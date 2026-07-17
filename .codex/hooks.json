@@ -1,0 +1,32 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/echeg/Projects/IdleMerge/.claude/hooks/peon-ping/peon.sh'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/echeg/Projects/IdleMerge/.claude/hooks/peon-ping/scripts/hook-handle-use.sh'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "'/Users/echeg/Projects/IdleMerge/.claude/hooks/peon-ping/scripts/hook-handle-rename.sh'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

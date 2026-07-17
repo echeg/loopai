@@ -1,0 +1,7 @@
+default_permissions = "rulesync"
+
+[mcp_servers]
+[features]
+hooks = true
+
+[permissions.rulesync]
