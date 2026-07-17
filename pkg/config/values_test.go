@@ -61,8 +61,10 @@ func TestValuesLoader_Load_EmbeddedOnly(t *testing.T) {
 	assert.Equal(t, 3600000, values.CodexTimeoutMs)
 	assert.Equal(t, "read-only", values.CodexSandbox)
 	assert.False(t, values.CodexSandboxSet)
-	assert.Equal(t, "codex", values.ExternalReviewTool)
+	assert.Equal(t, ExternalReviewToolAuto, values.ExternalReviewTool)
 	assert.False(t, values.ExternalReviewToolSet, "ExternalReviewToolSet must be false for embedded defaults")
+	assert.Empty(t, values.ExternalReviewModel)
+	assert.False(t, values.ExternalReviewModelSet, "ExternalReviewModelSet must be false for embedded defaults")
 	assert.Empty(t, values.CustomReviewScript)
 	assert.Equal(t, 2000, values.IterationDelayMs)
 	assert.Equal(t, 1, values.TaskRetryCount)
@@ -1241,9 +1243,11 @@ func TestValuesLoader_Load_ExternalReviewTool(t *testing.T) {
 		config       string
 		expectedTool string
 	}{
-		{name: "codex tool", config: "external_review_tool = codex", expectedTool: "codex"},
-		{name: "custom tool", config: "external_review_tool = custom", expectedTool: "custom"},
-		{name: "none tool", config: "external_review_tool = none", expectedTool: "none"},
+		{name: "auto tool", config: "external_review_tool = auto", expectedTool: ExternalReviewToolAuto},
+		{name: "claude tool", config: "external_review_tool = claude", expectedTool: ExternalReviewToolClaude},
+		{name: "codex tool", config: "external_review_tool = codex", expectedTool: ExternalReviewToolCodex},
+		{name: "custom tool", config: "external_review_tool = custom", expectedTool: ExternalReviewToolCustom},
+		{name: "none tool", config: "external_review_tool = none", expectedTool: ExternalReviewToolNone},
 	}
 
 	for _, tc := range tests {
@@ -1257,8 +1261,34 @@ func TestValuesLoader_Load_ExternalReviewTool(t *testing.T) {
 			require.NoError(t, err)
 
 			assert.Equal(t, tc.expectedTool, values.ExternalReviewTool)
+			assert.True(t, values.ExternalReviewToolSet)
 		})
 	}
+}
+
+func TestValuesLoader_Load_ExternalReviewModel(t *testing.T) {
+	t.Run("explicit model", func(t *testing.T) {
+		cfgPath := filepath.Join(t.TempDir(), "config")
+		require.NoError(t, os.WriteFile(cfgPath, []byte("external_review_model = opus:high"), 0o600))
+
+		values, err := newValuesLoader(defaultsFS).Load("", cfgPath)
+		require.NoError(t, err)
+		assert.Equal(t, "opus:high", values.ExternalReviewModel)
+		assert.True(t, values.ExternalReviewModelSet)
+	})
+
+	t.Run("explicit empty overrides global", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		globalPath := filepath.Join(tmpDir, "global")
+		localPath := filepath.Join(tmpDir, "local")
+		require.NoError(t, os.WriteFile(globalPath, []byte("external_review_model = gpt-5.5:xhigh"), 0o600))
+		require.NoError(t, os.WriteFile(localPath, []byte("external_review_model ="), 0o600))
+
+		values, err := newValuesLoader(defaultsFS).Load(localPath, globalPath)
+		require.NoError(t, err)
+		assert.Empty(t, values.ExternalReviewModel)
+		assert.True(t, values.ExternalReviewModelSet)
+	})
 }
 
 func TestValuesLoader_Load_CustomReviewScript(t *testing.T) {
@@ -1738,6 +1768,29 @@ func TestValues_mergeFrom_ExternalReviewFields(t *testing.T) {
 		src := Values{ExternalReviewTool: ""}
 		dst.mergeFrom(&src)
 		assert.Equal(t, "codex", dst.ExternalReviewTool)
+	})
+
+	t.Run("explicit external model overrides destination", func(t *testing.T) {
+		dst := Values{ExternalReviewModel: "opus:xhigh"}
+		src := Values{ExternalReviewModel: "gpt-5.5:high", ExternalReviewModelSet: true}
+		dst.mergeFrom(&src)
+		assert.Equal(t, "gpt-5.5:high", dst.ExternalReviewModel)
+		assert.True(t, dst.ExternalReviewModelSet)
+	})
+
+	t.Run("explicit empty external model clears destination", func(t *testing.T) {
+		dst := Values{ExternalReviewModel: "opus:xhigh"}
+		src := Values{ExternalReviewModelSet: true}
+		dst.mergeFrom(&src)
+		assert.Empty(t, dst.ExternalReviewModel)
+		assert.True(t, dst.ExternalReviewModelSet)
+	})
+
+	t.Run("unset external model preserves destination", func(t *testing.T) {
+		dst := Values{ExternalReviewModel: "opus:xhigh"}
+		dst.mergeFrom(&Values{})
+		assert.Equal(t, "opus:xhigh", dst.ExternalReviewModel)
+		assert.False(t, dst.ExternalReviewModelSet)
 	})
 
 	t.Run("merge custom review script", func(t *testing.T) {

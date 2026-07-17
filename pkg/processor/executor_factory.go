@@ -226,7 +226,7 @@ func (*executorFactory) needsCodexBinary(appConfig *config.Config) bool {
 		return true
 	}
 	switch appConfig.ExternalReviewTool {
-	case "custom", "none":
+	case config.ExternalReviewToolCustom, config.ExternalReviewToolNone:
 		return false
 	default:
 		return true

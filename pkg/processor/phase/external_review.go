@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
 	"github.com/umputun/ralphex/pkg/status"
 )
@@ -58,24 +59,33 @@ func NewExternalReviewPhase(opts ExternalReviewPhaseOpts) *ExternalReviewPhase {
 // Tool returns the effective external review tool after config and back-compat rules.
 func (p *ExternalReviewPhase) Tool() string {
 	if p.cfg.ExternalReviewToolSet && p.cfg.AppConfig != nil && p.cfg.AppConfig.ExternalReviewTool != "" {
-		return p.cfg.AppConfig.ExternalReviewTool
+		return currentExternalReviewTool(p.cfg.AppConfig.ExternalReviewTool)
 	}
 	if !p.cfg.CodexEnabled {
-		return "none"
+		return config.ExternalReviewToolNone
 	}
 	if p.cfg.AppConfig != nil && p.cfg.AppConfig.ExternalReviewTool != "" {
-		return p.cfg.AppConfig.ExternalReviewTool
+		return currentExternalReviewTool(p.cfg.AppConfig.ExternalReviewTool)
 	}
-	return "codex"
+	return config.ExternalReviewToolCodex
+}
+
+// currentExternalReviewTool preserves the existing Claude-primary behavior until
+// executor-aware auto selection is applied by the shared resolver.
+func currentExternalReviewTool(tool string) string {
+	if tool == config.ExternalReviewToolAuto {
+		return config.ExternalReviewToolCodex
+	}
+	return tool
 }
 
 // Run executes the configured external review loop and reports whether fixes need post-review.
 func (p *ExternalReviewPhase) Run(ctx context.Context) (ExternalReviewOutcome, error) {
 	switch p.Tool() {
-	case "none":
+	case config.ExternalReviewToolNone:
 		p.log.Print("external review disabled, skipping...")
 		return ExternalReviewOutcome{}, nil
-	case "custom":
+	case config.ExternalReviewToolCustom:
 		return p.runCustom(ctx)
 	default:
 		return p.runCodex(ctx)
@@ -86,14 +96,14 @@ func (p *ExternalReviewPhase) runCodex(ctx context.Context) (ExternalReviewOutco
 	if p.external == nil {
 		return ExternalReviewOutcome{}, errors.New("codex review executor not configured")
 	}
-	return p.runLoop(ctx, "codex")
+	return p.runLoop(ctx, config.ExternalReviewToolCodex)
 }
 
 func (p *ExternalReviewPhase) runCustom(ctx context.Context) (ExternalReviewOutcome, error) {
 	if p.custom == nil {
 		return ExternalReviewOutcome{}, errors.New("custom review script not configured")
 	}
-	return p.runLoop(ctx, "custom")
+	return p.runLoop(ctx, config.ExternalReviewToolCustom)
 }
 
 func (p *ExternalReviewPhase) showSummary(toolName, output string) {
@@ -230,7 +240,7 @@ func (p *ExternalReviewPhase) runIteration(ctx context.Context, opts externalRev
 		return externalReviewIterationResult{action: externalReviewBreakLoop}, nil
 	}
 
-	if opts.tool == "codex" {
+	if opts.tool == config.ExternalReviewToolCodex {
 		p.showSummary(opts.tool, reviewResult.Output)
 	}
 
@@ -295,7 +305,7 @@ func (p *ExternalReviewPhase) runClaudeEvaluation(loopCtx, parent context.Contex
 		p.phaseHolder.Set(status.PhaseClaudeEval)
 	}
 	p.log.PrintSection(status.NewClaudeEvalSection())
-	result := p.policy.Run(loopCtx, p.review.Run, p.evalPrompt(tool, output), "claude")
+	result := p.policy.Run(loopCtx, p.review.Run, p.evalPrompt(tool, output), config.ExternalReviewToolClaude)
 	if p.phaseHolder != nil {
 		p.phaseHolder.Set(status.PhaseCodex)
 	}
@@ -303,7 +313,7 @@ func (p *ExternalReviewPhase) runClaudeEvaluation(loopCtx, parent context.Contex
 	if result.Result.Error == nil {
 		return result, nil
 	}
-	if err := p.handleExecutorError(loopCtx, parent, "claude", result.Result.Error); err != nil {
+	if err := p.handleExecutorError(loopCtx, parent, config.ExternalReviewToolClaude, result.Result.Error); err != nil {
 		return ExecutionResult{}, err
 	}
 	return result, nil
@@ -329,28 +339,28 @@ func (p *ExternalReviewPhase) maxIterations() int {
 }
 
 func (p *ExternalReviewPhase) runReviewTool(ctx context.Context, tool, prompt string) ExecutionResult {
-	if tool == "custom" {
+	if tool == config.ExternalReviewToolCustom {
 		return p.policy.Run(ctx, p.custom.Run, prompt, tool)
 	}
 	return p.policy.Run(ctx, p.external.Run, prompt, tool)
 }
 
 func (p *ExternalReviewPhase) reviewPrompt(tool string, isFirst bool, claudeResponse string) string {
-	if tool == "custom" {
+	if tool == config.ExternalReviewToolCustom {
 		return p.prompts.CustomReviewPrompt(isFirst, claudeResponse)
 	}
 	return p.prompts.CodexReviewPrompt(isFirst, claudeResponse)
 }
 
 func (p *ExternalReviewPhase) evalPrompt(tool, output string) string {
-	if tool == "custom" {
+	if tool == config.ExternalReviewToolCustom {
 		return p.prompts.CustomEvaluationPrompt(output)
 	}
 	return p.prompts.CodexEvaluationPrompt(output)
 }
 
 func (p *ExternalReviewPhase) section(tool string, iteration int) status.Section {
-	if tool == "custom" {
+	if tool == config.ExternalReviewToolCustom {
 		return status.NewCustomIterationSection(iteration)
 	}
 	return status.NewCodexIterationSection(iteration)

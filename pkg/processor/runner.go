@@ -373,7 +373,7 @@ func (r *Runner) runCodexOnly(ctx context.Context) error {
 // used by runFull, runReviewOnly, and runCodexOnly to avoid duplicating this sequence.
 func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 	tool := r.phases.external.Tool()
-	if tool == "none" {
+	if tool == config.ExternalReviewToolNone {
 		r.log.Print("external review disabled, skipping...")
 		if err := r.phases.finalize.Run(ctx); err != nil {
 			return fmt.Errorf("finalize phase: %w", err)

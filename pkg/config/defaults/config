@@ -48,8 +48,7 @@ claude_args = --dangerously-skip-permissions --output-format stream-json --verbo
 # ------------------------------------------------------------------------------
 
 # executor: primary executor for task, review, and finalize phases
-# empty/default uses Claude Code; "codex" runs the full pipeline through codex
-# and skips the external review phase
+# empty/default uses Claude Code; "codex" runs the primary pipeline through codex
 # executor =
 
 # pass_claude_md: when executor = codex, let codex read project CLAUDE.md via
@@ -58,8 +57,8 @@ claude_args = --dangerously-skip-permissions --output-format stream-json --verbo
 # default: false
 # pass_claude_md = false
 
-# codex_enabled: whether to run codex external review phase
-# set to false to skip codex review entirely
+# codex_enabled: backward-compatible gate for automatically selected external review
+# set to false to disable external review when external_review_tool = auto
 # default: true
 codex_enabled = true
 
@@ -99,13 +98,20 @@ codex_sandbox = read-only
 # ------------------------------------------------------------------------------
 
 # external_review_tool: which tool to use for external code review
-# available: codex, custom, none
-# codex: use OpenAI Codex for external review (default)
+# available: auto, claude, codex, custom, none
+# auto: use Codex for a Claude primary executor and Claude for a Codex primary executor
+# claude: use Claude Code for external review
+# codex: use OpenAI Codex for external review
 # custom: use a custom script specified by custom_review_script
 # none: skip external review entirely
-# note: codex_enabled = false is treated as external_review_tool = none for backward compat
-# default: codex
-external_review_tool = codex
+# note: codex_enabled = false disables auto selection for backward compatibility
+# default: auto
+external_review_tool = auto
+
+# external_review_model: model[:effort] for the selected external provider
+# empty uses codex_model/codex_reasoning_effort for Codex or opus:xhigh for Claude
+# explicit values override the selected provider's dynamic default
+external_review_model =
 
 # custom_review_script: path to custom review script
 # only used when external_review_tool = custom

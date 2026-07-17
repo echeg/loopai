@@ -42,9 +42,11 @@ type Values struct {
 	SessionTimeoutSet          bool          // tracks if session_timeout was explicitly set
 	IdleTimeout                time.Duration // kill session after no output for this duration
 	IdleTimeoutSet             bool          // tracks if idle_timeout was explicitly set
-	ExternalReviewTool         string        // "codex", "custom", or "none"
+	ExternalReviewTool         string        // auto, claude, codex, custom, or none
 	ExternalReviewToolSet      bool          // tracks if external_review_tool was explicitly set in user config (not embedded default)
-	CustomReviewScript         string        // path to custom review script (when ExternalReviewTool = "custom")
+	ExternalReviewModel        string        // provider-specific model[:effort] spec; empty uses the selected provider's default
+	ExternalReviewModelSet     bool          // tracks if external_review_model was explicitly set in user config (not embedded default)
+	CustomReviewScript         string        // path to custom review script (when ExternalReviewTool = ExternalReviewToolCustom)
 	IterationDelayMs           int
 	IterationDelayMsSet        bool // tracks if iteration_delay_ms was explicitly set
 	TaskRetryCount             int
@@ -180,6 +182,7 @@ func (vl *valuesLoader) parseValuesFromEmbedded() (Values, error) {
 	values.CodexReasoningEffortSet = false
 	values.CodexSandboxSet = false
 	values.ExternalReviewToolSet = false
+	values.ExternalReviewModelSet = false
 	return values, nil
 }
 
@@ -253,6 +256,10 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 	if key, err := section.GetKey("external_review_tool"); err == nil {
 		values.ExternalReviewTool = key.String()
 		values.ExternalReviewToolSet = true
+	}
+	if key, err := section.GetKey("external_review_model"); err == nil {
+		values.ExternalReviewModel = key.String()
+		values.ExternalReviewModelSet = true
 	}
 	if key, err := section.GetKey("custom_review_script"); err == nil {
 		values.CustomReviewScript = expandTilde(key.String())
@@ -336,7 +343,7 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 	// executor selection: "" (= claude, default) or "codex"
 	if key, err := section.GetKey("executor"); err == nil {
 		v := strings.TrimSpace(key.String())
-		if v != "" && v != "codex" {
+		if v != ExecutorClaude && v != ExecutorCodex {
 			return Values{}, fmt.Errorf("invalid executor %q: must be \"\" (claude) or \"codex\"", v)
 		}
 		values.Executor = v
@@ -504,6 +511,12 @@ func (dst *Values) mergeFrom(src *Values) {
 		dst.ExternalReviewToolSet = true
 	} else if src.ExternalReviewTool != "" {
 		dst.ExternalReviewTool = src.ExternalReviewTool
+	}
+	if src.ExternalReviewModelSet {
+		dst.ExternalReviewModel = src.ExternalReviewModel
+		dst.ExternalReviewModelSet = true
+	} else if src.ExternalReviewModel != "" {
+		dst.ExternalReviewModel = src.ExternalReviewModel
 	}
 	if src.CustomReviewScript != "" {
 		dst.CustomReviewScript = src.CustomReviewScript

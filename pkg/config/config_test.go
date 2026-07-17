@@ -20,6 +20,7 @@ func Test_defaultsFS(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "claude_command")
 	assert.Contains(t, string(data), "codex_enabled")
+	assert.Contains(t, string(data), "external_review_model")
 	assert.Contains(t, string(data), "iteration_delay_ms")
 }
 
@@ -990,6 +991,7 @@ func TestLoad_ExternalReviewToolConfig(t *testing.T) {
 	// set external review tool config values
 	configContent := `
 external_review_tool = custom
+external_review_model = review-model:high
 custom_review_script = /path/to/my-review.sh
 `
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(configContent), 0o600))
@@ -997,7 +999,10 @@ custom_review_script = /path/to/my-review.sh
 	cfg, err := Load(configDir)
 	require.NoError(t, err)
 
-	assert.Equal(t, "custom", cfg.ExternalReviewTool)
+	assert.Equal(t, ExternalReviewToolCustom, cfg.ExternalReviewTool)
+	assert.True(t, cfg.ExternalReviewToolSet)
+	assert.Equal(t, "review-model:high", cfg.ExternalReviewModel)
+	assert.True(t, cfg.ExternalReviewModelSet)
 	assert.Equal(t, "/path/to/my-review.sh", cfg.CustomReviewScript)
 }
 
@@ -1014,8 +1019,10 @@ func TestLoad_ExternalReviewToolDefaults(t *testing.T) {
 	cfg, err := Load(configDir)
 	require.NoError(t, err)
 
-	// external_review_tool should default to "codex"
-	assert.Equal(t, "codex", cfg.ExternalReviewTool)
+	assert.Equal(t, ExternalReviewToolAuto, cfg.ExternalReviewTool)
+	assert.False(t, cfg.ExternalReviewToolSet)
+	assert.Empty(t, cfg.ExternalReviewModel)
+	assert.False(t, cfg.ExternalReviewModelSet)
 	assert.Empty(t, cfg.CustomReviewScript)
 }
 
@@ -1094,17 +1101,20 @@ func TestLocalConfig_LocalOverridesExternalReviewTool(t *testing.T) {
 	require.NoError(t, os.MkdirAll(localDir, 0o700))
 
 	// global config with external_review_tool = codex
-	globalConfig := `external_review_tool = codex`
+	globalConfig := "external_review_tool = codex\nexternal_review_model = gpt-5.5:xhigh"
 	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "config"), []byte(globalConfig), 0o600))
 
 	// local config disables external review
-	localConfig := `external_review_tool = none`
+	localConfig := "external_review_tool = none\nexternal_review_model = opus:high"
 	require.NoError(t, os.WriteFile(filepath.Join(localDir, "config"), []byte(localConfig), 0o600))
 
 	cfg, err := loadWithLocal(globalDir, localDir)
 	require.NoError(t, err)
 
-	assert.Equal(t, "none", cfg.ExternalReviewTool)
+	assert.Equal(t, ExternalReviewToolNone, cfg.ExternalReviewTool)
+	assert.True(t, cfg.ExternalReviewToolSet)
+	assert.Equal(t, "opus:high", cfg.ExternalReviewModel)
+	assert.True(t, cfg.ExternalReviewModelSet)
 }
 
 func TestLoad_NotifyParamsPopulated(t *testing.T) {
@@ -1470,6 +1480,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		CodexTimeoutMs:          1000,
 		CodexSandbox:            "read-only",
 		ExternalReviewTool:      "codex",
+		ExternalReviewModel:     "gpt-5.5:high",
 		CustomReviewScript:      "/tmp/review.sh",
 		IterationDelayMs:        500,
 		TaskRetryCount:          2,
@@ -1506,7 +1517,7 @@ func TestConfig_JSONShape(t *testing.T) {
 	wantKeys := []string{
 		"claude_command", "claude_args", "plan_model", "task_model", "review_model",
 		"codex_enabled", "codex_command", "codex_model", "codex_reasoning_effort",
-		"codex_timeout_ms", "codex_sandbox", "external_review_tool", "custom_review_script",
+		"codex_timeout_ms", "codex_sandbox", "external_review_tool", "external_review_model", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
 		"review_patience", "finalize_enabled", "preserve_anthropic_api_key", "executor",
 		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "plans_dir",
@@ -1526,9 +1537,10 @@ func TestConfig_JSONShape(t *testing.T) {
 	assert.JSONEq(t, `["l1"]`, string(got["claude_limit_patterns"]))
 	assert.JSONEq(t, `["l2"]`, string(got["codex_limit_patterns"]))
 	assert.JSONEq(t, `["r1"]`, string(got["claude_retry_patterns"]))
+	assert.JSONEq(t, `"gpt-5.5:high"`, string(got["external_review_model"]))
 
 	// the *Set sentinels and the loaded-from-files fields carry json:"-" and must be absent
-	for _, absent := range []string{"claude_args_set", "wait_on_limit_set", "notify_params", "colors", "task_prompt"} {
+	for _, absent := range []string{"claude_args_set", "external_review_model_set", "wait_on_limit_set", "notify_params", "colors", "task_prompt"} {
 		_, present := got[absent]
 		assert.False(t, present, "unexpected json key %q present", absent)
 	}

@@ -49,11 +49,11 @@ Real Claude/Codex execution is deliberately excluded from automatic validation b
 ## Implementation Steps
 
 ### Task 1: Add the external-review configuration surface
-- [ ] Extend `pkg/config/values.go` and `pkg/config/config.go` with `external_review_model` plus the required raw-value/set sentinel used by global/local merge precedence; update comments and JSON serialization consistently.
-- [ ] Define and use constants for `auto`, `claude`, `codex`, `custom`, and `none` instead of spreading new string literals through config and processor code.
-- [ ] Change the embedded `pkg/config/defaults/config` default to `external_review_tool=auto`, document the dynamic provider defaults, and leave `external_review_model` empty so runtime resolution can choose Codex config defaults or Claude `opus:xhigh`.
-- [ ] Update config loading, merging, default-dump/install expectations, and tests in `pkg/config/values_test.go`, `pkg/config/config_test.go`, and `pkg/config/defaults_test.go`; cover explicit empty/model values, local-over-global precedence, the new tool values, and the fact that embedded defaults are not marked as user-explicit.
-- [ ] Run `go test ./pkg/config` and fix all failures before continuing.
+- [x] Extend `pkg/config/values.go` and `pkg/config/config.go` with `external_review_model` plus the required raw-value/set sentinel used by global/local merge precedence; update comments and JSON serialization consistently.
+- [x] Define and use constants for `auto`, `claude`, `codex`, `custom`, and `none` instead of spreading new string literals through config and processor code.
+- [x] Change the embedded `pkg/config/defaults/config` default to `external_review_tool=auto`, document the dynamic provider defaults, and leave `external_review_model` empty so runtime resolution can choose Codex config defaults or Claude `opus:xhigh`.
+- [x] Update config loading, merging, default-dump/install expectations, and tests in `pkg/config/values_test.go`, `pkg/config/config_test.go`, and `pkg/config/defaults_test.go`; cover explicit empty/model values, local-over-global precedence, the new tool values, and the fact that embedded defaults are not marked as user-explicit.
+- [x] Run `go test ./pkg/config` and fix all failures before continuing.
 
 ### Task 2: Resolve auto selection, CLI precedence, and dependency policy
 - [ ] Add `claude` and `auto` choices to `--external-review-tool`, add `--external-review-model=<model[:effort]>`, and track explicit CLI use in `cmd/ralphex/main.go` using the existing flag-set pattern.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
 	"github.com/umputun/ralphex/pkg/processor/phase"
 )
@@ -91,7 +92,7 @@ func (p *retryPolicy) runWithSessionTimeout(ctx context.Context, run func(contex
 	prompt string, toolName string) phase.ExecutionResult {
 	sessionTimeout := p.sessionTimeout()
 	codexMode := p.cfg.isCodexExecutor()
-	useTimeout := sessionTimeout > 0 && (codexMode || toolName == "claude")
+	useTimeout := sessionTimeout > 0 && (codexMode || toolName == config.ExternalReviewToolClaude)
 
 	if !useTimeout {
 		result := run(ctx, prompt)

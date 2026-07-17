@@ -35,6 +35,8 @@ func TestDefaultsInstaller_Install_CreatesConfigDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "claude_command")
 	assert.Contains(t, string(data), "codex_enabled")
+	assert.Contains(t, string(data), "external_review_tool")
+	assert.Contains(t, string(data), "external_review_model")
 }
 
 func TestDefaultsInstaller_Install_ExistingDir(t *testing.T) {
@@ -874,6 +876,8 @@ func TestDumpDefaults(t *testing.T) {
 		data, err := os.ReadFile(filepath.Join(tmpDir, "config")) //nolint:gosec // test
 		require.NoError(t, err)
 		assert.Contains(t, string(data), "claude_command")
+		assert.Contains(t, string(data), "external_review_tool = auto")
+		assert.Contains(t, string(data), "external_review_model =")
 		stripped := stripComments(string(data))
 		assert.NotEmpty(t, strings.TrimSpace(stripped), "config should have raw (uncommented) content")
 
@@ -1055,6 +1059,8 @@ func TestDefaultsInstaller_Install_WritesCommentedConfig(t *testing.T) {
 	// should contain expected settings (commented)
 	assert.Contains(t, content, "# claude_command")
 	assert.Contains(t, content, "# codex_enabled")
+	assert.Contains(t, content, "# external_review_tool = auto")
+	assert.Contains(t, content, "# external_review_model =")
 }
 
 func TestDefaultsInstaller_Install_OverwritesCommentedConfig(t *testing.T) {

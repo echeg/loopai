@@ -37,6 +37,15 @@ const (
 	ExecutorCodex  = "codex"
 )
 
+// External review tool constants for Config.ExternalReviewTool.
+const (
+	ExternalReviewToolAuto   = "auto"
+	ExternalReviewToolClaude = "claude"
+	ExternalReviewToolCodex  = "codex"
+	ExternalReviewToolCustom = "custom"
+	ExternalReviewToolNone   = "none"
+)
+
 // Config holds all configuration settings for ralphex.
 // Fields ending in *Set mostly track whether that field was explicitly set in config.
 // This allows distinguishing explicit false/0 from "not set", enabling proper
@@ -61,9 +70,11 @@ type Config struct {
 	CodexSandbox         string `json:"codex_sandbox"`
 	CodexSandboxSet      bool   `json:"-"` // tracks if codex_sandbox was explicitly set outside embedded defaults
 
-	ExternalReviewTool    string `json:"external_review_tool"` // "codex", "custom", or "none"
-	ExternalReviewToolSet bool   `json:"-"`                    // tracks if external_review_tool was explicitly set in user config (not embedded default)
-	CustomReviewScript    string `json:"custom_review_script"` // path to custom review script
+	ExternalReviewTool     string `json:"external_review_tool"`  // auto, claude, codex, custom, or none
+	ExternalReviewToolSet  bool   `json:"-"`                     // tracks if external_review_tool was explicitly set in user config (not embedded default)
+	ExternalReviewModel    string `json:"external_review_model"` // provider-specific model[:effort] spec; empty uses the selected provider's default
+	ExternalReviewModelSet bool   `json:"-"`                     // tracks if external_review_model was explicitly set in user config (not embedded default)
+	CustomReviewScript     string `json:"custom_review_script"`  // path to custom review script
 
 	IterationDelayMs      int  `json:"iteration_delay_ms"`
 	IterationDelayMsSet   bool `json:"-"` // tracks if iteration_delay_ms was explicitly set in config
@@ -303,6 +314,8 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		CodexSandboxSet:         values.CodexSandboxSet,
 		ExternalReviewTool:      values.ExternalReviewTool,
 		ExternalReviewToolSet:   values.ExternalReviewToolSet,
+		ExternalReviewModel:     values.ExternalReviewModel,
+		ExternalReviewModelSet:  values.ExternalReviewModelSet,
 		CustomReviewScript:      values.CustomReviewScript,
 		IterationDelayMs:        values.IterationDelayMs,
 		IterationDelayMsSet:     values.IterationDelayMsSet,

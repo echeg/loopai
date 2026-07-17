@@ -43,9 +43,9 @@ func (c Config) isCodexExecutor() bool {
 
 func (c Config) executorName() string {
 	if c.isCodexExecutor() {
-		return "codex"
+		return config.ExternalReviewToolCodex
 	}
-	return "claude"
+	return config.ExternalReviewToolClaude
 }
 
 // wrapExecutorError wraps a phase executor error, routing through pattern-match handling first.
