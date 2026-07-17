@@ -430,6 +430,27 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 		assert.Equal(t, "workspace-write", reviewExec.Sandbox)
 	})
 
+	t.Run("external codex stays read-only when primary sandbox is writable", func(t *testing.T) {
+		appCfg := testAppConfig(t)
+		appCfg.Executor = config.ExecutorCodex
+		appCfg.ExternalReviewTool = config.ExternalReviewToolCodex
+		appCfg.CodexSandbox = "workspace-write"
+		appCfg.CodexSandboxSet = true
+		cfg := Config{
+			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
+			ExternalReviewToolSet: true, ExternalReviewTool: config.ExternalReviewToolCodex,
+			AppConfig: appCfg,
+		}
+		_, execs := (&executorFactory{}).Build(cfg, log)
+
+		taskExec, ok := execs.Task.(*executor.CodexExecutor)
+		require.True(t, ok)
+		assert.Equal(t, "workspace-write", taskExec.Sandbox)
+		externalExec, ok := execs.External.(*executor.CodexExecutor)
+		require.True(t, ok)
+		assert.Equal(t, "read-only", externalExec.Sandbox)
+	})
+
 	t.Run("zero-value Executors literal constructs usable runner", func(t *testing.T) {
 		cfg := Config{Mode: ModeReview, AppConfig: testAppConfig(t)}
 		r := NewWithExecutors(cfg, log, Executors{}, holder)

@@ -47,8 +47,9 @@ claude_args = --dangerously-skip-permissions --output-format stream-json --verbo
 # codex executor
 # ------------------------------------------------------------------------------
 
-# executor: primary executor for task, review, and finalize phases
-# empty/default uses Claude Code; "codex" runs the primary pipeline through codex
+# executor: primary executor for plan creation, task, review, external-finding
+# evaluation, and finalize phases. empty/default uses Claude Code; "codex" runs
+# the primary pipeline through codex
 # executor =
 
 # pass_claude_md: when executor = codex, let codex read project CLAUDE.md via
@@ -112,6 +113,7 @@ external_review_tool = auto
 # external_review_model: model[:effort] for the selected external provider
 # empty uses codex_model/codex_reasoning_effort for Codex or opus:xhigh for Claude
 # explicit values override the selected provider's dynamic default
+# must remain empty when external_review_tool = custom
 external_review_model =
 
 # custom_review_script: path to custom review script

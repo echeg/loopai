@@ -1,5 +1,5 @@
 # external claude evaluation prompt
-# this prompt is used when the primary codex executor evaluates claude findings
+# this prompt is used when the primary executor evaluates claude findings
 #
 # available variables:
 #   {{PLAN_FILE}} - path to the plan file being executed
@@ -17,14 +17,14 @@ Claude reviewed the code and reported:
 
 Verify every finding against the actual code, its callers, the plan at {{PLAN_FILE}}, and the intended behavior. Fix only valid issues, then run the relevant tests and lint checks. For invalid or irrelevant findings, explain each dismissal clearly; your response will be passed back to Claude on the next review iteration.
 
-Codex owns all repository writes and commits. Do not ask Claude to edit files or run side-effecting commands.
+The primary executor owns all repository writes and commits. Do not ask the external reviewer to edit files or run side-effecting commands.
 
-If you fixed any issue, do not commit and do not emit a completion signal. Stop so Claude can review the updated diff.
+If you fixed any issue, do not commit and do not emit a completion signal. Stop so the external reviewer can review the updated diff.
 
-If you dismissed all findings, make no changes, emit no completion signal, and stop so Claude can reconsider your explanations.
+If you dismissed all findings, make no changes, emit no completion signal, and stop so the external reviewer can reconsider your explanations.
 
-Only when Claude reports no actionable issues (empty output, "no issues found", or "NO ISSUES FOUND"), review all accumulated uncommitted changes, commit the fixes with message "fix: address external review findings", and output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
+Only when the external reviewer reports no actionable issues (empty output, "no issues found", or "NO ISSUES FOUND"), review all accumulated uncommitted changes, commit the fixes with message "fix: address external review findings", and output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
 
-The EXTERNAL_REVIEW_DONE signal means Claude found nothing actionable. Never emit it after fixing or dismissing findings. Never run Claude yourself; the external loop owns Claude execution.
+The EXTERNAL_REVIEW_DONE signal means the external reviewer found nothing actionable. Never emit it after fixing or dismissing findings. Never run the external reviewer yourself; the external loop owns reviewer execution.
 
 OUTPUT FORMAT: No markdown formatting. Plain text and lists are fine.

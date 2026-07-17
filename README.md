@@ -165,7 +165,7 @@ The primary executor verifies findings, fixes confirmed issues, and commits.
 
 The loop terminates when: all issues resolved, max iterations reached, stalemate detected (via `--review-patience`), or manual break via Ctrl+\ (SIGQUIT).
 
-**Stalemate detection:** When the external tool and Claude can't agree on findings, the loop can waste tokens iterating to the max. Set `--review-patience=N` (or `review_patience` in config) to terminate after N consecutive rounds with no commits or working tree changes.
+**Stalemate detection:** When the external reviewer and primary evaluator can't agree on findings, the loop can waste tokens iterating to the max. Set `--review-patience=N` (or `review_patience` in config) to terminate after N consecutive rounds with no commits or working tree changes.
 
 **Manual break:** Press Ctrl+\ (SIGQUIT) during the external review loop to terminate it immediately. The current executor run is cancelled via context cancellation. During the task phase, Ctrl+\ pauses instead — see [Phase 1: Task Execution](#phase-1-task-execution). Not available on Windows.
 
@@ -628,7 +628,7 @@ ralphex
 # review-only mode (skip task execution)
 ralphex --review docs/plans/feature.md
 
-# external-only mode (skip tasks and first review, run only external review loop)
+# external-only mode (skip tasks and first review; run external review, conditional post-review, and finalize)
 ralphex --external-only
 
 # codex executor mode (codex writes; auto-selected Claude opus:xhigh reviews)
@@ -681,7 +681,7 @@ ralphex --external-review-tool=none docs/plans/feature.md
 # use provider overrides for one run without editing config
 ralphex --claude-command=/path/to/codex-as-claude.sh --external-review-tool=custom --custom-review-script=/path/to/review.sh docs/plans/feature.md
 
-# set per-session timeout to kill hanging sessions (external review in Claude mode excluded)
+# set per-session timeout (external Codex/custom review under a Claude primary is excluded)
 ralphex --session-timeout=30m docs/plans/feature.md
 
 # kill claude/codex executor session when no output for 5 minutes
@@ -705,7 +705,7 @@ ralphex --serve --port=3000 docs/plans/feature.md
 | `--max-external-iterations` | Override external review iteration limit (0 = auto) | 0 |
 | `--review-patience` | Terminate external review after N unchanged rounds (0 = disabled) | 0 |
 | `-r, --review` | Skip task execution, run full review pipeline | false |
-| `-e, --external-only` | Skip tasks and first review, run only external review loop | false |
+| `-e, --external-only` | Skip tasks and first review; run external review, conditional post-review, and finalize | false |
 | `-c, --codex-only` | Alias for `--external-only` (deprecated) | false |
 | `--codex` | Use codex CLI for plan creation, task, internal review, external-finding evaluation, and finalize. With `external_review_tool = auto`, Claude `opus:xhigh` performs external review when available; a missing automatic reviewer warns and disables only that phase. Requires codex CLI ≥ 0.130.0 | false |
 | `--pass-claude-md` | Pass project `CLAUDE.md` to codex via `-c project_doc_fallback_filenames=["CLAUDE.md"]`. User-level `~/.claude/CLAUDE.md` is NOT auto-passed (a one-time setup hint is shown). Requires the codex executor (`--codex` or `executor = codex`) | false |
@@ -894,9 +894,9 @@ Agents to launch:
 
 ## Requirements
 
-- `claude` - Claude Code CLI (required for a Claude primary or explicit Claude reviewer; optional when a Codex primary falls back after missing automatic review)
+- `claude` - Claude Code CLI (required for a Claude primary or explicit Claude reviewer; optional for a Codex-primary installation because an unavailable auto-selected reviewer only disables external review)
 - `fzf` - for plan selection (optional)
-- `codex` - Codex CLI (required for `--codex` or explicit Codex review; optional when a Claude primary falls back after missing automatic review)
+- `codex` - Codex CLI (required for `--codex` or explicit Codex review; optional for a Claude-primary installation because an unavailable auto-selected reviewer only disables external review)
 - `gemini` - alternative provider for Claude phases (optional, via `scripts/gemini-as-claude/`)
 - `agy` - Antigravity CLI, alternative provider for Claude phases (optional, via `scripts/agy-as-claude/`)
 - `pi` - alternative provider for Claude phases (optional, via `scripts/pi-as-claude/`)
@@ -984,15 +984,15 @@ Provider-related CLI flags (`--claude-command`, `--claude-args`, `--external-rev
 | `default_branch` | Override auto-detected default branch for review diffs | auto-detect |
 | `vcs_command` | VCS command for the git backend (set to a translation script for hg repos) | `git` |
 | `commit_trailer` | Trailer line appended to all ralphex-orchestrated git commits | disabled |
-| `color_task` | Task execution phase color (hex) | `#00ff00` |
-| `color_review` | Review phase color (hex) | `#00ffff` |
-| `color_codex` | Codex review color (hex) | `#ff00ff` |
-| `color_claude_eval` | Claude evaluation color (hex) | `#64c8ff` |
-| `color_warn` | Warning messages color (hex) | `#ffff00` |
-| `color_error` | Error messages color (hex) | `#ff0000` |
-| `color_signal` | Completion/failure signals color (hex) | `#ff6464` |
-| `color_timestamp` | Timestamp prefix color (hex) | `#8a8a8a` |
-| `color_info` | Informational messages color (hex) | `#b4b4b4` |
+| `color_task` | Task execution phase color (hex) | `#2e8b57` |
+| `color_review` | Internal review phase color (hex) | `#1a9e9e` |
+| `color_codex` | External review phase color (legacy key, hex) | `#9b59b6` |
+| `color_claude_eval` | External findings evaluation phase color (legacy key, hex) | `#5b8dd9` |
+| `color_warn` | Warning messages color (hex) | `#d4930d` |
+| `color_error` | Error messages color (hex) | `#cc0000` |
+| `color_signal` | Completion/failure signals color (hex) | `#d25252` |
+| `color_timestamp` | Timestamp prefix color (hex) | `#707070` |
+| `color_info` | Informational messages color (hex) | `#808080` |
 | `claude_error_patterns` | Patterns to detect in claude output (comma-separated) | `You've hit your limit,You've hit your session limit,API Error:,cannot be launched inside another Claude Code session,Not logged in,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit` |
 | `codex_error_patterns` | Patterns to detect in codex output (comma-separated) | `Rate limit exceeded,rate limit reached,429 Too Many Requests,quota exceeded,insufficient_quota,You've hit your usage limit` |
 | `claude_limit_patterns` | Limit patterns for claude triggering wait+retry (comma-separated) | `You've hit your limit,You've hit your session limit,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit` |
@@ -1018,7 +1018,7 @@ Place custom prompt files in `~/.config/ralphex/prompts/` to override the built-
 
 ### Custom External Review
 
-Use your own AI tool for external code review instead of codex. This allows integration with OpenRouter, local LLMs, or any custom pipeline.
+Use your own AI tool for external code review instead of a built-in Claude or Codex reviewer. This allows integration with OpenRouter, local LLMs, or any custom pipeline.
 
 **Configuration:**
 
@@ -1095,7 +1095,7 @@ Customize `~/.config/ralphex/prompts/custom_review.txt` to modify the prompt sen
 - `{{PLAN_FILE}}` - path to the plan file
 - `{{PROGRESS_FILE}}` - path to progress log with previous review iterations
 - `{{DEFAULT_BRANCH}}` - detected default branch (main, master, etc.)
-- `{{PREVIOUS_REVIEW_CONTEXT}}` - previous review context (empty on first iteration, populated on subsequent)
+- `{{PREVIOUS_REVIEW_CONTEXT}}` - previous evaluator context (empty on first iteration, populated on subsequent)
 
 Customize `~/.config/ralphex/prompts/custom_eval.txt` to modify how the primary executor evaluates your tool's output. The evaluation prompt receives `{{CUSTOM_OUTPUT}}`; `codex.txt` and `external_claude_eval.txt` receive `{{CODEX_OUTPUT}}` and `{{CLAUDE_OUTPUT}}` respectively.
 

@@ -43,12 +43,12 @@ type opts struct {
 	ExternalReviewModel     string        `long:"external-review-model" description:"external review model as model[:effort]"`
 	CustomReviewScript      string        `long:"custom-review-script" description:"override custom external review script for this run"`
 	Review                  bool          `short:"r" long:"review" description:"skip task execution, run full review pipeline"`
-	ExternalOnly            bool          `short:"e" long:"external-only" description:"skip tasks and first review, run only external review loop"`
+	ExternalOnly            bool          `short:"e" long:"external-only" description:"skip tasks and first review; run external review, conditional post-review, and finalize"`
 	CodexOnly               bool          `short:"c" long:"codex-only" description:"alias for --external-only (deprecated)"`
 	TasksOnly               bool          `short:"t" long:"tasks-only" description:"run only task phase, skip all reviews"`
 	BaseRef                 string        `short:"b" long:"base-ref" description:"override default branch for review diffs (branch name or commit hash)"`
 	Wait                    time.Duration `long:"wait" description:"wait duration on rate limit before retry (e.g. 1h, 30m)"`
-	SessionTimeout          time.Duration `long:"session-timeout" description:"per-session timeout for task/review executor (e.g. 30m, 1h); external review in Claude mode excluded"`
+	SessionTimeout          time.Duration `long:"session-timeout" description:"per-session timeout (e.g. 30m, 1h); external Codex/custom review under a Claude primary excluded"`
 	IdleTimeout             time.Duration `long:"idle-timeout" description:"kill claude/codex executor session after no output for this duration (e.g. 5m, 10m)"`
 	SkipFinalize            bool          `long:"skip-finalize" description:"skip finalize step even if enabled in config"`
 	PreserveAnthropicAPIKey bool          `long:"preserve-anthropic-api-key" description:"pass ANTHROPIC_API_KEY through to claude (for users authenticating Claude Code via API key rather than OAuth/keychain)"`
@@ -1181,7 +1181,6 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		CodexEnabled:          externalReview.Provider != config.ExternalReviewToolNone,
 		ExternalReviewToolSet: true,
 		ExternalReviewTool:    externalReview.Provider,
-		ExternalReviewAuto:    externalReview.AutoSelected,
 		ExternalReviewModel:   externalReview.Model,
 		ExternalReviewEffort:  externalReview.Effort,
 		FinalizeEnabled:       req.Config.FinalizeEnabled,

@@ -336,7 +336,7 @@ Implementation:
 - `{{GOAL}}` - human-readable goal (plan-based or branch comparison)
 - `{{DEFAULT_BRANCH}}` - detected default branch (main, master, origin/main, etc.), overridable via `--base-ref` CLI flag or `default_branch` config option
 - `{{DIFF_INSTRUCTION}}` - git diff command for current iteration (first: `git diff main...HEAD`, subsequent: `git diff`)
-- `{{PREVIOUS_REVIEW_CONTEXT}}` - previous review context block for external review iterations (empty on first iteration, formatted context on subsequent)
+- `{{PREVIOUS_REVIEW_CONTEXT}}` - previous evaluator context block for external review iterations (empty on first iteration, formatted context on subsequent)
 - `{{CODEX_OUTPUT}}` / `{{CLAUDE_OUTPUT}}` / `{{CUSTOM_OUTPUT}}` - findings from the selected external reviewer for its matching evaluation prompt
 - `{{agent:name}}` - expands to Task tool instructions for the named agent
 
@@ -417,14 +417,16 @@ git add -A && git commit -m "add comment"
 go run <ralphex-project-root>/cmd/ralphex --review
 ```
 
-### Test Codex-Only Mode
+### Test Codex-Primary External-Only Mode
 
 ```bash
 cd /tmp/ralphex-test
 
-# run codex-only review
-go run <ralphex-project-root>/cmd/ralphex --codex-only
+# run Claude external review with Codex evaluation/fixes/finalize
+go run <ralphex-project-root>/cmd/ralphex --codex --external-only
 ```
+
+`--codex-only` remains a deprecated alias for `--external-only`; it does not select the Codex primary executor by itself.
 
 ### Monitor Progress
 

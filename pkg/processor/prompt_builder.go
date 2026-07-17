@@ -43,22 +43,6 @@ func (b *promptBuilder) SecondReviewPrompt(prefix string) string {
 	return prefix + b.prependCodexReviewGuidance(b.replacePromptVariables(b.cfg.AppConfig.ReviewSecondPrompt))
 }
 
-func (b *promptBuilder) CodexReviewPrompt(isFirst bool, evaluatorResponse string) string {
-	return b.ExternalReviewPrompt(config.ExternalReviewToolCodex, isFirst, evaluatorResponse)
-}
-
-func (b *promptBuilder) CodexEvaluationPrompt(codexFindings string) string {
-	return b.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, codexFindings)
-}
-
-func (b *promptBuilder) CustomReviewPrompt(isFirst bool, evaluatorResponse string) string {
-	return b.ExternalReviewPrompt(config.ExternalReviewToolCustom, isFirst, evaluatorResponse)
-}
-
-func (b *promptBuilder) CustomEvaluationPrompt(customOutput string) string {
-	return b.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, customOutput)
-}
-
 // ExternalReviewPrompt renders the prompt for the selected external reviewer.
 func (b *promptBuilder) ExternalReviewPrompt(reviewer string, isFirst bool, evaluatorResponse string) string {
 	var prompt string

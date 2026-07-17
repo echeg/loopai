@@ -37,7 +37,7 @@ func Test_defaultsFS_PromptFiles(t *testing.T) {
 		{file: "defaults/prompts/codex.txt", contains: []string{"{{CODEX_OUTPUT}}", "RALPHEX:EXTERNAL_REVIEW_DONE", "Codex reviewed"}},
 		{file: "defaults/prompts/codex_review.txt", contains: []string{"{{DIFF_INSTRUCTION}}", "{{PROGRESS_FILE}}", "{{PREVIOUS_REVIEW_CONTEXT}}", "{{PLAN_FILE}}"}},
 		{file: "defaults/prompts/external_claude_review.txt", contains: []string{"{{DIFF_INSTRUCTION}}", "{{PREVIOUS_REVIEW_CONTEXT}}", "findings-only", "Do not edit", "side-effecting Bash"}},
-		{file: "defaults/prompts/external_claude_eval.txt", contains: []string{"{{CLAUDE_OUTPUT}}", "Codex owns", "RALPHEX:EXTERNAL_REVIEW_DONE"}},
+		{file: "defaults/prompts/external_claude_eval.txt", contains: []string{"{{CLAUDE_OUTPUT}}", "primary executor owns", "RALPHEX:EXTERNAL_REVIEW_DONE"}},
 	}
 
 	for _, tc := range testCases {

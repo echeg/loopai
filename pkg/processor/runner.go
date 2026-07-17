@@ -20,9 +20,9 @@ const DefaultIterationDelay = 2 * time.Second
 type Mode string
 
 const (
-	ModeFull      Mode = "full"       // full execution: tasks + reviews + codex
+	ModeFull      Mode = "full"       // full execution: tasks + internal and external reviews + finalize
 	ModeReview    Mode = "review"     // skip tasks, run full review pipeline
-	ModeCodexOnly Mode = "codex-only" // skip tasks and first review, run only codex loop
+	ModeCodexOnly Mode = "codex-only" // skip tasks and first review, start at external review
 	ModeTasksOnly Mode = "tasks-only" // run only task phase, skip all reviews
 	ModePlan      Mode = "plan"       // interactive plan creation mode
 )
@@ -42,10 +42,9 @@ type Config struct {
 	TaskRetryCount        int            // number of times to retry failed tasks
 	TaskModel             string         // model[:effort] spec for task execution; parsed by executor setup (empty = CLI defaults)
 	ReviewModel           string         // model[:effort] spec for review phases; empty falls back to TaskModel
-	CodexEnabled          bool           // whether codex review is enabled
+	CodexEnabled          bool           // backward-compatible gate for automatic external review
 	ExternalReviewToolSet bool           // when true, AppConfig.ExternalReviewTool is an explicit choice that overrides codex_enabled=false back-compat
 	ExternalReviewTool    string         // concrete resolved provider; never auto when supplied by the CLI layer
-	ExternalReviewAuto    bool           // whether the concrete provider came from auto selection
 	ExternalReviewModel   string         // resolved external provider model
 	ExternalReviewEffort  string         // resolved external provider effort
 	FinalizeEnabled       bool           // whether finalize step is enabled
@@ -303,7 +302,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 }
 
-// runFull executes the complete pipeline: tasks → review → codex → review.
+// runFull executes the complete pipeline: tasks → internal review → external review → post-review → finalize.
 func (r *Runner) runFull(ctx context.Context) error {
 	if r.cfg.PlanFile == "" {
 		return errors.New("plan file required for full mode")
@@ -370,7 +369,7 @@ func (r *Runner) runCodexOnly(ctx context.Context) error {
 		return err
 	}
 
-	r.log.Print("codex phases completed successfully")
+	r.log.Print("external review phases completed successfully")
 	return nil
 }
 
@@ -387,7 +386,7 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 	}
 
 	r.phaseHolder.Set(status.PhaseExternalReview)
-	r.log.PrintSection(status.NewGenericSection(tool + " external review"))
+	r.log.PrintSection(status.NewGenericSection("external review (" + tool + ")"))
 
 	outcome, err := r.phases.external.Run(ctx)
 	if err != nil {

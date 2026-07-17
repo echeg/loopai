@@ -133,7 +133,7 @@ func TestRunner_buildCodexEvaluationPrompt(t *testing.T) {
 	findings := "Issue 1: Missing error check in foo.go:42"
 
 	r := &Runner{cfg: Config{AppConfig: testAppConfig(t)}, log: newMockLogger()}
-	prompt := newPromptBuilderForTest(r).CodexEvaluationPrompt(findings)
+	prompt := newPromptBuilderForTest(r).ExternalEvaluationPrompt(config.ExternalReviewToolCodex, findings)
 
 	assert.Contains(t, prompt, findings)
 	assert.Contains(t, prompt, "<<<RALPHEX:EXTERNAL_REVIEW_DONE>>>")
@@ -196,7 +196,7 @@ func TestRunner_buildCodexEvaluationPrompt_CustomPrompt(t *testing.T) {
 		CodexPrompt: "Custom codex evaluation with output: {{CODEX_OUTPUT}} for {{GOAL}}",
 	}
 	r := &Runner{cfg: Config{PlanFile: "docs/plans/test.md", AppConfig: appCfg}}
-	prompt := newPromptBuilderForTest(r).CodexEvaluationPrompt("found bug in main.go")
+	prompt := newPromptBuilderForTest(r).ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "found bug in main.go")
 
 	assert.Equal(t, "Custom codex evaluation with output: found bug in main.go for implementation of plan at docs/plans/test.md", prompt)
 }
@@ -845,13 +845,13 @@ func TestRunner_getDiffInstruction(t *testing.T) {
 func TestRunner_replaceVariablesWithIteration(t *testing.T) {
 	t.Run("replaces DIFF_INSTRUCTION for first iteration", func(t *testing.T) {
 		r := &Runner{cfg: Config{DefaultBranch: "main"}}
-		result := newPromptBuilderForTest(r).replaceVariablesWithIteration("Run: {{DIFF_INSTRUCTION}}", true, "")
+		result := newPromptBuilderForTest(r).replaceExternalVariablesWithIteration("Run: {{DIFF_INSTRUCTION}}", true, config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, "")
 		assert.Equal(t, "Run: git diff main...HEAD", result)
 	})
 
 	t.Run("replaces DIFF_INSTRUCTION for subsequent iteration", func(t *testing.T) {
 		r := &Runner{cfg: Config{DefaultBranch: "main"}}
-		result := newPromptBuilderForTest(r).replaceVariablesWithIteration("Run: {{DIFF_INSTRUCTION}}", false, "")
+		result := newPromptBuilderForTest(r).replaceExternalVariablesWithIteration("Run: {{DIFF_INSTRUCTION}}", false, config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, "")
 		assert.Equal(t, "Run: git diff", result)
 	})
 
@@ -862,7 +862,7 @@ func TestRunner_replaceVariablesWithIteration(t *testing.T) {
 			DefaultBranch: "develop",
 		}}
 		prompt := "Plan: {{PLAN_FILE}}, Progress: {{PROGRESS_FILE}}, Goal: {{GOAL}}, Branch: {{DEFAULT_BRANCH}}, Diff: {{DIFF_INSTRUCTION}}"
-		result := newPromptBuilderForTest(r).replaceVariablesWithIteration(prompt, true, "")
+		result := newPromptBuilderForTest(r).replaceExternalVariablesWithIteration(prompt, true, config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, "")
 
 		assert.Contains(t, result, "Plan: docs/plans/test.md")
 		assert.Contains(t, result, "Progress: progress.txt")
@@ -877,7 +877,7 @@ func TestRunner_replaceVariablesWithIteration(t *testing.T) {
 			CustomAgents: []config.CustomAgent{{Name: "test-agent", Prompt: "test prompt"}},
 		}
 		r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
-		result := newPromptBuilderForTest(r).replaceVariablesWithIteration("Diff: {{DIFF_INSTRUCTION}}, Agent: {{agent:test-agent}}", true, "")
+		result := newPromptBuilderForTest(r).replaceExternalVariablesWithIteration("Diff: {{DIFF_INSTRUCTION}}, Agent: {{agent:test-agent}}", true, config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, "")
 
 		assert.Contains(t, result, "Diff: git diff main...HEAD")
 		assert.Contains(t, result, "test prompt")
@@ -886,7 +886,7 @@ func TestRunner_replaceVariablesWithIteration(t *testing.T) {
 
 	t.Run("handles prompt without DIFF_INSTRUCTION", func(t *testing.T) {
 		r := &Runner{cfg: Config{DefaultBranch: "main"}}
-		result := newPromptBuilderForTest(r).replaceVariablesWithIteration("Plan: {{PLAN_FILE}}", true, "")
+		result := newPromptBuilderForTest(r).replaceExternalVariablesWithIteration("Plan: {{PLAN_FILE}}", true, config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, "")
 		assert.Contains(t, result, "(no plan file - reviewing current branch)")
 	})
 }
@@ -900,7 +900,7 @@ func TestRunner_buildCustomReviewPrompt(t *testing.T) {
 			AppConfig:     appCfg,
 		}, log: newMockLogger()}
 
-		prompt := newPromptBuilderForTest(r).CustomReviewPrompt(true, "")
+		prompt := newPromptBuilderForTest(r).ExternalReviewPrompt(config.ExternalReviewToolCustom, true, "")
 
 		assert.Contains(t, prompt, "git diff main...HEAD")
 		assert.Contains(t, prompt, "docs/plans/test.md")
@@ -917,7 +917,7 @@ func TestRunner_buildCustomReviewPrompt(t *testing.T) {
 			AppConfig:     appCfg,
 		}, log: newMockLogger()}
 
-		prompt := newPromptBuilderForTest(r).CustomReviewPrompt(false, "")
+		prompt := newPromptBuilderForTest(r).ExternalReviewPrompt(config.ExternalReviewToolCustom, false, "")
 
 		assert.Contains(t, prompt, "git diff")
 		assert.NotContains(t, prompt, "main...HEAD")
@@ -930,7 +930,7 @@ func TestRunner_buildCustomReviewPrompt(t *testing.T) {
 			AppConfig:     appCfg,
 		}, log: newMockLogger()}
 
-		prompt := newPromptBuilderForTest(r).CustomReviewPrompt(false, "I fixed the null pointer issue")
+		prompt := newPromptBuilderForTest(r).ExternalReviewPrompt(config.ExternalReviewToolCustom, false, "I fixed the null pointer issue")
 
 		assert.Contains(t, prompt, "PREVIOUS REVIEW CONTEXT")
 		assert.Contains(t, prompt, "I fixed the null pointer issue")
@@ -945,13 +945,13 @@ func TestRunner_buildCustomReviewPrompt(t *testing.T) {
 		r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
 
 		t.Run("empty on first iteration", func(t *testing.T) {
-			prompt := newPromptBuilderForTest(r).CustomReviewPrompt(true, "")
+			prompt := newPromptBuilderForTest(r).ExternalReviewPrompt(config.ExternalReviewToolCustom, true, "")
 			assert.Equal(t, "Review code.\n", prompt)
 			assert.NotContains(t, prompt, "PREVIOUS REVIEW CONTEXT")
 		})
 
 		t.Run("populated on subsequent iteration", func(t *testing.T) {
-			prompt := newPromptBuilderForTest(r).CustomReviewPrompt(false, "addressed the race condition")
+			prompt := newPromptBuilderForTest(r).ExternalReviewPrompt(config.ExternalReviewToolCustom, false, "addressed the race condition")
 			assert.Contains(t, prompt, "PREVIOUS REVIEW CONTEXT")
 			assert.Contains(t, prompt, "addressed the race condition")
 			assert.NotContains(t, prompt, "{{PREVIOUS_REVIEW_CONTEXT}}")
@@ -968,7 +968,7 @@ func TestRunner_buildCustomReviewPrompt(t *testing.T) {
 			AppConfig:     appCfg,
 		}, log: newMockLogger()}
 
-		prompt := newPromptBuilderForTest(r).CustomReviewPrompt(true, "")
+		prompt := newPromptBuilderForTest(r).ExternalReviewPrompt(config.ExternalReviewToolCustom, true, "")
 
 		assert.Contains(t, prompt, "implementation of plan at docs/plans/feature.md")
 		assert.Contains(t, prompt, "git diff develop...HEAD")
@@ -986,7 +986,7 @@ func TestRunner_buildCustomEvaluationPrompt(t *testing.T) {
 		}, log: newMockLogger()}
 
 		customOutput := "Found issue in foo.go:10 - potential null pointer"
-		prompt := newPromptBuilderForTest(r).CustomEvaluationPrompt(customOutput)
+		prompt := newPromptBuilderForTest(r).ExternalEvaluationPrompt(config.ExternalReviewToolCustom, customOutput)
 
 		assert.Contains(t, prompt, customOutput)
 		assert.NotContains(t, prompt, "{{CUSTOM_OUTPUT}}")
@@ -1000,7 +1000,7 @@ func TestRunner_buildCustomEvaluationPrompt(t *testing.T) {
 			AppConfig:     appCfg,
 		}, log: newMockLogger()}
 
-		prompt := newPromptBuilderForTest(r).CustomEvaluationPrompt("test output")
+		prompt := newPromptBuilderForTest(r).ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "test output")
 
 		assert.Contains(t, prompt, "docs/plans/feature.md")
 		assert.NotContains(t, prompt, "{{PLAN_FILE}}")
@@ -1016,7 +1016,7 @@ func TestRunner_buildCustomEvaluationPrompt(t *testing.T) {
 			AppConfig:     appCfg,
 		}, log: newMockLogger()}
 
-		prompt := newPromptBuilderForTest(r).CustomEvaluationPrompt("security issue found")
+		prompt := newPromptBuilderForTest(r).ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "security issue found")
 
 		assert.Equal(t, "Evaluate output: security issue found. Goal: implementation of plan at docs/plans/test.md", prompt)
 	})
@@ -1026,12 +1026,12 @@ func TestRunner_buildPreviousContext(t *testing.T) {
 	r := &Runner{cfg: Config{}}
 
 	t.Run("empty on first iteration (no response)", func(t *testing.T) {
-		result := newPromptBuilderForTest(r).buildPreviousContext("")
+		result := newPromptBuilderForTest(r).buildExternalPreviousContext(config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, "")
 		assert.Empty(t, result)
 	})
 
 	t.Run("populated with response on subsequent iterations", func(t *testing.T) {
-		result := newPromptBuilderForTest(r).buildPreviousContext("I fixed the null pointer issue")
+		result := newPromptBuilderForTest(r).buildExternalPreviousContext(config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, "I fixed the null pointer issue")
 		assert.Contains(t, result, "PREVIOUS REVIEW CONTEXT")
 		assert.Contains(t, result, "I fixed the null pointer issue")
 		assert.Contains(t, result, "Re-evaluate considering Claude's response")
@@ -1056,22 +1056,37 @@ func TestRunner_buildExternalClaudePrompts(t *testing.T) {
 	eval := builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "issue in main.go:12")
 	assert.Contains(t, eval, "issue in main.go:12")
 	assert.NotContains(t, eval, "{{CLAUDE_OUTPUT}}")
-	assert.Contains(t, eval, "Codex owns all repository writes")
+	assert.Contains(t, eval, "primary executor owns all repository writes")
 	assert.Contains(t, eval, status.ExternalReviewDone)
 	assert.Contains(t, eval, "Signed-off-by: primary-codex", "primary Codex keeps configured commit instructions")
+}
+
+func TestRunner_buildSameProviderExternalClaudePromptsAreRoleNeutral(t *testing.T) {
+	appCfg := testAppConfig(t)
+	appCfg.Executor = config.ExecutorClaude
+	r := &Runner{cfg: Config{PlanFile: "docs/plans/test.md", DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+	builder := newPromptBuilderForTest(r)
+
+	review := builder.ExternalReviewPrompt(config.ExternalReviewToolClaude, true, "")
+	eval := builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "NO ISSUES FOUND")
+
+	assert.Contains(t, review, "primary executor")
+	assert.NotContains(t, review, "primary Codex executor")
+	assert.Contains(t, eval, "primary executor owns all repository writes")
+	assert.NotContains(t, eval, "Codex owns all repository writes")
 }
 
 func TestRunner_replaceVariablesWithIteration_PreviousReviewContext(t *testing.T) {
 	t.Run("empty when no claude response", func(t *testing.T) {
 		r := &Runner{cfg: Config{DefaultBranch: "main"}}
-		result := newPromptBuilderForTest(r).replaceVariablesWithIteration("Review:\n{{PREVIOUS_REVIEW_CONTEXT}}", true, "")
+		result := newPromptBuilderForTest(r).replaceExternalVariablesWithIteration("Review:\n{{PREVIOUS_REVIEW_CONTEXT}}", true, config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, "")
 		assert.Equal(t, "Review:\n", result)
 		assert.NotContains(t, result, "PREVIOUS REVIEW CONTEXT")
 	})
 
 	t.Run("populated when claude response present", func(t *testing.T) {
 		r := &Runner{cfg: Config{DefaultBranch: "main"}}
-		result := newPromptBuilderForTest(r).replaceVariablesWithIteration("Review:\n{{PREVIOUS_REVIEW_CONTEXT}}", false, "fixed the bug")
+		result := newPromptBuilderForTest(r).replaceExternalVariablesWithIteration("Review:\n{{PREVIOUS_REVIEW_CONTEXT}}", false, config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, "fixed the bug")
 		assert.Contains(t, result, "PREVIOUS REVIEW CONTEXT")
 		assert.Contains(t, result, "fixed the bug")
 		assert.NotContains(t, result, "{{PREVIOUS_REVIEW_CONTEXT}}")
@@ -1080,7 +1095,7 @@ func TestRunner_replaceVariablesWithIteration_PreviousReviewContext(t *testing.T
 	t.Run("works with all variables together", func(t *testing.T) {
 		r := &Runner{cfg: Config{PlanFile: "docs/plans/test.md", DefaultBranch: "main", ProgressPath: "progress.txt"}}
 		prompt := "Plan: {{PLAN_FILE}}, Diff: {{DIFF_INSTRUCTION}}\n{{PREVIOUS_REVIEW_CONTEXT}}"
-		result := newPromptBuilderForTest(r).replaceVariablesWithIteration(prompt, false, "previous response")
+		result := newPromptBuilderForTest(r).replaceExternalVariablesWithIteration(prompt, false, config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, "previous response")
 
 		assert.Contains(t, result, "Plan: docs/plans/test.md")
 		assert.Contains(t, result, "Diff: git diff")
@@ -1094,7 +1109,7 @@ func TestRunner_replaceVariablesWithIteration_PreviousReviewContext(t *testing.T
 			CustomAgents: []config.CustomAgent{{Name: "quality", Prompt: "check quality"}},
 		}}}
 		prompt := "Review:\n{{PREVIOUS_REVIEW_CONTEXT}}"
-		result := newPromptBuilderForTest(r).replaceVariablesWithIteration(prompt, false, "use {{agent:quality}} for analysis")
+		result := newPromptBuilderForTest(r).replaceExternalVariablesWithIteration(prompt, false, config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, "use {{agent:quality}} for analysis")
 
 		// agent ref in prompt template should be expanded (none here), but agent ref
 		// in claude response must stay as literal text - prevents prompt injection
@@ -1113,7 +1128,7 @@ func TestRunner_buildCodexPrompt(t *testing.T) {
 			AppConfig:     appCfg,
 		}, log: newMockLogger()}
 
-		prompt := newPromptBuilderForTest(r).CodexReviewPrompt(true, "")
+		prompt := newPromptBuilderForTest(r).ExternalReviewPrompt(config.ExternalReviewToolCodex, true, "")
 
 		assert.Contains(t, prompt, "docs/plans/test.md")
 		assert.Contains(t, prompt, "progress.txt")
@@ -1135,7 +1150,7 @@ func TestRunner_buildCodexPrompt(t *testing.T) {
 			AppConfig:     appCfg,
 		}, log: newMockLogger()}
 
-		prompt := newPromptBuilderForTest(r).CodexReviewPrompt(false, "I fixed the null pointer issue")
+		prompt := newPromptBuilderForTest(r).ExternalReviewPrompt(config.ExternalReviewToolCodex, false, "I fixed the null pointer issue")
 
 		assert.Contains(t, prompt, "git diff")
 		assert.NotContains(t, prompt, "main...HEAD")
@@ -1151,7 +1166,7 @@ func TestRunner_buildCodexPrompt(t *testing.T) {
 			AppConfig:     appCfg,
 		}, log: newMockLogger()}
 
-		prompt := newPromptBuilderForTest(r).CodexReviewPrompt(true, "")
+		prompt := newPromptBuilderForTest(r).ExternalReviewPrompt(config.ExternalReviewToolCodex, true, "")
 
 		assert.NotContains(t, prompt, "PREVIOUS REVIEW CONTEXT")
 		assert.Contains(t, prompt, "Plan: (no plan file - reviewing current branch)")
@@ -1165,7 +1180,7 @@ func TestRunner_buildCodexPrompt(t *testing.T) {
 			AppConfig:     appCfg,
 		}, log: newMockLogger()}
 
-		prompt := newPromptBuilderForTest(r).CodexReviewPrompt(true, "")
+		prompt := newPromptBuilderForTest(r).ExternalReviewPrompt(config.ExternalReviewToolCodex, true, "")
 
 		assert.Contains(t, prompt, "implementation of plan at docs/plans/feature.md")
 		assert.NotContains(t, prompt, "{{GOAL}}")
@@ -1181,7 +1196,7 @@ func TestRunner_buildCodexPrompt(t *testing.T) {
 
 		// simulate claude response containing agent template variable (potential prompt injection)
 		response := "I used {{agent:quality}} to check and {{agent:testing}} found issues"
-		prompt := newPromptBuilderForTest(r).CodexReviewPrompt(false, response)
+		prompt := newPromptBuilderForTest(r).ExternalReviewPrompt(config.ExternalReviewToolCodex, false, response)
 
 		// agent refs must remain as literal text, not expanded into Task tool instructions
 		assert.Contains(t, prompt, "{{agent:quality}}")
@@ -1199,13 +1214,13 @@ func TestRunner_buildCodexPrompt(t *testing.T) {
 			AppConfig:     appCfg,
 		}, log: newMockLogger()}
 
-		prompt := newPromptBuilderForTest(r).CodexReviewPrompt(true, "")
+		prompt := newPromptBuilderForTest(r).ExternalReviewPrompt(config.ExternalReviewToolCodex, true, "")
 		assert.Contains(t, prompt, "implementation of plan at docs/plans/feature.md")
 		assert.Contains(t, prompt, "git diff develop...HEAD")
 		assert.Contains(t, prompt, "Branch: develop")
 		assert.NotContains(t, prompt, "{{")
 
-		prompt = newPromptBuilderForTest(r).CodexReviewPrompt(false, "fixed the bug")
+		prompt = newPromptBuilderForTest(r).ExternalReviewPrompt(config.ExternalReviewToolCodex, false, "fixed the bug")
 		assert.Contains(t, prompt, "PREVIOUS REVIEW CONTEXT")
 		assert.Contains(t, prompt, "fixed the bug")
 		assert.Contains(t, prompt, "git diff")
@@ -1279,7 +1294,7 @@ func TestRunner_replaceBaseVariables_CommitTrailer(t *testing.T) {
 		appCfg := &config.Config{CommitTrailer: "Co-authored-by: test <test@test.com>"}
 		r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}}
 
-		result := newPromptBuilderForTest(r).replaceVariablesWithIteration("Diff: {{DIFF_INSTRUCTION}}", true, "")
+		result := newPromptBuilderForTest(r).replaceExternalVariablesWithIteration("Diff: {{DIFF_INSTRUCTION}}", true, config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, "")
 
 		assert.Contains(t, result, "git diff main...HEAD")
 		assert.Contains(t, result, "Co-authored-by: test <test@test.com>")

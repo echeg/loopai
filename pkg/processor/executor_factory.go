@@ -83,7 +83,7 @@ func (f *executorFactory) externalBinaryMissing(appConfig *config.Config, provid
 			codexCmd = "codex"
 		}
 		if _, err := exec.LookPath(codexCmd); err != nil {
-			log.Print("warning: codex not found (%s: %v), disabling codex review phase", codexCmd, err)
+			log.Print("warning: codex not found (%s: %v), disabling external review phase", codexCmd, err)
 			return true
 		}
 	}
@@ -202,8 +202,8 @@ func (cfg Config) buildExternalClaudeExecutor(log Logger, model, effort string) 
 func (cfg Config) buildExternalCodexExecutor(log Logger, model, effort string) *executor.CodexExecutor {
 	e := cfg.newBaseCodexExecutor(log)
 	e.Model, e.ReasoningEffort = model, effort
+	e.Sandbox = "read-only"
 	if cfg.AppConfig != nil {
-		e.Sandbox = cfg.AppConfig.CodexSandbox
 		if cfg.isCodexExecutor() {
 			e.IdleTimeout = cfg.AppConfig.IdleTimeout
 		}

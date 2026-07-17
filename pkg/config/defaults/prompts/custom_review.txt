@@ -47,5 +47,7 @@ Check the progress log at {{PROGRESS_FILE}} for previous review iterations and f
 - Check if issues are already mitigated in the code
 - Only report issues you can verify by reading the actual code
 - Be specific about file paths and line numbers
+- This is a findings-only review: do not edit, create, delete, rename, or format repository files, and do not commit changes
+- Do not run side-effecting commands that install dependencies, rewrite generated files, alter Git state, access credentials, or modify external systems; the primary evaluator owns every change and commit
 
 {{PREVIOUS_REVIEW_CONTEXT}}

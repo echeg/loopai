@@ -54,8 +54,6 @@ func TestExternalReviewSections_ProviderAwareLabels(t *testing.T) {
 	assert.Equal(t, SectionExternalEvaluation, eval.Type)
 	assert.Zero(t, eval.Iteration)
 	assert.Equal(t, "codex evaluating claude findings", eval.Label)
-	assert.Equal(t, review, NewExternalReviewSection("claude", 4))
-	assert.Equal(t, eval, NewExternalEvalSection("codex", "claude"))
 }
 
 func TestLegacyExternalReviewSectionsRemainCompatible(t *testing.T) {

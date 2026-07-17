@@ -38,7 +38,6 @@ const (
 const (
 	SectionCodexIteration = SectionExternalReviewIteration
 	SectionClaudeEval     = SectionExternalEvaluation
-	SectionExternalEval   = SectionExternalEvaluation
 )
 
 // Section carries structured information about a section header.
@@ -94,22 +93,12 @@ func NewExternalReviewIterationSection(reviewer string, iteration int) Section {
 	}
 }
 
-// NewExternalReviewSection is a concise alias for NewExternalReviewIterationSection.
-func NewExternalReviewSection(reviewer string, iteration int) Section {
-	return NewExternalReviewIterationSection(reviewer, iteration)
-}
-
 // NewExternalEvaluationSection creates a provider-aware external findings evaluation section.
 func NewExternalEvaluationSection(evaluator, reviewer string) Section {
 	return Section{
 		Type:  SectionExternalEvaluation,
 		Label: fmt.Sprintf("%s evaluating %s findings", evaluator, reviewer),
 	}
-}
-
-// NewExternalEvalSection is a concise alias for NewExternalEvaluationSection.
-func NewExternalEvalSection(evaluator, reviewer string) Section {
-	return NewExternalEvaluationSection(evaluator, reviewer)
 }
 
 // NewCodexIterationSection creates a legacy Codex review iteration section.

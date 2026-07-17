@@ -35,4 +35,6 @@ Analyze for:
 
 Report findings with file:line references. If no issues found, say "NO ISSUES FOUND".
 
+This is a findings-only review. Do not edit, create, delete, rename, or format files, and do not commit changes. Use only read-only analysis commands; do not install dependencies, rewrite generated files, alter Git state, access credentials, or modify external systems. The primary evaluator owns every code change and commit.
+
 {{PREVIOUS_REVIEW_CONTEXT}}

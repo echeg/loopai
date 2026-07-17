@@ -71,7 +71,7 @@ ralphex --external-review-tool=none docs/plans/feature.md
 # override Claude-compatible provider and external review tool for one run
 ralphex --claude-command=/path/to/codex-as-claude.sh --external-review-tool=custom --custom-review-script=/path/to/review.sh docs/plans/feature.md
 
-# set per-session timeout to kill hanging sessions (external review in Claude mode excluded)
+# set per-session timeout (external Codex/custom review under a Claude primary is excluded)
 ralphex --session-timeout=30m docs/plans/feature.md
 
 # kill claude/codex executor session when no output for 5 minutes
@@ -121,9 +121,9 @@ ralphex --preserve-anthropic-api-key docs/plans/feature.md
 
 ## Requirements
 
-- `claude` - Claude Code CLI (required for a Claude primary or explicit Claude review; optional for Codex-only installations using automatic fallback)
+- `claude` - Claude Code CLI (required for a Claude primary or explicit Claude review; optional for Codex-primary installations because a missing auto-selected reviewer disables only external review)
 - `fzf` - for plan selection (optional)
-- `codex` - Codex CLI (required for `--codex` or explicit Codex review; optional for Claude-only installations using automatic fallback)
+- `codex` - Codex CLI (required for `--codex` or explicit Codex review; optional for Claude-primary installations because a missing auto-selected reviewer disables only external review)
 - `gemini` - alternative provider for Claude phases (optional, via `scripts/gemini-as-claude/`)
 - `agy` - Antigravity CLI, alternative provider for Claude phases (optional, via `scripts/agy-as-claude/`)
 - `pi` - alternative provider for Claude phases (optional, via `scripts/pi-as-claude/`)

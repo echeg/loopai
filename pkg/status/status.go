@@ -21,13 +21,12 @@ type Phase string
 
 // Phase constants for execution stages.
 const (
-	PhaseTask               Phase = "task"            // execution phase (green)
-	PhaseReview             Phase = "review"          // code review phase (cyan)
-	PhaseExternalReview     Phase = "external-review" // external reviewer phase (existing codex color)
-	PhaseExternalEval       Phase = "external-eval"   // primary evaluator phase (existing claude-eval color)
-	PhaseExternalEvaluation       = PhaseExternalEval
-	PhasePlan               Phase = "plan"     // plan creation phase (info color)
-	PhaseFinalize           Phase = "finalize" // finalize step phase (green)
+	PhaseTask           Phase = "task"            // execution phase (green)
+	PhaseReview         Phase = "review"          // code review phase (cyan)
+	PhaseExternalReview Phase = "external-review" // external reviewer phase (existing codex color)
+	PhaseExternalEval   Phase = "external-eval"   // primary evaluator phase (existing claude-eval color)
+	PhasePlan           Phase = "plan"            // plan creation phase (info color)
+	PhaseFinalize       Phase = "finalize"        // finalize step phase (green)
 
 	// PhaseCodex and PhaseClaudeEval remain readable for historical progress logs.
 	PhaseCodex      Phase = "codex"

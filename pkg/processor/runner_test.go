@@ -209,9 +209,9 @@ func TestRunner_RunFull_NoCodexFindings(t *testing.T) {
 	log := newRunnerMockLogger("progress.txt")
 	claude := newMockExecutor([]executor.Result{
 		{Output: "task done", Signal: status.Completed},
-		{Output: "review done", Signal: status.ReviewDone}, // first review
-		{Output: "review done", Signal: status.ReviewDone}, // pre-codex review loop
-		// codex returns empty → no findings → post-codex review skipped
+		{Output: "review done", Signal: status.ReviewDone},  // first review
+		{Output: "review done", Signal: status.ReviewDone},  // pre-codex review loop
+		{Output: "done", Signal: status.ExternalReviewDone}, // evaluator confirms empty external result
 	})
 	codex := newMockExecutor([]executor.Result{
 		{Output: ""}, // codex finds nothing
@@ -302,8 +302,9 @@ func TestRunner_RunCodexOnly_Success(t *testing.T) {
 
 func TestRunner_RunCodexOnly_NoFindings(t *testing.T) {
 	log := newRunnerMockLogger("progress.txt")
-	// codex returns empty → no findings → post-codex review skipped
-	claude := newMockExecutor(nil)
+	// An empty reviewer result still requires evaluator confirmation before the
+	// post-external review can be skipped.
+	claude := newMockExecutor([]executor.Result{{Output: "done", Signal: status.ExternalReviewDone}})
 	codex := newMockExecutor([]executor.Result{
 		{Output: ""}, // no findings
 	})
@@ -313,6 +314,10 @@ func TestRunner_RunCodexOnly_NoFindings(t *testing.T) {
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
+	assert.Len(t, claude.RunCalls(), 1)
+	assertLogContains(t, log, "external review phases completed successfully")
+	require.NotEmpty(t, log.PrintSectionCalls())
+	assert.Equal(t, "external review (codex)", log.PrintSectionCalls()[0].Section.Label)
 }
 
 func TestRunner_MaxExternalIterations_ExplicitLimit(t *testing.T) {
@@ -554,7 +559,7 @@ func TestRunner_BuildCodexPrompt_CompletedDir(t *testing.T) {
 
 	locator := newPlanLocator(r.cfg)
 	prompts := newPromptBuilder(promptBuilderOpts{cfg: r.cfg, log: r.log, locator: locator})
-	prompt := prompts.CodexReviewPrompt(true, "")
+	prompt := prompts.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, "")
 
 	assert.Contains(t, prompt, completedPath)
 	assert.NotContains(t, prompt, originalPath)
@@ -995,7 +1000,7 @@ func TestRunner_ExternalAndPostReview_UsesToolSpecificSectionLabel(t *testing.T)
 	for _, call := range sectionCalls {
 		labels = append(labels, call.Section.Label)
 	}
-	assert.Contains(t, labels, "custom external review")
+	assert.Contains(t, labels, "external review (custom)")
 }
 
 func TestRunner_CodexAndPostReview_InjectedExternalFindingsRunsPostReview(t *testing.T) {
@@ -1334,7 +1339,7 @@ func TestRunner_ReviewPromptIsSharedAcrossExecutors(t *testing.T) {
 				{Output: "done", Signal: status.CodexDone},         // claude eval (only hit in claude mode)
 			})
 			external := newMockExecutor([]executor.Result{
-				{Output: ""}, // empty output → external loop exits without claude eval (claude mode only)
+				{Output: ""}, // empty output still goes through primary evaluation
 			})
 
 			cfg := Config{

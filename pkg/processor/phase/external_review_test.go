@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
 	"github.com/umputun/ralphex/pkg/status"
 )
@@ -93,9 +94,9 @@ func TestExternalReviewPhaseRunCodexNilPhaseHolder(t *testing.T) {
 	assert.False(t, outcome.HadFindings)
 }
 
-func TestExternalReviewPhaseRunCodexFindings(t *testing.T) {
-	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "fixed"}, {Output: "done", Signal: status.CodexDone}})
-	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "found issue"}, {Output: "clean"}})
+func TestExternalReviewPhaseRunCodexFindingsThenEmptyRequiresEvaluation(t *testing.T) {
+	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "fixed"}, {Output: "done", Signal: status.ExternalReviewDone}})
+	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "found issue"}, {Output: ""}})
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}, review: review, external: external,
 	})
@@ -177,6 +178,30 @@ func TestExternalReviewPhaseRunCustomNoDuplicateOutput(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, count, "custom review output should be streamed once and not duplicated by summary")
+}
+
+func TestExternalReviewPhaseRunClaudeDoesNotDuplicateStreamedOutput(t *testing.T) {
+	log := newMockLogger("progress.txt")
+	appCfg := testAppConfig(t)
+	appCfg.Executor = config.ExecutorCodex
+	appCfg.ExternalReviewTool = config.ExternalReviewToolClaude
+	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
+		cfg: Config{
+			MaxIterations: 50, CodexEnabled: true,
+			ExternalReviewTool: config.ExternalReviewToolClaude, AppConfig: appCfg,
+		},
+		review:   newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.ExternalReviewDone}}),
+		external: newTaskPhaseMockExecutor([]executor.Result{{Output: "issue in foo.go:10"}}),
+		log:      log,
+	})
+
+	_, err := phase.Run(t.Context())
+
+	require.NoError(t, err)
+	for _, call := range log.PrintAlignedCalls() {
+		assert.NotContains(t, call.Text, "issue in foo.go:10",
+			"Claude output is streamed by its executor and must not be repeated by the phase summary")
+	}
 }
 
 func TestExternalReviewPhaseRunCustomNotConfigured(t *testing.T) {

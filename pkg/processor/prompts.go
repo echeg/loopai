@@ -104,19 +104,6 @@ func (b *promptBuilder) replaceExternalVariablesWithIteration(prompt string, isF
 	return b.appendCommitTrailerInstruction(result)
 }
 
-// buildPreviousContext preserves the historical Codex-reviewer/Claude-evaluator
-// rendering for package-local compatibility.
-func (b *promptBuilder) buildPreviousContext(evaluatorResponse string) string {
-	return b.buildExternalPreviousContext(config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, evaluatorResponse)
-}
-
-// replaceVariablesWithIteration is retained for tests and package-local callers
-// that predate provider-aware external review. It models the historical
-// Codex-reviewer/Claude-evaluator direction.
-func (b *promptBuilder) replaceVariablesWithIteration(prompt string, isFirstIteration bool, evaluatorResponse string) string {
-	return b.replaceExternalVariablesWithIteration(prompt, isFirstIteration, config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, evaluatorResponse)
-}
-
 func providerDisplayName(provider string) string {
 	if provider == "" {
 		return "Claude"

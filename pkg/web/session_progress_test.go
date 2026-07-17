@@ -248,6 +248,48 @@ plain review output
 		assert.Equal(t, "Review", second.Section)
 	})
 
+	t.Run("replays new external review section with neutral phase", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "progress-external-review.txt")
+		content := `# Ralphex Progress Log
+Plan: docs/plan.md
+Branch: main
+Mode: external-only
+Started: 2026-07-17 10:00:00
+------------------------------------------------------------
+
+--- External Review (Codex) ---
+[26-07-17 10:00:01] starting external review
+`
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+		m := NewSessionManager()
+		defer m.Close()
+		session := NewSession("test-external-review", path)
+		defer session.Close()
+		require.NoError(t, session.Publish(NewOutputEvent(status.PhaseTask, "seed")))
+		rawEvents, cleanup := subscribeSSEEvents(t, session)
+		defer cleanup()
+		_ = drainChannel(rawEvents, 50*time.Millisecond)
+
+		m.loadProgressFileIntoSession(path, session)
+
+		got := drainChannel(rawEvents, 50*time.Millisecond)
+		require.Len(t, got, 2)
+		var section Event
+		for _, raw := range got {
+			var event Event
+			require.NoError(t, json.Unmarshal([]byte(raw), &event))
+			if event.Type == EventTypeSection {
+				section = event
+				break
+			}
+		}
+		assert.Equal(t, EventTypeSection, section.Type)
+		assert.Equal(t, status.PhaseExternalReview, section.Phase)
+		assert.Equal(t, "External Review (Codex)", section.Section)
+	})
+
 	t.Run("emits task end boundaries for finished tasks", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "progress-task-boundaries.txt")
@@ -696,6 +738,7 @@ func TestPhaseFromSection(t *testing.T) {
 		{"task section", "Task 1: implement feature", status.PhaseTask},
 		{"codex iteration", "codex iteration 1", status.PhaseCodex},
 		{"codex external review", "codex external review", status.PhaseCodex},
+		{"new codex external review", "external review (codex)", status.PhaseExternalReview},
 		{"claude external review", "claude external review iteration 1", status.PhaseExternalReview},
 		{"codex external review iteration", "codex external review iteration 2", status.PhaseExternalReview},
 		{"codex evaluating claude", "codex evaluating claude findings", status.PhaseExternalEval},

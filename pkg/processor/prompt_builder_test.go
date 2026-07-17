@@ -33,10 +33,10 @@ func TestPromptBuilder_FinalPrompts(t *testing.T) {
 	assert.Equal(t, "task docs/plans/test.md progress.txt", builder.TaskPrompt())
 	assert.Equal(t, "first implementation of plan at docs/plans/test.md", builder.FirstReviewPrompt())
 	assert.Equal(t, "prefix: second main", builder.SecondReviewPrompt("prefix: "))
-	assert.Contains(t, builder.CodexReviewPrompt(true, ""), "git diff main...HEAD")
-	assert.Contains(t, builder.CustomReviewPrompt(false, "fixed"), "PREVIOUS REVIEW CONTEXT")
-	assert.Equal(t, "eval findings implementation of plan at docs/plans/test.md", builder.CodexEvaluationPrompt("findings"))
-	assert.Equal(t, "custom eval custom findings", builder.CustomEvaluationPrompt("custom findings"))
+	assert.Contains(t, builder.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, ""), "git diff main...HEAD")
+	assert.Contains(t, builder.ExternalReviewPrompt(config.ExternalReviewToolCustom, false, "fixed"), "PREVIOUS REVIEW CONTEXT")
+	assert.Equal(t, "eval findings implementation of plan at docs/plans/test.md", builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"))
+	assert.Equal(t, "custom eval custom findings", builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "custom findings"))
 	assert.Contains(t, builder.ExternalReviewPrompt(config.ExternalReviewToolClaude, false, "fixed"), "Claude (primary evaluator)")
 	assert.Equal(t, "codex eval claude findings", builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "claude findings"))
 	assert.Equal(t, "make add feature custom/plans", builder.PlanPrompt())
@@ -49,7 +49,7 @@ func TestPromptBuilder_NilConfigDependencies(t *testing.T) {
 	assert.NotPanics(t, func() {
 		assert.Empty(t, builder.TaskPrompt())
 		assert.Empty(t, builder.FirstReviewPrompt())
-		assert.Empty(t, builder.CodexEvaluationPrompt("findings"))
+		assert.Empty(t, builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"))
 		assert.Empty(t, builder.FinalizePrompt())
 	})
 }

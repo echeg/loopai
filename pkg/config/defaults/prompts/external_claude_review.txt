@@ -1,6 +1,6 @@
 # external claude review prompt
 # this prompt is sent to claude when it is the external reviewer
-# claude reports findings only; the primary codex executor owns all changes
+# claude reports findings only; the primary executor owns all changes
 #
 # available variables:
 #   {{DIFF_INSTRUCTION}} - git diff command appropriate for current iteration
@@ -16,6 +16,6 @@ Run {{DIFF_INSTRUCTION}} and read the changed files in full context. Check the p
 
 Analyze for bugs, logic errors, security vulnerabilities, race conditions, error-handling gaps, missing tests, and material code-quality problems. Report only verified findings with file:line references. If there are no actionable issues, say "NO ISSUES FOUND".
 
-This is a findings-only review. Do not edit, create, delete, rename, or format files. Do not commit changes. Read-only analysis commands such as git diff, git show, git log, rg, sed, and test commands that cannot modify repository state are permitted. Do not run side-effecting Bash commands, including commands that install dependencies, rewrite generated files, alter Git state, access credentials, or modify external systems. Leave every code change and commit to the primary Codex executor.
+This is a findings-only review. Do not edit, create, delete, rename, or format files. Do not commit changes. Read-only analysis commands such as git diff, git show, git log, rg, sed, and test commands that cannot modify repository state are permitted. Do not run side-effecting Bash commands, including commands that install dependencies, rewrite generated files, alter Git state, access credentials, or modify external systems. Leave every code change and commit to the primary executor.
 
 {{PREVIOUS_REVIEW_CONTEXT}}

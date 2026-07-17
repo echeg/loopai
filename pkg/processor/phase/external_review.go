@@ -143,7 +143,6 @@ func (p *ExternalReviewPhase) runLoop(ctx context.Context, tool string) (Externa
 	firstCompleted := false
 	stalemate := newStalemateState(p.cfg, p.log)
 
-loop:
 	for i := 1; i <= p.maxIterations(); i++ {
 		result, err := p.runIteration(loopCtx, externalReviewIterationOpts{
 			parent:            ctx,
@@ -175,8 +174,6 @@ loop:
 			// fall through to the sleep before the next iteration below
 		case externalReviewStop:
 			return outcome, nil
-		case externalReviewBreakLoop:
-			break loop
 		case externalReviewRetry:
 			continue
 		}
@@ -199,7 +196,6 @@ const (
 	externalReviewContinue externalReviewIterationAction = iota
 	externalReviewRetry
 	externalReviewStop
-	externalReviewBreakLoop
 )
 
 type externalReviewIterationOpts struct {
@@ -243,12 +239,10 @@ func (p *ExternalReviewPhase) runIteration(ctx context.Context, opts externalRev
 		return externalReviewIterationResult{action: externalReviewRetry}, nil
 	}
 
-	if reviewResult.Output == "" {
-		p.log.Print("%s review returned no output, skipping...", opts.tool)
-		return externalReviewIterationResult{action: externalReviewBreakLoop}, nil
-	}
-
-	if opts.tool != config.ExternalReviewToolCustom {
+	// Empty output is still evaluated: the evaluator prompt explicitly treats it
+	// as a clean result and owns the completion signal. Skipping evaluation here
+	// would let a truncated reviewer response terminate the loop silently.
+	if opts.tool == config.ExternalReviewToolCodex {
 		p.showSummary(opts.tool, reviewResult.Output)
 	}
 
