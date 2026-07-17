@@ -296,7 +296,7 @@ func run(ctx context.Context, o opts) error {
 	applyEffectiveExternalReview(cfg, externalReview)
 
 	if depErr := ctx.Err(); depErr != nil {
-		return depErr
+		return fmt.Errorf("execution context: %w", depErr)
 	}
 
 	// require running from repo root.
@@ -1225,28 +1225,7 @@ func printStartupInfo(info startupInfo, colors *progress.Colors) {
 
 func printExecutorInfo(info startupInfo, colors *progress.Colors) {
 	if info.Executor == config.ExecutorCodex {
-		colors.Info().Printf("executor: codex\n")
-		// codex effective config: skip lines we don't know (ralphex did not
-		// override them, so codex picks from ~/.codex/config.toml). sandbox is
-		// always resolved via CodexExecutorSandbox so it's always present.
-		if info.CodexModel != "" {
-			colors.Info().Printf("  model: %s\n", info.CodexModel)
-		}
-		if info.CodexSandbox != "" {
-			colors.Info().Printf("  sandbox: %s\n", info.CodexSandbox)
-		}
-		if info.CodexEffort != "" {
-			colors.Info().Printf("  reasoning effort: %s\n", info.CodexEffort)
-		}
-		if info.CodexReviewModel != info.CodexModel {
-			colors.Info().Printf("  review model: %s\n", codexBannerValue(info.CodexReviewModel))
-		}
-		if info.CodexReviewEffort != info.CodexEffort {
-			colors.Info().Printf("  review reasoning effort: %s\n", codexBannerValue(info.CodexReviewEffort))
-		}
-		if info.PassClaudeMd {
-			colors.Info().Printf("claude.md: project CLAUDE.md passthrough enabled\n")
-		}
+		printCodexExecutorInfo(info, colors)
 	}
 
 	if info.ExternalReview.Provider != "" {
@@ -1261,6 +1240,31 @@ func printExecutorInfo(info startupInfo, colors *progress.Colors) {
 		} else if info.ExternalReview.Effort != "" {
 			colors.Info().Printf("  reasoning effort: %s\n", info.ExternalReview.Effort)
 		}
+	}
+}
+
+func printCodexExecutorInfo(info startupInfo, colors *progress.Colors) {
+	colors.Info().Printf("executor: codex\n")
+	// codex effective config: skip lines we don't know (ralphex did not
+	// override them, so codex picks from ~/.codex/config.toml). sandbox is
+	// always resolved via CodexExecutorSandbox so it's always present.
+	if info.CodexModel != "" {
+		colors.Info().Printf("  model: %s\n", info.CodexModel)
+	}
+	if info.CodexSandbox != "" {
+		colors.Info().Printf("  sandbox: %s\n", info.CodexSandbox)
+	}
+	if info.CodexEffort != "" {
+		colors.Info().Printf("  reasoning effort: %s\n", info.CodexEffort)
+	}
+	if info.CodexReviewModel != info.CodexModel {
+		colors.Info().Printf("  review model: %s\n", codexBannerValue(info.CodexReviewModel))
+	}
+	if info.CodexReviewEffort != info.CodexEffort {
+		colors.Info().Printf("  review reasoning effort: %s\n", codexBannerValue(info.CodexReviewEffort))
+	}
+	if info.PassClaudeMd {
+		colors.Info().Printf("claude.md: project CLAUDE.md passthrough enabled\n")
 	}
 }
 

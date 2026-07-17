@@ -104,12 +104,12 @@ Real Claude/Codex execution is deliberately excluded from automatic validation b
 - [x] Run `rg -n "external_review_tool|external_review_model|EXTERNAL_REVIEW_DONE|--codex" README.md llms.txt CLAUDE.md pkg/config/defaults` and manually verify that current behavior is described consistently; no additional automated test is required for prose-only changes beyond the final repository gate.
 
 ### Task 8: Verify acceptance criteria and repository quality gates
-- [ ] Run focused regression tests: `go test ./pkg/config ./pkg/executor ./pkg/processor/... ./pkg/status ./pkg/progress ./pkg/web ./cmd/ralphex`.
-- [ ] Run `make fmt`, inspect the resulting diff for unrelated formatting, and run `git diff --check`.
-- [ ] Run the full race/coverage suite with `make test`; tests that touch configuration must use `t.TempDir()` and must not read or write the real `~/.config/ralphex` directory.
-- [ ] Run `make lint` and resolve every issue without unrelated linter exclusions.
-- [ ] Cross-compile with `GOOS=windows GOARCH=amd64 go build ./...` to verify the new flags, executor routing, and signal/status additions remain portable.
-- [ ] Re-read the Overview requirements and verify with tests that default Claude-to-Codex behavior is preserved, default Codex-to-Claude uses `opus:xhigh`, explicit overrides/none/custom work, auto/explicit dependency failures differ correctly, Claude cannot use built-in write tools, Codex owns all modifications, both completion signals work, and old progress logs remain readable.
+- [x] Run focused regression tests: `go test ./pkg/config ./pkg/executor ./pkg/processor/... ./pkg/status ./pkg/progress ./pkg/web ./cmd/ralphex`.
+- [x] Run `make fmt`, inspect the resulting diff for unrelated formatting, and run `git diff --check`.
+- [x] Run the full race/coverage suite with `make test`; tests that touch configuration must use `t.TempDir()` and must not read or write the real `~/.config/ralphex` directory.
+- [x] Run `make lint` and resolve every issue without unrelated linter exclusions.
+- [x] Cross-compile with `GOOS=windows GOARCH=amd64 go build ./...` to verify the new flags, executor routing, and signal/status additions remain portable.
+- [x] Re-read the Overview requirements and verify with tests that default Claude-to-Codex behavior is preserved, default Codex-to-Claude uses `opus:xhigh`, explicit overrides/none/custom work, auto/explicit dependency failures differ correctly, Claude cannot use built-in write tools, Codex owns all modifications, both completion signals work, and old progress logs remain readable.
 
 ## Post-Completion
 
