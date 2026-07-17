@@ -12,13 +12,14 @@ import (
 
 // Signal aliases mirror pkg/status values used by phase prompt contracts and parser helpers.
 const (
-	SignalCompleted  = status.Completed
-	SignalFailed     = status.Failed
-	SignalReviewDone = status.ReviewDone
-	SignalCodexDone  = status.CodexDone
-	SignalQuestion   = status.Question
-	SignalPlanReady  = status.PlanReady
-	SignalPlanDraft  = status.PlanDraft
+	SignalCompleted          = status.Completed
+	SignalFailed             = status.Failed
+	SignalReviewDone         = status.ReviewDone
+	SignalExternalReviewDone = status.ExternalReviewDone
+	SignalCodexDone          = status.CodexDone
+	SignalQuestion           = status.Question
+	SignalPlanReady          = status.PlanReady
+	SignalPlanDraft          = status.PlanDraft
 )
 
 var questionSignalRe = regexp.MustCompile(`<<<RALPHEX:QUESTION>>>\s*([\s\S]*?)\s*<<<RALPHEX:END>>>`)
@@ -37,9 +38,15 @@ func IsReviewDone(signal string) bool {
 	return signal == SignalReviewDone
 }
 
-// IsCodexDone reports whether signal marks external review completion.
+// IsExternalReviewDone reports whether either the current or legacy signal marks
+// external review completion.
+func IsExternalReviewDone(signal string) bool {
+	return signal == SignalExternalReviewDone || signal == SignalCodexDone
+}
+
+// IsCodexDone is retained for compatibility with existing phase callers.
 func IsCodexDone(signal string) bool {
-	return signal == SignalCodexDone
+	return IsExternalReviewDone(signal)
 }
 
 // IsPlanReady reports whether signal marks plan creation completion.

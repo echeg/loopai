@@ -664,6 +664,8 @@ func normalizePlainSignal(text string) string {
 		return signalFailed
 	case "REVIEW_DONE":
 		return signalReviewDone
+	case "EXTERNAL_REVIEW_DONE":
+		return signalExternalReviewDone
 	case "CODEX_REVIEW_DONE":
 		return signalCodexReviewDone
 	default:
@@ -680,6 +682,8 @@ func normalizeTokenSignal(rawSignal string) string {
 		return signalFailed
 	case "REVIEW_DONE":
 		return signalReviewDone
+	case "EXTERNAL_REVIEW_DONE":
+		return signalExternalReviewDone
 	case "CODEX_REVIEW_DONE":
 		return signalCodexReviewDone
 	default:

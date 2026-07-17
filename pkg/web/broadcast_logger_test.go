@@ -335,6 +335,51 @@ func TestBroadcastLogger_PrintSection_IterationEvents(t *testing.T) {
 	require.Len(t, mockLogger.PrintSectionCalls(), 2)
 }
 
+func TestBroadcastLogger_ExternalReviewSSEEvents(t *testing.T) {
+	mockLogger := &mocks.LoggerMock{
+		PrintSectionFunc: func(status.Section) {},
+		PrintAlignedFunc: func(string) {},
+	}
+	session := NewSession("test", "/tmp/test.txt")
+	defer session.Close()
+
+	holder := &status.PhaseHolder{}
+	holder.Set(status.PhaseExternalReview)
+	bl := NewBroadcastLogger(mockLogger, session, holder)
+
+	require.NoError(t, session.Publish(NewOutputEvent(status.PhaseTask, "seed")))
+	events, cleanup := subscribeSSEEvents(t, session)
+	defer cleanup()
+	_ = drainChannel(events, 50*time.Millisecond)
+
+	bl.PrintSection(status.NewExternalReviewIterationSection("claude", 2))
+	bl.PrintAligned(status.ExternalReviewDone)
+	holder.Set(status.PhaseExternalEval)
+	bl.PrintSection(status.NewExternalEvaluationSection("codex", "claude"))
+
+	drained := drainChannel(events, 50*time.Millisecond)
+	require.Len(t, drained, 5)
+
+	decoded := make([]Event, 0, len(drained))
+	for _, raw := range drained {
+		var event Event
+		require.NoError(t, json.Unmarshal([]byte(raw), &event))
+		decoded = append(decoded, event)
+	}
+
+	assert.Equal(t, EventTypeIterationStart, decoded[0].Type)
+	assert.Equal(t, 2, decoded[0].IterationNum)
+	assert.Equal(t, "claude external review iteration 2", decoded[0].Text)
+	assert.Equal(t, EventTypeSection, decoded[1].Type)
+	assert.Equal(t, status.PhaseExternalReview, decoded[1].Phase)
+	assert.Equal(t, EventTypeOutput, decoded[2].Type)
+	assert.Equal(t, EventTypeSignal, decoded[3].Type)
+	assert.Equal(t, signalExternalReviewDone, decoded[3].Signal)
+	assert.Equal(t, EventTypeSection, decoded[4].Type)
+	assert.Equal(t, status.PhaseExternalEval, decoded[4].Phase)
+	assert.Equal(t, "codex evaluating claude findings", decoded[4].Section)
+}
+
 func TestBroadcastLogger_LogQuestion(t *testing.T) {
 	mockLogger := &mocks.LoggerMock{
 		LogQuestionFunc: func(string, []string) {},
@@ -411,6 +456,7 @@ func TestExtractTerminalSignal(t *testing.T) {
 		{name: "completed", text: "task done " + status.Completed, signal: "COMPLETED"},
 		{name: "failed", text: "task failed " + status.Failed, signal: "FAILED"},
 		{name: "review-done", text: "review done " + status.ReviewDone, signal: "REVIEW_DONE"},
+		{name: "external-review-done", text: "external done " + status.ExternalReviewDone, signal: "EXTERNAL_REVIEW_DONE"},
 		{name: "codex-review-done", text: "codex done " + status.CodexDone, signal: "CODEX_REVIEW_DONE"},
 		{name: "no signal", text: "regular output", signal: ""},
 	}

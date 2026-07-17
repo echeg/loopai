@@ -257,7 +257,7 @@ func (p *ExternalReviewPhase) runIteration(ctx context.Context, opts externalRev
 
 	claudeResult := claudeExecResult.Result
 	result := externalReviewIterationResult{before: before, claudeResponse: claudeResult.Output, firstCompleted: true}
-	if IsCodexDone(claudeResult.Signal) {
+	if IsExternalReviewDone(claudeResult.Signal) {
 		p.log.Print("%s review complete - no more findings", opts.tool)
 		result.action = externalReviewStop
 		return result, nil

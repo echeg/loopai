@@ -26,10 +26,11 @@ const (
 )
 
 const (
-	signalCompleted       = "COMPLETED"
-	signalFailed          = "FAILED"
-	signalReviewDone      = "REVIEW_DONE"
-	signalCodexReviewDone = "CODEX_REVIEW_DONE"
+	signalCompleted          = "COMPLETED"
+	signalFailed             = "FAILED"
+	signalReviewDone         = "REVIEW_DONE"
+	signalExternalReviewDone = "EXTERNAL_REVIEW_DONE"
+	signalCodexReviewDone    = "CODEX_REVIEW_DONE"
 )
 
 // Event represents a single event to be streamed to web clients.

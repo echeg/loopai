@@ -81,11 +81,11 @@ Real Claude/Codex execution is deliberately excluded from automatic validation b
 - [x] Run `go test ./pkg/processor/...` and fix all failures before continuing.
 
 ### Task 5: Introduce provider-neutral external-review signals and statuses
-- [ ] Add `status.ExternalReviewDone = "<<<RALPHEX:EXTERNAL_REVIEW_DONE>>>"` and update executor/phase signal detection so the new signal and legacy `status.CodexDone` both complete an external review loop; keep compatibility wrappers where needed by existing callers and tests.
-- [ ] Add provider-neutral external-review and external-evaluation phases/section constructors in `pkg/status` whose labels include the actual reviewer/evaluator names, while retaining legacy Codex/Claude phase parsing for old progress files.
-- [ ] Map new phases to the existing external-review/evaluation color configuration rather than renaming user color keys, and update progress/web replay, broadcast events, section boundaries, session phase inference, and frontend non-terminal-signal handling.
-- [ ] Add or update tests in `pkg/status`, `pkg/executor`, `pkg/progress`, and `pkg/web` for both signals, old-log replay, `claude external review iteration N`, `codex evaluating claude findings`, phase/color selection, SSE events, and the rule that external completion does not mark the whole run complete.
-- [ ] Run `go test ./pkg/status ./pkg/executor ./pkg/progress ./pkg/web` and fix all failures before continuing.
+- [x] Add `status.ExternalReviewDone = "<<<RALPHEX:EXTERNAL_REVIEW_DONE>>>"` and update executor/phase signal detection so the new signal and legacy `status.CodexDone` both complete an external review loop; keep compatibility wrappers where needed by existing callers and tests.
+- [x] Add provider-neutral external-review and external-evaluation phases/section constructors in `pkg/status` whose labels include the actual reviewer/evaluator names, while retaining legacy Codex/Claude phase parsing for old progress files.
+- [x] Map new phases to the existing external-review/evaluation color configuration rather than renaming user color keys, and update progress/web replay, broadcast events, section boundaries, session phase inference, and frontend non-terminal-signal handling.
+- [x] Add or update tests in `pkg/status`, `pkg/executor`, `pkg/progress`, and `pkg/web` for both signals, old-log replay, `claude external review iteration N`, `codex evaluating claude findings`, phase/color selection, SSE events, and the rule that external completion does not mark the whole run complete.
+- [x] Run `go test ./pkg/status ./pkg/executor ./pkg/progress ./pkg/web` and fix all failures before continuing.
 
 ### Task 6: Generalize the external loop and add Claude-specific prompts
 - [ ] Add embedded/customizable `pkg/config/defaults/prompts/external_claude_review.txt` and `external_claude_eval.txt`, register them in `pkg/config/config.go` and `pkg/config/prompts.go`, and update defaults/dump/fallback tests. The review prompt must require findings only, permit read-only analysis commands, and explicitly prohibit file changes and side-effecting Bash commands.

@@ -726,7 +726,8 @@ header h1 {
     background: var(--phase-review-muted);
 }
 
-.phase-tab[data-phase="codex"].active {
+.phase-tab[data-phase="codex"].active,
+.phase-tab[data-phase="external-review"].active {
     color: var(--phase-codex);
     border-color: var(--phase-codex);
     background: var(--phase-codex-muted);
@@ -1087,11 +1088,13 @@ header h1 {
     color: var(--phase-review);
 }
 
-.output-line[data-phase="codex"] .content {
+.output-line[data-phase="codex"] .content,
+.output-line[data-phase="external-review"] .content {
     color: var(--phase-codex);
 }
 
-.output-line[data-phase="claude-eval"] .content {
+.output-line[data-phase="claude-eval"] .content,
+.output-line[data-phase="external-eval"] .content {
     color: var(--phase-claude-eval);
 }
 
@@ -1192,10 +1195,18 @@ header h1 {
     border: 1px solid var(--phase-review);
 }
 
-.section-header[data-phase="codex"] summary .section-phase {
+.section-header[data-phase="codex"] summary .section-phase,
+.section-header[data-phase="external-review"] summary .section-phase {
     color: var(--phase-codex);
     background: var(--phase-codex-muted);
     border: 1px solid var(--phase-codex);
+}
+
+.section-header[data-phase="claude-eval"] summary .section-phase,
+.section-header[data-phase="external-eval"] summary .section-phase {
+    color: var(--phase-claude-eval);
+    background: var(--phase-review-muted);
+    border: 1px solid var(--phase-claude-eval);
 }
 
 .section-header summary .section-title {

@@ -387,6 +387,14 @@
     }
 
     // create output line element
+    function matchesPhaseFilter(phase, filter) {
+        if (filter === 'all' || phase === filter) return true;
+        if (filter === 'external-review') {
+            return phase === 'external-eval' || phase === 'codex' || phase === 'claude-eval';
+        }
+        return false;
+    }
+
     function createOutputLine(event) {
         const line = document.createElement('div');
         line.className = 'output-line';
@@ -406,7 +414,7 @@
         line.appendChild(content);
 
         // apply phase filter
-        if (state.currentPhase !== 'all' && event.phase !== state.currentPhase) {
+        if (!matchesPhaseFilter(event.phase, state.currentPhase)) {
             line.classList.add('hidden');
         }
 
@@ -473,7 +481,7 @@
         details.appendChild(content);
 
         // apply phase filter
-        if (state.currentPhase !== 'all' && event.phase !== state.currentPhase) {
+        if (!matchesPhaseFilter(event.phase, state.currentPhase)) {
             details.classList.add('hidden');
         }
 
@@ -592,7 +600,8 @@
 
         if (event.type === 'signal') {
             // only COMPLETED (from ALL_TASKS_DONE) is a terminal success signal
-            // REVIEW_DONE and CODEX_REVIEW_DONE mark end of review passes, not end of execution
+            // Review completion signals (including EXTERNAL_REVIEW_DONE and the
+            // legacy CODEX_REVIEW_DONE) end passes, not the whole execution.
             var isSuccess = event.signal === 'COMPLETED';
             var isFailed = event.signal === 'FAILED';
 
@@ -618,6 +627,14 @@
                 break;
             case 'review':
                 statusBadge.textContent = 'REVIEW';
+                statusBadge.classList.add('review', 'pulse');
+                break;
+            case 'external-review':
+                statusBadge.textContent = 'EXTERNAL';
+                statusBadge.classList.add('codex', 'pulse');
+                break;
+            case 'external-eval':
+                statusBadge.textContent = 'EVAL';
                 statusBadge.classList.add('review', 'pulse');
                 break;
             case 'codex':
@@ -979,7 +996,7 @@
         var sections = output.querySelectorAll('.section-header');
         sections.forEach(function(section) {
             var phase = section.dataset.phase;
-            var phaseMatch = state.currentPhase === 'all' || phase === state.currentPhase;
+            var phaseMatch = matchesPhaseFilter(phase, state.currentPhase);
 
             var hasSearchMatch = !state.searchTerm;
             if (state.searchTerm) {
@@ -1006,7 +1023,7 @@
             var contentEl = line.querySelector('.content');
             var originalText = contentEl.dataset.originalText || contentEl.textContent;
 
-            var phaseMatch = state.currentPhase === 'all' || phase === state.currentPhase;
+            var phaseMatch = matchesPhaseFilter(phase, state.currentPhase);
             var searchMatch = !state.searchTerm || matchesSearch(originalText, state.searchTerm);
 
             if (phaseMatch && searchMatch) {
@@ -1979,8 +1996,8 @@
         return '<nav class="phase-nav">\n' +
             '<button class="phase-tab active" data-phase="all">All</button>\n' +
             '<button class="phase-tab" data-phase="task">Implementation</button>\n' +
-            '<button class="phase-tab" data-phase="review">Claude Review</button>\n' +
-            '<button class="phase-tab" data-phase="codex">Codex Review</button>\n' +
+            '<button class="phase-tab" data-phase="review">Primary Review</button>\n' +
+            '<button class="phase-tab" data-phase="external-review">External Review</button>\n' +
             '<span class="nav-separator"></span>\n' +
             '<button class="collapse-btn" id="expand-all">Expand All</button>\n' +
             '<button class="collapse-btn" id="collapse-all">Collapse All</button>\n' +

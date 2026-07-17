@@ -55,6 +55,8 @@ func NewColors(cfg config.ColorConfig) *Colors {
 
 	c.phases[status.PhaseTask] = c.task
 	c.phases[status.PhaseReview] = c.review
+	c.phases[status.PhaseExternalReview] = c.codex
+	c.phases[status.PhaseExternalEval] = c.claudeEval
 	c.phases[status.PhaseCodex] = c.codex
 	c.phases[status.PhaseClaudeEval] = c.claudeEval
 	c.phases[status.PhasePlan] = c.task     // plan phase uses task color (green)

@@ -5,13 +5,13 @@ import "fmt"
 // SectionType represents the semantic type of a section header.
 // the web layer uses these types to emit appropriate boundary events:
 //   - SectionTaskIteration: emits task_start/task_end events
-//   - SectionInternalReview, SectionCodexIteration: emits iteration_start events
-//   - SectionGeneric, SectionClaudeEval: no boundary events, just section headers
+//   - SectionInternalReview, SectionExternalReviewIteration: emits iteration_start events
+//   - SectionGeneric, SectionExternalEvaluation: no boundary events, just section headers
 //
 // invariants:
-//   - Iteration > 0 for SectionTaskIteration, SectionCodexIteration
+//   - Iteration > 0 for SectionTaskIteration, SectionExternalReviewIteration
 //   - Iteration >= 0 for SectionInternalReview (first review pass uses 0)
-//   - Iteration == 0 for SectionGeneric, SectionClaudeEval
+//   - Iteration == 0 for SectionGeneric, SectionExternalEvaluation
 //
 // prefer using the constructor functions (NewTaskIterationSection, etc.) to ensure
 // these invariants are maintained.
@@ -24,14 +24,21 @@ const (
 	SectionTaskIteration
 	// SectionInternalReview represents an internal review iteration.
 	SectionInternalReview
-	// SectionCodexIteration represents a Codex review iteration.
-	SectionCodexIteration
-	// SectionClaudeEval represents Claude evaluating codex findings.
-	SectionClaudeEval
+	// SectionExternalReviewIteration represents an external review iteration.
+	SectionExternalReviewIteration
+	// SectionExternalEvaluation represents the primary executor evaluating external findings.
+	SectionExternalEvaluation
 	// SectionPlanIteration represents a plan creation iteration.
 	SectionPlanIteration
 	// SectionCustomIteration represents a custom review tool iteration.
 	SectionCustomIteration
+)
+
+// Legacy section names are aliases so existing callers keep their structured behavior.
+const (
+	SectionCodexIteration = SectionExternalReviewIteration
+	SectionClaudeEval     = SectionExternalEvaluation
+	SectionExternalEval   = SectionExternalEvaluation
 )
 
 // Section carries structured information about a section header.
@@ -78,7 +85,34 @@ func NewInternalReviewSection(iteration int, suffix string) Section {
 	}
 }
 
-// NewCodexIterationSection creates a section for Codex review iteration.
+// NewExternalReviewIterationSection creates a provider-aware external review section.
+func NewExternalReviewIterationSection(reviewer string, iteration int) Section {
+	return Section{
+		Type:      SectionExternalReviewIteration,
+		Iteration: iteration,
+		Label:     fmt.Sprintf("%s external review iteration %d", reviewer, iteration),
+	}
+}
+
+// NewExternalReviewSection is a concise alias for NewExternalReviewIterationSection.
+func NewExternalReviewSection(reviewer string, iteration int) Section {
+	return NewExternalReviewIterationSection(reviewer, iteration)
+}
+
+// NewExternalEvaluationSection creates a provider-aware external findings evaluation section.
+func NewExternalEvaluationSection(evaluator, reviewer string) Section {
+	return Section{
+		Type:  SectionExternalEvaluation,
+		Label: fmt.Sprintf("%s evaluating %s findings", evaluator, reviewer),
+	}
+}
+
+// NewExternalEvalSection is a concise alias for NewExternalEvaluationSection.
+func NewExternalEvalSection(evaluator, reviewer string) Section {
+	return NewExternalEvaluationSection(evaluator, reviewer)
+}
+
+// NewCodexIterationSection creates a legacy Codex review iteration section.
 func NewCodexIterationSection(iteration int) Section {
 	return Section{
 		Type:      SectionCodexIteration,
@@ -87,7 +121,7 @@ func NewCodexIterationSection(iteration int) Section {
 	}
 }
 
-// NewClaudeEvalSection creates a section for Claude evaluating codex findings.
+// NewClaudeEvalSection creates a legacy section for Claude evaluating Codex findings.
 func NewClaudeEvalSection() Section {
 	return Section{
 		Type:  SectionClaudeEval,

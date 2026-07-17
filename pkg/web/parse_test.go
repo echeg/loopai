@@ -101,6 +101,13 @@ func TestParseProgressLine(t *testing.T) {
 		assert.Equal(t, "CODEX_REVIEW_DONE", parsed.Signal)
 	})
 
+	t.Run("signal line with external review done", func(t *testing.T) {
+		parsed, inHeader := parseProgressLine("[26-01-22 10:30:45] <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>", false)
+		assert.False(t, inHeader)
+		assert.Equal(t, EventTypeSignal, parsed.EventType)
+		assert.Equal(t, "EXTERNAL_REVIEW_DONE", parsed.Signal)
+	})
+
 	t.Run("plain line without timestamp", func(t *testing.T) {
 		parsed, inHeader := parseProgressLine("plain text line", false)
 		assert.False(t, inHeader)

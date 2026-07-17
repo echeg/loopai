@@ -64,7 +64,7 @@ func TestExternalReviewPhaseTool(t *testing.T) {
 }
 
 func TestExternalReviewPhaseRunCodexNoFindings(t *testing.T) {
-	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.CodexDone}})
+	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.ExternalReviewDone}})
 	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "found issue"}})
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}, review: review, external: external,

@@ -192,6 +192,17 @@ func TestServer_StaticFiles(t *testing.T) {
 	assert.Contains(t, body, "/static/app.js")
 }
 
+func TestFrontend_ExternalReviewCompletionIsNonTerminal(t *testing.T) {
+	app, err := embeddedFS.ReadFile("static/app.js")
+	require.NoError(t, err)
+	source := string(app)
+
+	assert.Contains(t, source, "EXTERNAL_REVIEW_DONE")
+	assert.Contains(t, source, "var isSuccess = event.signal === 'COMPLETED';")
+	assert.Contains(t, source, "var isFailed = event.signal === 'FAILED';")
+	assert.NotContains(t, source, "event.signal === 'EXTERNAL_REVIEW_DONE'")
+}
+
 func TestServer_SSE_LateJoiningClient(t *testing.T) {
 	// note: actual SSE streaming with go-sse is tested via E2E tests (see CLAUDE.md).
 	// unit tests verify the Session correctly stores events for replay.

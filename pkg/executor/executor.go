@@ -570,6 +570,7 @@ func detectSignal(text string) string {
 		status.Completed,
 		status.Failed,
 		status.ReviewDone,
+		status.ExternalReviewDone,
 		status.CodexDone,
 		status.PlanReady,
 	}

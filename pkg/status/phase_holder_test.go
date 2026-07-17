@@ -59,7 +59,10 @@ func TestPhaseHolder_OnChange_NilCallbackSafe(t *testing.T) {
 
 func TestPhaseHolder_ConcurrentAccess(t *testing.T) {
 	h := &PhaseHolder{}
-	phases := []Phase{PhaseTask, PhaseReview, PhaseCodex, PhaseClaudeEval, PhaseFinalize}
+	phases := []Phase{
+		PhaseTask, PhaseReview, PhaseExternalReview, PhaseExternalEval,
+		PhaseCodex, PhaseClaudeEval, PhaseFinalize,
+	}
 
 	var cbCount atomic.Int64
 	h.OnChange(func(_, _ Phase) {

@@ -1055,6 +1055,7 @@ func TestExtractSignal(t *testing.T) {
 		want  string
 	}{
 		{"full signal", "<<<RALPHEX:ALL_TASKS_DONE>>>", "ALL_TASKS_DONE"},
+		{"external review done", "<<<RALPHEX:EXTERNAL_REVIEW_DONE>>>", "EXTERNAL_REVIEW_DONE"},
 		{"codex review done", "<<<RALPHEX:CODEX_REVIEW_DONE>>>", "CODEX_REVIEW_DONE"},
 		{"review done", "<<<RALPHEX:REVIEW_DONE>>>", "REVIEW_DONE"},
 		{"task failed", "<<<RALPHEX:TASK_FAILED>>>", "TASK_FAILED"},
@@ -1146,6 +1147,8 @@ func TestNewColors(t *testing.T) {
 		assert.NotNil(t, colors.Timestamp())
 		assert.NotNil(t, colors.ForPhase(status.PhaseTask))
 		assert.NotNil(t, colors.ForPhase(status.PhaseReview))
+		assert.Same(t, colors.ForPhase(status.PhaseCodex), colors.ForPhase(status.PhaseExternalReview))
+		assert.Same(t, colors.ForPhase(status.PhaseClaudeEval), colors.ForPhase(status.PhaseExternalEval))
 		assert.NotNil(t, colors.ForPhase(status.PhaseCodex))
 		assert.NotNil(t, colors.ForPhase(status.PhaseClaudeEval))
 	})

@@ -352,6 +352,7 @@ func TestDetectSignal(t *testing.T) {
 		{"task done " + status.Completed, status.Completed},
 		{status.Failed + " error", status.Failed},
 		{"review complete " + status.ReviewDone, status.ReviewDone},
+		{status.ExternalReviewDone + " external analysis done", status.ExternalReviewDone},
 		{status.CodexDone + " analysis done", status.CodexDone},
 		{"plan complete " + status.PlanReady, status.PlanReady},
 		{`I have inspected the codebase and confirmed all tasks are done.
@@ -366,6 +367,9 @@ The implementation looks complete. Tests cover the new behavior.
 
 Additional thoughts: future work could explore caching.`, status.ReviewDone},
 		{`External review iteration finished.
+<<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
+No actionable findings remain.`, status.ExternalReviewDone},
+		{`Legacy external review iteration finished.
 <<<RALPHEX:CODEX_REVIEW_DONE>>>
 Note: a minor formatting preference was noted but not flagged.`, status.CodexDone},
 		{`Attempted to run go test ./... but encountered a compilation error.

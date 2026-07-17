@@ -92,10 +92,10 @@ func (b *BroadcastLogger) PrintSection(section status.Section) {
 	case status.SectionInternalReview:
 		b.broadcast(NewIterationStartEvent(b.holder.Get(), section.Iteration, section.Label))
 
-	case status.SectionCodexIteration:
+	case status.SectionExternalReviewIteration:
 		b.broadcast(NewIterationStartEvent(b.holder.Get(), section.Iteration, section.Label))
 
-	case status.SectionGeneric, status.SectionClaudeEval:
+	case status.SectionGeneric, status.SectionExternalEvaluation:
 		// no additional events for generic sections or claude eval
 
 	default:
@@ -176,6 +176,8 @@ func extractTerminalSignal(text string) string {
 		return signalFailed
 	case strings.Contains(text, status.ReviewDone):
 		return signalReviewDone
+	case strings.Contains(text, status.ExternalReviewDone):
+		return signalExternalReviewDone
 	case strings.Contains(text, status.CodexDone):
 		return signalCodexReviewDone
 	default:

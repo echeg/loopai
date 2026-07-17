@@ -26,11 +26,12 @@ func Test_IsReviewDone(t *testing.T) {
 	}
 }
 
-func Test_IsCodexDone(t *testing.T) {
+func Test_IsExternalReviewDone(t *testing.T) {
 	tests := []struct {
 		signal string
 		want   bool
 	}{
+		{SignalExternalReviewDone, true},
 		{SignalCodexDone, true},
 		{SignalCompleted, false},
 		{SignalFailed, false},
@@ -40,7 +41,8 @@ func Test_IsCodexDone(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.signal, func(t *testing.T) {
-			assert.Equal(t, tc.want, IsCodexDone(tc.signal))
+			assert.Equal(t, tc.want, IsExternalReviewDone(tc.signal))
+			assert.Equal(t, tc.want, IsCodexDone(tc.signal), "compatibility wrapper")
 		})
 	}
 }

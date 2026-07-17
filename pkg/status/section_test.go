@@ -43,3 +43,24 @@ func TestReviewSections_TypeAndLabelContract(t *testing.T) {
 		})
 	}
 }
+
+func TestExternalReviewSections_ProviderAwareLabels(t *testing.T) {
+	review := NewExternalReviewIterationSection("claude", 4)
+	assert.Equal(t, SectionExternalReviewIteration, review.Type)
+	assert.Equal(t, 4, review.Iteration)
+	assert.Equal(t, "claude external review iteration 4", review.Label)
+
+	eval := NewExternalEvaluationSection("codex", "claude")
+	assert.Equal(t, SectionExternalEvaluation, eval.Type)
+	assert.Zero(t, eval.Iteration)
+	assert.Equal(t, "codex evaluating claude findings", eval.Label)
+	assert.Equal(t, review, NewExternalReviewSection("claude", 4))
+	assert.Equal(t, eval, NewExternalEvalSection("codex", "claude"))
+}
+
+func TestLegacyExternalReviewSectionsRemainCompatible(t *testing.T) {
+	assert.Equal(t, SectionExternalReviewIteration, SectionCodexIteration)
+	assert.Equal(t, SectionExternalEvaluation, SectionClaudeEval)
+	assert.Equal(t, "codex iteration 2", NewCodexIterationSection(2).Label)
+	assert.Equal(t, "claude evaluating codex findings", NewClaudeEvalSection().Label)
+}

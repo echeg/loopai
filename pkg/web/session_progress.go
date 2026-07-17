@@ -221,13 +221,24 @@ func (m *SessionManager) publishEvent(session *Session, event Event) {
 	}
 }
 
-// phaseFromSection determines the phase from a section name.
-// checks "codex"/"custom" before "review" because external review sections should be PhaseCodex.
+// phaseFromSection determines the phase from a section name. Provider-neutral
+// labels are checked first; legacy Codex/custom and Claude-eval labels remain
+// supported so historical progress files replay with their original phases.
 func phaseFromSection(name string) status.Phase {
 	nameLower := strings.ToLower(name)
 	switch {
 	case strings.Contains(nameLower, "task"):
 		return status.PhaseTask
+	case strings.HasPrefix(nameLower, "codex iteration"),
+		strings.HasPrefix(nameLower, "custom review iteration"),
+		nameLower == "codex external review":
+		return status.PhaseCodex
+	case nameLower == "claude evaluating codex findings":
+		return status.PhaseClaudeEval
+	case strings.Contains(nameLower, "external review"):
+		return status.PhaseExternalReview
+	case strings.Contains(nameLower, "evaluating") && strings.Contains(nameLower, "findings"):
+		return status.PhaseExternalEval
 	case strings.Contains(nameLower, "codex"), strings.Contains(nameLower, "custom"):
 		return status.PhaseCodex
 	case strings.Contains(nameLower, "review"):
