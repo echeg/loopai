@@ -674,17 +674,17 @@ func (p *testPolicy) Sleep(ctx context.Context, d time.Duration) error {
 
 type testPrompts struct{}
 
-func (testPrompts) TaskPrompt() string                         { return "task prompt" }
-func (testPrompts) FirstReviewPrompt() string                  { return "first review prompt" }
-func (testPrompts) SecondReviewPrompt(prefix string) string    { return prefix + "second review prompt" }
-func (testPrompts) CodexReviewPrompt(_ bool, _ string) string  { return "git diff\ncodex review prompt" }
-func (testPrompts) CodexEvaluationPrompt(output string) string { return "codex eval: " + output }
-func (testPrompts) CustomReviewPrompt(_ bool, _ string) string {
-	return "git diff\ncustom review prompt"
+func (testPrompts) TaskPrompt() string                      { return "task prompt" }
+func (testPrompts) FirstReviewPrompt() string               { return "first review prompt" }
+func (testPrompts) SecondReviewPrompt(prefix string) string { return prefix + "second review prompt" }
+func (testPrompts) ExternalReviewPrompt(reviewer string, _ bool, evaluatorResponse string) string {
+	return "git diff\n" + reviewer + " review prompt\n" + evaluatorResponse
 }
-func (testPrompts) CustomEvaluationPrompt(output string) string { return "custom eval: " + output }
-func (testPrompts) PlanPrompt() string                          { return "plan prompt" }
-func (testPrompts) FinalizePrompt() string                      { return "finalize prompt" }
+func (testPrompts) ExternalEvaluationPrompt(reviewer, output string) string {
+	return reviewer + " eval: " + output
+}
+func (testPrompts) PlanPrompt() string     { return "plan prompt" }
+func (testPrompts) FinalizePrompt() string { return "finalize prompt" }
 
 type testLocator struct {
 	path string

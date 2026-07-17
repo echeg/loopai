@@ -52,6 +52,7 @@ func TestExternalReviewPhaseTool(t *testing.T) {
 		{name: "disabled backward compat", cfg: Config{CodexEnabled: false, AppConfig: testAppConfig(t)}, want: "none"},
 		{name: "explicit override", cfg: explicitExternalToolConfig(t, "codex", false), want: "codex"},
 		{name: "configured none", cfg: configuredExternalToolConfig(t, "none"), want: "none"},
+		{name: "shared resolver concrete claude", cfg: Config{CodexEnabled: false, ExternalReviewTool: "claude", AppConfig: testAppConfig(t)}, want: "claude"},
 	}
 
 	for _, tc := range tests {
@@ -105,6 +106,33 @@ func TestExternalReviewPhaseRunCodexFindings(t *testing.T) {
 	assert.True(t, outcome.HadFindings)
 	assert.Len(t, external.RunCalls(), 2)
 	assert.Len(t, review.RunCalls(), 2)
+}
+
+func TestExternalReviewPhaseRunClaudeFindingsEvaluatedByCodex(t *testing.T) {
+	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "dismissed finding"}, {Output: "done", Signal: status.ExternalReviewDone}})
+	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "issue in main.go:12"}, {Output: "NO ISSUES FOUND"}})
+	appCfg := testAppConfig(t)
+	appCfg.Executor = "codex"
+	appCfg.ExternalReviewTool = "claude"
+	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
+		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: appCfg}, review: review, external: external,
+	})
+
+	outcome, err := phase.Run(t.Context())
+
+	require.NoError(t, err)
+	assert.True(t, outcome.HadFindings)
+	require.Len(t, external.RunCalls(), 2)
+	assert.Contains(t, external.RunCalls()[0].Prompt, "claude review prompt")
+	assert.Contains(t, external.RunCalls()[1].Prompt, "dismissed finding")
+	require.Len(t, review.RunCalls(), 2)
+	assert.Contains(t, review.RunCalls()[0].Prompt, "issue in main.go:12")
+	sections := log.PrintSectionCalls()
+	require.Len(t, sections, 4)
+	assert.Equal(t, "claude external review iteration 1", sections[0].Section.Label)
+	assert.Equal(t, "codex evaluating claude findings", sections[1].Section.Label)
+	assert.Equal(t, "claude external review iteration 2", sections[2].Section.Label)
+	assert.Equal(t, "codex evaluating claude findings", sections[3].Section.Label)
 }
 
 func TestExternalReviewPhaseRunCustomSuccess(t *testing.T) {
@@ -333,7 +361,7 @@ func TestExternalReviewPhaseTimeoutSkipsStalemate(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Len(t, external.RunCalls(), 3)
-	assertLogContains(t, log, "claude eval session timed out")
+	assertLogContains(t, log, "eval session timed out")
 	for _, call := range log.PrintCalls() {
 		assert.NotContains(t, call.Format, "stalemate detected")
 	}

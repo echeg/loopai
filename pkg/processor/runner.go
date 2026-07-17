@@ -68,6 +68,7 @@ func toPhaseConfig(c Config) phase.Config {
 		ReviewPatience:        c.ReviewPatience,
 		CodexEnabled:          c.CodexEnabled,
 		ExternalReviewToolSet: c.ExternalReviewToolSet,
+		ExternalReviewTool:    c.ExternalReviewTool,
 		FinalizeEnabled:       c.FinalizeEnabled,
 		AppConfig:             c.AppConfig,
 	}
@@ -385,7 +386,7 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 		return nil
 	}
 
-	r.phaseHolder.Set(status.PhaseCodex)
+	r.phaseHolder.Set(status.PhaseExternalReview)
 	r.log.PrintSection(status.NewGenericSection(tool + " external review"))
 
 	outcome, err := r.phases.external.Run(ctx)
@@ -394,7 +395,7 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 	}
 
 	if !outcome.HadFindings {
-		r.log.Print("external review found no issues, skipping post-%s claude review", tool)
+		r.log.Print("external review found no issues, skipping post-%s %s review", tool, r.primaryExecutorName())
 		if err := r.phases.finalize.Run(ctx); err != nil {
 			return fmt.Errorf("finalize phase: %w", err)
 		}
@@ -416,6 +417,13 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 		return fmt.Errorf("finalize phase: %w", err)
 	}
 	return nil
+}
+
+func (r *Runner) primaryExecutorName() string {
+	if r.cfg.isCodexExecutor() {
+		return config.ExternalReviewToolCodex
+	}
+	return config.ExternalReviewToolClaude
 }
 
 // runTasksOnly executes only task phase, skipping all reviews.

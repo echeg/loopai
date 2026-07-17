@@ -763,7 +763,32 @@ func TestPromptLoader_Load_CustomEvalPrompt_FallsBackToEmbedded(t *testing.T) {
 	// should fall back to embedded custom_eval prompt
 	assert.Contains(t, prompts.CustomEval, "{{CUSTOM_OUTPUT}}")
 	assert.Contains(t, prompts.CustomEval, "{{PLAN_FILE}}")
-	assert.Contains(t, prompts.CustomEval, "RALPHEX:CODEX_REVIEW_DONE")
+	assert.Contains(t, prompts.CustomEval, "RALPHEX:EXTERNAL_REVIEW_DONE")
+}
+
+func TestPromptLoader_Load_ExternalClaudePrompts(t *testing.T) {
+	tmpDir := t.TempDir()
+	globalDir := filepath.Join(tmpDir, "global", "prompts")
+	localDir := filepath.Join(tmpDir, "local", "prompts")
+	require.NoError(t, os.MkdirAll(globalDir, 0o700))
+	require.NoError(t, os.MkdirAll(localDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "external_claude_review.txt"), []byte("global claude review"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(localDir, "external_claude_review.txt"), []byte("local claude review"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "external_claude_eval.txt"), []byte("evaluate {{CLAUDE_OUTPUT}}"), 0o600))
+
+	prompts, err := newPromptLoader(defaultsFS).Load(localDir, globalDir)
+	require.NoError(t, err)
+	assert.Equal(t, "local claude review", prompts.ExternalClaudeReview)
+	assert.Equal(t, "evaluate {{CLAUDE_OUTPUT}}", prompts.ExternalClaudeEval)
+}
+
+func TestPromptLoader_Load_ExternalClaudePromptsFallback(t *testing.T) {
+	prompts, err := newPromptLoader(defaultsFS).Load("", filepath.Join(t.TempDir(), "missing"))
+	require.NoError(t, err)
+	assert.Contains(t, prompts.ExternalClaudeReview, "findings-only")
+	assert.Contains(t, prompts.ExternalClaudeReview, "side-effecting Bash")
+	assert.Contains(t, prompts.ExternalClaudeEval, "{{CLAUDE_OUTPUT}}")
+	assert.Contains(t, prompts.ExternalClaudeEval, "RALPHEX:EXTERNAL_REVIEW_DONE")
 }
 
 func TestPromptLoader_Load_CustomEvalPrompt_LocalOverridesGlobal(t *testing.T) {

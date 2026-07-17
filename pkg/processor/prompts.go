@@ -75,30 +75,53 @@ func (b *promptBuilder) getDiffInstruction(isFirstIteration bool) string {
 
 // buildPreviousContext returns the PREVIOUS REVIEW CONTEXT block for external review prompts.
 // returns empty string on first iteration (no prior response), formatted context block on subsequent iterations.
-func (b *promptBuilder) buildPreviousContext(claudeResponse string) string {
-	if claudeResponse == "" {
+func (b *promptBuilder) buildExternalPreviousContext(reviewer, evaluator, evaluatorResponse string) string {
+	if evaluatorResponse == "" {
 		return ""
 	}
 	return fmt.Sprintf(`---
 PREVIOUS REVIEW CONTEXT:
-Claude (previous reviewer) responded to your findings:
+%s (primary evaluator) responded to %s's findings:
 
 %s
 
-Re-evaluate considering Claude's arguments. If Claude's fixes are correct, acknowledge them.
-If Claude's arguments are invalid, explain why the issues still exist.`, claudeResponse)
+Re-evaluate considering %s's response. If the fixes are correct, acknowledge them.
+If the dismissals are invalid, explain why the issues still exist.`, providerDisplayName(evaluator), providerDisplayName(reviewer), evaluatorResponse, providerDisplayName(evaluator))
 }
 
 // replaceVariablesWithIteration replaces all template variables including iteration-aware ones.
 // supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}},
 // {{DIFF_INSTRUCTION}}, {{PREVIOUS_REVIEW_CONTEXT}}, {{agent:name}}
 // this variant is used when iteration context is needed (e.g., external review prompts).
-func (b *promptBuilder) replaceVariablesWithIteration(prompt string, isFirstIteration bool, claudeResponse string) string {
+func (b *promptBuilder) replaceExternalVariablesWithIteration(prompt string, isFirstIteration bool, reviewer, evaluator, evaluatorResponse string) string {
 	result := b.replaceBaseVariables(prompt)
 	result = strings.ReplaceAll(result, "{{DIFF_INSTRUCTION}}", b.getDiffInstruction(isFirstIteration))
 	result = b.expandAgentReferences(result) // expand agents before inserting external content
-	result = strings.ReplaceAll(result, "{{PREVIOUS_REVIEW_CONTEXT}}", b.buildPreviousContext(claudeResponse))
+	result = strings.ReplaceAll(result, "{{PREVIOUS_REVIEW_CONTEXT}}", b.buildExternalPreviousContext(reviewer, evaluator, evaluatorResponse))
+	if reviewer == config.ExternalReviewToolClaude {
+		return result
+	}
 	return b.appendCommitTrailerInstruction(result)
+}
+
+// buildPreviousContext preserves the historical Codex-reviewer/Claude-evaluator
+// rendering for package-local compatibility.
+func (b *promptBuilder) buildPreviousContext(evaluatorResponse string) string {
+	return b.buildExternalPreviousContext(config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, evaluatorResponse)
+}
+
+// replaceVariablesWithIteration is retained for tests and package-local callers
+// that predate provider-aware external review. It models the historical
+// Codex-reviewer/Claude-evaluator direction.
+func (b *promptBuilder) replaceVariablesWithIteration(prompt string, isFirstIteration bool, evaluatorResponse string) string {
+	return b.replaceExternalVariablesWithIteration(prompt, isFirstIteration, config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, evaluatorResponse)
+}
+
+func providerDisplayName(provider string) string {
+	if provider == "" {
+		return "Claude"
+	}
+	return strings.ToUpper(provider[:1]) + provider[1:]
 }
 
 // reviewContextInstruction returns the lead-in prepended to every review agent

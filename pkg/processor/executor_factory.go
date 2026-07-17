@@ -24,6 +24,7 @@ func (f *executorFactory) Build(cfg Config, log Logger) (Config, Executors) {
 			cfg.AppConfig.ExternalReviewTool = config.ExternalReviewToolNone
 		}
 	}
+	cfg.ExternalReviewTool = externalProvider
 	externalExec := cfg.buildExternalExecutor(log, externalProvider)
 
 	if cfg.isCodexExecutor() {

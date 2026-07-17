@@ -1,0 +1,21 @@
+# external claude review prompt
+# this prompt is sent to claude when it is the external reviewer
+# claude reports findings only; the primary codex executor owns all changes
+#
+# available variables:
+#   {{DIFF_INSTRUCTION}} - git diff command appropriate for current iteration
+#   {{PLAN_FILE}} - path to the plan file being executed
+#   {{PROGRESS_FILE}} - path to progress log with previous review iterations
+#   {{PREVIOUS_REVIEW_CONTEXT}} - previous evaluator context (empty on first iteration)
+#   {{DEFAULT_BRANCH}} - default branch name (main, master, trunk, etc.)
+#   {{GOAL}} - human-readable goal description
+
+Review the code changes for: {{GOAL}}
+
+Run {{DIFF_INSTRUCTION}} and read the changed files in full context. Check the plan at {{PLAN_FILE}} and the review history at {{PROGRESS_FILE}}.
+
+Analyze for bugs, logic errors, security vulnerabilities, race conditions, error-handling gaps, missing tests, and material code-quality problems. Report only verified findings with file:line references. If there are no actionable issues, say "NO ISSUES FOUND".
+
+This is a findings-only review. Do not edit, create, delete, rename, or format files. Do not commit changes. Read-only analysis commands such as git diff, git show, git log, rg, sed, and test commands that cannot modify repository state are permitted. Do not run side-effecting Bash commands, including commands that install dependencies, rewrite generated files, alter Git state, access credentials, or modify external systems. Leave every code change and commit to the primary Codex executor.
+
+{{PREVIOUS_REVIEW_CONTEXT}}

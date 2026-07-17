@@ -16,15 +16,17 @@ var defaultsFS embed.FS
 
 // prompt file names
 const (
-	taskPromptFile         = "task.txt"
-	reviewFirstPromptFile  = "review_first.txt"
-	reviewSecondPromptFile = "review_second.txt"
-	codexPromptFile        = "codex.txt"
-	makePlanPromptFile     = "make_plan.txt"
-	finalizePromptFile     = "finalize.txt"
-	customReviewPromptFile = "custom_review.txt"
-	customEvalPromptFile   = "custom_eval.txt"
-	codexReviewPromptFile  = "codex_review.txt"
+	taskPromptFile                 = "task.txt"
+	reviewFirstPromptFile          = "review_first.txt"
+	reviewSecondPromptFile         = "review_second.txt"
+	codexPromptFile                = "codex.txt"
+	makePlanPromptFile             = "make_plan.txt"
+	finalizePromptFile             = "finalize.txt"
+	customReviewPromptFile         = "custom_review.txt"
+	customEvalPromptFile           = "custom_eval.txt"
+	codexReviewPromptFile          = "codex_review.txt"
+	externalClaudeReviewPromptFile = "external_claude_review.txt"
+	externalClaudeEvalPromptFile   = "external_claude_eval.txt"
 )
 
 // Executor mode constants for the Config.Executor field.
@@ -128,15 +130,17 @@ type Config struct {
 	Colors ColorConfig `json:"-"`
 
 	// prompts (loaded separately from files)
-	TaskPrompt         string `json:"-"`
-	ReviewFirstPrompt  string `json:"-"`
-	ReviewSecondPrompt string `json:"-"`
-	CodexPrompt        string `json:"-"`
-	MakePlanPrompt     string `json:"-"`
-	FinalizePrompt     string `json:"-"`
-	CustomReviewPrompt string `json:"-"`
-	CustomEvalPrompt   string `json:"-"`
-	CodexReviewPrompt  string `json:"-"`
+	TaskPrompt                 string `json:"-"`
+	ReviewFirstPrompt          string `json:"-"`
+	ReviewSecondPrompt         string `json:"-"`
+	CodexPrompt                string `json:"-"`
+	MakePlanPrompt             string `json:"-"`
+	FinalizePrompt             string `json:"-"`
+	CustomReviewPrompt         string `json:"-"`
+	CustomEvalPrompt           string `json:"-"`
+	CodexReviewPrompt          string `json:"-"`
+	ExternalClaudeReviewPrompt string `json:"-"`
+	ExternalClaudeEvalPrompt   string `json:"-"`
 
 	// custom agents (loaded separately from files)
 	CustomAgents []CustomAgent `json:"-"`
@@ -368,19 +372,21 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 			WebhookURLs:   values.NotifyWebhookURLs,
 			CustomScript:  values.NotifyCustomScript,
 		},
-		Colors:             colors,
-		TaskPrompt:         prompts.Task,
-		ReviewFirstPrompt:  prompts.ReviewFirst,
-		ReviewSecondPrompt: prompts.ReviewSecond,
-		CodexPrompt:        prompts.Codex,
-		MakePlanPrompt:     prompts.MakePlan,
-		FinalizePrompt:     prompts.Finalize,
-		CustomReviewPrompt: prompts.CustomReview,
-		CustomEvalPrompt:   prompts.CustomEval,
-		CodexReviewPrompt:  prompts.CodexReview,
-		CustomAgents:       agents,
-		configDir:          globalDir,
-		localDir:           localDir,
+		Colors:                     colors,
+		TaskPrompt:                 prompts.Task,
+		ReviewFirstPrompt:          prompts.ReviewFirst,
+		ReviewSecondPrompt:         prompts.ReviewSecond,
+		CodexPrompt:                prompts.Codex,
+		MakePlanPrompt:             prompts.MakePlan,
+		FinalizePrompt:             prompts.Finalize,
+		CustomReviewPrompt:         prompts.CustomReview,
+		CustomEvalPrompt:           prompts.CustomEval,
+		CodexReviewPrompt:          prompts.CodexReview,
+		ExternalClaudeReviewPrompt: prompts.ExternalClaudeReview,
+		ExternalClaudeEvalPrompt:   prompts.ExternalClaudeEval,
+		CustomAgents:               agents,
+		configDir:                  globalDir,
+		localDir:                   localDir,
 	}
 
 	// notify_on_error and notify_on_complete default to true when not explicitly set

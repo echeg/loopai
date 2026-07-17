@@ -34,8 +34,10 @@ func Test_defaultsFS_PromptFiles(t *testing.T) {
 		{file: "defaults/prompts/task.txt", contains: []string{"{{PLAN_FILE}}", "{{PROGRESS_FILE}}", "RALPHEX:ALL_TASKS_DONE", "RALPHEX:TASK_FAILED", "Success criteria", "Task sections", "### Task N:", "mark them [x]", "do not loop indefinitely"}},
 		{file: "defaults/prompts/review_first.txt", contains: []string{"{{GOAL}}", "{{PROGRESS_FILE}}", "RALPHEX:REVIEW_DONE", "{{agent:quality}}", "{{agent:testing}}"}},
 		{file: "defaults/prompts/review_second.txt", contains: []string{"{{GOAL}}", "{{PROGRESS_FILE}}", "RALPHEX:REVIEW_DONE", "{{agent:quality}}", "{{agent:implementation}}"}},
-		{file: "defaults/prompts/codex.txt", contains: []string{"{{CODEX_OUTPUT}}", "RALPHEX:CODEX_REVIEW_DONE", "Codex reviewed"}},
+		{file: "defaults/prompts/codex.txt", contains: []string{"{{CODEX_OUTPUT}}", "RALPHEX:EXTERNAL_REVIEW_DONE", "Codex reviewed"}},
 		{file: "defaults/prompts/codex_review.txt", contains: []string{"{{DIFF_INSTRUCTION}}", "{{PROGRESS_FILE}}", "{{PREVIOUS_REVIEW_CONTEXT}}", "{{PLAN_FILE}}"}},
+		{file: "defaults/prompts/external_claude_review.txt", contains: []string{"{{DIFF_INSTRUCTION}}", "{{PREVIOUS_REVIEW_CONTEXT}}", "findings-only", "Do not edit", "side-effecting Bash"}},
+		{file: "defaults/prompts/external_claude_eval.txt", contains: []string{"{{CLAUDE_OUTPUT}}", "Codex owns", "RALPHEX:EXTERNAL_REVIEW_DONE"}},
 	}
 
 	for _, tc := range testCases {
@@ -60,6 +62,8 @@ func Test_defaultsFS_AllFilesPresent(t *testing.T) {
 		"defaults/prompts/review_second.txt",
 		"defaults/prompts/codex.txt",
 		"defaults/prompts/codex_review.txt",
+		"defaults/prompts/external_claude_review.txt",
+		"defaults/prompts/external_claude_eval.txt",
 	}
 
 	for _, file := range expectedFiles {
@@ -128,6 +132,8 @@ func TestLoad_PopulatesAllFields(t *testing.T) {
 	assert.NotEmpty(t, cfg.ReviewSecondPrompt)
 	assert.NotEmpty(t, cfg.CodexPrompt)
 	assert.NotEmpty(t, cfg.CodexReviewPrompt)
+	assert.NotEmpty(t, cfg.ExternalClaudeReviewPrompt)
+	assert.NotEmpty(t, cfg.ExternalClaudeEvalPrompt)
 }
 
 func TestLoad_WithUserConfig(t *testing.T) {

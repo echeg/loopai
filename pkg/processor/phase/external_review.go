@@ -17,7 +17,7 @@ type ExternalReviewOutcome struct {
 	HadFindings bool
 }
 
-// ExternalReviewPhase runs codex or custom external review loops.
+// ExternalReviewPhase runs provider-aware external review loops.
 type ExternalReviewPhase struct {
 	cfg            Config
 	log            ExternalReviewLogger
@@ -58,6 +58,9 @@ func NewExternalReviewPhase(opts ExternalReviewPhaseOpts) *ExternalReviewPhase {
 
 // Tool returns the effective external review tool after config and back-compat rules.
 func (p *ExternalReviewPhase) Tool() string {
+	if p.cfg.ExternalReviewTool != "" && p.cfg.ExternalReviewTool != config.ExternalReviewToolAuto {
+		return p.cfg.ExternalReviewTool
+	}
 	if p.cfg.ExternalReviewToolSet && p.cfg.AppConfig != nil && p.cfg.AppConfig.ExternalReviewTool != "" {
 		return currentExternalReviewTool(p.cfg.AppConfig.ExternalReviewTool)
 	}
@@ -87,16 +90,18 @@ func (p *ExternalReviewPhase) Run(ctx context.Context) (ExternalReviewOutcome, e
 		return ExternalReviewOutcome{}, nil
 	case config.ExternalReviewToolCustom:
 		return p.runCustom(ctx)
+	case config.ExternalReviewToolClaude, config.ExternalReviewToolCodex:
+		return p.runExternal(ctx, p.Tool())
 	default:
-		return p.runCodex(ctx)
+		return ExternalReviewOutcome{}, fmt.Errorf("unsupported external review tool %q", p.Tool())
 	}
 }
 
-func (p *ExternalReviewPhase) runCodex(ctx context.Context) (ExternalReviewOutcome, error) {
+func (p *ExternalReviewPhase) runExternal(ctx context.Context, reviewer string) (ExternalReviewOutcome, error) {
 	if p.external == nil {
-		return ExternalReviewOutcome{}, errors.New("codex review executor not configured")
+		return ExternalReviewOutcome{}, fmt.Errorf("%s review executor not configured", reviewer)
 	}
-	return p.runLoop(ctx, config.ExternalReviewToolCodex)
+	return p.runLoop(ctx, reviewer)
 }
 
 func (p *ExternalReviewPhase) runCustom(ctx context.Context) (ExternalReviewOutcome, error) {
@@ -111,8 +116,8 @@ func (p *ExternalReviewPhase) showSummary(toolName, output string) {
 	if idx := strings.Index(summary, "```"); idx > 0 {
 		summary = summary[:idx]
 	}
-	if runes := []rune(summary); len(runes) > maxCodexSummaryLen {
-		summary = string(runes[:maxCodexSummaryLen]) + "..."
+	if runes := []rune(summary); len(runes) > maxExternalSummaryLen {
+		summary = string(runes[:maxExternalSummaryLen]) + "..."
 	}
 
 	summary = strings.TrimSpace(summary)
@@ -134,18 +139,18 @@ func (p *ExternalReviewPhase) runLoop(ctx context.Context, tool string) (Externa
 	loopCtx, loopCancel := p.breaks.context(ctx)
 	defer loopCancel()
 
-	var claudeResponse string
+	var evaluatorResponse string
 	firstCompleted := false
 	stalemate := newStalemateState(p.cfg, p.log)
 
 loop:
 	for i := 1; i <= p.maxIterations(); i++ {
 		result, err := p.runIteration(loopCtx, externalReviewIterationOpts{
-			parent:         ctx,
-			tool:           tool,
-			iteration:      i,
-			firstCompleted: firstCompleted,
-			claudeResponse: claudeResponse,
+			parent:            ctx,
+			tool:              tool,
+			iteration:         i,
+			firstCompleted:    firstCompleted,
+			evaluatorResponse: evaluatorResponse,
 		})
 		if err != nil {
 			if errors.Is(err, errExternalReviewBreak) {
@@ -156,7 +161,7 @@ loop:
 
 		if result.firstCompleted {
 			firstCompleted = true
-			claudeResponse = result.claudeResponse
+			evaluatorResponse = result.evaluatorResponse
 		}
 		if result.hadFindings {
 			outcome.HadFindings = true
@@ -198,19 +203,19 @@ const (
 )
 
 type externalReviewIterationOpts struct {
-	parent         context.Context
-	tool           string
-	iteration      int
-	firstCompleted bool
-	claudeResponse string
+	parent            context.Context
+	tool              string
+	iteration         int
+	firstCompleted    bool
+	evaluatorResponse string
 }
 
 type externalReviewIterationResult struct {
-	action         externalReviewIterationAction
-	before         gitSnapshot
-	claudeResponse string
-	firstCompleted bool
-	hadFindings    bool
+	action            externalReviewIterationAction
+	before            gitSnapshot
+	evaluatorResponse string
+	firstCompleted    bool
+	hadFindings       bool
 }
 
 func (p *ExternalReviewPhase) runIteration(ctx context.Context, opts externalReviewIterationOpts) (externalReviewIterationResult, error) {
@@ -218,9 +223,12 @@ func (p *ExternalReviewPhase) runIteration(ctx context.Context, opts externalRev
 		return externalReviewIterationResult{}, err
 	}
 
-	p.log.PrintSection(p.section(opts.tool, opts.iteration))
+	if p.phaseHolder != nil {
+		p.phaseHolder.Set(status.PhaseExternalReview)
+	}
+	p.log.PrintSection(status.NewExternalReviewIterationSection(opts.tool, opts.iteration))
 
-	reviewExecResult := p.runReviewTool(ctx, opts.tool, p.reviewPrompt(opts.tool, !opts.firstCompleted, opts.claudeResponse))
+	reviewExecResult := p.runReviewTool(ctx, opts.tool, p.prompts.ExternalReviewPrompt(opts.tool, !opts.firstCompleted, opts.evaluatorResponse))
 	reviewResult := reviewExecResult.Result
 	if reviewResult.Error != nil {
 		if err := p.handleExecutorError(ctx, opts.parent, opts.tool, reviewResult.Error); err != nil {
@@ -240,24 +248,24 @@ func (p *ExternalReviewPhase) runIteration(ctx context.Context, opts externalRev
 		return externalReviewIterationResult{action: externalReviewBreakLoop}, nil
 	}
 
-	if opts.tool == config.ExternalReviewToolCodex {
+	if opts.tool != config.ExternalReviewToolCustom {
 		p.showSummary(opts.tool, reviewResult.Output)
 	}
 
 	before := p.snapshotBeforeEval()
-	claudeExecResult, err := p.runClaudeEvaluation(ctx, opts.parent, opts.tool, reviewResult.Output)
+	evalExecResult, err := p.runEvaluation(ctx, opts.parent, opts.tool, reviewResult.Output)
 	if err != nil {
 		return externalReviewIterationResult{}, err
 	}
 
-	if claudeExecResult.TimedOut {
-		p.log.Print("claude eval session timed out, retrying %s iteration...", opts.tool)
+	if evalExecResult.TimedOut {
+		p.log.Print("%s eval session timed out, retrying %s iteration...", p.cfg.executorName(), opts.tool)
 		return externalReviewIterationResult{action: externalReviewRetry}, nil
 	}
 
-	claudeResult := claudeExecResult.Result
-	result := externalReviewIterationResult{before: before, claudeResponse: claudeResult.Output, firstCompleted: true}
-	if IsExternalReviewDone(claudeResult.Signal) {
+	evalResult := evalExecResult.Result
+	result := externalReviewIterationResult{before: before, evaluatorResponse: evalResult.Output, firstCompleted: true}
+	if IsExternalReviewDone(evalResult.Signal) {
 		p.log.Print("%s review complete - no more findings", opts.tool)
 		result.action = externalReviewStop
 		return result, nil
@@ -300,20 +308,21 @@ func (p *ExternalReviewPhase) snapshotBeforeEval() gitSnapshot {
 	return p.git.snapshot()
 }
 
-func (p *ExternalReviewPhase) runClaudeEvaluation(loopCtx, parent context.Context, tool, output string) (ExecutionResult, error) {
+func (p *ExternalReviewPhase) runEvaluation(loopCtx, parent context.Context, reviewer, output string) (ExecutionResult, error) {
+	evaluator := p.cfg.executorName()
 	if p.phaseHolder != nil {
-		p.phaseHolder.Set(status.PhaseClaudeEval)
+		p.phaseHolder.Set(status.PhaseExternalEval)
 	}
-	p.log.PrintSection(status.NewClaudeEvalSection())
-	result := p.policy.Run(loopCtx, p.review.Run, p.evalPrompt(tool, output), config.ExternalReviewToolClaude)
+	p.log.PrintSection(status.NewExternalEvaluationSection(evaluator, reviewer))
+	result := p.policy.Run(loopCtx, p.review.Run, p.prompts.ExternalEvaluationPrompt(reviewer, output), evaluator)
 	if p.phaseHolder != nil {
-		p.phaseHolder.Set(status.PhaseCodex)
+		p.phaseHolder.Set(status.PhaseExternalReview)
 	}
 
 	if result.Result.Error == nil {
 		return result, nil
 	}
-	if err := p.handleExecutorError(loopCtx, parent, config.ExternalReviewToolClaude, result.Result.Error); err != nil {
+	if err := p.handleExecutorError(loopCtx, parent, evaluator, result.Result.Error); err != nil {
 		return ExecutionResult{}, err
 	}
 	return result, nil
@@ -331,7 +340,7 @@ func (p *ExternalReviewPhase) sleepBeforeNext(loopCtx, parent context.Context) e
 }
 
 func (p *ExternalReviewPhase) maxIterations() int {
-	maxIterations := max(minCodexIterations, p.cfg.MaxIterations/codexIterationDivisor)
+	maxIterations := max(minExternalReviewIterations, p.cfg.MaxIterations/externalIterationDivisor)
 	if p.cfg.MaxExternalIterations > 0 {
 		maxIterations = p.cfg.MaxExternalIterations
 	}
@@ -343,25 +352,4 @@ func (p *ExternalReviewPhase) runReviewTool(ctx context.Context, tool, prompt st
 		return p.policy.Run(ctx, p.custom.Run, prompt, tool)
 	}
 	return p.policy.Run(ctx, p.external.Run, prompt, tool)
-}
-
-func (p *ExternalReviewPhase) reviewPrompt(tool string, isFirst bool, claudeResponse string) string {
-	if tool == config.ExternalReviewToolCustom {
-		return p.prompts.CustomReviewPrompt(isFirst, claudeResponse)
-	}
-	return p.prompts.CodexReviewPrompt(isFirst, claudeResponse)
-}
-
-func (p *ExternalReviewPhase) evalPrompt(tool, output string) string {
-	if tool == config.ExternalReviewToolCustom {
-		return p.prompts.CustomEvaluationPrompt(output)
-	}
-	return p.prompts.CodexEvaluationPrompt(output)
-}
-
-func (p *ExternalReviewPhase) section(tool string, iteration int) status.Section {
-	if tool == config.ExternalReviewToolCustom {
-		return status.NewCustomIterationSection(iteration)
-	}
-	return status.NewCodexIterationSection(iteration)
 }

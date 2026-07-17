@@ -12,13 +12,13 @@ import (
 )
 
 const (
-	minReviewIterations    = 3
-	reviewIterationDivisor = 10
-	minCodexIterations     = 3
-	codexIterationDivisor  = 5
-	maxCodexSummaryLen     = 5000
-	minPlanIterations      = 5
-	planIterationDivisor   = 5
+	minReviewIterations         = 3
+	reviewIterationDivisor      = 10
+	minExternalReviewIterations = 3
+	externalIterationDivisor    = 5
+	maxExternalSummaryLen       = 5000
+	minPlanIterations           = 5
+	planIterationDivisor        = 5
 )
 
 // retryBackoff is the pause before re-running an iteration that timed out or hit
@@ -33,6 +33,7 @@ type Config struct {
 	ReviewPatience        int
 	CodexEnabled          bool
 	ExternalReviewToolSet bool
+	ExternalReviewTool    string
 	FinalizeEnabled       bool
 	AppConfig             *config.Config
 }
@@ -152,10 +153,8 @@ type ReviewPrompts interface {
 
 // ExternalReviewPrompts renders external review and evaluation prompts.
 type ExternalReviewPrompts interface {
-	CodexReviewPrompt(isFirst bool, claudeResponse string) string
-	CodexEvaluationPrompt(codexOutput string) string
-	CustomReviewPrompt(isFirst bool, claudeResponse string) string
-	CustomEvaluationPrompt(customOutput string) string
+	ExternalReviewPrompt(reviewer string, isFirst bool, evaluatorResponse string) string
+	ExternalEvaluationPrompt(reviewer, findings string) string
 }
 
 // PlanCreationPrompts renders interactive plan creation prompts.

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/umputun/ralphex/pkg/config"
+	"github.com/umputun/ralphex/pkg/status"
 )
 
 var promptBuilderCache sync.Map
@@ -135,7 +136,7 @@ func TestRunner_buildCodexEvaluationPrompt(t *testing.T) {
 	prompt := newPromptBuilderForTest(r).CodexEvaluationPrompt(findings)
 
 	assert.Contains(t, prompt, findings)
-	assert.Contains(t, prompt, "<<<RALPHEX:CODEX_REVIEW_DONE>>>")
+	assert.Contains(t, prompt, "<<<RALPHEX:EXTERNAL_REVIEW_DONE>>>")
 	assert.Contains(t, prompt, "Codex reviewed the code")
 	assert.Contains(t, prompt, "Valid issues")
 	assert.Contains(t, prompt, "Invalid/irrelevant issues")
@@ -933,7 +934,7 @@ func TestRunner_buildCustomReviewPrompt(t *testing.T) {
 
 		assert.Contains(t, prompt, "PREVIOUS REVIEW CONTEXT")
 		assert.Contains(t, prompt, "I fixed the null pointer issue")
-		assert.Contains(t, prompt, "Re-evaluate considering Claude's arguments")
+		assert.Contains(t, prompt, "Re-evaluate considering Claude's response")
 		assert.NotContains(t, prompt, "{{PREVIOUS_REVIEW_CONTEXT}}")
 	})
 
@@ -1033,8 +1034,31 @@ func TestRunner_buildPreviousContext(t *testing.T) {
 		result := newPromptBuilderForTest(r).buildPreviousContext("I fixed the null pointer issue")
 		assert.Contains(t, result, "PREVIOUS REVIEW CONTEXT")
 		assert.Contains(t, result, "I fixed the null pointer issue")
-		assert.Contains(t, result, "Re-evaluate considering Claude's arguments")
+		assert.Contains(t, result, "Re-evaluate considering Claude's response")
 	})
+}
+
+func TestRunner_buildExternalClaudePrompts(t *testing.T) {
+	appCfg := testAppConfig(t)
+	appCfg.Executor = config.ExecutorCodex
+	appCfg.CommitTrailer = "Signed-off-by: primary-codex"
+	r := &Runner{cfg: Config{PlanFile: "docs/plans/test.md", DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+	builder := newPromptBuilderForTest(r)
+
+	review := builder.ExternalReviewPrompt(config.ExternalReviewToolClaude, false, "dismissed finding")
+	assert.Contains(t, review, "git diff")
+	assert.Contains(t, review, "Codex (primary evaluator) responded to Claude's findings")
+	assert.Contains(t, review, "dismissed finding")
+	assert.Contains(t, review, "Do not edit")
+	assert.Contains(t, review, "side-effecting Bash")
+	assert.NotContains(t, review, "Signed-off-by", "external Claude must not receive commit instructions")
+
+	eval := builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "issue in main.go:12")
+	assert.Contains(t, eval, "issue in main.go:12")
+	assert.NotContains(t, eval, "{{CLAUDE_OUTPUT}}")
+	assert.Contains(t, eval, "Codex owns all repository writes")
+	assert.Contains(t, eval, status.ExternalReviewDone)
+	assert.Contains(t, eval, "Signed-off-by: primary-codex", "primary Codex keeps configured commit instructions")
 }
 
 func TestRunner_replaceVariablesWithIteration_PreviousReviewContext(t *testing.T) {
@@ -1117,7 +1141,7 @@ func TestRunner_buildCodexPrompt(t *testing.T) {
 		assert.NotContains(t, prompt, "main...HEAD")
 		assert.Contains(t, prompt, "PREVIOUS REVIEW CONTEXT")
 		assert.Contains(t, prompt, "I fixed the null pointer issue")
-		assert.Contains(t, prompt, "Re-evaluate considering Claude's arguments")
+		assert.Contains(t, prompt, "Re-evaluate considering Claude's response")
 	})
 
 	t.Run("first iteration without claude response has no context block", func(t *testing.T) {

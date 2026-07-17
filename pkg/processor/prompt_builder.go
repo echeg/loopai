@@ -43,22 +43,57 @@ func (b *promptBuilder) SecondReviewPrompt(prefix string) string {
 	return prefix + b.prependCodexReviewGuidance(b.replacePromptVariables(b.cfg.AppConfig.ReviewSecondPrompt))
 }
 
-func (b *promptBuilder) CodexReviewPrompt(isFirst bool, claudeResponse string) string {
-	return b.replaceVariablesWithIteration(b.cfg.AppConfig.CodexReviewPrompt, isFirst, claudeResponse)
+func (b *promptBuilder) CodexReviewPrompt(isFirst bool, evaluatorResponse string) string {
+	return b.ExternalReviewPrompt(config.ExternalReviewToolCodex, isFirst, evaluatorResponse)
 }
 
-func (b *promptBuilder) CodexEvaluationPrompt(codexOutput string) string {
-	prompt := b.replacePromptVariables(b.cfg.AppConfig.CodexPrompt)
-	return strings.ReplaceAll(prompt, "{{CODEX_OUTPUT}}", codexOutput)
+func (b *promptBuilder) CodexEvaluationPrompt(codexFindings string) string {
+	return b.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, codexFindings)
 }
 
-func (b *promptBuilder) CustomReviewPrompt(isFirst bool, claudeResponse string) string {
-	return b.replaceVariablesWithIteration(b.cfg.AppConfig.CustomReviewPrompt, isFirst, claudeResponse)
+func (b *promptBuilder) CustomReviewPrompt(isFirst bool, evaluatorResponse string) string {
+	return b.ExternalReviewPrompt(config.ExternalReviewToolCustom, isFirst, evaluatorResponse)
 }
 
 func (b *promptBuilder) CustomEvaluationPrompt(customOutput string) string {
-	prompt := b.replacePromptVariables(b.cfg.AppConfig.CustomEvalPrompt)
-	return strings.ReplaceAll(prompt, "{{CUSTOM_OUTPUT}}", customOutput)
+	return b.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, customOutput)
+}
+
+// ExternalReviewPrompt renders the prompt for the selected external reviewer.
+func (b *promptBuilder) ExternalReviewPrompt(reviewer string, isFirst bool, evaluatorResponse string) string {
+	var prompt string
+	switch reviewer {
+	case config.ExternalReviewToolClaude:
+		prompt = b.cfg.AppConfig.ExternalClaudeReviewPrompt
+	case config.ExternalReviewToolCustom:
+		prompt = b.cfg.AppConfig.CustomReviewPrompt
+	default:
+		prompt = b.cfg.AppConfig.CodexReviewPrompt
+	}
+	return b.replaceExternalVariablesWithIteration(prompt, isFirst, reviewer, b.evaluatorName(), evaluatorResponse)
+}
+
+func (b *promptBuilder) evaluatorName() string {
+	if b.cfg.isCodexExecutor() {
+		return config.ExternalReviewToolCodex
+	}
+	return config.ExternalReviewToolClaude
+}
+
+// ExternalEvaluationPrompt renders the primary executor's evaluation prompt for
+// findings from the selected reviewer.
+func (b *promptBuilder) ExternalEvaluationPrompt(reviewer, findings string) string {
+	var prompt, outputVariable string
+	switch reviewer {
+	case config.ExternalReviewToolClaude:
+		prompt, outputVariable = b.cfg.AppConfig.ExternalClaudeEvalPrompt, "{{CLAUDE_OUTPUT}}"
+	case config.ExternalReviewToolCustom:
+		prompt, outputVariable = b.cfg.AppConfig.CustomEvalPrompt, "{{CUSTOM_OUTPUT}}"
+	default:
+		prompt, outputVariable = b.cfg.AppConfig.CodexPrompt, "{{CODEX_OUTPUT}}"
+	}
+	prompt = b.replacePromptVariables(prompt)
+	return strings.ReplaceAll(prompt, outputVariable, findings)
 }
 
 func (b *promptBuilder) PlanPrompt() string {

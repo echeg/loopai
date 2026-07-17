@@ -49,7 +49,7 @@ Do NOT reject issues just because they existed before this branch - fix them any
 **If the review tool reports NO actionable issues** (empty output, "no issues found", "NO ISSUES FOUND"):
 - Run `git diff` to review ALL uncommitted changes (accumulated fixes from multiple iterations)
 - Commit all fixes with message: "fix: address external review findings"
-- Output exactly: <<<RALPHEX:CODEX_REVIEW_DONE>>>
+- Output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
 
 CRITICAL: Never run the external review tool yourself. The external loop handles tool execution.
 

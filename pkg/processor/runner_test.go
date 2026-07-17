@@ -882,9 +882,9 @@ func TestRunner_CodexAndPostReview_PipelineOrder(t *testing.T) {
 			expClaude: 4,
 			expCodex:  2,
 			expPhases: []status.Phase{
-				status.PhaseCodex,                         // initial codex phase
-				status.PhaseClaudeEval, status.PhaseCodex, // iter 1 eval+restore
-				status.PhaseClaudeEval, status.PhaseCodex, // iter 2 eval+restore
+				status.PhaseExternalReview,
+				status.PhaseExternalEval, status.PhaseExternalReview,
+				status.PhaseExternalEval, status.PhaseExternalReview,
 				status.PhaseReview, status.PhaseFinalize,
 			},
 		},
@@ -908,10 +908,10 @@ func TestRunner_CodexAndPostReview_PipelineOrder(t *testing.T) {
 			// review phase set once at start (covers first review + pre-codex loop),
 			// then codex loop (2 iterations), then review, then finalize
 			expPhases: []status.Phase{
-				status.PhaseReview,                        // first review + pre-codex loop
-				status.PhaseCodex,                         // initial codex phase
-				status.PhaseClaudeEval, status.PhaseCodex, // iter 1 eval+restore
-				status.PhaseClaudeEval, status.PhaseCodex, // iter 2 eval+restore
+				status.PhaseReview,
+				status.PhaseExternalReview,
+				status.PhaseExternalEval, status.PhaseExternalReview,
+				status.PhaseExternalEval, status.PhaseExternalReview,
 				status.PhaseReview, status.PhaseFinalize,
 			},
 		},

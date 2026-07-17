@@ -11,16 +11,18 @@ import (
 
 func TestPromptBuilder_FinalPrompts(t *testing.T) {
 	appCfg := &config.Config{
-		TaskPrompt:         "task {{PLAN_FILE}} {{PROGRESS_FILE}}",
-		ReviewFirstPrompt:  "first {{GOAL}}",
-		ReviewSecondPrompt: "second {{DEFAULT_BRANCH}}",
-		CodexReviewPrompt:  "codex {{DIFF_INSTRUCTION}} {{PREVIOUS_REVIEW_CONTEXT}}",
-		CodexPrompt:        "eval {{CODEX_OUTPUT}} {{GOAL}}",
-		CustomReviewPrompt: "custom {{DIFF_INSTRUCTION}} {{PREVIOUS_REVIEW_CONTEXT}}",
-		CustomEvalPrompt:   "custom eval {{CUSTOM_OUTPUT}}",
-		MakePlanPrompt:     "make {{PLAN_DESCRIPTION}} {{PLANS_DIR}}",
-		FinalizePrompt:     "finalize {{GOAL}}",
-		PlansDir:           "custom/plans",
+		TaskPrompt:                 "task {{PLAN_FILE}} {{PROGRESS_FILE}}",
+		ReviewFirstPrompt:          "first {{GOAL}}",
+		ReviewSecondPrompt:         "second {{DEFAULT_BRANCH}}",
+		CodexReviewPrompt:          "codex {{DIFF_INSTRUCTION}} {{PREVIOUS_REVIEW_CONTEXT}}",
+		CodexPrompt:                "eval {{CODEX_OUTPUT}} {{GOAL}}",
+		CustomReviewPrompt:         "custom {{DIFF_INSTRUCTION}} {{PREVIOUS_REVIEW_CONTEXT}}",
+		CustomEvalPrompt:           "custom eval {{CUSTOM_OUTPUT}}",
+		ExternalClaudeReviewPrompt: "claude {{DIFF_INSTRUCTION}} {{PREVIOUS_REVIEW_CONTEXT}}",
+		ExternalClaudeEvalPrompt:   "codex eval {{CLAUDE_OUTPUT}}",
+		MakePlanPrompt:             "make {{PLAN_DESCRIPTION}} {{PLANS_DIR}}",
+		FinalizePrompt:             "finalize {{GOAL}}",
+		PlansDir:                   "custom/plans",
 	}
 	cfg := Config{
 		PlanFile: "docs/plans/test.md", ProgressPath: "progress.txt", PlanDescription: "add feature",
@@ -35,6 +37,8 @@ func TestPromptBuilder_FinalPrompts(t *testing.T) {
 	assert.Contains(t, builder.CustomReviewPrompt(false, "fixed"), "PREVIOUS REVIEW CONTEXT")
 	assert.Equal(t, "eval findings implementation of plan at docs/plans/test.md", builder.CodexEvaluationPrompt("findings"))
 	assert.Equal(t, "custom eval custom findings", builder.CustomEvaluationPrompt("custom findings"))
+	assert.Contains(t, builder.ExternalReviewPrompt(config.ExternalReviewToolClaude, false, "fixed"), "Claude (primary evaluator)")
+	assert.Equal(t, "codex eval claude findings", builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "claude findings"))
 	assert.Equal(t, "make add feature custom/plans", builder.PlanPrompt())
 	assert.Equal(t, "finalize implementation of plan at docs/plans/test.md", builder.FinalizePrompt())
 }
