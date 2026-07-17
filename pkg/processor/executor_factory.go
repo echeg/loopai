@@ -203,6 +203,7 @@ func (cfg Config) buildExternalCodexExecutor(log Logger, model, effort string) *
 	e := cfg.newBaseCodexExecutor(log)
 	e.Model, e.ReasoningEffort = model, effort
 	e.Sandbox = "read-only"
+	e.ForceReadOnly = true
 	if cfg.AppConfig != nil {
 		if cfg.isCodexExecutor() {
 			e.IdleTimeout = cfg.AppConfig.IdleTimeout

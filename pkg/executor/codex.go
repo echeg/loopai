@@ -108,6 +108,7 @@ type CodexExecutor struct {
 	LimitPatterns   []string          // patterns to detect rate limits (checked before error patterns)
 	MultiAgent      bool              // enable codex multi_agent feature + reviewer agent registration; set to true on the review-phase codex instance built by processor.New() for first-class --codex mode
 	PassClaudeMd    bool              // pass project-level CLAUDE.md to codex via project_doc_fallback_filenames (set by processor.New() only when cfg.AppConfig.Executor == ExecutorCodex)
+	ForceReadOnly   bool              // require the read-only sandbox even in Docker; used by external review so it cannot modify the project
 	IdleTimeout     time.Duration     // kill session after this duration of no output, zero = disabled
 	headerEmitted   atomic.Bool       // tracks first invocation across Run() calls; false until first task/review then suppressed permanently — used to emit codex's resolved model/sandbox/effort once at the top of the run
 	runner          CodexRunner       // for testing, nil uses default
@@ -147,6 +148,24 @@ func (e *CodexExecutor) configOverrides() []string {
 	return args
 }
 
+// sandboxMode resolves the effective sandbox. Primary execution disables the
+// sandbox in Docker because Landlock does not work in containers. External
+// review must instead remain read-only and fail if Codex cannot initialize that
+// sandbox; silently granting write access would let a findings-only reviewer
+// modify the repository.
+func (e *CodexExecutor) sandboxMode() string {
+	if e.ForceReadOnly {
+		return "read-only"
+	}
+	if os.Getenv("RALPHEX_DOCKER") == "1" {
+		return "danger-full-access"
+	}
+	if e.Sandbox == "" {
+		return "read-only"
+	}
+	return e.Sandbox
+}
+
 // codexFilterState tracks header separator count for filtering.
 type codexFilterState struct {
 	headerCount int             // tracks "--------" separators seen (show content between first two)
@@ -168,14 +187,7 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 		timeoutMs = 3600000
 	}
 
-	sandbox := e.Sandbox
-	if sandbox == "" {
-		sandbox = "read-only"
-	}
-	// disable sandbox in docker (landlock doesn't work in containers)
-	if os.Getenv("RALPHEX_DOCKER") == "1" {
-		sandbox = "danger-full-access"
-	}
+	sandbox := e.sandboxMode()
 
 	args := []string{"exec"}
 	args = append(args, e.configOverrides()...)

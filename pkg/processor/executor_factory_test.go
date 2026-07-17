@@ -396,6 +396,7 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 				externalExec, ok := execs.External.(*executor.CodexExecutor)
 				require.True(t, ok)
 				assert.Equal(t, "read-only", externalExec.Sandbox)
+				assert.True(t, externalExec.ForceReadOnly)
 				assert.False(t, externalExec.MultiAgent)
 				assert.False(t, externalExec.PassClaudeMd)
 				if tc.primary == config.ExecutorCodex {
@@ -449,6 +450,7 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 		externalExec, ok := execs.External.(*executor.CodexExecutor)
 		require.True(t, ok)
 		assert.Equal(t, "read-only", externalExec.Sandbox)
+		assert.True(t, externalExec.ForceReadOnly)
 	})
 
 	t.Run("zero-value Executors literal constructs usable runner", func(t *testing.T) {

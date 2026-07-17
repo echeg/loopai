@@ -312,11 +312,7 @@ func TestCodexExecutor_Run_DangerFullAccessBypassesSandbox(t *testing.T) {
 		assert.Contains(t, argsStr, "--sandbox danger-full-access")
 	})
 
-	t.Run("external codex review (claude mode) omits bypass flag in danger-full-access", func(t *testing.T) {
-		// MultiAgent=false signals external codex review (built by buildExternalCodexExecutor).
-		// Master never emitted --dangerously-bypass-approvals-and-sandbox; gating it on MultiAgent
-		// preserves master semantics for default-claude users (esp. Docker mode where the sandbox
-		// is forced to danger-full-access).
+	t.Run("non-multi-agent danger-full-access omits bypass flag", func(t *testing.T) {
 		var capturedArgs []string
 		mock := &mockCodexRunner{
 			runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
@@ -334,6 +330,31 @@ func TestCodexExecutor_Run_DangerFullAccessBypassesSandbox(t *testing.T) {
 			"external codex review must keep master semantics — no bypass flag")
 		assert.Contains(t, argsStr, "--sandbox danger-full-access")
 	})
+}
+
+func TestCodexExecutor_Run_ForceReadOnlyInDocker(t *testing.T) {
+	t.Setenv("RALPHEX_DOCKER", "1")
+
+	var capturedArgs []string
+	mock := &mockCodexRunner{
+		runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
+			capturedArgs = args
+			return mockStreams("", "result"), mockWait(), nil
+		},
+	}
+	e := &CodexExecutor{
+		runner:        mock,
+		Sandbox:       "danger-full-access",
+		ForceReadOnly: true,
+	}
+
+	result := e.Run(context.Background(), "test prompt")
+
+	require.NoError(t, result.Error)
+	argsStr := strings.Join(capturedArgs, " ")
+	assert.Contains(t, argsStr, "--sandbox read-only")
+	assert.NotContains(t, argsStr, "--sandbox danger-full-access")
+	assert.NotContains(t, argsStr, "--dangerously-bypass-approvals-and-sandbox")
 }
 
 func TestCodexExecutor_Run_CustomSettings(t *testing.T) {
