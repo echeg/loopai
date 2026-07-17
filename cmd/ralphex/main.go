@@ -39,7 +39,8 @@ type opts struct {
 	ReviewModel             string        `long:"review-model" description:"model for review phases as model[:effort] (falls back to --task-model)"`
 	ClaudeCommand           string        `long:"claude-command" description:"override claude-compatible command for this run"`
 	ClaudeArgs              string        `long:"claude-args" description:"override claude-compatible command args for this run"`
-	ExternalReviewTool      string        `long:"external-review-tool" choice:"codex" choice:"custom" choice:"none" description:"override external review tool for this run"`
+	ExternalReviewTool      string        `long:"external-review-tool" choice:"auto" choice:"claude" choice:"codex" choice:"custom" choice:"none" description:"override external review tool for this run"`
+	ExternalReviewModel     string        `long:"external-review-model" description:"external review model as model[:effort]"`
 	CustomReviewScript      string        `long:"custom-review-script" description:"override custom external review script for this run"`
 	Review                  bool          `short:"r" long:"review" description:"skip task execution, run full review pipeline"`
 	ExternalOnly            bool          `short:"e" long:"external-only" description:"skip tasks and first review, run only external review loop"`
@@ -51,7 +52,7 @@ type opts struct {
 	IdleTimeout             time.Duration `long:"idle-timeout" description:"kill claude/codex executor session after no output for this duration (e.g. 5m, 10m)"`
 	SkipFinalize            bool          `long:"skip-finalize" description:"skip finalize step even if enabled in config"`
 	PreserveAnthropicAPIKey bool          `long:"preserve-anthropic-api-key" description:"pass ANTHROPIC_API_KEY through to claude (for users authenticating Claude Code via API key rather than OAuth/keychain)"`
-	Codex                   bool          `long:"codex" description:"use codex CLI as the executor for task, review, and finalize phases (skips external review)"`
+	Codex                   bool          `long:"codex" description:"use codex CLI as the executor for task, review, and finalize phases"`
 	PassClaudeMd            bool          `long:"pass-claude-md" description:"pass project CLAUDE.md to codex via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is NOT auto-passed but a one-time setup hint is shown (codex executor only)"`
 	Worktree                bool          `long:"worktree" description:"run in isolated git worktree"`
 	Branch                  string        `long:"branch" description:"override branch name for worktree/branch creation (default: derived from plan filename)"`
@@ -75,10 +76,11 @@ type opts struct {
 	sessionTimeoutSet bool
 	idleTimeoutSet    bool
 
-	claudeCommandSet      bool
-	claudeArgsSet         bool
-	externalReviewToolSet bool
-	customReviewScriptSet bool
+	claudeCommandSet       bool
+	claudeArgsSet          bool
+	externalReviewToolSet  bool
+	externalReviewModelSet bool
+	customReviewScriptSet  bool
 }
 
 // markFlagsSet detects which duration flags were explicitly provided on the CLI
@@ -93,6 +95,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 	o.claudeCommandSet = isFlagSet(parser, "claude-command")
 	o.claudeArgsSet = isFlagSet(parser, "claude-args")
 	o.externalReviewToolSet = isFlagSet(parser, "external-review-tool")
+	o.externalReviewModelSet = isFlagSet(parser, "external-review-model")
 	o.customReviewScriptSet = isFlagSet(parser, "custom-review-script")
 }
 
@@ -145,6 +148,7 @@ type startupInfo struct {
 	CodexReviewModel        string // resolved model for codex review phase; shown only when it differs from CodexModel
 	CodexReviewEffort       string // resolved reasoning effort for codex review phase; shown only when it differs from CodexEffort
 	CodexSandbox            string // resolved sandbox for codex executor; always non-empty when Executor == codex
+	ExternalReview          externalReviewSelection
 }
 
 // executePlanRequest holds parameters for plan execution.
@@ -163,6 +167,7 @@ type executePlanRequest struct {
 	WtCleanup      *worktreeCleanupFn  // worktree cleanup for interrupt handler; nil when not in worktree mode
 	ProgressLog    *progress.Logger    // pre-created logger (worktree mode); nil in normal mode
 	PhaseHolder    *status.PhaseHolder // pre-created holder (worktree mode); nil in normal mode
+	ExternalReview externalReviewSelection
 }
 
 // worktreeCleanupFn holds a worktree cleanup function with mutex for safe cross-goroutine access.
@@ -278,15 +283,19 @@ func run(ctx context.Context, o opts) error {
 		return runWatchOnly(ctx, o, cfg, colors)
 	}
 
-	// check dependencies using configured command (or default "claude").
-	// when executor=codex, claude is not used for any phase, so its absence is fine;
-	// codex itself is checked here so absence is reported up-front rather than
-	// as a cryptic exec failure on the first task.
-	depCheck := checkClaudeDep
-	if cfg.Executor == config.ExecutorCodex {
-		depCheck = checkCodexDep
+	mode := determineMode(o)
+	externalReview, resolveErr := resolveExternalReviewSelection(o, cfg, mode)
+	if resolveErr != nil {
+		return resolveErr
 	}
-	if depErr := depCheck(cfg); depErr != nil {
+	printExternalReviewWarnings(externalReview, cfg, os.Stderr)
+	externalReview, err = checkExecutionDeps(cfg, externalReview, os.Stderr)
+	if err != nil {
+		return err
+	}
+	applyEffectiveExternalReview(cfg, externalReview)
+
+	if depErr := ctx.Err(); depErr != nil {
 		return depErr
 	}
 
@@ -317,8 +326,6 @@ func run(ctx context.Context, o opts) error {
 	// baseRef is for review diffs and {{DEFAULT_BRANCH}} template variable (--base-ref override)
 	baseRef := resolveDefaultBranch(o.BaseRef, cfg.DefaultBranch, autoDetected)
 
-	mode := determineMode(o)
-
 	// create plan selector for use by plan selection and plan mode
 	selector := plan.NewSelector(cfg.PlansDir, colors)
 
@@ -334,6 +341,7 @@ func run(ctx context.Context, o opts) error {
 			NotifySvc:      notifySvc,
 			WtCleanup:      wtCleanup,
 			BranchOverride: o.Branch,
+			ExternalReview: externalReview,
 		}, selector)
 	}
 
@@ -347,6 +355,7 @@ func run(ctx context.Context, o opts) error {
 		NotifySvc:      notifySvc,
 		WtCleanup:      wtCleanup,
 		BranchOverride: o.Branch,
+		ExternalReview: externalReview,
 	}, selector)
 }
 
@@ -466,7 +475,7 @@ func setupProgressLogger(o opts, req executePlanRequest, branch string) (progres
 			Mode:           string(req.Mode),
 			Branch:         branch,
 			BranchOverride: req.BranchOverride,
-			Params:         runHeaderParams(o, req.Config, req.Mode),
+			Params:         runHeaderParams(o, req.Config, req.Mode, req.ExternalReview),
 			NoColor:        o.NoColor,
 		}, req.Colors, holder)
 		if err != nil {
@@ -577,14 +586,14 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// wrap logger with broadcast logger if --serve is enabled
 	var runnerLog processor.Logger = plr.baseLog
 	if o.Serve {
-		params := runHeaderParams(o, req.Config, req.Mode)
+		params := runHeaderParams(o, req.Config, req.Mode, req.ExternalReview)
 		dashboard := web.NewDashboard(web.DashboardConfig{
 			BaseLog:         plr.baseLog,
 			Port:            o.Port,
 			Host:            o.Host,
 			PlanFile:        req.PlanFile,
 			Branch:          branch,
-			RunParams:       web.FormatRunParams(params.Executor, params.PlanModel, params.TaskModel, params.ReviewModel),
+			RunParams:       web.FormatRunParams(params.Executor, params.PlanModel, params.TaskModel, params.ReviewModel, params.ExternalReview, params.ExternalReviewModel),
 			WatchDirs:       o.Watch,
 			ConfigWatchDirs: req.Config.WatchDirs,
 			Colors:          req.Colors,
@@ -624,6 +633,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		CodexReviewModel:        codex.reviewModel,
 		CodexReviewEffort:       codex.reviewEffort,
 		CodexSandbox:            req.Config.CodexExecutorSandbox(),
+		ExternalReview:          req.ExternalReview,
 	}, req.Colors)
 	if codex.maxDropped {
 		req.Colors.Warn().Printf("codex does not support 'max' reasoning effort; ignoring (valid: low, medium, high, xhigh)\n")
@@ -738,7 +748,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		Mode:           string(req.Mode),
 		Branch:         branch,
 		BranchOverride: req.BranchOverride,
-		Params:         runHeaderParams(o, req.Config, req.Mode),
+		Params:         runHeaderParams(o, req.Config, req.Mode, req.ExternalReview),
 		NoColor:        o.NoColor,
 	}, req.Colors, holder)
 	if err != nil {
@@ -796,18 +806,19 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	}
 
 	return executePlan(ctx, o, executePlanRequest{
-		PlanFile:      wtPlanFile,
-		MainPlanFile:  req.PlanFile, // original path in main repo for MovePlanToCompleted
-		Mode:          req.Mode,
-		GitSvc:        wtGitSvc,
-		MainGitSvc:    req.GitSvc,
-		Config:        req.Config,
-		Colors:        req.Colors,
-		DefaultBranch: req.DefaultBranch,
-		BaseRef:       req.BaseRef,
-		NotifySvc:     req.NotifySvc,
-		ProgressLog:   baseLog,
-		PhaseHolder:   holder,
+		PlanFile:       wtPlanFile,
+		MainPlanFile:   req.PlanFile, // original path in main repo for MovePlanToCompleted
+		Mode:           req.Mode,
+		GitSvc:         wtGitSvc,
+		MainGitSvc:     req.GitSvc,
+		Config:         req.Config,
+		Colors:         req.Colors,
+		DefaultBranch:  req.DefaultBranch,
+		BaseRef:        req.BaseRef,
+		NotifySvc:      req.NotifySvc,
+		ProgressLog:    baseLog,
+		PhaseHolder:    holder,
+		ExternalReview: req.ExternalReview,
 	})
 }
 
@@ -868,6 +879,175 @@ func checkCodexDep(cfg *config.Config) error {
 		return fmt.Errorf("%s not found in PATH; install the codex CLI or set codex_command in config", codexCmd)
 	}
 	return nil
+}
+
+// externalReviewSelection is the single resolved view of external-review
+// configuration used by dependency checks, startup metadata, and processor setup.
+// Provider is always concrete (claude, codex, custom, or none), never auto.
+type externalReviewSelection struct {
+	Provider               string
+	Model                  string
+	Effort                 string
+	AutoSelected           bool
+	Explicit               bool
+	MaxDropped             bool
+	DisabledByCodexEnabled bool
+	DisabledByMissing      bool
+}
+
+func (s externalReviewSelection) modelSpec() string {
+	switch {
+	case s.Model == "" && s.Effort == "":
+		return ""
+	case s.Effort == "":
+		return s.Model
+	default:
+		return s.Model + ":" + s.Effort
+	}
+}
+
+func (s externalReviewSelection) providerLabel() string {
+	if s.DisabledByCodexEnabled {
+		return config.ExternalReviewToolNone + " (auto disabled by codex_enabled=false)"
+	}
+	if s.DisabledByMissing {
+		return config.ExternalReviewToolNone + " (auto-selected reviewer unavailable)"
+	}
+	label := s.Provider
+	if s.AutoSelected {
+		label += " (auto-selected)"
+	}
+	return label
+}
+
+func primaryProvider(cfg *config.Config) string {
+	if cfg != nil && cfg.Executor == config.ExecutorCodex {
+		return config.ExternalReviewToolCodex
+	}
+	return config.ExternalReviewToolClaude
+}
+
+// resolveExternalReviewSelection applies tool and model defaults after CLI and
+// config merging. ModeCodexOnly deliberately bypasses the legacy codex_enabled
+// gate because the user explicitly requested the external-review pipeline.
+func resolveExternalReviewSelection(o opts, cfg *config.Config, mode processor.Mode) (externalReviewSelection, error) {
+	if cfg == nil {
+		return externalReviewSelection{Provider: config.ExternalReviewToolNone}, nil
+	}
+
+	requested := cfg.ExternalReviewTool
+	if requested == "" {
+		requested = config.ExternalReviewToolAuto
+	}
+	selection := externalReviewSelection{
+		Provider:     requested,
+		AutoSelected: requested == config.ExternalReviewToolAuto,
+		Explicit:     requested != config.ExternalReviewToolAuto,
+	}
+	if mode == processor.ModeTasksOnly {
+		selection.Provider = config.ExternalReviewToolNone
+		selection.AutoSelected = false
+		selection.Explicit = false
+		return selection, nil
+	}
+
+	if requested == config.ExternalReviewToolAuto {
+		if !cfg.CodexEnabled && mode != processor.ModeCodexOnly {
+			selection.Provider = config.ExternalReviewToolNone
+			selection.DisabledByCodexEnabled = true
+			return selection, nil
+		}
+		if primaryProvider(cfg) == config.ExternalReviewToolCodex {
+			selection.Provider = config.ExternalReviewToolClaude
+		} else {
+			selection.Provider = config.ExternalReviewToolCodex
+		}
+	}
+
+	modelExplicit := o.externalReviewModelSet || cfg.ExternalReviewModelSet
+	if selection.Provider == config.ExternalReviewToolCustom && modelExplicit && cfg.ExternalReviewModel != "" {
+		return externalReviewSelection{}, errors.New("external_review_model cannot be used with external_review_tool=custom")
+	}
+
+	switch selection.Provider {
+	case config.ExternalReviewToolClaude:
+		selection.Model, selection.Effort = "opus", "xhigh"
+		if cfg.ExternalReviewModel != "" {
+			model, effort, _ := strings.Cut(cfg.ExternalReviewModel, ":")
+			if model != "" {
+				selection.Model = model
+			}
+			if effort != "" {
+				selection.Effort = effort
+			}
+		}
+	case config.ExternalReviewToolCodex:
+		selection.Model, selection.Effort, selection.MaxDropped = processor.ResolveCodexModelEffort(
+			cfg.ExternalReviewModel, cfg.CodexModel, cfg.CodexReasoningEffort)
+	case config.ExternalReviewToolCustom, config.ExternalReviewToolNone:
+		// custom reviewers do not have a provider model; none disables the phase.
+	default:
+		return externalReviewSelection{}, fmt.Errorf("unsupported external review tool %q", selection.Provider)
+	}
+	return selection, nil
+}
+
+func printExternalReviewWarnings(selection externalReviewSelection, cfg *config.Config, w io.Writer) {
+	if w == nil || cfg == nil {
+		return
+	}
+	if selection.Explicit && selection.Provider == primaryProvider(cfg) &&
+		(selection.Provider == config.ExternalReviewToolClaude || selection.Provider == config.ExternalReviewToolCodex) {
+		fmt.Fprintf(w, "warning: external reviewer %q matches the primary executor; cross-model review signal will be weaker\n", selection.Provider)
+	}
+	if selection.MaxDropped {
+		fmt.Fprintln(w, "warning: codex does not support 'max' reasoning effort for external review; ignoring (valid: low, medium, high, xhigh)")
+	}
+}
+
+// checkExecutionDeps verifies the primary provider and then the selected
+// external provider. A missing auto-selected reviewer is the one startup case
+// that degrades to no external review; explicit selections remain hard errors.
+func checkExecutionDeps(cfg *config.Config, selection externalReviewSelection, warnW io.Writer) (externalReviewSelection, error) {
+	var primaryErr error
+	if primaryProvider(cfg) == config.ExternalReviewToolCodex {
+		primaryErr = checkCodexDep(cfg)
+	} else {
+		primaryErr = checkClaudeDep(cfg)
+	}
+	if primaryErr != nil {
+		return selection, primaryErr
+	}
+
+	var externalErr error
+	switch selection.Provider {
+	case config.ExternalReviewToolClaude:
+		externalErr = checkClaudeDep(cfg)
+	case config.ExternalReviewToolCodex:
+		externalErr = checkCodexDep(cfg)
+	}
+	if externalErr == nil {
+		return selection, nil
+	}
+	if !selection.AutoSelected {
+		return selection, externalErr
+	}
+	if warnW != nil {
+		fmt.Fprintf(warnW, "warning: automatically selected external reviewer unavailable (%v); disabling external review for this run\n", externalErr)
+	}
+	selection.Provider = config.ExternalReviewToolNone
+	selection.Model = ""
+	selection.Effort = ""
+	selection.DisabledByMissing = true
+	return selection, nil
+}
+
+func applyEffectiveExternalReview(cfg *config.Config, selection externalReviewSelection) {
+	if cfg == nil {
+		return
+	}
+	cfg.ExternalReviewTool = selection.Provider
+	cfg.ExternalReviewModel = selection.modelSpec()
 }
 
 // isWatchOnlyMode returns true if running in watch-only mode.
@@ -964,11 +1144,17 @@ func validateFlags(o opts) error {
 
 // createRunner creates a processor.Runner with the given configuration.
 func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *status.PhaseHolder) *processor.Runner {
-	// --codex-only mode forces codex enabled regardless of config
-	codexEnabled := req.Config.CodexEnabled
-	if req.Mode == processor.ModeCodexOnly {
-		codexEnabled = true
+	externalReview := req.ExternalReview
+	if externalReview.Provider == "" {
+		var err error
+		externalReview, err = resolveExternalReviewSelection(o, req.Config, req.Mode)
+		if err != nil {
+			// run() validates this before runner construction; this fallback is for
+			// direct test helpers and preserves a safely disabled phase on bad input.
+			externalReview = externalReviewSelection{Provider: config.ExternalReviewToolNone}
+		}
 	}
+	applyEffectiveExternalReview(req.Config, externalReview)
 	// resolve max external iterations: CLI flag > config file > 0 (auto)
 	maxExtIter := req.Config.MaxExternalIterations
 	if o.MaxExternalIterations > 0 {
@@ -992,8 +1178,12 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		NoColor:               o.NoColor,
 		IterationDelayMs:      req.Config.IterationDelayMs,
 		TaskRetryCount:        req.Config.TaskRetryCount,
-		CodexEnabled:          codexEnabled,
-		ExternalReviewToolSet: o.externalReviewToolSet,
+		CodexEnabled:          externalReview.Provider != config.ExternalReviewToolNone,
+		ExternalReviewToolSet: true,
+		ExternalReviewTool:    externalReview.Provider,
+		ExternalReviewAuto:    externalReview.AutoSelected,
+		ExternalReviewModel:   externalReview.Model,
+		ExternalReviewEffort:  externalReview.Effort,
 		FinalizeEnabled:       req.Config.FinalizeEnabled,
 		DefaultBranch:         req.BaseRef,
 		TaskModel:             resolveSpec(o.TaskModel, req.Config.TaskModel),
@@ -1034,35 +1224,43 @@ func printStartupInfo(info startupInfo, colors *progress.Colors) {
 }
 
 func printExecutorInfo(info startupInfo, colors *progress.Colors) {
-	if info.Executor != config.ExecutorCodex {
-		return
+	if info.Executor == config.ExecutorCodex {
+		colors.Info().Printf("executor: codex\n")
+		// codex effective config: skip lines we don't know (ralphex did not
+		// override them, so codex picks from ~/.codex/config.toml). sandbox is
+		// always resolved via CodexExecutorSandbox so it's always present.
+		if info.CodexModel != "" {
+			colors.Info().Printf("  model: %s\n", info.CodexModel)
+		}
+		if info.CodexSandbox != "" {
+			colors.Info().Printf("  sandbox: %s\n", info.CodexSandbox)
+		}
+		if info.CodexEffort != "" {
+			colors.Info().Printf("  reasoning effort: %s\n", info.CodexEffort)
+		}
+		if info.CodexReviewModel != info.CodexModel {
+			colors.Info().Printf("  review model: %s\n", codexBannerValue(info.CodexReviewModel))
+		}
+		if info.CodexReviewEffort != info.CodexEffort {
+			colors.Info().Printf("  review reasoning effort: %s\n", codexBannerValue(info.CodexReviewEffort))
+		}
+		if info.PassClaudeMd {
+			colors.Info().Printf("claude.md: project CLAUDE.md passthrough enabled\n")
+		}
 	}
-	colors.Info().Printf("executor: codex (external review skipped)\n")
-	// codex effective config: skip lines we don't know (ralphex did not
-	// override them, so codex picks from ~/.codex/config.toml). sandbox is
-	// always resolved via CodexExecutorSandbox so it's always present.
-	if info.CodexModel != "" {
-		colors.Info().Printf("  model: %s\n", info.CodexModel)
-	}
-	if info.CodexSandbox != "" {
-		colors.Info().Printf("  sandbox: %s\n", info.CodexSandbox)
-	}
-	if info.CodexEffort != "" {
-		colors.Info().Printf("  reasoning effort: %s\n", info.CodexEffort)
-	}
-	// review model/effort lines appear only when the review phase resolves to a
-	// different model or effort than the task phase (separate --review-model). an
-	// empty review value that still differs from a set task value means the review
-	// executor inherits codex's own config — render that explicitly so the banner
-	// does not imply the review phase reuses the task value.
-	if info.CodexReviewModel != info.CodexModel {
-		colors.Info().Printf("  review model: %s\n", codexBannerValue(info.CodexReviewModel))
-	}
-	if info.CodexReviewEffort != info.CodexEffort {
-		colors.Info().Printf("  review reasoning effort: %s\n", codexBannerValue(info.CodexReviewEffort))
-	}
-	if info.PassClaudeMd {
-		colors.Info().Printf("claude.md: project CLAUDE.md passthrough enabled\n")
+
+	if info.ExternalReview.Provider != "" {
+		colors.Info().Printf("external review: %s\n", info.ExternalReview.providerLabel())
+		if info.ExternalReview.Provider == config.ExternalReviewToolCodex && info.ExternalReview.Model == "" {
+			colors.Info().Printf("  model: %s\n", codexBannerValue(""))
+		} else if info.ExternalReview.Model != "" {
+			colors.Info().Printf("  model: %s\n", info.ExternalReview.Model)
+		}
+		if info.ExternalReview.Provider == config.ExternalReviewToolCodex && info.ExternalReview.Effort == "" {
+			colors.Info().Printf("  reasoning effort: %s\n", codexBannerValue(""))
+		} else if info.ExternalReview.Effort != "" {
+			colors.Info().Printf("  reasoning effort: %s\n", info.ExternalReview.Effort)
+		}
 	}
 }
 
@@ -1091,18 +1289,28 @@ func resolveSpec(cliVal, cfgVal string) string {
 	return cfgVal
 }
 
-// runHeaderParams returns the user-set run parameters recorded in the progress
-// file header (and shown in the web dashboard). only explicitly configured
-// values are included: the review model is recorded only when set directly
-// (not its task_model fallback), while plan mode records the effective plan
-// spec since plan_model falls back to task_model by design.
-func runHeaderParams(o opts, cfg *config.Config, mode processor.Mode) progress.RunParams {
+// runHeaderParams returns run parameters recorded in the progress file header
+// and web dashboard. Primary model fields preserve the existing user-set-only
+// behavior; external fields record the effective provider and resolved model
+// separately so they cannot be mistaken for the primary review model.
+func runHeaderParams(o opts, cfg *config.Config, mode processor.Mode, external ...externalReviewSelection) progress.RunParams {
 	p := progress.RunParams{}
 	if cfg == nil {
 		return p
 	}
+	var externalReview externalReviewSelection
+	if len(external) > 0 {
+		externalReview = external[0]
+	}
 	if cfg.Executor == config.ExecutorCodex {
 		p.Executor = config.ExecutorCodex
+	}
+	if externalReview.Provider != "" {
+		p.ExternalReview = externalReview.providerLabel()
+		p.ExternalReviewModel = externalReview.modelSpec()
+		if externalReview.Provider == config.ExternalReviewToolCodex && p.ExternalReviewModel == "" {
+			p.ExternalReviewModel = "(inherits ~/.codex/config.toml)"
+		}
 	}
 	if mode == processor.ModePlan {
 		p.PlanModel = resolvePlanSpec(o, cfg)
@@ -1178,7 +1386,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		PlanDescription: o.PlanDescription,
 		Mode:            string(processor.ModePlan),
 		Branch:          branch,
-		Params:          runHeaderParams(o, req.Config, processor.ModePlan),
+		Params:          runHeaderParams(o, req.Config, processor.ModePlan, req.ExternalReview),
 		NoColor:         o.NoColor,
 	}, req.Colors, holder)
 	if err != nil {
@@ -1223,6 +1431,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		CodexReviewModel:        codex.reviewModel,
 		CodexReviewEffort:       codex.reviewEffort,
 		CodexSandbox:            req.Config.CodexExecutorSandbox(),
+		ExternalReview:          req.ExternalReview,
 	}, req.Colors)
 	if codex.maxDropped {
 		req.Colors.Warn().Printf("codex does not support 'max' reasoning effort; ignoring (valid: low, medium, high, xhigh)\n")
@@ -1298,6 +1507,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 			NotifySvc:      req.NotifySvc,
 			WtCleanup:      req.WtCleanup,
 			BranchOverride: req.BranchOverride,
+			ExternalReview: req.ExternalReview,
 		})
 	}
 
@@ -1307,14 +1517,15 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	}
 
 	return executePlan(ctx, o, executePlanRequest{
-		PlanFile:      planFile,
-		Mode:          processor.ModeFull,
-		GitSvc:        req.GitSvc,
-		Config:        req.Config,
-		Colors:        req.Colors,
-		DefaultBranch: req.DefaultBranch,
-		BaseRef:       req.BaseRef,
-		NotifySvc:     req.NotifySvc,
+		PlanFile:       planFile,
+		Mode:           processor.ModeFull,
+		GitSvc:         req.GitSvc,
+		Config:         req.Config,
+		Colors:         req.Colors,
+		DefaultBranch:  req.DefaultBranch,
+		BaseRef:        req.BaseRef,
+		NotifySvc:      req.NotifySvc,
+		ExternalReview: req.ExternalReview,
 	})
 }
 
@@ -1545,23 +1756,30 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 	if o.externalReviewToolSet {
 		cfg.ExternalReviewTool = o.ExternalReviewTool
 	}
+	if o.externalReviewModelSet {
+		cfg.ExternalReviewModel = o.ExternalReviewModel
+		cfg.ExternalReviewModelSet = true
+	}
 	if o.customReviewScriptSet {
 		cfg.CustomReviewScript = o.CustomReviewScript
 	}
 	return applyCodexOverrides(o, cfg, os.Stderr)
 }
 
-// applyCodexOverrides applies --codex / --pass-claude-md CLI flags and resolves config-file precedence.
-// when executor is codex (CLI flag or config), force external review off.
-// CLI-flag conflicts with the codex executor (--external-only, --codex-only,
-// --external-review-tool=<non-none>) are hard-errored here post-merge so the
-// config-only case (executor=codex in config + CLI external-review request) is
-// also caught. config-file conflict (executor=codex + external_review_tool=<not-none>
-// without a CLI override) is silently resolved with a warning written to warnW.
-// returns an error when --pass-claude-md is set without a codex executor (from CLI or config).
+// applyCodexOverrides applies --codex / --pass-claude-md CLI flags after config
+// merging. The name is retained for compatibility with existing callers; external
+// review selection is now resolved separately and is valid for either primary.
 func applyCodexOverrides(o opts, cfg *config.Config, warnW io.Writer) error {
+	_ = warnW
 	if o.Codex {
 		cfg.Executor = config.ExecutorCodex
+	}
+	if o.externalReviewToolSet {
+		cfg.ExternalReviewTool = o.ExternalReviewTool
+	}
+	if o.externalReviewModelSet {
+		cfg.ExternalReviewModel = o.ExternalReviewModel
+		cfg.ExternalReviewModelSet = true
 	}
 	if o.PassClaudeMd {
 		cfg.PassClaudeMd = true
@@ -1569,26 +1787,6 @@ func applyCodexOverrides(o opts, cfg *config.Config, warnW io.Writer) error {
 	if cfg.PassClaudeMd && cfg.Executor != config.ExecutorCodex {
 		return errors.New("--pass-claude-md requires --codex (or executor = codex in config)")
 	}
-	if cfg.Executor != config.ExecutorCodex {
-		return nil
-	}
-	// post-merge mutex checks: explicit CLI external-review requests conflict with codex executor
-	// whether the executor came from --codex on the CLI or from executor=codex in the config file.
-	if o.ExternalOnly {
-		return errors.New("--external-only is incompatible with codex executor (external review is skipped in codex mode)")
-	}
-	if o.CodexOnly {
-		return errors.New("--codex-only is incompatible with codex executor (external review is skipped in codex mode)")
-	}
-	if o.externalReviewToolSet && o.ExternalReviewTool != "none" {
-		return errors.New("--external-review-tool is incompatible with codex executor (external review is skipped)")
-	}
-	// warn only when the user explicitly set external_review_tool in their config file to
-	// something non-"none" (embedded default doesn't count — that case is silent).
-	if cfg.ExternalReviewToolSet && cfg.ExternalReviewTool != "none" && !o.externalReviewToolSet {
-		fmt.Fprintf(warnW, "warning: config-file external_review_tool=%q overridden to \"none\" because executor=codex\n", cfg.ExternalReviewTool)
-	}
-	cfg.ExternalReviewTool = "none"
 	return nil
 }
 

@@ -147,8 +147,8 @@ type templateData struct {
 // FormatRunParams builds the display string for user-set run parameters,
 // e.g. "codex · task gpt-5.5:high · review gpt-5.5:low". empty fields are
 // skipped; returns "" when no parameters were set.
-func FormatRunParams(executor, planModel, taskModel, reviewModel string) string {
-	parts := make([]string, 0, 4)
+func FormatRunParams(executor, planModel, taskModel, reviewModel string, external ...string) string {
+	parts := make([]string, 0, 6)
 	if executor != "" {
 		parts = append(parts, executor)
 	}
@@ -160,6 +160,19 @@ func FormatRunParams(executor, planModel, taskModel, reviewModel string) string 
 	}
 	if reviewModel != "" {
 		parts = append(parts, "review "+reviewModel)
+	}
+	var externalReview, externalReviewModel string
+	if len(external) > 0 {
+		externalReview = external[0]
+	}
+	if len(external) > 1 {
+		externalReviewModel = external[1]
+	}
+	if externalReview != "" {
+		parts = append(parts, "external "+externalReview)
+	}
+	if externalReviewModel != "" {
+		parts = append(parts, "external model "+externalReviewModel)
 	}
 	return strings.Join(parts, " · ")
 }
@@ -378,7 +391,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			PlanPath:     meta.PlanPath,
 			Branch:       meta.Branch,
 			Mode:         meta.Mode,
-			RunParams:    FormatRunParams(meta.Executor, meta.PlanModel, meta.TaskModel, meta.ReviewModel),
+			RunParams:    FormatRunParams(meta.Executor, meta.PlanModel, meta.TaskModel, meta.ReviewModel, meta.ExternalReview, meta.ExternalReviewModel),
 			StartTime:    meta.StartTime,
 			LastModified: session.GetLastModified(),
 			DiffStats:    session.GetDiffStats(),

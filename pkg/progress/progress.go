@@ -149,14 +149,16 @@ type Config struct {
 	NoColor         bool      // disable color output (sets color.NoColor globally)
 }
 
-// RunParams holds user-set executor/model parameters written to the progress
-// file header. empty fields are omitted from the header so only explicitly
-// configured parameters appear in the dashboard.
+// RunParams holds executor/model parameters written to the progress file header.
+// Empty fields are omitted; external review fields contain effective runtime
+// selection metadata while primary model fields remain user-configured values.
 type RunParams struct {
-	Executor    string // executor name when not the default claude (e.g. "codex")
-	PlanModel   string // model[:effort] spec for plan creation
-	TaskModel   string // model[:effort] spec for task execution
-	ReviewModel string // model[:effort] spec for review phases
+	Executor            string // executor name when not the default claude (e.g. "codex")
+	PlanModel           string // model[:effort] spec for plan creation
+	TaskModel           string // model[:effort] spec for task execution
+	ReviewModel         string // model[:effort] spec for primary review phases
+	ExternalReview      string // effective external provider, including auto-selection metadata
+	ExternalReviewModel string // resolved external model[:effort], kept separate from ReviewModel
 }
 
 // NewLogger creates a logger writing to both a progress file and stdout.
@@ -274,6 +276,12 @@ func (l *Logger) writeHeader(cfg Config) {
 	}
 	if cfg.Params.ReviewModel != "" {
 		l.writeFileLocked("Review model: %s\n", cfg.Params.ReviewModel)
+	}
+	if cfg.Params.ExternalReview != "" {
+		l.writeFileLocked("External review: %s\n", cfg.Params.ExternalReview)
+	}
+	if cfg.Params.ExternalReviewModel != "" {
+		l.writeFileLocked("External review model: %s\n", cfg.Params.ExternalReviewModel)
 	}
 	l.writeFileLocked("Started: %s\n", time.Now().Format("2006-01-02 15:04:05"))
 	l.writeFileLocked("%s\n\n", separatorLine)

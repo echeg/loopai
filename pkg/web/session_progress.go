@@ -24,6 +24,8 @@ import (
 //	Plan model: opus:high
 //	Task model: gpt-5.5:high
 //	Review model: gpt-5.5:low
+//	External review: claude (auto-selected)
+//	External review model: opus:xhigh
 //	Started: 2026-01-22 10:30:00
 //	------------------------------------------------------------
 //
@@ -86,6 +88,8 @@ func parseHeaderField(meta *SessionMetadata, line string) {
 		{"Plan model: ", &meta.PlanModel},
 		{"Task model: ", &meta.TaskModel},
 		{"Review model: ", &meta.ReviewModel},
+		{"External review: ", &meta.ExternalReview},
+		{"External review model: ", &meta.ExternalReviewModel},
 	}
 	for _, f := range fields {
 		if val, found := strings.CutPrefix(line, f.prefix); found {

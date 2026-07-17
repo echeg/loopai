@@ -44,6 +44,10 @@ type Config struct {
 	ReviewModel           string         // model[:effort] spec for review phases; empty falls back to TaskModel
 	CodexEnabled          bool           // whether codex review is enabled
 	ExternalReviewToolSet bool           // when true, AppConfig.ExternalReviewTool is an explicit choice that overrides codex_enabled=false back-compat
+	ExternalReviewTool    string         // concrete resolved provider; never auto when supplied by the CLI layer
+	ExternalReviewAuto    bool           // whether the concrete provider came from auto selection
+	ExternalReviewModel   string         // resolved external provider model
+	ExternalReviewEffort  string         // resolved external provider effort
 	FinalizeEnabled       bool           // whether finalize step is enabled
 	DefaultBranch         string         // default branch name (detected from repo)
 	AppConfig             *config.Config // full application config (for executors and prompts)

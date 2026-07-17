@@ -88,7 +88,7 @@ func TestNewLogger_HeaderRunParams(t *testing.T) {
 		{
 			name:        "no params set omits all lines",
 			params:      RunParams{},
-			absentLines: []string{"Executor: ", "Plan model: ", "Task model: ", "Review model: "},
+			absentLines: []string{"Executor: ", "Plan model: ", "Task model: ", "Review model: ", "External review: ", "External review model: "},
 		},
 		{
 			name:        "task model only",
@@ -100,6 +100,12 @@ func TestNewLogger_HeaderRunParams(t *testing.T) {
 			name:      "codex executor with task and review models",
 			params:    RunParams{Executor: "codex", TaskModel: "gpt-5.5:high", ReviewModel: "gpt-5.5:low"},
 			wantLines: []string{"Executor: codex\n", "Task model: gpt-5.5:high\n", "Review model: gpt-5.5:low\n"},
+		},
+		{
+			name: "external review metadata stays separate",
+			params: RunParams{ReviewModel: "gpt-5.5:low", ExternalReview: "claude (auto-selected)",
+				ExternalReviewModel: "opus:xhigh"},
+			wantLines: []string{"Review model: gpt-5.5:low\n", "External review: claude (auto-selected)\n", "External review model: opus:xhigh\n"},
 		},
 		{
 			name:        "plan model only",

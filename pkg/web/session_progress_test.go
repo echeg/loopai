@@ -56,6 +56,8 @@ Executor: codex
 Plan model: opus:high
 Task model: gpt-5.5:high
 Review model: gpt-5.5:low
+External review: claude (auto-selected)
+External review model: opus:xhigh
 Started: 2026-01-22 10:30:00
 ------------------------------------------------------------
 `
@@ -69,6 +71,8 @@ Started: 2026-01-22 10:30:00
 		assert.Equal(t, "opus:high", meta.PlanModel)
 		assert.Equal(t, "gpt-5.5:high", meta.TaskModel)
 		assert.Equal(t, "gpt-5.5:low", meta.ReviewModel)
+		assert.Equal(t, "claude (auto-selected)", meta.ExternalReview)
+		assert.Equal(t, "opus:xhigh", meta.ExternalReviewModel)
 		assert.Equal(t, "docs/plans/my-plan.md", meta.PlanPath, "Plan model line must not shadow Plan line")
 	})
 

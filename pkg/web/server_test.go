@@ -832,9 +832,9 @@ func TestExtractProjectDir(t *testing.T) {
 
 func TestFormatRunParams(t *testing.T) {
 	tests := []struct {
-		name                                        string
-		executor, planModel, taskModel, reviewModel string
-		want                                        string
+		name                                                                       string
+		executor, planModel, taskModel, reviewModel, externalReview, externalModel string
+		want                                                                       string
 	}{
 		{name: "all empty", want: ""},
 		{name: "executor only", executor: "codex", want: "codex"},
@@ -842,11 +842,12 @@ func TestFormatRunParams(t *testing.T) {
 		{name: "task and review models", taskModel: "opus", reviewModel: "sonnet:low", want: "task opus · review sonnet:low"},
 		{name: "executor with models", executor: "codex", taskModel: "gpt-5.5:high", reviewModel: "gpt-5.5:low", want: "codex · task gpt-5.5:high · review gpt-5.5:low"},
 		{name: "plan model only", planModel: "opus:high", want: "plan opus:high"},
+		{name: "external selection", externalReview: "claude (auto-selected)", externalModel: "opus:xhigh", want: "external claude (auto-selected) · external model opus:xhigh"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, FormatRunParams(tc.executor, tc.planModel, tc.taskModel, tc.reviewModel))
+			assert.Equal(t, tc.want, FormatRunParams(tc.executor, tc.planModel, tc.taskModel, tc.reviewModel, tc.externalReview, tc.externalModel))
 		})
 	}
 }
