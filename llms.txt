@@ -1,6 +1,6 @@
 # ralphex
 
-Autonomous plan execution with Claude Code. Executes implementation plans task by task in fresh Claude sessions, then runs multi-phase code reviews. Write a plan, start ralphex, walk away.
+Autonomous plan execution with Claude Code or Codex. Executes implementation plans task by task in fresh primary-executor sessions, then runs internal and cross-model external reviews. Write a plan, start ralphex, walk away.
 
 **GitHub:** https://github.com/umputun/ralphex
 
@@ -30,12 +30,15 @@ ralphex
 ralphex --review
 ralphex --review docs/plans/feature.md  # optional plan file for context
 
-# external-only mode (skip tasks and first claude review, run only external review)
+# external-only mode (skip tasks and first review, run external review and post-review)
 ralphex --external-only
 
-# codex executor mode (run task, review, finalize phases through codex; skip external review)
+# codex executor mode (codex writes; auto-selected Claude opus:xhigh reviews)
 # avoids the June 15, 2026 Anthropic billing split for Max-subscription users on an OpenAI plan
 ralphex --codex docs/plans/feature.md
+
+# codex external-only mode (Claude reviews; codex evaluates, fixes, post-reviews, and finalizes)
+ralphex --codex --external-only docs/plans/feature.md
 
 # codex executor mode with project CLAUDE.md passthrough (codex reads CLAUDE.md as AGENTS.md)
 ralphex --codex --pass-claude-md docs/plans/feature.md
@@ -60,6 +63,10 @@ ralphex --plan-model=fable:high --plan="add caching"
 
 # use different models for tasks and reviews
 ralphex --task-model=opus --review-model=sonnet:low docs/plans/feature.md
+
+# select or tune the external reviewer for one run
+ralphex --external-review-tool=claude --external-review-model=sonnet:high docs/plans/feature.md
+ralphex --external-review-tool=none docs/plans/feature.md
 
 # override Claude-compatible provider and external review tool for one run
 ralphex --claude-command=/path/to/codex-as-claude.sh --external-review-tool=custom --custom-review-script=/path/to/review.sh docs/plans/feature.md
@@ -114,9 +121,9 @@ ralphex --preserve-anthropic-api-key docs/plans/feature.md
 
 ## Requirements
 
-- `claude` - Claude Code CLI (required)
+- `claude` - Claude Code CLI (required for a Claude primary or explicit Claude review; optional for Codex-only installations using automatic fallback)
 - `fzf` - for plan selection (optional)
-- `codex` - for external review (optional)
+- `codex` - Codex CLI (required for `--codex` or explicit Codex review; optional for Claude-only installations using automatic fallback)
 - `gemini` - alternative provider for Claude phases (optional, via `scripts/gemini-as-claude/`)
 - `agy` - Antigravity CLI, alternative provider for Claude phases (optional, via `scripts/agy-as-claude/`)
 - `pi` - alternative provider for Claude phases (optional, via `scripts/pi-as-claude/`)
@@ -125,7 +132,7 @@ ralphex --preserve-anthropic-api-key docs/plans/feature.md
 
 Configuration directory: `~/.config/ralphex/` (override with `--config-dir` or `RALPHEX_CONFIG_DIR`)
 
-**Prompt files** (`~/.config/ralphex/prompts/`): `task.txt`, `review_first.txt`, `review_second.txt`, `codex.txt`, `codex_review.txt`, `custom_review.txt`, `custom_eval.txt`, `make_plan.txt`, `finalize.txt`. Loading priority for each: local → global → embedded. Review prompts are shared between claude and codex executors — the `{{agent:<name>}}` expansion produces the executor-appropriate agent invocation syntax (Task tool for claude, spawn_agent for codex).
+**Prompt files** (`~/.config/ralphex/prompts/`): `task.txt`, `review_first.txt`, `review_second.txt`, `codex.txt`, `codex_review.txt`, `external_claude_review.txt`, `external_claude_eval.txt`, `custom_review.txt`, `custom_eval.txt`, `make_plan.txt`, `finalize.txt`. Loading priority for each: local → global → embedded. Review prompts are shared between claude and codex executors — the `{{agent:<name>}}` expansion produces the executor-appropriate agent invocation syntax (Task tool for claude, spawn_agent for codex).
 
 **Agent files** (`~/.config/ralphex/agents/`): Custom review agents referenced via `{{agent:name}}` in prompts. On first run, 5 default agents are installed as commented-out templates. Agents use per-file fallback (local → global → embedded) — embedded defaults are always the baseline, so deleting an agent file does not disable it. To disable a specific agent, remove its `{{agent:name}}` reference from the prompt files, not the agent file itself
 
@@ -135,16 +142,19 @@ Configuration directory: `~/.config/ralphex/` (override with `--config-dir` or `
 - `{{GOAL}}` - goal description
 - `{{DEFAULT_BRANCH}}` - detected default branch (main, master, etc.), overridable via `--base-ref` CLI flag or `default_branch` config option
 - `{{agent:name}}` - expands to Task tool instructions for named agent
-- `{{DIFF_INSTRUCTION}}` - git diff command for current iteration (in codex_review.txt and custom_review.txt)
-- `{{PREVIOUS_REVIEW_CONTEXT}}` - previous review context for external review iterations (in codex_review.txt and custom_review.txt)
+- `{{DIFF_INSTRUCTION}}` - git diff command for the current external review iteration (in codex_review.txt, external_claude_review.txt, and custom_review.txt)
+- `{{PREVIOUS_REVIEW_CONTEXT}}` - previous evaluator context for external review iterations (in codex_review.txt, external_claude_review.txt, and custom_review.txt)
+- `{{CODEX_OUTPUT}}`, `{{CLAUDE_OUTPUT}}`, `{{CUSTOM_OUTPUT}}` - provider-specific findings supplied to the matching external evaluation prompt
 
 **External review iterations:** By default, external review runs up to `max(3, max_iterations/5)` iterations. Override with `max_external_iterations` config option or `--max-external-iterations` CLI flag (0 = auto).
 
-**Stalemate detection:** `review_patience` config option (or `--review-patience` CLI flag) terminates the external review loop early when Claude produces no commits for N consecutive rounds. Set to 0 (default) to disable. Useful when the external tool and Claude can't agree on findings.
+**Stalemate detection:** `review_patience` config option (or `--review-patience` CLI flag) terminates the external review loop early when the primary evaluator produces no commits or working-tree changes for N consecutive rounds. Set to 0 (default) to disable. Useful when the reviewer and evaluator cannot agree on findings.
 
 **Per-phase model configuration:** `plan_model`, `task_model`, and `review_model` config options (or `--plan-model`, `--task-model`, `--review-model` CLI flags) set phase model/effort using `model[:effort]` syntax. Examples: `opus` (model only), `opus:high` (both), `:medium` (effort only). Effort levels: `low`, `medium`, `high`, `xhigh`, `max`. `plan_model` sets plan creation and falls back to `task_model` if empty. `task_model` sets task execution. `review_model` sets review phases and falls back to `task_model` if empty. Parts are appended to the configured `claude_command` as `--model <m>` and/or `--effort <e>`. Custom wrappers may ignore the flags (default behavior via `*) shift ;;`) or map them to their own selection. Empty by default (uses Claude CLI's defaults).
 
 Under the codex executor (`--codex` or `executor = codex`), `plan_model`/`task_model`/`review_model` (CLI flag or config) select the model/effort per phase, resolved against `codex_model`/`codex_reasoning_effort` as the codex defaults. `--plan-model` sets plan creation and falls back to `--task-model` when unset. `--task-model` sets the task phase. `--review-model` sets the review phase and falls back to `--task-model` when unset. Codex builds a separate review executor when the review model/effort differs from task, so tasks and reviews can run on different codex models. An unset spec inherits the codex defaults, and each populated half of a `model[:effort]` spec overrides its default (`--task-model=:high` changes effort only). The `max` effort level does not exist in codex — passing it under `--codex` prints a warning and is ignored.
+
+`external_review_model` (or `--external-review-model=<model[:effort]>`) affects only the effective external provider. Empty resolves to `opus:xhigh` for Claude or to `codex_model`/`codex_reasoning_effort` for Codex. Each populated half overrides only that half of the provider default. It cannot be combined with `external_review_tool = custom`.
 
 ```ini
 # in ~/.config/ralphex/config
@@ -155,11 +165,11 @@ review_model = sonnet:low
 
 **Manual break (Ctrl+\):** Press Ctrl+\ (SIGQUIT) to intervene during execution. In the task phase, it pauses execution and prompts "press Enter to continue, Ctrl+C to abort" — on Enter the same task re-runs with a fresh session that re-reads the plan file, so you can edit the plan mid-run. In the external review phase, it terminates the loop immediately. Not available on Windows.
 
-**Custom external review:** Set `external_review_tool = custom` and `custom_review_script = /path/to/script.sh` to use your own AI tool instead of codex. Script receives prompt file path as single argument, outputs findings to stdout. ralphex passes the output to Claude for evaluation and fixing. For a one-off run, use `--external-review-tool=custom --custom-review-script=/path/to/script.sh`.
+**Custom external review:** Set `external_review_tool = custom` and `custom_review_script = /path/to/script.sh` to use your own AI tool. The script receives the prompt file path as its single argument and outputs findings to stdout. ralphex passes the output to the primary executor for evaluation and fixing. For a one-off run, use `--external-review-tool=custom --custom-review-script=/path/to/script.sh`.
 
 **Alternative providers for Claude phases:** `claude_command` and `claude_args` config options allow replacing Claude Code with any CLI that produces compatible stream-json output. Included wrappers: `scripts/codex-as-claude/codex-as-claude.sh`, `scripts/copilot-as-claude/copilot-as-claude.sh`, `scripts/gemini-as-claude/gemini-as-claude.sh`, `scripts/agy-as-claude/agy-as-claude.sh`, `scripts/opencode/opencode-as-claude.sh`, `scripts/pi-as-claude/pi-as-claude.sh`. Set `claude_command = /path/to/wrapper` in config, or use `--claude-command=/path/to/wrapper` for one run. Wrappers should ignore unknown flags gracefully. Use `--claude-args=` only when a wrapper cannot tolerate configured/default Claude flags and they must be cleared for a single run. See `docs/custom-providers.md` for details on writing wrappers for other tools (Gemini CLI, local LLMs, etc.).
 
-**Codex executor mode (`--codex`):** native codex alternative for running the full pipeline on codex. `--codex` routes task execution, both review phases, and finalize through the codex CLI; the external review phase is automatically skipped (codex-reviewing-codex is a same-model self-review with weak signal). Motivated by Anthropic's June 15, 2026 billing split between the Claude Max subscription and the Claude Agent SDK credit pool — users with an OpenAI plan can stay on their existing subscription.
+**Codex executor mode (`--codex`):** native Codex primary for the full pipeline. `--codex` routes task execution, both internal review phases, external-finding evaluation, and finalize through Codex. With `external_review_tool = auto`, Claude performs findings-only external review with `opus:xhigh`; Codex verifies every finding and owns all repository writes and commits.
 
 `--pass-claude-md` (valid with the codex executor: `--codex` or `executor = codex`) adds `-c project_doc_fallback_filenames=["CLAUDE.md"]` to the codex invocation so codex's native AGENTS.md walk picks up the project `./CLAUDE.md`. User-level `~/.claude/CLAUDE.md` is NOT auto-linked — ralphex never modifies `~/.codex/`. At first `--codex --pass-claude-md` run, if `~/.claude/CLAUDE.md` exists and `~/.codex/AGENTS.md` does not, ralphex prints a one-time hint suggesting `ln -s ~/.claude/CLAUDE.md ~/.codex/AGENTS.md`; the user opts in by running the command themselves.
 
@@ -171,7 +181,13 @@ executor       = codex
 pass_claude_md = true
 ```
 
-Mutual exclusion: `--codex` cannot be combined with `--external-only`, `--codex-only`, or `--external-review-tool=<X>` (when `<X>` is not `none`). `--pass-claude-md` requires the codex executor (`--codex` or `executor = codex`). Each invalid combination fails with a clear error at startup. Config-only conflicts (e.g., `executor = codex` plus `external_review_tool = codex`) are automatically resolved by forcing `external_review_tool = none`, with a warning printed to stderr.
+`--codex --external-only` and the deprecated `--codex --codex-only` alias are valid and start at the external review phase. Explicit `claude`, `codex`, `custom`, and `none` reviewers are allowed with either primary; choosing the same first-class provider prints a weak-signal warning. `--pass-claude-md` requires the Codex executor (`--codex` or `executor = codex`).
+
+Dependency policy: the primary executor binary is always required. A missing `auto`-selected external binary prints a warning and disables only the external phase for that run, so Claude-only and Codex-only installations remain usable. A missing explicitly selected external provider is a startup error. `codex_enabled = false` disables automatic external selection for backward compatibility, except external-only mode still runs the requested pipeline. Authentication, quota, and runtime failures after launch remain normal errors/retries and are not silently skipped.
+
+External Claude safety policy: ralphex preserves the configured `claude_command`, wrapper args, authentication behavior, user/project `CLAUDE.md`, skills, hooks, MCP, and Bash access. For the external reviewer it removes permission-bypass and conflicting permission/write-deny flags, then applies `--permission-mode=plan` and denies the built-in `Edit`, `Write`, and `NotebookEdit` tools. This is not an OS-level sandbox; Bash remains available, so the findings-only prompt also prohibits file changes and side-effecting commands. External Codex uses its `read-only` sandbox.
+
+External completion/status compatibility: new prompts emit `<<<RALPHEX:EXTERNAL_REVIEW_DONE>>>`. The legacy `<<<RALPHEX:CODEX_REVIEW_DONE>>>` signal remains recognized for customized prompts and historical logs. External completion ends the review loop, not the whole run. New progress labels name both roles (`claude external review iteration N`, `codex evaluating claude findings`); old provider-specific phase labels remain replayable.
 
 Codex defaults that differ by mode:
 - `codex_sandbox` default is `read-only` for external codex review (default claude mode) and `danger-full-access` for first-class `executor = codex` (task/review/finalize need to write git metadata and commit). The accessor `CodexExecutorSandbox()` returns the role-appropriate default unless the user sets `codex_sandbox` explicitly.

@@ -1,6 +1,6 @@
 # codex evaluation prompt
-# this prompt is used when claude evaluates codex review output
-# codex runs in phase 3, between first and second claude reviews
+# this prompt is used when the primary executor evaluates external codex output
+# the evaluator owns all fixes and emits the provider-neutral completion signal
 #
 # available variables:
 #   {{PLAN_FILE}} - path to the plan file being executed

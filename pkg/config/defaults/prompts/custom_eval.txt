@@ -1,5 +1,5 @@
 # custom evaluation prompt
-# this prompt is used when claude evaluates custom external review tool output
+# this prompt is used when the primary executor evaluates custom review output
 # the custom review tool runs in the external review phase
 #
 # available variables:

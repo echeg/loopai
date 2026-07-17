@@ -74,12 +74,15 @@ docs/plans/         # plan files location
 - Progress file locking (flock) for active session detection
 - Watch-mode dashboard reactivates completed sessions on fsnotify Write events, resuming tailing from `Session.lastOffset` — recovery path for the flock race in `RefreshStates` that can prematurely mark a running session completed. `Session.Reactivate()` is idempotent and scoped to the written path; `loadProgressFileIntoSession` records `lastOffset` after the initial load so reactivation does not re-emit replayed events
 - Progress file fresh start: files ending in a `Completed:` footer are truncated on reuse; files ending in a `Failed:` footer (written by `Logger.SetFailed` before `Close`) or with no footer preserve content and write a `--- restarted at ... ---` separator, so retried failed/aborted runs keep history. `SetFailed` is called in `cmd/ralphex/main.go` for `r.Run` errors (including `ErrUserAborted`), dashboard start errors, and errors from `runWithWorktree`
-- `--codex` is an executor switch (not a new pipeline mode): sets `cfg.Executor = config.ExecutorCodex` so task, both reviews, and finalize run through `CodexExecutor`(s) with `MultiAgent=true` (enables `features.multi_agent`, registers the `reviewer` agent for spawn_agent calls). Forces `cfg.ExternalReviewTool = "none"` (codex-reviewing-codex is weak-signal self-review). `--pass-claude-md` (codex executor only) sets `CodexExecutor.PassClaudeMd = true`. The `Mode` enum is unchanged; the `Executors` struct uses role-named fields (`Task`/`Review`/`External`/`Custom`), and `buildCodexExecutors` wires one codex instance into both `Task` and `Review` when the resolved review model/effort matches task, or two distinct instances when they differ. Review prompts are shared with claude — the `{{agent:<name>}}` expansion in `pkg/processor/prompts.go` reads `cfg.AppConfig.Executor` and emits `Use the Task tool` (claude) or `spawn_agent(agent='reviewer', task='...')` (codex). Codex config is passed as additive `-c` overrides per invocation by `(*CodexExecutor).configOverrides()` in `pkg/executor/codex.go`, layered on top of the user's `~/.codex/config.toml` so user customizations are preserved. ralphex never writes to `~/.codex/`; for user-level CLAUDE.md it prints a one-time hint to `ln -s ~/.claude/CLAUDE.md ~/.codex/AGENTS.md`
+- `--codex` is an executor switch (not a new pipeline mode): sets `cfg.Executor = config.ExecutorCodex` so task, both internal reviews, external-finding evaluation, and finalize run through `CodexExecutor`(s) with `MultiAgent=true` (enables `features.multi_agent`, registers the `reviewer` agent for spawn_agent calls). `external_review_tool = auto` resolves to external Claude `opus:xhigh`; the reverse default is external Codex for a Claude primary. `--codex --external-only` and deprecated `--codex --codex-only` are valid. `--pass-claude-md` (codex executor only) sets `CodexExecutor.PassClaudeMd = true`. The `Mode` enum is unchanged; the `Executors` struct uses role-named fields (`Task`/`Review`/`External`/`Custom`), and `buildCodexExecutors` wires one codex instance into both `Task` and `Review` when the resolved review model/effort matches task, or two distinct instances when they differ. Review prompts are shared with claude — the `{{agent:<name>}}` expansion in `pkg/processor/prompts.go` reads `cfg.AppConfig.Executor` and emits `Use the Task tool` (claude) or `spawn_agent(agent='reviewer', task='...')` (codex). Codex config is passed as additive `-c` overrides per invocation by `(*CodexExecutor).configOverrides()` in `pkg/executor/codex.go`, layered on top of the user's `~/.codex/config.toml` so user customizations are preserved. ralphex never writes to `~/.codex/`; for user-level CLAUDE.md it prints a one-time hint to `ln -s ~/.claude/CLAUDE.md ~/.codex/AGENTS.md`
 - Codex review-phase directives: `prependCodexReviewGuidance` (`pkg/processor/prompts.go`) injects a `=== Codex orchestration directives ===` block through `promptBuilder.FirstReviewPrompt` and `promptBuilder.SecondReviewPrompt` when `cfg.isCodexExecutor()` is true (no-op for claude). Covers two codex multi_agent quirks: (a) spawn_agent must pass only `agent` and `task` — `fork_context=true` with explicit `agent_type` is rejected by the codex API; (b) on a `wait_agent` timeout for a sub-agent that died mid-tool-call, re-spawn that agent ONCE then proceed with partial results. Section-level injection works for embedded and customized review prompts alike; `phase.ReviewPhase` consumes the final prompts.
 - Codex task-phase skill-conflict directive: `prependCodexTaskGuidance` (`pkg/processor/prompts.go`) injects the `=== Codex task-execution directives ===` block (`codexTaskGuidance`) through `promptBuilder.TaskPrompt` when `cfg.isCodexExecutor()` is true (no-op for claude). `phase.TaskPhase` consumes the final prompt. It tells codex that ralphex's task prompt is authoritative and a conflicting auto-activated skill from `~/.codex/skills/` must not be followed. Deliberately generic (names no specific skill); a soft prompt-level mitigation, not a hard guard — codex 0.133.0 has no per-invocation skill-disable flag. Task-phase only
 - Codex output streaming: codex has no `stream-json` equivalent, so assistant message text + tool dispatch land only in the session rollout file at `~/.codex/sessions/<y>/<m>/<d>/rollout-<ts>-<session-id>.jsonl`. `CodexExecutor.Run` extracts the session id from the stderr header banner (`extractSessionID` + buffered `sessionIDCh`) and spawns `tailRolloutFile` to follow it. `formatRolloutEvent` forwards only assistant message text — reasoning records are covered by the stderr bold-summary stream, `function_call` records are skipped as tool-machinery noise. `tailCtx` is canceled after stdout EOF so the tailer drains once more and exits
 - Codex stderr filtering: `shouldDisplay` (`pkg/executor/codex.go`) suppresses the per-iteration startup banner, but on the executor's first `Run()` call (`headerEmitted atomic.Bool`) whitelists three header lines — `model:`, `sandbox:`, `reasoning effort:` — so users see what codex resolved from `~/.codex/config.toml`. Bold reasoning summaries always flow through. The ralphex-side banner (`printExecutorInfo`, `cmd/ralphex/main.go`) emits `sandbox:` (and `model:` / `reasoning effort:` when `codex_model` / `codex_reasoning_effort` are set; empty values skipped)
 - `--plan-model`/`--task-model`/`--review-model` resolve per-phase model/effort. `plan_model` falls back to `task_model`; `review_model` falls back to `task_model`. Claude mode injects `--model`/`--effort` into `claude_command`. Codex mode: `ResolveCodexModelEffort` (`pkg/processor/executor_factory.go`) resolves the `model[:effort]` spec against `codex_model`/`codex_reasoning_effort` defaults; `buildCodexExecutors` builds a separate review `CodexExecutor` when review differs from task. `max` effort does not exist in codex — kept default, `maxDropped` reported, `codexModelBanner` / `codexPlanBanner` (`cmd/ralphex/main.go`) warns
+- External review resolution is centralized in `resolveExternalReviewSelection` (`cmd/ralphex/main.go`) for CLI/config precedence, dependency checks, banners, run metadata, and processor construction. `auto` selects the other first-class provider; `codex_enabled = false` disables only auto selection except in `ModeCodexOnly`. Missing auto-selected external binaries warn and disable the external phase, while missing primary or explicitly selected binaries fail startup. `external_review_model` is independent of `review_model`: Claude defaults to `opus:xhigh`; Codex defaults to `codex_model`/`codex_reasoning_effort`; each explicit `model[:effort]` half overlays the provider default. `custom` plus a non-empty explicit external model is invalid; explicit same-provider review is allowed with a weak-signal warning
+- External Claude uses `ClaudeExecutor.ExternalReview`: configured command/wrapper args, auth, `CLAUDE.md`, skills, hooks, MCP, Bash, streaming, patterns, cancellation, and timeouts are preserved, while permission bypass/conflicting flags are sanitized before adding `--permission-mode=plan` and denying built-in `Edit`, `Write`, and `NotebookEdit`. This is prompt/tool protection, not an OS-level sandbox, because Bash remains available. External Codex keeps `read-only` sandboxing. External reviewers report findings only; the primary `Review` executor owns all edits and commits
+- External review completion uses `status.ExternalReviewDone` (`<<<RALPHEX:EXTERNAL_REVIEW_DONE>>>`); `status.CodexDone` remains accepted for customized prompts and historical logs. Provider-aware status/section labels name the reviewer and evaluator, while legacy Codex/Claude phase parsing remains for old progress files. External completion is non-terminal for the whole run
 
 ### Finalize Step
 
@@ -89,20 +92,23 @@ Key files:
 - `pkg/processor/phase/finalize.go` - `FinalizePhase.Run()` method called at end of review modes
 - `pkg/config/defaults/prompts/finalize.txt` - default finalize prompt
 
-### Custom External Review
+### External Review
 
-Custom scripts instead of codex for external review (`external_review_tool = custom`, `custom_review_script`). Script gets the prompt file path as its single arg, outputs findings to stdout for Claude to evaluate.
+`external_review_tool` accepts `auto`, `claude`, `codex`, `custom`, or `none`. `auto` chooses the provider opposite the primary executor. Custom scripts receive the prompt file path as their single argument and output findings to stdout for the primary executor to evaluate.
 
 - `{{DIFF_INSTRUCTION}}` expands per iteration: first `git diff main...HEAD`, subsequent `git diff` (uncommitted only)
 - `max_external_iterations` 0 = auto, `max(3, max_iterations/5)`
-- `review_patience` stalemate detection: terminates after N consecutive no-commit rounds (0 = disabled)
-- `session_timeout`/`idle_timeout` (see Configuration): in default Claude mode neither applies to external codex/custom review; under `--codex` `session_timeout` covers every executor call
+- `review_patience` stalemate detection: terminates after N consecutive rounds without commits or working-tree changes (0 = disabled)
+- `session_timeout`/`idle_timeout` (see Configuration): in default Claude mode external Codex/custom review retains legacy exclusions; under `--codex` timeout policy covers executor calls, including external Claude
 - Manual break: Ctrl+\ pauses task phase (fresh session re-reads plan on resume), terminates external review immediately. Break channel is repeatable (send-on-channel, not close-once); `SetPauseHandler()` sets the task pause callback. Not on Windows
-- `codex_enabled = false` backward compat: treated as `external_review_tool = none`
+- `codex_enabled = false` backward compatibility: disables `auto` external selection outside `ModeCodexOnly`; explicit providers remain enabled
+- New evaluation prompts emit `EXTERNAL_REVIEW_DONE`; legacy `CODEX_REVIEW_DONE` remains accepted
 
 Key files:
 - `pkg/executor/custom.go` - CustomExecutor for running external scripts
-- `pkg/config/defaults/prompts/codex_review.txt` / `custom_review.txt` / `custom_eval.txt` - external review prompts
+- `pkg/config/defaults/prompts/codex_review.txt` / `codex.txt` - external Codex prompts
+- `pkg/config/defaults/prompts/external_claude_review.txt` / `external_claude_eval.txt` - findings-only external Claude prompts
+- `pkg/config/defaults/prompts/custom_review.txt` / `custom_eval.txt` - custom reviewer prompts
 - `pkg/processor/prompts.go` and `pkg/processor/prompt_builder.go` - `getDiffInstruction()`, `buildPreviousContext()`, prompt assembly
 - `pkg/processor/phase/external_review.go` - tool selection and external review loop
 
@@ -233,6 +239,7 @@ GOOS=windows GOARCH=amd64 go build ./...
 - Custom prompts: `~/.config/ralphex/prompts/*.txt` or `.ralphex/prompts/*.txt`
 - Custom agents: `~/.config/ralphex/agents/*.txt` or `.ralphex/agents/*.txt`
 - `plan_model` / `task_model` / `review_model` config options: `model[:effort]` for plan creation / task / review phases; `plan_model` and `review_model` fall back to `task_model`. CLI flags `--plan-model`/`--task-model`/`--review-model` take precedence. Parsed by executor setup (pkg/processor/executor_factory.go). See the Key Patterns bullet for claude- vs codex-executor behavior. Disabled by default (empty = Claude CLI defaults)
+- `external_review_tool` defaults to `auto`; `external_review_model` independently selects the external provider model/effort. CLI flags `--external-review-tool`/`--external-review-model` take precedence. Empty external model means `opus:xhigh` for Claude or `codex_model`/`codex_reasoning_effort` for Codex
 - `default_branch` config option: override auto-detected default branch for review diffs
 - `max_iterations` config option: override CLI default (50) for maximum task iterations per plan (CLI flag `--max-iterations` takes precedence)
 - `vcs_command` config option: override the VCS binary used by the git backend (default: `"git"`). Set to a translation script path (e.g., `scripts/hg2git/hg2git.sh`) to use ralphex with Mercurial repos. See `docs/hg-support.md`
@@ -330,6 +337,7 @@ Implementation:
 - `{{DEFAULT_BRANCH}}` - detected default branch (main, master, origin/main, etc.), overridable via `--base-ref` CLI flag or `default_branch` config option
 - `{{DIFF_INSTRUCTION}}` - git diff command for current iteration (first: `git diff main...HEAD`, subsequent: `git diff`)
 - `{{PREVIOUS_REVIEW_CONTEXT}}` - previous review context block for external review iterations (empty on first iteration, formatted context on subsequent)
+- `{{CODEX_OUTPUT}}` / `{{CLAUDE_OUTPUT}}` / `{{CUSTOM_OUTPUT}}` - findings from the selected external reviewer for its matching evaluation prompt
 - `{{agent:name}}` - expands to Task tool instructions for the named agent
 
 Variables are also expanded inside agent content, so custom agents can use `{{DEFAULT_BRANCH}}` etc.
@@ -391,7 +399,7 @@ cd /tmp/ralphex-test
 1. Creates branch `fix-issues`
 2. Phase 1: executes Task 1, then Task 2
 3. Phase 2: first Claude review
-4. Phase 2.5: codex external review
+4. Phase 2.5: executor-aware external review (Codex by default for a Claude primary)
 5. Phase 3: second Claude review
 6. Moves plan to `docs/plans/completed/`
 

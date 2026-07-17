@@ -105,6 +105,7 @@ codex_sandbox = read-only
 # custom: use a custom script specified by custom_review_script
 # none: skip external review entirely
 # note: codex_enabled = false disables auto selection for backward compatibility
+# external-only mode still resolves auto because the external pipeline was explicitly requested
 # default: auto
 external_review_tool = auto
 
@@ -116,7 +117,9 @@ external_review_model =
 # custom_review_script: path to custom review script
 # only used when external_review_tool = custom
 # script receives prompt file path as single argument
-# script should output findings to stdout and use <<<RALPHEX:CODEX_REVIEW_DONE>>> signal
+# script should output findings to stdout; the primary evaluator emits
+# <<<RALPHEX:EXTERNAL_REVIEW_DONE>>> when the reviewer reports no issues
+# customized prompts using legacy <<<RALPHEX:CODEX_REVIEW_DONE>>> remain supported
 # example: custom_review_script = ~/.config/ralphex/scripts/my-review.sh
 # custom_review_script =
 
@@ -187,9 +190,9 @@ task_retry_count = 1
 # max_external_iterations = 0
 
 # review_patience: terminate external review after N consecutive unchanged rounds
-# when the external review tool and Claude can't agree on findings, the loop
+# when the external reviewer and primary evaluator can't agree on findings, the loop
 # runs until max_external_iterations. set review_patience to break early when
-# N consecutive rounds produce no commits (Claude wins the dispute).
+# N consecutive rounds produce no commits or working-tree changes.
 # 0 = disabled (loop runs to max iterations)
 # default: 0
 # review_patience = 0
@@ -383,10 +386,10 @@ color_task = #2e8b57
 # color_review: review phase (teal)
 color_review = #1a9e9e
 
-# color_codex: codex external review (purple)
+# color_codex: external review phase (legacy key, purple)
 color_codex = #9b59b6
 
-# color_claude_eval: claude evaluation of codex output (blue)
+# color_claude_eval: external findings evaluation phase (legacy key, blue)
 color_claude_eval = #5b8dd9
 
 # color_warn: warning messages (amber)

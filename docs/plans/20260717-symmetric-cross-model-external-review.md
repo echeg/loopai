@@ -97,11 +97,11 @@ Real Claude/Codex execution is deliberately excluded from automatic validation b
 - [x] Run `go test ./pkg/config ./pkg/processor/...` and fix all failures before continuing.
 
 ### Task 7: Document the symmetric pipeline and migration behavior
-- [ ] Update `README.md` examples, option/config tables, pipeline description, model-selection rules, external-only examples, safety caveat, missing-binary policy, and Codex-mode requirements using the repository's `--flag=value` documentation style.
-- [ ] Update `llms.txt` and the living architecture/configuration guidance in `CLAUDE.md` so they no longer claim that `--codex` always skips external review or conflicts with external-only; document `auto`, `external_review_model`, `opus:xhigh`, neutral signals/statuses, and legacy compatibility.
-- [ ] Document that external Claude keeps normal user/project customizations, uses plan mode plus built-in write-tool denial, retains Bash, and therefore is not equivalent to Codex's OS/tool `read-only` sandbox.
-- [ ] Update embedded default comments and prompt-variable documentation, but do not modify `CHANGELOG.md`, immutable completed plans, or plugin versions because no Claude asset skill changes are in scope.
-- [ ] Run `rg -n "external_review_tool|external_review_model|EXTERNAL_REVIEW_DONE|--codex" README.md llms.txt CLAUDE.md pkg/config/defaults` and manually verify that current behavior is described consistently; no additional automated test is required for prose-only changes beyond the final repository gate.
+- [x] Update `README.md` examples, option/config tables, pipeline description, model-selection rules, external-only examples, safety caveat, missing-binary policy, and Codex-mode requirements using the repository's `--flag=value` documentation style.
+- [x] Update `llms.txt` and the living architecture/configuration guidance in `CLAUDE.md` so they no longer claim that `--codex` always skips external review or conflicts with external-only; document `auto`, `external_review_model`, `opus:xhigh`, neutral signals/statuses, and legacy compatibility.
+- [x] Document that external Claude keeps normal user/project customizations, uses plan mode plus built-in write-tool denial, retains Bash, and therefore is not equivalent to Codex's OS/tool `read-only` sandbox.
+- [x] Update embedded default comments and prompt-variable documentation, but do not modify `CHANGELOG.md`, immutable completed plans, or plugin versions because no Claude asset skill changes are in scope.
+- [x] Run `rg -n "external_review_tool|external_review_model|EXTERNAL_REVIEW_DONE|--codex" README.md llms.txt CLAUDE.md pkg/config/defaults` and manually verify that current behavior is described consistently; no additional automated test is required for prose-only changes beyond the final repository gate.
 
 ### Task 8: Verify acceptance criteria and repository quality gates
 - [ ] Run focused regression tests: `go test ./pkg/config ./pkg/executor ./pkg/processor/... ./pkg/status ./pkg/progress ./pkg/web ./cmd/ralphex`.
