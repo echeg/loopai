@@ -470,6 +470,185 @@ func TestClaudeExecutor_Run_WithCustomCommandAndArgs(t *testing.T) {
 	assert.Equal(t, []string{"--skip-perms", "--verbose", "--print"}, capturedArgs)
 }
 
+func TestClaudeExecutor_Run_ExternalReviewArgs(t *testing.T) {
+	tests := []struct {
+		name        string
+		command     string
+		args        string
+		argsSet     bool
+		model       string
+		effort      string
+		wantCommand string
+		wantArgs    []string
+	}{
+		{
+			name:        "default args with model and effort",
+			command:     "claude-wrapper",
+			model:       "opus",
+			effort:      "xhigh",
+			wantCommand: "claude-wrapper",
+			wantArgs: []string{
+				"--output-format", "stream-json", "--verbose",
+				"--permission-mode=plan", "--disallowedTools=Edit,Write,NotebookEdit",
+				"--model", "opus", "--effort", "xhigh", "--print",
+			},
+		},
+		{
+			name: "separate value conflicts preserve configured capabilities",
+			args: "--dangerously-skip-permissions --allow-dangerously-skip-permissions " +
+				"--permission-mode bypassPermissions --disallowedTools Bash Edit " +
+				"--output-format stream-json --verbose --allowedTools Read,Bash " +
+				"--mcp-config project.json --append-system-prompt 'keep hooks active'",
+			wantCommand: "claude",
+			wantArgs: []string{
+				"--output-format", "stream-json", "--verbose", "--allowedTools", "Read,Bash",
+				"--mcp-config", "project.json", "--append-system-prompt", "keep hooks active",
+				"--permission-mode=plan", "--disallowedTools=Edit,Write,NotebookEdit", "--print",
+			},
+		},
+		{
+			name: "equals form conflicts and kebab case deny list",
+			args: "--dangerously-skip-permissions=true --allow-dangerously-skip-permissions=true " +
+				"--permission-mode=acceptEdits --disallowed-tools=Bash,Write " +
+				"--output-format=stream-json --verbose",
+			wantCommand: "claude",
+			wantArgs: []string{
+				"--output-format=stream-json", "--verbose",
+				"--permission-mode=plan", "--disallowedTools=Edit,Write,NotebookEdit", "--print",
+			},
+		},
+		{
+			name: "repeated permission and deny flags",
+			args: "--permission-mode manual --permission-mode=acceptEdits " +
+				"--disallowedTools=Edit --disallowed-tools Bash Write --verbose",
+			wantCommand: "claude",
+			wantArgs: []string{
+				"--verbose", "--permission-mode=plan",
+				"--disallowedTools=Edit,Write,NotebookEdit", "--print",
+			},
+		},
+		{
+			name:        "explicit empty args",
+			argsSet:     true,
+			wantCommand: "claude",
+			wantArgs: []string{
+				"--permission-mode=plan", "--disallowedTools=Edit,Write,NotebookEdit", "--print",
+			},
+		},
+		{
+			name:        "boolean bypass does not consume following wrapper arg",
+			args:        "--dangerously-skip-permissions wrapper-arg --verbose",
+			wantCommand: "claude",
+			wantArgs: []string{
+				"wrapper-arg", "--verbose", "--permission-mode=plan",
+				"--disallowedTools=Edit,Write,NotebookEdit", "--print",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotCommand string
+			var gotArgs []string
+			mock := &mocks.CommandRunnerMock{
+				RunFunc: func(_ context.Context, command string, args ...string) (io.Reader, func() error, error) {
+					gotCommand = command
+					gotArgs = append([]string(nil), args...)
+					return strings.NewReader(`{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}`), func() error { return nil }, nil
+				},
+			}
+			e := &ClaudeExecutor{
+				Command:        tc.command,
+				Args:           tc.args,
+				ArgsSet:        tc.argsSet,
+				ExternalReview: true,
+				Model:          tc.model,
+				Effort:         tc.effort,
+				cmdRunner:      mock,
+			}
+
+			result := e.Run(context.Background(), "review prompt")
+
+			require.NoError(t, result.Error)
+			assert.Equal(t, tc.wantCommand, gotCommand)
+			assert.Equal(t, tc.wantArgs, gotArgs)
+		})
+	}
+}
+
+func TestClaudeExecutor_Run_NormalArgsUnchangedByExternalReviewPolicy(t *testing.T) {
+	tests := []struct {
+		name string
+		args string
+		want []string
+	}{
+		{
+			name: "defaults retain permission bypass",
+			want: []string{"--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose", "--print"},
+		},
+		{
+			name: "custom permission args remain untouched",
+			args: "--allow-dangerously-skip-permissions --permission-mode acceptEdits " +
+				"--disallowed-tools Bash --verbose",
+			want: []string{
+				"--allow-dangerously-skip-permissions", "--permission-mode", "acceptEdits",
+				"--disallowed-tools", "Bash", "--verbose", "--print",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			mock := &mocks.CommandRunnerMock{
+				RunFunc: func(_ context.Context, _ string, args ...string) (io.Reader, func() error, error) {
+					got = append([]string(nil), args...)
+					return strings.NewReader(`{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}`), func() error { return nil }, nil
+				},
+			}
+
+			result := (&ClaudeExecutor{Args: tc.args, cmdRunner: mock}).Run(context.Background(), "prompt")
+
+			require.NoError(t, result.Error)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestClaudeExecutor_Run_ExternalReviewFailureAndCancellation(t *testing.T) {
+	t.Run("start failure retains review policy", func(t *testing.T) {
+		var gotArgs []string
+		mock := &mocks.CommandRunnerMock{
+			RunFunc: func(_ context.Context, _ string, args ...string) (io.Reader, func() error, error) {
+				gotArgs = append([]string(nil), args...)
+				return nil, nil, errors.New("wrapper failed")
+			},
+		}
+		e := &ClaudeExecutor{ExternalReview: true, cmdRunner: mock}
+
+		result := e.Run(context.Background(), "review prompt")
+
+		require.EqualError(t, result.Error, "wrapper failed")
+		assert.Contains(t, gotArgs, "--permission-mode=plan")
+		assert.Contains(t, gotArgs, "--disallowedTools=Edit,Write,NotebookEdit")
+	})
+
+	t.Run("parent cancellation propagates", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		mock := &mocks.CommandRunnerMock{
+			RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+				return strings.NewReader(""), func() error { return context.Canceled }, nil
+			},
+		}
+		e := &ClaudeExecutor{ExternalReview: true, cmdRunner: mock}
+
+		result := e.Run(ctx, "review prompt")
+
+		require.ErrorIs(t, result.Error, context.Canceled)
+	})
+}
+
 func TestSplitArgs(t *testing.T) {
 	tests := []struct {
 		name  string

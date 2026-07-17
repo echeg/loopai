@@ -190,6 +190,73 @@ func stripFlag(args []string, flag string) []string {
 	return result
 }
 
+// claudeExternalReviewArgs removes permission bypasses and conflicting review
+// restrictions before applying the external review policy. This is not an OS-level
+// sandbox: Claude retains Bash so the review prompt must prohibit side effects too.
+func claudeExternalReviewArgs(args []string) []string {
+	const (
+		permissionMode  = "--permission-mode"
+		disallowedTools = "--disallowedTools"
+	)
+
+	args = stripBooleanFlags(args,
+		"--dangerously-skip-permissions",
+		"--allow-dangerously-skip-permissions",
+	)
+	args = stripFlag(args, permissionMode)
+	args = stripVariadicFlags(args, "--disallowedTools", "--disallowed-tools")
+	return append(args,
+		permissionMode+"=plan",
+		disallowedTools+"=Edit,Write,NotebookEdit",
+	)
+}
+
+// stripBooleanFlags removes boolean flags in bare and equals forms without consuming
+// the following argument, which belongs to the wrapper or another Claude option.
+func stripBooleanFlags(args []string, flags ...string) []string {
+	result := make([]string, 0, len(args))
+	for _, arg := range args {
+		remove := false
+		for _, flag := range flags {
+			if arg == flag || strings.HasPrefix(arg, flag+"=") {
+				remove = true
+				break
+			}
+		}
+		if !remove {
+			result = append(result, arg)
+		}
+	}
+	return result
+}
+
+// stripVariadicFlags removes flags whose values continue until the next option.
+// Claude's disallowed-tools option accepts either comma-separated or space-separated
+// tool names, so a single-value flag helper is insufficient here.
+func stripVariadicFlags(args []string, flags ...string) []string {
+	result := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		matched := false
+		for _, flag := range flags {
+			if args[i] == flag {
+				matched = true
+				for i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					i++
+				}
+				break
+			}
+			if strings.HasPrefix(args[i], flag+"=") {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			result = append(result, args[i])
+		}
+	}
+	return result
+}
+
 // claudeChildEnv builds the environment for a child claude process. CLAUDECODE is always
 // stripped to prevent nested-session errors. ANTHROPIC_API_KEY is stripped unless
 // preserveAPIKey is true; preserving it is required for users who authenticate Claude Code
@@ -244,6 +311,7 @@ type ClaudeExecutor struct {
 	Command        string            // command to execute, defaults to "claude"
 	Args           string            // additional arguments (space-separated), defaults to standard args
 	ArgsSet        bool              // true when Args was explicitly set, including an empty value
+	ExternalReview bool              // enforce the read-only-intent external review argument policy
 	Model          string            // model override (e.g., "fable", "opus", "sonnet", "haiku"); empty = CLI default
 	Effort         string            // reasoning effort override (e.g., "low", "medium", "high", "xhigh", "max"); empty = CLI default
 	OutputHandler  func(text string) // called for each text chunk, can be nil
@@ -276,6 +344,9 @@ func (e *ClaudeExecutor) Run(ctx context.Context, prompt string) Result {
 			"--output-format", "stream-json",
 			"--verbose",
 		}
+	}
+	if e.ExternalReview {
+		args = claudeExternalReviewArgs(args)
 	}
 	// inject --model flag if a model override is configured;
 	// strip any existing --model from args to avoid duplicate/conflicting flags
