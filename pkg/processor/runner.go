@@ -114,7 +114,7 @@ type GitChecker interface {
 type Executors struct {
 	Task     Executor
 	Review   Executor // optional: separate executor for review phases (nil = use Task)
-	External Executor // external review executor (codex or wrapper); nil when Executor=codex or external review disabled
+	External Executor // provider-specific external reviewer; nil for custom or disabled review
 	Custom   *executor.CustomExecutor
 }
 

@@ -322,39 +322,96 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 	log := newRunnerMockLogger("progress.txt")
 	holder := &status.PhaseHolder{}
 
-	t.Run("default executor: claude for task/review, codex for external", func(t *testing.T) {
-		appCfg := testAppConfig(t)
-		appCfg.Executor = config.ExecutorClaude
-		cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
-		_, execs := (&executorFactory{}).Build(cfg, log)
+	tests := []struct {
+		name     string
+		primary  string
+		external string
+	}{
+		{name: "claude primary with codex external", primary: config.ExecutorClaude, external: config.ExternalReviewToolCodex},
+		{name: "claude primary with claude external", primary: config.ExecutorClaude, external: config.ExternalReviewToolClaude},
+		{name: "claude primary with custom external", primary: config.ExecutorClaude, external: config.ExternalReviewToolCustom},
+		{name: "claude primary with no external", primary: config.ExecutorClaude, external: config.ExternalReviewToolNone},
+		{name: "codex primary with claude external", primary: config.ExecutorCodex, external: config.ExternalReviewToolClaude},
+		{name: "codex primary with codex external", primary: config.ExecutorCodex, external: config.ExternalReviewToolCodex},
+		{name: "codex primary with custom external", primary: config.ExecutorCodex, external: config.ExternalReviewToolCustom},
+		{name: "codex primary with no external", primary: config.ExecutorCodex, external: config.ExternalReviewToolNone},
+	}
 
-		_, ok := execs.Task.(*executor.ClaudeExecutor)
-		assert.True(t, ok, "task executor should be *executor.ClaudeExecutor when Executor is default")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			appCfg := testAppConfig(t)
+			appCfg.Executor = tc.primary
+			appCfg.ExternalReviewTool = tc.external
+			appCfg.ExternalReviewToolSet = true
+			appCfg.CustomReviewScript = "/path/to/custom-review"
+			appCfg.ClaudeCommand = "claude-wrapper"
+			appCfg.ClaudeArgs = "--wrapper-arg --output-format stream-json"
+			appCfg.ClaudeArgsSet = true
+			appCfg.ClaudeErrorPatterns = []string{"claude-error"}
+			appCfg.ClaudeLimitPatterns = []string{"claude-limit"}
+			appCfg.ClaudeRetryPatterns = []string{"claude-retry"}
+			appCfg.PreserveAnthropicAPIKey = true
+			appCfg.IdleTimeout = 3 * time.Minute
 
-		_, ok = effectiveReviewExecutor(execs).(*executor.ClaudeExecutor)
-		assert.True(t, ok, "review executor should be *executor.ClaudeExecutor when Executor is default")
+			cfg := Config{
+				Mode:                  ModeReview,
+				MaxIterations:         50,
+				CodexEnabled:          tc.external != config.ExternalReviewToolNone,
+				ExternalReviewToolSet: true,
+				ExternalReviewTool:    tc.external,
+				AppConfig:             appCfg,
+			}
+			_, execs := (&executorFactory{}).Build(cfg, log)
 
-		externalExec, ok := execs.External.(*executor.CodexExecutor)
-		assert.True(t, ok, "external executor should be *executor.CodexExecutor by default")
-		assert.Equal(t, "read-only", externalExec.Sandbox, "external codex review keeps the read-only default")
-	})
+			switch tc.primary {
+			case config.ExecutorCodex:
+				taskExec, ok := execs.Task.(*executor.CodexExecutor)
+				require.True(t, ok)
+				assert.Equal(t, "danger-full-access", taskExec.Sandbox)
+				_, ok = effectiveReviewExecutor(execs).(*executor.CodexExecutor)
+				assert.True(t, ok, "codex primary must retain review/fix ownership")
+			case config.ExecutorClaude:
+				_, ok := execs.Task.(*executor.ClaudeExecutor)
+				require.True(t, ok)
+				_, ok = effectiveReviewExecutor(execs).(*executor.ClaudeExecutor)
+				assert.True(t, ok, "claude primary must retain review/fix ownership")
+			}
 
-	t.Run("Executor=codex: codex for task/review, nil for external", func(t *testing.T) {
-		appCfg := testAppConfig(t)
-		appCfg.Executor = config.ExecutorCodex
-		cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
-		_, execs := (&executorFactory{}).Build(cfg, log)
-
-		taskExec, ok := execs.Task.(*executor.CodexExecutor)
-		assert.True(t, ok, "task executor should be *executor.CodexExecutor when Executor=codex")
-		assert.Equal(t, "danger-full-access", taskExec.Sandbox, "first-class codex task execution must allow git metadata writes by default")
-
-		reviewExec, ok := effectiveReviewExecutor(execs).(*executor.CodexExecutor)
-		assert.True(t, ok, "review executor should be codex when Executor=codex")
-		assert.Equal(t, "danger-full-access", reviewExec.Sandbox, "first-class codex review fixes must allow git metadata writes by default")
-
-		assert.Nil(t, execs.External, "external executor should be nil when Executor=codex")
-	})
+			switch tc.external {
+			case config.ExternalReviewToolClaude:
+				externalExec, ok := execs.External.(*executor.ClaudeExecutor)
+				require.True(t, ok)
+				assert.True(t, externalExec.ExternalReview)
+				assert.Equal(t, "opus", externalExec.Model)
+				assert.Equal(t, "xhigh", externalExec.Effort)
+				assert.Equal(t, "claude-wrapper", externalExec.Command)
+				assert.Equal(t, "--wrapper-arg --output-format stream-json", externalExec.Args)
+				assert.True(t, externalExec.ArgsSet)
+				assert.Equal(t, []string{"claude-error"}, externalExec.ErrorPatterns)
+				assert.Equal(t, []string{"claude-limit"}, externalExec.LimitPatterns)
+				assert.Equal(t, []string{"claude-retry"}, externalExec.RetryPatterns)
+				assert.True(t, externalExec.PreserveAPIKey)
+				assert.Equal(t, 3*time.Minute, externalExec.IdleTimeout)
+			case config.ExternalReviewToolCodex:
+				externalExec, ok := execs.External.(*executor.CodexExecutor)
+				require.True(t, ok)
+				assert.Equal(t, "read-only", externalExec.Sandbox)
+				assert.False(t, externalExec.MultiAgent)
+				assert.False(t, externalExec.PassClaudeMd)
+				if tc.primary == config.ExecutorCodex {
+					assert.Equal(t, 3*time.Minute, externalExec.IdleTimeout)
+				} else {
+					assert.Zero(t, externalExec.IdleTimeout)
+				}
+			case config.ExternalReviewToolCustom:
+				assert.Nil(t, execs.External)
+				require.NotNil(t, execs.Custom)
+				assert.Equal(t, "/path/to/custom-review", execs.Custom.Script)
+			case config.ExternalReviewToolNone:
+				assert.Nil(t, execs.External)
+			}
+		})
+	}
 
 	t.Run("Executor=codex respects explicit sandbox config", func(t *testing.T) {
 		appCfg := testAppConfig(t)
@@ -378,6 +435,98 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 		r := NewWithExecutors(cfg, log, Executors{}, holder)
 		require.NotNil(t, r)
 	})
+}
+
+func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
+	log := newRunnerMockLogger("progress.txt")
+
+	t.Run("codex external override does not change claude primary", func(t *testing.T) {
+		appCfg := testAppConfig(t)
+		appCfg.Executor = config.ExecutorClaude
+		cfg := Config{
+			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
+			TaskModel: "sonnet:medium", ReviewModel: "opus:high",
+			ExternalReviewToolSet: true, ExternalReviewTool: config.ExternalReviewToolCodex,
+			ExternalReviewModel: "gpt-external", ExternalReviewEffort: "low", AppConfig: appCfg,
+		}
+
+		_, execs := (&executorFactory{}).Build(cfg, log)
+		taskExec := execs.Task.(*executor.ClaudeExecutor)
+		reviewExec := effectiveReviewExecutor(execs).(*executor.ClaudeExecutor)
+		externalExec := execs.External.(*executor.CodexExecutor)
+		assert.Equal(t, [2]string{"sonnet", "medium"}, [2]string{taskExec.Model, taskExec.Effort})
+		assert.Equal(t, [2]string{"opus", "high"}, [2]string{reviewExec.Model, reviewExec.Effort})
+		assert.Equal(t, [2]string{"gpt-external", "low"}, [2]string{externalExec.Model, externalExec.ReasoningEffort})
+	})
+
+	t.Run("claude external override does not change codex primary", func(t *testing.T) {
+		appCfg := testAppConfig(t)
+		appCfg.Executor = config.ExecutorCodex
+		cfg := Config{
+			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
+			TaskModel: "gpt-primary:high", ReviewModel: "gpt-review:medium",
+			ExternalReviewToolSet: true, ExternalReviewTool: config.ExternalReviewToolClaude,
+			ExternalReviewModel: "sonnet", ExternalReviewEffort: "max", AppConfig: appCfg,
+		}
+
+		_, execs := (&executorFactory{}).Build(cfg, log)
+		taskExec := execs.Task.(*executor.CodexExecutor)
+		reviewExec := effectiveReviewExecutor(execs).(*executor.CodexExecutor)
+		externalExec := execs.External.(*executor.ClaudeExecutor)
+		assert.Equal(t, [2]string{"gpt-primary", "high"}, [2]string{taskExec.Model, taskExec.ReasoningEffort})
+		assert.Equal(t, [2]string{"gpt-review", "medium"}, [2]string{reviewExec.Model, reviewExec.ReasoningEffort})
+		assert.Equal(t, [2]string{"sonnet", "max"}, [2]string{externalExec.Model, externalExec.Effort})
+	})
+
+	t.Run("codex external empty spec inherits codex config", func(t *testing.T) {
+		appCfg := testAppConfig(t)
+		appCfg.CodexModel = "gpt-config"
+		appCfg.CodexReasoningEffort = "xhigh"
+		cfg := Config{
+			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
+			ExternalReviewToolSet: true, ExternalReviewTool: config.ExternalReviewToolCodex,
+			AppConfig: appCfg,
+		}
+
+		_, execs := (&executorFactory{}).Build(cfg, log)
+		externalExec := execs.External.(*executor.CodexExecutor)
+		assert.Equal(t, [2]string{"gpt-config", "xhigh"}, [2]string{externalExec.Model, externalExec.ReasoningEffort})
+	})
+}
+
+func TestRunner_New_AutoExternalRouting(t *testing.T) {
+	availableCommand, err := os.Executable()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name         string
+		primary      string
+		wantExternal any
+	}{
+		{name: "claude primary auto-selects codex", primary: config.ExecutorClaude, wantExternal: &executor.CodexExecutor{}},
+		{name: "codex primary auto-selects claude", primary: config.ExecutorCodex, wantExternal: &executor.ClaudeExecutor{}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			appCfg := testAppConfig(t)
+			appCfg.Executor = tc.primary
+			appCfg.ExternalReviewTool = config.ExternalReviewToolAuto
+			appCfg.CodexCommand = availableCommand
+			appCfg.ClaudeCommand = availableCommand
+			cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: true, AppConfig: appCfg}
+
+			_, execs := (&executorFactory{}).Build(cfg, newRunnerMockLogger("progress.txt"))
+			switch tc.wantExternal.(type) {
+			case *executor.CodexExecutor:
+				_, ok := execs.External.(*executor.CodexExecutor)
+				assert.True(t, ok)
+			case *executor.ClaudeExecutor:
+				_, ok := execs.External.(*executor.ClaudeExecutor)
+				assert.True(t, ok)
+			}
+		})
+	}
 }
 
 // newCapturingLogger returns a logger mock that captures every Print invocation

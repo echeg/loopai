@@ -73,12 +73,12 @@ Real Claude/Codex execution is deliberately excluded from automatic validation b
 - [x] Run `go test ./pkg/executor` and fix all failures before continuing.
 
 ### Task 4: Build provider-aware external executors
-- [ ] Refactor `pkg/processor/executor_factory.go` to build `Executors.External` from the resolved provider instead of assuming Codex: external Claude uses the review-only `ClaudeExecutor`, external Codex retains `read-only` sandbox and no multi-agent/CLAUDE.md passthrough, custom uses `Custom`, and none leaves the phase disabled.
-- [ ] Reuse the configured Claude command/args/auth/error patterns for external Claude and resolve its model/effort independently from task/review models; wire idle timeout for the Codex-primary pipeline consistently with the existing rule that every `--codex` executor call is covered.
-- [ ] Apply explicit `external_review_model` to external Codex without changing the primary Codex task/review executors or the existing `codex_model` fallback.
-- [ ] Keep `Executors.Review` as the primary evaluator/fixer so Claude findings flow to Codex under `--codex`, while the existing Claude-primary to Codex-primary evaluation direction remains unchanged.
-- [ ] Update `pkg/processor/executor_factory_test.go` and `pkg/processor/runner_test.go` with the full primary/external provider matrix, distinct model/effort assertions, no-external behavior, external-only Codex mode, all-writing-by-primary call ordering, and regression cases for the existing Claude-to-Codex pipeline.
-- [ ] Run `go test ./pkg/processor/...` and fix all failures before continuing.
+- [x] Refactor `pkg/processor/executor_factory.go` to build `Executors.External` from the resolved provider instead of assuming Codex: external Claude uses the review-only `ClaudeExecutor`, external Codex retains `read-only` sandbox and no multi-agent/CLAUDE.md passthrough, custom uses `Custom`, and none leaves the phase disabled.
+- [x] Reuse the configured Claude command/args/auth/error patterns for external Claude and resolve its model/effort independently from task/review models; wire idle timeout for the Codex-primary pipeline consistently with the existing rule that every `--codex` executor call is covered.
+- [x] Apply explicit `external_review_model` to external Codex without changing the primary Codex task/review executors or the existing `codex_model` fallback.
+- [x] Keep `Executors.Review` as the primary evaluator/fixer so Claude findings flow to Codex under `--codex`, while the existing Claude-primary to Codex-primary evaluation direction remains unchanged.
+- [x] Update `pkg/processor/executor_factory_test.go` and `pkg/processor/runner_test.go` with the full primary/external provider matrix, distinct model/effort assertions, no-external behavior, external-only Codex mode, all-writing-by-primary call ordering, and regression cases for the existing Claude-to-Codex pipeline.
+- [x] Run `go test ./pkg/processor/...` and fix all failures before continuing.
 
 ### Task 5: Introduce provider-neutral external-review signals and statuses
 - [ ] Add `status.ExternalReviewDone = "<<<RALPHEX:EXTERNAL_REVIEW_DONE>>>"` and update executor/phase signal detection so the new signal and legacy `status.CodexDone` both complete an external review loop; keep compatibility wrappers where needed by existing callers and tests.

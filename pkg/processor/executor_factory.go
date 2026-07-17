@@ -15,30 +15,120 @@ type executorFactory struct{}
 
 func (f *executorFactory) Build(cfg Config, log Logger) (Config, Executors) {
 	customExec := cfg.buildCustomExecutor(log)
+	externalProvider, autoSelected := cfg.externalReviewProvider()
+	if autoSelected && f.externalBinaryMissing(cfg.AppConfig, externalProvider, log) {
+		externalProvider = config.ExternalReviewToolNone
+		cfg.CodexEnabled = false
+		cfg.ExternalReviewTool = config.ExternalReviewToolNone
+		if cfg.AppConfig != nil {
+			cfg.AppConfig.ExternalReviewTool = config.ExternalReviewToolNone
+		}
+	}
+	externalExec := cfg.buildExternalExecutor(log, externalProvider)
 
 	if cfg.isCodexExecutor() {
 		if cfg.AppConfig.PassClaudeMd {
 			maybeEmitClaudeMdSetupHint(log)
 		}
 		codexTask, codexReview := cfg.buildCodexExecutors(log)
-		return cfg, Executors{Task: codexTask, Review: codexReview, Custom: customExec}
+		return cfg, Executors{Task: codexTask, Review: codexReview, External: externalExec, Custom: customExec}
 	}
 
 	claudeExec, reviewExec := cfg.buildClaudeExecutors(log)
-	codexExec := cfg.buildExternalCodexExecutor(log)
+	return cfg, Executors{Task: claudeExec, Review: reviewExec, External: externalExec, Custom: customExec}
+}
 
-	if cfg.CodexEnabled && f.needsCodexBinary(cfg.AppConfig) {
-		codexCmd := codexExec.Command
+// externalReviewProvider returns the concrete external provider expected by the
+// factory. The CLI normally resolves auto before processor construction; the
+// fallback here keeps direct processor.New callers executor-aware too.
+func (cfg Config) externalReviewProvider() (provider string, autoSelected bool) {
+	provider = cfg.ExternalReviewTool
+	if provider == "" && cfg.AppConfig != nil {
+		provider = cfg.AppConfig.ExternalReviewTool
+	}
+	if provider == "" {
+		provider = config.ExternalReviewToolAuto
+	}
+	autoSelected = provider == config.ExternalReviewToolAuto
+	if provider != config.ExternalReviewToolAuto {
+		return provider, autoSelected
+	}
+	if !cfg.CodexEnabled && cfg.Mode != ModeCodexOnly {
+		return config.ExternalReviewToolNone, autoSelected
+	}
+	if cfg.isCodexExecutor() {
+		return config.ExternalReviewToolClaude, autoSelected
+	}
+	return config.ExternalReviewToolCodex, autoSelected
+}
+
+func (f *executorFactory) externalBinaryMissing(appConfig *config.Config, provider string, log Logger) bool {
+	if appConfig == nil {
+		return false
+	}
+	switch provider {
+	case config.ExternalReviewToolClaude:
+		claudeCmd := appConfig.ClaudeCommand
+		if claudeCmd == "" {
+			claudeCmd = "claude"
+		}
+		if _, err := exec.LookPath(claudeCmd); err != nil {
+			log.Print("warning: claude not found (%s: %v), disabling external review phase", claudeCmd, err)
+			return true
+		}
+	case config.ExternalReviewToolCodex:
+		codexCmd := appConfig.CodexCommand
 		if codexCmd == "" {
 			codexCmd = "codex"
 		}
 		if _, err := exec.LookPath(codexCmd); err != nil {
 			log.Print("warning: codex not found (%s: %v), disabling codex review phase", codexCmd, err)
-			cfg.CodexEnabled = false
+			return true
 		}
 	}
+	return false
+}
 
-	return cfg, Executors{Task: claudeExec, Review: reviewExec, External: codexExec, Custom: customExec}
+func (cfg Config) buildExternalExecutor(log Logger, provider string) Executor {
+	model, effort := cfg.externalReviewModelEffort(provider)
+	switch provider {
+	case config.ExternalReviewToolClaude:
+		return cfg.buildExternalClaudeExecutor(log, model, effort)
+	case config.ExternalReviewToolCodex:
+		return cfg.buildExternalCodexExecutor(log, model, effort)
+	default:
+		return nil
+	}
+}
+
+func (cfg Config) externalReviewModelEffort(provider string) (model, effort string) {
+	spec := cfg.ExternalReviewModel
+	if spec == "" && cfg.ExternalReviewEffort == "" && cfg.AppConfig != nil {
+		spec = cfg.AppConfig.ExternalReviewModel
+	}
+
+	switch provider {
+	case config.ExternalReviewToolClaude:
+		model, effort = "opus", "xhigh"
+		resolvedModel, resolvedEffort := parseModelEffort(spec)
+		if resolvedModel != "" {
+			model = resolvedModel
+		}
+		if resolvedEffort != "" {
+			effort = resolvedEffort
+		}
+	case config.ExternalReviewToolCodex:
+		var defaultModel, defaultEffort string
+		if cfg.AppConfig != nil {
+			defaultModel = cfg.AppConfig.CodexModel
+			defaultEffort = cfg.AppConfig.CodexReasoningEffort
+		}
+		model, effort, _ = ResolveCodexModelEffort(spec, defaultModel, defaultEffort)
+	}
+	if cfg.ExternalReviewEffort != "" {
+		effort = cfg.ExternalReviewEffort
+	}
+	return model, effort
 }
 
 // buildClaudeExecutors constructs the claude executors for task and review phases.
@@ -91,13 +181,31 @@ func (cfg Config) applyClaudeAppConfig(e *executor.ClaudeExecutor) {
 	e.PreserveAPIKey = cfg.AppConfig.PreserveAnthropicAPIKey
 }
 
-// buildExternalCodexExecutor builds the codex executor used for the external review
-// phase in claude mode. MultiAgent stays off (the external review prompt does not use
-// spawn_agent) and PassClaudeMd stays off (rejected for claude mode by applyCodexOverrides).
-func (cfg Config) buildExternalCodexExecutor(log Logger) *executor.CodexExecutor {
+// buildExternalClaudeExecutor preserves the configured Claude command, wrappers,
+// authentication, and pattern handling while enabling the review-only policy.
+func (cfg Config) buildExternalClaudeExecutor(log Logger, model, effort string) *executor.ClaudeExecutor {
+	e := &executor.ClaudeExecutor{
+		OutputHandler:  func(text string) { log.PrintAligned(text) },
+		Debug:          cfg.Debug,
+		ExternalReview: true,
+		Model:          model,
+		Effort:         effort,
+	}
+	cfg.applyClaudeAppConfig(e)
+	return e
+}
+
+// buildExternalCodexExecutor builds the read-only codex external reviewer.
+// MultiAgent and PassClaudeMd intentionally stay off. When codex is the primary
+// executor, its idle-timeout guarantee also covers this same-provider review call.
+func (cfg Config) buildExternalCodexExecutor(log Logger, model, effort string) *executor.CodexExecutor {
 	e := cfg.newBaseCodexExecutor(log)
+	e.Model, e.ReasoningEffort = model, effort
 	if cfg.AppConfig != nil {
 		e.Sandbox = cfg.AppConfig.CodexSandbox
+		if cfg.isCodexExecutor() {
+			e.IdleTimeout = cfg.AppConfig.IdleTimeout
+		}
 	}
 	return e
 }
@@ -217,20 +325,6 @@ func maybeEmitClaudeMdSetupHint(log Logger) {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
-}
-
-// needsCodexBinary returns true when external codex review needs the codex binary.
-// first-class codex executor dependency checks happen in cmd/ralphex before runner construction.
-func (*executorFactory) needsCodexBinary(appConfig *config.Config) bool {
-	if appConfig == nil {
-		return true
-	}
-	switch appConfig.ExternalReviewTool {
-	case config.ExternalReviewToolCustom, config.ExternalReviewToolNone:
-		return false
-	default:
-		return true
-	}
 }
 
 // parseModelEffort splits a "model[:effort]" spec into separate parts.

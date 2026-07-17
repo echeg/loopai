@@ -224,11 +224,9 @@ func TestRunner_RunFull_NoCodexFindings(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestRunner_RunFull_CodexExecutor_SkipsExternalReview(t *testing.T) {
-	// when --codex is in effect, cfg.AppConfig.Executor == ExecutorCodex and
-	// cfg.AppConfig.ExternalReviewTool is forced to "none" by the CLI layer.
-	// runFull must route through the external phase tool=="none" skip
-	// so the external executor is never invoked.
+func TestRunner_RunFull_CodexExecutor_ExplicitNoneSkipsExternalReview(t *testing.T) {
+	// an explicit external_review_tool=none must skip the external phase even
+	// when codex is the primary executor and an external executor was supplied.
 	tmpDir := t.TempDir()
 	planFile := filepath.Join(tmpDir, "plan.md")
 	require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n### Task 1: first\n- [x] done"), 0o600))
@@ -249,7 +247,7 @@ func TestRunner_RunFull_CodexExecutor_SkipsExternalReview(t *testing.T) {
 		Mode:          ModeFull,
 		PlanFile:      planFile,
 		MaxIterations: 50,
-		CodexEnabled:  true, // would normally enable external review, but ExternalReviewTool="none" wins
+		CodexEnabled:  true, // explicit ExternalReviewTool="none" wins
 		AppConfig:     appCfg,
 	}
 	r := NewWithExecutors(cfg, log, Executors{Task: task, External: external}, &status.PhaseHolder{})
@@ -257,7 +255,7 @@ func TestRunner_RunFull_CodexExecutor_SkipsExternalReview(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Len(t, task.RunCalls(), 3, "task executor should run for task phase, first review, and pre-codex review loop")
-	assert.Empty(t, external.RunCalls(), "external executor must never be called when --codex forces ExternalReviewTool=none")
+	assert.Empty(t, external.RunCalls(), "external executor must never be called when ExternalReviewTool=none")
 }
 
 func TestRunner_RunReviewOnly_Success(t *testing.T) {
@@ -788,7 +786,7 @@ func TestRunner_Finalize_CodexExecutor_RunsAllPhasesThroughSharedInstance(t *tes
 
 	appCfg := testAppConfig(t)
 	appCfg.Executor = config.ExecutorCodex
-	appCfg.ExternalReviewTool = "none" // codex mode disables external review
+	appCfg.ExternalReviewTool = "none" // this case explicitly disables external review
 	cfg := Config{
 		Mode:                  ModeFull,
 		PlanFile:              planFile,
@@ -804,6 +802,57 @@ func TestRunner_Finalize_CodexExecutor_RunsAllPhasesThroughSharedInstance(t *tes
 
 	require.NoError(t, err)
 	assert.Len(t, codexExec.RunCalls(), 4, "shared codex executor must be invoked for task + both reviews + finalize")
+}
+
+func TestRunner_CodexExternalOnly_ClaudeFindingsAreHandledByPrimaryCodex(t *testing.T) {
+	var calls []string
+	primaryResults := []executor.Result{
+		{Output: "fixed valid finding"},
+		{Output: "no actionable findings", Signal: status.CodexDone},
+		{Output: "review done", Signal: status.ReviewDone},
+		{Output: "finalize done"},
+	}
+	primaryIndex := 0
+	primaryCodex := &mocks.ExecutorMock{RunFunc: func(_ context.Context, _ string) executor.Result {
+		calls = append(calls, "primary-codex")
+		result := primaryResults[primaryIndex]
+		primaryIndex++
+		return result
+	}}
+
+	externalResults := []executor.Result{
+		{Output: "finding in foo.go"},
+		{Output: "no issues found"},
+	}
+	externalIndex := 0
+	externalClaude := &mocks.ExecutorMock{RunFunc: func(_ context.Context, _ string) executor.Result {
+		calls = append(calls, "external-claude")
+		result := externalResults[externalIndex]
+		externalIndex++
+		return result
+	}}
+
+	appCfg := testAppConfig(t)
+	appCfg.Executor = config.ExecutorCodex
+	appCfg.ExternalReviewTool = config.ExternalReviewToolClaude
+	appCfg.ExternalReviewToolSet = true
+	cfg := Config{
+		Mode: ModeCodexOnly, MaxIterations: 50, IterationDelayMs: 1,
+		CodexEnabled: true, FinalizeEnabled: true, ExternalReviewToolSet: true,
+		ExternalReviewTool: config.ExternalReviewToolClaude, AppConfig: appCfg,
+	}
+	r := NewWithExecutors(cfg, newRunnerMockLogger("progress.txt"), Executors{
+		Task: primaryCodex, Review: primaryCodex, External: externalClaude,
+	}, &status.PhaseHolder{})
+
+	require.NoError(t, r.Run(t.Context()))
+	assert.Equal(t, []string{
+		"external-claude", "primary-codex",
+		"external-claude", "primary-codex",
+		"primary-codex", "primary-codex",
+	}, calls, "external Claude only reports findings; primary Codex evaluates, reviews, and finalizes")
+	assert.Len(t, externalClaude.RunCalls(), 2)
+	assert.Len(t, primaryCodex.RunCalls(), 4)
 }
 
 func TestRunner_CodexAndPostReview_PipelineOrder(t *testing.T) {
