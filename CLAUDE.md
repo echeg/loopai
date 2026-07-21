@@ -577,6 +577,16 @@ the run error. Do not defer either finish because dashboard shutdown can close
 the underlying log first. Plan-creation mode has no validation timer. A nil
 reporter must return the section timer unchanged.
 
+Executor display streams are filtered by provenance, not text shape. Codex stderr forwards only the
+first run's resolved `model:`/`sandbox:`/`reasoning effort:` header lines; reasoning titles come from
+the rollout file's typed `reasoning` records through `formatParsedRolloutEvent`, because codex 0.144+
+echoes loaded skill and tool markdown onto stderr and a skill header such as `**Detect stale base:**`
+is indistinguishable from a real bold reasoning title. Only the first line of each summary is shown.
+Claude Task subagents stream as `system/task_started` and `system/task_progress` events with no text
+block; `subagentLine` turns their `description` into an indented heartbeat sent to `OutputHandler`
+only, never into the output, recent text, or signal detection. Titles are unthrottled, per-step
+progress is limited to one line per `subagentProgressInterval` (10s).
+
 Claude command timing pairs foreground Bash `tool_use` and `tool_result` events
 by tool-use ID and measures their arrival times; background Bash calls are
 omitted because their first result is not process completion. Codex accepts both

@@ -17,6 +17,13 @@ import (
 
 //go:generate moq -out mocks/command_runner.go -pkg mocks -skip-ensure -fmt goimports . CommandRunner
 
+// subagentProgressInterval throttles subagent (Task tool) heartbeat lines: at most
+// one is forwarded per interval so a burst of tool steps across several parallel
+// review agents does not flood the progress stream. a single "still working" line
+// every few seconds is enough to show the review is alive. only these synthesized
+// heartbeat lines are throttled — the model's own text output is never dropped.
+const subagentProgressInterval = 10 * time.Second
+
 // Result holds execution result with output and detected signal.
 type Result struct {
 	Output       string // accumulated text output
@@ -334,6 +341,7 @@ type streamContentBlock struct {
 
 type streamEvent struct {
 	Type    string `json:"type"`
+	Subtype string `json:"subtype"` // for "system" events: init, task_started, task_progress, etc.
 	Message struct {
 		Content []streamContentBlock `json:"content"`
 	} `json:"message"`
@@ -346,6 +354,11 @@ type streamEvent struct {
 		Text string `json:"text"`
 	} `json:"delta"`
 	Result json.RawMessage `json:"result"` // can be string or object with "output" field
+	// subagent (Task tool) progress: newer Claude Code streams subagent activity as
+	// system/task_started (the agent's task title) and system/task_progress (per step)
+	// events whose description names the action; the subagent type is intentionally
+	// not surfaced (stock config runs every review agent as "general-purpose").
+	Description string `json:"description"` // task title / current step, e.g. "Running tests"
 }
 
 // ClaudeExecutor runs claude CLI commands with streaming JSON parsing.
@@ -512,6 +525,7 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 	if now == nil {
 		now = time.Now
 	}
+	var lastProgress time.Time // throttle window for subagent heartbeat lines
 
 	err := readLines(ctx, r, func(line string) {
 		idleTouch() // reset idle timer on every line of pipe activity
@@ -537,6 +551,28 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 
 		if e.CommandTimingHandler != nil {
 			e.trackCommandTiming(&event, commandStarts, now)
+		}
+
+		// surface subagent (Task tool) progress. newer Claude Code streams subagent
+		// activity as system/task_* events that carry no text block, so extractText
+		// drops them; without this the parent session appears silent for the whole
+		// duration of a multi-agent review. forwarded to OutputHandler only — not
+		// accumulated into output/recentBlocks/signal, which track the model's own text.
+		// task_started (title) is unthrottled; per-step task_progress is throttled so
+		// parallel agents don't flood.
+		if hb, throttle := subagentLine(&event); hb != "" {
+			if e.OutputHandler == nil {
+				return
+			}
+			if throttle {
+				if t := now(); t.Sub(lastProgress) >= subagentProgressInterval {
+					lastProgress = t
+					e.OutputHandler(hb)
+				}
+				return
+			}
+			e.OutputHandler(hb)
+			return
 		}
 
 		text := e.extractText(&event)
@@ -575,6 +611,29 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 	}
 
 	return Result{Output: output.String(), RecentText: recent.String(), Signal: signal}
+}
+
+// subagentLine formats a one-line heartbeat for a subagent (Task tool) system
+// event and reports whether the line should be throttled, or "" for events with
+// no surfaced progress. newer Claude Code streams subagent activity as system
+// task_* events whose payload carries no text block; surfacing the description
+// keeps the parent session from appearing silent while a multi-agent review runs.
+// task_started (the agent's task title) is unthrottled; task_progress (per step)
+// is throttled by the caller. the subagent type and tool name are intentionally
+// omitted — the description already names the action, and stock config runs every
+// review agent as "general-purpose" so a "[general-purpose]" prefix is just noise.
+func subagentLine(event *streamEvent) (line string, throttle bool) {
+	if event.Type != "system" || event.Description == "" {
+		return "", false
+	}
+	switch event.Subtype {
+	case "task_started":
+		return "  " + event.Description + "\n", false
+	case "task_progress":
+		return "  " + event.Description + "\n", true
+	default:
+		return "", false
+	}
 }
 
 // trackCommandTiming pairs Bash tool uses with their results using stream arrival time.
