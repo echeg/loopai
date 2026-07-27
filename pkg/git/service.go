@@ -161,6 +161,15 @@ func (s *Service) CreateBranch(name string) error {
 	return nil
 }
 
+// BranchExists reports whether a local branch with the given name exists.
+// a commit hash or any other revision that is not a local branch returns false.
+func (s *Service) BranchExists(name string) bool {
+	if name == "" {
+		return false
+	}
+	return s.repo.branchExists(name)
+}
+
 // EffectiveBranchName returns branchOverride when set, otherwise derives the branch name from planFile.
 func (s *Service) EffectiveBranchName(planFile, branchOverride string) string {
 	if branchOverride != "" {

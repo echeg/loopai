@@ -631,6 +631,109 @@ func TestResolveDefaultBranch(t *testing.T) {
 	}
 }
 
+func TestResolveBranchBase(t *testing.T) {
+	tests := []struct {
+		name           string
+		cliRef         string
+		defaultBranch  string
+		cliRefIsBranch bool
+		worktreeMode   bool
+		expected       string
+		expectedErr    string
+	}{
+		{
+			name: "no_cli_ref_keeps_default", cliRef: "", defaultBranch: "main",
+			expected: "main",
+		},
+		{
+			name: "no_cli_ref_keeps_default_in_worktree_mode", cliRef: "", defaultBranch: "main",
+			worktreeMode: true, expected: "main",
+		},
+		{
+			name: "branch_ref_becomes_base", cliRef: "release/13.0.0", defaultBranch: "main",
+			cliRefIsBranch: true, expected: "release/13.0.0",
+		},
+		{
+			name: "branch_ref_becomes_base_in_worktree_mode", cliRef: "release/13.0.0", defaultBranch: "main",
+			cliRefIsBranch: true, worktreeMode: true, expected: "release/13.0.0",
+		},
+		{
+			name: "commit_hash_keeps_default_outside_worktree_mode", cliRef: "abc1234", defaultBranch: "main",
+			expected: "main",
+		},
+		{
+			name: "commit_hash_fails_in_worktree_mode", cliRef: "abc1234", defaultBranch: "main",
+			worktreeMode: true, expectedErr: `--base-ref "abc1234" is not a branch`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := resolveBranchBase(tc.cliRef, tc.defaultBranch, tc.cliRefIsBranch, tc.worktreeMode)
+			if tc.expectedErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.expectedErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func TestResolveBaseRefs(t *testing.T) {
+	t.Run("branch_base_ref_becomes_worktree_base", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "release/13.0.0")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "release/13.0.0", "", true)
+		require.NoError(t, err)
+		assert.Equal(t, "release/13.0.0", branchBase, "worktree must branch off the requested release branch")
+		assert.Equal(t, "release/13.0.0", diffBase, "review diffs must use the same base")
+	})
+
+	t.Run("commit_hash_base_ref_rejected_in_worktree_mode", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		hash, err := gitSvc.HeadHash()
+		require.NoError(t, err)
+
+		_, _, err = resolveBaseRefs(gitSvc, hash, "", true)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "is not a branch")
+	})
+
+	t.Run("commit_hash_base_ref_kept_for_diffs_without_worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		hash, err := gitSvc.HeadHash()
+		require.NoError(t, err)
+
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, hash, "", false)
+		require.NoError(t, err)
+		assert.Equal(t, "master", branchBase, "a hash cannot be a branch base, auto-detected default stays")
+		assert.Equal(t, hash, diffBase, "diffs still honor the requested revision")
+	})
+
+	t.Run("config_branch_used_when_no_cli_ref", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "", "develop", true)
+		require.NoError(t, err)
+		assert.Equal(t, "develop", branchBase)
+		assert.Equal(t, "develop", diffBase)
+	})
+}
+
 func TestResolveMaxIterations(t *testing.T) {
 	tests := []struct {
 		name     string

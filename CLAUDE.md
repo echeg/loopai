@@ -168,6 +168,7 @@ Key files:
 - Worktree auto-removed on completion, failure, or SIGINT; branch preserved for PR
 - Only active for `ModeFull` and `ModeTasksOnly` (review/plan/external modes skip worktree)
 - `runWithWorktree()` in `cmd/ralphex/main.go` encapsulates the full lifecycle
+- Base branch resolution: `resolveBaseRefs()` (`cmd/ralphex/main.go`) produces two values from the same sources — `defaultBranch` for branch/worktree creation and `baseRef` for review diffs and `{{DEFAULT_BRANCH}}`. `--base-ref` feeds both when `git.Service.BranchExists()` says it names a local branch, which is what lets a plan run off a release branch (`--worktree --base-ref release/13.0.0`) while diff, rebase, and worktree keep a single shared base. A non-branch revision (commit hash) stays diff-only, and in worktree mode `resolveBranchBase()` rejects it outright rather than silently falling back to the auto-detected default, which would surface later as a confusing "requires main branch" error
 - Case-insensitive path handling: `CreateBranchForPlan()`, `CreateWorktreeForPlan()`, and `CommitPlanFile()` resolve plan file paths to actual on-disk case via `resolveFilesystemCase()` to handle macOS APFS case-insensitive filesystems. `hasChangesOtherThan()` uses case-insensitive comparison for plan file exclusion
 
 Key files:

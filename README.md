@@ -305,6 +305,15 @@ The `--worktree` flag runs plan execution in an isolated git worktree at `.ralph
 
 **Supported modes:** `--worktree` only applies to full mode and `--tasks-only`. It is silently ignored for `--review`, `--external-only`, and `--plan` — these modes operate from the current directory.
 
+**Base branch:** by default the worktree must be created from the default branch (`main`, `master`, or whatever `default_branch` resolves to), because the same branch is used as the base for review diffs and for the finalize rebase. To work off another branch — a release line, for example — pass it via `--base-ref`:
+
+```bash
+# branch the worktree off release/13.0.0; diffs and rebase use the same base
+ralphex --worktree --base-ref release/13.0.0 docs/plans/hotfix.md
+```
+
+`--base-ref` also accepts a commit hash, but a hash can only serve as a diff base, not as a branch base — combining it with `--worktree` is rejected with an explicit error. For a permanent per-project setting, use `default_branch` in `.ralphex/config` instead of passing the flag on every run.
+
 **Re-running reviews on a worktree branch:** if the task phase completed in a worktree but the review phase needs to be re-run, `cd` into the worktree directory and run the review from there:
 
 ```bash
@@ -650,6 +659,9 @@ ralphex --worktree docs/plans/feature.md
 ralphex --review --base-ref develop
 ralphex --review --base-ref abc1234 --skip-finalize
 
+# run a plan off a non-default branch (base for the worktree, diffs, and rebase)
+ralphex --worktree --base-ref release/13.0.0 docs/plans/hotfix.md
+
 # initialize local .ralphex/ config in current project (commented-out defaults)
 ralphex --init
 
@@ -710,7 +722,7 @@ ralphex --serve --port=3000 docs/plans/feature.md
 | `--codex` | Use codex CLI for plan creation, task, internal review, external-finding evaluation, and finalize. With `external_review_tool = auto`, Claude `opus:xhigh` performs external review when available; a missing automatic reviewer warns and disables only that phase. Requires codex CLI ≥ 0.130.0 | false |
 | `--pass-claude-md` | Pass project `CLAUDE.md` to codex via `-c project_doc_fallback_filenames=["CLAUDE.md"]`. User-level `~/.claude/CLAUDE.md` is NOT auto-passed (a one-time setup hint is shown). Requires the codex executor (`--codex` or `executor = codex`) | false |
 | `-t, --tasks-only` | Run only task phase, skip all reviews | false |
-| `-b, --base-ref` | Override default branch for review diffs (branch name or commit hash) | auto-detect |
+| `-b, --base-ref` | Override default branch for review diffs (branch name or commit hash). A branch name also becomes the base for branch and worktree creation, so plans can run off a release branch; a commit hash stays diff-only and is rejected with `--worktree` | auto-detect |
 | `--skip-finalize` | Skip finalize step even if enabled in config | false |
 | `--plan-model` | Model for plan creation as `model[:effort]` (falls back to `--task-model`). Same syntax and wrapper behavior as `--task-model`. Under `--codex`, selects the codex plan-creation model/effort | empty |
 | `--task-model` | Model for task execution as `model[:effort]` (e.g., `opus`, `opus:high`, `:medium`). Effort values: `low`, `medium`, `high`, `xhigh`, `max`. Appended as `--model <m>` and/or `--effort <e>` to `claude_command`; custom wrappers may ignore or implement the flags. Under `--codex`, selects the codex task-phase model/effort instead (see *Model selection under `--codex`*) | empty |
@@ -981,7 +993,7 @@ Provider-related CLI flags (`--claude-command`, `--claude-args`, `--external-rev
 | `use_worktree` | Run each plan in an isolated git worktree (full and tasks-only modes only) | `false` |
 | `preserve_anthropic_api_key` | Pass `ANTHROPIC_API_KEY` through to the claude child process (for users authenticating Claude Code via API key rather than OAuth/keychain). Default `false` strips the key so a host-set value cannot silently override OAuth credentials | `false` |
 | `plans_dir` | Plans directory | `docs/plans` |
-| `default_branch` | Override auto-detected default branch for review diffs | auto-detect |
+| `default_branch` | Override auto-detected default branch for review diffs and for branch/worktree creation | auto-detect |
 | `vcs_command` | VCS command for the git backend (set to a translation script for hg repos) | `git` |
 | `commit_trailer` | Trailer line appended to all ralphex-orchestrated git commits | disabled |
 | `color_task` | Task execution phase color (hex) | `#2e8b57` |

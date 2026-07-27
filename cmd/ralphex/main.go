@@ -46,7 +46,7 @@ type opts struct {
 	ExternalOnly            bool          `short:"e" long:"external-only" description:"skip tasks and first review; run external review, conditional post-review, and finalize"`
 	CodexOnly               bool          `short:"c" long:"codex-only" description:"alias for --external-only (deprecated)"`
 	TasksOnly               bool          `short:"t" long:"tasks-only" description:"run only task phase, skip all reviews"`
-	BaseRef                 string        `short:"b" long:"base-ref" description:"override default branch for review diffs (branch name or commit hash)"`
+	BaseRef                 string        `short:"b" long:"base-ref" description:"override default branch for review diffs; a branch name also becomes the base for branch/worktree creation (branch name or commit hash)"`
 	Wait                    time.Duration `long:"wait" description:"wait duration on rate limit before retry (e.g. 1h, 30m)"`
 	SessionTimeout          time.Duration `long:"session-timeout" description:"per-session timeout (e.g. 30m, 1h); external Codex/custom review under a Claude primary excluded"`
 	IdleTimeout             time.Duration `long:"idle-timeout" description:"kill claude/codex executor session after no output for this duration (e.g. 5m, 10m)"`
@@ -320,11 +320,14 @@ func run(ctx context.Context, o opts) error {
 		return ensureErr
 	}
 
-	autoDetected := gitSvc.GetDefaultBranch()
-	// defaultBranch is for branch/worktree creation (no --base-ref, it can be a commit hash)
-	defaultBranch := resolveDefaultBranch("", cfg.DefaultBranch, autoDetected)
-	// baseRef is for review diffs and {{DEFAULT_BRANCH}} template variable (--base-ref override)
-	baseRef := resolveDefaultBranch(o.BaseRef, cfg.DefaultBranch, autoDetected)
+	// defaultBranch is for branch/worktree creation, baseRef for review diffs and the
+	// {{DEFAULT_BRANCH}} template variable. --base-ref feeds both when it names a branch;
+	// a commit hash stays diff-only and is rejected outright in worktree mode.
+	defaultBranch, baseRef, err := resolveBaseRefs(gitSvc, o.BaseRef, cfg.DefaultBranch,
+		cfg.WorktreeEnabled && modeRequiresBranch(mode))
+	if err != nil {
+		return err
+	}
 
 	// create plan selector for use by plan selection and plan mode
 	selector := plan.NewSelector(cfg.PlansDir, colors)
@@ -1824,6 +1827,41 @@ func resolveDefaultBranch(cliRef, configBranch, autoDetected string) string {
 		return configBranch
 	}
 	return autoDetected
+}
+
+// resolveBaseRefs resolves the two bases a run needs: branchBase for branch/worktree creation
+// and diffBase for review diffs and the {{DEFAULT_BRANCH}} template variable.
+// they differ only when --base-ref names a revision that is not a branch.
+func resolveBaseRefs(gitSvc *git.Service, cliBaseRef, configBranch string, worktreeMode bool) (branchBase, diffBase string, err error) {
+	autoDetected := gitSvc.GetDefaultBranch()
+	diffBase = resolveDefaultBranch(cliBaseRef, configBranch, autoDetected)
+	defaultBranch := resolveDefaultBranch("", configBranch, autoDetected)
+
+	branchBase, err = resolveBranchBase(cliBaseRef, defaultBranch, gitSvc.BranchExists(cliBaseRef), worktreeMode)
+	if err != nil {
+		return "", "", err
+	}
+	return branchBase, diffBase, nil
+}
+
+// resolveBranchBase decides which ref is the base for branch and worktree creation.
+// the --base-ref value is honored only when it names an existing local branch: a commit hash
+// is a valid diff base but cannot be branched from or compared against the current branch name,
+// so it leaves the configured/auto-detected default branch in place.
+// in worktree mode a non-branch --base-ref is an error rather than a silent fallback, because
+// the fallback would fail later with a confusing "requires <default> branch" message.
+func resolveBranchBase(cliRef, defaultBranch string, cliRefIsBranch, worktreeMode bool) (string, error) {
+	if cliRef == "" {
+		return defaultBranch, nil
+	}
+	if cliRefIsBranch {
+		return cliRef, nil
+	}
+	if worktreeMode {
+		return "", fmt.Errorf("--base-ref %q is not a branch; worktree creation needs a branch to base the "+
+			"new worktree on, pass a branch name or drop --worktree", cliRef)
+	}
+	return defaultBranch, nil
 }
 
 // ensureRepoHasCommits checks that the repository has at least one commit.
