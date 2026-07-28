@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # opencode-review_test.sh — tests opencode-review.sh config building.
 #
-# run from the ralphex directory:
+# run from the loopai directory:
 #   bash scripts/opencode/opencode-review_test.sh
 #
 # uses a fake opencode stub to capture the final command and env without

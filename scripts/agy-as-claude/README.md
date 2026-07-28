@@ -1,6 +1,6 @@
 # agy-as-claude
 
-Antigravity CLI wrapper for ralphex, allowing `agy` to replace Claude Code in task and review phases.
+Antigravity CLI wrapper for loopai, allowing `agy` to replace Claude Code in task and review phases.
 
 ## Scripts
 
@@ -19,7 +19,7 @@ Tested with `agy` 1.0.2. The wrapper requires three `agy` flags to be present:
 
 Model selection is **not** exposed (no `AGY_MODEL` env var) — `agy` 1.0.2 has no `--model` flag.
 
-**Configuration** (`~/.config/ralphex/config` or `.ralphex/config`):
+**Configuration** (`~/.config/loopai/config` or `.loopai/config`):
 
 ```ini
 claude_command = /path/to/scripts/agy-as-claude/agy-as-claude.sh

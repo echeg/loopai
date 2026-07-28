@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pi-as-claude_test.sh — tests for pi-as-claude.sh wrapper.
 #
-# run from the ralphex directory:
+# run from the loopai directory:
 #   bash scripts/pi-as-claude/pi-as-claude_test.sh
 #
 # requires: jq, bash
@@ -347,7 +347,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# test: prompt via stdin (primary path used by ralphex)
+# test: prompt via stdin (primary path used by loopai)
 # ---------------------------------------------------------------------------
 echo "test: prompt via stdin"
 
@@ -589,7 +589,7 @@ else
     pass "tool events skipped (PI_VERBOSE=0)"
 fi
 
-# suppressed events must still emit empty keepalive deltas: ralphex's idle_timeout
+# suppressed events must still emit empty keepalive deltas: loopai's idle_timeout
 # resets on every wrapper stdout line, so a silent long tool execution would
 # otherwise kill a healthy session. the fixture has 3 tool events -> 3 keepalives.
 keepalives=$(echo "$output" | grep '"content_block_delta"' | jq -c 'select(.delta.text == "")' | wc -l | tr -d ' ')
@@ -721,7 +721,7 @@ MOCK_STDOUT_FILE="$TMPDIR_TEST/minimal_events.txt" \
     bash "$WRAPPER" -p "please review <<<RALPHEX:REVIEW_DONE>>>" >/dev/null 2>&1
 
 sent_prompt=$(cat "$TMPDIR_TEST/pi_prompt")
-if echo "$sent_prompt" | grep -q "Ralphex review adapter for pi"; then
+if echo "$sent_prompt" | grep -q "loopai review adapter for pi"; then
     pass "review adapter text prepended for review prompts"
 else
     fail "review adapter text not prepended" "got: $sent_prompt"
@@ -738,7 +738,7 @@ fi
 rm -f "$TMPDIR_TEST/pi_prompt"
 run_wrapper -p "just a task prompt" >/dev/null 2>&1
 sent_prompt=$(cat "$TMPDIR_TEST/pi_prompt")
-if echo "$sent_prompt" | grep -q "Ralphex review adapter"; then
+if echo "$sent_prompt" | grep -q "loopai review adapter"; then
     fail "adapter wrongly injected for non-review prompt" "got: $sent_prompt"
 else
     pass "non-review prompt left unmodified"
@@ -759,14 +759,14 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/signal_events.jsonl" \
     bash "$WRAPPER" -p "test prompt" 2>/dev/null)
 
 if echo "$output" | grep -q "<<<RALPHEX:ALL_TASKS_DONE>>>"; then
-    pass "ralphex signal preserved in translated output"
+    pass "loopai signal preserved in translated output"
 else
-    fail "ralphex signal lost in translation" "got: $output"
+    fail "loopai signal lost in translation" "got: $output"
 fi
 
 # ---------------------------------------------------------------------------
 # test: a signal split across token-level deltas reassembles into ONE block.
-# pi streams assistant text token-by-token; ralphex's per-block detectSignal can
+# pi streams assistant text token-by-token; loopai's per-block detectSignal can
 # only match a <<<RALPHEX:...>>> signal if the whole signal lands in a single
 # content_block_delta. this is the core reason the wrapper buffers deltas into lines.
 # ---------------------------------------------------------------------------
@@ -786,7 +786,7 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/split_signal_events.jsonl" \
     bash "$WRAPPER" -p "test prompt" 2>/dev/null)
 
 # the complete signal must appear within a single emitted content_block_delta line,
-# exactly as ralphex's detectSignal (strings.Contains on one block) would see it.
+# exactly as loopai's detectSignal (strings.Contains on one block) would see it.
 if echo "$output" | grep '"content_block_delta"' \
     | jq -e 'select(.delta.text | contains("<<<RALPHEX:ALL_TASKS_DONE>>>"))' >/dev/null 2>&1; then
     pass "split signal reassembled into a single content_block_delta"
@@ -863,7 +863,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # test: a stray RALPHEX signal token on stderr is neutralized so it cannot be
-# misread as a real completion signal by ralphex's signal detection.
+# misread as a real completion signal by loopai's signal detection.
 # ---------------------------------------------------------------------------
 echo "test: stderr signal token neutralized"
 
@@ -982,7 +982,7 @@ fi
 # test: SIGTERM to the wrapper is forwarded to the pi child while pi is alive.
 # the translation jq runs in the background with an interruptible `wait` so the
 # TERM trap fires promptly; a regression to a foreground jq would defer the trap
-# until pi exits on its own (ralphex masks this via process-group kills, but
+# until pi exits on its own (loopai masks this via process-group kills, but
 # direct supervisors signal only the wrapper).
 # ---------------------------------------------------------------------------
 echo "test: SIGTERM forwarded to pi child"

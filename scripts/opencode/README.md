@@ -1,6 +1,6 @@
 # opencode
 
-OpenCode CLI wrappers for ralphex, allowing OpenCode to replace Claude Code in task/review phases.
+OpenCode CLI wrappers for loopai, allowing OpenCode to replace Claude Code in task/review phases.
 
 ## Scripts
 
@@ -8,7 +8,7 @@ OpenCode CLI wrappers for ralphex, allowing OpenCode to replace Claude Code in t
 
 Wraps OpenCode CLI to produce Claude-compatible stream-json output. Acts as a drop-in replacement for `claude` in task and review phases.
 
-**Configuration** (`~/.config/ralphex/config` or `.ralphex/config`):
+**Configuration** (`~/.config/loopai/config` or `.loopai/config`):
 
 ```ini
 claude_command = /path/to/scripts/opencode/opencode-as-claude.sh
@@ -23,11 +23,11 @@ claude_args =
 - `OPENCODE_REASONING` — alias for `OPENCODE_VARIANT` when `OPENCODE_VARIANT` and `OPENCODE_EFFORT` are unset
 - `OPENCODE_VERBOSE` — set to `1` to include tool execution events in output (default: `0`)
 
-The wrapper also honors Claude-compatible `--model` and `--effort` flags. Ralphex `--task-model=model:effort`, `--review-model=model:effort`, and `--plan-model=model:effort` are translated to OpenCode as `--model model --variant effort`.
+The wrapper also honors Claude-compatible `--model` and `--effort` flags. loopai `--task-model=model:effort`, `--review-model=model:effort`, and `--plan-model=model:effort` are translated to OpenCode as `--model model --variant effort`.
 
 ### opencode-review.sh
 
-Custom review script for ralphex external review phase. Uses OpenCode CLI with a configurable model for code review.
+Custom review script for loopai external review phase. Uses OpenCode CLI with a configurable model for code review.
 
 **Configuration:**
 

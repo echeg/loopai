@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agy-as-claude_test.sh — tests for agy-as-claude.sh wrapper.
 #
-# run from the ralphex directory:
+# run from the loopai directory:
 #   bash scripts/agy-as-claude/agy-as-claude_test.sh
 #
 # requires: jq, bash
@@ -476,7 +476,7 @@ MOCK_STDOUT_FILE="$TMPDIR_TEST/review_events.txt" \
 
 if [[ -f "$TMPDIR_TEST/captured_prompt" ]]; then
     captured=$(cat "$TMPDIR_TEST/captured_prompt")
-    if echo "$captured" | grep -q 'Ralphex review adapter for Antigravity'; then
+    if echo "$captured" | grep -q 'loopai review adapter for Antigravity'; then
         pass "review adapter prepended to review prompt"
     else
         fail "review adapter not prepended" "prompt: $captured"
@@ -493,7 +493,7 @@ MOCK_STDOUT_FILE="$TMPDIR_TEST/minimal_events.txt" \
 
 if [[ -f "$TMPDIR_TEST/captured_prompt" ]]; then
     captured=$(cat "$TMPDIR_TEST/captured_prompt")
-    if echo "$captured" | grep -q 'Ralphex review adapter'; then
+    if echo "$captured" | grep -q 'loopai review adapter'; then
         fail "review adapter should NOT be prepended for non-review prompt" "prompt: $captured"
     else
         pass "review adapter not prepended for non-review prompt"
@@ -656,7 +656,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# test: prompt via stdin (primary path used by ralphex on Windows)
+# test: prompt via stdin (primary path used by loopai on Windows)
 # ---------------------------------------------------------------------------
 echo "test: prompt via stdin"
 

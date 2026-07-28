@@ -148,17 +148,12 @@ func (e *CodexExecutor) configOverrides() []string {
 	return args
 }
 
-// sandboxMode resolves the effective sandbox. Primary execution disables the
-// sandbox in the container runtime because Landlock is unavailable there. External
-// review must instead remain read-only and fail if Codex cannot initialize that
-// sandbox; silently granting write access would let a findings-only reviewer
-// modify the repository.
+// sandboxMode resolves the effective sandbox. External review must remain read-only
+// and fail if Codex cannot initialize that sandbox; silently granting write access
+// would let a findings-only reviewer modify the repository.
 func (e *CodexExecutor) sandboxMode() string {
 	if e.ForceReadOnly {
 		return "read-only"
-	}
-	if os.Getenv("RALPHEX_DOCKER") == "1" {
-		return "danger-full-access"
 	}
 	if e.Sandbox == "" {
 		return "read-only"
@@ -194,9 +189,8 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	// --dangerously-bypass-approvals-and-sandbox is required for unattended first-class
 	// --codex runs (which use danger-full-access by default). External codex review in
 	// claude mode worked on master without this flag and adding it would silently change
-	// approval semantics for default-claude users (especially when the runtime sandbox is
-	// forced to danger-full-access); gate the flag on MultiAgent which is true only in
-	// first-class --codex (set by processor.buildCodexExecutor).
+	// approval semantics for default-claude users; gate the flag on MultiAgent which is
+	// true only in first-class --codex (set by processor.buildCodexExecutor).
 	if sandbox == "danger-full-access" && e.MultiAgent {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}

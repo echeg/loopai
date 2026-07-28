@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is a test plan used for end-to-end testing of the ralphex web dashboard.
+This is a test plan used for end-to-end testing of the loopai web dashboard.
 
 ## Implementation Steps
 

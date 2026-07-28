@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # copilot-as-claude_test.sh — tests for copilot-as-claude.sh wrapper.
 #
-# run from the ralphex directory:
+# run from the loopai directory:
 #   bash scripts/copilot-as-claude/copilot-as-claude_test.sh
 #
 # requires: jq, bash
@@ -546,7 +546,7 @@ generated_plan_path="custom/plans/generated-plan.md"
 plan_prompt_with_paths=$(cat <<EOF
 You are helping create an implementation plan for: test feature
 Progress log: $progress_file (contains previous Q&A from this session)
-Emit only the required ralphex signals and stop at boundaries:
+Emit only the required loopai signals and stop at boundaries:
 <<<RALPHEX:QUESTION>>>
 <<<RALPHEX:PLAN_DRAFT>>>
 <<<RALPHEX:PLAN_READY>>>
@@ -628,6 +628,132 @@ if echo "$fallback_text" | grep -q '<<<RALPHEX:PLAN_READY>>>'; then
     fail "wrapper should ignore unrelated new plan files" "text: $fallback_text"
 else
     pass "wrapper ignores unrelated new plan files"
+fi
+
+# ---------------------------------------------------------------------------
+# test: basename progress path resolves under .loopai/progress
+# ---------------------------------------------------------------------------
+echo "test: basename progress path resolves under .loopai/progress"
+
+basename_project="$TMPDIR_TEST/basename-project"
+mkdir -p "$basename_project/.loopai/progress" "$basename_project/plans"
+basename_progress="progress-plan-basename.txt"
+cp "$progress_file" "$basename_project/.loopai/progress/$basename_progress"
+basename_prompt=$(cat <<EOF
+You are helping create an implementation plan for: basename lookup
+Progress log: $basename_progress (contains previous Q&A from this session)
+<<<RALPHEX:QUESTION>>>
+<<<RALPHEX:PLAN_DRAFT>>>
+<<<RALPHEX:PLAN_READY>>>
+EOF
+)
+(
+    sleep 1
+    cat > "$basename_project/plans/from-basename.md" <<'EOF'
+# Generated Plan
+
+## Overview
+Plan content.
+
+## Implementation Steps
+- Step 1
+EOF
+) &
+writer_pid=$!
+
+output=$(cd "$basename_project" && \
+    MOCK_STDOUT_FILE="$TMPDIR_TEST/plan_complete_without_signal_events.jsonl" \
+    MOCK_SLEEP_SECONDS=2 \
+    run_wrapper bash "$WRAPPER" -p "$basename_prompt" 2>/dev/null)
+wait "$writer_pid"
+
+fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
+if echo "$fallback_text" | grep -q '^plans/from-basename.md$' && \
+    echo "$fallback_text" | grep -q '<<<RALPHEX:PLAN_READY>>>'; then
+    pass "wrapper resolves basename progress paths from .loopai/progress"
+else
+    fail "wrapper should resolve basename progress paths from .loopai/progress" "text: $fallback_text"
+fi
+
+# ---------------------------------------------------------------------------
+# test: missing progress path scans .loopai/progress
+# ---------------------------------------------------------------------------
+echo "test: missing progress path scans .loopai/progress"
+
+scan_project="$TMPDIR_TEST/scan-project"
+mkdir -p "$scan_project/.loopai/progress" "$scan_project/plans"
+cp "$basename_project/.loopai/progress/$basename_progress" \
+    "$scan_project/.loopai/progress/progress-plan-scan.txt"
+scan_prompt='plan request without a progress path <<<RALPHEX:QUESTION>>> <<<RALPHEX:PLAN_DRAFT>>> <<<RALPHEX:PLAN_READY>>>'
+(
+    sleep 1
+    cat > "$scan_project/plans/from-scan.md" <<'EOF'
+# Generated Plan
+
+## Overview
+Plan content.
+
+## Implementation Steps
+- Step 1
+EOF
+) &
+writer_pid=$!
+
+output=$(cd "$scan_project" && \
+    MOCK_STDOUT_FILE="$TMPDIR_TEST/plan_complete_without_signal_events.jsonl" \
+    MOCK_SLEEP_SECONDS=2 \
+    run_wrapper bash "$WRAPPER" -p "$scan_prompt" 2>/dev/null)
+wait "$writer_pid"
+
+fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
+if echo "$fallback_text" | grep -q '^plans/from-scan.md$' && \
+    echo "$fallback_text" | grep -q '<<<RALPHEX:PLAN_READY>>>'; then
+    pass "wrapper discovers the latest plan progress file under .loopai/progress"
+else
+    fail "wrapper should discover plan progress under .loopai/progress" "text: $fallback_text"
+fi
+
+# ---------------------------------------------------------------------------
+# test: matching plans inside .loopai are pruned
+# ---------------------------------------------------------------------------
+echo "test: matching plans inside .loopai are pruned"
+
+prune_project="$TMPDIR_TEST/prune-project"
+mkdir -p "$prune_project/.loopai/progress"
+cp "$basename_project/.loopai/progress/$basename_progress" \
+    "$prune_project/.loopai/progress/progress-plan-prune.txt"
+prune_prompt=$(cat <<EOF
+Progress log: .loopai/progress/progress-plan-prune.txt (contains previous Q&A from this session)
+<<<RALPHEX:QUESTION>>>
+<<<RALPHEX:PLAN_DRAFT>>>
+<<<RALPHEX:PLAN_READY>>>
+EOF
+)
+(
+    sleep 1
+    cat > "$prune_project/.loopai/hidden-plan.md" <<'EOF'
+# Generated Plan
+
+## Overview
+Plan content.
+
+## Implementation Steps
+- Step 1
+EOF
+) &
+writer_pid=$!
+
+output=$(cd "$prune_project" && \
+    MOCK_STDOUT_FILE="$TMPDIR_TEST/plan_complete_without_signal_events.jsonl" \
+    MOCK_SLEEP_SECONDS=2 \
+    run_wrapper bash "$WRAPPER" -p "$prune_prompt" 2>/dev/null)
+wait "$writer_pid"
+
+fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
+if echo "$fallback_text" | grep -q '<<<RALPHEX:PLAN_READY>>>'; then
+    fail "wrapper should prune matching plans inside .loopai" "text: $fallback_text"
+else
+    pass "wrapper prunes matching plans inside .loopai"
 fi
 
 # ---------------------------------------------------------------------------
@@ -896,7 +1022,7 @@ MOCK_STDOUT_FILE="$TMPDIR_TEST/review_done_events.jsonl" \
 
 if [[ -f "$TMPDIR_TEST/copilot_stdin" ]]; then
     captured_prompt=$(cat "$TMPDIR_TEST/copilot_stdin")
-    if echo "$captured_prompt" | grep -q 'Ralphex review adapter for GitHub Copilot CLI'; then
+    if echo "$captured_prompt" | grep -q 'loopai review adapter for GitHub Copilot CLI'; then
         pass "review adapter prepended to review prompt"
     else
         fail "review adapter not prepended" "prompt: $captured_prompt"
@@ -906,9 +1032,9 @@ if [[ -f "$TMPDIR_TEST/copilot_stdin" ]]; then
     else
         fail "formatting rule missing from review adapter" "prompt: $captured_prompt"
     fi
-    # formatting rule must appear before the Ralphex adapter section
+    # formatting rule must appear before the loopai adapter section
     fmt_pos=$(echo "$captured_prompt" | grep -n 'FORMATTING RULE' | head -1 | cut -d: -f1)
-    adapter_pos=$(echo "$captured_prompt" | grep -n 'Ralphex review adapter' | head -1 | cut -d: -f1)
+    adapter_pos=$(echo "$captured_prompt" | grep -n 'loopai review adapter' | head -1 | cut -d: -f1)
     if [[ -n "$fmt_pos" && -n "$adapter_pos" && "$fmt_pos" -lt "$adapter_pos" ]]; then
         pass "formatting rule precedes adapter instructions"
     else
@@ -924,7 +1050,7 @@ MOCK_STDOUT_FILE="$TMPDIR_TEST/minimal_events.jsonl" \
 
 if [[ -f "$TMPDIR_TEST/copilot_stdin" ]]; then
     captured_prompt=$(cat "$TMPDIR_TEST/copilot_stdin")
-    if echo "$captured_prompt" | grep -q 'Ralphex review adapter for GitHub Copilot CLI'; then
+    if echo "$captured_prompt" | grep -q 'loopai review adapter for GitHub Copilot CLI'; then
         fail "review adapter should not be added to non-review prompts" "prompt: $captured_prompt"
     else
         pass "review adapter omitted for non-review prompts"
@@ -997,7 +1123,7 @@ if [[ -f "$TMPDIR_TEST/copilot_stdin" ]]; then
     else
         pass "plan adapter avoids re-drafting existing plans"
     fi
-    if echo "$captured_prompt" | grep -q 'Ralphex review adapter for GitHub Copilot CLI'; then
+    if echo "$captured_prompt" | grep -q 'loopai review adapter for GitHub Copilot CLI'; then
         fail "review adapter should not be added to plan prompts"
     else
         pass "review adapter omitted for plan prompts"

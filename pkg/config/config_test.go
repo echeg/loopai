@@ -1304,6 +1304,37 @@ func TestDetectLocalDir_NoLocalDir(t *testing.T) {
 	assert.Empty(t, result)
 }
 
+func TestLoadReadOnly_IgnoresLegacyLocalDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	globalDir := filepath.Join(tmpDir, "global-config")
+	legacyDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
+	require.NoError(t, os.MkdirAll(globalDir, 0o700))
+	require.NoError(t, os.MkdirAll(legacyDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "config"), []byte("claude_command = global-claude\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(legacyDir, "config"), []byte("claude_command = legacy-claude\n"), 0o600))
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.Chdir(origDir)) })
+	require.NoError(t, os.Chdir(tmpDir))
+
+	cfg, err := LoadReadOnly(globalDir)
+	require.NoError(t, err)
+	assert.Equal(t, "global-claude", cfg.ClaudeCommand)
+	assert.Empty(t, cfg.LocalDir())
+
+	require.NoError(t, os.MkdirAll(localDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(localDir, "config"), []byte("claude_command = local-claude\n"), 0o600))
+
+	cfg, err = LoadReadOnly(globalDir)
+	require.NoError(t, err)
+	assert.Equal(t, "local-claude", cfg.ClaudeCommand)
+	resolvedLocalDir, resolveErr := filepath.EvalSymlinks(localDir)
+	require.NoError(t, resolveErr)
+	assert.Equal(t, resolvedLocalDir, cfg.LocalDir())
+}
+
 func TestLoad_ConfigDirSameAsLocal_NotifyParams(t *testing.T) {
 	// regression test for issue #214: when --config-dir points to .loopai/,
 	// notify settings in that directory should still be loaded correctly

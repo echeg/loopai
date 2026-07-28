@@ -140,6 +140,12 @@ Main code:
 - `pkg/progress/` — logs
 - `pkg/web/` — dashboard
 
+Alternative provider wrappers:
+
+- `scripts/copilot-as-claude/copilot-as-claude.sh` — GitHub Copilot CLI adapter
+- `scripts/pi-as-claude/pi-as-claude.sh` — pi CLI adapter; setup and requirements are in `scripts/pi-as-claude/`
+- `docs/custom-providers.md` — configuration and protocol details for all included wrappers
+
 ## Compatibility boundary
 
 The public product name is loopai. The internal Go module remains `github.com/umputun/ralphex`, and protocol signals remain `<<<RALPHEX:...>>>`. Do not rename either: the module path keeps upstream merges manageable, and stable signals preserve prompt/log compatibility.

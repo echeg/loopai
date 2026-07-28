@@ -232,6 +232,10 @@ Custom prompts and agents use the same filenames as the embedded defaults. The `
 
 `claude_command` and `claude_args` may point to a Claude stream-json compatible wrapper. Examples live under `scripts/`, including wrappers for Codex, Copilot, Gemini, OpenCode, pi, and agy. See [docs/custom-providers.md](docs/custom-providers.md).
 
+The included Copilot adapter at `scripts/copilot-as-claude/copilot-as-claude.sh` wraps GitHub Copilot CLI and runs Copilot in native autopilot mode. Task and review phases use `--autopilot --no-ask-user --allow-all`; plan creation uses `--autopilot --allow-all` so clarification can flow through the stable plan signals. Set `COPILOT_MODEL` to choose a model.
+
+The pi adapter at `scripts/pi-as-claude/pi-as-claude.sh` supports `PI_PROVIDER`, `PI_MODEL`, `PI_THINKING`, and `PI_VERBOSE`. The included Codex and Copilot wrappers require `jq` on `PATH` for JSON translation. The included pi wrappers also require `jq` on `PATH`; see each wrapper README for authentication and provider-specific options.
+
 For a custom external reviewer, configure:
 
 ```ini
@@ -257,7 +261,7 @@ loopai --serve --port=3000
 loopai --serve --watch=/path/to/project-a --watch=/path/to/project-b
 ```
 
-When loopai runs inside cmux, it reports the phase, task count, spinner, and completion notifications through the public cmux CLI. Outside cmux this integration is a no-op.
+When loopai runs inside cmux, it reports the phase and effective model, review iteration, task count, spinner, and completion notifications through the public cmux CLI. Outside cmux this integration is a no-op.
 
 ## Notifications
 

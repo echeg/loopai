@@ -1,31 +1,36 @@
 ---
-description: Smart-merge updated ralphex defaults into customized prompts/agents
+description: Smart-merge updated loopai defaults into customized prompts/agents
 allowed-tools: [Bash, Read, Write, Glob, AskUserQuestion]
 ---
 
-# ralphex-update - Smart Prompt Merging
+# loopai-update - Smart Prompt Merging
 
 **SCOPE**: Compare current embedded defaults with user's installed config, and intelligently merge updates into customized files. Preserves user intent while incorporating structural changes.
 
 ## Step 0: Verify CLI Installation
 
 ```bash
-which ralphex
+which loopai
 ```
 
 **If not found**, guide installation:
-- **macOS (Homebrew)**: `brew install umputun/apps/ralphex`
-- **Any platform with Go**: `go install github.com/umputun/ralphex/cmd/ralphex@latest`
 
-**Do not proceed until `which ralphex` succeeds.**
+```bash
+git clone https://github.com/echeg/loopai
+cd loopai
+make build
+install -m 0755 .bin/loopai ~/.local/bin/loopai
+```
+
+**Do not proceed until `which loopai` succeeds.**
 
 ## Step 1: Extract Current Defaults
 
 Create temp directory and dump embedded defaults:
 
 ```bash
-DUMP_DIR=$(mktemp -d /tmp/ralphex-defaults-XXXX)
-ralphex --dump-defaults "$DUMP_DIR"
+DUMP_DIR=$(mktemp -d /tmp/loopai-defaults-XXXX)
+loopai --dump-defaults "$DUMP_DIR"
 echo "$DUMP_DIR"
 ```
 
@@ -37,24 +42,24 @@ Resolve the user's config directory:
 
 ```bash
 # check environment variable first
-echo "${RALPHEX_CONFIG_DIR:-}"
+echo "${LOOPAI_CONFIG_DIR:-}"
 ```
 
-If `RALPHEX_CONFIG_DIR` is empty, use default:
-- **macOS/Linux**: `~/.config/ralphex/`
+If `LOOPAI_CONFIG_DIR` is empty, use default:
+- **macOS/Linux**: `~/.config/loopai/`
 
 Verify the directory exists:
 ```bash
 ls -la <config-dir>/
 ```
 
-If it doesn't exist, inform user that ralphex hasn't been configured yet and there's nothing to update.
+If it doesn't exist, inform user that loopai hasn't been configured yet and there's nothing to update.
 
-## How ralphex Config Files Work
+## How loopai Config Files Work
 
-ralphex installs config, prompt, and agent files with all content **commented out** (every line prefixed with `# `). At runtime, `stripComments()` removes these lines, finds nothing, and falls back to **embedded defaults** compiled into the binary. These all-commented files are functionally identical to missing files — they are do-nothing placeholders.
+loopai installs config, prompt, and agent files with all content **commented out** (every line prefixed with `# `). At runtime, `stripComments()` removes these lines, finds nothing, and falls back to **embedded defaults** compiled into the binary. These all-commented files are functionally identical to missing files — they are do-nothing placeholders.
 
-When ralphex is updated, new embedded defaults take effect **automatically** for every file that hasn't been customized. No file changes are needed.
+When loopai is updated, new embedded defaults take effect **automatically** for every file that hasn't been customized. No file changes are needed.
 
 A file is **customized** only if it contains at least one uncommented, non-empty line that was intentionally modified by the user. The `--dump-defaults` command produces the raw (uncommented) embedded content for comparison.
 
@@ -89,7 +94,7 @@ Note: files that exist only in the dump directory (no corresponding user file) a
 Show the user a summary with two groups:
 
 ```
-ralphex config update summary:
+loopai config update summary:
 
 No changes needed (N files):
   prompts/task.txt, prompts/review_first.txt, agents/quality.txt, prompts/codex.txt, ...
@@ -170,8 +175,8 @@ When proposing smart merges, follow these rules:
 
 ## Constraints
 
-- This command is ONLY for updating ralphex configuration files
+- This command is ONLY for updating loopai configuration files
 - Do NOT modify any project source code
-- Do NOT run ralphex execution or review
+- Do NOT run loopai execution or review
 - Do NOT touch files outside the config directory
 - Always clean up the temp directory when done

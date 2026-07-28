@@ -1696,16 +1696,15 @@ func handleEarlyFlags(o opts) (bool, error) {
 // requires running from repository root to avoid creating config in a subdirectory
 // that would never be found during normal execution.
 func initLocal(configDir string) error {
-	// check for repository root markers (.git or .hg) to prevent creating
+	// check for the Git repository root marker to prevent creating
 	// config in subdirectories where loopai won't find it during normal execution.
 	// when a custom VCS backend is configured (not "git"), validate the repo
 	// by running the configured command with rev-parse --show-toplevel.
 	hasGit := fileExists(".git")
-	hasHg := fileExists(".hg")
-	if !hasGit && !hasHg {
+	if !hasGit {
 		cfg, loadErr := config.LoadReadOnly(configDir)
 		if loadErr != nil || cfg.VcsCommand == "" || cfg.VcsCommand == "git" {
-			return errors.New("must run from repository root (no .git or .hg directory found); cd to the repository root before running --init")
+			return errors.New("must run from repository root (no .git directory found); cd to the repository root before running --init")
 		}
 		// custom VCS backend configured — validate repo root using the backend command
 		if validErr := validateRepoRoot(cfg.VcsCommand); validErr != nil {

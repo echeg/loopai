@@ -1,4 +1,4 @@
-// ralphex dashboard - SSE streaming and UI handling
+// loopai dashboard - SSE streaming and UI handling
 //
 // XSS Prevention Strategy:
 // - All user/server-provided text is rendered via textContent or createTextNode

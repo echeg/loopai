@@ -56,6 +56,8 @@ pkg/status/          shared phases, sections, and protocol signals
 pkg/web/             dashboard, SSE, templates, static assets
 e2e/                 Playwright dashboard tests
 scripts/             provider wrappers and internal test helpers
+scripts/copilot-as-claude/ # GitHub Copilot CLI wrapper for Claude-compatible output
+scripts/pi-as-claude/ # pi wrapper for Claude-compatible output
 assets/claude/       optional slash-command source assets
 docs/                focused operational documentation and plans
 ```
@@ -96,6 +98,8 @@ The primary executor owns all repository writes. External reviewers produce find
 Claude is the default primary. `--codex` switches planning, tasks, internal reviews, evaluation, and finalize to Codex. `external_review_tool = auto` selects the other provider when installed. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
 
 Codex invocations use additive `-c` overrides so user `~/.codex/config.toml` settings remain available. loopai never writes to `~/.codex/`. `--pass-claude-md` lets Codex discover project `CLAUDE.md`; it does not install or link user-level files.
+
+Alternative Claude-compatible providers live under `scripts/`. `scripts/copilot-as-claude/copilot-as-claude.sh` wraps GitHub Copilot CLI and uses native autopilot mode; plan creation deliberately uses `--autopilot --allow-all` without `--no-ask-user`. `scripts/pi-as-claude/pi-as-claude.sh` translates pi JSONL output and maps loopai model/effort settings to pi provider options. Detailed setup and wrapper behavior live in `docs/custom-providers.md`.
 
 Worktrees live under `.loopai/worktrees/<branch>`. The progress logger is created before changing into a worktree, so logs remain in the main checkout at `.loopai/progress/`.
 

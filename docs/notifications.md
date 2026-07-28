@@ -1,10 +1,10 @@
 # Notifications
 
-ralphex can send notifications when plan execution completes (success or failure). Notifications are optional, disabled by default, and best-effort - failures are logged but never affect the exit code.
+loopai can send notifications when plan execution completes (success or failure). Notifications are optional, disabled by default, and best-effort - failures are logged but never affect the exit code.
 
 ## Quick setup
 
-1. Add channels to your config (`~/.config/ralphex/config` or `.ralphex/config`):
+1. Add channels to your config (`~/.config/loopai/config` or `.loopai/config`):
 
 ```ini
 notify_channels = telegram
@@ -12,7 +12,7 @@ notify_telegram_token = 123456:ABC-DEF
 notify_telegram_chat = -1001234567890
 ```
 
-2. Run ralphex as usual. A notification fires after execution finishes.
+2. Run loopai as usual. A notification fires after execution finishes.
 
 ## General settings
 
@@ -79,7 +79,7 @@ notify_smtp_host = mail.example.com
 notify_smtp_port = 587
 notify_smtp_username = user@example.com
 notify_smtp_password = password
-notify_email_from = ralphex@example.com
+notify_email_from = loopai@example.com
 notify_email_to = dev@example.com
 ```
 
@@ -107,7 +107,7 @@ The channel value is the channel name (without `#`) or channel ID.
 
 ### Webhook
 
-ralphex sends the notification message as a plain text POST to each webhook URL.
+loopai sends the notification message as a plain text POST to each webhook URL.
 
 Config:
 
@@ -126,7 +126,7 @@ Config:
 
 ```ini
 notify_channels = custom
-notify_custom_script = ~/.config/ralphex/scripts/notify.sh
+notify_custom_script = ~/.config/loopai/scripts/notify.sh
 ```
 
 The script:
@@ -156,7 +156,7 @@ Example script:
 ```bash
 #!/bin/bash
 # read JSON from stdin and send to a custom endpoint
-jq -c '.' | curl -s -X POST -H "Content-Type: application/json" -d @- https://hooks.example.com/ralphex
+jq -c '.' | curl -s -X POST -H "Content-Type: application/json" -d @- https://hooks.example.com/loopai
 ```
 
 Example script using ntfy.sh:
@@ -167,7 +167,7 @@ Example script using ntfy.sh:
 DATA=$(cat)
 STATUS=$(echo "$DATA" | jq -r '.status')
 PLAN=$(echo "$DATA" | jq -r '.plan_file')
-curl -s -d "ralphex ${STATUS}: ${PLAN}" ntfy.sh/my-ralphex-topic
+curl -s -d "loopai ${STATUS}: ${PLAN}" ntfy.sh/my-loopai-topic
 ```
 
 ## Using multiple channels
@@ -179,7 +179,7 @@ notify_channels = telegram, webhook, custom
 notify_telegram_token = 123456:ABC-DEF
 notify_telegram_chat = -1001234567890
 notify_webhook_urls = https://hooks.example.com/notify
-notify_custom_script = ~/.config/ralphex/scripts/notify.sh
+notify_custom_script = ~/.config/loopai/scripts/notify.sh
 ```
 
 Each channel is independent - if one fails, others still fire.
@@ -218,7 +218,7 @@ Notifications use a plain text format.
 Success:
 
 ```
-ralphex completed on myhost
+loopai completed on myhost
 
 plan:     docs/plans/add-auth.md
 branch:   add-auth
@@ -230,7 +230,7 @@ changes:  8 files (+142/-23 lines)
 Failure:
 
 ```
-ralphex failed on myhost
+loopai failed on myhost
 
 plan:     docs/plans/add-auth.md
 branch:   add-auth
@@ -243,7 +243,7 @@ The custom script channel receives structured JSON instead of this text format (
 
 ## Notes
 
-- Notifications are best-effort. Delivery failures are logged as warnings but never cause ralphex to fail or change its exit code.
+- Notifications are best-effort. Delivery failures are logged as warnings but never cause loopai to fail or change its exit code.
 - Misconfigured channels (missing required fields) are detected at startup and cause an immediate error. However, channels that require a live API call during initialization (e.g., Telegram's bot token verification) are gracefully skipped with a warning if the call fails, since notifications are best-effort.
 - Telegram initialization verifies the bot token via a synchronous API call (up to 30s timeout). If the API is unreachable or the token is invalid, the channel is disabled with a warning. Note that this verification blocks startup for the duration of the attempt.
 - The hostname in the message is resolved once at startup. If resolution fails, "unknown" is used.

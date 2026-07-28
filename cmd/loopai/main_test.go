@@ -2749,32 +2749,33 @@ func TestHandleEarlyFlags(t *testing.T) {
 		require.NoError(t, os.Chdir(tmpDir))
 		t.Cleanup(func() { require.NoError(t, os.Chdir(origDir)) })
 
-		// no .git or .hg - should fail
+		// no .git - should fail
 		done, err := handleEarlyFlags(opts{Init: true})
 		require.Error(t, err)
 		assert.True(t, done)
 		assert.Contains(t, err.Error(), "must run from repository root")
 	})
 
-	t.Run("init_works_with_hg_repo", func(t *testing.T) {
+	t.Run("init_rejects_hg_repo_without_custom_backend", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		origDir, err := os.Getwd()
 		require.NoError(t, err)
 		require.NoError(t, os.Chdir(tmpDir))
 		t.Cleanup(func() { require.NoError(t, os.Chdir(origDir)) })
 
-		// create .hg instead of .git
+		// a bare .hg marker is no longer a supported repository root.
 		require.NoError(t, os.Mkdir(filepath.Join(tmpDir, ".hg"), 0o700))
 
 		done, err := handleEarlyFlags(opts{Init: true})
-		require.NoError(t, err)
+		require.Error(t, err)
 		assert.True(t, done)
-		assert.DirExists(t, filepath.Join(tmpDir, ".loopai"))
+		assert.Contains(t, err.Error(), "no .git directory found")
+		assert.NoDirExists(t, filepath.Join(tmpDir, ".loopai"))
 	})
 
 	t.Run("init_works_with_custom_vcs_backend", func(t *testing.T) {
 		// simulate custom VCS backend with a script that returns cwd as repo root.
-		// no .git or .hg directory — validation goes through validateRepoRoot.
+		// no .git directory — validation goes through validateRepoRoot.
 		tmpDir := t.TempDir()
 		origDir, err := os.Getwd()
 		require.NoError(t, err)

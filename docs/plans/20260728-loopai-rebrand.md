@@ -232,6 +232,12 @@ progress-логи. Плюс в репозитории лежит ~6300 стро�
 - [x] проверить покрытие: 87.8%, не ниже зафиксированного до acceptance-проверки уровня 87.8%
 - [x] сверить, что `~/.config/ralphex/` и `~/.config/loopai/` не изменялись прогоном тестов:
       mtimes и SHA-256 всех файлов совпали со снимком до прогона
+- [x] ➕ по итогам review удалить остаточный `RALPHEX_DOCKER`, который отключал sandbox Codex после
+      удаления Docker-обвязки
+- [x] ➕ по итогам review перестать считать `.hg` достаточным маркером репозитория для `--init`;
+      custom `vcs_command` по-прежнему валидируется универсальным механизмом
+- [x] ➕ добавить регрессии на игнорирование `.ralphex`, префикс editor tempfile и все
+      `.loopai`-ветки поиска progress-файла в Copilot wrapper; включить wrapper suite в `make test` и CI
 
 ### Task 8: [Final] Update documentation
 
@@ -240,6 +246,11 @@ progress-логи. Плюс в репозитории лежит ~6300 стро�
       пути конфига, убрать разделы про Docker/Bedrock/Mercurial/сайт
 - [x] обновить `llms.txt`: команды, пути конфига, требования; убрать удалённые разделы
 - [x] обновить `CONTRIBUTING.md` под форк
+- [x] ➕ обновить `docs/custom-providers.md`, `docs/notifications.md` и README всех сохранённых
+      provider wrappers: имя бинаря, config paths и актуальная симметричная external-review матрица
+- [x] ➕ переименовать сохранённые Claude skills в `loopai*`, заменить команды/пути и описать
+      установку форка сборкой из исходников
+- [x] ➕ обновить пользовательские adapter-строки provider wrappers и `scripts/internal/README.md`
 - [x] зафиксировать в `CLAUDE.md` политику форка: module path и сигналы `RALPHEX` намеренно
       не переименованы ради мержабельности с апстримом — чтобы это не «починили» позже
 - [x] **не трогать** `CHANGELOG.md` — правило проекта

@@ -1,5 +1,5 @@
 ---
-description: Create structured implementation plan in docs/plans/
+description: Create a structured loopai implementation plan in docs/plans/
 ---
 
 # Implementation Plan Creation
@@ -8,16 +8,19 @@ Create an implementation plan in `docs/plans/YYYYMMDD-<task-name>.md` with inter
 
 ## Prerequisites: Verify CLI Installation
 
-Check if ralphex CLI is installed (needed to execute the plan after creation):
+Check if loopai CLI is installed (needed to execute the plan after creation):
 ```bash
-which ralphex
+which loopai
 ```
 
-**If not found**, inform user they'll need it to execute the plan:
-- **macOS (Homebrew)**: `brew install umputun/apps/ralphex`
-- **Linux (Debian/Ubuntu)**: download `.deb` from https://github.com/umputun/ralphex/releases
-- **Linux (RHEL/Fedora)**: download `.rpm` from https://github.com/umputun/ralphex/releases
-- **Any platform with Go**: `go install github.com/umputun/ralphex/cmd/ralphex@latest`
+**If not found**, inform the user that this personal fork is installed from source:
+
+```bash
+git clone https://github.com/echeg/loopai
+cd loopai
+make build
+install -m 0755 .bin/loopai ~/.local/bin/loopai
+```
 
 Proceed with plan creation regardless, but remind user to install before execution.
 
@@ -230,7 +233,7 @@ Example (NOTICE: tests are separate checklist items):
 - [ ] update README.md if needed
 - [ ] update project knowledge docs if new patterns discovered
 
-*Note: ralphex automatically moves completed plans to `docs/plans/completed/`*
+*Note: loopai automatically moves completed plans to `docs/plans/completed/`*
 
 ## Technical Details
 - Data structures and changes
@@ -292,7 +295,7 @@ If yes, begin with task 1.
 5. **On completion**:
    - Verify all checkboxes marked
    - Run final test suite
-   - *ralphex automatically moves plan to `docs/plans/completed/`*
+   - *loopai automatically moves plan to `docs/plans/completed/`*
 
 6. **Partial implementation exception**:
    - If a task provides partial implementation where tests cannot pass until a later task:

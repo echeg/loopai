@@ -2,10 +2,10 @@
 # opencode-as-claude.sh - wraps OpenCode CLI to produce Claude-compatible stream-json output.
 #
 # this script translates OpenCode JSONL events into the Claude stream-json format
-# that ralphex's ClaudeExecutor can parse, allowing OpenCode to be used as a drop-in
+# that loopai's ClaudeExecutor can parse, allowing OpenCode to be used as a drop-in
 # replacement for claude in task and review phases.
 #
-# config example (~/.config/ralphex/config or .ralphex/config):
+# config example (~/.config/loopai/config or .loopai/config):
 #   claude_command = /path/to/opencode-as-claude.sh
 #   claude_args =
 #
@@ -41,9 +41,9 @@ require_flag_value() {
     printf '%s\n' "$value"
 }
 
-# ralphex passes prompt via stdin (primary path, avoids Windows 8191-char cmd limit).
+# loopai passes prompt via stdin (primary path, avoids Windows 8191-char cmd limit).
 # also accept -p flag for backward compatibility with direct invocations.
-# support ralphex-injected --model/--effort and map effort to opencode's --variant.
+# support loopai-injected --model/--effort and map effort to opencode's --variant.
 # all other flags are ignored gracefully (--dangerously-skip-permissions, etc.)
 prompt=""
 while [[ $# -gt 0 ]]; do
@@ -60,7 +60,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$prompt" ]]; then
-    # fall back to stdin: ralphex passes prompt via pipe to avoid Windows 8191-char cmd limit.
+    # fall back to stdin: loopai passes prompt via pipe to avoid Windows 8191-char cmd limit.
     # only read when stdin is not a terminal to avoid blocking interactive invocations.
     if [[ ! -t 0 ]]; then
         prompt=$(cat)
@@ -100,7 +100,7 @@ if [[ "$prompt" == *"<<<RALPHEX:REVIEW_DONE>>>"* ]]; then
 fi
 
 if [[ "$is_review_prompt" == "1" ]]; then
-    adapter_text=$'Ralphex review adapter for OpenCode:\n- Interpret review "Task tool" instructions as sequential steps: perform each review agent\'s work one at a time.\n- OpenCode does not support parallel sub-agents, so execute each review task sequentially.\n- Apply fixes after completing all review steps.\n- Keep original review workflow and all <<<RALPHEX:...>>> signals unchanged.'
+    adapter_text=$'loopai review adapter for OpenCode:\n- Interpret review "Task tool" instructions as sequential steps: perform each review agent\'s work one at a time.\n- OpenCode does not support parallel sub-agents, so execute each review task sequentially.\n- Apply fixes after completing all review steps.\n- Keep original review workflow and all <<<RALPHEX:...>>> signals unchanged.'
     prompt="$adapter_text"$'\n\n'"$prompt"
 fi
 
@@ -120,7 +120,7 @@ mkfifo "$stdout_pipe"
 # write output rules instruction file to prevent LLM from echoing signal strings.
 # opencode's system prompt lacks Claude Code's "do not restate what the user said"
 # directive, so the model may echo <<<RALPHEX:...>>> signals from the prompt in its
-# planning output, causing false signal detection in ralphex.
+# planning output, causing false signal detection in loopai.
 instructions_file="$tmp_dir/output-rules.md"
 cat > "$instructions_file" <<'INSTREOF'
 # Output rules
@@ -156,7 +156,7 @@ opencode_pid=$!
 
 # run opencode with JSON output, translate events to claude stream-json format.
 # stderr is captured to a temp file and emitted as content_block_delta events
-# after the main stream, enabling ralphex error/limit pattern detection (R6).
+# after the main stream, enabling loopai error/limit pattern detection (R6).
 #
 # event mapping:
 #   text         -> content_block_delta (text_delta)

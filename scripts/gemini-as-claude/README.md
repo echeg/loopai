@@ -1,6 +1,6 @@
 # gemini-as-claude
 
-Gemini CLI wrapper for ralphex, allowing Gemini to replace Claude Code in task and review phases.
+Gemini CLI wrapper for loopai, allowing Gemini to replace Claude Code in task and review phases.
 
 ## Scripts
 
@@ -8,7 +8,7 @@ Gemini CLI wrapper for ralphex, allowing Gemini to replace Claude Code in task a
 
 Wraps Gemini CLI to produce Claude-compatible stream-json output. Acts as a drop-in replacement for `claude` in task and review phases. Since Gemini outputs plain text, this script wraps each line in a `content_block_delta` JSON event.
 
-**Configuration** (`~/.config/ralphex/config` or `.ralphex/config`):
+**Configuration** (`~/.config/loopai/config` or `.loopai/config`):
 
 ```ini
 claude_command = /path/to/scripts/gemini-as-claude/gemini-as-claude.sh

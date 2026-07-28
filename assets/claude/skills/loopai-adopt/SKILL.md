@@ -1,11 +1,11 @@
 ---
-description: Convert plans from various source formats (OpenSpec, spec-kit, GitHub/GitLab issues with checklists, generic task-lists, free-form markdown) into ralphex-format plans in docs/plans/. Triggers on "ralphex-adopt", "adopt plan", "convert plan to ralphex", "import plan as ralphex".
+description: Convert plans from various source formats (OpenSpec, spec-kit, GitHub/GitLab issues with checklists, generic task-lists, free-form markdown) into loopai-format plans in docs/plans/. Triggers on "loopai-adopt", "adopt plan", "convert plan to loopai", "import plan as loopai".
 allowed-tools: [Bash, Read, Write, Glob, Grep, AskUserQuestion]
 ---
 
-# ralphex-adopt - Convert Plans Into ralphex Format
+# loopai-adopt - Convert Plans Into loopai Format
 
-**SCOPE**: Read a source plan in some other format and produce a new ralphex-format plan at `docs/plans/YYYYMMDD-<slug>.md`. The source is never modified. Existing target files are never silently overwritten.
+**SCOPE**: Read a source plan in some other format and produce a new loopai-format plan at `docs/plans/YYYYMMDD-<slug>.md`. The source is never modified. Existing target files are never silently overwritten.
 
 Supported source shapes:
 
@@ -19,20 +19,22 @@ This is a single-skill conversion: discover, classify, ask focused questions whe
 
 ## Step 0: Optional CLI Check
 
-This check is **informational only**. Missing ralphex CLI must NOT break the flow — conversion does not require it. Do NOT block, exit, prompt the user, or wait for installation. Always continue to Step 1 regardless of the result.
+This check is **informational only**. Missing loopai CLI must NOT break the flow — conversion does not require it. Do NOT block, exit, prompt the user, or wait for installation. Always continue to Step 1 regardless of the result.
 
 ```bash
-which ralphex
+which loopai
 ```
 
-If `which ralphex` returns non-zero, briefly mention that ralphex is needed to execute the converted plan later (not now), list install options once, and continue immediately:
+If `which loopai` returns non-zero, briefly mention that loopai is needed to execute the converted plan later (not now), provide the source-build command below once, and continue immediately:
 
-- **macOS (Homebrew)**: `brew install umputun/apps/ralphex`
-- **Linux (Debian/Ubuntu)**: download `.deb` from https://github.com/umputun/ralphex/releases
-- **Linux (RHEL/Fedora)**: download `.rpm` from https://github.com/umputun/ralphex/releases
-- **Any platform with Go**: `go install github.com/umputun/ralphex/cmd/ralphex@latest`
+```bash
+git clone https://github.com/echeg/loopai
+cd loopai
+make build
+install -m 0755 .bin/loopai ~/.local/bin/loopai
+```
 
-If `which ralphex` succeeds, say nothing and proceed.
+If `which loopai` succeeds, say nothing and proceed.
 
 ## Step 1: Resolve Source From Argument Shape
 
@@ -102,11 +104,11 @@ Do not draft, then ask. Ask, then draft.
 
 ## Step 4: Convert Per Format
 
-All converted plans must satisfy ralphex's plan-format rules:
+All converted plans must satisfy loopai's plan-format rules:
 
 - File starts with `# <Plan Title>` H1.
 - Standard sections in order: `## Overview`, `## Context`, `## Development Approach`, `## Testing Strategy`, `## Progress Tracking`, optional `## Technical Details` (when source has architecture/spec details to preserve), `## Implementation Steps`, optional `## Post-Completion`.
-- Task headers use the structural form `### Task <N>: <title>`. The keyword `Task` is **always English**, even when the plan title and task titles are in another natural language. ralphex's plan parser only recognizes English `Task` and `Iteration` keywords; localized variants (`Задача`, `タスク`, `Tarea`, etc.) will not be detected.
+- Task headers use the structural form `### Task <N>: <title>`. The keyword `Task` is **always English**, even when the plan title and task titles are in another natural language. loopai's plan parser only recognizes English `Task` and `Iteration` keywords; localized variants (`Задача`, `タスク`, `Tarea`, etc.) will not be detected.
 - Checkboxes (`- [ ]` / `- [x]`) appear **only inside Task sections**. Do not put checkboxes in Overview, Context, Success criteria, or any other section — they cause the executor to spawn extra iterations.
 - Every Task should end with a "write tests" checkbox and a "run project tests" checkbox, phrased generically (project may be in any language).
 - The final Task is always `### Task <last>: Verify acceptance criteria` containing items that re-run the test suite, run the project linter, and confirm requirements from Overview were met.
@@ -231,10 +233,10 @@ Create a temp file and capture its path. Each Bash tool call runs in its own sub
 Use a portable `mktemp` form. The `-t prefix` form differs between macOS BSD and Linux GNU. A template ending in `XXXXXX` is portable, but a suffix after `XXXXXX` (e.g., `XXXXXX.md`) is silently treated as a literal filename by BSD `mktemp` and would cause concurrent runs to collide on the same path. Generate the random path first, then rename to add the `.md` extension:
 
 ```bash
-TMP=$(mktemp "${TMPDIR:-/tmp}/ralphex-adopt-XXXXXX") && mv "$TMP" "$TMP.md" && printf '%s\n' "$TMP.md"
+TMP=$(mktemp "${TMPDIR:-/tmp}/loopai-adopt-XXXXXX") && mv "$TMP" "$TMP.md" && printf '%s\n' "$TMP.md"
 ```
 
-Read the path from stdout (e.g., `/tmp/ralphex-adopt-aB3xY9.md`) and remember it. Refer to that literal string below as `<draft-path>`. Write the draft content to `<draft-path>` via the Write tool.
+Read the path from stdout (e.g., `/tmp/loopai-adopt-aB3xY9.md`) and remember it. Refer to that literal string below as `<draft-path>`. Write the draft content to `<draft-path>` via the Write tool.
 
 An `EXIT` trap is not used because each Bash call is its own subshell — the trap would fire immediately. Cleanup is explicit at the end of Step 6 (success) and on every cancel path (`rm -f <draft-path>` with the literal path substituted).
 
@@ -311,7 +313,7 @@ Adopted plan: docs/plans/<final-name>.md
 Source: <source kind and identifier>
 Tasks: <N>
 
-Next: run `ralphex docs/plans/<final-name>.md` to execute.
+Next: run `loopai docs/plans/<final-name>.md` to execute.
 ```
 
 ## Edge Cases
@@ -342,5 +344,5 @@ Next: run `ralphex docs/plans/<final-name>.md` to execute.
 - Never silently overwrite an existing target file.
 - Never embed placeholder markers (`???`, `TBD`, `[FIXME]`) in the output — AskUser before drafting instead.
 - Never assume the target project is a specific language. Test/run-test checkboxes must use generic phrasing such as "write tests" and "run project tests".
-- Never cite ralphex internal source files (e.g., `pkg/...`) in the converted plan content.
+- Never cite loopai internal source files (e.g., `pkg/...`) in the converted plan content.
 - Do not run tests, do not run linters, do not commit, do not push. The skill only produces a plan file.
