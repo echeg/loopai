@@ -317,7 +317,7 @@ func TestCustomExecutor_Run_PassesPromptToScript(t *testing.T) {
 
 	require.NoError(t, result.Error)
 	assert.NotEmpty(t, capturedPromptFile, "prompt file path should be passed to runner")
-	assert.Contains(t, capturedPromptFile, "ralphex-custom-prompt-", "temp file should have expected prefix")
+	assert.Contains(t, capturedPromptFile, "loopai-custom-prompt-", "temp file should have expected prefix")
 }
 
 func TestExecCustomRunner_Run(t *testing.T) {

@@ -52,7 +52,7 @@ type DiffStats struct {
 	Deletions int // lines deleted
 }
 
-// Service provides git operations for ralphex workflows.
+// Service provides git operations for loopai workflows.
 // It is the single public API for the git package.
 type Service struct {
 	repo    backend
@@ -216,11 +216,11 @@ func (s *Service) preparePlanBranch(planFile string, requireDefault bool, defaul
 		}
 		return "", false, fmt.Errorf("cannot create branch %q: worktree has uncommitted changes\n\n"+
 			"uncommitted files:\n%s\n\n"+
-			"ralphex needs to create a feature branch from %s to isolate plan work.\n\n"+
+			"loopai needs to create a feature branch from %s to isolate plan work.\n\n"+
 			"options:\n"+
-			"  git stash && ralphex %s && git stash pop   # stash changes temporarily\n"+
+			"  git stash && loopai %s && git stash pop   # stash changes temporarily\n"+
 			"  git commit -am \"wip\"                       # commit changes first\n"+
-			"  ralphex --review                           # skip branch creation (review-only mode)",
+			"  loopai --review                            # skip branch creation (review-only mode)",
 			branchName, fileList, currentBranch, planFile)
 	}
 

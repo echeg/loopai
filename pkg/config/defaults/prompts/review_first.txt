@@ -10,7 +10,7 @@
 #   {{agent:<name>}} - expands to the executor-appropriate agent invocation
 #                      (Task tool for claude, spawn_agent for codex)
 #
-# agents are defined in ~/.config/ralphex/agents/ (user) or pkg/config/defaults/agents/ (builtin)
+# agents are defined in ~/.config/loopai/agents/ (user) or pkg/config/defaults/agents/ (builtin)
 
 Code review of: {{GOAL}}
 

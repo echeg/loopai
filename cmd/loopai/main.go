@@ -1,4 +1,4 @@
-// Package main provides ralphex - autonomous plan execution with Claude Code.
+// Package main provides loopai - autonomous plan execution with Claude Code.
 package main
 
 import (
@@ -198,7 +198,7 @@ func (c *cleanupHolder) call() {
 
 func main() {
 	if os.Getenv("GO_FLAGS_COMPLETION") == "" {
-		fmt.Printf("ralphex %s\n", resolveVersion())
+		fmt.Printf("loopai %s\n", resolveVersion())
 	}
 
 	var o opts
@@ -1308,7 +1308,7 @@ func printStartupInfo(info startupInfo, colors *progress.Colors) {
 	if info.Mode != processor.ModeFull {
 		modeStr = fmt.Sprintf(" (%s mode)", info.Mode)
 	}
-	colors.Info().Printf("starting ralphex loop (max %d iterations)%s\n", info.MaxIterations, modeStr)
+	colors.Info().Printf("starting loopai loop (max %d iterations)%s\n", info.MaxIterations, modeStr)
 	displayMeta(colors, 0, info.PlanFile, info.Branch, info.ProgressPath)
 	printExecutorInfo(info, colors)
 	if info.PreserveAnthropicAPIKey {
@@ -1339,7 +1339,7 @@ func printExecutorInfo(info startupInfo, colors *progress.Colors) {
 
 func printCodexExecutorInfo(info startupInfo, colors *progress.Colors) {
 	colors.Info().Printf("executor: codex\n")
-	// codex effective config: skip lines we don't know (ralphex did not
+	// codex effective config: skip lines we don't know (loopai did not
 	// override them, so codex picks from ~/.codex/config.toml). sandbox is
 	// always resolved via CodexExecutorSandbox so it's always present.
 	if info.CodexModel != "" {
@@ -1697,7 +1697,7 @@ func handleEarlyFlags(o opts) (bool, error) {
 // that would never be found during normal execution.
 func initLocal(configDir string) error {
 	// check for repository root markers (.git or .hg) to prevent creating
-	// config in subdirectories where ralphex won't find it during normal execution.
+	// config in subdirectories where loopai won't find it during normal execution.
 	// when a custom VCS backend is configured (not "git"), validate the repo
 	// by running the configured command with rev-parse --show-toplevel.
 	hasGit := fileExists(".git")
@@ -1789,7 +1789,7 @@ func toRelPath(p string) string {
 
 // isResetOnly returns true if --reset was the only meaningful flag/arg specified.
 // this allows reset to work standalone (exit after reset) while also supporting
-// combined usage like "ralphex --reset docs/plans/feature.md".
+// combined usage like "loopai --reset docs/plans/feature.md".
 func isResetOnly(o opts) bool {
 	return o.PlanFile == "" &&
 		!o.Review &&
@@ -2049,7 +2049,7 @@ func ensureRepoHasCommits(ctx context.Context, gitSvc *git.Service, stdin io.Rea
 	createdCommit := false
 	promptFn := func() bool {
 		fmt.Fprintln(stdout, "repository has no commits")
-		fmt.Fprintln(stdout, "ralphex needs at least one commit to create feature branches.")
+		fmt.Fprintln(stdout, "loopai needs at least one commit to create feature branches.")
 		fmt.Fprintln(stdout)
 		if !input.AskYesNo(ctx, "create initial commit?", stdin, stdout) {
 			return false

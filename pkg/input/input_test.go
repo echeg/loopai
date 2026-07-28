@@ -776,8 +776,8 @@ func TestTerminalCollector_openEditor(t *testing.T) {
 		result, err := c.openEditor(context.Background(), "cleanup test content")
 		require.NoError(t, err)
 		assert.Equal(t, "cleanup test content", result)
-		// verify no ralphex-plan temp files remain after openEditor returns
-		matches, _ := filepath.Glob(os.TempDir() + "/ralphex-plan-*.md")
+		// verify no loopai-plan temp files remain after openEditor returns
+		matches, _ := filepath.Glob(os.TempDir() + "/loopai-plan-*.md")
 		assert.Empty(t, matches, "temp file should be cleaned up, found: %v", matches)
 	})
 }

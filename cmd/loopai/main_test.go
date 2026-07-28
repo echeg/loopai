@@ -1834,8 +1834,9 @@ func TestPrintStartupInfo(t *testing.T) {
 			MaxIterations: 50,
 			ProgressPath:  "progress.txt",
 		}
-		// this doesn't return anything, just verify it doesn't panic
-		printStartupInfo(info, colors)
+		out := captureStdout(t, func() { printStartupInfo(info, colors) })
+		assert.Contains(t, out, "starting loopai loop")
+		assert.NotContains(t, out, "starting ralphex loop")
 	})
 
 	t.Run("prints_no_plan_for_review_mode", func(t *testing.T) {
@@ -2147,6 +2148,7 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 
 		// verify output
 		assert.Contains(t, stdout.String(), "repository has no commits")
+		assert.Contains(t, stdout.String(), "loopai needs at least one commit")
 		assert.Contains(t, stdout.String(), "created initial commit")
 	})
 

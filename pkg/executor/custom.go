@@ -71,7 +71,7 @@ func (e *CustomExecutor) Run(ctx context.Context, promptContent string) Result {
 	}
 
 	// write prompt to temp file
-	promptFile, err := os.CreateTemp("", "ralphex-custom-prompt-*.txt")
+	promptFile, err := os.CreateTemp("", "loopai-custom-prompt-*.txt")
 	if err != nil {
 		return Result{Error: fmt.Errorf("create prompt file: %w", err)}
 	}

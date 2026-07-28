@@ -350,7 +350,7 @@ func (c *TerminalCollector) openEditor(ctx context.Context, content string) (str
 	}
 
 	// create temp file with .md extension for markdown syntax highlighting
-	tmpFile, err := os.CreateTemp("", "ralphex-plan-*.md")
+	tmpFile, err := os.CreateTemp("", "loopai-plan-*.md")
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
 	}

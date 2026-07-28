@@ -1,4 +1,4 @@
-// Package cmux reports ralphex execution state to the sidebar of the cmux terminal.
+// Package cmux reports loopai execution state to the sidebar of the cmux terminal.
 //
 // the integration is best-effort and one-directional: it shells out to the public cmux CLI and
 // never lets a failure reach the run. outside cmux (no binary in PATH or no CMUX_WORKSPACE_ID)
@@ -36,14 +36,14 @@ const (
 	// statusKey names both the pill and the sidebar loader entry. an own key is used instead of an
 	// agent key like claude_code because cmux shows non-allowlisted pills unconditionally, while
 	// allowlisted ones are hidden unless it sees a live pid of that agent.
-	statusKey = "ralphex"
+	statusKey = "loopai"
 
-	// statusPriority orders the ralphex pill among other pills in the tab row.
+	// statusPriority orders the loopai pill among other pills in the tab row.
 	statusPriority = "90"
 
-	// notifyTitle is the title of every notification ralphex raises, i.e. the app name on the banner.
+	// notifyTitle is the title of every notification loopai raises, i.e. the app name on the banner.
 	// same text as statusKey but a separate constant: one is a cmux entry key, the other is user-visible.
-	notifyTitle = "ralphex"
+	notifyTitle = "loopai"
 
 	// notifyBodyLimit caps the notification body, the macOS banner does not render more anyway.
 	notifyBodyLimit = 200
@@ -99,7 +99,7 @@ type Reporter struct {
 	lastDone, lastTotal int
 }
 
-// New returns a reporter for the current cmux workspace, or nil when ralphex does not run
+// New returns a reporter for the current cmux workspace, or nil when loopai does not run
 // inside cmux. all methods are nil-safe, so the result can be used without a nil check.
 func New(planFile string) *Reporter {
 	if strings.TrimSpace(os.Getenv(workspaceEnv)) == "" {
@@ -137,7 +137,7 @@ func (r *Reporter) loadingOn() { r.exec("workspace", "loading", "on", "--id", st
 // loadingOff removes the spinner from the sidebar.
 func (r *Reporter) loadingOff() { r.exec("workspace", "loading", "off", "--id", statusKey) }
 
-// setStatus sets the ralphex pill in the tab row. empty icon or color skip their own flags,
+// setStatus sets the loopai pill in the tab row. empty icon or color skip their own flags,
 // leaving the cmux-side default instead of passing an empty value.
 func (r *Reporter) setStatus(text, icon, color string) {
 	args := []string{"set-status", statusKey, text}
@@ -151,7 +151,7 @@ func (r *Reporter) setStatus(text, icon, color string) {
 	r.exec(args...)
 }
 
-// clearStatus removes the ralphex pill.
+// clearStatus removes the loopai pill.
 func (r *Reporter) clearStatus() { r.exec("clear-status", statusKey) }
 
 // setProgress sets the sidebar progress bar. ratio is expected in [0, 1]: reportProgress, the
@@ -316,7 +316,7 @@ type notifyingCollector struct {
 	inner inputCollector
 }
 
-// AskQuestion notifies that ralphex waits for an answer, then delegates.
+// AskQuestion notifies that loopai waits for an answer, then delegates.
 func (c *notifyingCollector) AskQuestion(ctx context.Context, question string, options []string) (string, error) {
 	c.rep.Notify("input needed", question)
 	return c.inner.AskQuestion(ctx, question, options) //nolint:wrapcheck // decorator passes the inner error through unchanged
