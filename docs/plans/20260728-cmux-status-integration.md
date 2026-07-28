@@ -256,22 +256,36 @@ cmux не видит живой PID соответствующего агент�
 
 ### Task 6: включение в main.go
 
-- [ ] в `executePlan` (`cmd/ralphex/main.go:579`) создать репортер после `setupProgressLogger`,
+- [x] в `executePlan` (`cmd/ralphex/main.go:579`) создать репортер после `setupProgressLogger`,
       вызвать `Start(ctx)`, поставить `defer rep.Stop()` рядом с `defer plr.closeLog()`
-- [ ] зарегистрировать `plr.holder.OnChange(rep.OnPhase)` — после создания дашборда, чтобы обе
+- [x] зарегистрировать `plr.holder.OnChange(rep.OnPhase)` — после создания дашборда, чтобы обе
       подписки сосуществовали
-- [ ] на завершении прогона слать `Notify` с результатом: успех рядом с `sendNotification(...)` на
+- [x] на завершении прогона слать `Notify` с результатом: успех рядом с `sendNotification(...)` на
       строке 679, провал — в ветке ошибки на строке 664-667; при `ErrUserAborted` уведомление не слать
-- [ ] в `runPlanMode` (`cmd/ralphex/main.go:1379`) сделать то же самое и дополнительно обернуть
-      коллектор: `collector = rep.WrapInput(collector)` перед `r.SetInputCollector`
-- [ ] **добавить `rep.Stop()` в cleanup-коллбэк `startInterruptWatcher`** (`main.go:247`) — на пути
+      (решение об отправке владеет `cmuxCompletionNotice`, а не место вызова)
+- [x] в `runPlanMode` (`cmd/ralphex/main.go:1379`) сделать то же самое и дополнительно обернуть
+      коллектор: `collector = rep.WrapInput(collector)` перед `r.SetInputCollector`;
+      ➕ перед переходом к реализации плана (`runWithWorktree`/`executePlan`) вызывается
+      `rep.Stop()`: иначе отложенный `Stop` plan-режима снял бы сайдбар уже начатого прогона
+- [x] **добавить `rep.Stop()` в cleanup-коллбэк `startInterruptWatcher`** (`main.go:247`) — на пути
       force-exit через `os.Exit(1)` дефёры не выполняются, и без этого спиннер зависнет в сайдбаре
       навсегда. Репортер должен быть доступен хендлеру так же, как `wtCleanup` (тот же приём с
-      синхронизированным холдером, см. `worktreeCleanupFn` на строке 180)
-- [ ] написать тесты на холдер репортера: потокобезопасная установка и вызов, вызов до установки —
+      синхронизированным холдером, см. `worktreeCleanupFn` на строке 180); ➕ вместо дублирования
+      типа `worktreeCleanupFn` переименован в `cleanupHolder` и переиспользован обоими холдерами;
+      ➕ сброс сайдбара запускается в отдельной горутине рядом с `wtCleanup.call()`, а не до/после:
+      бюджет force-exit общий (2 с), и зависшее удаление воркотри не должно оставлять спиннер висеть
+- [x] написать тесты на холдер репортера: потокобезопасная установка и вызов, вызов до установки —
       no-op, двойной вызов безопасен
-- [ ] написать тесты: сборка уведомления о завершении для успеха, провала и аборта
-- [ ] `make test` и `make lint` — должны пройти до начала задачи 7
+- [x] написать тесты: сборка уведомления о завершении для успеха, провала и аборта
+      (включая завёрнутый `ErrUserAborted` и nil-репортер)
+- [x] `make test` и `make lint` — должны пройти до начала задачи 7 (lint чистый по изменённым файлам;
+      ⚠️ `golangci-lint` не установлен в PATH, прогонялся
+      `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.6.2` — версия новее
+      закреплённой проектом, даёт 3 предсуществующих `prealloc` в нетронутых файлах.
+      ⚠️ в `make test` по-прежнему падает `cmd/ralphex`
+      `TestPlanModeIntegration/plan_mode_progress_file_naming` — предсуществующий отказ,
+      перепроверен на чистом дереве через `git stash`: тот же `execution context: context canceled`,
+      падает до входа в `runPlanMode`)
 
 ### Task 7: Verify acceptance criteria
 

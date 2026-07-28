@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2756,7 +2759,7 @@ func TestRunWithWorktree(t *testing.T) {
 
 		colors := testColors()
 		cfg := &config.Config{WorktreeEnabled: true}
-		wtCleanup := &worktreeCleanupFn{}
+		wtCleanup := &cleanupHolder{}
 
 		// cancel context immediately to stop executePlan fast
 		ctx, cancel := context.WithCancel(t.Context())
@@ -2805,7 +2808,7 @@ func TestRunWithWorktree(t *testing.T) {
 		cfg := &config.Config{WorktreeEnabled: true}
 
 		called := false
-		wtCleanup := &worktreeCleanupFn{fn: func() { called = true }}
+		wtCleanup := &cleanupHolder{fn: func() { called = true }}
 
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
@@ -2840,7 +2843,7 @@ func TestRunWithWorktree(t *testing.T) {
 
 		colors := testColors()
 		cfg := &config.Config{WorktreeEnabled: true}
-		wtCleanup := &worktreeCleanupFn{}
+		wtCleanup := &cleanupHolder{}
 
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
@@ -2917,7 +2920,7 @@ func TestRunWithWorktree_UntrackedPlan(t *testing.T) {
 
 	colors := testColors()
 	cfg := &config.Config{WorktreeEnabled: true}
-	wtCleanup := &worktreeCleanupFn{}
+	wtCleanup := &cleanupHolder{}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -2965,7 +2968,7 @@ func TestRunWithWorktree_CreateWorktreeError(t *testing.T) {
 
 	colors := testColors()
 	cfg := &config.Config{WorktreeEnabled: true}
-	wtCleanup := &worktreeCleanupFn{}
+	wtCleanup := &cleanupHolder{}
 
 	err = runWithWorktree(t.Context(), opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
 		PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: cfg,
@@ -3317,6 +3320,124 @@ func TestMakePauseHandler_EOFAborts(t *testing.T) {
 	handler := makePauseHandler(stdin, &stdout)
 	result := handler(context.Background())
 	assert.False(t, result, "handler should return false on EOF (stdin closed = abort)")
+}
+
+func TestCleanupHolder(t *testing.T) {
+	t.Run("call before set is a no-op", func(t *testing.T) {
+		h := &cleanupHolder{}
+		assert.NotPanics(t, h.call)
+	})
+
+	t.Run("call runs the registered function", func(t *testing.T) {
+		h := &cleanupHolder{}
+		calls := 0
+		h.set(func() { calls++ })
+		h.call()
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("double call is safe and runs the function again", func(t *testing.T) {
+		h := &cleanupHolder{}
+		calls := 0
+		h.set(func() { calls++ })
+		h.call()
+		h.call()
+		assert.Equal(t, 2, calls, "the holder does not deduplicate, callers use sync.Once for that")
+	})
+
+	t.Run("set replaces the previous function", func(t *testing.T) {
+		h := &cleanupHolder{}
+		first, second := false, false
+		h.set(func() { first = true })
+		h.set(func() { second = true })
+		h.call()
+		assert.False(t, first, "the replaced function must not run")
+		assert.True(t, second)
+	})
+
+	t.Run("concurrent set and call are race-free", func(t *testing.T) {
+		h := &cleanupHolder{}
+		var calls atomic.Int64
+		var wg sync.WaitGroup
+		for range 50 {
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				h.set(func() { calls.Add(1) })
+			}()
+			go func() {
+				defer wg.Done()
+				h.call()
+			}()
+		}
+		wg.Wait()
+		h.call()
+		assert.Positive(t, calls.Load(), "the last registered function must still be callable")
+	})
+}
+
+func TestCmuxCompletionNotice(t *testing.T) {
+	tests := []struct {
+		name             string
+		planFile         string
+		branch           string
+		elapsed          string
+		runErr           error
+		wantOK           bool
+		wantSubtitle     string
+		wantBodyContains string
+	}{
+		{
+			name: "success names the plan", planFile: "/repo/docs/plans/20260728-feature.md", branch: "feature",
+			elapsed: "12m30s", wantOK: true, wantSubtitle: "run completed",
+			wantBodyContains: "20260728-feature.md in 12m30s",
+		},
+		{
+			name: "success without plan falls back to branch", branch: "review-branch", elapsed: "2m",
+			wantOK: true, wantSubtitle: "run completed", wantBodyContains: "review-branch in 2m",
+		},
+		{
+			name: "failure carries the error", planFile: "/repo/docs/plans/feature.md", branch: "feature",
+			elapsed: "1m", runErr: errors.New("boom"), wantOK: true, wantSubtitle: "run failed",
+			wantBodyContains: "feature.md: boom",
+		},
+		{
+			name: "wrapped failure carries the error", planFile: "feature.md", branch: "feature", elapsed: "1m",
+			runErr: fmt.Errorf("runner: %w", errors.New("inner")), wantOK: true, wantSubtitle: "run failed",
+			wantBodyContains: "feature.md: runner: inner",
+		},
+		{
+			name: "user abort is not announced", planFile: "feature.md", branch: "feature", elapsed: "1m",
+			runErr: processor.ErrUserAborted, wantOK: false,
+		},
+		{
+			name: "wrapped user abort is not announced", planFile: "feature.md", branch: "feature", elapsed: "1m",
+			runErr: fmt.Errorf("runner: %w", processor.ErrUserAborted), wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			subtitle, body, ok := cmuxCompletionNotice(tt.planFile, tt.branch, tt.elapsed, tt.runErr)
+			assert.Equal(t, tt.wantOK, ok)
+			if !tt.wantOK {
+				assert.Empty(t, subtitle)
+				assert.Empty(t, body)
+				return
+			}
+			assert.Equal(t, tt.wantSubtitle, subtitle)
+			assert.Contains(t, body, tt.wantBodyContains)
+		})
+	}
+}
+
+func TestNotifyCmuxCompletion_NilReporter(t *testing.T) {
+	// outside cmux the reporter is nil; the helper must stay a no-op for every outcome
+	assert.NotPanics(t, func() {
+		notifyCmuxCompletion(nil, "plan.md", "branch", "1m", nil)
+		notifyCmuxCompletion(nil, "plan.md", "branch", "1m", errors.New("boom"))
+		notifyCmuxCompletion(nil, "", "branch", "1m", processor.ErrUserAborted)
+	})
 }
 
 func TestRunCleanupBounded(t *testing.T) {
