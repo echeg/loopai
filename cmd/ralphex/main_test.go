@@ -285,17 +285,14 @@ func TestPlanModeIntegration(t *testing.T) {
 		assert.NotContains(t, err.Error(), "no .git directory")
 	})
 
-	t.Run("plan_mode_progress_file_naming", func(t *testing.T) {
+	t.Run("plan_mode_clears_setup_before_execution", func(t *testing.T) {
 		// skip if configured claude command is not installed
 		skipIfClaudeNotAvailable(t)
 
-		// test that progress filename is generated correctly for plan mode
-		// the actual file creation is tested by the integration test with real runner
-
-		// verify progress filename function handles plan mode correctly
-		// note: progressFilename is not exported, but progress.Config with PlanDescription
-		// is used in runPlanMode - this test verifies the wiring is correct by checking
-		// that the run() routes to runPlanMode without validation errors
+		// run() checks the context after flag validation, config load, external review
+		// resolution and dependency checks, so a pre-canceled context stops exactly there.
+		// reaching that point is what proves plan mode got through setup — the plan creation
+		// loop itself is covered by the runner tests, it is never entered with a dead context
 		dir := setupTestRepo(t)
 		origDir, err := os.Getwd()
 		require.NoError(t, err)
@@ -313,9 +310,12 @@ func TestPlanModeIntegration(t *testing.T) {
 		o := opts{PlanDescription: "test plan description", MaxIterations: 1, ConfigDir: t.TempDir()}
 		err = run(ctx, o)
 
-		// error should be from plan creation (context canceled), not from config or validation
+		// error must be the cancellation, not a config or validation failure
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "plan creation")
+		assert.Contains(t, err.Error(), "context canceled")
+		assert.NotContains(t, err.Error(), "--plan flag conflicts")
+		assert.NotContains(t, err.Error(), "load config")
+		assert.NotContains(t, err.Error(), "no .git directory")
 	})
 }
 
@@ -636,43 +636,62 @@ func TestResolveDefaultBranch(t *testing.T) {
 
 func TestResolveBranchBase(t *testing.T) {
 	tests := []struct {
-		name           string
-		cliRef         string
-		defaultBranch  string
-		cliRefIsBranch bool
-		worktreeMode   bool
-		expected       string
-		expectedErr    string
+		name          string
+		cliRef        string
+		cliRefBranch  string
+		defaultBranch string
+		currentBranch string
+		worktreeMode  bool
+		expected      string
+		expectedErr   string
 	}{
 		{
-			name: "no_cli_ref_keeps_default", cliRef: "", defaultBranch: "main",
+			name: "no_cli_ref_keeps_default", cliRef: "", defaultBranch: "main", currentBranch: "main",
 			expected: "main",
 		},
 		{
-			name: "no_cli_ref_keeps_default_in_worktree_mode", cliRef: "", defaultBranch: "main",
+			name: "no_cli_ref_keeps_default_in_worktree_mode", cliRef: "", defaultBranch: "main", currentBranch: "main",
 			worktreeMode: true, expected: "main",
 		},
 		{
-			name: "branch_ref_becomes_base", cliRef: "release/13.0.0", defaultBranch: "main",
-			cliRefIsBranch: true, expected: "release/13.0.0",
+			name: "branch_ref_becomes_base_when_checked_out", cliRef: "release/13.0.0", cliRefBranch: "release/13.0.0",
+			defaultBranch: "main", currentBranch: "release/13.0.0", expected: "release/13.0.0",
 		},
 		{
-			name: "branch_ref_becomes_base_in_worktree_mode", cliRef: "release/13.0.0", defaultBranch: "main",
-			cliRefIsBranch: true, worktreeMode: true, expected: "release/13.0.0",
+			name: "branch_ref_becomes_base_in_worktree_mode", cliRef: "release/13.0.0", cliRefBranch: "release/13.0.0",
+			defaultBranch: "main", currentBranch: "release/13.0.0", worktreeMode: true, expected: "release/13.0.0",
+		},
+		{
+			name: "remote_tracking_ref_resolves_to_local_branch", cliRef: "origin/main", cliRefBranch: "main",
+			defaultBranch: "main", currentBranch: "main", expected: "main",
+		},
+		{
+			name: "branch_ref_from_another_feature_branch_is_kept", cliRef: "release/13.0.0", cliRefBranch: "release/13.0.0",
+			defaultBranch: "main", currentBranch: "some-feature", expected: "release/13.0.0",
+		},
+		{
+			name: "branch_ref_from_the_default_branch_fails", cliRef: "release/13.0.0", cliRefBranch: "release/13.0.0",
+			defaultBranch: "main", currentBranch: "main",
+			expectedErr: `--base-ref "release/13.0.0" names a branch but the checkout is on "main"`,
+		},
+		{
+			name: "branch_ref_from_the_remote_form_of_the_default_branch_fails", cliRef: "release/13.0.0",
+			cliRefBranch: "release/13.0.0", defaultBranch: "origin/main", currentBranch: "main",
+			expectedErr: `run "git checkout release/13.0.0"`,
 		},
 		{
 			name: "commit_hash_keeps_default_outside_worktree_mode", cliRef: "abc1234", defaultBranch: "main",
-			expected: "main",
+			currentBranch: "main", expected: "main",
 		},
 		{
-			name: "commit_hash_fails_in_worktree_mode", cliRef: "abc1234", defaultBranch: "main",
+			name: "commit_hash_fails_in_worktree_mode", cliRef: "abc1234", defaultBranch: "main", currentBranch: "main",
 			worktreeMode: true, expectedErr: `--base-ref "abc1234" is not a branch`,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := resolveBranchBase(tc.cliRef, tc.defaultBranch, tc.cliRefIsBranch, tc.worktreeMode)
+			result, err := resolveBranchBase(tc.cliRef, tc.cliRefBranch, tc.defaultBranch, tc.currentBranch, tc.worktreeMode)
 			if tc.expectedErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.expectedErr)
@@ -692,10 +711,52 @@ func TestResolveBaseRefs(t *testing.T) {
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
 
-		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "release/13.0.0", "", true)
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "release/13.0.0", "", true, true)
 		require.NoError(t, err)
 		assert.Equal(t, "release/13.0.0", branchBase, "worktree must branch off the requested release branch")
 		assert.Equal(t, "release/13.0.0", diffBase, "review diffs must use the same base")
+	})
+
+	t.Run("branch_base_ref_rejected_from_the_default_branch", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "branch", "release/13.0.0")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		// on master with a release base: honoring it would make CreateBranchForPlan read the
+		// mismatch as "already on a feature branch" and leave the run committing onto master
+		_, _, err = resolveBaseRefs(gitSvc, "release/13.0.0", "", true, false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `run "git checkout release/13.0.0"`)
+	})
+
+	t.Run("branch_base_ref_ignored_by_modes_that_create_no_branch", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "branch", "release/13.0.0")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		// review modes never create a branch, so --base-ref is a pure diff base there
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "release/13.0.0", "", false, false)
+		require.NoError(t, err)
+		assert.Equal(t, "master", branchBase)
+		assert.Equal(t, "release/13.0.0", diffBase)
+	})
+
+	t.Run("remote_tracking_base_ref_accepted_in_worktree_mode", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "remote", "add", "origin", dir)
+		runGit(t, dir, "update-ref", "refs/remotes/origin/master", "HEAD")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "origin/master", "", true, true)
+		require.NoError(t, err)
+		assert.Equal(t, "master", branchBase, "a remote-tracking ref names the local branch it tracks")
+		assert.Equal(t, "origin/master", diffBase, "diffs keep the requested revision as written")
 	})
 
 	t.Run("commit_hash_base_ref_rejected_in_worktree_mode", func(t *testing.T) {
@@ -706,7 +767,7 @@ func TestResolveBaseRefs(t *testing.T) {
 		hash, err := gitSvc.HeadHash()
 		require.NoError(t, err)
 
-		_, _, err = resolveBaseRefs(gitSvc, hash, "", true)
+		_, _, err = resolveBaseRefs(gitSvc, hash, "", true, true)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "is not a branch")
 	})
@@ -719,7 +780,7 @@ func TestResolveBaseRefs(t *testing.T) {
 		hash, err := gitSvc.HeadHash()
 		require.NoError(t, err)
 
-		branchBase, diffBase, err := resolveBaseRefs(gitSvc, hash, "", false)
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, hash, "", true, false)
 		require.NoError(t, err)
 		assert.Equal(t, "master", branchBase, "a hash cannot be a branch base, auto-detected default stays")
 		assert.Equal(t, hash, diffBase, "diffs still honor the requested revision")
@@ -730,10 +791,65 @@ func TestResolveBaseRefs(t *testing.T) {
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
 
-		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "", "develop", true)
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "", "develop", true, true)
 		require.NoError(t, err)
 		assert.Equal(t, "develop", branchBase)
 		assert.Equal(t, "develop", diffBase)
+	})
+}
+
+func TestLocalBranchRef(t *testing.T) {
+	dir := setupTestRepo(t)
+	runGit(t, dir, "branch", "release/13.0.0")
+	runGit(t, dir, "remote", "add", "origin", dir)
+	runGit(t, dir, "update-ref", "refs/remotes/origin/master", "HEAD")
+
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	hash, err := gitSvc.HeadHash()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name     string
+		ref      string
+		expected string
+	}{
+		{name: "local branch", ref: "release/13.0.0", expected: "release/13.0.0"},
+		{name: "remote tracking form", ref: "origin/master", expected: "master"},
+		{name: "remote tracking form without a local branch", ref: "origin/nope", expected: ""},
+		{name: "commit hash", ref: hash, expected: ""},
+		{name: "empty ref", ref: "", expected: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, localBranchRef(gitSvc, tc.ref))
+		})
+	}
+}
+
+func TestForceExitCleanup(t *testing.T) {
+	t.Run("waits for every holder", func(t *testing.T) {
+		var restored, first, second atomic.Bool
+		fast, slow := &cleanupHolder{}, &cleanupHolder{}
+		fast.set(func() { first.Store(true) })
+		// the sidebar reset shells out to cmux, so it is slower than an unset worktree holder;
+		// a fire-and-forget goroutine here would lose the race against os.Exit
+		slow.set(func() {
+			time.Sleep(50 * time.Millisecond)
+			second.Store(true)
+		})
+
+		forceExitCleanup(func() { restored.Store(true) }, fast, slow)()
+
+		assert.True(t, restored.Load(), "the terminal must be restored")
+		assert.True(t, first.Load())
+		assert.True(t, second.Load(), "cleanup must not return before a slow holder finished")
+	})
+
+	t.Run("unset holders are skipped", func(t *testing.T) {
+		assert.NotPanics(t, forceExitCleanup(func() {}, &cleanupHolder{}, &cleanupHolder{}))
 	})
 }
 

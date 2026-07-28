@@ -253,14 +253,7 @@ func run(ctx context.Context, o opts) error {
 
 	// print immediate feedback when context is canceled (Ctrl+C).
 	// returned cleanup ensures goroutine exits when run() returns, avoiding leaks in tests.
-	defer startInterruptWatcher(ctx, func() {
-		restoreTerminal()
-		// the sidebar reset runs alongside the worktree cleanup rather than before or after it:
-		// both share the same bounded budget on the force-exit path, so a stuck git worktree
-		// removal must not be what leaves the spinner hanging forever, and vice versa.
-		go cmuxStop.call()
-		wtCleanup.call()
-	})()
+	defer startInterruptWatcher(ctx, forceExitCleanup(restoreTerminal, cmuxStop, wtCleanup))()
 
 	// validate conflicting flags
 	if err := validateFlags(o); err != nil {
@@ -336,8 +329,11 @@ func run(ctx context.Context, o opts) error {
 	// defaultBranch is for branch/worktree creation, baseRef for review diffs and the
 	// {{DEFAULT_BRANCH}} template variable. --base-ref feeds both when it names a branch;
 	// a commit hash stays diff-only and is rejected outright in worktree mode.
+	// plan mode counts as a branch mode: it hands off to runWithWorktree once the plan exists,
+	// so its --base-ref has to pass the same validation instead of falling back silently.
+	branchMode := modeRequiresBranch(mode) || mode == processor.ModePlan
 	defaultBranch, baseRef, err := resolveBaseRefs(gitSvc, o.BaseRef, cfg.DefaultBranch,
-		cfg.WorktreeEnabled && modeRequiresBranch(mode))
+		branchMode, cfg.WorktreeEnabled && branchMode)
 	if err != nil {
 		return err
 	}
@@ -517,9 +513,6 @@ func sendNotification(req executePlanRequest, branch, elapsed string, stats git.
 	req.NotifySvc.Send(context.Background(), buildNotifyResult(req, branch, elapsed, stats, runErr))
 }
 
-// cmuxNotifyTitle is the title of every cmux notification ralphex raises.
-const cmuxNotifyTitle = "ralphex"
-
 // notifyCmuxCompletion raises the end-of-run cmux notification. no-op outside cmux and for a
 // user abort, where the decision is made by cmuxCompletionNotice.
 func notifyCmuxCompletion(rep *cmux.Reporter, planFile, branch, elapsed string, runErr error) {
@@ -527,25 +520,30 @@ func notifyCmuxCompletion(rep *cmux.Reporter, planFile, branch, elapsed string, 
 	if !ok {
 		return
 	}
-	rep.Notify(cmuxNotifyTitle, subtitle, body)
+	rep.Notify(subtitle, body)
 }
 
 // cmuxCompletionNotice builds the subtitle and body of the end-of-run cmux notification.
 // ok is false for a user abort: the person who aborted is already at the terminal, so a
-// banner would only be noise. the plan basename identifies the run when there is a plan,
-// review modes without one fall back to the branch.
+// banner would only be noise.
 func cmuxCompletionNotice(planFile, branch, elapsed string, runErr error) (subtitle, body string, ok bool) {
 	if errors.Is(runErr, processor.ErrUserAborted) {
 		return "", "", false
 	}
-	target := branch
-	if planFile != "" {
-		target = filepath.Base(planFile)
-	}
+	target := cmuxNotifyTarget(planFile, branch)
 	if runErr != nil {
 		return "run failed", fmt.Sprintf("%s: %v", target, runErr), true
 	}
 	return "run completed", fmt.Sprintf("%s in %s", target, elapsed), true
+}
+
+// cmuxNotifyTarget names the run in a notification body: the plan basename when there is a
+// plan, the branch for review modes that run without one.
+func cmuxNotifyTarget(planFile, branch string) string {
+	if planFile != "" {
+		return filepath.Base(planFile)
+	}
+	return branch
 }
 
 // buildNotifyResult constructs a notify.Result from execution parameters.
@@ -759,6 +757,10 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 
 	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved)
+
+	// clear the sidebar before the dashboard idles: with --serve the run is done but the process
+	// stays alive until Ctrl+C, and a spinner left spinning reports it as still working
+	rep.Stop()
 	keepDashboardAlive(ctx, o, req, plr.closeLog)
 
 	return nil
@@ -1547,7 +1549,9 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	// find the newly created plan file
 	planFile := selector.FindRecent(startTime)
 	elapsed := baseLog.Elapsed()
-	notifyCmuxCompletion(rep, planFile, branch, elapsed, nil)
+	// not a completion notice: the implementation run may still follow, and the continue prompt
+	// below waits for the user either way, so the banner says the plan is ready rather than done
+	rep.Notify("plan created", fmt.Sprintf("%s in %s", cmuxNotifyTarget(planFile, branch), elapsed))
 
 	// print completion message with plan file path if found
 	if planFile != "" {
@@ -1784,6 +1788,22 @@ func startInterruptWatcher(ctx context.Context, cleanup func()) func() {
 	return func() { close(done) }
 }
 
+// forceExitCleanup builds the callback the interrupt watcher runs right before os.Exit on the
+// force-exit path. the holders run concurrently but the callback waits for all of them: a stuck
+// git worktree removal must not be what leaves the cmux spinner hanging forever, and vice versa,
+// while runCleanupBounded's timeout bounds the total. spawning a holder without waiting would
+// simply lose the race against os.Exit, which never runs defers.
+func forceExitCleanup(restoreTerminal func(), holders ...*cleanupHolder) func() {
+	return func() {
+		restoreTerminal()
+		var wg sync.WaitGroup
+		for _, h := range holders {
+			wg.Go(h.call)
+		}
+		wg.Wait()
+	}
+}
+
 // runCleanupBounded runs cleanup in a separate goroutine and waits for it to
 // finish, but no longer than timeout. this bounds the force-exit path: cleanup
 // shares a sync.Once with the graceful shutdown's deferred worktree cleanup, so
@@ -1910,39 +1930,76 @@ func resolveDefaultBranch(cliRef, configBranch, autoDetected string) string {
 	return autoDetected
 }
 
+// remoteBranchPrefix is the remote-tracking form branch auto-detection may produce
+// (e.g. "origin/main"); it names the same branch as the local ref without it.
+const remoteBranchPrefix = "origin/"
+
 // resolveBaseRefs resolves the two bases a run needs: branchBase for branch/worktree creation
 // and diffBase for review diffs and the {{DEFAULT_BRANCH}} template variable.
 // they differ only when --base-ref names a revision that is not a branch.
-func resolveBaseRefs(gitSvc *git.Service, cliBaseRef, configBranch string, worktreeMode bool) (branchBase, diffBase string, err error) {
+// branchMode says whether the run creates a branch at all: review modes never do, so their
+// --base-ref is a pure diff base and must not be validated against the checkout.
+func resolveBaseRefs(gitSvc *git.Service, cliBaseRef, configBranch string, branchMode, worktreeMode bool) (branchBase, diffBase string, err error) {
 	autoDetected := gitSvc.GetDefaultBranch()
 	diffBase = resolveDefaultBranch(cliBaseRef, configBranch, autoDetected)
 	defaultBranch := resolveDefaultBranch("", configBranch, autoDetected)
 
-	branchBase, err = resolveBranchBase(cliBaseRef, defaultBranch, gitSvc.BranchExists(cliBaseRef), worktreeMode)
+	if !branchMode || cliBaseRef == "" {
+		return defaultBranch, diffBase, nil
+	}
+
+	branchBase, err = resolveBranchBase(cliBaseRef, localBranchRef(gitSvc, cliBaseRef), defaultBranch,
+		getCurrentBranch(gitSvc), worktreeMode)
 	if err != nil {
 		return "", "", err
 	}
 	return branchBase, diffBase, nil
 }
 
+// localBranchRef returns the local branch named by ref, or "" when ref names something else.
+// a remote-tracking form like "origin/main" resolves to the local branch it tracks, because
+// that is exactly what branch auto-detection produces and what the rest of the code compares
+// against after stripping the prefix.
+func localBranchRef(gitSvc *git.Service, ref string) string {
+	if gitSvc.BranchExists(ref) {
+		return ref
+	}
+	if local := strings.TrimPrefix(ref, remoteBranchPrefix); local != ref && gitSvc.BranchExists(local) {
+		return local
+	}
+	return ""
+}
+
 // resolveBranchBase decides which ref is the base for branch and worktree creation.
-// the --base-ref value is honored only when it names an existing local branch: a commit hash
-// is a valid diff base but cannot be branched from or compared against the current branch name,
-// so it leaves the configured/auto-detected default branch in place.
-// in worktree mode a non-branch --base-ref is an error rather than a silent fallback, because
-// the fallback would fail later with a confusing "requires <default> branch" message.
-func resolveBranchBase(cliRef, defaultBranch string, cliRefIsBranch, worktreeMode bool) (string, error) {
+// cliRefBranch is the local branch --base-ref names, empty when it names anything else: a commit
+// hash is a valid diff base but cannot be branched from, so the configured/auto-detected default
+// branch stays in place — except in worktree mode, where a silent fallback would surface later as
+// a confusing "requires <default> branch" message.
+// a branch base is honored only from that branch itself, since branch creation cuts from HEAD:
+// from another branch CreateBranchForPlan reads the mismatch as "already on a feature branch" and
+// skips silently, which would leave the whole run committing onto the default branch.
+func resolveBranchBase(cliRef, cliRefBranch, defaultBranch, currentBranch string, worktreeMode bool) (string, error) {
 	if cliRef == "" {
 		return defaultBranch, nil
 	}
-	if cliRefIsBranch {
-		return cliRef, nil
+	if cliRefBranch == "" {
+		if worktreeMode {
+			return "", fmt.Errorf("--base-ref %q is not a branch; worktree creation needs a branch to base the "+
+				"new worktree on, pass a branch name or drop --worktree", cliRef)
+		}
+		return defaultBranch, nil
 	}
-	if worktreeMode {
-		return "", fmt.Errorf("--base-ref %q is not a branch; worktree creation needs a branch to base the "+
-			"new worktree on, pass a branch name or drop --worktree", cliRef)
+	if !sameBranch(currentBranch, cliRefBranch) && sameBranch(currentBranch, defaultBranch) {
+		return "", fmt.Errorf("--base-ref %q names a branch but the checkout is on %q; run \"git checkout %s\" "+
+			"to work off it, or drop --base-ref to work off %s", cliRef, currentBranch, cliRefBranch, currentBranch)
 	}
-	return defaultBranch, nil
+	return cliRefBranch, nil
+}
+
+// sameBranch reports whether branch is the one ref names, tolerating the remote-tracking form
+// the same way git.Service compares against the default branch.
+func sameBranch(branch, ref string) bool {
+	return branch == strings.TrimPrefix(ref, remoteBranchPrefix)
 }
 
 // ensureRepoHasCommits checks that the repository has at least one commit.

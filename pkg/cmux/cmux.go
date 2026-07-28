@@ -42,6 +42,10 @@ const (
 	// statusPriority orders the ralphex pill among other pills in the tab row.
 	statusPriority = "90"
 
+	// notifyTitle is the title of every notification ralphex raises, i.e. the app name on the banner.
+	// same text as statusKey but a separate constant: one is a cmux entry key, the other is user-visible.
+	notifyTitle = "ralphex"
+
 	// notifyBodyLimit caps the notification body, the macOS banner does not render more anyway.
 	notifyBodyLimit = 200
 
@@ -119,16 +123,16 @@ func (r *Reporter) exec(args ...string) {
 	_ = r.runner.run(ctx, args...) // best-effort by design, the error is intentionally dropped
 }
 
-// LoadingOn shows the spinner in the sidebar and moves the workspace lane to "working".
+// loadingOn shows the spinner in the sidebar and moves the workspace lane to "working".
 // this is the only path to a real running signal that needs neither the agent allowlist nor vault registration.
-func (r *Reporter) LoadingOn() { r.exec("workspace", "loading", "on", "--id", statusKey) }
+func (r *Reporter) loadingOn() { r.exec("workspace", "loading", "on", "--id", statusKey) }
 
-// LoadingOff removes the spinner from the sidebar.
-func (r *Reporter) LoadingOff() { r.exec("workspace", "loading", "off", "--id", statusKey) }
+// loadingOff removes the spinner from the sidebar.
+func (r *Reporter) loadingOff() { r.exec("workspace", "loading", "off", "--id", statusKey) }
 
-// Status sets the ralphex pill in the tab row. empty icon or color skip their own flags,
+// setStatus sets the ralphex pill in the tab row. empty icon or color skip their own flags,
 // leaving the cmux-side default instead of passing an empty value.
-func (r *Reporter) Status(text, icon, color string) {
+func (r *Reporter) setStatus(text, icon, color string) {
 	args := []string{"set-status", statusKey, text}
 	if icon != "" {
 		args = append(args, "--icon", icon)
@@ -140,23 +144,12 @@ func (r *Reporter) Status(text, icon, color string) {
 	r.exec(args...)
 }
 
-// ClearStatus removes the ralphex pill.
-func (r *Reporter) ClearStatus() { r.exec("clear-status", statusKey) }
+// clearStatus removes the ralphex pill.
+func (r *Reporter) clearStatus() { r.exec("clear-status", statusKey) }
 
-// Progress sets the sidebar progress bar from a done/total pair. a non-positive total skips the
-// call entirely, so there is no division by zero, and the ratio is clamped to [0, 1] because a
-// plan may report more done tasks than parsed ones.
-func (r *Reporter) Progress(done, total int, label string) {
-	if total <= 0 {
-		return
-	}
-	ratio := float64(done) / float64(total)
-	switch {
-	case ratio < 0:
-		ratio = 0
-	case ratio > 1:
-		ratio = 1
-	}
+// setProgress sets the sidebar progress bar. ratio is expected in [0, 1]: reportProgress, the
+// only caller, derives it from a task count it has already checked, so it cannot fall outside.
+func (r *Reporter) setProgress(ratio float64, label string) {
 	args := []string{"set-progress", strconv.FormatFloat(ratio, 'f', 2, 64)}
 	if label != "" {
 		args = append(args, "--label", label)
@@ -164,13 +157,13 @@ func (r *Reporter) Progress(done, total int, label string) {
 	r.exec(args...)
 }
 
-// ClearProgress removes the sidebar progress bar.
-func (r *Reporter) ClearProgress() { r.exec("clear-progress") }
+// clearProgress removes the sidebar progress bar.
+func (r *Reporter) clearProgress() { r.exec("clear-progress") }
 
 // Notify raises a cmux notification: blue ring on the panel, macOS banner and an entry in the
 // notification panel. empty subtitle or body skip their own flags, the body is truncated to fit the banner.
-func (r *Reporter) Notify(title, subtitle, body string) {
-	args := []string{"notify", "--title", title}
+func (r *Reporter) Notify(subtitle, body string) {
+	args := []string{"notify", "--title", notifyTitle}
 	if subtitle != "" {
 		args = append(args, "--subtitle", subtitle)
 	}
@@ -180,12 +173,12 @@ func (r *Reporter) Notify(title, subtitle, body string) {
 	r.exec(args...)
 }
 
-// Clear removes every sidebar artifact ralphex owns. idempotent, calling it twice is safe,
+// clearAll removes every sidebar artifact ralphex owns. idempotent, calling it twice is safe,
 // which matters because cleanup runs both from a defer and from the interrupt handler.
-func (r *Reporter) Clear() {
-	r.LoadingOff()
-	r.ClearStatus()
-	r.ClearProgress()
+func (r *Reporter) clearAll() {
+	r.loadingOff()
+	r.clearStatus()
+	r.clearProgress()
 }
 
 // Start shows the spinner and begins polling the plan file for task progress in the background.
@@ -195,7 +188,16 @@ func (r *Reporter) Start(ctx context.Context) {
 	if r == nil {
 		return
 	}
-	r.LoadingOn()
+	r.loadingOn()
+
+	// plan creation has no plan file yet, so there is nothing to poll and no goroutine to run
+	if r.planFile == "" {
+		return
+	}
+
+	// report once up front: the bar is then there from the start rather than a tick later,
+	// which also covers runs shorter than the poll interval
+	r.reportProgress()
 
 	pollCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -252,7 +254,7 @@ func (r *Reporter) reportProgress() {
 		return
 	}
 	r.lastDone, r.lastTotal = done, total
-	r.Progress(done, total, fmt.Sprintf("%d/%d tasks", done, total))
+	r.setProgress(float64(done)/float64(total), fmt.Sprintf("%d/%d tasks", done, total))
 }
 
 // Stop ends background polling, waits for the goroutine to exit and removes every sidebar
@@ -271,7 +273,7 @@ func (r *Reporter) Stop() {
 			cancel()
 			<-done
 		}
-		r.Clear()
+		r.clearAll()
 	})
 }
 
@@ -301,20 +303,20 @@ type notifyingCollector struct {
 
 // AskQuestion notifies that ralphex waits for an answer, then delegates.
 func (c *notifyingCollector) AskQuestion(ctx context.Context, question string, options []string) (string, error) {
-	c.rep.Notify(statusKey, "input needed", question)
+	c.rep.Notify("input needed", question)
 	return c.inner.AskQuestion(ctx, question, options) //nolint:wrapcheck // decorator passes the inner error through unchanged
 }
 
 // AskDraftReview notifies that a plan draft is ready for review, then delegates.
 func (c *notifyingCollector) AskDraftReview(ctx context.Context, question, planContent string) (action, feedback string, err error) {
-	c.rep.Notify(statusKey, "plan draft ready", question)
+	c.rep.Notify("plan draft ready", question)
 	return c.inner.AskDraftReview(ctx, question, planContent) //nolint:wrapcheck // decorator passes the inner error through unchanged
 }
 
 // OnPhase updates the pill on a phase change, the signature matches status.PhaseHolder.OnChange.
 func (r *Reporter) OnPhase(_, cur status.Phase) {
 	s := styleForPhase(cur)
-	r.Status(s.text, s.icon, s.color)
+	r.setStatus(s.text, s.icon, s.color)
 }
 
 // phaseStyle is the sidebar presentation of a phase: pill text, SF Symbol name and hex color.

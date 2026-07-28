@@ -49,6 +49,7 @@ ralphex solves both problems. Each task executes in a fresh primary-executor ses
 - **Automatic commits** - commits after each task and review fix
 - **Real-time monitoring** - streaming output with timestamps, colors, and detailed logs
 - **Web dashboard** - browser-based real-time view with `--serve` flag
+- **cmux sidebar** - phase, task progress, and notifications in the cmux terminal sidebar, auto-detected
 - **Docker support** - run in isolated container for safer autonomous execution
 - **Notifications** - optional alerts on completion/failure via Telegram, Email, Slack, Webhook, or custom script
 - **Worktree isolation** - run multiple plans in parallel via `--worktree` flag
@@ -912,6 +913,7 @@ Agents to launch:
 - `gemini` - alternative provider for Claude phases (optional, via `scripts/gemini-as-claude/`)
 - `agy` - Antigravity CLI, alternative provider for Claude phases (optional, via `scripts/agy-as-claude/`)
 - `pi` - alternative provider for Claude phases (optional, via `scripts/pi-as-claude/`)
+- `cmux` - [cmux](https://github.com/manaflow-ai/cmux) terminal CLI for sidebar status reporting (optional, auto-detected)
 
 ## Configuration
 
@@ -1391,6 +1393,24 @@ Multi-session features:
 - **Session sidebar** - lists all discovered sessions, click to switch (keyboard: `S` to toggle)
 - **Active detection** - pulsing indicator for running sessions via file locking
 - **Auto-discovery** - new sessions appear automatically as they start
+
+## cmux Sidebar Integration
+
+When ralphex runs in a terminal of the [cmux](https://github.com/manaflow-ai/cmux) terminal, it reports its state to the cmux sidebar:
+
+- a spinner for the duration of the run, and the workspace lane switches to `working`
+- a status pill in the tab row with the current phase (`task`, `review`, `external review`, `evaluating findings`, `finalize`, `planning`)
+- a progress bar over the plan's tasks, updated from the plan file while the run proceeds (`3/7 tasks`)
+- a notification when the run stops and waits for you — a `--plan` question or a plan draft ready for review
+- a notification when the run finishes, with the outcome (nothing is sent when you abort the run yourself)
+
+Nothing to configure and no flag to pass: the integration turns itself on when the `cmux` CLI is in `PATH` and `CMUX_WORKSPACE_ID` is set, which cmux injects into every terminal it owns. Outside cmux it is a complete no-op. It only ever calls the public `cmux` CLI, so no cmux-side setup is needed.
+
+Indication is best-effort — a failing or slow `cmux` call is ignored and never affects the run, and errors are not written to the progress file. The sidebar is cleared on normal completion, on failure, and on Ctrl+C including the force-exit path, so a stopped run does not leave a spinner behind.
+
+This is what makes several parallel ralphex runs in different cmux workspaces tellable apart at a glance — each workspace shows its own phase and task progress.
+
+Not available through the Docker wrapper (`scripts/ralphex-dk.sh`): the container images ship no `cmux` binary and `CMUX_WORKSPACE_ID` is not passed through.
 
 ## Claude Code Integration (Optional)
 

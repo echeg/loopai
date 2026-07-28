@@ -207,77 +207,77 @@ func TestReporterSidebarCommands(t *testing.T) {
 	}{
 		{
 			name: "loading on",
-			call: func(r *Reporter) { r.LoadingOn() },
+			call: func(r *Reporter) { r.loadingOn() },
 			want: [][]string{{"workspace", "loading", "on", "--id", "ralphex"}},
 		},
 		{
 			name: "loading off",
-			call: func(r *Reporter) { r.LoadingOff() },
+			call: func(r *Reporter) { r.loadingOff() },
 			want: [][]string{{"workspace", "loading", "off", "--id", "ralphex"}},
 		},
 		{
 			name: "status with icon and color",
-			call: func(r *Reporter) { r.Status("task", "hammer", "#22c55e") },
+			call: func(r *Reporter) { r.setStatus("task", "hammer", "#22c55e") },
 			want: [][]string{{"set-status", "ralphex", "task", "--icon", "hammer", "--color", "#22c55e", "--priority", "90"}},
 		},
 		{
 			name: "status without icon",
-			call: func(r *Reporter) { r.Status("task", "", "#22c55e") },
+			call: func(r *Reporter) { r.setStatus("task", "", "#22c55e") },
 			want: [][]string{{"set-status", "ralphex", "task", "--color", "#22c55e", "--priority", "90"}},
 		},
 		{
 			name: "status without color",
-			call: func(r *Reporter) { r.Status("task", "hammer", "") },
+			call: func(r *Reporter) { r.setStatus("task", "hammer", "") },
 			want: [][]string{{"set-status", "ralphex", "task", "--icon", "hammer", "--priority", "90"}},
 		},
 		{
 			name: "status without icon and color",
-			call: func(r *Reporter) { r.Status("external review", "", "") },
+			call: func(r *Reporter) { r.setStatus("external review", "", "") },
 			want: [][]string{{"set-status", "ralphex", "external review", "--priority", "90"}},
 		},
 		{
 			name: "clear status",
-			call: func(r *Reporter) { r.ClearStatus() },
+			call: func(r *Reporter) { r.clearStatus() },
 			want: [][]string{{"clear-status", "ralphex"}},
 		},
 		{
 			name: "clear progress",
-			call: func(r *Reporter) { r.ClearProgress() },
+			call: func(r *Reporter) { r.clearProgress() },
 			want: [][]string{{"clear-progress"}},
 		},
 		{
 			name: "notify with all fields",
-			call: func(r *Reporter) { r.Notify("ralphex", "нужен ответ", "which option?") },
+			call: func(r *Reporter) { r.Notify("нужен ответ", "which option?") },
 			want: [][]string{{"notify", "--title", "ralphex", "--subtitle", "нужен ответ", "--body", "which option?"}},
 		},
 		{
 			name: "notify without subtitle",
-			call: func(r *Reporter) { r.Notify("ralphex", "", "done") },
+			call: func(r *Reporter) { r.Notify("", "done") },
 			want: [][]string{{"notify", "--title", "ralphex", "--body", "done"}},
 		},
 		{
 			name: "notify without body",
-			call: func(r *Reporter) { r.Notify("ralphex", "run finished", "") },
+			call: func(r *Reporter) { r.Notify("run finished", "") },
 			want: [][]string{{"notify", "--title", "ralphex", "--subtitle", "run finished"}},
 		},
 		{
 			name: "notify title only",
-			call: func(r *Reporter) { r.Notify("ralphex", "", "") },
+			call: func(r *Reporter) { r.Notify("", "") },
 			want: [][]string{{"notify", "--title", "ralphex"}},
 		},
 		{
 			name: "notify body truncated to the rune limit",
-			call: func(r *Reporter) { r.Notify("ralphex", "", strings.Repeat("я", notifyBodyLimit+50)) },
+			call: func(r *Reporter) { r.Notify("", strings.Repeat("я", notifyBodyLimit+50)) },
 			want: [][]string{{"notify", "--title", "ralphex", "--body", strings.Repeat("я", notifyBodyLimit)}},
 		},
 		{
 			name: "notify body at the rune limit is kept whole",
-			call: func(r *Reporter) { r.Notify("ralphex", "", strings.Repeat("я", notifyBodyLimit)) },
+			call: func(r *Reporter) { r.Notify("", strings.Repeat("я", notifyBodyLimit)) },
 			want: [][]string{{"notify", "--title", "ralphex", "--body", strings.Repeat("я", notifyBodyLimit)}},
 		},
 		{
 			name: "clear sends all three commands",
-			call: func(r *Reporter) { r.Clear() },
+			call: func(r *Reporter) { r.clearAll() },
 			want: [][]string{
 				{"workspace", "loading", "off", "--id", "ralphex"},
 				{"clear-status", "ralphex"},
@@ -295,29 +295,25 @@ func TestReporterSidebarCommands(t *testing.T) {
 	}
 }
 
-func TestReporterProgress(t *testing.T) {
+func TestReporterSetProgress(t *testing.T) {
 	tests := []struct {
-		name        string
-		done, total int
-		label       string
-		want        [][]string
+		name  string
+		ratio float64
+		label string
+		want  [][]string
 	}{
-		{name: "half done", done: 1, total: 2, label: "tasks", want: [][]string{{"set-progress", "0.50", "--label", "tasks"}}},
-		{name: "none done", done: 0, total: 4, label: "tasks", want: [][]string{{"set-progress", "0.00", "--label", "tasks"}}},
-		{name: "all done", done: 4, total: 4, label: "tasks", want: [][]string{{"set-progress", "1.00", "--label", "tasks"}}},
-		{name: "rounded to two decimals", done: 1, total: 3, label: "tasks", want: [][]string{{"set-progress", "0.33", "--label", "tasks"}}},
-		{name: "rounded up", done: 2, total: 3, label: "tasks", want: [][]string{{"set-progress", "0.67", "--label", "tasks"}}},
-		{name: "empty label skips the flag", done: 1, total: 2, want: [][]string{{"set-progress", "0.50"}}},
-		{name: "zero total is skipped", done: 3, total: 0, label: "tasks"},
-		{name: "negative total is skipped", done: 3, total: -2, label: "tasks"},
-		{name: "done above total is clamped", done: 9, total: 4, label: "tasks", want: [][]string{{"set-progress", "1.00", "--label", "tasks"}}},
-		{name: "negative done is clamped", done: -3, total: 4, label: "tasks", want: [][]string{{"set-progress", "0.00", "--label", "tasks"}}},
+		{name: "half done", ratio: 0.5, label: "tasks", want: [][]string{{"set-progress", "0.50", "--label", "tasks"}}},
+		{name: "none done", ratio: 0, label: "tasks", want: [][]string{{"set-progress", "0.00", "--label", "tasks"}}},
+		{name: "all done", ratio: 1, label: "tasks", want: [][]string{{"set-progress", "1.00", "--label", "tasks"}}},
+		{name: "rounded to two decimals", ratio: 1.0 / 3, label: "tasks", want: [][]string{{"set-progress", "0.33", "--label", "tasks"}}},
+		{name: "rounded up", ratio: 2.0 / 3, label: "tasks", want: [][]string{{"set-progress", "0.67", "--label", "tasks"}}},
+		{name: "empty label skips the flag", ratio: 0.5, want: [][]string{{"set-progress", "0.50"}}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := &fakeRunner{}
-			testReporter(t, runner).Progress(tt.done, tt.total, tt.label)
+			testReporter(t, runner).setProgress(tt.ratio, tt.label)
 			assert.Equal(t, tt.want, runner.recorded())
 		})
 	}
@@ -327,8 +323,8 @@ func TestReporterClearIdempotent(t *testing.T) {
 	runner := &fakeRunner{}
 	r := testReporter(t, runner)
 
-	r.Clear()
-	r.Clear()
+	r.clearAll()
+	r.clearAll()
 
 	calls := runner.recorded()
 	require.Len(t, calls, 6, "a repeated clear must send the same commands again, cmux ignores them")
@@ -424,15 +420,14 @@ func TestReporterNilReceiver(t *testing.T) {
 		name string
 		call func()
 	}{
-		{name: "loading on", call: func() { r.LoadingOn() }},
-		{name: "loading off", call: func() { r.LoadingOff() }},
-		{name: "status", call: func() { r.Status("task", "hammer", "#22c55e") }},
-		{name: "clear status", call: func() { r.ClearStatus() }},
-		{name: "progress", call: func() { r.Progress(1, 2, "tasks") }},
-		{name: "progress with zero total", call: func() { r.Progress(1, 0, "tasks") }},
-		{name: "clear progress", call: func() { r.ClearProgress() }},
-		{name: "notify", call: func() { r.Notify("ralphex", "done", "all tasks complete") }},
-		{name: "clear", call: func() { r.Clear() }},
+		{name: "loading on", call: func() { r.loadingOn() }},
+		{name: "loading off", call: func() { r.loadingOff() }},
+		{name: "status", call: func() { r.setStatus("task", "hammer", "#22c55e") }},
+		{name: "clear status", call: func() { r.clearStatus() }},
+		{name: "progress", call: func() { r.setProgress(0.5, "tasks") }},
+		{name: "clear progress", call: func() { r.clearProgress() }},
+		{name: "notify", call: func() { r.Notify("done", "all tasks complete") }},
+		{name: "clear", call: func() { r.clearAll() }},
 		{name: "on phase", call: func() { r.OnPhase(status.PhaseTask, status.PhaseReview) }},
 		{name: "start", call: func() { r.Start(context.Background()) }},
 		{name: "stop", call: func() { r.Stop() }},
@@ -557,6 +552,39 @@ func TestReporterStartPolls(t *testing.T) {
 
 	assert.Equal(t, []string{"workspace", "loading", "on", "--id", "ralphex"}, calls[0], "start must show the spinner")
 	assert.Equal(t, []string{"set-progress", "0.50", "--label", "1/2 tasks"}, calls[1])
+}
+
+func TestReporterStartReportsBeforeFirstTick(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner) // interval is an hour, so nothing here comes from a tick
+	r.planFile = writePlan(t, "# plan\n\n### Task 1: one\n\n- [x] a\n\n### Task 2: two\n\n- [ ] b\n")
+
+	r.Start(t.Context())
+	defer r.Stop()
+
+	assert.Equal(t, [][]string{
+		{"workspace", "loading", "on", "--id", "ralphex"},
+		{"set-progress", "0.50", "--label", "1/2 tasks"},
+	}, runner.recorded(), "the bar must be there from the start, not one poll interval later")
+}
+
+func TestReporterStartWithoutPlanFile(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+	r.interval = time.Millisecond // a poller, if started, would tick many times below
+
+	r.Start(t.Context())
+	time.Sleep(20 * time.Millisecond)
+
+	assert.Equal(t, [][]string{{"workspace", "loading", "on", "--id", "ralphex"}}, runner.recorded(),
+		"plan creation mode has nothing to poll, so only the spinner is reported")
+
+	r.mu.Lock()
+	pollDone := r.pollDone
+	r.mu.Unlock()
+	assert.Nil(t, pollDone, "no goroutine must be started when there is no plan file to poll")
+
+	assert.NotPanics(t, r.Stop, "stop must handle a reporter that never started a poller")
 }
 
 func TestReporterStartSurvivesBrokenPlan(t *testing.T) {
@@ -718,9 +746,13 @@ func (f *fakeCollector) AskDraftReview(_ context.Context, question, planContent 
 	return f.action, f.feedback, f.err
 }
 
-// compile-time check that the mirrored interface stays compatible with processor.InputCollector,
-// the real collector passed to WrapInput in cmd/ralphex.
-var _ inputCollector = processor.InputCollector(nil)
+// compile-time checks that the mirrored interface stays compatible with processor.InputCollector
+// in both directions: the real collector must be accepted by WrapInput, and what WrapInput returns
+// must be accepted by processor's SetInputCollector — the second is the one cmd/ralphex relies on.
+var (
+	_ inputCollector           = processor.InputCollector(nil)
+	_ processor.InputCollector = (*notifyingCollector)(nil)
+)
 
 func TestReporterWrapInputNilReporter(t *testing.T) {
 	var r *Reporter

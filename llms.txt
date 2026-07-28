@@ -131,6 +131,7 @@ ralphex --preserve-anthropic-api-key docs/plans/feature.md
 - `gemini` - alternative provider for Claude phases (optional, via `scripts/gemini-as-claude/`)
 - `agy` - Antigravity CLI, alternative provider for Claude phases (optional, via `scripts/agy-as-claude/`)
 - `pi` - alternative provider for Claude phases (optional, via `scripts/pi-as-claude/`)
+- `cmux` - cmux terminal CLI for sidebar status reporting (optional, auto-detected)
 
 ## Customization
 
@@ -229,7 +230,7 @@ Requirements: codex CLI ≥ 0.130.0. Older versions silently ignore unknown `-c`
 
 Nothing to configure and no flag to pass: the integration turns itself on when the `cmux` CLI is in `PATH` and `CMUX_WORKSPACE_ID` is set, which cmux injects into every terminal it owns. Outside cmux it is a complete no-op. It only ever calls the public `cmux` CLI, so no cmux-side setup is needed. Indication is best-effort — a failing or slow `cmux` call is ignored and never affects the run, and errors are not written to the progress file. The sidebar is cleared on normal completion, on failure, and on Ctrl+C including the force-exit path, so a stopped run does not leave a spinner behind.
 
-This is what makes several parallel ralphex runs in different cmux workspaces tellable apart at a glance — each workspace shows its own phase and task progress.
+This is what makes several parallel ralphex runs in different cmux workspaces tellable apart at a glance — each workspace shows its own phase and task progress. Not available through the Docker wrapper (`scripts/ralphex-dk.sh`): the container images ship no `cmux` binary and `CMUX_WORKSPACE_ID` is not passed through.
 
 Run `ralphex --init` to create local `.ralphex/` project config with commented-out defaults.
 
