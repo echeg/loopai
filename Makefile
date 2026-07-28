@@ -9,8 +9,8 @@ REV=$(if $(filter --,$(GIT_REV)),latest,$(GIT_REV))
 all: test build
 
 build:
-	cd cmd/ralphex && go build -ldflags "-X main.revision=$(REV) -s -w" -o ../../.bin/ralphex.$(BRANCH)
-	cp .bin/ralphex.$(BRANCH) .bin/ralphex
+	cd cmd/loopai && go build -ldflags "-X main.revision=$(REV) -s -w" -o ../../.bin/loopai.$(BRANCH)
+	cp .bin/loopai.$(BRANCH) .bin/loopai
 
 test:
 	go clean -testcache
@@ -44,31 +44,31 @@ e2e-ui:
 
 e2e-prep: build
 	@./scripts/internal/prep-toy-test.sh
-	@cp .bin/ralphex /tmp/ralphex-test/.bin/ralphex
+	@cp .bin/loopai /tmp/ralphex-test/.bin/loopai
 	@echo ""
 	@echo "=== E2E Full Test Ready ==="
 	@echo "cd /tmp/ralphex-test"
-	@echo ".bin/ralphex docs/plans/fix-issues.md"
+	@echo ".bin/loopai docs/plans/fix-issues.md"
 	@echo ""
 	@echo "Monitor: tail -f /tmp/ralphex-test/progress-fix-issues.txt"
 
 e2e-review: build
 	@./scripts/internal/prep-review-test.sh
-	@cp .bin/ralphex /tmp/ralphex-review-test/.bin/ralphex
+	@cp .bin/loopai /tmp/ralphex-review-test/.bin/loopai
 	@echo ""
 	@echo "=== E2E Review Test Ready ==="
 	@echo "cd /tmp/ralphex-review-test"
-	@echo ".bin/ralphex --review"
+	@echo ".bin/loopai --review"
 	@echo ""
 	@echo "Monitor: tail -f /tmp/ralphex-review-test/progress-review.txt"
 
 e2e-codex: build
 	@./scripts/internal/prep-review-test.sh
-	@cp .bin/ralphex /tmp/ralphex-review-test/.bin/ralphex
+	@cp .bin/loopai /tmp/ralphex-review-test/.bin/loopai
 	@echo ""
 	@echo "=== E2E Codex-Only Test Ready ==="
 	@echo "cd /tmp/ralphex-review-test"
-	@echo ".bin/ralphex --codex-only"
+	@echo ".bin/loopai --codex-only"
 	@echo ""
 	@echo "Monitor: tail -f /tmp/ralphex-review-test/progress-codex.txt"
 

@@ -871,7 +871,7 @@ func (f *fakeCollector) AskDraftReview(_ context.Context, question, planContent 
 
 // compile-time checks that the mirrored interface stays compatible with processor.InputCollector
 // in both directions: the real collector must be accepted by WrapInput, and what WrapInput returns
-// must be accepted by processor's SetInputCollector — the second is the one cmd/ralphex relies on.
+// must be accepted by processor's SetInputCollector — the second is the one cmd/loopai relies on.
 var (
 	_ inputCollector           = processor.InputCollector(nil)
 	_ processor.InputCollector = (*notifyingCollector)(nil)

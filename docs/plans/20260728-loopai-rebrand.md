@@ -168,16 +168,16 @@ progress-логи. Плюс в репозитории лежит ~6300 стро�
 
 ### Task 4: Переименовать бинарь и каталог команды
 
-- [ ] `git mv cmd/ralphex cmd/loopai` (main-пакет, никем не импортируется — переезд безопасен)
-- [ ] переименовать `cmd/loopai/main.go`-соседей, если имена файлов содержат «ralphex»
-- [ ] обновить `Makefile`: цель `build` (строки 11-13) собирает `cmd/loopai` в `.bin/loopai`,
+- [x] `git mv cmd/ralphex cmd/loopai` (main-пакет, никем не импортируется — переезд безопасен)
+- [x] переименовать `cmd/loopai/main.go`-соседей, если имена файлов содержат «ralphex»
+- [x] обновить `Makefile`: цель `build` (строки 11-13) собирает `cmd/loopai` в `.bin/loopai`,
       переменные и `cp` — на новое имя
-- [ ] обновить `.gitignore`: `/ralphex` → `/loopai` (строка 8)
-- [ ] обновить пути в `.github/workflows/ci.yml` и `e2e.yml`, если они ссылаются на `cmd/ralphex`
-- [ ] обновить тесты, ссылающиеся на путь `cmd/ralphex` или имя бинаря
-- [ ] проверить сборку: `make build` создаёт `.bin/loopai`
-- [ ] проверить кросс-компиляцию: `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] `make test` и `make lint` — должны пройти до начала задачи 5
+- [x] обновить `.gitignore`: `/ralphex` → `/loopai` (строка 8)
+- [x] обновить пути в `.github/workflows/ci.yml` и `e2e.yml`, если они ссылаются на `cmd/ralphex`
+- [x] обновить тесты, ссылающиеся на путь `cmd/ralphex` или имя бинаря
+- [x] проверить сборку: `make build` создаёт `.bin/loopai`
+- [x] проверить кросс-компиляцию: `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] `make test` и `make lint` — должны пройти до начала задачи 5
 
 ### Task 5: Переименовать каталоги конфига и данных
 
