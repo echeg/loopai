@@ -14,6 +14,11 @@ build:
 
 test:
 	go clean -testcache
+	@broken="$$(find -L assets/claude -type l -print)"; \
+		if [ -n "$$broken" ]; then \
+			printf 'broken symlinks:\n%s\n' "$$broken"; \
+			exit 1; \
+		fi
 	go test -race -coverprofile=coverage.out ./...
 	grep -v "_mock.go" coverage.out | grep -v mocks > coverage_no_mocks.out
 	go tool cover -func=coverage_no_mocks.out
