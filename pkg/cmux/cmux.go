@@ -8,7 +8,6 @@ package cmux
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -66,8 +65,11 @@ type execRunner struct {
 
 func (r *execRunner) run(ctx context.Context, args ...string) error {
 	cmd := exec.CommandContext(ctx, r.bin, args...)
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	// stdout/stderr are left nil on purpose, which connects the child to /dev/null. assigning an
+	// io.Writer (io.Discard) instead would make os/exec allocate a pipe and a copy goroutine, and
+	// cmd.Wait blocks until that pipe reaches EOF — a grandchild inheriting the write end would keep
+	// it open past the context deadline and hang the caller, which runs on the execution goroutine.
+	cmd.Stdout, cmd.Stderr = nil, nil
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("run %s %s: %w", r.bin, strings.Join(args, " "), err)
 	}
@@ -173,14 +175,6 @@ func (r *Reporter) Notify(subtitle, body string) {
 	r.exec(args...)
 }
 
-// clearAll removes every sidebar artifact ralphex owns. idempotent, calling it twice is safe,
-// which matters because cleanup runs both from a defer and from the interrupt handler.
-func (r *Reporter) clearAll() {
-	r.loadingOff()
-	r.clearStatus()
-	r.clearProgress()
-}
-
 // Start shows the spinner and begins polling the plan file for task progress in the background.
 // polling is used instead of hooking into the phase engines so the progress bar keeps moving
 // during a long task phase without touching pkg/processor.
@@ -265,6 +259,12 @@ func (r *Reporter) Stop() {
 		return
 	}
 	r.stopOnce.Do(func() {
+		// the spinner goes first, before the poller is joined: cmux puts no ttl on it, so a leftover
+		// spinner survives until cmux restarts. canceling does not shorten a poll call already in
+		// flight — exec times out against its own background context — so on the interrupt handler's
+		// bounded cleanup the join could otherwise eat the whole budget before this ever lands.
+		r.loadingOff()
+
 		r.mu.Lock()
 		cancel, done := r.cancel, r.pollDone
 		r.mu.Unlock()
@@ -273,7 +273,9 @@ func (r *Reporter) Stop() {
 			cancel()
 			<-done
 		}
-		r.clearAll()
+		// after the poller is gone, so a tick in flight cannot re-add the bar behind the clear
+		r.clearStatus()
+		r.clearProgress()
 	})
 }
 

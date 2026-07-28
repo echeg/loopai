@@ -21,9 +21,10 @@ import (
 type fakeRunner struct {
 	mu     sync.Mutex
 	calls  [][]string
-	err    error         // returned from run when set
-	block  time.Duration // when set, run waits for it or for ctx cancellation
-	ctxErr error         // context error observed by the last blocking call
+	err    error          // returned from run when set
+	block  time.Duration  // when set, run waits for it or for ctx cancellation
+	ctxErr error          // context error observed by the last blocking call
+	onCall func([]string) // when set, called with argv before run returns
 }
 
 func (f *fakeRunner) run(ctx context.Context, args ...string) error {
@@ -31,7 +32,12 @@ func (f *fakeRunner) run(ctx context.Context, args ...string) error {
 	f.calls = append(f.calls, append([]string(nil), args...))
 	block := f.block
 	err := f.err
+	onCall := f.onCall
 	f.mu.Unlock()
+
+	if onCall != nil {
+		onCall(args)
+	}
 
 	if block > 0 {
 		select {
@@ -275,15 +281,6 @@ func TestReporterSidebarCommands(t *testing.T) {
 			call: func(r *Reporter) { r.Notify("", strings.Repeat("я", notifyBodyLimit)) },
 			want: [][]string{{"notify", "--title", "ralphex", "--body", strings.Repeat("я", notifyBodyLimit)}},
 		},
-		{
-			name: "clear sends all three commands",
-			call: func(r *Reporter) { r.clearAll() },
-			want: [][]string{
-				{"workspace", "loading", "off", "--id", "ralphex"},
-				{"clear-status", "ralphex"},
-				{"clear-progress"},
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -317,18 +314,6 @@ func TestReporterSetProgress(t *testing.T) {
 			assert.Equal(t, tt.want, runner.recorded())
 		})
 	}
-}
-
-func TestReporterClearIdempotent(t *testing.T) {
-	runner := &fakeRunner{}
-	r := testReporter(t, runner)
-
-	r.clearAll()
-	r.clearAll()
-
-	calls := runner.recorded()
-	require.Len(t, calls, 6, "a repeated clear must send the same commands again, cmux ignores them")
-	assert.Equal(t, calls[:3], calls[3:], "the second clear must be identical to the first")
 }
 
 func TestStyleForPhase(t *testing.T) {
@@ -427,7 +412,6 @@ func TestReporterNilReceiver(t *testing.T) {
 		{name: "progress", call: func() { r.setProgress(0.5, "tasks") }},
 		{name: "clear progress", call: func() { r.clearProgress() }},
 		{name: "notify", call: func() { r.Notify("done", "all tasks complete") }},
-		{name: "clear", call: func() { r.clearAll() }},
 		{name: "on phase", call: func() { r.OnPhase(status.PhaseTask, status.PhaseReview) }},
 		{name: "start", call: func() { r.Start(context.Background()) }},
 		{name: "stop", call: func() { r.Stop() }},
@@ -636,6 +620,41 @@ func TestReporterStop(t *testing.T) {
 	}
 }
 
+func TestReporterStopClearsSpinnerBeforeJoin(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+	r.interval = time.Millisecond
+	r.planFile = writePlan(t, "# plan\n\n### Task 1: one\n\n- [x] a\n")
+
+	// observed from inside the loading-off call, so the ordering is pinned by the poll goroutine's
+	// own state rather than by timing: a call still in flight there ignores the cancel and could
+	// otherwise push the spinner clear past the interrupt handler's bounded cleanup
+	pollAlive := make(chan bool, 1)
+	runner.mu.Lock()
+	runner.onCall = func(args []string) {
+		if len(args) < 3 || args[0] != "workspace" || args[2] != "off" {
+			return
+		}
+		r.mu.Lock()
+		done := r.pollDone
+		r.mu.Unlock()
+		select {
+		case <-done:
+			pollAlive <- false
+		default:
+			pollAlive <- true
+		}
+	}
+	runner.mu.Unlock()
+
+	r.Start(t.Context())
+	runner.waitForCalls(t, 2)
+	r.Stop()
+
+	require.Len(t, pollAlive, 1, "stop must clear the spinner")
+	assert.True(t, <-pollAlive, "the spinner must be cleared before the poll goroutine is joined")
+}
+
 func TestReporterStopWithoutStart(t *testing.T) {
 	runner := &fakeRunner{}
 	r := testReporter(t, runner)
@@ -721,6 +740,22 @@ func TestExecRunner(t *testing.T) {
 		cancel()
 		r := &execRunner{bin: "true"}
 		assert.Error(t, r.run(ctx))
+	})
+
+	t.Run("returns while a grandchild still lives", func(t *testing.T) {
+		// stdout/stderr must not be wired to a pipe: the copy goroutine cmd.Wait joins only sees EOF
+		// once every inheritor of the write end is gone, so a surviving grandchild would block the
+		// call well past its context deadline and stall the execution goroutine calling it
+		r := &execRunner{bin: "sh"}
+		done := make(chan error, 1)
+		go func() { done <- r.run(t.Context(), "-c", "sleep 10 &") }()
+
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(3 * time.Second):
+			t.Fatal("run must not wait for a grandchild holding the inherited output")
+		}
 	})
 }
 
