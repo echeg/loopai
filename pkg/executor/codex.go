@@ -108,7 +108,7 @@ type CodexExecutor struct {
 	LimitPatterns   []string          // patterns to detect rate limits (checked before error patterns)
 	MultiAgent      bool              // enable codex multi_agent feature + reviewer agent registration; set to true on the review-phase codex instance built by processor.New() for first-class --codex mode
 	PassClaudeMd    bool              // pass project-level CLAUDE.md to codex via project_doc_fallback_filenames (set by processor.New() only when cfg.AppConfig.Executor == ExecutorCodex)
-	ForceReadOnly   bool              // require the read-only sandbox even in Docker; used by external review so it cannot modify the project
+	ForceReadOnly   bool              // require the read-only sandbox even when the runtime disables its default sandbox; used by external review so it cannot modify the project
 	IdleTimeout     time.Duration     // kill session after this duration of no output, zero = disabled
 	headerEmitted   atomic.Bool       // tracks first invocation across Run() calls; false until first task/review then suppressed permanently — used to emit codex's resolved model/sandbox/effort once at the top of the run
 	runner          CodexRunner       // for testing, nil uses default
@@ -149,7 +149,7 @@ func (e *CodexExecutor) configOverrides() []string {
 }
 
 // sandboxMode resolves the effective sandbox. Primary execution disables the
-// sandbox in Docker because Landlock does not work in containers. External
+// sandbox in the container runtime because Landlock is unavailable there. External
 // review must instead remain read-only and fail if Codex cannot initialize that
 // sandbox; silently granting write access would let a findings-only reviewer
 // modify the repository.
@@ -194,7 +194,7 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	// --dangerously-bypass-approvals-and-sandbox is required for unattended first-class
 	// --codex runs (which use danger-full-access by default). External codex review in
 	// claude mode worked on master without this flag and adding it would silently change
-	// approval semantics for default-claude users (esp. Docker mode where the sandbox is
+	// approval semantics for default-claude users (especially when the runtime sandbox is
 	// forced to danger-full-access); gate the flag on MultiAgent which is true only in
 	// first-class --codex (set by processor.buildCodexExecutor).
 	if sandbox == "danger-full-access" && e.MultiAgent {

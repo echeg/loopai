@@ -43,7 +43,6 @@ pkg/status/         # shared execution model types: signals, phases, sections
 pkg/web/            # web dashboard, SSE streaming, session management
 e2e/                # playwright e2e tests for web dashboard
 scripts/            # utility scripts organized by function
-scripts/ralphex-dk/ # Docker wrapper script (Python) with tests
 scripts/codex-as-claude/ # codex wrapper for Claude-compatible output
 scripts/copilot-as-claude/ # GitHub Copilot CLI wrapper for Claude-compatible output
 scripts/gemini-as-claude/ # gemini wrapper for Claude-compatible output
@@ -51,7 +50,7 @@ scripts/agy-as-claude/ # Antigravity (agy) CLI wrapper for Claude-compatible out
 scripts/pi-as-claude/ # pi wrapper for Claude-compatible output
 scripts/hg2git/     # Mercurial-to-git translation script with tests
 scripts/opencode/   # opencode wrapper scripts with tests
-scripts/internal/   # internal dev/CI scripts (prep-toy-test, init-docker, etc.)
+scripts/internal/   # internal development and CI scripts
 docs/plans/         # plan files location
 ```
 
@@ -124,29 +123,6 @@ Env vars:
 - pi: `PI_PROVIDER`, `PI_MODEL`, `PI_THINKING`, `PI_VERBOSE`, `PI_EXTRA_ARGS`
 Copilot wrapper: native autopilot mode — `--autopilot --no-ask-user --allow-all` for task/review, `--autopilot --allow-all` for plan runs (so `QUESTION` signals surface).
 pi wrapper: line-buffers pi's token-level text deltas so `<<<RALPHEX:...>>>` signals land intact in one `content_block_delta`; suppressed events emit empty keepalive deltas so `idle_timeout` doesn't fire during silent tool runs; literal `<<<RALPHEX:` on re-emitted stderr is neutralized to `<<< RALPHEX:`; the prompt reaches pi via stdin (temp-file redirect), never argv; translation jq runs in the background with an interruptible `wait` so the TERM-forwarding trap fires while pi is alive. Task/review phases only — plan creation mode has no pi adapter.
-
-### AWS Bedrock Provider (Docker Wrapper Only)
-
-`scripts/ralphex-dk.sh` supports AWS Bedrock as a Claude provider (`--claude-provider bedrock` / `RALPHEX_CLAUDE_PROVIDER`). See `docs/bedrock-setup.md`.
-
-Key functions in `scripts/ralphex-dk.sh`:
-- `get_claude_provider()` - returns provider from CLI flag or env var
-- `build_bedrock_env_args()` - builds docker -e flags for BEDROCK_ENV_VARS
-- `export_aws_profile_credentials()` - exports credentials from AWS profile
-- `validate_bedrock_config()` - validates bedrock config, returns warnings
-
-### Docker Socket Support (Docker Wrapper Only)
-
-`--docker` flag (or `RALPHEX_DOCKER_SOCKET`) mounts the host Docker socket for testcontainers. Socket path from `DOCKER_HOST` (unix://) or `/var/run/docker.sock`; GID auto-detected and passed via `DOCKER_GID`. Missing socket = fail-fast error.
-
-Key functions in `scripts/ralphex-dk.sh`:
-- `is_docker_enabled()` - checks CLI flag and `RALPHEX_DOCKER_SOCKET` env var
-- `resolve_docker_socket()` - resolves socket path from `DOCKER_HOST` or default
-- `get_docker_socket_gid()` - detects socket file GID via `os.stat()`
-
-### Docker Network Mode (Docker Wrapper Only)
-
-`--network MODE` flag (or `RALPHEX_DOCKER_NETWORK`) passes `--network <value>` to `docker run` — lets the container reach docker-compose services on localhost.
 
 ### Git Package API
 

@@ -50,7 +50,6 @@ ralphex solves both problems. Each task executes in a fresh primary-executor ses
 - **Real-time monitoring** - streaming output with timestamps, colors, and detailed logs
 - **Web dashboard** - browser-based real-time view with `--serve` flag
 - **cmux sidebar** - phase, task progress, and notifications in the cmux terminal sidebar, auto-detected
-- **Docker support** - run in isolated container for safer autonomous execution
 - **Notifications** - optional alerts on completion/failure via Telegram, Email, Slack, Webhook, or custom script
 - **Worktree isolation** - run multiple plans in parallel via `--worktree` flag
 - **Multiple modes** - full execution, tasks-only, review-only, external-only, or plan creation
@@ -85,7 +84,7 @@ ralphex will create a branch, execute tasks, commit results, run multi-phase rev
 >
 > Practical options:
 >
-> 1. Do nothing. Light use may fit inside the included monthly credit. This should also be transparent for users who already run Claude Code through API-key billing, Bedrock, Vertex, Foundry, or another non-subscription provider path.
+> 1. Do nothing. Light use may fit inside the included monthly credit. This should also be transparent for users who already run Claude Code through API-key billing or another non-subscription provider path.
 > 2. Use a skill-based flow in an interactive Claude Code session. The author's [`umputun/cc-thingz`](https://github.com/umputun/cc-thingz) plugin collection includes the `planning` family (`/planning:make` and `/planning:exec`). That keeps work inside the normal interactive Claude Code flow instead of `claude --print`.
 > 3. Switch the ralphex executor to codex. First-class [`--codex`](#codex-executor-mode) support routes plan creation, task execution, both internal review phases, external-finding evaluation, and finalize through the codex CLI. With the default `external_review_tool = auto`, Claude performs findings-only external review using `opus:xhigh`.
 > 4. Use a `claude -p` compatible wrapper that drives an interactive Claude Code session and emits Claude-compatible `stream-json`. Examples that match ralphex's invocation shape include [`umputun/fya`](https://github.com/umputun/fya), [`melonamin/agentrun`](https://github.com/melonamin/agentrun), [`Equality-Machine/claude-p`](https://github.com/Equality-Machine/claude-p), and [`kcosr/claude-pty-wrapper`](https://github.com/kcosr/claude-pty-wrapper). These wrappers are unofficial and may break if Anthropic changes or blocks this pattern.
@@ -395,238 +394,6 @@ brew install umputun/apps/ralphex
 ### From releases
 
 Download the appropriate binary from [releases](https://github.com/umputun/ralphex/releases).
-
-### Using Docker
-
-Download the wrapper script and install to PATH:
-
-```bash
-curl -sL https://raw.githubusercontent.com/umputun/ralphex/master/scripts/ralphex-dk.sh -o /usr/local/bin/ralphex
-chmod +x /usr/local/bin/ralphex
-```
-
-The script defaults to the Go image (`ralphex-go`). For other languages, build a custom image from the base with your toolchain installed (see [Available images](#available-images) for examples), then point the wrapper at it:
-```bash
-export RALPHEX_IMAGE=my-ralphex
-```
-
-Then use `ralphex` as usual - it runs in a container with Claude Code and Codex pre-installed. The script shows which image it's using at startup.
-
-**Why use Docker?** ralphex runs Claude Code with `--dangerously-skip-permissions`, giving it full access to execute commands and modify files. Running in a container provides isolation - Claude can only access the mounted project directory, not your entire system. This makes autonomous execution significantly safer.
-
-<details markdown>
-<summary>Isolation details</summary>
-
-**Container CAN access (read-write):**
-- Project directory mounted at `/workspace` - full access to create, modify, delete files
-- Git operations within the project (branch, commit, etc.)
-
-**Container CAN access (read-only):**
-- `~/.claude/` - credentials and settings (copied at startup, not modified)
-- `~/.codex/` - codex credentials if present
-- `~/.config/ralphex/` - user-level ralphex configuration
-- `~/.gitconfig` - git identity for commits
-- Global gitignore (`core.excludesFile`) - auto-detected and mounted
-- `.ralphex/` - project-level configuration if present
-
-**Container CANNOT access:**
-- Host filesystem outside mounted directories
-- Other projects or repositories
-- SSH keys, AWS credentials, or other secrets in `~/.ssh`, `~/.aws`, etc.
-- System files, binaries, or configurations
-- Other running processes or containers
-
-**Network:** Full network access (required for Claude API calls)
-
-**Privileges:** Runs as non-root user with no elevated capabilities
-
-</details>
-
-**Volume mounts:**
-- **Read-only**: `~/.claude` and `~/.codex` mounted to `/mnt/`, copied at startup to preserve isolation
-- **Read-write**: project directory (`/workspace`) - where ralphex creates branches, edits code, and commits
-- **Extra mounts**: user-defined volumes via `-v`/`--volume` flags or `RALPHEX_EXTRA_VOLUMES` env var
-
-**Requirements:**
-- Python 3.9+ (for the wrapper script)
-- Docker installed and running
-- Claude Code credentials in `~/.claude/` (or in `$CLAUDE_CONFIG_DIR` when set)
-- Codex credentials in `~/.codex/` (required for a Codex primary or external Codex review)
-- Git config in `~/.gitconfig` (for commits)
-
-**Environment variables:**
-- `RALPHEX_IMAGE` - Docker image to use (default: `ghcr.io/umputun/ralphex-go:latest`). CLI flag: `--image`
-- `RALPHEX_PORT` - Port for web dashboard when using `--serve` (default: `8080`). CLI flag: `--port`
-- `RALPHEX_CONFIG_DIR` - Custom config directory (default: `~/.config/ralphex`). Overrides global config location for prompts, agents, and settings
-- `CLAUDE_CONFIG_DIR` - Claude config directory (default: `~/.claude`). Use for alternate Claude installations (e.g., `~/.claude2`). Works both with Docker wrapper (volume mounts and keychain derivation) and non-Docker usage (passed through to Claude Code directly). Keychain service name is derived automatically from the path.
-- `RALPHEX_EXTRA_VOLUMES` - Extra volume mounts, comma-separated (e.g., `/data:/mnt/data:ro,/models:/mnt/models`). Entries without `:` are silently skipped
-- `RALPHEX_EXTRA_ENV` - Extra environment variables, comma-separated (e.g., `DEBUG=1,API_KEY`). Format: `VAR=value` or `VAR` (inherit from host). Security warning emitted for sensitive names (KEY, SECRET, TOKEN, etc.) with explicit values - use name-only form for secure credential passing
-- `RALPHEX_DOCKER_SOCKET` - Enable Docker socket mount: `1`, `true`, or `yes` (Docker wrapper only). CLI flag: `--docker`
-- `RALPHEX_DOCKER_NETWORK` - Docker network mode (e.g., `host`, `my-network`). Useful for reaching docker-compose services. CLI flag: `--network`
-- `TZ` - Override container timezone (default: auto-detected from host via `/etc/localtime`). Example: `TZ=Europe/Berlin ralphex docs/plans/feature.md`
-- `RALPHEX_CLAUDE_PROVIDER` - Claude provider mode: `default` or `bedrock` (Docker wrapper only)
-
-**Docker socket support:**
-
-The `--docker` flag (or `RALPHEX_DOCKER_SOCKET=1`) mounts the host Docker socket into the container, enabling testcontainers and Docker-dependent workflows:
-
-```bash
-ralphex --docker docs/plans/feature.md
-ralphex --docker --dry-run   # verify socket mount in command
-```
-
-- Auto-detects socket GID and passes `DOCKER_GID` env var for baseimage group setup
-- Emits security warning on Linux (macOS has VM isolation, no warning needed)
-- Exits with error if socket file doesn't exist (fail-fast, no silent degradation)
-
-**AWS Bedrock support:**
-
-When `--claude-provider=bedrock` or `RALPHEX_CLAUDE_PROVIDER=bedrock` is set:
-- Keychain credential extraction is skipped (not needed for Bedrock auth)
-- AWS credentials are automatically exported from `AWS_PROFILE` via `aws configure export-credentials`
-- Required Bedrock env vars are passed to container: `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION`, credentials
-
-Required environment for Bedrock:
-- `AWS_REGION` - AWS region where Bedrock is enabled
-- `AWS_PROFILE` or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` - authentication
-
-Note: `CLAUDE_CODE_USE_BEDROCK=1` is automatically set when using `--claude-provider=bedrock`.
-
-```bash
-# with AWS profile (credentials exported automatically)
-export AWS_PROFILE=my-bedrock-profile
-export AWS_REGION=us-east-1
-ralphex --claude-provider=bedrock docs/plans/feature.md
-
-# or use env var for session-wide setting
-export RALPHEX_CLAUDE_PROVIDER=bedrock
-ralphex docs/plans/feature.md
-```
-
-See [Bedrock setup documentation](docs/bedrock-setup.md) for detailed IAM policies and setup instructions.
-
-**Extra volume mounts:**
-```bash
-# via CLI flags (can use multiple -v)
-ralphex -v /data:/mnt/data:ro -v /models:/mnt/models docs/plans/feature.md
-
-# via environment variable (comma-separated)
-RALPHEX_EXTRA_VOLUMES="/data:/mnt/data:ro,/models:/mnt/models" ralphex docs/plans/feature.md
-```
-
-**Extra environment variables:**
-```bash
-# via CLI flags (can use multiple -E)
-ralphex -E DEBUG=1 -E API_KEY docs/plans/feature.md
-
-# via environment variable (comma-separated)
-RALPHEX_EXTRA_ENV="DEBUG=1,LOG_LEVEL=verbose" ralphex docs/plans/feature.md
-
-# name-only form inherits value from host (recommended for secrets)
-export API_KEY=secret123
-ralphex -E API_KEY docs/plans/feature.md
-
-# values containing commas require -E flag (env var splits on commas)
-ralphex -E "TAGS=foo,bar,baz" docs/plans/feature.md
-```
-
-**Debugging:**
-```bash
-ralphex --dry-run docs/plans/feature.md  # show docker command without executing
-```
-
-The `--dry-run` flag prints the full `docker run` command that would be executed. Useful for debugging container configuration or copying the command for manual execution.
-
-Note: inherited env vars (`-E FOO` without `=value`) won't work when copying the command to a different shell. Use explicit values for portability.
-
-**Updating:**
-```bash
-ralphex --update         # pull latest docker image
-ralphex --update-script  # update the wrapper script itself
-```
-
-<a id="available-images"></a>
-<details markdown>
-<summary>Available images</summary>
-
-Two images are published:
-
-| Image | Description |
-|-------|-------------|
-| `ghcr.io/umputun/ralphex:latest` | Base image with Claude Code, Codex, and core tools |
-| `ghcr.io/umputun/ralphex-go:latest` | Go development (extends base with Go toolchain) |
-
-**Base image includes:**
-
-| Tool | Version | Purpose |
-|------|---------|---------|
-| Claude Code | latest | AI coding assistant |
-| Codex | latest | External code review |
-| fya | latest | Optional claude print-mode wrapper (PTY-backed) |
-| Node.js/npm | 24.x | Required for Claude Code |
-| Python/pip | 3.x | Scripts and automation |
-| git | 2.x | Version control |
-| docker-cli | - | Docker client for container workflows |
-| make | 4.x | Build automation |
-| gcc, musl-dev | - | C compiler for native extensions |
-| bash | 5.x | Shell |
-| fzf | - | Fuzzy finder for plan selection |
-| ripgrep | - | Fast search (used by Claude Code) |
-
-**Go image adds:**
-
-| Tool | Version | Purpose |
-|------|---------|---------|
-| Go | 1.26.0 | Go compiler and runtime |
-| golangci-lint | latest | Go linter |
-| moq | latest | Mock generator |
-| goimports | latest | Import formatter |
-
-**For Go projects**, use the `-go` image:
-```bash
-RALPHEX_IMAGE=ghcr.io/umputun/ralphex-go:latest ralphex docs/plans/feature.md
-```
-
-**For other languages**, create a custom image by extending the base with your language toolchain. The Go image (`Dockerfile-go`) shows the pattern:
-
-```dockerfile
-FROM ghcr.io/umputun/ralphex:latest
-
-# install go from official distribution
-ARG GO_VERSION=1.26.0
-RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
-    wget -qO- "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" | tar -xz -C /usr/local
-
-ENV GOROOT=/usr/local/go
-ENV GOPATH=/home/app/go
-ENV PATH="${PATH}:${GOROOT}/bin:${GOPATH}/bin"
-
-# install go tools
-RUN wget -qO- https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b /usr/local/bin && \
-    GOBIN=/usr/local/bin go install github.com/matryer/moq@latest && \
-    GOBIN=/usr/local/bin go install golang.org/x/tools/cmd/goimports@latest
-```
-
-Same approach for Rust, Java, or any other language:
-```dockerfile
-FROM ghcr.io/umputun/ralphex:latest
-
-# rust
-RUN apk add --no-cache rust cargo
-ENV CARGO_HOME=/home/app/.cargo PATH="${PATH}:${CARGO_HOME}/bin"
-
-# java
-RUN apk add --no-cache openjdk21-jdk
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk PATH="${PATH}:${JAVA_HOME}/bin"
-```
-
-Build and use:
-```bash
-docker build -t my-ralphex -f Dockerfile.python .
-RALPHEX_IMAGE=my-ralphex ralphex docs/plans/feature.md
-```
-
-</details>
 
 Example with custom port:
 ```bash
@@ -1124,13 +891,6 @@ Customize `~/.config/ralphex/prompts/custom_review.txt` to modify the prompt sen
 
 Customize `~/.config/ralphex/prompts/custom_eval.txt` to modify how the primary executor evaluates your tool's output. The evaluation prompt receives `{{CUSTOM_OUTPUT}}`; `codex.txt` and `external_claude_eval.txt` receive `{{CODEX_OUTPUT}}` and `{{CLAUDE_OUTPUT}}` respectively.
 
-**Docker considerations:**
-
-When running ralphex in Docker, your script must be accessible inside the container:
-- Mount your scripts directory: `-v ~/.config/ralphex/scripts:/home/app/.config/ralphex/scripts:ro`
-- Ensure script dependencies are available (curl, jq, etc. are included in base image)
-- Environment variables (API keys) must be passed to container: `-e OPENROUTER_API_KEY`
-
 ### Using Alternative Providers for Claude Phases
 
 The `claude_command` and `claude_args` config options let you replace Claude Code with any CLI that produces compatible `stream-json` output. This means codex, GitHub Copilot CLI, Gemini CLI, local LLMs, or any other tool can drive task execution and review phases — you just need a wrapper script that translates the tool's output format. Use `--claude-command` and `--claude-args` to choose a wrapper for a single run without changing config.
@@ -1360,7 +1120,7 @@ Set the `CLAUDE_CONFIG_DIR` environment variable to point to the alternate Claud
 CLAUDE_CONFIG_DIR=~/.claude2 ralphex docs/plans/feature.md
 ```
 
-This is the same env var Claude Code itself uses. With Docker, the wrapper script mounts the specified directory and derives the correct macOS Keychain service name from the path. Without Docker, the env var passes through to the child Claude Code process directly. Each Claude installation stores credentials under a unique Keychain entry based on its config directory. No additional configuration is needed — just point `CLAUDE_CONFIG_DIR` to the right directory.
+This is the same env var Claude Code itself uses. The value passes through to the child Claude Code process directly. Each Claude installation stores credentials under a unique Keychain entry based on its config directory. No additional configuration is needed — just point `CLAUDE_CONFIG_DIR` to the right directory.
 
 **Can I run something after all phases complete (notifications, rebase commits, etc.)?**
 
@@ -1420,8 +1180,6 @@ Nothing to configure and no flag to pass: the integration turns itself on when t
 Indication is best-effort — a failing or slow `cmux` call is ignored and never affects the run, and errors are not written to the progress file. The sidebar is cleared on normal completion, on failure, and on Ctrl+C including the force-exit path, so a stopped run does not leave a spinner behind.
 
 This is what makes several parallel ralphex runs in different cmux workspaces tellable apart at a glance — each workspace shows its own phase and task progress.
-
-Not available through the Docker wrapper (`scripts/ralphex-dk.sh`): the container images ship no `cmux` binary and `CMUX_WORKSPACE_ID` is not passed through.
 
 ## Claude Code Integration (Optional)
 

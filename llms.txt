@@ -119,10 +119,6 @@ ralphex --dump-defaults=/tmp/ralphex-defaults
 ralphex --config-dir=~/my-config docs/plans/feature.md
 RALPHEX_CONFIG_DIR=~/my-config ralphex docs/plans/feature.md
 
-# use AWS Bedrock for Claude (Docker wrapper only)
-ralphex --claude-provider=bedrock docs/plans/feature.md
-RALPHEX_CLAUDE_PROVIDER=bedrock ralphex docs/plans/feature.md
-
 # preserve ANTHROPIC_API_KEY in the claude child env (for API-key auth users)
 ralphex --preserve-anthropic-api-key docs/plans/feature.md
 ```
@@ -234,100 +230,13 @@ Requirements: codex CLI ≥ 0.130.0. Older versions silently ignore unknown `-c`
 
 Nothing to configure and no flag to pass: the integration turns itself on when the `cmux` CLI is in `PATH` and `CMUX_WORKSPACE_ID` is set, which cmux injects into every terminal it owns. Outside cmux it is a complete no-op. It only ever calls the public `cmux` CLI, so no cmux-side setup is needed. Indication is best-effort — a failing or slow `cmux` call is ignored and never affects the run, and errors are not written to the progress file. The sidebar is cleared on normal completion, on failure, and on Ctrl+C including the force-exit path, so a stopped run does not leave a spinner behind.
 
-This is what makes several parallel ralphex runs in different cmux workspaces tellable apart at a glance — each workspace shows its own phase and task progress. Not available through the Docker wrapper (`scripts/ralphex-dk.sh`): the container images ship no `cmux` binary and `CMUX_WORKSPACE_ID` is not passed through.
+This is what makes several parallel ralphex runs in different cmux workspaces tellable apart at a glance — each workspace shows its own phase and task progress.
 
 Run `ralphex --init` to create local `.ralphex/` project config with commented-out defaults.
 
 Run `ralphex --reset` to restore default configuration interactively.
 
 Run `ralphex --dump-defaults <dir>` to extract raw embedded defaults for comparison or merging.
-
-## Docker Images
-
-ralphex provides Docker images for isolated execution:
-
-| Image | Contents |
-|-------|----------|
-| `ghcr.io/umputun/ralphex:latest` | Base: Claude Code, Codex, fya, Node.js, Python, git, docker-cli, make, gcc, bash, fzf, ripgrep |
-| `ghcr.io/umputun/ralphex-go:latest` | Go development: base + Go 1.26, golangci-lint, moq, goimports |
-
-**Using Docker wrapper** (requires Python 3.9+):
-```bash
-# install wrapper script (defaults to Go image)
-curl -sL https://raw.githubusercontent.com/umputun/ralphex/master/scripts/ralphex-dk.sh -o /usr/local/bin/ralphex
-chmod +x /usr/local/bin/ralphex
-
-# for non-Go projects, use base image
-export RALPHEX_IMAGE=ghcr.io/umputun/ralphex:latest
-
-# debug docker command without running (shows full command for troubleshooting)
-ralphex --dry-run docs/plans/feature.md
-```
-
-**Environment variables:**
-- `RALPHEX_IMAGE` - Docker image (default: `ghcr.io/umputun/ralphex-go:latest`). CLI flag: `--image`
-- `RALPHEX_PORT` - Web dashboard port with `--serve` (default: `8080`). CLI flag: `--port`
-- `RALPHEX_CONFIG_DIR` - Custom config directory (default: `~/.config/ralphex`). Overrides global config location for prompts, agents, and settings
-- `CLAUDE_CONFIG_DIR` - Claude config directory (default: `~/.claude`). Use for alternate Claude installations (e.g., `~/.claude2`). Works with both Docker wrapper and non-Docker usage.
-- `RALPHEX_EXTRA_VOLUMES` - Extra volume mounts, comma-separated (e.g., `/data:/mnt/data:ro,/models:/mnt/models`)
-- `RALPHEX_EXTRA_ENV` - Extra environment variables, comma-separated. Format: `VAR=value` or `VAR` (inherit from host). Warns when sensitive names (KEY, SECRET, TOKEN, etc.) have explicit values - use name-only form for secure credential passing. CLI flag: `-E`/`--env` (uppercase E to avoid conflict with ralphex's `-e`/`--external-only`)
-- `RALPHEX_DOCKER_SOCKET` - Enable Docker socket mount: `1`, `true`, or `yes` (Docker wrapper only). CLI flag: `--docker`
-- `RALPHEX_DOCKER_NETWORK` - Docker network mode (e.g., `host`, `my-network`). CLI flag: `--network`
-- `TZ` - Override container timezone (default: auto-detected from host)
-- `RALPHEX_CLAUDE_PROVIDER` - Claude provider mode: `default` or `bedrock` (Docker wrapper only)
-
-**Docker socket support** (Docker wrapper only):
-
-The `--docker` flag (or `RALPHEX_DOCKER_SOCKET=1`) mounts the host Docker socket into the container, enabling testcontainers and Docker-dependent workflows:
-```bash
-ralphex --docker docs/plans/feature.md
-ralphex --docker --dry-run   # verify socket mount in command
-```
-
-- Auto-detects socket GID and passes `DOCKER_GID` env var for baseimage group setup
-- Emits security warning on Linux (macOS has VM isolation, no warning needed)
-- Exits with error if socket file doesn't exist (fail-fast, no silent degradation)
-- Never applies SELinux `:z`/`:Z` suffixes to socket mount
-
-**AWS Bedrock support** (Docker wrapper only):
-
-When `--claude-provider=bedrock` or `RALPHEX_CLAUDE_PROVIDER=bedrock` is set:
-- Keychain credential extraction is skipped (not needed for Bedrock auth)
-- AWS credentials are automatically exported from `AWS_PROFILE` via `aws configure export-credentials`
-- Required Bedrock env vars are passed to container: `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION`, credentials
-
-Required environment for Bedrock:
-- `AWS_REGION` - AWS region where Bedrock is enabled
-- `AWS_PROFILE` or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` - authentication
-
-Note: `CLAUDE_CODE_USE_BEDROCK=1` is automatically set when using `--claude-provider=bedrock`.
-
-See `docs/bedrock-setup.md` for detailed setup instructions and IAM policies.
-
-**Creating custom images for other languages:**
-
-```dockerfile
-FROM ghcr.io/umputun/ralphex:latest
-
-# Rust
-RUN apk add --no-cache rust cargo
-ENV CARGO_HOME=/home/app/.cargo PATH="${PATH}:${CARGO_HOME}/bin"
-
-# Java
-RUN apk add --no-cache openjdk21-jdk
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk PATH="${PATH}:${JAVA_HOME}/bin"
-
-# TypeScript (node/npm already included)
-RUN npm install -g typescript
-```
-
-Build and use:
-```bash
-docker build -t my-ralphex .
-RALPHEX_IMAGE=my-ralphex ralphex docs/plans/feature.md
-```
-
----
 
 ## Claude Code Integration (Optional)
 

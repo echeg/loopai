@@ -1,1 +1,0 @@
-../ralphex-dk.sh

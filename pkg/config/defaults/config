@@ -90,7 +90,7 @@ codex_timeout_ms = 3600000
 # read-only: codex can read files but not write (safest for external review)
 # danger-full-access: codex runs without filesystem sandboxing, matching autonomous claude mode
 # note: first-class executor = codex uses danger-full-access unless codex_sandbox is explicitly set in user config
-# note: in docker, sandbox is auto-disabled (landlock doesn't work in containers)
+# note: in the container runtime, sandbox is auto-disabled because landlock is unavailable
 # default: read-only for external codex review, danger-full-access for executor = codex
 codex_sandbox = read-only
 

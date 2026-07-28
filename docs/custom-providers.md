@@ -146,7 +146,7 @@ Command execution events are skipped by default because codex reads many files o
 {"type":"content_block_delta","delta":{"type":"text_delta","text":"fixed the bug\n"}}
 ```
 
-The script uses `jq` for JSON parsing, which is included in ralphex Docker images and available on most systems.
+The script uses `jq` for JSON parsing, which must be installed and available in `PATH`.
 
 ## GitHub Copilot CLI wrapper (included example)
 
@@ -571,8 +571,6 @@ echo '{"type":"result","result":""}'
 **Streaming:** the wrapper should emit events as they become available, not buffer the entire response. This allows ralphex to show real-time progress. The codex wrapper achieves this via the `while IFS= read -r line` pattern.
 
 **Error handling:** if the underlying tool fails, the wrapper should either exit with a non-zero code or emit an error in a `result` event. ralphex's `ClaudeExecutor` handles both cases.
-
-**Docker:** when running in Docker, ensure the wrapper script and its dependencies (jq, curl, etc.) are available inside the container. The ralphex base image includes jq. Mount custom scripts as read-only volumes.
 
 ## Troubleshooting
 

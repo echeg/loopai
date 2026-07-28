@@ -3554,7 +3554,7 @@ func TestMakePauseHandler_ContextCancelAborts(t *testing.T) {
 }
 
 func TestMakePauseHandler_EOFAborts(t *testing.T) {
-	// empty reader returns EOF immediately, treated as abort (safe default for Docker/piped stdin)
+	// empty reader returns EOF immediately, treated as abort (safe default for piped stdin)
 	stdin := bytes.NewReader(nil)
 	var stdout bytes.Buffer
 	handler := makePauseHandler(stdin, &stdout)

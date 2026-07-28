@@ -128,18 +128,18 @@ progress-логи. Плюс в репозитории лежит ~6300 стро�
 Начинаем отсюда, потому что удаление не пересекается с переименованием и сразу убирает ~5700 строк
 из-под ног последующих задач.
 
-- [ ] удалить `Dockerfile`, `Dockerfile-go`, `docker-compose.yml`, `.dockerignore`
-- [ ] удалить `scripts/ralphex-dk.sh` и каталог `scripts/ralphex-dk/`
-- [ ] удалить `.github/workflows/docker.yml`
-- [ ] удалить `docs/bedrock-setup.md` (Bedrock работает только через Docker-обёртку)
-- [ ] убрать шаг `test docker wrapper script` из `.github/workflows/ci.yml` (строки 33-34)
-- [ ] переформулировать три комментария про Docker в `pkg/executor/codex.go` (111, 152, 197) так,
+- [x] удалить `Dockerfile`, `Dockerfile-go`, `docker-compose.yml`, `.dockerignore`
+- [x] удалить `scripts/ralphex-dk.sh` и каталог `scripts/ralphex-dk/`
+- [x] удалить `.github/workflows/docker.yml`
+- [x] удалить `docs/bedrock-setup.md` (Bedrock работает только через Docker-обёртку)
+- [x] убрать шаг `test docker wrapper script` из `.github/workflows/ci.yml` (строки 33-34)
+- [x] переформулировать три комментария про Docker в `pkg/executor/codex.go` (111, 152, 197) так,
       чтобы они объясняли поведение песочницы без отсылки к удалённой обёртке; код не менять
-- [ ] убрать секции про Docker, образы, `RALPHEX_IMAGE`/`RALPHEX_DOCKER_*` и Bedrock из `README.md`,
+- [x] убрать секции про Docker, образы, `RALPHEX_IMAGE`/`RALPHEX_DOCKER_*` и Bedrock из `README.md`,
       `CLAUDE.md`, `llms.txt`
-- [ ] проверить, что в репозитории не осталось ссылок: `grep -ri "docker\|bedrock\|ralphex-dk"`
+- [x] проверить, что в репозитории не осталось ссылок: `grep -ri "docker\|bedrock\|ralphex-dk"`
       по всему дереву кроме `vendor/`, `.git/`, `.reference/`, `CHANGELOG.md`
-- [ ] `make test` и `make lint` — должны пройти до начала задачи 2
+- [x] `make test` и `make lint` — должны пройти до начала задачи 2
 
 ### Task 2: Удалить поддержку Mercurial
 

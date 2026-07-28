@@ -259,7 +259,7 @@ func TestCodexExecutor_Run_ContextCanceled(t *testing.T) {
 }
 
 func TestCodexExecutor_Run_DefaultSettings(t *testing.T) {
-	// clear docker env to test default sandbox behavior
+	// clear the container marker to test default sandbox behavior
 	t.Setenv("RALPHEX_DOCKER", "")
 
 	var capturedArgs []string
@@ -332,7 +332,7 @@ func TestCodexExecutor_Run_DangerFullAccessBypassesSandbox(t *testing.T) {
 	})
 }
 
-func TestCodexExecutor_Run_ForceReadOnlyInDocker(t *testing.T) {
+func TestCodexExecutor_Run_ForceReadOnlyWhenContainerMarkerSet(t *testing.T) {
 	t.Setenv("RALPHEX_DOCKER", "1")
 
 	var capturedArgs []string
@@ -358,7 +358,7 @@ func TestCodexExecutor_Run_ForceReadOnlyInDocker(t *testing.T) {
 }
 
 func TestCodexExecutor_Run_CustomSettings(t *testing.T) {
-	// clear docker env to test custom sandbox setting
+	// clear the container marker to test custom sandbox setting
 	t.Setenv("RALPHEX_DOCKER", "")
 
 	var capturedCmd string
