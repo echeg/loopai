@@ -1280,7 +1280,7 @@ func TestDefaultsInstaller_Install_PreservesCustomAgents(t *testing.T) {
 func TestInitLocal(t *testing.T) {
 	t.Run("creates new directory with defaults", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		localDir := filepath.Join(tmpDir, ".ralphex")
+		localDir := filepath.Join(tmpDir, ".loopai")
 
 		err := InitLocal(localDir)
 		require.NoError(t, err)
@@ -1315,7 +1315,7 @@ func TestInitLocal(t *testing.T) {
 
 	t.Run("second call preserves existing customized files", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		localDir := filepath.Join(tmpDir, ".ralphex")
+		localDir := filepath.Join(tmpDir, ".loopai")
 
 		// first call creates defaults
 		require.NoError(t, InitLocal(localDir))
@@ -1334,7 +1334,7 @@ func TestInitLocal(t *testing.T) {
 
 	t.Run("second call overwrites commented-only files", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		localDir := filepath.Join(tmpDir, ".ralphex")
+		localDir := filepath.Join(tmpDir, ".loopai")
 
 		// first call creates defaults
 		require.NoError(t, InitLocal(localDir))
@@ -1353,7 +1353,7 @@ func TestInitLocal(t *testing.T) {
 
 	t.Run("preserves existing gitignore", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		localDir := filepath.Join(tmpDir, ".ralphex")
+		localDir := filepath.Join(tmpDir, ".loopai")
 		require.NoError(t, os.MkdirAll(localDir, 0o700))
 
 		customIG := "progress/\nworktrees/\ncustom-dir/\n"

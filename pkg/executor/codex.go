@@ -108,7 +108,7 @@ type CodexExecutor struct {
 	LimitPatterns   []string          // patterns to detect rate limits (checked before error patterns)
 	MultiAgent      bool              // enable codex multi_agent feature + reviewer agent registration; set to true on the review-phase codex instance built by processor.New() for first-class --codex mode
 	PassClaudeMd    bool              // pass project-level CLAUDE.md to codex via project_doc_fallback_filenames (set by processor.New() only when cfg.AppConfig.Executor == ExecutorCodex)
-	ForceReadOnly   bool              // require the read-only sandbox even in Docker; used by external review so it cannot modify the project
+	ForceReadOnly   bool              // require the read-only sandbox even when the runtime disables its default sandbox; used by external review so it cannot modify the project
 	IdleTimeout     time.Duration     // kill session after this duration of no output, zero = disabled
 	headerEmitted   atomic.Bool       // tracks first invocation across Run() calls; false until first task/review then suppressed permanently — used to emit codex's resolved model/sandbox/effort once at the top of the run
 	runner          CodexRunner       // for testing, nil uses default
@@ -148,17 +148,12 @@ func (e *CodexExecutor) configOverrides() []string {
 	return args
 }
 
-// sandboxMode resolves the effective sandbox. Primary execution disables the
-// sandbox in Docker because Landlock does not work in containers. External
-// review must instead remain read-only and fail if Codex cannot initialize that
-// sandbox; silently granting write access would let a findings-only reviewer
-// modify the repository.
+// sandboxMode resolves the effective sandbox. External review must remain read-only
+// and fail if Codex cannot initialize that sandbox; silently granting write access
+// would let a findings-only reviewer modify the repository.
 func (e *CodexExecutor) sandboxMode() string {
 	if e.ForceReadOnly {
 		return "read-only"
-	}
-	if os.Getenv("RALPHEX_DOCKER") == "1" {
-		return "danger-full-access"
 	}
 	if e.Sandbox == "" {
 		return "read-only"
@@ -194,14 +189,13 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	// --dangerously-bypass-approvals-and-sandbox is required for unattended first-class
 	// --codex runs (which use danger-full-access by default). External codex review in
 	// claude mode worked on master without this flag and adding it would silently change
-	// approval semantics for default-claude users (esp. Docker mode where the sandbox is
-	// forced to danger-full-access); gate the flag on MultiAgent which is true only in
-	// first-class --codex (set by processor.buildCodexExecutor).
+	// approval semantics for default-claude users; gate the flag on MultiAgent which is
+	// true only in first-class --codex (set by processor.buildCodexExecutor).
 	if sandbox == "danger-full-access" && e.MultiAgent {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
 	args = append(args, "--sandbox", sandbox)
-	// model and reasoning effort are emitted only when explicitly set in ralphex config,
+	// model and reasoning effort are emitted only when explicitly set in loopai config,
 	// so the user's ~/.codex/config.toml choice is preserved otherwise (matches the
 	// "additive -c overrides" promise documented in CLAUDE.md / llms.txt).
 	if e.Model != "" {
@@ -571,7 +565,7 @@ func (e *CodexExecutor) shouldDisplay(line string, state *codexFilterState) (boo
 	case state.headerCount == 1:
 		// inside the header block. on the first run let codex's resolved
 		// config (model / sandbox / reasoning effort) leak through so the
-		// banner reflects what codex actually picked when ralphex did not
+		// banner reflects what codex actually picked when loopai did not
 		// explicitly override these fields.
 		if state.firstRun && e.isHeaderConfigLine(s) {
 			show = true
@@ -598,7 +592,7 @@ func (e *CodexExecutor) shouldDisplay(line string, state *codexFilterState) (boo
 }
 
 // isHeaderConfigLine returns true when line is one of codex's header-block
-// lines describing the resolved per-session config that ralphex doesn't know
+// lines describing the resolved per-session config that loopai doesn't know
 // up front (model picked from ~/.codex/config.toml, sandbox, reasoning effort).
 // other header lines (workdir, provider, approval, reasoning summaries,
 // session id) are either obvious from context or not useful to the user.

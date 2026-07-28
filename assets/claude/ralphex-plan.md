@@ -1,1 +1,0 @@
-./skills/ralphex-plan/SKILL.md

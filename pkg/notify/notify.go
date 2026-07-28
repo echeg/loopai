@@ -1,4 +1,4 @@
-// Package notify provides notification support for ralphex plan execution results.
+// Package notify provides notification support for loopai plan execution results.
 package notify
 
 import (
@@ -197,9 +197,9 @@ func (s *Service) formatMessage(r Result) string {
 	var b strings.Builder
 
 	if r.Status == "success" {
-		fmt.Fprintf(&b, "ralphex completed on %s\n", s.hostname)
+		fmt.Fprintf(&b, "loopai completed on %s\n", s.hostname)
 	} else {
-		fmt.Fprintf(&b, "ralphex failed on %s\n", s.hostname)
+		fmt.Fprintf(&b, "loopai failed on %s\n", s.hostname)
 	}
 
 	b.WriteString("\n")
@@ -270,7 +270,7 @@ func makeEmailChannel(p Params) (channel, error) {
 	dest := fmt.Sprintf("mailto:%s?from=%s&subject=%s",
 		to,
 		url.QueryEscape(p.EmailFrom),
-		url.QueryEscape("ralphex notification"),
+		url.QueryEscape("loopai notification"),
 	)
 
 	return channel{notifier: em, dest: dest}, nil

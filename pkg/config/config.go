@@ -1,4 +1,4 @@
-// Package config provides configuration management for ralphex with embedded defaults.
+// Package config provides configuration management for loopai with embedded defaults.
 package config
 
 import (
@@ -48,7 +48,7 @@ const (
 	ExternalReviewToolNone   = "none"
 )
 
-// Config holds all configuration settings for ralphex.
+// Config holds all configuration settings for loopai.
 // Fields ending in *Set mostly track whether that field was explicitly set in config.
 // This allows distinguishing explicit false/0 from "not set", enabling proper
 // merge behavior where local config can override global config with zero values.
@@ -146,7 +146,7 @@ type Config struct {
 	CustomAgents []CustomAgent `json:"-"`
 
 	configDir string // private, global config directory set by Load()
-	localDir  string // private, local project config directory (.ralphex/) if found
+	localDir  string // private, local project config directory (.loopai/) if found
 }
 
 // CustomAgent represents a user-defined review agent.
@@ -171,8 +171,8 @@ type ColorConfig struct {
 }
 
 // Load loads all configuration from the specified directory.
-// If configDir is empty, uses the default location (~/.config/ralphex/).
-// It also auto-detects .ralphex/ in the current working directory for local overrides.
+// If configDir is empty, uses the default location (~/.config/loopai/).
+// It also auto-detects .loopai/ in the current working directory for local overrides.
 // It installs defaults if needed, parses config file, loads prompts and agents.
 func Load(configDir string) (*Config, error) {
 	globalDir := configDir
@@ -185,7 +185,7 @@ func Load(configDir string) (*Config, error) {
 }
 
 // loadWithLocal loads configuration with explicit global and local directories.
-// local config (.ralphex/) overrides global config (~/.config/ralphex/) per-field.
+// local config (.loopai/) overrides global config (~/.config/loopai/) per-field.
 // if localDir is empty, only global config is used.
 func loadWithLocal(globalDir, localDir string) (*Config, error) {
 	// install defaults
@@ -210,16 +210,16 @@ func LoadReadOnly(configDir string) (*Config, error) {
 	return loadConfigFromDirs(globalDir, localDir)
 }
 
-// detectLocalDir auto-detects .ralphex/ in cwd as local config directory.
+// detectLocalDir auto-detects .loopai/ in cwd as local config directory.
 // returns empty string if no local config found, if cwd detection fails, or if the
 // candidate resolves to the same absolute path as globalDir (avoids double-loading
-// the same directory, which happens when --config-dir points to .ralphex/).
+// the same directory, which happens when --config-dir points to .loopai/).
 func detectLocalDir(globalDir string) string {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return ""
 	}
-	candidate := filepath.Join(cwd, ".ralphex")
+	candidate := filepath.Join(cwd, ".loopai")
 	info, err := os.Stat(candidate)
 	if err != nil || !info.IsDir() {
 		return ""
@@ -401,15 +401,15 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 }
 
 // DefaultConfigDir returns the default configuration directory path.
-// returns ~/.config/ralphex/ on all platforms.
-// if os.UserHomeDir() fails, falls back to ./.config/ralphex/ silently -
+// returns ~/.config/loopai/ on all platforms.
+// if os.UserHomeDir() fails, falls back to ./.config/loopai/ silently -
 // this allows the tool to work even in unusual environments.
 func DefaultConfigDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(".", ".config", "ralphex")
+		return filepath.Join(".", ".config", "loopai")
 	}
-	return filepath.Join(home, ".config", "ralphex")
+	return filepath.Join(home, ".config", "loopai")
 }
 
 // LocalDir returns the local project config directory if one was detected.

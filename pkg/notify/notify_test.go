@@ -130,7 +130,8 @@ func TestNew(t *testing.T) {
 		}, &mockLogger{})
 		require.NoError(t, err)
 		require.NotNil(t, svc)
-		assert.Len(t, svc.channels, 1)
+		require.Len(t, svc.channels, 1)
+		assert.Contains(t, svc.channels[0].dest, "subject=loopai+notification")
 	})
 
 	t.Run("slack channel missing token", func(t *testing.T) {
@@ -285,7 +286,7 @@ func TestService_Send(t *testing.T) {
 		calls := mock.getCalls()
 		require.Len(t, calls, 1)
 		assert.Equal(t, "https://example.com/hook", calls[0].dest)
-		assert.Contains(t, calls[0].text, "ralphex completed on test-host")
+		assert.Contains(t, calls[0].text, "loopai completed on test-host")
 	})
 
 	t.Run("success skipped when onComplete is false", func(t *testing.T) {
@@ -317,7 +318,7 @@ func TestService_Send(t *testing.T) {
 		svc.Send(context.Background(), Result{Status: "failure", Error: "something broke"})
 		calls := mock.getCalls()
 		require.Len(t, calls, 1)
-		assert.Contains(t, calls[0].text, "ralphex failed on test-host")
+		assert.Contains(t, calls[0].text, "loopai failed on test-host")
 	})
 
 	t.Run("failure skipped when onError is false", func(t *testing.T) {
@@ -419,7 +420,7 @@ func TestService_FormatMessage(t *testing.T) {
 			Additions: 142,
 			Deletions: 23,
 		})
-		assert.Contains(t, msg, "ralphex completed on build-server")
+		assert.Contains(t, msg, "loopai completed on build-server")
 		assert.Contains(t, msg, "plan:     docs/plans/add-auth.md")
 		assert.Contains(t, msg, "branch:   add-auth")
 		assert.Contains(t, msg, "mode:     full")
@@ -437,14 +438,14 @@ func TestService_FormatMessage(t *testing.T) {
 			Duration: "3m 12s",
 			Error:    "runner: task phase: max iterations reached",
 		})
-		assert.Contains(t, msg, "ralphex failed on build-server")
+		assert.Contains(t, msg, "loopai failed on build-server")
 		assert.Contains(t, msg, "error:    runner: task phase: max iterations reached")
 		assert.NotContains(t, msg, "changes:")
 	})
 
 	t.Run("missing optional fields", func(t *testing.T) {
 		msg := svc.formatMessage(Result{Status: "success"})
-		assert.Contains(t, msg, "ralphex completed on build-server")
+		assert.Contains(t, msg, "loopai completed on build-server")
 		assert.NotContains(t, msg, "plan:")
 		assert.NotContains(t, msg, "branch:")
 		assert.NotContains(t, msg, "mode:")

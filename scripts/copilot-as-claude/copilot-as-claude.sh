@@ -2,10 +2,10 @@
 # copilot-as-claude.sh - wraps GitHub Copilot CLI to produce Claude-compatible stream-json output.
 #
 # this script translates Copilot CLI JSONL events into the Claude stream-json format
-# that ralphex's ClaudeExecutor can parse, allowing copilot to be used as a drop-in
+# that loopai's ClaudeExecutor can parse, allowing copilot to be used as a drop-in
 # replacement for claude in task, review, and plan phases.
 #
-# config example (~/.config/ralphex/config or .ralphex/config):
+# config example (~/.config/loopai/config or .loopai/config):
 #   claude_command = /path/to/copilot-as-claude.sh
 #   claude_args =
 #
@@ -20,7 +20,7 @@ set -euo pipefail
 command -v jq >/dev/null 2>&1 || { echo "error: jq is required but not found" >&2; exit 1; }
 command -v copilot >/dev/null 2>&1 || { echo "error: copilot is required but not found" >&2; exit 1; }
 
-# ralphex passes prompt via stdin (primary path, avoids Windows 8191-char cmd limit).
+# loopai passes prompt via stdin (primary path, avoids Windows 8191-char cmd limit).
 # also accept -p/--prompt for backward compatibility with direct invocations.
 # all other flags are ignored gracefully (--dangerously-skip-permissions, etc.)
 prompt=""
@@ -69,8 +69,8 @@ progress_file_from_prompt() {
                 ;;
         esac
         if [[ -n "$path" ]]; then
-            if [[ "$path" != */* && -f ".ralphex/progress/$path" ]]; then
-                printf '%s' ".ralphex/progress/$path"
+            if [[ "$path" != */* && -f ".loopai/progress/$path" ]]; then
+                printf '%s' ".loopai/progress/$path"
                 return 0
             fi
             printf '%s' "$path"
@@ -79,7 +79,7 @@ progress_file_from_prompt() {
     done <<< "$prompt"
 
     shopt -s nullglob
-    files=(.ralphex/progress/progress-plan*.txt)
+    files=(.loopai/progress/progress-plan*.txt)
     shopt -u nullglob
     if [[ ${#files[@]} -gt 0 ]]; then
         latest=$(ls -t "${files[@]}" 2>/dev/null | head -1 || true)
@@ -120,10 +120,10 @@ if [[ "$is_task_prompt" == "1" ]]; then
 fi
 
 # copilot defaults to markdown output (## headers, **bold**, ```fences```) which
-# renders as literal characters in ralphex progress logs.  the formatting rule
+# renders as literal characters in loopai progress logs.  the formatting rule
 # suppresses this; without it every review run has noisy markup in the log.
 if [[ "$is_review_prompt" == "1" ]]; then
-    adapter_text=$'FORMATTING RULE (strict): All output must be plain text only — no markdown of any kind (no headers, bold, code spans, code fences, horizontal rules). Use plain indented lists for structure. This renders in a terminal; markdown appears as literal characters.\n\nRalphex review adapter for GitHub Copilot CLI:\n- Review prompts refer to Claude "Task tool" calls — interpret those as agent delegation instructions.\n- Delegate all requested review roles as separate sub-agents; if parallel delegation is unavailable, run them sequentially — drop none.\n- Each agent should inspect the diff and source files directly and report problems only.\n- After all reviews, verify findings, fix confirmed issues, rerun tests and lint, and preserve all <<<RALPHEX:...>>> signals verbatim.'
+    adapter_text=$'FORMATTING RULE (strict): All output must be plain text only — no markdown of any kind (no headers, bold, code spans, code fences, horizontal rules). Use plain indented lists for structure. This renders in a terminal; markdown appears as literal characters.\n\nloopai review adapter for GitHub Copilot CLI:\n- Review prompts refer to Claude "Task tool" calls — interpret those as agent delegation instructions.\n- Delegate all requested review roles as separate sub-agents; if parallel delegation is unavailable, run them sequentially — drop none.\n- Each agent should inspect the diff and source files directly and report problems only.\n- After all reviews, verify findings, fix confirmed issues, rerun tests and lint, and preserve all <<<RALPHEX:...>>> signals verbatim.'
     prompt="$adapter_text"$'\n\n'"$prompt"
 fi
 
@@ -135,11 +135,11 @@ fi
 # Copilot CLI mode flags are not enough to replace boundary extraction below. Even
 # with autopilot continuation limits, Copilot can still place QUESTION / PLAN_DRAFT /
 # PLAN_READY and extra trailing text in the same assistant.message, so the wrapper
-# must truncate at the first plan boundary and hand control back to ralphex.
+# must truncate at the first plan boundary and hand control back to loopai.
 copilot_args=(-s --output-format json --stream on --allow-all)
 if [[ "$is_plan_prompt" == "1" ]]; then
     # plan creation still benefits from autopilot's multi-step exploration, but it
-    # must remain free to surface clarifications via ralphex QUESTION signals.
+    # must remain free to surface clarifications via loopai QUESTION signals.
     # native Copilot plan mode tended to re-draft after acceptance instead of
     # writing the accepted plan and emitting PLAN_READY.
     copilot_args+=(--autopilot)
@@ -164,7 +164,7 @@ cleanup() {
     # copilot may write tab characters or other control sequences to /dev/tty
     # (e.g. session status indicators in --silent mode).  reset the cursor to
     # column 0 and clear to end-of-line so those stray chars don't appear after
-    # the next prompt ralphex prints (e.g. "Continue with plan implementation?")
+    # the next prompt loopai prints (e.g. "Continue with plan implementation?")
     # use a subshell so that a failed >/dev/tty open (no controlling terminal)
     # is fully suppressed — bash prints the error to the shell's own stderr
     # before 2>/dev/null takes effect on the command, but the subshell's fd 2
@@ -193,7 +193,7 @@ emit_text_delta() {
     fi
     # before the first output, clear any stray characters copilot may have
     # written directly to /dev/tty (spinner/progress indicator tab).  this must
-    # happen before ralphex's progress logger prints the first timestamped line,
+    # happen before loopai's progress logger prints the first timestamped line,
     # otherwise the stray char appears prepended to the timestamp.
     if [[ "$first_output_emitted" == "0" ]]; then
         first_output_emitted=1
@@ -371,7 +371,7 @@ plan_written_since_start() {
             fi
         done < <(
             find . \
-                \( -path './.git' -o -path './.ralphex' \) -prune -o \
+                \( -path './.git' -o -path './.loopai' \) -prune -o \
                 -name '*.md' -type f -newer "$plan_write_marker" -print0 2>/dev/null
         )
 

@@ -20,14 +20,14 @@ func TestDashboardLoads(t *testing.T) {
 	t.Run("has correct title", func(t *testing.T) {
 		title, err := page.Title()
 		require.NoError(t, err)
-		assert.Contains(t, title, "Ralphex Dashboard")
+		assert.Contains(t, title, "Loopai Dashboard")
 	})
 
 	t.Run("has header with title", func(t *testing.T) {
 		h1 := page.Locator("header h1").First()
 		text, err := h1.TextContent()
 		require.NoError(t, err)
-		assert.Equal(t, "Ralphex Dashboard", text)
+		assert.Equal(t, "Loopai Dashboard", text)
 	})
 
 	t.Run("has status area", func(t *testing.T) {
@@ -41,7 +41,7 @@ func TestPhaseNavigation(t *testing.T) {
 
 	t.Run("all tabs visible", func(t *testing.T) {
 		// check all phase tabs are present
-		tabs := []string{"All", "Implementation", "Claude Review", "Codex Review"}
+		tabs := []string{"All", "Implementation", "Primary Review", "External Review"}
 		for _, tab := range tabs {
 			locator := page.Locator(".phase-tab", playwright.PageLocatorOptions{
 				HasText: tab,

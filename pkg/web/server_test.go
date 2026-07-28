@@ -60,7 +60,7 @@ func TestServer_HandleIndex(t *testing.T) {
 		require.NoError(t, err)
 
 		bodyStr := string(body)
-		assert.Contains(t, bodyStr, "Ralphex Dashboard")
+		assert.Contains(t, bodyStr, "Loopai Dashboard")
 		assert.Contains(t, bodyStr, "my-plan.md")
 		assert.Contains(t, bodyStr, "feature-branch")
 		assert.Contains(t, bodyStr, "codex · task gpt-5.5:high")

@@ -1,0 +1,1 @@
+./skills/loopai/SKILL.md

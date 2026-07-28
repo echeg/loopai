@@ -1,14 +1,14 @@
 [
   {
-    "label": "run: ralphex (debug)",
-    "command": "go run ./cmd/ralphex --debug",
+    "label": "run: loopai (debug)",
+    "command": "go run ./cmd/loopai --debug",
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true,
     "allow_concurrent_runs": false
   },
   {
-    "label": "run: ralphex --review",
-    "command": "go run ./cmd/ralphex --review --debug",
+    "label": "run: loopai --review",
+    "command": "go run ./cmd/loopai --review --debug",
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true,
     "allow_concurrent_runs": false
@@ -72,27 +72,6 @@
   {
     "label": "install",
     "command": "make install",
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "use_new_terminal": true,
-    "allow_concurrent_runs": false
-  },
-  {
-    "label": "docker: build",
-    "command": "make docker-build",
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "use_new_terminal": true,
-    "allow_concurrent_runs": false
-  },
-  {
-    "label": "docker: run",
-    "command": "./scripts/ralphex-dk.sh",
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "use_new_terminal": true,
-    "allow_concurrent_runs": false
-  },
-  {
-    "label": "docker: update image",
-    "command": "./scripts/ralphex-dk.sh --update",
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true,
     "allow_concurrent_runs": false

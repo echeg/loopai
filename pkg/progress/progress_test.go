@@ -44,12 +44,12 @@ func TestNewLogger(t *testing.T) {
 		wantBase string
 		wantDir  string
 	}{
-		{name: "full mode with plan", cfg: Config{PlanFile: "docs/plans/feature.md", Mode: "full", Branch: "main"}, wantBase: "progress-feature.txt", wantDir: ".ralphex/progress"},
-		{name: "review mode with plan", cfg: Config{PlanFile: "docs/plans/feature.md", Mode: "review", Branch: "main"}, wantBase: "progress-feature-review.txt", wantDir: ".ralphex/progress"},
-		{name: "codex-only mode with plan", cfg: Config{PlanFile: "docs/plans/feature.md", Mode: "codex-only", Branch: "main"}, wantBase: "progress-feature-codex.txt", wantDir: ".ralphex/progress"},
-		{name: "full mode no plan", cfg: Config{Mode: "full", Branch: "main"}, wantBase: "progress.txt", wantDir: ".ralphex/progress"},
-		{name: "review mode no plan", cfg: Config{Mode: "review", Branch: "main"}, wantBase: "progress-review.txt", wantDir: ".ralphex/progress"},
-		{name: "codex-only mode no plan", cfg: Config{Mode: "codex-only", Branch: "main"}, wantBase: "progress-codex.txt", wantDir: ".ralphex/progress"},
+		{name: "full mode with plan", cfg: Config{PlanFile: "docs/plans/feature.md", Mode: "full", Branch: "main"}, wantBase: "progress-feature.txt", wantDir: ".loopai/progress"},
+		{name: "review mode with plan", cfg: Config{PlanFile: "docs/plans/feature.md", Mode: "review", Branch: "main"}, wantBase: "progress-feature-review.txt", wantDir: ".loopai/progress"},
+		{name: "codex-only mode with plan", cfg: Config{PlanFile: "docs/plans/feature.md", Mode: "codex-only", Branch: "main"}, wantBase: "progress-feature-codex.txt", wantDir: ".loopai/progress"},
+		{name: "full mode no plan", cfg: Config{Mode: "full", Branch: "main"}, wantBase: "progress.txt", wantDir: ".loopai/progress"},
+		{name: "review mode no plan", cfg: Config{Mode: "review", Branch: "main"}, wantBase: "progress-review.txt", wantDir: ".loopai/progress"},
+		{name: "codex-only mode no plan", cfg: Config{Mode: "codex-only", Branch: "main"}, wantBase: "progress-codex.txt", wantDir: ".loopai/progress"},
 	}
 
 	for _, tc := range tests {
@@ -70,7 +70,7 @@ func TestNewLogger(t *testing.T) {
 			// verify header written
 			content, err := os.ReadFile(l.Path())
 			require.NoError(t, err)
-			assert.Contains(t, string(content), "# Ralphex Progress Log")
+			assert.Contains(t, string(content), "# Loopai Progress Log")
 			assert.Contains(t, string(content), "Mode: "+tc.cfg.Mode)
 		})
 	}
@@ -156,7 +156,7 @@ func TestNewLogger_AppendOnRestart(t *testing.T) {
 	// read content after first session
 	firstContent, err := os.ReadFile(l1.Path())
 	require.NoError(t, err)
-	assert.Contains(t, string(firstContent), "# Ralphex Progress Log")
+	assert.Contains(t, string(firstContent), "# Loopai Progress Log")
 	assert.Contains(t, string(firstContent), "first session output")
 
 	// simulate interrupted run: release lock and close file WITHOUT writing footer.
@@ -178,7 +178,7 @@ func TestNewLogger_AppendOnRestart(t *testing.T) {
 	contentStr := string(content)
 
 	// original content preserved
-	assert.Contains(t, contentStr, "# Ralphex Progress Log")
+	assert.Contains(t, contentStr, "# Loopai Progress Log")
 	assert.Contains(t, contentStr, "first session output")
 
 	// restart separator present (matches sectionRegex format)
@@ -189,7 +189,7 @@ func TestNewLogger_AppendOnRestart(t *testing.T) {
 	assert.Contains(t, contentStr, "second session output")
 
 	// header written only once
-	assert.Equal(t, 1, strings.Count(contentStr, "# Ralphex Progress Log"))
+	assert.Equal(t, 1, strings.Count(contentStr, "# Loopai Progress Log"))
 }
 
 func TestNewLogger_EmptyFileWritesHeader(t *testing.T) {
@@ -211,7 +211,7 @@ func TestNewLogger_EmptyFileWritesHeader(t *testing.T) {
 	content, err := os.ReadFile(l.Path())
 	require.NoError(t, err)
 	contentStr := string(content)
-	assert.Contains(t, contentStr, "# Ralphex Progress Log")
+	assert.Contains(t, contentStr, "# Loopai Progress Log")
 	assert.NotContains(t, contentStr, "--- restarted at")
 }
 
@@ -834,8 +834,8 @@ func TestNewLogger_FreshStartAfterCompleted(t *testing.T) {
 	assert.NotContains(t, contentStr, "--- restarted at")
 
 	// fresh header written
-	assert.Contains(t, contentStr, "# Ralphex Progress Log")
-	assert.Equal(t, 1, strings.Count(contentStr, "# Ralphex Progress Log"))
+	assert.Contains(t, contentStr, "# Loopai Progress Log")
+	assert.Equal(t, 1, strings.Count(contentStr, "# Loopai Progress Log"))
 
 	// new content present
 	assert.Contains(t, contentStr, "second session output")
@@ -882,7 +882,7 @@ func TestNewLogger_RestartAfterFailure_PreservesContent(t *testing.T) {
 	// new content appended
 	assert.Contains(t, s, "iteration 3 after restart")
 	// exactly one header (not rewritten)
-	assert.Equal(t, 1, strings.Count(s, "# Ralphex Progress Log"))
+	assert.Equal(t, 1, strings.Count(s, "# Loopai Progress Log"))
 }
 
 func TestGetProgressFilename(t *testing.T) {
@@ -1442,7 +1442,7 @@ func TestLogger_PlanModeFilename(t *testing.T) {
 			defer l.Close()
 
 			assert.Equal(t, tc.wantBase, filepath.Base(l.Path()))
-			assert.Contains(t, filepath.ToSlash(l.Path()), ".ralphex/progress")
+			assert.Contains(t, filepath.ToSlash(l.Path()), ".loopai/progress")
 
 			content, err := os.ReadFile(l.Path())
 			require.NoError(t, err)

@@ -1,4 +1,4 @@
-// Package status defines shared execution-model types for ralphex.
+// Package status defines shared execution-model types for loopai.
 // signal constants, phase types, and section types used by processor, executor, progress, and web packages.
 package status
 

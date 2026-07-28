@@ -301,7 +301,7 @@ func (cfg Config) buildCustomExecutor(log Logger) *executor.CustomExecutor {
 var claudeMdHintOnce sync.Once
 
 // maybeEmitClaudeMdSetupHint prints a one-time hint when ~/.claude/CLAUDE.md exists
-// but ~/.codex/AGENTS.md does not. ralphex never creates the symlink itself; the
+// but ~/.codex/AGENTS.md does not. loopai never creates the symlink itself; the
 // user owns ~/.codex/. probing errors are swallowed so a missing or unreadable
 // home directory simply suppresses the hint.
 func maybeEmitClaudeMdSetupHint(log Logger) {

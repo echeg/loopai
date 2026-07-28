@@ -3,7 +3,7 @@
 
 set -e
 
-TEST_DIR="/tmp/ralphex-test"
+TEST_DIR="/tmp/loopai-test"
 
 echo "cleaning up previous test..."
 rm -rf "$TEST_DIR"
@@ -45,7 +45,7 @@ EOF
 
 echo "creating .gitignore..."
 cat > .gitignore << 'EOF'
-.ralphex/progress/
+.loopai/progress/
 .bin/
 EOF
 
@@ -76,4 +76,4 @@ git commit -q -m "initial commit with buggy code"
 
 echo ""
 echo "toy project ready at: $TEST_DIR"
-echo "run: cd $TEST_DIR && ralphex docs/plans/fix-issues.md"
+echo "run: cd $TEST_DIR && loopai docs/plans/fix-issues.md"

@@ -1,63 +1,101 @@
-# Contributing to ralphex
+# Contributing to loopai
 
-## Development Setup
+loopai is a personal fork maintained for source builds and practical upstream synchronization. Keep contributions focused on the fork's current CLI and avoid reintroducing removed distribution or documentation infrastructure.
 
-1. Clone the repository
-2. Install Go 1.26+
-3. Run `make test` to verify setup
+## Development setup
 
-## Code Style
+1. Clone the repository.
+2. Install Go 1.26 or newer.
+3. Install Bash and `jq` for the provider-wrapper test suites.
+4. Install `golangci-lint`.
+5. Run `make test` and `make lint`.
+6. Build `.bin/loopai` with `make build`.
 
-- Follow standard Go conventions
-- All comments lowercase except godoc
-- Use table-driven tests with testify
-- Aim for 80%+ test coverage
+Optional dashboard tests require Playwright browsers:
 
-## Pull Requests
+```bash
+make e2e-setup
+make e2e
+```
 
-1. Create a feature branch from master
-2. Make your changes with tests
-3. Run `make test lint` before submitting
-4. Submit PR with clear description
+## Compatibility boundary
 
-## AI-Assisted Contributions
+User-visible names, commands, configuration, and runtime directories use `loopai`.
 
-AI-assisted development is welcome - this project is designed for that workflow. However, we have specific expectations for such PRs:
+Do not rename:
 
-**Quality expectations:**
+- the `github.com/umputun/ralphex` Go module or its import paths
+- internal package identifiers solely for branding
+- `<<<RALPHEX:...>>>` protocol signals
 
-- Contributors must review their own code before submitting, whether written by AI or not
-- PRs must follow project conventions. Explore the codebase first (with or without AI assistance) to understand patterns. Examples include:
-  - Code organization: flat package structure, one `_test.go` file per source file
-  - Testing: table-driven tests with testify, moq-generated mocks, 80%+ coverage
-  - Error handling: wrap with context using `fmt.Errorf("context: %w", err)`
-  - Library usage: use existing libraries, don't add new dependencies without discussion
-  - Interfaces: define at the consumer side, not the provider
-- Code must be readable and understandable by humans
-- Commit messages and PR descriptions should be meaningful, not generic AI output
-- Keep PRs focused: "general improvements" to unrelated code don't belong in the same PR unless directly warranted by the feature being implemented. Submit unrelated improvements as separate PRs
-- Contributors are responsible for checking AI output for security issues - AI tools can introduce vulnerabilities that aren't obvious at first glance
-- You must understand and be able to explain every line of code you submit. If asked about your changes during review, "the AI wrote it" is not an acceptable answer
+These names are intentionally retained to reduce upstream merge conflicts and preserve historical prompt/progress compatibility.
 
-**Reviewable scope:**
+Do not add reads or automatic migration from legacy `~/.config/ralphex/` or `.ralphex/`; the fork intentionally uses only `~/.config/loopai/` and `.loopai/`.
 
-- PRs must be reasonably sized for human review
-- Large changes should be split into focused, logical PRs
-- A PR touching dozens of files with thousands of lines is not reviewable - break it down
+## Code style
 
-**What we will not accept:**
+- Follow standard Go conventions.
+- Keep comments lowercase except exported godoc.
+- Wrap errors with context using `fmt.Errorf("context: %w", err)`.
+- Define interfaces at the consumer side.
+- Prefer existing dependencies.
+- Use `filepath` and keep behavior cross-platform.
+- Keep packages and changes small and cohesive.
 
-- Unreviewed AI output dumped for maintainers to fix
-- Code without tests or with failing tests/linter
-- Changes that ignore project conventions after being pointed to them
-- PRs that don't respond to review feedback
+## Tests
 
-PRs that violate these guidelines may be closed without further discussion. We value contributions but cannot serve as free QA for bulk AI-generated code.
+- Add or update tests with every behavior change.
+- Prefer table-driven tests with `testify`.
+- Cover successful and error paths.
+- Use `t.TempDir()` for filesystem tests.
+- Keep one corresponding `_test.go` file per source file.
+- Never access real `~/.config/loopai/` or `~/.config/ralphex/` from tests.
+- Do not reduce coverage or weaken assertions to make a change pass.
 
-## Reporting Issues
+Before submitting:
 
-Please include:
+```bash
+make test
+make lint
+```
+
+Run dashboard e2e and Windows cross-compilation when the affected code warrants them:
+
+```bash
+make e2e
+GOOS=windows GOARCH=amd64 go build ./...
+```
+
+## Changes and pull requests
+
+1. Branch from the appropriate base.
+2. Make one focused change with tests.
+3. Update README, CLAUDE.md, llms.txt, embedded config comments, or focused docs when behavior changes.
+4. Run the full validation suite.
+5. Write a meaningful commit message and pull-request description.
+
+Keep pull requests reviewable. Split unrelated changes and large refactors into separate submissions. Do not edit `CHANGELOG.md` during normal development; it belongs to the release process.
+
+New dependencies and broad architectural changes should be discussed before implementation.
+
+## AI-assisted contributions
+
+AI assistance is welcome, but contributors remain responsible for every submitted line.
+
+- Review generated code and tests yourself.
+- Check security, concurrency, error handling, and platform behavior.
+- Ensure the change follows existing package and test patterns.
+- Do not submit unreviewed bulk output for maintainers to repair.
+- Be prepared to explain the implementation and its tradeoffs.
+
+## Reporting issues
+
+Include:
+
+- loopai revision from `loopai --version`
 - Go version
-- OS and architecture
-- Steps to reproduce
-- Expected vs actual behavior
+- operating system and architecture
+- executor and relevant flags
+- steps to reproduce
+- expected and actual behavior
+- relevant `.loopai/progress/` excerpts with secrets removed

@@ -1,4 +1,4 @@
-// Package processor provides the main orchestration loop for ralphex execution.
+// Package processor provides the main orchestration loop for loopai execution.
 package processor
 
 import (

@@ -1,34 +1,34 @@
 # Custom Providers for Claude Phases
 
-ralphex uses Claude Code as the primary agent for task execution and code reviews. The `claude_command` and `claude_args` configuration options allow replacing Claude Code with any CLI tool that produces compatible output — codex, Gemini CLI, local LLMs, or custom scripts. The same provider can also be selected per run with `--claude-command` and `--claude-args`.
+loopai uses Claude Code as the primary agent for task execution and code reviews. The `claude_command` and `claude_args` configuration options allow replacing Claude Code with any CLI tool that produces compatible output — codex, Gemini CLI, local LLMs, or custom scripts. The same provider can also be selected per run with `--claude-command` and `--claude-args`.
 
 **For codex specifically, use the first-class `--codex` flag** described in the next section when you want codex to be the primary executor. The `claude_command` wrapper path remains supported for backwards compatibility and for tools without first-class integration (Gemini, Copilot, OpenCode, local LLMs).
 
 ## Codex executor mode (`--codex`) — native codex path
 
-The `--codex` flag is the native way to run the full ralphex pipeline (task execution, both review phases, finalize) through codex. The external review phase is automatically skipped because codex-reviewing-codex is a same-model self-review with weak signal — the cross-model independence between Claude and codex was the original reason that phase existed.
+The `--codex` flag makes Codex the primary executor for planning, tasks, internal reviews, finding evaluation, and finalize. External review remains available: with the default `external_review_tool = auto`, loopai selects Claude so the review stays cross-provider. Set `external_review_tool = none` to disable that phase.
 
 Why this path exists alongside `codex-as-claude.sh`:
 
-- ralphex calls the codex CLI directly. No translation layer, no Claude stream-json emulation, no extra `jq` round-trips.
+- loopai calls the codex CLI directly. No translation layer, no Claude stream-json emulation, no extra `jq` round-trips.
 - Multi-agent reviews are configured through additive `-c` flag overrides on the codex command line (`-c features.multi_agent=true`, `-c agents.reviewer.description=...`). The overrides layer on top of the user's `~/.codex/config.toml` rather than replacing it, so user customizations (model, sandbox, MCP servers) are preserved.
-- Review prompts (`review_first.txt`, `review_second.txt`) are shared between claude and codex. The `{{agent:<name>}}` expander in `pkg/processor/prompts.go` reads `cfg.AppConfig.Executor` and emits the executor-appropriate invocation: `Use the Task tool ...` for claude, `spawn_agent(agent='reviewer', task='...')` for codex. Under `--codex`, ralphex additionally prepends a section-level orchestration directive block (the `=== Codex orchestration directives ===` preamble) covering `spawn_agent` fork_context guard and `wait_agent` dead-agent retry — so users with their own customized review prompts get the directives without touching their prompt files.
+- Review prompts (`review_first.txt`, `review_second.txt`) are shared between Claude and Codex. The `{{agent:<name>}}` expander in `pkg/processor/prompts.go` reads `cfg.AppConfig.Executor` and emits the executor-appropriate invocation: `Use the Task tool ...` for Claude, `spawn_agent(agent='reviewer', task='...')` for Codex. Under `--codex`, loopai additionally prepends a section-level orchestration directive block (the `=== Codex orchestration directives ===` preamble) covering the `spawn_agent` argument guard and `wait_agent` dead-agent retry, so customized review prompts inherit the current orchestration rules.
 - `--pass-claude-md` adds `-c project_doc_fallback_filenames=["CLAUDE.md"]` so codex's native AGENTS.md walk picks up project-level `./CLAUDE.md`.
 
 ### Setup
 
 ```bash
 # one-off
-ralphex --codex docs/plans/feature.md
+loopai --codex docs/plans/feature.md
 
 # with project CLAUDE.md passthrough
-ralphex --codex --pass-claude-md docs/plans/feature.md
+loopai --codex --pass-claude-md docs/plans/feature.md
 ```
 
 Or persist via config:
 
 ```ini
-# in ~/.config/ralphex/config or .ralphex/config
+# in ~/.config/loopai/config or .loopai/config
 executor       = codex
 pass_claude_md = true
 ```
@@ -37,23 +37,23 @@ pass_claude_md = true
 
 `--codex` requires the codex CLI version 0.130.0 or newer. The mode relies on `[features] multi_agent`, `[agents.<name>]` agent registration, and (with `--pass-claude-md`) `project_doc_fallback_filenames` — all supported in 0.130.0. Older codex versions silently ignore unknown `-c` overrides, so a misconfigured run will not error visibly. There is no runtime version check; verify with `codex --version`.
 
-### Mutual exclusion
+### Executor and reviewer combinations
 
-`--codex` cannot be combined with `--external-only` (alias `-e`), `--codex-only` (alias `-c`), or `--external-review-tool=<X>` where `<X>` is not `none`. `--pass-claude-md` requires the codex executor, enabled either by `--codex` or `executor = codex` in config. Each invalid combination fails with a clear error at startup. Config-only conflicts (`executor = codex` plus `external_review_tool = codex` in the same config file) are silently resolved by forcing `external_review_tool = none` and printing a warning to stderr.
+`--codex` can be combined with `--external-only` (legacy alias `--codex-only`) and with any explicit external reviewer. `external_review_tool = auto` selects the other first-class provider: Claude for a Codex primary, Codex for a Claude primary. Explicit `claude`, `codex`, and `custom` selections are honored, including same-provider review when deliberately requested; `none` disables the phase. `--pass-claude-md` requires the Codex executor, enabled either by `--codex` or `executor = codex` in config.
 
 ### Prompt customization
 
-`review_first.txt` and `review_second.txt` are shared between claude and codex executors. A user's customized `~/.config/ralphex/prompts/review_first.txt` applies under both `--codex` and default claude. The `{{agent:<name>}}` expansion within those prompts switches syntax per executor (Task tool for claude, `spawn_agent` for codex), so the same prompt body works for both.
+`review_first.txt` and `review_second.txt` are shared between Claude and Codex executors. A user's customized `~/.config/loopai/prompts/review_first.txt` applies under both `--codex` and default Claude. The `{{agent:<name>}}` expansion within those prompts switches syntax per executor (Task tool for Claude, `spawn_agent` for Codex), so the same prompt body works for both.
 
-Under `--codex` ralphex automatically prepends a section-level orchestration directive block (covering `spawn_agent` fork_context guard and `wait_agent` dead-agent retry) at runtime — you do NOT need to put those directives in your customized prompt files. The block is generated by `prependCodexReviewGuidance` in `pkg/processor/prompts.go` and only fires when `cfg.isCodexExecutor()` is true.
+Under `--codex` loopai automatically prepends a section-level orchestration directive block (covering `spawn_agent` fork_context guard and `wait_agent` dead-agent retry) at runtime — you do NOT need to put those directives in your customized prompt files. The block is generated by `prependCodexReviewGuidance` in `pkg/processor/prompts.go` and only fires when `cfg.isCodexExecutor()` is true.
 
 ### User-level CLAUDE.md
 
-`--pass-claude-md` enables project-level `./CLAUDE.md` discovery only. For user-level `~/.claude/CLAUDE.md`, ralphex never writes to the user's `~/.codex/` directory. At first `--codex --pass-claude-md` run, if `~/.claude/CLAUDE.md` exists and `~/.codex/AGENTS.md` does not, ralphex prints a one-time hint suggesting `ln -s ~/.claude/CLAUDE.md ~/.codex/AGENTS.md` and continues. The user opts in by running the command themselves.
+`--pass-claude-md` enables project-level `./CLAUDE.md` discovery only. For user-level `~/.claude/CLAUDE.md`, loopai never writes to the user's `~/.codex/` directory. At first `--codex --pass-claude-md` run, if `~/.claude/CLAUDE.md` exists and `~/.codex/AGENTS.md` does not, loopai prints a one-time hint suggesting `ln -s ~/.claude/CLAUDE.md ~/.codex/AGENTS.md` and continues. The user opts in by running the command themselves.
 
 ## How it works (`claude_command` wrapper path)
 
-ralphex's `ClaudeExecutor` runs the configured command and passes the prompt via stdin, then reads stdout as a stream of JSON events. Each line must be a valid JSON object. The executor recognizes these event types:
+loopai's `ClaudeExecutor` runs the configured command and passes the prompt via stdin, then reads stdout as a stream of JSON events. Each line must be a valid JSON object. The executor recognizes these event types:
 
 | Event type | Fields used | Purpose |
 |---|---|---|
@@ -66,7 +66,7 @@ The executor also recognizes `message_stop` events, but wrapper scripts don't ne
 
 ### Signal detection
 
-ralphex prompts instruct the agent to emit signals like `<<<RALPHEX:COMPLETED>>>` or `<<<RALPHEX:FAILED>>>` in its output. These signals must appear in the text content of `content_block_delta` or `result` events. The wrapper doesn't need to handle signals — as long as the underlying tool follows the prompt instructions and the text passes through, signals will be detected automatically.
+loopai prompts instruct the agent to emit phase-specific signals such as `<<<RALPHEX:ALL_TASKS_DONE>>>` when task execution completes, `<<<RALPHEX:TASK_FAILED>>>` on an unrecoverable failure, or `<<<RALPHEX:REVIEW_DONE>>>` when a review finds no issues. These signals must appear in the text content of `content_block_delta` or `result` events. The wrapper doesn't need to handle signals — as long as the underlying tool follows the prompt instructions and the text passes through, signals will be detected automatically.
 
 ### Argument handling
 
@@ -86,13 +86,17 @@ When `claude_args` has a value (default: `--dangerously-skip-permissions --outpu
 
 ### Per-run provider overrides
 
-Use CLI flags when you want to test or switch providers without editing `~/.config/ralphex/config` or `.ralphex/config`. These flags override config for the current invocation only:
+Use CLI flags when you want to test or switch providers without editing `~/.config/loopai/config` or `.loopai/config`. These flags override config for the current invocation only:
 
 ```bash
-ralphex --claude-command=/path/to/wrapper.sh --external-review-tool=custom --custom-review-script=/path/to/review.sh docs/plans/feature.md
+loopai --claude-command=/path/to/wrapper.sh --external-review-tool=custom --custom-review-script=/path/to/review.sh docs/plans/feature.md
 ```
 
-`--external-review-tool` accepts `codex`, `custom`, or `none`. When `custom` is selected, `--custom-review-script` points at the script that receives the external review prompt file path.
+`--external-review-tool` accepts `auto`, `claude`, `codex`, `custom`, or `none`.
+`auto` selects the provider opposite the primary executor when it is available.
+Explicit `claude` and `codex` selections are honored, including same-provider
+review. When `custom` is selected, `--custom-review-script` points at the script
+that receives the external review prompt file path.
 
 ## Codex wrapper (included compatibility example)
 
@@ -103,14 +107,14 @@ The wrapper translates codex JSONL events to Claude stream-json format.
 ### Setup
 
 ```ini
-# in ~/.config/ralphex/config or .ralphex/config
+# in ~/.config/loopai/config or .loopai/config
 claude_command = /path/to/scripts/codex-as-claude/codex-as-claude.sh
 ```
 
 For a one-off run without editing config:
 
 ```bash
-ralphex --claude-command=/path/to/scripts/codex-as-claude/codex-as-claude.sh docs/plans/feature.md
+loopai --claude-command=/path/to/scripts/codex-as-claude/codex-as-claude.sh docs/plans/feature.md
 ```
 
 ### Environment variables
@@ -146,25 +150,25 @@ Command execution events are skipped by default because codex reads many files o
 {"type":"content_block_delta","delta":{"type":"text_delta","text":"fixed the bug\n"}}
 ```
 
-The script uses `jq` for JSON parsing, which is included in ralphex Docker images and available on most systems.
+The script uses `jq` for JSON parsing, which must be installed and available in `PATH`.
 
 ## GitHub Copilot CLI wrapper (included example)
 
-The repository includes a wrapper at `scripts/copilot-as-claude/copilot-as-claude.sh` that keeps ralphex on the existing `claude_command` / `claude_args` path by translating GitHub Copilot CLI JSONL events into Claude stream-json output.
+The repository includes a wrapper at `scripts/copilot-as-claude/copilot-as-claude.sh` that keeps loopai on the existing `claude_command` / `claude_args` path by translating GitHub Copilot CLI JSONL events into Claude stream-json output.
 
 Unlike the Gemini wrapper, Copilot already has a native non-interactive JSONL mode. Unlike OpenCode, it also has native permission flags, so the wrapper can lean on Copilot's own autonomy controls instead of inventing a wrapper-specific config layer. The Copilot wrapper mainly handles prompt ingestion from stdin, event translation, review-prompt adaptation, stderr passthrough, and fallback `result` emission.
 
 ### Setup
 
 ```ini
-# in ~/.config/ralphex/config or .ralphex/config
+# in ~/.config/loopai/config or .loopai/config
 claude_command = /path/to/scripts/copilot-as-claude/copilot-as-claude.sh
 ```
 
 For a one-off run without editing config:
 
 ```bash
-ralphex --claude-command=/path/to/scripts/copilot-as-claude/copilot-as-claude.sh docs/plans/feature.md
+loopai --claude-command=/path/to/scripts/copilot-as-claude/copilot-as-claude.sh docs/plans/feature.md
 ```
 
 ### Authentication
@@ -190,7 +194,7 @@ Copilot checks the token variables in the order above. Fine-grained PATs must in
 
 ### Why this wrapper uses Copilot JSONL mode
 
-The wrapper runs Copilot with `-s --output-format json --stream on` so it can consume native JSONL events instead of scraping terminal text. It emits completed assistant messages rather than token deltas to keep ralphex output readable, while still using explicit completion events to map into Claude `result` output and echoing stderr back into the stream for existing error and limit detection.
+The wrapper runs Copilot with `-s --output-format json --stream on` so it can consume native JSONL events instead of scraping terminal text. It emits completed assistant messages rather than token deltas to keep loopai output readable, while still using explicit completion events to map into Claude `result` output and echoing stderr back into the stream for existing error and limit detection.
 
 ### Permission model
 
@@ -198,9 +202,9 @@ The wrapper uses Copilot's native autonomy flags: `--autopilot --no-ask-user --a
 
 - `--autopilot` enables the multi-step autonomous execution required for unattended task/review phases
 - `--no-ask-user` prevents Copilot from pausing the run with follow-up questions
-- `--allow-all` enables tool, path, and URL permissions together, matching ralphex's unattended task/review model
+- `--allow-all` enables tool, path, and URL permissions together, matching loopai's unattended task/review model
 
-For ralphex plan creation, the wrapper instead uses `--autopilot --allow-all` and intentionally leaves off `--no-ask-user`. Plan mode is supposed to surface clarification through `<<<RALPHEX:QUESTION>>>` signals, so the wrapper avoids the unattended question-suppression path and instructs Copilot to use signal-based questions instead of the native `ask_user` tool. It intentionally avoids Copilot's native `--mode plan`, because that tended to re-draft after user acceptance instead of writing the accepted plan and emitting `PLAN_READY`.
+For loopai plan creation, the wrapper instead uses `--autopilot --allow-all` and intentionally leaves off `--no-ask-user`. Plan mode is supposed to surface clarification through `<<<RALPHEX:QUESTION>>>` signals, so the wrapper avoids the unattended question-suppression path and instructs Copilot to use signal-based questions instead of the native `ask_user` tool. It intentionally avoids Copilot's native `--mode plan`, because that tended to re-draft after user acceptance instead of writing the accepted plan and emitting `PLAN_READY`.
 
 GitHub's programmatic autopilot guidance uses the same core pattern: "Use the `--allow-all` (or `--yolo`) option" together with `--autopilot`, optionally adding `--max-autopilot-continues` for a safety cap in CI or scripts.
 
@@ -221,7 +225,7 @@ The repository includes a wrapper at `scripts/opencode/opencode-as-claude.sh` th
 ### Setup
 
 ```ini
-# in ~/.config/ralphex/config or .ralphex/config
+# in ~/.config/loopai/config or .loopai/config
 claude_command = /path/to/scripts/opencode/opencode-as-claude.sh
 ```
 
@@ -267,7 +271,7 @@ The repository includes a wrapper at `scripts/gemini-as-claude/gemini-as-claude.
 ### Setup
 
 ```ini
-# in ~/.config/ralphex/config or .ralphex/config
+# in ~/.config/loopai/config or .loopai/config
 claude_command = /path/to/scripts/gemini-as-claude/gemini-as-claude.sh
 ```
 
@@ -307,7 +311,7 @@ The `agy` CLI in this version does **not** expose a `--model` flag, so model sel
 ### Setup
 
 ```ini
-# in ~/.config/ralphex/config or .ralphex/config
+# in ~/.config/loopai/config or .loopai/config
 claude_command = /path/to/scripts/agy-as-claude/agy-as-claude.sh
 ```
 
@@ -319,7 +323,7 @@ The wrapper invokes `agy` with `--dangerously-skip-permissions` to auto-approve 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGY_PRINT_TIMEOUT` | `2h` | Print mode timeout passed to `agy`. The `agy` CLI defaults to `5m` which is shorter than typical ralphex task/review sessions. Override if you need a different limit. |
+| `AGY_PRINT_TIMEOUT` | `2h` | Print mode timeout passed to `agy`. The `agy` CLI defaults to `5m` which is shorter than typical loopai task/review sessions. Override if you need a different limit. |
 
 ### Environment isolation
 
@@ -355,14 +359,14 @@ The wrapper runs pi with `--mode json --print` and passes the prompt on stdin (a
 ### Setup
 
 ```ini
-# in ~/.config/ralphex/config or .ralphex/config
+# in ~/.config/loopai/config or .loopai/config
 claude_command = /path/to/scripts/pi-as-claude/pi-as-claude.sh
 ```
 
 For a one-off run without editing config:
 
 ```bash
-ralphex --claude-command=/path/to/scripts/pi-as-claude/pi-as-claude.sh docs/plans/feature.md
+loopai --claude-command=/path/to/scripts/pi-as-claude/pi-as-claude.sh docs/plans/feature.md
 ```
 
 ### Environment variables
@@ -370,16 +374,16 @@ ralphex --claude-command=/path/to/scripts/pi-as-claude/pi-as-claude.sh docs/plan
 | Variable | Default | Description |
 |---|---|---|
 | `PI_PROVIDER` | (pi default: `google`) | Provider passed as `--provider` when set |
-| `PI_MODEL` | (pi default) | Model used when ralphex does not append a `--model` flag |
-| `PI_THINKING` | (pi default) | Thinking level used when ralphex does not append an `--effort` flag |
+| `PI_MODEL` | (pi default) | Model used when loopai does not append a `--model` flag |
+| `PI_THINKING` | (pi default) | Thinking level used when loopai does not append an `--effort` flag |
 | `PI_VERBOSE` | `0` | Set to `1` to include tool execution events in the stream |
 | `PI_EXTRA_ARGS` | (none) | Extra flags appended verbatim to the pi invocation (word-split on whitespace); e.g. `--nolo-mode full` to auto-approve tools in non-interactive runs |
 
 ### Thinking / effort mapping
 
-ralphex appends `--model <m>` / `--effort <e>` per phase. The wrapper forwards `--model` to pi's `--model` and maps `--effort` to pi's `--thinking`:
+loopai appends `--model <m>` / `--effort <e>` per phase. The wrapper forwards `--model` to pi's `--model` and maps `--effort` to pi's `--thinking`:
 
-| ralphex effort | pi thinking |
+| loopai effort | pi thinking |
 |---|---|
 | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` | passed through verbatim |
 | `max` | `xhigh` (pi has no `max`; a one-line note is printed to stderr) |
@@ -397,7 +401,7 @@ The wrapper translates pi JSONL events as follows:
 
 pi streams assistant text as token-level deltas (e.g. `"The"`, `" quick"`, `" brown"`), so the wrapper buffers deltas and emits only complete lines. Emitting one event per token would garble the log with a newline after every token and, more importantly, split `<<<RALPHEX:...>>>` signals across blocks — the executor's per-block signal detection only matches a signal that lands intact in a single `content_block_delta`.
 
-Suppressed events are translated to empty text deltas rather than dropped: ralphex's `idle_timeout` resets on every line of wrapper output, so a long tool execution that produced no output at all would otherwise kill a healthy session. The executor ignores empty text, so keepalives never appear in the progress log.
+Suppressed events are translated to empty text deltas rather than dropped: loopai's `idle_timeout` resets on every line of wrapper output, so a long tool execution that produced no output at all would otherwise kill a healthy session. The executor ignores empty text, so keepalives never appear in the progress log.
 
 A fallback `{"type":"result","result":""}` is always emitted, covering pi exiting without a `turn_end`/`agent_end` event. Stderr is captured and emitted as `content_block_delta` events after the main stream for error/limit pattern detection, and pi's exit code is preserved. Any literal `<<<RALPHEX:` token on stderr is neutralized first (rewritten to `<<< RALPHEX:` with an inserted space), so a stray signal token echoed in pi diagnostics cannot be mistaken for a real completion signal — rate-limit and `API Error:` phrases pass through verbatim for error/limit detection.
 
@@ -415,18 +419,18 @@ A fallback `{"type":"result","result":""}` is always emitted, covering pi exitin
 
 For review prompts (detected by `<<<RALPHEX:REVIEW_DONE>>>` in the prompt text), the wrapper prepends adapter instructions telling the model to execute review agent tasks sequentially using pi's `read`/`bash`/`edit`/`write` tools, since pi exposes no parallel sub-agents.
 
-The wrapper covers task and review phases only. Plan creation mode (`ralphex --plan`) has no pi-specific adapter for `QUESTION`/`PLAN_DRAFT` handling (unlike the Copilot wrapper) and is untested with pi.
+The wrapper covers task and review phases only. Plan creation mode (`loopai --plan`) has no pi-specific adapter for `QUESTION`/`PLAN_DRAFT` handling (unlike the Copilot wrapper) and is untested with pi.
 
 ## Writing your own wrapper
 
 A wrapper script must:
 
-1. Read the prompt from stdin (ralphex pipes it to avoid Windows command-line length limits)
+1. Read the prompt from stdin (loopai pipes it to avoid Windows command-line length limits)
 2. Also accept `-p <prompt>` as a fallback for backward compatibility
 3. Ignore other flags gracefully
 4. Stream JSON events to stdout, one per line
 5. Exit with code 0 on success
-6. Optionally re-emit the child's stderr as `content_block_delta` events so ralphex error/limit pattern detection works — neutralize any literal `<<<RALPHEX:` token first (e.g. insert a space) so stray stderr text cannot be mistaken for a completion signal
+6. Optionally re-emit the child's stderr as `content_block_delta` events so loopai error/limit pattern detection works — neutralize any literal `<<<RALPHEX:` token first (e.g. insert a space) so stray stderr text cannot be mistaken for a completion signal
 
 ### Minimal template
 
@@ -444,7 +448,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$prompt" ]]; then
-    # fall back to stdin: ralphex passes prompt via pipe to avoid Windows 8191-char cmd limit.
+    # fall back to stdin: loopai passes prompt via pipe to avoid Windows 8191-char cmd limit.
     # only read when stdin is not a terminal to avoid blocking interactive invocations.
     if [[ ! -t 0 ]]; then
         prompt=$(cat)
@@ -564,15 +568,13 @@ echo '{"type":"result","result":""}'
 
 ## Limitations and considerations
 
-**Signal emission:** the underlying tool must follow ralphex prompt instructions to emit `<<<RALPHEX:...>>>` signals. Most capable models (GPT-4+, Claude, Gemini Pro) handle this reliably. Smaller/local models may not follow signal instructions consistently, which will cause ralphex to retry or timeout.
+**Signal emission:** the underlying tool must follow loopai prompt instructions to emit `<<<RALPHEX:...>>>` signals. Most capable models (GPT-4+, Claude, Gemini Pro) handle this reliably. Smaller/local models may not follow signal instructions consistently, which will cause loopai to retry or timeout.
 
 **Tool use:** Claude Code natively supports file editing, command execution, and other tools. Alternative providers typically only output text — they cannot directly edit files or run commands. This means they work best for review phases (where the output is analyzed by Claude for fixing) rather than task execution phases (where the agent needs to write code and run tests).
 
-**Streaming:** the wrapper should emit events as they become available, not buffer the entire response. This allows ralphex to show real-time progress. The codex wrapper achieves this via the `while IFS= read -r line` pattern.
+**Streaming:** the wrapper should emit events as they become available, not buffer the entire response. This allows loopai to show real-time progress. The codex wrapper achieves this via the `while IFS= read -r line` pattern.
 
-**Error handling:** if the underlying tool fails, the wrapper should either exit with a non-zero code or emit an error in a `result` event. ralphex's `ClaudeExecutor` handles both cases.
-
-**Docker:** when running in Docker, ensure the wrapper script and its dependencies (jq, curl, etc.) are available inside the container. The ralphex base image includes jq. Mount custom scripts as read-only volumes.
+**Error handling:** if the underlying tool fails, the wrapper should either exit with a non-zero code or emit an error in a `result` event. loopai's `ClaudeExecutor` handles both cases.
 
 ## Troubleshooting
 
@@ -582,7 +584,7 @@ echo '{"type":"result","result":""}'
 - Ensure `jq` is installed and accessible
 
 **Signals not detected:**
-- The model must include `<<<RALPHEX:COMPLETED>>>` or `<<<RALPHEX:FAILED>>>` in its text output
+- The model must include the phase-specific signal requested by the prompt, such as `<<<RALPHEX:ALL_TASKS_DONE>>>`, `<<<RALPHEX:TASK_FAILED>>>`, or `<<<RALPHEX:REVIEW_DONE>>>`, in its text output
 - Check that the prompt is passed through correctly (not truncated or escaped)
 - Test manually: run the wrapper with a prompt that includes signal instructions
 
@@ -592,7 +594,7 @@ echo '{"type":"result","result":""}'
 - Test with: `echo "test" | your-wrapper | jq .` (each line should parse)
 
 **Timeout / stuck:**
-- ralphex supports an optional per-session timeout via `--session-timeout` flag or `session_timeout` config option (e.g., `30m`, `1h`). In default Claude executor mode it applies to Claude calls only; under `--codex` it applies to every executor call. External codex/custom review in Claude mode is not affected.
-- ralphex also supports `--idle-timeout` flag or `idle_timeout` config option (e.g., `5m`). Unlike session timeout (fixed wall-clock limit), idle timeout resets on each output line and fires only when the session goes silent. It applies to the Claude executor in default mode and to every executor call under `--codex`; external codex review in default-claude mode is not affected. Custom review is not affected.
+- loopai supports an optional per-session timeout via `--session-timeout` flag or `session_timeout` config option (e.g., `30m`, `1h`). In default Claude executor mode it applies to Claude calls only; under `--codex` it applies to every executor call. External codex/custom review in Claude mode is not affected.
+- loopai also supports `--idle-timeout` flag or `idle_timeout` config option (e.g., `5m`). Unlike session timeout (fixed wall-clock limit), idle timeout resets on each output line and fires only when the session goes silent. It applies to the Claude executor in default mode and to every executor call under `--codex`; external codex review in default-claude mode is not affected. Custom review is not affected.
 - Check if the underlying tool has its own timeout settings
 - For codex: adjust `CODEX_SANDBOX` if the sandbox is blocking operations

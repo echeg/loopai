@@ -1,10 +1,10 @@
 # codex-as-claude
 
-Wraps the Codex CLI to produce Claude-compatible `stream-json` output, allowing Codex to be used as a drop-in replacement for Claude Code in ralphex task and review phases.
+Wraps the Codex CLI to produce Claude-compatible `stream-json` output, allowing Codex to be used as a drop-in replacement for Claude Code in loopai task and review phases.
 
 ## How it works
 
-The script translates Codex JSONL events into Claude's `stream-json` format that ralphex's `ClaudeExecutor` can parse. It extracts the prompt from `-p` flag and ignores all other Claude-specific flags gracefully.
+The script translates Codex JSONL events into Claude's `stream-json` format that loopai's `ClaudeExecutor` can parse. It extracts the prompt from `-p` flag and ignores all other Claude-specific flags gracefully.
 
 Event mapping:
 
@@ -17,7 +17,7 @@ Event mapping:
 
 ## Configuration
 
-Add to `~/.config/ralphex/config` or `.ralphex/config`:
+Add to `~/.config/loopai/config` or `.loopai/config`:
 
 ```ini
 claude_command = /path/to/scripts/codex-as-claude/codex-as-claude.sh

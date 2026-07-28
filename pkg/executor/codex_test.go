@@ -259,9 +259,6 @@ func TestCodexExecutor_Run_ContextCanceled(t *testing.T) {
 }
 
 func TestCodexExecutor_Run_DefaultSettings(t *testing.T) {
-	// clear docker env to test default sandbox behavior
-	t.Setenv("RALPHEX_DOCKER", "")
-
 	var capturedArgs []string
 	mock := &mockCodexRunner{
 		runFunc: func(_ context.Context, name string, args ...string) (CodexStreams, func() error, error) {
@@ -290,8 +287,6 @@ func TestCodexExecutor_Run_DefaultSettings(t *testing.T) {
 }
 
 func TestCodexExecutor_Run_DangerFullAccessBypassesSandbox(t *testing.T) {
-	t.Setenv("RALPHEX_DOCKER", "")
-
 	t.Run("first-class --codex emits bypass flag", func(t *testing.T) {
 		// MultiAgent=true is the first-class --codex signal (set by buildCodexExecutor).
 		// danger-full-access requires the bypass flag for unattended runs.
@@ -332,9 +327,7 @@ func TestCodexExecutor_Run_DangerFullAccessBypassesSandbox(t *testing.T) {
 	})
 }
 
-func TestCodexExecutor_Run_ForceReadOnlyInDocker(t *testing.T) {
-	t.Setenv("RALPHEX_DOCKER", "1")
-
+func TestCodexExecutor_Run_ForceReadOnly(t *testing.T) {
 	var capturedArgs []string
 	mock := &mockCodexRunner{
 		runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
@@ -358,9 +351,6 @@ func TestCodexExecutor_Run_ForceReadOnlyInDocker(t *testing.T) {
 }
 
 func TestCodexExecutor_Run_CustomSettings(t *testing.T) {
-	// clear docker env to test custom sandbox setting
-	t.Setenv("RALPHEX_DOCKER", "")
-
 	var capturedCmd string
 	var capturedArgs []string
 	mock := &mockCodexRunner{
@@ -1556,8 +1546,6 @@ func TestCodexExecutor_configOverrides_reviewerPairsWithMultiAgent(t *testing.T)
 }
 
 func TestCodexExecutor_Run_SplicesMultiAgentArgs(t *testing.T) {
-	t.Setenv("RALPHEX_DOCKER", "")
-
 	var capturedArgs []string
 	mock := &mockCodexRunner{
 		runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
@@ -1583,8 +1571,6 @@ func TestCodexExecutor_Run_SplicesMultiAgentArgs(t *testing.T) {
 }
 
 func TestCodexExecutor_Run_SplicesFallbackArgs(t *testing.T) {
-	t.Setenv("RALPHEX_DOCKER", "")
-
 	var capturedArgs []string
 	mock := &mockCodexRunner{
 		runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
@@ -1603,8 +1589,6 @@ func TestCodexExecutor_Run_SplicesFallbackArgs(t *testing.T) {
 }
 
 func TestCodexExecutor_Run_NoOverridesByDefault(t *testing.T) {
-	t.Setenv("RALPHEX_DOCKER", "")
-
 	var capturedArgs []string
 	mock := &mockCodexRunner{
 		runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {

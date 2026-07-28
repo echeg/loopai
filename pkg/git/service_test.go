@@ -281,8 +281,15 @@ func TestService_CreateBranchForPlan(t *testing.T) {
 
 		err = svc.CreateBranchForPlan(planFile, "master", "")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "worktree has uncommitted changes")
-		assert.Contains(t, err.Error(), "other.txt")
+		assert.Equal(t, fmt.Sprintf(
+			"cannot create branch \"feature\": worktree has uncommitted changes\n\n"+
+				"uncommitted files:\n  other.txt\n\n"+
+				"loopai needs to create a feature branch from master to isolate plan work.\n\n"+
+				"options:\n"+
+				"  git stash && loopai %s && git stash pop   # stash changes temporarily\n"+
+				"  git commit -am \"wip\"                       # commit changes first\n"+
+				"  loopai --review                            # skip branch creation (review-only mode)",
+			planFile), err.Error())
 	})
 
 	t.Run("auto-commits plan file if only dirty file", func(t *testing.T) {
@@ -886,7 +893,7 @@ func TestService_EnsureHasCommits(t *testing.T) {
 }
 
 func TestService_EnsureLocalGitignore(t *testing.T) {
-	t.Run("creates .ralphex/.gitignore", func(t *testing.T) {
+	t.Run("creates .loopai/.gitignore", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		log := &mockLogger{}
 		svc, err := NewService(dir, log)
@@ -895,9 +902,9 @@ func TestService_EnsureLocalGitignore(t *testing.T) {
 		err = svc.EnsureLocalGitignore()
 		require.NoError(t, err)
 		assert.Len(t, log.logs, 1)
-		assert.Contains(t, log.logs[0], ".ralphex/.gitignore")
+		assert.Contains(t, log.logs[0], ".loopai/.gitignore")
 
-		gitignorePath := filepath.Join(dir, ".ralphex", ".gitignore")
+		gitignorePath := filepath.Join(dir, ".loopai", ".gitignore")
 		content, err := os.ReadFile(gitignorePath) //nolint:gosec // test file
 		require.NoError(t, err)
 		assert.Equal(t, ".gitignore\nprogress/\nworktrees/\n", string(content))
@@ -909,9 +916,9 @@ func TestService_EnsureLocalGitignore(t *testing.T) {
 		svc, err := NewService(dir, log)
 		require.NoError(t, err)
 
-		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".ralphex"), 0o750))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai"), 0o750))
 		require.NoError(t, os.WriteFile(
-			filepath.Join(dir, ".ralphex", ".gitignore"),
+			filepath.Join(dir, ".loopai", ".gitignore"),
 			[]byte(".gitignore\nprogress/\nworktrees/\n"), 0o600))
 
 		err = svc.EnsureLocalGitignore()
@@ -925,32 +932,32 @@ func TestService_EnsureLocalGitignore(t *testing.T) {
 		svc, err := NewService(dir, log)
 		require.NoError(t, err)
 
-		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".ralphex"), 0o750))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai"), 0o750))
 		require.NoError(t, os.WriteFile(
-			filepath.Join(dir, ".ralphex", ".gitignore"),
+			filepath.Join(dir, ".loopai", ".gitignore"),
 			[]byte("old-content\n"), 0o600))
 
 		err = svc.EnsureLocalGitignore()
 		require.NoError(t, err)
 		assert.Len(t, log.logs, 1)
 
-		content, err := os.ReadFile(filepath.Join(dir, ".ralphex", ".gitignore")) //nolint:gosec // test file
+		content, err := os.ReadFile(filepath.Join(dir, ".loopai", ".gitignore")) //nolint:gosec // test file
 		require.NoError(t, err)
 		assert.Equal(t, ".gitignore\nprogress/\nworktrees/\n", string(content))
 	})
 
-	t.Run("creates .ralphex dir if missing", func(t *testing.T) {
+	t.Run("creates .loopai dir if missing", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())
 		require.NoError(t, err)
 
-		_, err = os.Stat(filepath.Join(dir, ".ralphex"))
+		_, err = os.Stat(filepath.Join(dir, ".loopai"))
 		assert.True(t, os.IsNotExist(err))
 
 		err = svc.EnsureLocalGitignore()
 		require.NoError(t, err)
 
-		info, err := os.Stat(filepath.Join(dir, ".ralphex"))
+		info, err := os.Stat(filepath.Join(dir, ".loopai"))
 		require.NoError(t, err)
 		assert.True(t, info.IsDir())
 	})
@@ -1093,7 +1100,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
 		require.NoError(t, err)
 		assert.True(t, planNeedsCommit, "untracked plan file should need commit")
-		assert.Contains(t, wtPath, filepath.Join(".ralphex", "worktrees", "add-worktree"))
+		assert.Contains(t, wtPath, filepath.Join(".loopai", "worktrees", "add-worktree"))
 
 		// verify worktree exists and is on the correct branch
 		wtSvc, err := NewService(wtPath, noopServiceLogger())
@@ -1327,7 +1334,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 
 		// try to create second worktree at different path but same branch.
 		// use AddWorktree directly to bypass dir-exists check.
-		secondPath := filepath.Join(dir, ".ralphex", "worktrees", "branch-conflict-2")
+		secondPath := filepath.Join(dir, ".loopai", "worktrees", "branch-conflict-2")
 		err = svc.repo.addWorktree(secondPath, "branch-conflict", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "already used by worktree")

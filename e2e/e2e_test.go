@@ -1,6 +1,6 @@
 //go:build e2e
 
-// Package e2e provides end-to-end tests for the ralphex web dashboard.
+// Package e2e provides end-to-end tests for the loopai web dashboard.
 package e2e
 
 import (
@@ -22,7 +22,7 @@ import (
 const (
 	testPort    = 18080
 	baseURL     = "http://127.0.0.1:18080"
-	binaryPath  = "/tmp/ralphex-e2e"
+	binaryPath  = "/tmp/loopai-e2e"
 	testDataDir = "testdata"
 
 	// polling intervals for condition-based waits (replaces time.Sleep).
@@ -62,7 +62,7 @@ func TestMain(m *testing.M) {
 
 	// create temp directory for test data
 	var err error
-	testTmpDir, err = os.MkdirTemp("", "ralphex-e2e-*")
+	testTmpDir, err = os.MkdirTemp("", "loopai-e2e-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create temp dir: %v\n", err)
 		return
@@ -106,7 +106,7 @@ func buildBinary() error {
 	}
 	projectRoot := filepath.Dir(cwd)
 
-	cmd := exec.Command("go", "build", "-o", binaryPath, "./cmd/ralphex")
+	cmd := exec.Command("go", "build", "-o", binaryPath, "./cmd/loopai")
 	cmd.Dir = projectRoot
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -571,5 +571,5 @@ func TestDashboardSmoke(t *testing.T) {
 	// verify page title
 	title, err := page.Title()
 	require.NoError(t, err)
-	require.Contains(t, title, "Ralphex")
+	require.Contains(t, title, "Loopai")
 }

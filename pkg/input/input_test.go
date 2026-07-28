@@ -769,16 +769,25 @@ func TestTerminalCollector_openEditor(t *testing.T) {
 	})
 
 	t.Run("temp file is cleaned up", func(t *testing.T) {
+		recordPath := filepath.Join(t.TempDir(), "editor-path")
+		editorPath := filepath.Join(t.TempDir(), "record-editor.sh")
+		require.NoError(t, os.WriteFile(editorPath, //nolint:gosec // test helper must be executable and lives in t.TempDir
+			[]byte("#!/bin/sh\nprintf '%s' \"$1\" > \"$RECORD_PATH\"\n"), 0o700))
+
 		t.Setenv("VISUAL", "")
-		t.Setenv("EDITOR", "true")
+		t.Setenv("EDITOR", editorPath)
+		t.Setenv("RECORD_PATH", recordPath)
 
 		c := &TerminalCollector{}
 		result, err := c.openEditor(context.Background(), "cleanup test content")
 		require.NoError(t, err)
 		assert.Equal(t, "cleanup test content", result)
-		// verify no ralphex-plan temp files remain after openEditor returns
-		matches, _ := filepath.Glob(os.TempDir() + "/ralphex-plan-*.md")
-		assert.Empty(t, matches, "temp file should be cleaned up, found: %v", matches)
+
+		recorded, readErr := os.ReadFile(recordPath) //nolint:gosec // test-controlled path in t.TempDir
+		require.NoError(t, readErr)
+		tmpPath := string(recorded)
+		assert.Regexp(t, `^loopai-plan-.*\.md$`, filepath.Base(tmpPath))
+		assert.NoFileExists(t, tmpPath)
 	})
 }
 

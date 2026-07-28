@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # codex-as-claude_test.sh — tests for codex-as-claude.sh wrapper.
 #
-# run from the ralphex directory:
+# run from the loopai directory:
 #   bash scripts/codex-as-claude/codex-as-claude_test.sh
 #
 # requires: jq, bash
@@ -154,7 +154,7 @@ if echo "$output" | grep -q 'thinking'; then
     fail "reasoning text leaked into output"
 elif echo "$output" | grep -q 'file.txt'; then
     fail "command_execution output leaked (CODEX_VERBOSE=0)"
-elif echo "$output" | grep -q '"agent text"'; then
+elif echo "$output" | grep -q 'agent text'; then
     pass "only agent_message events emitted"
 else
     fail "agent text not found in output" "got: $output"
@@ -216,7 +216,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# test: prompt via stdin (primary path used by ralphex on Windows)
+# test: prompt via stdin (primary path used by loopai on Windows)
 # ---------------------------------------------------------------------------
 echo "test: prompt via stdin"
 

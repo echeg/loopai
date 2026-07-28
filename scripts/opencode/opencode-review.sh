@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# opencode-review.sh - custom review script for ralphex external review phase.
+# opencode-review.sh - custom review script for loopai external review phase.
 #
 # uses OpenCode CLI to perform code review with a configurable model,
 # allowing a different model than the one used for task/review phases.
 #
-# config example (~/.config/ralphex/config or .ralphex/config):
+# config example (~/.config/loopai/config or .loopai/config):
 #   external_review_tool = custom
 #   custom_review_script = /path/to/opencode-review.sh
 #
@@ -35,7 +35,7 @@ command -v opencode >/dev/null 2>&1 || { echo "error: opencode is required but n
 command -v jq >/dev/null 2>&1 || { echo "error: jq is required but not found" >&2; exit 1; }
 
 # prompt file path is passed as the single argument. Optional --model/--effort
-# flags override env defaults for direct invocations and future ralphex plumbing.
+# flags override env defaults for direct invocations and future loopai plumbing.
 prompt_file=""
 while [[ $# -gt 0 ]]; do
     case "$1" in

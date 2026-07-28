@@ -12,10 +12,43 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/umputun/ralphex/pkg/progress"
 	"github.com/umputun/ralphex/pkg/status"
 )
 
 func TestParseProgressHeader(t *testing.T) {
+	t.Run("parses header written by current progress logger", func(t *testing.T) {
+		dir := t.TempDir()
+		oldWd, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+		logger, err := progress.NewLogger(progress.Config{
+			PlanFile: "docs/plans/current.md",
+			Branch:   "feature-current",
+			Mode:     "full",
+			Params: progress.RunParams{
+				Executor:    "codex",
+				TaskModel:   "gpt-5.5:high",
+				ReviewModel: "gpt-5.5:low",
+			},
+		}, testColors(), &status.PhaseHolder{})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = logger.Close() })
+
+		meta, complete, err := ParseProgressHeader(logger.Path())
+		require.NoError(t, err)
+		assert.True(t, complete)
+		assert.Equal(t, "docs/plans/current.md", meta.PlanPath)
+		assert.Equal(t, "feature-current", meta.Branch)
+		assert.Equal(t, "full", meta.Mode)
+		assert.Equal(t, "codex", meta.Executor)
+		assert.Equal(t, "gpt-5.5:high", meta.TaskModel)
+		assert.Equal(t, "gpt-5.5:low", meta.ReviewModel)
+		assert.False(t, meta.StartTime.IsZero())
+	})
+
 	t.Run("parses all fields", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "progress-test.txt")

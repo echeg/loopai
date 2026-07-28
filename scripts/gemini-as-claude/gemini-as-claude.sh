@@ -2,10 +2,10 @@
 # gemini-as-claude.sh - wraps Gemini CLI to produce Claude-compatible stream-json output.
 #
 # this script translates Gemini CLI plain-text output into the Claude stream-json format
-# that ralphex's ClaudeExecutor can parse, allowing Gemini to be used as a drop-in
+# that loopai's ClaudeExecutor can parse, allowing Gemini to be used as a drop-in
 # replacement for claude in task and review phases.
 #
-# config example (~/.config/ralphex/config or .ralphex/config):
+# config example (~/.config/loopai/config or .loopai/config):
 #   claude_command = /path/to/gemini-as-claude.sh
 #   claude_args =
 #
@@ -20,7 +20,7 @@ command -v jq >/dev/null 2>&1 || { echo "error: jq is required but not found" >&
 # verify gemini is available
 command -v gemini >/dev/null 2>&1 || { echo "error: gemini is required but not found" >&2; exit 1; }
 
-# ralphex passes prompt via stdin (primary path, avoids Windows 8191-char cmd limit).
+# loopai passes prompt via stdin (primary path, avoids Windows 8191-char cmd limit).
 # also accept -p flag for backward compatibility with direct invocations.
 # all other flags are ignored gracefully (--dangerously-skip-permissions, etc.)
 prompt=""
@@ -32,7 +32,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$prompt" ]]; then
-    # fall back to stdin: ralphex passes prompt via pipe to avoid Windows 8191-char cmd limit.
+    # fall back to stdin: loopai passes prompt via pipe to avoid Windows 8191-char cmd limit.
     # only read when stdin is not a terminal to avoid blocking interactive invocations.
     if [[ ! -t 0 ]]; then
         prompt=$(cat)
@@ -54,7 +54,7 @@ if [[ "$prompt" == *"<<<RALPHEX:REVIEW_DONE>>>"* ]]; then
 fi
 
 if [[ "$is_review_prompt" == "1" ]]; then
-    adapter_text=$'Ralphex review adapter for Gemini:\n- Interpret review "Task tool" instructions as sequential steps: perform each review agent\'s work one at a time.\n- Gemini CLI does not support parallel sub-agents, so execute each review task sequentially.\n- Apply fixes after completing all review steps.\n- Keep original review workflow and all <<<RALPHEX:...>>> signals unchanged.'
+    adapter_text=$'loopai review adapter for Gemini:\n- Interpret review "Task tool" instructions as sequential steps: perform each review agent\'s work one at a time.\n- Gemini CLI does not support parallel sub-agents, so execute each review task sequentially.\n- Apply fixes after completing all review steps.\n- Keep original review workflow and all <<<RALPHEX:...>>> signals unchanged.'
     prompt="$adapter_text"$'\n\n'"$prompt"
 fi
 

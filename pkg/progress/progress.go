@@ -263,7 +263,7 @@ func (l *Logger) writeHeader(cfg Config) {
 	if planStr == "" {
 		planStr = "(no plan - review only)"
 	}
-	l.writeFileLocked("# Ralphex Progress Log\n")
+	l.writeFileLocked("# Loopai Progress Log\n")
 	l.writeFileLocked("Plan: %s\n", planStr)
 	l.writeFileLocked("Branch: %s\n", cfg.Branch)
 	l.writeFileLocked("Mode: %s\n", cfg.Mode)
@@ -735,7 +735,7 @@ func isProgressCompleted(f *os.File, size int64) bool {
 }
 
 // progressDir is the directory for progress files within the project.
-const progressDir = ".ralphex/progress"
+const progressDir = ".loopai/progress"
 
 // filenameWithStem returns the progress file path for a known stem and mode.
 func filenameWithStem(stem, mode string) string {

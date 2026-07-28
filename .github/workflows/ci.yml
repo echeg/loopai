@@ -30,8 +30,15 @@ jobs:
           go test -race -timeout=100s -covermode=atomic -coverprofile=$GITHUB_WORKSPACE/profile.cov_tmp ./...
           grep -v -E "_mock.go|/mocks/" $GITHUB_WORKSPACE/profile.cov_tmp > $GITHUB_WORKSPACE/profile.cov
 
-      - name: test docker wrapper script
-        run: python3 scripts/ralphex-dk.sh --test
+      - name: validate retained assets and provider wrappers
+        run: make check-symlinks test-completions test-wrappers
+
+      - name: smoke test renamed binary
+        run: |
+          make build
+          test -x .bin/loopai
+          test ! -e .bin/ralphex
+          .bin/loopai --version | grep -E '^loopai '
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9

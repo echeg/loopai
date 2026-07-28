@@ -2,10 +2,10 @@
 # pi-as-claude.sh - wraps the pi CLI to produce Claude-compatible stream-json output.
 #
 # this script translates pi's `--mode json` event stream into the Claude stream-json
-# format that ralphex's ClaudeExecutor can parse, allowing pi to be used as a drop-in
+# format that loopai's ClaudeExecutor can parse, allowing pi to be used as a drop-in
 # replacement for claude in task and review phases.
 #
-# config example (~/.config/ralphex/config or .ralphex/config):
+# config example (~/.config/loopai/config or .loopai/config):
 #   claude_command = /path/to/pi-as-claude.sh
 #   claude_args =
 #
@@ -26,9 +26,9 @@ command -v jq >/dev/null 2>&1 || { echo "error: jq is required but not found" >&
 # verify pi is available
 command -v pi >/dev/null 2>&1 || { echo "error: pi is required but not found" >&2; exit 1; }
 
-# ralphex passes prompt via stdin (primary path, avoids Windows 8191-char cmd limit).
+# loopai passes prompt via stdin (primary path, avoids Windows 8191-char cmd limit).
 # also accept -p flag for backward compatibility with direct invocations.
-# --model and --effort are parsed explicitly (ralphex appends them per phase);
+# --model and --effort are parsed explicitly (loopai appends them per phase);
 # all other flags are ignored gracefully (--dangerously-skip-permissions, etc.)
 prompt=""
 model_flag=""
@@ -43,7 +43,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$prompt" ]]; then
-    # fall back to stdin: ralphex passes prompt via pipe to avoid Windows 8191-char cmd limit.
+    # fall back to stdin: loopai passes prompt via pipe to avoid Windows 8191-char cmd limit.
     # only read when stdin is not a terminal to avoid blocking interactive invocations.
     if [[ ! -t 0 ]]; then
         prompt=$(cat)
@@ -71,7 +71,7 @@ model="$model_flag"
 [[ -z "$model" ]] && model="$PI_MODEL"
 
 # resolve thinking level: explicit --effort flag wins over PI_THINKING env.
-# pi accepts off|minimal|low|medium|high|xhigh; ralphex's effort levels map directly
+# pi accepts off|minimal|low|medium|high|xhigh; loopai's effort levels map directly
 # except `max`, which pi lacks — fall back to `xhigh` with a one-line note (like codex).
 thinking=""
 if [[ -n "$effort_flag" ]]; then
@@ -88,7 +88,7 @@ fi
 # detect review prompts and prepend a pi-appropriate adapter.
 # pi exposes no parallel sub-agents, so instruct sequential per-agent review.
 if [[ "$prompt" == *"<<<RALPHEX:REVIEW_DONE>>>"* ]]; then
-    adapter_text=$'Ralphex review adapter for pi:\n- Interpret review "Task tool" instructions as sequential steps: perform each review agent\'s work one at a time.\n- pi does not support parallel sub-agents, so execute each review task sequentially using pi\'s read, bash, edit, and write tools.\n- Apply fixes after completing all review steps.\n- Keep original review workflow and all <<<RALPHEX:...>>> signals unchanged.'
+    adapter_text=$'loopai review adapter for pi:\n- Interpret review "Task tool" instructions as sequential steps: perform each review agent\'s work one at a time.\n- pi does not support parallel sub-agents, so execute each review task sequentially using pi\'s read, bash, edit, and write tools.\n- Apply fixes after completing all review steps.\n- Keep original review workflow and all <<<RALPHEX:...>>> signals unchanged.'
     prompt="$adapter_text"$'\n\n'"$prompt"
 fi
 
@@ -151,7 +151,7 @@ pi_pid=$!
 # translate pi's JSONL event stream into claude stream-json.
 # only assistant text is emitted by default — tool executions, the session header,
 # and other lifecycle events are noise (include tool lines with PI_VERBOSE=1).
-# suppressed events still emit an EMPTY text delta as a keepalive: ralphex's
+# suppressed events still emit an EMPTY text delta as a keepalive: loopai's
 # idle_timeout resets on every line of wrapper stdout, so a long silent tool
 # execution would otherwise kill a healthy session (the executor skips empty
 # text, so keepalives never pollute output or signal detection).
@@ -159,7 +159,7 @@ pi_pid=$!
 # pi emits assistant text as token-level `text_delta` deltas (e.g. "The", " quick",
 # " brown"), so the stream must be re-assembled into whole lines before emission.
 # emitting one content_block_delta per token would (a) garble the progress log with a
-# newline after every token and (b) split ralphex `<<<RALPHEX:...>>>` signals across
+# newline after every token and (b) split loopai `<<<RALPHEX:...>>>` signals across
 # blocks, where the executor's per-block detectSignal could never match them. we buffer
 # deltas and flush only complete lines, so a signal lands intact in a single block.
 # verbose tool lines deliberately do NOT flush the buffer: flushing a partial
@@ -208,10 +208,10 @@ pi_exit=0
 wait "$pi_pid" || pi_exit=$?
 pi_pid=""
 
-# emit stderr as content_block_delta events so ralphex error/limit pattern
+# emit stderr as content_block_delta events so loopai error/limit pattern
 # detection still works (pi may report rate limits / failures on stderr).
 # stderr is emitted only for error/limit detection, so neutralize any literal
-# `<<<RALPHEX:` signal token first: re-emitted stderr runs through ralphex's
+# `<<<RALPHEX:` signal token first: re-emitted stderr runs through loopai's
 # signal detection, and a stray token on stderr must not be mistaken for a real
 # completion signal. inserting a space breaks the prefix detectSignal keys on
 # while leaving rate-limit / `API Error:` phrases intact for error/limit checks.

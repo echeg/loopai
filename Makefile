@@ -6,18 +6,54 @@ TIMESTAMP=$(shell git log -1 --format=%ct HEAD 2>/dev/null | xargs -I{} date -u 
 GIT_REV=$(shell printf "%s-%s-%s" "$(BRANCH)" "$(HASH)" "$(TIMESTAMP)")
 REV=$(if $(filter --,$(GIT_REV)),latest,$(GIT_REV))
 
+WRAPPER_TESTS := \
+	scripts/agy-as-claude/agy-as-claude_test.sh \
+	scripts/codex-as-claude/codex-as-claude_test.sh \
+	scripts/copilot-as-claude/copilot-as-claude_docs_test.sh \
+	scripts/copilot-as-claude/copilot-as-claude_test.sh \
+	scripts/gemini-as-claude/gemini-as-claude_test.sh \
+	scripts/opencode/opencode-as-claude_test.sh \
+	scripts/opencode/opencode-review_test.sh \
+	scripts/pi-as-claude/pi-as-claude_docs_test.sh \
+	scripts/pi-as-claude/pi-as-claude_test.sh
+
 all: test build
 
 build:
-	cd cmd/ralphex && go build -ldflags "-X main.revision=$(REV) -s -w" -o ../../.bin/ralphex.$(BRANCH)
-	cp .bin/ralphex.$(BRANCH) .bin/ralphex
+	cd cmd/loopai && go build -ldflags "-X main.revision=$(REV) -s -w" -o ../../.bin/loopai.$(BRANCH)
+	cp .bin/loopai.$(BRANCH) .bin/loopai
 
-test:
+check-symlinks:
+	@broken="$$(find -L assets/claude -type l -print)"; \
+		if [ -n "$$broken" ]; then \
+			printf 'broken symlinks:\n%s\n' "$$broken"; \
+			exit 1; \
+		fi
+
+test-wrappers:
+	@set -e; for test_script in $(WRAPPER_TESTS); do \
+		bash "$$test_script"; \
+	done
+
+test-completions:
+	bash -n completions/loopai.bash
+	@grep -Fqx 'complete -o default -F _loopai loopai' completions/loopai.bash
+	@grep -Fqx '#compdef loopai' completions/loopai.zsh
+	@grep -Fq 'complete -c loopai ' completions/loopai.fish
+	@if grep -n 'ralphex' completions/loopai.*; then \
+		echo "legacy command name found in loopai completions"; \
+		exit 1; \
+	fi
+	@if command -v zsh >/dev/null 2>&1; then zsh -n completions/loopai.zsh; fi
+	@if command -v fish >/dev/null 2>&1; then fish -n completions/loopai.fish; fi
+
+test: check-symlinks test-completions
 	go clean -testcache
 	go test -race -coverprofile=coverage.out ./...
 	grep -v "_mock.go" coverage.out | grep -v mocks > coverage_no_mocks.out
 	go tool cover -func=coverage_no_mocks.out
 	rm coverage.out coverage_no_mocks.out
+	$(MAKE) test-wrappers
 
 lint:
 	golangci-lint run --max-issues-per-linter=0 --max-same-issues=0
@@ -44,62 +80,32 @@ e2e-ui:
 
 e2e-prep: build
 	@./scripts/internal/prep-toy-test.sh
-	@cp .bin/ralphex /tmp/ralphex-test/.bin/ralphex
+	@cp .bin/loopai /tmp/loopai-test/.bin/loopai
 	@echo ""
 	@echo "=== E2E Full Test Ready ==="
-	@echo "cd /tmp/ralphex-test"
-	@echo ".bin/ralphex docs/plans/fix-issues.md"
+	@echo "cd /tmp/loopai-test"
+	@echo ".bin/loopai docs/plans/fix-issues.md"
 	@echo ""
-	@echo "Monitor: tail -f /tmp/ralphex-test/progress-fix-issues.txt"
+	@echo "Monitor: tail -f /tmp/loopai-test/.loopai/progress/progress-fix-issues.txt"
 
 e2e-review: build
 	@./scripts/internal/prep-review-test.sh
-	@cp .bin/ralphex /tmp/ralphex-review-test/.bin/ralphex
+	@cp .bin/loopai /tmp/loopai-review-test/.bin/loopai
 	@echo ""
 	@echo "=== E2E Review Test Ready ==="
-	@echo "cd /tmp/ralphex-review-test"
-	@echo ".bin/ralphex --review"
+	@echo "cd /tmp/loopai-review-test"
+	@echo ".bin/loopai --review"
 	@echo ""
-	@echo "Monitor: tail -f /tmp/ralphex-review-test/progress-review.txt"
+	@echo "Monitor: tail -f /tmp/loopai-review-test/.loopai/progress/progress-review.txt"
 
 e2e-codex: build
 	@./scripts/internal/prep-review-test.sh
-	@cp .bin/ralphex /tmp/ralphex-review-test/.bin/ralphex
+	@cp .bin/loopai /tmp/loopai-review-test/.bin/loopai
 	@echo ""
 	@echo "=== E2E Codex-Only Test Ready ==="
-	@echo "cd /tmp/ralphex-review-test"
-	@echo ".bin/ralphex --codex-only"
+	@echo "cd /tmp/loopai-review-test"
+	@echo ".bin/loopai --codex --external-only"
 	@echo ""
-	@echo "Monitor: tail -f /tmp/ralphex-review-test/progress-codex.txt"
+	@echo "Monitor: tail -f /tmp/loopai-review-test/.loopai/progress/progress-codex.txt"
 
-prep_site:
-	# prepare docs source directory for zensical
-	rm -rf site/docs-src && mkdir -p site/docs-src
-	cp -fv README.md site/docs-src/index.md
-	cp -rv assets site/docs-src/
-	grep -v -E 'badge|coveralls|goreportcard' site/docs-src/index.md > site/docs-src/index.md.tmp && mv site/docs-src/index.md.tmp site/docs-src/index.md
-	sed 's|](llms.txt)|](/llms.txt)|g' site/docs-src/index.md > site/docs-src/index.md.tmp && mv site/docs-src/index.md.tmp site/docs-src/index.md
-	mkdir -p site/docs-src/stylesheets && cp -fv site/docs/stylesheets/extra.css site/docs-src/stylesheets/
-	# build site structure: landing page + docs subdirectory
-	rm -rf site/site && mkdir -p site/site
-	cp -fv site/docs/index.html site/site/
-	cp -fv site/docs/favicon.png site/site/
-	cp -fv site/docs/robots.txt site/site/
-	cp -fv site/docs/sitemap.xml site/site/
-	cp -rv assets site/site/
-	cp -fv llms.txt site/site/
-	# build site into site/site/docs/ (use venv for PEP 668 compliance)
-	cd site && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/zensical build
-	# copy raw claude assets (not rendered by build)
-	rm -rf site/site/docs/assets/claude && cp -rv assets/claude site/site/docs/assets/
-
-docker-build:
-	docker build -t ghcr.io/umputun/ralphex:latest .
-
-docker-build-go: docker-build
-	docker build -t ghcr.io/umputun/ralphex-go:latest -f Dockerfile-go .
-
-docker-run:
-	./scripts/ralphex-dk.sh $(ARGS)
-
-.PHONY: all build test lint fmt race version e2e-setup e2e e2e-ui e2e-prep e2e-review e2e-codex prep_site docker-build docker-build-go docker-run
+.PHONY: all build check-symlinks test-wrappers test lint fmt race version e2e-setup e2e e2e-ui e2e-prep e2e-review e2e-codex

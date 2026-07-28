@@ -1,4 +1,4 @@
-// ralphex dashboard - SSE streaming and UI handling
+// loopai dashboard - SSE streaming and UI handling
 //
 // XSS Prevention Strategy:
 // - All user/server-provided text is rendered via textContent or createTextNode
@@ -1979,7 +1979,7 @@
     function buildExportHeader(safeElapsed, safeStatus, safeStatusClass, safePlanName, safeBranch, safeRunParams) {
         return '<header>\n' +
             '<div class="header-top">\n' +
-            '<h1>Ralphex Dashboard</h1>\n' +
+            '<h1>Loopai Dashboard</h1>\n' +
             '<div class="status-area">\n' +
             '<span class="elapsed-time">' + safeElapsed + '</span>\n' +
             '<span class="status-badge ' + safeStatusClass + '">' + safeStatus + '</span>\n' +
@@ -2068,7 +2068,7 @@
                 var data = collectSessionData();
                 var clones = cloneContentForExport();
                 var html = buildExportHtml(data, clones, css);
-                var filename = 'ralphex-' + data.planName.replace(/[^a-z0-9]/gi, '-') + '.html';
+                var filename = 'loopai-' + data.planName.replace(/[^a-z0-9]/gi, '-') + '.html';
                 downloadFile(html, filename, 'text/html');
             })
             .catch(function(err) {

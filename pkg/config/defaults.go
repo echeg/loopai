@@ -176,7 +176,7 @@ type ResetResult struct {
 
 // Reset interactively resets global configuration to embedded defaults.
 // prompts user for each component (config, prompts, agents) before resetting.
-// local .ralphex/ is not affected.
+// local .loopai/ is not affected.
 func (d *defaultsInstaller) Reset(configDir string, stdin io.Reader, stdout io.Writer) (ResetResult, error) {
 	result := ResetResult{}
 	scanner := bufio.NewScanner(stdin)
@@ -249,7 +249,7 @@ func (d *defaultsInstaller) resetConfigFile(configPath string, scanner *bufio.Sc
 		return false, nil
 	}
 
-	// ensure parent directory exists (for first run or after user deleted ~/.config/ralphex/)
+	// ensure parent directory exists (for first run or after user deleted ~/.config/loopai/)
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return false, fmt.Errorf("create config dir: %w", err)
 	}
@@ -562,7 +562,7 @@ func (d *defaultsInstaller) dumpEmbeddedDir(destDir, embedPath string) error {
 	return nil
 }
 
-// InitLocal creates a local .ralphex/ configuration directory with commented-out defaults.
+// InitLocal creates a local .loopai/ configuration directory with commented-out defaults.
 // uses the same Install() logic as global config setup - existing customized files are preserved.
 // returns error if dir is empty.
 func InitLocal(dir string) error {
