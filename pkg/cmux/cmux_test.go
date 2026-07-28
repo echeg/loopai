@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/umputun/ralphex/pkg/processor"
 	"github.com/umputun/ralphex/pkg/status"
 )
 
@@ -435,6 +436,7 @@ func TestReporterNilReceiver(t *testing.T) {
 		{name: "on phase", call: func() { r.OnPhase(status.PhaseTask, status.PhaseReview) }},
 		{name: "start", call: func() { r.Start(context.Background()) }},
 		{name: "stop", call: func() { r.Stop() }},
+		{name: "wrap input", call: func() { r.WrapInput(&fakeCollector{}) }},
 	}
 
 	for _, tt := range tests {
@@ -691,5 +693,121 @@ func TestExecRunner(t *testing.T) {
 		cancel()
 		r := &execRunner{bin: "true"}
 		assert.Error(t, r.run(ctx))
+	})
+}
+
+// fakeCollector records the arguments it receives and returns canned values.
+type fakeCollector struct {
+	question    string
+	options     []string
+	planContent string
+
+	answer   string
+	action   string
+	feedback string
+	err      error
+}
+
+func (f *fakeCollector) AskQuestion(_ context.Context, question string, options []string) (string, error) {
+	f.question, f.options = question, options
+	return f.answer, f.err
+}
+
+func (f *fakeCollector) AskDraftReview(_ context.Context, question, planContent string) (action, feedback string, err error) {
+	f.question, f.planContent = question, planContent
+	return f.action, f.feedback, f.err
+}
+
+// compile-time check that the mirrored interface stays compatible with processor.InputCollector,
+// the real collector passed to WrapInput in cmd/ralphex.
+var _ inputCollector = processor.InputCollector(nil)
+
+func TestReporterWrapInputNilReporter(t *testing.T) {
+	var r *Reporter
+	inner := &fakeCollector{answer: "yes"}
+
+	wrapped := r.WrapInput(inner)
+	assert.Same(t, inner, wrapped, "outside cmux the original collector must be returned as is")
+}
+
+func TestReporterWrapInputAskQuestion(t *testing.T) {
+	t.Run("notifies and passes values through", func(t *testing.T) {
+		runner := &fakeRunner{}
+		inner := &fakeCollector{answer: "option b"}
+		wrapped := testReporter(t, runner).WrapInput(inner)
+
+		answer, err := wrapped.AskQuestion(t.Context(), "which storage?", []string{"a", "b"})
+		require.NoError(t, err)
+		assert.Equal(t, "option b", answer)
+		assert.Equal(t, "which storage?", inner.question)
+		assert.Equal(t, []string{"a", "b"}, inner.options)
+		assert.Equal(t, [][]string{
+			{"notify", "--title", "ralphex", "--subtitle", "input needed", "--body", "which storage?"},
+		}, runner.recorded())
+	})
+
+	t.Run("passes the inner error through unchanged", func(t *testing.T) {
+		runner := &fakeRunner{}
+		wantErr := errors.New("collector failed")
+		inner := &fakeCollector{err: wantErr}
+		wrapped := testReporter(t, runner).WrapInput(inner)
+
+		answer, err := wrapped.AskQuestion(t.Context(), "which storage?", nil)
+		assert.Same(t, wantErr, err, "the error must not be wrapped or replaced")
+		assert.Empty(t, answer)
+		assert.Len(t, runner.recorded(), 1, "the notification is sent before the call, not after")
+	})
+
+	t.Run("runner failure does not surface", func(t *testing.T) {
+		runner := &fakeRunner{err: errors.New("cmux is gone")}
+		inner := &fakeCollector{answer: "ok"}
+		wrapped := testReporter(t, runner).WrapInput(inner)
+
+		answer, err := wrapped.AskQuestion(t.Context(), "which storage?", nil)
+		require.NoError(t, err)
+		assert.Equal(t, "ok", answer)
+	})
+}
+
+func TestReporterWrapInputAskDraftReview(t *testing.T) {
+	t.Run("notifies and passes values through", func(t *testing.T) {
+		runner := &fakeRunner{}
+		inner := &fakeCollector{action: "accept", feedback: "looks good"}
+		wrapped := testReporter(t, runner).WrapInput(inner)
+
+		action, feedback, err := wrapped.AskDraftReview(t.Context(), "review the draft", "# plan\n")
+		require.NoError(t, err)
+		assert.Equal(t, "accept", action)
+		assert.Equal(t, "looks good", feedback)
+		assert.Equal(t, "review the draft", inner.question)
+		assert.Equal(t, "# plan\n", inner.planContent)
+		assert.Equal(t, [][]string{
+			{"notify", "--title", "ralphex", "--subtitle", "plan draft ready", "--body", "review the draft"},
+		}, runner.recorded())
+	})
+
+	t.Run("passes the inner error through unchanged", func(t *testing.T) {
+		runner := &fakeRunner{}
+		wantErr := errors.New("editor failed")
+		inner := &fakeCollector{err: wantErr}
+		wrapped := testReporter(t, runner).WrapInput(inner)
+
+		action, feedback, err := wrapped.AskDraftReview(t.Context(), "review the draft", "# plan\n")
+		assert.Same(t, wantErr, err, "the error must not be wrapped or replaced")
+		assert.Empty(t, action)
+		assert.Empty(t, feedback)
+	})
+
+	t.Run("long question is truncated in the notification body", func(t *testing.T) {
+		runner := &fakeRunner{}
+		wrapped := testReporter(t, runner).WrapInput(&fakeCollector{})
+
+		question := strings.Repeat("я", notifyBodyLimit+50)
+		_, _, err := wrapped.AskDraftReview(t.Context(), question, "# plan\n")
+		require.NoError(t, err)
+
+		calls := runner.recorded()
+		require.Len(t, calls, 1)
+		assert.Equal(t, strings.Repeat("я", notifyBodyLimit), calls[0][len(calls[0])-1])
 	})
 }

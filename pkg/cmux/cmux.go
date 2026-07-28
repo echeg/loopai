@@ -275,6 +275,42 @@ func (r *Reporter) Stop() {
 	})
 }
 
+// inputCollector collects interactive input during plan creation. it mirrors
+// processor.InputCollector and is declared here because the wrapper below is the only consumer,
+// which also keeps pkg/cmux free of a dependency on pkg/processor.
+type inputCollector interface {
+	AskQuestion(ctx context.Context, question string, options []string) (string, error)
+	AskDraftReview(ctx context.Context, question, planContent string) (action, feedback string, err error)
+}
+
+// WrapInput decorates an input collector so cmux is notified whenever the run stalls waiting for
+// a human. outside cmux the original collector is returned unchanged, so nothing is added to the path.
+func (r *Reporter) WrapInput(c inputCollector) inputCollector {
+	if r == nil {
+		return c
+	}
+	return &notifyingCollector{rep: r, inner: c}
+}
+
+// notifyingCollector raises a cmux notification before delegating to the wrapped collector.
+// the return values are passed through untouched, the notification is a side effect only.
+type notifyingCollector struct {
+	rep   *Reporter
+	inner inputCollector
+}
+
+// AskQuestion notifies that ralphex waits for an answer, then delegates.
+func (c *notifyingCollector) AskQuestion(ctx context.Context, question string, options []string) (string, error) {
+	c.rep.Notify(statusKey, "input needed", question)
+	return c.inner.AskQuestion(ctx, question, options) //nolint:wrapcheck // decorator passes the inner error through unchanged
+}
+
+// AskDraftReview notifies that a plan draft is ready for review, then delegates.
+func (c *notifyingCollector) AskDraftReview(ctx context.Context, question, planContent string) (action, feedback string, err error) {
+	c.rep.Notify(statusKey, "plan draft ready", question)
+	return c.inner.AskDraftReview(ctx, question, planContent) //nolint:wrapcheck // decorator passes the inner error through unchanged
+}
+
 // OnPhase updates the pill on a phase change, the signature matches status.PhaseHolder.OnChange.
 func (r *Reporter) OnPhase(_, cur status.Phase) {
 	s := styleForPhase(cur)
