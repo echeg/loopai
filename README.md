@@ -22,7 +22,7 @@ This repository is a personal fork. It is installed by building from source; no 
 ## Requirements
 
 - Go 1.26 or newer to build loopai
-- Git
+- Git, or a Git-compatible `vcs_command` wrapper
 - One primary executor:
   - Claude Code CLI for the default mode
   - Codex CLI 0.130.0 or newer for `--codex`
@@ -30,7 +30,9 @@ This repository is a personal fork. It is installed by building from source; no 
 - Optional: `fzf` for interactive selection; a numbered fallback is built in
 - Optional: `golangci-lint` for development
 
-loopai must be run from the root of a Git repository.
+loopai must be run from the repository root. A custom `vcs_command` must accept
+the same arguments as Git and return compatible output, including for
+`rev-parse --show-toplevel`.
 
 ## Installation
 
@@ -40,6 +42,7 @@ Build and install from this checkout:
 git clone https://github.com/echeg/loopai
 cd loopai
 make build
+install -d ~/.local/bin
 install -m 0755 .bin/loopai ~/.local/bin/loopai
 ```
 
@@ -50,6 +53,61 @@ loopai --version
 ```
 
 For development, `make build` always refreshes `.bin/loopai`.
+
+### Shell completions
+
+The source tree includes completions for Bash, Zsh, and Fish:
+
+```bash
+# Bash: add this to ~/.bashrc
+source /path/to/loopai/completions/loopai.bash
+
+# Zsh: add this to ~/.zshrc
+source /path/to/loopai/completions/loopai.zsh
+
+# Fish
+install -d ~/.config/fish/completions
+install -m 0644 completions/loopai.fish ~/.config/fish/completions/loopai.fish
+```
+
+### Optional Claude Code commands
+
+The retained command assets provide `/loopai`, `/loopai-plan`, `/loopai-adopt`,
+and `/loopai-update`. Install standalone copies with:
+
+```bash
+install -d ~/.claude/commands
+cp -L assets/claude/loopai*.md ~/.claude/commands/
+```
+
+The commands respectively launch/monitor loopai, create a plan, convert an
+existing specification into a plan, and merge updated embedded defaults into
+customized configuration.
+
+### Migrating from upstream ralphex
+
+loopai intentionally performs no automatic migration and never reads
+`~/.config/ralphex/` or project-local `.ralphex/` data. To migrate selected
+settings, copy them explicitly and inspect the result:
+
+```bash
+install -d ~/.config/loopai .loopai
+cp -R ~/.config/ralphex/. ~/.config/loopai/
+cp .ralphex/config .loopai/config
+# copy .ralphex/prompts/ and .ralphex/agents/ too, if customized
+cmux clear-status ralphex
+```
+
+The executable is now `loopai`, and `RALPHEX_CONFIG_DIR` is replaced by
+`LOOPAI_CONFIG_DIR`. Remove an old `ralphex` binary separately after verifying
+the new installation. Legacy `.ralphex/progress/` logs remain on disk but are
+not discovered by loopai’s project-root dashboard scan.
+
+This fork also removes the upstream Docker/Bedrock path, built-in Mercurial
+adapter, packaged releases (Homebrew, deb, rpm, and release binaries), hosted
+documentation site, and Claude plugin marketplace metadata. Source builds and
+the optional standalone Claude command assets above are the supported
+distribution paths.
 
 ## Quick start
 

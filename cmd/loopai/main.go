@@ -785,7 +785,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	handedOff := false
 	defer func() {
 		if err != nil && !handedOff {
-			notifyCmuxCompletion(cmux.New(req.PlanFile), req.PlanFile, branch, "", err)
+			notifyCmuxCompletion(cmux.New(req.PlanFile, cmuxRunModels(o, req)), req.PlanFile, branch, "", err)
 		}
 	}()
 
@@ -1442,17 +1442,21 @@ func cmuxRunModels(o opts, req executePlanRequest) cmux.Models {
 		return cmux.Models{}
 	}
 
-	var taskModel, reviewModel string
+	var planModel, taskModel, reviewModel string
 	if req.Config.Executor == config.ExecutorCodex {
+		planInfo := codexPlanBanner(o, req.Config)
 		info := codexModelBanner(o, req.Config)
+		planModel = modelEffortLabel("codex default", planInfo.taskModel, planInfo.taskEffort)
 		taskModel = modelEffortLabel("codex default", info.taskModel, info.taskEffort)
 		reviewModel = modelEffortLabel("codex default", info.reviewModel, info.reviewEffort)
 	} else {
+		planModel = configuredModelLabel("claude default", resolvePlanSpec(o, req.Config))
 		taskModel = configuredModelLabel("claude default", resolveSpec(o.TaskModel, req.Config.TaskModel))
 		reviewModel = configuredModelLabel("claude default", resolveReviewSpec(o, req.Config))
 	}
 
 	return cmux.Models{
+		Plan:           planModel,
 		Task:           taskModel,
 		Review:         reviewModel,
 		ExternalReview: req.ExternalReview.modelSpec(),
@@ -1553,7 +1557,10 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 
 	// cmux sidebar reporter, nil and fully no-op outside cmux. no plan file exists yet, so the
 	// progress bar stays empty and only the spinner and the phase pill are reported.
-	rep := cmux.New("")
+	rep := cmux.New("", cmuxRunModels(o, executePlanRequest{
+		Config:         req.Config,
+		ExternalReview: req.ExternalReview,
+	}))
 	rep.Start(ctx)
 	defer rep.Stop()
 	if req.CmuxStop != nil {

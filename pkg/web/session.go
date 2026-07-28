@@ -69,7 +69,7 @@ type SessionMetadata struct {
 // defaultTopic is the SSE topic used for all events within a session.
 const defaultTopic = "events"
 
-// Session represents a single ralphex execution instance.
+// Session represents a single loopai execution instance.
 // each session corresponds to one progress file and maintains its own SSE server.
 type Session struct {
 	mu sync.RWMutex
@@ -275,7 +275,7 @@ func (s *Session) MarkLoadedIfNot() bool {
 }
 
 // resetForNewRun clears per-run state for a progress file that was truncated
-// and re-initialized by a new ralphex invocation. callers must have observed
+// and re-initialized by a new loopai invocation. callers must have observed
 // that the header's Started: timestamp changed, indicating the stored offset
 // and loader state no longer correspond to current file content. callers are
 // also responsible for stopping any ongoing tailer before invoking this method

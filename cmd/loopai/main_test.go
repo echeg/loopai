@@ -1646,6 +1646,7 @@ func TestCmuxRunModels(t *testing.T) {
 		}
 
 		assert.Equal(t, cmux.Models{
+			Plan:           "opus:medium",
 			Task:           "opus:medium",
 			Review:         "sonnet:high",
 			ExternalReview: "gpt-5.6:xhigh",
@@ -1655,6 +1656,7 @@ func TestCmuxRunModels(t *testing.T) {
 	t.Run("claude defaults are explicit when no model is configured", func(t *testing.T) {
 		req := executePlanRequest{Config: &config.Config{}}
 		assert.Equal(t, cmux.Models{
+			Plan:   "claude default",
 			Task:   "claude default",
 			Review: "claude default",
 		}, cmuxRunModels(opts{}, req))
@@ -1669,6 +1671,7 @@ func TestCmuxRunModels(t *testing.T) {
 		}}
 
 		assert.Equal(t, cmux.Models{
+			Plan:   "gpt-5.5:xhigh",
 			Task:   "gpt-5.5:xhigh",
 			Review: "gpt-5.6:medium",
 		}, cmuxRunModels(opts{}, req))
@@ -1677,9 +1680,19 @@ func TestCmuxRunModels(t *testing.T) {
 	t.Run("effort-only spec names the inherited model source", func(t *testing.T) {
 		req := executePlanRequest{Config: &config.Config{TaskModel: ":high"}}
 		assert.Equal(t, cmux.Models{
+			Plan:   "claude default:high",
 			Task:   "claude default:high",
 			Review: "claude default:high",
 		}, cmuxRunModels(opts{}, req))
+	})
+
+	t.Run("plan model is resolved independently", func(t *testing.T) {
+		req := executePlanRequest{Config: &config.Config{
+			PlanModel:   "haiku:low",
+			TaskModel:   "opus:high",
+			ReviewModel: "sonnet:medium",
+		}}
+		assert.Equal(t, "haiku:low", cmuxRunModels(opts{}, req).Plan)
 	})
 }
 

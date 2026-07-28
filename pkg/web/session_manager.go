@@ -137,7 +137,7 @@ func (m *SessionManager) DiscoverRecursive(root string) ([]string, error) {
 // handles starting/stopping tailing based on state transitions.
 //
 // the header's Started: timestamp is compared against the previously stored
-// metadata to detect a new ralphex run that reused the progress file (truncate
+// metadata to detect a new loopai run that reused the progress file (truncate
 // + rewrite). when a restart is detected, per-run state (lastOffset, loaded,
 // phase, pending section, diff stats) is reset before the state-transition
 // path runs, so the subsequent loader / tailer reads the fresh file from byte
@@ -151,7 +151,7 @@ func (m *SessionManager) DiscoverRecursive(root string) ([]string, error) {
 // that zero would erase the previous run's StartTime and defeat the restart
 // detection on a later event when the full header is finally visible.
 func (m *SessionManager) updateSession(session *Session) error {
-	// parse header first so we can detect a new ralphex run that reused this
+	// parse header first so we can detect a new loopai run that reused this
 	// progress file. a changed "Started:" timestamp means the file was
 	// truncated and re-initialized: the stored lastOffset is from the
 	// previous run and no longer corresponds to current content.

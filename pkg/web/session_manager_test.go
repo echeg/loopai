@@ -991,6 +991,28 @@ func TestSessionManager_DiscoverRecursive_SubdirProgressFiles(t *testing.T) {
 		assert.Equal(t, "docs/plans/feature-b.md", s2.GetMetadata().PlanPath)
 	})
 
+	t.Run("ignores legacy .ralphex data under a project root", func(t *testing.T) {
+		root := t.TempDir()
+		currentDir := filepath.Join(root, ".loopai", "progress")
+		legacyDir := filepath.Join(root, ".ralphex", "progress")
+		require.NoError(t, os.MkdirAll(currentDir, 0o750))
+		require.NoError(t, os.MkdirAll(legacyDir, 0o750))
+
+		currentPath := filepath.Join(currentDir, "progress-current.txt")
+		legacyPath := filepath.Join(legacyDir, "progress-legacy.txt")
+		createProgressFile(t, currentPath, "docs/plans/current.md", "current", "full")
+		createProgressFile(t, legacyPath, "docs/plans/legacy.md", "legacy", "full")
+
+		m := NewSessionManager()
+		defer m.Close()
+
+		ids, err := m.DiscoverRecursive(root)
+		require.NoError(t, err)
+		assert.Equal(t, []string{sessionIDFromPath(currentPath)}, ids)
+		assert.NotNil(t, m.Get(sessionIDFromPath(currentPath)))
+		assert.Nil(t, m.Get(sessionIDFromPath(legacyPath)))
+	})
+
 	t.Run("discovers files in both root and .loopai/progress/ simultaneously", func(t *testing.T) {
 		root := t.TempDir()
 

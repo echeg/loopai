@@ -16,7 +16,7 @@ import (
 // ParseProgressHeader reads the header section of a progress file and extracts metadata.
 // the header format is:
 //
-//	# Ralphex Progress Log
+//	# Loopai Progress Log
 //	Plan: path/to/plan.md
 //	Branch: feature-branch
 //	Mode: full

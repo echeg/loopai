@@ -195,7 +195,7 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
 	args = append(args, "--sandbox", sandbox)
-	// model and reasoning effort are emitted only when explicitly set in ralphex config,
+	// model and reasoning effort are emitted only when explicitly set in loopai config,
 	// so the user's ~/.codex/config.toml choice is preserved otherwise (matches the
 	// "additive -c overrides" promise documented in CLAUDE.md / llms.txt).
 	if e.Model != "" {
@@ -565,7 +565,7 @@ func (e *CodexExecutor) shouldDisplay(line string, state *codexFilterState) (boo
 	case state.headerCount == 1:
 		// inside the header block. on the first run let codex's resolved
 		// config (model / sandbox / reasoning effort) leak through so the
-		// banner reflects what codex actually picked when ralphex did not
+		// banner reflects what codex actually picked when loopai did not
 		// explicitly override these fields.
 		if state.firstRun && e.isHeaderConfigLine(s) {
 			show = true
@@ -592,7 +592,7 @@ func (e *CodexExecutor) shouldDisplay(line string, state *codexFilterState) (boo
 }
 
 // isHeaderConfigLine returns true when line is one of codex's header-block
-// lines describing the resolved per-session config that ralphex doesn't know
+// lines describing the resolved per-session config that loopai doesn't know
 // up front (model picked from ~/.codex/config.toml, sandbox, reasoning effort).
 // other header lines (workdir, provider, approval, reasoning summaries,
 // session id) are either obvious from context or not useful to the user.

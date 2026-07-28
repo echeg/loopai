@@ -6,24 +6,42 @@ TIMESTAMP=$(shell git log -1 --format=%ct HEAD 2>/dev/null | xargs -I{} date -u 
 GIT_REV=$(shell printf "%s-%s-%s" "$(BRANCH)" "$(HASH)" "$(TIMESTAMP)")
 REV=$(if $(filter --,$(GIT_REV)),latest,$(GIT_REV))
 
+WRAPPER_TESTS := \
+	scripts/agy-as-claude/agy-as-claude_test.sh \
+	scripts/codex-as-claude/codex-as-claude_test.sh \
+	scripts/copilot-as-claude/copilot-as-claude_docs_test.sh \
+	scripts/copilot-as-claude/copilot-as-claude_test.sh \
+	scripts/gemini-as-claude/gemini-as-claude_test.sh \
+	scripts/opencode/opencode-as-claude_test.sh \
+	scripts/opencode/opencode-review_test.sh \
+	scripts/pi-as-claude/pi-as-claude_docs_test.sh \
+	scripts/pi-as-claude/pi-as-claude_test.sh
+
 all: test build
 
 build:
 	cd cmd/loopai && go build -ldflags "-X main.revision=$(REV) -s -w" -o ../../.bin/loopai.$(BRANCH)
 	cp .bin/loopai.$(BRANCH) .bin/loopai
 
-test:
-	go clean -testcache
+check-symlinks:
 	@broken="$$(find -L assets/claude -type l -print)"; \
 		if [ -n "$$broken" ]; then \
 			printf 'broken symlinks:\n%s\n' "$$broken"; \
 			exit 1; \
 		fi
+
+test-wrappers:
+	@set -e; for test_script in $(WRAPPER_TESTS); do \
+		bash "$$test_script"; \
+	done
+
+test: check-symlinks
+	go clean -testcache
 	go test -race -coverprofile=coverage.out ./...
 	grep -v "_mock.go" coverage.out | grep -v mocks > coverage_no_mocks.out
 	go tool cover -func=coverage_no_mocks.out
 	rm coverage.out coverage_no_mocks.out
-	bash scripts/copilot-as-claude/copilot-as-claude_test.sh
+	$(MAKE) test-wrappers
 
 lint:
 	golangci-lint run --max-issues-per-linter=0 --max-same-issues=0
@@ -56,7 +74,7 @@ e2e-prep: build
 	@echo "cd /tmp/loopai-test"
 	@echo ".bin/loopai docs/plans/fix-issues.md"
 	@echo ""
-	@echo "Monitor: tail -f /tmp/loopai-test/progress-fix-issues.txt"
+	@echo "Monitor: tail -f /tmp/loopai-test/.loopai/progress/progress-fix-issues.txt"
 
 e2e-review: build
 	@./scripts/internal/prep-review-test.sh
@@ -66,7 +84,7 @@ e2e-review: build
 	@echo "cd /tmp/loopai-review-test"
 	@echo ".bin/loopai --review"
 	@echo ""
-	@echo "Monitor: tail -f /tmp/loopai-review-test/progress-review.txt"
+	@echo "Monitor: tail -f /tmp/loopai-review-test/.loopai/progress/progress-review.txt"
 
 e2e-codex: build
 	@./scripts/internal/prep-review-test.sh
@@ -74,8 +92,8 @@ e2e-codex: build
 	@echo ""
 	@echo "=== E2E Codex-Only Test Ready ==="
 	@echo "cd /tmp/loopai-review-test"
-	@echo ".bin/loopai --codex-only"
+	@echo ".bin/loopai --codex --external-only"
 	@echo ""
-	@echo "Monitor: tail -f /tmp/loopai-review-test/progress-codex.txt"
+	@echo "Monitor: tail -f /tmp/loopai-review-test/.loopai/progress/progress-codex.txt"
 
-.PHONY: all build test lint fmt race version e2e-setup e2e e2e-ui e2e-prep e2e-review e2e-codex
+.PHONY: all build check-symlinks test-wrappers test lint fmt race version e2e-setup e2e e2e-ui e2e-prep e2e-review e2e-codex

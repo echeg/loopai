@@ -20,7 +20,8 @@ The fork does not contain upstream packaging/release infrastructure or the upstr
 
 ```bash
 make build      # build .bin/loopai
-make test       # race-enabled unit tests with coverage
+make test       # asset checks, race-enabled unit tests with coverage, provider-wrapper suites
+make test-wrappers # all retained provider-wrapper and wrapper-doc suites
 make lint       # golangci-lint
 make fmt        # gofmt and goimports
 make race       # focused race run
@@ -61,6 +62,11 @@ scripts/pi-as-claude/ # pi wrapper for Claude-compatible output
 assets/claude/       optional slash-command source assets
 docs/                focused operational documentation and plans
 ```
+
+The top-level `assets/claude/loopai*.md` files are symlinks to the matching
+`assets/claude/skills/loopai*/SKILL.md` sources. Keep the command name,
+directory name, and link target aligned; `make check-symlinks` rejects broken
+links.
 
 ## Configuration
 
@@ -128,6 +134,9 @@ make lint
 ```
 
 The full suite is required because configuration and progress paths cross package boundaries.
+`make test` first validates Claude command symlinks, then runs the race-enabled
+Go suite with coverage, and finally runs every retained provider-wrapper and
+wrapper-documentation shell suite. CI runs the same asset and wrapper checks.
 
 Dashboard e2e:
 
@@ -173,11 +182,20 @@ tail -f .loopai/progress/progress-fix-issues.txt
 Review an existing branch:
 
 ```bash
+make e2e-review
 cd /tmp/loopai-review-test
 .bin/loopai --review
+tail -f .loopai/progress/progress-review.txt
 ```
 
-Use `--codex --external-only` to smoke-test Claude findings with Codex evaluation and fixes.
+Smoke-test Claude findings with Codex evaluation and fixes:
+
+```bash
+make e2e-codex
+cd /tmp/loopai-review-test
+.bin/loopai --codex --external-only
+tail -f .loopai/progress/progress-codex.txt
+```
 
 ## Pull-request checklist
 

@@ -18,6 +18,7 @@ import (
 var skipDirs = map[string]bool{
 	".git":         true,
 	".idea":        true,
+	".ralphex":     true,
 	".vscode":      true,
 	".cache":       true,
 	".npm":         true,
@@ -173,6 +174,11 @@ func (w *Watcher) handleNonProgressEvent(event fsnotify.Event) {
 	}
 	info, err := os.Stat(event.Name)
 	if err != nil || !info.IsDir() {
+		return
+	}
+	// newly created nested legacy data directories must remain invisible just
+	// like ones present during the initial recursive walk.
+	if skipDirs[filepath.Base(event.Name)] {
 		return
 	}
 	if err := w.addRecursive(event.Name); err != nil {

@@ -103,6 +103,7 @@ type Reporter struct {
 // Models contains the effective model specs used by each execution role.
 // Empty values are omitted from cmux status text.
 type Models struct {
+	Plan           string
 	Task           string
 	Review         string
 	ExternalReview string
@@ -110,8 +111,7 @@ type Models struct {
 
 // New returns a reporter for the current cmux workspace, or nil when loopai does not run
 // inside cmux. all methods are nil-safe, so the result can be used without a nil check.
-// the optional models argument keeps callers that only need notifications lightweight.
-func New(planFile string, models ...Models) *Reporter {
+func New(planFile string, models Models) *Reporter {
 	if strings.TrimSpace(os.Getenv(workspaceEnv)) == "" {
 		return nil
 	}
@@ -119,18 +119,15 @@ func New(planFile string, models ...Models) *Reporter {
 	if err != nil {
 		return nil
 	}
-	r := &Reporter{
+	return &Reporter{
 		runner:    &execRunner{bin: bin},
 		planFile:  planFile,
+		models:    models,
 		timeout:   execTimeout,
 		interval:  pollInterval,
 		lastDone:  -1,
 		lastTotal: -1,
 	}
-	if len(models) > 0 {
-		r.models = models[0]
-	}
-	return r
 }
 
 // exec runs a cmux command best-effort. errors are swallowed on purpose: the sidebar is an
@@ -449,7 +446,7 @@ func (r *Reporter) statusText(text string, phase status.Phase, iteration int, wi
 	if model != "" {
 		text += " (" + model + ")"
 	}
-	if withIteration {
+	if withIteration && iteration > 0 {
 		text += fmt.Sprintf(" · iteration %d", iteration)
 	}
 	return text
@@ -457,6 +454,8 @@ func (r *Reporter) statusText(text string, phase status.Phase, iteration int, wi
 
 func (r *Reporter) modelForPhase(phase status.Phase) string {
 	switch phase {
+	case status.PhasePlan:
+		return r.models.Plan
 	case status.PhaseTask:
 		return r.models.Task
 	case status.PhaseReview, status.PhaseExternalEval, status.PhaseFinalize:

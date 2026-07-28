@@ -181,7 +181,7 @@ Report findings only - no positive observations.`, executor.CodexReviewerAgentNa
 //     directive the parent re-spawns once after the first 10-min wait window
 //     instead of waiting 40+ min before deciding the agent is gone.
 //
-// the block lives at ralphex level so users with customized review prompts
+// the block lives at loopai level so users with customized review prompts
 // (that hard-code agent lists inline instead of using {{agent:NAME}} expansion)
 // still get the directives — the per-agent expander doesn't fire for them.
 const codexReviewGuidance = `=== Codex orchestration directives ===
@@ -216,9 +216,9 @@ func (b *promptBuilder) prependCodexReviewGuidance(prompt string) string {
 
 // codexTaskGuidance is the directive block prepended to the task-execution
 // prompt by prependCodexTaskGuidance when the codex executor is active. it
-// tells codex that ralphex's task prompt is authoritative so that any
+// tells codex that loopai's task prompt is authoritative so that any
 // auto-activating codex skill whose workflow overlaps this prompt cannot
-// compete with ralphex's orchestration or flood the progress stream with
+// compete with loopai's orchestration or flood the progress stream with
 // recited skill text. deliberately generic — it names no specific skill,
 // since which skills a user has installed varies per machine.
 const codexTaskGuidance = `=== Codex task-execution directives ===

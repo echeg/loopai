@@ -225,6 +225,28 @@ Started: 2026-01-22 10:00:00
 	assert.Equal(t, expectedID, session.ID)
 }
 
+func TestWatcher_IgnoresNewLegacyDataDirectory(t *testing.T) {
+	root := t.TempDir()
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	w, err := NewWatcher([]string{root}, sm)
+	require.NoError(t, err)
+
+	go func() { _ = w.Start(t.Context()) }()
+	time.Sleep(100 * time.Millisecond)
+
+	legacyDir := filepath.Join(root, ".ralphex", "progress")
+	require.NoError(t, os.MkdirAll(legacyDir, 0o750))
+	time.Sleep(100 * time.Millisecond)
+
+	legacyPath := filepath.Join(legacyDir, "progress-legacy.txt")
+	createProgressFile(t, legacyPath, "docs/plans/legacy.md", "legacy", "full")
+	time.Sleep(200 * time.Millisecond)
+
+	assert.Nil(t, sm.Get(sessionIDFromPath(legacyPath)))
+}
+
 func TestWatcher_IgnoresNonProgressFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	sm := NewSessionManager()

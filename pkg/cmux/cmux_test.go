@@ -81,15 +81,33 @@ func testReporter(t *testing.T, runner commandRunner) *Reporter {
 }
 
 type fakeLogger struct {
-	sections []status.Section
+	printFormat   string
+	printArgs     []any
+	rawFormat     string
+	rawArgs       []any
+	sections      []status.Section
+	aligned       string
+	question      string
+	options       []string
+	answer        string
+	draftAction   string
+	draftFeedback string
 }
 
-func (l *fakeLogger) Print(string, ...any)                {}
-func (l *fakeLogger) PrintRaw(string, ...any)             {}
-func (l *fakeLogger) PrintAligned(string)                 {}
-func (l *fakeLogger) LogQuestion(string, []string)        {}
-func (l *fakeLogger) LogAnswer(string)                    {}
-func (l *fakeLogger) LogDraftReview(string, string)       {}
+func (l *fakeLogger) Print(format string, args ...any) {
+	l.printFormat, l.printArgs = format, args
+}
+func (l *fakeLogger) PrintRaw(format string, args ...any) {
+	l.rawFormat, l.rawArgs = format, args
+}
+func (l *fakeLogger) PrintAligned(text string) { l.aligned = text }
+func (l *fakeLogger) LogQuestion(question string, options []string) {
+	l.question, l.options = question, options
+}
+func (l *fakeLogger) LogAnswer(answer string) { l.answer = answer }
+func (l *fakeLogger) LogDraftReview(action, feedback string) {
+	l.draftAction, l.draftFeedback = action, feedback
+}
 func (l *fakeLogger) Path() string                        { return "progress.txt" }
 func (l *fakeLogger) PrintSection(section status.Section) { l.sections = append(l.sections, section) }
 
@@ -130,13 +148,15 @@ func TestNew(t *testing.T) {
 			t.Setenv(workspaceEnv, tt.workspace)
 			t.Setenv("PATH", tt.path)
 
-			r := New("docs/plans/feature.md")
+			models := Models{Plan: "opus:high", Task: "sonnet:medium"}
+			r := New("docs/plans/feature.md", models)
 			if tt.wantNil {
 				assert.Nil(t, r)
 				return
 			}
 			require.NotNil(t, r)
 			assert.Equal(t, "docs/plans/feature.md", r.planFile)
+			assert.Equal(t, models, r.models)
 			assert.Equal(t, execTimeout, r.timeout)
 			assert.Equal(t, pollInterval, r.interval)
 			assert.Equal(t, -1, r.lastDone, "the first tick must always report")
@@ -153,7 +173,7 @@ func TestNewUnsetWorkspaceEnv(t *testing.T) {
 	t.Setenv(workspaceEnv, "ws-1")
 	require.NoError(t, os.Unsetenv(workspaceEnv))
 
-	assert.Nil(t, New(""), "unset workspace env must disable the reporter")
+	assert.Nil(t, New("", Models{}), "unset workspace env must disable the reporter")
 }
 
 func TestReporterExecNilSafe(t *testing.T) {
@@ -400,6 +420,7 @@ func TestReporterOnPhaseIncludesEffectiveModel(t *testing.T) {
 	runner := &fakeRunner{}
 	r := testReporter(t, runner)
 	r.models = Models{
+		Plan:           "haiku:low",
 		Task:           "gpt-5.6:high",
 		Review:         "gpt-5.6:medium",
 		ExternalReview: "opus:xhigh",
@@ -409,12 +430,14 @@ func TestReporterOnPhaseIncludesEffectiveModel(t *testing.T) {
 	r.OnPhase(status.PhaseTask, status.PhaseReview)
 	r.OnPhase(status.PhaseReview, status.PhaseExternalReview)
 	r.OnPhase(status.PhaseExternalReview, status.PhaseExternalEval)
+	r.OnPhase(status.PhaseExternalEval, status.PhasePlan)
 
 	assert.Equal(t, [][]string{
 		{"set-status", "loopai", "task (gpt-5.6:high)", "--icon", "hammer", "--color", "#22c55e", "--priority", "90"},
 		{"set-status", "loopai", "review (gpt-5.6:medium)", "--icon", "magnifyingglass", "--color", "#06b6d4", "--priority", "90"},
 		{"set-status", "loopai", "external review (opus:xhigh)", "--icon", "person.2", "--color", "#a855f7", "--priority", "90"},
 		{"set-status", "loopai", "evaluating findings (gpt-5.6:medium)", "--icon", "checkmark.seal", "--color", "#a855f7", "--priority", "90"},
+		{"set-status", "loopai", "planning (haiku:low)", "--icon", "list.bullet.clipboard", "--color", "#3b82f6", "--priority", "90"},
 	}, runner.recorded())
 }
 
@@ -429,7 +452,7 @@ func TestReporterOnSectionShowsReviewIteration(t *testing.T) {
 	r.OnSection(status.NewGenericSection("ignored"))
 
 	assert.Equal(t, [][]string{
-		{"set-status", "loopai", "review (gpt-5.6:medium) · iteration 0", "--icon", "magnifyingglass", "--color", "#06b6d4", "--priority", "90"},
+		{"set-status", "loopai", "review (gpt-5.6:medium)", "--icon", "magnifyingglass", "--color", "#06b6d4", "--priority", "90"},
 		{"set-status", "loopai", "review (gpt-5.6:medium) · iteration 3", "--icon", "magnifyingglass", "--color", "#06b6d4", "--priority", "90"},
 		{"set-status", "loopai", "external review (opus:xhigh) · iteration 2", "--icon", "person.2", "--color", "#a855f7", "--priority", "90"},
 	}, runner.recorded())
@@ -453,6 +476,30 @@ func TestReporterWrapLoggerObservesSections(t *testing.T) {
 
 	var nilReporter *Reporter
 	assert.Same(t, inner, nilReporter.WrapLogger(inner))
+}
+
+func TestReporterWrapLoggerForwardsAllMethods(t *testing.T) {
+	inner := &fakeLogger{}
+	wrapped := testReporter(t, &fakeRunner{}).WrapLogger(inner)
+
+	wrapped.Print("value %d", 7)
+	wrapped.PrintRaw("raw %s", "text")
+	wrapped.PrintAligned("aligned")
+	wrapped.LogQuestion("continue?", []string{"yes", "no"})
+	wrapped.LogAnswer("yes")
+	wrapped.LogDraftReview("accept", "looks good")
+
+	assert.Equal(t, "value %d", inner.printFormat)
+	assert.Equal(t, []any{7}, inner.printArgs)
+	assert.Equal(t, "raw %s", inner.rawFormat)
+	assert.Equal(t, []any{"text"}, inner.rawArgs)
+	assert.Equal(t, "aligned", inner.aligned)
+	assert.Equal(t, "continue?", inner.question)
+	assert.Equal(t, []string{"yes", "no"}, inner.options)
+	assert.Equal(t, "yes", inner.answer)
+	assert.Equal(t, "accept", inner.draftAction)
+	assert.Equal(t, "looks good", inner.draftFeedback)
+	assert.Equal(t, "progress.txt", wrapped.Path())
 }
 
 func TestReporterOnPhaseAsObserver(t *testing.T) {
@@ -482,6 +529,52 @@ func TestReporterOnPhaseAfterStop(t *testing.T) {
 		{"clear-status", "loopai"},
 		{"clear-progress"},
 	}, runner.recorded(), "a phase change after stop must not re-add the pill")
+}
+
+func TestReporterOnSectionAfterStop(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+
+	r.Stop()
+	r.OnSection(status.NewInternalReviewSection(2, ": critical/major"))
+
+	assert.Equal(t, [][]string{
+		{"workspace", "loading", "off", "--id", "loopai"},
+		{"clear-status", "loopai"},
+		{"clear-progress"},
+	}, runner.recorded(), "a review section after stop must not re-add the pill")
+}
+
+func TestReporterStopWaitsForSectionUpdateInFlight(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+
+	inFlight, release := make(chan struct{}), make(chan struct{})
+	runner.onCall = func(args []string) {
+		if args[0] == "set-status" {
+			close(inFlight)
+			<-release
+		}
+	}
+
+	go r.OnSection(status.NewInternalReviewSection(2, ": critical/major"))
+	<-inFlight
+
+	stopped := make(chan struct{})
+	go func() { r.Stop(); close(stopped) }()
+
+	runner.waitForCalls(t, 2)
+	assert.NotContains(t, runner.recorded(), []string{"clear-status", "loopai"})
+
+	close(release)
+	<-stopped
+
+	assert.Equal(t, [][]string{
+		{"set-status", "loopai", "review · iteration 2", "--icon", "magnifyingglass", "--color", "#06b6d4", "--priority", "90"},
+		{"workspace", "loading", "off", "--id", "loopai"},
+		{"clear-status", "loopai"},
+		{"clear-progress"},
+	}, runner.recorded())
 }
 
 func TestReporterStopWaitsForPillUpdateInFlight(t *testing.T) {

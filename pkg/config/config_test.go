@@ -170,6 +170,41 @@ func TestDefaultConfigDir(t *testing.T) {
 	assert.Equal(t, filepath.Join(home, ".config", "loopai"), dir)
 }
 
+func TestLoadReadOnly_IgnoresLegacyGlobalDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	workDir := t.TempDir()
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.Chdir(origDir)) })
+	require.NoError(t, os.Chdir(workDir))
+
+	legacyDir := filepath.Join(home, ".config", "ralphex")
+	require.NoError(t, os.MkdirAll(legacyDir, 0o700))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(legacyDir, "config"),
+		[]byte("claude_command = legacy-claude\n"),
+		0o600,
+	))
+
+	cfg, err := LoadReadOnly("")
+	require.NoError(t, err)
+	assert.Equal(t, "claude", cfg.ClaudeCommand)
+
+	currentDir := filepath.Join(home, ".config", "loopai")
+	require.NoError(t, os.MkdirAll(currentDir, 0o700))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(currentDir, "config"),
+		[]byte("claude_command = current-claude\n"),
+		0o600,
+	))
+
+	cfg, err = LoadReadOnly("")
+	require.NoError(t, err)
+	assert.Equal(t, "current-claude", cfg.ClaudeCommand)
+}
+
 func TestEmbeddedDefaultsColorValues(t *testing.T) {
 	// tests that embedded defaults/config contains correct color values
 	// and that they parse into expected RGB strings

@@ -1,4 +1,4 @@
-// Package config provides configuration management for ralphex with embedded defaults.
+// Package config provides configuration management for loopai with embedded defaults.
 package config
 
 import (
@@ -48,7 +48,7 @@ const (
 	ExternalReviewToolNone   = "none"
 )
 
-// Config holds all configuration settings for ralphex.
+// Config holds all configuration settings for loopai.
 // Fields ending in *Set mostly track whether that field was explicitly set in config.
 // This allows distinguishing explicit false/0 from "not set", enabling proper
 // merge behavior where local config can override global config with zero values.
