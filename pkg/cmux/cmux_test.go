@@ -80,6 +80,19 @@ func testReporter(t *testing.T, runner commandRunner) *Reporter {
 	return &Reporter{runner: runner, timeout: time.Second, interval: time.Hour, lastDone: -1, lastTotal: -1}
 }
 
+type fakeLogger struct {
+	sections []status.Section
+}
+
+func (l *fakeLogger) Print(string, ...any)                {}
+func (l *fakeLogger) PrintRaw(string, ...any)             {}
+func (l *fakeLogger) PrintAligned(string)                 {}
+func (l *fakeLogger) LogQuestion(string, []string)        {}
+func (l *fakeLogger) LogAnswer(string)                    {}
+func (l *fakeLogger) LogDraftReview(string, string)       {}
+func (l *fakeLogger) Path() string                        { return "progress.txt" }
+func (l *fakeLogger) PrintSection(section status.Section) { l.sections = append(l.sections, section) }
+
 // writePlan writes a plan file into a temp dir and returns its path.
 func writePlan(t *testing.T, content string) string {
 	t.Helper()
@@ -381,6 +394,65 @@ func TestReporterOnPhase(t *testing.T) {
 			assert.Equal(t, tt.want, calls[0])
 		})
 	}
+}
+
+func TestReporterOnPhaseIncludesEffectiveModel(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+	r.models = Models{
+		Task:           "gpt-5.6:high",
+		Review:         "gpt-5.6:medium",
+		ExternalReview: "opus:xhigh",
+	}
+
+	r.OnPhase("", status.PhaseTask)
+	r.OnPhase(status.PhaseTask, status.PhaseReview)
+	r.OnPhase(status.PhaseReview, status.PhaseExternalReview)
+	r.OnPhase(status.PhaseExternalReview, status.PhaseExternalEval)
+
+	assert.Equal(t, [][]string{
+		{"set-status", "loopai", "task (gpt-5.6:high)", "--icon", "hammer", "--color", "#22c55e", "--priority", "90"},
+		{"set-status", "loopai", "review (gpt-5.6:medium)", "--icon", "magnifyingglass", "--color", "#06b6d4", "--priority", "90"},
+		{"set-status", "loopai", "external review (opus:xhigh)", "--icon", "person.2", "--color", "#a855f7", "--priority", "90"},
+		{"set-status", "loopai", "evaluating findings (gpt-5.6:medium)", "--icon", "checkmark.seal", "--color", "#a855f7", "--priority", "90"},
+	}, runner.recorded())
+}
+
+func TestReporterOnSectionShowsReviewIteration(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+	r.models = Models{Review: "gpt-5.6:medium", ExternalReview: "opus:xhigh"}
+
+	r.OnSection(status.NewInternalReviewSection(0, ": all findings"))
+	r.OnSection(status.NewInternalReviewSection(3, ": critical/major"))
+	r.OnSection(status.NewExternalReviewIterationSection("claude", 2))
+	r.OnSection(status.NewGenericSection("ignored"))
+
+	assert.Equal(t, [][]string{
+		{"set-status", "loopai", "review (gpt-5.6:medium) · iteration 0", "--icon", "magnifyingglass", "--color", "#06b6d4", "--priority", "90"},
+		{"set-status", "loopai", "review (gpt-5.6:medium) · iteration 3", "--icon", "magnifyingglass", "--color", "#06b6d4", "--priority", "90"},
+		{"set-status", "loopai", "external review (opus:xhigh) · iteration 2", "--icon", "person.2", "--color", "#a855f7", "--priority", "90"},
+	}, runner.recorded())
+}
+
+func TestReporterWrapLoggerObservesSections(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+	r.models = Models{Review: "gpt-5.6:medium"}
+	inner := &fakeLogger{}
+
+	wrapped := r.WrapLogger(inner)
+	section := status.NewInternalReviewSection(4, ": critical/major")
+	wrapped.PrintSection(section)
+
+	assert.Equal(t, []status.Section{section}, inner.sections)
+	assert.Equal(t, [][]string{{
+		"set-status", "loopai", "review (gpt-5.6:medium) · iteration 4",
+		"--icon", "magnifyingglass", "--color", "#06b6d4", "--priority", "90",
+	}}, runner.recorded())
+
+	var nilReporter *Reporter
+	assert.Same(t, inner, nilReporter.WrapLogger(inner))
 }
 
 func TestReporterOnPhaseAsObserver(t *testing.T) {

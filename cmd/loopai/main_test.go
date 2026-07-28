@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/umputun/ralphex/pkg/cmux"
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/git"
 	gitmocks "github.com/umputun/ralphex/pkg/git/mocks"
@@ -1626,6 +1627,59 @@ func TestResolveModelSpecs(t *testing.T) {
 		assert.Equal(t, "cfg-review:medium", resolveReviewSpec(opts{TaskModel: "cli-task:xhigh"}, cfg))
 		assert.Equal(t, "cli-task:xhigh", resolveReviewSpec(opts{TaskModel: "cli-task:xhigh"}, &config.Config{TaskModel: "cfg-task:low"}))
 		assert.Equal(t, "cfg-task:low", resolveReviewSpec(opts{}, &config.Config{TaskModel: "cfg-task:low"}))
+	})
+}
+
+func TestCmuxRunModels(t *testing.T) {
+	t.Run("nil config", func(t *testing.T) {
+		assert.Equal(t, cmux.Models{}, cmuxRunModels(opts{}, executePlanRequest{}))
+	})
+
+	t.Run("claude models use configured review and resolved external model", func(t *testing.T) {
+		req := executePlanRequest{
+			Config: &config.Config{ReviewModel: "sonnet:high"},
+			ExternalReview: externalReviewSelection{
+				Provider: config.ExternalReviewToolCodex,
+				Model:    "gpt-5.6",
+				Effort:   "xhigh",
+			},
+		}
+
+		assert.Equal(t, cmux.Models{
+			Task:           "opus:medium",
+			Review:         "sonnet:high",
+			ExternalReview: "gpt-5.6:xhigh",
+		}, cmuxRunModels(opts{TaskModel: "opus:medium"}, req))
+	})
+
+	t.Run("claude defaults are explicit when no model is configured", func(t *testing.T) {
+		req := executePlanRequest{Config: &config.Config{}}
+		assert.Equal(t, cmux.Models{
+			Task:   "claude default",
+			Review: "claude default",
+		}, cmuxRunModels(opts{}, req))
+	})
+
+	t.Run("codex models match effective executor resolution", func(t *testing.T) {
+		req := executePlanRequest{Config: &config.Config{
+			Executor:             config.ExecutorCodex,
+			CodexModel:           "gpt-5.5",
+			CodexReasoningEffort: "xhigh",
+			ReviewModel:          "gpt-5.6:medium",
+		}}
+
+		assert.Equal(t, cmux.Models{
+			Task:   "gpt-5.5:xhigh",
+			Review: "gpt-5.6:medium",
+		}, cmuxRunModels(opts{}, req))
+	})
+
+	t.Run("effort-only spec names the inherited model source", func(t *testing.T) {
+		req := executePlanRequest{Config: &config.Config{TaskModel: ":high"}}
+		assert.Equal(t, cmux.Models{
+			Task:   "claude default:high",
+			Review: "claude default:high",
+		}, cmuxRunModels(opts{}, req))
 	})
 }
 

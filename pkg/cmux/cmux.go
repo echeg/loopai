@@ -81,6 +81,7 @@ func (r *execRunner) run(ctx context.Context, args ...string) error {
 type Reporter struct {
 	runner   commandRunner
 	planFile string        // plan file polled for task progress, may be empty
+	models   Models        // effective models shown alongside phase names
 	timeout  time.Duration // per-call timeout
 	interval time.Duration // plan file poll interval
 
@@ -99,9 +100,18 @@ type Reporter struct {
 	lastDone, lastTotal int
 }
 
+// Models contains the effective model specs used by each execution role.
+// Empty values are omitted from cmux status text.
+type Models struct {
+	Task           string
+	Review         string
+	ExternalReview string
+}
+
 // New returns a reporter for the current cmux workspace, or nil when loopai does not run
 // inside cmux. all methods are nil-safe, so the result can be used without a nil check.
-func New(planFile string) *Reporter {
+// the optional models argument keeps callers that only need notifications lightweight.
+func New(planFile string, models ...Models) *Reporter {
 	if strings.TrimSpace(os.Getenv(workspaceEnv)) == "" {
 		return nil
 	}
@@ -109,7 +119,7 @@ func New(planFile string) *Reporter {
 	if err != nil {
 		return nil
 	}
-	return &Reporter{
+	r := &Reporter{
 		runner:    &execRunner{bin: bin},
 		planFile:  planFile,
 		timeout:   execTimeout,
@@ -117,6 +127,10 @@ func New(planFile string) *Reporter {
 		lastDone:  -1,
 		lastTotal: -1,
 	}
+	if len(models) > 0 {
+		r.models = models[0]
+	}
+	return r
 }
 
 // exec runs a cmux command best-effort. errors are swallowed on purpose: the sidebar is an
@@ -292,6 +306,65 @@ func (r *Reporter) Stop() {
 	})
 }
 
+// Logger is the execution logger surface needed to observe structured sections.
+type Logger interface {
+	Print(format string, args ...any)
+	PrintRaw(format string, args ...any)
+	PrintSection(section status.Section)
+	PrintAligned(text string)
+	LogQuestion(question string, options []string)
+	LogAnswer(answer string)
+	LogDraftReview(action string, feedback string)
+	Path() string
+}
+
+// WrapLogger decorates an execution logger so review section iterations update cmux.
+// Outside cmux the original logger is returned unchanged.
+func (r *Reporter) WrapLogger(logger Logger) Logger {
+	if r == nil {
+		return logger
+	}
+	return &reportingLogger{inner: logger, rep: r}
+}
+
+type reportingLogger struct {
+	inner Logger
+	rep   *Reporter
+}
+
+func (l *reportingLogger) Print(format string, args ...any) {
+	l.inner.Print(format, args...)
+}
+
+func (l *reportingLogger) PrintRaw(format string, args ...any) {
+	l.inner.PrintRaw(format, args...)
+}
+
+func (l *reportingLogger) PrintSection(section status.Section) {
+	l.inner.PrintSection(section)
+	l.rep.OnSection(section)
+}
+
+func (l *reportingLogger) PrintAligned(text string) {
+	l.inner.PrintAligned(text)
+}
+
+func (l *reportingLogger) LogQuestion(question string, options []string) {
+	l.inner.LogQuestion(question, options)
+}
+
+func (l *reportingLogger) LogAnswer(answer string) {
+	l.inner.LogAnswer(answer)
+}
+
+func (l *reportingLogger) LogDraftReview(action, feedback string) {
+	l.inner.LogDraftReview(action, feedback)
+}
+
+func (l *reportingLogger) Path() string {
+	return l.inner.Path()
+}
+
 // inputCollector collects interactive input during plan creation. it mirrors
 // processor.InputCollector and is declared here because the wrapper below is the only consumer,
 // which also keeps pkg/cmux free of a dependency on pkg/processor.
@@ -342,7 +415,57 @@ func (r *Reporter) OnPhase(_, cur status.Phase) {
 		return
 	}
 	s := styleForPhase(cur)
-	r.setStatus(s.text, s.icon, s.color)
+	r.setStatus(r.statusText(s.text, cur, 0, false), s.icon, s.color)
+}
+
+// OnSection enriches review phase status with the structured iteration number.
+// It is called by the logger wrapper after the section reaches the regular log.
+func (r *Reporter) OnSection(section status.Section) {
+	if r == nil {
+		return
+	}
+
+	var phase status.Phase
+	switch section.Type {
+	case status.SectionInternalReview:
+		phase = status.PhaseReview
+	case status.SectionExternalReviewIteration:
+		phase = status.PhaseExternalReview
+	default:
+		return
+	}
+
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	if r.stopped {
+		return
+	}
+	s := styleForPhase(phase)
+	r.setStatus(r.statusText(s.text, phase, section.Iteration, true), s.icon, s.color)
+}
+
+func (r *Reporter) statusText(text string, phase status.Phase, iteration int, withIteration bool) string {
+	model := r.modelForPhase(phase)
+	if model != "" {
+		text += " (" + model + ")"
+	}
+	if withIteration {
+		text += fmt.Sprintf(" · iteration %d", iteration)
+	}
+	return text
+}
+
+func (r *Reporter) modelForPhase(phase status.Phase) string {
+	switch phase {
+	case status.PhaseTask:
+		return r.models.Task
+	case status.PhaseReview, status.PhaseExternalEval, status.PhaseFinalize:
+		return r.models.Review
+	case status.PhaseExternalReview:
+		return r.models.ExternalReview
+	default:
+		return ""
+	}
 }
 
 // phaseStyle is the sidebar presentation of a phase: pill text, SF Symbol name and hex color.

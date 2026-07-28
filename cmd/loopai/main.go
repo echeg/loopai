@@ -631,7 +631,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 
 	// cmux sidebar reporter, nil and fully no-op outside cmux. Stop is also registered with the
 	// interrupt handler because defers are skipped on the force-exit path.
-	rep := cmux.New(req.PlanFile)
+	rep := cmux.New(req.PlanFile, cmuxRunModels(o, req))
 	rep.Start(ctx)
 	defer rep.Stop()
 	if req.CmuxStop != nil {
@@ -664,6 +664,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 			return wrapped
 		}
 	}
+	runnerLog = rep.WrapLogger(runnerLog)
 
 	// subscribe the sidebar to phase changes after the dashboard so both observers coexist
 	plr.holder.OnChange(rep.OnPhase)
@@ -1431,6 +1432,52 @@ func resolveReviewSpec(o opts, cfg *config.Config) string {
 		return reviewSpec
 	}
 	return resolveSpec(o.TaskModel, cfg.TaskModel)
+}
+
+// cmuxRunModels resolves the model labels shown beside live cmux phases.
+// Codex values mirror executor resolution; Claude's empty spec is explicitly
+// labeled as the CLI default because loopai cannot know which model Claude selects.
+func cmuxRunModels(o opts, req executePlanRequest) cmux.Models {
+	if req.Config == nil {
+		return cmux.Models{}
+	}
+
+	var taskModel, reviewModel string
+	if req.Config.Executor == config.ExecutorCodex {
+		info := codexModelBanner(o, req.Config)
+		taskModel = modelEffortLabel("codex default", info.taskModel, info.taskEffort)
+		reviewModel = modelEffortLabel("codex default", info.reviewModel, info.reviewEffort)
+	} else {
+		taskModel = configuredModelLabel("claude default", resolveSpec(o.TaskModel, req.Config.TaskModel))
+		reviewModel = configuredModelLabel("claude default", resolveReviewSpec(o, req.Config))
+	}
+
+	return cmux.Models{
+		Task:           taskModel,
+		Review:         reviewModel,
+		ExternalReview: req.ExternalReview.modelSpec(),
+	}
+}
+
+func configuredModelLabel(fallback, spec string) string {
+	switch {
+	case spec == "":
+		return fallback
+	case strings.HasPrefix(spec, ":"):
+		return fallback + spec
+	default:
+		return spec
+	}
+}
+
+func modelEffortLabel(fallback, model, effort string) string {
+	if model == "" {
+		model = fallback
+	}
+	if effort != "" {
+		return model + ":" + effort
+	}
+	return model
 }
 
 func codexBannerForSpec(spec string, cfg *config.Config) codexBannerInfo {
