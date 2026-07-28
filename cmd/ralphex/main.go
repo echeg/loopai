@@ -525,9 +525,10 @@ func notifyCmuxCompletion(rep *cmux.Reporter, planFile, branch, elapsed string, 
 
 // cmuxCompletionNotice builds the subtitle and body of the end-of-run cmux notification.
 // ok is false for a user abort: the person who aborted is already at the terminal, so a
-// banner would only be noise.
+// banner would only be noise. both abort routes count — Ctrl+\ declining to resume yields
+// ErrUserAborted, while Ctrl+C cancels the context and surfaces as a wrapped context.Canceled.
 func cmuxCompletionNotice(planFile, branch, elapsed string, runErr error) (subtitle, body string, ok bool) {
-	if errors.Is(runErr, processor.ErrUserAborted) {
+	if errors.Is(runErr, processor.ErrUserAborted) || errors.Is(runErr, context.Canceled) {
 		return "", "", false
 	}
 	target := cmuxNotifyTarget(planFile, branch)
@@ -1549,9 +1550,6 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	// find the newly created plan file
 	planFile := selector.FindRecent(startTime)
 	elapsed := baseLog.Elapsed()
-	// not a completion notice: the implementation run may still follow, and the continue prompt
-	// below waits for the user either way, so the banner says the plan is ready rather than done
-	rep.Notify("plan created", fmt.Sprintf("%s in %s", cmuxNotifyTarget(planFile, branch), elapsed))
 
 	// print completion message with plan file path if found
 	if planFile != "" {
@@ -1560,10 +1558,15 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		req.Colors.Info().Printf("\nplan creation completed in %s\n", elapsed)
 	}
 
-	// if no plan file found, can't continue to implementation
+	// if no plan file found, can't continue to implementation. no cmux banner either: nothing
+	// was created, and the run ends here rather than waiting for the user
 	if planFile == "" {
 		return nil
 	}
+
+	// not a completion notice: the implementation run may still follow, and the continue prompt
+	// below waits for the user either way, so the banner says the plan is ready rather than done
+	rep.Notify("plan created", fmt.Sprintf("%s in %s", filepath.Base(planFile), elapsed))
 
 	// ask user if they want to continue with plan implementation
 	if !input.AskYesNo(ctx, "Continue with plan implementation?", os.Stdin, os.Stdout) {

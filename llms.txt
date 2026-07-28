@@ -95,8 +95,9 @@ ralphex --review --base-ref develop
 ralphex --review --base-ref abc1234 --skip-finalize
 
 # work off a non-default branch: a --base-ref branch also becomes the base for the new
-# branch/worktree, so diffs, rebase, and the worktree all share one base (e.g. release hotfix)
-ralphex --worktree --base-ref release/13.0.0 docs/plans/hotfix.md
+# branch/worktree, so diffs, rebase, and the worktree all share one base (e.g. release hotfix).
+# requires the checkout to be on that branch already - branch creation cuts from HEAD
+git checkout release/13.0.0 && ralphex --worktree --base-ref release/13.0.0 docs/plans/hotfix.md
 
 # interactive plan creation — Claude asks questions, generates draft,
 # user reviews with accept/revise/interactive review ($EDITOR)/reject

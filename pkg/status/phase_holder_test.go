@@ -113,6 +113,11 @@ func TestPhaseHolder_ConcurrentOnChange(t *testing.T) {
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 
+	// one observer registered before the racing goroutines start, so every Set below is
+	// guaranteed to have something to fire. without it the assertion is a race: all Set calls
+	// may complete before the first concurrent OnChange lands, leaving the counter at zero
+	h.OnChange(func(_, _ Phase) { cbCount.Add(1) })
+
 	// register observers while phases are being set - exercises the snapshot-under-lock path
 	for range 16 {
 		wg.Go(func() {

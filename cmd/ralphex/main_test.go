@@ -3530,6 +3530,15 @@ func TestCmuxCompletionNotice(t *testing.T) {
 			name: "wrapped user abort is not announced", planFile: "feature.md", branch: "feature", elapsed: "1m",
 			runErr: fmt.Errorf("runner: %w", processor.ErrUserAborted), wantOK: false,
 		},
+		{
+			name: "ctrl-c cancellation is not announced", planFile: "feature.md", branch: "feature", elapsed: "1m",
+			runErr: context.Canceled, wantOK: false,
+		},
+		{
+			// SIGINT reaches executePlan as this shape, not as ErrUserAborted
+			name: "wrapped ctrl-c cancellation is not announced", planFile: "feature.md", branch: "feature",
+			elapsed: "1m", runErr: fmt.Errorf("runner: task phase: %w", context.Canceled), wantOK: false,
+		},
 	}
 
 	for _, tt := range tests {

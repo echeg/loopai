@@ -309,9 +309,13 @@ The `--worktree` flag runs plan execution in an isolated git worktree at `.ralph
 **Base branch:** by default the worktree must be created from the default branch (`main`, `master`, or whatever `default_branch` resolves to), because the same branch is used as the base for review diffs and for the finalize rebase. To work off another branch — a release line, for example — pass it via `--base-ref`:
 
 ```bash
+git checkout release/13.0.0
+
 # branch the worktree off release/13.0.0; diffs and rebase use the same base
 ralphex --worktree --base-ref release/13.0.0 docs/plans/hotfix.md
 ```
+
+The checkout must already be on the branch `--base-ref` names: branch creation cuts from `HEAD`, so running the command above from `main` is rejected with an explicit error rather than silently basing the work on the wrong commit.
 
 `--base-ref` also accepts a commit hash, but a hash can only serve as a diff base, not as a branch base — combining it with `--worktree` is rejected with an explicit error. For a permanent per-project setting, use `default_branch` in `.ralphex/config` instead of passing the flag on every run.
 
