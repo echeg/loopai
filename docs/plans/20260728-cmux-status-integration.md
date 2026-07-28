@@ -162,25 +162,31 @@ cmux не видит живой PID соответствующего агент�
 
 ### Task 3: команды сайдбара и маппинг фаз
 
-- [ ] `LoadingOn()` / `LoadingOff()` → argv `{"workspace", "loading", "on"|"off", "--id", "ralphex"}`
-- [ ] `Status(text, icon, color string)` → `{"set-status", "ralphex", text, "--icon", icon,
+- [x] `LoadingOn()` / `LoadingOff()` → argv `{"workspace", "loading", "on"|"off", "--id", "ralphex"}`
+- [x] `Status(text, icon, color string)` → `{"set-status", "ralphex", text, "--icon", icon,
       "--color", color, "--priority", "90"}`; пустые icon/color не добавляют своих флагов
-- [ ] `ClearStatus()` → `{"clear-status", "ralphex"}`
-- [ ] `Progress(done, total int, label string)` → `{"set-progress", <0.00..1.00>, "--label", label}`;
+- [x] `ClearStatus()` → `{"clear-status", "ralphex"}`
+- [x] `Progress(done, total int, label string)` → `{"set-progress", <0.00..1.00>, "--label", label}`;
       `total <= 0` — вызов пропускается, деления на ноль нет; значение форматируется с двумя знаками
-      и клампится в `[0, 1]`
-- [ ] `ClearProgress()` → `{"clear-progress"}`
-- [ ] `Notify(title, subtitle, body string)` → `{"notify", "--title", title, ...}`; пустые subtitle/body
+      и клампится в `[0, 1]`; ➕ пустой `label` не добавляет своего флага — по аналогии с `Status`
+      и `Notify`, чтобы не слать в сайдбар пустую подпись
+- [x] `ClearProgress()` → `{"clear-progress"}`
+- [x] `Notify(title, subtitle, body string)` → `{"notify", "--title", title, ...}`; пустые subtitle/body
       не добавляют своих флагов; тело обрезается до 200 рун (баннер macOS всё равно не покажет больше)
-- [ ] `Clear()` — идемпотентно: `LoadingOff` + `ClearStatus` + `ClearProgress`; безопасно вызывать дважды
-- [ ] добавить маппинг `status.Phase` → (текст пилюли, SF Symbol, hex-цвет) — см. «Technical Details»
-- [ ] `OnPhase(old, cur status.Phase)` с сигнатурой под `PhaseHolder.OnChange`; неизвестная фаза
-      использует своё строковое значение как текст и нейтральную иконку
-- [ ] написать тесты: табличные проверки argv для каждого метода, включая пропуск пустых флагов
-- [ ] написать тесты: `Progress` при `total=0`, при `done > total`, при отрицательных значениях
-- [ ] написать тесты: маппинг покрывает все константы фаз из `pkg/status`; неизвестная фаза не паникует
-- [ ] написать тесты: `Clear` идемпотентен и шлёт все три команды
-- [ ] `make test` и `make lint` — должны пройти до начала задачи 4
+- [x] `Clear()` — идемпотентно: `LoadingOff` + `ClearStatus` + `ClearProgress`; безопасно вызывать дважды
+- [x] добавить маппинг `status.Phase` → (текст пилюли, SF Symbol, hex-цвет) — см. «Technical Details»
+- [x] `OnPhase(old, cur status.Phase)` с сигнатурой под `PhaseHolder.OnChange`; неизвестная фаза
+      использует своё строковое значение как текст и нейтральную иконку (сюда же попадают легаси-фазы
+      `PhaseCodex`/`PhaseClaudeEval` — они только парсятся из старых прогресс-файлов и на живом
+      прогоне не выставляются)
+- [x] написать тесты: табличные проверки argv для каждого метода, включая пропуск пустых флагов
+- [x] написать тесты: `Progress` при `total=0`, при `done > total`, при отрицательных значениях
+- [x] написать тесты: маппинг покрывает все константы фаз из `pkg/status`; неизвестная фаза не паникует
+- [x] написать тесты: `Clear` идемпотентен и шлёт все три команды
+- [x] `make test` и `make lint` — должны пройти до начала задачи 4 (lint чистый, `pkg/cmux` 100%
+      покрытия; в `make test` по-прежнему падает ⚠️ `cmd/ralphex`
+      `TestPlanModeIntegration/plan_mode_progress_file_naming` — предсуществующий отказ,
+      перепроверен на чистом дереве через `git stash`, к `pkg/cmux` отношения не имеет)
 
 ### Task 4: фоновое обновление прогресса по plan-файлу
 
