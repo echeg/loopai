@@ -30,6 +30,19 @@ import (
 	"github.com/umputun/ralphex/pkg/status"
 )
 
+// TestMain isolates the suite from a live cmux terminal. cmux.New reads CMUX_WORKSPACE_ID from the
+// ambient environment, so running these tests inside cmux would drive the developer's real sidebar
+// and fire real notification banners — the same class of leak as touching the user's config dir.
+// tests that need a reporter set the variable themselves via t.Setenv, which restores this unset
+// state afterwards, so the deliberate cases keep working.
+func TestMain(m *testing.M) {
+	if err := os.Unsetenv("CMUX_WORKSPACE_ID"); err != nil {
+		fmt.Fprintf(os.Stderr, "unset CMUX_WORKSPACE_ID: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
+
 // captureStdout runs fn while redirecting os.Stdout (and the fatih/color Output
 // target, which many progress prints use) to a pipe and returns the captured output.
 // uses defer to restore global state even if fn panics or calls t.FailNow, preventing
@@ -2358,6 +2371,31 @@ func TestModeRequiresBranch(t *testing.T) {
 	}
 }
 
+func TestModeCreatesBranch(t *testing.T) {
+	// modeCreatesBranch gates whether --base-ref is validated as a branch base. it differs from
+	// modeRequiresBranch on plan mode only, which is the whole point: plan creation runs in place
+	// but hands off to an implementation run that does create a branch.
+	tests := []struct {
+		mode     processor.Mode
+		expected bool
+	}{
+		{processor.ModeFull, true},
+		{processor.ModeTasksOnly, true},
+		{processor.ModePlan, true},
+		{processor.ModeReview, false},
+		{processor.ModeCodexOnly, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			assert.Equal(t, tc.expected, modeCreatesBranch(tc.mode), "mode %s should return %v", tc.mode, tc.expected)
+		})
+	}
+
+	assert.True(t, modeCreatesBranch(processor.ModePlan) && !modeRequiresBranch(processor.ModePlan),
+		"plan mode is the case that separates the two predicates")
+}
+
 func TestShouldMovePlan(t *testing.T) {
 	// tests the shouldMovePlan predicate used to guard the plan move call.
 	// all three conditions must be true: non-empty plan file, mode requires branch, and config opts in.
@@ -3092,6 +3130,48 @@ func TestRunWithWorktree_CreateWorktreeError(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create worktree")
+}
+
+func TestRunWithWorktree_HandsOffFailureNotification(t *testing.T) {
+	skipIfClaudeNotAvailable(t)
+
+	// once setup succeeds and executePlan is entered, the downstream funnel owns the failure
+	// banner. the handedOff gate is what stops runWithWorktree from raising a second one, so the
+	// assertion is the notify *count* — with the gate broken every worktree failure double-banners.
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	// plan with a checkbox but no "### Task N:" section parses to zero tasks, so executePlan
+	// fails deterministically inside validation without ever reaching the executor
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+	planPath := filepath.Join(dir, "docs", "plans", "wt-once.md")
+	require.NoError(t, os.WriteFile(planPath, []byte("# WT Once\n\n- [ ] task 1\n"), 0o600))
+	runGit(t, dir, "add", "docs/plans/wt-once.md")
+	runGit(t, dir, "commit", "-m", "add wt once plan")
+
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + argvLog + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "cmux"), []byte(script), 0o755)) //nolint:gosec // test fixture must be executable
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	err = runWithWorktree(t.Context(), opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{WorktreeEnabled: true},
+		Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+	})
+	require.Error(t, err, "executePlan must fail so there is a failure to report")
+
+	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+	require.NoError(t, readErr, "the handed-off run must still reach the cmux CLI")
+	assert.Equal(t, 1, strings.Count(string(recorded), "notify --title"),
+		"exactly one funnel may banner a failure, got:\n%s", recorded)
 }
 
 func TestRunWithWorktree_NotifiesSetupFailure(t *testing.T) {

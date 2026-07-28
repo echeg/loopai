@@ -83,7 +83,8 @@ ralphex --codex-only
 # tasks-only mode (run only task phase, skip all reviews)
 ralphex --tasks-only docs/plans/feature.md
 
-# run in isolated git worktree (full and tasks-only modes only; ignored for --review/--external-only)
+# run in isolated git worktree (full, tasks-only, and the run handed off from --plan;
+# ignored for --review/--external-only)
 ralphex --worktree docs/plans/feature.md
 
 # override branch name when auto-detection is fragile (generic filenames, spec-driven layouts)
@@ -96,8 +97,10 @@ ralphex --review --base-ref abc1234 --skip-finalize
 
 # work off a non-default branch: a --base-ref branch also becomes the base for the new
 # branch/worktree, so diffs, rebase, and the worktree all share one base (e.g. release hotfix).
-# requires the checkout to be on that branch already - branch creation cuts from HEAD
+# applies to every branch-creating mode (full, --tasks-only, --plan), with or without --worktree.
+# running it from the default branch is rejected - branch creation cuts from HEAD
 git checkout release/13.0.0 && ralphex --worktree --base-ref release/13.0.0 docs/plans/hotfix.md
+git checkout release/13.0.0 && ralphex --base-ref release/13.0.0 docs/plans/hotfix.md
 
 # interactive plan creation — Claude asks questions, generates draft,
 # user reviews with accept/revise/interactive review ($EDITOR)/reject
@@ -146,7 +149,7 @@ Configuration directory: `~/.config/ralphex/` (override with `--config-dir` or `
 - `{{PLAN_FILE}}` - path to plan file
 - `{{PROGRESS_FILE}}` - path to progress log
 - `{{GOAL}}` - goal description
-- `{{DEFAULT_BRANCH}}` - detected default branch (main, master, etc.), overridable via `--base-ref` CLI flag or `default_branch` config option. When `--base-ref` names an existing local branch it also becomes the base for branch and worktree creation, so plans can run off a release branch; a commit hash stays diff-only and is rejected in `--worktree` mode
+- `{{DEFAULT_BRANCH}}` - detected default branch (main, master, etc.), overridable via `--base-ref` CLI flag or `default_branch` config option. When `--base-ref` names an existing local branch it also becomes the base for branch and worktree creation in every branch-creating mode (full, `--tasks-only`, `--plan`), so plans can run off a release branch; a commit hash stays diff-only and is rejected in `--worktree` mode
 - `{{agent:name}}` - expands to Task tool instructions for named agent
 - `{{DIFF_INSTRUCTION}}` - git diff command for the current external review iteration (in codex_review.txt, external_claude_review.txt, and custom_review.txt)
 - `{{PREVIOUS_REVIEW_CONTEXT}}` - previous evaluator context for external review iterations (in codex_review.txt, external_claude_review.txt, and custom_review.txt)

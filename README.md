@@ -304,18 +304,23 @@ pass_claude_md = true
 
 The `--worktree` flag runs plan execution in an isolated git worktree at `.ralphex/worktrees/<branch>`, enabling parallel execution of multiple plans on the same repo without branch conflicts.
 
-**Supported modes:** `--worktree` only applies to full mode and `--tasks-only`. It is silently ignored for `--review`, `--external-only`, and `--plan` — these modes operate from the current directory.
+**Supported modes:** `--worktree` applies to full mode, `--tasks-only`, and to the implementation run started from `--plan` after you accept the draft (plan creation itself always runs in the current directory). It is silently ignored for `--review` and `--external-only`.
 
-**Base branch:** by default the worktree must be created from the default branch (`main`, `master`, or whatever `default_branch` resolves to), because the same branch is used as the base for review diffs and for the finalize rebase. To work off another branch — a release line, for example — pass it via `--base-ref`:
+**Base branch:** by default a new branch is created from the default branch (`main`, `master`, or whatever `default_branch` resolves to), because the same branch is used as the base for review diffs and for the finalize rebase. To work off another branch — a release line, for example — pass it via `--base-ref`:
 
 ```bash
 git checkout release/13.0.0
 
 # branch the worktree off release/13.0.0; diffs and rebase use the same base
 ralphex --worktree --base-ref release/13.0.0 docs/plans/hotfix.md
+
+# same base resolution without a worktree
+ralphex --base-ref release/13.0.0 docs/plans/hotfix.md
 ```
 
-The checkout must already be on the branch `--base-ref` names: branch creation cuts from `HEAD`, so running the command above from `main` is rejected with an explicit error rather than silently basing the work on the wrong commit.
+This is not a worktree feature: `--base-ref` becomes the branch base in every mode that creates a branch — full mode, `--tasks-only`, and `--plan`. Review modes (`--review`, `--external-only`) never create one, so their `--base-ref` stays a pure diff base and is never validated against the checkout.
+
+Because branch creation cuts from `HEAD`, running the command above from the default branch is rejected with an explicit error rather than silently basing the work on the wrong commit — `git checkout` the branch first. From any other branch the `--base-ref` branch is accepted as the base as-is.
 
 `--base-ref` also accepts a commit hash, but a hash can only serve as a diff base, not as a branch base — combining it with `--worktree` is rejected with an explicit error. For a permanent per-project setting, use `default_branch` in `.ralphex/config` instead of passing the flag on every run.
 
@@ -657,14 +662,16 @@ ralphex --codex --pass-claude-md docs/plans/feature.md
 # tasks-only mode (run only task phase, skip all reviews)
 ralphex --tasks-only docs/plans/feature.md
 
-# run in isolated git worktree (full and tasks-only modes only)
+# run in isolated git worktree (full, tasks-only, and the run handed off from --plan)
 ralphex --worktree docs/plans/feature.md
 
 # override default branch for review diffs
 ralphex --review --base-ref develop
 ralphex --review --base-ref abc1234 --skip-finalize
 
-# run a plan off a non-default branch (base for the worktree, diffs, and rebase)
+# run a plan off a non-default branch (base for branch creation, diffs, and rebase)
+# requires the checkout to be on that branch already; works with and without --worktree
+git checkout release/13.0.0
 ralphex --worktree --base-ref release/13.0.0 docs/plans/hotfix.md
 
 # initialize local .ralphex/ config in current project (commented-out defaults)
@@ -740,7 +747,7 @@ ralphex --serve --port=3000 docs/plans/feature.md
 | `--wait` | Wait duration before retrying on rate limit (e.g., `1h`, `30m`) | disabled |
 | `--session-timeout` | Per-session timeout for task/review executor (e.g., `30m`, `1h`). Applies to Claude calls in default executor mode and every executor call under `--codex`; external codex/custom review in Claude mode is not affected | disabled |
 | `--idle-timeout` | Kill executor session when no output for specified duration (e.g., `5m`). Resets on each output line. Applies to the claude executor in default mode and to every executor call under `--codex`; external codex review in default-claude mode is NOT affected (preserves master behavior). Custom review is also not affected | disabled |
-| `--worktree` | Run in isolated git worktree (full and tasks-only modes only) | false |
+| `--worktree` | Run in isolated git worktree (full, tasks-only, and the run handed off from --plan) | false |
 | `--preserve-anthropic-api-key` | Pass `ANTHROPIC_API_KEY` through to claude (for users authenticating Claude Code via API key rather than OAuth/keychain) | false |
 | `--plan` | Create plan interactively (provide description) | - |
 | `-s, --serve` | Start web dashboard for real-time streaming | false |
@@ -996,7 +1003,7 @@ Provider-related CLI flags (`--claude-command`, `--claude-args`, `--external-rev
 | `task_retry_count` | Task retry attempts | `1` |
 | `finalize_enabled` | Enable finalize step after reviews | `false` |
 | `move_plan_on_completion` | Move completed plan file into `docs/plans/completed/` on success (disable for external plan-lifecycle workflows) | `true` |
-| `use_worktree` | Run each plan in an isolated git worktree (full and tasks-only modes only) | `false` |
+| `use_worktree` | Run each plan in an isolated git worktree (full, tasks-only, and the run handed off from --plan) | `false` |
 | `preserve_anthropic_api_key` | Pass `ANTHROPIC_API_KEY` through to the claude child process (for users authenticating Claude Code via API key rather than OAuth/keychain). Default `false` strips the key so a host-set value cannot silently override OAuth credentials | `false` |
 | `plans_dir` | Plans directory | `docs/plans` |
 | `default_branch` | Override auto-detected default branch for review diffs and for branch/worktree creation | auto-detect |

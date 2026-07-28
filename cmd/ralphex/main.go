@@ -329,9 +329,7 @@ func run(ctx context.Context, o opts) error {
 	// defaultBranch is for branch/worktree creation, baseRef for review diffs and the
 	// {{DEFAULT_BRANCH}} template variable. --base-ref feeds both when it names a branch;
 	// a commit hash stays diff-only and is rejected outright in worktree mode.
-	// plan mode counts as a branch mode: it hands off to runWithWorktree once the plan exists,
-	// so its --base-ref has to pass the same validation instead of falling back silently.
-	branchMode := modeRequiresBranch(mode) || mode == processor.ModePlan
+	branchMode := modeCreatesBranch(mode)
 	defaultBranch, baseRef, err := resolveBaseRefs(gitSvc, o.BaseRef, cfg.DefaultBranch,
 		branchMode, cfg.WorktreeEnabled && branchMode)
 	if err != nil {
@@ -1181,6 +1179,14 @@ func modeRequiresBranch(mode processor.Mode) bool {
 	return mode == processor.ModeFull || mode == processor.ModeTasksOnly
 }
 
+// modeCreatesBranch reports whether the run eventually creates a branch, which is what decides
+// if --base-ref may serve as its base. plan mode counts even though plan creation itself runs in
+// place: it hands off to the implementation run once the plan exists, so its --base-ref has to
+// pass the same validation up front instead of falling back silently and failing much later.
+func modeCreatesBranch(mode processor.Mode) bool {
+	return modeRequiresBranch(mode) || mode == processor.ModePlan
+}
+
 // makePauseHandler returns a context-aware pause handler for task loop breaks.
 // on break, prints a message and waits for Enter to resume or context cancellation to abort.
 // stdin read runs in a goroutine so the handler responds to Ctrl+C (SIGINT) promptly.
@@ -1595,13 +1601,16 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		return nil
 	}
 
-	// resolve plan file to absolute path before potential chdir
-	planFile, err = filepath.Abs(planFile)
-	if err != nil {
-		wrapped := fmt.Errorf("resolve plan file: %w", err)
+	// resolve plan file to absolute path before potential chdir. assigned through a separate
+	// variable: filepath.Abs returns "" on error, so writing planFile first would leave the
+	// notification below with nothing to name the run by
+	absPlanFile, absErr := filepath.Abs(planFile)
+	if absErr != nil {
+		wrapped := fmt.Errorf("resolve plan file: %w", absErr)
 		notifyCmuxCompletion(rep, planFile, branch, baseLog.Elapsed(), wrapped)
 		return wrapped
 	}
+	planFile = absPlanFile
 
 	// continue with plan implementation
 	req.Colors.Info().Printf("\ncontinuing with plan implementation...\n")
