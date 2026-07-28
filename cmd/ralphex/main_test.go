@@ -3094,6 +3094,50 @@ func TestRunWithWorktree_CreateWorktreeError(t *testing.T) {
 	assert.Contains(t, err.Error(), "create worktree")
 }
 
+func TestRunWithWorktree_NotifiesSetupFailure(t *testing.T) {
+	// worktree setup runs before executePlan creates its own reporter, so runWithWorktree must
+	// raise the cmux banner for its own failures: the plan-mode handoff already stopped its
+	// reporter and a direct run never had one, so nothing downstream would report this.
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+	planPath := filepath.Join(dir, "docs", "plans", "wt-notify.md")
+	require.NoError(t, os.WriteFile(planPath, []byte("# WT Notify\n"), 0o600))
+	runGit(t, dir, "add", "docs/plans/wt-notify.md")
+	runGit(t, dir, "commit", "-m", "add wt notify plan")
+
+	// fake cmux binary recording argv, so the best-effort notify call becomes observable.
+	// prepended to PATH rather than replacing it, git is still needed by the service below.
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + argvLog + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "cmux"), []byte(script), 0o755)) //nolint:gosec // test fixture must be executable
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	// pre-create the worktree dir to force an "already exists" failure during setup
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".ralphex", "worktrees", "wt-notify"), 0o750))
+
+	err = runWithWorktree(t.Context(), opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{WorktreeEnabled: true},
+		Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+	})
+	require.Error(t, err)
+
+	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+	require.NoError(t, readErr, "setup failure must reach the cmux CLI")
+	assert.Contains(t, string(recorded), "notify")
+	assert.Contains(t, string(recorded), "run failed")
+	assert.Contains(t, string(recorded), "wt-notify.md", "the notification body names the run")
+}
+
 // chdirTemp changes to a temporary directory and restores the original on cleanup.
 func chdirTemp(t *testing.T) {
 	t.Helper()

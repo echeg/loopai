@@ -89,6 +89,11 @@ type Reporter struct {
 	pollDone chan struct{}      // closed by the poll goroutine on exit, nil until Start
 	stopOnce sync.Once          // Stop runs at most once, it is called from a defer and from the interrupt handler
 
+	// statusMu is held across a pill update, so Stop taking it waits out an update in flight and
+	// the clear can never be overtaken by a set. stopped gates updates once Stop began.
+	statusMu sync.Mutex
+	stopped  bool
+
 	// last reported pair, touched by the poll goroutine only. -1 never matches a real count,
 	// so the first tick always reports.
 	lastDone, lastTotal int
@@ -265,6 +270,14 @@ func (r *Reporter) Stop() {
 		// bounded cleanup the join could otherwise eat the whole budget before this ever lands.
 		r.loadingOff()
 
+		// gate the pill before anything else: OnPhase runs on the execution goroutine, which on the
+		// force-exit path is still live and may change phase while the sidebar is being torn down.
+		// taking statusMu waits out an update in flight, so a set-status cannot land behind the
+		// clear below and leave the pill in the tab row — cmux drops it only when told to.
+		r.statusMu.Lock()
+		r.stopped = true
+		r.statusMu.Unlock()
+
 		r.mu.Lock()
 		cancel, done := r.cancel, r.pollDone
 		r.mu.Unlock()
@@ -316,7 +329,18 @@ func (c *notifyingCollector) AskDraftReview(ctx context.Context, question, planC
 }
 
 // OnPhase updates the pill on a phase change, the signature matches status.PhaseHolder.OnChange.
+// after Stop it does nothing: the observer is called from the execution goroutine, which outlives
+// the sidebar teardown on the force-exit path, and a late pill would then never be cleared.
+// Notify is deliberately not gated the same way — a banner is transient and needs no cleanup.
 func (r *Reporter) OnPhase(_, cur status.Phase) {
+	if r == nil {
+		return
+	}
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	if r.stopped {
+		return
+	}
 	s := styleForPhase(cur)
 	r.setStatus(s.text, s.icon, s.color)
 }

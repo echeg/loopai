@@ -398,6 +398,94 @@ func TestReporterOnPhaseAsObserver(t *testing.T) {
 	}, runner.recorded())
 }
 
+func TestReporterOnPhaseAfterStop(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+
+	r.Stop()
+	r.OnPhase(status.PhaseTask, status.PhaseReview)
+
+	assert.Equal(t, [][]string{
+		{"workspace", "loading", "off", "--id", "ralphex"},
+		{"clear-status", "ralphex"},
+		{"clear-progress"},
+	}, runner.recorded(), "a phase change after stop must not re-add the pill")
+}
+
+func TestReporterStopWaitsForPillUpdateInFlight(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+
+	// park OnPhase inside its own set-status call, holding statusMu, and let Stop catch up on it
+	inFlight, release := make(chan struct{}), make(chan struct{})
+	runner.mu.Lock()
+	runner.onCall = func(args []string) {
+		if args[0] != "set-status" {
+			return
+		}
+		close(inFlight)
+		<-release
+	}
+	runner.mu.Unlock()
+
+	go r.OnPhase(status.PhaseTask, status.PhaseReview)
+	<-inFlight
+
+	stopped := make(chan struct{})
+	go func() { r.Stop(); close(stopped) }()
+
+	// the spinner clear takes no lock, so it lands; the pill clear is behind the update in flight
+	runner.waitForCalls(t, 2)
+	assert.NotContains(t, runner.recorded(), []string{"clear-status", "ralphex"},
+		"the pill clear must wait for the update in flight instead of racing it")
+
+	close(release)
+	<-stopped
+
+	assert.Equal(t, [][]string{
+		{"set-status", "ralphex", "review", "--icon", "magnifyingglass", "--color", "#06b6d4", "--priority", "90"},
+		{"workspace", "loading", "off", "--id", "ralphex"},
+		{"clear-status", "ralphex"},
+		{"clear-progress"},
+	}, runner.recorded(), "the pill clear must land after the update it waited out")
+}
+
+func TestReporterOnPhaseConcurrentWithStop(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+
+	// models the force-exit path: the execution goroutine still changes phase while Stop tears down
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() { r.OnPhase(status.PhaseTask, status.PhaseReview) })
+	}
+	wg.Go(r.Stop)
+	wg.Wait()
+
+	cleared := false
+	for _, call := range runner.recorded() {
+		switch call[0] {
+		case "clear-status":
+			cleared = true
+		case "set-status":
+			assert.False(t, cleared, "the pill must never be set after the clear")
+		}
+	}
+}
+
+func TestReporterNotifyAfterStop(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+
+	r.Stop()
+	r.Notify("run failed", "boom")
+
+	// a banner is transient state, so it is deliberately not gated by Stop: the plan-mode handoff
+	// stops the reporter before delegating and still reports a failure through it
+	assert.Equal(t, []string{"notify", "--title", "ralphex", "--subtitle", "run failed", "--body", "boom"},
+		runner.recorded()[3], "notify must still go out after stop")
+}
+
 func TestReporterNilReceiver(t *testing.T) {
 	var r *Reporter
 

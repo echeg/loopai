@@ -660,6 +660,9 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		if dashErr != nil {
 			wrapped := fmt.Errorf("start dashboard: %w", dashErr)
 			plr.baseLog.SetFailed(wrapped)
+			// the spinner is already up, so the failure gets a banner too: in cmux the workspace may
+			// well be in the background by now, and a run that only ever stopped spinning reads as done
+			notifyCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), wrapped)
 			return wrapped
 		}
 	}
@@ -771,6 +774,22 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 // in the main repo), chdirs into the worktree, and runs executePlan. On return the worktree
 // is cleaned up and CWD is restored. req.WtCleanup is populated for interrupt handler use.
 func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err error) {
+	// derived from the plan file, so it is known before the worktree exists — both the progress
+	// logger below and the setup failure banner need it.
+	branch := req.GitSvc.EffectiveBranchName(req.PlanFile, req.BranchOverride)
+
+	// everything up to executePlan runs before the downstream reporter exists, so a setup failure
+	// would be invisible in cmux: the plan-mode handoff has already stopped its own reporter and a
+	// direct run never had one. notify on those errors only — once executePlan is entered it owns
+	// its own reporting, and notifying on its return value would double-banner every run failure.
+	// elapsed is empty on purpose: the failure notice does not use it and the log may not exist yet.
+	handedOff := false
+	defer func() {
+		if err != nil && !handedOff {
+			notifyCmuxCompletion(cmux.New(req.PlanFile), req.PlanFile, branch, "", err)
+		}
+	}()
+
 	wtPath, planNeedsCommit, err := req.GitSvc.CreateWorktreeForPlan(req.PlanFile, req.DefaultBranch, req.BranchOverride)
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
@@ -806,9 +825,9 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	}
 
 	// create progress logger BEFORE chdir so progress files land in main repo's .ralphex/progress/.
-	// use branch name derived from plan file since gitSvc still points at the main repo (on master).
+	// uses the branch name derived from the plan file above, since gitSvc still points at the main
+	// repo (on master).
 	holder := &status.PhaseHolder{}
-	branch := req.GitSvc.EffectiveBranchName(req.PlanFile, req.BranchOverride)
 	baseLog, err := progress.NewLogger(progress.Config{
 		PlanFile:       req.PlanFile,
 		Mode:           string(req.Mode),
@@ -870,6 +889,9 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 			return fmt.Errorf("commit plan in worktree: %w", commitErr)
 		}
 	}
+
+	// setup is done: executePlan creates its own reporter and owns every error from here on
+	handedOff = true
 
 	return executePlan(ctx, o, executePlanRequest{
 		PlanFile:       wtPlanFile,
@@ -1576,7 +1598,9 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	// resolve plan file to absolute path before potential chdir
 	planFile, err = filepath.Abs(planFile)
 	if err != nil {
-		return fmt.Errorf("resolve plan file: %w", err)
+		wrapped := fmt.Errorf("resolve plan file: %w", err)
+		notifyCmuxCompletion(rep, planFile, branch, baseLog.Elapsed(), wrapped)
+		return wrapped
 	}
 
 	// continue with plan implementation
@@ -1606,7 +1630,11 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 
 	// normal mode: create branch and run in place
 	if err := req.GitSvc.CreateBranchForPlan(planFile, req.DefaultBranch, req.BranchOverride); err != nil {
-		return fmt.Errorf("create branch for plan: %w", err)
+		wrapped := fmt.Errorf("create branch for plan: %w", err)
+		// the handoff dies before executePlan gets its own reporter, so this one raises the banner.
+		// Stop above only tore down the sidebar; notifications are not sidebar state and still go out
+		notifyCmuxCompletion(rep, planFile, branch, baseLog.Elapsed(), wrapped)
+		return wrapped
 	}
 
 	return executePlan(ctx, o, executePlanRequest{

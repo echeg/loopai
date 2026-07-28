@@ -297,7 +297,7 @@ func makeWebhookChannels(p Params) ([]channel, error) {
 	}
 
 	wh := ntfy.NewWebhook(ntfy.WebhookParams{})
-	var channels []channel
+	channels := make([]channel, 0, len(p.WebhookURLs))
 	for _, u := range p.WebhookURLs {
 		channels = append(channels, channel{notifier: wh, dest: u})
 	}
