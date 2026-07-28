@@ -57,6 +57,91 @@ func TestPhaseHolder_OnChange_NilCallbackSafe(t *testing.T) {
 	assert.Equal(t, PhaseTask, h.Get())
 }
 
+func TestPhaseHolder_OnChange_MultipleObservers(t *testing.T) {
+	h := &PhaseHolder{}
+
+	var order []string
+	h.OnChange(func(_, cur Phase) { order = append(order, "first:"+string(cur)) })
+	h.OnChange(func(_, cur Phase) { order = append(order, "second:"+string(cur)) })
+	h.OnChange(func(_, cur Phase) { order = append(order, "third:"+string(cur)) })
+
+	h.Set(PhaseTask)
+	h.Set(PhaseReview)
+
+	// every observer fires, in registration order, for every change
+	assert.Equal(t, []string{
+		"first:task", "second:task", "third:task",
+		"first:review", "second:review", "third:review",
+	}, order)
+}
+
+func TestPhaseHolder_OnChange_NilFuncIgnored(t *testing.T) {
+	h := &PhaseHolder{}
+
+	callCount := 0
+	h.OnChange(nil)
+	h.OnChange(func(_, _ Phase) { callCount++ })
+	h.OnChange(nil)
+
+	h.Set(PhaseTask) // must not panic on the nil entries
+
+	assert.Equal(t, 1, callCount)
+}
+
+func TestPhaseHolder_OnChange_ObserverCanRegisterAnother(t *testing.T) {
+	h := &PhaseHolder{}
+
+	// registering from inside a callback must not deadlock: observers run outside the lock
+	nested := 0
+	h.OnChange(func(_, cur Phase) {
+		if cur == PhaseTask {
+			h.OnChange(func(_, _ Phase) { nested++ })
+		}
+	})
+
+	h.Set(PhaseTask) // registers the nested observer, which must not fire for this change
+	assert.Equal(t, 0, nested)
+
+	h.Set(PhaseReview) // nested observer is live from here on
+	assert.Equal(t, 1, nested)
+}
+
+func TestPhaseHolder_ConcurrentOnChange(t *testing.T) {
+	h := &PhaseHolder{}
+
+	var cbCount atomic.Int64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+
+	// one observer registered before the racing goroutines start, so every Set below is
+	// guaranteed to have something to fire. without it the assertion is a race: all Set calls
+	// may complete before the first concurrent OnChange lands, leaving the counter at zero
+	h.OnChange(func(_, _ Phase) { cbCount.Add(1) })
+
+	// register observers while phases are being set - exercises the snapshot-under-lock path
+	for range 16 {
+		wg.Go(func() {
+			<-start
+			for range 50 {
+				h.OnChange(func(_, _ Phase) { cbCount.Add(1) })
+			}
+		})
+	}
+	for w := range 16 {
+		wg.Go(func() {
+			<-start
+			for i := range 50 {
+				h.Set(Phase(string(rune('a' + (w+i)%7))))
+			}
+		})
+	}
+
+	close(start)
+	wg.Wait()
+
+	assert.Positive(t, cbCount.Load())
+}
+
 func TestPhaseHolder_ConcurrentAccess(t *testing.T) {
 	h := &PhaseHolder{}
 	phases := []Phase{

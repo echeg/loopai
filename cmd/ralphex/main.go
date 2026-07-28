@@ -18,6 +18,7 @@ import (
 
 	"github.com/jessevdk/go-flags"
 
+	"github.com/umputun/ralphex/pkg/cmux"
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/git"
 	"github.com/umputun/ralphex/pkg/input"
@@ -46,7 +47,7 @@ type opts struct {
 	ExternalOnly            bool          `short:"e" long:"external-only" description:"skip tasks and first review; run external review, conditional post-review, and finalize"`
 	CodexOnly               bool          `short:"c" long:"codex-only" description:"alias for --external-only (deprecated)"`
 	TasksOnly               bool          `short:"t" long:"tasks-only" description:"run only task phase, skip all reviews"`
-	BaseRef                 string        `short:"b" long:"base-ref" description:"override default branch for review diffs (branch name or commit hash)"`
+	BaseRef                 string        `short:"b" long:"base-ref" description:"override default branch for review diffs; a branch name also becomes the base for branch/worktree creation (branch name or commit hash)"`
 	Wait                    time.Duration `long:"wait" description:"wait duration on rate limit before retry (e.g. 1h, 30m)"`
 	SessionTimeout          time.Duration `long:"session-timeout" description:"per-session timeout (e.g. 30m, 1h); external Codex/custom review under a Claude primary excluded"`
 	IdleTimeout             time.Duration `long:"idle-timeout" description:"kill claude/codex executor session after no output for this duration (e.g. 5m, 10m)"`
@@ -164,26 +165,29 @@ type executePlanRequest struct {
 	BaseRef        string // base reference for review diffs and templates (--base-ref override or DefaultBranch)
 	NotifySvc      *notify.Service
 	BranchOverride string              // branch name override (--branch flag); empty = derive from plan filename
-	WtCleanup      *worktreeCleanupFn  // worktree cleanup for interrupt handler; nil when not in worktree mode
+	WtCleanup      *cleanupHolder      // worktree cleanup for interrupt handler; nil when not in worktree mode
+	CmuxStop       *cleanupHolder      // cmux sidebar reset for interrupt handler; nil when not wired
 	ProgressLog    *progress.Logger    // pre-created logger (worktree mode); nil in normal mode
 	PhaseHolder    *status.PhaseHolder // pre-created holder (worktree mode); nil in normal mode
 	ExternalReview externalReviewSelection
 }
 
-// worktreeCleanupFn holds a worktree cleanup function with mutex for safe cross-goroutine access.
+// cleanupHolder holds a cleanup function with mutex for safe cross-goroutine access.
 // the interrupt watcher goroutine calls cleanup on force-exit, while the main goroutine populates it.
-type worktreeCleanupFn struct {
+// used for both worktree removal and the cmux sidebar reset: on the force-exit path defers never
+// run, so anything that must not outlive the process has to hang off the interrupt handler.
+type cleanupHolder struct {
 	mu sync.Mutex
 	fn func()
 }
 
-func (c *worktreeCleanupFn) set(fn func()) {
+func (c *cleanupHolder) set(fn func()) {
 	c.mu.Lock()
 	c.fn = fn
 	c.mu.Unlock()
 }
 
-func (c *worktreeCleanupFn) call() {
+func (c *cleanupHolder) call() {
 	c.mu.Lock()
 	fn := c.fn
 	c.mu.Unlock()
@@ -240,14 +244,16 @@ func run(ctx context.Context, o opts) error {
 
 	// worktree cleanup function, populated after worktree creation.
 	// synchronized for safe access from the interrupt watcher goroutine.
-	wtCleanup := &worktreeCleanupFn{}
+	wtCleanup := &cleanupHolder{}
+
+	// cmux sidebar reset, populated once the reporter is created. cmux has no TTL on the
+	// workspace loading spinner, so a run that exits without clearing it leaves it in the
+	// sidebar until cmux itself restarts.
+	cmuxStop := &cleanupHolder{}
 
 	// print immediate feedback when context is canceled (Ctrl+C).
 	// returned cleanup ensures goroutine exits when run() returns, avoiding leaks in tests.
-	defer startInterruptWatcher(ctx, func() {
-		restoreTerminal()
-		wtCleanup.call()
-	})()
+	defer startInterruptWatcher(ctx, forceExitCleanup(restoreTerminal, cmuxStop, wtCleanup))()
 
 	// validate conflicting flags
 	if err := validateFlags(o); err != nil {
@@ -320,11 +326,15 @@ func run(ctx context.Context, o opts) error {
 		return ensureErr
 	}
 
-	autoDetected := gitSvc.GetDefaultBranch()
-	// defaultBranch is for branch/worktree creation (no --base-ref, it can be a commit hash)
-	defaultBranch := resolveDefaultBranch("", cfg.DefaultBranch, autoDetected)
-	// baseRef is for review diffs and {{DEFAULT_BRANCH}} template variable (--base-ref override)
-	baseRef := resolveDefaultBranch(o.BaseRef, cfg.DefaultBranch, autoDetected)
+	// defaultBranch is for branch/worktree creation, baseRef for review diffs and the
+	// {{DEFAULT_BRANCH}} template variable. --base-ref feeds both when it names a branch;
+	// a commit hash stays diff-only and is rejected outright in worktree mode.
+	branchMode := modeCreatesBranch(mode)
+	defaultBranch, baseRef, err := resolveBaseRefs(gitSvc, o.BaseRef, cfg.DefaultBranch,
+		branchMode, cfg.WorktreeEnabled && branchMode)
+	if err != nil {
+		return err
+	}
 
 	// create plan selector for use by plan selection and plan mode
 	selector := plan.NewSelector(cfg.PlansDir, colors)
@@ -340,6 +350,7 @@ func run(ctx context.Context, o opts) error {
 			BaseRef:        baseRef,
 			NotifySvc:      notifySvc,
 			WtCleanup:      wtCleanup,
+			CmuxStop:       cmuxStop,
 			BranchOverride: o.Branch,
 			ExternalReview: externalReview,
 		}, selector)
@@ -354,6 +365,7 @@ func run(ctx context.Context, o opts) error {
 		BaseRef:        baseRef,
 		NotifySvc:      notifySvc,
 		WtCleanup:      wtCleanup,
+		CmuxStop:       cmuxStop,
 		BranchOverride: o.Branch,
 		ExternalReview: externalReview,
 	}, selector)
@@ -499,6 +511,40 @@ func sendNotification(req executePlanRequest, branch, elapsed string, stats git.
 	req.NotifySvc.Send(context.Background(), buildNotifyResult(req, branch, elapsed, stats, runErr))
 }
 
+// notifyCmuxCompletion raises the end-of-run cmux notification. no-op outside cmux and for a
+// user abort, where the decision is made by cmuxCompletionNotice.
+func notifyCmuxCompletion(rep *cmux.Reporter, planFile, branch, elapsed string, runErr error) {
+	subtitle, body, ok := cmuxCompletionNotice(planFile, branch, elapsed, runErr)
+	if !ok {
+		return
+	}
+	rep.Notify(subtitle, body)
+}
+
+// cmuxCompletionNotice builds the subtitle and body of the end-of-run cmux notification.
+// ok is false for a user abort: the person who aborted is already at the terminal, so a
+// banner would only be noise. both abort routes count — Ctrl+\ declining to resume yields
+// ErrUserAborted, while Ctrl+C cancels the context and surfaces as a wrapped context.Canceled.
+func cmuxCompletionNotice(planFile, branch, elapsed string, runErr error) (subtitle, body string, ok bool) {
+	if errors.Is(runErr, processor.ErrUserAborted) || errors.Is(runErr, context.Canceled) {
+		return "", "", false
+	}
+	target := cmuxNotifyTarget(planFile, branch)
+	if runErr != nil {
+		return "run failed", fmt.Sprintf("%s: %v", target, runErr), true
+	}
+	return "run completed", fmt.Sprintf("%s in %s", target, elapsed), true
+}
+
+// cmuxNotifyTarget names the run in a notification body: the plan basename when there is a
+// plan, the branch for review modes that run without one.
+func cmuxNotifyTarget(planFile, branch string) string {
+	if planFile != "" {
+		return filepath.Base(planFile)
+	}
+	return branch
+}
+
 // buildNotifyResult constructs a notify.Result from execution parameters.
 func buildNotifyResult(req executePlanRequest, branch, elapsed string, stats git.DiffStats, runErr error) notify.Result {
 	result := notify.Result{
@@ -583,6 +629,15 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 	defer plr.closeLog()
 
+	// cmux sidebar reporter, nil and fully no-op outside cmux. Stop is also registered with the
+	// interrupt handler because defers are skipped on the force-exit path.
+	rep := cmux.New(req.PlanFile)
+	rep.Start(ctx)
+	defer rep.Stop()
+	if req.CmuxStop != nil {
+		req.CmuxStop.set(rep.Stop)
+	}
+
 	// wrap logger with broadcast logger if --serve is enabled
 	var runnerLog processor.Logger = plr.baseLog
 	if o.Serve {
@@ -603,9 +658,15 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		if dashErr != nil {
 			wrapped := fmt.Errorf("start dashboard: %w", dashErr)
 			plr.baseLog.SetFailed(wrapped)
+			// the spinner is already up, so the failure gets a banner too: in cmux the workspace may
+			// well be in the background by now, and a run that only ever stopped spinning reads as done
+			notifyCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), wrapped)
 			return wrapped
 		}
 	}
+
+	// subscribe the sidebar to phase changes after the dashboard so both observers coexist
+	plr.holder.OnChange(rep.OnPhase)
 
 	// resolve effective codex model/effort for the banner so it reflects what
 	// the codex task and review executors actually receive (--task-model /
@@ -661,6 +722,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		wrapped := fmt.Errorf("runner: %w", runErr)
 		plr.baseLog.SetFailed(wrapped)
 		sendNotification(req, branch, plr.baseLog.Elapsed(), git.DiffStats{}, runErr)
+		notifyCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), runErr)
 		return wrapped
 	}
 
@@ -674,6 +736,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 
 	sendNotification(req, branch, elapsed, stats, nil)
+	notifyCmuxCompletion(rep, req.PlanFile, branch, elapsed, nil)
 
 	// move completed plan to completed/ directory.
 	// use MainGitSvc+MainPlanFile when available (worktree mode) because the plan file is in the main repo.
@@ -696,6 +759,10 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 
 	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved)
+
+	// clear the sidebar before the dashboard idles: with --serve the run is done but the process
+	// stays alive until Ctrl+C, and a spinner left spinning reports it as still working
+	rep.Stop()
 	keepDashboardAlive(ctx, o, req, plr.closeLog)
 
 	return nil
@@ -705,6 +772,22 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 // in the main repo), chdirs into the worktree, and runs executePlan. On return the worktree
 // is cleaned up and CWD is restored. req.WtCleanup is populated for interrupt handler use.
 func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err error) {
+	// derived from the plan file, so it is known before the worktree exists — both the progress
+	// logger below and the setup failure banner need it.
+	branch := req.GitSvc.EffectiveBranchName(req.PlanFile, req.BranchOverride)
+
+	// everything up to executePlan runs before the downstream reporter exists, so a setup failure
+	// would be invisible in cmux: the plan-mode handoff has already stopped its own reporter and a
+	// direct run never had one. notify on those errors only — once executePlan is entered it owns
+	// its own reporting, and notifying on its return value would double-banner every run failure.
+	// elapsed is empty on purpose: the failure notice does not use it and the log may not exist yet.
+	handedOff := false
+	defer func() {
+		if err != nil && !handedOff {
+			notifyCmuxCompletion(cmux.New(req.PlanFile), req.PlanFile, branch, "", err)
+		}
+	}()
+
 	wtPath, planNeedsCommit, err := req.GitSvc.CreateWorktreeForPlan(req.PlanFile, req.DefaultBranch, req.BranchOverride)
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
@@ -740,9 +823,9 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	}
 
 	// create progress logger BEFORE chdir so progress files land in main repo's .ralphex/progress/.
-	// use branch name derived from plan file since gitSvc still points at the main repo (on master).
+	// uses the branch name derived from the plan file above, since gitSvc still points at the main
+	// repo (on master).
 	holder := &status.PhaseHolder{}
-	branch := req.GitSvc.EffectiveBranchName(req.PlanFile, req.BranchOverride)
 	baseLog, err := progress.NewLogger(progress.Config{
 		PlanFile:       req.PlanFile,
 		Mode:           string(req.Mode),
@@ -805,6 +888,9 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		}
 	}
 
+	// setup is done: executePlan creates its own reporter and owns every error from here on
+	handedOff = true
+
 	return executePlan(ctx, o, executePlanRequest{
 		PlanFile:       wtPlanFile,
 		MainPlanFile:   req.PlanFile, // original path in main repo for MovePlanToCompleted
@@ -816,6 +902,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		DefaultBranch:  req.DefaultBranch,
 		BaseRef:        req.BaseRef,
 		NotifySvc:      req.NotifySvc,
+		CmuxStop:       req.CmuxStop,
 		ProgressLog:    baseLog,
 		PhaseHolder:    holder,
 		ExternalReview: req.ExternalReview,
@@ -1090,6 +1177,14 @@ func determineMode(o opts) processor.Mode {
 // ModeFull and ModeTasksOnly both execute tasks that make commits, requiring a branch.
 func modeRequiresBranch(mode processor.Mode) bool {
 	return mode == processor.ModeFull || mode == processor.ModeTasksOnly
+}
+
+// modeCreatesBranch reports whether the run eventually creates a branch, which is what decides
+// if --base-ref may serve as its base. plan mode counts even though plan creation itself runs in
+// place: it hands off to the implementation run once the plan exists, so its --base-ref has to
+// pass the same validation up front instead of falling back silently and failing much later.
+func modeCreatesBranch(mode processor.Mode) bool {
+	return modeRequiresBranch(mode) || mode == processor.ModePlan
 }
 
 // makePauseHandler returns a context-aware pause handler for task loop breaks.
@@ -1409,6 +1504,16 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		}
 	}()
 
+	// cmux sidebar reporter, nil and fully no-op outside cmux. no plan file exists yet, so the
+	// progress bar stays empty and only the spinner and the phase pill are reported.
+	rep := cmux.New("")
+	rep.Start(ctx)
+	defer rep.Stop()
+	if req.CmuxStop != nil {
+		req.CmuxStop.set(rep.Stop)
+	}
+	holder.OnChange(rep.OnPhase)
+
 	maxIter := resolveMaxIterations(o.MaxIterations, req.Config)
 
 	// resolve effective codex model/effort so the plan-mode banner reflects what
@@ -1458,12 +1563,15 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		TaskModel:        resolvePlanSpec(o, req.Config),
 		AppConfig:        req.Config,
 	}, baseLog, holder)
-	r.SetInputCollector(collector)
+	// the collector is called exactly when the run stalls waiting for a human, so wrapping it
+	// notifies cmux on questions and on the ready draft without touching the phase engines
+	r.SetInputCollector(rep.WrapInput(collector))
 
 	// run the plan creation loop
 	if runErr := r.Run(ctx); runErr != nil {
 		wrapped := fmt.Errorf("plan creation: %w", runErr)
 		planCreationErr = wrapped
+		notifyCmuxCompletion(rep, "", branch, baseLog.Elapsed(), runErr)
 		return wrapped
 	}
 
@@ -1478,24 +1586,38 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		req.Colors.Info().Printf("\nplan creation completed in %s\n", elapsed)
 	}
 
-	// if no plan file found, can't continue to implementation
+	// if no plan file found, can't continue to implementation. no cmux banner either: nothing
+	// was created, and the run ends here rather than waiting for the user
 	if planFile == "" {
 		return nil
 	}
+
+	// not a completion notice: the implementation run may still follow, and the continue prompt
+	// below waits for the user either way, so the banner says the plan is ready rather than done
+	rep.Notify("plan created", fmt.Sprintf("%s in %s", filepath.Base(planFile), elapsed))
 
 	// ask user if they want to continue with plan implementation
 	if !input.AskYesNo(ctx, "Continue with plan implementation?", os.Stdin, os.Stdout) {
 		return nil
 	}
 
-	// resolve plan file to absolute path before potential chdir
-	planFile, err = filepath.Abs(planFile)
-	if err != nil {
-		return fmt.Errorf("resolve plan file: %w", err)
+	// resolve plan file to absolute path before potential chdir. assigned through a separate
+	// variable: filepath.Abs returns "" on error, so writing planFile first would leave the
+	// notification below with nothing to name the run by
+	absPlanFile, absErr := filepath.Abs(planFile)
+	if absErr != nil {
+		wrapped := fmt.Errorf("resolve plan file: %w", absErr)
+		notifyCmuxCompletion(rep, planFile, branch, baseLog.Elapsed(), wrapped)
+		return wrapped
 	}
+	planFile = absPlanFile
 
 	// continue with plan implementation
 	req.Colors.Info().Printf("\ncontinuing with plan implementation...\n")
+
+	// hand the sidebar over to the execution reporter: stop this one before the next one takes
+	// the same keys, otherwise the deferred Stop would clear the execution run's own state
+	rep.Stop()
 
 	// worktree mode: create worktree and run from there
 	if req.Config.WorktreeEnabled {
@@ -1509,6 +1631,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 			BaseRef:        req.BaseRef,
 			NotifySvc:      req.NotifySvc,
 			WtCleanup:      req.WtCleanup,
+			CmuxStop:       req.CmuxStop,
 			BranchOverride: req.BranchOverride,
 			ExternalReview: req.ExternalReview,
 		})
@@ -1516,7 +1639,11 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 
 	// normal mode: create branch and run in place
 	if err := req.GitSvc.CreateBranchForPlan(planFile, req.DefaultBranch, req.BranchOverride); err != nil {
-		return fmt.Errorf("create branch for plan: %w", err)
+		wrapped := fmt.Errorf("create branch for plan: %w", err)
+		// the handoff dies before executePlan gets its own reporter, so this one raises the banner.
+		// Stop above only tore down the sidebar; notifications are not sidebar state and still go out
+		notifyCmuxCompletion(rep, planFile, branch, baseLog.Elapsed(), wrapped)
+		return wrapped
 	}
 
 	return executePlan(ctx, o, executePlanRequest{
@@ -1528,6 +1655,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		DefaultBranch:  req.DefaultBranch,
 		BaseRef:        req.BaseRef,
 		NotifySvc:      req.NotifySvc,
+		CmuxStop:       req.CmuxStop,
 		ExternalReview: req.ExternalReview,
 	})
 }
@@ -1700,6 +1828,22 @@ func startInterruptWatcher(ctx context.Context, cleanup func()) func() {
 	return func() { close(done) }
 }
 
+// forceExitCleanup builds the callback the interrupt watcher runs right before os.Exit on the
+// force-exit path. the holders run concurrently but the callback waits for all of them: a stuck
+// git worktree removal must not be what leaves the cmux spinner hanging forever, and vice versa,
+// while runCleanupBounded's timeout bounds the total. spawning a holder without waiting would
+// simply lose the race against os.Exit, which never runs defers.
+func forceExitCleanup(restoreTerminal func(), holders ...*cleanupHolder) func() {
+	return func() {
+		restoreTerminal()
+		var wg sync.WaitGroup
+		for _, h := range holders {
+			wg.Go(h.call)
+		}
+		wg.Wait()
+	}
+}
+
 // runCleanupBounded runs cleanup in a separate goroutine and waits for it to
 // finish, but no longer than timeout. this bounds the force-exit path: cleanup
 // shares a sync.Once with the graceful shutdown's deferred worktree cleanup, so
@@ -1824,6 +1968,78 @@ func resolveDefaultBranch(cliRef, configBranch, autoDetected string) string {
 		return configBranch
 	}
 	return autoDetected
+}
+
+// remoteBranchPrefix is the remote-tracking form branch auto-detection may produce
+// (e.g. "origin/main"); it names the same branch as the local ref without it.
+const remoteBranchPrefix = "origin/"
+
+// resolveBaseRefs resolves the two bases a run needs: branchBase for branch/worktree creation
+// and diffBase for review diffs and the {{DEFAULT_BRANCH}} template variable.
+// they differ only when --base-ref names a revision that is not a branch.
+// branchMode says whether the run creates a branch at all: review modes never do, so their
+// --base-ref is a pure diff base and must not be validated against the checkout.
+func resolveBaseRefs(gitSvc *git.Service, cliBaseRef, configBranch string, branchMode, worktreeMode bool) (branchBase, diffBase string, err error) {
+	autoDetected := gitSvc.GetDefaultBranch()
+	diffBase = resolveDefaultBranch(cliBaseRef, configBranch, autoDetected)
+	defaultBranch := resolveDefaultBranch("", configBranch, autoDetected)
+
+	if !branchMode || cliBaseRef == "" {
+		return defaultBranch, diffBase, nil
+	}
+
+	branchBase, err = resolveBranchBase(cliBaseRef, localBranchRef(gitSvc, cliBaseRef), defaultBranch,
+		getCurrentBranch(gitSvc), worktreeMode)
+	if err != nil {
+		return "", "", err
+	}
+	return branchBase, diffBase, nil
+}
+
+// localBranchRef returns the local branch named by ref, or "" when ref names something else.
+// a remote-tracking form like "origin/main" resolves to the local branch it tracks, because
+// that is exactly what branch auto-detection produces and what the rest of the code compares
+// against after stripping the prefix.
+func localBranchRef(gitSvc *git.Service, ref string) string {
+	if gitSvc.BranchExists(ref) {
+		return ref
+	}
+	if local := strings.TrimPrefix(ref, remoteBranchPrefix); local != ref && gitSvc.BranchExists(local) {
+		return local
+	}
+	return ""
+}
+
+// resolveBranchBase decides which ref is the base for branch and worktree creation.
+// cliRefBranch is the local branch --base-ref names, empty when it names anything else: a commit
+// hash is a valid diff base but cannot be branched from, so the configured/auto-detected default
+// branch stays in place — except in worktree mode, where a silent fallback would surface later as
+// a confusing "requires <default> branch" message.
+// a branch base is honored only from that branch itself, since branch creation cuts from HEAD:
+// from another branch CreateBranchForPlan reads the mismatch as "already on a feature branch" and
+// skips silently, which would leave the whole run committing onto the default branch.
+func resolveBranchBase(cliRef, cliRefBranch, defaultBranch, currentBranch string, worktreeMode bool) (string, error) {
+	if cliRef == "" {
+		return defaultBranch, nil
+	}
+	if cliRefBranch == "" {
+		if worktreeMode {
+			return "", fmt.Errorf("--base-ref %q is not a branch; worktree creation needs a branch to base the "+
+				"new worktree on, pass a branch name or drop --worktree", cliRef)
+		}
+		return defaultBranch, nil
+	}
+	if !sameBranch(currentBranch, cliRefBranch) && sameBranch(currentBranch, defaultBranch) {
+		return "", fmt.Errorf("--base-ref %q names a branch but the checkout is on %q; run \"git checkout %s\" "+
+			"to work off it, or drop --base-ref to work off %s", cliRef, currentBranch, cliRefBranch, currentBranch)
+	}
+	return cliRefBranch, nil
+}
+
+// sameBranch reports whether branch is the one ref names, tolerating the remote-tracking form
+// the same way git.Service compares against the default branch.
+func sameBranch(branch, ref string) bool {
+	return branch == strings.TrimPrefix(ref, remoteBranchPrefix)
 }
 
 // ensureRepoHasCommits checks that the repository has at least one commit.

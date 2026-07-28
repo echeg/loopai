@@ -398,12 +398,11 @@ type fileInfo struct {
 // findDifferentFiles returns files in destDir that differ from embedded defaults.
 // files with only comments/empty lines are considered matching (unmodified from commented templates).
 func (d *defaultsInstaller) findDifferentFiles(destDir, embedPath string) ([]fileInfo, error) {
-	var different []fileInfo
-
 	embeddedEntries, err := d.embedFS.ReadDir(embedPath)
 	if err != nil {
 		return nil, fmt.Errorf("read embedded dir: %w", err)
 	}
+	different := make([]fileInfo, 0, len(embeddedEntries))
 
 	for _, entry := range embeddedEntries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {

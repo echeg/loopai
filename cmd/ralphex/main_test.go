@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +29,19 @@ import (
 	"github.com/umputun/ralphex/pkg/progress"
 	"github.com/umputun/ralphex/pkg/status"
 )
+
+// TestMain isolates the suite from a live cmux terminal. cmux.New reads CMUX_WORKSPACE_ID from the
+// ambient environment, so running these tests inside cmux would drive the developer's real sidebar
+// and fire real notification banners — the same class of leak as touching the user's config dir.
+// tests that need a reporter set the variable themselves via t.Setenv, which restores this unset
+// state afterwards, so the deliberate cases keep working.
+func TestMain(m *testing.M) {
+	if err := os.Unsetenv("CMUX_WORKSPACE_ID"); err != nil {
+		fmt.Fprintf(os.Stderr, "unset CMUX_WORKSPACE_ID: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
 
 // captureStdout runs fn while redirecting os.Stdout (and the fatih/color Output
 // target, which many progress prints use) to a pipe and returns the captured output.
@@ -282,17 +298,14 @@ func TestPlanModeIntegration(t *testing.T) {
 		assert.NotContains(t, err.Error(), "no .git directory")
 	})
 
-	t.Run("plan_mode_progress_file_naming", func(t *testing.T) {
+	t.Run("plan_mode_clears_setup_before_execution", func(t *testing.T) {
 		// skip if configured claude command is not installed
 		skipIfClaudeNotAvailable(t)
 
-		// test that progress filename is generated correctly for plan mode
-		// the actual file creation is tested by the integration test with real runner
-
-		// verify progress filename function handles plan mode correctly
-		// note: progressFilename is not exported, but progress.Config with PlanDescription
-		// is used in runPlanMode - this test verifies the wiring is correct by checking
-		// that the run() routes to runPlanMode without validation errors
+		// run() checks the context after flag validation, config load, external review
+		// resolution and dependency checks, so a pre-canceled context stops exactly there.
+		// reaching that point is what proves plan mode got through setup — the plan creation
+		// loop itself is covered by the runner tests, it is never entered with a dead context
 		dir := setupTestRepo(t)
 		origDir, err := os.Getwd()
 		require.NoError(t, err)
@@ -310,9 +323,12 @@ func TestPlanModeIntegration(t *testing.T) {
 		o := opts{PlanDescription: "test plan description", MaxIterations: 1, ConfigDir: t.TempDir()}
 		err = run(ctx, o)
 
-		// error should be from plan creation (context canceled), not from config or validation
+		// error must be the cancellation, not a config or validation failure
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "plan creation")
+		assert.Contains(t, err.Error(), "context canceled")
+		assert.NotContains(t, err.Error(), "--plan flag conflicts")
+		assert.NotContains(t, err.Error(), "load config")
+		assert.NotContains(t, err.Error(), "no .git directory")
 	})
 }
 
@@ -629,6 +645,225 @@ func TestResolveDefaultBranch(t *testing.T) {
 			assert.Equal(t, tc.expected, result)
 		})
 	}
+}
+
+func TestResolveBranchBase(t *testing.T) {
+	tests := []struct {
+		name          string
+		cliRef        string
+		cliRefBranch  string
+		defaultBranch string
+		currentBranch string
+		worktreeMode  bool
+		expected      string
+		expectedErr   string
+	}{
+		{
+			name: "no_cli_ref_keeps_default", cliRef: "", defaultBranch: "main", currentBranch: "main",
+			expected: "main",
+		},
+		{
+			name: "no_cli_ref_keeps_default_in_worktree_mode", cliRef: "", defaultBranch: "main", currentBranch: "main",
+			worktreeMode: true, expected: "main",
+		},
+		{
+			name: "branch_ref_becomes_base_when_checked_out", cliRef: "release/13.0.0", cliRefBranch: "release/13.0.0",
+			defaultBranch: "main", currentBranch: "release/13.0.0", expected: "release/13.0.0",
+		},
+		{
+			name: "branch_ref_becomes_base_in_worktree_mode", cliRef: "release/13.0.0", cliRefBranch: "release/13.0.0",
+			defaultBranch: "main", currentBranch: "release/13.0.0", worktreeMode: true, expected: "release/13.0.0",
+		},
+		{
+			name: "remote_tracking_ref_resolves_to_local_branch", cliRef: "origin/main", cliRefBranch: "main",
+			defaultBranch: "main", currentBranch: "main", expected: "main",
+		},
+		{
+			name: "branch_ref_from_another_feature_branch_is_kept", cliRef: "release/13.0.0", cliRefBranch: "release/13.0.0",
+			defaultBranch: "main", currentBranch: "some-feature", expected: "release/13.0.0",
+		},
+		{
+			name: "branch_ref_from_the_default_branch_fails", cliRef: "release/13.0.0", cliRefBranch: "release/13.0.0",
+			defaultBranch: "main", currentBranch: "main",
+			expectedErr: `--base-ref "release/13.0.0" names a branch but the checkout is on "main"`,
+		},
+		{
+			name: "branch_ref_from_the_remote_form_of_the_default_branch_fails", cliRef: "release/13.0.0",
+			cliRefBranch: "release/13.0.0", defaultBranch: "origin/main", currentBranch: "main",
+			expectedErr: `run "git checkout release/13.0.0"`,
+		},
+		{
+			name: "commit_hash_keeps_default_outside_worktree_mode", cliRef: "abc1234", defaultBranch: "main",
+			currentBranch: "main", expected: "main",
+		},
+		{
+			name: "commit_hash_fails_in_worktree_mode", cliRef: "abc1234", defaultBranch: "main", currentBranch: "main",
+			worktreeMode: true, expectedErr: `--base-ref "abc1234" is not a branch`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := resolveBranchBase(tc.cliRef, tc.cliRefBranch, tc.defaultBranch, tc.currentBranch, tc.worktreeMode)
+			if tc.expectedErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.expectedErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func TestResolveBaseRefs(t *testing.T) {
+	t.Run("branch_base_ref_becomes_worktree_base", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "release/13.0.0")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "release/13.0.0", "", true, true)
+		require.NoError(t, err)
+		assert.Equal(t, "release/13.0.0", branchBase, "worktree must branch off the requested release branch")
+		assert.Equal(t, "release/13.0.0", diffBase, "review diffs must use the same base")
+	})
+
+	t.Run("branch_base_ref_rejected_from_the_default_branch", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "branch", "release/13.0.0")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		// on master with a release base: honoring it would make CreateBranchForPlan read the
+		// mismatch as "already on a feature branch" and leave the run committing onto master
+		_, _, err = resolveBaseRefs(gitSvc, "release/13.0.0", "", true, false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `run "git checkout release/13.0.0"`)
+	})
+
+	t.Run("branch_base_ref_ignored_by_modes_that_create_no_branch", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "branch", "release/13.0.0")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		// review modes never create a branch, so --base-ref is a pure diff base there
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "release/13.0.0", "", false, false)
+		require.NoError(t, err)
+		assert.Equal(t, "master", branchBase)
+		assert.Equal(t, "release/13.0.0", diffBase)
+	})
+
+	t.Run("remote_tracking_base_ref_accepted_in_worktree_mode", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "remote", "add", "origin", dir)
+		runGit(t, dir, "update-ref", "refs/remotes/origin/master", "HEAD")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "origin/master", "", true, true)
+		require.NoError(t, err)
+		assert.Equal(t, "master", branchBase, "a remote-tracking ref names the local branch it tracks")
+		assert.Equal(t, "origin/master", diffBase, "diffs keep the requested revision as written")
+	})
+
+	t.Run("commit_hash_base_ref_rejected_in_worktree_mode", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		hash, err := gitSvc.HeadHash()
+		require.NoError(t, err)
+
+		_, _, err = resolveBaseRefs(gitSvc, hash, "", true, true)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "is not a branch")
+	})
+
+	t.Run("commit_hash_base_ref_kept_for_diffs_without_worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		hash, err := gitSvc.HeadHash()
+		require.NoError(t, err)
+
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, hash, "", true, false)
+		require.NoError(t, err)
+		assert.Equal(t, "master", branchBase, "a hash cannot be a branch base, auto-detected default stays")
+		assert.Equal(t, hash, diffBase, "diffs still honor the requested revision")
+	})
+
+	t.Run("config_branch_used_when_no_cli_ref", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "", "develop", true, true)
+		require.NoError(t, err)
+		assert.Equal(t, "develop", branchBase)
+		assert.Equal(t, "develop", diffBase)
+	})
+}
+
+func TestLocalBranchRef(t *testing.T) {
+	dir := setupTestRepo(t)
+	runGit(t, dir, "branch", "release/13.0.0")
+	runGit(t, dir, "remote", "add", "origin", dir)
+	runGit(t, dir, "update-ref", "refs/remotes/origin/master", "HEAD")
+
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	hash, err := gitSvc.HeadHash()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name     string
+		ref      string
+		expected string
+	}{
+		{name: "local branch", ref: "release/13.0.0", expected: "release/13.0.0"},
+		{name: "remote tracking form", ref: "origin/master", expected: "master"},
+		{name: "remote tracking form without a local branch", ref: "origin/nope", expected: ""},
+		{name: "commit hash", ref: hash, expected: ""},
+		{name: "empty ref", ref: "", expected: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, localBranchRef(gitSvc, tc.ref))
+		})
+	}
+}
+
+func TestForceExitCleanup(t *testing.T) {
+	t.Run("waits for every holder", func(t *testing.T) {
+		var restored, first, second atomic.Bool
+		fast, slow := &cleanupHolder{}, &cleanupHolder{}
+		fast.set(func() { first.Store(true) })
+		// the sidebar reset shells out to cmux, so it is slower than an unset worktree holder;
+		// a fire-and-forget goroutine here would lose the race against os.Exit
+		slow.set(func() {
+			time.Sleep(50 * time.Millisecond)
+			second.Store(true)
+		})
+
+		forceExitCleanup(func() { restored.Store(true) }, fast, slow)()
+
+		assert.True(t, restored.Load(), "the terminal must be restored")
+		assert.True(t, first.Load())
+		assert.True(t, second.Load(), "cleanup must not return before a slow holder finished")
+	})
+
+	t.Run("unset holders are skipped", func(t *testing.T) {
+		assert.NotPanics(t, forceExitCleanup(func() {}, &cleanupHolder{}, &cleanupHolder{}))
+	})
 }
 
 func TestResolveMaxIterations(t *testing.T) {
@@ -2136,6 +2371,31 @@ func TestModeRequiresBranch(t *testing.T) {
 	}
 }
 
+func TestModeCreatesBranch(t *testing.T) {
+	// modeCreatesBranch gates whether --base-ref is validated as a branch base. it differs from
+	// modeRequiresBranch on plan mode only, which is the whole point: plan creation runs in place
+	// but hands off to an implementation run that does create a branch.
+	tests := []struct {
+		mode     processor.Mode
+		expected bool
+	}{
+		{processor.ModeFull, true},
+		{processor.ModeTasksOnly, true},
+		{processor.ModePlan, true},
+		{processor.ModeReview, false},
+		{processor.ModeCodexOnly, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			assert.Equal(t, tc.expected, modeCreatesBranch(tc.mode), "mode %s should return %v", tc.mode, tc.expected)
+		})
+	}
+
+	assert.True(t, modeCreatesBranch(processor.ModePlan) && !modeRequiresBranch(processor.ModePlan),
+		"plan mode is the case that separates the two predicates")
+}
+
 func TestShouldMovePlan(t *testing.T) {
 	// tests the shouldMovePlan predicate used to guard the plan move call.
 	// all three conditions must be true: non-empty plan file, mode requires branch, and config opts in.
@@ -2653,7 +2913,7 @@ func TestRunWithWorktree(t *testing.T) {
 
 		colors := testColors()
 		cfg := &config.Config{WorktreeEnabled: true}
-		wtCleanup := &worktreeCleanupFn{}
+		wtCleanup := &cleanupHolder{}
 
 		// cancel context immediately to stop executePlan fast
 		ctx, cancel := context.WithCancel(t.Context())
@@ -2702,7 +2962,7 @@ func TestRunWithWorktree(t *testing.T) {
 		cfg := &config.Config{WorktreeEnabled: true}
 
 		called := false
-		wtCleanup := &worktreeCleanupFn{fn: func() { called = true }}
+		wtCleanup := &cleanupHolder{fn: func() { called = true }}
 
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
@@ -2737,7 +2997,7 @@ func TestRunWithWorktree(t *testing.T) {
 
 		colors := testColors()
 		cfg := &config.Config{WorktreeEnabled: true}
-		wtCleanup := &worktreeCleanupFn{}
+		wtCleanup := &cleanupHolder{}
 
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
@@ -2814,7 +3074,7 @@ func TestRunWithWorktree_UntrackedPlan(t *testing.T) {
 
 	colors := testColors()
 	cfg := &config.Config{WorktreeEnabled: true}
-	wtCleanup := &worktreeCleanupFn{}
+	wtCleanup := &cleanupHolder{}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -2862,7 +3122,7 @@ func TestRunWithWorktree_CreateWorktreeError(t *testing.T) {
 
 	colors := testColors()
 	cfg := &config.Config{WorktreeEnabled: true}
-	wtCleanup := &worktreeCleanupFn{}
+	wtCleanup := &cleanupHolder{}
 
 	err = runWithWorktree(t.Context(), opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
 		PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: cfg,
@@ -2870,6 +3130,92 @@ func TestRunWithWorktree_CreateWorktreeError(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create worktree")
+}
+
+func TestRunWithWorktree_HandsOffFailureNotification(t *testing.T) {
+	skipIfClaudeNotAvailable(t)
+
+	// once setup succeeds and executePlan is entered, the downstream funnel owns the failure
+	// banner. the handedOff gate is what stops runWithWorktree from raising a second one, so the
+	// assertion is the notify *count* — with the gate broken every worktree failure double-banners.
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	// plan with a checkbox but no "### Task N:" section parses to zero tasks, so executePlan
+	// fails deterministically inside validation without ever reaching the executor
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+	planPath := filepath.Join(dir, "docs", "plans", "wt-once.md")
+	require.NoError(t, os.WriteFile(planPath, []byte("# WT Once\n\n- [ ] task 1\n"), 0o600))
+	runGit(t, dir, "add", "docs/plans/wt-once.md")
+	runGit(t, dir, "commit", "-m", "add wt once plan")
+
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + argvLog + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "cmux"), []byte(script), 0o755)) //nolint:gosec // test fixture must be executable
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	err = runWithWorktree(t.Context(), opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{WorktreeEnabled: true},
+		Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+	})
+	require.Error(t, err, "executePlan must fail so there is a failure to report")
+
+	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+	require.NoError(t, readErr, "the handed-off run must still reach the cmux CLI")
+	assert.Equal(t, 1, strings.Count(string(recorded), "notify --title"),
+		"exactly one funnel may banner a failure, got:\n%s", recorded)
+}
+
+func TestRunWithWorktree_NotifiesSetupFailure(t *testing.T) {
+	// worktree setup runs before executePlan creates its own reporter, so runWithWorktree must
+	// raise the cmux banner for its own failures: the plan-mode handoff already stopped its
+	// reporter and a direct run never had one, so nothing downstream would report this.
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+	planPath := filepath.Join(dir, "docs", "plans", "wt-notify.md")
+	require.NoError(t, os.WriteFile(planPath, []byte("# WT Notify\n"), 0o600))
+	runGit(t, dir, "add", "docs/plans/wt-notify.md")
+	runGit(t, dir, "commit", "-m", "add wt notify plan")
+
+	// fake cmux binary recording argv, so the best-effort notify call becomes observable.
+	// prepended to PATH rather than replacing it, git is still needed by the service below.
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + argvLog + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "cmux"), []byte(script), 0o755)) //nolint:gosec // test fixture must be executable
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	// pre-create the worktree dir to force an "already exists" failure during setup
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".ralphex", "worktrees", "wt-notify"), 0o750))
+
+	err = runWithWorktree(t.Context(), opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{WorktreeEnabled: true},
+		Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+	})
+	require.Error(t, err)
+
+	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+	require.NoError(t, readErr, "setup failure must reach the cmux CLI")
+	assert.Contains(t, string(recorded), "notify")
+	assert.Contains(t, string(recorded), "run failed")
+	assert.Contains(t, string(recorded), "wt-notify.md", "the notification body names the run")
 }
 
 // chdirTemp changes to a temporary directory and restores the original on cleanup.
@@ -3214,6 +3560,133 @@ func TestMakePauseHandler_EOFAborts(t *testing.T) {
 	handler := makePauseHandler(stdin, &stdout)
 	result := handler(context.Background())
 	assert.False(t, result, "handler should return false on EOF (stdin closed = abort)")
+}
+
+func TestCleanupHolder(t *testing.T) {
+	t.Run("call before set is a no-op", func(t *testing.T) {
+		h := &cleanupHolder{}
+		assert.NotPanics(t, h.call)
+	})
+
+	t.Run("call runs the registered function", func(t *testing.T) {
+		h := &cleanupHolder{}
+		calls := 0
+		h.set(func() { calls++ })
+		h.call()
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("double call is safe and runs the function again", func(t *testing.T) {
+		h := &cleanupHolder{}
+		calls := 0
+		h.set(func() { calls++ })
+		h.call()
+		h.call()
+		assert.Equal(t, 2, calls, "the holder does not deduplicate, callers use sync.Once for that")
+	})
+
+	t.Run("set replaces the previous function", func(t *testing.T) {
+		h := &cleanupHolder{}
+		first, second := false, false
+		h.set(func() { first = true })
+		h.set(func() { second = true })
+		h.call()
+		assert.False(t, first, "the replaced function must not run")
+		assert.True(t, second)
+	})
+
+	t.Run("concurrent set and call are race-free", func(t *testing.T) {
+		h := &cleanupHolder{}
+		var calls atomic.Int64
+		var wg sync.WaitGroup
+		for range 50 {
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				h.set(func() { calls.Add(1) })
+			}()
+			go func() {
+				defer wg.Done()
+				h.call()
+			}()
+		}
+		wg.Wait()
+		h.call()
+		assert.Positive(t, calls.Load(), "the last registered function must still be callable")
+	})
+}
+
+func TestCmuxCompletionNotice(t *testing.T) {
+	tests := []struct {
+		name             string
+		planFile         string
+		branch           string
+		elapsed          string
+		runErr           error
+		wantOK           bool
+		wantSubtitle     string
+		wantBodyContains string
+	}{
+		{
+			name: "success names the plan", planFile: "/repo/docs/plans/20260728-feature.md", branch: "feature",
+			elapsed: "12m30s", wantOK: true, wantSubtitle: "run completed",
+			wantBodyContains: "20260728-feature.md in 12m30s",
+		},
+		{
+			name: "success without plan falls back to branch", branch: "review-branch", elapsed: "2m",
+			wantOK: true, wantSubtitle: "run completed", wantBodyContains: "review-branch in 2m",
+		},
+		{
+			name: "failure carries the error", planFile: "/repo/docs/plans/feature.md", branch: "feature",
+			elapsed: "1m", runErr: errors.New("boom"), wantOK: true, wantSubtitle: "run failed",
+			wantBodyContains: "feature.md: boom",
+		},
+		{
+			name: "wrapped failure carries the error", planFile: "feature.md", branch: "feature", elapsed: "1m",
+			runErr: fmt.Errorf("runner: %w", errors.New("inner")), wantOK: true, wantSubtitle: "run failed",
+			wantBodyContains: "feature.md: runner: inner",
+		},
+		{
+			name: "user abort is not announced", planFile: "feature.md", branch: "feature", elapsed: "1m",
+			runErr: processor.ErrUserAborted, wantOK: false,
+		},
+		{
+			name: "wrapped user abort is not announced", planFile: "feature.md", branch: "feature", elapsed: "1m",
+			runErr: fmt.Errorf("runner: %w", processor.ErrUserAborted), wantOK: false,
+		},
+		{
+			name: "ctrl-c cancellation is not announced", planFile: "feature.md", branch: "feature", elapsed: "1m",
+			runErr: context.Canceled, wantOK: false,
+		},
+		{
+			// SIGINT reaches executePlan as this shape, not as ErrUserAborted
+			name: "wrapped ctrl-c cancellation is not announced", planFile: "feature.md", branch: "feature",
+			elapsed: "1m", runErr: fmt.Errorf("runner: task phase: %w", context.Canceled), wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			subtitle, body, ok := cmuxCompletionNotice(tt.planFile, tt.branch, tt.elapsed, tt.runErr)
+			assert.Equal(t, tt.wantOK, ok)
+			if !tt.wantOK {
+				assert.Empty(t, subtitle)
+				assert.Empty(t, body)
+				return
+			}
+			assert.Equal(t, tt.wantSubtitle, subtitle)
+			assert.Contains(t, body, tt.wantBodyContains)
+		})
+	}
+}
+
+func TestNotifyCmuxCompletion_NilReporter(t *testing.T) {
+	// outside cmux the reporter is nil; the helper must stay a no-op for every outcome
+	assert.NotPanics(t, func() {
+		notifyCmuxCompletion(nil, "plan.md", "branch", "1m", nil)
+		notifyCmuxCompletion(nil, "plan.md", "branch", "1m", errors.New("boom"))
+		notifyCmuxCompletion(nil, "", "branch", "1m", processor.ErrUserAborted)
+	})
 }
 
 func TestRunCleanupBounded(t *testing.T) {

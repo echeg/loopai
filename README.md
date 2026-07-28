@@ -49,6 +49,7 @@ ralphex solves both problems. Each task executes in a fresh primary-executor ses
 - **Automatic commits** - commits after each task and review fix
 - **Real-time monitoring** - streaming output with timestamps, colors, and detailed logs
 - **Web dashboard** - browser-based real-time view with `--serve` flag
+- **cmux sidebar** - phase, task progress, and notifications in the cmux terminal sidebar, auto-detected
 - **Docker support** - run in isolated container for safer autonomous execution
 - **Notifications** - optional alerts on completion/failure via Telegram, Email, Slack, Webhook, or custom script
 - **Worktree isolation** - run multiple plans in parallel via `--worktree` flag
@@ -303,7 +304,25 @@ pass_claude_md = true
 
 The `--worktree` flag runs plan execution in an isolated git worktree at `.ralphex/worktrees/<branch>`, enabling parallel execution of multiple plans on the same repo without branch conflicts.
 
-**Supported modes:** `--worktree` only applies to full mode and `--tasks-only`. It is silently ignored for `--review`, `--external-only`, and `--plan` — these modes operate from the current directory.
+**Supported modes:** `--worktree` applies to full mode, `--tasks-only`, and to the implementation run started from `--plan` after you accept the draft (plan creation itself always runs in the current directory). It is silently ignored for `--review` and `--external-only`.
+
+**Base branch:** by default a new branch is created from the default branch (`main`, `master`, or whatever `default_branch` resolves to), because the same branch is used as the base for review diffs and for the finalize rebase. To work off another branch — a release line, for example — pass it via `--base-ref`:
+
+```bash
+git checkout release/13.0.0
+
+# branch the worktree off release/13.0.0; diffs and rebase use the same base
+ralphex --worktree --base-ref release/13.0.0 docs/plans/hotfix.md
+
+# same base resolution without a worktree
+ralphex --base-ref release/13.0.0 docs/plans/hotfix.md
+```
+
+This is not a worktree feature: `--base-ref` becomes the branch base in every mode that creates a branch — full mode, `--tasks-only`, and `--plan`. Review modes (`--review`, `--external-only`) never create one, so their `--base-ref` stays a pure diff base and is never validated against the checkout.
+
+Because branch creation cuts from `HEAD`, running the command above from the default branch is rejected with an explicit error rather than silently basing the work on the wrong commit — `git checkout` the branch first. From any other branch the `--base-ref` branch is accepted as the base as-is.
+
+`--base-ref` also accepts a commit hash, but a hash can only serve as a diff base, not as a branch base — combining it with `--worktree` is rejected with an explicit error. For a permanent per-project setting, use `default_branch` in `.ralphex/config` instead of passing the flag on every run.
 
 **Re-running reviews on a worktree branch:** if the task phase completed in a worktree but the review phase needs to be re-run, `cd` into the worktree directory and run the review from there:
 
@@ -643,12 +662,17 @@ ralphex --codex --pass-claude-md docs/plans/feature.md
 # tasks-only mode (run only task phase, skip all reviews)
 ralphex --tasks-only docs/plans/feature.md
 
-# run in isolated git worktree (full and tasks-only modes only)
+# run in isolated git worktree (full, tasks-only, and the run handed off from --plan)
 ralphex --worktree docs/plans/feature.md
 
 # override default branch for review diffs
 ralphex --review --base-ref develop
 ralphex --review --base-ref abc1234 --skip-finalize
+
+# run a plan off a non-default branch (base for branch creation, diffs, and rebase)
+# requires the checkout to be on that branch already; works with and without --worktree
+git checkout release/13.0.0
+ralphex --worktree --base-ref release/13.0.0 docs/plans/hotfix.md
 
 # initialize local .ralphex/ config in current project (commented-out defaults)
 ralphex --init
@@ -710,7 +734,7 @@ ralphex --serve --port=3000 docs/plans/feature.md
 | `--codex` | Use codex CLI for plan creation, task, internal review, external-finding evaluation, and finalize. With `external_review_tool = auto`, Claude `opus:xhigh` performs external review when available; a missing automatic reviewer warns and disables only that phase. Requires codex CLI ≥ 0.130.0 | false |
 | `--pass-claude-md` | Pass project `CLAUDE.md` to codex via `-c project_doc_fallback_filenames=["CLAUDE.md"]`. User-level `~/.claude/CLAUDE.md` is NOT auto-passed (a one-time setup hint is shown). Requires the codex executor (`--codex` or `executor = codex`) | false |
 | `-t, --tasks-only` | Run only task phase, skip all reviews | false |
-| `-b, --base-ref` | Override default branch for review diffs (branch name or commit hash) | auto-detect |
+| `-b, --base-ref` | Override default branch for review diffs (branch name or commit hash). A branch name also becomes the base for branch and worktree creation, so plans can run off a release branch; a commit hash stays diff-only and is rejected with `--worktree` | auto-detect |
 | `--skip-finalize` | Skip finalize step even if enabled in config | false |
 | `--plan-model` | Model for plan creation as `model[:effort]` (falls back to `--task-model`). Same syntax and wrapper behavior as `--task-model`. Under `--codex`, selects the codex plan-creation model/effort | empty |
 | `--task-model` | Model for task execution as `model[:effort]` (e.g., `opus`, `opus:high`, `:medium`). Effort values: `low`, `medium`, `high`, `xhigh`, `max`. Appended as `--model <m>` and/or `--effort <e>` to `claude_command`; custom wrappers may ignore or implement the flags. Under `--codex`, selects the codex task-phase model/effort instead (see *Model selection under `--codex`*) | empty |
@@ -723,7 +747,7 @@ ralphex --serve --port=3000 docs/plans/feature.md
 | `--wait` | Wait duration before retrying on rate limit (e.g., `1h`, `30m`) | disabled |
 | `--session-timeout` | Per-session timeout for task/review executor (e.g., `30m`, `1h`). Applies to Claude calls in default executor mode and every executor call under `--codex`; external codex/custom review in Claude mode is not affected | disabled |
 | `--idle-timeout` | Kill executor session when no output for specified duration (e.g., `5m`). Resets on each output line. Applies to the claude executor in default mode and to every executor call under `--codex`; external codex review in default-claude mode is NOT affected (preserves master behavior). Custom review is also not affected | disabled |
-| `--worktree` | Run in isolated git worktree (full and tasks-only modes only) | false |
+| `--worktree` | Run in isolated git worktree (full, tasks-only, and the run handed off from --plan) | false |
 | `--preserve-anthropic-api-key` | Pass `ANTHROPIC_API_KEY` through to claude (for users authenticating Claude Code via API key rather than OAuth/keychain) | false |
 | `--plan` | Create plan interactively (provide description) | - |
 | `-s, --serve` | Start web dashboard for real-time streaming | false |
@@ -900,6 +924,7 @@ Agents to launch:
 - `gemini` - alternative provider for Claude phases (optional, via `scripts/gemini-as-claude/`)
 - `agy` - Antigravity CLI, alternative provider for Claude phases (optional, via `scripts/agy-as-claude/`)
 - `pi` - alternative provider for Claude phases (optional, via `scripts/pi-as-claude/`)
+- `cmux` - [cmux](https://github.com/manaflow-ai/cmux) terminal CLI for sidebar status reporting (optional, auto-detected)
 
 ## Configuration
 
@@ -978,10 +1003,10 @@ Provider-related CLI flags (`--claude-command`, `--claude-args`, `--external-rev
 | `task_retry_count` | Task retry attempts | `1` |
 | `finalize_enabled` | Enable finalize step after reviews | `false` |
 | `move_plan_on_completion` | Move completed plan file into `docs/plans/completed/` on success (disable for external plan-lifecycle workflows) | `true` |
-| `use_worktree` | Run each plan in an isolated git worktree (full and tasks-only modes only) | `false` |
+| `use_worktree` | Run each plan in an isolated git worktree (full, tasks-only, and the run handed off from --plan) | `false` |
 | `preserve_anthropic_api_key` | Pass `ANTHROPIC_API_KEY` through to the claude child process (for users authenticating Claude Code via API key rather than OAuth/keychain). Default `false` strips the key so a host-set value cannot silently override OAuth credentials | `false` |
 | `plans_dir` | Plans directory | `docs/plans` |
-| `default_branch` | Override auto-detected default branch for review diffs | auto-detect |
+| `default_branch` | Override auto-detected default branch for review diffs and for branch/worktree creation | auto-detect |
 | `vcs_command` | VCS command for the git backend (set to a translation script for hg repos) | `git` |
 | `commit_trailer` | Trailer line appended to all ralphex-orchestrated git commits | disabled |
 | `color_task` | Task execution phase color (hex) | `#2e8b57` |
@@ -1379,6 +1404,24 @@ Multi-session features:
 - **Session sidebar** - lists all discovered sessions, click to switch (keyboard: `S` to toggle)
 - **Active detection** - pulsing indicator for running sessions via file locking
 - **Auto-discovery** - new sessions appear automatically as they start
+
+## cmux Sidebar Integration
+
+When ralphex runs in a terminal of the [cmux](https://github.com/manaflow-ai/cmux) terminal, it reports its state to the cmux sidebar:
+
+- a spinner for the duration of the run, and the workspace lane switches to `working`
+- a status pill in the tab row with the current phase (`task`, `review`, `external review`, `evaluating findings`, `finalize`, `planning`)
+- a progress bar over the plan's tasks, updated from the plan file while the run proceeds (`3/7 tasks`)
+- a notification when the run stops and waits for you — a `--plan` question or a plan draft ready for review
+- a notification when the run finishes, with the outcome (nothing is sent when you abort the run yourself)
+
+Nothing to configure and no flag to pass: the integration turns itself on when the `cmux` CLI is in `PATH` and `CMUX_WORKSPACE_ID` is set, which cmux injects into every terminal it owns. Outside cmux it is a complete no-op. It only ever calls the public `cmux` CLI, so no cmux-side setup is needed.
+
+Indication is best-effort — a failing or slow `cmux` call is ignored and never affects the run, and errors are not written to the progress file. The sidebar is cleared on normal completion, on failure, and on Ctrl+C including the force-exit path, so a stopped run does not leave a spinner behind.
+
+This is what makes several parallel ralphex runs in different cmux workspaces tellable apart at a glance — each workspace shows its own phase and task progress.
+
+Not available through the Docker wrapper (`scripts/ralphex-dk.sh`): the container images ship no `cmux` binary and `CMUX_WORKSPACE_ID` is not passed through.
 
 ## Claude Code Integration (Optional)
 

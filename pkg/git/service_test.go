@@ -1548,6 +1548,55 @@ func TestService_FileHasChanges(t *testing.T) {
 	})
 }
 
+func TestService_BranchExists(t *testing.T) {
+	t.Run("returns true for existing branch", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, svc.CreateBranch("release/13.0.0"))
+		runGit(t, dir, "checkout", "master")
+
+		assert.True(t, svc.BranchExists("release/13.0.0"))
+	})
+
+	t.Run("returns true for current branch", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		assert.True(t, svc.BranchExists("master"))
+	})
+
+	t.Run("returns false for unknown branch", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		assert.False(t, svc.BranchExists("no-such-branch"))
+	})
+
+	t.Run("returns false for commit hash", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		hash, err := svc.HeadHash()
+		require.NoError(t, err)
+
+		// a hash is a valid revision but not a branch, so it cannot serve as a branch base
+		assert.False(t, svc.BranchExists(hash))
+	})
+
+	t.Run("returns false for empty name", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		assert.False(t, svc.BranchExists(""))
+	})
+}
+
 func TestService_formatDirtyFiles(t *testing.T) {
 	svc := &Service{}
 

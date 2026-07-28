@@ -279,7 +279,8 @@ func (e *externalBackend) hasChangesOtherThan(path string) ([]string, error) {
 		return nil, nil
 	}
 
-	var dirty []string
+	// one entry per porcelain line at most, some are skipped below
+	dirty := make([]string, 0, strings.Count(out, "\n")+1)
 	for line := range strings.SplitSeq(out, "\n") {
 		if line == "" {
 			continue
