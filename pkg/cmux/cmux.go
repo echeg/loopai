@@ -13,14 +13,20 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/umputun/ralphex/pkg/plan"
 	"github.com/umputun/ralphex/pkg/status"
 )
 
 const (
 	// execTimeout bounds a single cmux CLI call, the socket is local so a hanging call must not stall the run.
 	execTimeout = 2 * time.Second
+
+	// pollInterval is how often the plan file is re-read for the progress bar. a task iteration
+	// takes minutes, so a tighter interval would only re-read the file for nothing.
+	pollInterval = 10 * time.Second
 
 	// workspaceEnv is injected by cmux into every terminal it owns and inherited by child processes.
 	workspaceEnv = "CMUX_WORKSPACE_ID"
@@ -70,6 +76,16 @@ type Reporter struct {
 	runner   commandRunner
 	planFile string        // plan file polled for task progress, may be empty
 	timeout  time.Duration // per-call timeout
+	interval time.Duration // plan file poll interval
+
+	mu       sync.Mutex         // guards the poller handles below, Stop may run on another goroutine
+	cancel   context.CancelFunc // stops the poll goroutine, nil until Start
+	pollDone chan struct{}      // closed by the poll goroutine on exit, nil until Start
+	stopOnce sync.Once          // Stop runs at most once, it is called from a defer and from the interrupt handler
+
+	// last reported pair, touched by the poll goroutine only. -1 never matches a real count,
+	// so the first tick always reports.
+	lastDone, lastTotal int
 }
 
 // New returns a reporter for the current cmux workspace, or nil when ralphex does not run
@@ -82,7 +98,14 @@ func New(planFile string) *Reporter {
 	if err != nil {
 		return nil
 	}
-	return &Reporter{runner: &execRunner{bin: bin}, planFile: planFile, timeout: execTimeout}
+	return &Reporter{
+		runner:    &execRunner{bin: bin},
+		planFile:  planFile,
+		timeout:   execTimeout,
+		interval:  pollInterval,
+		lastDone:  -1,
+		lastTotal: -1,
+	}
 }
 
 // exec runs a cmux command best-effort. errors are swallowed on purpose: the sidebar is an
@@ -163,6 +186,93 @@ func (r *Reporter) Clear() {
 	r.LoadingOff()
 	r.ClearStatus()
 	r.ClearProgress()
+}
+
+// Start shows the spinner and begins polling the plan file for task progress in the background.
+// polling is used instead of hooking into the phase engines so the progress bar keeps moving
+// during a long task phase without touching pkg/processor.
+func (r *Reporter) Start(ctx context.Context) {
+	if r == nil {
+		return
+	}
+	r.LoadingOn()
+
+	pollCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	r.mu.Lock()
+	r.cancel = cancel
+	r.pollDone = done
+	r.mu.Unlock()
+
+	go r.poll(pollCtx, done)
+}
+
+// poll re-reads the plan file on every tick until the context is canceled.
+func (r *Reporter) poll(ctx context.Context, done chan struct{}) {
+	defer close(done)
+
+	ticker := time.NewTicker(r.interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.reportProgress()
+		}
+	}
+}
+
+// reportProgress counts done tasks in the plan file and pushes the ratio to the sidebar.
+// a missing path, a read error (the plan may have moved to completed/) or an unchanged pair
+// skip the tick silently, the goroutine keeps running.
+func (r *Reporter) reportProgress() {
+	if r.planFile == "" {
+		return
+	}
+	p, err := plan.ParsePlanFile(r.planFile)
+	if err != nil {
+		return
+	}
+
+	total := len(p.Tasks)
+	if total == 0 {
+		return
+	}
+	done := 0
+	for _, t := range p.Tasks {
+		if t.Status == plan.TaskStatusDone {
+			done++
+		}
+	}
+
+	if done == r.lastDone && total == r.lastTotal {
+		return
+	}
+	r.lastDone, r.lastTotal = done, total
+	r.Progress(done, total, fmt.Sprintf("%d/%d tasks", done, total))
+}
+
+// Stop ends background polling, waits for the goroutine to exit and removes every sidebar
+// artifact. safe to call twice and safe to call without a preceding Start, which matters because
+// it runs both from a defer and from the interrupt handler.
+func (r *Reporter) Stop() {
+	if r == nil {
+		return
+	}
+	r.stopOnce.Do(func() {
+		r.mu.Lock()
+		cancel, done := r.cancel, r.pollDone
+		r.mu.Unlock()
+
+		if cancel != nil {
+			cancel()
+			<-done
+		}
+		r.Clear()
+	})
 }
 
 // OnPhase updates the pill on a phase change, the signature matches status.PhaseHolder.OnChange.

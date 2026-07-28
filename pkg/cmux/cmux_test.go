@@ -51,10 +51,34 @@ func (f *fakeRunner) recorded() [][]string {
 	return append([][]string(nil), f.calls...)
 }
 
+// waitForCalls polls the fake runner until it records at least n calls or the deadline expires.
+func (f *fakeRunner) waitForCalls(t *testing.T, n int) [][]string {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		calls := f.recorded()
+		if len(calls) >= n {
+			return calls
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected at least %d calls, got %d: %v", n, len(calls), calls)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // testReporter builds a reporter wired to a fake runner, bypassing environment detection.
 func testReporter(t *testing.T, runner commandRunner) *Reporter {
 	t.Helper()
-	return &Reporter{runner: runner, timeout: time.Second}
+	return &Reporter{runner: runner, timeout: time.Second, interval: time.Hour, lastDone: -1, lastTotal: -1}
+}
+
+// writePlan writes a plan file into a temp dir and returns its path.
+func writePlan(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "plan.md")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
 }
 
 // writeFakeBin creates an executable file in dir so exec.LookPath can find it.
@@ -94,6 +118,9 @@ func TestNew(t *testing.T) {
 			require.NotNil(t, r)
 			assert.Equal(t, "docs/plans/feature.md", r.planFile)
 			assert.Equal(t, execTimeout, r.timeout)
+			assert.Equal(t, pollInterval, r.interval)
+			assert.Equal(t, -1, r.lastDone, "the first tick must always report")
+			assert.Equal(t, -1, r.lastTotal)
 			assert.NotNil(t, r.runner)
 		})
 	}
@@ -406,6 +433,8 @@ func TestReporterNilReceiver(t *testing.T) {
 		{name: "notify", call: func() { r.Notify("ralphex", "done", "all tasks complete") }},
 		{name: "clear", call: func() { r.Clear() }},
 		{name: "on phase", call: func() { r.OnPhase(status.PhaseTask, status.PhaseReview) }},
+		{name: "start", call: func() { r.Start(context.Background()) }},
+		{name: "stop", call: func() { r.Stop() }},
 	}
 
 	for _, tt := range tests {
@@ -413,6 +442,230 @@ func TestReporterNilReceiver(t *testing.T) {
 			assert.NotPanics(t, tt.call)
 		})
 	}
+}
+
+func TestReporterReportProgress(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    [][]string
+	}{
+		{
+			name:    "all tasks done",
+			content: "# plan\n\n### Task 1: one\n\n- [x] a\n- [x] b\n\n### Task 2: two\n\n- [x] c\n",
+			want:    [][]string{{"set-progress", "1.00", "--label", "2/2 tasks"}},
+		},
+		{
+			name:    "partially done",
+			content: "# plan\n\n### Task 1: one\n\n- [x] a\n\n### Task 2: two\n\n- [ ] b\n\n### Task 3: three\n\n- [ ] c\n",
+			want:    [][]string{{"set-progress", "0.33", "--label", "1/3 tasks"}},
+		},
+		{
+			name:    "task started but not finished counts as not done",
+			content: "# plan\n\n### Task 1: one\n\n- [x] a\n- [ ] b\n\n### Task 2: two\n\n- [x] c\n",
+			want:    [][]string{{"set-progress", "0.50", "--label", "1/2 tasks"}},
+		},
+		{
+			name:    "no tasks done",
+			content: "# plan\n\n### Task 1: one\n\n- [ ] a\n\n### Task 2: two\n\n- [ ] b\n",
+			want:    [][]string{{"set-progress", "0.00", "--label", "0/2 tasks"}},
+		},
+		{
+			name:    "plan without task sections is skipped",
+			content: "# plan\n\n## Overview\n\nno tasks here\n\n- [ ] not a task checkbox\n",
+		},
+		{name: "empty plan is skipped", content: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeRunner{}
+			r := testReporter(t, runner)
+			r.planFile = writePlan(t, tt.content)
+
+			r.reportProgress()
+			assert.Equal(t, tt.want, runner.recorded())
+		})
+	}
+}
+
+func TestReporterReportProgressSkipsTick(t *testing.T) {
+	tests := []struct {
+		name     string
+		planFile func(t *testing.T) string
+	}{
+		{name: "empty plan path", planFile: func(*testing.T) string { return "" }},
+		{
+			name: "missing plan file, it may have moved to completed/",
+			planFile: func(t *testing.T) string {
+				t.Helper()
+				return filepath.Join(t.TempDir(), "gone.md")
+			},
+		},
+		{
+			name: "unreadable plan file",
+			planFile: func(t *testing.T) string {
+				t.Helper()
+				return t.TempDir() // a directory fails to read as a file
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeRunner{}
+			r := testReporter(t, runner)
+			r.planFile = tt.planFile(t)
+
+			assert.NotPanics(t, func() { r.reportProgress() })
+			assert.Empty(t, runner.recorded(), "a skipped tick must not touch the sidebar")
+		})
+	}
+}
+
+func TestReporterReportProgressUnchangedPair(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+	r.planFile = writePlan(t, "# plan\n\n### Task 1: one\n\n- [x] a\n\n### Task 2: two\n\n- [ ] b\n")
+
+	r.reportProgress()
+	r.reportProgress()
+	r.reportProgress()
+	assert.Equal(t, [][]string{{"set-progress", "0.50", "--label", "1/2 tasks"}}, runner.recorded(),
+		"an unchanged done/total pair must not be pushed again")
+
+	require.NoError(t, os.WriteFile(r.planFile,
+		[]byte("# plan\n\n### Task 1: one\n\n- [x] a\n\n### Task 2: two\n\n- [x] b\n"), 0o600))
+	r.reportProgress()
+	assert.Equal(t, [][]string{
+		{"set-progress", "0.50", "--label", "1/2 tasks"},
+		{"set-progress", "1.00", "--label", "2/2 tasks"},
+	}, runner.recorded(), "a changed pair must be pushed")
+}
+
+func TestReporterStartPolls(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+	r.interval = time.Millisecond
+	r.planFile = writePlan(t, "# plan\n\n### Task 1: one\n\n- [x] a\n\n### Task 2: two\n\n- [ ] b\n")
+
+	r.Start(t.Context())
+	calls := runner.waitForCalls(t, 2)
+	r.Stop()
+
+	assert.Equal(t, []string{"workspace", "loading", "on", "--id", "ralphex"}, calls[0], "start must show the spinner")
+	assert.Equal(t, []string{"set-progress", "0.50", "--label", "1/2 tasks"}, calls[1])
+}
+
+func TestReporterStartSurvivesBrokenPlan(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+	r.interval = time.Millisecond
+	r.planFile = filepath.Join(t.TempDir(), "appears-later.md")
+
+	r.Start(t.Context())
+	runner.waitForCalls(t, 1) // only the spinner so far, the plan file does not exist yet
+
+	require.NoError(t, os.WriteFile(r.planFile, []byte("# plan\n\n### Task 1: one\n\n- [x] a\n"), 0o600))
+	calls := runner.waitForCalls(t, 2)
+	r.Stop()
+
+	assert.Equal(t, []string{"set-progress", "1.00", "--label", "1/1 tasks"}, calls[1],
+		"the goroutine must survive failed ticks and report once the plan is readable")
+}
+
+func TestReporterStop(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+	r.interval = time.Millisecond
+	r.planFile = writePlan(t, "# plan\n\n### Task 1: one\n\n- [x] a\n")
+
+	r.Start(t.Context())
+	runner.waitForCalls(t, 2)
+
+	r.Stop()
+	afterFirst := runner.recorded()
+	r.Stop()
+	r.Stop()
+
+	assert.Equal(t, afterFirst, runner.recorded(), "stop must be idempotent")
+	require.GreaterOrEqual(t, len(afterFirst), 5)
+	assert.Equal(t, [][]string{
+		{"workspace", "loading", "off", "--id", "ralphex"},
+		{"clear-status", "ralphex"},
+		{"clear-progress"},
+	}, afterFirst[len(afterFirst)-3:], "stop must clear every sidebar artifact")
+
+	r.mu.Lock()
+	done := r.pollDone
+	r.mu.Unlock()
+	select {
+	case <-done:
+	default:
+		t.Fatal("stop must wait for the poll goroutine to exit")
+	}
+}
+
+func TestReporterStopWithoutStart(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+
+	assert.NotPanics(t, func() { r.Stop() })
+	assert.Equal(t, [][]string{
+		{"workspace", "loading", "off", "--id", "ralphex"},
+		{"clear-status", "ralphex"},
+		{"clear-progress"},
+	}, runner.recorded(), "stop without start must still clear the sidebar")
+}
+
+func TestReporterStopConcurrent(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+	r.interval = time.Millisecond
+	r.planFile = writePlan(t, "# plan\n\n### Task 1: one\n\n- [x] a\n")
+
+	r.Start(t.Context())
+	runner.waitForCalls(t, 2)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() { r.Stop() })
+	}
+	wg.Wait()
+
+	calls := runner.recorded()
+	assert.Equal(t, [][]string{
+		{"workspace", "loading", "off", "--id", "ralphex"},
+		{"clear-status", "ralphex"},
+		{"clear-progress"},
+	}, calls[len(calls)-3:], "concurrent stops must clear exactly once")
+}
+
+func TestReporterContextCancelStopsPolling(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+	r.interval = time.Millisecond
+	r.planFile = writePlan(t, "# plan\n\n### Task 1: one\n\n- [x] a\n")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	r.Start(ctx)
+	runner.waitForCalls(t, 2)
+
+	cancel()
+
+	r.mu.Lock()
+	done := r.pollDone
+	r.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("canceling the context must stop the poll goroutine without Stop")
+	}
+
+	before := len(runner.recorded())
+	time.Sleep(20 * time.Millisecond)
+	assert.Len(t, runner.recorded(), before, "a stopped goroutine must not tick again")
+	assert.NotContains(t, runner.recorded(), []string{"clear-progress"}, "cancel alone must not clear the sidebar")
 }
 
 func TestExecRunner(t *testing.T) {
