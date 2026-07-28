@@ -1,7 +1,7 @@
-#compdef ralphex
+#compdef loopai
 
-# zsh completion for ralphex (generated via go-flags)
-_ralphex() {
+# zsh completion for loopai (generated via go-flags)
+_loopai() {
     local -a lines
     lines=(${(f)"$(GO_FLAGS_COMPLETION=verbose "${words[1]}" "${(@)words[2,$CURRENT]}" 2>/dev/null)"})
     if (( ${#lines} )); then
@@ -25,4 +25,4 @@ _ralphex() {
     fi
 }
 
-_ralphex "$@"
+_loopai "$@"

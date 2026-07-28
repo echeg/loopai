@@ -75,26 +75,5 @@
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true,
     "allow_concurrent_runs": false
-  },
-  {
-    "label": "docker: build",
-    "command": "make docker-build",
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "use_new_terminal": true,
-    "allow_concurrent_runs": false
-  },
-  {
-    "label": "docker: run",
-    "command": "./scripts/ralphex-dk.sh",
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "use_new_terminal": true,
-    "allow_concurrent_runs": false
-  },
-  {
-    "label": "docker: update image",
-    "command": "./scripts/ralphex-dk.sh --update",
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "use_new_terminal": true,
-    "allow_concurrent_runs": false
   }
 ]

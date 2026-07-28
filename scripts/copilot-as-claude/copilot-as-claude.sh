@@ -69,8 +69,8 @@ progress_file_from_prompt() {
                 ;;
         esac
         if [[ -n "$path" ]]; then
-            if [[ "$path" != */* && -f ".ralphex/progress/$path" ]]; then
-                printf '%s' ".ralphex/progress/$path"
+            if [[ "$path" != */* && -f ".loopai/progress/$path" ]]; then
+                printf '%s' ".loopai/progress/$path"
                 return 0
             fi
             printf '%s' "$path"
@@ -79,7 +79,7 @@ progress_file_from_prompt() {
     done <<< "$prompt"
 
     shopt -s nullglob
-    files=(.ralphex/progress/progress-plan*.txt)
+    files=(.loopai/progress/progress-plan*.txt)
     shopt -u nullglob
     if [[ ${#files[@]} -gt 0 ]]; then
         latest=$(ls -t "${files[@]}" 2>/dev/null | head -1 || true)
@@ -371,7 +371,7 @@ plan_written_since_start() {
             fi
         done < <(
             find . \
-                \( -path './.git' -o -path './.ralphex' \) -prune -o \
+                \( -path './.git' -o -path './.loopai' \) -prune -o \
                 -name '*.md' -type f -newer "$plan_write_marker" -print0 2>/dev/null
         )
 

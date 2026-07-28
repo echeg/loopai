@@ -4,7 +4,7 @@
 
 set -e
 
-TEST_DIR="/tmp/ralphex-review-test"
+TEST_DIR="/tmp/loopai-review-test"
 
 echo "cleaning up previous test..."
 rm -rf "$TEST_DIR"
@@ -115,7 +115,7 @@ EOF
 
 echo "creating .gitignore..."
 cat > .gitignore << 'EOF'
-.ralphex/progress/
+.loopai/progress/
 .bin/
 EOF
 
@@ -132,7 +132,7 @@ git commit -q -m "feat: add data processor"
 
 echo ""
 echo "review test project ready at: $TEST_DIR"
-echo "run: cd $TEST_DIR && ralphex --review"
+echo "run: cd $TEST_DIR && loopai --review"
 echo ""
 echo "subtle issues for reviewers to find:"
 echo "  - empty DataDir not validated before use"

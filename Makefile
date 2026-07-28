@@ -44,32 +44,32 @@ e2e-ui:
 
 e2e-prep: build
 	@./scripts/internal/prep-toy-test.sh
-	@cp .bin/loopai /tmp/ralphex-test/.bin/loopai
+	@cp .bin/loopai /tmp/loopai-test/.bin/loopai
 	@echo ""
 	@echo "=== E2E Full Test Ready ==="
-	@echo "cd /tmp/ralphex-test"
+	@echo "cd /tmp/loopai-test"
 	@echo ".bin/loopai docs/plans/fix-issues.md"
 	@echo ""
-	@echo "Monitor: tail -f /tmp/ralphex-test/progress-fix-issues.txt"
+	@echo "Monitor: tail -f /tmp/loopai-test/progress-fix-issues.txt"
 
 e2e-review: build
 	@./scripts/internal/prep-review-test.sh
-	@cp .bin/loopai /tmp/ralphex-review-test/.bin/loopai
+	@cp .bin/loopai /tmp/loopai-review-test/.bin/loopai
 	@echo ""
 	@echo "=== E2E Review Test Ready ==="
-	@echo "cd /tmp/ralphex-review-test"
+	@echo "cd /tmp/loopai-review-test"
 	@echo ".bin/loopai --review"
 	@echo ""
-	@echo "Monitor: tail -f /tmp/ralphex-review-test/progress-review.txt"
+	@echo "Monitor: tail -f /tmp/loopai-review-test/progress-review.txt"
 
 e2e-codex: build
 	@./scripts/internal/prep-review-test.sh
-	@cp .bin/loopai /tmp/ralphex-review-test/.bin/loopai
+	@cp .bin/loopai /tmp/loopai-review-test/.bin/loopai
 	@echo ""
 	@echo "=== E2E Codex-Only Test Ready ==="
-	@echo "cd /tmp/ralphex-review-test"
+	@echo "cd /tmp/loopai-review-test"
 	@echo ".bin/loopai --codex-only"
 	@echo ""
-	@echo "Monitor: tail -f /tmp/ralphex-review-test/progress-codex.txt"
+	@echo "Monitor: tail -f /tmp/loopai-review-test/progress-codex.txt"
 
 .PHONY: all build test lint fmt race version e2e-setup e2e e2e-ui e2e-prep e2e-review e2e-codex

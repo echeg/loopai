@@ -571,5 +571,5 @@ func TestDashboardSmoke(t *testing.T) {
 	// verify page title
 	title, err := page.Title()
 	require.NoError(t, err)
-	require.Contains(t, title, "Ralphex")
+	require.Contains(t, title, "Loopai")
 }

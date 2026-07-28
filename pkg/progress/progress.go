@@ -263,7 +263,7 @@ func (l *Logger) writeHeader(cfg Config) {
 	if planStr == "" {
 		planStr = "(no plan - review only)"
 	}
-	l.writeFileLocked("# Ralphex Progress Log\n")
+	l.writeFileLocked("# Loopai Progress Log\n")
 	l.writeFileLocked("Plan: %s\n", planStr)
 	l.writeFileLocked("Branch: %s\n", cfg.Branch)
 	l.writeFileLocked("Mode: %s\n", cfg.Mode)

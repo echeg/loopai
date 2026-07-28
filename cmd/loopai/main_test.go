@@ -132,6 +132,16 @@ func parseTestOpts(t *testing.T, args ...string) opts {
 	return o
 }
 
+func TestLoopaiEnvironmentOptions(t *testing.T) {
+	t.Setenv("LOOPAI_WEB_HOST", "0.0.0.0")
+	t.Setenv("LOOPAI_CONFIG_DIR", "/tmp/loopai-config")
+
+	o := parseTestOpts(t)
+
+	assert.Equal(t, "0.0.0.0", o.Host)
+	assert.Equal(t, "/tmp/loopai-config", o.ConfigDir)
+}
+
 func TestPromptPlanDescription(t *testing.T) {
 	colors := testColors()
 
