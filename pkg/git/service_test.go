@@ -281,8 +281,15 @@ func TestService_CreateBranchForPlan(t *testing.T) {
 
 		err = svc.CreateBranchForPlan(planFile, "master", "")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "worktree has uncommitted changes")
-		assert.Contains(t, err.Error(), "other.txt")
+		assert.Equal(t, fmt.Sprintf(
+			"cannot create branch \"feature\": worktree has uncommitted changes\n\n"+
+				"uncommitted files:\n  other.txt\n\n"+
+				"loopai needs to create a feature branch from master to isolate plan work.\n\n"+
+				"options:\n"+
+				"  git stash && loopai %s && git stash pop   # stash changes temporarily\n"+
+				"  git commit -am \"wip\"                       # commit changes first\n"+
+				"  loopai --review                            # skip branch creation (review-only mode)",
+			planFile), err.Error())
 	})
 
 	t.Run("auto-commits plan file if only dirty file", func(t *testing.T) {
