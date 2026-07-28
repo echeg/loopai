@@ -39,7 +39,7 @@ dist/
 # debug
 __debug_bin*
 
-# ralphex progress logs
+# loopai progress logs
 .loopai/progress/
 **/progress.txt
 **/progress-*.txt
@@ -51,6 +51,6 @@ __debug_bin*
 # python
 __pycache__/
 
-# ralphex progress logs
+# loopai worktrees
 .loopai/worktrees/
 AGENTS.md

@@ -6,9 +6,10 @@ loopai is a personal fork maintained for source builds and practical upstream sy
 
 1. Clone the repository.
 2. Install Go 1.26 or newer.
-3. Install `golangci-lint`.
-4. Run `make test` and `make lint`.
-5. Build `.bin/loopai` with `make build`.
+3. Install Bash and `jq` for the provider-wrapper test suites.
+4. Install `golangci-lint`.
+5. Run `make test` and `make lint`.
+6. Build `.bin/loopai` with `make build`.
 
 Optional dashboard tests require Playwright browsers:
 

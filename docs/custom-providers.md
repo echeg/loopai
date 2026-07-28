@@ -92,7 +92,11 @@ Use CLI flags when you want to test or switch providers without editing `~/.conf
 loopai --claude-command=/path/to/wrapper.sh --external-review-tool=custom --custom-review-script=/path/to/review.sh docs/plans/feature.md
 ```
 
-`--external-review-tool` accepts `codex`, `custom`, or `none`. When `custom` is selected, `--custom-review-script` points at the script that receives the external review prompt file path.
+`--external-review-tool` accepts `auto`, `claude`, `codex`, `custom`, or `none`.
+`auto` selects the provider opposite the primary executor when it is available.
+Explicit `claude` and `codex` selections are honored, including same-provider
+review. When `custom` is selected, `--custom-review-script` points at the script
+that receives the external review prompt file path.
 
 ## Codex wrapper (included compatibility example)
 

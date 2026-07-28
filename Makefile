@@ -35,7 +35,19 @@ test-wrappers:
 		bash "$$test_script"; \
 	done
 
-test: check-symlinks
+test-completions:
+	bash -n completions/loopai.bash
+	@grep -Fqx 'complete -o default -F _loopai loopai' completions/loopai.bash
+	@grep -Fqx '#compdef loopai' completions/loopai.zsh
+	@grep -Fq 'complete -c loopai ' completions/loopai.fish
+	@if grep -n 'ralphex' completions/loopai.*; then \
+		echo "legacy command name found in loopai completions"; \
+		exit 1; \
+	fi
+	@if command -v zsh >/dev/null 2>&1; then zsh -n completions/loopai.zsh; fi
+	@if command -v fish >/dev/null 2>&1; then fish -n completions/loopai.fish; fi
+
+test: check-symlinks test-completions
 	go clean -testcache
 	go test -race -coverprofile=coverage.out ./...
 	grep -v "_mock.go" coverage.out | grep -v mocks > coverage_no_mocks.out

@@ -28,7 +28,8 @@ This repository is a personal fork. It is installed by building from source; no 
   - Codex CLI 0.130.0 or newer for `--codex`
 - Optional: the other executor for automatic cross-provider review
 - Optional: `fzf` for interactive selection; a numbered fallback is built in
-- Optional: `golangci-lint` for development
+- Development: Bash and `jq` for the included provider-wrapper test suites
+- Optional for development: `golangci-lint`
 
 loopai must be run from the repository root. A custom `vcs_command` must accept
 the same arguments as Git and return compatible output, including for
@@ -98,10 +99,11 @@ cp .ralphex/config .loopai/config
 cmux clear-status ralphex
 ```
 
-The executable is now `loopai`, and `RALPHEX_CONFIG_DIR` is replaced by
-`LOOPAI_CONFIG_DIR`. Remove an old `ralphex` binary separately after verifying
-the new installation. Legacy `.ralphex/progress/` logs remain on disk but are
-not discovered by loopai’s project-root dashboard scan.
+The executable is now `loopai`. Replace `RALPHEX_CONFIG_DIR` with
+`LOOPAI_CONFIG_DIR` and `RALPHEX_WEB_HOST` with `LOOPAI_WEB_HOST`. Remove an old
+`ralphex` binary separately after verifying the new installation. Legacy
+`.ralphex/progress/` logs remain on disk but are not discovered by loopai’s
+project-root dashboard scan.
 
 This fork also removes the upstream Docker/Bedrock path, built-in Mercurial
 adapter, packaged releases (Homebrew, deb, rpm, and release binaries), hosted

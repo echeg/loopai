@@ -111,6 +111,13 @@ Worktrees live under `.loopai/worktrees/<branch>`. The progress logger is create
 
 cmux reporting is best-effort and must never affect execution. The status key and notification title are `loopai`. All calls go through the public `cmux` CLI and failures are ignored.
 
+`cmd/loopai` resolves effective plan, task, review, and external-review models
+and passes them to `cmux.Reporter`. Phase labels come from `status.PhaseHolder`;
+review iteration labels come from `Reporter.WrapLogger`, which observes
+structured `PrintSection` calls while forwarding the complete logger interface.
+Keep this wrapper in the logger chain after dashboard setup. A nil reporter must
+return the original logger unchanged.
+
 ## Code style
 
 - Use idiomatic Go and keep packages focused.

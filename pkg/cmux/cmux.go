@@ -321,45 +321,17 @@ func (r *Reporter) WrapLogger(logger Logger) Logger {
 	if r == nil {
 		return logger
 	}
-	return &reportingLogger{inner: logger, rep: r}
+	return &reportingLogger{Logger: logger, rep: r}
 }
 
 type reportingLogger struct {
-	inner Logger
-	rep   *Reporter
-}
-
-func (l *reportingLogger) Print(format string, args ...any) {
-	l.inner.Print(format, args...)
-}
-
-func (l *reportingLogger) PrintRaw(format string, args ...any) {
-	l.inner.PrintRaw(format, args...)
+	Logger
+	rep *Reporter
 }
 
 func (l *reportingLogger) PrintSection(section status.Section) {
-	l.inner.PrintSection(section)
+	l.Logger.PrintSection(section)
 	l.rep.OnSection(section)
-}
-
-func (l *reportingLogger) PrintAligned(text string) {
-	l.inner.PrintAligned(text)
-}
-
-func (l *reportingLogger) LogQuestion(question string, options []string) {
-	l.inner.LogQuestion(question, options)
-}
-
-func (l *reportingLogger) LogAnswer(answer string) {
-	l.inner.LogAnswer(answer)
-}
-
-func (l *reportingLogger) LogDraftReview(action, feedback string) {
-	l.inner.LogDraftReview(action, feedback)
-}
-
-func (l *reportingLogger) Path() string {
-	return l.inner.Path()
 }
 
 // inputCollector collects interactive input during plan creation. it mirrors
@@ -412,7 +384,7 @@ func (r *Reporter) OnPhase(_, cur status.Phase) {
 		return
 	}
 	s := styleForPhase(cur)
-	r.setStatus(r.statusText(s.text, cur, 0, false), s.icon, s.color)
+	r.setStatus(r.statusText(s.text, cur, 0), s.icon, s.color)
 }
 
 // OnSection enriches review phase status with the structured iteration number.
@@ -438,15 +410,15 @@ func (r *Reporter) OnSection(section status.Section) {
 		return
 	}
 	s := styleForPhase(phase)
-	r.setStatus(r.statusText(s.text, phase, section.Iteration, true), s.icon, s.color)
+	r.setStatus(r.statusText(s.text, phase, section.Iteration), s.icon, s.color)
 }
 
-func (r *Reporter) statusText(text string, phase status.Phase, iteration int, withIteration bool) string {
+func (r *Reporter) statusText(text string, phase status.Phase, iteration int) string {
 	model := r.modelForPhase(phase)
 	if model != "" {
 		text += " (" + model + ")"
 	}
-	if withIteration && iteration > 0 {
+	if iteration > 0 {
 		text += fmt.Sprintf(" · iteration %d", iteration)
 	}
 	return text

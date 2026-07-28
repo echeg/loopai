@@ -631,7 +631,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 
 	// cmux sidebar reporter, nil and fully no-op outside cmux. Stop is also registered with the
 	// interrupt handler because defers are skipped on the force-exit path.
-	rep := cmux.New(req.PlanFile, cmuxRunModels(o, req))
+	rep := cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview))
 	rep.Start(ctx)
 	defer rep.Stop()
 	if req.CmuxStop != nil {
@@ -785,7 +785,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	handedOff := false
 	defer func() {
 		if err != nil && !handedOff {
-			notifyCmuxCompletion(cmux.New(req.PlanFile, cmuxRunModels(o, req)), req.PlanFile, branch, "", err)
+			notifyCmuxCompletion(cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview)), req.PlanFile, branch, "", err)
 		}
 	}()
 
@@ -1437,29 +1437,29 @@ func resolveReviewSpec(o opts, cfg *config.Config) string {
 // cmuxRunModels resolves the model labels shown beside live cmux phases.
 // Codex values mirror executor resolution; Claude's empty spec is explicitly
 // labeled as the CLI default because loopai cannot know which model Claude selects.
-func cmuxRunModels(o opts, req executePlanRequest) cmux.Models {
-	if req.Config == nil {
+func cmuxRunModels(o opts, cfg *config.Config, externalReview externalReviewSelection) cmux.Models {
+	if cfg == nil {
 		return cmux.Models{}
 	}
 
 	var planModel, taskModel, reviewModel string
-	if req.Config.Executor == config.ExecutorCodex {
-		planInfo := codexPlanBanner(o, req.Config)
-		info := codexModelBanner(o, req.Config)
+	if cfg.Executor == config.ExecutorCodex {
+		planInfo := codexPlanBanner(o, cfg)
+		info := codexModelBanner(o, cfg)
 		planModel = modelEffortLabel("codex default", planInfo.taskModel, planInfo.taskEffort)
 		taskModel = modelEffortLabel("codex default", info.taskModel, info.taskEffort)
 		reviewModel = modelEffortLabel("codex default", info.reviewModel, info.reviewEffort)
 	} else {
-		planModel = configuredModelLabel("claude default", resolvePlanSpec(o, req.Config))
-		taskModel = configuredModelLabel("claude default", resolveSpec(o.TaskModel, req.Config.TaskModel))
-		reviewModel = configuredModelLabel("claude default", resolveReviewSpec(o, req.Config))
+		planModel = configuredModelLabel("claude default", resolvePlanSpec(o, cfg))
+		taskModel = configuredModelLabel("claude default", resolveSpec(o.TaskModel, cfg.TaskModel))
+		reviewModel = configuredModelLabel("claude default", resolveReviewSpec(o, cfg))
 	}
 
 	return cmux.Models{
 		Plan:           planModel,
 		Task:           taskModel,
 		Review:         reviewModel,
-		ExternalReview: req.ExternalReview.modelSpec(),
+		ExternalReview: externalReview.modelSpec(),
 	}
 }
 
@@ -1557,10 +1557,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 
 	// cmux sidebar reporter, nil and fully no-op outside cmux. no plan file exists yet, so the
 	// progress bar stays empty and only the spinner and the phase pill are reported.
-	rep := cmux.New("", cmuxRunModels(o, executePlanRequest{
-		Config:         req.Config,
-		ExternalReview: req.ExternalReview,
-	}))
+	rep := cmux.New("", cmuxRunModels(o, req.Config, req.ExternalReview))
 	rep.Start(ctx)
 	defer rep.Stop()
 	if req.CmuxStop != nil {

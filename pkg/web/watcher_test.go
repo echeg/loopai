@@ -369,6 +369,7 @@ func TestWatcher_SkipsKnownDirectories(t *testing.T) {
 	}{
 		{"git", ".git"},
 		{"idea", ".idea"},
+		{"legacy_loopai_data", ".ralphex"},
 		{"vscode", ".vscode"},
 		{"node_modules", "node_modules"},
 		{"vendor", "vendor"},
