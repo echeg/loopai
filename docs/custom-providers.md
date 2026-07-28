@@ -66,7 +66,7 @@ The executor also recognizes `message_stop` events, but wrapper scripts don't ne
 
 ### Signal detection
 
-loopai prompts instruct the agent to emit signals like `<<<RALPHEX:COMPLETED>>>` or `<<<RALPHEX:FAILED>>>` in its output. These signals must appear in the text content of `content_block_delta` or `result` events. The wrapper doesn't need to handle signals — as long as the underlying tool follows the prompt instructions and the text passes through, signals will be detected automatically.
+loopai prompts instruct the agent to emit phase-specific signals such as `<<<RALPHEX:ALL_TASKS_DONE>>>` when task execution completes, `<<<RALPHEX:TASK_FAILED>>>` on an unrecoverable failure, or `<<<RALPHEX:REVIEW_DONE>>>` when a review finds no issues. These signals must appear in the text content of `content_block_delta` or `result` events. The wrapper doesn't need to handle signals — as long as the underlying tool follows the prompt instructions and the text passes through, signals will be detected automatically.
 
 ### Argument handling
 
@@ -580,7 +580,7 @@ echo '{"type":"result","result":""}'
 - Ensure `jq` is installed and accessible
 
 **Signals not detected:**
-- The model must include `<<<RALPHEX:COMPLETED>>>` or `<<<RALPHEX:FAILED>>>` in its text output
+- The model must include the phase-specific signal requested by the prompt, such as `<<<RALPHEX:ALL_TASKS_DONE>>>`, `<<<RALPHEX:TASK_FAILED>>>`, or `<<<RALPHEX:REVIEW_DONE>>>`, in its text output
 - Check that the prompt is passed through correctly (not truncated or escaped)
 - Test manually: run the wrapper with a prompt that includes signal instructions
 
