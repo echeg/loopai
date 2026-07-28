@@ -2,12 +2,6 @@
   <img src="assets/ralphex-wordmark-split.png" alt="ralphex" width="400">
 </p>
 
-<p align="center">
-  <a href="https://github.com/umputun/ralphex/actions/workflows/ci.yml"><img src="https://github.com/umputun/ralphex/actions/workflows/ci.yml/badge.svg" alt="build"></a>
-  <a href="https://coveralls.io/github/umputun/ralphex?branch=master"><img src="https://coveralls.io/repos/github/umputun/ralphex/badge.svg?branch=master" alt="Coverage Status"></a>
-  <a href="https://goreportcard.com/report/github.com/umputun/ralphex"><img src="https://goreportcard.com/badge/github.com/umputun/ralphex?v=2" alt="Go Report Card"></a>
-</p>
-
 <h2 align="center">Autonomous plan execution with Claude Code and codex</h2>
 
 *ralphex is a standalone CLI tool that runs in your terminal from the root of a git repository. It orchestrates Claude Code or codex to execute implementation plans autonomously - no IDE plugins or cloud services required, just a coding agent and a single binary.*
@@ -384,16 +378,6 @@ After plan creation, you can choose to continue with immediate execution or exit
 ```bash
 go install github.com/umputun/ralphex/cmd/ralphex@latest
 ```
-
-### Using Homebrew
-
-```bash
-brew install umputun/apps/ralphex
-```
-
-### From releases
-
-Download the appropriate binary from [releases](https://github.com/umputun/ralphex/releases).
 
 Example with custom port:
 ```bash
@@ -1198,25 +1182,13 @@ ralphex works standalone from the terminal. Optionally, you can add slash comman
 
 The ralphex CLI is the primary interface. Claude Code skills (`/ralphex`, `/ralphex-plan`, `/ralphex-adopt`, and `/ralphex-update`) are optional convenience commands.
 
-**Via Plugin Marketplace (Recommended)**
+**Manual Installation**
 
-```bash
-# Add ralphex marketplace
-/plugin marketplace add umputun/ralphex
-
-# Install the plugin
-/plugin install ralphex@ralphex
-```
-
-Benefits: Auto-updates when marketplace refreshes (at Claude Code startup).
-
-**Manual Installation (Alternative)**
-
-The slash command definitions are hosted at:
-- [`/ralphex`](https://ralphex.com/assets/claude/ralphex.md)
-- [`/ralphex-plan`](https://ralphex.com/assets/claude/ralphex-plan.md)
-- [`/ralphex-adopt`](https://ralphex.com/assets/claude/ralphex-adopt.md)
-- [`/ralphex-update`](https://ralphex.com/assets/claude/ralphex-update.md)
+The slash command definitions are included in this repository:
+- [`/ralphex`](assets/claude/ralphex.md)
+- [`/ralphex-plan`](assets/claude/ralphex-plan.md)
+- [`/ralphex-adopt`](assets/claude/ralphex-adopt.md)
+- [`/ralphex-update`](assets/claude/ralphex-update.md)
 
 To install, ask Claude Code to "install ralphex slash commands" or manually copy the files to `~/.claude/commands/`.
 

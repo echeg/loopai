@@ -72,25 +72,4 @@ e2e-codex: build
 	@echo ""
 	@echo "Monitor: tail -f /tmp/ralphex-review-test/progress-codex.txt"
 
-prep_site:
-	# prepare docs source directory for zensical
-	rm -rf site/docs-src && mkdir -p site/docs-src
-	cp -fv README.md site/docs-src/index.md
-	cp -rv assets site/docs-src/
-	grep -v -E 'badge|coveralls|goreportcard' site/docs-src/index.md > site/docs-src/index.md.tmp && mv site/docs-src/index.md.tmp site/docs-src/index.md
-	sed 's|](llms.txt)|](/llms.txt)|g' site/docs-src/index.md > site/docs-src/index.md.tmp && mv site/docs-src/index.md.tmp site/docs-src/index.md
-	mkdir -p site/docs-src/stylesheets && cp -fv site/docs/stylesheets/extra.css site/docs-src/stylesheets/
-	# build site structure: landing page + docs subdirectory
-	rm -rf site/site && mkdir -p site/site
-	cp -fv site/docs/index.html site/site/
-	cp -fv site/docs/favicon.png site/site/
-	cp -fv site/docs/robots.txt site/site/
-	cp -fv site/docs/sitemap.xml site/site/
-	cp -rv assets site/site/
-	cp -fv llms.txt site/site/
-	# build site into site/site/docs/ (use venv for PEP 668 compliance)
-	cd site && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/zensical build
-	# copy raw claude assets (not rendered by build)
-	rm -rf site/site/docs/assets/claude && cp -rv assets/claude site/site/docs/assets/
-
-.PHONY: all build test lint fmt race version e2e-setup e2e e2e-ui e2e-prep e2e-review e2e-codex prep_site
+.PHONY: all build test lint fmt race version e2e-setup e2e e2e-ui e2e-prep e2e-review e2e-codex
