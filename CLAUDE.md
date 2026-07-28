@@ -29,6 +29,7 @@ go mod tidy && go mod vendor                             # tidy and re-vendor
 
 ```
 cmd/ralphex/        # main entry point, CLI parsing
+pkg/cmux/           # best-effort cmux terminal sidebar reporting (spinner, phase pill, progress, notifications)
 pkg/config/         # configuration loading, defaults, prompts, agents
 pkg/executor/       # claude and codex CLI execution
 pkg/git/            # git operations (external git CLI)
@@ -67,6 +68,7 @@ docs/plans/         # plan files location
 - Plan format: Checkboxes (`- [ ]` / `- [x]`) belong only in Task sections (`### Task N:` or `### Iteration N:`). The `Task` / `Iteration` keywords are structural tokens matched by `pkg/plan/parse.go` (`taskHeaderPattern`) and MUST stay in English even when plan content is written in another language — task titles and body text may be localized, but the section header keyword is fixed. Success criteria, Overview, and Context should not use checkboxes — they cause extra loop iterations. The task prompt handles them when present, but plan authors should avoid them.
 - Plan file rename tolerance: two layers prevent the task phase looping when a plan file is renamed mid-run. (a) `make_plan.txt` does not ask the LLM to `git mv` the plan into `completed/` — the framework calls `MovePlanToCompleted` at end-of-run idempotently using `r.cfg.PlanFile`'s exact basename. (b) `planLocator.Path` (`pkg/processor/plan_locator.go`) and `MovePlanToCompleted` (`pkg/git/service.go`) probe an alternate-date-format basename (`YYYY-MM-DD-<slug>` ↔ `YYYYMMDD-<slug>`) both alongside the original path (in-place rename) and under `completed/`; the in-place alternate is probed before the `completed/` paths so a current renamed file wins over a stale completed copy. `MovePlanToCompleted` also treats an alternate-named file in the original directory as the move source. `TaskPhase.HasUncompletedTasks` (`pkg/processor/phase/task.go`) treats `fs.ErrNotExist` from `ParsePlanFile` as "no uncompleted tasks" rather than "assume incomplete".
 - Signal-based completion detection (COMPLETED, FAILED, REVIEW_DONE signals) — constants in `pkg/status/`
+- `status.PhaseHolder.OnChange` appends observers rather than replacing one callback — the web dashboard (`pkg/web/broadcast_logger.go`) and the cmux sidebar reporter (`pkg/cmux`) both subscribe, so registering does not clobber an earlier subscriber. Observers fire in registration order, only on an actual phase change, and outside the mutex (so they may call back into the holder); the slice is snapshotted under the lock and a nil callback is ignored at registration
 - Processor phase architecture: `Runner` in `pkg/processor/runner.go` coordinates mode sequencing only. Task, internal review, external review, finalize, and plan creation behavior lives in `pkg/processor/phase` and is injected through consumer-side interfaces in `pkg/processor`. Shared prompt rendering, executor retry/timeout policy, and plan location stay in `pkg/processor`; break handling and git snapshots are phase-owned shared support. Keep new phase behavior out of `Runner`; preserve late-bound setters through `phase.Deps`.
 - Plan creation signals: QUESTION (with JSON payload), PLAN_DRAFT (full draft content), and PLAN_READY
 - Streaming output with timestamps
@@ -204,6 +206,28 @@ Key files:
 - `pkg/processor/phase/signals.go` - runtime phase signal parsers for QUESTION and PLAN_DRAFT, plus signal helpers
 - `pkg/processor/signals.go` - processor compatibility wrappers around phase signal helpers
 - `pkg/config/defaults/prompts/make_plan.txt` - plan creation prompt
+
+### cmux Sidebar Integration
+
+`pkg/cmux` reports run state to the sidebar of the [cmux](https://github.com/manaflow-ai/cmux) terminal: a spinner for the duration of the run, a status pill with the current phase, a progress bar over plan tasks, and notifications when the run waits for input or finishes. Entirely on the ralphex side — it shells out to the public `cmux` CLI, so no cmux-side changes and no dependency on its private socket protocol.
+
+- **Auto-detected, no config flag.** `cmux.New(planFile)` returns `nil` when `CMUX_WORKSPACE_ID` is empty/blank or `cmux` is not in `PATH`. Every exported method is nil-safe with an early `if r == nil { return }`, so callers never nil-check and outside cmux the integration costs nothing. `WrapInput` on a nil reporter returns the original collector unchanged
+- **Best-effort by design.** Indication, not functionality: each call gets a 2s timeout, stdout/stderr are discarded, and errors are swallowed without logging — logging them would pollute the progress file. Nothing here can fail a run
+- **`pkg/processor` and `pkg/processor/phase` are untouched.** Events come from existing points: `status.PhaseHolder` for phases, the plan file for progress, `InputCollector` for questions
+- **Status key is `ralphex`, not `claude_code`.** cmux shows pills with a non-allowlisted key unconditionally, while allowlisted agent keys are hidden unless cmux sees a live PID for that agent. `workspace loading on --id ralphex` is used for the spinner because the workspace lane is computed from live signals, not pills — it is the only route to a real `running` signal that needs neither the agent allowlist nor vault registration. The `needs-attention` lane requires the private socket, so `cmux notify` (blue ring, tab highlight, `Cmd+Shift+U`) substitutes for it
+- **Progress comes from polling the plan file** every 10s in a goroutine started by `Start(ctx)`, counting `plan.TaskStatusDone` against total tasks — so the bar keeps moving during a long task phase without hooking into the phase engines. A missing/unparsable plan file (it may have moved to `completed/`), zero parsed tasks, or a `done/total` pair unchanged since the last tick skip the tick silently; the goroutine keeps running. `Stop()` is `sync.Once`-guarded, waits for the goroutine, then calls `Clear()`
+- **Cleanup MUST hang off the interrupt handler.** cmux has no TTL on the `workspace loading` spinner: a run that exits without clearing it leaves the spinner in the sidebar until cmux itself restarts. `startInterruptWatcher` force-exits via `os.Exit(1)`, where defers never run — so `rep.Stop` is registered in the `cmuxStop` `cleanupHolder` and invoked from the interrupt cleanup callback. It runs as `go cmuxStop.call()` alongside `wtCleanup.call()` rather than before or after it, because both share the same 2s bounded force-exit budget and a stuck worktree removal must not be what leaves the spinner hanging
+- `cleanupHolder` (formerly `worktreeCleanupFn`) is the shared mutex-guarded holder type for both worktree removal and the sidebar reset; `set` before `call` is not guaranteed, so `call` on an unset holder is a no-op
+
+Wiring (both execution funnels in `cmd/ralphex/main.go`):
+- `executePlan` — reporter created after `setupProgressLogger`, `Start(ctx)`, `defer rep.Stop()` next to `defer plr.closeLog()`, `plr.holder.OnChange(rep.OnPhase)` registered after the dashboard so both subscriptions coexist
+- `runPlanMode` — same, plus `collector = rep.WrapInput(collector)` before `r.SetInputCollector`, and an explicit `rep.Stop()` before handing off to `runWithWorktree`/`executePlan`: otherwise the deferred plan-mode `Stop` would tear down the sidebar of the already-started implementation run
+- `notifyCmuxCompletion` / `cmuxCompletionNotice` own the end-of-run notification for success and failure; `ErrUserAborted` (including wrapped) sends nothing — the decision lives in `cmuxCompletionNotice`, not at the call sites
+
+Key files:
+- `pkg/cmux/cmux.go` - `Reporter`, `commandRunner` (fake in tests, real binary never spawned), phase→pill mapping, plan polling, `WrapInput`
+- `pkg/status/phase_holder.go` - `OnChange` appends observers (see Key Patterns)
+- `cmd/ralphex/main.go` - `cleanupHolder`, `cmuxStop` wiring, `notifyCmuxCompletion`
 
 ## Platform Support
 

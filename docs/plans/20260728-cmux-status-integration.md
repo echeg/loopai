@@ -325,11 +325,22 @@ cmux не видит живой PID соответствующего агент�
 
 ### Task 8: [Final] Update documentation
 
-- [ ] добавить раздел про интеграцию с cmux в `CLAUDE.md` (что делает, где точки включения,
-      почему очистка обязана висеть на interrupt-хендлере)
-- [ ] добавить пользовательское описание в `llms.txt`: что появляется в сайдбаре, что интеграция
-      включается автоматически и требует только запуска ralphex из терминала cmux
-- [ ] дописать `pkg/cmux/` в дерево «Project Structure» в `CLAUDE.md`
+- [x] добавить раздел про интеграцию с cmux в `CLAUDE.md` (что делает, где точки включения,
+      почему очистка обязана висеть на interrupt-хендлере) — новый раздел «cmux Sidebar Integration»
+      после «Plan Creation Mode»: авто-детект и nil-safety, best-effort с проглатыванием ошибок,
+      неприкосновенность `pkg/processor`, обоснование ключа `ralphex` и `workspace loading`,
+      поллинг plan-файла, обязательная очистка через `cmuxStop`/`cleanupHolder` на force-exit,
+      точки включения в `executePlan`/`runPlanMode` и `notifyCmuxCompletion`, список ключевых файлов;
+      ➕ дополнительно бullet в «Key Patterns» про `PhaseHolder.OnChange` со списком наблюдателей —
+      контракт общего типа, его читают при добавлении новых подписчиков фаз, а не в разделе про cmux
+- [x] добавить пользовательское описание в `llms.txt`: что появляется в сайдбаре, что интеграция
+      включается автоматически и требует только запуска ralphex из терминала cmux — блок
+      «cmux sidebar integration» рядом с «Notifications»
+- [x] дописать `pkg/cmux/` в дерево «Project Structure» в `CLAUDE.md`
+- [x] `make test` — задача меняет только markdown (`git diff --stat`: `CLAUDE.md`, `llms.txt`),
+      Go-файлы не тронуты, поэтому `make lint` не затрагивается. ⚠️ в `make test` по-прежнему падает
+      `cmd/ralphex` `TestPlanModeIntegration/plan_mode_progress_file_naming` — предсуществующий
+      отказ, воспроизведён на чистом дереве в задачах 2-7, к документации отношения не имеет
 
 ## Technical Details
 

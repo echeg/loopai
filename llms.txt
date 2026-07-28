@@ -219,6 +219,18 @@ Requirements: codex CLI ≥ 0.130.0. Older versions silently ignore unknown `-c`
 
 **Notifications** (`notify_*` fields in config): Optional alerts on completion/failure via `telegram`, `email`, `slack`, `webhook`, or `custom` script. Disabled by default. See `docs/notifications.md` for setup.
 
+**cmux sidebar integration:** when ralphex runs in a terminal of the [cmux](https://github.com/manaflow-ai/cmux) macOS terminal, it reports its state to the cmux sidebar:
+
+- a spinner for the duration of the run, and the workspace lane switches to `working`
+- a status pill in the tab row with the current phase (`task`, `review`, `external review`, `evaluating findings`, `finalize`, `planning`)
+- a progress bar over the plan's tasks, updated from the plan file while the run proceeds (`3/7 tasks`)
+- a notification when the run stops and waits for you — a `--plan` question or a plan draft ready for review
+- a notification when the run finishes, with the outcome (nothing is sent when you abort the run yourself)
+
+Nothing to configure and no flag to pass: the integration turns itself on when the `cmux` CLI is in `PATH` and `CMUX_WORKSPACE_ID` is set, which cmux injects into every terminal it owns. Outside cmux it is a complete no-op. It only ever calls the public `cmux` CLI, so no cmux-side setup is needed. Indication is best-effort — a failing or slow `cmux` call is ignored and never affects the run, and errors are not written to the progress file. The sidebar is cleared on normal completion, on failure, and on Ctrl+C including the force-exit path, so a stopped run does not leave a spinner behind.
+
+This is what makes several parallel ralphex runs in different cmux workspaces tellable apart at a glance — each workspace shows its own phase and task progress.
+
 Run `ralphex --init` to create local `.ralphex/` project config with commented-out defaults.
 
 Run `ralphex --reset` to restore default configuration interactively.
