@@ -289,16 +289,39 @@ cmux не видит живой PID соответствующего агент�
 
 ### Task 7: Verify acceptance criteria
 
-- [ ] проверить, что все требования из Overview реализованы
-- [ ] проверить, что вне cmux (нет бинаря / нет `CMUX_WORKSPACE_ID`) ни одна команда не запускается
-- [ ] проверить, что `pkg/processor` и `pkg/processor/phase` не изменялись (`git diff --stat`)
-- [ ] запустить полный набор тестов: `make test`
-- [ ] запустить e2e веб-дашборда, если окружение позволяет: `go test -tags=e2e -timeout=10m ./e2e/...`
-- [ ] запустить линтер: `make lint` — все замечания исправить
-- [ ] проверить сборку под Windows: `GOOS=windows GOARCH=amd64 go build ./...` (пакет не должен
-      использовать unix-специфичные вызовы)
-- [ ] проверить покрытие нового пакета — не ниже 80%
-- [ ] сверить контрольные суммы `~/.config/ralphex/` до и после прогона тестов — конфиг не тронут
+- [x] проверить, что все требования из Overview реализованы — все пять сверены по `cmd/ralphex/main.go`:
+      спиннер (`rep.Start` на 638/1479 → `LoadingOn`), пилюля фазы (`holder.OnChange(rep.OnPhase)`
+      на 669/1484), прогресс-бар (поллинг плана в горутине `Start`), уведомление на ожидании ввода
+      (`rep.WrapInput(collector)` на 1537), уведомление о завершении (`notifyCmuxCompletion`
+      на 725/739/1543/1550). Гарантированная очистка на force-exit — `cmuxStop` (`cleanupHolder`)
+      и `go cmuxStop.call()` на строке 261
+- [x] проверить, что вне cmux (нет бинаря / нет `CMUX_WORKSPACE_ID`) ни одна команда не запускается —
+      `New` возвращает `nil` при пустом `CMUX_WORKSPACE_ID` или отсутствии бинаря; все экспортируемые
+      методы nil-safe (`exec`, `Start`, `Stop`, `WrapInput` имеют ранний возврат), покрыто тестами
+      `TestNewUnsetWorkspaceEnv`, `TestReporterNilReceiver`, `TestReporterWrapInputNilReporter`
+- [x] проверить, что `pkg/processor` и `pkg/processor/phase` не изменялись (`git diff --stat`) —
+      в диффе `master...HEAD` этих путей нет вовсе
+- [x] запустить полный набор тестов: `make test` — все пакеты зелёные, `pkg/cmux` 100% покрытия.
+      ⚠️ падает один предсуществующий тест `cmd/ralphex`
+      `TestPlanModeIntegration/plan_mode_progress_file_naming`: воспроизведён идентично на `master`
+      в отдельном worktree (`"execution context: context canceled" does not contain "plan creation"`),
+      к работам этого плана отношения не имеет
+- [x] запустить e2e веб-дашборда, если окружение позволяет: `go test -tags=e2e -timeout=10m ./e2e/...`
+      — ⚠️ падает один предсуществующий тест `TestPhaseNavigation/all_tabs_visible`: ожидает легаси-вкладки
+      `Claude Review` / `Codex Review`, переименованные работой symmetric-cross-model-external-review.
+      Воспроизведён идентично на `master`. UI дашборда этим планом не затрагивался
+- [x] запустить линтер: `make lint` — по изменённым файлам чисто. ⚠️ `golangci-lint` не установлен
+      в PATH, прогонялся `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.6.2`
+      (проект версию не пиннит, CI берёт `golangci-lint-action@v9`). Остаются 3 замечания `prealloc`
+      в `pkg/config/defaults.go`, `pkg/git/external.go`, `pkg/notify/notify.go` — все три файла
+      не менялись ни этим планом, ни веткой целиком (`git log master..HEAD -- <files>` пуст),
+      правка нарушила бы правило «no general improvements to unrelated code»
+- [x] проверить сборку под Windows: `GOOS=windows GOARCH=amd64 go build ./...` (пакет не должен
+      использовать unix-специфичные вызовы) — exit 0
+- [x] проверить покрытие нового пакета — не ниже 80% — `pkg/cmux` 100.0%, зелёный под `-race`
+      (вместе с `pkg/status`)
+- [x] сверить контрольные суммы `~/.config/ralphex/` до и после прогона тестов — конфиг не тронут:
+      19 файлов, `diff` до/после пуст
 
 ### Task 8: [Final] Update documentation
 
