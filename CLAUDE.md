@@ -48,7 +48,6 @@ scripts/copilot-as-claude/ # GitHub Copilot CLI wrapper for Claude-compatible ou
 scripts/gemini-as-claude/ # gemini wrapper for Claude-compatible output
 scripts/agy-as-claude/ # Antigravity (agy) CLI wrapper for Claude-compatible output
 scripts/pi-as-claude/ # pi wrapper for Claude-compatible output
-scripts/hg2git/     # Mercurial-to-git translation script with tests
 scripts/opencode/   # opencode wrapper scripts with tests
 scripts/internal/   # internal development and CI scripts
 docs/plans/         # plan files location
@@ -130,7 +129,7 @@ Single public entry point: `git.NewService(path, logger, vcsCmd...) (*Service, e
 - All git operations are methods on `Service` (CreateBranchForPlan, CreateWorktreeForPlan, MovePlanToCompleted, EnsureLocalGitignore, etc.)
 - `Logger` interface for dependency injection, compatible with `*color.Color`
 - Uses `backend` interface internally, implemented by `externalBackend` which shells out to the configured VCS command
-- Optional `vcsCmd` parameter overrides the default `"git"` command (e.g., path to `hg2git.sh` translation script)
+- Optional `vcsCmd` parameter overrides the default `"git"` command with a Git-compatible executable
 
 Key files:
 - `pkg/git/service.go` - `Service` type, `backend` interface
@@ -246,7 +245,7 @@ GOOS=windows GOARCH=amd64 go build ./...
 - `external_review_tool` defaults to `auto`; `external_review_model` independently selects the external provider model/effort. CLI flags `--external-review-tool`/`--external-review-model` take precedence. Empty external model means `opus:xhigh` for Claude or `codex_model`/`codex_reasoning_effort` for Codex
 - `default_branch` config option: override auto-detected default branch for review diffs and for branch/worktree creation
 - `max_iterations` config option: override CLI default (50) for maximum task iterations per plan (CLI flag `--max-iterations` takes precedence)
-- `vcs_command` config option: override the VCS binary used by the git backend (default: `"git"`). Set to a translation script path (e.g., `scripts/hg2git/hg2git.sh`) to use ralphex with Mercurial repos. See `docs/hg-support.md`
+- `vcs_command` config option: override the Git-compatible executable used by the VCS backend (default: `"git"`)
 - `commit_trailer` config option: trailer line appended to all ralphex-orchestrated git commits (both Go-code commits and LLM-prompted commits). When set, the trailer is appended after a blank line at the end of every commit message. Example: `commit_trailer = Co-authored-by: ralphex <noreply@ralphex.com>`. Disabled by default (empty)
 - Notification config: `notify_channels`, `notify_on_error`, `notify_on_complete`, `notify_timeout_ms`, plus channel-specific `notify_*` fields (see `docs/notifications.md`)
 - `review_patience` config option: terminate external review after N consecutive unchanged rounds (0 = disabled). CLI flag `--review-patience` takes precedence

@@ -202,7 +202,7 @@ Codex defaults that differ by mode:
 
 Requirements: codex CLI ≥ 0.130.0. Older versions silently ignore unknown `-c` overrides, so a misconfigured run will not error visibly. There is no runtime version check; verify with `codex --version`.
 
-**Configurable VCS backend:** `vcs_command` config option overrides the default `git` binary for all backend operations. Set to a translation script (e.g., `scripts/hg2git/hg2git.sh`) to use ralphex with Mercurial repos. The included `hg2git.sh` maps git subcommands to hg equivalents with phase-based commit logic (amend on draft, commit on public). See `docs/hg-support.md` for setup.
+**Configurable VCS backend:** `vcs_command` overrides the default `git` executable for backend operations. The replacement must accept Git CLI arguments and produce compatible output; this supports logging, policy enforcement, and project-specific Git wrappers.
 
 **Commit trailer:** `commit_trailer` config option appends a custom trailer line to all ralphex-orchestrated git commits (both Go-code commits and LLM-prompted commits). When set, the trailer is appended after a blank line at the end of every commit message. Example: `commit_trailer = Co-authored-by: ralphex <noreply@ralphex.com>`. Disabled by default.
 

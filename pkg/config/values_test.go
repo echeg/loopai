@@ -2002,18 +2002,18 @@ func TestValuesLoader_Load_VcsCommand(t *testing.T) {
 	t.Run("parse vcs_command", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		cfgPath := filepath.Join(tmpDir, "config")
-		require.NoError(t, os.WriteFile(cfgPath, []byte(`vcs_command = /usr/local/bin/hg2git.sh`), 0o600))
+		require.NoError(t, os.WriteFile(cfgPath, []byte(`vcs_command = /usr/local/bin/git-wrapper`), 0o600))
 
 		loader := newValuesLoader(defaultsFS)
 		values, err := loader.Load("", cfgPath)
 		require.NoError(t, err)
-		assert.Equal(t, "/usr/local/bin/hg2git.sh", values.VcsCommand)
+		assert.Equal(t, "/usr/local/bin/git-wrapper", values.VcsCommand)
 	})
 
 	t.Run("tilde expansion", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		cfgPath := filepath.Join(tmpDir, "config")
-		require.NoError(t, os.WriteFile(cfgPath, []byte(`vcs_command = ~/scripts/hg2git.sh`), 0o600))
+		require.NoError(t, os.WriteFile(cfgPath, []byte(`vcs_command = ~/scripts/git-wrapper`), 0o600))
 
 		loader := newValuesLoader(defaultsFS)
 		values, err := loader.Load("", cfgPath)
@@ -2021,7 +2021,7 @@ func TestValuesLoader_Load_VcsCommand(t *testing.T) {
 
 		home, err := os.UserHomeDir()
 		require.NoError(t, err)
-		assert.Equal(t, home+"/scripts/hg2git.sh", values.VcsCommand)
+		assert.Equal(t, home+"/scripts/git-wrapper", values.VcsCommand)
 	})
 
 	t.Run("default from embedded is git", func(t *testing.T) {
@@ -2048,16 +2048,16 @@ func TestValuesLoader_Load_VcsCommand(t *testing.T) {
 func TestValues_mergeFrom_VcsCommand(t *testing.T) {
 	t.Run("non-empty overrides", func(t *testing.T) {
 		dst := Values{VcsCommand: "git"}
-		src := Values{VcsCommand: "/path/to/hg2git.sh"}
+		src := Values{VcsCommand: "/path/to/git-wrapper"}
 		dst.mergeFrom(&src)
-		assert.Equal(t, "/path/to/hg2git.sh", dst.VcsCommand)
+		assert.Equal(t, "/path/to/git-wrapper", dst.VcsCommand)
 	})
 
 	t.Run("empty does not overwrite", func(t *testing.T) {
-		dst := Values{VcsCommand: "/path/to/hg2git.sh"}
+		dst := Values{VcsCommand: "/path/to/git-wrapper"}
 		src := Values{VcsCommand: ""}
 		dst.mergeFrom(&src)
-		assert.Equal(t, "/path/to/hg2git.sh", dst.VcsCommand)
+		assert.Equal(t, "/path/to/git-wrapper", dst.VcsCommand)
 	})
 }
 

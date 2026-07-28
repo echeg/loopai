@@ -143,13 +143,13 @@ progress-логи. Плюс в репозитории лежит ~6300 стро�
 
 ### Task 2: Удалить поддержку Mercurial
 
-- [ ] удалить каталог `scripts/hg2git/` и `docs/hg-support.md`
-- [ ] убрать упоминания hg/Mercurial из `README.md`, `CLAUDE.md`, `llms.txt`
-- [ ] **оставить** опцию `vcs_command` и её обвязку в `pkg/git` — это универсальный механизм,
+- [x] удалить каталог `scripts/hg2git/` и `docs/hg-support.md`
+- [x] убрать упоминания hg/Mercurial из `README.md`, `CLAUDE.md`, `llms.txt`
+- [x] **оставить** опцию `vcs_command` и её обвязку в `pkg/git` — это универсальный механизм,
       не привязанный к Mercurial; в описании опции убрать hg2git как пример
-- [ ] обновить комментарий к `vcs_command` в `pkg/config/defaults/config` (строка 244)
-- [ ] проверить отсутствие ссылок: `grep -ri "hg2git\|mercurial"` по дереву кроме исключений выше
-- [ ] `make test` и `make lint` — должны пройти до начала задачи 3
+- [x] обновить комментарий к `vcs_command` в `pkg/config/defaults/config` (строка 244)
+- [x] проверить отсутствие ссылок: `grep -ri "hg2git\|mercurial"` по дереву кроме исключений выше
+- [x] `make test` и `make lint` — должны пройти до начала задачи 3
 
 ### Task 3: Удалить инфраструктуру релизов и сайт
 

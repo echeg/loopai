@@ -774,7 +774,7 @@ Provider-related CLI flags (`--claude-command`, `--claude-args`, `--external-rev
 | `preserve_anthropic_api_key` | Pass `ANTHROPIC_API_KEY` through to the claude child process (for users authenticating Claude Code via API key rather than OAuth/keychain). Default `false` strips the key so a host-set value cannot silently override OAuth credentials | `false` |
 | `plans_dir` | Plans directory | `docs/plans` |
 | `default_branch` | Override auto-detected default branch for review diffs and for branch/worktree creation | auto-detect |
-| `vcs_command` | VCS command for the git backend (set to a translation script for hg repos) | `git` |
+| `vcs_command` | Git-compatible command used by the VCS backend | `git` |
 | `commit_trailer` | Trailer line appended to all ralphex-orchestrated git commits | disabled |
 | `color_task` | Task execution phase color (hex) | `#2e8b57` |
 | `color_review` | Internal review phase color (hex) | `#1a9e9e` |
@@ -966,16 +966,16 @@ The wrappers under `scripts/codex-as-claude/`, `scripts/copilot-as-claude/`, `sc
 
 ### Configurable VCS Backend
 
-ralphex can work with Mercurial repositories through the `vcs_command` config option and custom prompt files.
+The `vcs_command` config option replaces the `git` executable used for backend operations. The
+configured command must accept the same arguments and produce output compatible with the Git CLI.
 
 ```ini
 # in ~/.config/ralphex/config or .ralphex/config
-vcs_command = ~/.config/ralphex/scripts/hg2git.sh
+vcs_command = ~/.config/ralphex/scripts/git-wrapper.sh
 ```
 
-A reference translation script is included at [`scripts/hg2git/hg2git.sh`](https://github.com/umputun/ralphex/blob/master/scripts/hg2git/hg2git.sh). It maps the ~15 git subcommands ralphex uses internally to Mercurial equivalents, with phase-based commit logic (amend on draft, commit on public). Requires bash 4.0+ (for associative arrays used in diff stats parsing).
-
-You will also need to customise prompt files to replace git commands that Claude executes as bash commands during reviews. See [Mercurial support documentation](https://github.com/umputun/ralphex/blob/master/docs/hg-support.md) for full setup instructions, prompt replacement examples, `.hgignore` setup, and known limitations.
+This is useful for logging, policy enforcement, or routing Git operations through a project-specific
+wrapper. Prompt templates invoke Git independently, so `vcs_command` only affects backend operations.
 
 <details markdown>
 <summary><b>FAQ</b></summary>
@@ -1002,7 +1002,7 @@ Yes, use `--review` flag to run the full review pipeline (Phase 2 â†’ Phase 3 â†
 
 **Can I run ralphex in a non-git directory?**
 
-Not directly, but ralphex supports Mercurial repos through the `vcs_command` config option and a translation script. See [Configurable VCS Backend](#configurable-vcs-backend) for setup.
+No. ralphex requires a Git repository for branch and commit isolation.
 
 **What if my repository has no commits?**
 

@@ -242,8 +242,8 @@ plans_dir = docs/plans
 # ------------------------------------------------------------------------------
 
 # vcs_command: the VCS command used by ralphex's git backend
-# set to a custom script (e.g., ~/scripts/hg2git.sh) to use Mercurial
-# the script receives the same arguments as git and must translate them
+# set to a custom Git-compatible executable or wrapper
+# the command receives the same arguments as git and must return compatible output
 # default: git
 vcs_command = git
 
