@@ -1,8 +1,8 @@
 # ralphex configuration
-# copy this file to ~/.config/ralphex/config and modify as needed
+# copy this file to ~/.config/loopai/config and modify as needed
 #
 # config values in this file can be overridden by CLI flags.
-# precedence (highest to lowest): CLI flags > local config (.ralphex/) > global config (~/.config/ralphex/) > embedded defaults
+# precedence (highest to lowest): CLI flags > local config (.loopai/) > global config (~/.config/loopai/) > embedded defaults
 #
 # NOTE: inline comments (e.g., "key = value # comment") are NOT supported.
 # use full-line comments starting with # on a separate line instead.
@@ -122,7 +122,7 @@ external_review_model =
 # script should output findings to stdout; the primary evaluator emits
 # <<<RALPHEX:EXTERNAL_REVIEW_DONE>>> when the reviewer reports no issues
 # customized prompts using legacy <<<RALPHEX:CODEX_REVIEW_DONE>>> remain supported
-# example: custom_review_script = ~/.config/ralphex/scripts/my-review.sh
+# example: custom_review_script = ~/.config/loopai/scripts/my-review.sh
 # custom_review_script =
 
 # ------------------------------------------------------------------------------
@@ -162,7 +162,7 @@ move_plan_on_completion = true
 # ------------------------------------------------------------------------------
 
 # use_worktree: run each plan in an isolated git worktree
-# creates .ralphex/worktrees/<plan-name> for parallel execution
+# creates .loopai/worktrees/<plan-name> for parallel execution
 # default: false
 # use_worktree = false
 
@@ -375,7 +375,7 @@ codex_limit_patterns = Rate limit exceeded,rate limit reached,429 Too Many Reque
 # notify_custom_script: path to custom notification script
 # script receives Result JSON on stdin, exit 0 = success, non-zero = failure
 # timeout controlled by notify_timeout_ms
-# example: notify_custom_script = ~/.config/ralphex/scripts/notify.sh
+# example: notify_custom_script = ~/.config/loopai/scripts/notify.sh
 # notify_custom_script =
 
 # ------------------------------------------------------------------------------

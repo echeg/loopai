@@ -1313,7 +1313,7 @@ func TestValuesLoader_Load_CustomReviewScript_TildeExpansion(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config")
 
-	configContent := `custom_review_script = ~/.config/ralphex/scripts/my-review.sh`
+	configContent := `custom_review_script = ~/.config/loopai/scripts/my-review.sh`
 	require.NoError(t, os.WriteFile(configPath, []byte(configContent), 0o600))
 
 	loader := newValuesLoader(defaultsFS)
@@ -1323,7 +1323,7 @@ func TestValuesLoader_Load_CustomReviewScript_TildeExpansion(t *testing.T) {
 	// tilde should be expanded to home directory
 	home, homeErr := os.UserHomeDir()
 	require.NoError(t, homeErr)
-	expected := home + "/.config/ralphex/scripts/my-review.sh"
+	expected := home + "/.config/loopai/scripts/my-review.sh"
 	assert.Equal(t, expected, values.CustomReviewScript)
 }
 
@@ -1352,7 +1352,7 @@ func TestExpandTilde(t *testing.T) {
 		expected string
 	}{
 		{name: "tilde with slash", input: "~/some/path", expected: home + "/some/path"},
-		{name: "tilde with nested path", input: "~/.config/ralphex/script.sh", expected: home + "/.config/ralphex/script.sh"},
+		{name: "tilde with nested path", input: "~/.config/loopai/script.sh", expected: home + "/.config/loopai/script.sh"},
 		{name: "absolute path unchanged", input: "/absolute/path", expected: "/absolute/path"},
 		{name: "relative path unchanged", input: "relative/path", expected: "relative/path"},
 		{name: "empty string", input: "", expected: ""},
@@ -1456,13 +1456,13 @@ notify_custom_script = /usr/local/bin/notify.sh
 	})
 
 	t.Run("tilde expansion for custom script", func(t *testing.T) {
-		data := []byte(`notify_custom_script = ~/.config/ralphex/scripts/notify.sh`)
+		data := []byte(`notify_custom_script = ~/.config/loopai/scripts/notify.sh`)
 		values, err := vl.parseValuesFromBytes(data)
 		require.NoError(t, err)
 
 		home, homeErr := os.UserHomeDir()
 		require.NoError(t, homeErr)
-		assert.Equal(t, home+"/.config/ralphex/scripts/notify.sh", values.NotifyCustomScript)
+		assert.Equal(t, home+"/.config/loopai/scripts/notify.sh", values.NotifyCustomScript)
 	})
 }
 

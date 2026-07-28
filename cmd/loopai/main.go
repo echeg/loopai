@@ -65,7 +65,7 @@ type opts struct {
 	Port                    int           `short:"p" long:"port" default:"8080" description:"web dashboard port"`
 	Host                    string        `long:"host" default:"127.0.0.1" env:"RALPHEX_WEB_HOST" description:"web dashboard listen address"`
 	Watch                   []string      `short:"w" long:"watch" description:"directories to watch for progress files (repeatable)"`
-	Init                    bool          `long:"init" description:"initialize local .ralphex/ config directory in current project"`
+	Init                    bool          `long:"init" description:"initialize local .loopai/ config directory in current project"`
 	Reset                   bool          `long:"reset" description:"interactively reset global config to embedded defaults"`
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
 	ConfigDir               string        `long:"config-dir" env:"RALPHEX_CONFIG_DIR" description:"custom config directory"`
@@ -822,7 +822,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		return fmt.Errorf("get working directory: %w", err)
 	}
 
-	// create progress logger BEFORE chdir so progress files land in main repo's .ralphex/progress/.
+	// create progress logger BEFORE chdir so progress files land in main repo's .loopai/progress/.
 	// uses the branch name derived from the plan file above, since gitSvc still points at the main
 	// repo (on master).
 	holder := &status.PhaseHolder{}
@@ -1692,7 +1692,7 @@ func handleEarlyFlags(o opts) (bool, error) {
 	return false, nil
 }
 
-// initLocal creates .ralphex/ config directory in current project.
+// initLocal creates .loopai/ config directory in current project.
 // requires running from repository root to avoid creating config in a subdirectory
 // that would never be found during normal execution.
 func initLocal(configDir string) error {
@@ -1713,7 +1713,7 @@ func initLocal(configDir string) error {
 		}
 	}
 
-	const localDir = ".ralphex"
+	const localDir = ".loopai"
 	if err := config.InitLocal(localDir); err != nil {
 		return fmt.Errorf("init local config: %w", err)
 	}
@@ -1729,7 +1729,7 @@ func fileExists(path string) bool {
 
 // validateRepoRoot runs the configured VCS command to check we're at the repo root.
 // stricter than newExternalBackend (which only validates "inside a repo"):
-// here we require cwd == repo root so .ralphex/ is created at the right level.
+// here we require cwd == repo root so .loopai/ is created at the right level.
 func validateRepoRoot(vcsCommand string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

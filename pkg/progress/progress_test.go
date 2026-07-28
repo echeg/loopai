@@ -44,12 +44,12 @@ func TestNewLogger(t *testing.T) {
 		wantBase string
 		wantDir  string
 	}{
-		{name: "full mode with plan", cfg: Config{PlanFile: "docs/plans/feature.md", Mode: "full", Branch: "main"}, wantBase: "progress-feature.txt", wantDir: ".ralphex/progress"},
-		{name: "review mode with plan", cfg: Config{PlanFile: "docs/plans/feature.md", Mode: "review", Branch: "main"}, wantBase: "progress-feature-review.txt", wantDir: ".ralphex/progress"},
-		{name: "codex-only mode with plan", cfg: Config{PlanFile: "docs/plans/feature.md", Mode: "codex-only", Branch: "main"}, wantBase: "progress-feature-codex.txt", wantDir: ".ralphex/progress"},
-		{name: "full mode no plan", cfg: Config{Mode: "full", Branch: "main"}, wantBase: "progress.txt", wantDir: ".ralphex/progress"},
-		{name: "review mode no plan", cfg: Config{Mode: "review", Branch: "main"}, wantBase: "progress-review.txt", wantDir: ".ralphex/progress"},
-		{name: "codex-only mode no plan", cfg: Config{Mode: "codex-only", Branch: "main"}, wantBase: "progress-codex.txt", wantDir: ".ralphex/progress"},
+		{name: "full mode with plan", cfg: Config{PlanFile: "docs/plans/feature.md", Mode: "full", Branch: "main"}, wantBase: "progress-feature.txt", wantDir: ".loopai/progress"},
+		{name: "review mode with plan", cfg: Config{PlanFile: "docs/plans/feature.md", Mode: "review", Branch: "main"}, wantBase: "progress-feature-review.txt", wantDir: ".loopai/progress"},
+		{name: "codex-only mode with plan", cfg: Config{PlanFile: "docs/plans/feature.md", Mode: "codex-only", Branch: "main"}, wantBase: "progress-feature-codex.txt", wantDir: ".loopai/progress"},
+		{name: "full mode no plan", cfg: Config{Mode: "full", Branch: "main"}, wantBase: "progress.txt", wantDir: ".loopai/progress"},
+		{name: "review mode no plan", cfg: Config{Mode: "review", Branch: "main"}, wantBase: "progress-review.txt", wantDir: ".loopai/progress"},
+		{name: "codex-only mode no plan", cfg: Config{Mode: "codex-only", Branch: "main"}, wantBase: "progress-codex.txt", wantDir: ".loopai/progress"},
 	}
 
 	for _, tc := range tests {
@@ -1442,7 +1442,7 @@ func TestLogger_PlanModeFilename(t *testing.T) {
 			defer l.Close()
 
 			assert.Equal(t, tc.wantBase, filepath.Base(l.Path()))
-			assert.Contains(t, filepath.ToSlash(l.Path()), ".ralphex/progress")
+			assert.Contains(t, filepath.ToSlash(l.Path()), ".loopai/progress")
 
 			content, err := os.ReadFile(l.Path())
 			require.NoError(t, err)

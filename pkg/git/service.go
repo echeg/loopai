@@ -278,7 +278,7 @@ func (s *Service) CreateBranchForPlan(planFile, defaultBranch, branchOverride st
 
 // CreateWorktreeForPlan creates an isolated git worktree for plan execution.
 // must be called from the default branch (same guard as CreateBranchForPlan).
-// derives branch name from plan file, creates worktree at .ralphex/worktrees/<branch>.
+// derives branch name from plan file, creates worktree at .loopai/worktrees/<branch>.
 // returns (worktree path, planNeedsCommit, error). when planNeedsCommit is true the caller
 // must commit the plan file in the worktree context (via CommitPlanFile on the worktree's
 // git service) so the commit lands on the feature branch rather than the default branch.
@@ -290,7 +290,7 @@ func (s *Service) CreateWorktreeForPlan(planFile, defaultBranch, branchOverride 
 	// check worktree existence early, before preparePlanBranch runs hasChangesOtherThan
 	// (an existing worktree dir would show up as untracked and fail the dirty check)
 	earlyBranch := s.EffectiveBranchName(planFile, branchOverride)
-	wtPath := filepath.Join(s.repo.root(), ".ralphex", "worktrees", earlyBranch)
+	wtPath := filepath.Join(s.repo.root(), ".loopai", "worktrees", earlyBranch)
 
 	// prune stale worktree entries first
 	if pruneErr := s.repo.pruneWorktrees(); pruneErr != nil {
@@ -589,17 +589,17 @@ func (s *Service) DiffStats(baseBranch string) (DiffStats, error) {
 	return s.repo.diffStats(baseBranch)
 }
 
-// EnsureLocalGitignore creates .ralphex/.gitignore with patterns for runtime artifacts
-// (progress/ and worktrees/). this keeps ignore rules self-contained inside .ralphex/
+// EnsureLocalGitignore creates .loopai/.gitignore with patterns for runtime artifacts
+// (progress/ and worktrees/). this keeps ignore rules self-contained inside .loopai/
 // instead of modifying the project's root .gitignore.
 // idempotent: does nothing if the file already exists with the expected content.
 func (s *Service) EnsureLocalGitignore() error {
-	ralphexDir := filepath.Join(s.repo.root(), ".ralphex")
-	if err := os.MkdirAll(ralphexDir, 0o750); err != nil {
-		return fmt.Errorf("create .ralphex dir: %w", err)
+	loopaiDir := filepath.Join(s.repo.root(), ".loopai")
+	if err := os.MkdirAll(loopaiDir, 0o750); err != nil {
+		return fmt.Errorf("create .loopai dir: %w", err)
 	}
 
-	gitignorePath := filepath.Join(ralphexDir, ".gitignore")
+	gitignorePath := filepath.Join(loopaiDir, ".gitignore")
 	const content = ".gitignore\nprogress/\nworktrees/\n"
 
 	if existing, err := os.ReadFile(gitignorePath); err == nil { //nolint:gosec // .gitignore is world-readable
@@ -609,10 +609,10 @@ func (s *Service) EnsureLocalGitignore() error {
 	}
 
 	if err := os.WriteFile(gitignorePath, []byte(content), 0o644); err != nil { //nolint:gosec // .gitignore needs world-readable
-		return fmt.Errorf("write .ralphex/.gitignore: %w", err)
+		return fmt.Errorf("write .loopai/.gitignore: %w", err)
 	}
 
-	s.log.Printf("created .ralphex/.gitignore\n")
+	s.log.Printf("created .loopai/.gitignore\n")
 	return nil
 }
 

@@ -573,7 +573,7 @@ func newCapturingLogger(captured *[]string) *mocks.LoggerMock {
 // resets the hint sync.Once so each subtest can exercise the first-emit path
 // without leaking state. covers both Unix (HOME) and Windows (USERPROFILE /
 // HOMEDRIVE+HOMEPATH) since os.UserHomeDir() reads different vars per platform —
-// the test-safety rule forbids touching the real ~/.config/ralphex/.
+// the test-safety rule forbids touching the real ~/.config/loopai/.
 func setIsolatedHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()

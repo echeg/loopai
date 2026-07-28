@@ -735,7 +735,7 @@ func isProgressCompleted(f *os.File, size int64) bool {
 }
 
 // progressDir is the directory for progress files within the project.
-const progressDir = ".ralphex/progress"
+const progressDir = ".loopai/progress"
 
 // filenameWithStem returns the progress file path for a known stem and mode.
 func filenameWithStem(stem, mode string) string {

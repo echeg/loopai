@@ -184,22 +184,22 @@ progress-логи. Плюс в репозитории лежит ~6300 стро�
 Самая рискованная задача: пути протекают между пакетами и захардкожены в тестах.
 Полный `go test ./...` после неё обязателен, прогона одного пакета недостаточно.
 
-- [ ] `pkg/config/config.go`: `~/.config/ralphex` → `~/.config/loopai` (строки 410, 412),
+- [x] `pkg/config/config.go`: `~/.config/ralphex` → `~/.config/loopai` (строки 410, 412),
       локальный `.ralphex` → `.loopai` (строка 222)
-- [ ] `pkg/progress/progress.go:738`: `progressDir` → `.loopai/progress`
-- [ ] `pkg/git/service.go`: путь worktree (293), создание `.loopai/.gitignore` и его сообщения
+- [x] `pkg/progress/progress.go:738`: `progressDir` → `.loopai/progress`
+- [x] `pkg/git/service.go`: путь worktree (293), создание `.loopai/.gitignore` и его сообщения
       (597, 599, 612, 615)
-- [ ] `cmd/loopai/main.go:1716`: константа `localDir` → `.loopai`
-- [ ] `cmd/loopai/main.go:68`: описание флага `--init` → `.loopai/`
-- [ ] обновить `.gitignore`: `.ralphex/progress/` и `.ralphex/worktrees/` → `.loopai/...`
+- [x] `cmd/loopai/main.go:1716`: константа `localDir` → `.loopai`
+- [x] `cmd/loopai/main.go:68`: описание флага `--init` → `.loopai/`
+- [x] обновить `.gitignore`: `.ralphex/progress/` и `.ralphex/worktrees/` → `.loopai/...`
       (строки 42-43, 64-65)
-- [ ] обновить комментарии с путями в `pkg/config/defaults/config`
+- [x] обновить комментарии с путями в `pkg/config/defaults/config`
       (строки 1, 2, 5, 125, 165, 237)
-- [ ] обновить все тесты и testdata с захардкоженными путями `.ralphex` / `~/.config/ralphex`
-- [ ] написать/обновить тест: `--init` создаёт именно `.loopai/`, а существующий `.ralphex/`
+- [x] обновить все тесты и testdata с захардкоженными путями `.ralphex` / `~/.config/ralphex`
+- [x] написать/обновить тест: `--init` создаёт именно `.loopai/`, а существующий `.ralphex/`
       игнорируется (чистый разрыв, не миграция)
-- [ ] написать/обновить тест: глобальный конфиг резолвится в `~/.config/loopai` (через подменённый HOME)
-- [ ] `go test ./...` целиком (не только затронутые пакеты) и `make lint` — до начала задачи 6
+- [x] написать/обновить тест: глобальный конфиг резолвится в `~/.config/loopai` (через подменённый HOME)
+- [x] `go test ./...` целиком (не только затронутые пакеты) и `make lint` — до начала задачи 6
 
 ### Task 6: Переименовать пользовательские строки
 

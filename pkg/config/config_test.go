@@ -97,10 +97,12 @@ func Test_defaultsFS_EmbeddedAgentsExist(t *testing.T) {
 // --- Load tests ---
 
 func TestLoad_SetsConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
 	cfg, err := Load("") // empty uses default
 	require.NoError(t, err)
-	assert.NotEmpty(t, cfg.configDir)
-	assert.Contains(t, cfg.configDir, "ralphex")
+	assert.Equal(t, filepath.Join(home, ".config", "loopai"), cfg.configDir)
 }
 
 func TestLoad_WithCustomDir(t *testing.T) {
@@ -118,6 +120,8 @@ func TestLoad_WithCustomDir(t *testing.T) {
 }
 
 func TestLoad_PopulatesAllFields(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	cfg, err := Load("") // empty uses default
 	require.NoError(t, err)
 
@@ -159,9 +163,11 @@ iteration_delay_ms = 9999
 }
 
 func TestDefaultConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
 	dir := DefaultConfigDir()
-	assert.NotEmpty(t, dir)
-	assert.Contains(t, dir, "ralphex")
+	assert.Equal(t, filepath.Join(home, ".config", "loopai"), dir)
 }
 
 func TestEmbeddedDefaultsColorValues(t *testing.T) {
@@ -608,7 +614,7 @@ func TestLocalConfig_NoLocalDir(t *testing.T) {
 func TestLocalConfig_WithLocalDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 	require.NoError(t, os.MkdirAll(localDir, 0o700))
 
 	cfg, err := loadWithLocal(globalDir, localDir)
@@ -621,7 +627,7 @@ func TestLocalConfig_WithLocalDir(t *testing.T) {
 func TestLocalConfig_LocalOverridesGlobal(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 
 	require.NoError(t, os.MkdirAll(globalDir, 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
@@ -659,7 +665,7 @@ plans_dir = local/plans
 func TestLocalConfig_LocalOverridesColors(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 
 	require.NoError(t, os.MkdirAll(globalDir, 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
@@ -692,7 +698,7 @@ color_task = #0000ff
 func TestLocalConfig_LocalOverridesCodexEnabled(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 
 	require.NoError(t, os.MkdirAll(globalDir, 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
@@ -717,7 +723,7 @@ func TestLocalConfig_LocalOverridesCodexEnabled(t *testing.T) {
 func TestLocalConfig_LocalOverridesTaskRetryCount(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 
 	require.NoError(t, os.MkdirAll(globalDir, 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
@@ -742,7 +748,7 @@ func TestLocalConfig_LocalOverridesTaskRetryCount(t *testing.T) {
 func TestLocalConfig_NoLocalConfigFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 
 	require.NoError(t, os.MkdirAll(globalDir, 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
@@ -761,8 +767,8 @@ func TestLocalConfig_NoLocalConfigFile(t *testing.T) {
 }
 
 func TestConfig_LocalDir_Accessor(t *testing.T) {
-	cfg := &Config{localDir: "/some/path/.ralphex"}
-	assert.Equal(t, "/some/path/.ralphex", cfg.LocalDir())
+	cfg := &Config{localDir: "/some/path/.loopai"}
+	assert.Equal(t, "/some/path/.loopai", cfg.LocalDir())
 
 	cfg2 := &Config{}
 	assert.Empty(t, cfg2.LocalDir())
@@ -773,7 +779,7 @@ func TestConfig_LocalDir_Accessor(t *testing.T) {
 func TestLocalConfig_LocalPromptsOverrideGlobal(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "agents"), 0o700))
@@ -799,7 +805,7 @@ func TestLocalConfig_LocalPromptsOverrideGlobal(t *testing.T) {
 func TestLocalConfig_LocalAgentsMergeWithGlobalAndEmbedded(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "agents"), 0o700))
@@ -848,7 +854,7 @@ func TestLoad_InvalidConfig(t *testing.T) {
 func TestLoad_PartialOverridesAllComponents(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 
 	// set up global directories
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
@@ -939,7 +945,7 @@ color_task = #0000ff
 }
 
 func TestLoad_SymlinkedConfigDir(t *testing.T) {
-	// simulates real-world scenario where ~/.config/ralphex is symlinked from another repo
+	// simulates real-world scenario where ~/.config/loopai is symlinked from another repo
 	tmpDir := t.TempDir()
 
 	// create real config directory with content
@@ -956,7 +962,7 @@ color_task = #123456
 	require.NoError(t, os.WriteFile(filepath.Join(realDir, "prompts", "task.txt"), []byte("symlinked task prompt"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(realDir, "agents", "custom.txt"), []byte("symlinked agent"), 0o600))
 
-	// create symlink (like ln -s dotfiles-repo/ralphex-config ~/.config/ralphex)
+	// create symlink (like ln -s dotfiles-repo/ralphex-config ~/.config/loopai)
 	symlinkDir := filepath.Join(tmpDir, "config-symlink")
 	require.NoError(t, os.Symlink(realDir, symlinkDir))
 
@@ -1099,7 +1105,7 @@ func TestLoad_ReviewPatience_DefaultZero(t *testing.T) {
 func TestLocalConfig_LocalOverridesExternalReviewTool(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 
 	require.NoError(t, os.MkdirAll(globalDir, 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
@@ -1176,7 +1182,7 @@ func TestLoad_NotifyParamsDefaults(t *testing.T) {
 func TestLocalConfig_LocalOverridesNotifyParams(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 
 	require.NoError(t, os.MkdirAll(globalDir, 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
@@ -1208,7 +1214,7 @@ notify_timeout_ms = 5000
 }
 
 func TestLoad_SymlinkedLocalDir(t *testing.T) {
-	// simulates local .ralphex being a symlink to shared project config
+	// simulates local .loopai being a symlink to shared project config
 	tmpDir := t.TempDir()
 
 	// global config
@@ -1229,8 +1235,8 @@ claude_command = local-symlinked-claude
 `
 	require.NoError(t, os.WriteFile(filepath.Join(realLocalDir, "config"), []byte(localConfig), 0o600))
 
-	// create symlink for local dir (like ln -s shared-configs/project-a .ralphex)
-	symlinkLocalDir := filepath.Join(tmpDir, ".ralphex-symlink")
+	// create symlink for local dir (like ln -s shared-configs/project-a .loopai)
+	symlinkLocalDir := filepath.Join(tmpDir, ".loopai-symlink")
 	require.NoError(t, os.Symlink(realLocalDir, symlinkLocalDir))
 
 	// load with symlinked local dir
@@ -1248,10 +1254,10 @@ claude_command = local-symlinked-claude
 }
 
 func TestDetectLocalDir_DeduplicatesSamePath(t *testing.T) {
-	// when globalDir points to .ralphex/ in cwd, detectLocalDir should return empty
+	// when globalDir points to .loopai/ in cwd, detectLocalDir should return empty
 	// to avoid double-loading the same directory (issue #214)
 	tmpDir := t.TempDir()
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 	require.NoError(t, os.MkdirAll(localDir, 0o700))
 
 	origDir, err := os.Getwd()
@@ -1259,8 +1265,8 @@ func TestDetectLocalDir_DeduplicatesSamePath(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, os.Chdir(origDir)) })
 	require.NoError(t, os.Chdir(tmpDir))
 
-	// relative path pointing to the same .ralphex/ that auto-detection would find
-	result := detectLocalDir(".ralphex")
+	// relative path pointing to the same .loopai/ that auto-detection would find
+	result := detectLocalDir(".loopai")
 	assert.Empty(t, result, "should skip local when it resolves to same path as globalDir")
 
 	// absolute path pointing to the same directory
@@ -1270,7 +1276,7 @@ func TestDetectLocalDir_DeduplicatesSamePath(t *testing.T) {
 
 func TestDetectLocalDir_DifferentPaths(t *testing.T) {
 	tmpDir := t.TempDir()
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 	require.NoError(t, os.MkdirAll(localDir, 0o700))
 
 	origDir, err := os.Getwd()
@@ -1282,12 +1288,12 @@ func TestDetectLocalDir_DifferentPaths(t *testing.T) {
 	globalDir := filepath.Join(tmpDir, "global-config")
 	result := detectLocalDir(globalDir)
 	assert.NotEmpty(t, result, "should detect local dir when globalDir is different")
-	assert.Contains(t, result, ".ralphex")
+	assert.Contains(t, result, ".loopai")
 }
 
 func TestDetectLocalDir_NoLocalDir(t *testing.T) {
 	tmpDir := t.TempDir()
-	// no .ralphex/ directory in tmpDir
+	// no .loopai/ directory in tmpDir
 
 	origDir, err := os.Getwd()
 	require.NoError(t, err)
@@ -1299,10 +1305,10 @@ func TestDetectLocalDir_NoLocalDir(t *testing.T) {
 }
 
 func TestLoad_ConfigDirSameAsLocal_NotifyParams(t *testing.T) {
-	// regression test for issue #214: when --config-dir points to .ralphex/,
+	// regression test for issue #214: when --config-dir points to .loopai/,
 	// notify settings in that directory should still be loaded correctly
 	tmpDir := t.TempDir()
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 	require.NoError(t, os.MkdirAll(localDir, 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(localDir, "prompts"), 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(localDir, "agents"), 0o700))
@@ -1320,7 +1326,7 @@ notify_custom_script = /path/to/notify.sh
 	t.Cleanup(func() { require.NoError(t, os.Chdir(origDir)) })
 	require.NoError(t, os.Chdir(tmpDir))
 
-	// simulate --config-dir .ralphex
+	// simulate --config-dir .loopai
 	cfg, err := Load(localDir)
 	require.NoError(t, err)
 
@@ -1368,7 +1374,7 @@ func TestLoad_SessionTimeout_DefaultDisabled(t *testing.T) {
 func TestLocalConfig_LocalOverridesSessionTimeout(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 
 	require.NoError(t, os.MkdirAll(globalDir, 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
@@ -1427,7 +1433,7 @@ func TestLoad_IdleTimeout_DefaultDisabled(t *testing.T) {
 func TestLocalConfig_LocalOverridesIdleTimeout(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".ralphex")
+	localDir := filepath.Join(tmpDir, ".loopai")
 
 	require.NoError(t, os.MkdirAll(globalDir, 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))

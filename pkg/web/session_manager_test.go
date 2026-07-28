@@ -957,11 +957,11 @@ Started: 2026-01-22 10:00:00
 }
 
 func TestSessionManager_DiscoverRecursive_SubdirProgressFiles(t *testing.T) {
-	t.Run("discovers files in .ralphex/progress/ subdirectory", func(t *testing.T) {
+	t.Run("discovers files in .loopai/progress/ subdirectory", func(t *testing.T) {
 		root := t.TempDir()
 
-		// create .ralphex/progress/ subdirectory with progress files
-		progressDir := filepath.Join(root, ".ralphex", "progress")
+		// create .loopai/progress/ subdirectory with progress files
+		progressDir := filepath.Join(root, ".loopai", "progress")
 		require.NoError(t, os.MkdirAll(progressDir, 0o750))
 
 		path1 := filepath.Join(progressDir, "progress-feature-a.txt")
@@ -991,15 +991,15 @@ func TestSessionManager_DiscoverRecursive_SubdirProgressFiles(t *testing.T) {
 		assert.Equal(t, "docs/plans/feature-b.md", s2.GetMetadata().PlanPath)
 	})
 
-	t.Run("discovers files in both root and .ralphex/progress/ simultaneously", func(t *testing.T) {
+	t.Run("discovers files in both root and .loopai/progress/ simultaneously", func(t *testing.T) {
 		root := t.TempDir()
 
 		// create progress file in root (old location)
 		oldPath := filepath.Join(root, "progress-old-plan.txt")
 		createProgressFile(t, oldPath, "docs/plans/old-plan.md", "old-branch", "full")
 
-		// create progress file in .ralphex/progress/ (new location)
-		progressDir := filepath.Join(root, ".ralphex", "progress")
+		// create progress file in .loopai/progress/ (new location)
+		progressDir := filepath.Join(root, ".loopai", "progress")
 		require.NoError(t, os.MkdirAll(progressDir, 0o750))
 		newPath := filepath.Join(progressDir, "progress-new-plan.txt")
 		createProgressFile(t, newPath, "docs/plans/new-plan.md", "new-branch", "review")

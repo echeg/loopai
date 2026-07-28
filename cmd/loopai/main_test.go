@@ -1063,7 +1063,7 @@ func TestProviderOverrideFlags(t *testing.T) {
 func TestExternalReviewCLIConfigPrecedence(t *testing.T) {
 	tmp := t.TempDir()
 	globalDir := filepath.Join(tmp, "global")
-	localDir := filepath.Join(tmp, "project", ".ralphex")
+	localDir := filepath.Join(tmp, "project", ".loopai")
 	require.NoError(t, os.MkdirAll(globalDir, 0o750))
 	require.NoError(t, os.MkdirAll(localDir, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "config"), []byte(
@@ -2692,8 +2692,8 @@ func TestHandleEarlyFlags(t *testing.T) {
 		// create .git so repo root check passes
 		require.NoError(t, os.Mkdir(filepath.Join(tmpDir, ".git"), 0o700))
 
-		// make .ralphex point to a file so MkdirAll fails
-		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".ralphex"), []byte("x"), 0o600))
+		// make .loopai point to a file so MkdirAll fails
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".loopai"), []byte("x"), 0o600))
 
 		done, err := handleEarlyFlags(opts{Init: true})
 		require.Error(t, err)
@@ -2710,13 +2710,24 @@ func TestHandleEarlyFlags(t *testing.T) {
 		// create .git so repo root check passes
 		require.NoError(t, os.Mkdir(filepath.Join(tmpDir, ".git"), 0o700))
 
+		// legacy config must remain untouched and must not replace the new local config.
+		legacyDir := filepath.Join(tmpDir, ".ralphex")
+		require.NoError(t, os.Mkdir(legacyDir, 0o700))
+		legacyConfig := []byte("claude_command = legacy\n")
+		require.NoError(t, os.WriteFile(filepath.Join(legacyDir, "config"), legacyConfig, 0o600))
+
 		done, err := handleEarlyFlags(opts{Init: true})
 		require.NoError(t, err)
 		assert.True(t, done)
-		assert.DirExists(t, filepath.Join(tmpDir, ".ralphex"))
-		assert.FileExists(t, filepath.Join(tmpDir, ".ralphex", "config"))
-		assert.DirExists(t, filepath.Join(tmpDir, ".ralphex", "prompts"))
-		assert.DirExists(t, filepath.Join(tmpDir, ".ralphex", "agents"))
+		loopaiDir := filepath.Join(tmpDir, ".loopai")
+		assert.DirExists(t, loopaiDir)
+		assert.FileExists(t, filepath.Join(loopaiDir, "config"))
+		assert.DirExists(t, filepath.Join(loopaiDir, "prompts"))
+		assert.DirExists(t, filepath.Join(loopaiDir, "agents"))
+
+		gotLegacyConfig, readErr := os.ReadFile(filepath.Join(legacyDir, "config")) //nolint:gosec // test file
+		require.NoError(t, readErr)
+		assert.Equal(t, legacyConfig, gotLegacyConfig)
 	})
 
 	t.Run("init_fails_outside_repo_root", func(t *testing.T) {
@@ -2746,7 +2757,7 @@ func TestHandleEarlyFlags(t *testing.T) {
 		done, err := handleEarlyFlags(opts{Init: true})
 		require.NoError(t, err)
 		assert.True(t, done)
-		assert.DirExists(t, filepath.Join(tmpDir, ".ralphex"))
+		assert.DirExists(t, filepath.Join(tmpDir, ".loopai"))
 	})
 
 	t.Run("init_works_with_custom_vcs_backend", func(t *testing.T) {
@@ -2772,7 +2783,7 @@ func TestHandleEarlyFlags(t *testing.T) {
 		done, err := handleEarlyFlags(opts{Init: true, ConfigDir: cfgDir})
 		require.NoError(t, err)
 		assert.True(t, done)
-		assert.DirExists(t, filepath.Join(tmpDir, ".ralphex"))
+		assert.DirExists(t, filepath.Join(tmpDir, ".loopai"))
 	})
 
 	t.Run("init_fails_with_custom_vcs_in_arbitrary_dir", func(t *testing.T) {
@@ -2932,7 +2943,7 @@ func TestRunWithWorktree(t *testing.T) {
 		assert.Equal(t, resolvedDir, cwd, "cwd should be restored after runWithWorktree")
 
 		// verify worktree directory cleaned up
-		wtPath := filepath.Join(dir, ".ralphex", "worktrees", "wt-test")
+		wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-test")
 		assert.NoDirExists(t, wtPath, "worktree should be removed after runWithWorktree")
 
 		// verify branch was preserved (worktree creates the branch)
@@ -3040,7 +3051,7 @@ func TestWorktreeMode_SkippedForNonBranchModes(t *testing.T) {
 		_ = run(ctx, o)
 
 		// no worktree directory should exist
-		wtPath := filepath.Join(dir, ".ralphex", "worktrees", "wt-skip")
+		wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-skip")
 		assert.NoDirExists(t, wtPath, "review mode should not create worktree")
 
 		// should stay on master
@@ -3095,7 +3106,7 @@ func TestRunWithWorktree_UntrackedPlan(t *testing.T) {
 	assert.True(t, branchExists(t, dir, "wt-untracked"), "branch should exist")
 
 	// verify worktree cleaned up
-	wtPath := filepath.Join(dir, ".ralphex", "worktrees", "wt-untracked")
+	wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-untracked")
 	assert.NoDirExists(t, wtPath, "worktree should be removed")
 }
 
@@ -3117,7 +3128,7 @@ func TestRunWithWorktree_CreateWorktreeError(t *testing.T) {
 	require.NoError(t, err)
 
 	// pre-create worktree dir to force "already exists" error
-	wtPath := filepath.Join(dir, ".ralphex", "worktrees", "wt-fail")
+	wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-fail")
 	require.NoError(t, os.MkdirAll(wtPath, 0o750))
 
 	colors := testColors()
@@ -3203,7 +3214,7 @@ func TestRunWithWorktree_NotifiesSetupFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	// pre-create the worktree dir to force an "already exists" failure during setup
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".ralphex", "worktrees", "wt-notify"), 0o750))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "worktrees", "wt-notify"), 0o750))
 
 	err = runWithWorktree(t.Context(), opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
 		PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{WorktreeEnabled: true},
@@ -3474,14 +3485,14 @@ func TestDisplayMeta(t *testing.T) {
 		wantNotContains                      []string
 	}{
 		{name: "no_indent_with_plan", indent: 0, planFile: "docs/plans/feature.md", branch: "feature-branch",
-			progressPath: ".ralphex/progress/progress-feature.txt",
-			wantContains: []string{"plan: docs/plans/feature.md", "branch: feature-branch", "progress log: .ralphex/progress/progress-feature.txt"}},
+			progressPath: ".loopai/progress/progress-feature.txt",
+			wantContains: []string{"plan: docs/plans/feature.md", "branch: feature-branch", "progress log: .loopai/progress/progress-feature.txt"}},
 		{name: "indented_with_plan", indent: 2, planFile: "docs/plans/feature.md", branch: "main",
-			progressPath: ".ralphex/progress/progress-feature.txt",
-			wantContains: []string{"  plan: docs/plans/feature.md", "  branch: main", "  progress log: .ralphex/progress/progress-feature.txt"}},
+			progressPath: ".loopai/progress/progress-feature.txt",
+			wantContains: []string{"  plan: docs/plans/feature.md", "  branch: main", "  progress log: .loopai/progress/progress-feature.txt"}},
 		{name: "no_plan_file", indent: 0, planFile: "", branch: "develop",
-			progressPath:    ".ralphex/progress/progress.txt",
-			wantContains:    []string{"branch: develop", "progress log: .ralphex/progress/progress.txt"},
+			progressPath:    ".loopai/progress/progress.txt",
+			wantContains:    []string{"branch: develop", "progress log: .loopai/progress/progress.txt"},
 			wantNotContains: []string{"plan:"}},
 	}
 
