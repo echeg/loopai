@@ -77,7 +77,7 @@ func TestValuesLoader_Load_EmbeddedOnly(t *testing.T) {
 	assert.Equal(t, "docs/plans", values.PlansDir)
 	assert.Equal(t, "git", values.VcsCommand)
 	assert.Empty(t, values.CommitTrailer)
-	assert.Equal(t, []string{"You've hit your limit", "You've hit your session limit", "API Error:", "cannot be launched inside another Claude Code session", "Not logged in", "Your usage allocation has been disabled by your admin", "You've hit your org's monthly usage limit", "You're out of usage credits"}, values.ClaudeErrorPatterns)
+	assert.Equal(t, []string{"You've hit your limit", "You've hit your session limit", "API Error: 400", "API Error: 401", "API Error: 403", "API Error: 404", "API Error: 413", "API Error: 429", "API Error: 500", "cannot be launched inside another Claude Code session", "Not logged in", "Your usage allocation has been disabled by your admin", "You've hit your org's monthly usage limit", "You're out of usage credits"}, values.ClaudeErrorPatterns)
 	assert.Equal(t, []string{"Rate limit exceeded", "rate limit reached", "429 Too Many Requests", "quota exceeded", "insufficient_quota", "You've hit your usage limit"}, values.CodexErrorPatterns)
 	assert.Equal(t, []string{"You've hit your limit", "You've hit your session limit", "Your usage allocation has been disabled by your admin", "You've hit your org's monthly usage limit", "You're out of usage credits"}, values.ClaudeLimitPatterns)
 	assert.Equal(t, []string{"Rate limit exceeded", "rate limit reached", "429 Too Many Requests", "quota exceeded", "insufficient_quota", "You've hit your usage limit", "is at capacity", "You hit your spend cap"}, values.CodexLimitPatterns)
