@@ -369,6 +369,7 @@ func TestStyleForPhase(t *testing.T) {
 		},
 		{name: "finalize", phase: status.PhaseFinalize, want: phaseStyle{text: "finalize", icon: "flag.checkered", color: "#22c55e"}},
 		{name: "plan", phase: status.PhasePlan, want: phaseStyle{text: "planning", icon: "list.bullet.clipboard", color: "#3b82f6"}},
+		{name: "limit wait", phase: status.PhaseLimitWait, want: phaseStyle{text: "rate limited", icon: "clock.arrow.circlepath", color: "#ef4444"}},
 		// legacy phases are only parsed from historical progress files, they fall back to the raw value
 		{name: "legacy codex", phase: status.PhaseCodex, want: phaseStyle{text: "codex", icon: unknownPhaseIcon}},
 		{name: "legacy claude eval", phase: status.PhaseClaudeEval, want: phaseStyle{text: "claude-eval", icon: unknownPhaseIcon}},
@@ -515,6 +516,25 @@ func TestReporterOnPhaseAsObserver(t *testing.T) {
 		{"set-status", "loopai", "task", "--icon", "hammer", "--color", "#22c55e", "--priority", "90"},
 		{"set-status", "loopai", "finalize", "--icon", "flag.checkered", "--color", "#22c55e", "--priority", "90"},
 	}, runner.recorded())
+}
+
+func TestReporterLogLimitWaitUpdatesCmux(t *testing.T) {
+	runner := &fakeRunner{}
+	inner := &fakeLogger{}
+	wrapped := testReporter(t, runner).WrapLogger(inner)
+	logger, ok := wrapped.(interface {
+		LogLimitWait(pattern, tool, waitLabel string)
+	})
+	require.True(t, ok)
+
+	logger.LogLimitWait("You've hit your session limit", "claude", "10m")
+
+	assert.Equal(t, "rate limit detected: %q in %s output, waiting %s before retry...", inner.printFormat)
+	assert.Equal(t, []any{"You've hit your session limit", "claude", "10m"}, inner.printArgs)
+	assert.Equal(t, [][]string{{
+		"set-status", "loopai", "rate limited · retry in 10m",
+		"--icon", "clock.arrow.circlepath", "--color", "#ef4444", "--priority", "90",
+	}}, runner.recorded())
 }
 
 func TestReporterOnPhaseAfterStop(t *testing.T) {

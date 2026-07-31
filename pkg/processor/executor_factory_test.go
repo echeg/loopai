@@ -777,6 +777,8 @@ func TestRunner_WaitOnLimit_ZeroReturnsLimitError(t *testing.T) {
 
 	appCfg := testAppConfig(t)
 	appCfg.TaskRetryCountSet = false
+	appCfg.WaitOnLimit = 0
+	appCfg.WaitOnLimitSet = true
 	task := newMockExecutor([]executor.Result{{Error: &executor.LimitPatternError{Pattern: "limit", HelpCmd: "usage"}}})
 	cfg := Config{Mode: ModeTasksOnly, PlanFile: planFile, MaxIterations: 10, AppConfig: appCfg}
 	r := NewWithExecutors(cfg, newRunnerMockLogger(""), Executors{Task: task}, &status.PhaseHolder{})

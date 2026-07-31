@@ -9,22 +9,27 @@ import (
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
 	"github.com/umputun/ralphex/pkg/processor/phase"
+	"github.com/umputun/ralphex/pkg/status"
 )
 
 type retryPolicy struct {
 	cfg         Config
 	log         Logger
 	waitOnLimit time.Duration
+	phaseHolder *status.PhaseHolder
 }
 
 type retryPolicyOpts struct {
 	cfg         Config
 	log         Logger
 	waitOnLimit time.Duration
+	phaseHolder *status.PhaseHolder
 }
 
 func newRetryPolicy(opts retryPolicyOpts) *retryPolicy {
-	return &retryPolicy{cfg: opts.cfg, log: opts.log, waitOnLimit: opts.waitOnLimit}
+	return &retryPolicy{
+		cfg: opts.cfg, log: opts.log, waitOnLimit: opts.waitOnLimit, phaseHolder: opts.phaseHolder,
+	}
 }
 
 func (p *retryPolicy) Run(ctx context.Context, run func(context.Context, string) executor.Result,
@@ -52,13 +57,55 @@ func (p *retryPolicy) Run(ctx context.Context, run func(context.Context, string)
 			return result
 		}
 
-		p.log.Print("rate limit detected: %q in %s output, waiting %s before retry...",
-			limitErr.Pattern, toolName, p.waitOnLimit)
+		restorePhase := p.enterLimitWait()
+		waitLabel := formatLimitWait(p.waitOnLimit)
+		p.logLimitWait(limitErr.Pattern, toolName, waitLabel)
 
 		if err := p.Sleep(ctx, p.waitOnLimit); err != nil {
+			restorePhase()
 			return phase.ExecutionResult{Result: executor.Result{Error: fmt.Errorf("interrupted during limit wait: %w", ctx.Err())}}
 		}
+		restorePhase()
 	}
+}
+
+// limitWaitLogger is an optional logger extension used by the cmux decorator to enrich the
+// temporary rate-limit status without coupling the processor package to cmux.
+type limitWaitLogger interface {
+	LogLimitWait(pattern, tool, waitLabel string)
+}
+
+func (p *retryPolicy) logLimitWait(pattern, tool, waitLabel string) {
+	if log, ok := p.log.(limitWaitLogger); ok {
+		log.LogLimitWait(pattern, tool, waitLabel)
+		return
+	}
+	p.log.Print("rate limit detected: %q in %s output, waiting %s before retry...",
+		pattern, tool, waitLabel)
+}
+
+func (p *retryPolicy) enterLimitWait() func() {
+	if p.phaseHolder == nil {
+		return func() {}
+	}
+	previous := p.phaseHolder.Get()
+	p.phaseHolder.Set(status.PhaseLimitWait)
+	return func() {
+		// Do not overwrite a newer phase if another observer or cancellation path advanced it.
+		if p.phaseHolder.Get() == status.PhaseLimitWait {
+			p.phaseHolder.Set(previous)
+		}
+	}
+}
+
+func formatLimitWait(d time.Duration) string {
+	if d > 0 && d%time.Hour == 0 {
+		return fmt.Sprintf("%dh", int64(d/time.Hour))
+	}
+	if d > 0 && d%time.Minute == 0 {
+		return fmt.Sprintf("%dm", int64(d/time.Minute))
+	}
+	return d.String()
 }
 
 func (p *retryPolicy) HandlePatternMatchError(err error, tool string) error {

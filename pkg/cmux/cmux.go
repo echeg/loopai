@@ -329,6 +329,14 @@ type reportingLogger struct {
 	rep *Reporter
 }
 
+// LogLimitWait forwards the regular progress message and enriches the cmux pill with the
+// configured retry delay. retryPolicy discovers this method through an optional interface.
+func (l *reportingLogger) LogLimitWait(pattern, tool, waitLabel string) {
+	l.Print("rate limit detected: %q in %s output, waiting %s before retry...",
+		pattern, tool, waitLabel)
+	l.rep.OnLimitWait(waitLabel)
+}
+
 func (l *reportingLogger) PrintSection(section status.Section) {
 	l.Logger.PrintSection(section)
 	l.rep.OnSection(section)
@@ -385,6 +393,20 @@ func (r *Reporter) OnPhase(_, cur status.Phase) {
 	}
 	s := styleForPhase(cur)
 	r.setStatus(r.statusText(s.text, cur, 0), s.icon, s.color)
+}
+
+// OnLimitWait shows the configured retry delay while execution is paused by a provider limit.
+func (r *Reporter) OnLimitWait(waitLabel string) {
+	if r == nil {
+		return
+	}
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	if r.stopped {
+		return
+	}
+	s := styleForPhase(status.PhaseLimitWait)
+	r.setStatus("rate limited · retry in "+waitLabel, s.icon, s.color)
 }
 
 // OnSection enriches review phase status with the structured iteration number.
@@ -456,6 +478,7 @@ var phaseStyles = map[status.Phase]phaseStyle{
 	status.PhaseExternalEval:   {text: "evaluating findings", icon: "checkmark.seal", color: "#a855f7"},
 	status.PhaseFinalize:       {text: "finalize", icon: "flag.checkered", color: "#22c55e"},
 	status.PhasePlan:           {text: "planning", icon: "list.bullet.clipboard", color: "#3b82f6"},
+	status.PhaseLimitWait:      {text: "rate limited", icon: "clock.arrow.circlepath", color: "#ef4444"},
 }
 
 // styleForPhase returns the presentation of a phase, falling back to its raw value with a

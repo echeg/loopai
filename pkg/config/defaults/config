@@ -283,8 +283,7 @@ claude_retry_patterns = FYA_TRANSIENT_TIMEOUT,API Error: 529,API Error: 502,API 
 
 # claude_limit_patterns: patterns to detect rate limits in claude output
 # comma-separated list of substrings (case-insensitive matching)
-# when detected AND wait_on_limit is set, loopai waits and retries
-# when detected WITHOUT wait_on_limit, falls through to error pattern behavior
+# when detected, loopai waits for wait_on_limit and retries until success or Ctrl+C
 # transient HTTP errors (529/502/503/504) live in claude_retry_patterns, not here
 # default: You've hit your limit,You've hit your session limit,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit
 claude_limit_patterns = You've hit your limit,You've hit your session limit,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit
@@ -297,8 +296,8 @@ codex_limit_patterns = Rate limit exceeded,rate limit reached,429 Too Many Reque
 
 # wait_on_limit: duration to wait before retrying after a rate limit is detected
 # uses Go duration format (e.g., "1h", "30m", "1h30m", "90s")
-# omit to inherit global value; set to 0s to explicitly disable inherited setting
-# wait_on_limit =
+# default: 10m; set to 0s (or pass --wait 0) to fail immediately
+wait_on_limit = 10m
 
 # ------------------------------------------------------------------------------
 # notifications (optional, disabled by default)

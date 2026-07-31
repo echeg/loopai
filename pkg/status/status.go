@@ -27,6 +27,7 @@ const (
 	PhaseExternalEval   Phase = "external-eval"   // primary evaluator phase (existing claude-eval color)
 	PhasePlan           Phase = "plan"            // plan creation phase (info color)
 	PhaseFinalize       Phase = "finalize"        // finalize step phase (green)
+	PhaseLimitWait      Phase = "limit-wait"      // waiting for a provider limit reset (red)
 
 	// PhaseCodex and PhaseClaudeEval remain readable for historical progress logs.
 	PhaseCodex      Phase = "codex"

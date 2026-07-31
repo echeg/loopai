@@ -339,6 +339,11 @@ loopai --serve --watch=/path/to/project-a --watch=/path/to/project-b
 
 When loopai runs inside cmux, it reports the phase and effective model, review iteration, task count, spinner, and completion notifications through the public cmux CLI. Outside cmux this integration is a no-op.
 
+Provider session and rate limits are retried every 10 minutes by default until the provider
+recovers or the run is canceled with `Ctrl+C`. During the wait, progress output is red and cmux
+shows `rate limited · retry in 10m`. Override the interval with `--wait <duration>` or disable
+limit retries for one run with `--wait 0`; the equivalent config key is `wait_on_limit`.
+
 ## Notifications
 
 Notifications are disabled by default. The configuration supports Telegram, email, Slack, generic webhooks, and custom scripts. See [docs/notifications.md](docs/notifications.md).

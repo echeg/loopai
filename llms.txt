@@ -115,7 +115,7 @@ Progress is available at `.loopai/progress/progress-*.txt`. The dashboard starts
 - `--external-review-tool=auto|claude|codex|custom|none`
 - `--external-review-model=model[:effort]`
 - `--base-ref=branch-or-commit`
-- `--wait=duration`
+- `--wait=duration` (default `10m`; `--wait 0` disables limit retries)
 - `--session-timeout=duration`
 - `--idle-timeout=duration`
 - `--skip-finalize`

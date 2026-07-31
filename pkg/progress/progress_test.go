@@ -485,12 +485,17 @@ func TestLogger_PhaseColors(t *testing.T) {
 	holder.Set(status.PhaseCodex)
 	l.Print("codex output")
 
+	holder.Set(status.PhaseLimitWait)
+	l.Print("rate limit output")
+
 	output := buf.String()
 	// check for ANSI escape sequences (color codes start with \033[)
 	assert.Contains(t, output, "\033[")
 	assert.Contains(t, output, "task output")
 	assert.Contains(t, output, "review output")
 	assert.Contains(t, output, "codex output")
+	assert.Contains(t, output, "\033[38;2;255;0;0mrate limit output",
+		"limit wait output must use the configured error red")
 }
 
 func TestLogger_ColorDisabled(t *testing.T) {

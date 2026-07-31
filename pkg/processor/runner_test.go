@@ -614,6 +614,8 @@ func TestRunner_LimitPatternMatch_ClaudeInTaskPhase_NoWait(t *testing.T) {
 	codex := newMockExecutor(nil)
 
 	cfg := Config{Mode: ModeFull, PlanFile: planFile, MaxIterations: 10, AppConfig: testAppConfig(t)}
+	cfg.AppConfig.WaitOnLimit = 0
+	cfg.AppConfig.WaitOnLimitSet = true
 	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 

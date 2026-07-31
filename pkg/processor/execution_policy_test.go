@@ -41,7 +41,13 @@ func TestExecutionPolicy_RunReturnsPerCallTimeoutState(t *testing.T) {
 
 func TestExecutionPolicy_RunRetriesLimitErrors(t *testing.T) {
 	log := newMockLogger()
-	policy := newRetryPolicy(retryPolicyOpts{log: log, waitOnLimit: time.Millisecond})
+	holder := &status.PhaseHolder{}
+	holder.Set(status.PhaseReview)
+	var phases []status.Phase
+	holder.OnChange(func(_, cur status.Phase) { phases = append(phases, cur) })
+	policy := newRetryPolicy(retryPolicyOpts{
+		log: log, waitOnLimit: time.Millisecond, phaseHolder: holder,
+	})
 
 	calls := 0
 	run := func(_ context.Context, _ string) executor.Result {
@@ -64,6 +70,8 @@ func TestExecutionPolicy_RunRetriesLimitErrors(t *testing.T) {
 		}
 	}
 	assert.True(t, logged)
+	assert.Equal(t, []status.Phase{status.PhaseLimitWait, status.PhaseReview}, phases)
+	assert.Equal(t, status.PhaseReview, holder.Get())
 }
 
 func TestExecutionPolicy_RunWithLimitRetryRetryOnLimitError(t *testing.T) {
@@ -121,7 +129,11 @@ func TestExecutionPolicy_RunWithLimitRetryNoRetryWhenWaitZero(t *testing.T) {
 }
 
 func TestExecutionPolicy_RunWithLimitRetryContextCancelledDuringWait(t *testing.T) {
-	policy := newRetryPolicy(retryPolicyOpts{log: newMockLogger(), waitOnLimit: 10 * time.Second})
+	holder := &status.PhaseHolder{}
+	holder.Set(status.PhaseTask)
+	policy := newRetryPolicy(retryPolicyOpts{
+		log: newMockLogger(), waitOnLimit: 10 * time.Second, phaseHolder: holder,
+	})
 	ctx, cancel := context.WithCancel(t.Context())
 
 	callCount := 0
@@ -136,6 +148,22 @@ func TestExecutionPolicy_RunWithLimitRetryContextCancelledDuringWait(t *testing.
 	require.Error(t, result.Result.Error)
 	require.ErrorIs(t, result.Result.Error, context.Canceled)
 	assert.Equal(t, 1, callCount)
+	assert.Equal(t, status.PhaseTask, holder.Get(), "cancellation must restore the active phase")
+}
+
+func TestFormatLimitWait(t *testing.T) {
+	tests := []struct {
+		wait time.Duration
+		want string
+	}{
+		{wait: 10 * time.Minute, want: "10m"},
+		{wait: 2 * time.Hour, want: "2h"},
+		{wait: 90 * time.Minute, want: "90m"},
+		{wait: 90 * time.Second, want: "1m30s"},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, formatLimitWait(tt.wait))
+	}
 }
 
 func TestExecutionPolicy_RunWithLimitRetryPatternMatchErrorNotRetried(t *testing.T) {

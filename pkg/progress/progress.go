@@ -61,6 +61,7 @@ func NewColors(cfg config.ColorConfig) *Colors {
 	c.phases[status.PhaseClaudeEval] = c.claudeEval
 	c.phases[status.PhasePlan] = c.task     // plan phase uses task color (green)
 	c.phases[status.PhaseFinalize] = c.task // finalize phase uses task color (green)
+	c.phases[status.PhaseLimitWait] = c.err // provider limit waits are actionable and use error red
 
 	return c
 }

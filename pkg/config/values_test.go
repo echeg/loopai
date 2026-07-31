@@ -77,8 +77,8 @@ func TestValuesLoader_Load_EmbeddedOnly(t *testing.T) {
 	assert.Equal(t, []string{"You've hit your limit", "You've hit your session limit", "Your usage allocation has been disabled by your admin", "You've hit your org's monthly usage limit"}, values.ClaudeLimitPatterns)
 	assert.Equal(t, []string{"Rate limit exceeded", "rate limit reached", "429 Too Many Requests", "quota exceeded", "insufficient_quota", "You've hit your usage limit"}, values.CodexLimitPatterns)
 	assert.Equal(t, []string{"FYA_TRANSIENT_TIMEOUT", "API Error: 529", "API Error: 502", "API Error: 503", "API Error: 504"}, values.ClaudeRetryPatterns)
-	assert.Zero(t, values.WaitOnLimit)
-	assert.False(t, values.WaitOnLimitSet)
+	assert.Equal(t, 10*time.Minute, values.WaitOnLimit)
+	assert.True(t, values.WaitOnLimitSet)
 }
 
 func TestValuesLoader_Load_GlobalOnly(t *testing.T) {
@@ -2227,12 +2227,12 @@ func TestValuesLoader_Load_WaitOnLimit(t *testing.T) {
 		assert.True(t, values.WaitOnLimitSet)
 	})
 
-	t.Run("not set uses default zero", func(t *testing.T) {
+	t.Run("not set uses embedded default", func(t *testing.T) {
 		loader := newValuesLoader(defaultsFS)
 		values, err := loader.Load("", "")
 		require.NoError(t, err)
-		assert.Zero(t, values.WaitOnLimit)
-		assert.False(t, values.WaitOnLimitSet)
+		assert.Equal(t, 10*time.Minute, values.WaitOnLimit)
+		assert.True(t, values.WaitOnLimitSet)
 	})
 
 	t.Run("local overrides global", func(t *testing.T) {

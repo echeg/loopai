@@ -204,7 +204,9 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 	}
 
 	locator := newPlanLocator(cfg)
-	policy := newRetryPolicy(retryPolicyOpts{cfg: cfg, log: log, waitOnLimit: waitOnLimit})
+	policy := newRetryPolicy(retryPolicyOpts{
+		cfg: cfg, log: log, waitOnLimit: waitOnLimit, phaseHolder: holder,
+	})
 	prompts := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: log, locator: locator})
 	phaseCfg := toPhaseConfig(cfg)
 	deps := &phase.Deps{}
