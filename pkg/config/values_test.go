@@ -51,6 +51,8 @@ func TestValuesLoader_Load_EmbeddedOnly(t *testing.T) {
 	// all values should come from embedded defaults
 	assert.Equal(t, "claude", values.ClaudeCommand)
 	assert.Equal(t, "--dangerously-skip-permissions --output-format stream-json --verbose", values.ClaudeArgs)
+	assert.True(t, values.ClaudeSwapEnabled)
+	assert.True(t, values.ClaudeSwapEnabledSet)
 	assert.True(t, values.CodexEnabled)
 	assert.True(t, values.CodexEnabledSet)
 	assert.Equal(t, "codex", values.CodexCommand)
@@ -79,6 +81,19 @@ func TestValuesLoader_Load_EmbeddedOnly(t *testing.T) {
 	assert.Equal(t, []string{"FYA_TRANSIENT_TIMEOUT", "API Error: 529", "API Error: 502", "API Error: 503", "API Error: 504"}, values.ClaudeRetryPatterns)
 	assert.Equal(t, 10*time.Minute, values.WaitOnLimit)
 	assert.True(t, values.WaitOnLimitSet)
+}
+
+func TestValuesLoader_Load_ClaudeSwapCanBeDisabledLocally(t *testing.T) {
+	dir := t.TempDir()
+	globalConfig := filepath.Join(dir, "global")
+	localConfig := filepath.Join(dir, "local")
+	require.NoError(t, os.WriteFile(globalConfig, []byte("claude_swap_enabled = true\n"), 0o600))
+	require.NoError(t, os.WriteFile(localConfig, []byte("claude_swap_enabled = false\n"), 0o600))
+
+	values, err := newValuesLoader(defaultsFS).Load(localConfig, globalConfig)
+	require.NoError(t, err)
+	assert.False(t, values.ClaudeSwapEnabled)
+	assert.True(t, values.ClaudeSwapEnabledSet)
 }
 
 func TestValuesLoader_Load_GlobalOnly(t *testing.T) {

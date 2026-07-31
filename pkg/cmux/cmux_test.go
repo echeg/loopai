@@ -537,6 +537,25 @@ func TestReporterLogLimitWaitUpdatesCmux(t *testing.T) {
 	}}, runner.recorded())
 }
 
+func TestReporterLogLimitRecoveryUpdatesCmux(t *testing.T) {
+	runner := &fakeRunner{}
+	inner := &fakeLogger{}
+	wrapper := testReporter(t, runner).WrapLogger(inner)
+	logger, ok := wrapper.(interface {
+		LogLimitRecovery(statusText, message string)
+	})
+	require.True(t, ok)
+
+	logger.LogLimitRecovery("account switched · retry in 35s", "switched slot 1 to slot 2")
+
+	assert.Equal(t, "%s", inner.printFormat)
+	assert.Equal(t, []any{"switched slot 1 to slot 2"}, inner.printArgs)
+	assert.Equal(t, [][]string{{
+		"set-status", "loopai", "account switched · retry in 35s",
+		"--icon", "clock.arrow.circlepath", "--color", "#ef4444", "--priority", "90",
+	}}, runner.recorded())
+}
+
 func TestReporterOnPhaseAfterStop(t *testing.T) {
 	runner := &fakeRunner{}
 	r := testReporter(t, runner)

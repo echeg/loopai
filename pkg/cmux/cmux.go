@@ -337,6 +337,13 @@ func (l *reportingLogger) LogLimitWait(pattern, tool, waitLabel string) {
 	l.rep.OnLimitWait(waitLabel)
 }
 
+// LogLimitRecovery forwards the regular progress message and replaces the
+// temporary rate-limit pill with account-rotation progress.
+func (l *reportingLogger) LogLimitRecovery(statusText, message string) {
+	l.Print("%s", message)
+	l.rep.OnLimitRecovery(statusText)
+}
+
 func (l *reportingLogger) PrintSection(section status.Section) {
 	l.Logger.PrintSection(section)
 	l.rep.OnSection(section)
@@ -407,6 +414,21 @@ func (r *Reporter) OnLimitWait(waitLabel string) {
 	}
 	s := styleForPhase(status.PhaseLimitWait)
 	r.setStatus("rate limited · retry in "+waitLabel, s.icon, s.color)
+}
+
+// OnLimitRecovery shows sanitized claude-swap progress. Account emails and raw
+// command output never reach the sidebar.
+func (r *Reporter) OnLimitRecovery(text string) {
+	if r == nil {
+		return
+	}
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	if r.stopped {
+		return
+	}
+	s := styleForPhase(status.PhaseLimitWait)
+	r.setStatus(text, s.icon, s.color)
 }
 
 // OnSection enriches review phase status with the structured iteration number.

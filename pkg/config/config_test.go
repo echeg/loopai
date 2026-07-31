@@ -1601,7 +1601,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "plans_dir",
 		"watch_dirs", "default_branch", "vcs_command", "commit_trailer",
 		"claude_error_patterns", "codex_error_patterns", "claude_limit_patterns",
-		"codex_limit_patterns", "claude_retry_patterns", "wait_on_limit", "session_timeout", "idle_timeout",
+		"codex_limit_patterns", "claude_retry_patterns", "claude_swap_enabled", "wait_on_limit", "session_timeout", "idle_timeout",
 	}
 
 	gotKeys := make([]string, 0, len(got))

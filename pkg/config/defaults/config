@@ -22,6 +22,12 @@ claude_command = claude
 # --verbose: enable detailed logging
 claude_args = --dangerously-skip-permissions --output-format stream-json --verbose
 
+# claude_swap_enabled: when true and claude-swap is found in PATH, rotate to the
+# next available managed account after Claude returns a configured limit pattern.
+# loopai coordinates concurrent runs globally and never reads or stores tokens.
+# default: true
+claude_swap_enabled = true
+
 # plan_model: model to use for interactive plan creation
 # syntax: model[:effort] where model is fable/opus/sonnet/haiku (or a full model ID like
 # claude-sonnet-4-5-20250929) and effort is low/medium/high/xhigh/max.

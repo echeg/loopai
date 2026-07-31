@@ -1255,6 +1255,31 @@ func TestWaitFlag(t *testing.T) {
 	})
 }
 
+func TestDetectClaudeSwapRecovery(t *testing.T) {
+	binDir := t.TempDir()
+	t.Setenv("PATH", binDir)
+	cfg := &config.Config{ClaudeSwapEnabled: true, ClaudeCommand: "claude"}
+
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, config.ExternalReviewToolCodex),
+		"missing claude-swap keeps the optional integration disabled")
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "claude-swap"), []byte("#!/bin/sh\n"), 0o755)) //nolint:gosec // executable fixture for LookPath
+	assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, config.ExternalReviewToolCodex))
+	assert.Nil(t, detectClaudeSwapRecovery(opts{NoClaudeSwap: true}, cfg, config.ExternalReviewToolCodex))
+
+	cfg.ClaudeSwapEnabled = false
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, config.ExternalReviewToolCodex))
+	cfg.ClaudeSwapEnabled = true
+	cfg.ClaudeCommand = "claude-wrapper"
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, config.ExternalReviewToolCodex),
+		"custom stream-json wrappers must not mutate Claude Code credentials")
+
+	cfg.ClaudeCommand = "claude"
+	cfg.Executor = config.ExecutorCodex
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, config.ExternalReviewToolCodex))
+	assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, config.ExternalReviewToolClaude),
+		"a native external Claude reviewer uses the same failover integration")
+}
+
 func TestSessionTimeoutFlag(t *testing.T) {
 	t.Run("cli_overrides_config", func(t *testing.T) {
 		cfg := &config.Config{SessionTimeout: 10 * time.Minute, SessionTimeoutSet: true}

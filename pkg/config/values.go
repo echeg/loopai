@@ -25,6 +25,8 @@ type Values struct {
 	ClaudeLimitPatterns        []string
 	CodexLimitPatterns         []string
 	ClaudeRetryPatterns        []string
+	ClaudeSwapEnabled          bool
+	ClaudeSwapEnabledSet       bool
 	CodexEnabled               bool
 	CodexEnabledSet            bool // tracks if codex_enabled was explicitly set
 	CodexCommand               string
@@ -214,6 +216,14 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 	}
 	if key, err := section.GetKey("review_model"); err == nil {
 		values.ReviewModel = key.String()
+	}
+	if key, err := section.GetKey("claude_swap_enabled"); err == nil {
+		val, boolErr := key.Bool()
+		if boolErr != nil {
+			return Values{}, fmt.Errorf("invalid claude_swap_enabled: %w", boolErr)
+		}
+		values.ClaudeSwapEnabled = val
+		values.ClaudeSwapEnabledSet = true
 	}
 
 	// codex settings
@@ -529,6 +539,10 @@ func (dst *Values) mergeFrom(src *Values) {
 // mergeExecutionFrom merges execution-related fields from src into dst.
 // called from mergeFrom to manage cyclomatic complexity.
 func (dst *Values) mergeExecutionFrom(src *Values) {
+	if src.ClaudeSwapEnabledSet {
+		dst.ClaudeSwapEnabled = src.ClaudeSwapEnabled
+		dst.ClaudeSwapEnabledSet = true
+	}
 	if src.IterationDelayMsSet {
 		dst.IterationDelayMs = src.IterationDelayMs
 		dst.IterationDelayMsSet = true

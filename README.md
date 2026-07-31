@@ -344,6 +344,16 @@ recovers or the run is canceled with `Ctrl+C`. During the wait, progress output 
 shows `rate limited · retry in 10m`. Override the interval with `--wait <duration>` or disable
 limit retries for one run with `--wait 0`; the equivalent config key is `wait_on_limit`.
 
+When the native `claude` command is in use and `claude-swap` is available in `PATH`, loopai also
+enables reactive account failover automatically. On a real Claude limit match it runs
+`claude-swap switch --strategy next-available --model all --json`, waits for the credential change
+to settle, and retries the same call. A global lock and generation file under `~/.config/loopai/`
+ensure concurrent loopai processes perform only one switch for the same exhausted account; recently
+limited slots are skipped even when claude-swap usage data is stale. If switching is unavailable,
+the normal 10-minute retry remains active. Disable this integration with `--no-claude-swap` or
+`claude_swap_enabled = false`. Custom Claude-compatible wrappers and Codex limits never trigger it,
+and loopai stores only slot numbers and timestamps—not account emails or credentials.
+
 ## Notifications
 
 Notifications are disabled by default. The configuration supports Telegram, email, Slack, generic webhooks, and custom scripts. See [docs/notifications.md](docs/notifications.md).

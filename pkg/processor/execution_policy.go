@@ -8,6 +8,7 @@ import (
 
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
+	"github.com/umputun/ralphex/pkg/limits"
 	"github.com/umputun/ralphex/pkg/processor/phase"
 	"github.com/umputun/ralphex/pkg/status"
 )
@@ -17,6 +18,7 @@ type retryPolicy struct {
 	log         Logger
 	waitOnLimit time.Duration
 	phaseHolder *status.PhaseHolder
+	recovery    limits.Recovery
 }
 
 type retryPolicyOpts struct {
@@ -24,17 +26,23 @@ type retryPolicyOpts struct {
 	log         Logger
 	waitOnLimit time.Duration
 	phaseHolder *status.PhaseHolder
+	recovery    limits.Recovery
 }
 
 func newRetryPolicy(opts retryPolicyOpts) *retryPolicy {
 	return &retryPolicy{
 		cfg: opts.cfg, log: opts.log, waitOnLimit: opts.waitOnLimit, phaseHolder: opts.phaseHolder,
+		recovery: opts.recovery,
 	}
 }
 
 func (p *retryPolicy) Run(ctx context.Context, run func(context.Context, string) executor.Result,
 	prompt string, toolName string) phase.ExecutionResult {
 	for {
+		var snapshot limits.Snapshot
+		if p.recovery != nil && toolName == config.ExternalReviewToolClaude {
+			snapshot = p.recovery.Snapshot(ctx)
+		}
 		result := p.runWithSessionTimeout(ctx, run, prompt, toolName)
 		if result.Result.Error == nil {
 			return result
@@ -58,6 +66,14 @@ func (p *retryPolicy) Run(ctx context.Context, run func(context.Context, string)
 		}
 
 		restorePhase := p.enterLimitWait()
+		if p.recovery != nil && toolName == config.ExternalReviewToolClaude {
+			if err := p.recoverClaudeLimit(ctx, snapshot); err != nil {
+				restorePhase()
+				return phase.ExecutionResult{Result: executor.Result{Error: err}}
+			}
+			restorePhase()
+			continue
+		}
 		waitLabel := formatLimitWait(p.waitOnLimit)
 		p.logLimitWait(limitErr.Pattern, toolName, waitLabel)
 
@@ -67,6 +83,62 @@ func (p *retryPolicy) Run(ctx context.Context, run func(context.Context, string)
 		}
 		restorePhase()
 	}
+}
+
+func (p *retryPolicy) recoverClaudeLimit(ctx context.Context, snapshot limits.Snapshot) error {
+	p.logRecovery("switching Claude account", "rate limit detected in Claude output; attempting claude-swap account rotation...")
+	recovered, recoverErr := p.recovery.Recover(ctx, snapshot, p.waitOnLimit)
+	if recoverErr == nil && recovered.Recovered {
+		p.logRecoveredAccount(recovered)
+		if recovered.RetryAfter <= 0 {
+			return nil
+		}
+		if err := p.Sleep(ctx, recovered.RetryAfter); err != nil {
+			return fmt.Errorf("interrupted during account switch settle: %w", ctx.Err())
+		}
+		return nil
+	}
+
+	waitLabel := formatLimitWait(p.waitOnLimit)
+	if recoverErr != nil {
+		p.logRecovery("swap unavailable · retry in "+waitLabel,
+			fmt.Sprintf("claude-swap unavailable (%s); waiting %s before retry...", recovered.Reason, waitLabel))
+	} else {
+		p.logRecovery("swap unavailable · retry in "+waitLabel,
+			fmt.Sprintf("claude-swap could not select another account (%s); waiting %s before retry...",
+				recovered.Reason, waitLabel))
+	}
+	if err := p.Sleep(ctx, p.waitOnLimit); err != nil {
+		return fmt.Errorf("interrupted during limit wait: %w", ctx.Err())
+	}
+	return nil
+}
+
+func (p *retryPolicy) logRecoveredAccount(recovered limits.RecoveryResult) {
+	waitLabel := formatLimitWait(recovered.RetryAfter)
+	if recovered.Switched {
+		p.logRecovery("account switched · retry in "+waitLabel,
+			fmt.Sprintf("claude-swap switched account slot %d to slot %d; retrying in %s...",
+				recovered.From, recovered.To, waitLabel))
+		return
+	}
+	p.logRecovery("account already switched · retry in "+waitLabel,
+		fmt.Sprintf("another process already changed the Claude account to slot %d; retrying in %s...",
+			recovered.To, waitLabel))
+}
+
+// limitRecoveryLogger is an optional logger extension used by the cmux
+// decorator to show account-switch progress without coupling processor to cmux.
+type limitRecoveryLogger interface {
+	LogLimitRecovery(statusText, message string)
+}
+
+func (p *retryPolicy) logRecovery(statusText, message string) {
+	if log, ok := p.log.(limitRecoveryLogger); ok {
+		log.LogLimitRecovery(statusText, message)
+		return
+	}
+	p.log.Print("%s", message)
 }
 
 // limitWaitLogger is an optional logger extension used by the cmux decorator to enrich the

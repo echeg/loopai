@@ -18,10 +18,12 @@ import (
 
 	"github.com/jessevdk/go-flags"
 
+	"github.com/umputun/ralphex/pkg/claudeswap"
 	"github.com/umputun/ralphex/pkg/cmux"
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/git"
 	"github.com/umputun/ralphex/pkg/input"
+	"github.com/umputun/ralphex/pkg/limits"
 	"github.com/umputun/ralphex/pkg/notify"
 	"github.com/umputun/ralphex/pkg/plan"
 	"github.com/umputun/ralphex/pkg/processor"
@@ -53,6 +55,7 @@ type opts struct {
 	IdleTimeout             time.Duration `long:"idle-timeout" description:"kill claude/codex executor session after no output for this duration (e.g. 5m, 10m)"`
 	SkipFinalize            bool          `long:"skip-finalize" description:"skip finalize step even if enabled in config"`
 	PreserveAnthropicAPIKey bool          `long:"preserve-anthropic-api-key" description:"pass ANTHROPIC_API_KEY through to claude (for users authenticating Claude Code via API key rather than OAuth/keychain)"`
+	NoClaudeSwap            bool          `long:"no-claude-swap" description:"disable automatic claude-swap account rotation for this run"`
 	Codex                   bool          `long:"codex" description:"use codex CLI as the executor for task, review, and finalize phases"`
 	PassClaudeMd            bool          `long:"pass-claude-md" description:"pass project CLAUDE.md to codex via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is NOT auto-passed but a one-time setup hint is shown (codex executor only)"`
 	Worktree                bool          `long:"worktree" description:"run in isolated git worktree"`
@@ -171,6 +174,7 @@ type executePlanRequest struct {
 	ProgressLog    *progress.Logger    // pre-created logger (worktree mode); nil in normal mode
 	PhaseHolder    *status.PhaseHolder // pre-created holder (worktree mode); nil in normal mode
 	ExternalReview externalReviewSelection
+	LimitRecovery  limits.Recovery
 }
 
 // cleanupHolder holds a cleanup function with mutex for safe cross-goroutine access.
@@ -301,6 +305,7 @@ func run(ctx context.Context, o opts) error {
 		return err
 	}
 	applyEffectiveExternalReview(cfg, externalReview)
+	limitRecovery := detectClaudeSwapRecovery(o, cfg, externalReview.Provider)
 
 	if depErr := ctx.Err(); depErr != nil {
 		return fmt.Errorf("execution context: %w", depErr)
@@ -355,6 +360,7 @@ func run(ctx context.Context, o opts) error {
 			CmuxStop:       cmuxStop,
 			BranchOverride: o.Branch,
 			ExternalReview: externalReview,
+			LimitRecovery:  limitRecovery,
 		}, selector)
 	}
 
@@ -370,6 +376,7 @@ func run(ctx context.Context, o opts) error {
 		CmuxStop:       cmuxStop,
 		BranchOverride: o.Branch,
 		ExternalReview: externalReview,
+		LimitRecovery:  limitRecovery,
 	}, selector)
 }
 
@@ -914,6 +921,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		ProgressLog:    baseLog,
 		PhaseHolder:    holder,
 		ExternalReview: req.ExternalReview,
+		LimitRecovery:  req.LimitRecovery,
 	})
 }
 
@@ -1373,6 +1381,9 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		reviewPatience = o.ReviewPatience
 	}
 
+	if req.LimitRecovery != nil {
+		log.Print("claude-swap detected: automatic Claude account failover enabled")
+	}
 	r := processor.New(processor.Config{
 		PlanFile:              req.PlanFile,
 		ProgressPath:          log.Path(),
@@ -1394,11 +1405,34 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		TaskModel:             resolveSpec(o.TaskModel, req.Config.TaskModel),
 		ReviewModel:           resolveReviewSpec(o, req.Config),
 		AppConfig:             req.Config,
+		LimitRecovery:         req.LimitRecovery,
 	}, log, holder)
 	if req.GitSvc != nil {
 		r.SetGitChecker(req.GitSvc)
 	}
 	return r
+}
+
+func detectClaudeSwapRecovery(o opts, cfg *config.Config, externalProvider string) limits.Recovery {
+	if cfg == nil || o.NoClaudeSwap || !cfg.ClaudeSwapEnabled {
+		return nil
+	}
+	claudeCmd := strings.TrimSpace(cfg.ClaudeCommand)
+	if claudeCmd == "" {
+		claudeCmd = "claude"
+	}
+	if filepath.Base(claudeCmd) != "claude" {
+		return nil // custom stream-json compatible wrappers do not share Claude Code auth
+	}
+	usesClaude := cfg.Executor != config.ExecutorCodex || externalProvider == config.ExternalReviewToolClaude
+	if !usesClaude {
+		return nil
+	}
+	recovery, ok := claudeswap.Detect(config.DefaultConfigDir())
+	if !ok {
+		return nil
+	}
+	return recovery
 }
 
 func printStartupInfo(info startupInfo, colors *progress.Colors) {
@@ -1674,6 +1708,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		req.CmuxStop.set(rep.Stop)
 	}
 	holder.OnChange(rep.OnPhase)
+	var planLog processor.Logger = rep.WrapLogger(baseLog)
 
 	maxIter := resolveMaxIterations(o.MaxIterations, req.Config)
 
@@ -1712,6 +1747,9 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	// record start time for finding the created plan
 	startTime := time.Now()
 
+	if req.LimitRecovery != nil {
+		planLog.Print("claude-swap detected: automatic Claude account failover enabled")
+	}
 	r := processor.New(processor.Config{
 		PlanDescription:  o.PlanDescription,
 		ProgressPath:     baseLog.Path(),
@@ -1723,7 +1761,8 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		DefaultBranch:    req.BaseRef,
 		TaskModel:        resolvePlanSpec(o, req.Config),
 		AppConfig:        req.Config,
-	}, baseLog, holder)
+		LimitRecovery:    req.LimitRecovery,
+	}, planLog, holder)
 	// the collector is called exactly when the run stalls waiting for a human, so wrapping it
 	// notifies cmux on questions and on the ready draft without touching the phase engines
 	r.SetInputCollector(rep.WrapInput(collector))
@@ -1795,6 +1834,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 			CmuxStop:       req.CmuxStop,
 			BranchOverride: req.BranchOverride,
 			ExternalReview: req.ExternalReview,
+			LimitRecovery:  req.LimitRecovery,
 		})
 	}
 
@@ -1818,6 +1858,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		NotifySvc:      req.NotifySvc,
 		CmuxStop:       req.CmuxStop,
 		ExternalReview: req.ExternalReview,
+		LimitRecovery:  req.LimitRecovery,
 	})
 }
 

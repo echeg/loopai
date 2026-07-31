@@ -11,6 +11,7 @@ import (
 
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
+	"github.com/umputun/ralphex/pkg/limits"
 	"github.com/umputun/ralphex/pkg/status"
 )
 
@@ -37,6 +38,76 @@ func TestExecutionPolicy_RunReturnsPerCallTimeoutState(t *testing.T) {
 	require.NoError(t, result.Result.Error)
 	assert.Equal(t, "ok", result.Result.Output)
 	assert.False(t, result.TimedOut)
+}
+
+type fakeLimitRecovery struct {
+	snapshots int
+	recovers  int
+	result    limits.RecoveryResult
+	err       error
+}
+
+func (f *fakeLimitRecovery) Snapshot(context.Context) limits.Snapshot {
+	f.snapshots++
+	return limits.Snapshot{Generation: 7, Account: 1, Total: 3}
+}
+
+func (f *fakeLimitRecovery) Recover(_ context.Context, _ limits.Snapshot, _ time.Duration) (limits.RecoveryResult, error) {
+	f.recovers++
+	return f.result, f.err
+}
+
+func TestExecutionPolicy_RunRecoversClaudeLimitWithAccountSwitch(t *testing.T) {
+	recovery := &fakeLimitRecovery{result: limits.RecoveryResult{
+		Recovered: true, Switched: true, From: 1, To: 2, RetryAfter: time.Millisecond,
+	}}
+	policy := newRetryPolicy(retryPolicyOpts{
+		log: newMockLogger(), waitOnLimit: time.Hour, recovery: recovery,
+	})
+	calls := 0
+	result := policy.Run(t.Context(), func(context.Context, string) executor.Result {
+		calls++
+		if calls == 1 {
+			return executor.Result{Error: &executor.LimitPatternError{Pattern: "limit"}}
+		}
+		return executor.Result{Output: "ok"}
+	}, "prompt", "claude")
+
+	require.NoError(t, result.Result.Error)
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, 2, recovery.snapshots, "each Claude attempt captures the shared generation")
+	assert.Equal(t, 1, recovery.recovers)
+}
+
+func TestExecutionPolicy_RunDoesNotRecoverCodexLimit(t *testing.T) {
+	recovery := &fakeLimitRecovery{result: limits.RecoveryResult{Recovered: true}}
+	policy := newRetryPolicy(retryPolicyOpts{
+		log: newMockLogger(), waitOnLimit: time.Millisecond, recovery: recovery,
+	})
+	calls := 0
+	result := policy.Run(t.Context(), func(context.Context, string) executor.Result {
+		calls++
+		if calls == 1 {
+			return executor.Result{Error: &executor.LimitPatternError{Pattern: "limit"}}
+		}
+		return executor.Result{Output: "ok"}
+	}, "prompt", "codex")
+
+	require.NoError(t, result.Result.Error)
+	assert.Zero(t, recovery.snapshots)
+	assert.Zero(t, recovery.recovers)
+}
+
+func TestExecutionPolicy_RunWaitZeroDisablesAccountRecovery(t *testing.T) {
+	recovery := &fakeLimitRecovery{result: limits.RecoveryResult{Recovered: true}}
+	policy := newRetryPolicy(retryPolicyOpts{log: newMockLogger(), recovery: recovery})
+	result := policy.Run(t.Context(), func(context.Context, string) executor.Result {
+		return executor.Result{Error: &executor.LimitPatternError{Pattern: "limit"}}
+	}, "prompt", "claude")
+
+	require.Error(t, result.Result.Error)
+	assert.Equal(t, 1, recovery.snapshots)
+	assert.Zero(t, recovery.recovers, "--wait 0 remains fail-fast")
 }
 
 func TestExecutionPolicy_RunRetriesLimitErrors(t *testing.T) {

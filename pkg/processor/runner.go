@@ -9,6 +9,7 @@ import (
 
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
+	"github.com/umputun/ralphex/pkg/limits"
 	"github.com/umputun/ralphex/pkg/processor/phase"
 	"github.com/umputun/ralphex/pkg/status"
 )
@@ -29,27 +30,28 @@ const (
 
 // Config holds runner configuration.
 type Config struct {
-	PlanFile              string         // path to plan file (required for full mode)
-	PlanDescription       string         // plan description for interactive plan creation mode
-	ProgressPath          string         // path to progress file
-	Mode                  Mode           // execution mode
-	MaxIterations         int            // maximum iterations for task phase
-	MaxExternalIterations int            // override external review iteration limit (0 = auto)
-	ReviewPatience        int            // terminate external review after N unchanged rounds (0 = disabled)
-	Debug                 bool           // enable debug output
-	NoColor               bool           // disable color output
-	IterationDelayMs      int            // delay between iterations in milliseconds
-	TaskRetryCount        int            // number of times to retry failed tasks
-	TaskModel             string         // model[:effort] spec for task execution; parsed by executor setup (empty = CLI defaults)
-	ReviewModel           string         // model[:effort] spec for review phases; empty falls back to TaskModel
-	CodexEnabled          bool           // backward-compatible gate for automatic external review
-	ExternalReviewToolSet bool           // when true, AppConfig.ExternalReviewTool is an explicit choice that overrides codex_enabled=false back-compat
-	ExternalReviewTool    string         // concrete resolved provider; never auto when supplied by the CLI layer
-	ExternalReviewModel   string         // resolved external provider model
-	ExternalReviewEffort  string         // resolved external provider effort
-	FinalizeEnabled       bool           // whether finalize step is enabled
-	DefaultBranch         string         // default branch name (detected from repo)
-	AppConfig             *config.Config // full application config (for executors and prompts)
+	PlanFile              string          // path to plan file (required for full mode)
+	PlanDescription       string          // plan description for interactive plan creation mode
+	ProgressPath          string          // path to progress file
+	Mode                  Mode            // execution mode
+	MaxIterations         int             // maximum iterations for task phase
+	MaxExternalIterations int             // override external review iteration limit (0 = auto)
+	ReviewPatience        int             // terminate external review after N unchanged rounds (0 = disabled)
+	Debug                 bool            // enable debug output
+	NoColor               bool            // disable color output
+	IterationDelayMs      int             // delay between iterations in milliseconds
+	TaskRetryCount        int             // number of times to retry failed tasks
+	TaskModel             string          // model[:effort] spec for task execution; parsed by executor setup (empty = CLI defaults)
+	ReviewModel           string          // model[:effort] spec for review phases; empty falls back to TaskModel
+	CodexEnabled          bool            // backward-compatible gate for automatic external review
+	ExternalReviewToolSet bool            // when true, AppConfig.ExternalReviewTool is an explicit choice that overrides codex_enabled=false back-compat
+	ExternalReviewTool    string          // concrete resolved provider; never auto when supplied by the CLI layer
+	ExternalReviewModel   string          // resolved external provider model
+	ExternalReviewEffort  string          // resolved external provider effort
+	FinalizeEnabled       bool            // whether finalize step is enabled
+	DefaultBranch         string          // default branch name (detected from repo)
+	AppConfig             *config.Config  // full application config (for executors and prompts)
+	LimitRecovery         limits.Recovery // optional provider-specific limit recovery
 }
 
 // isCodexExecutor reports whether the configured task/review executor is codex
@@ -205,7 +207,7 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 
 	locator := newPlanLocator(cfg)
 	policy := newRetryPolicy(retryPolicyOpts{
-		cfg: cfg, log: log, waitOnLimit: waitOnLimit, phaseHolder: holder,
+		cfg: cfg, log: log, waitOnLimit: waitOnLimit, phaseHolder: holder, recovery: cfg.LimitRecovery,
 	})
 	prompts := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: log, locator: locator})
 	phaseCfg := toPhaseConfig(cfg)
