@@ -342,7 +342,6 @@ func (s *Service) CommitPlanFile(planFile, mainRepoRoot string) error {
 	if err != nil || branchName == "" {
 		branchName = plan.ExtractBranchName(planFile)
 	}
-	s.log.Printf("committing plan file: %s\n", filepath.Base(planFile))
 
 	// compute the plan file's relative path from the main repo root, then resolve
 	// it inside this repo's root. this is needed because planFile is absolute and
@@ -362,9 +361,19 @@ func (s *Service) CommitPlanFile(planFile, mainRepoRoot string) error {
 	localPlan := filepath.Join(s.repo.root(), relPlan)
 	localPlan = s.resolveFilesystemCase(localPlan)
 
-	if err := s.repo.add(localPlan); err != nil {
-		return fmt.Errorf("stage plan file: %w", err)
+	if addErr := s.repo.add(localPlan); addErr != nil {
+		return fmt.Errorf("stage plan file: %w", addErr)
 	}
+	hasChanges, err := s.repo.fileHasChanges(localPlan)
+	if err != nil {
+		return fmt.Errorf("check staged plan file: %w", err)
+	}
+	if !hasChanges {
+		s.log.Printf("plan file already committed: %s\n", filepath.Base(planFile))
+		return nil
+	}
+
+	s.log.Printf("committing plan file: %s\n", filepath.Base(planFile))
 	if err := s.repo.commit(s.appendTrailer("add plan: " + branchName)); err != nil {
 		return fmt.Errorf("commit plan file: %w", err)
 	}

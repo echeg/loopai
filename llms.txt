@@ -36,6 +36,7 @@ loopai --external-only
 loopai --codex docs/plans/feature.md
 loopai --codex --pass-claude-md docs/plans/feature.md
 loopai --worktree docs/plans/feature.md
+loopai --resume-worktree docs/plans/feature.md
 loopai --serve docs/plans/feature.md
 loopai --init
 loopai --reset

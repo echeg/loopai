@@ -1391,6 +1391,11 @@ func TestValidateFlags(t *testing.T) {
 		{name: "zero_idle_timeout_is_valid", opts: opts{IdleTimeout: 0}, wantErr: false},
 		{name: "codex_alone_is_valid", opts: opts{Codex: true}, wantErr: false},
 		{name: "codex_with_pass_claude_md_is_valid", opts: opts{Codex: true, PassClaudeMd: true}, wantErr: false},
+		{name: "resume_worktree_is_valid", opts: opts{ResumeWorktree: true}, wantErr: false},
+		{name: "resume_worktree_with_tasks_only_is_valid", opts: opts{ResumeWorktree: true, TasksOnly: true}, wantErr: false},
+		{name: "resume_worktree_with_plan_conflicts", opts: opts{ResumeWorktree: true, PlanDescription: "add feature"}, wantErr: true, errMsg: "--plan"},
+		{name: "resume_worktree_with_review_conflicts", opts: opts{ResumeWorktree: true, Review: true}, wantErr: true, errMsg: "full or --tasks-only"},
+		{name: "resume_worktree_with_external_only_conflicts", opts: opts{ResumeWorktree: true, ExternalOnly: true}, wantErr: true, errMsg: "full or --tasks-only"},
 		// the --codex / --external-only / --codex-only / --external-review-tool / --pass-claude-md
 		// mutex checks moved to applyCodexOverrides so config-file executor=codex is also enforced;
 		// validateFlags accepts those combos at CLI parse time and the post-merge gate rejects them.
@@ -1483,6 +1488,12 @@ func TestApplyCodexOverrides_AllowsSymmetricExternalReview(t *testing.T) {
 		var warnBuf bytes.Buffer
 		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
 	})
+}
+
+func TestApplyCLIOverrides_ResumeWorktreeImpliesWorktree(t *testing.T) {
+	cfg := &config.Config{}
+	require.NoError(t, applyCLIOverrides(opts{ResumeWorktree: true}, cfg))
+	assert.True(t, cfg.WorktreeEnabled)
 }
 
 func TestCodexFlag_ApplyCLIOverrides(t *testing.T) {
@@ -2953,6 +2964,10 @@ func TestIsResetOnly(t *testing.T) {
 	t.Run("reset_with_init", func(t *testing.T) {
 		assert.False(t, isResetOnly(opts{Reset: true, Init: true}))
 	})
+
+	t.Run("reset_with_resume_worktree", func(t *testing.T) {
+		assert.False(t, isResetOnly(opts{Reset: true, ResumeWorktree: true}))
+	})
 }
 
 func TestResolveVersion(t *testing.T) {
@@ -3097,6 +3112,151 @@ func TestRunWithWorktree(t *testing.T) {
 		// branch should be preserved after worktree cleanup
 		assert.True(t, branchExists(t, dir, "wt-branch"), "branch should exist after worktree removal")
 	})
+}
+
+func TestRunWithWorktreeResume(t *testing.T) {
+	t.Run("rejects_unregistered_directory_without_removing_it", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "resume-stale.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Resume Stale\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/resume-stale.md")
+		runGit(t, dir, "commit", "-m", "add resume stale plan")
+
+		wtPath := filepath.Join(dir, ".loopai", "worktrees", "resume-stale")
+		require.NoError(t, os.MkdirAll(wtPath, 0o750))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		err = runWithWorktree(t.Context(), opts{ResumeWorktree: true, NoColor: true}, executePlanRequest{
+			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc,
+			Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
+			DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not a registered git worktree")
+		assert.DirExists(t, wtPath, "invalid resume targets must never be removed")
+	})
+
+	t.Run("rejects_wrong_branch_without_removing_worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "resume-branch.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Resume Branch\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/resume-branch.md")
+		runGit(t, dir, "commit", "-m", "add resume branch plan")
+
+		wtPath := filepath.Join(dir, ".loopai", "worktrees", "resume-branch")
+		runGit(t, dir, "worktree", "add", wtPath, "-b", "different-branch")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
+		err = runWithWorktree(t.Context(), opts{ResumeWorktree: true, NoColor: true}, executePlanRequest{
+			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc,
+			Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
+			DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `expected branch "resume-branch", found "different-branch"`)
+		assert.DirExists(t, wtPath, "branch mismatch must not remove the existing worktree")
+	})
+
+	t.Run("preserves_dirty_worktree_on_failure", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "resume-preserve.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Resume Preserve\n\n- [ ] no task section\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/resume-preserve.md")
+		runGit(t, dir, "commit", "-m", "add resume preserve plan")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "master", "")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
+
+		dirtyPath := filepath.Join(wtPath, "unfinished.txt")
+		require.NoError(t, os.WriteFile(dirtyPath, []byte("keep me"), 0o600))
+
+		err = runWithWorktree(t.Context(), opts{
+			ResumeWorktree: true, TasksOnly: true, MaxIterations: 1, NoColor: true,
+		}, executePlanRequest{
+			PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
+			Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
+			DefaultBranch: "master", BaseRef: "master", WtCleanup: &cleanupHolder{},
+		})
+		require.Error(t, err)
+		assert.DirExists(t, wtPath)
+		assert.FileExists(t, dirtyPath, "failed resume must preserve unfinished changes")
+	})
+
+	t.Run("removes_worktree_after_success", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "resume-complete.md")
+		require.NoError(t, os.WriteFile(planPath, []byte(
+			"# Resume Complete\n\n### Task 1: Done\n\n- [x] already complete\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/resume-complete.md")
+		runGit(t, dir, "commit", "-m", "add resume complete plan")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "master", "")
+		require.NoError(t, err)
+
+		fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+		writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+
+		err = runWithWorktree(t.Context(), opts{
+			ResumeWorktree: true, TasksOnly: true, MaxIterations: 1, NoColor: true,
+		}, executePlanRequest{
+			PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
+			Config: &config.Config{WorktreeEnabled: true, ClaudeCommand: fakeClaude}, Colors: testColors(),
+			DefaultBranch: "master", BaseRef: "master", WtCleanup: &cleanupHolder{},
+		})
+		require.NoError(t, err)
+		assert.NoDirExists(t, wtPath)
+		assert.True(t, branchExists(t, dir, "resume-complete"), "successful resume preserves the feature branch")
+	})
+}
+
+func TestResolveWorktreePlanFile(t *testing.T) {
+	mainRoot := t.TempDir()
+	worktreeRoot := t.TempDir()
+	planPath := filepath.Join(mainRoot, "docs", "plans", "feature.md")
+
+	assert.Equal(t, filepath.Join(worktreeRoot, "docs", "plans", "feature.md"),
+		resolveWorktreePlanFile(planPath, mainRoot, worktreeRoot))
+	assert.Equal(t, "docs/plans/feature.md",
+		resolveWorktreePlanFile("docs/plans/feature.md", mainRoot, worktreeRoot))
+
+	outside := filepath.Join(filepath.Dir(mainRoot), "outside.md")
+	assert.Equal(t, outside, resolveWorktreePlanFile(outside, mainRoot, worktreeRoot))
 }
 
 func TestWorktreeMode_SkippedForNonBranchModes(t *testing.T) {

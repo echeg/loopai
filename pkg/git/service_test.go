@@ -1405,6 +1405,50 @@ func TestService_CommitPlanFile(t *testing.T) {
 		require.NoError(t, svc.RemoveWorktree(wtPath))
 	})
 
+	t.Run("existing branch with identical plan is a no-op", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		log := &mockLogger{}
+		svc, err := NewService(dir, log)
+		require.NoError(t, err)
+
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "resume-test.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Resume Test Plan"), 0o600))
+
+		// first setup attempt creates the feature branch and commits the plan there.
+		// the plan deliberately remains untracked in the main worktree.
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		require.NoError(t, err)
+		require.True(t, planNeedsCommit)
+
+		wtSvc, err := NewService(wtPath, log)
+		require.NoError(t, err)
+		require.NoError(t, wtSvc.CommitPlanFile(planFile, svc.Root()))
+		require.NoError(t, svc.RemoveWorktree(wtPath))
+
+		// a retry reuses the feature branch. CreateWorktreeForPlan still copies the
+		// untracked main-worktree plan, but its content already matches the branch.
+		retryPath, retryNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		require.NoError(t, err)
+		require.True(t, retryNeedsCommit)
+		defer svc.RemoveWorktree(retryPath) //nolint:errcheck // test cleanup
+
+		retrySvc, err := NewService(retryPath, log)
+		require.NoError(t, err)
+		headBefore, err := retrySvc.repo.headHash()
+		require.NoError(t, err)
+
+		log.logs = nil
+		require.NoError(t, retrySvc.CommitPlanFile(planFile, svc.Root()))
+
+		headAfter, err := retrySvc.repo.headHash()
+		require.NoError(t, err)
+		assert.Equal(t, headBefore, headAfter, "identical plan must not create an empty commit")
+		require.NotEmpty(t, log.logs)
+		assert.Contains(t, log.logs[len(log.logs)-1], "plan file already committed")
+	})
+
 	t.Run("commits plan file with case-mismatched path", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		log := &mockLogger{}

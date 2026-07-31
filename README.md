@@ -172,6 +172,9 @@ loopai --codex --pass-claude-md docs/plans/feature.md
 # execute in an isolated worktree
 loopai --worktree docs/plans/feature.md
 
+# continue an interrupted isolated worktree
+loopai --resume-worktree docs/plans/feature.md
+
 # initialize project-local configuration
 loopai --init
 
@@ -242,6 +245,19 @@ The model syntax is `model[:effort]`; either half may be omitted. Provider-speci
 ```bash
 loopai --worktree docs/plans/feature.md
 ```
+
+If a process was interrupted before its worktree could be removed, resume it explicitly:
+
+```bash
+loopai --resume-worktree docs/plans/feature.md
+```
+
+`--resume-worktree` implies `--worktree`. It validates that the expected directory is a registered
+Git worktree on the plan's feature branch and that the plan exists inside it, then continues from
+the first incomplete task. Dirty changes are preserved. On another failure or interruption the
+worktree remains available for another resume; after successful completion it is removed normally.
+The progress-file lock rejects another live run that resolves to the same progress path. If the
+original run used `--branch`, pass the same option when resuming.
 
 To base a plan on a non-default branch, check out that branch first and pass it explicitly:
 
