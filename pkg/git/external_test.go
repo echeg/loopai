@@ -37,6 +37,14 @@ func TestExternalBackendCloseoutCommandsHonorCancellation(t *testing.T) {
 	}
 }
 
+func TestDirectCancellationPreservesCallerSession(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), "git", "--version")
+	configureDirectCommandCancellation(cmd)
+
+	assert.Nil(t, cmd.SysProcAttr)
+	assert.Equal(t, commandWaitDelay, cmd.WaitDelay)
+}
+
 // setupExternalTestRepo creates a temp git repo using the git CLI for external backend tests.
 func setupExternalTestRepo(t *testing.T) string {
 	t.Helper()

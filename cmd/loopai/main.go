@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -290,21 +291,25 @@ func run(ctx context.Context, o opts) error {
 
 	// A normal invocation replaces any prior completion outcome even when flag validation,
 	// startup, or preflight fails. Explicit clear and close-out attempts retain the old pill
-	// until their own success paths clear it.
-	clearStaleCmuxStatus(o)
+	// until their own success paths clear it. A possible watch-only invocation has to wait for
+	// config loading so configured watch directories can be considered.
+	resolveStaleCmuxStatus := prepareStaleCmuxStatus(o)
 
 	// validate conflicting flags
 	if err := validateFlags(o); err != nil {
+		resolveStaleCmuxStatus(false)
 		return err
 	}
 
 	// handle early-exit flags (before full config load)
 	if done, err := handleEarlyFlags(o); err != nil || done {
+		resolveStaleCmuxStatus(false)
 		return err
 	}
 	// load config first to get custom command paths
 	cfg, err := loadRunConfig(o)
 	if err != nil {
+		resolveStaleCmuxStatus(false)
 		return err
 	}
 
@@ -315,6 +320,8 @@ func run(ctx context.Context, o opts) error {
 	if closeoutRequested(o) {
 		return runCloseoutCommand(ctx, o, cfg, colors)
 	}
+	watchOnly := isWatchOnlyMode(o, cfg.WatchDirs)
+	resolveStaleCmuxStatus(watchOnly)
 
 	// create notification service (nil if no channels configured)
 	notifySvc, err := notify.New(cfg.NotifyParams, stderrLog{})
@@ -324,7 +331,7 @@ func run(ctx context.Context, o opts) error {
 
 	// watch-only mode: --serve with watch dirs (CLI or config) and no plan file
 	// runs web dashboard without plan execution, can run from any directory
-	if isWatchOnlyMode(o, cfg.WatchDirs) {
+	if watchOnly {
 		return runWatchOnly(ctx, o, cfg, colors)
 	}
 
@@ -1408,6 +1415,12 @@ func isWatchOnlyMode(o opts, configWatchDirs []string) bool {
 	return o.Serve && o.PlanFile == "" && o.PlanDescription == "" && (len(o.Watch) > 0 || len(configWatchDirs) > 0)
 }
 
+// mayBeWatchOnlyMode reports whether config loading is needed to distinguish a dashboard-only
+// invocation from a normal run. Bare --serve can still be a normal run when no watch dirs exist.
+func mayBeWatchOnlyMode(o opts) bool {
+	return o.Serve && o.PlanFile == "" && o.PlanDescription == ""
+}
+
 // runWatchOnly starts the web dashboard in watch-only mode without plan execution.
 func runWatchOnly(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors) error {
 	dirs := web.ResolveWatchDirs(o.Watch, cfg.WatchDirs)
@@ -2136,10 +2149,25 @@ func clearCmuxStatus(stdout io.Writer) {
 }
 
 func clearStaleCmuxStatus(o opts) {
-	if o.Clear || closeoutRequested(o) {
+	if o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || (o.Reset && isResetOnly(o)) {
 		return
 	}
 	cmux.New("", cmux.Models{}).Clear()
+}
+
+// prepareStaleCmuxStatus clears immediately for definite runs. When --serve might become
+// watch-only after config loading, the returned callback performs the clear only if startup
+// resolves to a normal run or exits before that distinction can be made.
+func prepareStaleCmuxStatus(o opts) func(preserve bool) {
+	if mayBeWatchOnlyMode(o) {
+		return func(preserve bool) {
+			if !preserve {
+				clearStaleCmuxStatus(o)
+			}
+		}
+	}
+	clearStaleCmuxStatus(o)
+	return func(bool) {}
 }
 
 type cmuxStatusClearer interface {
@@ -2181,25 +2209,24 @@ func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase stri
 	if err != nil {
 		return fmt.Errorf("read feature branch head: %w", err)
 	}
-	mergedHead, err := mergeForCloseout(ctx, mergeSvc, feature, base)
+	mergeResult, err := mergeForCloseout(ctx, mergeSvc, feature, base, featureHead)
 	if err != nil {
 		return err
 	}
-	mergeType := "merge commit"
-	if mergedHead == featureHead {
-		mergeType = "fast-forward"
-	}
 
 	if cleanupErr := cleanupMergedWorktree(gitSvc, mergeSvc, feature, featurePath, primaryPath); cleanupErr != nil {
-		return cleanupErr
+		return restoreMergeWorktree(mergeSvc, mergeResult, cleanupErr)
 	}
 	if deleteErr := mergeSvc.DeleteBranch(feature); deleteErr != nil {
-		return fmt.Errorf("delete merged feature branch: %w", deleteErr)
+		return restoreMergeWorktree(mergeSvc, mergeResult, fmt.Errorf("delete merged feature branch: %w", deleteErr))
+	}
+	if restoreErr := restoreMergeWorktree(mergeSvc, mergeResult, nil); restoreErr != nil {
+		return restoreErr
 	}
 	if rep != nil {
 		rep.Clear()
 	}
-	fmt.Fprintf(stdout, "merged %s into %s (%s); deleted branch %s\n", feature, base, mergeType, feature)
+	fmt.Fprintf(stdout, "merged %s into %s (%s); deleted branch %s\n", feature, base, mergeResult.mergeType, feature)
 	return nil
 }
 
@@ -2251,36 +2278,85 @@ func worktreePathForBranch(worktrees []git.Worktree, branch string) string {
 	return ""
 }
 
-func mergeForCloseout(ctx context.Context, gitSvc *git.Service, feature, base string) (string, error) {
+type closeoutMergeResult struct {
+	mergeType    string
+	original     string
+	originalHead string
+	restore      bool
+}
+
+func mergeForCloseout(ctx context.Context, gitSvc *git.Service, feature, base, featureHead string) (closeoutMergeResult, error) {
 	original, err := gitSvc.CurrentBranch()
 	if err != nil {
-		return "", fmt.Errorf("read merge worktree branch: %w", err)
+		return closeoutMergeResult{}, fmt.Errorf("read merge worktree branch: %w", err)
+	}
+	originalHead, err := gitSvc.HeadHash()
+	if err != nil {
+		return closeoutMergeResult{}, fmt.Errorf("read merge worktree head: %w", err)
 	}
 	if original != base {
 		if checkoutErr := gitSvc.CheckoutBranch(base); checkoutErr != nil {
-			return "", fmt.Errorf("check out base branch %q: %w", base, checkoutErr)
+			return closeoutMergeResult{}, fmt.Errorf("check out base branch %q: %w", base, checkoutErr)
 		}
 	}
+	baseHead, err := gitSvc.HeadHash()
+	if err != nil {
+		return closeoutMergeResult{}, fmt.Errorf("read base branch head: %w", err)
+	}
 	if err = gitSvc.MergeBranchContext(ctx, feature); err != nil {
-		return "", closeoutMergeError(gitSvc, original, feature, base, err)
+		return closeoutMergeResult{}, closeoutMergeError(gitSvc, original, originalHead, feature, base, err)
 	}
 	mergedHead, err := gitSvc.HeadHash()
 	if err != nil {
-		return "", fmt.Errorf("read merged branch head: %w", err)
+		return closeoutMergeResult{}, fmt.Errorf("read merged branch head: %w", err)
 	}
-	return mergedHead, nil
+	result := closeoutMergeResult{original: original, originalHead: originalHead, restore: original != base && original != feature}
+	if mergedHead == baseHead {
+		result.mergeType = "already up to date"
+		return result, nil
+	}
+	if mergedHead == featureHead {
+		result.mergeType = "fast-forward"
+		return result, nil
+	}
+	result.mergeType = "merge commit"
+	return result, nil
 }
 
-func closeoutMergeError(gitSvc *git.Service, original, feature, base string, mergeErr error) error {
+func restoreMergeWorktree(gitSvc *git.Service, result closeoutMergeResult, priorErr error) error {
+	if !result.restore {
+		return priorErr
+	}
+	if restoreErr := restoreCheckout(gitSvc, result.original, result.originalHead); restoreErr != nil {
+		if priorErr != nil {
+			return fmt.Errorf("%w; additionally failed to restore the merge worktree: %w", priorErr, restoreErr)
+		}
+		return fmt.Errorf("merge succeeded but failed to restore the merge worktree: %w", restoreErr)
+	}
+	return priorErr
+}
+
+func closeoutMergeError(gitSvc *git.Service, original, originalHead, feature, base string, mergeErr error) error {
 	if original != base {
-		if restoreErr := gitSvc.CheckoutBranch(original); restoreErr != nil {
-			return fmt.Errorf("merge %q into %q failed: %w; additionally failed to restore %q: %w", feature, base, mergeErr, original, restoreErr)
+		if restoreErr := restoreCheckout(gitSvc, original, originalHead); restoreErr != nil {
+			return fmt.Errorf("merge %q into %q failed: %w; additionally failed to restore the merge worktree: %w", feature, base, mergeErr, restoreErr)
 		}
 	}
 	if errors.Is(mergeErr, git.ErrMergeConflict) {
 		return fmt.Errorf("merge %q into %q conflicted and was aborted; resolve the branches and rerun --merge: %w", feature, base, mergeErr)
 	}
 	return fmt.Errorf("merge %q into %q failed: %w", feature, base, mergeErr)
+}
+
+func restoreCheckout(gitSvc *git.Service, branch, head string) error {
+	target := branch
+	if target == "" {
+		target = head
+	}
+	if err := gitSvc.CheckoutBranch(target); err != nil {
+		return fmt.Errorf("restore %q: %w", target, err)
+	}
+	return nil
 }
 
 func cleanupMergedWorktree(featureSvc, mergeSvc *git.Service, feature, featurePath, primaryPath string) error {
@@ -2377,9 +2453,12 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 		"--title", title, "--body-file", "-")
 	cmd.Dir = gitSvc.Root()
 	cmd.Stdin = strings.NewReader(body)
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("create GitHub PR: %w: %s", err, strings.TrimSpace(string(out)))
+		details := strings.TrimSpace(stderr.String() + "\n" + string(out))
+		return fmt.Errorf("create GitHub PR: %w: %s", err, details)
 	}
 	prURL := strings.TrimSpace(string(out))
 	if prURL != "" {
@@ -2573,49 +2652,49 @@ func findPRPlan(repoRoot, branch string) (string, error) {
 		return recordedPath, nil
 	}
 
-	for _, dir := range []string{
+	dirs := []string{
 		filepath.Join(repoRoot, "docs", "plans", "completed"),
 		filepath.Join(repoRoot, "docs", "plans"),
-	} {
-		path, findErr := findPRPlanInDir(repoRoot, dir, branch)
+	}
+	var fallbackPath string
+	for _, dir := range dirs {
+		exactPath, candidateFallback, findErr := findPRPlanInDir(repoRoot, dir, branch)
 		if findErr != nil {
 			return "", findErr
 		}
-		if path != "" {
-			return path, nil
+		if exactPath != "" {
+			return exactPath, nil
+		}
+		if fallbackPath == "" {
+			fallbackPath = candidateFallback
 		}
 	}
-	return "", nil
+	return fallbackPath, nil
 }
 
-func findPRPlanInDir(repoRoot, dir, branch string) (string, error) {
+func findPRPlanInDir(repoRoot, dir, branch string) (exactPath, fallbackPath string, err error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+		return "", "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("list PR plans in %q: %w", dir, err)
+		return "", "", fmt.Errorf("list PR plans in %q: %w", dir, err)
 	}
 
-	var exactPath string
 	var exactTime time.Time
 	for _, entry := range entries {
-		if filepath.Ext(entry.Name()) != ".md" || plan.ExtractBranchName(entry.Name()) != branch {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" || plan.ExtractBranchName(entry.Name()) != branch {
 			continue
 		}
 		info, infoErr := entry.Info()
 		if infoErr != nil {
-			return "", fmt.Errorf("inspect associated PR plan %q: %w", entry.Name(), infoErr)
+			return "", "", fmt.Errorf("inspect associated PR plan %q: %w", entry.Name(), infoErr)
 		}
 		if exactPath == "" || info.ModTime().After(exactTime) {
 			exactPath, exactTime = filepath.Join(dir, entry.Name()), info.ModTime()
 		}
 	}
-	if exactPath != "" {
-		return exactPath, nil
-	}
 
-	var fallbackPath string
 	var fallbackTime time.Time
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
@@ -2635,7 +2714,7 @@ func findPRPlanInDir(repoRoot, dir, branch string) (string, error) {
 			fallbackPath, fallbackTime = path, info.ModTime()
 		}
 	}
-	return fallbackPath, nil
+	return exactPath, fallbackPath, nil
 }
 
 // findRecordedPRPlan uses the progress header's exact branch-to-plan association. This covers

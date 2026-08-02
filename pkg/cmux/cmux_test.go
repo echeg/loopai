@@ -246,7 +246,7 @@ func TestReporterSidebarCommands(t *testing.T) {
 	}{
 		{
 			name: "loading on",
-			call: func(r *Reporter) { r.loadingOn() },
+			call: func(r *Reporter) { r.loadingOnContext(context.Background()) },
 			want: [][]string{{"workspace", "loading", "on", "--id", "loopai"}},
 		},
 		{
@@ -813,7 +813,7 @@ func TestReporterNilReceiver(t *testing.T) {
 		name string
 		call func()
 	}{
-		{name: "loading on", call: func() { r.loadingOn() }},
+		{name: "loading on", call: func() { r.loadingOnContext(context.Background()) }},
 		{name: "loading off", call: func() { r.loadingOff() }},
 		{name: "status", call: func() { r.setStatus("task", "hammer", "#22c55e") }},
 		{name: "clear status", call: func() { r.clearStatus() }},

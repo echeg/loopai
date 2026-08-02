@@ -270,6 +270,33 @@ func TestService_MergeBranch(t *testing.T) {
 		assert.Equal(t, "master\n", string(content))
 		assert.Empty(t, strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
 	})
+
+	t.Run("non-conflict commit failure is not reported as a conflict", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+
+		runGit(t, dir, "checkout", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o600))
+		runGit(t, dir, "add", "base.txt")
+		runGit(t, dir, "commit", "-m", "advance base")
+		masterHash := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+
+		hook := filepath.Join(dir, ".git", "hooks", "prepare-commit-msg")
+		require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\necho hook rejected merge >&2\nexit 1\n"), 0o755)) //nolint:gosec // executable hook fixture
+
+		err = svc.MergeBranch("feature")
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrMergeConflict)
+		assert.Contains(t, err.Error(), "hook rejected merge")
+		assert.Equal(t, masterHash, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD")))
+		assert.Empty(t, strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
+	})
 }
 
 func TestService_DeleteBranch(t *testing.T) {
@@ -380,7 +407,7 @@ func TestService_WorktreeInspectionAndSafeRemoval(t *testing.T) {
 	assert.NoDirExists(t, worktreePath)
 }
 
-func TestService_RemoveWorktreeSafeRefusesIgnoredFiles(t *testing.T) {
+func TestService_RemoveWorktreeSafeAllowsIgnoredFiles(t *testing.T) {
 	dir := setupExternalTestRepo(t)
 	worktreePath := filepath.Join(t.TempDir(), "feature")
 	runGit(t, dir, "worktree", "add", worktreePath, "-b", "feature")
@@ -391,10 +418,8 @@ func TestService_RemoveWorktreeSafeRefusesIgnoredFiles(t *testing.T) {
 
 	mainSvc, err := NewService(dir, noopServiceLogger())
 	require.NoError(t, err)
-	err = mainSvc.RemoveWorktreeSafe(worktreePath)
-	require.ErrorContains(t, err, "ignored files")
-	assert.DirExists(t, worktreePath)
-	assert.FileExists(t, filepath.Join(worktreePath, "secret.env"))
+	require.NoError(t, mainSvc.RemoveWorktreeSafe(worktreePath))
+	assert.NoDirExists(t, worktreePath)
 }
 
 func TestService_CreateBranchForPlan(t *testing.T) {

@@ -3184,6 +3184,75 @@ func TestRunMergeCommand(t *testing.T) {
 		assert.Equal(t, 1, clearer.calls)
 	})
 
+	t.Run("ignored files do not block linked worktree cleanup", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		makeFeature(t, dir)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "info", "exclude"), []byte("artifact.tmp\n"), 0o600))
+		runGit(t, dir, "checkout", "master")
+		worktreePath := filepath.Join(t.TempDir(), "feature")
+		runGit(t, dir, "worktree", "add", worktreePath, "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(worktreePath, "artifact.tmp"), []byte("generated\n"), 0o600))
+		featureSvc, err := git.NewService(worktreePath, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", clearer, io.Discard))
+		assert.NoDirExists(t, worktreePath)
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, 1, clearer.calls)
+	})
+
+	t.Run("restores a third branch borrowed for linked worktree merge", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		makeFeature(t, dir)
+		runGit(t, dir, "checkout", "master")
+		runGit(t, dir, "checkout", "-b", "develop")
+		worktreePath := filepath.Join(t.TempDir(), "feature")
+		runGit(t, dir, "worktree", "add", worktreePath, "feature")
+		featureSvc, err := git.NewService(worktreePath, noopLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", &recordingStatusClearer{}, io.Discard))
+		assert.Equal(t, "develop", currentGitBranch(t, dir))
+		assert.NoDirExists(t, worktreePath)
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "master:feature.txt"))
+	})
+
+	t.Run("restores detached HEAD borrowed for linked worktree merge", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		makeFeature(t, dir)
+		runGit(t, dir, "checkout", "--detach", "master")
+		originalHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		worktreePath := filepath.Join(t.TempDir(), "feature")
+		runGit(t, dir, "worktree", "add", worktreePath, "feature")
+		featureSvc, err := git.NewService(worktreePath, noopLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", &recordingStatusClearer{}, io.Discard))
+		assert.Empty(t, currentGitBranch(t, dir))
+		assert.Equal(t, originalHead, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.NoDirExists(t, worktreePath)
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "master:feature.txt"))
+	})
+
+	t.Run("reports an already merged branch accurately", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		runGit(t, dir, "checkout", "master")
+		runGit(t, dir, "merge", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o600))
+		runGit(t, dir, "add", "base.txt")
+		runGit(t, dir, "commit", "-m", "advance base")
+		runGit(t, dir, "checkout", "feature")
+		var output bytes.Buffer
+
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", &recordingStatusClearer{}, &output))
+		assert.Contains(t, output.String(), "feature into master (already up to date)")
+		assert.False(t, branchExists(t, dir, "feature"))
+	})
+
 	t.Run("unrelated worktree at conventional path is preserved", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		svc := makeFeature(t, dir)
@@ -3433,7 +3502,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.ErrorContains(t, err, "size limit")
 	})
 
-	t.Run("completed textual fallback beats active exact plan", func(t *testing.T) {
+	t.Run("active exact plan beats completed textual fallback", func(t *testing.T) {
 		root := t.TempDir()
 		exactDir := filepath.Join(root, "docs", "plans")
 		require.NoError(t, os.MkdirAll(exactDir, 0o750))
@@ -3447,8 +3516,22 @@ func TestBuildPRTitleBody(t *testing.T) {
 
 		title, body, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
 		require.NoError(t, err)
-		assert.Equal(t, "Newer fallback", title)
-		assert.NotContains(t, body, "Exact.")
+		assert.Equal(t, "Exact active plan", title)
+		assert.Contains(t, body, "Exact.")
+	})
+
+	t.Run("directory matching exact plan name is ignored", func(t *testing.T) {
+		root := t.TempDir()
+		completedDir := filepath.Join(root, "docs", "plans", "completed")
+		require.NoError(t, os.MkdirAll(filepath.Join(completedDir, "20260802-feature.md"), 0o750))
+		activeDir := filepath.Join(root, "docs", "plans")
+		require.NoError(t, os.WriteFile(filepath.Join(activeDir, "20260802-feature.md"),
+			[]byte("# Active feature plan\n\n## Overview\n\nSelected.\n"), 0o600))
+
+		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{})
+		require.NoError(t, err)
+		assert.Equal(t, "Active feature plan", title)
+		assert.Contains(t, body, "Selected.")
 	})
 
 	t.Run("unrelated invalid plans do not block exact association", func(t *testing.T) {
@@ -3594,12 +3677,12 @@ func TestRunPRCommand(t *testing.T) {
 		return dir, remote, svc
 	}
 
-	t.Run("success prints URL and clears pill", func(t *testing.T) {
+	t.Run("success prints only URL and clears pill", func(t *testing.T) {
 		dir, remote, svc := setupFeatureWithRemote(t)
 		binDir := t.TempDir()
 		argsLog := filepath.Join(binDir, "gh-args.log")
 		bodyLog := filepath.Join(binDir, "gh-body.log")
-		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nif [ \"$1\" = repo ]; then\n  printf '%s\\n' 'acme/repo'\n  exit 0\nfi\nprintf '%s\\n' \"$@\" > \"$GH_ARGS_LOG\"\ncat > \"$GH_BODY_LOG\"\nprintf '%s\\n' 'https://github.com/acme/repo/pull/42'\n")
+		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nif [ \"$1\" = repo ]; then\n  printf '%s\\n' 'acme/repo'\n  exit 0\nfi\nprintf '%s\\n' \"$@\" > \"$GH_ARGS_LOG\"\ncat > \"$GH_BODY_LOG\"\nprintf '%s\\n' 'warning: 1 uncommitted change' >&2\nprintf '%s\\n' 'https://github.com/acme/repo/pull/42'\n")
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("GH_ARGS_LOG", argsLog)
 		t.Setenv("GH_BODY_LOG", bodyLog)
@@ -3798,6 +3881,68 @@ func TestRunClearsStaleCmuxStatusBeforeFlagValidationFailure(t *testing.T) {
 	require.ErrorContains(t, err, "--wait must be non-negative")
 	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 	require.NoError(t, readErr)
+	assert.Equal(t, "clear-status loopai\n", string(recorded))
+}
+
+func TestRunWatchOnlyPreservesStaleCmuxStatus(t *testing.T) {
+	tests := []struct {
+		name           string
+		configureWatch bool
+	}{
+		{name: "CLI watch directory"},
+		{name: "configured watch directory", configureWatch: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			argvLog := filepath.Join(binDir, "cmux-argv.log")
+			writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+			t.Setenv("CMUX_ARGV_LOG", argvLog)
+
+			watchDir := t.TempDir()
+			configDir := t.TempDir()
+			o := opts{Serve: true, Port: 0, ConfigDir: configDir, NoColor: true}
+			if tc.configureWatch {
+				require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"),
+					[]byte("watch_dirs = "+watchDir+"\n"), 0o600))
+			} else {
+				o.Watch = []string{watchDir}
+			}
+
+			ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+			defer cancel()
+			require.NoError(t, run(ctx, o))
+
+			_, err := os.Stat(argvLog)
+			require.ErrorIs(t, err, os.ErrNotExist)
+		})
+	}
+}
+
+func TestClearStaleCmuxStatusSkipsConfigUtilities(t *testing.T) {
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "cmux-argv.log")
+	writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	t.Setenv("CMUX_ARGV_LOG", argvLog)
+
+	for _, o := range []opts{
+		{Init: true},
+		{Reset: true},
+		{DumpDefaults: filepath.Join(t.TempDir(), "defaults")},
+	} {
+		clearStaleCmuxStatus(o)
+	}
+	_, err := os.Stat(argvLog)
+	require.ErrorIs(t, err, os.ErrNotExist)
+
+	clearStaleCmuxStatus(opts{Reset: true, PlanFile: "plan.md"})
+	recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+	require.NoError(t, err)
 	assert.Equal(t, "clear-status loopai\n", string(recorded))
 }
 

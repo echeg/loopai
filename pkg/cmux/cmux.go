@@ -154,9 +154,11 @@ func (r *Reporter) execContext(parent context.Context, args ...string) {
 	_ = r.runner.run(ctx, args...) // best-effort by design, the error is intentionally dropped
 }
 
-// loadingOn shows the spinner in the sidebar and moves the workspace lane to "working".
+// loadingOnContext shows the spinner in the sidebar and moves the workspace lane to "working".
 // this is the only path to a real running signal that needs neither the agent allowlist nor vault registration.
-func (r *Reporter) loadingOn() { r.exec("workspace", "loading", "on", "--id", statusKey) }
+func (r *Reporter) loadingOnContext(ctx context.Context) {
+	r.execContext(ctx, "workspace", "loading", "on", "--id", statusKey)
+}
 
 // loadingOff removes the spinner from the sidebar.
 func (r *Reporter) loadingOff() { r.exec("workspace", "loading", "off", "--id", statusKey) }
@@ -269,7 +271,7 @@ func (r *Reporter) Start(ctx context.Context) {
 	if startCtx.Err() != nil {
 		return
 	}
-	r.execContext(startCtx, "workspace", "loading", "on", "--id", statusKey)
+	r.loadingOnContext(startCtx)
 	if startCtx.Err() != nil {
 		return
 	}

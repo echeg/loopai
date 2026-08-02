@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os/exec"
 	"syscall"
-	"time"
 )
 
 // configureCommandCancellation gives Git and any credential/helper children their own process
@@ -24,5 +23,5 @@ func configureCommandCancellation(cmd *exec.Cmd) {
 		}
 		return fmt.Errorf("kill Git process group: %w", err)
 	}
-	cmd.WaitDelay = 250 * time.Millisecond
+	cmd.WaitDelay = commandWaitDelay
 }

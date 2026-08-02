@@ -15,7 +15,18 @@ import (
 	"time"
 )
 
-const mergeCleanupTimeout = 5 * time.Second
+const (
+	mergeCleanupTimeout = 5 * time.Second
+	commandWaitDelay    = 250 * time.Millisecond
+)
+
+type commandCancellation uint8
+
+const (
+	commandCancellationNone commandCancellation = iota
+	commandCancellationDirect
+	commandCancellationGroup
+)
 
 // externalBackend implements the backend interface by shelling out to the git CLI.
 type externalBackend struct {
@@ -58,15 +69,34 @@ func newExternalBackend(path, command string) (*externalBackend, error) {
 // leading whitespace is preserved (important for porcelain format parsing).
 // on failure, returns error with the combined output for diagnostics.
 func (e *externalBackend) run(args ...string) (string, error) {
-	return e.runContext(context.Background(), args...)
+	return e.runCommand(context.Background(), commandCancellationNone, args...)
 }
 
 func (e *externalBackend) runContext(ctx context.Context, args ...string) (string, error) {
+	return e.runCommand(ctx, commandCancellationGroup, args...)
+}
+
+func (e *externalBackend) runContextWithTerminal(ctx context.Context, args ...string) (string, error) {
+	return e.runCommand(ctx, commandCancellationDirect, args...)
+}
+
+func configureDirectCommandCancellation(cmd *exec.Cmd) {
+	// Keep Git in the caller's session so terminal credential prompts remain available.
+	// WaitDelay still bounds waits on pipes inherited by a credential helper after cancel.
+	cmd.WaitDelay = commandWaitDelay
+}
+
+func (e *externalBackend) runCommand(ctx context.Context, cancellation commandCancellation, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, e.command, args...)
 	cmd.Dir = e.path
-	configureCommandCancellation(cmd)
-	// Attach a direct writer instead of os/exec's internal CombinedOutput pipe. A credential
-	// helper inheriting a pipe could otherwise keep Wait blocked after CommandContext kills Git.
+	switch cancellation {
+	case commandCancellationNone:
+	case commandCancellationDirect:
+		configureDirectCommandCancellation(cmd)
+	case commandCancellationGroup:
+		configureCommandCancellation(cmd)
+	}
+	// Capture stdout and stderr together so command failures retain Git's diagnostics.
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	err := cmd.Run()
@@ -251,8 +281,8 @@ func (e *externalBackend) checkoutBranch(name string) error {
 	return nil
 }
 
-// mergeBranch merges the named branch into the current HEAD. If git leaves a
-// merge in progress, the merge is aborted before ErrMergeConflict is returned.
+// mergeBranch merges the named branch into the current HEAD. Any merge left in
+// progress is aborted; ErrMergeConflict is returned only when unmerged paths exist.
 func (e *externalBackend) mergeBranch(ctx context.Context, name string) error {
 	_, err := e.runContext(ctx, "merge", "--no-overwrite-ignore", name)
 	if err == nil {
@@ -264,12 +294,28 @@ func (e *externalBackend) mergeBranch(ctx context.Context, name string) error {
 	mergeHead := exec.CommandContext(cleanupCtx, e.command, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
 	mergeHead.Dir = e.path
 	if mergeHead.Run() == nil {
-		if _, abortErr := e.runContext(cleanupCtx, "merge", "--abort"); abortErr != nil {
-			return fmt.Errorf("%w: %w (abort failed: %w)", ErrMergeConflict, err, abortErr)
-		}
-		return fmt.Errorf("%w: %w", ErrMergeConflict, err)
+		return e.abortFailedMerge(cleanupCtx, err)
 	}
 	return fmt.Errorf("merge: %w", err)
+}
+
+func (e *externalBackend) abortFailedMerge(ctx context.Context, mergeErr error) error {
+	unmerged, inspectErr := e.runContext(ctx, "ls-files", "-u")
+	_, abortErr := e.runContext(ctx, "merge", "--abort")
+	switch {
+	case inspectErr != nil && abortErr != nil:
+		return fmt.Errorf("merge: %w (inspect unmerged paths: %w; abort failed: %w)", mergeErr, inspectErr, abortErr)
+	case inspectErr != nil:
+		return fmt.Errorf("merge: %w (inspect unmerged paths: %w)", mergeErr, inspectErr)
+	case unmerged != "" && abortErr != nil:
+		return fmt.Errorf("%w: %w (abort failed: %w)", ErrMergeConflict, mergeErr, abortErr)
+	case unmerged != "":
+		return fmt.Errorf("%w: %w", ErrMergeConflict, mergeErr)
+	case abortErr != nil:
+		return fmt.Errorf("merge: %w (abort failed: %w)", mergeErr, abortErr)
+	default:
+		return fmt.Errorf("merge: %w", mergeErr)
+	}
 }
 
 // deleteBranch safely deletes a local branch, refusing unmerged branches.
@@ -286,7 +332,7 @@ func (e *externalBackend) push(ctx context.Context, branch string) error {
 	if _, err := e.runContext(ctx, "check-ref-format", ref); err != nil {
 		return fmt.Errorf("validate branch ref: %w", err)
 	}
-	if _, err := e.runContext(ctx, "push", "-u", "origin", ref+":"+ref); err != nil {
+	if _, err := e.runContextWithTerminal(ctx, "push", "-u", "origin", ref+":"+ref); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
 	return nil
@@ -637,18 +683,19 @@ func (e *externalBackend) removeWorktree(path string) error {
 	return nil
 }
 
-// removeWorktreeSafe refuses to discard modifications, untracked files, or ignored files.
+// removeWorktreeSafe refuses to discard modifications or untracked files. Ignored files are
+// deliberately allowed and are deleted by the non-forced `git worktree remove` operation.
 func (e *externalBackend) removeWorktreeSafe(path string) error {
 	target, err := newExternalBackend(path, e.command)
 	if err != nil {
 		return fmt.Errorf("inspect worktree before removal: %w", err)
 	}
-	out, err := target.run("status", "--porcelain", "--untracked-files=all", "--ignored=matching")
+	out, err := target.run("status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("inspect worktree content before removal: %w", err)
 	}
 	if out != "" {
-		return errors.New("remove worktree: worktree contains modified, untracked, or ignored files")
+		return errors.New("remove worktree: worktree contains modified or untracked files")
 	}
 	_, err = e.run("worktree", "remove", path)
 	if err != nil {

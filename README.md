@@ -248,7 +248,9 @@ loopai --pr=release/13
 `--merge` requires clean feature and base worktrees, including no untracked files. It
 merges the current feature branch in the base worktree, safely removes a linked feature
 worktree only when Git confirms its branch and cleanliness, then deletes the merged
-branch. `--pr` requires authenticated `gh` and a GitHub remote named `origin`; it pushes
+branch. The worktree removal also deletes ignored files in that worktree, such as build
+output or a local `.env`; preserve any local-only ignored files before running `--merge`.
+`--pr` requires authenticated `gh` and a GitHub remote named `origin`; it pushes
 committed branch state, builds the title and body from the associated plan and diff
 statistics, and keeps the feature branch and worktree. Commit intended changes before
 running `--pr`. Each command clears the completion pill only after it succeeds, so a
