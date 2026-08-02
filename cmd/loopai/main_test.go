@@ -1686,6 +1686,30 @@ func TestValidateFlags(t *testing.T) {
 		{name: "pass_claude_md_without_codex_is_valid_at_cli_stage", opts: opts{PassClaudeMd: true}, wantErr: false},
 	}
 
+	// parser-based cases: opts built through a real go-flags parse so tag defaults
+	// (e.g. max-external-iterations, review-patience default:"0") are applied exactly
+	// as in production. hand-built opts above never see defaults and cannot catch a
+	// default being mistaken for an explicit CLI value.
+	t.Run("parsed_standalone_closeout_flags_are_valid", func(t *testing.T) {
+		for _, args := range [][]string{{"--clear"}, {"--merge"}, {"--pr"}} {
+			var o opts
+			p := flags.NewParser(&o, flags.Default)
+			_, err := p.ParseArgs(args)
+			require.NoError(t, err)
+			o.markFlagsSet(p)
+			assert.NoError(t, validateFlags(o), "bare %v must be valid", args)
+		}
+	})
+
+	t.Run("parsed_explicit_zero_execution_flag_still_conflicts", func(t *testing.T) {
+		var o opts
+		p := flags.NewParser(&o, flags.Default)
+		_, err := p.ParseArgs([]string{"--clear", "--max-external-iterations", "0"})
+		require.NoError(t, err)
+		o.markFlagsSet(p)
+		require.ErrorContains(t, validateFlags(o), "--clear cannot be combined")
+	})
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateFlags(tc.opts)

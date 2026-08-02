@@ -3144,7 +3144,10 @@ func isFlagSet(parser *flags.Parser, name string) bool {
 		return false
 	}
 	opt := parser.FindOptionByLongName(name)
-	return opt != nil && opt.IsSet()
+	// IsSet alone also reports true when go-flags applied a `default:"..."` tag value
+	// (e.g. max-external-iterations, review-patience), which would make every run look
+	// like an explicit CLI invocation; only a non-default set counts as user-provided.
+	return opt != nil && opt.IsSet() && !opt.IsSetDefault()
 }
 
 // resolveMaxIterations returns the effective max iterations value.
