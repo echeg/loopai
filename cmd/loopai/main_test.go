@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -3344,6 +3345,37 @@ func TestBuildPRTitleBody(t *testing.T) {
 		assert.Equal(t, "New plan", title)
 	})
 
+	t.Run("fallback requires a delimited branch name", func(t *testing.T) {
+		root := t.TempDir()
+		writePlan(t, root, "unrelated.md", "# Unrelated plan\n\nReferences prefix behavior, fix.release, fixfix, and authentication.\n")
+
+		title, _, err := buildPRTitleBody(root, "fix", git.DiffStats{})
+		require.NoError(t, err)
+		assert.Equal(t, "fix", title)
+	})
+
+	t.Run("symlinked plan is rejected without reading its target", func(t *testing.T) {
+		root := t.TempDir()
+		outside := filepath.Join(t.TempDir(), "outside.md")
+		require.NoError(t, os.WriteFile(outside, []byte("# Secret title\n\n## Overview\n\nSecret body.\n"), 0o600))
+		plansDir := filepath.Join(root, "docs", "plans", "completed")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		require.NoError(t, os.Symlink(outside, filepath.Join(plansDir, "20260802-feature.md")))
+
+		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{})
+		require.ErrorContains(t, err, "regular file without symlinks")
+		assert.Empty(t, title)
+		assert.Empty(t, body)
+	})
+
+	t.Run("oversized plan is rejected", func(t *testing.T) {
+		root := t.TempDir()
+		writePlan(t, root, "20260802-feature.md", strings.Repeat("x", int(maxPRPlanSize)+1))
+
+		_, _, err := buildPRTitleBody(root, "feature", git.DiffStats{})
+		require.ErrorContains(t, err, "size limit")
+	})
+
 	t.Run("exact active plan beats newer textual fallback", func(t *testing.T) {
 		root := t.TempDir()
 		exactDir := filepath.Join(root, "docs", "plans")
@@ -3375,6 +3407,44 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "New exact", title)
 	})
+}
+
+func TestExecutePlan_DashboardStartupFailureDoesNotPersistPill(t *testing.T) {
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	planPath := filepath.Join(dir, "docs", "plans", "dashboard-startup.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath, []byte("# Dashboard startup\n\n### Task 1: test\n\n- [ ] test\n"), 0o600))
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	t.Setenv("CMUX_ARGV_LOG", argvLog)
+
+	err = executePlan(t.Context(), opts{Serve: true, Host: "127.0.0.1", Port: port, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc,
+		Config: &config.Config{}, Colors: testColors(), BaseRef: "master",
+	})
+	require.ErrorContains(t, err, "start dashboard")
+
+	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+	require.NoError(t, readErr)
+	assert.Contains(t, string(recorded), "notify --title loopai")
+	assert.NotContains(t, string(recorded), "set-status loopai failed")
+	assert.Contains(t, string(recorded), "clear-status loopai")
 }
 
 func TestRunPRCommand(t *testing.T) {

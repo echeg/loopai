@@ -730,9 +730,9 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		if dashErr != nil {
 			wrapped := fmt.Errorf("start dashboard: %w", dashErr)
 			plr.baseLog.SetFailed(wrapped)
-			// the spinner is already up, so the failure gets a banner too: in cmux the workspace may
-			// well be in the background by now, and a run that only ever stopped spinning reads as done
-			finishCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), wrapped)
+			// dashboard startup is still preflight: raise a banner, but let Stop clear every
+			// transient artifact rather than leaving a persistent execution-failure pill.
+			notifyCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), wrapped)
 			return wrapped
 		}
 	}
@@ -2392,7 +2392,7 @@ func buildPRTitleBody(repoRoot, branch string, stats git.DiffStats) (title, body
 	}
 	var overview string
 	if planPath != "" {
-		content, readErr := os.ReadFile(planPath) //nolint:gosec // path is constrained to the repository's completed plans directory
+		content, readErr := readPRPlan(repoRoot, planPath)
 		if readErr != nil {
 			return "", "", fmt.Errorf("read PR plan: %w", readErr)
 		}
@@ -2404,6 +2404,65 @@ func buildPRTitleBody(repoRoot, branch string, stats git.DiffStats) (title, body
 		return title, statsText, nil
 	}
 	return title, overview + "\n\n" + statsText, nil
+}
+
+const maxPRPlanSize int64 = 1 << 20
+
+// readPRPlan reads a bounded regular file below repoRoot without following symlinked path
+// components. The identity check also rejects a file swapped between inspection and open.
+func readPRPlan(repoRoot, path string) ([]byte, error) {
+	root, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository root: %w", err)
+	}
+	target, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve plan path: %w", err)
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, errors.New("plan path is outside repository root")
+	}
+
+	current := root
+	var inspected os.FileInfo
+	for component := range strings.SplitSeq(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		inspected, err = os.Lstat(current)
+		if err != nil {
+			return nil, fmt.Errorf("inspect plan path: %w", err)
+		}
+		if inspected.Mode()&os.ModeSymlink != 0 {
+			return nil, errors.New("plan path contains a symlink")
+		}
+	}
+	if inspected == nil || !inspected.Mode().IsRegular() {
+		return nil, errors.New("plan is not a regular file")
+	}
+	if inspected.Size() > maxPRPlanSize {
+		return nil, fmt.Errorf("plan exceeds %d-byte size limit", maxPRPlanSize)
+	}
+
+	f, err := os.Open(target) //nolint:gosec // every component was constrained and inspected above
+	if err != nil {
+		return nil, fmt.Errorf("open plan: %w", err)
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect opened plan: %w", err)
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(inspected, opened) {
+		return nil, errors.New("plan changed while being opened")
+	}
+	content, err := io.ReadAll(io.LimitReader(f, maxPRPlanSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read plan: %w", err)
+	}
+	if int64(len(content)) > maxPRPlanSize {
+		return nil, fmt.Errorf("plan exceeds %d-byte size limit", maxPRPlanSize)
+	}
+	return content, nil
 }
 
 func findPRPlan(repoRoot, branch string) (string, error) {
@@ -2430,17 +2489,20 @@ func findPRPlan(repoRoot, branch string) (string, error) {
 			if infoErr != nil {
 				return "", fmt.Errorf("inspect PR plan %q: %w", entry.Name(), infoErr)
 			}
+			if entry.Type()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return "", fmt.Errorf("inspect PR plan %q: plan must be a regular file without symlinks", entry.Name())
+			}
 			if plan.ExtractBranchName(entry.Name()) == branch || plan.ExtractBranchName(entry.Name()) == branchPlanName {
 				if exactPath == "" || info.ModTime().After(exactTime) {
 					exactPath, exactTime = path, info.ModTime()
 				}
 				continue
 			}
-			content, readErr := os.ReadFile(path) //nolint:gosec // path comes from a repository plans directory
+			content, readErr := readPRPlan(repoRoot, path)
 			if readErr != nil {
 				return "", fmt.Errorf("read PR plan %q: %w", entry.Name(), readErr)
 			}
-			if strings.Contains(string(content), branch) && (fallbackPath == "" || info.ModTime().After(fallbackTime)) {
+			if planMentionsBranch(string(content), branch) && (fallbackPath == "" || info.ModTime().After(fallbackTime)) {
 				fallbackPath, fallbackTime = path, info.ModTime()
 			}
 		}
@@ -2449,6 +2511,52 @@ func findPRPlan(repoRoot, branch string) (string, error) {
 		return exactPath, nil
 	}
 	return fallbackPath, nil
+}
+
+func planMentionsBranch(content, branch string) bool {
+	if branch == "" {
+		return false
+	}
+	for searchFrom := 0; searchFrom+len(branch) <= len(content); {
+		relative := strings.Index(content[searchFrom:], branch)
+		if relative < 0 {
+			return false
+		}
+		idx := searchFrom + relative
+		beforeOK := branchBoundaryBefore(content, idx)
+		after := idx + len(branch)
+		afterOK := branchBoundaryAfter(content, after)
+		if beforeOK && afterOK {
+			return true
+		}
+		searchFrom = idx + 1
+	}
+	return false
+}
+
+func branchBoundaryBefore(content string, idx int) bool {
+	if idx == 0 {
+		return true
+	}
+	if content[idx-1] != '.' {
+		return !isBranchTokenByte(content[idx-1])
+	}
+	return idx == 1 || !isBranchTokenByte(content[idx-2])
+}
+
+func branchBoundaryAfter(content string, idx int) bool {
+	if idx == len(content) {
+		return true
+	}
+	if content[idx] != '.' {
+		return !isBranchTokenByte(content[idx])
+	}
+	return idx+1 == len(content) || !isBranchTokenByte(content[idx+1])
+}
+
+func isBranchTokenByte(ch byte) bool {
+	return ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' ||
+		ch == '-' || ch == '_' || ch == '.' || ch == '/'
 }
 
 func parsePRPlan(content, fallbackTitle string) (title, overview string) {
