@@ -4256,6 +4256,65 @@ func TestNotifyCmuxCompletion_NilReporter(t *testing.T) {
 	})
 }
 
+func TestFinishCmuxCompletion(t *testing.T) {
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "cmux"), []byte(script), 0o755)) //nolint:gosec // test fixture must be executable
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	t.Setenv("CMUX_ARGV_LOG", argvLog)
+
+	tests := []struct {
+		name       string
+		runErr     error
+		wantStatus string
+		wantNotify bool
+	}{
+		{
+			name:       "success finishes with elapsed time",
+			wantStatus: "set-status loopai done in 12m30s --icon bolt --color #34c759 --priority 90",
+			wantNotify: true,
+		},
+		{
+			name:       "run error finishes with error detail",
+			runErr:     errors.New("boom"),
+			wantStatus: "set-status loopai failed · boom --icon exclamationmark.triangle --color #ff3b30 --priority 90",
+			wantNotify: true,
+		},
+		{name: "user abort does not finish", runErr: processor.ErrUserAborted},
+		{name: "context cancellation does not finish", runErr: context.Canceled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, os.RemoveAll(argvLog))
+			rep := cmux.New("plan.md", cmux.Models{})
+			require.NotNil(t, rep)
+
+			finishCmuxCompletion(rep, "plan.md", "branch", "12m30s", tt.runErr)
+
+			recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+			if !tt.wantNotify {
+				assert.ErrorIs(t, err, os.ErrNotExist)
+				return
+			}
+			require.NoError(t, err)
+			output := string(recorded)
+			assert.Contains(t, output, "notify --title loopai")
+			assert.Contains(t, output, tt.wantStatus)
+		})
+	}
+}
+
+func TestFinishCmuxCompletion_NilReporter(t *testing.T) {
+	assert.NotPanics(t, func() {
+		finishCmuxCompletion(nil, "plan.md", "branch", "1m", nil)
+		finishCmuxCompletion(nil, "plan.md", "branch", "1m", errors.New("boom"))
+		finishCmuxCompletion(nil, "plan.md", "branch", "1m", context.Canceled)
+	})
+}
+
 func TestRunCleanupBounded(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -533,6 +533,22 @@ func notifyCmuxCompletion(rep *cmux.Reporter, planFile, branch, elapsed string, 
 	rep.Notify(subtitle, body)
 }
 
+// finishCmuxCompletion raises the transient completion notification and leaves the matching
+// persistent final-status pill. It is used by execution and review runs only; plan creation uses
+// notifyCmuxCompletion directly because a created plan is not a finished implementation run.
+func finishCmuxCompletion(rep *cmux.Reporter, planFile, branch, elapsed string, runErr error) {
+	subtitle, body, ok := cmuxCompletionNotice(planFile, branch, elapsed, runErr)
+	if !ok {
+		return
+	}
+	rep.Notify(subtitle, body)
+	if runErr != nil {
+		rep.Finish(false, runErr.Error())
+		return
+	}
+	rep.Finish(true, elapsed)
+}
+
 // cmuxCompletionNotice builds the subtitle and body of the end-of-run cmux notification.
 // ok is false for a user abort: the person who aborted is already at the terminal, so a
 // banner would only be noise. both abort routes count — Ctrl+\ declining to resume yields
@@ -680,7 +696,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 			plr.baseLog.SetFailed(wrapped)
 			// the spinner is already up, so the failure gets a banner too: in cmux the workspace may
 			// well be in the background by now, and a run that only ever stopped spinning reads as done
-			notifyCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), wrapped)
+			finishCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), wrapped)
 			return wrapped
 		}
 	}
@@ -743,7 +759,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		wrapped := fmt.Errorf("runner: %w", runErr)
 		plr.baseLog.SetFailed(wrapped)
 		sendNotification(req, branch, plr.baseLog.Elapsed(), git.DiffStats{}, runErr)
-		notifyCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), runErr)
+		finishCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), runErr)
 		return wrapped
 	}
 
@@ -757,7 +773,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 
 	sendNotification(req, branch, elapsed, stats, nil)
-	notifyCmuxCompletion(rep, req.PlanFile, branch, elapsed, nil)
+	finishCmuxCompletion(rep, req.PlanFile, branch, elapsed, nil)
 
 	// move completed plan to completed/ directory.
 	// use MainGitSvc+MainPlanFile when available (worktree mode) because the plan file is in the main repo.
@@ -806,7 +822,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	handedOff := false
 	defer func() {
 		if err != nil && !handedOff {
-			notifyCmuxCompletion(cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview)), req.PlanFile, branch, "", err)
+			finishCmuxCompletion(cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview)), req.PlanFile, branch, "", err)
 		}
 	}()
 

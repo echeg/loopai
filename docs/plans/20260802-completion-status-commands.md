@@ -92,14 +92,14 @@ drops it. No TTL hacks (detached sleep processes) are used.
 
 ### Task 2: Wire Finish into run completion paths
 
-- [ ] in `cmd/loopai/main.go`, call `rep.Finish` alongside `notifyCmuxCompletion` using
+- [x] in `cmd/loopai/main.go`, call `rep.Finish` alongside `notifyCmuxCompletion` using
       the same outcome classification as `cmuxCompletionNotice` (success → elapsed,
       failure → error, user abort / context canceled → no Finish, plain Stop)
-- [ ] cover plan-execution and review-mode completion paths; plan-creation mode keeps
+- [x] cover plan-execution and review-mode completion paths; plan-creation mode keeps
       its current transient notify only
-- [ ] write tests for outcome classification → Finish invocation (success, run error,
+- [x] write tests for outcome classification → Finish invocation (success, run error,
       ErrUserAborted, context.Canceled)
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 3: Add --clear command
 
