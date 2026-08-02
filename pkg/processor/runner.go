@@ -44,7 +44,6 @@ type Config struct {
 	TaskModel             string                // model[:effort] spec for task execution; parsed by executor setup (empty = CLI defaults)
 	ReviewModel           string                // model[:effort] spec for review phases; empty falls back to TaskModel
 	CodexEnabled          bool                  // backward-compatible gate for automatic external review
-	ExternalReviewToolSet bool                  // when true, AppConfig.ExternalReviewTool is an explicit choice that overrides codex_enabled=false back-compat
 	ExternalReviewTool    string                // concrete resolved provider; never auto when supplied by the CLI layer
 	ExternalReviewModel   string                // resolved external provider model
 	ExternalReviewEffort  string                // resolved external provider effort
@@ -68,9 +67,6 @@ func toPhaseConfig(c Config) phase.Config {
 		MaxIterations:         c.MaxIterations,
 		MaxExternalIterations: c.MaxExternalIterations,
 		ReviewPatience:        c.ReviewPatience,
-		CodexEnabled:          c.CodexEnabled,
-		ExternalReviewToolSet: c.ExternalReviewToolSet,
-		ExternalReviewTool:    c.ExternalReviewTool,
 		FinalizeEnabled:       c.FinalizeEnabled,
 		AppConfig:             c.AppConfig,
 	}
@@ -228,12 +224,8 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 	})
 	reviewers := make([]phase.ExternalReviewer, 0, len(execs.Externals))
 	for _, reviewer := range execs.Externals {
-		tool := reviewer.Tool
-		if tool == "" {
-			tool = injectedExternalReviewTool(cfg)
-		}
-		if tool != config.ExternalReviewToolNone {
-			reviewers = append(reviewers, phase.ExternalReviewer{Tool: tool, Exec: reviewer.Exec})
+		if reviewer.Tool != "" && reviewer.Tool != config.ExternalReviewToolNone {
+			reviewers = append(reviewers, reviewer)
 		}
 	}
 	externalPhase := phase.NewExternalReviewPhase(phase.ExternalReviewPhaseOpts{
@@ -259,27 +251,6 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 		deps:        deps,
 		phases:      phases,
 	}
-}
-
-// injectedExternalReviewTool preserves the legacy resolution used by callers
-// that inject executors directly without going through executorFactory.Build.
-func injectedExternalReviewTool(cfg Config) string {
-	if cfg.ExternalReviewTool != "" && cfg.ExternalReviewTool != config.ExternalReviewToolAuto {
-		return cfg.ExternalReviewTool
-	}
-	if cfg.ExternalReviewToolSet && cfg.AppConfig != nil && cfg.AppConfig.ExternalReviewTool != "" {
-		if cfg.AppConfig.ExternalReviewTool == config.ExternalReviewToolAuto {
-			return config.ExternalReviewToolCodex
-		}
-		return cfg.AppConfig.ExternalReviewTool
-	}
-	if !cfg.CodexEnabled {
-		return config.ExternalReviewToolNone
-	}
-	if cfg.AppConfig != nil && cfg.AppConfig.ExternalReviewTool != "" && cfg.AppConfig.ExternalReviewTool != config.ExternalReviewToolAuto {
-		return cfg.AppConfig.ExternalReviewTool
-	}
-	return config.ExternalReviewToolCodex
 }
 
 // SetInputCollector sets the input collector for plan creation mode.

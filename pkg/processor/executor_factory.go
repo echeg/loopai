@@ -53,9 +53,9 @@ func (f *executorFactory) buildExternalReviewers(cfg *Config, log Logger) []Exte
 
 	reviewers := make([]ExternalReviewer, 0, len(specs))
 	for _, spec := range specs {
+		reviewerExec, displayName := cfg.buildExternalReviewerExecutor(log, spec)
 		reviewers = append(reviewers, ExternalReviewer{
-			Tool: spec.Provider,
-			Exec: cfg.buildExternalReviewerExecutor(log, spec),
+			Tool: spec.Provider, DisplayName: displayName, Exec: reviewerExec,
 		})
 	}
 	return reviewers
@@ -119,25 +119,29 @@ func (f *executorFactory) externalBinaryMissing(appConfig *config.Config, provid
 	return false
 }
 
-func (cfg Config) buildExternalReviewerExecutor(log Logger, spec config.ReviewerSpec) Executor {
+func (cfg Config) buildExternalReviewerExecutor(log Logger, spec config.ReviewerSpec) (Executor, string) {
 	var codexModel, codexEffort string
 	if cfg.AppConfig != nil {
 		codexModel, codexEffort = cfg.AppConfig.CodexModel, cfg.AppConfig.CodexReasoningEffort
 	}
 	model, effort, _ := ResolveExternalReviewerModelEffort(spec.Provider, spec.ModelSpec, codexModel, codexEffort)
+	displayName := spec.Provider
+	if modelSpec := joinModelEffort(model, effort); modelSpec != "" {
+		displayName += " (" + modelSpec + ")"
+	}
 	switch spec.Provider {
 	case config.ExternalReviewToolClaude:
-		return cfg.buildExternalClaudeExecutor(log, model, effort)
+		return cfg.buildExternalClaudeExecutor(log, model, effort), displayName
 	case config.ExternalReviewToolCodex:
-		return cfg.buildExternalCodexExecutor(log, model, effort)
+		return cfg.buildExternalCodexExecutor(log, model, effort), displayName
 	case config.ExternalReviewToolCustom:
 		custom := cfg.buildCustomExecutor(log)
 		if custom == nil {
-			return nil
+			return nil, displayName
 		}
-		return custom
+		return custom, displayName
 	default:
-		return nil
+		return nil, displayName
 	}
 }
 

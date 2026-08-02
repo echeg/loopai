@@ -20,6 +20,7 @@ type externalReviewPhaseTestOpts struct {
 	cfg       Config
 	review    Executor
 	reviewers []ExternalReviewer
+	tool      string
 	external  Executor
 	custom    *executor.CustomExecutor
 	log       *mockLogger
@@ -50,7 +51,13 @@ func externalReviewersForTest(opts externalReviewPhaseTestOpts) []ExternalReview
 	if opts.reviewers != nil {
 		return opts.reviewers
 	}
-	tool := effectiveTestReviewerTool(opts.cfg)
+	tool := opts.tool
+	if tool == "" {
+		tool = config.ExternalReviewToolCodex
+	}
+	if opts.custom != nil {
+		tool = config.ExternalReviewToolCustom
+	}
 	if tool == config.ExternalReviewToolNone {
 		return nil
 	}
@@ -64,38 +71,76 @@ func externalReviewersForTest(opts externalReviewPhaseTestOpts) []ExternalReview
 	return []ExternalReviewer{{Tool: tool, Exec: exec}}
 }
 
-func effectiveTestReviewerTool(cfg Config) string {
-	if cfg.ExternalReviewTool != "" && cfg.ExternalReviewTool != config.ExternalReviewToolAuto {
-		return cfg.ExternalReviewTool
-	}
-	if cfg.AppConfig != nil && cfg.AppConfig.ExternalReviewTool != "" && cfg.AppConfig.ExternalReviewTool != config.ExternalReviewToolAuto {
-		return cfg.AppConfig.ExternalReviewTool
-	}
-	if cfg.CodexEnabled {
-		return config.ExternalReviewToolCodex
-	}
-	return config.ExternalReviewToolNone
-}
-
 func TestExternalReviewPhaseEnabledAndLabel(t *testing.T) {
 	tests := []struct {
 		name        string
 		cfg         Config
+		reviewers   []ExternalReviewer
 		wantEnabled bool
 		wantLabel   string
 	}{
-		{name: "chain", cfg: Config{CodexEnabled: true, AppConfig: testAppConfig(t)}, wantEnabled: true, wantLabel: "codex"},
-		{name: "disabled", cfg: Config{CodexEnabled: false, AppConfig: testAppConfig(t)}},
+		{name: "chain", cfg: Config{AppConfig: testAppConfig(t)}, wantEnabled: true, wantLabel: "codex"},
+		{name: "disabled", cfg: Config{AppConfig: testAppConfig(t)}, reviewers: []ExternalReviewer{}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{cfg: tc.cfg})
+			phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{cfg: tc.cfg, reviewers: tc.reviewers})
 
 			assert.Equal(t, tc.wantEnabled, phase.Enabled())
 			assert.Equal(t, tc.wantLabel, phase.Label())
 		})
 	}
+}
+
+func TestExternalReviewPhaseSingleReviewerKeepsLegacyLabels(t *testing.T) {
+	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "clean"}})
+	evaluator := newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.ExternalReviewDone}})
+	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
+		cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)}, review: evaluator,
+		reviewers: []ExternalReviewer{{
+			Tool: config.ExternalReviewToolCodex, DisplayName: "codex (gpt-5.5:xhigh)", Exec: external,
+		}},
+	})
+
+	assert.Equal(t, "codex", phase.Label())
+	_, err := phase.Run(t.Context())
+	require.NoError(t, err)
+
+	sections := log.PrintSectionCalls()
+	require.Len(t, sections, 3)
+	assert.Equal(t, "external review (codex)", sections[0].Section.Label)
+	assert.Equal(t, "codex external review iteration 1", sections[1].Section.Label)
+	assert.Equal(t, "claude evaluating codex findings", sections[2].Section.Label)
+}
+
+func TestExternalReviewPhaseRepeatedProvidersUseDistinctLabels(t *testing.T) {
+	first := newTaskPhaseMockExecutor([]executor.Result{{Output: "clean"}})
+	second := newTaskPhaseMockExecutor([]executor.Result{{Output: "clean"}})
+	evaluator := newTaskPhaseMockExecutor([]executor.Result{
+		{Output: "done", Signal: status.ExternalReviewDone},
+		{Output: "done", Signal: status.ExternalReviewDone},
+	})
+	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
+		cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)}, review: evaluator,
+		reviewers: []ExternalReviewer{
+			{Tool: config.ExternalReviewToolClaude, DisplayName: "claude (opus:xhigh)", Exec: first},
+			{Tool: config.ExternalReviewToolClaude, DisplayName: "claude (fable:max)", Exec: second},
+		},
+	})
+
+	assert.Equal(t, "claude (opus:xhigh) → claude (fable:max)", phase.Label())
+	_, err := phase.Run(t.Context())
+	require.NoError(t, err)
+
+	sections := log.PrintSectionCalls()
+	require.Len(t, sections, 6)
+	assert.Equal(t, "external review (claude (opus:xhigh))", sections[0].Section.Label)
+	assert.Equal(t, "claude (opus:xhigh) external review iteration 1", sections[1].Section.Label)
+	assert.Equal(t, "claude evaluating claude (opus:xhigh) findings", sections[2].Section.Label)
+	assert.Equal(t, "external review (claude (fable:max))", sections[3].Section.Label)
+	assert.Equal(t, "claude (fable:max) external review iteration 1", sections[4].Section.Label)
+	assert.Equal(t, "claude evaluating claude (fable:max) findings", sections[5].Section.Label)
 }
 
 func TestExternalReviewPhaseRunsReviewersInOrderUntilClean(t *testing.T) {
@@ -120,7 +165,7 @@ func TestExternalReviewPhaseRunsReviewersInOrderUntilClean(t *testing.T) {
 		{Output: "fixed second"}, {Output: "done", Signal: status.ExternalReviewDone},
 	})
 	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg:    Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)},
+		cfg:    Config{MaxIterations: 50, AppConfig: testAppConfig(t)},
 		review: evaluator,
 		reviewers: []ExternalReviewer{
 			{Tool: config.ExternalReviewToolCodex, Exec: first},
@@ -152,7 +197,7 @@ func TestExternalReviewPhaseAggregatesFindingsFromSecondReviewer(t *testing.T) {
 		{Output: "done", Signal: status.ExternalReviewDone},
 	})
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}, review: evaluator,
+		cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)}, review: evaluator,
 		reviewers: []ExternalReviewer{
 			{Tool: config.ExternalReviewToolCodex, Exec: first},
 			{Tool: config.ExternalReviewToolClaude, Exec: second},
@@ -176,7 +221,7 @@ func TestExternalReviewPhaseBreakStopsRemainingReviewers(t *testing.T) {
 	}}
 	second := newTaskPhaseMockExecutor([]executor.Result{{Output: "must not run"}})
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)},
+		cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)},
 		reviewers: []ExternalReviewer{
 			{Tool: config.ExternalReviewToolCodex, Exec: first},
 			{Tool: config.ExternalReviewToolClaude, Exec: second},
@@ -194,7 +239,7 @@ func TestExternalReviewPhaseCancellationStopsRemainingReviewers(t *testing.T) {
 	first := newTaskPhaseMockExecutor([]executor.Result{{Output: "must not run"}})
 	second := newTaskPhaseMockExecutor([]executor.Result{{Output: "must not run"}})
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)},
+		cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)},
 		reviewers: []ExternalReviewer{
 			{Tool: config.ExternalReviewToolCodex, Exec: first},
 			{Tool: config.ExternalReviewToolClaude, Exec: second},
@@ -217,7 +262,7 @@ func TestExternalReviewPhaseSecondReviewerErrorStopsChain(t *testing.T) {
 	third := newTaskPhaseMockExecutor([]executor.Result{{Output: "must not run"}})
 	evaluator := newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.ExternalReviewDone}})
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}, review: evaluator,
+		cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)}, review: evaluator,
 		reviewers: []ExternalReviewer{
 			{Tool: config.ExternalReviewToolCodex, Exec: first},
 			{Tool: config.ExternalReviewToolClaude, Exec: second},
@@ -242,7 +287,7 @@ func TestExternalReviewPhaseIterationCapAdvancesToNextReviewer(t *testing.T) {
 	})
 	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{
-			MaxIterations: 50, MaxExternalIterations: 1, CodexEnabled: true,
+			MaxIterations: 50, MaxExternalIterations: 1,
 			AppConfig: testAppConfig(t),
 		},
 		review: evaluator,
@@ -269,7 +314,7 @@ func TestExternalReviewPhaseStalematePatienceIsPerReviewer(t *testing.T) {
 		{Output: "not fixed"}, {Output: "still not fixed"},
 	})
 	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg:    Config{MaxIterations: 50, MaxExternalIterations: 5, ReviewPatience: 2, CodexEnabled: true, AppConfig: testAppConfig(t)},
+		cfg:    Config{MaxIterations: 50, MaxExternalIterations: 5, ReviewPatience: 2, AppConfig: testAppConfig(t)},
 		review: evaluator,
 		reviewers: []ExternalReviewer{
 			{Tool: config.ExternalReviewToolCodex, Exec: first},
@@ -300,7 +345,7 @@ func TestExternalReviewPhaseRunCodexNoFindings(t *testing.T) {
 	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.ExternalReviewDone}})
 	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "found issue"}})
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}, review: review, external: external,
+		cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)}, review: review, external: external,
 	})
 
 	outcome, err := phase.Run(t.Context())
@@ -315,7 +360,7 @@ func TestExternalReviewPhaseRunCodexNilPhaseHolder(t *testing.T) {
 	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.CodexDone}})
 	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "found issue"}})
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}, review: review, external: external,
+		cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)}, review: review, external: external,
 	})
 	phase.phaseHolder = nil
 
@@ -329,7 +374,7 @@ func TestExternalReviewPhaseRunCodexFindingsThenEmptyRequiresEvaluation(t *testi
 	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "fixed"}, {Output: "done", Signal: status.ExternalReviewDone}})
 	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "found issue"}, {Output: ""}})
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}, review: review, external: external,
+		cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)}, review: review, external: external,
 	})
 
 	outcome, err := phase.Run(t.Context())
@@ -347,7 +392,8 @@ func TestExternalReviewPhaseRunClaudeFindingsEvaluatedByCodex(t *testing.T) {
 	appCfg.Executor = "codex"
 	appCfg.ExternalReviewTool = "claude"
 	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: appCfg}, review: review, external: external,
+		cfg: Config{MaxIterations: 50, AppConfig: appCfg}, tool: config.ExternalReviewToolClaude,
+		review: review, external: external,
 	})
 
 	outcome, err := phase.Run(t.Context())
@@ -376,7 +422,7 @@ func TestExternalReviewPhaseRunCustomSuccess(t *testing.T) {
 	appCfg.ExternalReviewTool = "custom"
 	appCfg.CustomReviewScript = custom.Script
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: appCfg}, review: review, custom: custom,
+		cfg: Config{MaxIterations: 50, AppConfig: appCfg}, review: review, custom: custom,
 	})
 
 	outcome, err := phase.Run(t.Context())
@@ -394,7 +440,7 @@ func TestExternalReviewPhaseRunCustomNoDuplicateOutput(t *testing.T) {
 	appCfg.ExternalReviewTool = "custom"
 	appCfg.CustomReviewScript = custom.Script
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg:    Config{MaxIterations: 50, CodexEnabled: true, AppConfig: appCfg},
+		cfg:    Config{MaxIterations: 50, AppConfig: appCfg},
 		review: newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.CodexDone}}),
 		custom: custom,
 		log:    log,
@@ -419,9 +465,10 @@ func TestExternalReviewPhaseRunClaudeDoesNotDuplicateStreamedOutput(t *testing.T
 	appCfg.ExternalReviewTool = config.ExternalReviewToolClaude
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{
-			MaxIterations: 50, CodexEnabled: true,
-			ExternalReviewTool: config.ExternalReviewToolClaude, AppConfig: appCfg,
+			MaxIterations: 50,
+			AppConfig:     appCfg,
 		},
+		tool:     config.ExternalReviewToolClaude,
 		review:   newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.ExternalReviewDone}}),
 		external: newTaskPhaseMockExecutor([]executor.Result{{Output: "issue in foo.go:10"}}),
 		log:      log,
@@ -440,7 +487,7 @@ func TestExternalReviewPhaseRunCustomNotConfigured(t *testing.T) {
 	appCfg := testAppConfig(t)
 	appCfg.ExternalReviewTool = "custom"
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: appCfg},
+		cfg: Config{MaxIterations: 50, AppConfig: appCfg}, tool: config.ExternalReviewToolCustom,
 	})
 
 	_, err := phase.Run(t.Context())
@@ -457,7 +504,7 @@ func TestExternalReviewPhaseRunBreakChannelExitsEarly(t *testing.T) {
 		return executor.Result{Error: ctx.Err()}
 	}}
 	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}, external: external,
+		cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)}, external: external,
 	})
 	phase.breaks.deps.BreakCh = breakCh
 
@@ -486,7 +533,7 @@ func TestExternalReviewPhaseShowSummary(t *testing.T) {
 func TestExternalReviewPhaseRunPatternError(t *testing.T) {
 	external := newTaskPhaseMockExecutor([]executor.Result{{Error: &executor.PatternMatchError{Pattern: "limit", HelpCmd: "usage"}}})
 	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}, external: external,
+		cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)}, external: external,
 	})
 
 	_, err := phase.Run(t.Context())
@@ -500,7 +547,7 @@ func TestExternalReviewPhaseRunClaudeEvalError(t *testing.T) {
 	review := newTaskPhaseMockExecutor([]executor.Result{{Error: errors.New("eval failed")}})
 	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "found issue"}})
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}, review: review, external: external,
+		cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)}, review: review, external: external,
 	})
 
 	_, err := phase.Run(t.Context())
@@ -528,7 +575,7 @@ func TestExternalReviewPhaseStalemateBreaksAfterPatience(t *testing.T) {
 	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "rejected findings"}, {Output: "rejected findings again"}})
 	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "found issue"}, {Output: "found issue"}})
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg:    Config{MaxIterations: 50, MaxExternalIterations: 5, CodexEnabled: true, ReviewPatience: 2, AppConfig: testAppConfig(t)},
+		cfg:    Config{MaxIterations: 50, MaxExternalIterations: 5, ReviewPatience: 2, AppConfig: testAppConfig(t)},
 		review: review, external: external, log: log,
 	})
 	phase.git.deps.Git = &gitCheckerMock{
@@ -560,7 +607,7 @@ func TestExternalReviewPhaseTimeoutRetriesNextIteration(t *testing.T) {
 			review := newTaskPhaseMockExecutor(nil)
 			external := newTaskPhaseMockExecutor(nil)
 			phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-				cfg:    Config{MaxIterations: 50, MaxExternalIterations: 3, CodexEnabled: true, AppConfig: testAppConfig(t)},
+				cfg:    Config{MaxIterations: 50, MaxExternalIterations: 3, AppConfig: testAppConfig(t)},
 				review: review, external: external, log: log,
 			})
 			phase.policy = newScriptedTestPolicy(log,
@@ -584,7 +631,7 @@ func TestExternalReviewPhaseTimeoutSkipsStalemate(t *testing.T) {
 	review := newTaskPhaseMockExecutor(nil)
 	external := newTaskPhaseMockExecutor(nil)
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg:    Config{MaxIterations: 50, MaxExternalIterations: 5, CodexEnabled: true, ReviewPatience: 2, AppConfig: testAppConfig(t)},
+		cfg:    Config{MaxIterations: 50, MaxExternalIterations: 5, ReviewPatience: 2, AppConfig: testAppConfig(t)},
 		review: review, external: external, log: log,
 	})
 	phase.policy = newScriptedTestPolicy(log,
@@ -618,7 +665,7 @@ func TestExternalReviewPhaseKeepsBranchDiffAfterTimeout(t *testing.T) {
 		return executor.Result{}
 	}}
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}, review: review, external: external,
+		cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)}, review: review, external: external,
 	})
 	phase.policy = newScriptedTestPolicy(newMockLogger(""),
 		ExecutionResult{Result: executor.Result{Output: "found issue"}},

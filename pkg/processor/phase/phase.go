@@ -31,9 +31,6 @@ type Config struct {
 	MaxIterations         int
 	MaxExternalIterations int
 	ReviewPatience        int
-	CodexEnabled          bool
-	ExternalReviewToolSet bool
-	ExternalReviewTool    string
 	FinalizeEnabled       bool
 	AppConfig             *config.Config
 }

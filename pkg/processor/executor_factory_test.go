@@ -382,12 +382,11 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 			appCfg.IdleTimeout = 3 * time.Minute
 
 			cfg := Config{
-				Mode:                  ModeReview,
-				MaxIterations:         50,
-				CodexEnabled:          tc.external != config.ExternalReviewToolNone,
-				ExternalReviewToolSet: true,
-				ExternalReviewTool:    tc.external,
-				AppConfig:             appCfg,
+				Mode:               ModeReview,
+				MaxIterations:      50,
+				CodexEnabled:       tc.external != config.ExternalReviewToolNone,
+				ExternalReviewTool: tc.external,
+				AppConfig:          appCfg,
 			}
 			_, execs := (&executorFactory{}).Build(cfg, log)
 
@@ -467,8 +466,8 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 		appCfg.CodexSandboxSet = true
 		cfg := Config{
 			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
-			ExternalReviewToolSet: true, ExternalReviewTool: config.ExternalReviewToolCodex,
-			AppConfig: appCfg,
+			ExternalReviewTool: config.ExternalReviewToolCodex,
+			AppConfig:          appCfg,
 		}
 		_, execs := (&executorFactory{}).Build(cfg, log)
 
@@ -497,7 +496,7 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 		cfg := Config{
 			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
 			TaskModel: "sonnet:medium", ReviewModel: "opus:high",
-			ExternalReviewToolSet: true, ExternalReviewTool: config.ExternalReviewToolCodex,
+			ExternalReviewTool:  config.ExternalReviewToolCodex,
 			ExternalReviewModel: "gpt-external", ExternalReviewEffort: "low", AppConfig: appCfg,
 		}
 
@@ -516,7 +515,7 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 		cfg := Config{
 			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
 			TaskModel: "gpt-primary:high", ReviewModel: "gpt-review:medium",
-			ExternalReviewToolSet: true, ExternalReviewTool: config.ExternalReviewToolClaude,
+			ExternalReviewTool:  config.ExternalReviewToolClaude,
 			ExternalReviewModel: "sonnet", ExternalReviewEffort: "max", AppConfig: appCfg,
 		}
 
@@ -535,8 +534,8 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 		appCfg.CodexReasoningEffort = "xhigh"
 		cfg := Config{
 			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
-			ExternalReviewToolSet: true, ExternalReviewTool: config.ExternalReviewToolCodex,
-			AppConfig: appCfg,
+			ExternalReviewTool: config.ExternalReviewToolCodex,
+			AppConfig:          appCfg,
 		}
 
 		_, execs := (&executorFactory{}).Build(cfg, log)
@@ -564,6 +563,7 @@ func TestExecutorFactory_ExternalReviewerChain(t *testing.T) {
 
 		require.Len(t, execs.Externals, 2)
 		assert.Equal(t, config.ExternalReviewToolCodex, execs.Externals[0].Tool)
+		assert.Equal(t, "codex (gpt-chain:xhigh)", execs.Externals[0].DisplayName)
 		codexExec, ok := execs.Externals[0].Exec.(*executor.CodexExecutor)
 		require.True(t, ok)
 		assert.Equal(t, "gpt-chain", codexExec.Model)
@@ -572,6 +572,7 @@ func TestExecutorFactory_ExternalReviewerChain(t *testing.T) {
 		assert.True(t, codexExec.ForceReadOnly)
 
 		assert.Equal(t, config.ExternalReviewToolClaude, execs.Externals[1].Tool)
+		assert.Equal(t, "claude (fable:max)", execs.Externals[1].DisplayName)
 		claudeExec, ok := execs.Externals[1].Exec.(*executor.ClaudeExecutor)
 		require.True(t, ok)
 		assert.Equal(t, "fable", claudeExec.Model)
@@ -591,6 +592,8 @@ func TestExecutorFactory_ExternalReviewerChain(t *testing.T) {
 		_, execs := (&executorFactory{}).Build(cfg, log)
 
 		require.Len(t, execs.Externals, 2)
+		assert.Equal(t, "claude (opus:xhigh)", execs.Externals[0].DisplayName)
+		assert.Equal(t, "claude (fable:max)", execs.Externals[1].DisplayName)
 		first := execs.Externals[0].Exec.(*executor.ClaudeExecutor)
 		second := execs.Externals[1].Exec.(*executor.ClaudeExecutor)
 		assert.NotSame(t, first, second)
@@ -621,7 +624,7 @@ func TestExecutorFactory_LegacyExternalFallbackParity(t *testing.T) {
 	appCfg.CodexModel = "gpt-default"
 	appCfg.CodexReasoningEffort = "medium"
 	legacy := Config{
-		Mode: ModeReview, CodexEnabled: true, ExternalReviewToolSet: true,
+		Mode: ModeReview, CodexEnabled: true,
 		ExternalReviewTool:  config.ExternalReviewToolCodex,
 		ExternalReviewModel: "gpt-review", ExternalReviewEffort: "xhigh", AppConfig: appCfg,
 	}

@@ -302,7 +302,7 @@ func run(ctx context.Context, o opts) error {
 	if resolveErr != nil {
 		return resolveErr
 	}
-	printExternalReviewWarnings(externalReview, cfg, os.Stderr)
+	printExternalReviewWarnings(o, externalReview, cfg, os.Stderr)
 	externalReview, err = checkExecutionDeps(cfg, externalReview, os.Stderr)
 	if err != nil {
 		return err
@@ -1253,17 +1253,30 @@ func resolveExternalReviewSelection(o opts, cfg *config.Config, mode processor.M
 	return selection, nil
 }
 
-func printExternalReviewWarnings(selection externalReviewSelection, cfg *config.Config, w io.Writer) {
+func printExternalReviewWarnings(o opts, selection externalReviewSelection, cfg *config.Config, w io.Writer) {
 	if w == nil || cfg == nil {
 		return
 	}
+	if cfg.ExternalReviewersSet {
+		switch {
+		case o.externalReviewToolSet || o.externalReviewModelSet:
+			fmt.Fprintln(w, "warning: external_reviewers takes precedence; legacy external-review CLI flags are ignored (use --external-reviewers= to clear or disable the configured chain)")
+		case cfg.ExternalReviewToolSet || cfg.ExternalReviewModelSet:
+			fmt.Fprintln(w, "warning: external_reviewers takes precedence; legacy external_review_tool and external_review_model config keys are ignored (set external_reviewers = in the more-specific config file to clear or disable the inherited chain)")
+		}
+	}
+	warnedPrimaryMatch := make(map[string]bool)
+	maxDroppedWarned := false
 	for _, reviewer := range selection.Reviewers {
 		if selection.Explicit && reviewer.Provider == primaryProvider(cfg) &&
-			(reviewer.Provider == config.ExternalReviewToolClaude || reviewer.Provider == config.ExternalReviewToolCodex) {
+			(reviewer.Provider == config.ExternalReviewToolClaude || reviewer.Provider == config.ExternalReviewToolCodex) &&
+			!warnedPrimaryMatch[reviewer.Provider] {
 			fmt.Fprintf(w, "warning: external reviewer %q matches the primary executor; cross-model review signal will be weaker\n", reviewer.Provider)
+			warnedPrimaryMatch[reviewer.Provider] = true
 		}
-		if reviewer.MaxDropped {
+		if reviewer.MaxDropped && !maxDroppedWarned {
 			fmt.Fprintln(w, "warning: codex does not support 'max' reasoning effort for external review; ignoring (valid: low, medium, high, xhigh)")
+			maxDroppedWarned = true
 		}
 	}
 }
@@ -1481,7 +1494,6 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		IterationDelayMs:      req.Config.IterationDelayMs,
 		TaskRetryCount:        req.Config.TaskRetryCount,
 		CodexEnabled:          enabled,
-		ExternalReviewToolSet: true,
 		ExternalReviewTool:    reviewer.Provider,
 		ExternalReviewModel:   reviewer.Model,
 		ExternalReviewEffort:  reviewer.Effort,

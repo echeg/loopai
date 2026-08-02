@@ -1062,8 +1062,8 @@ func TestProviderOverrideFlags(t *testing.T) {
 	})
 
 	t.Run("external_review_tool_cli_override_does_not_mutate_codex_enabled", func(t *testing.T) {
-		// CLI explicitness is plumbed to the runner via ExternalReviewToolSet,
-		// so applyCLIOverrides no longer needs to flip CodexEnabled.
+		// Explicit providers bypass the legacy CodexEnabled auto-selection gate,
+		// so applyCLIOverrides does not need to flip CodexEnabled.
 		cfg := &config.Config{
 			CodexEnabled:       false,
 			CodexEnabledSet:    true,
@@ -1241,7 +1241,7 @@ func TestExternalReviewWarnings(t *testing.T) {
 		selection, err := resolveExternalReviewSelection(opts{}, cfg, processor.ModeFull)
 		require.NoError(t, err)
 		var buf bytes.Buffer
-		printExternalReviewWarnings(selection, cfg, &buf)
+		printExternalReviewWarnings(opts{}, selection, cfg, &buf)
 		assert.Contains(t, buf.String(), "matches the primary executor")
 	})
 
@@ -1250,8 +1250,50 @@ func TestExternalReviewWarnings(t *testing.T) {
 		selection, err := resolveExternalReviewSelection(opts{}, cfg, processor.ModeFull)
 		require.NoError(t, err)
 		var buf bytes.Buffer
-		printExternalReviewWarnings(selection, cfg, &buf)
+		printExternalReviewWarnings(opts{}, selection, cfg, &buf)
 		assert.Empty(t, buf.String())
+	})
+
+	t.Run("configured chain warns when legacy CLI flag is ignored", func(t *testing.T) {
+		cfg := &config.Config{ExternalReviewers: "codex", ExternalReviewersSet: true}
+		o := parseTestOpts(t, "--external-review-tool=none")
+		require.NoError(t, applyCLIOverrides(o, cfg))
+		selection, err := resolveExternalReviewSelection(o, cfg, processor.ModeFull)
+		require.NoError(t, err)
+
+		var buf bytes.Buffer
+		printExternalReviewWarnings(o, selection, cfg, &buf)
+		assert.Contains(t, buf.String(), "legacy external-review CLI flags are ignored")
+		assert.Contains(t, buf.String(), "--external-reviewers=")
+	})
+
+	t.Run("configured chain warns when legacy config key is ignored", func(t *testing.T) {
+		cfg := &config.Config{
+			ExternalReviewTool:    config.ExternalReviewToolNone,
+			ExternalReviewToolSet: true,
+			ExternalReviewers:     "codex",
+			ExternalReviewersSet:  true,
+		}
+		selection, err := resolveExternalReviewSelection(opts{}, cfg, processor.ModeFull)
+		require.NoError(t, err)
+
+		var buf bytes.Buffer
+		printExternalReviewWarnings(opts{}, selection, cfg, &buf)
+		assert.Contains(t, buf.String(), "legacy external_review_tool and external_review_model config keys are ignored")
+		assert.Contains(t, buf.String(), "set external_reviewers =")
+	})
+
+	t.Run("repeated providers emit each warning once", func(t *testing.T) {
+		cfg := &config.Config{Executor: config.ExecutorCodex}
+		selection := externalReviewSelection{Explicit: true, Reviewers: []resolvedReviewer{
+			{Provider: config.ExternalReviewToolCodex, MaxDropped: true},
+			{Provider: config.ExternalReviewToolCodex, MaxDropped: true},
+		}}
+
+		var buf bytes.Buffer
+		printExternalReviewWarnings(opts{}, selection, cfg, &buf)
+		assert.Equal(t, 1, strings.Count(buf.String(), "matches the primary executor"))
+		assert.Equal(t, 1, strings.Count(buf.String(), "does not support 'max' reasoning effort"))
 	})
 }
 
