@@ -30,6 +30,9 @@ type backend interface {
 	branchExists(name string) bool
 	createBranch(name string) error
 	checkoutBranch(name string) error
+	mergeBranch(name string) error
+	deleteBranch(name string) error
+	push(branch string) error
 	diffFingerprint() (string, error)
 	isDirty() (bool, error)
 	fileHasChanges(path string) (bool, error)
@@ -44,6 +47,10 @@ type backend interface {
 	removeWorktree(path string) error
 	pruneWorktrees() error
 }
+
+// ErrMergeConflict identifies a merge that could not be completed because of conflicts.
+// The repository is returned to its pre-merge state before this error is returned.
+var ErrMergeConflict = errors.New("merge conflict")
 
 // DiffStats holds statistics about changes between two commits.
 type DiffStats struct {
@@ -168,6 +175,47 @@ func (s *Service) BranchExists(name string) bool {
 		return false
 	}
 	return s.repo.branchExists(name)
+}
+
+// ResolveBaseBranch validates an explicit local base branch or auto-detects main/master.
+func (s *Service) ResolveBaseBranch(explicit string) (string, error) {
+	if explicit != "" {
+		if !s.repo.branchExists(explicit) {
+			return "", fmt.Errorf("base branch %q does not exist", explicit)
+		}
+		return explicit, nil
+	}
+
+	for _, name := range []string{"main", "master"} {
+		if s.repo.branchExists(name) {
+			return name, nil
+		}
+	}
+	return "", errors.New("base branch not found: neither main nor master exists")
+}
+
+// MergeBranch merges branch into the currently checked-out branch.
+func (s *Service) MergeBranch(branch string) error {
+	if err := s.repo.mergeBranch(branch); err != nil {
+		return fmt.Errorf("merge branch %q: %w", branch, err)
+	}
+	return nil
+}
+
+// DeleteBranch safely deletes a fully merged local branch.
+func (s *Service) DeleteBranch(name string) error {
+	if err := s.repo.deleteBranch(name); err != nil {
+		return fmt.Errorf("delete branch %q: %w", name, err)
+	}
+	return nil
+}
+
+// Push pushes branch to origin and configures it as the upstream branch.
+func (s *Service) Push(branch string) error {
+	if err := s.repo.push(branch); err != nil {
+		return fmt.Errorf("push branch %q: %w", branch, err)
+	}
+	return nil
 }
 
 // EffectiveBranchName returns branchOverride when set, otherwise derives the branch name from planFile.

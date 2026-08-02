@@ -183,6 +183,150 @@ func TestService_IsDefaultBranch(t *testing.T) {
 	})
 }
 
+func TestService_ResolveBaseBranch(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    func(t *testing.T, dir string)
+		explicit string
+		want     string
+		errText  string
+	}{
+		{name: "explicit existing branch", explicit: "release", setup: func(t *testing.T, dir string) {
+			runGit(t, dir, "branch", "release")
+		}, want: "release"},
+		{name: "explicit missing branch", explicit: "release", errText: `base branch "release" does not exist`},
+		{name: "prefers main", setup: func(t *testing.T, dir string) {
+			runGit(t, dir, "branch", "main")
+		}, want: "main"},
+		{name: "falls back to master", want: "master"},
+		{name: "neither conventional branch exists", setup: func(t *testing.T, dir string) {
+			runGit(t, dir, "branch", "-m", "unusual")
+		}, errText: "base branch not found: neither main nor master exists"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := setupExternalTestRepo(t)
+			if tt.setup != nil {
+				tt.setup(t, dir)
+			}
+			svc, err := NewService(dir, noopServiceLogger())
+			require.NoError(t, err)
+
+			got, err := svc.ResolveBaseBranch(tt.explicit)
+			if tt.errText != "" {
+				require.EqualError(t, err, tt.errText)
+				assert.Empty(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestService_MergeBranch(t *testing.T) {
+	t.Run("clean merge", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+		featureHash := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+		runGit(t, dir, "checkout", "master")
+
+		require.NoError(t, svc.MergeBranch("feature"))
+		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
+		assert.Equal(t, featureHash, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD")))
+	})
+
+	t.Run("conflict aborts and preserves branches", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "commit", "-am", "feature change")
+		featureHash := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+
+		runGit(t, dir, "checkout", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("master\n"), 0o600))
+		runGit(t, dir, "commit", "-am", "master change")
+		masterHash := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+
+		err = svc.MergeBranch("feature")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrMergeConflict)
+		assert.Equal(t, masterHash, strings.TrimSpace(runGit(t, dir, "rev-parse", "master")))
+		assert.Equal(t, featureHash, strings.TrimSpace(runGit(t, dir, "rev-parse", "feature")))
+		assert.Equal(t, "master", strings.TrimSpace(runGit(t, dir, "branch", "--show-current")))
+		assert.Equal(t, "master\n", string(mustReadFile(t, filepath.Join(dir, "README.md"))))
+		assert.Empty(t, strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
+	})
+}
+
+func TestService_DeleteBranch(t *testing.T) {
+	tests := []struct {
+		name   string
+		merged bool
+	}{
+		{name: "deletes merged branch", merged: true},
+		{name: "refuses unmerged branch", merged: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := setupExternalTestRepo(t)
+			svc, err := NewService(dir, noopServiceLogger())
+			require.NoError(t, err)
+			runGit(t, dir, "checkout", "-b", "feature")
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+			runGit(t, dir, "add", "feature.txt")
+			runGit(t, dir, "commit", "-m", "feature")
+			runGit(t, dir, "checkout", "master")
+			if tt.merged {
+				runGit(t, dir, "merge", "feature")
+			}
+
+			err = svc.DeleteBranch("feature")
+			if tt.merged {
+				require.NoError(t, err)
+				assert.False(t, svc.BranchExists("feature"))
+				return
+			}
+			require.Error(t, err)
+			assert.True(t, svc.BranchExists("feature"))
+		})
+	}
+}
+
+func TestService_Push(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	remote := t.TempDir()
+	runGit(t, remote, "init", "--bare")
+	runGit(t, dir, "remote", "add", "origin", remote)
+	runGit(t, dir, "checkout", "-b", "feature")
+
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	require.NoError(t, svc.Push("feature"))
+
+	assert.Equal(t, strings.TrimSpace(runGit(t, dir, "rev-parse", "feature")),
+		strings.TrimSpace(runGit(t, remote, "rev-parse", "refs/heads/feature")))
+	assert.Equal(t, "origin/feature", strings.TrimSpace(runGit(t, dir, "rev-parse", "--abbrev-ref", "feature@{upstream}")))
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return data
+}
+
 func TestService_CreateBranchForPlan(t *testing.T) {
 	t.Run("returns nil on feature branch", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

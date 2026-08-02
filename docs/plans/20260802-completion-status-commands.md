@@ -113,20 +113,20 @@ drops it. No TTL hacks (detached sleep processes) are used.
 
 ### Task 4: Add merge, safe branch delete, and base detection to pkg/git
 
-- [ ] add `ResolveBaseBranch(explicit string) (string, error)` to `pkg/git`: explicit
+- [x] add `ResolveBaseBranch(explicit string) (string, error)` to `pkg/git`: explicit
       name must exist; otherwise first existing of `main`, `master`; error naming both
       when neither exists
-- [ ] add `MergeBranch(branch string) error`: runs `git merge <branch>` on the current
+- [x] add `MergeBranch(branch string) error`: runs `git merge <branch>` on the current
       HEAD (default ff-when-possible behavior); on conflict runs `git merge --abort`
       and returns a distinct error (e.g. `ErrMergeConflict`) wrapping git output
-- [ ] add `DeleteBranch(name string) error` using safe `git branch -d`
-- [ ] add `Push(branch string) error` running `git push -u origin <branch>` (needed by
+- [x] add `DeleteBranch(name string) error` using safe `git branch -d`
+- [x] add `Push(branch string) error` running `git push -u origin <branch>` (needed by
       Task 6; kept here to finish pkg/git changes in one task)
-- [ ] write table-driven tests with `t.TempDir()` repos: base detection (explicit,
+- [x] write table-driven tests with `t.TempDir()` repos: base detection (explicit,
       main, master, neither), clean merge, conflicting merge aborts and preserves both
       branches, safe delete of merged/unmerged branch; push tested against a local bare
       remote
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 5: Add --merge command
 

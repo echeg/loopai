@@ -221,6 +221,41 @@ func (e *externalBackend) checkoutBranch(name string) error {
 	return nil
 }
 
+// mergeBranch merges the named branch into the current HEAD. If git leaves a
+// merge in progress, the merge is aborted before ErrMergeConflict is returned.
+func (e *externalBackend) mergeBranch(name string) error {
+	_, err := e.run("merge", name)
+	if err == nil {
+		return nil
+	}
+
+	mergeHead := exec.CommandContext(context.Background(), e.command, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
+	mergeHead.Dir = e.path
+	if mergeHead.Run() == nil {
+		if _, abortErr := e.run("merge", "--abort"); abortErr != nil {
+			return fmt.Errorf("%w: %v (abort failed: %v)", ErrMergeConflict, err, abortErr)
+		}
+		return fmt.Errorf("%w: %v", ErrMergeConflict, err)
+	}
+	return fmt.Errorf("merge: %w", err)
+}
+
+// deleteBranch safely deletes a local branch, refusing unmerged branches.
+func (e *externalBackend) deleteBranch(name string) error {
+	if _, err := e.run("branch", "-d", name); err != nil {
+		return fmt.Errorf("delete branch: %w", err)
+	}
+	return nil
+}
+
+// push pushes a branch to origin and records the upstream relationship.
+func (e *externalBackend) push(branch string) error {
+	if _, err := e.run("push", "-u", "origin", branch); err != nil {
+		return fmt.Errorf("push: %w", err)
+	}
+	return nil
+}
+
 // isDirty returns true if the worktree has uncommitted changes (staged or modified tracked files).
 func (e *externalBackend) isDirty() (bool, error) {
 	out, err := e.run("status", "--porcelain")
