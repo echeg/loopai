@@ -1,14 +1,41 @@
 package git
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestExternalBackendCloseoutCommandsHonorCancellation(t *testing.T) {
+	dir := t.TempDir()
+	command := filepath.Join(t.TempDir(), "slow-git")
+	require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\ncase \"$1\" in merge|push) sleep 30 ;; esac\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
+	backend := &externalBackend{path: dir, command: command}
+
+	for _, tc := range []struct {
+		name string
+		call func(context.Context) error
+	}{
+		{name: "merge", call: func(ctx context.Context) error { return backend.mergeBranch(ctx, "feature") }},
+		{name: "push", call: func(ctx context.Context) error { return backend.push(ctx, "feature") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+			defer cancel()
+			started := time.Now()
+			err := tc.call(ctx)
+			require.Error(t, err)
+			assert.Less(t, time.Since(started), 8*time.Second,
+				"cancellation must stop well before the command's 30-second fixture delay")
+		})
+	}
+}
 
 // setupExternalTestRepo creates a temp git repo using the git CLI for external backend tests.
 func setupExternalTestRepo(t *testing.T) string {

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jessevdk/go-flags"
 
@@ -295,6 +296,9 @@ func run(ctx context.Context, o opts) error {
 	if done, err := handleEarlyFlags(o); err != nil || done {
 		return err
 	}
+	// A normal invocation replaces any prior completion outcome even when later startup or
+	// preflight work fails. Failed close-out commands intentionally retain the pill instead.
+	clearStaleCmuxStatus(o)
 
 	// load config first to get custom command paths
 	cfg, err := loadRunConfig(o)
@@ -704,11 +708,11 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// cmux sidebar reporter, nil and fully no-op outside cmux. Stop is also registered with the
 	// interrupt handler because defers are skipped on the force-exit path.
 	rep := cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview))
-	rep.Start(ctx)
 	defer rep.Stop()
 	if req.CmuxStop != nil {
 		req.CmuxStop.set(rep.Stop)
 	}
+	rep.Start(ctx)
 
 	// wrap logger with broadcast logger if --serve is enabled
 	var runnerLog processor.Logger = plr.baseLog
@@ -1916,11 +1920,11 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	// cmux sidebar reporter, nil and fully no-op outside cmux. no plan file exists yet, so the
 	// progress bar stays empty and only the spinner and the phase pill are reported.
 	rep := cmux.New("", cmuxRunModels(o, req.Config, req.ExternalReview))
-	rep.Start(ctx)
 	defer rep.Stop()
 	if req.CmuxStop != nil {
 		req.CmuxStop.set(rep.Stop)
 	}
+	rep.Start(ctx)
 	holder.OnChange(rep.OnPhase)
 	var planLog processor.Logger = rep.WrapLogger(baseLog)
 
@@ -2124,13 +2128,20 @@ func clearCmuxStatus(stdout io.Writer) {
 	rep.Clear()
 }
 
+func clearStaleCmuxStatus(o opts) {
+	if closeoutRequested(o) {
+		return
+	}
+	cmux.New("", cmux.Models{}).Clear()
+}
+
 type cmuxStatusClearer interface {
 	Clear()
 }
 
 // runMergeCommand merges the current feature branch into an explicit or detected base.
 // The completion pill is deliberately retained on every failure so the pending action stays visible.
-func runMergeCommand(gitSvc *git.Service, explicitBase string, rep cmuxStatusClearer, stdout io.Writer) error {
+func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase string, rep cmuxStatusClearer, stdout io.Writer) error {
 	dirty, err := gitSvc.IsDirtyAll()
 	if err != nil {
 		return fmt.Errorf("check working tree: %w", err)
@@ -2163,7 +2174,7 @@ func runMergeCommand(gitSvc *git.Service, explicitBase string, rep cmuxStatusCle
 	if err != nil {
 		return fmt.Errorf("read feature branch head: %w", err)
 	}
-	mergedHead, err := mergeForCloseout(mergeSvc, feature, base)
+	mergedHead, err := mergeForCloseout(ctx, mergeSvc, feature, base)
 	if err != nil {
 		return err
 	}
@@ -2233,7 +2244,7 @@ func worktreePathForBranch(worktrees []git.Worktree, branch string) string {
 	return ""
 }
 
-func mergeForCloseout(gitSvc *git.Service, feature, base string) (string, error) {
+func mergeForCloseout(ctx context.Context, gitSvc *git.Service, feature, base string) (string, error) {
 	original, err := gitSvc.CurrentBranch()
 	if err != nil {
 		return "", fmt.Errorf("read merge worktree branch: %w", err)
@@ -2243,7 +2254,7 @@ func mergeForCloseout(gitSvc *git.Service, feature, base string) (string, error)
 			return "", fmt.Errorf("check out base branch %q: %w", base, checkoutErr)
 		}
 	}
-	if err = gitSvc.MergeBranch(feature); err != nil {
+	if err = gitSvc.MergeBranchContext(ctx, feature); err != nil {
 		return "", closeoutMergeError(gitSvc, original, feature, base, err)
 	}
 	mergedHead, err := gitSvc.HeadHash()
@@ -2344,12 +2355,17 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 	if err != nil {
 		return err
 	}
-	if pushErr := gitSvc.Push(branch); pushErr != nil {
+	if metadataErr := validatePRMetadata(title, body); metadataErr != nil {
+		return metadataErr
+	}
+	if pushErr := gitSvc.PushContext(ctx, branch); pushErr != nil {
 		return fmt.Errorf("push PR branch: %w", pushErr)
 	}
 
-	cmd := exec.CommandContext(ctx, ghPath, "pr", "create", "--base", base, "--head", branch, "--title", title, "--body", body)
+	cmd := exec.CommandContext(ctx, ghPath, "pr", "create", "--base", base, "--head", branch,
+		"--title", title, "--body-file", "-")
 	cmd.Dir = gitSvc.Root()
+	cmd.Stdin = strings.NewReader(body)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("create GitHub PR: %w: %s", err, strings.TrimSpace(string(out)))
@@ -2376,7 +2392,7 @@ func runCloseoutCommand(ctx context.Context, o opts, cfg *config.Config, colors 
 	}
 	rep := cmux.New("", cmux.Models{})
 	if mergeRequested(o) {
-		return runMergeCommand(gitSvc, o.Merge, rep, os.Stdout)
+		return runMergeCommand(ctx, gitSvc, o.Merge, rep, os.Stdout)
 	}
 	return runPRCommand(ctx, gitSvc, o.PR, rep, os.Stdout)
 }
@@ -2406,7 +2422,22 @@ func buildPRTitleBody(repoRoot, branch string, stats git.DiffStats) (title, body
 	return title, overview + "\n\n" + statsText, nil
 }
 
-const maxPRPlanSize int64 = 1 << 20
+const (
+	maxPRPlanSize           int64 = 1 << 20
+	maxPRProgressHeaderSize int64 = 64 << 10
+	maxPRTitleRunes               = 256
+	maxPRBodyRunes                = 65_536
+)
+
+func validatePRMetadata(title, body string) error {
+	if utf8.RuneCountInString(title) > maxPRTitleRunes {
+		return fmt.Errorf("PR title exceeds %d-character GitHub limit", maxPRTitleRunes)
+	}
+	if utf8.RuneCountInString(body) > maxPRBodyRunes {
+		return fmt.Errorf("PR body exceeds %d-character GitHub limit", maxPRBodyRunes)
+	}
+	return nil
+}
 
 // readPRPlan reads a bounded regular file below repoRoot without following symlinked path
 // components. The identity check also rejects a file swapped between inspection and open.
@@ -2466,7 +2497,14 @@ func readPRPlan(repoRoot, path string) ([]byte, error) {
 }
 
 func findPRPlan(repoRoot, branch string) (string, error) {
-	branchPlanName := filepath.Base(branch)
+	recordedPath, err := findRecordedPRPlan(repoRoot, branch)
+	if err != nil {
+		return "", err
+	}
+	if recordedPath != "" {
+		return recordedPath, nil
+	}
+
 	var exactPath, fallbackPath string
 	var exactTime, fallbackTime time.Time
 	for _, dir := range []string{
@@ -2492,7 +2530,7 @@ func findPRPlan(repoRoot, branch string) (string, error) {
 			if entry.Type()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 				return "", fmt.Errorf("inspect PR plan %q: plan must be a regular file without symlinks", entry.Name())
 			}
-			if plan.ExtractBranchName(entry.Name()) == branch || plan.ExtractBranchName(entry.Name()) == branchPlanName {
+			if plan.ExtractBranchName(entry.Name()) == branch {
 				if exactPath == "" || info.ModTime().After(exactTime) {
 					exactPath, exactTime = path, info.ModTime()
 				}
@@ -2511,6 +2549,87 @@ func findPRPlan(repoRoot, branch string) (string, error) {
 		return exactPath, nil
 	}
 	return fallbackPath, nil
+}
+
+// findRecordedPRPlan uses the progress header's exact branch-to-plan association. This covers
+// arbitrary --branch overrides without guessing from a slash-delimited branch basename.
+func findRecordedPRPlan(repoRoot, branch string) (string, error) {
+	dir := filepath.Join(repoRoot, ".loopai", "progress")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("list progress records: %w", err)
+	}
+
+	var matched string
+	var matchedTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".txt" || entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return "", fmt.Errorf("inspect progress record %q: %w", entry.Name(), infoErr)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		f, openErr := os.Open(path) //nolint:gosec // direct regular-file child of the fixed progress directory
+		if openErr != nil {
+			return "", fmt.Errorf("open progress record %q: %w", entry.Name(), openErr)
+		}
+		content, readErr := io.ReadAll(io.LimitReader(f, maxPRProgressHeaderSize))
+		closeErr := f.Close()
+		if readErr != nil {
+			return "", fmt.Errorf("read progress record %q: %w", entry.Name(), readErr)
+		}
+		if closeErr != nil {
+			return "", fmt.Errorf("close progress record %q: %w", entry.Name(), closeErr)
+		}
+		planPath, recordedBranch := parseProgressAssociation(string(content))
+		if recordedBranch != branch || planPath == "" || planPath == "(no plan - review only)" {
+			continue
+		}
+		candidate := resolveRecordedPlan(repoRoot, planPath)
+		if candidate != "" && (matched == "" || info.ModTime().After(matchedTime)) {
+			matched, matchedTime = candidate, info.ModTime()
+		}
+	}
+	return matched, nil
+}
+
+func parseProgressAssociation(content string) (planPath, branch string) {
+	for line := range strings.SplitSeq(content, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		switch {
+		case strings.HasPrefix(line, "Plan: "):
+			planPath = strings.TrimSpace(strings.TrimPrefix(line, "Plan: "))
+		case strings.HasPrefix(line, "Branch: "):
+			branch = strings.TrimSpace(strings.TrimPrefix(line, "Branch: "))
+		}
+		if planPath != "" && branch != "" {
+			return planPath, branch
+		}
+	}
+	return planPath, branch
+}
+
+func resolveRecordedPlan(repoRoot, recorded string) string {
+	candidate := recorded
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(repoRoot, candidate)
+	}
+	if info, err := os.Lstat(candidate); err == nil && info.Mode().IsRegular() {
+		return candidate
+	}
+	completed := filepath.Join(filepath.Dir(candidate), "completed", filepath.Base(candidate))
+	if info, err := os.Lstat(completed); err == nil && info.Mode().IsRegular() {
+		return completed
+	}
+	return ""
 }
 
 func planMentionsBranch(content, branch string) bool {

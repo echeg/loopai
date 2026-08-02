@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -30,9 +31,9 @@ type backend interface {
 	branchExists(name string) bool
 	createBranch(name string) error
 	checkoutBranch(name string) error
-	mergeBranch(name string) error
+	mergeBranch(ctx context.Context, name string) error
 	deleteBranch(name string) error
-	push(branch string) error
+	push(ctx context.Context, branch string) error
 	worktrees() ([]Worktree, error)
 	diffFingerprint() (string, error)
 	isDirty() (bool, error)
@@ -243,7 +244,12 @@ func (s *Service) ResolveBaseBranch(explicit string) (string, error) {
 
 // MergeBranch merges branch into the currently checked-out branch.
 func (s *Service) MergeBranch(branch string) error {
-	if err := s.repo.mergeBranch(branch); err != nil {
+	return s.MergeBranchContext(context.Background(), branch)
+}
+
+// MergeBranchContext merges branch into the current branch and honors cancellation.
+func (s *Service) MergeBranchContext(ctx context.Context, branch string) error {
+	if err := s.repo.mergeBranch(ctx, branch); err != nil {
 		return fmt.Errorf("merge branch %q: %w", branch, err)
 	}
 	return nil
@@ -259,7 +265,12 @@ func (s *Service) DeleteBranch(name string) error {
 
 // Push pushes branch to origin and configures it as the upstream branch.
 func (s *Service) Push(branch string) error {
-	if err := s.repo.push(branch); err != nil {
+	return s.PushContext(context.Background(), branch)
+}
+
+// PushContext pushes branch to origin, configures its upstream, and honors cancellation.
+func (s *Service) PushContext(ctx context.Context, branch string) error {
+	if err := s.repo.push(ctx, branch); err != nil {
 		return fmt.Errorf("push branch %q: %w", branch, err)
 	}
 	return nil

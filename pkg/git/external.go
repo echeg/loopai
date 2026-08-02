@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,7 +12,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
+
+const mergeCleanupTimeout = 5 * time.Second
 
 // externalBackend implements the backend interface by shelling out to the git CLI.
 type externalBackend struct {
@@ -54,9 +58,19 @@ func newExternalBackend(path, command string) (*externalBackend, error) {
 // leading whitespace is preserved (important for porcelain format parsing).
 // on failure, returns error with the combined output for diagnostics.
 func (e *externalBackend) run(args ...string) (string, error) {
-	cmd := exec.CommandContext(context.Background(), e.command, args...)
+	return e.runContext(context.Background(), args...)
+}
+
+func (e *externalBackend) runContext(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, e.command, args...)
 	cmd.Dir = e.path
-	out, err := cmd.CombinedOutput()
+	configureCommandCancellation(cmd)
+	// Attach a direct writer instead of os/exec's internal CombinedOutput pipe. A credential
+	// helper inheriting a pipe could otherwise keep Wait blocked after CommandContext kills Git.
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	err := cmd.Run()
+	out := output.Bytes()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg != "" {
@@ -223,16 +237,18 @@ func (e *externalBackend) checkoutBranch(name string) error {
 
 // mergeBranch merges the named branch into the current HEAD. If git leaves a
 // merge in progress, the merge is aborted before ErrMergeConflict is returned.
-func (e *externalBackend) mergeBranch(name string) error {
-	_, err := e.run("merge", name)
+func (e *externalBackend) mergeBranch(ctx context.Context, name string) error {
+	_, err := e.runContext(ctx, "merge", name)
 	if err == nil {
 		return nil
 	}
 
-	mergeHead := exec.CommandContext(context.Background(), e.command, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), mergeCleanupTimeout)
+	defer cancel()
+	mergeHead := exec.CommandContext(cleanupCtx, e.command, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
 	mergeHead.Dir = e.path
 	if mergeHead.Run() == nil {
-		if _, abortErr := e.run("merge", "--abort"); abortErr != nil {
+		if _, abortErr := e.runContext(cleanupCtx, "merge", "--abort"); abortErr != nil {
 			return fmt.Errorf("%w: %w (abort failed: %w)", ErrMergeConflict, err, abortErr)
 		}
 		return fmt.Errorf("%w: %w", ErrMergeConflict, err)
@@ -249,8 +265,8 @@ func (e *externalBackend) deleteBranch(name string) error {
 }
 
 // push pushes a branch to origin and records the upstream relationship.
-func (e *externalBackend) push(branch string) error {
-	if _, err := e.run("push", "-u", "origin", branch); err != nil {
+func (e *externalBackend) push(ctx context.Context, branch string) error {
+	if _, err := e.runContext(ctx, "push", "-u", "origin", branch); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
 	return nil

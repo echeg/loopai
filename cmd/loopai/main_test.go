@@ -3158,7 +3158,7 @@ func TestRunMergeCommand(t *testing.T) {
 		clearer := &recordingStatusClearer{}
 		var output bytes.Buffer
 
-		require.NoError(t, runMergeCommand(svc, "", clearer, &output))
+		require.NoError(t, runMergeCommand(t.Context(), svc, "", clearer, &output))
 		assert.Equal(t, "master", currentGitBranch(t, dir))
 		assert.False(t, branchExists(t, dir, "feature"))
 		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
@@ -3177,7 +3177,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		require.NoError(t, runMergeCommand(svc, "master", clearer, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", clearer, io.Discard))
 		assert.NoDirExists(t, worktreePath)
 		assert.False(t, branchExists(t, dir, "feature"))
 		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
@@ -3193,7 +3193,7 @@ func TestRunMergeCommand(t *testing.T) {
 		runGit(t, dir, "worktree", "add", worktreePath, "unrelated")
 		t.Cleanup(func() { _ = svc.RemoveWorktree(worktreePath) })
 
-		require.NoError(t, runMergeCommand(svc, "master", &recordingStatusClearer{}, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard))
 		assert.DirExists(t, worktreePath)
 		assert.Equal(t, "unrelated", currentGitBranch(t, worktreePath))
 	})
@@ -3211,7 +3211,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		err = runMergeCommand(featureSvc, "master", clearer, io.Discard)
+		err = runMergeCommand(t.Context(), featureSvc, "master", clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "clean base worktree")
 		assert.Equal(t, "master", currentGitBranch(t, dir))
@@ -3226,7 +3226,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("dirty\n"), 0o600))
 		clearer := &recordingStatusClearer{}
 
-		err := runMergeCommand(svc, "master", clearer, io.Discard)
+		err := runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "clean working tree")
 		assert.Equal(t, "feature", currentGitBranch(t, dir))
@@ -3240,7 +3240,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("keep\n"), 0o600))
 		clearer := &recordingStatusClearer{}
 
-		err := runMergeCommand(svc, "master", clearer, io.Discard)
+		err := runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "clean working tree")
 		assert.Equal(t, "feature", currentGitBranch(t, dir))
@@ -3254,7 +3254,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		err = runMergeCommand(svc, "master", clearer, io.Discard)
+		err = runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "already the base branch")
 		assert.Equal(t, "master", currentGitBranch(t, dir))
@@ -3274,7 +3274,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		err = runMergeCommand(svc, "master", clearer, io.Discard)
+		err = runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
 		require.Error(t, err)
 		require.ErrorIs(t, err, git.ErrMergeConflict)
 		assert.Contains(t, err.Error(), "conflicted and was aborted")
@@ -3407,6 +3407,30 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "New exact", title)
 	})
+
+	t.Run("progress header associates arbitrary branch override", func(t *testing.T) {
+		root := t.TempDir()
+		writePlan(t, root, "20260802-original-plan.md", "# Override plan\n\n## Overview\n\nExact association.\n")
+		progressDir := filepath.Join(root, ".loopai", "progress")
+		require.NoError(t, os.MkdirAll(progressDir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(progressDir, "progress-team-custom.txt"), []byte(
+			"# Loopai Progress Log\nPlan: docs/plans/completed/20260802-original-plan.md\nBranch: team/custom\nMode: full\n"), 0o600))
+
+		title, body, err := buildPRTitleBody(root, "team/custom", git.DiffStats{})
+		require.NoError(t, err)
+		assert.Equal(t, "Override plan", title)
+		assert.Contains(t, body, "Exact association.")
+	})
+
+	t.Run("branch basename does not select unrelated plan", func(t *testing.T) {
+		root := t.TempDir()
+		writePlan(t, root, "20260802-foo.md", "# Unrelated foo plan\n\n## Overview\n\nWrong plan.\n")
+
+		title, body, err := buildPRTitleBody(root, "feature/foo", git.DiffStats{})
+		require.NoError(t, err)
+		assert.Equal(t, "feature/foo", title)
+		assert.NotContains(t, body, "Wrong plan.")
+	})
 }
 
 func TestExecutePlan_DashboardStartupFailureDoesNotPersistPill(t *testing.T) {
@@ -3470,9 +3494,11 @@ func TestRunPRCommand(t *testing.T) {
 		dir, remote, svc := setupFeatureWithRemote(t)
 		binDir := t.TempDir()
 		argsLog := filepath.Join(binDir, "gh-args.log")
-		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GH_ARGS_LOG\"\nprintf '%s\\n' 'https://github.com/acme/repo/pull/42'\n")
+		bodyLog := filepath.Join(binDir, "gh-body.log")
+		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GH_ARGS_LOG\"\ncat > \"$GH_BODY_LOG\"\nprintf '%s\\n' 'https://github.com/acme/repo/pull/42'\n")
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("GH_ARGS_LOG", argsLog)
+		t.Setenv("GH_BODY_LOG", bodyLog)
 		clearer := &recordingStatusClearer{}
 		var output bytes.Buffer
 
@@ -3483,8 +3509,11 @@ func TestRunPRCommand(t *testing.T) {
 		assert.True(t, branchExists(t, dir, "feature"))
 		args, err := os.ReadFile(argsLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, err)
-		assert.Contains(t, string(args), "pr\ncreate\n--base\nmaster\n--head\nfeature\n--title\nFeature PR\n--body\n")
-		assert.Contains(t, string(args), "Implements feature.")
+		assert.Contains(t, string(args), "pr\ncreate\n--base\nmaster\n--head\nfeature\n--title\nFeature PR\n--body-file\n-\n")
+		assert.NotContains(t, string(args), "Implements feature.", "the body must not be exposed in argv")
+		body, readBodyErr := os.ReadFile(bodyLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readBodyErr)
+		assert.Contains(t, string(body), "Implements feature.")
 		localHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "feature"))
 		assert.Equal(t, localHead, strings.TrimSpace(gitOutput(t, remote, "rev-parse", "refs/heads/feature")))
 		assert.Equal(t, "origin/feature", strings.TrimSpace(gitOutput(t, dir, "rev-parse", "--abbrev-ref", "feature@{upstream}")))
@@ -3500,6 +3529,27 @@ func TestRunPRCommand(t *testing.T) {
 		err := runPRCommand(t.Context(), svc, "master", clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "authentication required")
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("oversized metadata fails before push", func(t *testing.T) {
+		dir, remote, svc := setupFeatureWithRemote(t)
+		planPath := filepath.Join(dir, "docs", "plans", "completed", "20260802-feature.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Feature PR\n\n## Overview\n\n"+
+			strings.Repeat("x", maxPRBodyRunes)), 0o600))
+		binDir := t.TempDir()
+		invoked := filepath.Join(binDir, "invoked")
+		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\ntouch \"$GH_INVOKED\"\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("GH_INVOKED", invoked)
+		clearer := &recordingStatusClearer{}
+
+		err := runPRCommand(t.Context(), svc, "master", clearer, io.Discard)
+		require.ErrorContains(t, err, "PR body exceeds")
+		assert.NoFileExists(t, invoked)
+		cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/feature")
+		cmd.Dir = remote
+		require.Error(t, cmd.Run(), "validation must happen before the branch is pushed")
 		assert.Zero(t, clearer.calls)
 	})
 
@@ -3560,6 +3610,23 @@ func TestRunDispatchesMergeCloseoutBeforeExecutionDependencies(t *testing.T) {
 	assert.Equal(t, "master", currentGitBranch(t, dir))
 	assert.False(t, branchExists(t, dir, "feature"))
 	assert.FileExists(t, filepath.Join(dir, "feature.txt"))
+}
+
+func TestRunClearsStaleCmuxStatusBeforeConfigFailure(t *testing.T) {
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "cmux-argv.log")
+	writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	t.Setenv("CMUX_ARGV_LOG", argvLog)
+	badConfigDir := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(badConfigDir, []byte("x"), 0o600))
+
+	err := run(t.Context(), opts{ConfigDir: badConfigDir})
+	require.ErrorContains(t, err, "load config")
+	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+	require.NoError(t, readErr)
+	assert.Equal(t, "clear-status loopai\n", string(recorded))
 }
 
 func TestHandleEarlyFlags(t *testing.T) {

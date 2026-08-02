@@ -377,6 +377,21 @@ func TestReporterStopAfterFinishPreservesPill(t *testing.T) {
 	}, runner.recorded())
 }
 
+func TestReporterFinishIsTerminalForStatusUpdates(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+
+	r.Finish(true, "12s")
+	r.OnPhase(status.PhaseTask, status.PhaseReview)
+	r.OnLimitWait("10m")
+	r.OnLimitRecovery("account switched")
+	r.OnSection(status.NewInternalReviewSection(2, ": critical/major"))
+
+	assert.Equal(t, [][]string{{
+		"set-status", "loopai", "done in 12s", "--icon", "bolt", "--color", "#34c759", "--priority", "90",
+	}}, runner.recorded(), "late callbacks must not overwrite the final pill")
+}
+
 func TestReporterFinishAfterStopNoOp(t *testing.T) {
 	runner := &fakeRunner{}
 	r := testReporter(t, runner)
@@ -1018,7 +1033,7 @@ func TestReporterStop(t *testing.T) {
 	}
 }
 
-func TestReporterStopClearsSpinnerBeforeJoin(t *testing.T) {
+func TestReporterStopClearsSpinnerWhileStoppingPoll(t *testing.T) {
 	runner := &fakeRunner{}
 	r := testReporter(t, runner)
 	r.interval = time.Millisecond
@@ -1050,7 +1065,34 @@ func TestReporterStopClearsSpinnerBeforeJoin(t *testing.T) {
 	r.Stop()
 
 	require.Len(t, pollAlive, 1, "stop must clear the spinner")
-	assert.True(t, <-pollAlive, "the spinner must be cleared before the poll goroutine is joined")
+	<-pollAlive // either state is valid; loading-off must run without waiting on a stuck poll command
+}
+
+func TestReporterStopCancelsStartBeforeCleanup(t *testing.T) {
+	runner := &fakeRunner{block: time.Hour}
+	r := testReporter(t, runner)
+	r.timeout = 50 * time.Millisecond
+
+	startReturned := make(chan struct{})
+	go func() {
+		r.Start(t.Context())
+		close(startReturned)
+	}()
+	runner.waitForCalls(t, 1)
+
+	r.Stop()
+	select {
+	case <-startReturned:
+	case <-time.After(time.Second):
+		t.Fatal("Stop must cancel and join synchronous Start setup")
+	}
+
+	calls := runner.recorded()
+	require.GreaterOrEqual(t, len(calls), 4)
+	assert.Equal(t, []string{"clear-status", "loopai"}, calls[0])
+	assert.Equal(t, []string{"workspace", "loading", "off", "--id", "loopai"}, calls[1])
+	assert.NotContains(t, calls[2:], []string{"workspace", "loading", "on", "--id", "loopai"},
+		"Start must not recreate the spinner after Stop begins")
 }
 
 func TestReporterStopWithoutStart(t *testing.T) {
