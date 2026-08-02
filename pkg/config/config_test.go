@@ -23,6 +23,8 @@ func Test_defaultsFS(t *testing.T) {
 	assert.Contains(t, string(data), "external_review_model")
 	assert.Contains(t, string(data), "# external_reviewers =")
 	assert.Contains(t, string(data), "takes precedence over external_review_tool and external_review_model")
+	assert.Contains(t, string(data), "the primary fixes them using review_model (or task_model)")
+	assert.Contains(t, string(data), "custom entries in external_reviewers")
 	assert.Contains(t, string(data), "iteration_delay_ms")
 }
 
@@ -33,6 +35,8 @@ func TestDumpDefaults_ContainsExternalReviewersComment(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(dir, "config")) //nolint:gosec // test path is rooted in t.TempDir
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "# external_reviewers =")
+	assert.Contains(t, string(data), "reviewers run sequentially")
+	assert.Contains(t, string(data), "custom entries in external_reviewers")
 }
 
 func TestParseExternalReviewers(t *testing.T) {

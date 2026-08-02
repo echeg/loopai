@@ -39,7 +39,7 @@ pass_claude_md = true
 
 ### Executor and reviewer combinations
 
-`--codex` can be combined with `--external-only` (legacy alias `--codex-only`) and with any explicit external reviewer. `external_review_tool = auto` selects the other first-class provider: Claude for a Codex primary, Codex for a Claude primary. Explicit `claude`, `codex`, and `custom` selections are honored, including same-provider review when deliberately requested; `none` disables the phase. `--pass-claude-md` requires the Codex executor, enabled either by `--codex` or `executor = codex` in config.
+`--codex` can be combined with `--external-only` (legacy alias `--codex-only`) and with any explicit external reviewer. `external_review_tool = auto` selects the other first-class provider: Claude for a Codex primary, Codex for a Claude primary. Explicit `claude`, `codex`, and `custom` selections are honored, including same-provider review when deliberately requested; `none` disables the phase. For multiple reviewers, use `external_reviewers` as described below. `--pass-claude-md` requires the Codex executor, enabled either by `--codex` or `executor = codex` in config.
 
 ### Prompt customization
 
@@ -97,6 +97,32 @@ loopai --claude-command=/path/to/wrapper.sh --external-review-tool=custom --cust
 Explicit `claude` and `codex` selections are honored, including same-provider
 review. When `custom` is selected, `--custom-review-script` points at the script
 that receives the external review prompt file path.
+
+For an ordered chain, use a comma-separated list of `provider[:model[:effort]]`
+entries in config or on the command line:
+
+```ini
+external_reviewers = codex:gpt-5.5:xhigh, custom, claude:fable:max
+custom_review_script = /path/to/review.sh
+```
+
+```bash
+loopai \
+  --external-reviewers=codex:gpt-5.5:xhigh,custom,claude:fable:max \
+  --custom-review-script=/path/to/review.sh \
+  docs/plans/feature.md
+```
+
+`external_reviewers` takes precedence over the legacy `external_review_tool` and
+`external_review_model` config keys. The `--external-reviewers` flag cannot be combined with
+`--external-review-tool` or `--external-review-model` in the same invocation. Reviewers run in
+list order, and each runs until it reports no findings before the next starts. Reviewers only find
+issues; the primary executor evaluates findings and owns all repository writes, using
+`review_model` and then `task_model` as its fallback.
+
+A `custom` entry cannot include a model and requires `custom_review_script`; every custom entry
+uses that script. The script contract is unchanged: it receives the external-review prompt-file
+path as its only argument and writes findings to standard output.
 
 ## Codex wrapper (included compatibility example)
 

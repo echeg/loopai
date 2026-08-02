@@ -158,11 +158,11 @@ Problem it solves: today only one external provider can review a run. Users want
 - Modify: `pkg/config/defaults/config` (final comment wording review)
 - Modify: `docs/custom-providers.md` (custom entries in chains)
 
-- [ ] document `external_reviewers` syntax, precedence over legacy keys, sequential-until-clean semantics, and the fix-ownership model (reviewers find, primary fixes with `review_model`)
-- [ ] document `--external-reviewers` CLI flag and mutual exclusion with legacy flags
-- [ ] note `custom` chain entries and their `custom_review_script` requirement
-- [ ] verify embedded config comments match final behavior
-- [ ] run `make test` (asset checks included) - must pass before task 7
+- [x] document `external_reviewers` syntax, precedence over legacy keys, sequential-until-clean semantics, and the fix-ownership model (reviewers find, primary fixes with `review_model`)
+- [x] document `--external-reviewers` CLI flag and mutual exclusion with legacy flags
+- [x] note `custom` chain entries and their `custom_review_script` requirement
+- [x] verify embedded config comments match final behavior
+- [x] run `make test` (asset checks included) - must pass before task 7
 
 ### Task 7: Verify acceptance criteria
 

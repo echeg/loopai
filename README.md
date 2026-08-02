@@ -196,7 +196,7 @@ The full pipeline has four phases:
 
 1. Task execution finds the first incomplete `### Task N:` or `### Iteration N:` section, runs the selected executor, validates the result, marks the task complete, and commits it.
 2. First review launches the configured review agents in parallel through the primary executor.
-3. External review asks the other provider, or a configured custom reviewer, for findings. The primary executor evaluates findings and owns all fixes.
+3. External review runs the configured reviewer or reviewer chain for findings. The primary executor evaluates findings and owns all fixes.
 4. Second review checks the final changes for critical or major regressions.
 
 An optional finalize step can run after review. It is disabled by default and controlled with `finalize_enabled`; `--skip-finalize` disables it for one invocation.
@@ -225,6 +225,30 @@ With `external_review_tool = auto`, loopai selects the other installed first-cla
 - Codex primary → Claude external reviewer
 
 If an automatically selected reviewer is unavailable, loopai warns and skips only that phase. A missing primary or explicitly selected reviewer is an error. Set `external_review_tool = none` to disable external review.
+
+For an ordered review chain, set `external_reviewers` to a comma-separated list of
+`provider[:model[:effort]]` entries. Providers are `claude`, `codex`, and `custom`:
+
+```ini
+external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max
+```
+
+Each reviewer runs until it reports no findings before the next reviewer starts. Reviewers remain
+read-only: the primary executor evaluates their findings and applies fixes with `review_model`
+(falling back to `task_model`). An explicit `external_reviewers` value takes precedence over
+`external_review_tool` and `external_review_model`. Unlike the legacy `auto` mode, every provider
+in a chain is explicit, so a missing reviewer binary is an error.
+
+The equivalent per-run flag is:
+
+```bash
+loopai \
+  --external-reviewers=codex:gpt-5.5:xhigh,claude:fable:max \
+  docs/plans/feature.md
+```
+
+`--external-reviewers` cannot be combined with `--external-review-tool` or
+`--external-review-model`.
 
 Per-phase models can be selected with:
 
@@ -315,11 +339,13 @@ The pi adapter at `scripts/pi-as-claude/pi-as-claude.sh` supports `PI_PROVIDER`,
 For a custom external reviewer, configure:
 
 ```ini
-external_review_tool = custom
+external_reviewers = codex, custom
 custom_review_script = /absolute/path/to/reviewer.sh
 ```
 
-The script receives a prompt-file path as its only argument and writes findings to standard output.
+`custom` entries cannot specify a model and require `custom_review_script`. The same script is used
+for every custom entry. It receives a prompt-file path as its only argument and writes findings to
+standard output. The legacy `external_review_tool = custom` form remains supported.
 
 ## Progress and dashboard
 
