@@ -163,6 +163,20 @@ func TestMergeFlagParsing(t *testing.T) {
 	})
 }
 
+func TestPRFlagParsing(t *testing.T) {
+	t.Run("bare flag auto detects base", func(t *testing.T) {
+		o := parseTestOpts(t, "--pr")
+		assert.True(t, o.prSet)
+		assert.Empty(t, o.PR)
+	})
+
+	t.Run("explicit base", func(t *testing.T) {
+		o := parseTestOpts(t, "--pr=develop")
+		assert.True(t, o.prSet)
+		assert.Equal(t, "develop", o.PR)
+	})
+}
+
 func TestPromptPlanDescription(t *testing.T) {
 	colors := testColors()
 
@@ -1602,6 +1616,12 @@ func TestValidateFlags(t *testing.T) {
 		{name: "merge_with_plan_file_conflicts", opts: opts{mergeSet: true, PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "--merge cannot be combined"},
 		{name: "merge_with_review_conflicts", opts: opts{mergeSet: true, Review: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "merge_with_clear_conflicts", opts: opts{mergeSet: true, Clear: true}, wantErr: true, errMsg: "--clear cannot be combined"},
+		{name: "pr_only_is_valid", opts: opts{prSet: true}, wantErr: false},
+		{name: "pr_with_explicit_base_is_valid", opts: opts{PR: "develop"}, wantErr: false},
+		{name: "pr_with_plan_file_conflicts", opts: opts{prSet: true, PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "--pr cannot be combined"},
+		{name: "pr_with_review_conflicts", opts: opts{prSet: true, Review: true}, wantErr: true, errMsg: "other mode flags"},
+		{name: "pr_with_merge_conflicts", opts: opts{prSet: true, mergeSet: true}, wantErr: true, errMsg: "--pr cannot be combined"},
+		{name: "pr_with_clear_conflicts", opts: opts{prSet: true, Clear: true}, wantErr: true, errMsg: "--clear cannot be combined"},
 		{name: "both_plan_and_planfile_conflicts", opts: opts{PlanDescription: "add feature", PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "conflicts"},
 		{name: "negative_wait_is_invalid", opts: opts{Wait: -30 * time.Minute}, wantErr: true, errMsg: "non-negative"},
 		{name: "positive_wait_is_valid", opts: opts{Wait: time.Hour}, wantErr: false},
@@ -3174,6 +3194,137 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, statusErr)
 		assert.Empty(t, strings.TrimSpace(string(status)))
 	})
+}
+
+func TestBuildPRTitleBody(t *testing.T) {
+	writePlan := func(t *testing.T, root, name, content string) string {
+		t.Helper()
+		dir := filepath.Join(root, "docs", "plans", "completed")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+		return path
+	}
+
+	t.Run("plan found", func(t *testing.T) {
+		root := t.TempDir()
+		writePlan(t, root, "20260802-feature.md", "# A useful feature\n\n## Overview\n\nAdds the useful behavior.\n\n## Context\n\nDetails.\n")
+
+		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{Files: 3, Additions: 12, Deletions: 4})
+		require.NoError(t, err)
+		assert.Equal(t, "A useful feature", title)
+		assert.Contains(t, body, "Adds the useful behavior.")
+		assert.Contains(t, body, "- Files changed: 3")
+		assert.Contains(t, body, "- Additions: 12")
+		assert.Contains(t, body, "- Deletions: 4")
+		assert.NotContains(t, body, "Details.")
+	})
+
+	t.Run("plan missing", func(t *testing.T) {
+		title, body, err := buildPRTitleBody(t.TempDir(), "feature/missing", git.DiffStats{})
+		require.NoError(t, err)
+		assert.Equal(t, "feature/missing", title)
+		assert.Equal(t, "## Changes\n\n- Files changed: 0\n- Additions: 0\n- Deletions: 0", body)
+	})
+
+	t.Run("no Overview section", func(t *testing.T) {
+		root := t.TempDir()
+		writePlan(t, root, "feature.md", "# Feature without overview\n\n## Context\n\nOnly context.\n")
+
+		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{Files: 1})
+		require.NoError(t, err)
+		assert.Equal(t, "Feature without overview", title)
+		assert.NotContains(t, body, "Only context.")
+		assert.Contains(t, body, "- Files changed: 1")
+	})
+
+	t.Run("newest plan mentioning branch is fallback", func(t *testing.T) {
+		root := t.TempDir()
+		oldPath := writePlan(t, root, "old.md", "# Old plan\n\nReferences special-branch.\n")
+		newPath := writePlan(t, root, "new.md", "# New plan\n\nReferences special-branch.\n")
+		oldTime := time.Now().Add(-time.Hour)
+		require.NoError(t, os.Chtimes(oldPath, oldTime, oldTime))
+		newTime := time.Now()
+		require.NoError(t, os.Chtimes(newPath, newTime, newTime))
+
+		title, _, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
+		require.NoError(t, err)
+		assert.Equal(t, "New plan", title)
+	})
+}
+
+func TestRunPRCommand(t *testing.T) {
+	setupFeatureWithRemote := func(t *testing.T) (string, *git.Service) {
+		t.Helper()
+		dir := setupTestRepo(t)
+		remote := filepath.Join(t.TempDir(), "origin.git")
+		runGit(t, filepath.Dir(remote), "init", "--bare", remote)
+		runGit(t, dir, "remote", "add", "origin", remote)
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+		plansDir := filepath.Join(dir, "docs", "plans", "completed")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260802-feature.md"), []byte("# Feature PR\n\n## Overview\n\nImplements feature.\n"), 0o600))
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		return dir, svc
+	}
+
+	t.Run("success prints URL and clears pill", func(t *testing.T) {
+		dir, svc := setupFeatureWithRemote(t)
+		binDir := t.TempDir()
+		argsLog := filepath.Join(binDir, "gh-args.log")
+		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GH_ARGS_LOG\"\nprintf '%s\\n' 'https://github.com/acme/repo/pull/42'\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("GH_ARGS_LOG", argsLog)
+		clearer := &recordingStatusClearer{}
+		var output bytes.Buffer
+
+		require.NoError(t, runPRCommand(t.Context(), svc, "master", clearer, &output))
+		assert.Equal(t, "https://github.com/acme/repo/pull/42\n", output.String())
+		assert.Equal(t, 1, clearer.calls)
+		assert.Equal(t, "feature", currentGitBranch(t, dir))
+		assert.True(t, branchExists(t, dir, "feature"))
+		args, err := os.ReadFile(argsLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(args), "pr\ncreate\n--base\nmaster\n--head\nfeature\n--title\nFeature PR\n--body\n")
+		assert.Contains(t, string(args), "Implements feature.")
+	})
+
+	t.Run("gh failure keeps pill", func(t *testing.T) {
+		_, svc := setupFeatureWithRemote(t)
+		binDir := t.TempDir()
+		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nprintf '%s\\n' 'authentication required'\nexit 1\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		clearer := &recordingStatusClearer{}
+
+		err := runPRCommand(t.Context(), svc, "master", clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "authentication required")
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("missing gh has install hint", func(t *testing.T) {
+		_, svc := setupFeatureWithRemote(t)
+		t.Setenv("PATH", t.TempDir())
+		clearer := &recordingStatusClearer{}
+
+		err := runPRCommand(t.Context(), svc, "master", clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "install")
+		assert.Zero(t, clearer.calls)
+	})
+}
+
+func currentGitBranch(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "branch", "--show-current")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	return strings.TrimSpace(string(out))
 }
 
 func TestHandleEarlyFlags(t *testing.T) {

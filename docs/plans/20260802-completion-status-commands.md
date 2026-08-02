@@ -148,20 +148,20 @@ drops it. No TTL hacks (detached sleep processes) are used.
 
 ### Task 6: Add --pr command
 
-- [ ] add `PR string` flag (`--pr`, optional value = base branch) handled as an early
+- [x] add `PR string` flag (`--pr`, optional value = base branch) handled as an early
       standalone mode; require `gh` in PATH with an install-hint error otherwise
-- [ ] derive PR title/body: locate the plan for the current branch in
+- [x] derive PR title/body: locate the plan for the current branch in
       `docs/plans/completed/` (match by branch-derived plan name, fallback: newest
       completed plan mentioning the branch); title = plan `# ` heading (fallback:
       branch name), body = plan Overview section + diff stats vs base; body generation
       lives in a testable helper
-- [ ] implement flow: resolve base, `Push(branch)`, run `gh pr create --base <base>
+- [x] implement flow: resolve base, `Push(branch)`, run `gh pr create --base <base>
       --head <branch> --title ... --body ...`, print the PR URL from gh output, clear
       the cmux pill; branch and worktree stay
-- [ ] write tests: title/body builder (plan found, plan missing, no Overview section);
+- [x] write tests: title/body builder (plan found, plan missing, no Overview section);
       flow tests with a stub `gh` binary on PATH (success prints URL and clears pill,
       gh failure keeps pill and exits non-zero)
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 7: Verify acceptance criteria
 

@@ -74,6 +74,7 @@ type opts struct {
 	Reset                   bool          `long:"reset" description:"interactively reset global config to embedded defaults"`
 	Clear                   bool          `long:"clear" description:"remove loopai cmux status pill"`
 	Merge                   string        `long:"merge" optional:"true" optional-value:"" value-name:"base" description:"merge current feature branch into base branch"`
+	PR                      string        `long:"pr" optional:"true" optional-value:"" value-name:"base" description:"push current feature branch and create a GitHub pull request"`
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
 	ConfigDir               string        `long:"config-dir" env:"LOOPAI_CONFIG_DIR" description:"custom config directory"`
 
@@ -84,6 +85,7 @@ type opts struct {
 	sessionTimeoutSet bool
 	idleTimeoutSet    bool
 	mergeSet          bool
+	prSet             bool
 
 	claudeCommandSet       bool
 	claudeArgsSet          bool
@@ -103,6 +105,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 	o.sessionTimeoutSet = isFlagSet(parser, "session-timeout")
 	o.idleTimeoutSet = isFlagSet(parser, "idle-timeout")
 	o.mergeSet = isFlagSet(parser, "merge")
+	o.prSet = isFlagSet(parser, "pr")
 	o.claudeCommandSet = isFlagSet(parser, "claude-command")
 	o.claudeArgsSet = isFlagSet(parser, "claude-args")
 	o.externalReviewToolSet = isFlagSet(parser, "external-review-tool")
@@ -290,17 +293,8 @@ func run(ctx context.Context, o opts) error {
 	colors := progress.NewColors(cfg.Colors)
 
 	// standalone git close-out commands do not require executor or notification dependencies.
-	if mergeRequested(o) {
-		if cfg.VcsCommand == "" || cfg.VcsCommand == "git" {
-			if _, statErr := os.Stat(".git"); statErr != nil {
-				return errors.New("must run from repository root (no .git directory found); run from the repo root")
-			}
-		}
-		gitSvc, openErr := openGitService(colors, cfg.VcsCommand)
-		if openErr != nil {
-			return fmt.Errorf("open git repo: %w", openErr)
-		}
-		return runMergeCommand(gitSvc, o.Merge, cmux.New("", cmux.Models{}), os.Stdout)
+	if closeoutRequested(o) {
+		return runCloseoutCommand(ctx, o, cfg, colors)
 	}
 
 	// create notification service (nil if no channels configured)
@@ -1455,11 +1449,8 @@ func shouldMovePlan(req executePlanRequest) bool {
 
 // validateFlags checks for conflicting CLI flags.
 func validateFlags(o opts) error {
-	if o.Clear && hasOtherMode(o) {
-		return errors.New("--clear cannot be combined with a plan file or other mode flags")
-	}
-	if mergeRequested(o) && (o.Clear || hasExecutionMode(o)) {
-		return errors.New("--merge cannot be combined with a plan file or other mode flags")
+	if err := validateCloseoutFlags(o); err != nil {
+		return err
 	}
 	if o.PlanDescription != "" && o.PlanFile != "" {
 		return errors.New("--plan flag conflicts with plan file argument; use one or the other")
@@ -1491,7 +1482,7 @@ func validateFlags(o opts) error {
 // hasOtherMode reports whether --clear was combined with an operation that would otherwise
 // start or configure another standalone mode. Ordinary presentation flags remain harmless.
 func hasOtherMode(o opts) bool {
-	return hasExecutionMode(o) || mergeRequested(o)
+	return hasExecutionMode(o) || mergeRequested(o) || prRequested(o)
 }
 
 func hasExecutionMode(o opts) bool {
@@ -1509,6 +1500,23 @@ func hasExecutionMode(o opts) bool {
 }
 
 func mergeRequested(o opts) bool { return o.mergeSet || o.Merge != "" }
+
+func prRequested(o opts) bool { return o.prSet || o.PR != "" }
+
+func closeoutRequested(o opts) bool { return mergeRequested(o) || prRequested(o) }
+
+func validateCloseoutFlags(o opts) error {
+	if o.Clear && hasOtherMode(o) {
+		return errors.New("--clear cannot be combined with a plan file or other mode flags")
+	}
+	if mergeRequested(o) && (o.Clear || hasExecutionMode(o)) {
+		return errors.New("--merge cannot be combined with a plan file or other mode flags")
+	}
+	if prRequested(o) && (o.Clear || mergeRequested(o) || hasExecutionMode(o)) {
+		return errors.New("--pr cannot be combined with a plan file or other mode flags")
+	}
+	return nil
+}
 
 func validateExternalReviewFlags(o opts) error {
 	if o.externalReviewersSet && (o.externalReviewToolSet || o.externalReviewModelSet) {
@@ -2158,6 +2166,167 @@ func runMergeCommand(gitSvc *git.Service, explicitBase string, rep cmuxStatusCle
 	}
 	fmt.Fprintf(stdout, "merged %s into %s (%s); deleted branch %s\n", feature, base, mergeType, feature)
 	return nil
+}
+
+// runPRCommand pushes the current feature branch and creates a GitHub pull request.
+// The completion pill is retained until gh confirms that the PR was created.
+func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string, rep cmuxStatusClearer, stdout io.Writer) error {
+	ghPath, err := exec.LookPath("gh")
+	if err != nil {
+		return errors.New("--pr requires GitHub CLI (gh) in PATH; install it from https://cli.github.com/")
+	}
+
+	branch, err := gitSvc.CurrentBranch()
+	if err != nil {
+		return fmt.Errorf("read current branch: %w", err)
+	}
+	if branch == "" {
+		return errors.New("--pr requires a checked-out feature branch; detached HEAD is not supported")
+	}
+	base, err := gitSvc.ResolveBaseBranch(explicitBase)
+	if err != nil {
+		return fmt.Errorf("resolve PR base branch: %w", err)
+	}
+	if branch == base {
+		return fmt.Errorf("current branch %q is already the base branch; check out the feature branch first", base)
+	}
+
+	stats, err := gitSvc.DiffStats(base)
+	if err != nil {
+		return fmt.Errorf("calculate PR diff stats: %w", err)
+	}
+	title, body, err := buildPRTitleBody(gitSvc.Root(), branch, stats)
+	if err != nil {
+		return err
+	}
+	if pushErr := gitSvc.Push(branch); pushErr != nil {
+		return fmt.Errorf("push PR branch: %w", pushErr)
+	}
+
+	cmd := exec.CommandContext(ctx, ghPath, "pr", "create", "--base", base, "--head", branch, "--title", title, "--body", body)
+	cmd.Dir = gitSvc.Root()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("create GitHub PR: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	url := strings.TrimSpace(string(out))
+	if url != "" {
+		fmt.Fprintln(stdout, url)
+	}
+	if rep != nil {
+		rep.Clear()
+	}
+	return nil
+}
+
+func runCloseoutCommand(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors) error {
+	if cfg.VcsCommand == "" || cfg.VcsCommand == "git" {
+		if _, err := os.Stat(".git"); err != nil {
+			return errors.New("must run from repository root (no .git directory found); run from the repo root")
+		}
+	}
+	gitSvc, err := openGitService(colors, cfg.VcsCommand)
+	if err != nil {
+		return fmt.Errorf("open git repo: %w", err)
+	}
+	rep := cmux.New("", cmux.Models{})
+	if mergeRequested(o) {
+		return runMergeCommand(gitSvc, o.Merge, rep, os.Stdout)
+	}
+	return runPRCommand(ctx, gitSvc, o.PR, rep, os.Stdout)
+}
+
+// buildPRTitleBody derives PR metadata from the completed plan associated with branch.
+// Missing plans and Overview sections are valid and fall back to branch-based metadata.
+func buildPRTitleBody(repoRoot, branch string, stats git.DiffStats) (title, body string, err error) {
+	title = branch
+	planPath, err := findCompletedPlan(repoRoot, branch)
+	if err != nil {
+		return "", "", err
+	}
+	var overview string
+	if planPath != "" {
+		content, readErr := os.ReadFile(planPath) //nolint:gosec // path is constrained to the repository's completed plans directory
+		if readErr != nil {
+			return "", "", fmt.Errorf("read completed plan: %w", readErr)
+		}
+		title, overview = parsePRPlan(string(content), branch)
+	}
+
+	statsText := fmt.Sprintf("## Changes\n\n- Files changed: %d\n- Additions: %d\n- Deletions: %d", stats.Files, stats.Additions, stats.Deletions)
+	if overview == "" {
+		return title, statsText, nil
+	}
+	return title, overview + "\n\n" + statsText, nil
+}
+
+func findCompletedPlan(repoRoot, branch string) (string, error) {
+	dir := filepath.Join(repoRoot, "docs", "plans", "completed")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("list completed plans: %w", err)
+	}
+
+	branchPlanName := filepath.Base(branch)
+	var exactPath, fallbackPath string
+	var exactTime, fallbackTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return "", fmt.Errorf("inspect completed plan %q: %w", entry.Name(), infoErr)
+		}
+		if plan.ExtractBranchName(entry.Name()) == branch || plan.ExtractBranchName(entry.Name()) == branchPlanName {
+			if exactPath == "" || info.ModTime().After(exactTime) {
+				exactPath, exactTime = path, info.ModTime()
+			}
+			continue
+		}
+		content, readErr := os.ReadFile(path) //nolint:gosec // path comes from the completed plans directory
+		if readErr != nil {
+			return "", fmt.Errorf("read completed plan %q: %w", entry.Name(), readErr)
+		}
+		if strings.Contains(string(content), branch) && (fallbackPath == "" || info.ModTime().After(fallbackTime)) {
+			fallbackPath, fallbackTime = path, info.ModTime()
+		}
+	}
+	if exactPath != "" {
+		return exactPath, nil
+	}
+	return fallbackPath, nil
+}
+
+func parsePRPlan(content, fallbackTitle string) (title, overview string) {
+	title = fallbackTitle
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		if heading, ok := strings.CutPrefix(line, "# "); ok && strings.TrimSpace(heading) != "" {
+			title = strings.TrimSpace(heading)
+			break
+		}
+	}
+
+	overviewStart := -1
+	for idx, line := range lines {
+		if strings.TrimSpace(line) == "## Overview" {
+			overviewStart = idx + 1
+			continue
+		}
+		if overviewStart >= 0 && strings.HasPrefix(strings.TrimSpace(line), "## ") {
+			overview = strings.TrimSpace(strings.Join(lines[overviewStart:idx], "\n"))
+			return title, overview
+		}
+	}
+	if overviewStart >= 0 {
+		overview = strings.TrimSpace(strings.Join(lines[overviewStart:], "\n"))
+	}
+	return title, overview
 }
 
 // initLocal creates .loopai/ config directory in current project.
