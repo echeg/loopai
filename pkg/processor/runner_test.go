@@ -93,12 +93,14 @@ type testExternalReviewPhase struct {
 	runFunc     func(ctx context.Context) error
 }
 
-func (p testExternalReviewPhase) Tool() string {
+func (p testExternalReviewPhase) Label() string {
 	if p.toolValue == "" {
 		return "codex"
 	}
 	return p.toolValue
 }
+
+func (p testExternalReviewPhase) Enabled() bool { return p.toolValue != "none" }
 
 func (p testExternalReviewPhase) Run(ctx context.Context) (phase.ExternalReviewOutcome, error) {
 	if p.runFunc != nil {
@@ -992,7 +994,10 @@ func TestRunner_ExternalAndPostReview_UsesToolSpecificSectionLabel(t *testing.T)
 	cfg := Config{Mode: ModeCodexOnly, MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}
 	r := NewWithExecutors(cfg, log, Executors{Task: newMockExecutor(nil)}, &status.PhaseHolder{})
 
-	r.phases.external = testExternalReviewPhase{toolValue: "custom"}
+	r.phases.external = testExternalReviewPhase{toolValue: "custom", runFunc: func(context.Context) error {
+		log.PrintSection(status.NewGenericSection("external review (custom)"))
+		return nil
+	}}
 	r.phases.finalize = testFinalizePhase{}
 
 	err := r.Run(t.Context())
@@ -1027,6 +1032,51 @@ func TestRunner_CodexAndPostReview_InjectedExternalFindingsRunsPostReview(t *tes
 
 	require.NoError(t, err)
 	assert.Contains(t, reviewPrefix, "fix: address code review findings")
+	assert.True(t, finalizeCalled)
+}
+
+func TestRunner_SecondReviewerFindingsRunSinglePostReviewAndFinalize(t *testing.T) {
+	log := newRunnerMockLogger("progress.txt")
+	cfg := Config{Mode: ModeCodexOnly, MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}
+	r := NewWithExecutors(cfg, log, Executors{Task: newMockExecutor(nil)}, &status.PhaseHolder{})
+
+	var reviewCalls, finalizeCalls int
+	r.phases.external = testExternalReviewPhase{toolValue: "codex → claude", hadFindings: true}
+	r.phases.review = testReviewPhase{loopFunc: func(context.Context, string) error {
+		reviewCalls++
+		return nil
+	}}
+	r.phases.finalize = testFinalizePhase{runFunc: func(context.Context) error {
+		finalizeCalls++
+		return nil
+	}}
+
+	err := r.Run(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, reviewCalls)
+	assert.Equal(t, 1, finalizeCalls)
+}
+
+func TestRunner_EmptyReviewerChainSkipsToFinalize(t *testing.T) {
+	log := newRunnerMockLogger("progress.txt")
+	cfg := Config{Mode: ModeCodexOnly, MaxIterations: 50, CodexEnabled: false, AppConfig: testAppConfig(t)}
+	r := NewWithExecutors(cfg, log, Executors{Task: newMockExecutor(nil)}, &status.PhaseHolder{})
+
+	var reviewCalled, finalizeCalled bool
+	r.phases.review = testReviewPhase{loopFunc: func(context.Context, string) error {
+		reviewCalled = true
+		return nil
+	}}
+	r.phases.finalize = testFinalizePhase{runFunc: func(context.Context) error {
+		finalizeCalled = true
+		return nil
+	}}
+
+	err := r.Run(t.Context())
+
+	require.NoError(t, err)
+	assert.False(t, reviewCalled)
 	assert.True(t, finalizeCalled)
 }
 

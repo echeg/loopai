@@ -150,7 +150,8 @@ type reviewPhaseRunner interface {
 }
 
 type externalReviewPhaseRunner interface {
-	Tool() string
+	Enabled() bool
+	Label() string
 	Run(ctx context.Context) (phase.ExternalReviewOutcome, error)
 }
 
@@ -229,20 +230,18 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 		Cfg: phaseCfg, Log: log, Exec: review, Policy: policy, Prompts: prompts,
 		Git: git, PhaseHolder: holder, IterationDelay: iterDelay,
 	})
-	// Task 4 teaches the phase to consume the full chain. Until then, preserve
-	// the existing one-reviewer behavior while the factory and public dependency
-	// shape become list-based.
-	var external Executor
-	var custom *executor.CustomExecutor
-	if len(execs.Externals) > 0 {
-		external = execs.Externals[0].Exec
-		custom, _ = external.(*executor.CustomExecutor)
-		if custom != nil {
-			external = nil
+	reviewers := make([]phase.ExternalReviewer, 0, len(execs.Externals))
+	for _, reviewer := range execs.Externals {
+		tool := reviewer.Tool
+		if tool == "" {
+			tool = injectedExternalReviewTool(cfg)
+		}
+		if tool != config.ExternalReviewToolNone {
+			reviewers = append(reviewers, phase.ExternalReviewer{Tool: tool, Exec: reviewer.Exec})
 		}
 	}
 	externalPhase := phase.NewExternalReviewPhase(phase.ExternalReviewPhaseOpts{
-		Cfg: phaseCfg, Log: log, External: external, Custom: custom, Review: review,
+		Cfg: phaseCfg, Log: log, Reviewers: reviewers, Review: review,
 		Policy: policy, Prompts: prompts, Breaks: breaks, Git: git, PhaseHolder: holder, IterationDelay: iterDelay,
 	})
 	finalizePhase := phase.NewFinalizePhase(phase.FinalizePhaseOpts{
@@ -264,6 +263,27 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 		deps:        deps,
 		phases:      phases,
 	}
+}
+
+// injectedExternalReviewTool preserves the legacy resolution used by callers
+// that inject executors directly without going through executorFactory.Build.
+func injectedExternalReviewTool(cfg Config) string {
+	if cfg.ExternalReviewTool != "" && cfg.ExternalReviewTool != config.ExternalReviewToolAuto {
+		return cfg.ExternalReviewTool
+	}
+	if cfg.ExternalReviewToolSet && cfg.AppConfig != nil && cfg.AppConfig.ExternalReviewTool != "" {
+		if cfg.AppConfig.ExternalReviewTool == config.ExternalReviewToolAuto {
+			return config.ExternalReviewToolCodex
+		}
+		return cfg.AppConfig.ExternalReviewTool
+	}
+	if !cfg.CodexEnabled {
+		return config.ExternalReviewToolNone
+	}
+	if cfg.AppConfig != nil && cfg.AppConfig.ExternalReviewTool != "" && cfg.AppConfig.ExternalReviewTool != config.ExternalReviewToolAuto {
+		return cfg.AppConfig.ExternalReviewTool
+	}
+	return config.ExternalReviewToolCodex
 }
 
 // SetInputCollector sets the input collector for plan creation mode.
@@ -399,8 +419,7 @@ func (r *Runner) runCodexOnly(ctx context.Context) error {
 // runExternalAndPostReview runs the shared external-review → post-review → finalize pipeline.
 // used by runFull, runReviewOnly, and runCodexOnly to avoid duplicating this sequence.
 func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
-	tool := r.phases.external.Tool()
-	if tool == config.ExternalReviewToolNone {
+	if !r.phases.external.Enabled() {
 		r.log.Print("external review disabled, skipping...")
 		if err := r.phases.finalize.Run(ctx); err != nil {
 			return fmt.Errorf("finalize phase: %w", err)
@@ -409,15 +428,15 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 	}
 
 	r.phaseHolder.Set(status.PhaseExternalReview)
-	r.log.PrintSection(status.NewGenericSection("external review (" + tool + ")"))
+	label := r.phases.external.Label()
 
 	outcome, err := r.phases.external.Run(ctx)
 	if err != nil {
-		return fmt.Errorf("%s loop: %w", tool, err)
+		return fmt.Errorf("%s loop: %w", label, err)
 	}
 
 	if !outcome.HadFindings {
-		r.log.Print("external review found no issues, skipping post-%s %s review", tool, r.primaryExecutorName())
+		r.log.Print("external review found no issues, skipping post-%s %s review", label, r.primaryExecutorName())
 		if err := r.phases.finalize.Run(ctx); err != nil {
 			return fmt.Errorf("finalize phase: %w", err)
 		}

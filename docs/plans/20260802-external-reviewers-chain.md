@@ -131,12 +131,12 @@ Problem it solves: today only one external provider can review a run. Users want
 - Modify: `pkg/processor/phase/external_review_test.go`
 - Modify: `pkg/processor/runner_test.go`
 
-- [ ] change `ExternalReviewPhase` to hold `[]ExternalReviewer`; `Run` iterates entries sequentially, per-entry section header, per-entry `runLoop` with own stalemate state and iteration cap; aggregate `HadFindings`
-- [ ] replace `Tool()` usage in `runner.runExternalAndPostReview` with an enabled-check + chain label; keep none/disabled fast path and single post-review + finalize after the whole chain
-- [ ] preserve legacy behavior for the one-element chain (log lines and evaluation flow unchanged); evaluation keeps using the review executor
-- [ ] handle manual break and context cancellation across the chain (break stops remaining reviewers, same as current single-loop semantics)
-- [ ] write tests: two-reviewer chain runs in order and each until clean, findings in reviewer 2 only still trigger post-review, break during reviewer 1 skips reviewer 2, stalemate patience is per reviewer, none-chain skips to finalize
-- [ ] run tests - must pass before task 5
+- [x] change `ExternalReviewPhase` to hold `[]ExternalReviewer`; `Run` iterates entries sequentially, per-entry section header, per-entry `runLoop` with own stalemate state and iteration cap; aggregate `HadFindings`
+- [x] replace `Tool()` usage in `runner.runExternalAndPostReview` with an enabled-check + chain label; keep none/disabled fast path and single post-review + finalize after the whole chain
+- [x] preserve legacy behavior for the one-element chain (log lines and evaluation flow unchanged); evaluation keeps using the review executor
+- [x] handle manual break and context cancellation across the chain (break stops remaining reviewers, same as current single-loop semantics)
+- [x] write tests: two-reviewer chain runs in order and each until clean, findings in reviewer 2 only still trigger post-review, break during reviewer 1 skips reviewer 2, stalemate patience is per reviewer, none-chain skips to finalize
+- [x] run tests - must pass before task 5
 
 ### Task 5: Run-header, cmux, and dashboard labels for chains
 

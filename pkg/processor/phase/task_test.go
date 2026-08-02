@@ -34,7 +34,7 @@ func taskPhaseFromRunner(t *testing.T, opts taskPhaseTestOpts) *taskPhase {
 		opts.cfg.AppConfig = testAppConfig(t)
 	}
 	r := newTestRunner(testRunnerOpts{
-		cfg: opts.cfg, log: opts.log, execs: Executors{Task: opts.exec, External: newTaskPhaseMockExecutor(nil)},
+		cfg: opts.cfg, log: opts.log, execs: Executors{Task: opts.exec},
 		holder: &status.PhaseHolder{}, planFile: opts.planFile, retryCount: opts.retryCount,
 	})
 	phase, ok := r.phases.task.(*taskPhase)
@@ -231,7 +231,7 @@ func TestTaskPhase_Run_BreakWithPauseResume(t *testing.T) {
 	runner := newTestRunner(testRunnerOpts{
 		cfg:      Config{MaxIterations: 10, AppConfig: testAppConfig(t)},
 		log:      log,
-		execs:    Executors{Task: exec, External: newTaskPhaseMockExecutor(nil)},
+		execs:    Executors{Task: exec},
 		holder:   &status.PhaseHolder{},
 		planFile: planFile,
 	})
@@ -339,10 +339,9 @@ type finalizePhase = FinalizePhase
 type planCreationPhase = PlanCreationPhase
 
 type Executors struct {
-	Task     Executor
-	Review   Executor
-	External Executor
-	Custom   *executor.CustomExecutor
+	Task      Executor
+	Review    Executor
+	Externals []ExternalReviewer
 }
 
 type Runner struct {
@@ -394,7 +393,7 @@ func newTestRunner(opts testRunnerOpts) *Runner {
 		Git: git, PhaseHolder: opts.holder, IterationDelay: iterDelay,
 	})
 	external := NewExternalReviewPhase(ExternalReviewPhaseOpts{
-		Cfg: opts.cfg, Log: opts.log, External: opts.execs.External, Custom: opts.execs.Custom, Review: review,
+		Cfg: opts.cfg, Log: opts.log, Reviewers: opts.execs.Externals, Review: review,
 		Policy: policy, Prompts: prompts, Breaks: breaks, Git: git, PhaseHolder: opts.holder, IterationDelay: iterDelay,
 	})
 	finalize := NewFinalizePhase(FinalizePhaseOpts{Cfg: opts.cfg, Log: opts.log, Exec: review, Policy: policy, Prompts: prompts, PhaseHolder: opts.holder})

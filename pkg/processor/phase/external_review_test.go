@@ -16,11 +16,12 @@ import (
 )
 
 type externalReviewPhaseTestOpts struct {
-	cfg      Config
-	review   Executor
-	external Executor
-	custom   *executor.CustomExecutor
-	log      *mockLogger
+	cfg       Config
+	review    Executor
+	reviewers []ExternalReviewer
+	external  Executor
+	custom    *executor.CustomExecutor
+	log       *mockLogger
 }
 
 func externalReviewPhaseFromRunner(t *testing.T, opts externalReviewPhaseTestOpts) (*externalReviewPhase, *mockLogger) {
@@ -37,32 +38,207 @@ func externalReviewPhaseFromRunner(t *testing.T, opts externalReviewPhaseTestOpt
 	if opts.external == nil {
 		opts.external = newTaskPhaseMockExecutor(nil)
 	}
-	r := newTestRunner(testRunnerOpts{cfg: opts.cfg, log: opts.log, execs: Executors{Task: opts.review, External: opts.external, Custom: opts.custom}, holder: &status.PhaseHolder{}})
+	reviewers := externalReviewersForTest(opts)
+	r := newTestRunner(testRunnerOpts{cfg: opts.cfg, log: opts.log, execs: Executors{Task: opts.review, Externals: reviewers}, holder: &status.PhaseHolder{}})
 	phase, ok := r.phases.external.(*externalReviewPhase)
 	require.True(t, ok)
 	return phase, opts.log
 }
 
-func TestExternalReviewPhaseTool(t *testing.T) {
+func externalReviewersForTest(opts externalReviewPhaseTestOpts) []ExternalReviewer {
+	if opts.reviewers != nil {
+		return opts.reviewers
+	}
+	tool := effectiveTestReviewerTool(opts.cfg)
+	if tool == config.ExternalReviewToolNone {
+		return nil
+	}
+	exec := opts.external
+	if tool == config.ExternalReviewToolCustom {
+		exec = nil
+	}
+	if opts.custom != nil {
+		exec = opts.custom
+	}
+	return []ExternalReviewer{{Tool: tool, Exec: exec}}
+}
+
+func effectiveTestReviewerTool(cfg Config) string {
+	if cfg.ExternalReviewTool != "" && cfg.ExternalReviewTool != config.ExternalReviewToolAuto {
+		return cfg.ExternalReviewTool
+	}
+	if cfg.AppConfig != nil && cfg.AppConfig.ExternalReviewTool != "" && cfg.AppConfig.ExternalReviewTool != config.ExternalReviewToolAuto {
+		return cfg.AppConfig.ExternalReviewTool
+	}
+	if cfg.CodexEnabled {
+		return config.ExternalReviewToolCodex
+	}
+	return config.ExternalReviewToolNone
+}
+
+func TestExternalReviewPhaseEnabledAndLabel(t *testing.T) {
 	tests := []struct {
-		name string
-		cfg  Config
-		want string
+		name        string
+		cfg         Config
+		wantEnabled bool
+		wantLabel   string
 	}{
-		{name: "codex enabled default", cfg: Config{CodexEnabled: true, AppConfig: testAppConfig(t)}, want: "codex"},
-		{name: "disabled backward compat", cfg: Config{CodexEnabled: false, AppConfig: testAppConfig(t)}, want: "none"},
-		{name: "explicit override", cfg: explicitExternalToolConfig(t, "codex", false), want: "codex"},
-		{name: "configured none", cfg: configuredExternalToolConfig(t, "none"), want: "none"},
-		{name: "shared resolver concrete claude", cfg: Config{CodexEnabled: false, ExternalReviewTool: "claude", AppConfig: testAppConfig(t)}, want: "claude"},
+		{name: "chain", cfg: Config{CodexEnabled: true, AppConfig: testAppConfig(t)}, wantEnabled: true, wantLabel: "codex"},
+		{name: "disabled", cfg: Config{CodexEnabled: false, AppConfig: testAppConfig(t)}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{cfg: tc.cfg})
 
-			assert.Equal(t, tc.want, phase.Tool())
+			assert.Equal(t, tc.wantEnabled, phase.Enabled())
+			assert.Equal(t, tc.wantLabel, phase.Label())
 		})
 	}
+}
+
+func TestExternalReviewPhaseRunsReviewersInOrderUntilClean(t *testing.T) {
+	var order []string
+	firstResults := []executor.Result{{Output: "first finding"}, {Output: "first clean"}}
+	secondResults := []executor.Result{{Output: "second finding"}, {Output: "second clean"}}
+	firstIndex, secondIndex := 0, 0
+	first := &executorMock{RunFunc: func(context.Context, string) executor.Result {
+		order = append(order, "codex")
+		result := firstResults[firstIndex]
+		firstIndex++
+		return result
+	}}
+	second := &executorMock{RunFunc: func(context.Context, string) executor.Result {
+		order = append(order, "claude")
+		result := secondResults[secondIndex]
+		secondIndex++
+		return result
+	}}
+	evaluator := newTaskPhaseMockExecutor([]executor.Result{
+		{Output: "fixed first"}, {Output: "done", Signal: status.ExternalReviewDone},
+		{Output: "fixed second"}, {Output: "done", Signal: status.ExternalReviewDone},
+	})
+	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
+		cfg:    Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)},
+		review: evaluator,
+		reviewers: []ExternalReviewer{
+			{Tool: config.ExternalReviewToolCodex, Exec: first},
+			{Tool: config.ExternalReviewToolClaude, Exec: second},
+		},
+	})
+
+	outcome, err := phase.Run(t.Context())
+
+	require.NoError(t, err)
+	assert.True(t, outcome.HadFindings)
+	assert.Equal(t, []string{"codex", "codex", "claude", "claude"}, order)
+	assert.Len(t, evaluator.RunCalls(), 4)
+	sections := log.PrintSectionCalls()
+	require.Len(t, sections, 10)
+	assert.Equal(t, "external review (codex)", sections[0].Section.Label)
+	assert.Equal(t, "external review (claude)", sections[5].Section.Label)
+}
+
+func TestExternalReviewPhaseAggregatesFindingsFromSecondReviewer(t *testing.T) {
+	first := newTaskPhaseMockExecutor([]executor.Result{{Output: "clean"}})
+	second := newTaskPhaseMockExecutor([]executor.Result{{Output: "finding"}, {Output: "clean"}})
+	evaluator := newTaskPhaseMockExecutor([]executor.Result{
+		{Output: "done", Signal: status.ExternalReviewDone},
+		{Output: "fixed"},
+		{Output: "done", Signal: status.ExternalReviewDone},
+	})
+	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
+		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}, review: evaluator,
+		reviewers: []ExternalReviewer{
+			{Tool: config.ExternalReviewToolCodex, Exec: first},
+			{Tool: config.ExternalReviewToolClaude, Exec: second},
+		},
+	})
+
+	outcome, err := phase.Run(t.Context())
+
+	require.NoError(t, err)
+	assert.True(t, outcome.HadFindings)
+	assert.Len(t, first.RunCalls(), 1)
+	assert.Len(t, second.RunCalls(), 2)
+}
+
+func TestExternalReviewPhaseBreakStopsRemainingReviewers(t *testing.T) {
+	breakCh := make(chan struct{}, 1)
+	first := &executorMock{RunFunc: func(ctx context.Context, _ string) executor.Result {
+		breakCh <- struct{}{}
+		<-ctx.Done()
+		return executor.Result{Error: ctx.Err()}
+	}}
+	second := newTaskPhaseMockExecutor([]executor.Result{{Output: "must not run"}})
+	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
+		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)},
+		reviewers: []ExternalReviewer{
+			{Tool: config.ExternalReviewToolCodex, Exec: first},
+			{Tool: config.ExternalReviewToolClaude, Exec: second},
+		},
+	})
+	phase.breaks.deps.BreakCh = breakCh
+
+	_, err := phase.Run(t.Context())
+
+	require.NoError(t, err)
+	assert.Empty(t, second.RunCalls())
+}
+
+func TestExternalReviewPhaseCancellationStopsRemainingReviewers(t *testing.T) {
+	first := newTaskPhaseMockExecutor([]executor.Result{{Output: "must not run"}})
+	second := newTaskPhaseMockExecutor([]executor.Result{{Output: "must not run"}})
+	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
+		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)},
+		reviewers: []ExternalReviewer{
+			{Tool: config.ExternalReviewToolCodex, Exec: first},
+			{Tool: config.ExternalReviewToolClaude, Exec: second},
+		},
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := phase.Run(ctx)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Empty(t, first.RunCalls())
+	assert.Empty(t, second.RunCalls())
+}
+
+func TestExternalReviewPhaseStalematePatienceIsPerReviewer(t *testing.T) {
+	first := newTaskPhaseMockExecutor([]executor.Result{{Output: "finding"}, {Output: "finding again"}})
+	second := newTaskPhaseMockExecutor([]executor.Result{{Output: "finding"}, {Output: "finding again"}})
+	evaluator := newTaskPhaseMockExecutor([]executor.Result{
+		{Output: "not fixed"}, {Output: "still not fixed"},
+		{Output: "not fixed"}, {Output: "still not fixed"},
+	})
+	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
+		cfg:    Config{MaxIterations: 50, MaxExternalIterations: 5, ReviewPatience: 2, CodexEnabled: true, AppConfig: testAppConfig(t)},
+		review: evaluator,
+		reviewers: []ExternalReviewer{
+			{Tool: config.ExternalReviewToolCodex, Exec: first},
+			{Tool: config.ExternalReviewToolClaude, Exec: second},
+		},
+	})
+	phase.git.deps.Git = &gitCheckerMock{
+		HeadHashFunc:        func() (string, error) { return "abc123def456abc123def456abc123def456abcd", nil },
+		DiffFingerprintFunc: func() (string, error) { return "unchanged-diff", nil },
+	}
+
+	outcome, err := phase.Run(t.Context())
+
+	require.NoError(t, err)
+	assert.True(t, outcome.HadFindings)
+	assert.Len(t, first.RunCalls(), 2)
+	assert.Len(t, second.RunCalls(), 2)
+	stalemates := 0
+	for _, call := range log.PrintCalls() {
+		if strings.Contains(call.Format, "stalemate detected") {
+			stalemates++
+		}
+	}
+	assert.Equal(t, 2, stalemates)
 }
 
 func TestExternalReviewPhaseRunCodexNoFindings(t *testing.T) {
@@ -129,11 +305,12 @@ func TestExternalReviewPhaseRunClaudeFindingsEvaluatedByCodex(t *testing.T) {
 	require.Len(t, review.RunCalls(), 2)
 	assert.Contains(t, review.RunCalls()[0].Prompt, "issue in main.go:12")
 	sections := log.PrintSectionCalls()
-	require.Len(t, sections, 4)
-	assert.Equal(t, "claude external review iteration 1", sections[0].Section.Label)
-	assert.Equal(t, "codex evaluating claude findings", sections[1].Section.Label)
-	assert.Equal(t, "claude external review iteration 2", sections[2].Section.Label)
-	assert.Equal(t, "codex evaluating claude findings", sections[3].Section.Label)
+	require.Len(t, sections, 5)
+	assert.Equal(t, "external review (claude)", sections[0].Section.Label)
+	assert.Equal(t, "claude external review iteration 1", sections[1].Section.Label)
+	assert.Equal(t, "codex evaluating claude findings", sections[2].Section.Label)
+	assert.Equal(t, "claude external review iteration 2", sections[3].Section.Label)
+	assert.Equal(t, "codex evaluating claude findings", sections[4].Section.Label)
 }
 
 func TestExternalReviewPhaseRunCustomSuccess(t *testing.T) {
@@ -275,20 +452,6 @@ func TestExternalReviewPhaseRunClaudeEvalError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "claude execution")
-}
-
-func explicitExternalToolConfig(t *testing.T, tool string, codexEnabled bool) Config {
-	t.Helper()
-	appCfg := testAppConfig(t)
-	appCfg.ExternalReviewTool = tool
-	return Config{MaxIterations: 50, CodexEnabled: codexEnabled, ExternalReviewToolSet: true, AppConfig: appCfg}
-}
-
-func configuredExternalToolConfig(t *testing.T, tool string) Config {
-	t.Helper()
-	appCfg := testAppConfig(t)
-	appCfg.ExternalReviewTool = tool
-	return Config{MaxIterations: 50, CodexEnabled: true, AppConfig: appCfg}
 }
 
 type mockCustomRunnerImpl struct {

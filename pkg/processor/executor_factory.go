@@ -131,7 +131,11 @@ func (cfg Config) buildExternalReviewerExecutor(log Logger, spec config.Reviewer
 	case config.ExternalReviewToolCodex:
 		return cfg.buildExternalCodexExecutor(log, model, effort)
 	case config.ExternalReviewToolCustom:
-		return cfg.buildCustomExecutor(log)
+		custom := cfg.buildCustomExecutor(log)
+		if custom == nil {
+			return nil
+		}
+		return custom
 	default:
 		return nil
 	}

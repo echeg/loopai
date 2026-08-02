@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/umputun/ralphex/pkg/config"
-	"github.com/umputun/ralphex/pkg/executor"
 	"github.com/umputun/ralphex/pkg/status"
 )
 
@@ -17,12 +16,17 @@ type ExternalReviewOutcome struct {
 	HadFindings bool
 }
 
+// ExternalReviewer pairs an external-review provider with its read-only executor.
+type ExternalReviewer struct {
+	Tool string
+	Exec Executor
+}
+
 // ExternalReviewPhase runs provider-aware external review loops.
 type ExternalReviewPhase struct {
 	cfg            Config
 	log            ExternalReviewLogger
-	external       Executor
-	custom         *executor.CustomExecutor
+	reviewers      []ExternalReviewer
 	review         Executor
 	policy         Policy
 	prompts        ExternalReviewPrompts
@@ -36,8 +40,7 @@ type ExternalReviewPhase struct {
 type ExternalReviewPhaseOpts struct {
 	Cfg            Config
 	Log            ExternalReviewLogger
-	External       Executor
-	Custom         *executor.CustomExecutor
+	Reviewers      []ExternalReviewer
 	Review         Executor
 	Policy         Policy
 	Prompts        ExternalReviewPrompts
@@ -50,65 +53,50 @@ type ExternalReviewPhaseOpts struct {
 // NewExternalReviewPhase creates an external review phase engine.
 func NewExternalReviewPhase(opts ExternalReviewPhaseOpts) *ExternalReviewPhase {
 	return &ExternalReviewPhase{
-		cfg: opts.Cfg, log: opts.Log, external: opts.External, custom: opts.Custom,
+		cfg: opts.Cfg, log: opts.Log, reviewers: opts.Reviewers,
 		review: opts.Review, policy: opts.Policy, prompts: opts.Prompts, breaks: opts.Breaks,
 		git: opts.Git, phaseHolder: opts.PhaseHolder, iterationDelay: opts.IterationDelay,
 	}
 }
 
-// Tool returns the effective external review tool after config and back-compat rules.
-func (p *ExternalReviewPhase) Tool() string {
-	if p.cfg.ExternalReviewTool != "" && p.cfg.ExternalReviewTool != config.ExternalReviewToolAuto {
-		return p.cfg.ExternalReviewTool
-	}
-	if p.cfg.ExternalReviewToolSet && p.cfg.AppConfig != nil && p.cfg.AppConfig.ExternalReviewTool != "" {
-		return currentExternalReviewTool(p.cfg.AppConfig.ExternalReviewTool)
-	}
-	if !p.cfg.CodexEnabled {
-		return config.ExternalReviewToolNone
-	}
-	if p.cfg.AppConfig != nil && p.cfg.AppConfig.ExternalReviewTool != "" {
-		return currentExternalReviewTool(p.cfg.AppConfig.ExternalReviewTool)
-	}
-	return config.ExternalReviewToolCodex
-}
+// Enabled reports whether at least one external reviewer is configured.
+func (p *ExternalReviewPhase) Enabled() bool { return len(p.reviewers) > 0 }
 
-// currentExternalReviewTool preserves the existing Claude-primary behavior until
-// executor-aware auto selection is applied by the shared resolver.
-func currentExternalReviewTool(tool string) string {
-	if tool == config.ExternalReviewToolAuto {
-		return config.ExternalReviewToolCodex
+// Label returns the provider names in execution order.
+func (p *ExternalReviewPhase) Label() string {
+	tools := make([]string, 0, len(p.reviewers))
+	for _, reviewer := range p.reviewers {
+		tools = append(tools, reviewer.Tool)
 	}
-	return tool
+	return strings.Join(tools, " → ")
 }
 
 // Run executes the configured external review loop and reports whether fixes need post-review.
 func (p *ExternalReviewPhase) Run(ctx context.Context) (ExternalReviewOutcome, error) {
-	switch p.Tool() {
-	case config.ExternalReviewToolNone:
+	if !p.Enabled() {
 		p.log.Print("external review disabled, skipping...")
 		return ExternalReviewOutcome{}, nil
-	case config.ExternalReviewToolCustom:
-		return p.runCustom(ctx)
-	case config.ExternalReviewToolClaude, config.ExternalReviewToolCodex:
-		return p.runExternal(ctx, p.Tool())
-	default:
-		return ExternalReviewOutcome{}, fmt.Errorf("unsupported external review tool %q", p.Tool())
 	}
-}
 
-func (p *ExternalReviewPhase) runExternal(ctx context.Context, reviewer string) (ExternalReviewOutcome, error) {
-	if p.external == nil {
-		return ExternalReviewOutcome{}, fmt.Errorf("%s review executor not configured", reviewer)
+	outcome := ExternalReviewOutcome{}
+	for _, reviewer := range p.reviewers {
+		if reviewer.Exec == nil {
+			if reviewer.Tool == config.ExternalReviewToolCustom {
+				return outcome, errors.New("custom review script not configured")
+			}
+			return outcome, fmt.Errorf("%s review executor not configured", reviewer.Tool)
+		}
+		p.log.PrintSection(status.NewGenericSection("external review (" + reviewer.Tool + ")"))
+		reviewerOutcome, interrupted, err := p.runLoop(ctx, reviewer)
+		outcome.HadFindings = outcome.HadFindings || reviewerOutcome.HadFindings
+		if err != nil {
+			return outcome, err
+		}
+		if interrupted {
+			return outcome, nil
+		}
 	}
-	return p.runLoop(ctx, reviewer)
-}
-
-func (p *ExternalReviewPhase) runCustom(ctx context.Context) (ExternalReviewOutcome, error) {
-	if p.custom == nil {
-		return ExternalReviewOutcome{}, errors.New("custom review script not configured")
-	}
-	return p.runLoop(ctx, config.ExternalReviewToolCustom)
+	return outcome, nil
 }
 
 func (p *ExternalReviewPhase) showSummary(toolName, output string) {
@@ -134,7 +122,7 @@ func (p *ExternalReviewPhase) showSummary(toolName, output string) {
 	}
 }
 
-func (p *ExternalReviewPhase) runLoop(ctx context.Context, tool string) (ExternalReviewOutcome, error) {
+func (p *ExternalReviewPhase) runLoop(ctx context.Context, reviewer ExternalReviewer) (ExternalReviewOutcome, bool, error) {
 	outcome := ExternalReviewOutcome{}
 	loopCtx, loopCancel := p.breaks.context(ctx)
 	defer loopCancel()
@@ -146,16 +134,17 @@ func (p *ExternalReviewPhase) runLoop(ctx context.Context, tool string) (Externa
 	for i := 1; i <= p.maxIterations(); i++ {
 		result, err := p.runIteration(loopCtx, externalReviewIterationOpts{
 			parent:            ctx,
-			tool:              tool,
+			tool:              reviewer.Tool,
+			exec:              reviewer.Exec,
 			iteration:         i,
 			firstCompleted:    firstCompleted,
 			evaluatorResponse: evaluatorResponse,
 		})
 		if err != nil {
 			if errors.Is(err, errExternalReviewBreak) {
-				return outcome, nil
+				return outcome, true, nil
 			}
-			return outcome, err
+			return outcome, false, err
 		}
 
 		if result.firstCompleted {
@@ -165,7 +154,7 @@ func (p *ExternalReviewPhase) runLoop(ctx context.Context, tool string) (Externa
 		if result.hadFindings {
 			outcome.HadFindings = true
 			if stalemate.Update(result.before, p.git.snapshot()) {
-				return outcome, nil
+				return outcome, false, nil
 			}
 		}
 
@@ -173,21 +162,21 @@ func (p *ExternalReviewPhase) runLoop(ctx context.Context, tool string) (Externa
 		case externalReviewContinue:
 			// fall through to the sleep before the next iteration below
 		case externalReviewStop:
-			return outcome, nil
+			return outcome, false, nil
 		case externalReviewRetry:
 			continue
 		}
 
 		if err := p.sleepBeforeNext(loopCtx, ctx); err != nil {
 			if errors.Is(err, errExternalReviewBreak) {
-				return outcome, nil
+				return outcome, true, nil
 			}
-			return outcome, err
+			return outcome, false, err
 		}
 	}
 
-	p.log.Print("max %s iterations reached, continuing to next phase...", tool)
-	return outcome, nil
+	p.log.Print("max %s iterations reached, continuing to next phase...", reviewer.Tool)
+	return outcome, false, nil
 }
 
 type externalReviewIterationAction int
@@ -201,6 +190,7 @@ const (
 type externalReviewIterationOpts struct {
 	parent            context.Context
 	tool              string
+	exec              Executor
 	iteration         int
 	firstCompleted    bool
 	evaluatorResponse string
@@ -224,7 +214,7 @@ func (p *ExternalReviewPhase) runIteration(ctx context.Context, opts externalRev
 	}
 	p.log.PrintSection(status.NewExternalReviewIterationSection(opts.tool, opts.iteration))
 
-	reviewExecResult := p.runReviewTool(ctx, opts.tool, p.prompts.ExternalReviewPrompt(opts.tool, !opts.firstCompleted, opts.evaluatorResponse))
+	reviewExecResult := p.runReviewTool(ctx, opts.tool, opts.exec, p.prompts.ExternalReviewPrompt(opts.tool, !opts.firstCompleted, opts.evaluatorResponse))
 	reviewResult := reviewExecResult.Result
 	if reviewResult.Error != nil {
 		if err := p.handleExecutorError(ctx, opts.parent, opts.tool, reviewResult.Error); err != nil {
@@ -341,9 +331,6 @@ func (p *ExternalReviewPhase) maxIterations() int {
 	return maxIterations
 }
 
-func (p *ExternalReviewPhase) runReviewTool(ctx context.Context, tool, prompt string) ExecutionResult {
-	if tool == config.ExternalReviewToolCustom {
-		return p.policy.Run(ctx, p.custom.Run, prompt, tool)
-	}
-	return p.policy.Run(ctx, p.external.Run, prompt, tool)
+func (p *ExternalReviewPhase) runReviewTool(ctx context.Context, tool string, exec Executor, prompt string) ExecutionResult {
+	return p.policy.Run(ctx, exec.Run, prompt, tool)
 }
