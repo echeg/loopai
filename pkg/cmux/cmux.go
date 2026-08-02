@@ -48,6 +48,10 @@ const (
 	// notifyBodyLimit caps the notification body, the macOS banner does not render more anyway.
 	notifyBodyLimit = 200
 
+	// failureDetailLimit keeps the final pill compact. Longer errors remain available in the
+	// terminal summary and notification, while the pill shows only the outcome.
+	failureDetailLimit = 80
+
 	// unknownPhaseIcon is used for a phase missing from phaseStyles.
 	unknownPhaseIcon = "circle"
 )
@@ -94,6 +98,7 @@ type Reporter struct {
 	// the clear can never be overtaken by a set. stopped gates updates once Stop began.
 	statusMu sync.Mutex
 	stopped  bool
+	finished bool
 
 	// last reported pair, touched by the poll goroutine only. -1 never matches a real count,
 	// so the first tick always reports.
@@ -191,6 +196,35 @@ func (r *Reporter) Notify(subtitle, body string) {
 	r.exec(args...)
 }
 
+// Finish replaces the running phase pill with a persistent final outcome. Stop still removes
+// transient artifacts, but preserves this pill until the next run or an explicit clear command.
+func (r *Reporter) Finish(success bool, detail string) {
+	if r == nil {
+		return
+	}
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	if r.stopped {
+		return
+	}
+
+	detail = strings.TrimSpace(detail)
+	if success {
+		text := "done"
+		if detail != "" {
+			text += " in " + detail
+		}
+		r.setStatus(text, "bolt", "#34c759")
+	} else {
+		text := "failed"
+		if detail != "" && len([]rune(detail)) <= failureDetailLimit {
+			text += " · " + detail
+		}
+		r.setStatus(text, "exclamationmark.triangle", "#ff3b30")
+	}
+	r.finished = true
+}
+
 // Start shows the spinner and begins polling the plan file for task progress in the background.
 // polling is used instead of hooking into the phase engines so the progress bar keeps moving
 // during a long task phase without touching pkg/processor.
@@ -198,6 +232,7 @@ func (r *Reporter) Start(ctx context.Context) {
 	if r == nil {
 		return
 	}
+	r.clearStatus()
 	r.loadingOn()
 
 	// plan creation has no plan file yet, so there is nothing to poll and no goroutine to run
@@ -267,9 +302,10 @@ func (r *Reporter) reportProgress() {
 	r.setProgress(float64(done)/float64(total), fmt.Sprintf("%d/%d tasks", done, total))
 }
 
-// Stop ends background polling, waits for the goroutine to exit and removes every sidebar
-// artifact. safe to call twice and safe to call without a preceding Start, which matters because
-// it runs both from a defer and from the interrupt handler.
+// Stop ends background polling, waits for the goroutine to exit and removes transient sidebar
+// artifacts. A final pill installed by Finish is preserved. Stop is safe to call twice and safe
+// to call without a preceding Start, which matters because it runs both from a defer and from the
+// interrupt handler.
 func (r *Reporter) Stop() {
 	if r == nil {
 		return
@@ -287,6 +323,7 @@ func (r *Reporter) Stop() {
 		// clear below and leave the pill in the tab row — cmux drops it only when told to.
 		r.statusMu.Lock()
 		r.stopped = true
+		finished := r.finished
 		r.statusMu.Unlock()
 
 		r.mu.Lock()
@@ -298,7 +335,9 @@ func (r *Reporter) Stop() {
 			<-done
 		}
 		// after the poller is gone, so a tick in flight cannot re-add the bar behind the clear
-		r.clearStatus()
+		if !finished {
+			r.clearStatus()
+		}
 		r.clearProgress()
 	})
 }

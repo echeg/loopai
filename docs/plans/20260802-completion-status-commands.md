@@ -74,21 +74,21 @@ drops it. No TTL hacks (detached sleep processes) are used.
 
 ### Task 1: Add final-status support to cmux Reporter
 
-- [ ] add `Finish(success bool, detail string)` to `pkg/cmux/cmux.go`: sets the pill to
+- [x] add `Finish(success bool, detail string)` to `pkg/cmux/cmux.go`: sets the pill to
       green `#34c759` icon `bolt` text `done in <detail>` on success, red `#ff3b30`
       icon `exclamationmark.triangle` text `failed` (detail appended when short) on
       error; marks the reporter finished under `statusMu`
-- [ ] change `Stop()` to skip `clearStatus()` when `Finish` ran (spinner and progress
+- [x] change `Stop()` to skip `clearStatus()` when `Finish` ran (spinner and progress
       are still cleared); abort path keeps current behavior because `Finish` is not
       called there
-- [ ] make `Start()` overwrite any leftover final pill from a previous run (explicit
+- [x] make `Start()` overwrite any leftover final pill from a previous run (explicit
       `clearStatus` before `loadingOn`)
-- [ ] keep nil-reporter and post-Stop safety: `Finish` on nil or stopped reporter is a
+- [x] keep nil-reporter and post-Stop safety: `Finish` on nil or stopped reporter is a
       no-op
-- [ ] write tests with the fake runner: finish-success argv (color/icon/text),
+- [x] write tests with the fake runner: finish-success argv (color/icon/text),
       finish-failure argv, Stop-after-Finish preserves pill, Stop-without-Finish clears,
       Finish-after-Stop no-op, nil reporter no-op
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 2: Wire Finish into run completion paths
 

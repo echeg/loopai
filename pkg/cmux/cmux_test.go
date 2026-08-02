@@ -325,6 +325,70 @@ func TestReporterSidebarCommands(t *testing.T) {
 	}
 }
 
+func TestReporterFinish(t *testing.T) {
+	tests := []struct {
+		name    string
+		success bool
+		detail  string
+		want    []string
+	}{
+		{
+			name:    "success with elapsed time",
+			success: true,
+			detail:  "2h24m",
+			want:    []string{"set-status", "loopai", "done in 2h24m", "--icon", "bolt", "--color", "#34c759", "--priority", "90"},
+		},
+		{
+			name:   "failure with short detail",
+			detail: "processor exited",
+			want:   []string{"set-status", "loopai", "failed · processor exited", "--icon", "exclamationmark.triangle", "--color", "#ff3b30", "--priority", "90"},
+		},
+		{
+			name:   "failure omits long detail",
+			detail: strings.Repeat("x", failureDetailLimit+1),
+			want:   []string{"set-status", "loopai", "failed", "--icon", "exclamationmark.triangle", "--color", "#ff3b30", "--priority", "90"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeRunner{}
+			r := testReporter(t, runner)
+
+			r.Finish(tt.success, tt.detail)
+
+			assert.Equal(t, [][]string{tt.want}, runner.recorded())
+			assert.True(t, r.finished)
+		})
+	}
+}
+
+func TestReporterStopAfterFinishPreservesPill(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+
+	r.Finish(true, "12s")
+	r.Stop()
+
+	assert.Equal(t, [][]string{
+		{"set-status", "loopai", "done in 12s", "--icon", "bolt", "--color", "#34c759", "--priority", "90"},
+		{"workspace", "loading", "off", "--id", "loopai"},
+		{"clear-progress"},
+	}, runner.recorded())
+}
+
+func TestReporterFinishAfterStopNoOp(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+	r.Stop()
+	before := runner.recorded()
+
+	r.Finish(false, "too late")
+
+	assert.Equal(t, before, runner.recorded())
+	assert.False(t, r.finished)
+}
+
 func TestReporterSetProgress(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -704,6 +768,7 @@ func TestReporterNilReceiver(t *testing.T) {
 		{name: "progress", call: func() { r.setProgress(0.5, "tasks") }},
 		{name: "clear progress", call: func() { r.clearProgress() }},
 		{name: "notify", call: func() { r.Notify("done", "all tasks complete") }},
+		{name: "finish", call: func() { r.Finish(true, "1s") }},
 		{name: "on phase", call: func() { r.OnPhase(status.PhaseTask, status.PhaseReview) }},
 		{name: "start", call: func() { r.Start(context.Background()) }},
 		{name: "stop", call: func() { r.Stop() }},
@@ -823,11 +888,12 @@ func TestReporterStartPolls(t *testing.T) {
 	r.planFile = writePlan(t, "# plan\n\n### Task 1: one\n\n- [x] a\n\n### Task 2: two\n\n- [ ] b\n")
 
 	r.Start(t.Context())
-	calls := runner.waitForCalls(t, 2)
+	calls := runner.waitForCalls(t, 3)
 	r.Stop()
 
-	assert.Equal(t, []string{"workspace", "loading", "on", "--id", "loopai"}, calls[0], "start must show the spinner")
-	assert.Equal(t, []string{"set-progress", "0.50", "--label", "1/2 tasks"}, calls[1])
+	assert.Equal(t, []string{"clear-status", "loopai"}, calls[0], "start must remove a stale final pill")
+	assert.Equal(t, []string{"workspace", "loading", "on", "--id", "loopai"}, calls[1], "start must show the spinner")
+	assert.Equal(t, []string{"set-progress", "0.50", "--label", "1/2 tasks"}, calls[2])
 }
 
 func TestReporterStartReportsBeforeFirstTick(t *testing.T) {
@@ -839,6 +905,7 @@ func TestReporterStartReportsBeforeFirstTick(t *testing.T) {
 	defer r.Stop()
 
 	assert.Equal(t, [][]string{
+		{"clear-status", "loopai"},
 		{"workspace", "loading", "on", "--id", "loopai"},
 		{"set-progress", "0.50", "--label", "1/2 tasks"},
 	}, runner.recorded(), "the bar must be there from the start, not one poll interval later")
@@ -852,8 +919,10 @@ func TestReporterStartWithoutPlanFile(t *testing.T) {
 	r.Start(t.Context())
 	time.Sleep(20 * time.Millisecond)
 
-	assert.Equal(t, [][]string{{"workspace", "loading", "on", "--id", "loopai"}}, runner.recorded(),
-		"plan creation mode has nothing to poll, so only the spinner is reported")
+	assert.Equal(t, [][]string{
+		{"clear-status", "loopai"},
+		{"workspace", "loading", "on", "--id", "loopai"},
+	}, runner.recorded(), "plan creation mode clears a stale pill and reports only the spinner")
 
 	r.mu.Lock()
 	pollDone := r.pollDone
@@ -870,13 +939,13 @@ func TestReporterStartSurvivesBrokenPlan(t *testing.T) {
 	r.planFile = filepath.Join(t.TempDir(), "appears-later.md")
 
 	r.Start(t.Context())
-	runner.waitForCalls(t, 1) // only the spinner so far, the plan file does not exist yet
+	runner.waitForCalls(t, 2) // stale-pill cleanup and spinner only; the plan file does not exist yet
 
 	require.NoError(t, os.WriteFile(r.planFile, []byte("# plan\n\n### Task 1: one\n\n- [x] a\n"), 0o600))
-	calls := runner.waitForCalls(t, 2)
+	calls := runner.waitForCalls(t, 3)
 	r.Stop()
 
-	assert.Equal(t, []string{"set-progress", "1.00", "--label", "1/1 tasks"}, calls[1],
+	assert.Equal(t, []string{"set-progress", "1.00", "--label", "1/1 tasks"}, calls[2],
 		"the goroutine must survive failed ticks and report once the plan is readable")
 }
 
@@ -887,7 +956,7 @@ func TestReporterStop(t *testing.T) {
 	r.planFile = writePlan(t, "# plan\n\n### Task 1: one\n\n- [x] a\n")
 
 	r.Start(t.Context())
-	runner.waitForCalls(t, 2)
+	runner.waitForCalls(t, 3)
 
 	r.Stop()
 	afterFirst := runner.recorded()
@@ -940,7 +1009,7 @@ func TestReporterStopClearsSpinnerBeforeJoin(t *testing.T) {
 	runner.mu.Unlock()
 
 	r.Start(t.Context())
-	runner.waitForCalls(t, 2)
+	runner.waitForCalls(t, 3)
 	r.Stop()
 
 	require.Len(t, pollAlive, 1, "stop must clear the spinner")
@@ -966,7 +1035,7 @@ func TestReporterStopConcurrent(t *testing.T) {
 	r.planFile = writePlan(t, "# plan\n\n### Task 1: one\n\n- [x] a\n")
 
 	r.Start(t.Context())
-	runner.waitForCalls(t, 2)
+	runner.waitForCalls(t, 3)
 
 	var wg sync.WaitGroup
 	for range 8 {
@@ -990,7 +1059,7 @@ func TestReporterContextCancelStopsPolling(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	r.Start(ctx)
-	runner.waitForCalls(t, 2)
+	runner.waitForCalls(t, 3)
 
 	cancel()
 
