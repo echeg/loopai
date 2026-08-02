@@ -661,8 +661,9 @@ func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-c
 // findRolloutFile resolves the path to codex's session-rollout JSONL file
 // for the given session id. codex stores the file under
 // ~/.codex/sessions/<year>/<month>/<day>/rollout-<timestamp>-<session-id>.jsonl
-// and may take a brief moment to create it after printing the session-id
-// banner, so we poll up to ~5s. returns "" when the file cannot be located.
+// and may take a while to create it after printing the session-id banner,
+// especially under load, so we poll up to ~30s. returns "" when the file
+// cannot be located.
 func (e *CodexExecutor) findRolloutFile(ctx context.Context, sessionID string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -670,7 +671,7 @@ func (e *CodexExecutor) findRolloutFile(ctx context.Context, sessionID string) s
 	}
 	pattern := filepath.Join(home, ".codex", "sessions", "*", "*", "*", "rollout-*-"+sessionID+".jsonl")
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		matches, _ := filepath.Glob(pattern)
 		if len(matches) > 0 {
