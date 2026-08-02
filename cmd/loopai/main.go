@@ -1120,6 +1120,26 @@ func (s externalReviewSelection) modelSpec() string {
 	return ""
 }
 
+// chainLabel formats the complete external-review sequence for metadata that
+// can represent a reviewer chain in one field. Empty selections retain the
+// legacy "none" label; callers that previously omitted disabled review should
+// continue to gate on the selection state before using it.
+func (s externalReviewSelection) chainLabel() string {
+	if len(s.Reviewers) == 0 {
+		return config.ExternalReviewToolNone
+	}
+
+	labels := make([]string, 0, len(s.Reviewers))
+	for _, reviewer := range s.Reviewers {
+		label := reviewer.Provider
+		if model := reviewer.modelSpec(); model != "" {
+			label += " (" + model + ")"
+		}
+		labels = append(labels, label)
+	}
+	return strings.Join(labels, " → ")
+}
+
 func (s externalReviewSelection) firstReviewer() (resolvedReviewer, bool) {
 	if len(s.Reviewers) == 0 {
 		return resolvedReviewer{}, false
@@ -1532,19 +1552,29 @@ func printExecutorInfo(info startupInfo, colors *progress.Colors) {
 	if info.Executor == config.ExecutorCodex {
 		printCodexExecutorInfo(info, colors)
 	}
+	printExternalReviewInfo(info.ExternalReview, colors)
+}
 
-	if reviewer, ok := info.ExternalReview.firstReviewer(); ok || info.ExternalReview.DisabledByCodexEnabled || info.ExternalReview.DisabledByMissing {
-		colors.Info().Printf("external review: %s\n", info.ExternalReview.providerLabel())
-		if reviewer.Provider == config.ExternalReviewToolCodex && reviewer.Model == "" {
-			colors.Info().Printf("  model: %s\n", codexBannerValue(""))
-		} else if reviewer.Model != "" {
-			colors.Info().Printf("  model: %s\n", reviewer.Model)
-		}
-		if reviewer.Provider == config.ExternalReviewToolCodex && reviewer.Effort == "" {
-			colors.Info().Printf("  reasoning effort: %s\n", codexBannerValue(""))
-		} else if reviewer.Effort != "" {
-			colors.Info().Printf("  reasoning effort: %s\n", reviewer.Effort)
-		}
+func printExternalReviewInfo(selection externalReviewSelection, colors *progress.Colors) {
+	reviewer, enabled := selection.firstReviewer()
+	if !enabled && !selection.DisabledByCodexEnabled && !selection.DisabledByMissing {
+		return
+	}
+	if len(selection.Reviewers) > 1 {
+		colors.Info().Printf("external review: %s\n", selection.chainLabel())
+		return
+	}
+
+	colors.Info().Printf("external review: %s\n", selection.providerLabel())
+	if reviewer.Provider == config.ExternalReviewToolCodex && reviewer.Model == "" {
+		colors.Info().Printf("  model: %s\n", codexBannerValue(""))
+	} else if reviewer.Model != "" {
+		colors.Info().Printf("  model: %s\n", reviewer.Model)
+	}
+	if reviewer.Provider == config.ExternalReviewToolCodex && reviewer.Effort == "" {
+		colors.Info().Printf("  reasoning effort: %s\n", codexBannerValue(""))
+	} else if reviewer.Effort != "" {
+		colors.Info().Printf("  reasoning effort: %s\n", reviewer.Effort)
 	}
 }
 
@@ -1615,10 +1645,14 @@ func runHeaderParams(o opts, cfg *config.Config, mode processor.Mode, external .
 		p.Executor = config.ExecutorCodex
 	}
 	if reviewer, ok := externalReview.firstReviewer(); ok || externalReview.DisabledByCodexEnabled || externalReview.DisabledByMissing {
-		p.ExternalReview = externalReview.providerLabel()
-		p.ExternalReviewModel = externalReview.modelSpec()
-		if reviewer.Provider == config.ExternalReviewToolCodex && p.ExternalReviewModel == "" {
-			p.ExternalReviewModel = "(inherits ~/.codex/config.toml)"
+		if len(externalReview.Reviewers) > 1 {
+			p.ExternalReview = externalReview.chainLabel()
+		} else {
+			p.ExternalReview = externalReview.providerLabel()
+			p.ExternalReviewModel = externalReview.modelSpec()
+			if reviewer.Provider == config.ExternalReviewToolCodex && p.ExternalReviewModel == "" {
+				p.ExternalReviewModel = "(inherits ~/.codex/config.toml)"
+			}
 		}
 	}
 	if mode == processor.ModePlan {
@@ -1665,11 +1699,16 @@ func cmuxRunModels(o opts, cfg *config.Config, externalReview externalReviewSele
 		reviewModel = configuredModelLabel("claude default", resolveReviewSpec(o, cfg))
 	}
 
+	externalReviewModel := externalReview.modelSpec()
+	if len(externalReview.Reviewers) > 1 {
+		externalReviewModel = externalReview.chainLabel()
+	}
+
 	return cmux.Models{
 		Plan:           planModel,
 		Task:           taskModel,
 		Review:         reviewModel,
-		ExternalReview: externalReview.modelSpec(),
+		ExternalReview: externalReviewModel,
 	}
 }
 

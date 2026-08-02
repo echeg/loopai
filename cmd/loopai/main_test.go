@@ -29,6 +29,7 @@ import (
 	"github.com/umputun/ralphex/pkg/processor"
 	"github.com/umputun/ralphex/pkg/progress"
 	"github.com/umputun/ralphex/pkg/status"
+	"github.com/umputun/ralphex/pkg/web"
 )
 
 // TestMain isolates the suite from a live cmux terminal. cmux.New reads CMUX_WORKSPACE_ID from the
@@ -1750,6 +1751,45 @@ func TestResolveModelSpecs(t *testing.T) {
 	})
 }
 
+func TestExternalReviewChainLabel(t *testing.T) {
+	tests := []struct {
+		name      string
+		selection externalReviewSelection
+		want      string
+	}{
+		{
+			name: "single reviewer",
+			selection: externalReviewSelection{Reviewers: []resolvedReviewer{
+				{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "xhigh"},
+			}},
+			want: "codex (gpt-5.5:xhigh)",
+		},
+		{
+			name: "reviewer chain",
+			selection: externalReviewSelection{Reviewers: []resolvedReviewer{
+				{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "xhigh"},
+				{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max"},
+			}},
+			want: "codex (gpt-5.5:xhigh) → claude (fable:max)",
+		},
+		{
+			name: "custom reviewer",
+			selection: externalReviewSelection{Reviewers: []resolvedReviewer{
+				{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "high"},
+				{Provider: config.ExternalReviewToolCustom},
+			}},
+			want: "codex (gpt-5.5:high) → custom",
+		},
+		{name: "none", want: config.ExternalReviewToolNone},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.selection.chainLabel())
+		})
+	}
+}
+
 func TestCmuxRunModels(t *testing.T) {
 	t.Run("nil config", func(t *testing.T) {
 		assert.Equal(t, cmux.Models{}, cmuxRunModels(opts{}, nil, externalReviewSelection{}))
@@ -1767,6 +1807,16 @@ func TestCmuxRunModels(t *testing.T) {
 			Review:         "sonnet:high",
 			ExternalReview: "gpt-5.6:xhigh",
 		}, cmuxRunModels(opts{TaskModel: "opus:medium"}, cfg, externalReview))
+	})
+
+	t.Run("external reviewer chain uses joined provider and model labels", func(t *testing.T) {
+		externalReview := externalReviewSelection{Reviewers: []resolvedReviewer{
+			{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "xhigh"},
+			{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max"},
+		}}
+
+		got := cmuxRunModels(opts{}, &config.Config{}, externalReview)
+		assert.Equal(t, "codex (gpt-5.5:xhigh) → claude (fable:max)", got.ExternalReview)
 	})
 
 	t.Run("claude defaults are explicit when no model is configured", func(t *testing.T) {
@@ -1860,6 +1910,21 @@ func TestRunHeaderParams(t *testing.T) {
 		assert.Equal(t, "gpt-5.5:low", got.ReviewModel)
 		assert.Equal(t, "claude (auto-selected)", got.ExternalReview)
 		assert.Equal(t, "opus:xhigh", got.ExternalReviewModel)
+	})
+
+	t.Run("external reviewer chain is recorded as one label", func(t *testing.T) {
+		external := externalReviewSelection{Reviewers: []resolvedReviewer{
+			{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "xhigh"},
+			{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max"},
+		}}
+
+		got := runHeaderParams(opts{}, &config.Config{}, processor.ModeFull, external)
+		assert.Equal(t, "codex (gpt-5.5:xhigh) → claude (fable:max)", got.ExternalReview)
+		assert.Empty(t, got.ExternalReviewModel)
+		assert.Equal(t,
+			"external codex (gpt-5.5:xhigh) → claude (fable:max)",
+			web.FormatRunParams(got.Executor, got.PlanModel, got.TaskModel, got.ReviewModel, got.ExternalReview, got.ExternalReviewModel),
+		)
 	})
 }
 
@@ -2124,6 +2189,24 @@ func TestPrintStartupInfo(t *testing.T) {
 		assert.Contains(t, out, "external review: claude (auto-selected)")
 		assert.Contains(t, out, "model: opus")
 		assert.Contains(t, out, "reasoning effort: xhigh")
+	})
+
+	t.Run("shows external reviewer chain as one label", func(t *testing.T) {
+		info := startupInfo{
+			PlanFile:      "/path/to/plan.md",
+			Branch:        "feature-branch",
+			Mode:          processor.ModeFull,
+			MaxIterations: 50,
+			ProgressPath:  "progress.txt",
+			ExternalReview: externalReviewSelection{Reviewers: []resolvedReviewer{
+				{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "xhigh"},
+				{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max"},
+			}},
+		}
+		out := captureStdout(t, func() { printStartupInfo(info, colors) })
+		assert.Contains(t, out, "external review: codex (gpt-5.5:xhigh) → claude (fable:max)")
+		assert.NotContains(t, out, "\n  model:")
+		assert.NotContains(t, out, "\n  reasoning effort:")
 	})
 
 	t.Run("shows claude md passthrough line when enabled", func(t *testing.T) {

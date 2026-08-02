@@ -145,10 +145,10 @@ Problem it solves: today only one external provider can review a run. Users want
 - Modify: `cmd/loopai/main_test.go`
 - Modify: `pkg/web/*` (only if FormatRunParams signature needs the joined string)
 
-- [ ] format the chain as `codex (gpt-5.5:xhigh) → claude (fable:max)` for run header, notifications, cmux `RunModels.ExternalReview`, and `web.FormatRunParams`
-- [ ] keep single-reviewer output byte-identical to current output (no churn for existing users)
-- [ ] write tests for label formatting (single, chain, custom entry, none)
-- [ ] run tests - must pass before task 6
+- [x] format the chain as `codex (gpt-5.5:xhigh) → claude (fable:max)` for run header, notifications, cmux `RunModels.ExternalReview`, and `web.FormatRunParams`
+- [x] keep single-reviewer output byte-identical to current output (no churn for existing users)
+- [x] write tests for label formatting (single, chain, custom entry, none)
+- [x] run tests - must pass before task 6
 
 ### Task 6: Documentation
 
