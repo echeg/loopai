@@ -175,11 +175,11 @@ drops it. No TTL hacks (detached sleep processes) are used.
 
 ### Task 8: [Final] Update documentation
 
-- [ ] update README.md: completion status pill behavior and the three new commands
-- [ ] update llms.txt with the new flags
-- [ ] update CLAUDE.md cmux section note (final pill is intentionally left after
+- [x] update README.md: completion status pill behavior and the three new commands
+- [x] update llms.txt with the new flags
+- [x] update CLAUDE.md cmux section note (final pill is intentionally left after
       completion; Stop no longer clears it on finished runs)
-- [ ] update embedded config comments only if any new config keys appeared (none
+- [x] update embedded config comments only if any new config keys appeared (none
       expected)
 
 ## Technical Details

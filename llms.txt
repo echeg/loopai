@@ -38,6 +38,11 @@ loopai --codex --pass-claude-md docs/plans/feature.md
 loopai --worktree docs/plans/feature.md
 loopai --resume-worktree docs/plans/feature.md
 loopai --serve docs/plans/feature.md
+loopai --clear
+loopai --merge
+loopai --merge=release/13
+loopai --pr
+loopai --pr=release/13
 loopai --init
 loopai --reset
 loopai --dump-defaults /tmp/loopai-defaults
@@ -107,6 +112,10 @@ Local files override global files, which override embedded defaults. `LOOPAI_CON
 
 Progress is available at `.loopai/progress/progress-*.txt`. The dashboard starts with `loopai --serve` and listens on `127.0.0.1:8080` by default; use `--host`, `--port`, or `LOOPAI_WEB_HOST` to change it.
 
+Inside cmux, a successful run leaves a green `done in <elapsed>` status pill and a failed run leaves a red `failed` pill; Ctrl+C clears run status. A later run replaces the pill, and `loopai --clear` removes it explicitly (`--clear` is a successful no-op outside cmux).
+
+Close-out commands are standalone modes. `loopai --merge[=base]` requires a clean working tree, resolves a missing base as `main` then `master`, merges the current feature branch, removes its loopai worktree, safely deletes the branch, and clears the pill on success. `loopai --pr[=base]` requires `gh`, pushes the current branch, creates a GitHub PR using the completed plan and diff statistics, keeps the branch/worktree, and clears the pill on success. Failures retain the pill. Use `=` to supply the optional base value, for example `--merge=release/13`.
+
 ## Useful options
 
 - `--max-iterations=N`
@@ -118,6 +127,9 @@ Progress is available at `.loopai/progress/progress-*.txt`. The dashboard starts
 - `--external-review-model=model[:effort]`
 - `--external-reviewers=provider[:model[:effort]],...` (mutually exclusive with the two legacy external-review flags)
 - `--base-ref=branch-or-commit`
+- `--clear`
+- `--merge[=base]`
+- `--pr[=base]`
 - `--wait=duration` (default `10m`; `--wait 0` disables limit retries)
 - `--session-timeout=duration`
 - `--idle-timeout=duration`

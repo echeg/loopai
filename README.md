@@ -16,7 +16,7 @@ This repository is a personal fork. It is installed by building from source; no 
 - Commits after completed tasks and review fixes
 - Streams timestamped progress to `.loopai/progress/`
 - Serves a real-time web dashboard with `--serve`
-- Reports status to the cmux sidebar when available
+- Reports live and persistent completion status to the cmux sidebar when available
 - Sends optional Telegram, email, Slack, webhook, or custom-script notifications
 
 ## Requirements
@@ -215,6 +215,39 @@ Plans are Markdown files, normally stored in `docs/plans/`.
 
 By default, a successfully completed plan moves to `docs/plans/completed/`. Set `move_plan_on_completion = false` when another workflow owns plan archival.
 
+## Completion and close-out
+
+Inside cmux, a completed run leaves a persistent status pill in the workspace: a green
+bolt with `done in <elapsed>` after success, or a red warning icon with `failed` after
+an error. Canceling with `Ctrl+C` performs the usual cleanup and leaves no completion
+pill. The next loopai run replaces an existing pill; it can also be removed explicitly:
+
+```bash
+loopai --clear
+```
+
+Outside cmux, `--clear` is a successful no-op. After a feature run completes, loopai
+can perform either of these standalone close-out actions from the repository root:
+
+```bash
+# Merge the current feature branch into main (or master when main does not exist).
+loopai --merge
+
+# Use an explicit base branch.
+loopai --merge=release/13
+
+# Push the current feature branch and open a GitHub pull request via gh.
+loopai --pr
+loopai --pr=release/13
+```
+
+`--merge` requires a clean working tree. It checks out the base, merges the current
+feature branch, then removes its loopai worktree and safely deletes the merged branch.
+`--pr` requires the GitHub CLI (`gh`); it builds the title and body from the completed
+plan and diff statistics, and keeps the feature branch and worktree. Each command
+clears the completion pill only after it succeeds, so a failed close-out remains
+visible. These commands cannot be combined with a plan file or another execution mode.
+
 ## Executors and reviews
 
 Claude Code is the default primary executor. Pass `--codex`, or set `executor = codex`, to use Codex for plan creation, task execution, internal reviews, finding evaluation, and finalize.
@@ -370,7 +403,7 @@ loopai --serve --port=3000
 loopai --serve --watch=/path/to/project-a --watch=/path/to/project-b
 ```
 
-When loopai runs inside cmux, it reports the phase and effective model, review iteration, task count, spinner, and completion notifications through the public cmux CLI. Outside cmux this integration is a no-op.
+When loopai runs inside cmux, it reports the phase and effective model, review iteration, task count, spinner, and completion notifications through the public cmux CLI. Successful and failed runs retain the completion pill described above; an abort clears it. Outside cmux this integration is a no-op.
 
 Provider session and rate limits are retried every 10 minutes by default until the provider
 recovers or the run is canceled with `Ctrl+C`. During the wait, progress output is red and cmux

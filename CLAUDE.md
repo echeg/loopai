@@ -115,7 +115,7 @@ Alternative Claude-compatible providers live under `scripts/`. `scripts/copilot-
 
 Worktrees live under `.loopai/worktrees/<branch>`. The progress logger is created before changing into a worktree, so logs remain in the main checkout at `.loopai/progress/`.
 
-cmux reporting is best-effort and must never affect execution. The status key and notification title are `loopai`. All calls go through the public `cmux` CLI and failures are ignored.
+cmux reporting is best-effort and must never affect execution. The status key and notification title are `loopai`. All calls go through the public `cmux` CLI and failures are ignored. After a completed run, `Reporter.Finish` intentionally leaves the final success or failure pill in place: `Stop` still clears the spinner and progress, but does not clear that pill. Abort paths do not call `Finish`, so `Stop` performs the full cleanup. A later run overwrites the pill, while `--clear`, a successful `--merge`, or a successful `--pr` removes it explicitly.
 
 `cmd/loopai` resolves effective plan, task, review, and external-review models
 and passes them to `cmux.Reporter`. Phase labels come from `status.PhaseHolder`;
