@@ -3884,10 +3884,25 @@ func TestBuildNotifyResult(t *testing.T) {
 		assert.Equal(t, "main", result.Branch)
 		assert.Equal(t, "45s", result.Duration)
 		assert.Equal(t, "runner failed", result.Error)
-		assert.Equal(t, config.ExternalReviewToolNone, result.ExternalReview)
+		assert.Empty(t, result.ExternalReview)
 		assert.Zero(t, result.Files)
 		assert.Zero(t, result.Additions)
 		assert.Zero(t, result.Deletions)
+	})
+
+	t.Run("legacy_single_reviewer_is_omitted", func(t *testing.T) {
+		req := executePlanRequest{
+			Mode: processor.ModeFull,
+			ExternalReview: externalReviewSelection{Resolved: true, Reviewers: []resolvedReviewer{{
+				Provider: config.ExternalReviewToolCodex,
+				Model:    "gpt-5.5",
+				Effort:   "xhigh",
+			}}},
+		}
+
+		result := buildNotifyResult(req, "main", "45s", git.DiffStats{}, nil)
+
+		assert.Empty(t, result.ExternalReview)
 	})
 }
 

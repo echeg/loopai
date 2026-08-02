@@ -409,6 +409,21 @@ func TestService_Send(t *testing.T) {
 func TestService_FormatMessage(t *testing.T) {
 	svc := &Service{hostname: "build-server"}
 
+	t.Run("legacy message omits external review", func(t *testing.T) {
+		msg := svc.formatMessage(Result{
+			Status:    "success",
+			PlanFile:  "plan.md",
+			Branch:    "feature",
+			Mode:      "full",
+			Duration:  "5s",
+			Files:     1,
+			Additions: 2,
+			Deletions: 3,
+		})
+
+		assert.Equal(t, "loopai completed on build-server\n\nplan:     plan.md\nbranch:   feature\nmode:     full\nduration: 5s\nchanges:  1 files (+2/-3 lines)\n", msg)
+	})
+
 	t.Run("success message", func(t *testing.T) {
 		msg := svc.formatMessage(Result{
 			Status:         "success",

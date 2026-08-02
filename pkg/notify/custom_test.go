@@ -18,6 +18,25 @@ func TestNewCustomChannel(t *testing.T) {
 	assert.Equal(t, "/usr/local/bin/notify.sh", ch.scriptPath)
 }
 
+func TestResultJSON_LegacyPayloadOmitsExternalReview(t *testing.T) {
+	data, err := json.Marshal(Result{
+		Status:    "success",
+		Mode:      "full",
+		PlanFile:  "plan.md",
+		Branch:    "feature",
+		Duration:  "5s",
+		Files:     1,
+		Additions: 2,
+		Deletions: 3,
+	})
+	require.NoError(t, err)
+
+	assert.JSONEq(t,
+		`{"status":"success","mode":"full","plan_file":"plan.md","branch":"feature","duration":"5s","files":1,"additions":2,"deletions":3}`,
+		string(data),
+	)
+}
+
 func TestCustomChannel_Send(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell scripts not supported on windows")

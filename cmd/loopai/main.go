@@ -579,13 +579,10 @@ func buildNotifyResult(req executePlanRequest, branch, elapsed string, stats git
 }
 
 func externalReviewNotificationLabel(selection externalReviewSelection) string {
-	if !selection.Resolved {
+	if len(selection.Reviewers) <= 1 {
 		return ""
 	}
-	if len(selection.Reviewers) > 1 {
-		return selection.chainLabel()
-	}
-	return selection.providerLabel()
+	return selection.chainLabel()
 }
 
 // displayStats prints completion summary with optional diff statistics and paths.
