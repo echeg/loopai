@@ -260,7 +260,7 @@ func TestService_MergeBranch(t *testing.T) {
 
 		err = svc.MergeBranch("feature")
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrMergeConflict)
+		require.ErrorIs(t, err, ErrMergeConflict)
 		assert.Equal(t, masterHash, strings.TrimSpace(runGit(t, dir, "rev-parse", "master")))
 		assert.Equal(t, featureHash, strings.TrimSpace(runGit(t, dir, "rev-parse", "feature")))
 		assert.Equal(t, "master", strings.TrimSpace(runGit(t, dir, "branch", "--show-current")))
@@ -322,7 +322,7 @@ func TestService_Push(t *testing.T) {
 
 func mustReadFile(t *testing.T, path string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // test helper only reads paths created by its caller
 	require.NoError(t, err)
 	return data
 }

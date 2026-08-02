@@ -233,9 +233,9 @@ func (e *externalBackend) mergeBranch(name string) error {
 	mergeHead.Dir = e.path
 	if mergeHead.Run() == nil {
 		if _, abortErr := e.run("merge", "--abort"); abortErr != nil {
-			return fmt.Errorf("%w: %v (abort failed: %v)", ErrMergeConflict, err, abortErr)
+			return fmt.Errorf("%w: %w (abort failed: %w)", ErrMergeConflict, err, abortErr)
 		}
-		return fmt.Errorf("%w: %v", ErrMergeConflict, err)
+		return fmt.Errorf("%w: %w", ErrMergeConflict, err)
 	}
 	return fmt.Errorf("merge: %w", err)
 }

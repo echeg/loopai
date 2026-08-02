@@ -165,13 +165,13 @@ drops it. No TTL hacks (detached sleep processes) are used.
 
 ### Task 7: Verify acceptance criteria
 
-- [ ] verify all Overview requirements are implemented (pill on success/failure, abort
+- [x] verify all Overview requirements are implemented (pill on success/failure, abort
       unchanged, --clear/--merge/--pr semantics including pill clearing)
-- [ ] verify mode-flag exclusivity errors are consistent across --clear/--merge/--pr
-- [ ] run full test suite (`make test`) - must pass
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` (git/path handling)
-- [ ] verify test coverage of new code meets project standard (80%+)
+- [x] verify mode-flag exclusivity errors are consistent across --clear/--merge/--pr
+- [x] run full test suite (`make test`) - must pass
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` (git/path handling)
+- [x] verify test coverage of new code meets project standard (80%+)
 
 ### Task 8: [Final] Update documentation
 

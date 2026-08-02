@@ -3183,16 +3183,16 @@ func TestRunMergeCommand(t *testing.T) {
 
 		err = runMergeCommand(svc, "master", clearer, io.Discard)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, git.ErrMergeConflict)
+		require.ErrorIs(t, err, git.ErrMergeConflict)
 		assert.Contains(t, err.Error(), "conflicted and was aborted")
 		assert.Equal(t, "feature", currentBranch(t, dir))
 		assert.True(t, branchExists(t, dir, "feature"))
 		assert.Zero(t, clearer.calls)
 		cmd := exec.Command("git", "status", "--porcelain")
 		cmd.Dir = dir
-		status, statusErr := cmd.Output()
+		statusOutput, statusErr := cmd.Output()
 		require.NoError(t, statusErr)
-		assert.Empty(t, strings.TrimSpace(string(status)))
+		assert.Empty(t, strings.TrimSpace(string(statusOutput)))
 	})
 }
 

@@ -281,11 +281,8 @@ func run(ctx context.Context, o opts) error {
 	}
 
 	// load config first to get custom command paths
-	cfg, err := config.Load(o.ConfigDir)
+	cfg, err := loadRunConfig(o)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	if err := applyCLIOverrides(o, cfg); err != nil { //nolint:govet // intentional shadow: scoped err for early return
 		return err
 	}
 
@@ -393,6 +390,17 @@ func run(ctx context.Context, o opts) error {
 		ExternalReview: externalReview,
 		LimitRecovery:  limitRecovery,
 	}, selector)
+}
+
+func loadRunConfig(o opts) (*config.Config, error) {
+	cfg, err := config.Load(o.ConfigDir)
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	if overrideErr := applyCLIOverrides(o, cfg); overrideErr != nil {
+		return nil, overrideErr
+	}
+	return cfg, nil
 }
 
 // selectAndExecutePlan selects a plan file, sets up branch or worktree, and runs execution.
@@ -2062,7 +2070,8 @@ func runReset(configDir string, stdin io.Reader, stdout io.Writer) error {
 // returns (true, nil) if an early exit occurred, (true, err) on error, or (false, nil) to continue.
 func handleEarlyFlags(o opts) (bool, error) {
 	if o.Clear {
-		return true, clearCmuxStatus(os.Stdout)
+		clearCmuxStatus(os.Stdout)
+		return true, nil
 	}
 
 	if o.Reset {
@@ -2087,14 +2096,13 @@ func handleEarlyFlags(o opts) (bool, error) {
 
 // clearCmuxStatus removes the completion pill when cmux is available. Outside cmux there is
 // nothing to clear, which is a successful no-op rather than a configuration error.
-func clearCmuxStatus(stdout io.Writer) error {
+func clearCmuxStatus(stdout io.Writer) {
 	rep := cmux.New("", cmux.Models{})
 	if rep == nil {
 		fmt.Fprintln(stdout, "no loopai cmux status pill to clear (not running inside cmux)")
-		return nil
+		return
 	}
 	rep.Clear()
-	return nil
 }
 
 type cmuxStatusClearer interface {
@@ -2106,7 +2114,7 @@ type cmuxStatusClearer interface {
 func runMergeCommand(gitSvc *git.Service, explicitBase string, rep cmuxStatusClearer, stdout io.Writer) error {
 	dirty, err := gitSvc.IsDirty()
 	if err != nil {
-		return err
+		return fmt.Errorf("check working tree: %w", err)
 	}
 	if dirty {
 		return errors.New("--merge requires a clean working tree; commit or stash tracked changes first")
@@ -2114,14 +2122,14 @@ func runMergeCommand(gitSvc *git.Service, explicitBase string, rep cmuxStatusCle
 
 	feature, err := gitSvc.CurrentBranch()
 	if err != nil {
-		return err
+		return fmt.Errorf("read current branch: %w", err)
 	}
 	if feature == "" {
 		return errors.New("--merge requires a checked-out feature branch; detached HEAD is not supported")
 	}
 	base, err := gitSvc.ResolveBaseBranch(explicitBase)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve merge base branch: %w", err)
 	}
 	if feature == base {
 		return fmt.Errorf("current branch %q is already the base branch; check out the feature branch first", base)
@@ -2131,13 +2139,13 @@ func runMergeCommand(gitSvc *git.Service, explicitBase string, rep cmuxStatusCle
 	if err != nil {
 		return fmt.Errorf("read feature branch head: %w", err)
 	}
-	if err = gitSvc.CheckoutBranch(base); err != nil {
-		return err
+	if checkoutErr := gitSvc.CheckoutBranch(base); checkoutErr != nil {
+		return fmt.Errorf("check out base branch %q: %w", base, checkoutErr)
 	}
 	if err = gitSvc.MergeBranch(feature); err != nil {
 		restoreErr := gitSvc.CheckoutBranch(feature)
 		if restoreErr != nil {
-			return fmt.Errorf("merge %q into %q failed: %w; additionally failed to restore %q: %v", feature, base, err, feature, restoreErr)
+			return fmt.Errorf("merge %q into %q failed: %w; additionally failed to restore %q: %w", feature, base, err, feature, restoreErr)
 		}
 		if errors.Is(err, git.ErrMergeConflict) {
 			return fmt.Errorf("merge %q into %q conflicted and was aborted; resolve the branches and rerun --merge: %w", feature, base, err)
@@ -2158,8 +2166,8 @@ func runMergeCommand(gitSvc *git.Service, explicitBase string, rep cmuxStatusCle
 	if err = gitSvc.RemoveWorktree(worktreePath); err != nil {
 		return fmt.Errorf("clean up worktree for %q: %w", feature, err)
 	}
-	if err = gitSvc.DeleteBranch(feature); err != nil {
-		return err
+	if deleteErr := gitSvc.DeleteBranch(feature); deleteErr != nil {
+		return fmt.Errorf("delete merged feature branch: %w", deleteErr)
 	}
 	if rep != nil {
 		rep.Clear()
