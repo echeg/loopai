@@ -170,6 +170,10 @@ func (r *Reporter) setStatus(text, icon, color string) {
 // clearStatus removes the loopai pill.
 func (r *Reporter) clearStatus() { r.exec("clear-status", statusKey) }
 
+// Clear removes the persistent loopai status pill. It is nil-safe so standalone commands
+// can call it without checking whether they are running inside cmux.
+func (r *Reporter) Clear() { r.clearStatus() }
+
 // setProgress sets the sidebar progress bar. ratio is expected in [0, 1]: reportProgress, the
 // only caller, derives it from a task count it has already checked, so it cannot fall outside.
 func (r *Reporter) setProgress(ratio float64, label string) {

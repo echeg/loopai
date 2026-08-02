@@ -103,13 +103,13 @@ drops it. No TTL hacks (detached sleep processes) are used.
 
 ### Task 3: Add --clear command
 
-- [ ] add `Clear bool` flag (`--clear`, description: remove loopai cmux status pill) to
+- [x] add `Clear bool` flag (`--clear`, description: remove loopai cmux status pill) to
       opts in `cmd/loopai/main.go` and handle it early like `--init`/`--reset` modes
-- [ ] implement clear: nil reporter (outside cmux) prints a short note and exits 0;
+- [x] implement clear: nil reporter (outside cmux) prints a short note and exits 0;
       inside cmux runs `clear-status loopai` and exits 0
-- [ ] reject combining `--clear` with a plan file or other mode flags with a clear error
-- [ ] write tests for flag parsing, in-cmux argv, outside-cmux no-op exit
-- [ ] run tests - must pass before next task
+- [x] reject combining `--clear` with a plan file or other mode flags with a clear error
+- [x] write tests for flag parsing, in-cmux argv, outside-cmux no-op exit
+- [x] run tests - must pass before next task
 
 ### Task 4: Add merge, safe branch delete, and base detection to pkg/git
 

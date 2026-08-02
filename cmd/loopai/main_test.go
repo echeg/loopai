@@ -144,6 +144,11 @@ func TestLoopaiEnvironmentOptions(t *testing.T) {
 	assert.Equal(t, "/tmp/loopai-config", o.ConfigDir)
 }
 
+func TestClearFlagParsing(t *testing.T) {
+	o := parseTestOpts(t, "--clear")
+	assert.True(t, o.Clear)
+}
+
 func TestPromptPlanDescription(t *testing.T) {
 	colors := testColors()
 
@@ -1573,6 +1578,11 @@ func TestValidateFlags(t *testing.T) {
 		{name: "no_flags_is_valid", opts: opts{}, wantErr: false},
 		{name: "plan_flag_only_is_valid", opts: opts{PlanDescription: "add feature"}, wantErr: false},
 		{name: "plan_file_only_is_valid", opts: opts{PlanFile: "docs/plans/test.md"}, wantErr: false},
+		{name: "clear_only_is_valid", opts: opts{Clear: true}, wantErr: false},
+		{name: "clear_with_plan_file_conflicts", opts: opts{Clear: true, PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "--clear cannot be combined"},
+		{name: "clear_with_plan_mode_conflicts", opts: opts{Clear: true, PlanDescription: "add feature"}, wantErr: true, errMsg: "other mode flags"},
+		{name: "clear_with_review_mode_conflicts", opts: opts{Clear: true, Review: true}, wantErr: true, errMsg: "other mode flags"},
+		{name: "clear_with_init_mode_conflicts", opts: opts{Clear: true, Init: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "both_plan_and_planfile_conflicts", opts: opts{PlanDescription: "add feature", PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "conflicts"},
 		{name: "negative_wait_is_invalid", opts: opts{Wait: -30 * time.Minute}, wantErr: true, errMsg: "non-negative"},
 		{name: "positive_wait_is_valid", opts: opts{Wait: time.Hour}, wantErr: false},
@@ -3044,6 +3054,32 @@ func TestHandleEarlyFlags(t *testing.T) {
 		done, err := handleEarlyFlags(opts{})
 		require.NoError(t, err)
 		assert.False(t, done)
+	})
+
+	t.Run("clear_outside_cmux_is_successful_noop", func(t *testing.T) {
+		t.Setenv("CMUX_WORKSPACE_ID", "")
+		output := captureStdout(t, func() {
+			done, err := handleEarlyFlags(opts{Clear: true})
+			require.NoError(t, err)
+			assert.True(t, done)
+		})
+		assert.Contains(t, output, "not running inside cmux")
+	})
+
+	t.Run("clear_inside_cmux_runs_expected_command", func(t *testing.T) {
+		binDir := t.TempDir()
+		argvLog := filepath.Join(binDir, "argv.log")
+		writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Setenv("CMUX_ARGV_LOG", argvLog)
+
+		done, err := handleEarlyFlags(opts{Clear: true})
+		require.NoError(t, err)
+		assert.True(t, done)
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Equal(t, "clear-status loopai\n", string(recorded))
 	})
 
 	t.Run("dump_defaults_exits", func(t *testing.T) {

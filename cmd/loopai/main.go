@@ -72,6 +72,7 @@ type opts struct {
 	Watch                   []string      `short:"w" long:"watch" description:"directories to watch for progress files (repeatable)"`
 	Init                    bool          `long:"init" description:"initialize local .loopai/ config directory in current project"`
 	Reset                   bool          `long:"reset" description:"interactively reset global config to embedded defaults"`
+	Clear                   bool          `long:"clear" description:"remove loopai cmux status pill"`
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
 	ConfigDir               string        `long:"config-dir" env:"LOOPAI_CONFIG_DIR" description:"custom config directory"`
 
@@ -1437,6 +1438,9 @@ func shouldMovePlan(req executePlanRequest) bool {
 
 // validateFlags checks for conflicting CLI flags.
 func validateFlags(o opts) error {
+	if o.Clear && hasOtherMode(o) {
+		return errors.New("--clear cannot be combined with a plan file or other mode flags")
+	}
 	if o.PlanDescription != "" && o.PlanFile != "" {
 		return errors.New("--plan flag conflicts with plan file argument; use one or the other")
 	}
@@ -1462,6 +1466,22 @@ func validateFlags(o opts) error {
 	// mutual-exclusion checks are deferred to applyCodexOverrides, which runs after the
 	// config-file merge so that executor=codex coming from config is also enforced.
 	return nil
+}
+
+// hasOtherMode reports whether --clear was combined with an operation that would otherwise
+// start or configure another standalone mode. Ordinary presentation flags remain harmless.
+func hasOtherMode(o opts) bool {
+	return o.PlanFile != "" ||
+		o.PlanDescription != "" ||
+		o.Review ||
+		o.ExternalOnly ||
+		o.CodexOnly ||
+		o.TasksOnly ||
+		o.ResumeWorktree ||
+		o.Serve ||
+		o.Init ||
+		o.Reset ||
+		o.DumpDefaults != ""
 }
 
 func validateExternalReviewFlags(o opts) error {
@@ -2004,9 +2024,13 @@ func runReset(configDir string, stdin io.Reader, stdout io.Writer) error {
 	return nil
 }
 
-// handleEarlyFlags processes flags that should run before full config load (--reset, --dump-defaults).
+// handleEarlyFlags processes flags that should run before full config load (--clear, --reset, --dump-defaults).
 // returns (true, nil) if an early exit occurred, (true, err) on error, or (false, nil) to continue.
 func handleEarlyFlags(o opts) (bool, error) {
+	if o.Clear {
+		return true, clearCmuxStatus(os.Stdout)
+	}
+
 	if o.Reset {
 		if err := runReset(o.ConfigDir, os.Stdin, os.Stdout); err != nil {
 			return true, err
@@ -2025,6 +2049,18 @@ func handleEarlyFlags(o opts) (bool, error) {
 	}
 
 	return false, nil
+}
+
+// clearCmuxStatus removes the completion pill when cmux is available. Outside cmux there is
+// nothing to clear, which is a successful no-op rather than a configuration error.
+func clearCmuxStatus(stdout io.Writer) error {
+	rep := cmux.New("", cmux.Models{})
+	if rep == nil {
+		fmt.Fprintln(stdout, "no loopai cmux status pill to clear (not running inside cmux)")
+		return nil
+	}
+	rep.Clear()
+	return nil
 }
 
 // initLocal creates .loopai/ config directory in current project.
