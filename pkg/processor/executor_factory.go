@@ -108,6 +108,22 @@ func (cfg Config) externalReviewModelEffort(provider string) (model, effort stri
 		spec = cfg.AppConfig.ExternalReviewModel
 	}
 
+	var defaultModel, defaultEffort string
+	if cfg.AppConfig != nil {
+		defaultModel = cfg.AppConfig.CodexModel
+		defaultEffort = cfg.AppConfig.CodexReasoningEffort
+	}
+	model, effort, _ = ResolveExternalReviewerModelEffort(provider, spec, defaultModel, defaultEffort)
+	if cfg.ExternalReviewEffort != "" {
+		effort = cfg.ExternalReviewEffort
+	}
+	return model, effort
+}
+
+// ResolveExternalReviewerModelEffort applies provider-specific defaults to an
+// external reviewer model specification. It is shared by CLI resolution and
+// executor construction so both paths produce identical settings.
+func ResolveExternalReviewerModelEffort(provider, spec, codexModel, codexEffort string) (model, effort string, maxDropped bool) {
 	switch provider {
 	case config.ExternalReviewToolClaude:
 		model, effort = "opus", "xhigh"
@@ -119,17 +135,9 @@ func (cfg Config) externalReviewModelEffort(provider string) (model, effort stri
 			effort = resolvedEffort
 		}
 	case config.ExternalReviewToolCodex:
-		var defaultModel, defaultEffort string
-		if cfg.AppConfig != nil {
-			defaultModel = cfg.AppConfig.CodexModel
-			defaultEffort = cfg.AppConfig.CodexReasoningEffort
-		}
-		model, effort, _ = ResolveCodexModelEffort(spec, defaultModel, defaultEffort)
+		model, effort, maxDropped = ResolveCodexModelEffort(spec, codexModel, codexEffort)
 	}
-	if cfg.ExternalReviewEffort != "" {
-		effort = cfg.ExternalReviewEffort
-	}
-	return model, effort
+	return model, effort, maxDropped
 }
 
 // buildClaudeExecutors constructs the claude executors for task and review phases.

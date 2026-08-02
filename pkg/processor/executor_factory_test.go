@@ -206,6 +206,28 @@ func TestResolveCodexModelEffort(t *testing.T) {
 	}
 }
 
+func TestResolveExternalReviewerModelEffort(t *testing.T) {
+	tests := []struct {
+		name, provider, spec, defaultModel, defaultEffort string
+		wantModel, wantEffort                             string
+		wantMax                                           bool
+	}{
+		{name: "claude defaults", provider: config.ExternalReviewToolClaude, wantModel: "opus", wantEffort: "xhigh"},
+		{name: "claude overrides", provider: config.ExternalReviewToolClaude, spec: "fable:max", wantModel: "fable", wantEffort: "max"},
+		{name: "codex defaults", provider: config.ExternalReviewToolCodex, defaultModel: "gpt-5.5", defaultEffort: "high", wantModel: "gpt-5.5", wantEffort: "high"},
+		{name: "codex max dropped", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6:max", defaultEffort: "medium", wantModel: "gpt-5.6", wantEffort: "medium", wantMax: true},
+		{name: "custom has no model", provider: config.ExternalReviewToolCustom},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			model, effort, maxDropped := ResolveExternalReviewerModelEffort(tc.provider, tc.spec, tc.defaultModel, tc.defaultEffort)
+			assert.Equal(t, tc.wantModel, model)
+			assert.Equal(t, tc.wantEffort, effort)
+			assert.Equal(t, tc.wantMax, maxDropped)
+		})
+	}
+}
+
 func effectiveReviewExecutor(execs Executors) Executor {
 	if execs.Review != nil {
 		return execs.Review

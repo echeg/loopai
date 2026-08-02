@@ -101,13 +101,13 @@ Problem it solves: today only one external provider can review a run. Users want
 - Modify: `cmd/loopai/main.go`
 - Modify: `cmd/loopai/main_test.go`
 
-- [ ] add `--external-reviewers` flag (string) with explicit-set tracking, mutually exclusive with `--external-review-tool`/`--external-review-model` (error if combined)
-- [ ] generalize `externalReviewSelection` to carry `[]resolvedReviewer{Provider, Model, Effort}`; legacy tool/model path resolves to a one-element list, `auto`/`none` semantics unchanged
-- [ ] resolve per-entry model/effort defaults (claude → `opus:xhigh`, codex → codex config defaults) reusing/relocating `externalReviewModelEffort` logic so cmd and factory share it
-- [ ] extend `checkExecutionDeps`: verify binary per unique provider in the chain (explicit ⇒ error, not warning), `custom` entries require `custom_review_script`
-- [ ] update `detectClaudeSwapRecovery` to enable recovery when primary is claude or any chain entry is claude
-- [ ] write tests for flag parsing, mutual exclusion, chain resolution with defaults, dep-check errors (missing binary, custom without script), recovery detection
-- [ ] run tests - must pass before task 3
+- [x] add `--external-reviewers` flag (string) with explicit-set tracking, mutually exclusive with `--external-review-tool`/`--external-review-model` (error if combined)
+- [x] generalize `externalReviewSelection` to carry `[]resolvedReviewer{Provider, Model, Effort}`; legacy tool/model path resolves to a one-element list, `auto`/`none` semantics unchanged
+- [x] resolve per-entry model/effort defaults (claude → `opus:xhigh`, codex → codex config defaults) reusing/relocating `externalReviewModelEffort` logic so cmd and factory share it
+- [x] extend `checkExecutionDeps`: verify binary per unique provider in the chain (explicit ⇒ error, not warning), `custom` entries require `custom_review_script`
+- [x] update `detectClaudeSwapRecovery` to enable recovery when primary is claude or any chain entry is claude
+- [x] write tests for flag parsing, mutual exclusion, chain resolution with defaults, dep-check errors (missing binary, custom without script), recovery detection
+- [x] run tests - must pass before task 3
 
 ### Task 3: Executor factory builds per-entry executors
 

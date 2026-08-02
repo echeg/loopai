@@ -44,6 +44,7 @@ type opts struct {
 	ClaudeArgs              string        `long:"claude-args" description:"override claude-compatible command args for this run"`
 	ExternalReviewTool      string        `long:"external-review-tool" choice:"auto" choice:"claude" choice:"codex" choice:"custom" choice:"none" description:"override external review tool for this run"`
 	ExternalReviewModel     string        `long:"external-review-model" description:"external review model as model[:effort]"`
+	ExternalReviewers       string        `long:"external-reviewers" description:"ordered external reviewers as provider[:model[:effort]],..."`
 	CustomReviewScript      string        `long:"custom-review-script" description:"override custom external review script for this run"`
 	Review                  bool          `short:"r" long:"review" description:"skip task execution, run full review pipeline"`
 	ExternalOnly            bool          `short:"e" long:"external-only" description:"skip tasks and first review; run external review, conditional post-review, and finalize"`
@@ -85,6 +86,7 @@ type opts struct {
 	claudeArgsSet          bool
 	externalReviewToolSet  bool
 	externalReviewModelSet bool
+	externalReviewersSet   bool
 	customReviewScriptSet  bool
 }
 
@@ -101,6 +103,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 	o.claudeArgsSet = isFlagSet(parser, "claude-args")
 	o.externalReviewToolSet = isFlagSet(parser, "external-review-tool")
 	o.externalReviewModelSet = isFlagSet(parser, "external-review-model")
+	o.externalReviewersSet = isFlagSet(parser, "external-reviewers")
 	o.customReviewScriptSet = isFlagSet(parser, "custom-review-script")
 }
 
@@ -305,7 +308,7 @@ func run(ctx context.Context, o opts) error {
 		return err
 	}
 	applyEffectiveExternalReview(cfg, externalReview)
-	limitRecovery := detectClaudeSwapRecovery(o, cfg, externalReview.Provider)
+	limitRecovery := detectClaudeSwapRecovery(o, cfg, externalReview)
 
 	if depErr := ctx.Err(); depErr != nil {
 		return fmt.Errorf("execution context: %w", depErr)
@@ -1081,29 +1084,47 @@ func checkCodexDep(cfg *config.Config) error {
 	return nil
 }
 
-// externalReviewSelection is the single resolved view of external-review
-// configuration used by dependency checks, startup metadata, and processor setup.
-// Provider is always concrete (claude, codex, custom, or none), never auto.
+type resolvedReviewer struct {
+	Provider   string
+	Model      string
+	Effort     string
+	MaxDropped bool
+}
+
+func (r resolvedReviewer) modelSpec() string {
+	switch {
+	case r.Model == "" && r.Effort == "":
+		return ""
+	case r.Effort == "":
+		return r.Model
+	default:
+		return r.Model + ":" + r.Effort
+	}
+}
+
+// externalReviewSelection is the resolved ordered external-review chain used
+// by dependency checks, startup metadata, and processor setup. Reviewers always
+// contain concrete providers; legacy auto/none state is kept as selection metadata.
 type externalReviewSelection struct {
-	Provider               string
-	Model                  string
-	Effort                 string
+	Reviewers              []resolvedReviewer
 	AutoSelected           bool
 	Explicit               bool
-	MaxDropped             bool
 	DisabledByCodexEnabled bool
 	DisabledByMissing      bool
 }
 
 func (s externalReviewSelection) modelSpec() string {
-	switch {
-	case s.Model == "" && s.Effort == "":
-		return ""
-	case s.Effort == "":
-		return s.Model
-	default:
-		return s.Model + ":" + s.Effort
+	if reviewer, ok := s.firstReviewer(); ok {
+		return reviewer.modelSpec()
 	}
+	return ""
+}
+
+func (s externalReviewSelection) firstReviewer() (resolvedReviewer, bool) {
+	if len(s.Reviewers) == 0 {
+		return resolvedReviewer{}, false
+	}
+	return s.Reviewers[0], true
 }
 
 func (s externalReviewSelection) providerLabel() string {
@@ -1113,7 +1134,11 @@ func (s externalReviewSelection) providerLabel() string {
 	if s.DisabledByMissing {
 		return config.ExternalReviewToolNone + " (auto-selected reviewer unavailable)"
 	}
-	label := s.Provider
+	reviewer, ok := s.firstReviewer()
+	if !ok {
+		return config.ExternalReviewToolNone
+	}
+	label := reviewer.Provider
 	if s.AutoSelected {
 		label += " (auto-selected)"
 	}
@@ -1132,7 +1157,26 @@ func primaryProvider(cfg *config.Config) string {
 // gate because the user explicitly requested the external-review pipeline.
 func resolveExternalReviewSelection(o opts, cfg *config.Config, mode processor.Mode) (externalReviewSelection, error) {
 	if cfg == nil {
-		return externalReviewSelection{Provider: config.ExternalReviewToolNone}, nil
+		return externalReviewSelection{}, nil
+	}
+	if mode == processor.ModeTasksOnly {
+		return externalReviewSelection{}, nil
+	}
+
+	if cfg.ExternalReviewersSet {
+		specs, err := config.ParseExternalReviewers(cfg.ExternalReviewers)
+		if err != nil {
+			return externalReviewSelection{}, fmt.Errorf("parse external_reviewers: %w", err)
+		}
+		selection := externalReviewSelection{Explicit: true, Reviewers: make([]resolvedReviewer, 0, len(specs))}
+		for _, spec := range specs {
+			model, effort, maxDropped := processor.ResolveExternalReviewerModelEffort(
+				spec.Provider, spec.ModelSpec, cfg.CodexModel, cfg.CodexReasoningEffort)
+			selection.Reviewers = append(selection.Reviewers, resolvedReviewer{
+				Provider: spec.Provider, Model: model, Effort: effort, MaxDropped: maxDropped,
+			})
+		}
+		return selection, nil
 	}
 
 	requested := cfg.ExternalReviewTool
@@ -1140,54 +1184,38 @@ func resolveExternalReviewSelection(o opts, cfg *config.Config, mode processor.M
 		requested = config.ExternalReviewToolAuto
 	}
 	selection := externalReviewSelection{
-		Provider:     requested,
 		AutoSelected: requested == config.ExternalReviewToolAuto,
 		Explicit:     requested != config.ExternalReviewToolAuto,
-	}
-	if mode == processor.ModeTasksOnly {
-		selection.Provider = config.ExternalReviewToolNone
-		selection.AutoSelected = false
-		selection.Explicit = false
-		return selection, nil
 	}
 
 	if requested == config.ExternalReviewToolAuto {
 		if !cfg.CodexEnabled && mode != processor.ModeCodexOnly {
-			selection.Provider = config.ExternalReviewToolNone
 			selection.DisabledByCodexEnabled = true
 			return selection, nil
 		}
 		if primaryProvider(cfg) == config.ExternalReviewToolCodex {
-			selection.Provider = config.ExternalReviewToolClaude
+			requested = config.ExternalReviewToolClaude
 		} else {
-			selection.Provider = config.ExternalReviewToolCodex
+			requested = config.ExternalReviewToolCodex
 		}
 	}
 
 	modelExplicit := o.externalReviewModelSet || cfg.ExternalReviewModelSet
-	if selection.Provider == config.ExternalReviewToolCustom && modelExplicit && cfg.ExternalReviewModel != "" {
+	if requested == config.ExternalReviewToolCustom && modelExplicit && cfg.ExternalReviewModel != "" {
 		return externalReviewSelection{}, errors.New("external_review_model cannot be used with external_review_tool=custom")
 	}
 
-	switch selection.Provider {
-	case config.ExternalReviewToolClaude:
-		selection.Model, selection.Effort = "opus", "xhigh"
-		if cfg.ExternalReviewModel != "" {
-			model, effort, _ := strings.Cut(cfg.ExternalReviewModel, ":")
-			if model != "" {
-				selection.Model = model
-			}
-			if effort != "" {
-				selection.Effort = effort
-			}
-		}
-	case config.ExternalReviewToolCodex:
-		selection.Model, selection.Effort, selection.MaxDropped = processor.ResolveCodexModelEffort(
-			cfg.ExternalReviewModel, cfg.CodexModel, cfg.CodexReasoningEffort)
-	case config.ExternalReviewToolCustom, config.ExternalReviewToolNone:
+	switch requested {
+	case config.ExternalReviewToolClaude, config.ExternalReviewToolCodex:
+		model, effort, maxDropped := processor.ResolveExternalReviewerModelEffort(
+			requested, cfg.ExternalReviewModel, cfg.CodexModel, cfg.CodexReasoningEffort)
+		selection.Reviewers = []resolvedReviewer{{Provider: requested, Model: model, Effort: effort, MaxDropped: maxDropped}}
+	case config.ExternalReviewToolCustom:
+		selection.Reviewers = []resolvedReviewer{{Provider: requested}}
+	case config.ExternalReviewToolNone:
 		// custom reviewers do not have a provider model; none disables the phase.
 	default:
-		return externalReviewSelection{}, fmt.Errorf("unsupported external review tool %q", selection.Provider)
+		return externalReviewSelection{}, fmt.Errorf("unsupported external review tool %q", requested)
 	}
 	return selection, nil
 }
@@ -1196,12 +1224,14 @@ func printExternalReviewWarnings(selection externalReviewSelection, cfg *config.
 	if w == nil || cfg == nil {
 		return
 	}
-	if selection.Explicit && selection.Provider == primaryProvider(cfg) &&
-		(selection.Provider == config.ExternalReviewToolClaude || selection.Provider == config.ExternalReviewToolCodex) {
-		fmt.Fprintf(w, "warning: external reviewer %q matches the primary executor; cross-model review signal will be weaker\n", selection.Provider)
-	}
-	if selection.MaxDropped {
-		fmt.Fprintln(w, "warning: codex does not support 'max' reasoning effort for external review; ignoring (valid: low, medium, high, xhigh)")
+	for _, reviewer := range selection.Reviewers {
+		if selection.Explicit && reviewer.Provider == primaryProvider(cfg) &&
+			(reviewer.Provider == config.ExternalReviewToolClaude || reviewer.Provider == config.ExternalReviewToolCodex) {
+			fmt.Fprintf(w, "warning: external reviewer %q matches the primary executor; cross-model review signal will be weaker\n", reviewer.Provider)
+		}
+		if reviewer.MaxDropped {
+			fmt.Fprintln(w, "warning: codex does not support 'max' reasoning effort for external review; ignoring (valid: low, medium, high, xhigh)")
+		}
 	}
 }
 
@@ -1219,26 +1249,36 @@ func checkExecutionDeps(cfg *config.Config, selection externalReviewSelection, w
 		return selection, primaryErr
 	}
 
-	var externalErr error
-	switch selection.Provider {
-	case config.ExternalReviewToolClaude:
-		externalErr = checkClaudeDep(cfg)
-	case config.ExternalReviewToolCodex:
-		externalErr = checkCodexDep(cfg)
+	checked := make(map[string]bool)
+	for _, reviewer := range selection.Reviewers {
+		if checked[reviewer.Provider] {
+			continue
+		}
+		checked[reviewer.Provider] = true
+		var externalErr error
+		switch reviewer.Provider {
+		case config.ExternalReviewToolClaude:
+			externalErr = checkClaudeDep(cfg)
+		case config.ExternalReviewToolCodex:
+			externalErr = checkCodexDep(cfg)
+		case config.ExternalReviewToolCustom:
+			if strings.TrimSpace(cfg.CustomReviewScript) == "" {
+				externalErr = errors.New("custom external reviewer requires custom_review_script")
+			}
+		}
+		if externalErr == nil {
+			continue
+		}
+		if !selection.AutoSelected {
+			return selection, externalErr
+		}
+		if warnW != nil {
+			fmt.Fprintf(warnW, "warning: automatically selected external reviewer unavailable (%v); disabling external review for this run\n", externalErr)
+		}
+		selection.Reviewers = nil
+		selection.DisabledByMissing = true
+		break
 	}
-	if externalErr == nil {
-		return selection, nil
-	}
-	if !selection.AutoSelected {
-		return selection, externalErr
-	}
-	if warnW != nil {
-		fmt.Fprintf(warnW, "warning: automatically selected external reviewer unavailable (%v); disabling external review for this run\n", externalErr)
-	}
-	selection.Provider = config.ExternalReviewToolNone
-	selection.Model = ""
-	selection.Effort = ""
-	selection.DisabledByMissing = true
 	return selection, nil
 }
 
@@ -1246,8 +1286,14 @@ func applyEffectiveExternalReview(cfg *config.Config, selection externalReviewSe
 	if cfg == nil {
 		return
 	}
-	cfg.ExternalReviewTool = selection.Provider
-	cfg.ExternalReviewModel = selection.modelSpec()
+	reviewer, ok := selection.firstReviewer()
+	if !ok {
+		cfg.ExternalReviewTool = config.ExternalReviewToolNone
+		cfg.ExternalReviewModel = ""
+		return
+	}
+	cfg.ExternalReviewTool = reviewer.Provider
+	cfg.ExternalReviewModel = reviewer.modelSpec()
 }
 
 // isWatchOnlyMode returns true if running in watch-only mode.
@@ -1350,25 +1396,37 @@ func validateFlags(o opts) error {
 	if o.IdleTimeout < 0 {
 		return fmt.Errorf("--idle-timeout must be non-negative, got %s", o.IdleTimeout)
 	}
+	if err := validateExternalReviewFlags(o); err != nil {
+		return err
+	}
 	// --codex / --pass-claude-md / --external-only / --codex-only / --external-review-tool
 	// mutual-exclusion checks are deferred to applyCodexOverrides, which runs after the
 	// config-file merge so that executor=codex coming from config is also enforced.
 	return nil
 }
 
+func validateExternalReviewFlags(o opts) error {
+	if o.externalReviewersSet && (o.externalReviewToolSet || o.externalReviewModelSet) {
+		return errors.New("--external-reviewers cannot be combined with --external-review-tool or --external-review-model")
+	}
+	return nil
+}
+
 // createRunner creates a processor.Runner with the given configuration.
 func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *status.PhaseHolder) *processor.Runner {
 	externalReview := req.ExternalReview
-	if externalReview.Provider == "" {
+	if len(externalReview.Reviewers) == 0 && !externalReview.Explicit && !externalReview.AutoSelected &&
+		!externalReview.DisabledByCodexEnabled && !externalReview.DisabledByMissing {
 		var err error
 		externalReview, err = resolveExternalReviewSelection(o, req.Config, req.Mode)
 		if err != nil {
 			// run() validates this before runner construction; this fallback is for
 			// direct test helpers and preserves a safely disabled phase on bad input.
-			externalReview = externalReviewSelection{Provider: config.ExternalReviewToolNone}
+			externalReview = externalReviewSelection{}
 		}
 	}
 	applyEffectiveExternalReview(req.Config, externalReview)
+	reviewer, enabled := externalReview.firstReviewer()
 	// resolve max external iterations: CLI flag > config file > 0 (auto)
 	maxExtIter := req.Config.MaxExternalIterations
 	if o.MaxExternalIterations > 0 {
@@ -1395,11 +1453,11 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		NoColor:               o.NoColor,
 		IterationDelayMs:      req.Config.IterationDelayMs,
 		TaskRetryCount:        req.Config.TaskRetryCount,
-		CodexEnabled:          externalReview.Provider != config.ExternalReviewToolNone,
+		CodexEnabled:          enabled,
 		ExternalReviewToolSet: true,
-		ExternalReviewTool:    externalReview.Provider,
-		ExternalReviewModel:   externalReview.Model,
-		ExternalReviewEffort:  externalReview.Effort,
+		ExternalReviewTool:    reviewer.Provider,
+		ExternalReviewModel:   reviewer.Model,
+		ExternalReviewEffort:  reviewer.Effort,
 		FinalizeEnabled:       req.Config.FinalizeEnabled,
 		DefaultBranch:         req.BaseRef,
 		TaskModel:             resolveSpec(o.TaskModel, req.Config.TaskModel),
@@ -1413,7 +1471,7 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 	return r
 }
 
-func detectClaudeSwapRecovery(o opts, cfg *config.Config, externalProvider string) limits.Recovery {
+func detectClaudeSwapRecovery(o opts, cfg *config.Config, externalReview externalReviewSelection) limits.Recovery {
 	if cfg == nil || o.NoClaudeSwap || !cfg.ClaudeSwapEnabled {
 		return nil
 	}
@@ -1424,7 +1482,10 @@ func detectClaudeSwapRecovery(o opts, cfg *config.Config, externalProvider strin
 	if filepath.Base(claudeCmd) != "claude" {
 		return nil // custom stream-json compatible wrappers do not share Claude Code auth
 	}
-	usesClaude := cfg.Executor != config.ExecutorCodex || externalProvider == config.ExternalReviewToolClaude
+	usesClaude := cfg.Executor != config.ExecutorCodex
+	for _, reviewer := range externalReview.Reviewers {
+		usesClaude = usesClaude || reviewer.Provider == config.ExternalReviewToolClaude
+	}
 	if !usesClaude {
 		return nil
 	}
@@ -1467,17 +1528,17 @@ func printExecutorInfo(info startupInfo, colors *progress.Colors) {
 		printCodexExecutorInfo(info, colors)
 	}
 
-	if info.ExternalReview.Provider != "" {
+	if reviewer, ok := info.ExternalReview.firstReviewer(); ok || info.ExternalReview.DisabledByCodexEnabled || info.ExternalReview.DisabledByMissing {
 		colors.Info().Printf("external review: %s\n", info.ExternalReview.providerLabel())
-		if info.ExternalReview.Provider == config.ExternalReviewToolCodex && info.ExternalReview.Model == "" {
+		if reviewer.Provider == config.ExternalReviewToolCodex && reviewer.Model == "" {
 			colors.Info().Printf("  model: %s\n", codexBannerValue(""))
-		} else if info.ExternalReview.Model != "" {
-			colors.Info().Printf("  model: %s\n", info.ExternalReview.Model)
+		} else if reviewer.Model != "" {
+			colors.Info().Printf("  model: %s\n", reviewer.Model)
 		}
-		if info.ExternalReview.Provider == config.ExternalReviewToolCodex && info.ExternalReview.Effort == "" {
+		if reviewer.Provider == config.ExternalReviewToolCodex && reviewer.Effort == "" {
 			colors.Info().Printf("  reasoning effort: %s\n", codexBannerValue(""))
-		} else if info.ExternalReview.Effort != "" {
-			colors.Info().Printf("  reasoning effort: %s\n", info.ExternalReview.Effort)
+		} else if reviewer.Effort != "" {
+			colors.Info().Printf("  reasoning effort: %s\n", reviewer.Effort)
 		}
 	}
 }
@@ -1548,10 +1609,10 @@ func runHeaderParams(o opts, cfg *config.Config, mode processor.Mode, external .
 	if cfg.Executor == config.ExecutorCodex {
 		p.Executor = config.ExecutorCodex
 	}
-	if externalReview.Provider != "" {
+	if reviewer, ok := externalReview.firstReviewer(); ok || externalReview.DisabledByCodexEnabled || externalReview.DisabledByMissing {
 		p.ExternalReview = externalReview.providerLabel()
 		p.ExternalReviewModel = externalReview.modelSpec()
-		if externalReview.Provider == config.ExternalReviewToolCodex && p.ExternalReviewModel == "" {
+		if reviewer.Provider == config.ExternalReviewToolCodex && p.ExternalReviewModel == "" {
 			p.ExternalReviewModel = "(inherits ~/.codex/config.toml)"
 		}
 	}
@@ -2102,6 +2163,19 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 		cfg.ClaudeArgs = o.ClaudeArgs
 		cfg.ClaudeArgsSet = true
 	}
+	if err := applyExternalReviewCLIOverrides(o, cfg); err != nil {
+		return err
+	}
+	if o.customReviewScriptSet {
+		cfg.CustomReviewScript = o.CustomReviewScript
+	}
+	return applyCodexOverrides(o, cfg, os.Stderr)
+}
+
+func applyExternalReviewCLIOverrides(o opts, cfg *config.Config) error {
+	if err := validateExternalReviewFlags(o); err != nil {
+		return err
+	}
 	if o.externalReviewToolSet {
 		cfg.ExternalReviewTool = o.ExternalReviewTool
 	}
@@ -2109,10 +2183,11 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 		cfg.ExternalReviewModel = o.ExternalReviewModel
 		cfg.ExternalReviewModelSet = true
 	}
-	if o.customReviewScriptSet {
-		cfg.CustomReviewScript = o.CustomReviewScript
+	if o.externalReviewersSet {
+		cfg.ExternalReviewers = o.ExternalReviewers
+		cfg.ExternalReviewersSet = true
 	}
-	return applyCodexOverrides(o, cfg, os.Stderr)
+	return nil
 }
 
 // applyCodexOverrides applies --codex / --pass-claude-md CLI flags after config

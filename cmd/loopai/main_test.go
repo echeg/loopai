@@ -968,6 +968,24 @@ func TestPreserveAnthropicAPIKeyFlag(t *testing.T) {
 }
 
 func TestProviderOverrideFlags(t *testing.T) {
+	t.Run("external_reviewers_flag_is_tracked_and_overrides_config", func(t *testing.T) {
+		cfg := &config.Config{ExternalReviewers: "claude:sonnet", ExternalReviewersSet: true}
+		o := parseTestOpts(t, "--external-reviewers", "codex:gpt-5.6:xhigh,claude:fable:max")
+
+		require.NoError(t, applyCLIOverrides(o, cfg))
+		assert.True(t, o.externalReviewersSet)
+		assert.Equal(t, "codex:gpt-5.6:xhigh,claude:fable:max", cfg.ExternalReviewers)
+		assert.True(t, cfg.ExternalReviewersSet)
+	})
+
+	t.Run("external_reviewers_conflicts_with_legacy_flags", func(t *testing.T) {
+		for _, legacy := range []string{"--external-review-tool=codex", "--external-review-model=gpt-5.6"} {
+			o := parseTestOpts(t, "--external-reviewers=codex", legacy)
+			require.ErrorContains(t, validateFlags(o), "cannot be combined")
+			require.ErrorContains(t, applyCLIOverrides(o, &config.Config{}), "cannot be combined")
+		}
+	})
+
 	t.Run("external_review_tool_accepts_auto_and_claude", func(t *testing.T) {
 		for _, tool := range []string{config.ExternalReviewToolAuto, config.ExternalReviewToolClaude} {
 			o := parseTestOpts(t, "--external-review-tool="+tool)
@@ -1133,13 +1151,45 @@ func TestResolveExternalReviewSelection(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tc.wantTool, got.Provider)
-			assert.Equal(t, tc.wantModel, got.Model)
-			assert.Equal(t, tc.wantEffort, got.Effort)
+			reviewer, ok := got.firstReviewer()
+			if tc.wantTool == config.ExternalReviewToolNone {
+				assert.False(t, ok)
+			} else {
+				require.True(t, ok)
+				assert.Equal(t, tc.wantTool, reviewer.Provider)
+				assert.Equal(t, tc.wantModel, reviewer.Model)
+				assert.Equal(t, tc.wantEffort, reviewer.Effort)
+				assert.Equal(t, tc.wantMax, reviewer.MaxDropped)
+			}
 			assert.Equal(t, tc.wantAuto, got.AutoSelected)
-			assert.Equal(t, tc.wantMax, got.MaxDropped)
 		})
 	}
+}
+
+func TestResolveExternalReviewerChain(t *testing.T) {
+	cfg := &config.Config{
+		ExternalReviewers:    "codex, claude:fable:max, custom",
+		ExternalReviewersSet: true,
+		CodexModel:           "gpt-5.5",
+		CodexReasoningEffort: "high",
+	}
+
+	got, err := resolveExternalReviewSelection(opts{}, cfg, processor.ModeFull)
+	require.NoError(t, err)
+	assert.True(t, got.Explicit)
+	assert.Equal(t, []resolvedReviewer{
+		{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "high"},
+		{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max"},
+		{Provider: config.ExternalReviewToolCustom},
+	}, got.Reviewers)
+
+	tasksOnly, err := resolveExternalReviewSelection(opts{}, cfg, processor.ModeTasksOnly)
+	require.NoError(t, err)
+	assert.Empty(t, tasksOnly.Reviewers)
+
+	bad := &config.Config{ExternalReviewers: "codex,", ExternalReviewersSet: true}
+	_, err = resolveExternalReviewSelection(opts{}, bad, processor.ModeFull)
+	assert.ErrorContains(t, err, "parse external_reviewers")
 }
 
 func TestExternalReviewWarnings(t *testing.T) {
@@ -1178,11 +1228,11 @@ func TestCheckExecutionDeps(t *testing.T) {
 		wantErr     string
 		wantWarning bool
 	}{
-		{name: "both providers present", cfg: config.Config{ClaudeCommand: fakeClaude, CodexCommand: fakeCodex}, selection: externalReviewSelection{Provider: "codex", AutoSelected: true}, wantTool: "codex"},
-		{name: "automatic external missing degrades", cfg: config.Config{ClaudeCommand: fakeClaude, CodexCommand: missingCodex}, selection: externalReviewSelection{Provider: "codex", AutoSelected: true}, wantTool: "none", wantWarning: true},
-		{name: "explicit external missing fails", cfg: config.Config{ClaudeCommand: fakeClaude, CodexCommand: missingCodex}, selection: externalReviewSelection{Provider: "codex", Explicit: true}, wantTool: "codex", wantErr: "install the codex CLI"},
-		{name: "codex primary automatic claude missing degrades", cfg: config.Config{Executor: config.ExecutorCodex, ClaudeCommand: missingClaude, CodexCommand: fakeCodex}, selection: externalReviewSelection{Provider: "claude", AutoSelected: true}, wantTool: "none", wantWarning: true},
-		{name: "primary missing always fails", cfg: config.Config{ClaudeCommand: missingClaude, CodexCommand: fakeCodex}, selection: externalReviewSelection{Provider: "none"}, wantTool: "none", wantErr: "install Claude Code"},
+		{name: "both providers present", cfg: config.Config{ClaudeCommand: fakeClaude, CodexCommand: fakeCodex}, selection: externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: "codex"}}, AutoSelected: true}, wantTool: "codex"},
+		{name: "automatic external missing degrades", cfg: config.Config{ClaudeCommand: fakeClaude, CodexCommand: missingCodex}, selection: externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: "codex"}}, AutoSelected: true}, wantTool: "none", wantWarning: true},
+		{name: "explicit external missing fails", cfg: config.Config{ClaudeCommand: fakeClaude, CodexCommand: missingCodex}, selection: externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: "codex"}}, Explicit: true}, wantTool: "codex", wantErr: "install the codex CLI"},
+		{name: "codex primary automatic claude missing degrades", cfg: config.Config{Executor: config.ExecutorCodex, ClaudeCommand: missingClaude, CodexCommand: fakeCodex}, selection: externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: "claude"}}, AutoSelected: true}, wantTool: "none", wantWarning: true},
+		{name: "primary missing always fails", cfg: config.Config{ClaudeCommand: missingClaude, CodexCommand: fakeCodex}, selection: externalReviewSelection{}, wantTool: "none", wantErr: "install Claude Code"},
 	}
 
 	for _, tc := range tests {
@@ -1195,10 +1245,44 @@ func TestCheckExecutionDeps(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
-			assert.Equal(t, tc.wantTool, got.Provider)
+			reviewer, ok := got.firstReviewer()
+			if tc.wantTool == config.ExternalReviewToolNone {
+				assert.False(t, ok)
+			} else {
+				require.True(t, ok)
+				assert.Equal(t, tc.wantTool, reviewer.Provider)
+			}
 			assert.Equal(t, tc.wantWarning, warnings.Len() > 0)
 		})
 	}
+}
+
+func TestCheckExecutionDepsChain(t *testing.T) {
+	fakeClaude := filepath.Join(t.TempDir(), "claude-ok")
+	writeExecutable(t, fakeClaude, "#!/bin/sh\nexit 0\n")
+	missingCodex := filepath.Join(t.TempDir(), "missing-codex")
+
+	t.Run("explicit chain missing binary fails", func(t *testing.T) {
+		cfg := &config.Config{ClaudeCommand: fakeClaude, CodexCommand: missingCodex}
+		selection := externalReviewSelection{Explicit: true, Reviewers: []resolvedReviewer{
+			{Provider: config.ExternalReviewToolClaude},
+			{Provider: config.ExternalReviewToolCodex},
+			{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.6"},
+		}}
+		_, err := checkExecutionDeps(cfg, selection, io.Discard)
+		assert.ErrorContains(t, err, "install the codex CLI")
+	})
+
+	t.Run("custom reviewer requires script", func(t *testing.T) {
+		cfg := &config.Config{ClaudeCommand: fakeClaude}
+		selection := externalReviewSelection{Explicit: true, Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCustom}}}
+		_, err := checkExecutionDeps(cfg, selection, io.Discard)
+		require.EqualError(t, err, "custom external reviewer requires custom_review_script")
+
+		cfg.CustomReviewScript = "/tmp/review.sh"
+		_, err = checkExecutionDeps(cfg, selection, io.Discard)
+		require.NoError(t, err)
+	})
 }
 
 func TestRunAppliesClaudeCommandOverrideBeforeDependencyCheck(t *testing.T) {
@@ -1260,23 +1344,23 @@ func TestDetectClaudeSwapRecovery(t *testing.T) {
 	t.Setenv("PATH", binDir)
 	cfg := &config.Config{ClaudeSwapEnabled: true, ClaudeCommand: "claude"}
 
-	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, config.ExternalReviewToolCodex),
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}),
 		"missing claude-swap keeps the optional integration disabled")
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "claude-swap"), []byte("#!/bin/sh\n"), 0o755)) //nolint:gosec // executable fixture for LookPath
-	assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, config.ExternalReviewToolCodex))
-	assert.Nil(t, detectClaudeSwapRecovery(opts{NoClaudeSwap: true}, cfg, config.ExternalReviewToolCodex))
+	assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
+	assert.Nil(t, detectClaudeSwapRecovery(opts{NoClaudeSwap: true}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
 
 	cfg.ClaudeSwapEnabled = false
-	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, config.ExternalReviewToolCodex))
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
 	cfg.ClaudeSwapEnabled = true
 	cfg.ClaudeCommand = "claude-wrapper"
-	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, config.ExternalReviewToolCodex),
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}),
 		"custom stream-json wrappers must not mutate Claude Code credentials")
 
 	cfg.ClaudeCommand = "claude"
 	cfg.Executor = config.ExecutorCodex
-	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, config.ExternalReviewToolCodex))
-	assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, config.ExternalReviewToolClaude),
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
+	assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}, {Provider: config.ExternalReviewToolClaude}}}),
 		"a native external Claude reviewer uses the same failover integration")
 }
 
@@ -1674,9 +1758,7 @@ func TestCmuxRunModels(t *testing.T) {
 	t.Run("claude models use configured review and resolved external model", func(t *testing.T) {
 		cfg := &config.Config{ReviewModel: "sonnet:high"}
 		externalReview := externalReviewSelection{
-			Provider: config.ExternalReviewToolCodex,
-			Model:    "gpt-5.6",
-			Effort:   "xhigh",
+			Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.6", Effort: "xhigh"}},
 		}
 
 		assert.Equal(t, cmux.Models{
@@ -1772,7 +1854,7 @@ func TestRunHeaderParams(t *testing.T) {
 	})
 
 	t.Run("external model is distinct from primary review model", func(t *testing.T) {
-		external := externalReviewSelection{Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "xhigh", AutoSelected: true}
+		external := externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "xhigh"}}, AutoSelected: true}
 		got := runHeaderParams(parseTestOpts(t, "--review-model", "gpt-5.5:low"),
 			&config.Config{Executor: config.ExecutorCodex}, processor.ModeFull, external)
 		assert.Equal(t, "gpt-5.5:low", got.ReviewModel)
@@ -2035,7 +2117,7 @@ func TestPrintStartupInfo(t *testing.T) {
 			ProgressPath:  "progress.txt",
 			Executor:      config.ExecutorCodex,
 			ExternalReview: externalReviewSelection{
-				Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "xhigh", AutoSelected: true,
+				Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "xhigh"}}, AutoSelected: true,
 			},
 		}
 		out := captureStdout(t, func() { printStartupInfo(info, colors) })
