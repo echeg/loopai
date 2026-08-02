@@ -3220,6 +3220,38 @@ func TestRunMergeCommand(t *testing.T) {
 		assert.Zero(t, clearer.calls)
 	})
 
+	t.Run("ignored base file that merge would overwrite is preserved", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("secret.env\n"), 0o600))
+		runGit(t, dir, "add", ".gitignore")
+		runGit(t, dir, "commit", "-m", "ignore local secret")
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "secret.env"), []byte("feature version\n"), 0o600))
+		runGit(t, dir, "add", "-f", "secret.env")
+		runGit(t, dir, "commit", "-m", "feature adds secret path")
+		mainSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "checkout", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "secret.env"), []byte("local ignored data\n"), 0o600))
+		worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
+		runGit(t, dir, "worktree", "add", worktreePath, "feature")
+		t.Cleanup(func() { _ = mainSvc.RemoveWorktree(worktreePath) })
+		featureSvc, err := git.NewService(worktreePath, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		err = runMergeCommand(t.Context(), featureSvc, "master", clearer, io.Discard)
+		require.ErrorContains(t, err, "merge \"feature\" into \"master\" failed")
+		content, readErr := os.ReadFile(filepath.Join(dir, "secret.env")) //nolint:gosec // test fixture
+		require.NoError(t, readErr)
+		assert.Equal(t, "local ignored data\n", string(content))
+		assert.Equal(t, "master", currentGitBranch(t, dir))
+		assert.Equal(t, "feature", currentGitBranch(t, worktreePath))
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+	})
+
 	t.Run("dirty tree is refused", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		svc := makeFeature(t, dir)
@@ -3244,6 +3276,31 @@ func TestRunMergeCommand(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "clean working tree")
 		assert.Equal(t, "feature", currentGitBranch(t, dir))
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("ignored file that checkout would overwrite is refused", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("secret.env\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "secret.env"), []byte("base version\n"), 0o600))
+		runGit(t, dir, "add", ".gitignore")
+		runGit(t, dir, "add", "-f", "secret.env")
+		runGit(t, dir, "commit", "-m", "base secret fixture")
+		runGit(t, dir, "checkout", "-b", "feature")
+		runGit(t, dir, "rm", "secret.env")
+		runGit(t, dir, "commit", "-m", "remove secret from feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "secret.env"), []byte("local ignored data\n"), 0o600))
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		err = runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
+		require.ErrorContains(t, err, "check out base branch")
+		assert.Equal(t, "feature", currentGitBranch(t, dir))
+		content, readErr := os.ReadFile(filepath.Join(dir, "secret.env")) //nolint:gosec // test fixture
+		require.NoError(t, readErr)
+		assert.Equal(t, "local ignored data\n", string(content))
 		assert.True(t, branchExists(t, dir, "feature"))
 		assert.Zero(t, clearer.calls)
 	})

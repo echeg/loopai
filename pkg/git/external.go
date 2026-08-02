@@ -160,7 +160,7 @@ func (e *externalBackend) hasCommits() (bool, error) {
 
 // currentBranch returns the name of the current branch, or empty string for detached HEAD.
 func (e *externalBackend) currentBranch() (string, error) {
-	cmd := exec.CommandContext(context.Background(), e.command, "symbolic-ref", "--short", "HEAD")
+	cmd := exec.CommandContext(context.Background(), e.command, "symbolic-ref", "HEAD")
 	cmd.Dir = e.path
 	cmd.Env = append(os.Environ(), "LC_ALL=C") // force English stderr for reliable parsing
 	out, err := cmd.Output()
@@ -177,7 +177,12 @@ func (e *externalBackend) currentBranch() (string, error) {
 		}
 		return "", fmt.Errorf("get current branch: %w", err) // unexpected exit code or exec failure
 	}
-	return strings.TrimSpace(string(out)), nil
+	ref := strings.TrimSpace(string(out))
+	const headsPrefix = "refs/heads/"
+	if !strings.HasPrefix(ref, headsPrefix) {
+		return "", fmt.Errorf("get current branch: HEAD points to unexpected symbolic ref %q", ref)
+	}
+	return strings.TrimPrefix(ref, headsPrefix), nil
 }
 
 func (e *externalBackend) originURL() (string, error) {
@@ -239,7 +244,7 @@ func (e *externalBackend) createBranch(name string) error {
 
 // checkoutBranch switches to an existing branch.
 func (e *externalBackend) checkoutBranch(name string) error {
-	_, err := e.run("checkout", name)
+	_, err := e.run("checkout", "--no-overwrite-ignore", name)
 	if err != nil {
 		return fmt.Errorf("checkout branch: %w", err)
 	}
@@ -249,7 +254,7 @@ func (e *externalBackend) checkoutBranch(name string) error {
 // mergeBranch merges the named branch into the current HEAD. If git leaves a
 // merge in progress, the merge is aborted before ErrMergeConflict is returned.
 func (e *externalBackend) mergeBranch(ctx context.Context, name string) error {
-	_, err := e.runContext(ctx, "merge", name)
+	_, err := e.runContext(ctx, "merge", "--no-overwrite-ignore", name)
 	if err == nil {
 		return nil
 	}
@@ -277,7 +282,11 @@ func (e *externalBackend) deleteBranch(name string) error {
 
 // push pushes a branch to origin and records the upstream relationship.
 func (e *externalBackend) push(ctx context.Context, branch string) error {
-	if _, err := e.runContext(ctx, "push", "-u", "origin", branch); err != nil {
+	ref := "refs/heads/" + branch
+	if _, err := e.runContext(ctx, "check-ref-format", ref); err != nil {
+		return fmt.Errorf("validate branch ref: %w", err)
+	}
+	if _, err := e.runContext(ctx, "push", "-u", "origin", ref+":"+ref); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
 	return nil

@@ -3,6 +3,7 @@ package git
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -307,19 +308,39 @@ func TestService_DeleteBranch(t *testing.T) {
 }
 
 func TestService_Push(t *testing.T) {
-	dir := setupExternalTestRepo(t)
-	remote := t.TempDir()
-	runGit(t, remote, "init", "--bare")
-	runGit(t, dir, "remote", "add", "origin", remote)
-	runGit(t, dir, "checkout", "-b", "feature")
+	t.Run("pushes ordinary branch and records upstream", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		remote := t.TempDir()
+		runGit(t, remote, "init", "--bare")
+		runGit(t, dir, "remote", "add", "origin", remote)
+		runGit(t, dir, "checkout", "-b", "feature")
 
-	svc, err := NewService(dir, noopServiceLogger())
-	require.NoError(t, err)
-	require.NoError(t, svc.Push("feature"))
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		require.NoError(t, svc.Push("feature"))
 
-	assert.Equal(t, strings.TrimSpace(runGit(t, dir, "rev-parse", "feature")),
-		strings.TrimSpace(runGit(t, remote, "rev-parse", "refs/heads/feature")))
-	assert.Equal(t, "origin/feature", strings.TrimSpace(runGit(t, dir, "rev-parse", "--abbrev-ref", "feature@{upstream}")))
+		assert.Equal(t, strings.TrimSpace(runGit(t, dir, "rev-parse", "feature")),
+			strings.TrimSpace(runGit(t, remote, "rev-parse", "refs/heads/feature")))
+		assert.Equal(t, "origin/feature", strings.TrimSpace(runGit(t, dir, "rev-parse", "--abbrev-ref", "feature@{upstream}")))
+	})
+
+	t.Run("leading plus remains part of branch name", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		remote := t.TempDir()
+		runGit(t, remote, "init", "--bare")
+		runGit(t, dir, "remote", "add", "origin", remote)
+		runGit(t, dir, "update-ref", "refs/heads/+feature", "HEAD")
+
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		require.NoError(t, svc.Push("+feature"))
+
+		assert.Equal(t, strings.TrimSpace(runGit(t, dir, "rev-parse", "refs/heads/+feature")),
+			strings.TrimSpace(runGit(t, remote, "rev-parse", "refs/heads/+feature")))
+		wrongRef := exec.Command("git", "rev-parse", "--verify", "refs/heads/feature")
+		wrongRef.Dir = remote
+		require.Error(t, wrongRef.Run(), "the leading plus must not become force-refspec syntax")
+	})
 }
 
 func TestService_WorktreeInspectionAndSafeRemoval(t *testing.T) {

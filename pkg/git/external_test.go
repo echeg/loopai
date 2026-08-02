@@ -15,7 +15,7 @@ import (
 func TestExternalBackendCloseoutCommandsHonorCancellation(t *testing.T) {
 	dir := t.TempDir()
 	command := filepath.Join(t.TempDir(), "slow-git")
-	require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\ncase \"$1\" in merge|push) sleep 30 ;; esac\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
+	require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\ncase \"$1\" in check-ref-format) exit 0 ;; merge|push) sleep 30 ;; esac\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
 	backend := &externalBackend{path: dir, command: command}
 
 	for _, tc := range []struct {
@@ -206,6 +206,18 @@ func TestExternalBackend_CurrentBranch(t *testing.T) {
 		branch, err := eb.currentBranch()
 		require.NoError(t, err)
 		assert.Equal(t, "feature-test", branch)
+	})
+
+	t.Run("returns canonical branch name when a tag has the same name", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		require.NoError(t, eb.createBranch("release"))
+		runGit(t, dir, "tag", "release")
+		branch, err := eb.currentBranch()
+		require.NoError(t, err)
+		assert.Equal(t, "release", branch)
 	})
 
 	t.Run("returns empty string for detached HEAD", func(t *testing.T) {
