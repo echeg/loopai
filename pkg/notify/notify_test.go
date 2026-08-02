@@ -411,19 +411,21 @@ func TestService_FormatMessage(t *testing.T) {
 
 	t.Run("success message", func(t *testing.T) {
 		msg := svc.formatMessage(Result{
-			Status:    "success",
-			PlanFile:  "docs/plans/add-auth.md",
-			Branch:    "add-auth",
-			Mode:      "full",
-			Duration:  "12m 34s",
-			Files:     8,
-			Additions: 142,
-			Deletions: 23,
+			Status:         "success",
+			PlanFile:       "docs/plans/add-auth.md",
+			Branch:         "add-auth",
+			Mode:           "full",
+			Duration:       "12m 34s",
+			ExternalReview: "codex (gpt-5.5:xhigh) → claude (fable:max)",
+			Files:          8,
+			Additions:      142,
+			Deletions:      23,
 		})
 		assert.Contains(t, msg, "loopai completed on build-server")
 		assert.Contains(t, msg, "plan:     docs/plans/add-auth.md")
 		assert.Contains(t, msg, "branch:   add-auth")
 		assert.Contains(t, msg, "mode:     full")
+		assert.Contains(t, msg, "external: codex (gpt-5.5:xhigh) → claude (fable:max)")
 		assert.Contains(t, msg, "duration: 12m 34s")
 		assert.Contains(t, msg, "changes:  8 files (+142/-23 lines)")
 		assert.NotContains(t, msg, "error:")

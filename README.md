@@ -201,7 +201,7 @@ The full pipeline has four phases:
 
 An optional finalize step can run after review. It is disabled by default and controlled with `finalize_enabled`; `--skip-finalize` disables it for one invocation.
 
-Press Ctrl+\ during a task iteration to pause it, edit the plan, and retry the same task in a fresh session. During external review, Ctrl+\ terminates that review loop. This shortcut is not available on Windows.
+Press Ctrl+\ during a task iteration to pause it, edit the plan, and retry the same task in a fresh session. During external review, Ctrl+\ terminates the entire reviewer chain and skips all remaining reviewers. This shortcut is not available on Windows.
 
 ## Plan format
 
@@ -224,7 +224,7 @@ With `external_review_tool = auto`, loopai selects the other installed first-cla
 - Claude primary → Codex external reviewer
 - Codex primary → Claude external reviewer
 
-If an automatically selected reviewer is unavailable, loopai warns and skips only that phase. A missing primary or explicitly selected reviewer is an error. Set `external_review_tool = none` to disable external review.
+If an automatically selected reviewer is unavailable, loopai warns and skips only that phase. A missing primary or explicitly selected reviewer is an error. Set `external_review_tool = none` to disable the legacy single-reviewer path when `external_reviewers` is unset.
 
 For an ordered review chain, set `external_reviewers` to a comma-separated list of
 `provider[:model[:effort]]` entries. Providers are `claude`, `codex`, and `custom`:
@@ -233,11 +233,18 @@ For an ordered review chain, set `external_reviewers` to a comma-separated list 
 external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max
 ```
 
-Each reviewer runs until it reports no findings before the next reviewer starts. Reviewers remain
-read-only: the primary executor evaluates their findings and applies fixes with `review_model`
-(falling back to `task_model`). An explicit `external_reviewers` value takes precedence over
-`external_review_tool` and `external_review_model`. Unlike the legacy `auto` mode, every provider
-in a chain is explicit, so a missing reviewer binary is an error.
+Reviewers run in list order. Each reviewer loops until it reports no findings, reaches its own
+`max_external_iterations` cap, or triggers its own `review_patience` threshold; then the next
+reviewer starts. Reviewers remain read-only: the primary executor evaluates their findings and
+applies fixes with `review_model` (falling back to `task_model`). A bare `claude` entry defaults to
+`opus:xhigh`; a bare `codex` entry uses `codex_model` and `codex_reasoning_effort`. Codex ignores
+the Claude-only `max` effort with a warning. Use `provider::effort` to override only effort.
+
+Providers may be repeated—each entry creates a separate review loop. An explicit
+`external_reviewers` value at any config layer takes precedence over `external_review_tool` and
+`external_review_model`; use an empty local value or `--external-reviewers=` to clear/disable an
+inherited chain. Unlike legacy `auto`, every non-empty chain entry is explicit, so a missing
+reviewer binary is an error.
 
 The equivalent per-run flag is:
 

@@ -3,6 +3,7 @@ package phase
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -133,6 +134,9 @@ func TestExternalReviewPhaseRunsReviewersInOrderUntilClean(t *testing.T) {
 	assert.True(t, outcome.HadFindings)
 	assert.Equal(t, []string{"codex", "codex", "claude", "claude"}, order)
 	assert.Len(t, evaluator.RunCalls(), 4)
+	require.Len(t, second.RunCalls(), 2)
+	assert.NotContains(t, second.RunCalls()[0].Prompt, "fixed first",
+		"each reviewer must start with fresh loop context")
 	sections := log.PrintSectionCalls()
 	require.Len(t, sections, 10)
 	assert.Equal(t, "external review (codex)", sections[0].Section.Label)
@@ -204,6 +208,57 @@ func TestExternalReviewPhaseCancellationStopsRemainingReviewers(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Empty(t, first.RunCalls())
 	assert.Empty(t, second.RunCalls())
+}
+
+func TestExternalReviewPhaseSecondReviewerErrorStopsChain(t *testing.T) {
+	first := newTaskPhaseMockExecutor([]executor.Result{{Output: "clean"}})
+	secondErr := errors.New("reviewer failed")
+	second := newTaskPhaseMockExecutor([]executor.Result{{Error: secondErr}})
+	third := newTaskPhaseMockExecutor([]executor.Result{{Output: "must not run"}})
+	evaluator := newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.ExternalReviewDone}})
+	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
+		cfg: Config{MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}, review: evaluator,
+		reviewers: []ExternalReviewer{
+			{Tool: config.ExternalReviewToolCodex, Exec: first},
+			{Tool: config.ExternalReviewToolClaude, Exec: second},
+			{Tool: config.ExternalReviewToolCodex, Exec: third},
+		},
+	})
+
+	_, err := phase.Run(t.Context())
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, secondErr)
+	require.ErrorContains(t, err, "claude execution")
+	assert.Empty(t, third.RunCalls())
+}
+
+func TestExternalReviewPhaseIterationCapAdvancesToNextReviewer(t *testing.T) {
+	first := newTaskPhaseMockExecutor([]executor.Result{{Output: "finding"}})
+	second := newTaskPhaseMockExecutor([]executor.Result{{Output: "clean"}})
+	evaluator := newTaskPhaseMockExecutor([]executor.Result{
+		{Output: "fixed"},
+		{Output: "done", Signal: status.ExternalReviewDone},
+	})
+	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
+		cfg: Config{
+			MaxIterations: 50, MaxExternalIterations: 1, CodexEnabled: true,
+			AppConfig: testAppConfig(t),
+		},
+		review: evaluator,
+		reviewers: []ExternalReviewer{
+			{Tool: config.ExternalReviewToolCodex, Exec: first},
+			{Tool: config.ExternalReviewToolClaude, Exec: second},
+		},
+	})
+
+	outcome, err := phase.Run(t.Context())
+
+	require.NoError(t, err)
+	assert.True(t, outcome.HadFindings)
+	assert.Len(t, first.RunCalls(), 1)
+	assert.Len(t, second.RunCalls(), 1)
+	assert.Contains(t, fmt.Sprint(log.PrintCalls()), "max %s iterations reached, continuing to next phase")
 }
 
 func TestExternalReviewPhaseStalematePatienceIsPerReviewer(t *testing.T) {

@@ -560,10 +560,11 @@ func cmuxNotifyTarget(planFile, branch string) string {
 // buildNotifyResult constructs a notify.Result from execution parameters.
 func buildNotifyResult(req executePlanRequest, branch, elapsed string, stats git.DiffStats, runErr error) notify.Result {
 	result := notify.Result{
-		Mode:     string(req.Mode),
-		PlanFile: req.PlanFile,
-		Branch:   branch,
-		Duration: elapsed,
+		Mode:           string(req.Mode),
+		PlanFile:       req.PlanFile,
+		Branch:         branch,
+		Duration:       elapsed,
+		ExternalReview: externalReviewNotificationLabel(req.ExternalReview),
 	}
 	if runErr != nil {
 		result.Status = "failure"
@@ -575,6 +576,16 @@ func buildNotifyResult(req executePlanRequest, branch, elapsed string, stats git
 		result.Deletions = stats.Deletions
 	}
 	return result
+}
+
+func externalReviewNotificationLabel(selection externalReviewSelection) string {
+	if !selection.Resolved {
+		return ""
+	}
+	if len(selection.Reviewers) > 1 {
+		return selection.chainLabel()
+	}
+	return selection.providerLabel()
 }
 
 // displayStats prints completion summary with optional diff statistics and paths.
@@ -1107,6 +1118,7 @@ func (r resolvedReviewer) modelSpec() string {
 // contain concrete providers; legacy auto/none state is kept as selection metadata.
 type externalReviewSelection struct {
 	Reviewers              []resolvedReviewer
+	Resolved               bool
 	AutoSelected           bool
 	Explicit               bool
 	DisabledByCodexEnabled bool
@@ -1177,10 +1189,10 @@ func primaryProvider(cfg *config.Config) string {
 // gate because the user explicitly requested the external-review pipeline.
 func resolveExternalReviewSelection(o opts, cfg *config.Config, mode processor.Mode) (externalReviewSelection, error) {
 	if cfg == nil {
-		return externalReviewSelection{}, nil
+		return externalReviewSelection{Resolved: true}, nil
 	}
 	if mode == processor.ModeTasksOnly {
-		return externalReviewSelection{}, nil
+		return externalReviewSelection{Resolved: true}, nil
 	}
 
 	if cfg.ExternalReviewersSet {
@@ -1188,7 +1200,7 @@ func resolveExternalReviewSelection(o opts, cfg *config.Config, mode processor.M
 		if err != nil {
 			return externalReviewSelection{}, fmt.Errorf("parse external_reviewers: %w", err)
 		}
-		selection := externalReviewSelection{Explicit: true, Reviewers: make([]resolvedReviewer, 0, len(specs))}
+		selection := externalReviewSelection{Resolved: true, Explicit: true, Reviewers: make([]resolvedReviewer, 0, len(specs))}
 		for _, spec := range specs {
 			model, effort, maxDropped := processor.ResolveExternalReviewerModelEffort(
 				spec.Provider, spec.ModelSpec, cfg.CodexModel, cfg.CodexReasoningEffort)
@@ -1204,6 +1216,7 @@ func resolveExternalReviewSelection(o opts, cfg *config.Config, mode processor.M
 		requested = config.ExternalReviewToolAuto
 	}
 	selection := externalReviewSelection{
+		Resolved:     true,
 		AutoSelected: requested == config.ExternalReviewToolAuto,
 		Explicit:     requested != config.ExternalReviewToolAuto,
 	}
@@ -1435,16 +1448,6 @@ func validateExternalReviewFlags(o opts) error {
 // createRunner creates a processor.Runner with the given configuration.
 func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *status.PhaseHolder) *processor.Runner {
 	externalReview := req.ExternalReview
-	if len(externalReview.Reviewers) == 0 && !externalReview.Explicit && !externalReview.AutoSelected &&
-		!externalReview.DisabledByCodexEnabled && !externalReview.DisabledByMissing {
-		var err error
-		externalReview, err = resolveExternalReviewSelection(o, req.Config, req.Mode)
-		if err != nil {
-			// run() validates this before runner construction; this fallback is for
-			// direct test helpers and preserves a safely disabled phase on bad input.
-			externalReview = externalReviewSelection{}
-		}
-	}
 	applyEffectiveExternalReview(req.Config, externalReview)
 	reviewer, enabled := externalReview.firstReviewer()
 	reviewers := make([]config.ReviewerSpec, 0, len(externalReview.Reviewers))
@@ -1557,7 +1560,7 @@ func printExecutorInfo(info startupInfo, colors *progress.Colors) {
 
 func printExternalReviewInfo(selection externalReviewSelection, colors *progress.Colors) {
 	reviewer, enabled := selection.firstReviewer()
-	if !enabled && !selection.DisabledByCodexEnabled && !selection.DisabledByMissing {
+	if !enabled && !selection.Resolved {
 		return
 	}
 	if len(selection.Reviewers) > 1 {
@@ -1644,7 +1647,7 @@ func runHeaderParams(o opts, cfg *config.Config, mode processor.Mode, external .
 	if cfg.Executor == config.ExecutorCodex {
 		p.Executor = config.ExecutorCodex
 	}
-	if reviewer, ok := externalReview.firstReviewer(); ok || externalReview.DisabledByCodexEnabled || externalReview.DisabledByMissing {
+	if reviewer, ok := externalReview.firstReviewer(); ok || externalReview.Resolved {
 		if len(externalReview.Reviewers) > 1 {
 			p.ExternalReview = externalReview.chainLabel()
 		} else {
@@ -2241,13 +2244,6 @@ func applyCodexOverrides(o opts, cfg *config.Config, warnW io.Writer) error {
 	_ = warnW
 	if o.Codex {
 		cfg.Executor = config.ExecutorCodex
-	}
-	if o.externalReviewToolSet {
-		cfg.ExternalReviewTool = o.ExternalReviewTool
-	}
-	if o.externalReviewModelSet {
-		cfg.ExternalReviewModel = o.ExternalReviewModel
-		cfg.ExternalReviewModelSet = true
 	}
 	if o.PassClaudeMd {
 		cfg.PassClaudeMd = true

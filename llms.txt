@@ -80,9 +80,9 @@ The full pipeline is:
 6. run a final critical/major review
 7. optionally finalize and move the plan to `docs/plans/completed/`
 
-Claude Code is primary by default. `--codex` makes Codex primary for planning, task execution, internal review, fixes, and finalize. `external_review_tool = auto` selects the other installed provider. Set it to `none` to disable external review.
+Claude Code is primary by default. `--codex` makes Codex primary for planning, task execution, internal review, fixes, and finalize. `external_review_tool = auto` selects the other installed provider. Set it to `none` to disable the legacy review path when `external_reviewers` is unset.
 
-For an ordered chain, configure `external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max` using `provider[:model[:effort]]` entries. It takes precedence over `external_review_tool` and `external_review_model`. Reviewers run sequentially, each until clean; they only report findings, while the primary executor evaluates and fixes them with `review_model` (falling back to `task_model`). Providers are `claude`, `codex`, and `custom`. A `custom` entry cannot include a model and requires `custom_review_script`.
+For an ordered chain, configure `external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max` using `provider[:model[:effort]]` entries. It takes precedence over `external_review_tool` and `external_review_model`; an empty local value or `--external-reviewers=` clears/disables an inherited chain. Reviewers run sequentially until clean, their per-reviewer iteration cap, or their per-reviewer stalemate threshold; they only report findings, while the primary executor evaluates and fixes them with `review_model` (falling back to `task_model`). Bare `claude` defaults to `opus:xhigh`; bare `codex` uses the configured Codex defaults, and Codex ignores `max` effort with a warning. Providers may repeat, with each entry creating a separate loop. Providers are `claude`, `codex`, and `custom`; a `custom` entry cannot include a model, requires `custom_review_script`, and repeated custom entries share that script.
 
 ## Configuration and data
 

@@ -110,13 +110,9 @@ type GitChecker interface {
 	DiffFingerprint() (string, error)
 }
 
-// ExternalReviewer pairs an external-review provider with its executor.
-// Exec may be nil when a required custom script is not configured; the phase
-// reports that configuration error when it runs.
-type ExternalReviewer struct {
-	Tool string
-	Exec Executor
-}
+// ExternalReviewer is the shared runtime reviewer type used by the processor
+// factory and external-review phase.
+type ExternalReviewer = phase.ExternalReviewer
 
 // Executors groups the executor dependencies for the Runner.
 // Role-named: Task is used for the task phase, Review for review phases (nil = use Task),

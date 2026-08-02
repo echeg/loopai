@@ -143,13 +143,16 @@ JSON schema piped to stdin:
   "plan_file": "docs/plans/add-auth.md",
   "branch": "add-auth",
   "duration": "12m 34s",
+  "external_review": "codex (gpt-5.5:xhigh) → claude (fable:max)",
   "files": 8,
   "additions": 142,
   "deletions": 23
 }
 ```
 
-The `error` field is present only on failure (omitted on success).
+The `external_review` field contains the effective reviewer or reviewer-chain label and is omitted
+only when review selection was not resolved. The `error` field is present only on failure (omitted
+on success).
 
 Example script:
 
@@ -223,6 +226,7 @@ loopai completed on myhost
 plan:     docs/plans/add-auth.md
 branch:   add-auth
 mode:     full
+external: codex (gpt-5.5:xhigh) → claude (fable:max)
 duration: 12m 34s
 changes:  8 files (+142/-23 lines)
 ```
@@ -235,6 +239,7 @@ loopai failed on myhost
 plan:     docs/plans/add-auth.md
 branch:   add-auth
 mode:     full
+external: codex (gpt-5.5:xhigh) → claude (fable:max)
 duration: 5m 12s
 error:    runner: task phase: max iterations reached
 ```

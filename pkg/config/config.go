@@ -41,6 +41,10 @@ type ReviewerSpec struct {
 // ParseExternalReviewers parses a comma-separated list of
 // provider[:model[:effort]] reviewer specifications.
 func ParseExternalReviewers(value string) ([]ReviewerSpec, error) {
+	if strings.TrimSpace(value) == "" {
+		return []ReviewerSpec{}, nil
+	}
+
 	entries := strings.Split(value, ",")
 	reviewers := make([]ReviewerSpec, 0, len(entries))
 	for i, entry := range entries {
@@ -49,9 +53,21 @@ func ParseExternalReviewers(value string) ([]ReviewerSpec, error) {
 			return nil, fmt.Errorf("external reviewer entry %d is empty", i+1)
 		}
 
-		provider, modelSpec, _ := strings.Cut(entry, ":")
-		provider = strings.TrimSpace(provider)
-		modelSpec = strings.TrimSpace(modelSpec)
+		parts := strings.Split(entry, ":")
+		if len(parts) > 3 {
+			return nil, fmt.Errorf("external reviewer entry %d has too many ':' separators", i+1)
+		}
+		provider := strings.TrimSpace(parts[0])
+		modelSpec := ""
+		if len(parts) > 1 {
+			modelSpec = strings.TrimSpace(parts[1])
+		}
+		if len(parts) == 3 {
+			effort := strings.TrimSpace(parts[2])
+			if effort != "" {
+				modelSpec += ":" + effort
+			}
+		}
 		switch provider {
 		case ExternalReviewToolClaude, ExternalReviewToolCodex:
 		case ExternalReviewToolCustom:

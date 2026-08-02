@@ -125,7 +125,11 @@ external_review_model =
 # available providers: claude, codex, custom
 # example: external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max
 # when set, takes precedence over external_review_tool and external_review_model
-# reviewers run sequentially, and each reviewer runs until it reports no findings
+# an explicitly empty value clears an inherited chain and disables external review
+# reviewers run sequentially until clean, their per-reviewer iteration cap, or patience
+# bare claude defaults to opus:xhigh; bare codex uses the configured codex defaults
+# max effort is Claude-only; Codex ignores it with a warning
+# providers may repeat; every entry creates a separate review loop
 # reviewers only report findings; the primary fixes them using review_model (or task_model)
 # custom entries must not specify a model and use custom_review_script
 # external_reviewers =
@@ -201,14 +205,15 @@ task_retry_count = 1
 
 # max_external_iterations: override external review iteration limit
 # 0 = auto (derived from max_iterations as max(3, max_iterations/5))
-# set to a positive value to use a fixed iteration count
+# set to a positive value to use a fixed count independently for each reviewer
 # default: 0
 # max_external_iterations = 0
 
 # review_patience: terminate external review after N consecutive unchanged rounds
 # when the external reviewer and primary evaluator can't agree on findings, the loop
 # runs until max_external_iterations. set review_patience to break early when
-# N consecutive rounds produce no commits or working-tree changes.
+# N consecutive rounds produce no commits or working-tree changes. patience resets
+# independently for each reviewer in a chain.
 # 0 = disabled (loop runs to max iterations)
 # default: 0
 # review_patience = 0

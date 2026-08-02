@@ -25,14 +25,15 @@ func TestCustomChannel_Send(t *testing.T) {
 
 	t.Run("pipes json to script stdin", func(t *testing.T) {
 		r := Result{
-			Status:    "success",
-			Mode:      "full",
-			PlanFile:  "docs/plans/test.md",
-			Branch:    "feature",
-			Duration:  "5m 30s",
-			Files:     3,
-			Additions: 50,
-			Deletions: 10,
+			Status:         "success",
+			Mode:           "full",
+			PlanFile:       "docs/plans/test.md",
+			Branch:         "feature",
+			Duration:       "5m 30s",
+			ExternalReview: "codex → claude",
+			Files:          3,
+			Additions:      50,
+			Deletions:      10,
 		}
 
 		// create a wrapper script that writes stdin to a temp file so we can verify

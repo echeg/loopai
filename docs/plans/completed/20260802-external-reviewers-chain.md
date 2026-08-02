@@ -8,7 +8,7 @@ Generalize the external review phase from a single tool (`external_review_tool` 
 external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max
 ```
 
-Reviewers run **sequentially, each until clean**: the first reviewer loops until it reports no findings, then the next one starts. Each reviewer stays read-only and produces findings; the primary executor (with `review_model`, falling back to `task_model`) evaluates and fixes them, exactly as today. The "primary owns all repository writes" invariant is untouched.
+Reviewers run sequentially: each loops until clean, its independent iteration cap, or its independent stalemate threshold, then the next reviewer starts. Each reviewer stays read-only and produces findings; the primary executor (with `review_model`, falling back to `task_model`) evaluates and fixes them, exactly as today. The "primary owns all repository writes" invariant is untouched.
 
 Problem it solves: today only one external provider can review a run. Users want a chain like "task with opus, then codex review, then a second claude-model review" without changing the primary provider.
 
@@ -60,7 +60,7 @@ Problem it solves: today only one external provider can review a run. Users want
 - `auto`/`none` remain legacy-key concepts. The list requires explicit providers; a missing explicit reviewer binary is an error (consistent with current "missing explicit reviewers are errors" rule).
 - Duplicated providers with different models are allowed and expected (`claude:opus, claude:fable`), so executors are built per entry, not per provider.
 - `custom` entries use `custom_review_script` and must not carry a model spec.
-- Run order: sequential-until-clean. Reviewer i loops (find → evaluate → fix) until "no findings" or its iteration cap, then reviewer i+1 starts. Post-external review loop and finalize run once after the whole chain, as today.
+- Run order: sequential with per-reviewer safety exits. Reviewer i loops (find → evaluate → fix) until "no findings," its iteration cap, or its stalemate threshold, then reviewer i+1 starts. Post-external review loop and finalize run once after the whole chain, as today.
 
 ## Technical Details
 
@@ -90,7 +90,7 @@ Problem it solves: today only one external provider can review a run. Users want
 
 - [x] add `ReviewerSpec` type and `ParseExternalReviewers` to `pkg/config` (provider validation, custom-with-model error, empty-entry error, whitespace trimming)
 - [x] add `ExternalReviewers string` + `ExternalReviewersSet bool` fields to `Config`, loaded in `values.go` with the same local-over-global override rules as `external_review_model`
-- [x] document the new key as a commented default in `pkg/config/defaults/config` (syntax, precedence over `external_review_tool`/`external_review_model`, sequential-until-clean semantics)
+- [x] document the new key as a commented default in `pkg/config/defaults/config` (syntax, precedence over `external_review_tool`/`external_review_model`, sequential semantics and safety exits)
 - [x] write tests for `ParseExternalReviewers` (valid chains, model-less entries, custom, unknown provider, custom with model, empty string, trailing commas)
 - [x] write tests for config loading/override of `external_reviewers` (global vs local, explicit-set tracking, dump-defaults contains the comment)
 - [x] run tests - must pass before task 2
@@ -135,7 +135,7 @@ Problem it solves: today only one external provider can review a run. Users want
 - [x] replace `Tool()` usage in `runner.runExternalAndPostReview` with an enabled-check + chain label; keep none/disabled fast path and single post-review + finalize after the whole chain
 - [x] preserve legacy behavior for the one-element chain (log lines and evaluation flow unchanged); evaluation keeps using the review executor
 - [x] handle manual break and context cancellation across the chain (break stops remaining reviewers, same as current single-loop semantics)
-- [x] write tests: two-reviewer chain runs in order and each until clean, findings in reviewer 2 only still trigger post-review, break during reviewer 1 skips reviewer 2, stalemate patience is per reviewer, none-chain skips to finalize
+- [x] write tests: two-reviewer chain runs in order on the clean path, findings in reviewer 2 only still trigger post-review, break during reviewer 1 skips reviewer 2, iteration caps and stalemate patience are per reviewer, none-chain skips to finalize
 - [x] run tests - must pass before task 5
 
 ### Task 5: Run-header, cmux, and dashboard labels for chains
@@ -158,7 +158,7 @@ Problem it solves: today only one external provider can review a run. Users want
 - Modify: `pkg/config/defaults/config` (final comment wording review)
 - Modify: `docs/custom-providers.md` (custom entries in chains)
 
-- [x] document `external_reviewers` syntax, precedence over legacy keys, sequential-until-clean semantics, and the fix-ownership model (reviewers find, primary fixes with `review_model`)
+- [x] document `external_reviewers` syntax, precedence over legacy keys, sequential execution and safety exits, and the fix-ownership model (reviewers find, primary fixes with `review_model`)
 - [x] document `--external-reviewers` CLI flag and mutual exclusion with legacy flags
 - [x] note `custom` chain entries and their `custom_review_script` requirement
 - [x] verify embedded config comments match final behavior
@@ -182,8 +182,8 @@ Problem it solves: today only one external provider can review a run. Users want
 ## Post-Completion
 
 **Manual verification:**
-- `make e2e-review` scenario with `external_reviewers = codex, claude` on a real branch: confirm codex loop reaches clean before the claude reviewer starts, and the primary commits fixes between iterations
-- confirm cmux status line and dashboard show the chain label during a live run
+- [ ] deferred: `make e2e-review` with `external_reviewers = codex, claude` requires live provider sessions; unit coverage and `make e2e-prep` passed on 2026-08-02
+- [ ] deferred: live cmux status-line and dashboard observation requires an interactive cmux run; formatting unit tests passed on 2026-08-02
 
 **External system updates:**
 - none — distribution is by source build; no packaging changes

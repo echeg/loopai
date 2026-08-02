@@ -61,15 +61,16 @@ type logger interface {
 
 // Result holds completion data for notifications.
 type Result struct {
-	Status    string `json:"status"` // "success" or "failure"
-	Mode      string `json:"mode"`
-	PlanFile  string `json:"plan_file"`
-	Branch    string `json:"branch"`
-	Duration  string `json:"duration"`
-	Files     int    `json:"files"`
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
-	Error     string `json:"error,omitempty"`
+	Status         string `json:"status"` // "success" or "failure"
+	Mode           string `json:"mode"`
+	PlanFile       string `json:"plan_file"`
+	Branch         string `json:"branch"`
+	Duration       string `json:"duration"`
+	ExternalReview string `json:"external_review,omitempty"`
+	Files          int    `json:"files"`
+	Additions      int    `json:"additions"`
+	Deletions      int    `json:"deletions"`
+	Error          string `json:"error,omitempty"`
 }
 
 // New creates a notification Service from the given Params.
@@ -212,6 +213,9 @@ func (s *Service) formatMessage(r Result) string {
 	}
 	if r.Mode != "" {
 		fmt.Fprintf(&b, "mode:     %s\n", r.Mode)
+	}
+	if r.ExternalReview != "" {
+		fmt.Fprintf(&b, "external: %s\n", r.ExternalReview)
 	}
 	if r.Duration != "" {
 		fmt.Fprintf(&b, "duration: %s\n", r.Duration)

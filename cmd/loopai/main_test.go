@@ -1117,6 +1117,33 @@ func TestExternalReviewCLIConfigPrecedence(t *testing.T) {
 	assert.Equal(t, "gpt-cli:xhigh", cfg.ExternalReviewModel)
 }
 
+func TestExternalReviewersEmptyLocalValueDisablesGlobalChain(t *testing.T) {
+	tmp := t.TempDir()
+	globalDir := filepath.Join(tmp, "global")
+	projectDir := filepath.Join(tmp, "project")
+	localDir := filepath.Join(projectDir, ".loopai")
+	require.NoError(t, os.MkdirAll(globalDir, 0o750))
+	require.NoError(t, os.MkdirAll(localDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "config"), []byte("external_reviewers = codex\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(localDir, "config"), []byte("external_reviewers =\n"), 0o600))
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(projectDir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	cfg, err := config.LoadReadOnly(globalDir)
+	require.NoError(t, err)
+	assert.True(t, cfg.ExternalReviewersSet)
+	assert.Empty(t, cfg.ExternalReviewers)
+
+	selection, err := resolveExternalReviewSelection(opts{}, cfg, processor.ModeFull)
+	require.NoError(t, err)
+	assert.True(t, selection.Resolved)
+	assert.True(t, selection.Explicit)
+	assert.Empty(t, selection.Reviewers)
+}
+
 func TestResolveExternalReviewSelection(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -1152,6 +1179,7 @@ func TestResolveExternalReviewSelection(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
+			assert.True(t, got.Resolved)
 			reviewer, ok := got.firstReviewer()
 			if tc.wantTool == config.ExternalReviewToolNone {
 				assert.False(t, ok)
@@ -1190,7 +1218,21 @@ func TestResolveExternalReviewerChain(t *testing.T) {
 
 	bad := &config.Config{ExternalReviewers: "codex,", ExternalReviewersSet: true}
 	_, err = resolveExternalReviewSelection(opts{}, bad, processor.ModeFull)
-	assert.ErrorContains(t, err, "parse external_reviewers")
+	require.ErrorContains(t, err, "parse external_reviewers")
+
+	empty := &config.Config{ExternalReviewersSet: true}
+	disabled, err := resolveExternalReviewSelection(opts{}, empty, processor.ModeFull)
+	require.NoError(t, err)
+	assert.True(t, disabled.Resolved)
+	assert.True(t, disabled.Explicit)
+	assert.Empty(t, disabled.Reviewers)
+
+	normalized := &config.Config{ExternalReviewers: "codex : gpt-5.6 : high", ExternalReviewersSet: true}
+	resolved, err := resolveExternalReviewSelection(opts{}, normalized, processor.ModeFull)
+	require.NoError(t, err)
+	require.Len(t, resolved.Reviewers, 1)
+	assert.Equal(t, "gpt-5.6", resolved.Reviewers[0].Model)
+	assert.Equal(t, "high", resolved.Reviewers[0].Effort)
 }
 
 func TestExternalReviewWarnings(t *testing.T) {
@@ -1553,40 +1595,35 @@ func TestApplyCodexOverrides_AllowsSymmetricExternalReview(t *testing.T) {
 	t.Run("cli_codex_plus_external_review_tool_codex_allowed", func(t *testing.T) {
 		cfg := &config.Config{}
 		o := parseTestOpts(t, "--codex", "--external-review-tool", "codex")
-		var warnBuf bytes.Buffer
-		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
+		require.NoError(t, applyCLIOverrides(o, cfg))
 		assert.Equal(t, config.ExternalReviewToolCodex, cfg.ExternalReviewTool)
 	})
 
 	t.Run("cli_codex_plus_external_review_tool_custom_allowed", func(t *testing.T) {
 		cfg := &config.Config{}
 		o := parseTestOpts(t, "--codex", "--external-review-tool", "custom")
-		var warnBuf bytes.Buffer
-		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
+		require.NoError(t, applyCLIOverrides(o, cfg))
 		assert.Equal(t, config.ExternalReviewToolCustom, cfg.ExternalReviewTool)
 	})
 
 	t.Run("config_executor_codex_plus_cli_external_review_tool_custom_allowed", func(t *testing.T) {
 		cfg := &config.Config{Executor: config.ExecutorCodex}
 		o := parseTestOpts(t, "--external-review-tool", "custom")
-		var warnBuf bytes.Buffer
-		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
+		require.NoError(t, applyCLIOverrides(o, cfg))
 		assert.Equal(t, config.ExternalReviewToolCustom, cfg.ExternalReviewTool)
 	})
 
 	t.Run("cli_codex_plus_external_review_tool_none_allowed", func(t *testing.T) {
 		cfg := &config.Config{}
 		o := parseTestOpts(t, "--codex", "--external-review-tool", "none")
-		var warnBuf bytes.Buffer
-		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
+		require.NoError(t, applyCLIOverrides(o, cfg))
 		assert.Equal(t, "none", cfg.ExternalReviewTool)
 	})
 
 	t.Run("config_executor_codex_plus_cli_external_review_tool_none_allowed", func(t *testing.T) {
 		cfg := &config.Config{Executor: config.ExecutorCodex}
 		o := parseTestOpts(t, "--external-review-tool", "none")
-		var warnBuf bytes.Buffer
-		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
+		require.NoError(t, applyCLIOverrides(o, cfg))
 		assert.Equal(t, "none", cfg.ExternalReviewTool)
 	})
 
@@ -1926,6 +1963,23 @@ func TestRunHeaderParams(t *testing.T) {
 			web.FormatRunParams(got.Executor, got.PlanModel, got.TaskModel, got.ReviewModel, got.ExternalReview, got.ExternalReviewModel),
 		)
 	})
+
+	t.Run("resolved disabled review is recorded", func(t *testing.T) {
+		selection, err := resolveExternalReviewSelection(opts{}, &config.Config{ExternalReviewTool: config.ExternalReviewToolNone}, processor.ModeFull)
+		require.NoError(t, err)
+
+		got := runHeaderParams(opts{}, &config.Config{}, processor.ModeFull, selection)
+		assert.Equal(t, config.ExternalReviewToolNone, got.ExternalReview)
+		assert.Empty(t, got.ExternalReviewModel)
+	})
+
+	t.Run("tasks only records disabled review", func(t *testing.T) {
+		selection, err := resolveExternalReviewSelection(opts{}, &config.Config{ExternalReviewTool: config.ExternalReviewToolClaude}, processor.ModeTasksOnly)
+		require.NoError(t, err)
+
+		got := runHeaderParams(opts{}, &config.Config{}, processor.ModeTasksOnly, selection)
+		assert.Equal(t, config.ExternalReviewToolNone, got.ExternalReview)
+	})
 }
 
 func TestCodexModelBanner(t *testing.T) {
@@ -2207,6 +2261,17 @@ func TestPrintStartupInfo(t *testing.T) {
 		assert.Contains(t, out, "external review: codex (gpt-5.5:xhigh) → claude (fable:max)")
 		assert.NotContains(t, out, "\n  model:")
 		assert.NotContains(t, out, "\n  reasoning effort:")
+	})
+
+	t.Run("shows resolved disabled external review", func(t *testing.T) {
+		info := startupInfo{
+			Mode:           processor.ModeTasksOnly,
+			MaxIterations:  50,
+			ExternalReview: externalReviewSelection{Resolved: true},
+		}
+
+		out := captureStdout(t, func() { printStartupInfo(info, colors) })
+		assert.Contains(t, out, "external review: none")
 	})
 
 	t.Run("shows claude md passthrough line when enabled", func(t *testing.T) {
@@ -3745,7 +3810,13 @@ func TestSendNotification(t *testing.T) {
 
 func TestBuildNotifyResult(t *testing.T) {
 	t.Run("success_result", func(t *testing.T) {
-		req := executePlanRequest{Mode: processor.ModeFull, PlanFile: "plan.md"}
+		req := executePlanRequest{
+			Mode: processor.ModeFull, PlanFile: "plan.md",
+			ExternalReview: externalReviewSelection{Resolved: true, Reviewers: []resolvedReviewer{
+				{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "xhigh"},
+				{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max"},
+			}},
+		}
 		stats := git.DiffStats{Files: 3, Additions: 100, Deletions: 20}
 		result := buildNotifyResult(req, "feature-branch", "1m30s", stats, nil)
 
@@ -3754,6 +3825,7 @@ func TestBuildNotifyResult(t *testing.T) {
 		assert.Equal(t, "plan.md", result.PlanFile)
 		assert.Equal(t, "feature-branch", result.Branch)
 		assert.Equal(t, "1m30s", result.Duration)
+		assert.Equal(t, "codex (gpt-5.5:xhigh) → claude (fable:max)", result.ExternalReview)
 		assert.Equal(t, 3, result.Files)
 		assert.Equal(t, 100, result.Additions)
 		assert.Equal(t, 20, result.Deletions)
@@ -3761,7 +3833,7 @@ func TestBuildNotifyResult(t *testing.T) {
 	})
 
 	t.Run("failure_result", func(t *testing.T) {
-		req := executePlanRequest{Mode: processor.ModeReview, PlanFile: "review.md"}
+		req := executePlanRequest{Mode: processor.ModeReview, PlanFile: "review.md", ExternalReview: externalReviewSelection{Resolved: true}}
 		result := buildNotifyResult(req, "main", "45s", git.DiffStats{}, errors.New("runner failed"))
 
 		assert.Equal(t, "failure", result.Status)
@@ -3770,6 +3842,7 @@ func TestBuildNotifyResult(t *testing.T) {
 		assert.Equal(t, "main", result.Branch)
 		assert.Equal(t, "45s", result.Duration)
 		assert.Equal(t, "runner failed", result.Error)
+		assert.Equal(t, config.ExternalReviewToolNone, result.ExternalReview)
 		assert.Zero(t, result.Files)
 		assert.Zero(t, result.Additions)
 		assert.Zero(t, result.Deletions)

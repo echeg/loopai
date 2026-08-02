@@ -67,15 +67,18 @@ func TestParseExternalReviewers(t *testing.T) {
 			value: " custom , codex : gpt-5.5 : high ",
 			want: []ReviewerSpec{
 				{Provider: ExternalReviewToolCustom},
-				{Provider: ExternalReviewToolCodex, ModelSpec: "gpt-5.5 : high"},
+				{Provider: ExternalReviewToolCodex, ModelSpec: "gpt-5.5:high"},
 			},
 		},
+		{name: "effort-only entry", value: "codex::high", want: []ReviewerSpec{{Provider: ExternalReviewToolCodex, ModelSpec: ":high"}}},
 		{name: "unknown provider", value: "gemini:pro", wantErr: "unknown external reviewer provider"},
 		{name: "legacy auto is not explicit provider", value: "auto", wantErr: "unknown external reviewer provider"},
 		{name: "custom with model", value: "custom:review-model", wantErr: "must not specify a model"},
-		{name: "empty string", value: "", wantErr: "entry 1 is empty"},
+		{name: "empty string disables chain", value: "", want: []ReviewerSpec{}},
+		{name: "whitespace disables chain", value: "  ", want: []ReviewerSpec{}},
 		{name: "trailing comma", value: "codex,", wantErr: "entry 2 is empty"},
 		{name: "empty middle entry", value: "codex, ,claude", wantErr: "entry 2 is empty"},
+		{name: "too many segments", value: "codex:model:high:extra", wantErr: "too many ':' separators"},
 	}
 
 	for _, tc := range tests {

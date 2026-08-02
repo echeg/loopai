@@ -6,7 +6,7 @@ loopai uses Claude Code as the primary agent for task execution and code reviews
 
 ## Codex executor mode (`--codex`) — native codex path
 
-The `--codex` flag makes Codex the primary executor for planning, tasks, internal reviews, finding evaluation, and finalize. External review remains available: with the default `external_review_tool = auto`, loopai selects Claude so the review stays cross-provider. Set `external_review_tool = none` to disable that phase.
+The `--codex` flag makes Codex the primary executor for planning, tasks, internal reviews, finding evaluation, and finalize. External review remains available: with the default `external_review_tool = auto`, loopai selects Claude so the review stays cross-provider. Set `external_review_tool = none` to disable the legacy review path when `external_reviewers` is unset.
 
 Why this path exists alongside `codex-as-claude.sh`:
 
@@ -115,13 +115,16 @@ loopai \
 
 `external_reviewers` takes precedence over the legacy `external_review_tool` and
 `external_review_model` config keys. The `--external-reviewers` flag cannot be combined with
-`--external-review-tool` or `--external-review-model` in the same invocation. Reviewers run in
-list order, and each runs until it reports no findings before the next starts. Reviewers only find
-issues; the primary executor evaluates findings and owns all repository writes, using
-`review_model` and then `task_model` as its fallback.
+`--external-review-tool` or `--external-review-model` in the same invocation. A chain inherited
+from another config layer still wins over the legacy keys; use an empty local value or
+`--external-reviewers=` to clear and disable it. Reviewers run in list order, and each runs until
+it reports no findings, reaches its independent iteration cap, or triggers its independent
+stalemate threshold. Reviewers only find issues; the primary executor evaluates findings and owns
+all repository writes, using `review_model` and then `task_model` as its fallback.
 
 A `custom` entry cannot include a model and requires `custom_review_script`; every custom entry
-uses that script. The script contract is unchanged: it receives the external-review prompt-file
+uses that script. Providers may repeat, and every entry creates a distinct review loop; repeated
+custom entries all use the same script. The script contract is unchanged: it receives the external-review prompt-file
 path as its only argument and writes findings to standard output.
 
 ## Codex wrapper (included compatibility example)
