@@ -180,6 +180,17 @@ func (e *externalBackend) currentBranch() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+func (e *externalBackend) originURL() (string, error) {
+	out, err := e.run("config", "--get", "remote.origin.url")
+	if err != nil {
+		return "", fmt.Errorf("get origin URL: %w", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		return "", errors.New("origin URL is empty")
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // getDefaultBranch returns the default branch name.
 // detects from origin/HEAD symbolic reference, falls back to checking common branch names.
 func (e *externalBackend) getDefaultBranch() string {

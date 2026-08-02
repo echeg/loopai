@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -287,6 +288,11 @@ func run(ctx context.Context, o opts) error {
 	// returned cleanup ensures goroutine exits when run() returns, avoiding leaks in tests.
 	defer startInterruptWatcher(ctx, forceExitCleanup(restoreTerminal, cmuxStop, wtCleanup))()
 
+	// A normal invocation replaces any prior completion outcome even when flag validation,
+	// startup, or preflight fails. Explicit clear and close-out attempts retain the old pill
+	// until their own success paths clear it.
+	clearStaleCmuxStatus(o)
+
 	// validate conflicting flags
 	if err := validateFlags(o); err != nil {
 		return err
@@ -296,10 +302,6 @@ func run(ctx context.Context, o opts) error {
 	if done, err := handleEarlyFlags(o); err != nil || done {
 		return err
 	}
-	// A normal invocation replaces any prior completion outcome even when later startup or
-	// preflight work fails. Failed close-out commands intentionally retain the pill instead.
-	clearStaleCmuxStatus(o)
-
 	// load config first to get custom command paths
 	cfg, err := loadRunConfig(o)
 	if err != nil {
@@ -416,6 +418,11 @@ func loadRunConfig(o opts) (*config.Config, error) {
 	cfg, err := config.Load(o.ConfigDir)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
+	}
+	// Close-out modes reject execution flags and only consume VCS/color configuration. Do not
+	// let executor-only semantic checks make an otherwise valid merge or PR impossible.
+	if closeoutRequested(o) {
+		return cfg, nil
 	}
 	if overrideErr := applyCLIOverrides(o, cfg); overrideErr != nil {
 		return nil, overrideErr
@@ -2129,7 +2136,7 @@ func clearCmuxStatus(stdout io.Writer) {
 }
 
 func clearStaleCmuxStatus(o opts) {
-	if closeoutRequested(o) {
+	if o.Clear || closeoutRequested(o) {
 		return
 	}
 	cmux.New("", cmux.Models{}).Clear()
@@ -2346,7 +2353,6 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 	if branch == base {
 		return fmt.Errorf("current branch %q is already the base branch; check out the feature branch first", base)
 	}
-
 	stats, err := gitSvc.DiffStats(base)
 	if err != nil {
 		return fmt.Errorf("calculate PR diff stats: %w", err)
@@ -2358,11 +2364,16 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 	if metadataErr := validatePRMetadata(title, body); metadataErr != nil {
 		return metadataErr
 	}
+	repoSpec, err := validateGitHubOrigin(ctx, ghPath, gitSvc)
+	if err != nil {
+		return err
+	}
 	if pushErr := gitSvc.PushContext(ctx, branch); pushErr != nil {
 		return fmt.Errorf("push PR branch: %w", pushErr)
 	}
 
-	cmd := exec.CommandContext(ctx, ghPath, "pr", "create", "--base", base, "--head", branch,
+	cmd := exec.CommandContext(ctx, ghPath, "pr", "create", "--repo", repoSpec,
+		"--base", base, "--head", branch,
 		"--title", title, "--body-file", "-")
 	cmd.Dir = gitSvc.Root()
 	cmd.Stdin = strings.NewReader(body)
@@ -2370,14 +2381,71 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 	if err != nil {
 		return fmt.Errorf("create GitHub PR: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	url := strings.TrimSpace(string(out))
-	if url != "" {
-		fmt.Fprintln(stdout, url)
+	prURL := strings.TrimSpace(string(out))
+	if prURL != "" {
+		fmt.Fprintln(stdout, prURL)
 	}
 	if rep != nil {
 		rep.Clear()
 	}
 	return nil
+}
+
+func validateGitHubOrigin(ctx context.Context, ghPath string, gitSvc *git.Service) (string, error) {
+	originURL, err := gitSvc.OriginURL()
+	if err != nil {
+		return "", fmt.Errorf("validate GitHub origin: %w", err)
+	}
+	repoSpec, err := githubRepoSpec(originURL)
+	if err != nil {
+		return "", fmt.Errorf("validate GitHub origin: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, ghPath, "repo", "view", repoSpec,
+		"--json", "nameWithOwner", "--jq", ".nameWithOwner")
+	cmd.Dir = gitSvc.Root()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("validate GitHub origin with gh: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		return "", errors.New("validate GitHub origin with gh: repository lookup returned no name")
+	}
+	return repoSpec, nil
+}
+
+func githubRepoSpec(remoteURL string) (string, error) {
+	remoteURL = strings.TrimSpace(remoteURL)
+	if remoteURL == "" {
+		return "", errors.New("origin URL is empty")
+	}
+
+	var host, repoPath string
+	if strings.Contains(remoteURL, "://") {
+		parsed, err := url.Parse(remoteURL)
+		if err != nil || parsed.Hostname() == "" {
+			return "", fmt.Errorf("origin is not a valid hosted repository URL: %q", remoteURL)
+		}
+		host, repoPath = parsed.Hostname(), parsed.Path
+	} else {
+		colon := strings.IndexByte(remoteURL, ':')
+		if colon <= 0 || strings.ContainsAny(remoteURL[:colon], `/\\`) {
+			return "", fmt.Errorf("origin is not a GitHub repository URL: %q", remoteURL)
+		}
+		host = remoteURL[:colon]
+		if at := strings.LastIndexByte(host, '@'); at >= 0 {
+			host = host[at+1:]
+		}
+		repoPath = remoteURL[colon+1:]
+	}
+
+	parts := strings.Split(strings.TrimSuffix(strings.Trim(repoPath, "/"), ".git"), "/")
+	if host == "" || len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", fmt.Errorf("origin is not a GitHub owner/repository URL: %q", remoteURL)
+	}
+	if strings.EqualFold(host, "github.com") {
+		return parts[0] + "/" + parts[1], nil
+	}
+	return host + "/" + parts[0] + "/" + parts[1], nil
 }
 
 func runCloseoutCommand(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors) error {
@@ -2505,48 +2573,67 @@ func findPRPlan(repoRoot, branch string) (string, error) {
 		return recordedPath, nil
 	}
 
-	var exactPath, fallbackPath string
-	var exactTime, fallbackTime time.Time
 	for _, dir := range []string{
 		filepath.Join(repoRoot, "docs", "plans", "completed"),
 		filepath.Join(repoRoot, "docs", "plans"),
 	} {
-		entries, readDirErr := os.ReadDir(dir)
-		if errors.Is(readDirErr, os.ErrNotExist) {
+		path, findErr := findPRPlanInDir(repoRoot, dir, branch)
+		if findErr != nil {
+			return "", findErr
+		}
+		if path != "" {
+			return path, nil
+		}
+	}
+	return "", nil
+}
+
+func findPRPlanInDir(repoRoot, dir, branch string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("list PR plans in %q: %w", dir, err)
+	}
+
+	var exactPath string
+	var exactTime time.Time
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".md" || plan.ExtractBranchName(entry.Name()) != branch {
 			continue
 		}
-		if readDirErr != nil {
-			return "", fmt.Errorf("list PR plans in %q: %w", dir, readDirErr)
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return "", fmt.Errorf("inspect associated PR plan %q: %w", entry.Name(), infoErr)
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
-				continue
-			}
-			path := filepath.Join(dir, entry.Name())
-			info, infoErr := entry.Info()
-			if infoErr != nil {
-				return "", fmt.Errorf("inspect PR plan %q: %w", entry.Name(), infoErr)
-			}
-			if entry.Type()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-				return "", fmt.Errorf("inspect PR plan %q: plan must be a regular file without symlinks", entry.Name())
-			}
-			if plan.ExtractBranchName(entry.Name()) == branch {
-				if exactPath == "" || info.ModTime().After(exactTime) {
-					exactPath, exactTime = path, info.ModTime()
-				}
-				continue
-			}
-			content, readErr := readPRPlan(repoRoot, path)
-			if readErr != nil {
-				return "", fmt.Errorf("read PR plan %q: %w", entry.Name(), readErr)
-			}
-			if planMentionsBranch(string(content), branch) && (fallbackPath == "" || info.ModTime().After(fallbackTime)) {
-				fallbackPath, fallbackTime = path, info.ModTime()
-			}
+		if exactPath == "" || info.ModTime().After(exactTime) {
+			exactPath, exactTime = filepath.Join(dir, entry.Name()), info.ModTime()
 		}
 	}
 	if exactPath != "" {
 		return exactPath, nil
+	}
+
+	var fallbackPath string
+	var fallbackTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		content, readErr := readPRPlan(repoRoot, path)
+		if readErr != nil {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			continue
+		}
+		if planMentionsBranch(string(content), branch) &&
+			(fallbackPath == "" || info.ModTime().After(fallbackTime)) {
+			fallbackPath, fallbackTime = path, info.ModTime()
+		}
 	}
 	return fallbackPath, nil
 }
@@ -2622,12 +2709,14 @@ func resolveRecordedPlan(repoRoot, recorded string) string {
 	if !filepath.IsAbs(candidate) {
 		candidate = filepath.Join(repoRoot, candidate)
 	}
+	if filepath.Base(filepath.Dir(candidate)) != "completed" {
+		completed := filepath.Join(filepath.Dir(candidate), "completed", filepath.Base(candidate))
+		if info, err := os.Lstat(completed); err == nil && info.Mode().IsRegular() {
+			return completed
+		}
+	}
 	if info, err := os.Lstat(candidate); err == nil && info.Mode().IsRegular() {
 		return candidate
-	}
-	completed := filepath.Join(filepath.Dir(candidate), "completed", filepath.Base(candidate))
-	if info, err := os.Lstat(completed); err == nil && info.Mode().IsRegular() {
-		return completed
 	}
 	return ""
 }

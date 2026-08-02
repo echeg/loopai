@@ -3354,7 +3354,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		assert.Equal(t, "fix", title)
 	})
 
-	t.Run("symlinked plan is rejected without reading its target", func(t *testing.T) {
+	t.Run("associated symlinked plan is rejected without reading its target", func(t *testing.T) {
 		root := t.TempDir()
 		outside := filepath.Join(t.TempDir(), "outside.md")
 		require.NoError(t, os.WriteFile(outside, []byte("# Secret title\n\n## Overview\n\nSecret body.\n"), 0o600))
@@ -3363,7 +3363,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, os.Symlink(outside, filepath.Join(plansDir, "20260802-feature.md")))
 
 		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{})
-		require.ErrorContains(t, err, "regular file without symlinks")
+		require.ErrorContains(t, err, "symlink")
 		assert.Empty(t, title)
 		assert.Empty(t, body)
 	})
@@ -3376,7 +3376,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.ErrorContains(t, err, "size limit")
 	})
 
-	t.Run("exact active plan beats newer textual fallback", func(t *testing.T) {
+	t.Run("completed textual fallback beats active exact plan", func(t *testing.T) {
 		root := t.TempDir()
 		exactDir := filepath.Join(root, "docs", "plans")
 		require.NoError(t, os.MkdirAll(exactDir, 0o750))
@@ -3390,8 +3390,35 @@ func TestBuildPRTitleBody(t *testing.T) {
 
 		title, body, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
 		require.NoError(t, err)
-		assert.Equal(t, "Exact active plan", title)
-		assert.Contains(t, body, "Exact.")
+		assert.Equal(t, "Newer fallback", title)
+		assert.NotContains(t, body, "Exact.")
+	})
+
+	t.Run("unrelated invalid plans do not block exact association", func(t *testing.T) {
+		root := t.TempDir()
+		writePlan(t, root, "20260802-feature.md", "# Feature plan\n\n## Overview\n\nSelected.\n")
+		outside := filepath.Join(t.TempDir(), "outside.md")
+		require.NoError(t, os.WriteFile(outside, []byte("# Secret\n"), 0o600))
+		require.NoError(t, os.Symlink(outside,
+			filepath.Join(root, "docs", "plans", "completed", "unrelated.md")))
+
+		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{})
+		require.NoError(t, err)
+		assert.Equal(t, "Feature plan", title)
+		assert.Contains(t, body, "Selected.")
+	})
+
+	t.Run("unrelated invalid plans are skipped during textual fallback", func(t *testing.T) {
+		root := t.TempDir()
+		writePlan(t, root, "valid.md", "# Valid fallback\n\nReferences special-branch.\n")
+		outside := filepath.Join(t.TempDir(), "outside.md")
+		require.NoError(t, os.WriteFile(outside, []byte("# Secret\n"), 0o600))
+		require.NoError(t, os.Symlink(outside,
+			filepath.Join(root, "docs", "plans", "completed", "unrelated.md")))
+
+		title, _, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
+		require.NoError(t, err)
+		assert.Equal(t, "Valid fallback", title)
 	})
 
 	t.Run("newest exact plan wins", func(t *testing.T) {
@@ -3420,6 +3447,24 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "Override plan", title)
 		assert.Contains(t, body, "Exact association.")
+	})
+
+	t.Run("progress association prefers completed copy over active copy", func(t *testing.T) {
+		root := t.TempDir()
+		activeDir := filepath.Join(root, "docs", "plans")
+		require.NoError(t, os.MkdirAll(activeDir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(activeDir, "original-plan.md"),
+			[]byte("# Active copy\n"), 0o600))
+		writePlan(t, root, "original-plan.md", "# Completed copy\n\n## Overview\n\nFinished.\n")
+		progressDir := filepath.Join(root, ".loopai", "progress")
+		require.NoError(t, os.MkdirAll(progressDir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(progressDir, "progress-team-custom.txt"), []byte(
+			"# Loopai Progress Log\nPlan: docs/plans/original-plan.md\nBranch: team/custom\nMode: full\n"), 0o600))
+
+		title, body, err := buildPRTitleBody(root, "team/custom", git.DiffStats{})
+		require.NoError(t, err)
+		assert.Equal(t, "Completed copy", title)
+		assert.Contains(t, body, "Finished.")
 	})
 
 	t.Run("branch basename does not select unrelated plan", func(t *testing.T) {
@@ -3477,7 +3522,9 @@ func TestRunPRCommand(t *testing.T) {
 		dir := setupTestRepo(t)
 		remote := filepath.Join(t.TempDir(), "origin.git")
 		runGit(t, filepath.Dir(remote), "init", "--bare", remote)
-		runGit(t, dir, "remote", "add", "origin", remote)
+		originURL := "https://github.com/acme/repo.git"
+		runGit(t, dir, "remote", "add", "origin", originURL)
+		runGit(t, dir, "config", "url."+remote+".insteadOf", originURL)
 		runGit(t, dir, "checkout", "-b", "feature")
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
 		runGit(t, dir, "add", "feature.txt")
@@ -3495,7 +3542,7 @@ func TestRunPRCommand(t *testing.T) {
 		binDir := t.TempDir()
 		argsLog := filepath.Join(binDir, "gh-args.log")
 		bodyLog := filepath.Join(binDir, "gh-body.log")
-		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GH_ARGS_LOG\"\ncat > \"$GH_BODY_LOG\"\nprintf '%s\\n' 'https://github.com/acme/repo/pull/42'\n")
+		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nif [ \"$1\" = repo ]; then\n  printf '%s\\n' 'acme/repo'\n  exit 0\nfi\nprintf '%s\\n' \"$@\" > \"$GH_ARGS_LOG\"\ncat > \"$GH_BODY_LOG\"\nprintf '%s\\n' 'https://github.com/acme/repo/pull/42'\n")
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("GH_ARGS_LOG", argsLog)
 		t.Setenv("GH_BODY_LOG", bodyLog)
@@ -3509,7 +3556,7 @@ func TestRunPRCommand(t *testing.T) {
 		assert.True(t, branchExists(t, dir, "feature"))
 		args, err := os.ReadFile(argsLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, err)
-		assert.Contains(t, string(args), "pr\ncreate\n--base\nmaster\n--head\nfeature\n--title\nFeature PR\n--body-file\n-\n")
+		assert.Contains(t, string(args), "pr\ncreate\n--repo\nacme/repo\n--base\nmaster\n--head\nfeature\n--title\nFeature PR\n--body-file\n-\n")
 		assert.NotContains(t, string(args), "Implements feature.", "the body must not be exposed in argv")
 		body, readBodyErr := os.ReadFile(bodyLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, readBodyErr)
@@ -3556,11 +3603,14 @@ func TestRunPRCommand(t *testing.T) {
 	t.Run("push failure does not invoke gh and keeps pill", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		runGit(t, dir, "checkout", "-b", "feature")
+		originURL := "https://github.com/acme/repo.git"
+		runGit(t, dir, "remote", "add", "origin", originURL)
+		runGit(t, dir, "config", "url."+filepath.Join(t.TempDir(), "missing.git")+".insteadOf", originURL)
 		svc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
 		binDir := t.TempDir()
 		invoked := filepath.Join(binDir, "invoked")
-		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\ntouch \"$GH_INVOKED\"\n")
+		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nif [ \"$1\" = repo ]; then\n  printf '%s\\n' 'acme/repo'\n  exit 0\nfi\ntouch \"$GH_INVOKED\"\n")
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("GH_INVOKED", invoked)
 		clearer := &recordingStatusClearer{}
@@ -3570,6 +3620,28 @@ func TestRunPRCommand(t *testing.T) {
 		assert.Contains(t, err.Error(), "push PR branch")
 		assert.NoFileExists(t, invoked)
 		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("non-GitHub origin is rejected before gh or push", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		remote := filepath.Join(t.TempDir(), "origin.git")
+		runGit(t, filepath.Dir(remote), "init", "--bare", remote)
+		runGit(t, dir, "remote", "add", "origin", remote)
+		runGit(t, dir, "checkout", "-b", "feature")
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		binDir := t.TempDir()
+		invoked := filepath.Join(binDir, "invoked")
+		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\ntouch \"$GH_INVOKED\"\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("GH_INVOKED", invoked)
+
+		err = runPRCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard)
+		require.ErrorContains(t, err, "not a GitHub repository URL")
+		assert.NoFileExists(t, invoked)
+		cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/feature")
+		cmd.Dir = remote
+		require.Error(t, cmd.Run(), "branch must not be pushed before origin validation")
 	})
 
 	t.Run("missing gh has install hint", func(t *testing.T) {
@@ -3582,6 +3654,31 @@ func TestRunPRCommand(t *testing.T) {
 		assert.Contains(t, err.Error(), "install")
 		assert.Zero(t, clearer.calls)
 	})
+}
+
+func TestGitHubRepoSpec(t *testing.T) {
+	tests := []struct {
+		name, remote, want string
+		wantErr            bool
+	}{
+		{name: "https", remote: "https://github.com/acme/repo.git", want: "acme/repo"},
+		{name: "ssh shorthand", remote: "git@github.com:acme/repo.git", want: "acme/repo"},
+		{name: "enterprise ssh", remote: "ssh://git@git.example.com/acme/repo.git", want: "git.example.com/acme/repo"},
+		{name: "local path", remote: "/tmp/repo.git", wantErr: true},
+		{name: "missing owner", remote: "https://github.com/repo.git", wantErr: true},
+		{name: "nested path", remote: "https://gitlab.com/group/subgroup/repo.git", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := githubRepoSpec(tc.remote)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 func currentGitBranch(t *testing.T, dir string) string {
@@ -3605,7 +3702,10 @@ func TestRunDispatchesMergeCloseoutBeforeExecutionDependencies(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(origDir) })
 	t.Setenv("CMUX_WORKSPACE_ID", "")
 
-	err = run(t.Context(), opts{mergeSet: true, ConfigDir: t.TempDir(), NoColor: true})
+	configDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"),
+		[]byte("pass_claude_md = true\n"), 0o600))
+	err = run(t.Context(), opts{mergeSet: true, ConfigDir: configDir, NoColor: true})
 	require.NoError(t, err)
 	assert.Equal(t, "master", currentGitBranch(t, dir))
 	assert.False(t, branchExists(t, dir, "feature"))
@@ -3624,6 +3724,21 @@ func TestRunClearsStaleCmuxStatusBeforeConfigFailure(t *testing.T) {
 
 	err := run(t.Context(), opts{ConfigDir: badConfigDir})
 	require.ErrorContains(t, err, "load config")
+	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+	require.NoError(t, readErr)
+	assert.Equal(t, "clear-status loopai\n", string(recorded))
+}
+
+func TestRunClearsStaleCmuxStatusBeforeFlagValidationFailure(t *testing.T) {
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "cmux-argv.log")
+	writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	t.Setenv("CMUX_ARGV_LOG", argvLog)
+
+	err := run(t.Context(), opts{Wait: -time.Second})
+	require.ErrorContains(t, err, "--wait must be non-negative")
 	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 	require.NoError(t, readErr)
 	assert.Equal(t, "clear-status loopai\n", string(recorded))

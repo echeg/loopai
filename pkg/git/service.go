@@ -27,6 +27,7 @@ type backend interface {
 	headHash() (string, error)
 	hasCommits() (bool, error)
 	currentBranch() (string, error)
+	originURL() (string, error)
 	getDefaultBranch() string
 	branchExists(name string) bool
 	createBranch(name string) error
@@ -143,6 +144,15 @@ func (s *Service) CurrentBranch() (string, error) {
 		return "", fmt.Errorf("current branch: %w", err)
 	}
 	return branch, nil
+}
+
+// OriginURL returns the configured URL for the origin remote without applying Git URL rewrites.
+func (s *Service) OriginURL() (string, error) {
+	remoteURL, err := s.repo.originURL()
+	if err != nil {
+		return "", fmt.Errorf("read origin remote URL: %w", err)
+	}
+	return remoteURL, nil
 }
 
 // CheckoutBranch switches the working tree to an existing local branch.
