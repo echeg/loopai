@@ -175,9 +175,9 @@ Problem it solves: today only one external provider can review a run. Users want
 
 ### Task 8: [Final] Update documentation and close out
 
-- [ ] update `CLAUDE.md` (configuration section: new key; architecture note about reviewer chains) if behavior descriptions there became stale
-- [ ] confirm `CHANGELOG.md` untouched
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update `CLAUDE.md` (configuration section: new key; architecture note about reviewer chains) if behavior descriptions there became stale
+- [x] confirm `CHANGELOG.md` untouched
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 

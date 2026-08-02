@@ -82,6 +82,11 @@ links.
 
 Local files override global files, which override embedded defaults. Embedded defaults remain the per-file fallback, so deleting an installed prompt or agent does not disable it. Remove its template reference to disable an agent.
 
+`external_reviewers` configures an ordered comma-separated reviewer chain using
+`provider[:model[:effort]]` entries. It takes precedence over the legacy
+`external_review_tool` and `external_review_model` keys. `custom` entries use
+`custom_review_script` and cannot specify a model.
+
 `loopai --init` creates project-local commented defaults. `loopai --reset` restores global defaults interactively. `loopai --dump-defaults <dir>` extracts embedded defaults for inspection.
 
 This is a clean configuration break: never add automatic reads or migrations from `~/.config/ralphex/` or `.ralphex/`.
@@ -99,9 +104,9 @@ Tests must redirect HOME or config paths to `t.TempDir()` and must never touch e
 
 Task plans use `### Task N:` or `### Iteration N:` headings and Markdown checkboxes. The task phase handles only the first incomplete section per executor iteration.
 
-The primary executor owns all repository writes. External reviewers produce findings only; the primary evaluates and fixes them.
+The primary executor owns all repository writes. External reviewers produce findings only; the primary evaluates and fixes them using `review_model`, falling back to `task_model`. Reviewer chains run in order, and each reviewer loops until clean before the next reviewer starts. Post-external review and finalize run once after the complete chain.
 
-Claude is the default primary. `--codex` switches planning, tasks, internal reviews, evaluation, and finalize to Codex. `external_review_tool = auto` selects the other provider when installed. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
+Claude is the default primary. `--codex` switches planning, tasks, internal reviews, evaluation, and finalize to Codex. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. In the legacy path, `external_review_tool = auto` selects the other provider when installed. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
 
 Codex invocations use additive `-c` overrides so user `~/.codex/config.toml` settings remain available. loopai never writes to `~/.codex/`. `--pass-claude-md` lets Codex discover project `CLAUDE.md`; it does not install or link user-level files.
 
