@@ -191,6 +191,25 @@ func TestPRFlagParsing(t *testing.T) {
 	})
 }
 
+func TestCloseoutRejectsExplicitZeroOrEmptyExecutionFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "clear with zero max iterations", args: []string{"--clear", "--max-iterations=0"}},
+		{name: "merge with zero review patience", args: []string{"--merge", "--review-patience=0"}},
+		{name: "pr with empty claude command", args: []string{"--pr", "--claude-command="}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			o := parseTestOpts(t, tt.args...)
+			assert.True(t, o.executionModeSet)
+			require.Error(t, validateFlags(o))
+		})
+	}
+}
+
 func TestPromptPlanDescription(t *testing.T) {
 	colors := testColors()
 
@@ -4247,8 +4266,8 @@ func TestRunWithWorktree_NotifiesSetupFailure(t *testing.T) {
 	require.NoError(t, readErr, "setup failure must reach the cmux CLI")
 	assert.Contains(t, string(recorded), "notify")
 	assert.Contains(t, string(recorded), "run failed")
-	assert.Equal(t, 1, strings.Count(string(recorded), "set-status loopai failed"),
-		"setup failure must leave exactly one persistent failure pill")
+	assert.NotContains(t, string(recorded), "set-status loopai failed",
+		"setup failure occurs before execution and must not leave a persistent failure pill")
 	assert.Contains(t, string(recorded), "wt-notify.md", "the notification body names the run")
 }
 

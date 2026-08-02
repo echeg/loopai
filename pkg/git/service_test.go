@@ -359,6 +359,23 @@ func TestService_WorktreeInspectionAndSafeRemoval(t *testing.T) {
 	assert.NoDirExists(t, worktreePath)
 }
 
+func TestService_RemoveWorktreeSafeRefusesIgnoredFiles(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	worktreePath := filepath.Join(t.TempDir(), "feature")
+	runGit(t, dir, "worktree", "add", worktreePath, "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(worktreePath, ".gitignore"), []byte("secret.env\n"), 0o600))
+	runGit(t, worktreePath, "add", ".gitignore")
+	runGit(t, worktreePath, "commit", "-m", "ignore local secret")
+	require.NoError(t, os.WriteFile(filepath.Join(worktreePath, "secret.env"), []byte("keep me\n"), 0o600))
+
+	mainSvc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	err = mainSvc.RemoveWorktreeSafe(worktreePath)
+	require.ErrorContains(t, err, "ignored files")
+	assert.DirExists(t, worktreePath)
+	assert.FileExists(t, filepath.Join(worktreePath, "secret.env"))
+}
+
 func TestService_CreateBranchForPlan(t *testing.T) {
 	t.Run("returns nil on feature branch", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

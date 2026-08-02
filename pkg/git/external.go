@@ -601,9 +601,20 @@ func (e *externalBackend) removeWorktree(path string) error {
 	return nil
 }
 
-// removeWorktreeSafe refuses to discard modifications or untracked files.
+// removeWorktreeSafe refuses to discard modifications, untracked files, or ignored files.
 func (e *externalBackend) removeWorktreeSafe(path string) error {
-	_, err := e.run("worktree", "remove", path)
+	target, err := newExternalBackend(path, e.command)
+	if err != nil {
+		return fmt.Errorf("inspect worktree before removal: %w", err)
+	}
+	out, err := target.run("status", "--porcelain", "--untracked-files=all", "--ignored=matching")
+	if err != nil {
+		return fmt.Errorf("inspect worktree content before removal: %w", err)
+	}
+	if out != "" {
+		return errors.New("remove worktree: worktree contains modified, untracked, or ignored files")
+	}
+	_, err = e.run("worktree", "remove", path)
 	if err != nil {
 		return fmt.Errorf("remove worktree: %w", err)
 	}

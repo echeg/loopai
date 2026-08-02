@@ -86,6 +86,7 @@ type opts struct {
 	idleTimeoutSet    bool
 	mergeSet          bool
 	prSet             bool
+	executionModeSet  bool
 
 	claudeCommandSet       bool
 	claudeArgsSet          bool
@@ -95,8 +96,9 @@ type opts struct {
 	customReviewScriptSet  bool
 }
 
-// markFlagsSet detects which duration flags were explicitly provided on the CLI
-// so that --flag 0 can override a non-zero config value.
+// markFlagsSet detects options whose explicit presence matters even when their parsed value is
+// zero or empty. This both supports zero-valued config overrides and prevents standalone close-out
+// commands from being combined with execution options such as --max-iterations=0.
 func (o *opts) markFlagsSet(parser *flags.Parser) {
 	if parser == nil {
 		return
@@ -112,6 +114,20 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 	o.externalReviewModelSet = isFlagSet(parser, "external-review-model")
 	o.externalReviewersSet = isFlagSet(parser, "external-reviewers")
 	o.customReviewScriptSet = isFlagSet(parser, "custom-review-script")
+	for _, name := range []string{
+		"max-iterations", "max-external-iterations", "review-patience",
+		"plan-model", "task-model", "review-model", "claude-command", "claude-args",
+		"external-review-tool", "external-review-model", "external-reviewers", "custom-review-script",
+		"review", "external-only", "codex-only", "tasks-only", "base-ref", "wait",
+		"session-timeout", "idle-timeout", "skip-finalize", "preserve-anthropic-api-key",
+		"no-claude-swap", "codex", "pass-claude-md", "worktree", "resume-worktree",
+		"branch", "plan", "serve", "watch", "init", "reset", "dump-defaults",
+	} {
+		if isFlagSet(parser, name) {
+			o.executionModeSet = true
+			break
+		}
+	}
 }
 
 var revision = "unknown"
@@ -842,7 +858,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	handedOff := false
 	defer func() {
 		if err != nil && !handedOff {
-			finishCmuxCompletion(cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview)), req.PlanFile, branch, "", err)
+			notifyCmuxCompletion(cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview)), req.PlanFile, branch, "", err)
 		}
 	}()
 
@@ -1488,6 +1504,9 @@ func validateFlags(o opts) error {
 }
 
 func hasExecutionMode(o opts) bool {
+	if o.executionModeSet {
+		return true
+	}
 	for _, set := range []bool{
 		o.PlanFile != "", o.MaxIterations != 0, o.MaxExternalIterations != 0,
 		o.ReviewPatience != 0, o.PlanModel != "", o.TaskModel != "", o.ReviewModel != "",
