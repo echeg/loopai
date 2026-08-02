@@ -190,7 +190,11 @@ func (e *externalBackend) hasCommits() (bool, error) {
 
 // currentBranch returns the name of the current branch, or empty string for detached HEAD.
 func (e *externalBackend) currentBranch() (string, error) {
-	cmd := exec.CommandContext(context.Background(), e.command, "symbolic-ref", "HEAD")
+	return e.currentBranchContext(context.Background())
+}
+
+func (e *externalBackend) currentBranchContext(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, e.command, "symbolic-ref", "HEAD")
 	cmd.Dir = e.path
 	cmd.Env = append(os.Environ(), "LC_ALL=C") // force English stderr for reliable parsing
 	out, err := cmd.Output()
@@ -311,8 +315,19 @@ func (e *externalBackend) mergeBranch(ctx context.Context, name, expectedHead st
 	if err != nil {
 		return fmt.Errorf("read pre-merge HEAD: %w", err)
 	}
+	currentBranch, err := e.currentBranchContext(ctx)
+	if err != nil {
+		return fmt.Errorf("read current branch before merge: %w", err)
+	}
 	branchRef := "refs/heads/" + name
-	_, err = e.runContext(ctx, "merge", "--commit", "--no-squash", "--no-overwrite-ignore", branchRef)
+	mergeArgs := []string{"merge", "--commit", "--no-squash", "--no-overwrite-ignore", branchRef}
+	if currentBranch != "" {
+		// Branch mergeOptions can select a strategy such as "ours", which creates a merge
+		// commit and passes the ancestry check while discarding the feature tree. Clear the
+		// option at command scope so close-out always uses Git's ordinary merge semantics.
+		mergeArgs = append([]string{"-c", "branch." + currentBranch + ".mergeOptions="}, mergeArgs...)
+	}
+	_, err = e.runContext(ctx, mergeArgs...)
 	if err == nil {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), mergeCleanupTimeout)
 		defer cancel()

@@ -244,6 +244,26 @@ func TestService_MergeBranch(t *testing.T) {
 		assert.Equal(t, featureHash, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD")))
 	})
 
+	t.Run("ignores base branch merge options", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+
+		runGit(t, dir, "checkout", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o600))
+		runGit(t, dir, "add", "base.txt")
+		runGit(t, dir, "commit", "-m", "advance base")
+		runGit(t, dir, "config", "branch.master.mergeOptions", "-s ours")
+
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		require.NoError(t, svc.MergeBranch("feature"))
+		assert.FileExists(t, filepath.Join(dir, "feature.txt"),
+			"configured branch merge options must not discard feature content")
+	})
+
 	t.Run("branch wins over a same-named tag", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		runGit(t, dir, "tag", "feature")

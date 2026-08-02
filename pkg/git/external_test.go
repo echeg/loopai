@@ -15,7 +15,7 @@ import (
 func TestExternalBackendCloseoutCommandsHonorCancellation(t *testing.T) {
 	dir := t.TempDir()
 	command := filepath.Join(t.TempDir(), "slow-git")
-	require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\nif [ \"$1\" = rev-parse ] && [ \"$2\" = HEAD ]; then printf '%s\\n' deadbeef; exit 0; fi\ncase \"$1\" in check-ref-format) exit 0 ;; merge|push) sleep 30 ;; esac\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
+	require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\nif [ \"$1\" = rev-parse ] && [ \"$2\" = HEAD ]; then printf '%s\\n' deadbeef; exit 0; fi\nif [ \"$1\" = symbolic-ref ] && [ \"$2\" = HEAD ]; then printf '%s\\n' refs/heads/master; exit 0; fi\nif [ \"$1\" = -c ]; then shift 2; fi\ncase \"$1\" in check-ref-format) exit 0 ;; merge|push) sleep 30 ;; esac\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
 	backend := &externalBackend{path: dir, command: command}
 
 	for _, tc := range []struct {
