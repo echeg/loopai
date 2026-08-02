@@ -166,12 +166,12 @@ Problem it solves: today only one external provider can review a run. Users want
 
 ### Task 7: Verify acceptance criteria
 
-- [ ] verify chain config `external_reviewers = codex, claude:fable` produces two sequential review loops with correct executors (unit-level assertions already exist; re-check end to end via `make e2e-prep` smoke if feasible)
-- [ ] verify legacy configs (`external_review_tool` alone, with model, `auto`, `none`, `custom`) behave identically to master
-- [ ] verify explicit chain with missing binary fails with a clear error; legacy `auto` with missing binary still downgrades with a warning
-- [ ] run full test suite: `make test`
-- [ ] run `make lint`
-- [ ] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify chain config `external_reviewers = codex, claude:fable` produces two sequential review loops with correct executors (unit-level assertions already exist; re-check end to end via `make e2e-prep` smoke if feasible)
+- [x] verify legacy configs (`external_review_tool` alone, with model, `auto`, `none`, `custom`) behave identically to master
+- [x] verify explicit chain with missing binary fails with a clear error; legacy `auto` with missing binary still downgrades with a warning
+- [x] run full test suite: `make test`
+- [x] run `make lint`
+- [x] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 8: [Final] Update documentation and close out
 
