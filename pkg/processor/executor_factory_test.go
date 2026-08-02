@@ -235,6 +235,12 @@ func effectiveReviewExecutor(execs Executors) Executor {
 	return execs.Task
 }
 
+func externalExecutor(t *testing.T, execs Executors) Executor {
+	t.Helper()
+	require.NotEmpty(t, execs.Externals)
+	return execs.Externals[0].Exec
+}
+
 func TestRunner_New_ModelEffortWiring(t *testing.T) {
 	log := newRunnerMockLogger("progress.txt")
 
@@ -401,7 +407,7 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 
 			switch tc.external {
 			case config.ExternalReviewToolClaude:
-				externalExec, ok := execs.External.(*executor.ClaudeExecutor)
+				externalExec, ok := externalExecutor(t, execs).(*executor.ClaudeExecutor)
 				require.True(t, ok)
 				assert.True(t, externalExec.ExternalReview)
 				assert.Equal(t, "opus", externalExec.Model)
@@ -415,7 +421,7 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 				assert.True(t, externalExec.PreserveAPIKey)
 				assert.Equal(t, 3*time.Minute, externalExec.IdleTimeout)
 			case config.ExternalReviewToolCodex:
-				externalExec, ok := execs.External.(*executor.CodexExecutor)
+				externalExec, ok := externalExecutor(t, execs).(*executor.CodexExecutor)
 				require.True(t, ok)
 				assert.Equal(t, "read-only", externalExec.Sandbox)
 				assert.True(t, externalExec.ForceReadOnly)
@@ -427,11 +433,11 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 					assert.Zero(t, externalExec.IdleTimeout)
 				}
 			case config.ExternalReviewToolCustom:
-				assert.Nil(t, execs.External)
-				require.NotNil(t, execs.Custom)
-				assert.Equal(t, "/path/to/custom-review", execs.Custom.Script)
+				customExec, ok := externalExecutor(t, execs).(*executor.CustomExecutor)
+				require.True(t, ok)
+				assert.Equal(t, "/path/to/custom-review", customExec.Script)
 			case config.ExternalReviewToolNone:
-				assert.Nil(t, execs.External)
+				assert.Empty(t, execs.Externals)
 			}
 		})
 	}
@@ -469,7 +475,7 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 		taskExec, ok := execs.Task.(*executor.CodexExecutor)
 		require.True(t, ok)
 		assert.Equal(t, "workspace-write", taskExec.Sandbox)
-		externalExec, ok := execs.External.(*executor.CodexExecutor)
+		externalExec, ok := externalExecutor(t, execs).(*executor.CodexExecutor)
 		require.True(t, ok)
 		assert.Equal(t, "read-only", externalExec.Sandbox)
 		assert.True(t, externalExec.ForceReadOnly)
@@ -498,7 +504,7 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 		_, execs := (&executorFactory{}).Build(cfg, log)
 		taskExec := execs.Task.(*executor.ClaudeExecutor)
 		reviewExec := effectiveReviewExecutor(execs).(*executor.ClaudeExecutor)
-		externalExec := execs.External.(*executor.CodexExecutor)
+		externalExec := externalExecutor(t, execs).(*executor.CodexExecutor)
 		assert.Equal(t, [2]string{"sonnet", "medium"}, [2]string{taskExec.Model, taskExec.Effort})
 		assert.Equal(t, [2]string{"opus", "high"}, [2]string{reviewExec.Model, reviewExec.Effort})
 		assert.Equal(t, [2]string{"gpt-external", "low"}, [2]string{externalExec.Model, externalExec.ReasoningEffort})
@@ -517,7 +523,7 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 		_, execs := (&executorFactory{}).Build(cfg, log)
 		taskExec := execs.Task.(*executor.CodexExecutor)
 		reviewExec := effectiveReviewExecutor(execs).(*executor.CodexExecutor)
-		externalExec := execs.External.(*executor.ClaudeExecutor)
+		externalExec := externalExecutor(t, execs).(*executor.ClaudeExecutor)
 		assert.Equal(t, [2]string{"gpt-primary", "high"}, [2]string{taskExec.Model, taskExec.ReasoningEffort})
 		assert.Equal(t, [2]string{"gpt-review", "medium"}, [2]string{reviewExec.Model, reviewExec.ReasoningEffort})
 		assert.Equal(t, [2]string{"sonnet", "max"}, [2]string{externalExec.Model, externalExec.Effort})
@@ -534,9 +540,124 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 		}
 
 		_, execs := (&executorFactory{}).Build(cfg, log)
-		externalExec := execs.External.(*executor.CodexExecutor)
+		externalExec := externalExecutor(t, execs).(*executor.CodexExecutor)
 		assert.Equal(t, [2]string{"gpt-config", "xhigh"}, [2]string{externalExec.Model, externalExec.ReasoningEffort})
 	})
+}
+
+func TestExecutorFactory_ExternalReviewerChain(t *testing.T) {
+	log := newRunnerMockLogger("progress.txt")
+
+	t.Run("two providers preserve order and settings", func(t *testing.T) {
+		appCfg := testAppConfig(t)
+		appCfg.CodexModel = "gpt-default"
+		appCfg.CodexReasoningEffort = "medium"
+		cfg := Config{
+			Mode: ModeReview, AppConfig: appCfg,
+			ExternalReviewers: []config.ReviewerSpec{
+				{Provider: config.ExternalReviewToolCodex, ModelSpec: "gpt-chain:xhigh"},
+				{Provider: config.ExternalReviewToolClaude, ModelSpec: "fable:max"},
+			},
+		}
+
+		_, execs := (&executorFactory{}).Build(cfg, log)
+
+		require.Len(t, execs.Externals, 2)
+		assert.Equal(t, config.ExternalReviewToolCodex, execs.Externals[0].Tool)
+		codexExec, ok := execs.Externals[0].Exec.(*executor.CodexExecutor)
+		require.True(t, ok)
+		assert.Equal(t, "gpt-chain", codexExec.Model)
+		assert.Equal(t, "xhigh", codexExec.ReasoningEffort)
+		assert.Equal(t, "read-only", codexExec.Sandbox)
+		assert.True(t, codexExec.ForceReadOnly)
+
+		assert.Equal(t, config.ExternalReviewToolClaude, execs.Externals[1].Tool)
+		claudeExec, ok := execs.Externals[1].Exec.(*executor.ClaudeExecutor)
+		require.True(t, ok)
+		assert.Equal(t, "fable", claudeExec.Model)
+		assert.Equal(t, "max", claudeExec.Effort)
+		assert.True(t, claudeExec.ExternalReview)
+	})
+
+	t.Run("duplicate provider gets distinct executors", func(t *testing.T) {
+		cfg := Config{
+			Mode: ModeReview, AppConfig: testAppConfig(t),
+			ExternalReviewers: []config.ReviewerSpec{
+				{Provider: config.ExternalReviewToolClaude, ModelSpec: "opus:xhigh"},
+				{Provider: config.ExternalReviewToolClaude, ModelSpec: "fable:max"},
+			},
+		}
+
+		_, execs := (&executorFactory{}).Build(cfg, log)
+
+		require.Len(t, execs.Externals, 2)
+		first := execs.Externals[0].Exec.(*executor.ClaudeExecutor)
+		second := execs.Externals[1].Exec.(*executor.ClaudeExecutor)
+		assert.NotSame(t, first, second)
+		assert.Equal(t, [2]string{"opus", "xhigh"}, [2]string{first.Model, first.Effort})
+		assert.Equal(t, [2]string{"fable", "max"}, [2]string{second.Model, second.Effort})
+	})
+
+	t.Run("custom entry builds custom executor", func(t *testing.T) {
+		appCfg := testAppConfig(t)
+		appCfg.CustomReviewScript = "/path/to/custom-review"
+		cfg := Config{
+			Mode: ModeReview, AppConfig: appCfg,
+			ExternalReviewers: []config.ReviewerSpec{{Provider: config.ExternalReviewToolCustom}},
+		}
+
+		_, execs := (&executorFactory{}).Build(cfg, log)
+
+		require.Len(t, execs.Externals, 1)
+		assert.Equal(t, config.ExternalReviewToolCustom, execs.Externals[0].Tool)
+		customExec, ok := execs.Externals[0].Exec.(*executor.CustomExecutor)
+		require.True(t, ok)
+		assert.Equal(t, "/path/to/custom-review", customExec.Script)
+	})
+}
+
+func TestExecutorFactory_LegacyExternalFallbackParity(t *testing.T) {
+	appCfg := testAppConfig(t)
+	appCfg.CodexModel = "gpt-default"
+	appCfg.CodexReasoningEffort = "medium"
+	legacy := Config{
+		Mode: ModeReview, CodexEnabled: true, ExternalReviewToolSet: true,
+		ExternalReviewTool:  config.ExternalReviewToolCodex,
+		ExternalReviewModel: "gpt-review", ExternalReviewEffort: "xhigh", AppConfig: appCfg,
+	}
+	chain := legacy
+	chain.ExternalReviewers = []config.ReviewerSpec{{
+		Provider: config.ExternalReviewToolCodex, ModelSpec: "gpt-review:xhigh",
+	}}
+
+	_, legacyExecs := (&executorFactory{}).Build(legacy, newRunnerMockLogger("progress.txt"))
+	_, chainExecs := (&executorFactory{}).Build(chain, newRunnerMockLogger("progress.txt"))
+
+	require.Len(t, legacyExecs.Externals, 1)
+	require.Len(t, chainExecs.Externals, 1)
+	legacyExec := legacyExecs.Externals[0].Exec.(*executor.CodexExecutor)
+	chainExec := chainExecs.Externals[0].Exec.(*executor.CodexExecutor)
+	assert.Equal(t, chainExec.Model, legacyExec.Model)
+	assert.Equal(t, chainExec.ReasoningEffort, legacyExec.ReasoningEffort)
+	assert.Equal(t, chainExec.Sandbox, legacyExec.Sandbox)
+	assert.Equal(t, chainExec.ForceReadOnly, legacyExec.ForceReadOnly)
+}
+
+func TestExecutorFactory_LegacyAutoMissingBinaryDowngrades(t *testing.T) {
+	appCfg := testAppConfig(t)
+	appCfg.Executor = config.ExecutorClaude
+	appCfg.ExternalReviewTool = config.ExternalReviewToolAuto
+	appCfg.CodexCommand = "/nonexistent/path/to/codex"
+	cfg := Config{Mode: ModeReview, CodexEnabled: true, AppConfig: appCfg}
+	log := newRunnerMockLogger("progress.txt")
+
+	resolved, execs := (&executorFactory{}).Build(cfg, log)
+
+	assert.Empty(t, execs.Externals)
+	assert.False(t, resolved.CodexEnabled)
+	assert.Equal(t, config.ExternalReviewToolNone, resolved.ExternalReviewTool)
+	assert.Equal(t, config.ExternalReviewToolNone, appCfg.ExternalReviewTool)
+	assertLogContains(t, log, "codex not found")
 }
 
 func TestRunner_New_AutoExternalRouting(t *testing.T) {
@@ -564,10 +685,10 @@ func TestRunner_New_AutoExternalRouting(t *testing.T) {
 			_, execs := (&executorFactory{}).Build(cfg, newRunnerMockLogger("progress.txt"))
 			switch tc.wantExternal.(type) {
 			case *executor.CodexExecutor:
-				_, ok := execs.External.(*executor.CodexExecutor)
+				_, ok := externalExecutor(t, execs).(*executor.CodexExecutor)
 				assert.True(t, ok)
 			case *executor.ClaudeExecutor:
-				_, ok := execs.External.(*executor.ClaudeExecutor)
+				_, ok := externalExecutor(t, execs).(*executor.ClaudeExecutor)
 				assert.True(t, ok)
 			}
 		})

@@ -14,29 +14,58 @@ import (
 type executorFactory struct{}
 
 func (f *executorFactory) Build(cfg Config, log Logger) (Config, Executors) {
-	customExec := cfg.buildCustomExecutor(log)
-	externalProvider, autoSelected := cfg.externalReviewProvider()
-	if autoSelected && f.externalBinaryMissing(cfg.AppConfig, externalProvider, log) {
-		externalProvider = config.ExternalReviewToolNone
-		cfg.CodexEnabled = false
-		cfg.ExternalReviewTool = config.ExternalReviewToolNone
-		if cfg.AppConfig != nil {
-			cfg.AppConfig.ExternalReviewTool = config.ExternalReviewToolNone
-		}
-	}
-	cfg.ExternalReviewTool = externalProvider
-	externalExec := cfg.buildExternalExecutor(log, externalProvider)
+	externals := f.buildExternalReviewers(&cfg, log)
 
 	if cfg.isCodexExecutor() {
 		if cfg.AppConfig.PassClaudeMd {
 			maybeEmitClaudeMdSetupHint(log)
 		}
 		codexTask, codexReview := cfg.buildCodexExecutors(log)
-		return cfg, Executors{Task: codexTask, Review: codexReview, External: externalExec, Custom: customExec}
+		return cfg, Executors{Task: codexTask, Review: codexReview, Externals: externals}
 	}
 
 	claudeExec, reviewExec := cfg.buildClaudeExecutors(log)
-	return cfg, Executors{Task: claudeExec, Review: reviewExec, External: externalExec, Custom: customExec}
+	return cfg, Executors{Task: claudeExec, Review: reviewExec, Externals: externals}
+}
+
+// buildExternalReviewers builds one executor for every ordered reviewer. When
+// callers have not supplied the new list, it synthesizes the legacy one-entry
+// chain, including executor-aware auto selection and its missing-binary downgrade.
+func (f *executorFactory) buildExternalReviewers(cfg *Config, log Logger) []ExternalReviewer {
+	specs := cfg.ExternalReviewers
+	if len(specs) == 0 {
+		provider, autoSelected := cfg.externalReviewProvider()
+		if autoSelected && f.externalBinaryMissing(cfg.AppConfig, provider, log) {
+			provider = config.ExternalReviewToolNone
+			cfg.CodexEnabled = false
+			cfg.ExternalReviewTool = config.ExternalReviewToolNone
+			if cfg.AppConfig != nil {
+				cfg.AppConfig.ExternalReviewTool = config.ExternalReviewToolNone
+			}
+		}
+		cfg.ExternalReviewTool = provider
+		if provider == config.ExternalReviewToolNone {
+			return nil
+		}
+		model, effort := cfg.externalReviewModelEffort(provider)
+		specs = []config.ReviewerSpec{{Provider: provider, ModelSpec: joinModelEffort(model, effort)}}
+	}
+
+	reviewers := make([]ExternalReviewer, 0, len(specs))
+	for _, spec := range specs {
+		reviewers = append(reviewers, ExternalReviewer{
+			Tool: spec.Provider,
+			Exec: cfg.buildExternalReviewerExecutor(log, spec),
+		})
+	}
+	return reviewers
+}
+
+func joinModelEffort(model, effort string) string {
+	if effort == "" {
+		return model
+	}
+	return model + ":" + effort
 }
 
 // externalReviewProvider returns the concrete external provider expected by the
@@ -90,13 +119,19 @@ func (f *executorFactory) externalBinaryMissing(appConfig *config.Config, provid
 	return false
 }
 
-func (cfg Config) buildExternalExecutor(log Logger, provider string) Executor {
-	model, effort := cfg.externalReviewModelEffort(provider)
-	switch provider {
+func (cfg Config) buildExternalReviewerExecutor(log Logger, spec config.ReviewerSpec) Executor {
+	var codexModel, codexEffort string
+	if cfg.AppConfig != nil {
+		codexModel, codexEffort = cfg.AppConfig.CodexModel, cfg.AppConfig.CodexReasoningEffort
+	}
+	model, effort, _ := ResolveExternalReviewerModelEffort(spec.Provider, spec.ModelSpec, codexModel, codexEffort)
+	switch spec.Provider {
 	case config.ExternalReviewToolClaude:
 		return cfg.buildExternalClaudeExecutor(log, model, effort)
 	case config.ExternalReviewToolCodex:
 		return cfg.buildExternalCodexExecutor(log, model, effort)
+	case config.ExternalReviewToolCustom:
+		return cfg.buildCustomExecutor(log)
 	default:
 		return nil
 	}

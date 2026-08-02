@@ -1427,6 +1427,10 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 	}
 	applyEffectiveExternalReview(req.Config, externalReview)
 	reviewer, enabled := externalReview.firstReviewer()
+	reviewers := make([]config.ReviewerSpec, 0, len(externalReview.Reviewers))
+	for _, resolved := range externalReview.Reviewers {
+		reviewers = append(reviewers, config.ReviewerSpec{Provider: resolved.Provider, ModelSpec: resolved.modelSpec()})
+	}
 	// resolve max external iterations: CLI flag > config file > 0 (auto)
 	maxExtIter := req.Config.MaxExternalIterations
 	if o.MaxExternalIterations > 0 {
@@ -1458,6 +1462,7 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		ExternalReviewTool:    reviewer.Provider,
 		ExternalReviewModel:   reviewer.Model,
 		ExternalReviewEffort:  reviewer.Effort,
+		ExternalReviewers:     reviewers,
 		FinalizeEnabled:       req.Config.FinalizeEnabled,
 		DefaultBranch:         req.BaseRef,
 		TaskModel:             resolveSpec(o.TaskModel, req.Config.TaskModel),

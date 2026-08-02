@@ -136,7 +136,7 @@ func TestRunner_Run_UnknownMode(t *testing.T) {
 	claude := newMockExecutor(nil)
 	codex := newMockExecutor(nil)
 
-	r := NewWithExecutors(Config{Mode: "invalid"}, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(Config{Mode: "invalid"}, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.Error(t, err)
@@ -148,7 +148,7 @@ func TestRunner_RunFull_NoPlanFile(t *testing.T) {
 	claude := newMockExecutor(nil)
 	codex := newMockExecutor(nil)
 
-	r := NewWithExecutors(Config{Mode: ModeFull}, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(Config{Mode: ModeFull}, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.Error(t, err)
@@ -194,7 +194,7 @@ func TestRunner_RunFull_Success(t *testing.T) {
 		Mode: ModeFull, PlanFile: planFile, MaxIterations: 50,
 		IterationDelayMs: 1, CodexEnabled: true, AppConfig: testAppConfig(t),
 	}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -218,7 +218,7 @@ func TestRunner_RunFull_NoCodexFindings(t *testing.T) {
 	})
 
 	cfg := Config{Mode: ModeFull, PlanFile: planFile, MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -250,7 +250,7 @@ func TestRunner_RunFull_CodexExecutor_ExplicitNoneSkipsExternalReview(t *testing
 		CodexEnabled:  true, // explicit ExternalReviewTool="none" wins
 		AppConfig:     appCfg,
 	}
-	r := NewWithExecutors(cfg, log, Executors{Task: task, External: external}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: task, Externals: []ExternalReviewer{{Exec: external}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -273,7 +273,7 @@ func TestRunner_RunReviewOnly_Success(t *testing.T) {
 	})
 
 	cfg := Config{Mode: ModeReview, MaxIterations: 50, IterationDelayMs: 1, CodexEnabled: true, AppConfig: testAppConfig(t)}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -293,7 +293,7 @@ func TestRunner_RunCodexOnly_Success(t *testing.T) {
 	})
 
 	cfg := Config{Mode: ModeCodexOnly, MaxIterations: 50, IterationDelayMs: 1, CodexEnabled: true, AppConfig: testAppConfig(t)}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -310,7 +310,7 @@ func TestRunner_RunCodexOnly_NoFindings(t *testing.T) {
 	})
 
 	cfg := Config{Mode: ModeCodexOnly, MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -337,7 +337,7 @@ func TestRunner_MaxExternalIterations_ExplicitLimit(t *testing.T) {
 		Mode: ModeCodexOnly, MaxIterations: 50, IterationDelayMs: 1,
 		MaxExternalIterations: 2, CodexEnabled: true, AppConfig: testAppConfig(t),
 	}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -363,7 +363,7 @@ func TestRunner_MaxExternalIterations_DerivedFormula(t *testing.T) {
 		Mode: ModeCodexOnly, MaxIterations: 15, IterationDelayMs: 1,
 		MaxExternalIterations: 0, CodexEnabled: true, AppConfig: testAppConfig(t),
 	}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -377,7 +377,7 @@ func TestRunner_CodexDisabled_SkipsCodexPhase(t *testing.T) {
 	codex := newMockExecutor(nil)
 
 	cfg := Config{Mode: ModeCodexOnly, MaxIterations: 50, CodexEnabled: false, AppConfig: testAppConfig(t)}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -397,7 +397,7 @@ func TestRunner_RunTasksOnly_Success(t *testing.T) {
 	codex := newMockExecutor(nil)
 
 	cfg := Config{Mode: ModeTasksOnly, PlanFile: planFile, MaxIterations: 50, AppConfig: testAppConfig(t)}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -410,7 +410,7 @@ func TestRunner_RunTasksOnly_NoPlanFile(t *testing.T) {
 	claude := newMockExecutor(nil)
 	codex := newMockExecutor(nil)
 
-	r := NewWithExecutors(Config{Mode: ModeTasksOnly}, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(Config{Mode: ModeTasksOnly}, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.Error(t, err)
@@ -430,7 +430,7 @@ func TestRunner_RunTasksOnly_TaskPhaseError(t *testing.T) {
 	codex := newMockExecutor(nil)
 
 	cfg := Config{Mode: ModeTasksOnly, PlanFile: planFile, MaxIterations: 10, AppConfig: testAppConfig(t)}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.Error(t, err)
@@ -455,7 +455,7 @@ func TestRunner_RunTasksOnly_NoReviews(t *testing.T) {
 		CodexEnabled:  true, // enabled but should not run in tasks-only mode
 		AppConfig:     testAppConfig(t),
 	}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -475,7 +475,7 @@ func TestRunner_CodexPhase_Error(t *testing.T) {
 	})
 
 	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: true, AppConfig: testAppConfig(t)}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.Error(t, err)
@@ -495,7 +495,7 @@ func TestRunner_ClaudeExecution_Error(t *testing.T) {
 	codex := newMockExecutor(nil)
 
 	cfg := Config{Mode: ModeFull, PlanFile: planFile, MaxIterations: 10, AppConfig: testAppConfig(t)}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.Error(t, err)
@@ -512,7 +512,7 @@ func TestRunner_RunFull_NoTaskSections(t *testing.T) {
 	codex := newMockExecutor(nil)
 
 	cfg := Config{Mode: ModeFull, PlanFile: planFile, MaxIterations: 10, AppConfig: testAppConfig(t)}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.Error(t, err)
@@ -531,7 +531,7 @@ func TestRunner_RunTasksOnly_NoTaskSections(t *testing.T) {
 	codex := newMockExecutor(nil)
 
 	cfg := Config{Mode: ModeTasksOnly, PlanFile: planFile, MaxIterations: 10, AppConfig: testAppConfig(t)}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.Error(t, err)
@@ -555,7 +555,7 @@ func TestRunner_BuildCodexPrompt_CompletedDir(t *testing.T) {
 	codex := newMockExecutor(nil)
 
 	cfg := Config{PlanFile: originalPath, AppConfig: testAppConfig(t)}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 
 	locator := newPlanLocator(r.cfg)
 	prompts := newPromptBuilder(promptBuilderOpts{cfg: r.cfg, log: r.log, locator: locator})
@@ -577,7 +577,7 @@ func TestRunner_ErrorPatternMatch_ClaudeInTaskPhase(t *testing.T) {
 	codex := newMockExecutor(nil)
 
 	cfg := Config{Mode: ModeFull, PlanFile: planFile, MaxIterations: 10, AppConfig: testAppConfig(t)}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.Error(t, err)
@@ -616,7 +616,7 @@ func TestRunner_LimitPatternMatch_ClaudeInTaskPhase_NoWait(t *testing.T) {
 	cfg := Config{Mode: ModeFull, PlanFile: planFile, MaxIterations: 10, AppConfig: testAppConfig(t)}
 	cfg.AppConfig.WaitOnLimit = 0
 	cfg.AppConfig.WaitOnLimitSet = true
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.Error(t, err)
@@ -705,7 +705,7 @@ func TestRunner_CodexAndPostReview_ShortCircuitWhenClaudeModeDisablesExternal(t 
 		CodexEnabled:  false, // makes the external review phase return tool "none"
 		AppConfig:     testAppConfig(t),
 	}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, holder)
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, holder)
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -742,7 +742,7 @@ func TestRunner_Finalize_RunsInReviewOnlyMode(t *testing.T) {
 		FinalizeEnabled: true,
 		AppConfig:       testAppConfig(t),
 	}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -765,7 +765,7 @@ func TestRunner_Finalize_RunsInCodexOnlyMode(t *testing.T) {
 		FinalizeEnabled: true,
 		AppConfig:       testAppConfig(t),
 	}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -803,7 +803,7 @@ func TestRunner_Finalize_CodexExecutor_RunsAllPhasesThroughSharedInstance(t *tes
 		AppConfig:             appCfg,
 	}
 	r := NewWithExecutors(cfg, log,
-		Executors{Task: codexExec, Review: codexExec, External: nil},
+		Executors{Task: codexExec, Review: codexExec, Externals: []ExternalReviewer{{Exec: nil}}},
 		&status.PhaseHolder{})
 	err := r.Run(t.Context())
 
@@ -849,7 +849,8 @@ func TestRunner_CodexExternalOnly_ClaudeFindingsAreHandledByPrimaryCodex(t *test
 		ExternalReviewTool: config.ExternalReviewToolClaude, AppConfig: appCfg,
 	}
 	r := NewWithExecutors(cfg, newRunnerMockLogger("progress.txt"), Executors{
-		Task: primaryCodex, Review: primaryCodex, External: externalClaude,
+		Task: primaryCodex, Review: primaryCodex,
+		Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolClaude, Exec: externalClaude}},
 	}, &status.PhaseHolder{})
 
 	require.NoError(t, r.Run(t.Context()))
@@ -952,7 +953,7 @@ func TestRunner_CodexAndPostReview_PipelineOrder(t *testing.T) {
 				FinalizeEnabled:  true,
 				AppConfig:        testAppConfig(t),
 			}
-			r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, holder)
+			r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, holder)
 			err := r.Run(t.Context())
 
 			require.NoError(t, err)
@@ -1058,7 +1059,7 @@ func TestRunner_CodexAndPostReview_CommitPendingPrefix(t *testing.T) {
 			Mode: ModeCodexOnly, MaxIterations: 50, IterationDelayMs: 1,
 			CodexEnabled: true, AppConfig: testAppConfig(t),
 		}
-		r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+		r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 		err := r.Run(t.Context())
 
 		require.NoError(t, err)
@@ -1075,7 +1076,7 @@ func TestRunner_CodexAndPostReview_CommitPendingPrefix(t *testing.T) {
 		codex := newMockExecutor(nil)
 
 		cfg := Config{Mode: ModeCodexOnly, MaxIterations: 50, CodexEnabled: false, AppConfig: testAppConfig(t)}
-		r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+		r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 		err := r.Run(t.Context())
 
 		require.NoError(t, err)
@@ -1180,7 +1181,7 @@ func TestRunner_SleepWithContext_CancelDuringDelay(t *testing.T) {
 		IterationDelayMs: longDelay,
 		AppConfig:        testAppConfig(t),
 	}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 
 	ctx, cancelFunc := context.WithCancel(t.Context())
 	cancel = cancelFunc
@@ -1209,7 +1210,7 @@ func TestRunner_FullMode_ErrUserAborted_SkipsReview(t *testing.T) {
 		Mode: ModeFull, MaxIterations: 50, CodexEnabled: true,
 		PlanFile: planFile, AppConfig: testAppConfig(t),
 	}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	taskPhase := testTaskPhase{runFunc: func(_ context.Context) error {
 		return ErrUserAborted
 	}}
@@ -1248,7 +1249,7 @@ func TestRunner_TasksOnly_ErrUserAborted_CleanExit(t *testing.T) {
 		Mode: ModeTasksOnly, MaxIterations: 50,
 		PlanFile: planFile, AppConfig: testAppConfig(t),
 	}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, External: codex}, &status.PhaseHolder{})
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Exec: codex}}}, &status.PhaseHolder{})
 	taskPhase := testTaskPhase{runFunc: func(_ context.Context) error {
 		return ErrUserAborted
 	}}
@@ -1280,7 +1281,7 @@ func TestRunner_ReviewClaude_UsedForReviewPhases(t *testing.T) {
 
 	cfg := Config{Mode: ModeReview, MaxIterations: 50, IterationDelayMs: 1, CodexEnabled: true, AppConfig: testAppConfig(t)}
 	r := NewWithExecutors(cfg, log, Executors{
-		Task: taskClaude, Review: reviewClaude, External: codex,
+		Task: taskClaude, Review: reviewClaude, Externals: []ExternalReviewer{{Exec: codex}},
 	}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
@@ -1307,7 +1308,7 @@ func TestRunner_ReviewClaude_NilFallsBackToTaskExecutor(t *testing.T) {
 
 	cfg := Config{Mode: ModeReview, MaxIterations: 50, IterationDelayMs: 1, CodexEnabled: true, AppConfig: testAppConfig(t)}
 	r := NewWithExecutors(cfg, log, Executors{
-		Task: claude, Review: nil, External: codex,
+		Task: claude, Review: nil, Externals: []ExternalReviewer{{Exec: codex}},
 	}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
@@ -1349,7 +1350,7 @@ func TestRunner_ReviewPromptIsSharedAcrossExecutors(t *testing.T) {
 				CodexEnabled: tc.executor == config.ExecutorClaude, AppConfig: appCfg,
 			}
 			r := NewWithExecutors(cfg, log,
-				Executors{Task: task, External: external},
+				Executors{Task: task, Externals: []ExternalReviewer{{Exec: external}}},
 				&status.PhaseHolder{})
 			require.NoError(t, r.Run(t.Context()))
 

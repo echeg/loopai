@@ -116,11 +116,11 @@ Problem it solves: today only one external provider can review a run. Users want
 - Modify: `pkg/processor/runner.go` (Executors struct only)
 - Modify: `pkg/processor/executor_factory_test.go`
 
-- [ ] add `ExternalReviewer { Tool string; Exec Executor }` and replace `Executors.External`/`Executors.Custom` with `Externals []ExternalReviewer`
-- [ ] factory: build one executor per chain entry via existing `buildExternalClaudeExecutor` / `buildExternalCodexExecutor` / custom builder; duplicate providers with different models produce distinct executors
-- [ ] keep the direct-`processor.New` fallback: when no chain is provided, synthesize a one-element chain from legacy `ExternalReviewTool`/`ExternalReviewModel` (including auto-selection and missing-binary downgrade for auto)
-- [ ] write tests: chain of two providers, duplicate provider different models, custom entry, legacy fallback parity (same executor settings as before), auto downgrade still works
-- [ ] run tests - must pass before task 4
+- [x] add `ExternalReviewer { Tool string; Exec Executor }` and replace `Executors.External`/`Executors.Custom` with `Externals []ExternalReviewer`
+- [x] factory: build one executor per chain entry via existing `buildExternalClaudeExecutor` / `buildExternalCodexExecutor` / custom builder; duplicate providers with different models produce distinct executors
+- [x] keep the direct-`processor.New` fallback: when no chain is provided, synthesize a one-element chain from legacy `ExternalReviewTool`/`ExternalReviewModel` (including auto-selection and missing-binary downgrade for auto)
+- [x] write tests: chain of two providers, duplicate provider different models, custom entry, legacy fallback parity (same executor settings as before), auto downgrade still works
+- [x] run tests - must pass before task 4
 
 ### Task 4: Sequential chain in the external review phase and runner
 
