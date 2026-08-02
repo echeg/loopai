@@ -130,21 +130,21 @@ drops it. No TTL hacks (detached sleep processes) are used.
 
 ### Task 5: Add --merge command
 
-- [ ] add `Merge string` flag (`--merge`, optional value = base branch,
+- [x] add `Merge string` flag (`--merge`, optional value = base branch,
       `optional-argument` style so bare `--merge` auto-detects) handled as an early
       standalone mode
-- [ ] implement flow in `cmd/loopai`: require clean working tree (`isDirty` surface),
+- [x] implement flow in `cmd/loopai`: require clean working tree (`isDirty` surface),
       resolve base via `ResolveBaseBranch`, error when current branch equals base;
       checkout base → `MergeBranch(feature)`
-- [ ] on success: remove `.loopai/worktrees/<branch>` via `RemoveWorktree` when it
+- [x] on success: remove `.loopai/worktrees/<branch>` via `RemoveWorktree` when it
       exists, `DeleteBranch(feature)`, clear the cmux pill, print summary (base, branch,
       ff/merge)
-- [ ] on conflict: merge already aborted by pkg/git; checkout the original branch back,
+- [x] on conflict: merge already aborted by pkg/git; checkout the original branch back,
       print actionable error, keep the pill, exit non-zero
-- [ ] write tests: happy path with and without worktree, dirty-tree refusal,
+- [x] write tests: happy path with and without worktree, dirty-tree refusal,
       current==base refusal, conflict path restores original branch and keeps branch
       alive
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 6: Add --pr command
 

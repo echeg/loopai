@@ -149,6 +149,20 @@ func TestClearFlagParsing(t *testing.T) {
 	assert.True(t, o.Clear)
 }
 
+func TestMergeFlagParsing(t *testing.T) {
+	t.Run("bare flag auto detects base", func(t *testing.T) {
+		o := parseTestOpts(t, "--merge")
+		assert.True(t, o.mergeSet)
+		assert.Empty(t, o.Merge)
+	})
+
+	t.Run("explicit base", func(t *testing.T) {
+		o := parseTestOpts(t, "--merge=develop")
+		assert.True(t, o.mergeSet)
+		assert.Equal(t, "develop", o.Merge)
+	})
+}
+
 func TestPromptPlanDescription(t *testing.T) {
 	colors := testColors()
 
@@ -1583,6 +1597,11 @@ func TestValidateFlags(t *testing.T) {
 		{name: "clear_with_plan_mode_conflicts", opts: opts{Clear: true, PlanDescription: "add feature"}, wantErr: true, errMsg: "other mode flags"},
 		{name: "clear_with_review_mode_conflicts", opts: opts{Clear: true, Review: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "clear_with_init_mode_conflicts", opts: opts{Clear: true, Init: true}, wantErr: true, errMsg: "other mode flags"},
+		{name: "merge_only_is_valid", opts: opts{mergeSet: true}, wantErr: false},
+		{name: "merge_with_explicit_base_is_valid", opts: opts{Merge: "develop"}, wantErr: false},
+		{name: "merge_with_plan_file_conflicts", opts: opts{mergeSet: true, PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "--merge cannot be combined"},
+		{name: "merge_with_review_conflicts", opts: opts{mergeSet: true, Review: true}, wantErr: true, errMsg: "other mode flags"},
+		{name: "merge_with_clear_conflicts", opts: opts{mergeSet: true, Clear: true}, wantErr: true, errMsg: "--clear cannot be combined"},
 		{name: "both_plan_and_planfile_conflicts", opts: opts{PlanDescription: "add feature", PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "conflicts"},
 		{name: "negative_wait_is_invalid", opts: opts{Wait: -30 * time.Minute}, wantErr: true, errMsg: "non-negative"},
 		{name: "positive_wait_is_valid", opts: opts{Wait: time.Hour}, wantErr: false},
@@ -3046,6 +3065,114 @@ func TestDumpDefaults(t *testing.T) {
 
 		err := dumpDefaults(filepath.Join(blockingFile, "sub"))
 		require.Error(t, err)
+	})
+}
+
+type recordingStatusClearer struct{ calls int }
+
+func (r *recordingStatusClearer) Clear() { r.calls++ }
+
+func TestRunMergeCommand(t *testing.T) {
+	makeFeature := func(t *testing.T, dir string) *git.Service {
+		t.Helper()
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		return svc
+	}
+
+	currentBranch := func(t *testing.T, dir string) string {
+		t.Helper()
+		cmd := exec.Command("git", "branch", "--show-current")
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		require.NoError(t, err)
+		return strings.TrimSpace(string(out))
+	}
+
+	t.Run("happy path without worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		clearer := &recordingStatusClearer{}
+		var output bytes.Buffer
+
+		require.NoError(t, runMergeCommand(svc, "", clearer, &output))
+		assert.Equal(t, "master", currentBranch(t, dir))
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
+		assert.Equal(t, 1, clearer.calls)
+		assert.Contains(t, output.String(), "feature into master (fast-forward)")
+	})
+
+	t.Run("happy path removes worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
+		runGit(t, dir, "branch", "cleanup-worktree", "master")
+		runGit(t, dir, "worktree", "add", worktreePath, "cleanup-worktree")
+		clearer := &recordingStatusClearer{}
+
+		require.NoError(t, runMergeCommand(svc, "master", clearer, io.Discard))
+		assert.NoDirExists(t, worktreePath)
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, 1, clearer.calls)
+	})
+
+	t.Run("dirty tree is refused", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("dirty\n"), 0o600))
+		clearer := &recordingStatusClearer{}
+
+		err := runMergeCommand(svc, "master", clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "clean working tree")
+		assert.Equal(t, "feature", currentBranch(t, dir))
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("current branch equal to base is refused", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		err = runMergeCommand(svc, "master", clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "already the base branch")
+		assert.Equal(t, "master", currentBranch(t, dir))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("conflict restores feature and keeps pill", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "commit", "-am", "feature change")
+		runGit(t, dir, "checkout", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("base\n"), 0o600))
+		runGit(t, dir, "commit", "-am", "base change")
+		runGit(t, dir, "checkout", "feature")
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		err = runMergeCommand(svc, "master", clearer, io.Discard)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, git.ErrMergeConflict)
+		assert.Contains(t, err.Error(), "conflicted and was aborted")
+		assert.Equal(t, "feature", currentBranch(t, dir))
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+		cmd := exec.Command("git", "status", "--porcelain")
+		cmd.Dir = dir
+		status, statusErr := cmd.Output()
+		require.NoError(t, statusErr)
+		assert.Empty(t, strings.TrimSpace(string(status)))
 	})
 }
 

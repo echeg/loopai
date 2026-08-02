@@ -73,6 +73,7 @@ type opts struct {
 	Init                    bool          `long:"init" description:"initialize local .loopai/ config directory in current project"`
 	Reset                   bool          `long:"reset" description:"interactively reset global config to embedded defaults"`
 	Clear                   bool          `long:"clear" description:"remove loopai cmux status pill"`
+	Merge                   string        `long:"merge" optional:"true" optional-value:"" value-name:"base" description:"merge current feature branch into base branch"`
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
 	ConfigDir               string        `long:"config-dir" env:"LOOPAI_CONFIG_DIR" description:"custom config directory"`
 
@@ -82,6 +83,7 @@ type opts struct {
 	waitSet           bool
 	sessionTimeoutSet bool
 	idleTimeoutSet    bool
+	mergeSet          bool
 
 	claudeCommandSet       bool
 	claudeArgsSet          bool
@@ -100,6 +102,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 	o.waitSet = isFlagSet(parser, "wait")
 	o.sessionTimeoutSet = isFlagSet(parser, "session-timeout")
 	o.idleTimeoutSet = isFlagSet(parser, "idle-timeout")
+	o.mergeSet = isFlagSet(parser, "merge")
 	o.claudeCommandSet = isFlagSet(parser, "claude-command")
 	o.claudeArgsSet = isFlagSet(parser, "claude-args")
 	o.externalReviewToolSet = isFlagSet(parser, "external-review-tool")
@@ -285,6 +288,20 @@ func run(ctx context.Context, o opts) error {
 
 	// create colors from config (all colors guaranteed populated via fallback)
 	colors := progress.NewColors(cfg.Colors)
+
+	// standalone git close-out commands do not require executor or notification dependencies.
+	if mergeRequested(o) {
+		if cfg.VcsCommand == "" || cfg.VcsCommand == "git" {
+			if _, statErr := os.Stat(".git"); statErr != nil {
+				return errors.New("must run from repository root (no .git directory found); run from the repo root")
+			}
+		}
+		gitSvc, openErr := openGitService(colors, cfg.VcsCommand)
+		if openErr != nil {
+			return fmt.Errorf("open git repo: %w", openErr)
+		}
+		return runMergeCommand(gitSvc, o.Merge, cmux.New("", cmux.Models{}), os.Stdout)
+	}
 
 	// create notification service (nil if no channels configured)
 	notifySvc, err := notify.New(cfg.NotifyParams, stderrLog{})
@@ -1441,6 +1458,9 @@ func validateFlags(o opts) error {
 	if o.Clear && hasOtherMode(o) {
 		return errors.New("--clear cannot be combined with a plan file or other mode flags")
 	}
+	if mergeRequested(o) && (o.Clear || hasExecutionMode(o)) {
+		return errors.New("--merge cannot be combined with a plan file or other mode flags")
+	}
 	if o.PlanDescription != "" && o.PlanFile != "" {
 		return errors.New("--plan flag conflicts with plan file argument; use one or the other")
 	}
@@ -1471,6 +1491,10 @@ func validateFlags(o opts) error {
 // hasOtherMode reports whether --clear was combined with an operation that would otherwise
 // start or configure another standalone mode. Ordinary presentation flags remain harmless.
 func hasOtherMode(o opts) bool {
+	return hasExecutionMode(o) || mergeRequested(o)
+}
+
+func hasExecutionMode(o opts) bool {
 	return o.PlanFile != "" ||
 		o.PlanDescription != "" ||
 		o.Review ||
@@ -1483,6 +1507,8 @@ func hasOtherMode(o opts) bool {
 		o.Reset ||
 		o.DumpDefaults != ""
 }
+
+func mergeRequested(o opts) bool { return o.mergeSet || o.Merge != "" }
 
 func validateExternalReviewFlags(o opts) error {
 	if o.externalReviewersSet && (o.externalReviewToolSet || o.externalReviewModelSet) {
@@ -2060,6 +2086,77 @@ func clearCmuxStatus(stdout io.Writer) error {
 		return nil
 	}
 	rep.Clear()
+	return nil
+}
+
+type cmuxStatusClearer interface {
+	Clear()
+}
+
+// runMergeCommand merges the current feature branch into an explicit or detected base.
+// The completion pill is deliberately retained on every failure so the pending action stays visible.
+func runMergeCommand(gitSvc *git.Service, explicitBase string, rep cmuxStatusClearer, stdout io.Writer) error {
+	dirty, err := gitSvc.IsDirty()
+	if err != nil {
+		return err
+	}
+	if dirty {
+		return errors.New("--merge requires a clean working tree; commit or stash tracked changes first")
+	}
+
+	feature, err := gitSvc.CurrentBranch()
+	if err != nil {
+		return err
+	}
+	if feature == "" {
+		return errors.New("--merge requires a checked-out feature branch; detached HEAD is not supported")
+	}
+	base, err := gitSvc.ResolveBaseBranch(explicitBase)
+	if err != nil {
+		return err
+	}
+	if feature == base {
+		return fmt.Errorf("current branch %q is already the base branch; check out the feature branch first", base)
+	}
+
+	featureHead, err := gitSvc.HeadHash()
+	if err != nil {
+		return fmt.Errorf("read feature branch head: %w", err)
+	}
+	if err = gitSvc.CheckoutBranch(base); err != nil {
+		return err
+	}
+	if err = gitSvc.MergeBranch(feature); err != nil {
+		restoreErr := gitSvc.CheckoutBranch(feature)
+		if restoreErr != nil {
+			return fmt.Errorf("merge %q into %q failed: %w; additionally failed to restore %q: %v", feature, base, err, feature, restoreErr)
+		}
+		if errors.Is(err, git.ErrMergeConflict) {
+			return fmt.Errorf("merge %q into %q conflicted and was aborted; resolve the branches and rerun --merge: %w", feature, base, err)
+		}
+		return fmt.Errorf("merge %q into %q failed; restored %q: %w", feature, base, feature, err)
+	}
+
+	mergedHead, err := gitSvc.HeadHash()
+	if err != nil {
+		return fmt.Errorf("read merged branch head: %w", err)
+	}
+	mergeType := "merge commit"
+	if mergedHead == featureHead {
+		mergeType = "fast-forward"
+	}
+
+	worktreePath := filepath.Join(gitSvc.Root(), ".loopai", "worktrees", feature)
+	if err = gitSvc.RemoveWorktree(worktreePath); err != nil {
+		return fmt.Errorf("clean up worktree for %q: %w", feature, err)
+	}
+	if err = gitSvc.DeleteBranch(feature); err != nil {
+		return err
+	}
+	if rep != nil {
+		rep.Clear()
+	}
+	fmt.Fprintf(stdout, "merged %s into %s (%s); deleted branch %s\n", feature, base, mergeType, feature)
 	return nil
 }
 

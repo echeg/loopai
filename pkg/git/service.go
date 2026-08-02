@@ -123,6 +123,23 @@ func (s *Service) CurrentBranch() (string, error) {
 	return branch, nil
 }
 
+// CheckoutBranch switches the working tree to an existing local branch.
+func (s *Service) CheckoutBranch(name string) error {
+	if err := s.repo.checkoutBranch(name); err != nil {
+		return fmt.Errorf("checkout branch %q: %w", name, err)
+	}
+	return nil
+}
+
+// IsDirty reports whether the working tree has staged or modified tracked files.
+func (s *Service) IsDirty() (bool, error) {
+	dirty, err := s.repo.isDirty()
+	if err != nil {
+		return false, fmt.Errorf("check working tree: %w", err)
+	}
+	return dirty, nil
+}
+
 // IsDefaultBranch returns true if the current branch matches the given default branch.
 // strips "origin/" prefix from defaultBranch for comparison (auto-detect may return "origin/main").
 // when defaultBranch is empty, falls back to checking "main" and "master".
