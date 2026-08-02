@@ -48,6 +48,8 @@ type Values struct {
 	ExternalReviewToolSet      bool          // tracks if external_review_tool was explicitly set in user config (not embedded default)
 	ExternalReviewModel        string        // provider-specific model[:effort] spec; empty uses the selected provider's default
 	ExternalReviewModelSet     bool          // tracks if external_review_model was explicitly set in user config (not embedded default)
+	ExternalReviewers          string        // ordered provider[:model[:effort]] reviewer chain
+	ExternalReviewersSet       bool          // tracks if external_reviewers was explicitly set in user config
 	CustomReviewScript         string        // path to custom review script (when ExternalReviewTool = ExternalReviewToolCustom)
 	IterationDelayMs           int
 	IterationDelayMsSet        bool // tracks if iteration_delay_ms was explicitly set
@@ -185,6 +187,7 @@ func (vl *valuesLoader) parseValuesFromEmbedded() (Values, error) {
 	values.CodexSandboxSet = false
 	values.ExternalReviewToolSet = false
 	values.ExternalReviewModelSet = false
+	values.ExternalReviewersSet = false
 	return values, nil
 }
 
@@ -270,6 +273,10 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 	if key, err := section.GetKey("external_review_model"); err == nil {
 		values.ExternalReviewModel = key.String()
 		values.ExternalReviewModelSet = true
+	}
+	if key, err := section.GetKey("external_reviewers"); err == nil {
+		values.ExternalReviewers = key.String()
+		values.ExternalReviewersSet = true
 	}
 	if key, err := section.GetKey("custom_review_script"); err == nil {
 		values.CustomReviewScript = expandTilde(key.String())
@@ -528,12 +535,22 @@ func (dst *Values) mergeFrom(src *Values) {
 	} else if src.ExternalReviewModel != "" {
 		dst.ExternalReviewModel = src.ExternalReviewModel
 	}
+	dst.mergeExternalReviewersFrom(src)
 	if src.CustomReviewScript != "" {
 		dst.CustomReviewScript = src.CustomReviewScript
 	}
 	dst.mergeExecutionFrom(src)
 	dst.mergeExtraFrom(src)
 	dst.mergeNotifyFrom(src)
+}
+
+func (dst *Values) mergeExternalReviewersFrom(src *Values) {
+	if src.ExternalReviewersSet {
+		dst.ExternalReviewers = src.ExternalReviewers
+		dst.ExternalReviewersSet = true
+	} else if src.ExternalReviewers != "" {
+		dst.ExternalReviewers = src.ExternalReviewers
+	}
 }
 
 // mergeExecutionFrom merges execution-related fields from src into dst.

@@ -3,9 +3,11 @@ package config
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/umputun/ralphex/pkg/notify"
@@ -28,6 +30,42 @@ const (
 	externalClaudeReviewPromptFile = "external_claude_review.txt"
 	externalClaudeEvalPromptFile   = "external_claude_eval.txt"
 )
+
+// ReviewerSpec describes one explicit external reviewer in an ordered chain.
+// ModelSpec is a provider-specific model[:effort] value and may be empty.
+type ReviewerSpec struct {
+	Provider  string
+	ModelSpec string
+}
+
+// ParseExternalReviewers parses a comma-separated list of
+// provider[:model[:effort]] reviewer specifications.
+func ParseExternalReviewers(value string) ([]ReviewerSpec, error) {
+	entries := strings.Split(value, ",")
+	reviewers := make([]ReviewerSpec, 0, len(entries))
+	for i, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("external reviewer entry %d is empty", i+1)
+		}
+
+		provider, modelSpec, _ := strings.Cut(entry, ":")
+		provider = strings.TrimSpace(provider)
+		modelSpec = strings.TrimSpace(modelSpec)
+		switch provider {
+		case ExternalReviewToolClaude, ExternalReviewToolCodex:
+		case ExternalReviewToolCustom:
+			if modelSpec != "" {
+				return nil, errors.New("custom external reviewer must not specify a model")
+			}
+		default:
+			return nil, fmt.Errorf("unknown external reviewer provider %q", provider)
+		}
+
+		reviewers = append(reviewers, ReviewerSpec{Provider: provider, ModelSpec: modelSpec})
+	}
+	return reviewers, nil
+}
 
 // Executor mode constants for the Config.Executor field.
 // ExecutorClaude is the default — the empty string is intentional so that an
@@ -76,6 +114,8 @@ type Config struct {
 	ExternalReviewToolSet  bool   `json:"-"`                     // tracks if external_review_tool was explicitly set in user config (not embedded default)
 	ExternalReviewModel    string `json:"external_review_model"` // provider-specific model[:effort] spec; empty uses the selected provider's default
 	ExternalReviewModelSet bool   `json:"-"`                     // tracks if external_review_model was explicitly set in user config (not embedded default)
+	ExternalReviewers      string `json:"external_reviewers"`    // ordered provider[:model[:effort]] reviewer chain
+	ExternalReviewersSet   bool   `json:"-"`                     // tracks if external_reviewers was explicitly set in user config
 	CustomReviewScript     string `json:"custom_review_script"`  // path to custom review script
 
 	IterationDelayMs      int  `json:"iteration_delay_ms"`
@@ -321,6 +361,8 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		ExternalReviewToolSet:   values.ExternalReviewToolSet,
 		ExternalReviewModel:     values.ExternalReviewModel,
 		ExternalReviewModelSet:  values.ExternalReviewModelSet,
+		ExternalReviewers:       values.ExternalReviewers,
+		ExternalReviewersSet:    values.ExternalReviewersSet,
 		CustomReviewScript:      values.CustomReviewScript,
 		IterationDelayMs:        values.IterationDelayMs,
 		IterationDelayMsSet:     values.IterationDelayMsSet,

@@ -88,12 +88,12 @@ Problem it solves: today only one external provider can review a run. Users want
 - Modify: `pkg/config/config_test.go`
 - Modify: `pkg/config/values_test.go`
 
-- [ ] add `ReviewerSpec` type and `ParseExternalReviewers` to `pkg/config` (provider validation, custom-with-model error, empty-entry error, whitespace trimming)
-- [ ] add `ExternalReviewers string` + `ExternalReviewersSet bool` fields to `Config`, loaded in `values.go` with the same local-over-global override rules as `external_review_model`
-- [ ] document the new key as a commented default in `pkg/config/defaults/config` (syntax, precedence over `external_review_tool`/`external_review_model`, sequential-until-clean semantics)
-- [ ] write tests for `ParseExternalReviewers` (valid chains, model-less entries, custom, unknown provider, custom with model, empty string, trailing commas)
-- [ ] write tests for config loading/override of `external_reviewers` (global vs local, explicit-set tracking, dump-defaults contains the comment)
-- [ ] run tests - must pass before task 2
+- [x] add `ReviewerSpec` type and `ParseExternalReviewers` to `pkg/config` (provider validation, custom-with-model error, empty-entry error, whitespace trimming)
+- [x] add `ExternalReviewers string` + `ExternalReviewersSet bool` fields to `Config`, loaded in `values.go` with the same local-over-global override rules as `external_review_model`
+- [x] document the new key as a commented default in `pkg/config/defaults/config` (syntax, precedence over `external_review_tool`/`external_review_model`, sequential-until-clean semantics)
+- [x] write tests for `ParseExternalReviewers` (valid chains, model-less entries, custom, unknown provider, custom with model, empty string, trailing commas)
+- [x] write tests for config loading/override of `external_reviewers` (global vs local, explicit-set tracking, dump-defaults contains the comment)
+- [x] run tests - must pass before task 2
 
 ### Task 2: CLI flag and list-shaped selection resolution
 

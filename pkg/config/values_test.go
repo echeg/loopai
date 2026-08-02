@@ -67,6 +67,8 @@ func TestValuesLoader_Load_EmbeddedOnly(t *testing.T) {
 	assert.False(t, values.ExternalReviewToolSet, "ExternalReviewToolSet must be false for embedded defaults")
 	assert.Empty(t, values.ExternalReviewModel)
 	assert.False(t, values.ExternalReviewModelSet, "ExternalReviewModelSet must be false for embedded defaults")
+	assert.Empty(t, values.ExternalReviewers)
+	assert.False(t, values.ExternalReviewersSet, "ExternalReviewersSet must be false for embedded defaults")
 	assert.Empty(t, values.CustomReviewScript)
 	assert.Equal(t, 2000, values.IterationDelayMs)
 	assert.Equal(t, 1, values.TaskRetryCount)
@@ -1306,6 +1308,44 @@ func TestValuesLoader_Load_ExternalReviewModel(t *testing.T) {
 	})
 }
 
+func TestValuesLoader_Load_ExternalReviewers(t *testing.T) {
+	t.Run("global value", func(t *testing.T) {
+		cfgPath := filepath.Join(t.TempDir(), "config")
+		require.NoError(t, os.WriteFile(cfgPath, []byte("external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max"), 0o600))
+
+		values, err := newValuesLoader(defaultsFS).Load("", cfgPath)
+		require.NoError(t, err)
+		assert.Equal(t, "codex:gpt-5.5:xhigh, claude:fable:max", values.ExternalReviewers)
+		assert.True(t, values.ExternalReviewersSet)
+	})
+
+	t.Run("local overrides global", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		globalPath := filepath.Join(tmpDir, "global")
+		localPath := filepath.Join(tmpDir, "local")
+		require.NoError(t, os.WriteFile(globalPath, []byte("external_reviewers = codex:gpt-5.5:xhigh"), 0o600))
+		require.NoError(t, os.WriteFile(localPath, []byte("external_reviewers = claude:fable:max"), 0o600))
+
+		values, err := newValuesLoader(defaultsFS).Load(localPath, globalPath)
+		require.NoError(t, err)
+		assert.Equal(t, "claude:fable:max", values.ExternalReviewers)
+		assert.True(t, values.ExternalReviewersSet)
+	})
+
+	t.Run("explicit empty local clears global", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		globalPath := filepath.Join(tmpDir, "global")
+		localPath := filepath.Join(tmpDir, "local")
+		require.NoError(t, os.WriteFile(globalPath, []byte("external_reviewers = codex"), 0o600))
+		require.NoError(t, os.WriteFile(localPath, []byte("external_reviewers ="), 0o600))
+
+		values, err := newValuesLoader(defaultsFS).Load(localPath, globalPath)
+		require.NoError(t, err)
+		assert.Empty(t, values.ExternalReviewers)
+		assert.True(t, values.ExternalReviewersSet)
+	})
+}
+
 func TestValuesLoader_Load_CustomReviewScript(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config")
@@ -1806,6 +1846,21 @@ func TestValues_mergeFrom_ExternalReviewFields(t *testing.T) {
 		dst.mergeFrom(&Values{})
 		assert.Equal(t, "opus:xhigh", dst.ExternalReviewModel)
 		assert.False(t, dst.ExternalReviewModelSet)
+	})
+
+	t.Run("explicit external reviewers override destination", func(t *testing.T) {
+		dst := Values{ExternalReviewers: "codex"}
+		src := Values{ExternalReviewers: "claude:fable", ExternalReviewersSet: true}
+		dst.mergeFrom(&src)
+		assert.Equal(t, "claude:fable", dst.ExternalReviewers)
+		assert.True(t, dst.ExternalReviewersSet)
+	})
+
+	t.Run("explicit empty external reviewers clear destination", func(t *testing.T) {
+		dst := Values{ExternalReviewers: "codex"}
+		dst.mergeFrom(&Values{ExternalReviewersSet: true})
+		assert.Empty(t, dst.ExternalReviewers)
+		assert.True(t, dst.ExternalReviewersSet)
 	})
 
 	t.Run("merge custom review script", func(t *testing.T) {

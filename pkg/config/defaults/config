@@ -121,6 +121,14 @@ external_review_tool = auto
 # must remain empty when external_review_tool = custom
 external_review_model =
 
+# external_reviewers: ordered comma-separated provider[:model[:effort]] chain
+# available providers: claude, codex, custom
+# example: external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max
+# when set, takes precedence over external_review_tool and external_review_model
+# reviewers run sequentially, and each reviewer runs until it reports no findings
+# custom entries must not specify a model and use custom_review_script
+# external_reviewers =
+
 # custom_review_script: path to custom review script
 # only used when external_review_tool = custom
 # script receives prompt file path as single argument
