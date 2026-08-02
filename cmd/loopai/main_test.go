@@ -161,6 +161,13 @@ func TestMergeFlagParsing(t *testing.T) {
 		assert.True(t, o.mergeSet)
 		assert.Equal(t, "develop", o.Merge)
 	})
+
+	t.Run("bare flag does not swallow conflicting execution flag", func(t *testing.T) {
+		o := parseTestOpts(t, "--merge", "--worktree")
+		assert.True(t, o.mergeSet)
+		assert.True(t, o.Worktree)
+		require.Error(t, validateFlags(o))
+	})
 }
 
 func TestPRFlagParsing(t *testing.T) {
@@ -174,6 +181,13 @@ func TestPRFlagParsing(t *testing.T) {
 		o := parseTestOpts(t, "--pr=develop")
 		assert.True(t, o.prSet)
 		assert.Equal(t, "develop", o.PR)
+	})
+
+	t.Run("bare flag does not swallow conflicting execution flag", func(t *testing.T) {
+		o := parseTestOpts(t, "--pr", "--codex")
+		assert.True(t, o.prSet)
+		assert.True(t, o.Codex)
+		require.Error(t, validateFlags(o))
 	})
 }
 
@@ -1610,16 +1624,21 @@ func TestValidateFlags(t *testing.T) {
 		{name: "clear_with_plan_file_conflicts", opts: opts{Clear: true, PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "--clear cannot be combined"},
 		{name: "clear_with_plan_mode_conflicts", opts: opts{Clear: true, PlanDescription: "add feature"}, wantErr: true, errMsg: "other mode flags"},
 		{name: "clear_with_review_mode_conflicts", opts: opts{Clear: true, Review: true}, wantErr: true, errMsg: "other mode flags"},
+		{name: "clear_with_worktree_conflicts", opts: opts{Clear: true, Worktree: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "clear_with_init_mode_conflicts", opts: opts{Clear: true, Init: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "merge_only_is_valid", opts: opts{mergeSet: true}, wantErr: false},
 		{name: "merge_with_explicit_base_is_valid", opts: opts{Merge: "develop"}, wantErr: false},
 		{name: "merge_with_plan_file_conflicts", opts: opts{mergeSet: true, PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "--merge cannot be combined"},
 		{name: "merge_with_review_conflicts", opts: opts{mergeSet: true, Review: true}, wantErr: true, errMsg: "other mode flags"},
+		{name: "merge_with_branch_conflicts", opts: opts{mergeSet: true, Branch: "feature"}, wantErr: true, errMsg: "other mode flags"},
+		{name: "merge_with_executor_option_conflicts", opts: opts{mergeSet: true, Codex: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "merge_with_clear_conflicts", opts: opts{mergeSet: true, Clear: true}, wantErr: true, errMsg: "--clear cannot be combined"},
 		{name: "pr_only_is_valid", opts: opts{prSet: true}, wantErr: false},
 		{name: "pr_with_explicit_base_is_valid", opts: opts{PR: "develop"}, wantErr: false},
 		{name: "pr_with_plan_file_conflicts", opts: opts{prSet: true, PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "--pr cannot be combined"},
 		{name: "pr_with_review_conflicts", opts: opts{prSet: true, Review: true}, wantErr: true, errMsg: "other mode flags"},
+		{name: "pr_with_base_ref_conflicts", opts: opts{prSet: true, BaseRef: "develop"}, wantErr: true, errMsg: "other mode flags"},
+		{name: "pr_with_model_conflicts", opts: opts{prSet: true, TaskModel: "opus"}, wantErr: true, errMsg: "other mode flags"},
 		{name: "pr_with_merge_conflicts", opts: opts{prSet: true, mergeSet: true}, wantErr: true, errMsg: "--pr cannot be combined"},
 		{name: "pr_with_clear_conflicts", opts: opts{prSet: true, Clear: true}, wantErr: true, errMsg: "--clear cannot be combined"},
 		{name: "both_plan_and_planfile_conflicts", opts: opts{PlanDescription: "add feature", PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "conflicts"},
@@ -2953,6 +2972,15 @@ func runGit(t *testing.T, dir string, args ...string) {
 	require.NoError(t, err, "git %v failed: %s", args, out)
 }
 
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git %v failed: %s", args, out)
+	return string(out)
+}
+
 // setupTestRepo creates a test git repository with an initial commit.
 func setupTestRepo(t *testing.T) string {
 	t.Helper()
@@ -3104,15 +3132,6 @@ func TestRunMergeCommand(t *testing.T) {
 		return svc
 	}
 
-	currentBranch := func(t *testing.T, dir string) string {
-		t.Helper()
-		cmd := exec.Command("git", "branch", "--show-current")
-		cmd.Dir = dir
-		out, err := cmd.Output()
-		require.NoError(t, err)
-		return strings.TrimSpace(string(out))
-	}
-
 	t.Run("happy path without worktree", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		svc := makeFeature(t, dir)
@@ -3120,25 +3139,65 @@ func TestRunMergeCommand(t *testing.T) {
 		var output bytes.Buffer
 
 		require.NoError(t, runMergeCommand(svc, "", clearer, &output))
-		assert.Equal(t, "master", currentBranch(t, dir))
+		assert.Equal(t, "master", currentGitBranch(t, dir))
 		assert.False(t, branchExists(t, dir, "feature"))
 		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
 		assert.Equal(t, 1, clearer.calls)
 		assert.Contains(t, output.String(), "feature into master (fast-forward)")
 	})
 
-	t.Run("happy path removes worktree", func(t *testing.T) {
+	t.Run("happy path removes actual feature worktree", func(t *testing.T) {
 		dir := setupTestRepo(t)
-		svc := makeFeature(t, dir)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "checkout", "master")
 		worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
-		runGit(t, dir, "branch", "cleanup-worktree", "master")
-		runGit(t, dir, "worktree", "add", worktreePath, "cleanup-worktree")
+		runGit(t, dir, "worktree", "add", worktreePath, "feature")
+		svc, err := git.NewService(worktreePath, noopLogger())
+		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
 		require.NoError(t, runMergeCommand(svc, "master", clearer, io.Discard))
 		assert.NoDirExists(t, worktreePath)
 		assert.False(t, branchExists(t, dir, "feature"))
+		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
 		assert.Equal(t, 1, clearer.calls)
+	})
+
+	t.Run("unrelated worktree at conventional path is preserved", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		require.NoError(t, svc.EnsureLocalGitignore())
+		worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
+		runGit(t, dir, "branch", "unrelated", "master")
+		runGit(t, dir, "worktree", "add", worktreePath, "unrelated")
+		t.Cleanup(func() { _ = svc.RemoveWorktree(worktreePath) })
+
+		require.NoError(t, runMergeCommand(svc, "master", &recordingStatusClearer{}, io.Discard))
+		assert.DirExists(t, worktreePath)
+		assert.Equal(t, "unrelated", currentGitBranch(t, worktreePath))
+	})
+
+	t.Run("dirty base worktree is refused before merge", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "checkout", "master")
+		worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
+		runGit(t, dir, "worktree", "add", worktreePath, "feature")
+		t.Cleanup(func() { _ = mainSvc.RemoveWorktree(worktreePath) })
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("dirty base\n"), 0o600))
+		featureSvc, err := git.NewService(worktreePath, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		err = runMergeCommand(featureSvc, "master", clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "clean base worktree")
+		assert.Equal(t, "master", currentGitBranch(t, dir))
+		assert.Equal(t, "feature", currentGitBranch(t, worktreePath))
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
 	})
 
 	t.Run("dirty tree is refused", func(t *testing.T) {
@@ -3150,7 +3209,21 @@ func TestRunMergeCommand(t *testing.T) {
 		err := runMergeCommand(svc, "master", clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "clean working tree")
-		assert.Equal(t, "feature", currentBranch(t, dir))
+		assert.Equal(t, "feature", currentGitBranch(t, dir))
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("untracked files make tree dirty", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("keep\n"), 0o600))
+		clearer := &recordingStatusClearer{}
+
+		err := runMergeCommand(svc, "master", clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "clean working tree")
+		assert.Equal(t, "feature", currentGitBranch(t, dir))
 		assert.True(t, branchExists(t, dir, "feature"))
 		assert.Zero(t, clearer.calls)
 	})
@@ -3164,7 +3237,7 @@ func TestRunMergeCommand(t *testing.T) {
 		err = runMergeCommand(svc, "master", clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "already the base branch")
-		assert.Equal(t, "master", currentBranch(t, dir))
+		assert.Equal(t, "master", currentGitBranch(t, dir))
 		assert.Zero(t, clearer.calls)
 	})
 
@@ -3185,7 +3258,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.Error(t, err)
 		require.ErrorIs(t, err, git.ErrMergeConflict)
 		assert.Contains(t, err.Error(), "conflicted and was aborted")
-		assert.Equal(t, "feature", currentBranch(t, dir))
+		assert.Equal(t, "feature", currentGitBranch(t, dir))
 		assert.True(t, branchExists(t, dir, "feature"))
 		assert.Zero(t, clearer.calls)
 		cmd := exec.Command("git", "status", "--porcelain")
@@ -3251,10 +3324,42 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "New plan", title)
 	})
+
+	t.Run("exact active plan beats newer textual fallback", func(t *testing.T) {
+		root := t.TempDir()
+		exactDir := filepath.Join(root, "docs", "plans")
+		require.NoError(t, os.MkdirAll(exactDir, 0o750))
+		exactPath := filepath.Join(exactDir, "20260802-special-branch.md")
+		require.NoError(t, os.WriteFile(exactPath, []byte("# Exact active plan\n\n## Overview\n\nExact.\n"), 0o600))
+		fallbackPath := writePlan(t, root, "newer.md", "# Newer fallback\n\nReferences special-branch.\n")
+		oldTime := time.Now().Add(-time.Hour)
+		require.NoError(t, os.Chtimes(exactPath, oldTime, oldTime))
+		newTime := time.Now()
+		require.NoError(t, os.Chtimes(fallbackPath, newTime, newTime))
+
+		title, body, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
+		require.NoError(t, err)
+		assert.Equal(t, "Exact active plan", title)
+		assert.Contains(t, body, "Exact.")
+	})
+
+	t.Run("newest exact plan wins", func(t *testing.T) {
+		root := t.TempDir()
+		oldPath := writePlan(t, root, "20260801-special-branch.md", "# Old exact\n")
+		newPath := writePlan(t, root, "20260802-special-branch.md", "# New exact\n")
+		oldTime := time.Now().Add(-time.Hour)
+		require.NoError(t, os.Chtimes(oldPath, oldTime, oldTime))
+		newTime := time.Now()
+		require.NoError(t, os.Chtimes(newPath, newTime, newTime))
+
+		title, _, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
+		require.NoError(t, err)
+		assert.Equal(t, "New exact", title)
+	})
 }
 
 func TestRunPRCommand(t *testing.T) {
-	setupFeatureWithRemote := func(t *testing.T) (string, *git.Service) {
+	setupFeatureWithRemote := func(t *testing.T) (string, string, *git.Service) {
 		t.Helper()
 		dir := setupTestRepo(t)
 		remote := filepath.Join(t.TempDir(), "origin.git")
@@ -3269,11 +3374,11 @@ func TestRunPRCommand(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260802-feature.md"), []byte("# Feature PR\n\n## Overview\n\nImplements feature.\n"), 0o600))
 		svc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
-		return dir, svc
+		return dir, remote, svc
 	}
 
 	t.Run("success prints URL and clears pill", func(t *testing.T) {
-		dir, svc := setupFeatureWithRemote(t)
+		dir, remote, svc := setupFeatureWithRemote(t)
 		binDir := t.TempDir()
 		argsLog := filepath.Join(binDir, "gh-args.log")
 		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GH_ARGS_LOG\"\nprintf '%s\\n' 'https://github.com/acme/repo/pull/42'\n")
@@ -3291,10 +3396,13 @@ func TestRunPRCommand(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, string(args), "pr\ncreate\n--base\nmaster\n--head\nfeature\n--title\nFeature PR\n--body\n")
 		assert.Contains(t, string(args), "Implements feature.")
+		localHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "feature"))
+		assert.Equal(t, localHead, strings.TrimSpace(gitOutput(t, remote, "rev-parse", "refs/heads/feature")))
+		assert.Equal(t, "origin/feature", strings.TrimSpace(gitOutput(t, dir, "rev-parse", "--abbrev-ref", "feature@{upstream}")))
 	})
 
 	t.Run("gh failure keeps pill", func(t *testing.T) {
-		_, svc := setupFeatureWithRemote(t)
+		_, _, svc := setupFeatureWithRemote(t)
 		binDir := t.TempDir()
 		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nprintf '%s\\n' 'authentication required'\nexit 1\n")
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -3306,8 +3414,27 @@ func TestRunPRCommand(t *testing.T) {
 		assert.Zero(t, clearer.calls)
 	})
 
+	t.Run("push failure does not invoke gh and keeps pill", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "feature")
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		binDir := t.TempDir()
+		invoked := filepath.Join(binDir, "invoked")
+		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\ntouch \"$GH_INVOKED\"\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("GH_INVOKED", invoked)
+		clearer := &recordingStatusClearer{}
+
+		err = runPRCommand(t.Context(), svc, "master", clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "push PR branch")
+		assert.NoFileExists(t, invoked)
+		assert.Zero(t, clearer.calls)
+	})
+
 	t.Run("missing gh has install hint", func(t *testing.T) {
-		_, svc := setupFeatureWithRemote(t)
+		_, _, svc := setupFeatureWithRemote(t)
 		t.Setenv("PATH", t.TempDir())
 		clearer := &recordingStatusClearer{}
 
@@ -3325,6 +3452,25 @@ func currentGitBranch(t *testing.T, dir string) string {
 	out, err := cmd.Output()
 	require.NoError(t, err)
 	return strings.TrimSpace(string(out))
+}
+
+func TestRunDispatchesMergeCloseoutBeforeExecutionDependencies(t *testing.T) {
+	dir := setupTestRepo(t)
+	runGit(t, dir, "checkout", "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+	runGit(t, dir, "add", "feature.txt")
+	runGit(t, dir, "commit", "-m", "feature")
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	t.Setenv("CMUX_WORKSPACE_ID", "")
+
+	err = run(t.Context(), opts{mergeSet: true, ConfigDir: t.TempDir(), NoColor: true})
+	require.NoError(t, err)
+	assert.Equal(t, "master", currentGitBranch(t, dir))
+	assert.False(t, branchExists(t, dir, "feature"))
+	assert.FileExists(t, filepath.Join(dir, "feature.txt"))
 }
 
 func TestHandleEarlyFlags(t *testing.T) {
@@ -3617,7 +3763,7 @@ func TestRunWithWorktree(t *testing.T) {
 		// create and commit plan file
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
 		planPath := filepath.Join(dir, "docs", "plans", "wt-test.md")
-		require.NoError(t, os.WriteFile(planPath, []byte("# WT Test\n\n- [ ] task 1\n"), 0o600))
+		require.NoError(t, os.WriteFile(planPath, []byte("# WT Test\n\n### Task 1: cancel\n\n- [ ] task 1\n"), 0o600))
 		runGit(t, dir, "add", "docs/plans/wt-test.md")
 		runGit(t, dir, "commit", "-m", "add wt test plan")
 
@@ -3627,6 +3773,12 @@ func TestRunWithWorktree(t *testing.T) {
 		colors := testColors()
 		cfg := &config.Config{WorktreeEnabled: true}
 		wtCleanup := &cleanupHolder{}
+		binDir := t.TempDir()
+		argvLog := filepath.Join(binDir, "cmux-argv.log")
+		writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Setenv("CMUX_ARGV_LOG", argvLog)
 
 		// cancel context immediately to stop executePlan fast
 		ctx, cancel := context.WithCancel(t.Context())
@@ -3650,6 +3802,12 @@ func TestRunWithWorktree(t *testing.T) {
 
 		// verify branch was preserved (worktree creates the branch)
 		assert.True(t, branchExists(t, dir, "wt-test"), "branch should be preserved after worktree removal")
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		output := string(recorded)
+		assert.NotContains(t, output, "set-status loopai done")
+		assert.NotContains(t, output, "set-status loopai failed")
+		assert.Contains(t, output, "clear-status loopai", "an aborted run must perform full pill cleanup")
 	})
 
 	t.Run("populates_worktree_cleanup_ptr", func(t *testing.T) {
@@ -3842,6 +4000,12 @@ cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
 printf '%s\n' '{"type":"result","result":""}'
 `)
+		binDir := t.TempDir()
+		argvLog := filepath.Join(binDir, "cmux-argv.log")
+		writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Setenv("CMUX_ARGV_LOG", argvLog)
 
 		err = runWithWorktree(t.Context(), opts{
 			ResumeWorktree: true, TasksOnly: true, MaxIterations: 1, NoColor: true,
@@ -3853,6 +4017,14 @@ printf '%s\n' '{"type":"result","result":""}'
 		require.NoError(t, err)
 		assert.NoDirExists(t, wtPath)
 		assert.True(t, branchExists(t, dir, "resume-complete"), "successful resume preserves the feature branch")
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		output := string(recorded)
+		statusPos := strings.LastIndex(output, "set-status loopai done in")
+		clearPos := strings.LastIndex(output, "clear-status loopai")
+		assert.Greater(t, statusPos, clearPos, "the final success pill must survive Stop: %s", output)
+		assert.Contains(t, output, "workspace loading off --id loopai")
+		assert.Contains(t, output, "clear-progress")
 	})
 }
 
@@ -4030,6 +4202,8 @@ func TestRunWithWorktree_HandsOffFailureNotification(t *testing.T) {
 	require.NoError(t, readErr, "the handed-off run must still reach the cmux CLI")
 	assert.Equal(t, 1, strings.Count(string(recorded), "notify --title"),
 		"exactly one funnel may banner a failure, got:\n%s", recorded)
+	assert.Equal(t, 1, strings.Count(string(recorded), "set-status loopai failed"),
+		"the handed-off failure must leave exactly one persistent failure pill, got:\n%s", recorded)
 }
 
 func TestRunWithWorktree_NotifiesSetupFailure(t *testing.T) {
@@ -4073,6 +4247,8 @@ func TestRunWithWorktree_NotifiesSetupFailure(t *testing.T) {
 	require.NoError(t, readErr, "setup failure must reach the cmux CLI")
 	assert.Contains(t, string(recorded), "notify")
 	assert.Contains(t, string(recorded), "run failed")
+	assert.Equal(t, 1, strings.Count(string(recorded), "set-status loopai failed"),
+		"setup failure must leave exactly one persistent failure pill")
 	assert.Contains(t, string(recorded), "wt-notify.md", "the notification body names the run")
 }
 

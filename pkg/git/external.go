@@ -256,6 +256,34 @@ func (e *externalBackend) push(branch string) error {
 	return nil
 }
 
+// worktrees returns registered worktrees in Git's stable porcelain format.
+func (e *externalBackend) worktrees() ([]Worktree, error) {
+	out, err := e.run("worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("list worktrees: %w", err)
+	}
+
+	var result []Worktree
+	var current Worktree
+	flush := func() {
+		if current.Path != "" {
+			result = append(result, current)
+		}
+		current = Worktree{}
+	}
+	for line := range strings.SplitSeq(out+"\n", "\n") {
+		switch {
+		case line == "":
+			flush()
+		case strings.HasPrefix(line, "worktree "):
+			current.Path = strings.TrimPrefix(line, "worktree ")
+		case strings.HasPrefix(line, "branch refs/heads/"):
+			current.Branch = strings.TrimPrefix(line, "branch refs/heads/")
+		}
+	}
+	return result, nil
+}
+
 // isDirty returns true if the worktree has uncommitted changes (staged or modified tracked files).
 func (e *externalBackend) isDirty() (bool, error) {
 	out, err := e.run("status", "--porcelain")
@@ -278,6 +306,15 @@ func (e *externalBackend) isDirty() (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// isDirtyAll reports every porcelain entry, including untracked files.
+func (e *externalBackend) isDirtyAll() (bool, error) {
+	out, err := e.run("status", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("get status: %w", err)
+	}
+	return out != "", nil
 }
 
 // fileHasChanges returns true if the given file has uncommitted changes.
@@ -558,6 +595,15 @@ func (e *externalBackend) addWorktree(path, branch string, createBranch bool) er
 // removeWorktree removes a git worktree at the given path.
 func (e *externalBackend) removeWorktree(path string) error {
 	_, err := e.run("worktree", "remove", "--force", path)
+	if err != nil {
+		return fmt.Errorf("remove worktree: %w", err)
+	}
+	return nil
+}
+
+// removeWorktreeSafe refuses to discard modifications or untracked files.
+func (e *externalBackend) removeWorktreeSafe(path string) error {
+	_, err := e.run("worktree", "remove", path)
 	if err != nil {
 		return fmt.Errorf("remove worktree: %w", err)
 	}

@@ -264,7 +264,9 @@ func TestService_MergeBranch(t *testing.T) {
 		assert.Equal(t, masterHash, strings.TrimSpace(runGit(t, dir, "rev-parse", "master")))
 		assert.Equal(t, featureHash, strings.TrimSpace(runGit(t, dir, "rev-parse", "feature")))
 		assert.Equal(t, "master", strings.TrimSpace(runGit(t, dir, "branch", "--show-current")))
-		assert.Equal(t, "master\n", string(mustReadFile(t, filepath.Join(dir, "README.md"))))
+		content, readErr := os.ReadFile(filepath.Join(dir, "README.md")) //nolint:gosec // test repo path
+		require.NoError(t, readErr)
+		assert.Equal(t, "master\n", string(content))
 		assert.Empty(t, strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
 	})
 }
@@ -320,11 +322,41 @@ func TestService_Push(t *testing.T) {
 	assert.Equal(t, "origin/feature", strings.TrimSpace(runGit(t, dir, "rev-parse", "--abbrev-ref", "feature@{upstream}")))
 }
 
-func mustReadFile(t *testing.T, path string) []byte {
-	t.Helper()
-	data, err := os.ReadFile(path) //nolint:gosec // test helper only reads paths created by its caller
+func TestService_WorktreeInspectionAndSafeRemoval(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
+	rootSvc, err := NewService(dir, noopServiceLogger())
 	require.NoError(t, err)
-	return data
+	require.NoError(t, rootSvc.EnsureLocalGitignore())
+	runGit(t, dir, "worktree", "add", worktreePath, "-b", "feature")
+	svc, err := NewService(worktreePath, noopServiceLogger())
+	require.NoError(t, err)
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	resolvedWorktreePath, err := filepath.EvalSymlinks(worktreePath)
+	require.NoError(t, err)
+
+	worktrees, err := svc.Worktrees()
+	require.NoError(t, err)
+	require.Len(t, worktrees, 2)
+	assert.Equal(t, resolvedDir, worktrees[0].Path)
+	assert.Equal(t, "master", worktrees[0].Branch)
+	assert.Equal(t, resolvedWorktreePath, worktrees[1].Path)
+	assert.Equal(t, "feature", worktrees[1].Branch)
+
+	require.NoError(t, os.WriteFile(filepath.Join(worktreePath, "untracked.txt"), []byte("keep\n"), 0o600))
+	dirty, err := svc.IsDirtyAll()
+	require.NoError(t, err)
+	assert.True(t, dirty)
+	err = svc.RemoveWorktreeSafe(worktreePath)
+	require.Error(t, err)
+	assert.DirExists(t, worktreePath)
+
+	require.NoError(t, os.Remove(filepath.Join(worktreePath, "untracked.txt")))
+	mainSvc, err := svc.OpenWorktree(dir)
+	require.NoError(t, err)
+	require.NoError(t, mainSvc.RemoveWorktreeSafe(worktreePath))
+	assert.NoDirExists(t, worktreePath)
 }
 
 func TestService_CreateBranchForPlan(t *testing.T) {

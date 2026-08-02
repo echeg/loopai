@@ -22,6 +22,7 @@ Requirements:
 - Claude Code CLI for the default executor, or Codex CLI 0.130.0+ with `--codex`
 - Optional second provider for cross-provider external review
 - Optional fzf, cmux, and golangci-lint
+- Optional for `--pr`: authenticated GitHub CLI and a GitHub remote named `origin`
 
 Run loopai from a Git repository root.
 
@@ -112,9 +113,9 @@ Local files override global files, which override embedded defaults. `LOOPAI_CON
 
 Progress is available at `.loopai/progress/progress-*.txt`. The dashboard starts with `loopai --serve` and listens on `127.0.0.1:8080` by default; use `--host`, `--port`, or `LOOPAI_WEB_HOST` to change it.
 
-Inside cmux, a successful run leaves a green `done in <elapsed>` status pill and a failed run leaves a red `failed` pill; Ctrl+C clears run status. A later run replaces the pill, and `loopai --clear` removes it explicitly (`--clear` is a successful no-op outside cmux).
+Inside cmux, a started implementation or review run leaves a green `done in <elapsed>` status pill on success and a red `failed` pill on non-abort execution failure. Startup/preflight and plan-creation failures do not leave a pill; Ctrl+C clears run status. A later run replaces the pill, and `loopai --clear` removes it explicitly (`--clear` is a successful no-op outside cmux).
 
-Close-out commands are standalone modes. `loopai --merge[=base]` requires a clean working tree, resolves a missing base as `main` then `master`, merges the current feature branch, removes its loopai worktree, safely deletes the branch, and clears the pill on success. `loopai --pr[=base]` requires `gh`, pushes the current branch, creates a GitHub PR using the completed plan and diff statistics, keeps the branch/worktree, and clears the pill on success. Failures retain the pill. Use `=` to supply the optional base value, for example `--merge=release/13`.
+Close-out commands are standalone modes. `loopai --merge[=base]` requires clean feature and base worktrees (including no untracked files), resolves a missing base as `main` then `master`, merges the current feature branch in the base worktree, safely removes only a clean linked worktree registered for that feature branch, deletes the branch, and clears the pill on success. `loopai --pr[=base]` requires authenticated `gh` and a GitHub `origin`, pushes committed branch state, creates a PR using the associated plan and diff statistics, keeps the branch/worktree, and clears the pill on success. Commit intended changes before `--pr`; failures retain the pill. Use `=` to supply the optional base value, for example `--merge=release/13`.
 
 ## Useful options
 

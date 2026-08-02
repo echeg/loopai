@@ -33,8 +33,10 @@ type backend interface {
 	mergeBranch(name string) error
 	deleteBranch(name string) error
 	push(branch string) error
+	worktrees() ([]Worktree, error)
 	diffFingerprint() (string, error)
 	isDirty() (bool, error)
+	isDirtyAll() (bool, error)
 	fileHasChanges(path string) (bool, error)
 	hasChangesOtherThan(path string) ([]string, error)
 	add(path string) error
@@ -45,6 +47,7 @@ type backend interface {
 	diffStats(baseBranch string) (DiffStats, error)
 	addWorktree(path, branch string, createBranch bool) error
 	removeWorktree(path string) error
+	removeWorktreeSafe(path string) error
 	pruneWorktrees() error
 }
 
@@ -59,11 +62,19 @@ type DiffStats struct {
 	Deletions int // lines deleted
 }
 
+// Worktree describes one registered Git worktree and the local branch checked out there.
+// Branch is empty for a detached worktree.
+type Worktree struct {
+	Path   string
+	Branch string
+}
+
 // Service provides git operations for loopai workflows.
 // It is the single public API for the git package.
 type Service struct {
 	repo    backend
 	log     Logger
+	command string
 	trailer string // optional trailer line appended to all commits
 }
 
@@ -80,7 +91,17 @@ func NewService(path string, log Logger, vcsCmd ...string) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{repo: b, log: log}, nil
+	return &Service{repo: b, log: log, command: command}, nil
+}
+
+// OpenWorktree opens another worktree from the same repository using the same Git command and logger.
+func (s *Service) OpenWorktree(path string) (*Service, error) {
+	opened, err := NewService(path, s.log, s.command)
+	if err != nil {
+		return nil, err
+	}
+	opened.trailer = s.trailer
+	return opened, nil
 }
 
 // SetCommitTrailer sets an optional trailer line appended to all commit messages.
@@ -136,6 +157,15 @@ func (s *Service) IsDirty() (bool, error) {
 	dirty, err := s.repo.isDirty()
 	if err != nil {
 		return false, fmt.Errorf("check working tree: %w", err)
+	}
+	return dirty, nil
+}
+
+// IsDirtyAll reports whether the working tree has any staged, unstaged, or untracked changes.
+func (s *Service) IsDirtyAll() (bool, error) {
+	dirty, err := s.repo.isDirtyAll()
+	if err != nil {
+		return false, fmt.Errorf("check complete working tree: %w", err)
 	}
 	return dirty, nil
 }
@@ -231,6 +261,23 @@ func (s *Service) DeleteBranch(name string) error {
 func (s *Service) Push(branch string) error {
 	if err := s.repo.push(branch); err != nil {
 		return fmt.Errorf("push branch %q: %w", branch, err)
+	}
+	return nil
+}
+
+// Worktrees returns every registered worktree. Git lists the primary worktree first.
+func (s *Service) Worktrees() ([]Worktree, error) {
+	worktrees, err := s.repo.worktrees()
+	if err != nil {
+		return nil, fmt.Errorf("list worktrees: %w", err)
+	}
+	return worktrees, nil
+}
+
+// RemoveWorktreeSafe removes a clean registered worktree without forcing deletion.
+func (s *Service) RemoveWorktreeSafe(path string) error {
+	if err := s.repo.removeWorktreeSafe(path); err != nil {
+		return fmt.Errorf("remove clean worktree: %w", err)
 	}
 	return nil
 }

@@ -117,6 +117,8 @@ Worktrees live under `.loopai/worktrees/<branch>`. The progress logger is create
 
 cmux reporting is best-effort and must never affect execution. The status key and notification title are `loopai`. All calls go through the public `cmux` CLI and failures are ignored. After a completed run, `Reporter.Finish` intentionally leaves the final success or failure pill in place: `Stop` still clears the spinner and progress, but does not clear that pill. Abort paths do not call `Finish`, so `Stop` performs the full cleanup. A later run overwrites the pill, while `--clear`, a successful `--merge`, or a successful `--pr` removes it explicitly.
 
+Standalone close-out routing happens before executor and notification dependencies are constructed. `--clear` exits before config loading; `--merge` and `--pr` load config for `vcs_command` and colors, then open Git directly. Base resolution accepts an explicit local branch or local `main`/`master`. Merge uses the registered base worktree, requires clean feature and base worktrees, never force-removes a close-out worktree, aborts conflicts as `git.ErrMergeConflict`, and deletes the feature branch only after verified cleanup. PR creation pushes committed state to `origin`, invokes authenticated `gh`, and derives metadata from an exact associated plan (including the active-plan fallback used by worktree runs). Tests use local bare remotes and `PATH`-injected `gh` stubs.
+
 `cmd/loopai` resolves effective plan, task, review, and external-review models
 and passes them to `cmux.Reporter`. Phase labels come from `status.PhaseHolder`;
 review iteration labels come from `Reporter.WrapLogger`, which observes

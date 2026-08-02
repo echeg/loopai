@@ -1487,24 +1487,23 @@ func validateFlags(o opts) error {
 	return nil
 }
 
-// hasOtherMode reports whether --clear was combined with an operation that would otherwise
-// start or configure another standalone mode. Ordinary presentation flags remain harmless.
-func hasOtherMode(o opts) bool {
-	return hasExecutionMode(o) || mergeRequested(o) || prRequested(o)
-}
-
 func hasExecutionMode(o opts) bool {
-	return o.PlanFile != "" ||
-		o.PlanDescription != "" ||
-		o.Review ||
-		o.ExternalOnly ||
-		o.CodexOnly ||
-		o.TasksOnly ||
-		o.ResumeWorktree ||
-		o.Serve ||
-		o.Init ||
-		o.Reset ||
-		o.DumpDefaults != ""
+	for _, set := range []bool{
+		o.PlanFile != "", o.MaxIterations != 0, o.MaxExternalIterations != 0,
+		o.ReviewPatience != 0, o.PlanModel != "", o.TaskModel != "", o.ReviewModel != "",
+		o.ClaudeCommand != "", o.ClaudeArgs != "", o.ExternalReviewTool != "",
+		o.ExternalReviewModel != "", o.ExternalReviewers != "", o.CustomReviewScript != "",
+		o.PlanDescription != "", o.Review, o.ExternalOnly, o.CodexOnly, o.TasksOnly,
+		o.BaseRef != "", o.waitSet || o.Wait != 0, o.sessionTimeoutSet || o.SessionTimeout != 0,
+		o.idleTimeoutSet || o.IdleTimeout != 0, o.SkipFinalize, o.PreserveAnthropicAPIKey,
+		o.NoClaudeSwap, o.Codex, o.PassClaudeMd, o.Worktree, o.ResumeWorktree, o.Branch != "",
+		o.Serve, len(o.Watch) != 0, o.Init, o.Reset, o.DumpDefaults != "",
+	} {
+		if set {
+			return true
+		}
+	}
+	return false
 }
 
 func mergeRequested(o opts) bool { return o.mergeSet || o.Merge != "" }
@@ -1514,13 +1513,14 @@ func prRequested(o opts) bool { return o.prSet || o.PR != "" }
 func closeoutRequested(o opts) bool { return mergeRequested(o) || prRequested(o) }
 
 func validateCloseoutFlags(o opts) error {
-	if o.Clear && hasOtherMode(o) {
+	merge, pr, execution := mergeRequested(o), prRequested(o), hasExecutionMode(o)
+	if o.Clear && (merge || pr || execution) {
 		return errors.New("--clear cannot be combined with a plan file or other mode flags")
 	}
-	if mergeRequested(o) && (o.Clear || hasExecutionMode(o)) {
+	if merge && execution {
 		return errors.New("--merge cannot be combined with a plan file or other mode flags")
 	}
-	if prRequested(o) && (o.Clear || mergeRequested(o) || hasExecutionMode(o)) {
+	if pr && (merge || execution) {
 		return errors.New("--pr cannot be combined with a plan file or other mode flags")
 	}
 	return nil
@@ -2112,12 +2112,12 @@ type cmuxStatusClearer interface {
 // runMergeCommand merges the current feature branch into an explicit or detected base.
 // The completion pill is deliberately retained on every failure so the pending action stays visible.
 func runMergeCommand(gitSvc *git.Service, explicitBase string, rep cmuxStatusClearer, stdout io.Writer) error {
-	dirty, err := gitSvc.IsDirty()
+	dirty, err := gitSvc.IsDirtyAll()
 	if err != nil {
 		return fmt.Errorf("check working tree: %w", err)
 	}
 	if dirty {
-		return errors.New("--merge requires a clean working tree; commit or stash tracked changes first")
+		return errors.New("--merge requires a clean working tree; commit, stash, or remove changes first")
 	}
 
 	feature, err := gitSvc.CurrentBranch()
@@ -2135,38 +2135,28 @@ func runMergeCommand(gitSvc *git.Service, explicitBase string, rep cmuxStatusCle
 		return fmt.Errorf("current branch %q is already the base branch; check out the feature branch first", base)
 	}
 
+	mergeSvc, featurePath, primaryPath, err := prepareMergeWorktrees(gitSvc, feature, base)
+	if err != nil {
+		return err
+	}
+
 	featureHead, err := gitSvc.HeadHash()
 	if err != nil {
 		return fmt.Errorf("read feature branch head: %w", err)
 	}
-	if checkoutErr := gitSvc.CheckoutBranch(base); checkoutErr != nil {
-		return fmt.Errorf("check out base branch %q: %w", base, checkoutErr)
-	}
-	if err = gitSvc.MergeBranch(feature); err != nil {
-		restoreErr := gitSvc.CheckoutBranch(feature)
-		if restoreErr != nil {
-			return fmt.Errorf("merge %q into %q failed: %w; additionally failed to restore %q: %w", feature, base, err, feature, restoreErr)
-		}
-		if errors.Is(err, git.ErrMergeConflict) {
-			return fmt.Errorf("merge %q into %q conflicted and was aborted; resolve the branches and rerun --merge: %w", feature, base, err)
-		}
-		return fmt.Errorf("merge %q into %q failed; restored %q: %w", feature, base, feature, err)
-	}
-
-	mergedHead, err := gitSvc.HeadHash()
+	mergedHead, err := mergeForCloseout(mergeSvc, feature, base)
 	if err != nil {
-		return fmt.Errorf("read merged branch head: %w", err)
+		return err
 	}
 	mergeType := "merge commit"
 	if mergedHead == featureHead {
 		mergeType = "fast-forward"
 	}
 
-	worktreePath := filepath.Join(gitSvc.Root(), ".loopai", "worktrees", feature)
-	if err = gitSvc.RemoveWorktree(worktreePath); err != nil {
-		return fmt.Errorf("clean up worktree for %q: %w", feature, err)
+	if cleanupErr := cleanupMergedWorktree(gitSvc, mergeSvc, feature, featurePath, primaryPath); cleanupErr != nil {
+		return cleanupErr
 	}
-	if deleteErr := gitSvc.DeleteBranch(feature); deleteErr != nil {
+	if deleteErr := mergeSvc.DeleteBranch(feature); deleteErr != nil {
 		return fmt.Errorf("delete merged feature branch: %w", deleteErr)
 	}
 	if rep != nil {
@@ -2174,6 +2164,134 @@ func runMergeCommand(gitSvc *git.Service, explicitBase string, rep cmuxStatusCle
 	}
 	fmt.Fprintf(stdout, "merged %s into %s (%s); deleted branch %s\n", feature, base, mergeType, feature)
 	return nil
+}
+
+func prepareMergeWorktrees(gitSvc *git.Service, feature, base string) (mergeSvc *git.Service, featurePath, primaryPath string, err error) {
+	worktrees, err := gitSvc.Worktrees()
+	if err != nil {
+		return nil, "", "", fmt.Errorf("inspect repository worktrees: %w", err)
+	}
+	if len(worktrees) == 0 {
+		return nil, "", "", errors.New("inspect repository worktrees: Git returned no registered worktrees")
+	}
+	primaryPath = worktrees[0].Path
+	featurePath = worktreePathForBranch(worktrees, feature)
+	basePath := worktreePathForBranch(worktrees, base)
+	if featurePath == "" || filepath.Clean(featurePath) != filepath.Clean(gitSvc.Root()) {
+		return nil, "", "", fmt.Errorf("current branch %q is not registered at repository root %q", feature, gitSvc.Root())
+	}
+	if filepath.Clean(featurePath) == filepath.Clean(primaryPath) {
+		if basePath != "" && filepath.Clean(basePath) != filepath.Clean(primaryPath) {
+			return nil, "", "", fmt.Errorf("cannot close branch %q from the primary worktree while base branch %q is checked out at %q", feature, base, basePath)
+		}
+		return gitSvc, featurePath, primaryPath, nil
+	}
+
+	mergePath := primaryPath
+	if basePath != "" {
+		mergePath = basePath
+	}
+	mergeSvc, err = gitSvc.OpenWorktree(mergePath)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("open base worktree %q: %w", mergePath, err)
+	}
+	baseDirty, err := mergeSvc.IsDirtyAll()
+	if err != nil {
+		return nil, "", "", fmt.Errorf("check base worktree: %w", err)
+	}
+	if baseDirty {
+		return nil, "", "", fmt.Errorf("--merge requires a clean base worktree at %s", mergeSvc.Root())
+	}
+	return mergeSvc, featurePath, primaryPath, nil
+}
+
+func worktreePathForBranch(worktrees []git.Worktree, branch string) string {
+	for _, wt := range worktrees {
+		if wt.Branch == branch {
+			return wt.Path
+		}
+	}
+	return ""
+}
+
+func mergeForCloseout(gitSvc *git.Service, feature, base string) (string, error) {
+	original, err := gitSvc.CurrentBranch()
+	if err != nil {
+		return "", fmt.Errorf("read merge worktree branch: %w", err)
+	}
+	if original != base {
+		if checkoutErr := gitSvc.CheckoutBranch(base); checkoutErr != nil {
+			return "", fmt.Errorf("check out base branch %q: %w", base, checkoutErr)
+		}
+	}
+	if err = gitSvc.MergeBranch(feature); err != nil {
+		return "", closeoutMergeError(gitSvc, original, feature, base, err)
+	}
+	mergedHead, err := gitSvc.HeadHash()
+	if err != nil {
+		return "", fmt.Errorf("read merged branch head: %w", err)
+	}
+	return mergedHead, nil
+}
+
+func closeoutMergeError(gitSvc *git.Service, original, feature, base string, mergeErr error) error {
+	if original != base {
+		if restoreErr := gitSvc.CheckoutBranch(original); restoreErr != nil {
+			return fmt.Errorf("merge %q into %q failed: %w; additionally failed to restore %q: %w", feature, base, mergeErr, original, restoreErr)
+		}
+	}
+	if errors.Is(mergeErr, git.ErrMergeConflict) {
+		return fmt.Errorf("merge %q into %q conflicted and was aborted; resolve the branches and rerun --merge: %w", feature, base, mergeErr)
+	}
+	return fmt.Errorf("merge %q into %q failed: %w", feature, base, mergeErr)
+}
+
+func cleanupMergedWorktree(featureSvc, mergeSvc *git.Service, feature, featurePath, primaryPath string) error {
+	if filepath.Clean(featurePath) == filepath.Clean(primaryPath) {
+		return nil
+	}
+	// Revalidate both identity and cleanliness immediately before removal. The standalone
+	// close-out command must never force-delete an unrelated or newly modified worktree.
+	latest, err := mergeSvc.Worktrees()
+	if err != nil {
+		return fmt.Errorf("revalidate feature worktree: %w", err)
+	}
+	if registeredPath := worktreePathForBranch(latest, feature); filepath.Clean(registeredPath) != filepath.Clean(featurePath) {
+		return fmt.Errorf("refuse to remove worktree %q: it is no longer registered for branch %q", featurePath, feature)
+	}
+	dirty, err := featureSvc.IsDirtyAll()
+	if err != nil {
+		return fmt.Errorf("recheck feature worktree: %w", err)
+	}
+	if dirty {
+		return fmt.Errorf("refuse to remove modified feature worktree at %s", featurePath)
+	}
+	if err := leaveWorktreeBeforeRemoval(featurePath, mergeSvc.Root()); err != nil {
+		return err
+	}
+	if err := mergeSvc.RemoveWorktreeSafe(featurePath); err != nil {
+		return fmt.Errorf("clean up worktree for %q: %w", feature, err)
+	}
+	return nil
+}
+
+func leaveWorktreeBeforeRemoval(featurePath, destination string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("read current directory before worktree cleanup: %w", err)
+	}
+	if !pathWithin(cwd, featurePath) {
+		return nil
+	}
+	if err := os.Chdir(destination); err != nil {
+		return fmt.Errorf("leave feature worktree before cleanup: %w", err)
+	}
+	return nil
+}
+
+func pathWithin(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // runPRCommand pushes the current feature branch and creates a GitHub pull request.
@@ -2244,11 +2362,12 @@ func runCloseoutCommand(ctx context.Context, o opts, cfg *config.Config, colors 
 	return runPRCommand(ctx, gitSvc, o.PR, rep, os.Stdout)
 }
 
-// buildPRTitleBody derives PR metadata from the completed plan associated with branch.
-// Missing plans and Overview sections are valid and fall back to branch-based metadata.
+// buildPRTitleBody derives PR metadata from the plan associated with branch. Completed plans
+// are preferred, while the active plans directory covers worktree runs whose archival commit
+// exists only on the base branch.
 func buildPRTitleBody(repoRoot, branch string, stats git.DiffStats) (title, body string, err error) {
 	title = branch
-	planPath, err := findCompletedPlan(repoRoot, branch)
+	planPath, err := findPRPlan(repoRoot, branch)
 	if err != nil {
 		return "", "", err
 	}
@@ -2256,7 +2375,7 @@ func buildPRTitleBody(repoRoot, branch string, stats git.DiffStats) (title, body
 	if planPath != "" {
 		content, readErr := os.ReadFile(planPath) //nolint:gosec // path is constrained to the repository's completed plans directory
 		if readErr != nil {
-			return "", "", fmt.Errorf("read completed plan: %w", readErr)
+			return "", "", fmt.Errorf("read PR plan: %w", readErr)
 		}
 		title, overview = parsePRPlan(string(content), branch)
 	}
@@ -2268,40 +2387,43 @@ func buildPRTitleBody(repoRoot, branch string, stats git.DiffStats) (title, body
 	return title, overview + "\n\n" + statsText, nil
 }
 
-func findCompletedPlan(repoRoot, branch string) (string, error) {
-	dir := filepath.Join(repoRoot, "docs", "plans", "completed")
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("list completed plans: %w", err)
-	}
-
+func findPRPlan(repoRoot, branch string) (string, error) {
 	branchPlanName := filepath.Base(branch)
 	var exactPath, fallbackPath string
 	var exactTime, fallbackTime time.Time
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+	for _, dir := range []string{
+		filepath.Join(repoRoot, "docs", "plans", "completed"),
+		filepath.Join(repoRoot, "docs", "plans"),
+	} {
+		entries, readDirErr := os.ReadDir(dir)
+		if errors.Is(readDirErr, os.ErrNotExist) {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
-		info, infoErr := entry.Info()
-		if infoErr != nil {
-			return "", fmt.Errorf("inspect completed plan %q: %w", entry.Name(), infoErr)
+		if readDirErr != nil {
+			return "", fmt.Errorf("list PR plans in %q: %w", dir, readDirErr)
 		}
-		if plan.ExtractBranchName(entry.Name()) == branch || plan.ExtractBranchName(entry.Name()) == branchPlanName {
-			if exactPath == "" || info.ModTime().After(exactTime) {
-				exactPath, exactTime = path, info.ModTime()
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+				continue
 			}
-			continue
-		}
-		content, readErr := os.ReadFile(path) //nolint:gosec // path comes from the completed plans directory
-		if readErr != nil {
-			return "", fmt.Errorf("read completed plan %q: %w", entry.Name(), readErr)
-		}
-		if strings.Contains(string(content), branch) && (fallbackPath == "" || info.ModTime().After(fallbackTime)) {
-			fallbackPath, fallbackTime = path, info.ModTime()
+			path := filepath.Join(dir, entry.Name())
+			info, infoErr := entry.Info()
+			if infoErr != nil {
+				return "", fmt.Errorf("inspect PR plan %q: %w", entry.Name(), infoErr)
+			}
+			if plan.ExtractBranchName(entry.Name()) == branch || plan.ExtractBranchName(entry.Name()) == branchPlanName {
+				if exactPath == "" || info.ModTime().After(exactTime) {
+					exactPath, exactTime = path, info.ModTime()
+				}
+				continue
+			}
+			content, readErr := os.ReadFile(path) //nolint:gosec // path comes from a repository plans directory
+			if readErr != nil {
+				return "", fmt.Errorf("read PR plan %q: %w", entry.Name(), readErr)
+			}
+			if strings.Contains(string(content), branch) && (fallbackPath == "" || info.ModTime().After(fallbackTime)) {
+				fallbackPath, fallbackTime = path, info.ModTime()
+			}
 		}
 	}
 	if exactPath != "" {

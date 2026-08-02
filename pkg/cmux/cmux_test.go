@@ -389,6 +389,43 @@ func TestReporterFinishAfterStopNoOp(t *testing.T) {
 	assert.False(t, r.finished)
 }
 
+func TestReporterFinishConcurrentWithStop(t *testing.T) {
+	for range 100 {
+		runner := &fakeRunner{}
+		r := testReporter(t, runner)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			r.Finish(true, "1s")
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			r.Stop()
+		}()
+		close(start)
+		wg.Wait()
+
+		lastSet, lastClear := -1, -1
+		for idx, call := range runner.recorded() {
+			if len(call) > 0 && call[0] == "set-status" {
+				lastSet = idx
+			}
+			if len(call) > 0 && call[0] == "clear-status" {
+				lastClear = idx
+			}
+		}
+		if lastSet >= 0 {
+			assert.Less(t, lastClear, lastSet, "a completed pill must not be cleared after Finish wins the race")
+		} else {
+			assert.GreaterOrEqual(t, lastClear, 0, "Stop-first must clear the unfinished pill")
+		}
+	}
+}
+
 func TestReporterSetProgress(t *testing.T) {
 	tests := []struct {
 		name  string
