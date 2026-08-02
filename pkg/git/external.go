@@ -226,6 +226,23 @@ func (e *externalBackend) originURL() (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+func (e *externalBackend) originPushURLs() ([]string, error) {
+	out, err := e.run("remote", "get-url", "--push", "--all", "origin")
+	if err != nil {
+		return nil, fmt.Errorf("get effective origin push URLs: %w", err)
+	}
+	var urls []string
+	for line := range strings.SplitSeq(out, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			urls = append(urls, trimmed)
+		}
+	}
+	if len(urls) == 0 {
+		return nil, errors.New("effective origin push URL is empty")
+	}
+	return urls, nil
+}
+
 // getDefaultBranch returns the default branch name.
 // detects from origin/HEAD symbolic reference, falls back to checking common branch names.
 func (e *externalBackend) getDefaultBranch() string {
@@ -281,12 +298,29 @@ func (e *externalBackend) checkoutBranch(name string) error {
 	return nil
 }
 
-// mergeBranch merges the named branch into the current HEAD. Any merge left in
-// progress is aborted; ErrMergeConflict is returned only when unmerged paths exist.
-func (e *externalBackend) mergeBranch(ctx context.Context, name string) error {
-	_, err := e.runContext(ctx, "merge", "--no-overwrite-ignore", name)
+// mergeBranch merges the named branch into the current HEAD. Command-line overrides prevent the
+// current branch's mergeOptions from silently changing close-out semantics. Any merge left in
+// progress is aborted; ErrMergeConflict is returned only when unmerged paths exist. A nominally
+// successful merge is rolled back unless it incorporates expectedHead.
+func (e *externalBackend) mergeBranch(ctx context.Context, name, expectedHead string) error {
+	preMergeHead, err := e.headHash()
+	if err != nil {
+		return fmt.Errorf("read pre-merge HEAD: %w", err)
+	}
+	_, err = e.runContext(ctx, "merge", "--commit", "--no-squash", "--no-overwrite-ignore", name)
 	if err == nil {
-		return nil
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), mergeCleanupTimeout)
+		defer cancel()
+		incorporated, verifyErr := e.isAncestor(cleanupCtx, expectedHead, "HEAD")
+		if verifyErr == nil && incorporated {
+			return nil
+		}
+		if verifyErr != nil {
+			return e.rollbackSuccessfulMerge(cleanupCtx, preMergeHead,
+				fmt.Errorf("verify merged commit %q: %w", expectedHead, verifyErr))
+		}
+		return e.rollbackSuccessfulMerge(cleanupCtx, preMergeHead,
+			fmt.Errorf("merge completed without incorporating expected commit %q", expectedHead))
 	}
 
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), mergeCleanupTimeout)
@@ -297,6 +331,33 @@ func (e *externalBackend) mergeBranch(ctx context.Context, name string) error {
 		return e.abortFailedMerge(cleanupCtx, err)
 	}
 	return fmt.Errorf("merge: %w", err)
+}
+
+func (e *externalBackend) isAncestor(ctx context.Context, ancestor, descendant string) (bool, error) {
+	cmd := exec.CommandContext(ctx, e.command, "merge-base", "--is-ancestor", ancestor, descendant)
+	cmd.Dir = e.path
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	details := strings.TrimSpace(output.String())
+	if details != "" {
+		return false, fmt.Errorf("git merge-base: %s", details)
+	}
+	return false, fmt.Errorf("git merge-base: %w", err)
+}
+
+func (e *externalBackend) rollbackSuccessfulMerge(ctx context.Context, preMergeHead string, cause error) error {
+	if _, err := e.runContext(ctx, "reset", "--hard", preMergeHead); err != nil {
+		return fmt.Errorf("%w; additionally failed to restore pre-merge HEAD %q: %w", cause, preMergeHead, err)
+	}
+	return cause
 }
 
 func (e *externalBackend) abortFailedMerge(ctx context.Context, mergeErr error) error {

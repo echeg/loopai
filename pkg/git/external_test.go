@@ -15,14 +15,14 @@ import (
 func TestExternalBackendCloseoutCommandsHonorCancellation(t *testing.T) {
 	dir := t.TempDir()
 	command := filepath.Join(t.TempDir(), "slow-git")
-	require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\ncase \"$1\" in check-ref-format) exit 0 ;; merge|push) sleep 30 ;; esac\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
+	require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\nif [ \"$1\" = rev-parse ] && [ \"$2\" = HEAD ]; then printf '%s\\n' deadbeef; exit 0; fi\ncase \"$1\" in check-ref-format) exit 0 ;; merge|push) sleep 30 ;; esac\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
 	backend := &externalBackend{path: dir, command: command}
 
 	for _, tc := range []struct {
 		name string
 		call func(context.Context) error
 	}{
-		{name: "merge", call: func(ctx context.Context) error { return backend.mergeBranch(ctx, "feature") }},
+		{name: "merge", call: func(ctx context.Context) error { return backend.mergeBranch(ctx, "feature", "feature") }},
 		{name: "push", call: func(ctx context.Context) error { return backend.push(ctx, "feature") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

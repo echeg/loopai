@@ -297,6 +297,32 @@ func TestService_MergeBranch(t *testing.T) {
 		assert.Equal(t, masterHash, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD")))
 		assert.Empty(t, strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
 	})
+
+	t.Run("failed incorporation check restores pre-merge state", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		masterHash := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+
+		runGit(t, dir, "checkout", "-b", "expected")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "expected.txt"), []byte("expected\n"), 0o600))
+		runGit(t, dir, "add", "expected.txt")
+		runGit(t, dir, "commit", "-m", "unrelated expected commit")
+		expectedHash := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+
+		runGit(t, dir, "checkout", "master")
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+		runGit(t, dir, "checkout", "master")
+
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		err = svc.MergeBranchCommitContext(t.Context(), "feature", expectedHash)
+		require.ErrorContains(t, err, "without incorporating expected commit")
+		assert.Equal(t, masterHash, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD")))
+		assert.Empty(t, strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
+		assert.True(t, svc.BranchExists("feature"))
+	})
 }
 
 func TestService_DeleteBranch(t *testing.T) {

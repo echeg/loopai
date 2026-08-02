@@ -28,11 +28,12 @@ type backend interface {
 	hasCommits() (bool, error)
 	currentBranch() (string, error)
 	originURL() (string, error)
+	originPushURLs() ([]string, error)
 	getDefaultBranch() string
 	branchExists(name string) bool
 	createBranch(name string) error
 	checkoutBranch(name string) error
-	mergeBranch(ctx context.Context, name string) error
+	mergeBranch(ctx context.Context, name, expectedHead string) error
 	deleteBranch(name string) error
 	push(ctx context.Context, branch string) error
 	worktrees() ([]Worktree, error)
@@ -155,6 +156,16 @@ func (s *Service) OriginURL() (string, error) {
 	return remoteURL, nil
 }
 
+// OriginPushURLs returns every effective URL Git will use when pushing to origin. Unlike
+// OriginURL, these URLs include pushurl and URL-rewrite configuration.
+func (s *Service) OriginPushURLs() ([]string, error) {
+	remoteURLs, err := s.repo.originPushURLs()
+	if err != nil {
+		return nil, fmt.Errorf("read effective origin push URLs: %w", err)
+	}
+	return remoteURLs, nil
+}
+
 // CheckoutBranch switches the working tree to an existing local branch.
 func (s *Service) CheckoutBranch(name string) error {
 	if err := s.repo.checkoutBranch(name); err != nil {
@@ -254,12 +265,18 @@ func (s *Service) ResolveBaseBranch(explicit string) (string, error) {
 
 // MergeBranch merges branch into the currently checked-out branch.
 func (s *Service) MergeBranch(branch string) error {
-	return s.MergeBranchContext(context.Background(), branch)
+	return s.MergeBranchCommitContext(context.Background(), branch, branch)
 }
 
 // MergeBranchContext merges branch into the current branch and honors cancellation.
 func (s *Service) MergeBranchContext(ctx context.Context, branch string) error {
-	if err := s.repo.mergeBranch(ctx, branch); err != nil {
+	return s.MergeBranchCommitContext(ctx, branch, branch)
+}
+
+// MergeBranchCommitContext merges branch and verifies that expectedHead is incorporated into the
+// resulting HEAD. A successful Git command that does not satisfy that invariant is rolled back.
+func (s *Service) MergeBranchCommitContext(ctx context.Context, branch, expectedHead string) error {
+	if err := s.repo.mergeBranch(ctx, branch, expectedHead); err != nil {
 		return fmt.Errorf("merge branch %q: %w", branch, err)
 	}
 	return nil

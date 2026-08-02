@@ -250,8 +250,9 @@ merges the current feature branch in the base worktree, safely removes a linked 
 worktree only when Git confirms its branch and cleanliness, then deletes the merged
 branch. The worktree removal also deletes ignored files in that worktree, such as build
 output or a local `.env`; preserve any local-only ignored files before running `--merge`.
-`--pr` requires authenticated `gh` and a GitHub remote named `origin`; it pushes
-committed branch state, builds the title and body from the associated plan and diff
+`--pr` requires authenticated `gh` and a GitHub remote named `origin`; every effective
+origin push URL must identify that same GitHub repository. It pushes committed branch
+state, builds the title and body from the associated plan and diff
 statistics, and keeps the feature branch and worktree. Commit intended changes before
 running `--pr`. Each command clears the completion pill only after it succeeds, so a
 failed close-out remains visible. These commands cannot be combined with a plan file or

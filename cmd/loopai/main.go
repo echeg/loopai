@@ -2303,7 +2303,7 @@ func mergeForCloseout(ctx context.Context, gitSvc *git.Service, feature, base, f
 	if err != nil {
 		return closeoutMergeResult{}, fmt.Errorf("read base branch head: %w", err)
 	}
-	if err = gitSvc.MergeBranchContext(ctx, feature); err != nil {
+	if err = gitSvc.MergeBranchCommitContext(ctx, feature, featureHead); err != nil {
 		return closeoutMergeResult{}, closeoutMergeError(gitSvc, original, originalHead, feature, base, err)
 	}
 	mergedHead, err := gitSvc.HeadHash()
@@ -2478,6 +2478,19 @@ func validateGitHubOrigin(ctx context.Context, ghPath string, gitSvc *git.Servic
 	repoSpec, err := githubRepoSpec(originURL)
 	if err != nil {
 		return "", fmt.Errorf("validate GitHub origin: %w", err)
+	}
+	pushURLs, err := gitSvc.OriginPushURLs()
+	if err != nil {
+		return "", fmt.Errorf("validate GitHub origin: %w", err)
+	}
+	for _, pushURL := range pushURLs {
+		pushRepoSpec, pushErr := githubRepoSpec(pushURL)
+		if pushErr != nil {
+			return "", fmt.Errorf("validate GitHub origin push destination %q: %w", pushURL, pushErr)
+		}
+		if !strings.EqualFold(pushRepoSpec, repoSpec) {
+			return "", fmt.Errorf("validate GitHub origin: push destination %q does not match PR repository %q", pushRepoSpec, repoSpec)
+		}
 	}
 	cmd := exec.CommandContext(ctx, ghPath, "repo", "view", repoSpec,
 		"--json", "nameWithOwner", "--jq", ".nameWithOwner")

@@ -3166,6 +3166,22 @@ func TestRunMergeCommand(t *testing.T) {
 		assert.Contains(t, output.String(), "feature into master (fast-forward)")
 	})
 
+	t.Run("command overrides configured squash and no-commit merge options", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		runGit(t, dir, "checkout", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o600))
+		runGit(t, dir, "add", "base.txt")
+		runGit(t, dir, "commit", "-m", "advance base")
+		runGit(t, dir, "config", "branch.master.mergeOptions", "--squash --no-commit")
+		runGit(t, dir, "checkout", "feature")
+
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard))
+		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "master:feature.txt"))
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
+		assert.False(t, branchExists(t, dir, "feature"))
+	})
+
 	t.Run("happy path removes actual feature worktree", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		mainSvc := makeFeature(t, dir)
@@ -3664,7 +3680,6 @@ func TestRunPRCommand(t *testing.T) {
 		runGit(t, filepath.Dir(remote), "init", "--bare", remote)
 		originURL := "https://github.com/acme/repo.git"
 		runGit(t, dir, "remote", "add", "origin", originURL)
-		runGit(t, dir, "config", "url."+remote+".insteadOf", originURL)
 		runGit(t, dir, "checkout", "-b", "feature")
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
 		runGit(t, dir, "add", "feature.txt")
@@ -3672,7 +3687,13 @@ func TestRunPRCommand(t *testing.T) {
 		plansDir := filepath.Join(dir, "docs", "plans", "completed")
 		require.NoError(t, os.MkdirAll(plansDir, 0o750))
 		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260802-feature.md"), []byte("# Feature PR\n\n## Overview\n\nImplements feature.\n"), 0o600))
-		svc, err := git.NewService(dir, noopLogger())
+		realGit, err := exec.LookPath("git")
+		require.NoError(t, err)
+		t.Setenv("PR_TEST_REAL_GIT", realGit)
+		t.Setenv("PR_TEST_REMOTE", remote)
+		gitWrapper := filepath.Join(t.TempDir(), "git-wrapper")
+		writeExecutable(t, gitWrapper, "#!/bin/sh\nif [ \"$1\" = push ]; then\n  refspec=$4\n  \"$PR_TEST_REAL_GIT\" push \"$PR_TEST_REMOTE\" \"$refspec\" || exit $?\n  branch=${refspec#refs/heads/}\n  branch=${branch%%:*}\n  \"$PR_TEST_REAL_GIT\" update-ref \"refs/remotes/origin/$branch\" \"$branch\" || exit $?\n  \"$PR_TEST_REAL_GIT\" config \"branch.$branch.remote\" origin || exit $?\n  \"$PR_TEST_REAL_GIT\" config \"branch.$branch.merge\" \"refs/heads/$branch\" || exit $?\n  exit 0\nfi\nexec \"$PR_TEST_REAL_GIT\" \"$@\"\n")
+		svc, err := git.NewService(dir, noopLogger(), gitWrapper)
 		require.NoError(t, err)
 		return dir, remote, svc
 	}
@@ -3745,8 +3766,12 @@ func TestRunPRCommand(t *testing.T) {
 		runGit(t, dir, "checkout", "-b", "feature")
 		originURL := "https://github.com/acme/repo.git"
 		runGit(t, dir, "remote", "add", "origin", originURL)
-		runGit(t, dir, "config", "url."+filepath.Join(t.TempDir(), "missing.git")+".insteadOf", originURL)
-		svc, err := git.NewService(dir, noopLogger())
+		realGit, err := exec.LookPath("git")
+		require.NoError(t, err)
+		t.Setenv("PR_TEST_REAL_GIT", realGit)
+		gitWrapper := filepath.Join(t.TempDir(), "git-wrapper")
+		writeExecutable(t, gitWrapper, "#!/bin/sh\nif [ \"$1\" = push ]; then printf '%s\\n' 'simulated push failure' >&2; exit 1; fi\nexec \"$PR_TEST_REAL_GIT\" \"$@\"\n")
+		svc, err := git.NewService(dir, noopLogger(), gitWrapper)
 		require.NoError(t, err)
 		binDir := t.TempDir()
 		invoked := filepath.Join(binDir, "invoked")
@@ -3761,6 +3786,36 @@ func TestRunPRCommand(t *testing.T) {
 		assert.NoFileExists(t, invoked)
 		assert.Zero(t, clearer.calls)
 	})
+
+	for _, tc := range []struct {
+		name      string
+		configure func(t *testing.T, dir string)
+	}{
+		{name: "different pushurl is rejected", configure: func(t *testing.T, dir string) {
+			runGit(t, dir, "remote", "set-url", "--add", "--push", "origin", "https://github.com/other/repo.git")
+		}},
+		{name: "different pushInsteadOf destination is rejected", configure: func(t *testing.T, dir string) {
+			runGit(t, dir, "config", "url.https://github.com/other/repo.git.pushInsteadOf", "https://github.com/acme/repo.git")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := setupTestRepo(t)
+			runGit(t, dir, "remote", "add", "origin", "https://github.com/acme/repo.git")
+			runGit(t, dir, "checkout", "-b", "feature")
+			tc.configure(t, dir)
+			svc, err := git.NewService(dir, noopLogger())
+			require.NoError(t, err)
+			binDir := t.TempDir()
+			invoked := filepath.Join(binDir, "invoked")
+			writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\ntouch \"$GH_INVOKED\"\n")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("GH_INVOKED", invoked)
+
+			err = runPRCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard)
+			require.ErrorContains(t, err, "does not match PR repository")
+			assert.NoFileExists(t, invoked)
+		})
+	}
 
 	t.Run("non-GitHub origin is rejected before gh or push", func(t *testing.T) {
 		dir := setupTestRepo(t)
