@@ -244,6 +244,22 @@ func TestService_MergeBranch(t *testing.T) {
 		assert.Equal(t, featureHash, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD")))
 	})
 
+	t.Run("branch wins over a same-named tag", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		runGit(t, dir, "tag", "feature")
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+		featureHash := strings.TrimSpace(runGit(t, dir, "rev-parse", "refs/heads/feature"))
+		runGit(t, dir, "checkout", "master")
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, svc.MergeBranch("feature"))
+		assert.Equal(t, featureHash, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD")))
+	})
+
 	t.Run("conflict aborts and preserves branches", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())
@@ -358,6 +374,16 @@ func TestService_DeleteBranch(t *testing.T) {
 			assert.True(t, svc.BranchExists("feature"))
 		})
 	}
+}
+
+func TestService_DeleteBranchWhoseNameStartsWithDash(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	runGit(t, dir, "update-ref", "refs/heads/-feature", "HEAD")
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+
+	require.NoError(t, svc.DeleteBranch("-feature"))
+	assert.False(t, svc.BranchExists("-feature"))
 }
 
 func TestService_Push(t *testing.T) {
@@ -1313,6 +1339,21 @@ func TestService_DiffStats(t *testing.T) {
 		assert.Equal(t, 1, stats.Files)
 		assert.Equal(t, 2, stats.Additions)
 		assert.Equal(t, 0, stats.Deletions)
+	})
+
+	t.Run("local branch wins over a same-named tag", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		require.NoError(t, svc.CreateBranch("feature"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("line1\nline2\n"), 0o600))
+		require.NoError(t, svc.repo.add("feature.txt"))
+		require.NoError(t, svc.repo.commit("add feature file"))
+		runGit(t, dir, "tag", "master")
+
+		stats, err := svc.DiffStats("master")
+		require.NoError(t, err)
+		assert.Equal(t, DiffStats{Files: 1, Additions: 2}, stats)
 	})
 
 	t.Run("returns stats using commit hash as base ref", func(t *testing.T) {

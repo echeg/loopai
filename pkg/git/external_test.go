@@ -369,6 +369,18 @@ func TestExternalBackend_CheckoutBranch(t *testing.T) {
 		err = eb.checkoutBranch("nonexistent")
 		assert.Error(t, err)
 	})
+
+	t.Run("switches to branch whose name starts with a dash", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+		runGit(t, dir, "update-ref", "refs/heads/-feature", "HEAD")
+
+		require.NoError(t, eb.checkoutBranch("-feature"))
+		branch, branchErr := eb.currentBranch()
+		require.NoError(t, branchErr)
+		assert.Equal(t, "-feature", branch)
+	})
 }
 
 func TestExternalBackend_IsDirty(t *testing.T) {

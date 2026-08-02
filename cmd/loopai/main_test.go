@@ -3817,6 +3817,27 @@ func TestRunPRCommand(t *testing.T) {
 		})
 	}
 
+	t.Run("invalid credentialed push URL is redacted", func(t *testing.T) {
+		const credential = "secret-access-token"
+		dir := setupTestRepo(t)
+		runGit(t, dir, "remote", "add", "origin", "https://github.com/acme/repo.git")
+		runGit(t, dir, "remote", "set-url", "--add", "--push", "origin",
+			"https://"+credential+"@github.com/owner")
+		runGit(t, dir, "checkout", "-b", "feature")
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		binDir := t.TempDir()
+		invoked := filepath.Join(binDir, "invoked")
+		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\ntouch \"$GH_INVOKED\"\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("GH_INVOKED", invoked)
+
+		err = runPRCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard)
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), credential)
+		assert.NoFileExists(t, invoked)
+	})
+
 	t.Run("non-GitHub origin is rejected before gh or push", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		remote := filepath.Join(t.TempDir(), "origin.git")
@@ -3874,6 +3895,13 @@ func TestGitHubRepoSpec(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestGitHubRepoSpecErrorsDoNotExposeCredentials(t *testing.T) {
+	const credential = "secret-access-token"
+	_, err := githubRepoSpec("https://" + credential + "@github.com/owner")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), credential)
 }
 
 func currentGitBranch(t *testing.T, dir string) string {

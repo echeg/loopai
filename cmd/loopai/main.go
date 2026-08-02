@@ -2486,7 +2486,7 @@ func validateGitHubOrigin(ctx context.Context, ghPath string, gitSvc *git.Servic
 	for _, pushURL := range pushURLs {
 		pushRepoSpec, pushErr := githubRepoSpec(pushURL)
 		if pushErr != nil {
-			return "", fmt.Errorf("validate GitHub origin push destination %q: %w", pushURL, pushErr)
+			return "", fmt.Errorf("validate GitHub origin push destination: %w", pushErr)
 		}
 		if !strings.EqualFold(pushRepoSpec, repoSpec) {
 			return "", fmt.Errorf("validate GitHub origin: push destination %q does not match PR repository %q", pushRepoSpec, repoSpec)
@@ -2515,13 +2515,13 @@ func githubRepoSpec(remoteURL string) (string, error) {
 	if strings.Contains(remoteURL, "://") {
 		parsed, err := url.Parse(remoteURL)
 		if err != nil || parsed.Hostname() == "" {
-			return "", fmt.Errorf("origin is not a valid hosted repository URL: %q", remoteURL)
+			return "", errors.New("origin is not a valid hosted repository URL")
 		}
 		host, repoPath = parsed.Hostname(), parsed.Path
 	} else {
 		colon := strings.IndexByte(remoteURL, ':')
 		if colon <= 0 || strings.ContainsAny(remoteURL[:colon], `/\\`) {
-			return "", fmt.Errorf("origin is not a GitHub repository URL: %q", remoteURL)
+			return "", errors.New("origin is not a GitHub repository URL")
 		}
 		host = remoteURL[:colon]
 		if at := strings.LastIndexByte(host, '@'); at >= 0 {
@@ -2532,7 +2532,7 @@ func githubRepoSpec(remoteURL string) (string, error) {
 
 	parts := strings.Split(strings.TrimSuffix(strings.Trim(repoPath, "/"), ".git"), "/")
 	if host == "" || len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", fmt.Errorf("origin is not a GitHub owner/repository URL: %q", remoteURL)
+		return "", errors.New("origin is not a GitHub owner/repository URL")
 	}
 	if strings.EqualFold(host, "github.com") {
 		return parts[0] + "/" + parts[1], nil

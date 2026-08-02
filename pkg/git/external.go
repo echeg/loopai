@@ -291,7 +291,11 @@ func (e *externalBackend) createBranch(name string) error {
 
 // checkoutBranch switches to an existing branch.
 func (e *externalBackend) checkoutBranch(name string) error {
-	_, err := e.run("checkout", "--no-overwrite-ignore", name)
+	args := []string{"switch", "--no-overwrite-ignore"}
+	if !e.branchExists(name) {
+		args = append(args, "--detach")
+	}
+	_, err := e.run(append(args, "--", name)...)
 	if err != nil {
 		return fmt.Errorf("checkout branch: %w", err)
 	}
@@ -307,7 +311,8 @@ func (e *externalBackend) mergeBranch(ctx context.Context, name, expectedHead st
 	if err != nil {
 		return fmt.Errorf("read pre-merge HEAD: %w", err)
 	}
-	_, err = e.runContext(ctx, "merge", "--commit", "--no-squash", "--no-overwrite-ignore", name)
+	branchRef := "refs/heads/" + name
+	_, err = e.runContext(ctx, "merge", "--commit", "--no-squash", "--no-overwrite-ignore", branchRef)
 	if err == nil {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), mergeCleanupTimeout)
 		defer cancel()
@@ -381,7 +386,7 @@ func (e *externalBackend) abortFailedMerge(ctx context.Context, mergeErr error) 
 
 // deleteBranch safely deletes a local branch, refusing unmerged branches.
 func (e *externalBackend) deleteBranch(name string) error {
-	if _, err := e.run("branch", "-d", name); err != nil {
+	if _, err := e.run("branch", "-d", "--", name); err != nil {
 		return fmt.Errorf("delete branch: %w", err)
 	}
 	return nil
@@ -656,20 +661,23 @@ func (e *externalBackend) diffStats(baseBranch string) (DiffStats, error) {
 // and finally arbitrary refs like commit hashes or tags via rev-parse.
 func (e *externalBackend) resolveRef(branchName string) string {
 	// try local branch
-	if e.refExists("refs/heads/" + branchName) {
-		return branchName
+	localRef := "refs/heads/" + branchName
+	if e.refExists(localRef) {
+		return localRef
 	}
 
 	// try remote tracking branch
-	if e.refExists("refs/remotes/origin/" + branchName) {
-		return "origin/" + branchName
+	remoteRef := "refs/remotes/origin/" + branchName
+	if e.refExists(remoteRef) {
+		return remoteRef
 	}
 
 	// try as-is for "origin/" prefixed names
 	if strings.HasPrefix(branchName, "origin/") {
 		remoteName := branchName[7:]
-		if e.refExists("refs/remotes/origin/" + remoteName) {
-			return branchName
+		remoteRef = "refs/remotes/origin/" + remoteName
+		if e.refExists(remoteRef) {
+			return remoteRef
 		}
 	}
 

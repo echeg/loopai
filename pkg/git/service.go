@@ -265,12 +265,12 @@ func (s *Service) ResolveBaseBranch(explicit string) (string, error) {
 
 // MergeBranch merges branch into the currently checked-out branch.
 func (s *Service) MergeBranch(branch string) error {
-	return s.MergeBranchCommitContext(context.Background(), branch, branch)
+	return s.MergeBranchCommitContext(context.Background(), branch, "refs/heads/"+branch)
 }
 
 // MergeBranchContext merges branch into the current branch and honors cancellation.
 func (s *Service) MergeBranchContext(ctx context.Context, branch string) error {
-	return s.MergeBranchCommitContext(ctx, branch, branch)
+	return s.MergeBranchCommitContext(ctx, branch, "refs/heads/"+branch)
 }
 
 // MergeBranchCommitContext merges branch and verifies that expectedHead is incorporated into the
