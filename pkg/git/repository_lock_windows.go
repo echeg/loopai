@@ -3,6 +3,7 @@
 package git
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -11,7 +12,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func lockRepositoryFile(f *os.File) error {
+func lockRepositoryFile(ctx context.Context, f *os.File) error {
 	for {
 		err := windows.LockFileEx(windows.Handle(f.Fd()),
 			windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
@@ -22,7 +23,11 @@ func lockRepositoryFile(f *os.File) error {
 		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
 			return fmt.Errorf("LockFileEx: %w", err)
 		}
-		time.Sleep(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for repository lock: %w", ctx.Err())
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
 }
 

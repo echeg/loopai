@@ -881,7 +881,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		}
 	}()
 
-	wt, err := prepareWorktreeRun(o, req, branch)
+	wt, err := prepareWorktreeRunContext(ctx, o, req, branch)
 	if err != nil {
 		return err
 	}
@@ -1018,6 +1018,10 @@ type worktreeRun struct {
 // prepareWorktreeRun creates a new worktree or validates an existing resume target.
 // It never removes a resumed worktree on error.
 func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktreeRun, error) {
+	return prepareWorktreeRunContext(context.Background(), o, req, branch)
+}
+
+func prepareWorktreeRunContext(ctx context.Context, o opts, req executePlanRequest, branch string) (worktreeRun, error) {
 	wt := worktreeRun{
 		path:    filepath.Join(req.GitSvc.Root(), ".loopai", "worktrees", branch),
 		resumed: o.ResumeWorktree,
@@ -1030,7 +1034,7 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 	}
 	if !wt.resumed {
 		var err error
-		wt.path, wt.planNeedsCommit, err = prepareFreshWorktree(o, req, branch)
+		wt.path, wt.planNeedsCommit, err = prepareFreshWorktree(ctx, o, req, branch)
 		if err != nil {
 			return worktreeRun{}, err
 		}
@@ -1064,25 +1068,25 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 }
 
 // prepareWorktreeSource optionally commits the source checkout before a fresh worktree is cut.
-func prepareWorktreeSource(o opts, req executePlanRequest, branch string) error {
+func prepareWorktreeSource(o opts, req executePlanRequest, branch string) (bool, error) {
 	if !o.Commit {
-		return nil
+		return false, nil
 	}
 	committed, err := req.GitSvc.AutoCommitAll("auto-commit working tree before plan: " + branch)
 	if err != nil {
-		return fmt.Errorf("auto-commit working tree: %w", err)
+		return false, fmt.Errorf("auto-commit working tree: %w", err)
 	}
 	if committed {
 		req.Colors.Info().Printf("auto-committed working tree before creating branch: %s\n", branch)
-		return nil
+		return true, nil
 	}
 	req.Colors.Info().Printf("working tree clean; no auto-commit needed before creating branch: %s\n", branch)
-	return nil
+	return false, nil
 }
 
 // prepareFreshWorktree holds the repository lock across source mutation and branch creation.
-func prepareFreshWorktree(o opts, req executePlanRequest, branch string) (path string, planNeedsCommit bool, err error) {
-	release, err := req.GitSvc.AcquireWorktreeCreationLock()
+func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, branch string) (path string, planNeedsCommit bool, err error) {
+	release, err := req.GitSvc.AcquireWorktreeCreationLockContext(ctx)
 	if err != nil {
 		return "", false, fmt.Errorf("lock worktree creation: %w", err)
 	}
@@ -1110,15 +1114,23 @@ func prepareFreshWorktree(o opts, req executePlanRequest, branch string) (path s
 	if ignoreErr := req.GitSvc.EnsureLocalGitignore(); ignoreErr != nil {
 		return "", false, fmt.Errorf("ensure gitignore before worktree creation: %w", ignoreErr)
 	}
+	sourceHeadBefore := ""
 	if o.Commit {
-		if preflightErr := req.GitSvc.ValidateWorktreeAutoCommit(req.PlanFile, req.BranchOverride); preflightErr != nil {
-			return "", false, fmt.Errorf("preflight source auto-commit: %w", preflightErr)
+		sourceHeadBefore, err = req.GitSvc.HeadHash()
+		if err != nil {
+			return "", false, fmt.Errorf("identify source HEAD before auto-commit: %w", err)
 		}
 	}
-	if sourceErr := prepareWorktreeSource(o, req, branch); sourceErr != nil {
+	committed, sourceErr := prepareWorktreeSource(o, req, branch)
+	if sourceErr != nil {
 		return "", false, sourceErr
 	}
-	path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlan(req.PlanFile, req.BranchOverride)
+	if committed {
+		path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlanAfterAutoCommit(
+			ctx, req.PlanFile, req.BranchOverride, sourceHeadBefore)
+	} else {
+		path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlan(req.PlanFile, req.BranchOverride)
+	}
 	if err != nil {
 		return "", false, fmt.Errorf("create worktree: %w", err)
 	}

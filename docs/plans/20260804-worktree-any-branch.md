@@ -105,7 +105,7 @@
 
 - Worktree and non-worktree branch preparation use separate validation paths, with shared change inspection, so their branch policies stay behaviorally independent.
 - Plan-branch collision check compares the current branch against `EffectiveBranchName(planFile, branchOverride)` before any mutation.
-- Auto-commit sequence: repository lock → runtime-ignore setup → `git add -A` → `status --porcelain` → commit with trailer → `git worktree add`. A custom tracked `.loopai/.gitignore` is preserved; repository-local Git excludes protect runtime artifacts.
+- Auto-commit sequence: cancelable repository lock → runtime-ignore setup → `git add -A` → `status --porcelain` → commit with trailer → `git worktree add`. Existing project-owned ignore files are preserved; repository-local Git excludes and explicit runtime path filtering protect runtime artifacts. When reusing a plan branch that contained the pre-commit source HEAD, the new source commit is merged into that branch and conflicts abort without leaving a worktree behind.
 - Flag note: go-flags treats defaults carefully in this repo (`isFlagSet`); `Commit` is a plain bool with no default, so no `markFlagsSet` entry is needed unless validation requires distinguishing "set" (it does not — false is inert).
 - `--merge` back into a non-default base requires an explicit base argument (`loopai --merge=<base>`); this is accepted and documented, not changed.
 

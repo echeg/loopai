@@ -22,7 +22,7 @@ Separately, a dirty working tree blocks worktree creation with "cannot create wo
 
 - Worktree and non-worktree branch preparation use separate validation paths. Worktree validation no longer compares the current branch against the default branch; dirty-tree checks and plan-file handling remain shared.
 - New guard replacing the old one: if the current branch equals the plan-derived branch name, fail with a clear message ("plan branch already checked out here; switch to the source branch or run without --worktree") instead of letting `git worktree add` fail cryptically — git refuses to check out one branch in two worktrees.
-- Existing plan branch (re-run): the worktree is created on the existing branch only when it already contains the current source HEAD; stale or divergent reuse is rejected.
+- Existing plan branch (re-run): the worktree is created on the existing branch only when it contains the source HEAD seen before any auto-commit; stale or divergent reuse is rejected. A newly auto-committed source HEAD is merged into the valid existing plan branch, with conflict rollback.
 - Detached HEAD: allowed; the new branch is cut from HEAD.
 - Creation log line names the source: `creating worktree with new branch: X (from ch_main)`.
 
@@ -38,7 +38,7 @@ Separately, a dirty working tree blocks worktree creation with "cannot create wo
 - Semantics: if the working tree is dirty at worktree-creation time, run `git add -A` + commit in the **source checkout** before cutting the feature branch. This advances the current branch when attached or the detached HEAD otherwise. Commit message: `auto-commit working tree before plan: <branch>` plus the standard loopai trailer (`appendTrailer`). Clean tree: flag is a no-op.
 - `.loopai/` runtime artifacts are excluded via `.loopai/.gitignore` or repository-local Git excludes, so `git add -A` cannot capture them without overwriting project-owned ignore rules.
 - With `--commit`, the plan file (if new/modified) is committed in the source checkout as part of the auto-commit; the existing plan-copy/commit-in-worktree path then sees it already committed and skips.
-- A repository-level lock serializes auto-commit through worktree branch creation across parallel loopai runs.
+- A cancelable repository-level lock serializes auto-commit through worktree branch creation across parallel loopai runs.
 
 ## Testing
 

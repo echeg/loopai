@@ -35,6 +35,7 @@ type backend interface {
 	createBranch(name string) error
 	checkoutBranch(name string) error
 	mergeBranch(ctx context.Context, name, expectedHead string) error
+	mergeRevision(ctx context.Context, revision, expectedHead string) error
 	deleteBranch(name string) error
 	push(ctx context.Context, branch string) error
 	worktrees() ([]Worktree, error)
@@ -140,6 +141,11 @@ func (s *Service) AutoCommitAll(message string) (bool, error) {
 // AcquireWorktreeCreationLock serializes source auto-commit and worktree creation across
 // loopai processes using the repository's shared Git metadata directory.
 func (s *Service) AcquireWorktreeCreationLock() (func() error, error) {
+	return s.AcquireWorktreeCreationLockContext(context.Background())
+}
+
+// AcquireWorktreeCreationLockContext is AcquireWorktreeCreationLock with cancellation support.
+func (s *Service) AcquireWorktreeCreationLockContext(ctx context.Context) (func() error, error) {
 	commonDir, err := s.repo.gitCommonDir()
 	if err != nil {
 		return nil, fmt.Errorf("locate repository lock directory: %w", err)
@@ -148,7 +154,7 @@ func (s *Service) AcquireWorktreeCreationLock() (func() error, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open worktree creation lock: %w", err)
 	}
-	if err := lockRepositoryFile(lockFile); err != nil {
+	if err := lockRepositoryFile(ctx, lockFile); err != nil {
 		_ = lockFile.Close()
 		return nil, fmt.Errorf("acquire worktree creation lock: %w", err)
 	}
@@ -486,6 +492,24 @@ func (s *Service) CreateBranchForPlan(planFile, defaultBranch, branchOverride st
 // git service) so the commit lands on the feature branch rather than the default branch.
 // branchOverride, when non-empty, is used directly instead of deriving the name from planFile.
 func (s *Service) CreateWorktreeForPlan(planFile, branchOverride string) (string, bool, error) {
+	return s.createWorktreeForPlan(context.Background(), planFile, branchOverride, "")
+}
+
+// CreateWorktreeForPlanAfterAutoCommit creates a plan worktree after sourceHeadBefore was
+// auto-committed. An existing plan branch that contained the previous source HEAD is brought
+// forward by merging the new source commit after the worktree is created.
+func (s *Service) CreateWorktreeForPlanAfterAutoCommit(
+	ctx context.Context, planFile, branchOverride, sourceHeadBefore string,
+) (string, bool, error) {
+	if sourceHeadBefore == "" {
+		return "", false, errors.New("source HEAD before auto-commit is empty")
+	}
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, sourceHeadBefore)
+}
+
+func (s *Service) createWorktreeForPlan(
+	ctx context.Context, planFile, branchOverride, existingBranchAncestor string,
+) (string, bool, error) {
 	planFile = s.resolveFilesystemCase(planFile)
 
 	// prune stale worktree entries first
@@ -493,7 +517,7 @@ func (s *Service) CreateWorktreeForPlan(planFile, branchOverride string) (string
 		s.log.Printf("warning: prune worktrees: %v\n", pruneErr)
 	}
 
-	if err := s.PreflightWorktreeForPlan(planFile, branchOverride); err != nil {
+	if err := s.preflightWorktreeForPlan(planFile, branchOverride, existingBranchAncestor); err != nil {
 		return "", false, err
 	}
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
@@ -521,12 +545,8 @@ func (s *Service) CreateWorktreeForPlan(planFile, branchOverride string) (string
 
 	// create worktree with branch
 	if s.repo.branchExists(branchName) {
-		if err := s.validateExistingPlanBranch(branchName); err != nil {
+		if err := s.createExistingPlanWorktree(ctx, wtPath, branchName, existingBranchAncestor); err != nil {
 			return "", false, err
-		}
-		s.log.Printf("creating worktree with existing branch: %s\n", branchName)
-		if err := s.repo.addWorktree(wtPath, branchName, false); err != nil {
-			return "", false, fmt.Errorf("add worktree with existing branch: %w", err)
 		}
 	} else {
 		s.log.Printf("creating worktree with new branch: %s (from %s)\n", branchName, source)
@@ -547,10 +567,59 @@ func (s *Service) CreateWorktreeForPlan(planFile, branchOverride string) (string
 	return wtPath, planHasChanges, nil
 }
 
+func (s *Service) createExistingPlanWorktree(
+	ctx context.Context, wtPath, branchName, existingBranchAncestor string,
+) error {
+	if err := s.validateExistingPlanBranchAt(branchName, existingBranchAncestor); err != nil {
+		return err
+	}
+	s.log.Printf("creating worktree with existing branch: %s\n", branchName)
+	if err := s.repo.addWorktree(wtPath, branchName, false); err != nil {
+		return fmt.Errorf("add worktree with existing branch: %w", err)
+	}
+	if existingBranchAncestor == "" {
+		return nil
+	}
+	mergeErr := s.mergeAutoCommittedSource(ctx, wtPath)
+	if mergeErr == nil {
+		return nil
+	}
+	if removeErr := s.repo.removeWorktree(wtPath); removeErr != nil {
+		return errors.Join(mergeErr, fmt.Errorf("remove worktree after source merge failure: %w", removeErr))
+	}
+	return mergeErr
+}
+
+func (s *Service) mergeAutoCommittedSource(ctx context.Context, wtPath string) error {
+	sourceHead, err := s.repo.headHash()
+	if err != nil {
+		return fmt.Errorf("identify auto-committed source HEAD: %w", err)
+	}
+	wtSvc, err := s.OpenWorktree(wtPath)
+	if err != nil {
+		return fmt.Errorf("open existing plan worktree: %w", err)
+	}
+	containsSource, err := wtSvc.repo.isAncestor(ctx, sourceHead, "HEAD")
+	if err != nil {
+		return fmt.Errorf("check existing plan branch against auto-committed source: %w", err)
+	}
+	if containsSource {
+		return nil
+	}
+	if err := wtSvc.repo.mergeRevision(ctx, sourceHead, sourceHead); err != nil {
+		return fmt.Errorf("merge auto-committed source into existing plan branch: %w", err)
+	}
+	return nil
+}
+
 // PreflightWorktreeForPlan rejects deterministic target conflicts without changing repository
 // state. Callers that may mutate the source checkout must run this while holding the repository
 // lock and before installing runtime ignores or creating an auto-commit.
 func (s *Service) PreflightWorktreeForPlan(planFile, branchOverride string) error {
+	return s.preflightWorktreeForPlan(planFile, branchOverride, "")
+}
+
+func (s *Service) preflightWorktreeForPlan(planFile, branchOverride, existingBranchAncestor string) error {
 	planFile = s.resolveFilesystemCase(planFile)
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
 	if branchName == "" {
@@ -590,27 +659,9 @@ func (s *Service) PreflightWorktreeForPlan(planFile, branchOverride string) erro
 	}
 
 	if s.repo.branchExists(branchName) {
-		return s.validateExistingPlanBranch(branchName)
+		return s.validateExistingPlanBranchAt(branchName, existingBranchAncestor)
 	}
 	return nil
-}
-
-// ValidateWorktreeAutoCommit rejects a dirty source when the target branch already exists.
-// Committing would advance the source HEAD beyond that branch and make safe reuse impossible.
-func (s *Service) ValidateWorktreeAutoCommit(planFile, branchOverride string) error {
-	planFile = s.resolveFilesystemCase(planFile)
-	branchName := s.EffectiveBranchName(planFile, branchOverride)
-	if !s.repo.branchExists(branchName) {
-		return nil
-	}
-	dirty, err := s.repo.isDirtyAll()
-	if err != nil {
-		return fmt.Errorf("check source before reusing plan branch %q: %w", branchName, err)
-	}
-	if !dirty {
-		return nil
-	}
-	return fmt.Errorf("cannot auto-commit before reusing existing plan branch %q; commit the source changes first, then merge or rebase them into the plan branch, or choose another --branch", branchName)
 }
 
 func (s *Service) validateExistingPlanBranch(branchName string) error {
@@ -618,7 +669,14 @@ func (s *Service) validateExistingPlanBranch(branchName string) error {
 	if err != nil {
 		return fmt.Errorf("identify current HEAD before reusing plan branch: %w", err)
 	}
-	containsHead, err := s.repo.isAncestor(context.Background(), head, "refs/heads/"+branchName)
+	return s.validateExistingPlanBranchAt(branchName, head)
+}
+
+func (s *Service) validateExistingPlanBranchAt(branchName, requiredAncestor string) error {
+	if requiredAncestor == "" {
+		return s.validateExistingPlanBranch(branchName)
+	}
+	containsHead, err := s.repo.isAncestor(context.Background(), requiredAncestor, "refs/heads/"+branchName)
 	if err != nil {
 		return fmt.Errorf("verify existing plan branch %q: %w", branchName, err)
 	}
@@ -895,9 +953,8 @@ func (s *Service) DiffStats(baseBranch string) (DiffStats, error) {
 }
 
 // EnsureLocalGitignore ensures progress and worktree artifacts are ignored without overwriting
-// a project-owned .loopai/.gitignore. A missing file gets the standard self-contained rules;
-// a custom existing file is preserved and the rules are enforced by repository-local excludes
-// plus higher-precedence ignore files inside the runtime directories.
+// project-owned ignore files. Missing files get self-contained rules; custom existing files are
+// preserved and repository-local excludes provide the best available fallback.
 func (s *Service) EnsureLocalGitignore() error {
 	loopaiDir := filepath.Join(s.repo.root(), ".loopai")
 	if err := os.MkdirAll(loopaiDir, 0o750); err != nil {
@@ -934,7 +991,8 @@ func (s *Service) EnsureLocalGitignore() error {
 }
 
 // ensureRuntimeDirectoryIgnored installs a higher-precedence ignore rule inside a runtime
-// directory. This is needed because parent .gitignore negations override .git/info/exclude.
+// directory only when that file does not already exist. Existing files may be tracked project
+// configuration and must never be rewritten by loopai.
 func ensureRuntimeDirectoryIgnored(dir string) error {
 	if info, err := os.Lstat(dir); err == nil {
 		if !info.IsDir() {
@@ -955,49 +1013,15 @@ func ensureRuntimeDirectoryIgnored(dir string) error {
 		return fmt.Errorf("inspect runtime ignore file %s: %w", ignorePath, err)
 	}
 
-	data, err := os.ReadFile(ignorePath) //nolint:gosec // path is repository-owned and symlinks are rejected above
-	if os.IsNotExist(err) {
-		if writeErr := os.WriteFile(ignorePath, []byte("*\n"), 0o600); writeErr != nil {
-			return fmt.Errorf("write runtime ignore file %s: %w", ignorePath, writeErr)
-		}
+	if _, err := os.Lstat(ignorePath); err == nil {
 		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect runtime ignore file %s: %w", ignorePath, err)
 	}
-	if err != nil {
-		return fmt.Errorf("read runtime ignore file %s: %w", ignorePath, err)
-	}
-
-	if lastIgnorePattern(data) == "*" {
-		return nil
-	}
-
-	f, err := os.OpenFile(ignorePath, os.O_APPEND|os.O_WRONLY, 0) //nolint:gosec // symlinks rejected above
-	if err != nil {
-		return fmt.Errorf("open runtime ignore file %s: %w", ignorePath, err)
-	}
-	prefix := ""
-	if len(data) > 0 && data[len(data)-1] != '\n' {
-		prefix = "\n"
-	}
-	_, writeErr := fmt.Fprintf(f, "%s*\n", prefix)
-	closeErr := f.Close()
-	if writeErr != nil {
+	if writeErr := os.WriteFile(ignorePath, []byte("*\n"), 0o600); writeErr != nil {
 		return fmt.Errorf("write runtime ignore file %s: %w", ignorePath, writeErr)
 	}
-	if closeErr != nil {
-		return fmt.Errorf("close runtime ignore file %s: %w", ignorePath, closeErr)
-	}
 	return nil
-}
-
-func lastIgnorePattern(data []byte) string {
-	last := ""
-	for rawLine := range strings.SplitSeq(string(data), "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line != "" && !strings.HasPrefix(line, "#") {
-			last = line
-		}
-	}
-	return last
 }
 
 // FileHasChanges returns true if the given file has uncommitted changes (staged or unstaged).

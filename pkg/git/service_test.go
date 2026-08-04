@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1288,6 +1289,32 @@ func TestService_EnsureLocalGitignore(t *testing.T) {
 		assert.Equal(t, custom, string(content))
 	})
 
+	t.Run("preserves tracked runtime directory ignore files", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "progress"), 0o750))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "worktrees"), 0o750))
+		customRoot := ".gitignore\n!progress/\n!progress/**\n!worktrees/\n!worktrees/**\n"
+		progressRules := "*.keep\n"
+		worktreeRules := "# project-owned\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", ".gitignore"), []byte(customRoot), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "progress", ".gitignore"), []byte(progressRules), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "worktrees", ".gitignore"), []byte(worktreeRules), 0o600))
+		runGit(t, dir, "add", "-f", ".loopai/.gitignore", ".loopai/progress/.gitignore", ".loopai/worktrees/.gitignore")
+		runGit(t, dir, "commit", "-m", "add project runtime ignore rules")
+
+		require.NoError(t, svc.EnsureLocalGitignore())
+		progressContent, err := os.ReadFile(filepath.Join(dir, ".loopai", "progress", ".gitignore")) //nolint:gosec // test file
+		require.NoError(t, err)
+		assert.Equal(t, progressRules, string(progressContent))
+		worktreeContent, err := os.ReadFile(filepath.Join(dir, ".loopai", "worktrees", ".gitignore")) //nolint:gosec // test file
+		require.NoError(t, err)
+		assert.Equal(t, worktreeRules, string(worktreeContent))
+		assert.Empty(t, runGit(t, dir, "status", "--porcelain"))
+	})
+
 	t.Run("creates .loopai dir if missing", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())
@@ -2285,6 +2312,24 @@ func TestService_AcquireWorktreeCreationLock(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("second repository lock did not acquire after release")
 	}
+}
+
+func TestService_AcquireWorktreeCreationLockContext_Canceled(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	first, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	second, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+
+	releaseFirst, err := first.AcquireWorktreeCreationLock()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, releaseFirst()) }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	release, err := second.AcquireWorktreeCreationLockContext(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, release)
 }
 
 func TestService_CommitWithTrailer(t *testing.T) {

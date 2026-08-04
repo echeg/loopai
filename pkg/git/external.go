@@ -385,6 +385,10 @@ func (e *externalBackend) checkoutBranch(name string) error {
 // progress is aborted; ErrMergeConflict is returned only when unmerged paths exist. A nominally
 // successful merge is rolled back unless it incorporates expectedHead.
 func (e *externalBackend) mergeBranch(ctx context.Context, name, expectedHead string) error {
+	return e.mergeRevision(ctx, "refs/heads/"+name, expectedHead)
+}
+
+func (e *externalBackend) mergeRevision(ctx context.Context, revision, expectedHead string) error {
 	preMergeHead, err := e.headHash()
 	if err != nil {
 		return fmt.Errorf("read pre-merge HEAD: %w", err)
@@ -393,8 +397,7 @@ func (e *externalBackend) mergeBranch(ctx context.Context, name, expectedHead st
 	if err != nil {
 		return fmt.Errorf("read current branch before merge: %w", err)
 	}
-	branchRef := "refs/heads/" + name
-	mergeArgs := []string{"merge", "--commit", "--no-squash", "--no-overwrite-ignore", branchRef}
+	mergeArgs := []string{"merge", "--commit", "--no-squash", "--no-overwrite-ignore", revision}
 	if currentBranch != "" {
 		// Branch mergeOptions can select a strategy such as "ours", which creates a merge
 		// commit and passes the ancestry check while discarding the feature tree. Clear the
@@ -596,12 +599,18 @@ func (e *externalBackend) hasChangesOtherThan(path string) ([]string, error) {
 		}
 		// extract file path from porcelain output: "XY path" or "XY path -> newpath"
 		filePath := e.extractPathFromPorcelain(line)
-		if strings.EqualFold(filePath, rel) {
+		if strings.EqualFold(filePath, rel) || isLoopaiRuntimePath(filePath) {
 			continue
 		}
 		dirty = append(dirty, filePath)
 	}
 	return dirty, nil
+}
+
+func isLoopaiRuntimePath(path string) bool {
+	path = filepath.ToSlash(path)
+	return path == ".loopai/progress" || strings.HasPrefix(path, ".loopai/progress/") ||
+		path == ".loopai/worktrees" || strings.HasPrefix(path, ".loopai/worktrees/")
 }
 
 // add stages a file for commit.

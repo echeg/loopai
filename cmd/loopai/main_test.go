@@ -4441,33 +4441,68 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		assert.NoDirExists(t, filepath.Join(dir, ".loopai"))
 	})
 
-	t.Run("dirty_source_with_existing_plan_branch_is_rejected_before_commit", func(t *testing.T) {
+	t.Run("dirty_source_is_committed_and_merged_into_existing_plan_branch", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
 		planPath := filepath.Join(dir, "docs", "plans", "existing-reuse.md")
 		require.NoError(t, os.WriteFile(planPath, []byte("# Existing Reuse\n"), 0o600))
 		runGit(t, dir, "add", "docs/plans/existing-reuse.md")
 		runGit(t, dir, "commit", "-m", "add existing reuse plan")
-		runGit(t, dir, "branch", "existing-reuse")
+		runGit(t, dir, "switch", "-c", "existing-reuse")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "branch-only.txt"), []byte("preserve branch work\n"), 0o600))
+		runGit(t, dir, "add", "branch-only.txt")
+		runGit(t, dir, "commit", "-m", "existing plan work")
+		runGit(t, dir, "switch", "master")
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
 
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
 		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
-		branchBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "existing-reuse"))
-		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+		wt, err := prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
 			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
 			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
 		}, "existing-reuse")
 
-		require.ErrorContains(t, err, "cannot auto-commit before reusing existing plan branch \"existing-reuse\"")
-		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
-		assert.Equal(t, branchBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "existing-reuse")))
-		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
-		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "existing-reuse"))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+		sourceHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		assert.NotEqual(t, headBefore, sourceHead)
+		runGit(t, dir, "merge-base", "--is-ancestor", sourceHead, "existing-reuse")
+		assert.Equal(t, "preserve branch work", strings.TrimSpace(gitOutput(t, wt.path, "show", "HEAD:branch-only.txt")))
+		assert.Equal(t, "# Dirty", strings.TrimSpace(gitOutput(t, wt.path, "show", "HEAD:README.md")))
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
 	})
 
-	t.Run("case_mismatched_plan_path_cannot_bypass_existing_branch_guard", func(t *testing.T) {
+	t.Run("existing_plan_branch_merge_conflict_is_aborted_and_worktree_removed", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "existing-conflict.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Existing Conflict\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/existing-conflict.md")
+		runGit(t, dir, "commit", "-m", "add conflict plan")
+		runGit(t, dir, "switch", "-c", "existing-conflict")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("branch version\n"), 0o600))
+		runGit(t, dir, "commit", "-am", "change README on plan branch")
+		branchBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		runGit(t, dir, "switch", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("source version\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		sourceBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "existing-conflict")
+
+		require.ErrorContains(t, err, "merge auto-committed source into existing plan branch")
+		assert.NotEqual(t, sourceBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, branchBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "existing-conflict")))
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "existing-conflict"))
+	})
+
+	t.Run("case_mismatched_plan_path_reuses_existing_branch_after_auto_commit", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
 		actualPlanPath := filepath.Join(dir, "docs", "plans", "Add-Auth.md")
@@ -4480,18 +4515,18 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
 		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
-		branchBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "Add-Auth"))
 		userPlanPath := filepath.Join(dir, "docs", "plans", "add-auth.md")
-		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+		wt, err := prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
 			PlanFile: userPlanPath, GitSvc: gitSvc, Config: &config.Config{},
 			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
 		}, "add-auth")
 
-		require.ErrorContains(t, err, "cannot auto-commit before reusing existing plan branch \"Add-Auth\"")
-		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
-		assert.Equal(t, branchBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "Add-Auth")))
-		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
-		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "Add-Auth"))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+		sourceHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		assert.NotEqual(t, headBefore, sourceHead)
+		runGit(t, dir, "merge-base", "--is-ancestor", sourceHead, "Add-Auth")
+		assert.Equal(t, "# Dirty", strings.TrimSpace(gitOutput(t, wt.path, "show", "HEAD:README.md")))
 	})
 
 	t.Run("clean_source_is_no_op_and_still_creates_worktree", func(t *testing.T) {
