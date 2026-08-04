@@ -1266,6 +1266,28 @@ func TestService_EnsureLocalGitignore(t *testing.T) {
 		assert.Empty(t, runGit(t, dir, "status", "--porcelain"))
 	})
 
+	t.Run("custom negations cannot expose runtime artifacts", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai"), 0o750))
+		custom := ".gitignore\n!progress/\n!progress/**\n!worktrees/\n!worktrees/**\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", ".gitignore"), []byte(custom), 0o600))
+		runGit(t, dir, "add", "-f", ".loopai/.gitignore")
+		runGit(t, dir, "commit", "-m", "add custom loopai ignore")
+
+		require.NoError(t, svc.EnsureLocalGitignore())
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "progress", "run.log"), []byte("secret\n"), 0o600))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "worktrees", "feature"), 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "worktrees", "feature", "file"), []byte("artifact\n"), 0o600))
+
+		assert.Empty(t, runGit(t, dir, "status", "--porcelain"))
+		content, readErr := os.ReadFile(filepath.Join(dir, ".loopai", ".gitignore")) //nolint:gosec // test file
+		require.NoError(t, readErr)
+		assert.Equal(t, custom, string(content))
+	})
+
 	t.Run("creates .loopai dir if missing", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())
@@ -2176,6 +2198,27 @@ func TestService_AutoCommitAll(t *testing.T) {
 		assert.Contains(t, runGit(t, dir, "show", "--pretty=format:", "--name-status", "HEAD"), "D\tremove.txt")
 		message := runGit(t, dir, "log", "-1", "--pretty=%B")
 		assert.Equal(t, "save working tree\n\nLoopai-Test: auto-commit", strings.TrimSpace(message))
+	})
+
+	t.Run("never commits runtime artifacts that were already staged", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "progress"), 0o750))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "worktrees", "feature"), 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "progress", "run.log"), []byte("secret\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "worktrees", "feature", "file"), []byte("artifact\n"), 0o600))
+		runGit(t, dir, "add", "-f", ".loopai/progress/run.log", ".loopai/worktrees/feature/file")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("commit me\n"), 0o600))
+
+		committed, err := svc.AutoCommitAll("save without runtime artifacts")
+		require.NoError(t, err)
+		assert.True(t, committed)
+		files := runGit(t, dir, "show", "--pretty=format:", "--name-only", "HEAD")
+		assert.Contains(t, files, "dirty.txt")
+		assert.NotContains(t, files, ".loopai/progress")
+		assert.NotContains(t, files, ".loopai/worktrees")
+		assert.NotContains(t, runGit(t, dir, "diff", "--cached", "--name-only"), ".loopai/")
 	})
 
 	t.Run("clean tree is a no-op", func(t *testing.T) {

@@ -340,8 +340,15 @@ func (e *externalBackend) getDefaultBranch() string {
 
 // validateBranchName checks a prospective local branch name without changing repository state.
 func (e *externalBackend) validateBranchName(name string) error {
-	if _, err := e.run("check-ref-format", "--branch", name); err != nil {
+	canonical, err := e.run("check-ref-format", "--branch", name)
+	if err != nil {
 		return fmt.Errorf("check branch name: %w", err)
+	}
+	// --branch expands reflog shorthand such as @{-1}. Those expressions are valid
+	// inputs to Git, but they are not literal branch names and would make later
+	// existence checks and worktree creation operate on different refs.
+	if canonical != name {
+		return fmt.Errorf("check branch name: resolves to %q instead of naming a literal branch", canonical)
 	}
 	return nil
 }
@@ -672,14 +679,26 @@ func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
 		return false, cause
 	}
 
-	// git add -A respects .gitignore natively
-	_, err = e.run("add", "-A")
+	// Runtime artifacts must never enter the source commit, even if a custom
+	// .loopai/.gitignore negates the repository-local exclusion rules.
+	_, err = e.run("add", "-A", "--", ".",
+		":(exclude).loopai/progress", ":(exclude).loopai/progress/**",
+		":(exclude).loopai/worktrees", ":(exclude).loopai/worktrees/**")
 	if err != nil {
 		return restoreOnError(fmt.Errorf("stage files: %w", err))
 	}
+	// Pathspec exclusions do not remove entries that were already staged before
+	// this operation. Restore runtime paths to HEAD so the commit cannot capture
+	// those entries either.
+	if _, err = e.run("reset", "--quiet", "HEAD", "--", ".loopai/progress", ".loopai/worktrees"); err != nil {
+		return restoreOnError(fmt.Errorf("unstage runtime artifacts: %w", err))
+	}
 
-	// check if anything was staged
-	out, err := e.run("status", "--porcelain")
+	// Check for staged non-runtime changes. Runtime files may remain visible when
+	// this low-level method is used before EnsureLocalGitignore.
+	out, err := e.run("status", "--porcelain", "--", ".",
+		":(exclude).loopai/progress", ":(exclude).loopai/progress/**",
+		":(exclude).loopai/worktrees", ":(exclude).loopai/worktrees/**")
 	if err != nil {
 		return restoreOnError(fmt.Errorf("check status: %w", err))
 	}

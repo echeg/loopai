@@ -895,7 +895,8 @@ func (s *Service) DiffStats(baseBranch string) (DiffStats, error) {
 
 // EnsureLocalGitignore ensures progress and worktree artifacts are ignored without overwriting
 // a project-owned .loopai/.gitignore. A missing file gets the standard self-contained rules;
-// a custom existing file is preserved and the rules are added to Git's repository-local excludes.
+// a custom existing file is preserved and the rules are enforced by repository-local excludes
+// plus higher-precedence ignore files inside the runtime directories.
 func (s *Service) EnsureLocalGitignore() error {
 	loopaiDir := filepath.Join(s.repo.root(), ".loopai")
 	if err := os.MkdirAll(loopaiDir, 0o750); err != nil {
@@ -912,6 +913,11 @@ func (s *Service) EnsureLocalGitignore() error {
 		if excludeErr := s.repo.ensureRuntimeExcludes("/.loopai/progress/", "/.loopai/worktrees/"); excludeErr != nil {
 			return fmt.Errorf("preserve custom .loopai/.gitignore: %w", excludeErr)
 		}
+		for _, runtimeDir := range []string{"progress", "worktrees"} {
+			if ignoreErr := ensureRuntimeDirectoryIgnored(filepath.Join(loopaiDir, runtimeDir)); ignoreErr != nil {
+				return fmt.Errorf("preserve custom .loopai/.gitignore: %w", ignoreErr)
+			}
+		}
 		s.log.Printf("preserved custom .loopai/.gitignore and configured repository-local runtime excludes\n")
 		return nil
 	} else if !os.IsNotExist(err) {
@@ -924,6 +930,73 @@ func (s *Service) EnsureLocalGitignore() error {
 
 	s.log.Printf("created .loopai/.gitignore\n")
 	return nil
+}
+
+// ensureRuntimeDirectoryIgnored installs a higher-precedence ignore rule inside a runtime
+// directory. This is needed because parent .gitignore negations override .git/info/exclude.
+func ensureRuntimeDirectoryIgnored(dir string) error {
+	if info, err := os.Lstat(dir); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("runtime path %s is not a directory", dir)
+		}
+	} else if os.IsNotExist(err) {
+		if mkdirErr := os.MkdirAll(dir, 0o750); mkdirErr != nil {
+			return fmt.Errorf("create runtime directory %s: %w", dir, mkdirErr)
+		}
+	} else {
+		return fmt.Errorf("inspect runtime directory %s: %w", dir, err)
+	}
+
+	ignorePath := filepath.Join(dir, ".gitignore")
+	if info, err := os.Lstat(ignorePath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("runtime ignore file %s is a symbolic link", ignorePath)
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inspect runtime ignore file %s: %w", ignorePath, err)
+	}
+
+	data, err := os.ReadFile(ignorePath) //nolint:gosec // path is repository-owned and symlinks are rejected above
+	if os.IsNotExist(err) {
+		if writeErr := os.WriteFile(ignorePath, []byte("*\n"), 0o600); writeErr != nil {
+			return fmt.Errorf("write runtime ignore file %s: %w", ignorePath, writeErr)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read runtime ignore file %s: %w", ignorePath, err)
+	}
+
+	if lastIgnorePattern(data) == "*" {
+		return nil
+	}
+
+	f, err := os.OpenFile(ignorePath, os.O_APPEND|os.O_WRONLY, 0) //nolint:gosec // symlinks rejected above
+	if err != nil {
+		return fmt.Errorf("open runtime ignore file %s: %w", ignorePath, err)
+	}
+	prefix := ""
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		prefix = "\n"
+	}
+	_, writeErr := fmt.Fprintf(f, "%s*\n", prefix)
+	closeErr := f.Close()
+	if writeErr != nil {
+		return fmt.Errorf("write runtime ignore file %s: %w", ignorePath, writeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close runtime ignore file %s: %w", ignorePath, closeErr)
+	}
+	return nil
+}
+
+func lastIgnorePattern(data []byte) string {
+	last := ""
+	for rawLine := range strings.SplitSeq(string(data), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			last = line
+		}
+	}
+	return last
 }
 
 // FileHasChanges returns true if the given file has uncommitted changes (staged or unstaged).
