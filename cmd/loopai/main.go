@@ -1596,9 +1596,6 @@ func validateCommitFlags(o opts) error {
 	if !o.Commit {
 		return nil
 	}
-	if o.ResumeWorktree {
-		return errors.New("--commit cannot be used with --resume-worktree; it only applies when creating a new worktree")
-	}
 	if o.Review || o.ExternalOnly || o.CodexOnly {
 		return errors.New("--commit is only supported for full, --tasks-only, or --plan worktree execution")
 	}

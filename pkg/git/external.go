@@ -703,6 +703,9 @@ func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
 		return restoreOnError(fmt.Errorf("check status: %w", err))
 	}
 	if out == "" {
+		if restoreErr := index.restore(); restoreErr != nil {
+			return false, fmt.Errorf("restore Git index after no-op auto-commit: %w", restoreErr)
+		}
 		return false, nil
 	}
 

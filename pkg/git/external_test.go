@@ -814,6 +814,29 @@ func TestExternalBackend_AutoCommitAll(t *testing.T) {
 		assert.Equal(t, before, runGit(t, dir, "rev-parse", "HEAD"))
 	})
 
+	t.Run("no-op preserves staged runtime changes", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		runtimeDir := filepath.Join(dir, ".loopai", "progress")
+		require.NoError(t, os.MkdirAll(runtimeDir, 0o750))
+		runtimeFile := filepath.Join(runtimeDir, "run.log")
+		require.NoError(t, os.WriteFile(runtimeFile, []byte("initial\n"), 0o600))
+		runGit(t, dir, "add", "-f", ".loopai/progress/run.log")
+		runGit(t, dir, "commit", "-m", "track runtime history")
+		require.NoError(t, os.WriteFile(runtimeFile, []byte("staged update\n"), 0o600))
+		runGit(t, dir, "add", ".loopai/progress/run.log")
+
+		statusBefore := runGit(t, dir, "status", "--porcelain")
+		stagedBefore := runGit(t, dir, "diff", "--cached", "--binary")
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		committed, err := eb.autoCommitAll("unused")
+		require.NoError(t, err)
+		assert.False(t, committed)
+		assert.Equal(t, statusBefore, runGit(t, dir, "status", "--porcelain"))
+		assert.Equal(t, stagedBefore, runGit(t, dir, "diff", "--cached", "--binary"))
+	})
+
 	for _, tc := range []struct {
 		name      string
 		fail      string

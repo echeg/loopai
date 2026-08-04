@@ -598,6 +598,7 @@ func (s *Service) PreflightWorktreeForPlan(planFile, branchOverride string) erro
 // ValidateWorktreeAutoCommit rejects a dirty source when the target branch already exists.
 // Committing would advance the source HEAD beyond that branch and make safe reuse impossible.
 func (s *Service) ValidateWorktreeAutoCommit(planFile, branchOverride string) error {
+	planFile = s.resolveFilesystemCase(planFile)
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
 	if !s.repo.branchExists(branchName) {
 		return nil
