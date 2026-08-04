@@ -4637,6 +4637,55 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "ignore-failure"))
 	})
 
+	t.Run("outside_plan_is_rejected_before_auto_commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		outsideDir := t.TempDir()
+		planPath := filepath.Join(outsideDir, "outside-plan.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Outside Plan\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("keep staged\n"), 0o600))
+		runGit(t, dir, "add", "staged.txt")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		indexBefore := gitOutput(t, dir, "diff", "--cached", "--name-status")
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "outside-plan")
+		require.ErrorContains(t, err, "outside repository")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, indexBefore, gitOutput(t, dir, "diff", "--cached", "--name-status"))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "outside-plan")))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "outside-plan"))
+	})
+
+	t.Run("ignored_plan_is_rejected_before_auto_commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("docs/plans/ignored-plan.md\n"), 0o600))
+		runGit(t, dir, "add", ".gitignore")
+		runGit(t, dir, "commit", "-m", "ignore plan fixture")
+		planPath := filepath.Join(dir, "docs", "plans", "ignored-plan.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Ignored Plan\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "ignored-plan")
+		require.ErrorContains(t, err, "ignored or otherwise unavailable to Git")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "ignored-plan")))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "ignored-plan"))
+	})
+
 	t.Run("concurrent_fresh_runs_ignore_each_others_worktrees", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		plansDir := filepath.Join(dir, "docs", "plans")

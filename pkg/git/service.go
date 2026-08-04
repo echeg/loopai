@@ -43,6 +43,7 @@ type backend interface {
 	isDirty() (bool, error)
 	isDirtyAll() (bool, error)
 	fileHasChanges(path string) (bool, error)
+	fileTracked(path string) (bool, error)
 	hasChangesOtherThan(path string) ([]string, error)
 	gitCommonDir() (string, error)
 	ensureRuntimeExcludes(patterns ...string) error
@@ -391,6 +392,39 @@ func (s *Service) inspectPlanChanges(planFile string) ([]string, bool, error) {
 	return dirtyFiles, planHasChanges, nil
 }
 
+// validateWorktreePlanFile rejects plans that cannot be carried into the new worktree.
+// In particular, ignored untracked files and paths outside the repository must fail before
+// --commit is allowed to mutate the source checkout.
+func (s *Service) validateWorktreePlanFile(planFile string) error {
+	if !filepath.IsAbs(planFile) {
+		planFile = filepath.Join(s.repo.root(), planFile)
+	}
+	planFile = s.resolveFilesystemCase(planFile)
+	info, err := os.Lstat(planFile)
+	if err != nil {
+		return fmt.Errorf("inspect plan file %q: %w", planFile, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("plan file %q is not a regular file", planFile)
+	}
+
+	changed, err := s.repo.fileHasChanges(planFile)
+	if err != nil {
+		return fmt.Errorf("validate plan file %q: %w", planFile, err)
+	}
+	if changed {
+		return nil
+	}
+	tracked, err := s.repo.fileTracked(planFile)
+	if err != nil {
+		return fmt.Errorf("check tracked plan file %q: %w", planFile, err)
+	}
+	if !tracked {
+		return fmt.Errorf("plan file %q is ignored or otherwise unavailable to Git", planFile)
+	}
+	return nil
+}
+
 // prepareBranchPlan validates the non-worktree branch-creation path.
 func (s *Service) prepareBranchPlan(planFile, defaultBranch, branchOverride string) (string, bool, error) {
 	currentBranch, err := s.repo.currentBranch()
@@ -659,9 +693,11 @@ func (s *Service) preflightWorktreeForPlan(planFile, branchOverride, existingBra
 	}
 
 	if s.repo.branchExists(branchName) {
-		return s.validateExistingPlanBranchAt(branchName, existingBranchAncestor)
+		if err := s.validateExistingPlanBranchAt(branchName, existingBranchAncestor); err != nil {
+			return err
+		}
 	}
-	return nil
+	return s.validateWorktreePlanFile(planFile)
 }
 
 func (s *Service) validateExistingPlanBranch(branchName string) error {

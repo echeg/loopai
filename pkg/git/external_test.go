@@ -524,6 +524,25 @@ func TestExternalBackend_FileHasChanges(t *testing.T) {
 	})
 }
 
+func TestExternalBackend_FileTracked(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	eb, err := newExternalBackend(dir, "git")
+	require.NoError(t, err)
+
+	tracked, err := eb.fileTracked("README.md")
+	require.NoError(t, err)
+	assert.True(t, tracked)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.md"), []byte("# Plan\n"), 0o600))
+	tracked, err = eb.fileTracked("untracked.md")
+	require.NoError(t, err)
+	assert.False(t, tracked)
+
+	tracked, err = eb.fileTracked(filepath.Join(t.TempDir(), "outside.md"))
+	require.Error(t, err)
+	assert.False(t, tracked)
+}
+
 func TestExternalBackend_HasChangesOtherThan(t *testing.T) {
 	t.Run("returns empty when no changes", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

@@ -572,6 +572,19 @@ func (e *externalBackend) fileHasChanges(path string) (bool, error) {
 	return out != "", nil
 }
 
+// fileTracked reports whether path is present in the Git index.
+func (e *externalBackend) fileTracked(path string) (bool, error) {
+	rel, err := e.toRelative(path)
+	if err != nil {
+		return false, err
+	}
+	out, err := e.run("ls-files", "-z", "--cached", "--", rel)
+	if err != nil {
+		return false, fmt.Errorf("check tracked file: %w", err)
+	}
+	return out != "", nil
+}
+
 // hasChangesOtherThan returns the list of dirty file paths (excluding the given file, case-insensitive).
 // this includes modified/deleted tracked files, staged changes, and untracked files (excluding gitignored).
 // an empty slice means no other changes.
