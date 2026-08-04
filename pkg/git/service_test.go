@@ -1206,6 +1206,22 @@ func TestService_EnsureHasCommits(t *testing.T) {
 }
 
 func TestService_EnsureLocalGitignore(t *testing.T) {
+	t.Run("rejects symlinked .loopai directory", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		outside := t.TempDir()
+		if err := os.Symlink(outside, filepath.Join(dir, ".loopai")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		err = svc.EnsureLocalGitignore()
+		require.ErrorContains(t, err, "symbolic link")
+		assert.NoFileExists(t, filepath.Join(outside, ".gitignore"))
+		assert.NoDirExists(t, filepath.Join(outside, "progress"))
+		assert.NoDirExists(t, filepath.Join(outside, "worktrees"))
+	})
+
 	t.Run("creates .loopai/.gitignore", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		log := &mockLogger{}
@@ -1611,6 +1627,34 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
 		require.Error(t, err)
 		assert.Equal(t, "plan branch \"feature\" is already checked out here; switch to the source branch or run without --worktree", err.Error())
+	})
+
+	t.Run("fails when plan branch differs from current branch only by case", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		require.NoError(t, svc.CreateBranch("Feature"))
+
+		planFile := filepath.Join(dir, "docs", "plans", "feature.md")
+		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
+		require.ErrorContains(t, err, "plan branch \"feature\" is already checked out here")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "feature"))
+	})
+
+	t.Run("rejects symlinked worktree parent", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		outside := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai"), 0o750))
+		if err := os.Symlink(outside, filepath.Join(dir, ".loopai", "worktrees")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "escaped.md")
+		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
+		require.ErrorContains(t, err, "symbolic link")
+		assert.NoDirExists(t, filepath.Join(outside, "escaped"))
 	})
 
 	t.Run("fails when branch override is already checked out", func(t *testing.T) {

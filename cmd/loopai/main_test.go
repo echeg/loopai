@@ -4637,6 +4637,30 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "ignore-failure"))
 	})
 
+	t.Run("case_only_plan_branch_collision_is_rejected_before_auto_commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "feature.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Feature\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/feature.md")
+		runGit(t, dir, "commit", "-m", "add feature plan")
+		runGit(t, dir, "branch", "-m", "Feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "feature")
+
+		require.ErrorContains(t, err, "plan branch \"feature\" is already checked out here")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "feature"))
+	})
+
 	t.Run("outside_plan_is_rejected_before_auto_commit", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		outsideDir := t.TempDir()

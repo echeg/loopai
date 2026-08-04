@@ -694,11 +694,11 @@ func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	restoreOnError := func(cause error) (bool, error) {
+	restoreOnError := func(cause error) error {
 		if restoreErr := index.restore(); restoreErr != nil {
-			return false, errors.Join(cause, fmt.Errorf("restore Git index: %w", restoreErr))
+			return errors.Join(cause, fmt.Errorf("restore Git index: %w", restoreErr))
 		}
-		return false, cause
+		return cause
 	}
 
 	// Runtime artifacts must never enter the source commit, even if a custom
@@ -707,22 +707,24 @@ func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
 		":(exclude).loopai/progress", ":(exclude).loopai/progress/**",
 		":(exclude).loopai/worktrees", ":(exclude).loopai/worktrees/**")
 	if err != nil {
-		return restoreOnError(fmt.Errorf("stage files: %w", err))
+		return false, restoreOnError(fmt.Errorf("stage files: %w", err))
 	}
 	// Pathspec exclusions do not remove entries that were already staged before
 	// this operation. Restore runtime paths to HEAD so the commit cannot capture
 	// those entries either.
 	if _, err = e.run("reset", "--quiet", "HEAD", "--", ".loopai/progress", ".loopai/worktrees"); err != nil {
-		return restoreOnError(fmt.Errorf("unstage runtime artifacts: %w", err))
+		return false, restoreOnError(fmt.Errorf("unstage runtime artifacts: %w", err))
 	}
 
 	// Check for staged non-runtime changes. Runtime files may remain visible when
-	// this low-level method is used before EnsureLocalGitignore.
+	// this low-level method is used before EnsureLocalGitignore. Any remaining
+	// unstaged entry means git add -A could not capture the full working-tree state
+	// (most commonly dirty content inside a submodule), so refuse a partial commit.
 	out, err := e.run("status", "--porcelain", "--", ".",
 		":(exclude).loopai/progress", ":(exclude).loopai/progress/**",
 		":(exclude).loopai/worktrees", ":(exclude).loopai/worktrees/**")
 	if err != nil {
-		return restoreOnError(fmt.Errorf("check status: %w", err))
+		return false, restoreOnError(fmt.Errorf("check status: %w", err))
 	}
 	if out == "" {
 		if restoreErr := index.restore(); restoreErr != nil {
@@ -730,10 +732,18 @@ func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
 		}
 		return false, nil
 	}
+	for line := range strings.SplitSeq(out, "\n") {
+		if len(line) < 2 {
+			return false, restoreOnError(fmt.Errorf("parse status after staging: unexpected porcelain entry %q", line))
+		}
+		if line[0] == '?' || line[1] != ' ' {
+			return false, restoreOnError(errors.New("working tree still has unstaged changes after git add -A; dirty submodules or concurrently modified files cannot be auto-committed safely"))
+		}
+	}
 
 	_, err = e.run("commit", "-m", msg)
 	if err != nil {
-		return restoreOnError(fmt.Errorf("commit: %w", err))
+		return false, restoreOnError(fmt.Errorf("commit: %w", err))
 	}
 	return true, nil
 }

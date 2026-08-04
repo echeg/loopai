@@ -856,6 +856,31 @@ func TestExternalBackend_AutoCommitAll(t *testing.T) {
 		assert.Equal(t, stagedBefore, runGit(t, dir, "diff", "--cached", "--binary"))
 	})
 
+	t.Run("rejects dirty submodule without creating a partial commit", func(t *testing.T) {
+		submodule := setupExternalTestRepo(t)
+		require.NoError(t, os.WriteFile(filepath.Join(submodule, "nested.txt"), []byte("initial\n"), 0o600))
+		runGit(t, submodule, "add", "nested.txt")
+		runGit(t, submodule, "commit", "-m", "add nested file")
+
+		dir := setupExternalTestRepo(t)
+		runGit(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "nested")
+		runGit(t, dir, "commit", "-m", "add submodule")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "nested", "nested.txt"), []byte("dirty\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ordinary.txt"), []byte("must not commit\n"), 0o600))
+
+		headBefore := runGit(t, dir, "rev-parse", "HEAD")
+		indexBefore := runGit(t, dir, "diff", "--cached", "--binary")
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		committed, err := eb.autoCommitAll("must stay atomic")
+		require.ErrorContains(t, err, "dirty submodules")
+		assert.False(t, committed)
+		assert.Equal(t, headBefore, runGit(t, dir, "rev-parse", "HEAD"))
+		assert.Equal(t, indexBefore, runGit(t, dir, "diff", "--cached", "--binary"))
+		assert.Contains(t, runGit(t, dir, "status", "--porcelain"), "ordinary.txt")
+	})
+
 	for _, tc := range []struct {
 		name      string
 		fail      string

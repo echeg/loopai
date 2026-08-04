@@ -663,12 +663,15 @@ func (s *Service) preflightWorktreeForPlan(planFile, branchOverride, existingBra
 		return fmt.Errorf("invalid plan branch %q: %w", branchName, err)
 	}
 	wtPath := filepath.Join(s.repo.root(), ".loopai", "worktrees", branchName)
+	if err := s.validateRuntimeDirectoryPath(filepath.Dir(wtPath)); err != nil {
+		return fmt.Errorf("invalid worktree target parent: %w", err)
+	}
 
 	currentBranch, err := s.repo.currentBranch()
 	if err != nil {
 		return fmt.Errorf("check current branch: %w", err)
 	}
-	if currentBranch == branchName {
+	if currentBranch == branchName || (currentBranch != "" && strings.EqualFold(currentBranch, branchName)) {
 		return fmt.Errorf("plan branch %q is already checked out here; switch to the source branch or run without --worktree", branchName)
 	}
 	if _, statErr := os.Lstat(wtPath); statErr == nil {
@@ -682,7 +685,7 @@ func (s *Service) preflightWorktreeForPlan(planFile, branchOverride, existingBra
 		return fmt.Errorf("inspect registered worktrees: %w", err)
 	}
 	for _, worktree := range worktrees {
-		if worktree.Branch != branchName {
+		if worktree.Branch != branchName && !strings.EqualFold(worktree.Branch, branchName) {
 			continue
 		}
 		if _, statErr := os.Lstat(worktree.Path); statErr == nil {
@@ -993,8 +996,16 @@ func (s *Service) DiffStats(baseBranch string) (DiffStats, error) {
 // preserved and repository-local excludes provide the best available fallback.
 func (s *Service) EnsureLocalGitignore() error {
 	loopaiDir := filepath.Join(s.repo.root(), ".loopai")
+	if err := s.validateRuntimeDirectoryPath(loopaiDir); err != nil {
+		return fmt.Errorf("validate .loopai dir: %w", err)
+	}
 	if err := os.MkdirAll(loopaiDir, 0o750); err != nil {
 		return fmt.Errorf("create .loopai dir: %w", err)
+	}
+	for _, runtimeDir := range []string{"progress", "worktrees"} {
+		if err := s.validateRuntimeDirectoryPath(filepath.Join(loopaiDir, runtimeDir)); err != nil {
+			return fmt.Errorf("validate .loopai runtime directories: %w", err)
+		}
 	}
 
 	gitignorePath := filepath.Join(loopaiDir, ".gitignore")
@@ -1023,6 +1034,42 @@ func (s *Service) EnsureLocalGitignore() error {
 	}
 
 	s.log.Printf("created .loopai/.gitignore\n")
+	return nil
+}
+
+// validateRuntimeDirectoryPath rejects symlinked and non-directory components beneath the
+// canonical repository root. Runtime paths are repository-controlled, so following one of their
+// symlinks could otherwise make loopai create ignore files or worktrees outside the checkout.
+// Missing components are safe: their nearest existing parent has already been validated.
+func (s *Service) validateRuntimeDirectoryPath(path string) error {
+	root := filepath.Clean(s.repo.root())
+	target := filepath.Clean(path)
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return fmt.Errorf("resolve runtime path %s: %w", target, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("runtime path %s is outside repository %s", target, root)
+	}
+
+	current := root
+	for component := range strings.SplitSeq(rel, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, statErr := os.Lstat(current)
+		switch {
+		case os.IsNotExist(statErr):
+			return nil
+		case statErr != nil:
+			return fmt.Errorf("inspect runtime path %s: %w", current, statErr)
+		case info.Mode()&os.ModeSymlink != 0:
+			return fmt.Errorf("runtime path %s is a symbolic link", current)
+		case !info.IsDir():
+			return fmt.Errorf("runtime path %s is not a directory", current)
+		}
+	}
 	return nil
 }
 
