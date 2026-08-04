@@ -4686,6 +4686,58 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "ignored-plan"))
 	})
 
+	t.Run("runtime_plan_is_rejected_after_ignore_setup_before_auto_commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		progressDir := filepath.Join(dir, ".loopai", "progress")
+		require.NoError(t, os.MkdirAll(progressDir, 0o750))
+		planPath := filepath.Join(progressDir, "runtime-plan.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Runtime Plan\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "runtime-plan")
+
+		require.ErrorContains(t, err, "preflight worktree creation after ignore setup")
+		require.ErrorContains(t, err, "ignored or otherwise unavailable to Git")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "runtime-plan")))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "runtime-plan"))
+	})
+
+	t.Run("dangling_worktree_target_is_rejected_before_auto_commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "dangling-target.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Dangling Target\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/dangling-target.md")
+		runGit(t, dir, "commit", "-m", "add dangling target plan")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+		worktreesDir := filepath.Join(dir, ".loopai", "worktrees")
+		require.NoError(t, os.MkdirAll(worktreesDir, 0o750))
+		targetPath := filepath.Join(worktreesDir, "dangling-target")
+		require.NoError(t, os.Symlink(filepath.Join(dir, "missing-worktree"), targetPath))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "dangling-target")
+
+		require.ErrorContains(t, err, "preflight worktree creation")
+		require.ErrorContains(t, err, "worktree already exists")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "dangling-target")))
+	})
+
 	t.Run("concurrent_fresh_runs_ignore_each_others_worktrees", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		plansDir := filepath.Join(dir, "docs", "plans")

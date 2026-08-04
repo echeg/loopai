@@ -648,7 +648,7 @@ func (s *Service) mergeAutoCommittedSource(ctx context.Context, wtPath string) e
 
 // PreflightWorktreeForPlan rejects deterministic target conflicts without changing repository
 // state. Callers that may mutate the source checkout must run this while holding the repository
-// lock and before installing runtime ignores or creating an auto-commit.
+// lock before installing runtime ignores, and again afterward before creating an auto-commit.
 func (s *Service) PreflightWorktreeForPlan(planFile, branchOverride string) error {
 	return s.preflightWorktreeForPlan(planFile, branchOverride, "")
 }
@@ -671,7 +671,7 @@ func (s *Service) preflightWorktreeForPlan(planFile, branchOverride, existingBra
 	if currentBranch == branchName {
 		return fmt.Errorf("plan branch %q is already checked out here; switch to the source branch or run without --worktree", branchName)
 	}
-	if _, statErr := os.Stat(wtPath); statErr == nil {
+	if _, statErr := os.Lstat(wtPath); statErr == nil {
 		return fmt.Errorf("worktree already exists at %s, another instance may be running", wtPath)
 	} else if !os.IsNotExist(statErr) {
 		return fmt.Errorf("inspect worktree target %s: %w", wtPath, statErr)
@@ -685,7 +685,7 @@ func (s *Service) preflightWorktreeForPlan(planFile, branchOverride, existingBra
 		if worktree.Branch != branchName {
 			continue
 		}
-		if _, statErr := os.Stat(worktree.Path); statErr == nil {
+		if _, statErr := os.Lstat(worktree.Path); statErr == nil {
 			return fmt.Errorf("plan branch %q is already used by worktree at %s", branchName, worktree.Path)
 		} else if !os.IsNotExist(statErr) {
 			return fmt.Errorf("inspect registered worktree %s: %w", worktree.Path, statErr)

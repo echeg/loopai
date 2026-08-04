@@ -1114,6 +1114,12 @@ func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, b
 	if ignoreErr := req.GitSvc.EnsureLocalGitignore(); ignoreErr != nil {
 		return "", false, fmt.Errorf("ensure gitignore before worktree creation: %w", ignoreErr)
 	}
+	// Ignore installation can change whether an untracked plan is visible to Git,
+	// particularly for plans placed under loopai's reserved runtime directories.
+	// Revalidate before an auto-commit is allowed to advance the source checkout.
+	if preflightErr := req.GitSvc.PreflightWorktreeForPlan(req.PlanFile, req.BranchOverride); preflightErr != nil {
+		return "", false, fmt.Errorf("preflight worktree creation after ignore setup: %w", preflightErr)
+	}
 	sourceHeadBefore := ""
 	if o.Commit {
 		sourceHeadBefore, err = req.GitSvc.HeadHash()
