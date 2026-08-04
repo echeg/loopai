@@ -1068,11 +1068,6 @@ func prepareWorktreeSource(o opts, req executePlanRequest, branch string) error 
 	if !o.Commit {
 		return nil
 	}
-	// Install the runtime ignore rules before git add -A so prior progress and
-	// worktree artifacts cannot be swept into the user's source commit.
-	if err := req.GitSvc.EnsureLocalGitignore(); err != nil {
-		return fmt.Errorf("ensure gitignore before auto-commit: %w", err)
-	}
 	committed, err := req.GitSvc.AutoCommitAll("auto-commit working tree before plan: " + branch)
 	if err != nil {
 		return fmt.Errorf("auto-commit working tree: %w", err)
@@ -1105,6 +1100,12 @@ func prepareFreshWorktree(o opts, req executePlanRequest, branch string) (path s
 		}
 	}()
 
+	// Install runtime ignores while holding the repository lock so another fresh run
+	// cannot observe this run's worktree directory as an untracked source change.
+	// This must also precede AutoCommitAll so runtime artifacts are never staged.
+	if ignoreErr := req.GitSvc.EnsureLocalGitignore(); ignoreErr != nil {
+		return "", false, fmt.Errorf("ensure gitignore before worktree creation: %w", ignoreErr)
+	}
 	if sourceErr := prepareWorktreeSource(o, req, branch); sourceErr != nil {
 		return "", false, sourceErr
 	}

@@ -4414,11 +4414,53 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
 			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
 		}, "ignore-failure")
-		require.ErrorContains(t, err, "ensure gitignore before auto-commit")
+		require.ErrorContains(t, err, "ensure gitignore before worktree creation")
 		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
 		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
 		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "ignore-failure")))
 		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "ignore-failure"))
+	})
+
+	t.Run("concurrent_fresh_runs_ignore_each_others_worktrees", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		firstPlan := filepath.Join(plansDir, "parallel-one.md")
+		secondPlan := filepath.Join(plansDir, "parallel-two.md")
+		require.NoError(t, os.WriteFile(firstPlan, []byte("# Parallel One\n"), 0o600))
+		require.NoError(t, os.WriteFile(secondPlan, []byte("# Parallel Two\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/parallel-one.md", "docs/plans/parallel-two.md")
+		runGit(t, dir, "commit", "-m", "add parallel plans")
+
+		firstSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		secondSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		type result struct {
+			wt  worktreeRun
+			err error
+		}
+		results := make(chan result, 2)
+		start := make(chan struct{})
+		launch := func(svc *git.Service, planPath, branch string) {
+			<-start
+			wt, prepareErr := prepareWorktreeRun(opts{Worktree: true}, executePlanRequest{
+				PlanFile: planPath, GitSvc: svc, Config: &config.Config{},
+				Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+			}, branch)
+			results <- result{wt: wt, err: prepareErr}
+		}
+		go launch(firstSvc, firstPlan, "parallel-one")
+		go launch(secondSvc, secondPlan, "parallel-two")
+		close(start)
+
+		for range 2 {
+			res := <-results
+			require.NoError(t, res.err)
+			t.Cleanup(func() { _ = firstSvc.RemoveWorktree(res.wt.path) })
+			assert.DirExists(t, res.wt.path)
+		}
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
 	})
 
 	t.Run("returns_commit_error_without_creating_worktree", func(t *testing.T) {
