@@ -330,7 +330,7 @@ func (s *Service) EffectiveBranchName(planFile, branchOverride string) string {
 
 // preparePlanBranch validates state, extracts branch name, and checks plan file status.
 // returns branch name and whether the plan file has uncommitted changes.
-// when requireDefault is true, returns error if not on the default branch.
+// when requireDefault is true, prepares a branch from the current HEAD for a worktree.
 // when requireDefault is false, returns empty branch name if not on the default branch (caller should skip).
 // defaultBranch is the resolved default branch name (e.g. "main", "develop", "origin/main").
 // branchOverride, when non-empty, is used directly instead of deriving from planFile.
@@ -340,18 +340,14 @@ func (s *Service) preparePlanBranch(planFile string, requireDefault bool, defaul
 		return "", false, fmt.Errorf("check current branch: %w", err)
 	}
 
-	if !s.matchesDefaultBranch(currentBranch, defaultBranch) {
-		if requireDefault {
-			expected := strings.TrimPrefix(defaultBranch, "origin/")
-			if expected == "" {
-				expected = "main/master"
-			}
-			return "", false, fmt.Errorf("worktree creation requires %s branch, currently on %q", expected, currentBranch)
-		}
+	if !requireDefault && !s.matchesDefaultBranch(currentBranch, defaultBranch) {
 		return "", false, nil // already on feature branch, caller should skip
 	}
 
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
+	if requireDefault && currentBranch == branchName {
+		return "", false, fmt.Errorf("plan branch %q is already checked out here; switch to the base branch or run without --worktree", branchName)
+	}
 
 	// check for uncommitted changes to files other than the plan
 	dirtyFiles, err := s.repo.hasChangesOtherThan(planFile)
@@ -426,9 +422,9 @@ func (s *Service) CreateBranchForPlan(planFile, defaultBranch, branchOverride st
 	return nil
 }
 
-// CreateWorktreeForPlan creates an isolated git worktree for plan execution.
-// must be called from the default branch (same guard as CreateBranchForPlan).
-// derives branch name from plan file, creates worktree at .loopai/worktrees/<branch>.
+// CreateWorktreeForPlan creates an isolated git worktree for plan execution from the current HEAD.
+// It derives the branch name from the plan file and creates the worktree at
+// .loopai/worktrees/<branch>.
 // returns (worktree path, planNeedsCommit, error). when planNeedsCommit is true the caller
 // must commit the plan file in the worktree context (via CommitPlanFile on the worktree's
 // git service) so the commit lands on the feature branch rather than the default branch.
@@ -456,6 +452,21 @@ func (s *Service) CreateWorktreeForPlan(planFile, defaultBranch, branchOverride 
 	if err != nil {
 		return "", false, err
 	}
+	source, err := s.repo.currentBranch()
+	if err != nil {
+		return "", false, fmt.Errorf("identify worktree source: %w", err)
+	}
+	if source == "" {
+		head, headErr := s.repo.headHash()
+		if headErr != nil {
+			return "", false, fmt.Errorf("identify worktree source commit: %w", headErr)
+		}
+		const shortHashLength = 7
+		if len(head) > shortHashLength {
+			head = head[:shortHashLength]
+		}
+		source = head
+	}
 
 	// create worktree with branch
 	if s.repo.branchExists(branchName) {
@@ -464,7 +475,7 @@ func (s *Service) CreateWorktreeForPlan(planFile, defaultBranch, branchOverride 
 			return "", false, fmt.Errorf("add worktree with existing branch: %w", err)
 		}
 	} else {
-		s.log.Printf("creating worktree with new branch: %s\n", branchName)
+		s.log.Printf("creating worktree with new branch: %s (from %s)\n", branchName, source)
 		if err := s.repo.addWorktree(wtPath, branchName, true); err != nil {
 			return "", false, fmt.Errorf("add worktree with new branch: %w", err)
 		}

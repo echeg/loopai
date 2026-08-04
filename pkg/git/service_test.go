@@ -1476,46 +1476,84 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, svc.RemoveWorktree(wtPath))
 	})
 
-	t.Run("fails when not on default branch", func(t *testing.T) {
+	t.Run("creates worktree from non-default branch HEAD", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		log := &mockLogger{}
+		svc, err := NewService(dir, log)
+		require.NoError(t, err)
+
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "from-feature.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+
+		require.NoError(t, svc.CreateBranch("ch_main"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "source.txt"), []byte("source branch\n"), 0o600))
+		require.NoError(t, svc.repo.add("source.txt"))
+		require.NoError(t, svc.repo.commit("advance source branch"))
+		sourceHead, err := svc.repo.headHash()
+		require.NoError(t, err)
+
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		require.NoError(t, err)
+		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
+		assert.False(t, planNeedsCommit)
+		assert.Equal(t, sourceHead, strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD")))
+		require.NotEmpty(t, log.logs)
+		assert.Contains(t, log.logs[len(log.logs)-1], "creating worktree with new branch: from-feature (from ch_main)")
+	})
+
+	t.Run("fails when plan branch is already checked out", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())
 		require.NoError(t, err)
 
-		// switch to feature branch
 		require.NoError(t, svc.CreateBranch("feature"))
 
 		planFile := filepath.Join(dir, "docs", "plans", "feature.md")
 		_, _, err = svc.CreateWorktreeForPlan(planFile, "master", "")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "requires master branch")
+		assert.Equal(t, "plan branch \"feature\" is already checked out here; switch to the base branch or run without --worktree", err.Error())
 	})
 
-	t.Run("fails with fallback error when empty default branch on feature", func(t *testing.T) {
+	t.Run("fails when branch override is already checked out", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())
 		require.NoError(t, err)
 
-		// switch to feature branch
-		require.NoError(t, svc.CreateBranch("feature"))
+		require.NoError(t, svc.CreateBranch("custom-feature"))
 
-		planFile := filepath.Join(dir, "docs", "plans", "feature.md")
-		_, _, err = svc.CreateWorktreeForPlan(planFile, "", "")
+		planFile := filepath.Join(dir, "docs", "plans", "different-name.md")
+		_, _, err = svc.CreateWorktreeForPlan(planFile, "master", "custom-feature")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "requires main/master branch")
+		assert.Contains(t, err.Error(), "plan branch \"custom-feature\" is already checked out here")
 	})
 
-	t.Run("fails when not on develop default branch", func(t *testing.T) {
+	t.Run("creates worktree from detached HEAD", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
-		svc, err := NewService(dir, noopServiceLogger())
+		log := &mockLogger{}
+		svc, err := NewService(dir, log)
 		require.NoError(t, err)
 
-		// switch to feature branch
-		require.NoError(t, svc.CreateBranch("feature"))
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "detached-feature.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
 
-		planFile := filepath.Join(dir, "docs", "plans", "feature.md")
-		_, _, err = svc.CreateWorktreeForPlan(planFile, "develop", "")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "requires develop branch")
+		detachedHead := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+		runGit(t, dir, "checkout", "--detach", detachedHead)
+
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		require.NoError(t, err)
+		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
+		assert.False(t, planNeedsCommit)
+		assert.Equal(t, detachedHead, strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD")))
+		require.NotEmpty(t, log.logs)
+		assert.Contains(t, log.logs[len(log.logs)-1], "creating worktree with new branch: detached-feature (from "+detachedHead[:7]+")")
 	})
 
 	t.Run("succeeds from develop when develop is default", func(t *testing.T) {

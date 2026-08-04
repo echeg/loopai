@@ -48,15 +48,15 @@
 
 ### Task 1: Remove default-branch guard from worktree creation
 
-- [ ] in `pkg/git/service.go` `preparePlanBranch`: when `requireDefault=true`, stop comparing the current branch against the default branch (drop the `worktree creation requires %s branch` error); keep the `requireDefault=false` path byte-for-byte unchanged
-- [ ] add a replacement guard: when the current branch equals the plan-derived (or `--branch` override) branch name, return a clear error like `plan branch %q is already checked out here; switch to the base branch or run without --worktree` (git would otherwise refuse with a cryptic "already checked out" error)
-- [ ] keep dirty-tree checks and plan-file auto-commit detection exactly as they are
-- [ ] extend the creation log line in `CreateWorktreeForPlan` to name the source branch: `creating worktree with new branch: X (from ch_main)`; for detached HEAD log the short commit hash instead
-- [ ] update godoc comments on `CreateWorktreeForPlan` and `preparePlanBranch` (they currently document the main-branch requirement)
-- [ ] write tests: worktree created successfully from a non-default branch (feature branch parent commit is that branch's HEAD)
-- [ ] write tests: error when standing on the plan branch itself; creation from detached HEAD works; dirty tree still errors without auto-commit; existing-branch re-run behavior unchanged
-- [ ] verify existing `CreateBranchForPlan` (non-worktree) tests still pass unmodified
-- [ ] run `go test ./pkg/git/...` — must pass before task 2
+- [x] in `pkg/git/service.go` `preparePlanBranch`: when `requireDefault=true`, stop comparing the current branch against the default branch (drop the `worktree creation requires %s branch` error); keep the `requireDefault=false` path byte-for-byte unchanged
+- [x] add a replacement guard: when the current branch equals the plan-derived (or `--branch` override) branch name, return a clear error like `plan branch %q is already checked out here; switch to the base branch or run without --worktree` (git would otherwise refuse with a cryptic "already checked out" error)
+- [x] keep dirty-tree checks and plan-file auto-commit detection exactly as they are
+- [x] extend the creation log line in `CreateWorktreeForPlan` to name the source branch: `creating worktree with new branch: X (from ch_main)`; for detached HEAD log the short commit hash instead
+- [x] update godoc comments on `CreateWorktreeForPlan` and `preparePlanBranch` (they currently document the main-branch requirement)
+- [x] write tests: worktree created successfully from a non-default branch (feature branch parent commit is that branch's HEAD)
+- [x] write tests: error when standing on the plan branch itself; creation from detached HEAD works; dirty tree still errors without auto-commit; existing-branch re-run behavior unchanged
+- [x] verify existing `CreateBranchForPlan` (non-worktree) tests still pass unmodified
+- [x] run `go test ./pkg/git/...` — must pass before task 2
 
 ### Task 2: Add auto-commit-all support to git service
 
