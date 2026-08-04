@@ -1682,7 +1682,7 @@ func TestValidateFlags(t *testing.T) {
 		{name: "codex_alone_is_valid", opts: opts{Codex: true}, wantErr: false},
 		{name: "codex_with_pass_claude_md_is_valid", opts: opts{Codex: true, PassClaudeMd: true}, wantErr: false},
 		{name: "commit_with_worktree_is_valid", opts: opts{Commit: true, Worktree: true}, wantErr: false},
-		{name: "commit_without_worktree_is_invalid", opts: opts{Commit: true}, wantErr: true, errMsg: "--commit requires --worktree"},
+		{name: "commit_without_worktree_is_deferred_until_config_merge", opts: opts{Commit: true}, wantErr: false},
 		{name: "commit_with_resume_is_invalid", opts: opts{Commit: true, Worktree: true, ResumeWorktree: true}, wantErr: true, errMsg: "cannot be used with --resume-worktree"},
 		{name: "commit_with_implicit_resume_is_invalid", opts: opts{Commit: true, ResumeWorktree: true}, wantErr: true, errMsg: "cannot be used with --resume-worktree"},
 		{name: "commit_with_review_is_invalid", opts: opts{Commit: true, Worktree: true, Review: true}, wantErr: true, errMsg: "only supported for full"},
@@ -1809,6 +1809,24 @@ func TestApplyCLIOverrides_ResumeWorktreeImpliesWorktree(t *testing.T) {
 	cfg := &config.Config{}
 	require.NoError(t, applyCLIOverrides(opts{ResumeWorktree: true}, cfg))
 	assert.True(t, cfg.WorktreeEnabled)
+}
+
+func TestApplyCLIOverrides_CommitRequiresEffectiveWorktree(t *testing.T) {
+	t.Run("accepts config enabled worktree", func(t *testing.T) {
+		cfg := &config.Config{WorktreeEnabled: true}
+		require.NoError(t, applyCLIOverrides(opts{Commit: true}, cfg))
+		assert.True(t, cfg.WorktreeEnabled)
+	})
+
+	t.Run("accepts CLI enabled worktree", func(t *testing.T) {
+		cfg := &config.Config{}
+		require.NoError(t, applyCLIOverrides(opts{Commit: true, Worktree: true}, cfg))
+		assert.True(t, cfg.WorktreeEnabled)
+	})
+
+	t.Run("rejects when worktree is disabled", func(t *testing.T) {
+		require.ErrorContains(t, applyCLIOverrides(opts{Commit: true}, &config.Config{}), "--commit requires --worktree")
+	})
 }
 
 func TestCodexFlag_ApplyCLIOverrides(t *testing.T) {
@@ -4341,6 +4359,31 @@ func TestResolveVersion(t *testing.T) {
 }
 
 func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
+	t.Run("invalid_branch_is_rejected_before_source_mutation", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "valid.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Valid\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/valid.md")
+		runGit(t, dir, "commit", "-m", "add valid plan")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		statusBefore := gitOutput(t, dir, "status", "--porcelain")
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+			BranchOverride: "bad branch",
+		}, "bad branch")
+
+		require.ErrorContains(t, err, `invalid plan branch "bad branch"`)
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, statusBefore, gitOutput(t, dir, "status", "--porcelain"))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai"))
+	})
+
 	t.Run("plan_branch_collision_is_rejected_before_source_mutation", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))

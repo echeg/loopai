@@ -338,6 +338,14 @@ func (e *externalBackend) getDefaultBranch() string {
 	return "master"
 }
 
+// validateBranchName checks a prospective local branch name without changing repository state.
+func (e *externalBackend) validateBranchName(name string) error {
+	if _, err := e.run("check-ref-format", "--branch", name); err != nil {
+		return fmt.Errorf("check branch name: %w", err)
+	}
+	return nil
+}
+
 // branchExists checks if a branch with the given name exists.
 func (e *externalBackend) branchExists(name string) bool {
 	return e.refExists("refs/heads/" + name)
@@ -653,17 +661,27 @@ func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
 	if err := e.validateAutoCommitState(); err != nil {
 		return false, err
 	}
+	index, err := e.snapshotIndex()
+	if err != nil {
+		return false, err
+	}
+	restoreOnError := func(cause error) (bool, error) {
+		if restoreErr := index.restore(); restoreErr != nil {
+			return false, errors.Join(cause, fmt.Errorf("restore Git index: %w", restoreErr))
+		}
+		return false, cause
+	}
 
 	// git add -A respects .gitignore natively
-	_, err := e.run("add", "-A")
+	_, err = e.run("add", "-A")
 	if err != nil {
-		return false, fmt.Errorf("stage files: %w", err)
+		return restoreOnError(fmt.Errorf("stage files: %w", err))
 	}
 
 	// check if anything was staged
 	out, err := e.run("status", "--porcelain")
 	if err != nil {
-		return false, fmt.Errorf("check status: %w", err)
+		return restoreOnError(fmt.Errorf("check status: %w", err))
 	}
 	if out == "" {
 		return false, nil
@@ -671,9 +689,52 @@ func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
 
 	_, err = e.run("commit", "-m", msg)
 	if err != nil {
-		return false, fmt.Errorf("commit: %w", err)
+		return restoreOnError(fmt.Errorf("commit: %w", err))
 	}
 	return true, nil
+}
+
+type indexSnapshot struct {
+	path    string
+	data    []byte
+	mode    os.FileMode
+	existed bool
+}
+
+func (e *externalBackend) snapshotIndex() (indexSnapshot, error) {
+	path, err := e.run("rev-parse", "--git-path", "index")
+	if err != nil {
+		return indexSnapshot{}, fmt.Errorf("locate Git index before auto-commit: %w", err)
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(e.path, path)
+	}
+	path = filepath.Clean(path)
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return indexSnapshot{path: path}, nil
+	}
+	if err != nil {
+		return indexSnapshot{}, fmt.Errorf("inspect Git index before auto-commit: %w", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return indexSnapshot{}, fmt.Errorf("read Git index before auto-commit: %w", err)
+	}
+	return indexSnapshot{path: path, data: data, mode: info.Mode(), existed: true}, nil
+}
+
+func (s indexSnapshot) restore() error {
+	if !s.existed {
+		if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove newly created index: %w", err)
+		}
+		return nil
+	}
+	if err := os.WriteFile(s.path, s.data, s.mode.Perm()); err != nil {
+		return fmt.Errorf("write saved index: %w", err)
+	}
+	return nil
 }
 
 func (e *externalBackend) validateAutoCommitState() error {

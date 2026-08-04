@@ -1602,9 +1602,6 @@ func validateCommitFlags(o opts) error {
 	if o.Review || o.ExternalOnly || o.CodexOnly {
 		return errors.New("--commit is only supported for full, --tasks-only, or --plan worktree execution")
 	}
-	if !o.Worktree {
-		return errors.New("--commit requires --worktree")
-	}
 	return nil
 }
 
@@ -3155,6 +3152,9 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 	}
 	if o.Worktree || o.ResumeWorktree {
 		cfg.WorktreeEnabled = true
+	}
+	if o.Commit && !cfg.WorktreeEnabled {
+		return errors.New("--commit requires --worktree")
 	}
 	if o.Wait > 0 || (o.Wait == 0 && o.waitSet) {
 		cfg.WaitOnLimit = o.Wait

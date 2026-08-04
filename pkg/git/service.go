@@ -30,6 +30,7 @@ type backend interface {
 	originURL() (string, error)
 	originPushURLs() ([]string, error)
 	getDefaultBranch() string
+	validateBranchName(name string) error
 	branchExists(name string) bool
 	createBranch(name string) error
 	checkoutBranch(name string) error
@@ -552,6 +553,12 @@ func (s *Service) CreateWorktreeForPlan(planFile, branchOverride string) (string
 func (s *Service) PreflightWorktreeForPlan(planFile, branchOverride string) error {
 	planFile = s.resolveFilesystemCase(planFile)
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
+	if branchName == "" {
+		return errors.New("plan branch name is empty")
+	}
+	if err := s.repo.validateBranchName(branchName); err != nil {
+		return fmt.Errorf("invalid plan branch %q: %w", branchName, err)
+	}
 	wtPath := filepath.Join(s.repo.root(), ".loopai", "worktrees", branchName)
 
 	currentBranch, err := s.repo.currentBranch()

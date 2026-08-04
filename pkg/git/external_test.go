@@ -837,6 +837,29 @@ func TestExternalBackend_AutoCommitAll(t *testing.T) {
 		})
 	}
 
+	t.Run("restores index when commit fails", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		readme := filepath.Join(dir, "README.md")
+		require.NoError(t, os.WriteFile(readme, []byte("# Staged\n"), 0o600))
+		runGit(t, dir, "add", "README.md")
+		require.NoError(t, os.WriteFile(readme, []byte("# Staged\n\nunstaged\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("untracked\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "hooks", "pre-commit"), []byte("#!/bin/sh\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
+
+		statusBefore := runGit(t, dir, "status", "--porcelain")
+		stagedBefore := runGit(t, dir, "diff", "--cached", "--binary")
+		unstagedBefore := runGit(t, dir, "diff", "--binary")
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		committed, err := eb.autoCommitAll("blocked")
+		require.ErrorContains(t, err, "commit")
+		assert.False(t, committed)
+		assert.Equal(t, statusBefore, runGit(t, dir, "status", "--porcelain"))
+		assert.Equal(t, stagedBefore, runGit(t, dir, "diff", "--cached", "--binary"))
+		assert.Equal(t, unstagedBefore, runGit(t, dir, "diff", "--binary"))
+	})
+
 	t.Run("refuses to finish an in-progress merge", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		runGit(t, dir, "checkout", "-b", "feature")
