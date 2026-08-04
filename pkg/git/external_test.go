@@ -524,6 +524,25 @@ func TestExternalBackend_FileHasChanges(t *testing.T) {
 	})
 }
 
+func TestExternalBackend_FileTracked(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	eb, err := newExternalBackend(dir, "git")
+	require.NoError(t, err)
+
+	tracked, err := eb.fileTracked("README.md")
+	require.NoError(t, err)
+	assert.True(t, tracked)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.md"), []byte("# Plan\n"), 0o600))
+	tracked, err = eb.fileTracked("untracked.md")
+	require.NoError(t, err)
+	assert.False(t, tracked)
+
+	tracked, err = eb.fileTracked(filepath.Join(t.TempDir(), "outside.md"))
+	require.Error(t, err)
+	assert.False(t, tracked)
+}
+
 func TestExternalBackend_HasChangesOtherThan(t *testing.T) {
 	t.Run("returns empty when no changes", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
@@ -798,6 +817,134 @@ func TestExternalBackend_CreateInitialCommit(t *testing.T) {
 		assert.Contains(t, out, "README.md")
 		assert.Contains(t, out, ".gitignore")
 		assert.NotContains(t, out, "debug.log")
+	})
+}
+
+func TestExternalBackend_AutoCommitAll(t *testing.T) {
+	t.Run("returns false with no changes", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		before := runGit(t, dir, "rev-parse", "HEAD")
+		committed, err := eb.autoCommitAll("unused")
+		require.NoError(t, err)
+		assert.False(t, committed)
+		assert.Equal(t, before, runGit(t, dir, "rev-parse", "HEAD"))
+	})
+
+	t.Run("no-op preserves staged runtime changes", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		runtimeDir := filepath.Join(dir, ".loopai", "progress")
+		require.NoError(t, os.MkdirAll(runtimeDir, 0o750))
+		runtimeFile := filepath.Join(runtimeDir, "run.log")
+		require.NoError(t, os.WriteFile(runtimeFile, []byte("initial\n"), 0o600))
+		runGit(t, dir, "add", "-f", ".loopai/progress/run.log")
+		runGit(t, dir, "commit", "-m", "track runtime history")
+		require.NoError(t, os.WriteFile(runtimeFile, []byte("staged update\n"), 0o600))
+		runGit(t, dir, "add", ".loopai/progress/run.log")
+
+		statusBefore := runGit(t, dir, "status", "--porcelain")
+		stagedBefore := runGit(t, dir, "diff", "--cached", "--binary")
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		committed, err := eb.autoCommitAll("unused")
+		require.NoError(t, err)
+		assert.False(t, committed)
+		assert.Equal(t, statusBefore, runGit(t, dir, "status", "--porcelain"))
+		assert.Equal(t, stagedBefore, runGit(t, dir, "diff", "--cached", "--binary"))
+	})
+
+	t.Run("rejects dirty submodule without creating a partial commit", func(t *testing.T) {
+		submodule := setupExternalTestRepo(t)
+		require.NoError(t, os.WriteFile(filepath.Join(submodule, "nested.txt"), []byte("initial\n"), 0o600))
+		runGit(t, submodule, "add", "nested.txt")
+		runGit(t, submodule, "commit", "-m", "add nested file")
+
+		dir := setupExternalTestRepo(t)
+		runGit(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "nested")
+		runGit(t, dir, "commit", "-m", "add submodule")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "nested", "nested.txt"), []byte("dirty\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ordinary.txt"), []byte("must not commit\n"), 0o600))
+
+		headBefore := runGit(t, dir, "rev-parse", "HEAD")
+		indexBefore := runGit(t, dir, "diff", "--cached", "--binary")
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		committed, err := eb.autoCommitAll("must stay atomic")
+		require.ErrorContains(t, err, "dirty submodules")
+		assert.False(t, committed)
+		assert.Equal(t, headBefore, runGit(t, dir, "rev-parse", "HEAD"))
+		assert.Equal(t, indexBefore, runGit(t, dir, "diff", "--cached", "--binary"))
+		assert.Contains(t, runGit(t, dir, "status", "--porcelain"), "ordinary.txt")
+	})
+
+	for _, tc := range []struct {
+		name      string
+		fail      string
+		wantError string
+	}{
+		{name: "returns add errors", fail: "add", wantError: "stage files"},
+		{name: "returns status errors", fail: "status", wantError: "check status"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := setupExternalTestRepo(t)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("dirty\n"), 0o600))
+			command := filepath.Join(t.TempDir(), "failing-git")
+			script := "#!/bin/sh\nif [ \"$1\" = \"" + tc.fail + "\" ]; then echo forced failure >&2; exit 1; fi\nexec git \"$@\"\n"
+			require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+			eb, err := newExternalBackend(dir, command)
+			require.NoError(t, err)
+
+			committed, err := eb.autoCommitAll("blocked")
+			require.ErrorContains(t, err, tc.wantError)
+			assert.False(t, committed)
+		})
+	}
+
+	t.Run("restores index when commit fails", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		readme := filepath.Join(dir, "README.md")
+		require.NoError(t, os.WriteFile(readme, []byte("# Staged\n"), 0o600))
+		runGit(t, dir, "add", "README.md")
+		require.NoError(t, os.WriteFile(readme, []byte("# Staged\n\nunstaged\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("untracked\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "hooks", "pre-commit"), []byte("#!/bin/sh\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
+
+		statusBefore := runGit(t, dir, "status", "--porcelain")
+		stagedBefore := runGit(t, dir, "diff", "--cached", "--binary")
+		unstagedBefore := runGit(t, dir, "diff", "--binary")
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		committed, err := eb.autoCommitAll("blocked")
+		require.ErrorContains(t, err, "commit")
+		assert.False(t, committed)
+		assert.Equal(t, statusBefore, runGit(t, dir, "status", "--porcelain"))
+		assert.Equal(t, stagedBefore, runGit(t, dir, "diff", "--cached", "--binary"))
+		assert.Equal(t, unstagedBefore, runGit(t, dir, "diff", "--binary"))
+	})
+
+	t.Run("refuses to finish an in-progress merge", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature change")
+		runGit(t, dir, "checkout", "master")
+		runGit(t, dir, "merge", "--no-ff", "--no-commit", "feature")
+
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+		headBefore := runGit(t, dir, "rev-parse", "HEAD")
+		committed, err := eb.autoCommitAll("must not finish merge")
+
+		require.ErrorContains(t, err, "merge is in progress")
+		assert.False(t, committed)
+		assert.Equal(t, headBefore, runGit(t, dir, "rev-parse", "HEAD"))
+		assert.FileExists(t, filepath.Join(dir, ".git", "MERGE_HEAD"))
 	})
 }
 

@@ -119,6 +119,65 @@ func (e *externalBackend) root() string {
 	return e.path
 }
 
+func (e *externalBackend) gitCommonDir() (string, error) {
+	out, err := e.run("rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", fmt.Errorf("get Git common directory: %w", err)
+	}
+	if !filepath.IsAbs(out) {
+		out = filepath.Join(e.path, out)
+	}
+	return filepath.Clean(out), nil
+}
+
+func (e *externalBackend) ensureRuntimeExcludes(patterns ...string) error {
+	out, err := e.run("rev-parse", "--git-path", "info/exclude")
+	if err != nil {
+		return fmt.Errorf("locate Git exclude file: %w", err)
+	}
+	if !filepath.IsAbs(out) {
+		out = filepath.Join(e.path, out)
+	}
+	excludePath := filepath.Clean(out)
+	data, err := os.ReadFile(excludePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read Git exclude file: %w", err)
+	}
+	existing := make(map[string]struct{})
+	for line := range strings.SplitSeq(string(data), "\n") {
+		existing[strings.TrimSpace(line)] = struct{}{}
+	}
+	missing := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		if _, ok := existing[pattern]; !ok {
+			missing = append(missing, pattern)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	if mkdirErr := os.MkdirAll(filepath.Dir(excludePath), 0o750); mkdirErr != nil {
+		return fmt.Errorf("create Git info directory: %w", mkdirErr)
+	}
+	f, err := os.OpenFile(excludePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open Git exclude file: %w", err)
+	}
+	prefix := ""
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		prefix = "\n"
+	}
+	_, writeErr := fmt.Fprintf(f, "%s%s\n", prefix, strings.Join(missing, "\n"))
+	closeErr := f.Close()
+	if writeErr != nil {
+		return fmt.Errorf("write Git exclude file: %w", writeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close Git exclude file: %w", closeErr)
+	}
+	return nil
+}
+
 // headHash returns the current HEAD commit hash.
 func (e *externalBackend) headHash() (string, error) {
 	out, err := e.run("rev-parse", "HEAD")
@@ -279,6 +338,21 @@ func (e *externalBackend) getDefaultBranch() string {
 	return "master"
 }
 
+// validateBranchName checks a prospective local branch name without changing repository state.
+func (e *externalBackend) validateBranchName(name string) error {
+	canonical, err := e.run("check-ref-format", "--branch", name)
+	if err != nil {
+		return fmt.Errorf("check branch name: %w", err)
+	}
+	// --branch expands reflog shorthand such as @{-1}. Those expressions are valid
+	// inputs to Git, but they are not literal branch names and would make later
+	// existence checks and worktree creation operate on different refs.
+	if canonical != name {
+		return fmt.Errorf("check branch name: resolves to %q instead of naming a literal branch", canonical)
+	}
+	return nil
+}
+
 // branchExists checks if a branch with the given name exists.
 func (e *externalBackend) branchExists(name string) bool {
 	return e.refExists("refs/heads/" + name)
@@ -311,6 +385,10 @@ func (e *externalBackend) checkoutBranch(name string) error {
 // progress is aborted; ErrMergeConflict is returned only when unmerged paths exist. A nominally
 // successful merge is rolled back unless it incorporates expectedHead.
 func (e *externalBackend) mergeBranch(ctx context.Context, name, expectedHead string) error {
+	return e.mergeRevision(ctx, "refs/heads/"+name, expectedHead)
+}
+
+func (e *externalBackend) mergeRevision(ctx context.Context, revision, expectedHead string) error {
 	preMergeHead, err := e.headHash()
 	if err != nil {
 		return fmt.Errorf("read pre-merge HEAD: %w", err)
@@ -319,8 +397,7 @@ func (e *externalBackend) mergeBranch(ctx context.Context, name, expectedHead st
 	if err != nil {
 		return fmt.Errorf("read current branch before merge: %w", err)
 	}
-	branchRef := "refs/heads/" + name
-	mergeArgs := []string{"merge", "--commit", "--no-squash", "--no-overwrite-ignore", branchRef}
+	mergeArgs := []string{"merge", "--commit", "--no-squash", "--no-overwrite-ignore", revision}
 	if currentBranch != "" {
 		// Branch mergeOptions can select a strategy such as "ours", which creates a merge
 		// commit and passes the ancestry check while discarding the feature tree. Clear the
@@ -495,6 +572,19 @@ func (e *externalBackend) fileHasChanges(path string) (bool, error) {
 	return out != "", nil
 }
 
+// fileTracked reports whether path is present in the Git index.
+func (e *externalBackend) fileTracked(path string) (bool, error) {
+	rel, err := e.toRelative(path)
+	if err != nil {
+		return false, err
+	}
+	out, err := e.run("ls-files", "-z", "--cached", "--", rel)
+	if err != nil {
+		return false, fmt.Errorf("check tracked file: %w", err)
+	}
+	return out != "", nil
+}
+
 // hasChangesOtherThan returns the list of dirty file paths (excluding the given file, case-insensitive).
 // this includes modified/deleted tracked files, staged changes, and untracked files (excluding gitignored).
 // an empty slice means no other changes.
@@ -522,12 +612,18 @@ func (e *externalBackend) hasChangesOtherThan(path string) ([]string, error) {
 		}
 		// extract file path from porcelain output: "XY path" or "XY path -> newpath"
 		filePath := e.extractPathFromPorcelain(line)
-		if strings.EqualFold(filePath, rel) {
+		if strings.EqualFold(filePath, rel) || isLoopaiRuntimePath(filePath) {
 			continue
 		}
 		dirty = append(dirty, filePath)
 	}
 	return dirty, nil
+}
+
+func isLoopaiRuntimePath(path string) bool {
+	path = filepath.ToSlash(path)
+	return path == ".loopai/progress" || strings.HasPrefix(path, ".loopai/progress/") ||
+		path == ".loopai/worktrees" || strings.HasPrefix(path, ".loopai/worktrees/")
 }
 
 // add stages a file for commit.
@@ -589,26 +685,169 @@ func (e *externalBackend) commitFiles(msg string, paths ...string) error {
 	return nil
 }
 
-// createInitialCommit stages all non-ignored files and creates an initial commit.
-func (e *externalBackend) createInitialCommit(msg string) error {
-	// git add -A respects .gitignore natively
-	_, err := e.run("add", "-A")
+// autoCommitAll stages all non-ignored files and commits them when anything changed.
+func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
+	if err := e.validateAutoCommitState(); err != nil {
+		return false, err
+	}
+	index, err := e.snapshotIndex()
 	if err != nil {
-		return fmt.Errorf("stage files: %w", err)
+		return false, err
+	}
+	restoreOnError := func(cause error) error {
+		if restoreErr := index.restore(); restoreErr != nil {
+			return errors.Join(cause, fmt.Errorf("restore Git index: %w", restoreErr))
+		}
+		return cause
 	}
 
-	// check if anything was staged
-	out, err := e.run("status", "--porcelain")
+	// Runtime artifacts must never enter the source commit, even if a custom
+	// .loopai/.gitignore negates the repository-local exclusion rules.
+	_, err = e.run("add", "-A", "--", ".",
+		":(exclude).loopai/progress", ":(exclude).loopai/progress/**",
+		":(exclude).loopai/worktrees", ":(exclude).loopai/worktrees/**")
 	if err != nil {
-		return fmt.Errorf("check status: %w", err)
+		return false, restoreOnError(fmt.Errorf("stage files: %w", err))
+	}
+	// Pathspec exclusions do not remove entries that were already staged before
+	// this operation. Restore runtime paths to HEAD so the commit cannot capture
+	// those entries either.
+	if _, err = e.run("reset", "--quiet", "HEAD", "--", ".loopai/progress", ".loopai/worktrees"); err != nil {
+		return false, restoreOnError(fmt.Errorf("unstage runtime artifacts: %w", err))
+	}
+
+	// Check for staged non-runtime changes. Runtime files may remain visible when
+	// this low-level method is used before EnsureLocalGitignore. Any remaining
+	// unstaged entry means git add -A could not capture the full working-tree state
+	// (most commonly dirty content inside a submodule), so refuse a partial commit.
+	out, err := e.run("status", "--porcelain", "--", ".",
+		":(exclude).loopai/progress", ":(exclude).loopai/progress/**",
+		":(exclude).loopai/worktrees", ":(exclude).loopai/worktrees/**")
+	if err != nil {
+		return false, restoreOnError(fmt.Errorf("check status: %w", err))
 	}
 	if out == "" {
-		return errors.New("no files to commit")
+		if restoreErr := index.restore(); restoreErr != nil {
+			return false, fmt.Errorf("restore Git index after no-op auto-commit: %w", restoreErr)
+		}
+		return false, nil
+	}
+	for line := range strings.SplitSeq(out, "\n") {
+		if len(line) < 2 {
+			return false, restoreOnError(fmt.Errorf("parse status after staging: unexpected porcelain entry %q", line))
+		}
+		if line[0] == '?' || line[1] != ' ' {
+			return false, restoreOnError(errors.New("working tree still has unstaged changes after git add -A; dirty submodules or concurrently modified files cannot be auto-committed safely"))
+		}
 	}
 
 	_, err = e.run("commit", "-m", msg)
 	if err != nil {
-		return fmt.Errorf("commit: %w", err)
+		return false, restoreOnError(fmt.Errorf("commit: %w", err))
+	}
+	return true, nil
+}
+
+type indexSnapshot struct {
+	path    string
+	data    []byte
+	mode    os.FileMode
+	existed bool
+}
+
+func (e *externalBackend) snapshotIndex() (indexSnapshot, error) {
+	path, err := e.run("rev-parse", "--git-path", "index")
+	if err != nil {
+		return indexSnapshot{}, fmt.Errorf("locate Git index before auto-commit: %w", err)
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(e.path, path)
+	}
+	path = filepath.Clean(path)
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return indexSnapshot{path: path}, nil
+	}
+	if err != nil {
+		return indexSnapshot{}, fmt.Errorf("inspect Git index before auto-commit: %w", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return indexSnapshot{}, fmt.Errorf("read Git index before auto-commit: %w", err)
+	}
+	return indexSnapshot{path: path, data: data, mode: info.Mode(), existed: true}, nil
+}
+
+func (s indexSnapshot) restore() error {
+	if !s.existed {
+		if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove newly created index: %w", err)
+		}
+		return nil
+	}
+	if err := os.WriteFile(s.path, s.data, s.mode.Perm()); err != nil {
+		return fmt.Errorf("write saved index: %w", err)
+	}
+	return nil
+}
+
+func (e *externalBackend) validateAutoCommitState() error {
+	unmerged, err := e.run("ls-files", "-u")
+	if err != nil {
+		return fmt.Errorf("check unmerged paths before auto-commit: %w", err)
+	}
+	if unmerged != "" {
+		return errors.New("refuse auto-commit with unmerged paths; finish or abort the current Git operation first")
+	}
+
+	gitDir, err := e.gitDir()
+	if err != nil {
+		return fmt.Errorf("locate Git operation state before auto-commit: %w", err)
+	}
+	states := []struct {
+		path string
+		name string
+	}{
+		{path: "MERGE_HEAD", name: "merge"},
+		{path: "CHERRY_PICK_HEAD", name: "cherry-pick"},
+		{path: "REVERT_HEAD", name: "revert"},
+		{path: "rebase-merge", name: "rebase"},
+		{path: "rebase-apply", name: "rebase"},
+		{path: "sequencer", name: "sequenced Git operation"},
+	}
+	for _, state := range states {
+		_, statErr := os.Stat(filepath.Join(gitDir, state.path))
+		switch {
+		case statErr == nil:
+			return fmt.Errorf("refuse auto-commit while a %s is in progress; finish or abort it first", state.name)
+		case os.IsNotExist(statErr):
+			continue
+		default:
+			return fmt.Errorf("inspect %s state before auto-commit: %w", state.name, statErr)
+		}
+	}
+	return nil
+}
+
+func (e *externalBackend) gitDir() (string, error) {
+	out, err := e.run("rev-parse", "--git-dir")
+	if err != nil {
+		return "", fmt.Errorf("get Git directory: %w", err)
+	}
+	if !filepath.IsAbs(out) {
+		out = filepath.Join(e.path, out)
+	}
+	return filepath.Clean(out), nil
+}
+
+// createInitialCommit stages all non-ignored files and creates an initial commit.
+func (e *externalBackend) createInitialCommit(msg string) error {
+	committed, err := e.autoCommitAll(msg)
+	if err != nil {
+		return err
+	}
+	if !committed {
+		return errors.New("no files to commit")
 	}
 	return nil
 }

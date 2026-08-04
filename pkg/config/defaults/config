@@ -180,7 +180,8 @@ move_plan_on_completion = true
 # ------------------------------------------------------------------------------
 
 # use_worktree: run each plan in an isolated git worktree
-# creates .loopai/worktrees/<plan-name> for parallel execution
+# cuts the plan branch from the current HEAD and creates
+# .loopai/worktrees/<plan-name> for parallel execution
 # default: false
 # use_worktree = false
 

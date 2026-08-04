@@ -51,9 +51,9 @@ type opts struct {
 	CustomReviewScript      string        `long:"custom-review-script" description:"override custom external review script for this run"`
 	Review                  bool          `short:"r" long:"review" description:"skip task execution, run full review pipeline"`
 	ExternalOnly            bool          `short:"e" long:"external-only" description:"skip tasks and first review; run external review, conditional post-review, and finalize"`
-	CodexOnly               bool          `short:"c" long:"codex-only" description:"alias for --external-only (deprecated)"`
+	CodexOnly               bool          `long:"codex-only" description:"alias for --external-only (deprecated)"`
 	TasksOnly               bool          `short:"t" long:"tasks-only" description:"run only task phase, skip all reviews"`
-	BaseRef                 string        `short:"b" long:"base-ref" description:"override default branch for review diffs; a branch name also becomes the base for branch/worktree creation (branch name or commit hash)"`
+	BaseRef                 string        `short:"b" long:"base-ref" description:"override the base for review diffs; a branch name also becomes the base for non-worktree branch creation (branch name or commit hash)"`
 	Wait                    time.Duration `long:"wait" description:"wait duration on rate limit before retry (default: 10m; 0 disables retries)"`
 	SessionTimeout          time.Duration `long:"session-timeout" description:"per-session timeout (e.g. 30m, 1h); external Codex/custom review under a Claude primary excluded"`
 	IdleTimeout             time.Duration `long:"idle-timeout" description:"kill claude/codex executor session after no output for this duration (e.g. 5m, 10m)"`
@@ -63,6 +63,7 @@ type opts struct {
 	Codex                   bool          `long:"codex" description:"use codex CLI as the executor for task, review, and finalize phases"`
 	PassClaudeMd            bool          `long:"pass-claude-md" description:"pass project CLAUDE.md to codex via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is NOT auto-passed but a one-time setup hint is shown (codex executor only)"`
 	Worktree                bool          `long:"worktree" description:"run in isolated git worktree"`
+	Commit                  bool          `short:"c" long:"commit" description:"auto-commit the dirty source checkout before creating the worktree (requires --worktree)"`
 	ResumeWorktree          bool          `long:"resume-worktree" description:"continue in an existing interrupted worktree (implies --worktree)"`
 	Branch                  string        `long:"branch" description:"override branch name for worktree/branch creation (default: derived from plan filename)"`
 	PlanDescription         string        `long:"plan" description:"create plan interactively (enter plan description)"`
@@ -194,7 +195,7 @@ type executePlanRequest struct {
 	MainGitSvc     *git.Service // main repo service for cross-boundary ops (worktree mode); nil in normal mode
 	Config         *config.Config
 	Colors         *progress.Colors
-	DefaultBranch  string // actual default branch for branch/worktree creation (config or auto-detect)
+	DefaultBranch  string // base for non-worktree branch creation; worktrees are created from current HEAD
 	BaseRef        string // base reference for review diffs and templates (--base-ref override or DefaultBranch)
 	NotifySvc      *notify.Service
 	BranchOverride string              // branch name override (--branch flag); empty = derive from plan filename
@@ -373,9 +374,9 @@ func run(ctx context.Context, o opts) error {
 		return ensureErr
 	}
 
-	// defaultBranch is for branch/worktree creation, baseRef for review diffs and the
-	// {{DEFAULT_BRANCH}} template variable. --base-ref feeds both when it names a branch;
-	// a commit hash stays diff-only and is rejected when creating (but not resuming) a worktree.
+	// defaultBranch is for non-worktree branch creation, baseRef for review diffs and the
+	// {{DEFAULT_BRANCH}} template variable. In worktree mode --base-ref stays diff-only because
+	// the worktree branch is always cut from the current HEAD.
 	branchMode := modeCreatesBranch(mode)
 	creationMode := branchMode && !o.ResumeWorktree
 	defaultBranch, baseRef, err := resolveBaseRefs(gitSvc, o.BaseRef, cfg.DefaultBranch,
@@ -880,7 +881,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		}
 	}()
 
-	wt, err := prepareWorktreeRun(o, req, branch)
+	wt, err := prepareWorktreeRunContext(ctx, o, req, branch)
 	if err != nil {
 		return err
 	}
@@ -1017,6 +1018,10 @@ type worktreeRun struct {
 // prepareWorktreeRun creates a new worktree or validates an existing resume target.
 // It never removes a resumed worktree on error.
 func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktreeRun, error) {
+	return prepareWorktreeRunContext(context.Background(), o, req, branch)
+}
+
+func prepareWorktreeRunContext(ctx context.Context, o opts, req executePlanRequest, branch string) (worktreeRun, error) {
 	wt := worktreeRun{
 		path:    filepath.Join(req.GitSvc.Root(), ".loopai", "worktrees", branch),
 		resumed: o.ResumeWorktree,
@@ -1026,12 +1031,12 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 		if err := requireResumeWorktree(wt.path); err != nil {
 			return worktreeRun{}, err
 		}
-	} else {
+	}
+	if !wt.resumed {
 		var err error
-		wt.path, wt.planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlan(
-			req.PlanFile, req.DefaultBranch, req.BranchOverride)
+		wt.path, wt.planNeedsCommit, err = prepareFreshWorktree(ctx, o, req, branch)
 		if err != nil {
-			return worktreeRun{}, fmt.Errorf("create worktree: %w", err)
+			return worktreeRun{}, err
 		}
 		req.WtCleanup.set(func() {
 			if rmErr := req.GitSvc.RemoveWorktree(wt.path); rmErr != nil {
@@ -1060,6 +1065,82 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 	}
 	req.Colors.Info().Printf("resuming existing worktree: %s\n", wt.path)
 	return wt, nil
+}
+
+// prepareWorktreeSource optionally commits the source checkout before a fresh worktree is cut.
+func prepareWorktreeSource(o opts, req executePlanRequest, branch string) (bool, error) {
+	if !o.Commit {
+		return false, nil
+	}
+	committed, err := req.GitSvc.AutoCommitAll("auto-commit working tree before plan: " + branch)
+	if err != nil {
+		return false, fmt.Errorf("auto-commit working tree: %w", err)
+	}
+	if committed {
+		req.Colors.Info().Printf("auto-committed working tree before creating branch: %s\n", branch)
+		return true, nil
+	}
+	req.Colors.Info().Printf("working tree clean; no auto-commit needed before creating branch: %s\n", branch)
+	return false, nil
+}
+
+// prepareFreshWorktree holds the repository lock across source mutation and branch creation.
+func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, branch string) (path string, planNeedsCommit bool, err error) {
+	release, err := req.GitSvc.AcquireWorktreeCreationLockContext(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("lock worktree creation: %w", err)
+	}
+	defer func() {
+		if releaseErr := release(); releaseErr != nil && err == nil {
+			if path != "" {
+				if removeErr := req.GitSvc.RemoveWorktree(path); removeErr != nil {
+					err = errors.Join(releaseErr, fmt.Errorf("remove worktree after lock release failure: %w", removeErr))
+					return
+				}
+				path = ""
+				planNeedsCommit = false
+			}
+			err = releaseErr
+		}
+	}()
+
+	if preflightErr := req.GitSvc.PreflightWorktreeForPlan(req.PlanFile, req.BranchOverride); preflightErr != nil {
+		return "", false, fmt.Errorf("preflight worktree creation: %w", preflightErr)
+	}
+
+	// Install runtime ignores while holding the repository lock so another fresh run
+	// cannot observe this run's worktree directory as an untracked source change.
+	// This must also precede AutoCommitAll so runtime artifacts are never staged.
+	if ignoreErr := req.GitSvc.EnsureLocalGitignore(); ignoreErr != nil {
+		return "", false, fmt.Errorf("ensure gitignore before worktree creation: %w", ignoreErr)
+	}
+	// Ignore installation can change whether an untracked plan is visible to Git,
+	// particularly for plans placed under loopai's reserved runtime directories.
+	// Revalidate before an auto-commit is allowed to advance the source checkout.
+	if preflightErr := req.GitSvc.PreflightWorktreeForPlan(req.PlanFile, req.BranchOverride); preflightErr != nil {
+		return "", false, fmt.Errorf("preflight worktree creation after ignore setup: %w", preflightErr)
+	}
+	sourceHeadBefore := ""
+	if o.Commit {
+		sourceHeadBefore, err = req.GitSvc.HeadHash()
+		if err != nil {
+			return "", false, fmt.Errorf("identify source HEAD before auto-commit: %w", err)
+		}
+	}
+	committed, sourceErr := prepareWorktreeSource(o, req, branch)
+	if sourceErr != nil {
+		return "", false, sourceErr
+	}
+	if committed {
+		path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlanAfterAutoCommit(
+			ctx, req.PlanFile, req.BranchOverride, sourceHeadBefore)
+	} else {
+		path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlan(req.PlanFile, req.BranchOverride)
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("create worktree: %w", err)
+	}
+	return path, planNeedsCommit, nil
 }
 
 func requireResumeWorktree(path string) error {
@@ -1458,9 +1539,8 @@ func modeRequiresBranch(mode processor.Mode) bool {
 }
 
 // modeCreatesBranch reports whether the run eventually creates a branch, which is what decides
-// if --base-ref may serve as its base. plan mode counts even though plan creation itself runs in
-// place: it hands off to the implementation run once the plan exists, so its --base-ref has to
-// pass the same validation up front instead of falling back silently and failing much later.
+// if --base-ref needs branch-base resolution outside worktree mode. plan mode counts even though
+// plan creation itself runs in place: it hands off to an implementation run once the plan exists.
 func modeCreatesBranch(mode processor.Mode) bool {
 	return modeRequiresBranch(mode) || mode == processor.ModePlan
 }
@@ -1509,6 +1589,9 @@ func validateFlags(o opts) error {
 	if o.ResumeWorktree && (o.Review || o.ExternalOnly || o.CodexOnly) {
 		return errors.New("--resume-worktree is only supported for full or --tasks-only execution")
 	}
+	if err := validateCommitFlags(o); err != nil {
+		return err
+	}
 	if o.Wait < 0 {
 		return fmt.Errorf("--wait must be non-negative, got %s", o.Wait)
 	}
@@ -1527,6 +1610,16 @@ func validateFlags(o opts) error {
 	return nil
 }
 
+func validateCommitFlags(o opts) error {
+	if !o.Commit {
+		return nil
+	}
+	if o.Review || o.ExternalOnly || o.CodexOnly {
+		return errors.New("--commit is only supported for full, --tasks-only, or --plan worktree execution")
+	}
+	return nil
+}
+
 func hasExecutionMode(o opts) bool {
 	if o.executionModeSet {
 		return true
@@ -1539,7 +1632,7 @@ func hasExecutionMode(o opts) bool {
 		o.PlanDescription != "", o.Review, o.ExternalOnly, o.CodexOnly, o.TasksOnly,
 		o.BaseRef != "", o.waitSet || o.Wait != 0, o.sessionTimeoutSet || o.SessionTimeout != 0,
 		o.idleTimeoutSet || o.IdleTimeout != 0, o.SkipFinalize, o.PreserveAnthropicAPIKey,
-		o.NoClaudeSwap, o.Codex, o.PassClaudeMd, o.Worktree, o.ResumeWorktree, o.Branch != "",
+		o.NoClaudeSwap, o.Codex, o.PassClaudeMd, o.Worktree, o.Commit, o.ResumeWorktree, o.Branch != "",
 		o.Serve, len(o.Watch) != 0, o.Init, o.Reset, o.DumpDefaults != "",
 	} {
 		if set {
@@ -3075,6 +3168,9 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 	if o.Worktree || o.ResumeWorktree {
 		cfg.WorktreeEnabled = true
 	}
+	if o.Commit && !cfg.WorktreeEnabled {
+		return errors.New("--commit requires --worktree")
+	}
 	if o.Wait > 0 || (o.Wait == 0 && o.waitSet) {
 		cfg.WaitOnLimit = o.Wait
 		cfg.WaitOnLimitSet = true
@@ -3178,22 +3274,22 @@ func resolveDefaultBranch(cliRef, configBranch, autoDetected string) string {
 // (e.g. "origin/main"); it names the same branch as the local ref without it.
 const remoteBranchPrefix = "origin/"
 
-// resolveBaseRefs resolves the two bases a run needs: branchBase for branch/worktree creation
-// and diffBase for review diffs and the {{DEFAULT_BRANCH}} template variable.
-// they differ only when --base-ref names a revision that is not a branch.
-// branchMode says whether the run creates a branch at all: review modes never do, so their
-// --base-ref is a pure diff base and must not be validated against the checkout.
+// resolveBaseRefs resolves the two bases a run needs: branchBase for non-worktree branch creation
+// and diffBase for review diffs and the {{DEFAULT_BRANCH}} template variable. In worktree mode,
+// branchBase remains the configured/auto-detected default because worktree creation uses current
+// HEAD; --base-ref is purely a diff base. branchMode says whether the run creates a branch at all:
+// review modes never do, so their --base-ref is also a pure diff base.
 func resolveBaseRefs(gitSvc *git.Service, cliBaseRef, configBranch string, branchMode, worktreeMode bool) (branchBase, diffBase string, err error) {
 	autoDetected := gitSvc.GetDefaultBranch()
 	diffBase = resolveDefaultBranch(cliBaseRef, configBranch, autoDetected)
 	defaultBranch := resolveDefaultBranch("", configBranch, autoDetected)
 
-	if !branchMode || cliBaseRef == "" {
+	if !branchMode || cliBaseRef == "" || worktreeMode {
 		return defaultBranch, diffBase, nil
 	}
 
 	branchBase, err = resolveBranchBase(cliBaseRef, localBranchRef(gitSvc, cliBaseRef), defaultBranch,
-		getCurrentBranch(gitSvc), worktreeMode)
+		getCurrentBranch(gitSvc))
 	if err != nil {
 		return "", "", err
 	}
@@ -3214,23 +3310,19 @@ func localBranchRef(gitSvc *git.Service, ref string) string {
 	return ""
 }
 
-// resolveBranchBase decides which ref is the base for branch and worktree creation.
+// resolveBranchBase decides which ref is the base for non-worktree branch creation.
 // cliRefBranch is the local branch --base-ref names, empty when it names anything else: a commit
 // hash is a valid diff base but cannot be branched from, so the configured/auto-detected default
-// branch stays in place — except in worktree mode, where a silent fallback would surface later as
-// a confusing "requires <default> branch" message.
+// branch stays in place. Worktree mode bypasses this function because its branch is cut from
+// current HEAD and --base-ref is used only for diffs.
 // a branch base is honored only from that branch itself, since branch creation cuts from HEAD:
 // from another branch CreateBranchForPlan reads the mismatch as "already on a feature branch" and
 // skips silently, which would leave the whole run committing onto the default branch.
-func resolveBranchBase(cliRef, cliRefBranch, defaultBranch, currentBranch string, worktreeMode bool) (string, error) {
+func resolveBranchBase(cliRef, cliRefBranch, defaultBranch, currentBranch string) (string, error) {
 	if cliRef == "" {
 		return defaultBranch, nil
 	}
 	if cliRefBranch == "" {
-		if worktreeMode {
-			return "", fmt.Errorf("--base-ref %q is not a branch; worktree creation needs a branch to base the "+
-				"new worktree on, pass a branch name or drop --worktree", cliRef)
-		}
 		return defaultBranch, nil
 	}
 	if !sameBranch(currentBranch, cliRefBranch) && sameBranch(currentBranch, defaultBranch) {

@@ -150,6 +150,26 @@ func TestClearFlagParsing(t *testing.T) {
 	assert.True(t, o.Clear)
 }
 
+func TestCommitFlagParsing(t *testing.T) {
+	t.Run("short flag sets commit", func(t *testing.T) {
+		o := parseTestOpts(t, "-c")
+		assert.True(t, o.Commit)
+		assert.False(t, o.CodexOnly)
+	})
+
+	t.Run("long flag sets commit", func(t *testing.T) {
+		o := parseTestOpts(t, "--commit")
+		assert.True(t, o.Commit)
+		assert.False(t, o.CodexOnly)
+	})
+
+	t.Run("codex only keeps long form", func(t *testing.T) {
+		o := parseTestOpts(t, "--codex-only")
+		assert.True(t, o.CodexOnly)
+		assert.False(t, o.Commit)
+	})
+}
+
 func TestMergeFlagParsing(t *testing.T) {
 	t.Run("bare flag auto detects base", func(t *testing.T) {
 		o := parseTestOpts(t, "--merge")
@@ -733,7 +753,6 @@ func TestResolveBranchBase(t *testing.T) {
 		cliRefBranch  string
 		defaultBranch string
 		currentBranch string
-		worktreeMode  bool
 		expected      string
 		expectedErr   string
 	}{
@@ -742,16 +761,8 @@ func TestResolveBranchBase(t *testing.T) {
 			expected: "main",
 		},
 		{
-			name: "no_cli_ref_keeps_default_in_worktree_mode", cliRef: "", defaultBranch: "main", currentBranch: "main",
-			worktreeMode: true, expected: "main",
-		},
-		{
 			name: "branch_ref_becomes_base_when_checked_out", cliRef: "release/13.0.0", cliRefBranch: "release/13.0.0",
 			defaultBranch: "main", currentBranch: "release/13.0.0", expected: "release/13.0.0",
-		},
-		{
-			name: "branch_ref_becomes_base_in_worktree_mode", cliRef: "release/13.0.0", cliRefBranch: "release/13.0.0",
-			defaultBranch: "main", currentBranch: "release/13.0.0", worktreeMode: true, expected: "release/13.0.0",
 		},
 		{
 			name: "remote_tracking_ref_resolves_to_local_branch", cliRef: "origin/main", cliRefBranch: "main",
@@ -775,15 +786,11 @@ func TestResolveBranchBase(t *testing.T) {
 			name: "commit_hash_keeps_default_outside_worktree_mode", cliRef: "abc1234", defaultBranch: "main",
 			currentBranch: "main", expected: "main",
 		},
-		{
-			name: "commit_hash_fails_in_worktree_mode", cliRef: "abc1234", defaultBranch: "main", currentBranch: "main",
-			worktreeMode: true, expectedErr: `--base-ref "abc1234" is not a branch`,
-		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := resolveBranchBase(tc.cliRef, tc.cliRefBranch, tc.defaultBranch, tc.currentBranch, tc.worktreeMode)
+			result, err := resolveBranchBase(tc.cliRef, tc.cliRefBranch, tc.defaultBranch, tc.currentBranch)
 			if tc.expectedErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.expectedErr)
@@ -796,7 +803,7 @@ func TestResolveBranchBase(t *testing.T) {
 }
 
 func TestResolveBaseRefs(t *testing.T) {
-	t.Run("branch_base_ref_becomes_worktree_base", func(t *testing.T) {
+	t.Run("branch_base_ref_is_diff_only_in_worktree_mode", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		runGit(t, dir, "checkout", "-b", "release/13.0.0")
 
@@ -805,8 +812,8 @@ func TestResolveBaseRefs(t *testing.T) {
 
 		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "release/13.0.0", "", true, true)
 		require.NoError(t, err)
-		assert.Equal(t, "release/13.0.0", branchBase, "worktree must branch off the requested release branch")
-		assert.Equal(t, "release/13.0.0", diffBase, "review diffs must use the same base")
+		assert.Equal(t, "master", branchBase, "worktree creation ignores the resolved branch base and uses current HEAD")
+		assert.Equal(t, "release/13.0.0", diffBase, "review diffs honor the requested base")
 	})
 
 	t.Run("branch_base_ref_rejected_from_the_default_branch", func(t *testing.T) {
@@ -847,11 +854,11 @@ func TestResolveBaseRefs(t *testing.T) {
 
 		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "origin/master", "", true, true)
 		require.NoError(t, err)
-		assert.Equal(t, "master", branchBase, "a remote-tracking ref names the local branch it tracks")
+		assert.Equal(t, "master", branchBase, "worktree creation keeps the default branch metadata")
 		assert.Equal(t, "origin/master", diffBase, "diffs keep the requested revision as written")
 	})
 
-	t.Run("commit_hash_base_ref_rejected_in_worktree_mode", func(t *testing.T) {
+	t.Run("commit_hash_base_ref_is_diff_only_in_worktree_mode", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
@@ -859,9 +866,10 @@ func TestResolveBaseRefs(t *testing.T) {
 		hash, err := gitSvc.HeadHash()
 		require.NoError(t, err)
 
-		_, _, err = resolveBaseRefs(gitSvc, hash, "", true, true)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "is not a branch")
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, hash, "", true, true)
+		require.NoError(t, err)
+		assert.Equal(t, "master", branchBase)
+		assert.Equal(t, hash, diffBase)
 	})
 
 	t.Run("commit_hash_base_ref_kept_for_diffs_without_worktree", func(t *testing.T) {
@@ -1673,6 +1681,12 @@ func TestValidateFlags(t *testing.T) {
 		{name: "zero_idle_timeout_is_valid", opts: opts{IdleTimeout: 0}, wantErr: false},
 		{name: "codex_alone_is_valid", opts: opts{Codex: true}, wantErr: false},
 		{name: "codex_with_pass_claude_md_is_valid", opts: opts{Codex: true, PassClaudeMd: true}, wantErr: false},
+		{name: "commit_with_worktree_is_valid", opts: opts{Commit: true, Worktree: true}, wantErr: false},
+		{name: "commit_without_worktree_is_deferred_until_config_merge", opts: opts{Commit: true}, wantErr: false},
+		{name: "commit_with_resume_is_inert", opts: opts{Commit: true, Worktree: true, ResumeWorktree: true}, wantErr: false},
+		{name: "commit_with_implicit_resume_is_inert", opts: opts{Commit: true, ResumeWorktree: true}, wantErr: false},
+		{name: "commit_with_review_is_invalid", opts: opts{Commit: true, Worktree: true, Review: true}, wantErr: true, errMsg: "only supported for full"},
+		{name: "commit_with_external_only_is_invalid", opts: opts{Commit: true, Worktree: true, ExternalOnly: true}, wantErr: true, errMsg: "only supported for full"},
 		{name: "resume_worktree_is_valid", opts: opts{ResumeWorktree: true}, wantErr: false},
 		{name: "resume_worktree_with_tasks_only_is_valid", opts: opts{ResumeWorktree: true, TasksOnly: true}, wantErr: false},
 		{name: "resume_worktree_with_plan_conflicts", opts: opts{ResumeWorktree: true, PlanDescription: "add feature"}, wantErr: true, errMsg: "--plan"},
@@ -1795,6 +1809,30 @@ func TestApplyCLIOverrides_ResumeWorktreeImpliesWorktree(t *testing.T) {
 	cfg := &config.Config{}
 	require.NoError(t, applyCLIOverrides(opts{ResumeWorktree: true}, cfg))
 	assert.True(t, cfg.WorktreeEnabled)
+}
+
+func TestApplyCLIOverrides_CommitRequiresEffectiveWorktree(t *testing.T) {
+	t.Run("accepts config enabled worktree", func(t *testing.T) {
+		cfg := &config.Config{WorktreeEnabled: true}
+		require.NoError(t, applyCLIOverrides(opts{Commit: true}, cfg))
+		assert.True(t, cfg.WorktreeEnabled)
+	})
+
+	t.Run("accepts CLI enabled worktree", func(t *testing.T) {
+		cfg := &config.Config{}
+		require.NoError(t, applyCLIOverrides(opts{Commit: true, Worktree: true}, cfg))
+		assert.True(t, cfg.WorktreeEnabled)
+	})
+
+	t.Run("accepts resume implied worktree", func(t *testing.T) {
+		cfg := &config.Config{}
+		require.NoError(t, applyCLIOverrides(opts{Commit: true, ResumeWorktree: true}, cfg))
+		assert.True(t, cfg.WorktreeEnabled)
+	})
+
+	t.Run("rejects when worktree is disabled", func(t *testing.T) {
+		require.ErrorContains(t, applyCLIOverrides(opts{Commit: true}, &config.Config{}), "--commit requires --worktree")
+	})
 }
 
 func TestCodexFlag_ApplyCLIOverrides(t *testing.T) {
@@ -4326,6 +4364,493 @@ func TestResolveVersion(t *testing.T) {
 	})
 }
 
+func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
+	t.Run("invalid_branch_is_rejected_before_source_mutation", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "valid.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Valid\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/valid.md")
+		runGit(t, dir, "commit", "-m", "add valid plan")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		statusBefore := gitOutput(t, dir, "status", "--porcelain")
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+			BranchOverride: "bad branch",
+		}, "bad branch")
+
+		require.ErrorContains(t, err, `invalid plan branch "bad branch"`)
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, statusBefore, gitOutput(t, dir, "status", "--porcelain"))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai"))
+	})
+
+	t.Run("reflog_shorthand_branch_is_rejected_before_source_mutation", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "valid.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Valid\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/valid.md")
+		runGit(t, dir, "commit", "-m", "add valid plan")
+		runGit(t, dir, "switch", "-c", "previous")
+		runGit(t, dir, "switch", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		statusBefore := gitOutput(t, dir, "status", "--porcelain")
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+			BranchOverride: "@{-1}",
+		}, "@{-1}")
+
+		require.ErrorContains(t, err, `invalid plan branch "@{-1}"`)
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, statusBefore, gitOutput(t, dir, "status", "--porcelain"))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai"))
+	})
+
+	t.Run("plan_branch_collision_is_rejected_before_source_mutation", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "collision.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Collision\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/collision.md")
+		runGit(t, dir, "commit", "-m", "add collision plan")
+		runGit(t, dir, "checkout", "-b", "collision")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "collision")
+
+		require.ErrorContains(t, err, "plan branch \"collision\" is already checked out here")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai"))
+	})
+
+	t.Run("dirty_source_is_committed_and_merged_into_existing_plan_branch", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "existing-reuse.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Existing Reuse\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/existing-reuse.md")
+		runGit(t, dir, "commit", "-m", "add existing reuse plan")
+		runGit(t, dir, "switch", "-c", "existing-reuse")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "branch-only.txt"), []byte("preserve branch work\n"), 0o600))
+		runGit(t, dir, "add", "branch-only.txt")
+		runGit(t, dir, "commit", "-m", "existing plan work")
+		runGit(t, dir, "switch", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		wt, err := prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "existing-reuse")
+
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+		sourceHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		assert.NotEqual(t, headBefore, sourceHead)
+		runGit(t, dir, "merge-base", "--is-ancestor", sourceHead, "existing-reuse")
+		assert.Equal(t, "preserve branch work", strings.TrimSpace(gitOutput(t, wt.path, "show", "HEAD:branch-only.txt")))
+		assert.Equal(t, "# Dirty", strings.TrimSpace(gitOutput(t, wt.path, "show", "HEAD:README.md")))
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
+	})
+
+	t.Run("existing_plan_branch_merge_conflict_is_aborted_and_worktree_removed", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "existing-conflict.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Existing Conflict\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/existing-conflict.md")
+		runGit(t, dir, "commit", "-m", "add conflict plan")
+		runGit(t, dir, "switch", "-c", "existing-conflict")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("branch version\n"), 0o600))
+		runGit(t, dir, "commit", "-am", "change README on plan branch")
+		branchBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		runGit(t, dir, "switch", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("source version\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		sourceBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "existing-conflict")
+
+		require.ErrorContains(t, err, "merge auto-committed source into existing plan branch")
+		assert.NotEqual(t, sourceBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, branchBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "existing-conflict")))
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "existing-conflict"))
+	})
+
+	t.Run("case_mismatched_plan_path_reuses_existing_branch_after_auto_commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		actualPlanPath := filepath.Join(dir, "docs", "plans", "Add-Auth.md")
+		require.NoError(t, os.WriteFile(actualPlanPath, []byte("# Add Auth\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/Add-Auth.md")
+		runGit(t, dir, "commit", "-m", "add mixed-case plan")
+		runGit(t, dir, "branch", "Add-Auth")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		userPlanPath := filepath.Join(dir, "docs", "plans", "add-auth.md")
+		wt, err := prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: userPlanPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "add-auth")
+
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+		sourceHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		assert.NotEqual(t, headBefore, sourceHead)
+		runGit(t, dir, "merge-base", "--is-ancestor", sourceHead, "Add-Auth")
+		assert.Equal(t, "# Dirty", strings.TrimSpace(gitOutput(t, wt.path, "show", "HEAD:README.md")))
+	})
+
+	t.Run("clean_source_is_no_op_and_still_creates_worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "clean-source.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Clean Source\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/clean-source.md")
+		runGit(t, dir, "commit", "-m", "add clean plan")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		wt, err := prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "clean-source")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "clean-source")))
+		assert.DirExists(t, wt.path)
+	})
+
+	t.Run("commits_dirty_source_and_includes_plan_in_new_worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "auto-commit.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Auto Commit\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		req := executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}
+
+		wt, err := prepareWorktreeRun(opts{Commit: true, Worktree: true}, req, "auto-commit")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+		assert.False(t, wt.planNeedsCommit, "auto-committed plan must not be copied and recommitted")
+
+		headAfter := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "master"))
+		assert.NotEqual(t, headBefore, headAfter)
+		assert.Equal(t, headAfter, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "auto-commit")))
+		assert.Equal(t, "auto-commit working tree before plan: auto-commit",
+			strings.TrimSpace(gitOutput(t, dir, "log", "-1", "--format=%B", "master")))
+		readme, readErr := os.ReadFile(filepath.Join(wt.path, "README.md"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "# Updated\n", string(readme))
+		planContents, readErr := os.ReadFile(wt.planFile)
+		require.NoError(t, readErr)
+		assert.Equal(t, "# Auto Commit\n", string(planContents))
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
+	})
+
+	t.Run("commits_dirty_detached_head_and_creates_worktree_from_it", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		runGit(t, dir, "checkout", "--detach", headBefore)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "detached-auto-commit.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Detached Auto Commit\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Detached update\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wt, err := prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "detached-auto-commit")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+
+		detachedHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		assert.NotEqual(t, headBefore, detachedHead)
+		assert.Equal(t, "HEAD", strings.TrimSpace(gitOutput(t, dir, "rev-parse", "--abbrev-ref", "HEAD")))
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD^")))
+		assert.Equal(t, detachedHead, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "detached-auto-commit")))
+		assert.False(t, wt.planNeedsCommit)
+		assert.Equal(t, "# Detached update", strings.TrimSpace(gitOutput(t, wt.path, "show", "HEAD:README.md")))
+		assert.Equal(t, "# Detached Auto Commit", strings.TrimSpace(gitOutput(t, wt.path, "show", "HEAD:docs/plans/detached-auto-commit.md")))
+	})
+
+	t.Run("invalid_worktree_parent_preserves_source_and_creates_nothing", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "ignore-failure.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Ignore Failure\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/ignore-failure.md")
+		runGit(t, dir, "commit", "-m", "add ignore failure plan")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai"), []byte("blocks directory\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "ignore-failure")
+		require.ErrorContains(t, err, "preflight worktree creation")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "ignore-failure")))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "ignore-failure"))
+	})
+
+	t.Run("case_only_plan_branch_collision_is_rejected_before_auto_commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "feature.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Feature\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/feature.md")
+		runGit(t, dir, "commit", "-m", "add feature plan")
+		runGit(t, dir, "branch", "-m", "Feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "feature")
+
+		require.ErrorContains(t, err, "plan branch \"feature\" is already checked out here")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "feature"))
+	})
+
+	t.Run("outside_plan_is_rejected_before_auto_commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		outsideDir := t.TempDir()
+		planPath := filepath.Join(outsideDir, "outside-plan.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Outside Plan\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("keep staged\n"), 0o600))
+		runGit(t, dir, "add", "staged.txt")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		indexBefore := gitOutput(t, dir, "diff", "--cached", "--name-status")
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "outside-plan")
+		require.ErrorContains(t, err, "outside repository")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, indexBefore, gitOutput(t, dir, "diff", "--cached", "--name-status"))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "outside-plan")))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "outside-plan"))
+	})
+
+	t.Run("ignored_plan_is_rejected_before_auto_commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("docs/plans/ignored-plan.md\n"), 0o600))
+		runGit(t, dir, "add", ".gitignore")
+		runGit(t, dir, "commit", "-m", "ignore plan fixture")
+		planPath := filepath.Join(dir, "docs", "plans", "ignored-plan.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Ignored Plan\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "ignored-plan")
+		require.ErrorContains(t, err, "ignored or otherwise unavailable to Git")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "ignored-plan")))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "ignored-plan"))
+	})
+
+	t.Run("runtime_plan_is_rejected_after_ignore_setup_before_auto_commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		progressDir := filepath.Join(dir, ".loopai", "progress")
+		require.NoError(t, os.MkdirAll(progressDir, 0o750))
+		planPath := filepath.Join(progressDir, "runtime-plan.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Runtime Plan\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "runtime-plan")
+
+		require.ErrorContains(t, err, "preflight worktree creation after ignore setup")
+		require.ErrorContains(t, err, "ignored or otherwise unavailable to Git")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "runtime-plan")))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "runtime-plan"))
+	})
+
+	t.Run("dangling_worktree_target_is_rejected_before_auto_commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "dangling-target.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Dangling Target\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/dangling-target.md")
+		runGit(t, dir, "commit", "-m", "add dangling target plan")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+		worktreesDir := filepath.Join(dir, ".loopai", "worktrees")
+		require.NoError(t, os.MkdirAll(worktreesDir, 0o750))
+		targetPath := filepath.Join(worktreesDir, "dangling-target")
+		require.NoError(t, os.Symlink(filepath.Join(dir, "missing-worktree"), targetPath))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "dangling-target")
+
+		require.ErrorContains(t, err, "preflight worktree creation")
+		require.ErrorContains(t, err, "worktree already exists")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "dangling-target")))
+	})
+
+	t.Run("concurrent_fresh_runs_ignore_each_others_worktrees", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		firstPlan := filepath.Join(plansDir, "parallel-one.md")
+		secondPlan := filepath.Join(plansDir, "parallel-two.md")
+		require.NoError(t, os.WriteFile(firstPlan, []byte("# Parallel One\n"), 0o600))
+		require.NoError(t, os.WriteFile(secondPlan, []byte("# Parallel Two\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/parallel-one.md", "docs/plans/parallel-two.md")
+		runGit(t, dir, "commit", "-m", "add parallel plans")
+
+		firstSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		secondSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		type result struct {
+			wt  worktreeRun
+			err error
+		}
+		results := make(chan result, 2)
+		start := make(chan struct{})
+		launch := func(svc *git.Service, planPath, branch string) {
+			<-start
+			wt, prepareErr := prepareWorktreeRun(opts{Worktree: true}, executePlanRequest{
+				PlanFile: planPath, GitSvc: svc, Config: &config.Config{},
+				Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+			}, branch)
+			results <- result{wt: wt, err: prepareErr}
+		}
+		go launch(firstSvc, firstPlan, "parallel-one")
+		go launch(secondSvc, secondPlan, "parallel-two")
+		close(start)
+
+		for range 2 {
+			res := <-results
+			require.NoError(t, res.err)
+			t.Cleanup(func() { _ = firstSvc.RemoveWorktree(res.wt.path) })
+			assert.DirExists(t, res.wt.path)
+		}
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
+	})
+
+	t.Run("returns_commit_error_without_creating_worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "blocked.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Blocked\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/blocked.md")
+		runGit(t, dir, "commit", "-m", "add blocked plan")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+		writeExecutable(t, filepath.Join(dir, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "blocked")
+		require.ErrorContains(t, err, "auto-commit working tree")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "blocked"))
+	})
+
+	t.Run("resume_does_not_auto_commit_source", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "resume-no-commit.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Resume\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/resume-no-commit.md")
+		runGit(t, dir, "commit", "-m", "add resume plan")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Still dirty\n"), 0o600))
+
+		wt, err := prepareWorktreeRun(opts{Commit: true, ResumeWorktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "resume-no-commit")
+		require.NoError(t, err)
+		assert.True(t, wt.resumed)
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+	})
+}
+
 func TestRunWithWorktree(t *testing.T) {
 	t.Run("creates_worktree_and_restores_cwd", func(t *testing.T) {
 		skipIfClaudeNotAvailable(t)
@@ -4464,6 +4989,40 @@ func TestRunWithWorktree(t *testing.T) {
 }
 
 func TestRunWithWorktreeResume(t *testing.T) {
+	t.Run("accepts_case_mismatched_plan_path", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		actualPlanPath := filepath.Join(plansDir, "Resume-Mixed-Case.md")
+		require.NoError(t, os.WriteFile(actualPlanPath, []byte("# Resume Mixed Case\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/Resume-Mixed-Case.md")
+		runGit(t, dir, "commit", "-m", "add mixed-case resume plan")
+
+		requestedPlanPath := filepath.Join(plansDir, "resume-mixed-case.md")
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wtPath, _, err := gitSvc.CreateWorktreeForPlan(requestedPlanPath, "")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
+
+		branch := gitSvc.EffectiveBranchName(requestedPlanPath, "")
+		assert.Equal(t, "Resume-Mixed-Case", branch)
+		wt, err := prepareWorktreeRun(opts{ResumeWorktree: true}, executePlanRequest{
+			PlanFile: requestedPlanPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), WtCleanup: &cleanupHolder{},
+		}, branch)
+		require.NoError(t, err)
+		assert.Equal(t, wtPath, wt.path)
+		currentBranch, err := wt.gitSvc.CurrentBranch()
+		require.NoError(t, err)
+		assert.Equal(t, "Resume-Mixed-Case", currentBranch)
+	})
+
 	t.Run("rejects_unregistered_directory_without_removing_it", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		origDir, err := os.Getwd()
@@ -4536,7 +5095,7 @@ func TestRunWithWorktreeResume(t *testing.T) {
 
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
-		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "master", "")
+		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "")
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
 
@@ -4571,7 +5130,7 @@ func TestRunWithWorktreeResume(t *testing.T) {
 
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
-		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "master", "")
+		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "")
 		require.NoError(t, err)
 
 		fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
@@ -4739,7 +5298,7 @@ func TestRunWithWorktree_CreateWorktreeError(t *testing.T) {
 		Colors: colors, DefaultBranch: "master", WtCleanup: wtCleanup,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "create worktree")
+	assert.Contains(t, err.Error(), "preflight worktree creation")
 }
 
 func TestRunWithWorktree_HandsOffFailureNotification(t *testing.T) {
