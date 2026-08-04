@@ -1503,6 +1503,25 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "stale-feature"))
 	})
 
+	t.Run("rejects stale branch when same-named tag contains current HEAD", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, svc.CreateBranch("ambiguous-feature"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		planFile := filepath.Join(dir, "docs", "plans", "ambiguous-feature.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("advance source with plan"))
+		runGit(t, dir, "tag", "ambiguous-feature")
+
+		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
+		require.ErrorContains(t, err, "does not include current HEAD")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "ambiguous-feature"))
+	})
+
 	t.Run("creates worktree from non-default branch HEAD", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		log := &mockLogger{}

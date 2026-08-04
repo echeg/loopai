@@ -555,7 +555,7 @@ func (s *Service) validateExistingPlanBranch(branchName string) error {
 	if err != nil {
 		return fmt.Errorf("identify current HEAD before reusing plan branch: %w", err)
 	}
-	containsHead, err := s.repo.isAncestor(context.Background(), head, branchName)
+	containsHead, err := s.repo.isAncestor(context.Background(), head, "refs/heads/"+branchName)
 	if err != nil {
 		return fmt.Errorf("verify existing plan branch %q: %w", branchName, err)
 	}
