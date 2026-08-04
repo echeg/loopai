@@ -2100,6 +2100,63 @@ func TestService_appendTrailer(t *testing.T) {
 	})
 }
 
+func TestService_AutoCommitAll(t *testing.T) {
+	t.Run("commits modified and untracked files and respects gitignore", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		svc.SetCommitTrailer("Loopai-Test: auto-commit")
+
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Modified\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("new\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.log\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ignored.log"), []byte("ignored\n"), 0o600))
+
+		committed, err := svc.AutoCommitAll("save working tree")
+		require.NoError(t, err)
+		assert.True(t, committed)
+		assert.Empty(t, runGit(t, dir, "status", "--porcelain"))
+
+		files := runGit(t, dir, "show", "--pretty=format:", "--name-only", "HEAD")
+		assert.Contains(t, files, "README.md")
+		assert.Contains(t, files, "untracked.txt")
+		assert.Contains(t, files, ".gitignore")
+		assert.NotContains(t, files, "ignored.log")
+		message := runGit(t, dir, "log", "-1", "--pretty=%B")
+		assert.Equal(t, "save working tree\n\nLoopai-Test: auto-commit", strings.TrimSpace(message))
+	})
+
+	t.Run("clean tree is a no-op", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		before, err := svc.HeadHash()
+		require.NoError(t, err)
+		committed, err := svc.AutoCommitAll("unused")
+		require.NoError(t, err)
+		assert.False(t, committed)
+		after, err := svc.HeadHash()
+		require.NoError(t, err)
+		assert.Equal(t, before, after)
+	})
+
+	t.Run("returns commit errors", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		hooksDir := filepath.Join(dir, ".git", "hooks")
+		hook := filepath.Join(hooksDir, "pre-commit")
+		require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "blocked.txt"), []byte("change\n"), 0o600))
+
+		committed, err := svc.AutoCommitAll("blocked")
+		require.Error(t, err)
+		assert.False(t, committed)
+		assert.Contains(t, err.Error(), "auto-commit all: commit")
+	})
+}
+
 func TestService_CommitWithTrailer(t *testing.T) {
 	t.Run("trailer appears in commit log", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

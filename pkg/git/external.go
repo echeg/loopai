@@ -589,26 +589,38 @@ func (e *externalBackend) commitFiles(msg string, paths ...string) error {
 	return nil
 }
 
-// createInitialCommit stages all non-ignored files and creates an initial commit.
-func (e *externalBackend) createInitialCommit(msg string) error {
+// autoCommitAll stages all non-ignored files and commits them when anything changed.
+func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
 	// git add -A respects .gitignore natively
 	_, err := e.run("add", "-A")
 	if err != nil {
-		return fmt.Errorf("stage files: %w", err)
+		return false, fmt.Errorf("stage files: %w", err)
 	}
 
 	// check if anything was staged
 	out, err := e.run("status", "--porcelain")
 	if err != nil {
-		return fmt.Errorf("check status: %w", err)
+		return false, fmt.Errorf("check status: %w", err)
 	}
 	if out == "" {
-		return errors.New("no files to commit")
+		return false, nil
 	}
 
 	_, err = e.run("commit", "-m", msg)
 	if err != nil {
-		return fmt.Errorf("commit: %w", err)
+		return false, fmt.Errorf("commit: %w", err)
+	}
+	return true, nil
+}
+
+// createInitialCommit stages all non-ignored files and creates an initial commit.
+func (e *externalBackend) createInitialCommit(msg string) error {
+	committed, err := e.autoCommitAll(msg)
+	if err != nil {
+		return err
+	}
+	if !committed {
+		return errors.New("no files to commit")
 	}
 	return nil
 }

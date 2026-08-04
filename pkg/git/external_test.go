@@ -801,6 +801,20 @@ func TestExternalBackend_CreateInitialCommit(t *testing.T) {
 	})
 }
 
+func TestExternalBackend_AutoCommitAll(t *testing.T) {
+	t.Run("returns false with no changes", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		before := runGit(t, dir, "rev-parse", "HEAD")
+		committed, err := eb.autoCommitAll("unused")
+		require.NoError(t, err)
+		assert.False(t, committed)
+		assert.Equal(t, before, runGit(t, dir, "rev-parse", "HEAD"))
+	})
+}
+
 func TestExternalBackend_diffStats(t *testing.T) {
 	t.Run("returns zero stats when branches are equal", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

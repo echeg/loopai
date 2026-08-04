@@ -60,10 +60,10 @@
 
 ### Task 2: Add auto-commit-all support to git service
 
-- [ ] add backend method in `pkg/git/external.go`: stage everything with `git add -A`, check `status --porcelain`, commit when non-empty (mirror `createInitialCommit`, but returning a "nothing to commit" signal instead of an error)
-- [ ] add `Service.AutoCommitAll(message string) (committed bool, err error)` in `pkg/git/service.go`: applies `appendTrailer` to the message, no-op returning `false` on a clean tree
-- [ ] write tests: dirty tree (modified + untracked files) gets committed on the current branch and the tree is clean afterwards; gitignored files are not committed; clean tree returns `committed=false` with no new commit
-- [ ] run `go test ./pkg/git/...` — must pass before task 3
+- [x] add backend method in `pkg/git/external.go`: stage everything with `git add -A`, check `status --porcelain`, commit when non-empty (mirror `createInitialCommit`, but returning a "nothing to commit" signal instead of an error)
+- [x] add `Service.AutoCommitAll(message string) (committed bool, err error)` in `pkg/git/service.go`: applies `appendTrailer` to the message, no-op returning `false` on a clean tree
+- [x] write tests: dirty tree (modified + untracked files) gets committed on the current branch and the tree is clean afterwards; gitignored files are not committed; clean tree returns `committed=false` with no new commit
+- [x] run `go test ./pkg/git/...` — must pass before task 3
 
 ### Task 3: Add -c/--commit CLI flag and wire it into worktree creation
 

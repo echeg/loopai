@@ -46,6 +46,7 @@ type backend interface {
 	moveFile(src, dst string) error
 	commit(msg string) error
 	commitFiles(msg string, paths ...string) error
+	autoCommitAll(msg string) (bool, error)
 	createInitialCommit(msg string) error
 	diffStats(baseBranch string) (DiffStats, error)
 	addWorktree(path, branch string, createBranch bool) error
@@ -120,6 +121,16 @@ func (s *Service) appendTrailer(msg string) string {
 		return msg
 	}
 	return msg + "\n\n" + s.trailer
+}
+
+// AutoCommitAll stages all non-ignored changes and commits them with the given message.
+// It returns false without creating a commit when the working tree is clean.
+func (s *Service) AutoCommitAll(message string) (bool, error) {
+	committed, err := s.repo.autoCommitAll(s.appendTrailer(message))
+	if err != nil {
+		return false, fmt.Errorf("auto-commit all: %w", err)
+	}
+	return committed, nil
 }
 
 // Root returns the absolute path to the repository root.
