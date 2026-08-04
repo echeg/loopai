@@ -836,6 +836,26 @@ func TestExternalBackend_AutoCommitAll(t *testing.T) {
 			assert.False(t, committed)
 		})
 	}
+
+	t.Run("refuses to finish an in-progress merge", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature change")
+		runGit(t, dir, "checkout", "master")
+		runGit(t, dir, "merge", "--no-ff", "--no-commit", "feature")
+
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+		headBefore := runGit(t, dir, "rev-parse", "HEAD")
+		committed, err := eb.autoCommitAll("must not finish merge")
+
+		require.ErrorContains(t, err, "merge is in progress")
+		assert.False(t, committed)
+		assert.Equal(t, headBefore, runGit(t, dir, "rev-parse", "HEAD"))
+		assert.FileExists(t, filepath.Join(dir, ".git", "MERGE_HEAD"))
+	})
 }
 
 func TestExternalBackend_diffStats(t *testing.T) {

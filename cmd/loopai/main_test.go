@@ -4341,6 +4341,56 @@ func TestResolveVersion(t *testing.T) {
 }
 
 func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
+	t.Run("plan_branch_collision_is_rejected_before_source_mutation", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "collision.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Collision\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/collision.md")
+		runGit(t, dir, "commit", "-m", "add collision plan")
+		runGit(t, dir, "checkout", "-b", "collision")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "collision")
+
+		require.ErrorContains(t, err, "plan branch \"collision\" is already checked out here")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai"))
+	})
+
+	t.Run("dirty_source_with_existing_plan_branch_is_rejected_before_commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "existing-reuse.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Existing Reuse\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/existing-reuse.md")
+		runGit(t, dir, "commit", "-m", "add existing reuse plan")
+		runGit(t, dir, "branch", "existing-reuse")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		branchBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "existing-reuse"))
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "existing-reuse")
+
+		require.ErrorContains(t, err, "cannot auto-commit before reusing existing plan branch \"existing-reuse\"")
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, branchBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "existing-reuse")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "existing-reuse"))
+	})
+
 	t.Run("clean_source_is_no_op_and_still_creates_worktree", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
@@ -4397,7 +4447,7 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
 	})
 
-	t.Run("gitignore_setup_failure_preserves_source_and_creates_nothing", func(t *testing.T) {
+	t.Run("invalid_worktree_parent_preserves_source_and_creates_nothing", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
 		planPath := filepath.Join(dir, "docs", "plans", "ignore-failure.md")
@@ -4414,7 +4464,7 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
 			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
 		}, "ignore-failure")
-		require.ErrorContains(t, err, "ensure gitignore before worktree creation")
+		require.ErrorContains(t, err, "preflight worktree creation")
 		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
 		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
 		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "ignore-failure")))
@@ -4923,7 +4973,7 @@ func TestRunWithWorktree_CreateWorktreeError(t *testing.T) {
 		Colors: colors, DefaultBranch: "master", WtCleanup: wtCleanup,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "create worktree")
+	assert.Contains(t, err.Error(), "preflight worktree creation")
 }
 
 func TestRunWithWorktree_HandsOffFailureNotification(t *testing.T) {

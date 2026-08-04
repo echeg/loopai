@@ -650,6 +650,10 @@ func (e *externalBackend) commitFiles(msg string, paths ...string) error {
 
 // autoCommitAll stages all non-ignored files and commits them when anything changed.
 func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
+	if err := e.validateAutoCommitState(); err != nil {
+		return false, err
+	}
+
 	// git add -A respects .gitignore natively
 	_, err := e.run("add", "-A")
 	if err != nil {
@@ -670,6 +674,55 @@ func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
 		return false, fmt.Errorf("commit: %w", err)
 	}
 	return true, nil
+}
+
+func (e *externalBackend) validateAutoCommitState() error {
+	unmerged, err := e.run("ls-files", "-u")
+	if err != nil {
+		return fmt.Errorf("check unmerged paths before auto-commit: %w", err)
+	}
+	if unmerged != "" {
+		return errors.New("refuse auto-commit with unmerged paths; finish or abort the current Git operation first")
+	}
+
+	gitDir, err := e.gitDir()
+	if err != nil {
+		return fmt.Errorf("locate Git operation state before auto-commit: %w", err)
+	}
+	states := []struct {
+		path string
+		name string
+	}{
+		{path: "MERGE_HEAD", name: "merge"},
+		{path: "CHERRY_PICK_HEAD", name: "cherry-pick"},
+		{path: "REVERT_HEAD", name: "revert"},
+		{path: "rebase-merge", name: "rebase"},
+		{path: "rebase-apply", name: "rebase"},
+		{path: "sequencer", name: "sequenced Git operation"},
+	}
+	for _, state := range states {
+		_, statErr := os.Stat(filepath.Join(gitDir, state.path))
+		switch {
+		case statErr == nil:
+			return fmt.Errorf("refuse auto-commit while a %s is in progress; finish or abort it first", state.name)
+		case os.IsNotExist(statErr):
+			continue
+		default:
+			return fmt.Errorf("inspect %s state before auto-commit: %w", state.name, statErr)
+		}
+	}
+	return nil
+}
+
+func (e *externalBackend) gitDir() (string, error) {
+	out, err := e.run("rev-parse", "--git-dir")
+	if err != nil {
+		return "", fmt.Errorf("get Git directory: %w", err)
+	}
+	if !filepath.IsAbs(out) {
+		out = filepath.Join(e.path, out)
+	}
+	return filepath.Clean(out), nil
 }
 
 // createInitialCommit stages all non-ignored files and creates an initial commit.

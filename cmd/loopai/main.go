@@ -1100,11 +1100,20 @@ func prepareFreshWorktree(o opts, req executePlanRequest, branch string) (path s
 		}
 	}()
 
+	if preflightErr := req.GitSvc.PreflightWorktreeForPlan(req.PlanFile, req.BranchOverride); preflightErr != nil {
+		return "", false, fmt.Errorf("preflight worktree creation: %w", preflightErr)
+	}
+
 	// Install runtime ignores while holding the repository lock so another fresh run
 	// cannot observe this run's worktree directory as an untracked source change.
 	// This must also precede AutoCommitAll so runtime artifacts are never staged.
 	if ignoreErr := req.GitSvc.EnsureLocalGitignore(); ignoreErr != nil {
 		return "", false, fmt.Errorf("ensure gitignore before worktree creation: %w", ignoreErr)
+	}
+	if o.Commit {
+		if preflightErr := req.GitSvc.ValidateWorktreeAutoCommit(req.PlanFile, req.BranchOverride); preflightErr != nil {
+			return "", false, fmt.Errorf("preflight source auto-commit: %w", preflightErr)
+		}
 	}
 	if sourceErr := prepareWorktreeSource(o, req, branch); sourceErr != nil {
 		return "", false, sourceErr

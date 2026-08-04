@@ -487,22 +487,18 @@ func (s *Service) CreateBranchForPlan(planFile, defaultBranch, branchOverride st
 func (s *Service) CreateWorktreeForPlan(planFile, branchOverride string) (string, bool, error) {
 	planFile = s.resolveFilesystemCase(planFile)
 
-	// check worktree existence early, before prepareWorktreePlan runs hasChangesOtherThan
-	// (an existing worktree dir would show up as untracked and fail the dirty check)
-	earlyBranch := s.EffectiveBranchName(planFile, branchOverride)
-	wtPath := filepath.Join(s.repo.root(), ".loopai", "worktrees", earlyBranch)
-
 	// prune stale worktree entries first
 	if pruneErr := s.repo.pruneWorktrees(); pruneErr != nil {
 		s.log.Printf("warning: prune worktrees: %v\n", pruneErr)
 	}
 
-	// check if worktree directory already exists
-	if _, statErr := os.Stat(wtPath); statErr == nil {
-		return "", false, fmt.Errorf("worktree already exists at %s, another instance may be running", wtPath)
+	if err := s.PreflightWorktreeForPlan(planFile, branchOverride); err != nil {
+		return "", false, err
 	}
+	branchName := s.EffectiveBranchName(planFile, branchOverride)
+	wtPath := filepath.Join(s.repo.root(), ".loopai", "worktrees", branchName)
 
-	branchName, planHasChanges, err := s.prepareWorktreePlan(planFile, branchOverride)
+	_, planHasChanges, err := s.prepareWorktreePlan(planFile, branchOverride)
 	if err != nil {
 		return "", false, err
 	}
@@ -548,6 +544,65 @@ func (s *Service) CreateWorktreeForPlan(planFile, branchOverride string) (string
 	}
 
 	return wtPath, planHasChanges, nil
+}
+
+// PreflightWorktreeForPlan rejects deterministic target conflicts without changing repository
+// state. Callers that may mutate the source checkout must run this while holding the repository
+// lock and before installing runtime ignores or creating an auto-commit.
+func (s *Service) PreflightWorktreeForPlan(planFile, branchOverride string) error {
+	planFile = s.resolveFilesystemCase(planFile)
+	branchName := s.EffectiveBranchName(planFile, branchOverride)
+	wtPath := filepath.Join(s.repo.root(), ".loopai", "worktrees", branchName)
+
+	currentBranch, err := s.repo.currentBranch()
+	if err != nil {
+		return fmt.Errorf("check current branch: %w", err)
+	}
+	if currentBranch == branchName {
+		return fmt.Errorf("plan branch %q is already checked out here; switch to the source branch or run without --worktree", branchName)
+	}
+	if _, statErr := os.Stat(wtPath); statErr == nil {
+		return fmt.Errorf("worktree already exists at %s, another instance may be running", wtPath)
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect worktree target %s: %w", wtPath, statErr)
+	}
+
+	worktrees, err := s.repo.worktrees()
+	if err != nil {
+		return fmt.Errorf("inspect registered worktrees: %w", err)
+	}
+	for _, worktree := range worktrees {
+		if worktree.Branch != branchName {
+			continue
+		}
+		if _, statErr := os.Stat(worktree.Path); statErr == nil {
+			return fmt.Errorf("plan branch %q is already used by worktree at %s", branchName, worktree.Path)
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("inspect registered worktree %s: %w", worktree.Path, statErr)
+		}
+	}
+
+	if s.repo.branchExists(branchName) {
+		return s.validateExistingPlanBranch(branchName)
+	}
+	return nil
+}
+
+// ValidateWorktreeAutoCommit rejects a dirty source when the target branch already exists.
+// Committing would advance the source HEAD beyond that branch and make safe reuse impossible.
+func (s *Service) ValidateWorktreeAutoCommit(planFile, branchOverride string) error {
+	branchName := s.EffectiveBranchName(planFile, branchOverride)
+	if !s.repo.branchExists(branchName) {
+		return nil
+	}
+	dirty, err := s.repo.isDirtyAll()
+	if err != nil {
+		return fmt.Errorf("check source before reusing plan branch %q: %w", branchName, err)
+	}
+	if !dirty {
+		return nil
+	}
+	return fmt.Errorf("cannot auto-commit before reusing existing plan branch %q; commit the source changes first, then merge or rebase them into the plan branch, or choose another --branch", branchName)
 }
 
 func (s *Service) validateExistingPlanBranch(branchName string) error {
