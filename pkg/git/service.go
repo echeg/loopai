@@ -371,12 +371,14 @@ func (s *Service) RemoveWorktreeSafe(path string) error {
 	return nil
 }
 
-// EffectiveBranchName returns branchOverride when set, otherwise derives the branch name from planFile.
+// EffectiveBranchName returns branchOverride when set, otherwise derives the branch name from
+// planFile after resolving its actual on-disk filename case. Keeping this consistent with
+// worktree creation ensures progress paths and resume validation use the branch Git created.
 func (s *Service) EffectiveBranchName(planFile, branchOverride string) string {
 	if branchOverride != "" {
 		return branchOverride
 	}
-	return plan.ExtractBranchName(planFile)
+	return plan.ExtractBranchName(s.resolveFilesystemCase(planFile))
 }
 
 // inspectPlanChanges returns dirty files other than the plan and whether the plan itself changed.

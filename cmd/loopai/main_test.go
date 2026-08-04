@@ -4989,6 +4989,40 @@ func TestRunWithWorktree(t *testing.T) {
 }
 
 func TestRunWithWorktreeResume(t *testing.T) {
+	t.Run("accepts_case_mismatched_plan_path", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		actualPlanPath := filepath.Join(plansDir, "Resume-Mixed-Case.md")
+		require.NoError(t, os.WriteFile(actualPlanPath, []byte("# Resume Mixed Case\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/Resume-Mixed-Case.md")
+		runGit(t, dir, "commit", "-m", "add mixed-case resume plan")
+
+		requestedPlanPath := filepath.Join(plansDir, "resume-mixed-case.md")
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wtPath, _, err := gitSvc.CreateWorktreeForPlan(requestedPlanPath, "")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
+
+		branch := gitSvc.EffectiveBranchName(requestedPlanPath, "")
+		assert.Equal(t, "Resume-Mixed-Case", branch)
+		wt, err := prepareWorktreeRun(opts{ResumeWorktree: true}, executePlanRequest{
+			PlanFile: requestedPlanPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), WtCleanup: &cleanupHolder{},
+		}, branch)
+		require.NoError(t, err)
+		assert.Equal(t, wtPath, wt.path)
+		currentBranch, err := wt.gitSvc.CurrentBranch()
+		require.NoError(t, err)
+		assert.Equal(t, "Resume-Mixed-Case", currentBranch)
+	})
+
 	t.Run("rejects_unregistered_directory_without_removing_it", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		origDir, err := os.Getwd()
