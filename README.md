@@ -174,6 +174,9 @@ loopai --codex --pass-claude-md docs/plans/feature.md
 # execute in an isolated worktree
 loopai --worktree docs/plans/feature.md
 
+# commit local changes, then execute from a new isolated worktree
+loopai --worktree --commit docs/plans/feature.md
+
 # continue an interrupted isolated worktree
 loopai --resume-worktree docs/plans/feature.md
 
@@ -314,11 +317,25 @@ The model syntax is `model[:effort]`; either half may be omitted. Provider-speci
 
 ## Worktree isolation
 
-`--worktree` creates an isolated checkout under `.loopai/worktrees/<branch>`. This is useful for parallel plans.
+`--worktree` creates an isolated checkout under `.loopai/worktrees/<branch>`. The plan's
+feature branch is cut from the current checkout's `HEAD`, whether it is a branch or a
+detached commit. This is useful for parallel plans and for starting work from any source
+branch.
 
 ```bash
+git checkout release/13
 loopai --worktree docs/plans/feature.md
 ```
+
+The source checkout must normally be clean. Pass `-c` or `--commit` to stage all changes
+with `git add -A` and commit them on the current branch before creating a fresh worktree:
+
+```bash
+loopai --worktree -c docs/plans/hotfix.md
+```
+
+Gitignored files remain uncommitted, and a clean checkout makes `--commit` a no-op. The
+flag requires `--worktree` and does not run when resuming an existing worktree.
 
 If a process was interrupted before its worktree could be removed, resume it explicitly:
 
@@ -333,14 +350,18 @@ worktree remains available for another resume; after successful completion it is
 The progress-file lock rejects another live run that resolves to the same progress path. If the
 original run used `--branch`, pass the same option when resuming.
 
-To base a plan on a non-default branch, check out that branch first and pass it explicitly:
+Worktree creation does not use or record a base branch. `--base-ref` remains the base for
+review diffs and templates; without it, loopai uses `default_branch` configuration or its
+normal `main`/`master` detection. Consequently, when a worktree was cut from a non-default
+branch, pass that branch explicitly to review against it or merge back into it:
 
 ```bash
-git checkout release/13
-loopai --worktree --base-ref release/13 docs/plans/hotfix.md
+loopai --review --base-ref release/13
+loopai --merge=release/13
 ```
 
-In branch-creating modes, a branch-valued `--base-ref` is both the creation and diff base. In review-only modes it is only the diff base.
+Non-worktree branch mode is unchanged: a branch-valued `--base-ref` is both its branch-creation
+base and its diff base.
 
 ## Configuration
 

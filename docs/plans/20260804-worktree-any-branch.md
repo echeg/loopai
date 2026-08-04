@@ -95,11 +95,11 @@
 
 ### Task 6: [Final] Update documentation
 
-- [ ] README.md: remove/replace statements that worktree requires the default branch; document cutting from the current branch and the new `-c/--commit` flag; note that review diffs and `--merge` still resolve against the default branch or `--base-ref`
-- [ ] llms.txt: same updates in compact form
-- [ ] embedded config comments in `pkg/config/defaults` if they mention the worktree default-branch requirement
-- [ ] CLAUDE.md architecture notes: update the worktree behavior description
-- [ ] move the design spec reference if docs structure requires it; keep `docs/superpowers/specs/2026-08-04-worktree-any-branch-design.md` linked from this plan
+- [x] README.md: remove/replace statements that worktree requires the default branch; document cutting from the current branch and the new `-c/--commit` flag; note that review diffs and `--merge` still resolve against the default branch or `--base-ref`
+- [x] llms.txt: same updates in compact form
+- [x] embedded config comments in `pkg/config/defaults` if they mention the worktree default-branch requirement
+- [x] CLAUDE.md architecture notes: update the worktree behavior description
+- [x] move the design spec reference if docs structure requires it; keep `docs/superpowers/specs/2026-08-04-worktree-any-branch-design.md` linked from this plan
 
 ## Technical Details
 
