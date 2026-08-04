@@ -3,16 +3,16 @@
 ## Overview
 
 - `--worktree` currently fails with `worktree creation requires main branch, currently on "X"` when run from any branch other than the resolved default branch. Remove that guard: the worktree and its feature branch are cut from the **current HEAD**, whatever branch (or detached HEAD) the checkout is on.
-- Add `-c` / `--commit`: when the working tree is dirty at worktree-creation time, auto-commit everything (`git add -A`, respecting gitignore) on the **current branch** before cutting the feature branch, instead of failing with the dirty-tree error.
+- Add `-c` / `--commit`: when the working tree is dirty at worktree-creation time, auto-commit everything (`git add -A`, respecting gitignore) in the **source checkout** before cutting the feature branch, instead of failing with the dirty-tree error.
 - The base branch is deliberately **not recorded**. Review diffs and `--merge` keep their existing base resolution (`--base-ref` / `default_branch` config / auto-detected main-master). Non-worktree branch mode is unchanged.
 - Design spec: `docs/superpowers/specs/2026-08-04-worktree-any-branch-design.md`.
 
 ## Context (from discovery)
 
-- `pkg/git/service.go` — `preparePlanBranch` (line ~337) holds the guard: `requireDefault=true` (worktree path) errors when not on the default branch; `CreateWorktreeForPlan` (~437) passes `requireDefault=true`; `CreateBranchForPlan` (~392) passes `false` and must stay unchanged.
+- `pkg/git/service.go` — the original shared `preparePlanBranch` helper held the worktree default-branch guard; review follow-up split worktree and non-worktree validation so their policies remain independent.
 - `pkg/git/external.go` — `createInitialCommit` already demonstrates the `add -A` + porcelain-check + commit sequence to reuse for the auto-commit backend method.
 - `cmd/loopai/main.go` — opts struct (~line 39): `CodexOnly` owns `short:"c"`; worktree creation call at ~1031 (`CreateWorktreeForPlan`); `resolveBranchBase` (~3225) has two worktree-specific error paths that become obsolete.
-- `.loopai/.gitignore` (written by `EnsureLocalGitignore`) already excludes `progress/` and `worktrees/`, so `git add -A` cannot capture runtime artifacts.
+- `EnsureLocalGitignore` excludes `progress/` and `worktrees/` through `.loopai/.gitignore` or repository-local Git excludes, so `git add -A` cannot capture runtime artifacts without overwriting project-owned rules.
 - `appendTrailer` in `pkg/git/service.go` is the existing helper for loopai commit trailers.
 
 ## Development Approach
@@ -48,13 +48,13 @@
 
 ### Task 1: Remove default-branch guard from worktree creation
 
-- [x] in `pkg/git/service.go` `preparePlanBranch`: when `requireDefault=true`, stop comparing the current branch against the default branch (drop the `worktree creation requires %s branch` error); keep the `requireDefault=false` path byte-for-byte unchanged
-- [x] add a replacement guard: when the current branch equals the plan-derived (or `--branch` override) branch name, return a clear error like `plan branch %q is already checked out here; switch to the base branch or run without --worktree` (git would otherwise refuse with a cryptic "already checked out" error)
+- [x] in `pkg/git/service.go`: stop comparing the current branch against the default branch for worktree creation (drop the `worktree creation requires %s branch` error); preserve non-worktree default-branch behavior
+- [x] add a replacement guard: when the current branch equals the plan-derived (or `--branch` override) branch name, return a clear error like `plan branch %q is already checked out here; switch to the source branch or run without --worktree` (git would otherwise refuse with a cryptic "already checked out" error)
 - [x] keep dirty-tree checks and plan-file auto-commit detection exactly as they are
 - [x] extend the creation log line in `CreateWorktreeForPlan` to name the source branch: `creating worktree with new branch: X (from ch_main)`; for detached HEAD log the short commit hash instead
-- [x] update godoc comments on `CreateWorktreeForPlan` and `preparePlanBranch` (they currently document the main-branch requirement)
+- [x] update godoc comments on `CreateWorktreeForPlan` and the worktree preparation helper (they previously documented the main-branch requirement)
 - [x] write tests: worktree created successfully from a non-default branch (feature branch parent commit is that branch's HEAD)
-- [x] write tests: error when standing on the plan branch itself; creation from detached HEAD works; dirty tree still errors without auto-commit; existing-branch re-run behavior unchanged
+- [x] write tests: error when standing on the plan branch itself; creation from detached HEAD works; dirty tree still errors without auto-commit; an existing branch is reused only when it contains the source HEAD
 - [x] verify existing `CreateBranchForPlan` (non-worktree) tests still pass unmodified
 - [x] run `go test ./pkg/git/...` — must pass before task 2
 
@@ -62,17 +62,17 @@
 
 - [x] add backend method in `pkg/git/external.go`: stage everything with `git add -A`, check `status --porcelain`, commit when non-empty (mirror `createInitialCommit`, but returning a "nothing to commit" signal instead of an error)
 - [x] add `Service.AutoCommitAll(message string) (committed bool, err error)` in `pkg/git/service.go`: applies `appendTrailer` to the message, no-op returning `false` on a clean tree
-- [x] write tests: dirty tree (modified + untracked files) gets committed on the current branch and the tree is clean afterwards; gitignored files are not committed; clean tree returns `committed=false` with no new commit
+- [x] write tests: dirty tree (modified + untracked files) gets committed in the source checkout and the tree is clean afterwards; gitignored files are not committed; clean tree returns `committed=false` with no new commit
 - [x] run `go test ./pkg/git/...` — must pass before task 3
 
 ### Task 3: Add -c/--commit CLI flag and wire it into worktree creation
 
-- [x] in `cmd/loopai/main.go` opts: remove `short:"c"` from `CodexOnly` (keep long `--codex-only` working) and add `Commit bool` with `short:"c" long:"commit"` and a description like "auto-commit dirty working tree on the current branch before creating the worktree (requires --worktree)"
+- [x] in `cmd/loopai/main.go` opts: remove `short:"c"` from `CodexOnly` (keep long `--codex-only` working) and add `Commit bool` with `short:"c" long:"commit"` and a description like "auto-commit the dirty source checkout before creating the worktree (requires --worktree)"
 - [x] validate flag combinations: `--commit` without worktree mode fails fast with a clear error; place the check alongside the existing mode-flag validation
 - [x] in the fresh-worktree creation path (before `CreateWorktreeForPlan` at ~main.go:1031): when `--commit` is set, call `AutoCommitAll` with message `auto-commit working tree before plan: <branch>`; log whether a commit was made; the resume path (`--resume-worktree`) must not auto-commit
-- [x] confirm the plan-file flow: after auto-commit the plan file is already committed on the base branch, so `planNeedsCommit` comes back false and the copy-into-worktree path is skipped naturally (add a test asserting this)
+- [x] confirm the plan-file flow: after auto-commit the plan file is already committed in the source checkout, so `planNeedsCommit` comes back false and the copy-into-worktree path is skipped naturally (add a test asserting this)
 - [x] write tests: flag parsing (`-c` sets Commit, `--codex-only` long form still works and no longer reacts to `-c`), `--commit` without `--worktree` rejected
-- [x] write integration-style test: dirty tree + `--worktree --commit` creates the worktree with changes committed on the base branch
+- [x] write integration-style test: dirty tree + `--worktree --commit` creates the worktree with changes committed in the source checkout
 - [x] run `go test ./cmd/... ./pkg/git/...` — must pass before task 4
 
 ### Task 4: Simplify resolveBranchBase for worktree mode
@@ -103,16 +103,16 @@
 
 ## Technical Details
 
-- Guard removal is scoped by the existing `requireDefault` boolean: `true` (worktree) drops the branch comparison, `false` (branch mode) keeps the "skip when not on default" behavior — the two callers stay behaviorally independent.
+- Worktree and non-worktree branch preparation use separate validation paths, with shared change inspection, so their branch policies stay behaviorally independent.
 - Plan-branch collision check compares the current branch against `EffectiveBranchName(planFile, branchOverride)` before any mutation.
-- Auto-commit sequence: `git add -A` → `status --porcelain` → commit with trailer; runs in the main checkout before `git worktree add`, so `.loopai/worktrees/` does not exist yet and runtime artifacts are gitignored via `.loopai/.gitignore`.
+- Auto-commit sequence: repository lock → runtime-ignore setup → `git add -A` → `status --porcelain` → commit with trailer → `git worktree add`. A custom tracked `.loopai/.gitignore` is preserved; repository-local Git excludes protect runtime artifacts.
 - Flag note: go-flags treats defaults carefully in this repo (`isFlagSet`); `Commit` is a plain bool with no default, so no `markFlagsSet` entry is needed unless validation requires distinguishing "set" (it does not — false is inert).
-- `--merge` back into a non-default base requires an explicit base argument (`loopai --merge <base>`); this is accepted and documented, not changed.
+- `--merge` back into a non-default base requires an explicit base argument (`loopai --merge=<base>`); this is accepted and documented, not changed.
 
 ## Post-Completion
 
 **Manual verification**:
 - In a real repository on a non-default branch with local edits: `loopai --worktree -c <plan.md>` creates the worktree, commits the edits on the source branch, and the run proceeds; `tail -f .loopai/progress/...` shows normal phases.
-- `loopai --merge <source-branch>` from the finished feature branch lands the work back on the source branch.
+- `loopai --merge=<source-branch>` from the finished feature branch lands the work back on the source branch.
 
 **External system updates**: none — no consuming projects, no config migrations.

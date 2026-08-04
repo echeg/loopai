@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1237,7 +1238,7 @@ func TestService_EnsureLocalGitignore(t *testing.T) {
 		assert.Empty(t, log.logs, "should not log when content already matches")
 	})
 
-	t.Run("overwrites stale content", func(t *testing.T) {
+	t.Run("preserves custom tracked content and installs local excludes", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		log := &mockLogger{}
 		svc, err := NewService(dir, log)
@@ -1246,15 +1247,23 @@ func TestService_EnsureLocalGitignore(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai"), 0o750))
 		require.NoError(t, os.WriteFile(
 			filepath.Join(dir, ".loopai", ".gitignore"),
-			[]byte("old-content\n"), 0o600))
+			[]byte("custom-rule\n"), 0o600))
+		runGit(t, dir, "add", ".loopai/.gitignore")
+		runGit(t, dir, "commit", "-m", "add custom loopai ignore")
 
 		err = svc.EnsureLocalGitignore()
 		require.NoError(t, err)
 		assert.Len(t, log.logs, 1)
+		assert.Contains(t, log.logs[0], "preserved custom")
 
 		content, err := os.ReadFile(filepath.Join(dir, ".loopai", ".gitignore")) //nolint:gosec // test file
 		require.NoError(t, err)
-		assert.Equal(t, ".gitignore\nprogress/\nworktrees/\n", string(content))
+		assert.Equal(t, "custom-rule\n", string(content))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "progress"), 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "progress", "run.log"), []byte("log"), 0o600))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "worktrees", "feature"), 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "worktrees", "feature", "file"), []byte("data"), 0o600))
+		assert.Empty(t, runGit(t, dir, "status", "--porcelain"))
 	})
 
 	t.Run("creates .loopai dir if missing", func(t *testing.T) {
@@ -1423,7 +1432,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		planFile := filepath.Join(plansDir, "add-worktree.md")
 		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
 
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		assert.True(t, planNeedsCommit, "untracked plan file should need commit")
 		assert.Contains(t, wtPath, filepath.Join(".loopai", "worktrees", "add-worktree"))
@@ -1444,10 +1453,6 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		svc, err := NewService(dir, noopServiceLogger())
 		require.NoError(t, err)
 
-		// create the branch first but stay on master
-		require.NoError(t, svc.CreateBranch("existing-feature"))
-		require.NoError(t, svc.repo.checkoutBranch("master"))
-
 		// create plan file with matching name
 		plansDir := filepath.Join(dir, "docs", "plans")
 		require.NoError(t, os.MkdirAll(plansDir, 0o750))
@@ -1456,10 +1461,14 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, svc.repo.add(planFile))
 		require.NoError(t, svc.repo.commit("add plan"))
 
+		// create the existing branch at the source HEAD, then return to master
+		require.NoError(t, svc.CreateBranch("existing-feature"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+
 		log := &mockLogger{}
 		svc.log = log
 
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		assert.False(t, planNeedsCommit, "already-committed plan file should not need commit")
 
@@ -1474,6 +1483,24 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 
 		// cleanup
 		require.NoError(t, svc.RemoveWorktree(wtPath))
+	})
+
+	t.Run("rejects existing branch that omits current HEAD", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, svc.CreateBranch("stale-feature"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		planFile := filepath.Join(dir, "docs", "plans", "stale-feature.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("advance source with plan"))
+
+		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
+		require.ErrorContains(t, err, "does not include current HEAD")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "stale-feature"))
 	})
 
 	t.Run("creates worktree from non-default branch HEAD", func(t *testing.T) {
@@ -1496,7 +1523,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		sourceHead, err := svc.repo.headHash()
 		require.NoError(t, err)
 
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
 		assert.False(t, planNeedsCommit)
@@ -1513,9 +1540,9 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, svc.CreateBranch("feature"))
 
 		planFile := filepath.Join(dir, "docs", "plans", "feature.md")
-		_, _, err = svc.CreateWorktreeForPlan(planFile, "master", "")
+		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
 		require.Error(t, err)
-		assert.Equal(t, "plan branch \"feature\" is already checked out here; switch to the base branch or run without --worktree", err.Error())
+		assert.Equal(t, "plan branch \"feature\" is already checked out here; switch to the source branch or run without --worktree", err.Error())
 	})
 
 	t.Run("fails when branch override is already checked out", func(t *testing.T) {
@@ -1526,7 +1553,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, svc.CreateBranch("custom-feature"))
 
 		planFile := filepath.Join(dir, "docs", "plans", "different-name.md")
-		_, _, err = svc.CreateWorktreeForPlan(planFile, "master", "custom-feature")
+		_, _, err = svc.CreateWorktreeForPlan(planFile, "custom-feature")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "plan branch \"custom-feature\" is already checked out here")
 	})
@@ -1547,7 +1574,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		detachedHead := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
 		runGit(t, dir, "checkout", "--detach", detachedHead)
 
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
 		assert.False(t, planNeedsCommit)
@@ -1569,7 +1596,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		planFile := filepath.Join(plansDir, "develop-feature.md")
 		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
 
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "develop", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		assert.Contains(t, wtPath, "develop-feature")
 		assert.True(t, planNeedsCommit, "untracked plan file should need commit")
@@ -1592,7 +1619,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		// create another uncommitted file
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "other.txt"), []byte("other"), 0o600))
 
-		_, _, err = svc.CreateWorktreeForPlan(planFile, "master", "")
+		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "cannot create worktree")
 		assert.Contains(t, err.Error(), "uncommitted changes")
@@ -1611,7 +1638,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
 
 		// create first worktree
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		assert.True(t, planNeedsCommit, "untracked plan file should need commit")
 
@@ -1619,7 +1646,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, svc.repo.checkoutBranch("master"))
 
 		// second attempt should fail
-		_, _, err = svc.CreateWorktreeForPlan(planFile, "master", "")
+		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "worktree already exists")
 
@@ -1639,7 +1666,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		planFile := filepath.Join(plansDir, "new-feature.md")
 		require.NoError(t, os.WriteFile(planFile, []byte("# New Feature"), 0o600))
 
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		assert.True(t, planNeedsCommit, "untracked plan file should need commit")
 
@@ -1667,7 +1694,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		planFile := filepath.Join(plansDir, "no-commit-on-main.md")
 		require.NoError(t, os.WriteFile(planFile, []byte("# Regression Test"), 0o600))
 
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		assert.True(t, planNeedsCommit)
 
@@ -1691,7 +1718,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		planFile := filepath.Join(plansDir, "branch-conflict.md")
 		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
 
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		assert.True(t, planNeedsCommit, "untracked plan file should need commit")
 		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // cleanup
@@ -1714,7 +1741,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		planFile := filepath.Join(plansDir, "2024-01-15-add-auth.md")
 		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
 
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		assert.True(t, planNeedsCommit, "untracked plan file should need commit")
 		assert.Contains(t, wtPath, "add-auth")
@@ -1745,7 +1772,7 @@ func TestService_CommitPlanFile(t *testing.T) {
 		require.NoError(t, os.WriteFile(planFile, []byte("# Commit Test Plan"), 0o600))
 
 		// create worktree (plan is copied in)
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		assert.True(t, planNeedsCommit)
 
@@ -1782,7 +1809,7 @@ func TestService_CommitPlanFile(t *testing.T) {
 
 		// first setup attempt creates the feature branch and commits the plan there.
 		// the plan deliberately remains untracked in the main worktree.
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		require.True(t, planNeedsCommit)
 
@@ -1793,7 +1820,7 @@ func TestService_CommitPlanFile(t *testing.T) {
 
 		// a retry reuses the feature branch. CreateWorktreeForPlan still copies the
 		// untracked main-worktree plan, but its content already matches the branch.
-		retryPath, retryNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		retryPath, retryNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		require.True(t, retryNeedsCommit)
 		defer svc.RemoveWorktree(retryPath) //nolint:errcheck // test cleanup
@@ -1826,7 +1853,7 @@ func TestService_CommitPlanFile(t *testing.T) {
 		require.NoError(t, os.WriteFile(planFile, []byte("# Case Test Plan"), 0o600))
 
 		// create worktree from master (plan is copied in with original case)
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		assert.True(t, planNeedsCommit)
 
@@ -1856,7 +1883,7 @@ func TestService_CommitPlanFile(t *testing.T) {
 		planFile := filepath.Join(plansDir, "2026-04-30-some-long-generated-name.md")
 		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
 
-		wtPath, _, err := svc.CreateWorktreeForPlan(planFile, "master", "my-custom-branch")
+		wtPath, _, err := svc.CreateWorktreeForPlan(planFile, "my-custom-branch")
 		require.NoError(t, err)
 		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup, error irrelevant
 
@@ -1880,7 +1907,7 @@ func TestService_RemoveWorktree(t *testing.T) {
 		planFile := filepath.Join(plansDir, "rm-test.md")
 		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
 
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		assert.True(t, planNeedsCommit)
 
@@ -1916,7 +1943,7 @@ func TestService_RemoveWorktree(t *testing.T) {
 		planFile := filepath.Join(plansDir, "preserve-branch.md")
 		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
 
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "master", "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
 		require.NoError(t, err)
 		assert.True(t, planNeedsCommit)
 
@@ -2106,11 +2133,15 @@ func TestService_AutoCommitAll(t *testing.T) {
 		svc, err := NewService(dir, noopServiceLogger())
 		require.NoError(t, err)
 		svc.SetCommitTrailer("Loopai-Test: auto-commit")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "remove.txt"), []byte("remove me\n"), 0o600))
+		require.NoError(t, svc.repo.add("remove.txt"))
+		require.NoError(t, svc.repo.commit("add removable fixture"))
 
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Modified\n"), 0o600))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("new\n"), 0o600))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.log\n"), 0o600))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "ignored.log"), []byte("ignored\n"), 0o600))
+		require.NoError(t, os.Remove(filepath.Join(dir, "remove.txt")))
 
 		committed, err := svc.AutoCommitAll("save working tree")
 		require.NoError(t, err)
@@ -2122,6 +2153,8 @@ func TestService_AutoCommitAll(t *testing.T) {
 		assert.Contains(t, files, "untracked.txt")
 		assert.Contains(t, files, ".gitignore")
 		assert.NotContains(t, files, "ignored.log")
+		assert.NotContains(t, runGit(t, dir, "ls-tree", "--name-only", "HEAD", "remove.txt"), "remove.txt")
+		assert.Contains(t, runGit(t, dir, "show", "--pretty=format:", "--name-status", "HEAD"), "D\tremove.txt")
 		message := runGit(t, dir, "log", "-1", "--pretty=%B")
 		assert.Equal(t, "save working tree\n\nLoopai-Test: auto-commit", strings.TrimSpace(message))
 	})
@@ -2155,6 +2188,41 @@ func TestService_AutoCommitAll(t *testing.T) {
 		assert.False(t, committed)
 		assert.Contains(t, err.Error(), "auto-commit all: commit")
 	})
+}
+
+func TestService_AcquireWorktreeCreationLock(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	first, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	second, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+
+	releaseFirst, err := first.AcquireWorktreeCreationLock()
+	require.NoError(t, err)
+	type lockResult struct {
+		release func() error
+		err     error
+	}
+	acquired := make(chan lockResult, 1)
+	go func() {
+		release, lockErr := second.AcquireWorktreeCreationLock()
+		acquired <- lockResult{release: release, err: lockErr}
+	}()
+
+	select {
+	case <-acquired:
+		t.Fatal("second repository lock acquired before the first was released")
+	case <-time.After(100 * time.Millisecond):
+	}
+	require.NoError(t, releaseFirst())
+	select {
+	case result := <-acquired:
+		require.NoError(t, result.err)
+		require.NotNil(t, result.release)
+		require.NoError(t, result.release())
+	case <-time.After(5 * time.Second):
+		t.Fatal("second repository lock did not acquire after release")
+	}
 }
 
 func TestService_CommitWithTrailer(t *testing.T) {

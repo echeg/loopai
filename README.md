@@ -317,10 +317,11 @@ The model syntax is `model[:effort]`; either half may be omitted. Provider-speci
 
 ## Worktree isolation
 
-`--worktree` creates an isolated checkout under `.loopai/worktrees/<branch>`. The plan's
-feature branch is cut from the current checkout's `HEAD`, whether it is a branch or a
-detached commit. This is useful for parallel plans and for starting work from any source
-branch.
+`--worktree` creates an isolated checkout under `.loopai/worktrees/<branch>`. A new plan
+branch is cut from the current checkout's `HEAD`, whether it is a branch or a detached
+commit. An existing plan branch is reused only when it already contains that source
+`HEAD`; otherwise loopai asks you to merge or rebase the source changes first. This is
+useful for parallel plans and for starting work from any source branch.
 
 ```bash
 git checkout release/13
@@ -328,7 +329,8 @@ loopai --worktree docs/plans/feature.md
 ```
 
 The source checkout must normally be clean. Pass `-c` or `--commit` to stage all changes
-with `git add -A` and commit them on the current branch before creating a fresh worktree:
+with `git add -A` and commit them in the source checkout before creating a fresh worktree.
+This advances the checked-out branch when attached, or the detached `HEAD` otherwise:
 
 ```bash
 loopai --worktree -c docs/plans/hotfix.md
@@ -336,6 +338,12 @@ loopai --worktree -c docs/plans/hotfix.md
 
 Gitignored files remain uncommitted, and a clean checkout makes `--commit` a no-op. The
 flag requires `--worktree` and does not run when resuming an existing worktree.
+An uncommitted plan file may be the checkout's only change without `--commit`; loopai
+copies and commits it in the feature worktree. With `--commit`, the plan is included in
+the source-side all-files commit instead.
+
+Breaking CLI change: the deprecated `-c` alias for `--codex-only` was removed. Use
+`--codex-only` explicitly. `-c` now means `--commit` and requires `--worktree`.
 
 If a process was interrupted before its worktree could be removed, resume it explicitly:
 

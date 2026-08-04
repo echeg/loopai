@@ -63,7 +63,7 @@ type opts struct {
 	Codex                   bool          `long:"codex" description:"use codex CLI as the executor for task, review, and finalize phases"`
 	PassClaudeMd            bool          `long:"pass-claude-md" description:"pass project CLAUDE.md to codex via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is NOT auto-passed but a one-time setup hint is shown (codex executor only)"`
 	Worktree                bool          `long:"worktree" description:"run in isolated git worktree"`
-	Commit                  bool          `short:"c" long:"commit" description:"auto-commit dirty working tree on the current branch before creating the worktree (requires --worktree)"`
+	Commit                  bool          `short:"c" long:"commit" description:"auto-commit the dirty source checkout before creating the worktree (requires --worktree)"`
 	ResumeWorktree          bool          `long:"resume-worktree" description:"continue in an existing interrupted worktree (implies --worktree)"`
 	Branch                  string        `long:"branch" description:"override branch name for worktree/branch creation (default: derived from plan filename)"`
 	PlanDescription         string        `long:"plan" description:"create plan interactively (enter plan description)"`
@@ -1023,18 +1023,16 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 		resumed: o.ResumeWorktree,
 	}
 
-	if err := prepareResumeWorktree(wt); err != nil {
-		return worktreeRun{}, err
-	}
-	if !wt.resumed {
-		if err := prepareWorktreeSource(o, req, branch); err != nil {
+	if wt.resumed {
+		if err := requireResumeWorktree(wt.path); err != nil {
 			return worktreeRun{}, err
 		}
+	}
+	if !wt.resumed {
 		var err error
-		wt.path, wt.planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlan(
-			req.PlanFile, req.DefaultBranch, req.BranchOverride)
+		wt.path, wt.planNeedsCommit, err = prepareFreshWorktree(o, req, branch)
 		if err != nil {
-			return worktreeRun{}, fmt.Errorf("create worktree: %w", err)
+			return worktreeRun{}, err
 		}
 		req.WtCleanup.set(func() {
 			if rmErr := req.GitSvc.RemoveWorktree(wt.path); rmErr != nil {
@@ -1065,13 +1063,6 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 	return wt, nil
 }
 
-func prepareResumeWorktree(wt worktreeRun) error {
-	if !wt.resumed {
-		return nil
-	}
-	return requireResumeWorktree(wt.path)
-}
-
 // prepareWorktreeSource optionally commits the source checkout before a fresh worktree is cut.
 func prepareWorktreeSource(o opts, req executePlanRequest, branch string) error {
 	if !o.Commit {
@@ -1092,6 +1083,36 @@ func prepareWorktreeSource(o opts, req executePlanRequest, branch string) error 
 	}
 	req.Colors.Info().Printf("working tree clean; no auto-commit needed before creating branch: %s\n", branch)
 	return nil
+}
+
+// prepareFreshWorktree holds the repository lock across source mutation and branch creation.
+func prepareFreshWorktree(o opts, req executePlanRequest, branch string) (path string, planNeedsCommit bool, err error) {
+	release, err := req.GitSvc.AcquireWorktreeCreationLock()
+	if err != nil {
+		return "", false, fmt.Errorf("lock worktree creation: %w", err)
+	}
+	defer func() {
+		if releaseErr := release(); releaseErr != nil && err == nil {
+			if path != "" {
+				if removeErr := req.GitSvc.RemoveWorktree(path); removeErr != nil {
+					err = errors.Join(releaseErr, fmt.Errorf("remove worktree after lock release failure: %w", removeErr))
+					return
+				}
+				path = ""
+				planNeedsCommit = false
+			}
+			err = releaseErr
+		}
+	}()
+
+	if sourceErr := prepareWorktreeSource(o, req, branch); sourceErr != nil {
+		return "", false, sourceErr
+	}
+	path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlan(req.PlanFile, req.BranchOverride)
+	if err != nil {
+		return "", false, fmt.Errorf("create worktree: %w", err)
+	}
+	return path, planNeedsCommit, nil
 }
 
 func requireResumeWorktree(path string) error {
@@ -1540,11 +1561,8 @@ func validateFlags(o opts) error {
 	if o.ResumeWorktree && (o.Review || o.ExternalOnly || o.CodexOnly) {
 		return errors.New("--resume-worktree is only supported for full or --tasks-only execution")
 	}
-	if o.Commit && !o.Worktree {
-		return errors.New("--commit requires --worktree")
-	}
-	if o.Commit && o.ResumeWorktree {
-		return errors.New("--commit cannot be used with --resume-worktree; it only applies when creating a new worktree")
+	if err := validateCommitFlags(o); err != nil {
+		return err
 	}
 	if o.Wait < 0 {
 		return fmt.Errorf("--wait must be non-negative, got %s", o.Wait)
@@ -1561,6 +1579,22 @@ func validateFlags(o opts) error {
 	// --codex / --pass-claude-md / --external-only / --codex-only / --external-review-tool
 	// mutual-exclusion checks are deferred to applyCodexOverrides, which runs after the
 	// config-file merge so that executor=codex coming from config is also enforced.
+	return nil
+}
+
+func validateCommitFlags(o opts) error {
+	if !o.Commit {
+		return nil
+	}
+	if o.ResumeWorktree {
+		return errors.New("--commit cannot be used with --resume-worktree; it only applies when creating a new worktree")
+	}
+	if o.Review || o.ExternalOnly || o.CodexOnly {
+		return errors.New("--commit is only supported for full, --tasks-only, or --plan worktree execution")
+	}
+	if !o.Worktree {
+		return errors.New("--commit requires --worktree")
+	}
 	return nil
 }
 
@@ -3225,12 +3259,12 @@ func resolveBaseRefs(gitSvc *git.Service, cliBaseRef, configBranch string, branc
 	diffBase = resolveDefaultBranch(cliBaseRef, configBranch, autoDetected)
 	defaultBranch := resolveDefaultBranch("", configBranch, autoDetected)
 
-	if !branchMode || cliBaseRef == "" {
+	if !branchMode || cliBaseRef == "" || worktreeMode {
 		return defaultBranch, diffBase, nil
 	}
 
 	branchBase, err = resolveBranchBase(cliBaseRef, localBranchRef(gitSvc, cliBaseRef), defaultBranch,
-		getCurrentBranch(gitSvc), worktreeMode)
+		getCurrentBranch(gitSvc))
 	if err != nil {
 		return "", "", err
 	}
@@ -3254,15 +3288,12 @@ func localBranchRef(gitSvc *git.Service, ref string) string {
 // resolveBranchBase decides which ref is the base for non-worktree branch creation.
 // cliRefBranch is the local branch --base-ref names, empty when it names anything else: a commit
 // hash is a valid diff base but cannot be branched from, so the configured/auto-detected default
-// branch stays in place. Worktree mode always keeps that default here because its branch is cut
-// from current HEAD and --base-ref is used only for diffs.
+// branch stays in place. Worktree mode bypasses this function because its branch is cut from
+// current HEAD and --base-ref is used only for diffs.
 // a branch base is honored only from that branch itself, since branch creation cuts from HEAD:
 // from another branch CreateBranchForPlan reads the mismatch as "already on a feature branch" and
 // skips silently, which would leave the whole run committing onto the default branch.
-func resolveBranchBase(cliRef, cliRefBranch, defaultBranch, currentBranch string, worktreeMode bool) (string, error) {
-	if worktreeMode {
-		return defaultBranch, nil
-	}
+func resolveBranchBase(cliRef, cliRefBranch, defaultBranch, currentBranch string) (string, error) {
 	if cliRef == "" {
 		return defaultBranch, nil
 	}

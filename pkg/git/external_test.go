@@ -813,6 +813,29 @@ func TestExternalBackend_AutoCommitAll(t *testing.T) {
 		assert.False(t, committed)
 		assert.Equal(t, before, runGit(t, dir, "rev-parse", "HEAD"))
 	})
+
+	for _, tc := range []struct {
+		name      string
+		fail      string
+		wantError string
+	}{
+		{name: "returns add errors", fail: "add", wantError: "stage files"},
+		{name: "returns status errors", fail: "status", wantError: "check status"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := setupExternalTestRepo(t)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("dirty\n"), 0o600))
+			command := filepath.Join(t.TempDir(), "failing-git")
+			script := "#!/bin/sh\nif [ \"$1\" = \"" + tc.fail + "\" ]; then echo forced failure >&2; exit 1; fi\nexec git \"$@\"\n"
+			require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+			eb, err := newExternalBackend(dir, command)
+			require.NoError(t, err)
+
+			committed, err := eb.autoCommitAll("blocked")
+			require.ErrorContains(t, err, tc.wantError)
+			assert.False(t, committed)
+		})
+	}
 }
 
 func TestExternalBackend_diffStats(t *testing.T) {

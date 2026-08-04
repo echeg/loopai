@@ -119,6 +119,65 @@ func (e *externalBackend) root() string {
 	return e.path
 }
 
+func (e *externalBackend) gitCommonDir() (string, error) {
+	out, err := e.run("rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", fmt.Errorf("get Git common directory: %w", err)
+	}
+	if !filepath.IsAbs(out) {
+		out = filepath.Join(e.path, out)
+	}
+	return filepath.Clean(out), nil
+}
+
+func (e *externalBackend) ensureRuntimeExcludes(patterns ...string) error {
+	out, err := e.run("rev-parse", "--git-path", "info/exclude")
+	if err != nil {
+		return fmt.Errorf("locate Git exclude file: %w", err)
+	}
+	if !filepath.IsAbs(out) {
+		out = filepath.Join(e.path, out)
+	}
+	excludePath := filepath.Clean(out)
+	data, err := os.ReadFile(excludePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read Git exclude file: %w", err)
+	}
+	existing := make(map[string]struct{})
+	for line := range strings.SplitSeq(string(data), "\n") {
+		existing[strings.TrimSpace(line)] = struct{}{}
+	}
+	missing := make([]string, 0, len(patterns))
+	for _, pattern := range patterns {
+		if _, ok := existing[pattern]; !ok {
+			missing = append(missing, pattern)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	if mkdirErr := os.MkdirAll(filepath.Dir(excludePath), 0o750); mkdirErr != nil {
+		return fmt.Errorf("create Git info directory: %w", mkdirErr)
+	}
+	f, err := os.OpenFile(excludePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open Git exclude file: %w", err)
+	}
+	prefix := ""
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		prefix = "\n"
+	}
+	_, writeErr := fmt.Fprintf(f, "%s%s\n", prefix, strings.Join(missing, "\n"))
+	closeErr := f.Close()
+	if writeErr != nil {
+		return fmt.Errorf("write Git exclude file: %w", writeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close Git exclude file: %w", closeErr)
+	}
+	return nil
+}
+
 // headHash returns the current HEAD commit hash.
 func (e *externalBackend) headHash() (string, error) {
 	out, err := e.run("rev-parse", "HEAD")

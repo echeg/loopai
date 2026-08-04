@@ -42,6 +42,8 @@ type backend interface {
 	isDirtyAll() (bool, error)
 	fileHasChanges(path string) (bool, error)
 	hasChangesOtherThan(path string) ([]string, error)
+	gitCommonDir() (string, error)
+	ensureRuntimeExcludes(patterns ...string) error
 	add(path string) error
 	moveFile(src, dst string) error
 	commit(msg string) error
@@ -53,6 +55,7 @@ type backend interface {
 	removeWorktree(path string) error
 	removeWorktreeSafe(path string) error
 	pruneWorktrees() error
+	isAncestor(ctx context.Context, ancestor, descendant string) (bool, error)
 }
 
 // ErrMergeConflict identifies a merge that could not be completed because of conflicts.
@@ -131,6 +134,35 @@ func (s *Service) AutoCommitAll(message string) (bool, error) {
 		return false, fmt.Errorf("auto-commit all: %w", err)
 	}
 	return committed, nil
+}
+
+// AcquireWorktreeCreationLock serializes source auto-commit and worktree creation across
+// loopai processes using the repository's shared Git metadata directory.
+func (s *Service) AcquireWorktreeCreationLock() (func() error, error) {
+	commonDir, err := s.repo.gitCommonDir()
+	if err != nil {
+		return nil, fmt.Errorf("locate repository lock directory: %w", err)
+	}
+	lockFile, err := os.OpenFile(filepath.Join(commonDir, "loopai-worktree-create.lock"), os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // commonDir is resolved by Git
+	if err != nil {
+		return nil, fmt.Errorf("open worktree creation lock: %w", err)
+	}
+	if err := lockRepositoryFile(lockFile); err != nil {
+		_ = lockFile.Close()
+		return nil, fmt.Errorf("acquire worktree creation lock: %w", err)
+	}
+
+	return func() error {
+		unlockErr := unlockRepositoryFile(lockFile)
+		closeErr := lockFile.Close()
+		if unlockErr != nil {
+			return fmt.Errorf("release worktree creation lock: %w", unlockErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close worktree creation lock: %w", closeErr)
+		}
+		return nil
+	}, nil
 }
 
 // Root returns the absolute path to the repository root.
@@ -339,38 +371,36 @@ func (s *Service) EffectiveBranchName(planFile, branchOverride string) string {
 	return plan.ExtractBranchName(planFile)
 }
 
-// preparePlanBranch validates state, extracts branch name, and checks plan file status.
-// returns branch name and whether the plan file has uncommitted changes.
-// when requireDefault is true, prepares a branch from the current HEAD for a worktree.
-// when requireDefault is false, returns empty branch name if not on the default branch (caller should skip).
-// defaultBranch is the resolved default branch name (e.g. "main", "develop", "origin/main").
-// branchOverride, when non-empty, is used directly instead of deriving from planFile.
-func (s *Service) preparePlanBranch(planFile string, requireDefault bool, defaultBranch, branchOverride string) (string, bool, error) {
+// inspectPlanChanges returns dirty files other than the plan and whether the plan itself changed.
+func (s *Service) inspectPlanChanges(planFile string) ([]string, bool, error) {
+	dirtyFiles, err := s.repo.hasChangesOtherThan(planFile)
+	if err != nil {
+		return nil, false, fmt.Errorf("check uncommitted files: %w", err)
+	}
+	planHasChanges, err := s.repo.fileHasChanges(planFile)
+	if err != nil {
+		return nil, false, fmt.Errorf("check plan file status: %w", err)
+	}
+	return dirtyFiles, planHasChanges, nil
+}
+
+// prepareBranchPlan validates the non-worktree branch-creation path.
+func (s *Service) prepareBranchPlan(planFile, defaultBranch, branchOverride string) (string, bool, error) {
 	currentBranch, err := s.repo.currentBranch()
 	if err != nil {
 		return "", false, fmt.Errorf("check current branch: %w", err)
 	}
-
-	if !requireDefault && !s.matchesDefaultBranch(currentBranch, defaultBranch) {
+	if !s.matchesDefaultBranch(currentBranch, defaultBranch) {
 		return "", false, nil // already on feature branch, caller should skip
 	}
 
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
-	if requireDefault && currentBranch == branchName {
-		return "", false, fmt.Errorf("plan branch %q is already checked out here; switch to the base branch or run without --worktree", branchName)
-	}
-
-	// check for uncommitted changes to files other than the plan
-	dirtyFiles, err := s.repo.hasChangesOtherThan(planFile)
+	dirtyFiles, planHasChanges, err := s.inspectPlanChanges(planFile)
 	if err != nil {
-		return "", false, fmt.Errorf("check uncommitted files: %w", err)
+		return "", false, err
 	}
 	if len(dirtyFiles) > 0 {
 		fileList := s.formatDirtyFiles(dirtyFiles)
-		if requireDefault {
-			return "", false, fmt.Errorf("cannot create worktree: worktree has uncommitted changes other than the plan file\n\n"+
-				"uncommitted files:\n%s", fileList)
-		}
 		return "", false, fmt.Errorf("cannot create branch %q: worktree has uncommitted changes\n\n"+
 			"uncommitted files:\n%s\n\n"+
 			"loopai needs to create a feature branch from %s to isolate plan work.\n\n"+
@@ -380,13 +410,27 @@ func (s *Service) preparePlanBranch(planFile string, requireDefault bool, defaul
 			"  loopai --review                            # skip branch creation (review-only mode)",
 			branchName, fileList, currentBranch, planFile)
 	}
+	return branchName, planHasChanges, nil
+}
 
-	// check if plan file needs to be committed (untracked, modified, or staged)
-	planHasChanges, err := s.repo.fileHasChanges(planFile)
+// prepareWorktreePlan validates worktree creation from the current HEAD.
+func (s *Service) prepareWorktreePlan(planFile, branchOverride string) (string, bool, error) {
+	currentBranch, err := s.repo.currentBranch()
 	if err != nil {
-		return "", false, fmt.Errorf("check plan file status: %w", err)
+		return "", false, fmt.Errorf("check current branch: %w", err)
 	}
-
+	branchName := s.EffectiveBranchName(planFile, branchOverride)
+	if currentBranch == branchName {
+		return "", false, fmt.Errorf("plan branch %q is already checked out here; switch to the source branch or run without --worktree", branchName)
+	}
+	dirtyFiles, planHasChanges, err := s.inspectPlanChanges(planFile)
+	if err != nil {
+		return "", false, err
+	}
+	if len(dirtyFiles) > 0 {
+		return "", false, fmt.Errorf("cannot create worktree: worktree has uncommitted changes other than the plan file\n\n"+
+			"uncommitted files:\n%s", s.formatDirtyFiles(dirtyFiles))
+	}
 	return branchName, planHasChanges, nil
 }
 
@@ -398,7 +442,7 @@ func (s *Service) preparePlanBranch(planFile string, requireDefault bool, defaul
 // branchOverride, when non-empty, is used directly instead of deriving the name from planFile.
 func (s *Service) CreateBranchForPlan(planFile, defaultBranch, branchOverride string) error {
 	planFile = s.resolveFilesystemCase(planFile)
-	branchName, planHasChanges, err := s.preparePlanBranch(planFile, false, defaultBranch, branchOverride)
+	branchName, planHasChanges, err := s.prepareBranchPlan(planFile, defaultBranch, branchOverride)
 	if err != nil {
 		return err
 	}
@@ -439,12 +483,11 @@ func (s *Service) CreateBranchForPlan(planFile, defaultBranch, branchOverride st
 // returns (worktree path, planNeedsCommit, error). when planNeedsCommit is true the caller
 // must commit the plan file in the worktree context (via CommitPlanFile on the worktree's
 // git service) so the commit lands on the feature branch rather than the default branch.
-// defaultBranch is the resolved default branch name (e.g. "main", "develop").
 // branchOverride, when non-empty, is used directly instead of deriving the name from planFile.
-func (s *Service) CreateWorktreeForPlan(planFile, defaultBranch, branchOverride string) (string, bool, error) {
+func (s *Service) CreateWorktreeForPlan(planFile, branchOverride string) (string, bool, error) {
 	planFile = s.resolveFilesystemCase(planFile)
 
-	// check worktree existence early, before preparePlanBranch runs hasChangesOtherThan
+	// check worktree existence early, before prepareWorktreePlan runs hasChangesOtherThan
 	// (an existing worktree dir would show up as untracked and fail the dirty check)
 	earlyBranch := s.EffectiveBranchName(planFile, branchOverride)
 	wtPath := filepath.Join(s.repo.root(), ".loopai", "worktrees", earlyBranch)
@@ -459,7 +502,7 @@ func (s *Service) CreateWorktreeForPlan(planFile, defaultBranch, branchOverride 
 		return "", false, fmt.Errorf("worktree already exists at %s, another instance may be running", wtPath)
 	}
 
-	branchName, planHasChanges, err := s.preparePlanBranch(planFile, true, defaultBranch, branchOverride)
+	branchName, planHasChanges, err := s.prepareWorktreePlan(planFile, branchOverride)
 	if err != nil {
 		return "", false, err
 	}
@@ -481,6 +524,9 @@ func (s *Service) CreateWorktreeForPlan(planFile, defaultBranch, branchOverride 
 
 	// create worktree with branch
 	if s.repo.branchExists(branchName) {
+		if err := s.validateExistingPlanBranch(branchName); err != nil {
+			return "", false, err
+		}
 		s.log.Printf("creating worktree with existing branch: %s\n", branchName)
 		if err := s.repo.addWorktree(wtPath, branchName, false); err != nil {
 			return "", false, fmt.Errorf("add worktree with existing branch: %w", err)
@@ -502,6 +548,21 @@ func (s *Service) CreateWorktreeForPlan(planFile, defaultBranch, branchOverride 
 	}
 
 	return wtPath, planHasChanges, nil
+}
+
+func (s *Service) validateExistingPlanBranch(branchName string) error {
+	head, err := s.repo.headHash()
+	if err != nil {
+		return fmt.Errorf("identify current HEAD before reusing plan branch: %w", err)
+	}
+	containsHead, err := s.repo.isAncestor(context.Background(), head, branchName)
+	if err != nil {
+		return fmt.Errorf("verify existing plan branch %q: %w", branchName, err)
+	}
+	if !containsHead {
+		return fmt.Errorf("existing plan branch %q does not include current HEAD; merge or rebase the source changes into it, or choose another --branch", branchName)
+	}
+	return nil
 }
 
 // CommitPlanFile stages and commits a plan file on the current branch.
@@ -770,10 +831,9 @@ func (s *Service) DiffStats(baseBranch string) (DiffStats, error) {
 	return s.repo.diffStats(baseBranch)
 }
 
-// EnsureLocalGitignore creates .loopai/.gitignore with patterns for runtime artifacts
-// (progress/ and worktrees/). this keeps ignore rules self-contained inside .loopai/
-// instead of modifying the project's root .gitignore.
-// idempotent: does nothing if the file already exists with the expected content.
+// EnsureLocalGitignore ensures progress and worktree artifacts are ignored without overwriting
+// a project-owned .loopai/.gitignore. A missing file gets the standard self-contained rules;
+// a custom existing file is preserved and the rules are added to Git's repository-local excludes.
 func (s *Service) EnsureLocalGitignore() error {
 	loopaiDir := filepath.Join(s.repo.root(), ".loopai")
 	if err := os.MkdirAll(loopaiDir, 0o750); err != nil {
@@ -787,6 +847,13 @@ func (s *Service) EnsureLocalGitignore() error {
 		if string(existing) == content {
 			return nil
 		}
+		if excludeErr := s.repo.ensureRuntimeExcludes("/.loopai/progress/", "/.loopai/worktrees/"); excludeErr != nil {
+			return fmt.Errorf("preserve custom .loopai/.gitignore: %w", excludeErr)
+		}
+		s.log.Printf("preserved custom .loopai/.gitignore and configured repository-local runtime excludes\n")
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read .loopai/.gitignore: %w", err)
 	}
 
 	if err := os.WriteFile(gitignorePath, []byte(content), 0o644); err != nil { //nolint:gosec // .gitignore needs world-readable
