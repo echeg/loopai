@@ -150,6 +150,26 @@ func TestClearFlagParsing(t *testing.T) {
 	assert.True(t, o.Clear)
 }
 
+func TestCommitFlagParsing(t *testing.T) {
+	t.Run("short flag sets commit", func(t *testing.T) {
+		o := parseTestOpts(t, "-c")
+		assert.True(t, o.Commit)
+		assert.False(t, o.CodexOnly)
+	})
+
+	t.Run("long flag sets commit", func(t *testing.T) {
+		o := parseTestOpts(t, "--commit")
+		assert.True(t, o.Commit)
+		assert.False(t, o.CodexOnly)
+	})
+
+	t.Run("codex only keeps long form", func(t *testing.T) {
+		o := parseTestOpts(t, "--codex-only")
+		assert.True(t, o.CodexOnly)
+		assert.False(t, o.Commit)
+	})
+}
+
 func TestMergeFlagParsing(t *testing.T) {
 	t.Run("bare flag auto detects base", func(t *testing.T) {
 		o := parseTestOpts(t, "--merge")
@@ -1673,6 +1693,9 @@ func TestValidateFlags(t *testing.T) {
 		{name: "zero_idle_timeout_is_valid", opts: opts{IdleTimeout: 0}, wantErr: false},
 		{name: "codex_alone_is_valid", opts: opts{Codex: true}, wantErr: false},
 		{name: "codex_with_pass_claude_md_is_valid", opts: opts{Codex: true, PassClaudeMd: true}, wantErr: false},
+		{name: "commit_with_worktree_is_valid", opts: opts{Commit: true, Worktree: true}, wantErr: false},
+		{name: "commit_without_worktree_is_invalid", opts: opts{Commit: true}, wantErr: true, errMsg: "--commit requires --worktree"},
+		{name: "commit_with_resume_is_invalid", opts: opts{Commit: true, Worktree: true, ResumeWorktree: true}, wantErr: true, errMsg: "cannot be used with --resume-worktree"},
 		{name: "resume_worktree_is_valid", opts: opts{ResumeWorktree: true}, wantErr: false},
 		{name: "resume_worktree_with_tasks_only_is_valid", opts: opts{ResumeWorktree: true, TasksOnly: true}, wantErr: false},
 		{name: "resume_worktree_with_plan_conflicts", opts: opts{ResumeWorktree: true, PlanDescription: "add feature"}, wantErr: true, errMsg: "--plan"},
@@ -4323,6 +4346,88 @@ func TestResolveVersion(t *testing.T) {
 		// but VCS info should be available from the git repo
 		v := resolveVersion()
 		assert.NotEmpty(t, v)
+	})
+}
+
+func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
+	t.Run("commits_dirty_source_and_includes_plan_in_new_worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "auto-commit.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Auto Commit\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		req := executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}
+
+		wt, err := prepareWorktreeRun(opts{Commit: true, Worktree: true}, req, "auto-commit")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+		assert.False(t, wt.planNeedsCommit, "auto-committed plan must not be copied and recommitted")
+
+		headAfter := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "master"))
+		assert.NotEqual(t, headBefore, headAfter)
+		assert.Equal(t, headAfter, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "auto-commit")))
+		assert.Equal(t, "auto-commit working tree before plan: auto-commit",
+			strings.TrimSpace(gitOutput(t, dir, "log", "-1", "--format=%B", "master")))
+		readme, readErr := os.ReadFile(filepath.Join(wt.path, "README.md")) //nolint:gosec // test temp dir
+		require.NoError(t, readErr)
+		assert.Equal(t, "# Updated\n", string(readme))
+		planContents, readErr := os.ReadFile(wt.planFile) //nolint:gosec // test temp dir
+		require.NoError(t, readErr)
+		assert.Equal(t, "# Auto Commit\n", string(planContents))
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
+	})
+
+	t.Run("returns_commit_error_without_creating_worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "blocked.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Blocked\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/blocked.md")
+		runGit(t, dir, "commit", "-m", "add blocked plan")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Dirty\n"), 0o600))
+		writeExecutable(t, filepath.Join(dir, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "blocked")
+		require.ErrorContains(t, err, "auto-commit working tree")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "blocked"))
+	})
+
+	t.Run("resume_does_not_auto_commit_source", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "resume-no-commit.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Resume\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/resume-no-commit.md")
+		runGit(t, dir, "commit", "-m", "add resume plan")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "master", "")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
+		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Still dirty\n"), 0o600))
+
+		wt, err := prepareWorktreeRun(opts{Commit: true, ResumeWorktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "resume-no-commit")
+		require.NoError(t, err)
+		assert.True(t, wt.resumed)
+		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
 	})
 }
 

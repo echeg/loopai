@@ -51,7 +51,7 @@ type opts struct {
 	CustomReviewScript      string        `long:"custom-review-script" description:"override custom external review script for this run"`
 	Review                  bool          `short:"r" long:"review" description:"skip task execution, run full review pipeline"`
 	ExternalOnly            bool          `short:"e" long:"external-only" description:"skip tasks and first review; run external review, conditional post-review, and finalize"`
-	CodexOnly               bool          `short:"c" long:"codex-only" description:"alias for --external-only (deprecated)"`
+	CodexOnly               bool          `long:"codex-only" description:"alias for --external-only (deprecated)"`
 	TasksOnly               bool          `short:"t" long:"tasks-only" description:"run only task phase, skip all reviews"`
 	BaseRef                 string        `short:"b" long:"base-ref" description:"override default branch for review diffs; a branch name also becomes the base for branch/worktree creation (branch name or commit hash)"`
 	Wait                    time.Duration `long:"wait" description:"wait duration on rate limit before retry (default: 10m; 0 disables retries)"`
@@ -63,6 +63,7 @@ type opts struct {
 	Codex                   bool          `long:"codex" description:"use codex CLI as the executor for task, review, and finalize phases"`
 	PassClaudeMd            bool          `long:"pass-claude-md" description:"pass project CLAUDE.md to codex via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is NOT auto-passed but a one-time setup hint is shown (codex executor only)"`
 	Worktree                bool          `long:"worktree" description:"run in isolated git worktree"`
+	Commit                  bool          `short:"c" long:"commit" description:"auto-commit dirty working tree on the current branch before creating the worktree (requires --worktree)"`
 	ResumeWorktree          bool          `long:"resume-worktree" description:"continue in an existing interrupted worktree (implies --worktree)"`
 	Branch                  string        `long:"branch" description:"override branch name for worktree/branch creation (default: derived from plan filename)"`
 	PlanDescription         string        `long:"plan" description:"create plan interactively (enter plan description)"`
@@ -1027,6 +1028,22 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 			return worktreeRun{}, err
 		}
 	} else {
+		if o.Commit {
+			// Install the runtime ignore rules before git add -A so prior progress and
+			// worktree artifacts cannot be swept into the user's source commit.
+			if err := req.GitSvc.EnsureLocalGitignore(); err != nil {
+				return worktreeRun{}, fmt.Errorf("ensure gitignore before auto-commit: %w", err)
+			}
+			committed, err := req.GitSvc.AutoCommitAll("auto-commit working tree before plan: " + branch)
+			if err != nil {
+				return worktreeRun{}, fmt.Errorf("auto-commit working tree: %w", err)
+			}
+			if committed {
+				req.Colors.Info().Printf("auto-committed working tree before creating branch: %s\n", branch)
+			} else {
+				req.Colors.Info().Printf("working tree clean; no auto-commit needed before creating branch: %s\n", branch)
+			}
+		}
 		var err error
 		wt.path, wt.planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlan(
 			req.PlanFile, req.DefaultBranch, req.BranchOverride)
@@ -1509,6 +1526,12 @@ func validateFlags(o opts) error {
 	if o.ResumeWorktree && (o.Review || o.ExternalOnly || o.CodexOnly) {
 		return errors.New("--resume-worktree is only supported for full or --tasks-only execution")
 	}
+	if o.Commit && !o.Worktree {
+		return errors.New("--commit requires --worktree")
+	}
+	if o.Commit && o.ResumeWorktree {
+		return errors.New("--commit cannot be used with --resume-worktree; it only applies when creating a new worktree")
+	}
 	if o.Wait < 0 {
 		return fmt.Errorf("--wait must be non-negative, got %s", o.Wait)
 	}
@@ -1539,7 +1562,7 @@ func hasExecutionMode(o opts) bool {
 		o.PlanDescription != "", o.Review, o.ExternalOnly, o.CodexOnly, o.TasksOnly,
 		o.BaseRef != "", o.waitSet || o.Wait != 0, o.sessionTimeoutSet || o.SessionTimeout != 0,
 		o.idleTimeoutSet || o.IdleTimeout != 0, o.SkipFinalize, o.PreserveAnthropicAPIKey,
-		o.NoClaudeSwap, o.Codex, o.PassClaudeMd, o.Worktree, o.ResumeWorktree, o.Branch != "",
+		o.NoClaudeSwap, o.Codex, o.PassClaudeMd, o.Worktree, o.Commit, o.ResumeWorktree, o.Branch != "",
 		o.Serve, len(o.Watch) != 0, o.Init, o.Reset, o.DumpDefaults != "",
 	} {
 		if set {

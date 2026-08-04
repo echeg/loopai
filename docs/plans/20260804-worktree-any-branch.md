@@ -67,13 +67,13 @@
 
 ### Task 3: Add -c/--commit CLI flag and wire it into worktree creation
 
-- [ ] in `cmd/loopai/main.go` opts: remove `short:"c"` from `CodexOnly` (keep long `--codex-only` working) and add `Commit bool` with `short:"c" long:"commit"` and a description like "auto-commit dirty working tree on the current branch before creating the worktree (requires --worktree)"
-- [ ] validate flag combinations: `--commit` without worktree mode fails fast with a clear error; place the check alongside the existing mode-flag validation
-- [ ] in the fresh-worktree creation path (before `CreateWorktreeForPlan` at ~main.go:1031): when `--commit` is set, call `AutoCommitAll` with message `auto-commit working tree before plan: <branch>`; log whether a commit was made; the resume path (`--resume-worktree`) must not auto-commit
-- [ ] confirm the plan-file flow: after auto-commit the plan file is already committed on the base branch, so `planNeedsCommit` comes back false and the copy-into-worktree path is skipped naturally (add a test asserting this)
-- [ ] write tests: flag parsing (`-c` sets Commit, `--codex-only` long form still works and no longer reacts to `-c`), `--commit` without `--worktree` rejected
-- [ ] write integration-style test: dirty tree + `--worktree --commit` creates the worktree with changes committed on the base branch
-- [ ] run `go test ./cmd/... ./pkg/git/...` — must pass before task 4
+- [x] in `cmd/loopai/main.go` opts: remove `short:"c"` from `CodexOnly` (keep long `--codex-only` working) and add `Commit bool` with `short:"c" long:"commit"` and a description like "auto-commit dirty working tree on the current branch before creating the worktree (requires --worktree)"
+- [x] validate flag combinations: `--commit` without worktree mode fails fast with a clear error; place the check alongside the existing mode-flag validation
+- [x] in the fresh-worktree creation path (before `CreateWorktreeForPlan` at ~main.go:1031): when `--commit` is set, call `AutoCommitAll` with message `auto-commit working tree before plan: <branch>`; log whether a commit was made; the resume path (`--resume-worktree`) must not auto-commit
+- [x] confirm the plan-file flow: after auto-commit the plan file is already committed on the base branch, so `planNeedsCommit` comes back false and the copy-into-worktree path is skipped naturally (add a test asserting this)
+- [x] write tests: flag parsing (`-c` sets Commit, `--codex-only` long form still works and no longer reacts to `-c`), `--commit` without `--worktree` rejected
+- [x] write integration-style test: dirty tree + `--worktree --commit` creates the worktree with changes committed on the base branch
+- [x] run `go test ./cmd/... ./pkg/git/...` — must pass before task 4
 
 ### Task 4: Simplify resolveBranchBase for worktree mode
 
