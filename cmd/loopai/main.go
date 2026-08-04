@@ -53,7 +53,7 @@ type opts struct {
 	ExternalOnly            bool          `short:"e" long:"external-only" description:"skip tasks and first review; run external review, conditional post-review, and finalize"`
 	CodexOnly               bool          `long:"codex-only" description:"alias for --external-only (deprecated)"`
 	TasksOnly               bool          `short:"t" long:"tasks-only" description:"run only task phase, skip all reviews"`
-	BaseRef                 string        `short:"b" long:"base-ref" description:"override default branch for review diffs; a branch name also becomes the base for branch/worktree creation (branch name or commit hash)"`
+	BaseRef                 string        `short:"b" long:"base-ref" description:"override the base for review diffs; a branch name also becomes the base for non-worktree branch creation (branch name or commit hash)"`
 	Wait                    time.Duration `long:"wait" description:"wait duration on rate limit before retry (default: 10m; 0 disables retries)"`
 	SessionTimeout          time.Duration `long:"session-timeout" description:"per-session timeout (e.g. 30m, 1h); external Codex/custom review under a Claude primary excluded"`
 	IdleTimeout             time.Duration `long:"idle-timeout" description:"kill claude/codex executor session after no output for this duration (e.g. 5m, 10m)"`
@@ -195,7 +195,7 @@ type executePlanRequest struct {
 	MainGitSvc     *git.Service // main repo service for cross-boundary ops (worktree mode); nil in normal mode
 	Config         *config.Config
 	Colors         *progress.Colors
-	DefaultBranch  string // actual default branch for branch/worktree creation (config or auto-detect)
+	DefaultBranch  string // base for non-worktree branch creation; worktrees are created from current HEAD
 	BaseRef        string // base reference for review diffs and templates (--base-ref override or DefaultBranch)
 	NotifySvc      *notify.Service
 	BranchOverride string              // branch name override (--branch flag); empty = derive from plan filename
@@ -374,9 +374,9 @@ func run(ctx context.Context, o opts) error {
 		return ensureErr
 	}
 
-	// defaultBranch is for branch/worktree creation, baseRef for review diffs and the
-	// {{DEFAULT_BRANCH}} template variable. --base-ref feeds both when it names a branch;
-	// a commit hash stays diff-only and is rejected when creating (but not resuming) a worktree.
+	// defaultBranch is for non-worktree branch creation, baseRef for review diffs and the
+	// {{DEFAULT_BRANCH}} template variable. In worktree mode --base-ref stays diff-only because
+	// the worktree branch is always cut from the current HEAD.
 	branchMode := modeCreatesBranch(mode)
 	creationMode := branchMode && !o.ResumeWorktree
 	defaultBranch, baseRef, err := resolveBaseRefs(gitSvc, o.BaseRef, cfg.DefaultBranch,
@@ -1475,9 +1475,8 @@ func modeRequiresBranch(mode processor.Mode) bool {
 }
 
 // modeCreatesBranch reports whether the run eventually creates a branch, which is what decides
-// if --base-ref may serve as its base. plan mode counts even though plan creation itself runs in
-// place: it hands off to the implementation run once the plan exists, so its --base-ref has to
-// pass the same validation up front instead of falling back silently and failing much later.
+// if --base-ref needs branch-base resolution outside worktree mode. plan mode counts even though
+// plan creation itself runs in place: it hands off to an implementation run once the plan exists.
 func modeCreatesBranch(mode processor.Mode) bool {
 	return modeRequiresBranch(mode) || mode == processor.ModePlan
 }
@@ -3201,11 +3200,11 @@ func resolveDefaultBranch(cliRef, configBranch, autoDetected string) string {
 // (e.g. "origin/main"); it names the same branch as the local ref without it.
 const remoteBranchPrefix = "origin/"
 
-// resolveBaseRefs resolves the two bases a run needs: branchBase for branch/worktree creation
-// and diffBase for review diffs and the {{DEFAULT_BRANCH}} template variable.
-// they differ only when --base-ref names a revision that is not a branch.
-// branchMode says whether the run creates a branch at all: review modes never do, so their
-// --base-ref is a pure diff base and must not be validated against the checkout.
+// resolveBaseRefs resolves the two bases a run needs: branchBase for non-worktree branch creation
+// and diffBase for review diffs and the {{DEFAULT_BRANCH}} template variable. In worktree mode,
+// branchBase remains the configured/auto-detected default because worktree creation uses current
+// HEAD; --base-ref is purely a diff base. branchMode says whether the run creates a branch at all:
+// review modes never do, so their --base-ref is also a pure diff base.
 func resolveBaseRefs(gitSvc *git.Service, cliBaseRef, configBranch string, branchMode, worktreeMode bool) (branchBase, diffBase string, err error) {
 	autoDetected := gitSvc.GetDefaultBranch()
 	diffBase = resolveDefaultBranch(cliBaseRef, configBranch, autoDetected)
@@ -3237,23 +3236,22 @@ func localBranchRef(gitSvc *git.Service, ref string) string {
 	return ""
 }
 
-// resolveBranchBase decides which ref is the base for branch and worktree creation.
+// resolveBranchBase decides which ref is the base for non-worktree branch creation.
 // cliRefBranch is the local branch --base-ref names, empty when it names anything else: a commit
 // hash is a valid diff base but cannot be branched from, so the configured/auto-detected default
-// branch stays in place — except in worktree mode, where a silent fallback would surface later as
-// a confusing "requires <default> branch" message.
+// branch stays in place. Worktree mode always keeps that default here because its branch is cut
+// from current HEAD and --base-ref is used only for diffs.
 // a branch base is honored only from that branch itself, since branch creation cuts from HEAD:
 // from another branch CreateBranchForPlan reads the mismatch as "already on a feature branch" and
 // skips silently, which would leave the whole run committing onto the default branch.
 func resolveBranchBase(cliRef, cliRefBranch, defaultBranch, currentBranch string, worktreeMode bool) (string, error) {
+	if worktreeMode {
+		return defaultBranch, nil
+	}
 	if cliRef == "" {
 		return defaultBranch, nil
 	}
 	if cliRefBranch == "" {
-		if worktreeMode {
-			return "", fmt.Errorf("--base-ref %q is not a branch; worktree creation needs a branch to base the "+
-				"new worktree on, pass a branch name or drop --worktree", cliRef)
-		}
 		return defaultBranch, nil
 	}
 	if !sameBranch(currentBranch, cliRefBranch) && sameBranch(currentBranch, defaultBranch) {

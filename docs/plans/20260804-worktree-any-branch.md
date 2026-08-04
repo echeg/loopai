@@ -77,12 +77,12 @@
 
 ### Task 4: Simplify resolveBranchBase for worktree mode
 
-- [ ] in `cmd/loopai/main.go` `resolveBranchBase`: remove the two worktree-specific error paths (`--base-ref %q is not a branch; worktree creation needs a branch...` and the `checkout is on %q` mismatch error for worktree mode); in worktree mode `--base-ref` is now purely a diff base and branch creation always uses current HEAD
-- [ ] audit user-facing messages that promise the default-branch requirement for worktrees (grep for `requires` / `default branch` in `cmd/loopai`) and update or drop those that no longer apply; leave non-worktree messages alone
-- [ ] update `--base-ref` flag description to reflect that worktree creation no longer uses it as a branch base
-- [ ] update `resolveBranchBase` / `resolveBaseRefs` godoc comments
-- [ ] update existing `resolveBranchBase` tests: removed error cases now succeed; add cases asserting worktree mode returns a usable result regardless of `--base-ref` form
-- [ ] run `go test ./cmd/...` — must pass before task 5
+- [x] in `cmd/loopai/main.go` `resolveBranchBase`: remove the two worktree-specific error paths (`--base-ref %q is not a branch; worktree creation needs a branch...` and the `checkout is on %q` mismatch error for worktree mode); in worktree mode `--base-ref` is now purely a diff base and branch creation always uses current HEAD
+- [x] audit user-facing messages that promise the default-branch requirement for worktrees (grep for `requires` / `default branch` in `cmd/loopai`) and update or drop those that no longer apply; leave non-worktree messages alone
+- [x] update `--base-ref` flag description to reflect that worktree creation no longer uses it as a branch base
+- [x] update `resolveBranchBase` / `resolveBaseRefs` godoc comments
+- [x] update existing `resolveBranchBase` tests: removed error cases now succeed; add cases asserting worktree mode returns a usable result regardless of `--base-ref` form
+- [x] run `go test ./cmd/...` — must pass before task 5
 
 ### Task 5: Verify acceptance criteria
 

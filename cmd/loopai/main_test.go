@@ -770,8 +770,8 @@ func TestResolveBranchBase(t *testing.T) {
 			defaultBranch: "main", currentBranch: "release/13.0.0", expected: "release/13.0.0",
 		},
 		{
-			name: "branch_ref_becomes_base_in_worktree_mode", cliRef: "release/13.0.0", cliRefBranch: "release/13.0.0",
-			defaultBranch: "main", currentBranch: "release/13.0.0", worktreeMode: true, expected: "release/13.0.0",
+			name: "branch_ref_is_diff_only_in_worktree_mode", cliRef: "release/13.0.0", cliRefBranch: "release/13.0.0",
+			defaultBranch: "main", currentBranch: "release/13.0.0", worktreeMode: true, expected: "main",
 		},
 		{
 			name: "remote_tracking_ref_resolves_to_local_branch", cliRef: "origin/main", cliRefBranch: "main",
@@ -792,12 +792,17 @@ func TestResolveBranchBase(t *testing.T) {
 			expectedErr: `run "git checkout release/13.0.0"`,
 		},
 		{
+			name: "branch_ref_from_different_checkout_succeeds_in_worktree_mode", cliRef: "release/13.0.0",
+			cliRefBranch: "release/13.0.0", defaultBranch: "main", currentBranch: "main",
+			worktreeMode: true, expected: "main",
+		},
+		{
 			name: "commit_hash_keeps_default_outside_worktree_mode", cliRef: "abc1234", defaultBranch: "main",
 			currentBranch: "main", expected: "main",
 		},
 		{
-			name: "commit_hash_fails_in_worktree_mode", cliRef: "abc1234", defaultBranch: "main", currentBranch: "main",
-			worktreeMode: true, expectedErr: `--base-ref "abc1234" is not a branch`,
+			name: "commit_hash_is_diff_only_in_worktree_mode", cliRef: "abc1234", defaultBranch: "main",
+			currentBranch: "main", worktreeMode: true, expected: "main",
 		},
 	}
 
@@ -816,7 +821,7 @@ func TestResolveBranchBase(t *testing.T) {
 }
 
 func TestResolveBaseRefs(t *testing.T) {
-	t.Run("branch_base_ref_becomes_worktree_base", func(t *testing.T) {
+	t.Run("branch_base_ref_is_diff_only_in_worktree_mode", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		runGit(t, dir, "checkout", "-b", "release/13.0.0")
 
@@ -825,8 +830,8 @@ func TestResolveBaseRefs(t *testing.T) {
 
 		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "release/13.0.0", "", true, true)
 		require.NoError(t, err)
-		assert.Equal(t, "release/13.0.0", branchBase, "worktree must branch off the requested release branch")
-		assert.Equal(t, "release/13.0.0", diffBase, "review diffs must use the same base")
+		assert.Equal(t, "master", branchBase, "worktree creation ignores the resolved branch base and uses current HEAD")
+		assert.Equal(t, "release/13.0.0", diffBase, "review diffs honor the requested base")
 	})
 
 	t.Run("branch_base_ref_rejected_from_the_default_branch", func(t *testing.T) {
@@ -867,11 +872,11 @@ func TestResolveBaseRefs(t *testing.T) {
 
 		branchBase, diffBase, err := resolveBaseRefs(gitSvc, "origin/master", "", true, true)
 		require.NoError(t, err)
-		assert.Equal(t, "master", branchBase, "a remote-tracking ref names the local branch it tracks")
+		assert.Equal(t, "master", branchBase, "worktree creation keeps the default branch metadata")
 		assert.Equal(t, "origin/master", diffBase, "diffs keep the requested revision as written")
 	})
 
-	t.Run("commit_hash_base_ref_rejected_in_worktree_mode", func(t *testing.T) {
+	t.Run("commit_hash_base_ref_is_diff_only_in_worktree_mode", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
@@ -879,9 +884,10 @@ func TestResolveBaseRefs(t *testing.T) {
 		hash, err := gitSvc.HeadHash()
 		require.NoError(t, err)
 
-		_, _, err = resolveBaseRefs(gitSvc, hash, "", true, true)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "is not a branch")
+		branchBase, diffBase, err := resolveBaseRefs(gitSvc, hash, "", true, true)
+		require.NoError(t, err)
+		assert.Equal(t, "master", branchBase)
+		assert.Equal(t, hash, diffBase)
 	})
 
 	t.Run("commit_hash_base_ref_kept_for_diffs_without_worktree", func(t *testing.T) {
