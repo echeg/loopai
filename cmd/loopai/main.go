@@ -1023,26 +1023,12 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 		resumed: o.ResumeWorktree,
 	}
 
-	if wt.resumed {
-		if err := requireResumeWorktree(wt.path); err != nil {
+	if err := prepareResumeWorktree(wt); err != nil {
+		return worktreeRun{}, err
+	}
+	if !wt.resumed {
+		if err := prepareWorktreeSource(o, req, branch); err != nil {
 			return worktreeRun{}, err
-		}
-	} else {
-		if o.Commit {
-			// Install the runtime ignore rules before git add -A so prior progress and
-			// worktree artifacts cannot be swept into the user's source commit.
-			if err := req.GitSvc.EnsureLocalGitignore(); err != nil {
-				return worktreeRun{}, fmt.Errorf("ensure gitignore before auto-commit: %w", err)
-			}
-			committed, err := req.GitSvc.AutoCommitAll("auto-commit working tree before plan: " + branch)
-			if err != nil {
-				return worktreeRun{}, fmt.Errorf("auto-commit working tree: %w", err)
-			}
-			if committed {
-				req.Colors.Info().Printf("auto-committed working tree before creating branch: %s\n", branch)
-			} else {
-				req.Colors.Info().Printf("working tree clean; no auto-commit needed before creating branch: %s\n", branch)
-			}
 		}
 		var err error
 		wt.path, wt.planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlan(
@@ -1077,6 +1063,35 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 	}
 	req.Colors.Info().Printf("resuming existing worktree: %s\n", wt.path)
 	return wt, nil
+}
+
+func prepareResumeWorktree(wt worktreeRun) error {
+	if !wt.resumed {
+		return nil
+	}
+	return requireResumeWorktree(wt.path)
+}
+
+// prepareWorktreeSource optionally commits the source checkout before a fresh worktree is cut.
+func prepareWorktreeSource(o opts, req executePlanRequest, branch string) error {
+	if !o.Commit {
+		return nil
+	}
+	// Install the runtime ignore rules before git add -A so prior progress and
+	// worktree artifacts cannot be swept into the user's source commit.
+	if err := req.GitSvc.EnsureLocalGitignore(); err != nil {
+		return fmt.Errorf("ensure gitignore before auto-commit: %w", err)
+	}
+	committed, err := req.GitSvc.AutoCommitAll("auto-commit working tree before plan: " + branch)
+	if err != nil {
+		return fmt.Errorf("auto-commit working tree: %w", err)
+	}
+	if committed {
+		req.Colors.Info().Printf("auto-committed working tree before creating branch: %s\n", branch)
+		return nil
+	}
+	req.Colors.Info().Printf("working tree clean; no auto-commit needed before creating branch: %s\n", branch)
+	return nil
 }
 
 func requireResumeWorktree(path string) error {

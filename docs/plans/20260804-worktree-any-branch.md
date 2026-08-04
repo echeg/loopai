@@ -86,12 +86,12 @@
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview are implemented (worktree from any branch, plan-branch collision error, `-c/--commit` semantics, non-worktree mode untouched)
-- [ ] verify edge cases: detached HEAD, dirty tree without `--commit` still errors, clean tree with `--commit` is a no-op
-- [ ] run full test suite: `make test` — must pass
-- [ ] run `make lint` — all issues fixed
-- [ ] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] verify no test touched real `~/.config/loopai/` or `~/.config/ralphex/`
+- [x] verify all requirements from Overview are implemented (worktree from any branch, plan-branch collision error, `-c/--commit` semantics, non-worktree mode untouched)
+- [x] verify edge cases: detached HEAD, dirty tree without `--commit` still errors, clean tree with `--commit` is a no-op
+- [x] run full test suite: `make test` — must pass
+- [x] run `make lint` — all issues fixed
+- [x] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify no test touched real `~/.config/loopai/` or `~/.config/ralphex/`
 
 ### Task 6: [Final] Update documentation
 

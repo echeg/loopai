@@ -4381,10 +4381,10 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		assert.Equal(t, headAfter, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "auto-commit")))
 		assert.Equal(t, "auto-commit working tree before plan: auto-commit",
 			strings.TrimSpace(gitOutput(t, dir, "log", "-1", "--format=%B", "master")))
-		readme, readErr := os.ReadFile(filepath.Join(wt.path, "README.md")) //nolint:gosec // test temp dir
+		readme, readErr := os.ReadFile(filepath.Join(wt.path, "README.md"))
 		require.NoError(t, readErr)
 		assert.Equal(t, "# Updated\n", string(readme))
-		planContents, readErr := os.ReadFile(wt.planFile) //nolint:gosec // test temp dir
+		planContents, readErr := os.ReadFile(wt.planFile)
 		require.NoError(t, readErr)
 		assert.Equal(t, "# Auto Commit\n", string(planContents))
 		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
