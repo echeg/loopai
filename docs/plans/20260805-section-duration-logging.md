@@ -60,13 +60,13 @@
 
 ### Task 1: SectionTimer wrapper in pkg/progress
 
-- [ ] create `pkg/progress/section_timer.go`: exported interface `SectionLogger` (local mirror of the shared logger method set: Print, PrintRaw, PrintSection, PrintAligned, LogQuestion, LogAnswer, LogDraftReview, Path) with a comment documenting the import cycle (`cmux`/`processor` → `plan` → `progress`) as the reason the mirror exists and that drift is caught by compile-time assertions in `cmd/loopai` tests
-- [ ] `SectionTimer` struct: embeds/forwards `SectionLogger`, guarded by a `sync.Mutex` (the suite is race-enabled; the mutex is cheap — unconditional, not "if needed"); constructor `NewSectionTimer(inner SectionLogger, now func() time.Time)` with nil `now` defaulting to `time.Now`
-- [ ] `PrintSection`: when a section is open, emit the closing line via `inner.Print("%s took %s", label, dur)` (printf-safe — labels can contain `%` from reviewer names), add duration to the `SectionType` bucket, then forward the new header; first section just records the start
-- [ ] `FinishRun()` (named to avoid colliding with `cmux.Reporter.Finish` semantics): close the last open section (emit its `took` line), then emit `phase durations: ...` with non-empty buckets in fixed order (tasks, internal review, external review, evaluation, planning, other); idempotent; silent no-op when no sections were ever seen
-- [ ] duration-format helper in `section_timer.go` following `Elapsed` conventions (>=1h → `1h23m`, else `5m30s`/`45s`); `Elapsed` itself stays untouched
-- [ ] write tests in `pkg/progress/section_timer_test.go`: fake-clock sequences → exact emitted lines and summary; single section closed by `FinishRun`; `FinishRun` idempotence; `FinishRun` with zero sections emits nothing; bucket-mapping table covering every `SectionType` (incl. `SectionGeneric` "external review (...)" landing in other); format boundaries (59s, 61s, 1h+); one smoke assertion that a forwarded method delegates (no 7-method table — embedding covers the rest)
-- [ ] run `go test ./pkg/progress/...` — must pass before task 2
+- [x] create `pkg/progress/section_timer.go`: exported interface `SectionLogger` (local mirror of the shared logger method set: Print, PrintRaw, PrintSection, PrintAligned, LogQuestion, LogAnswer, LogDraftReview, Path) with a comment documenting the import cycle (`cmux`/`processor` → `plan` → `progress`) as the reason the mirror exists and that drift is caught by compile-time assertions in `cmd/loopai` tests
+- [x] `SectionTimer` struct: embeds/forwards `SectionLogger`, guarded by a `sync.Mutex` (the suite is race-enabled; the mutex is cheap — unconditional, not "if needed"); constructor `NewSectionTimer(inner SectionLogger, now func() time.Time)` with nil `now` defaulting to `time.Now`
+- [x] `PrintSection`: when a section is open, emit the closing line via `inner.Print("%s took %s", label, dur)` (printf-safe — labels can contain `%` from reviewer names), add duration to the `SectionType` bucket, then forward the new header; first section just records the start
+- [x] `FinishRun()` (named to avoid colliding with `cmux.Reporter.Finish` semantics): close the last open section (emit its `took` line), then emit `phase durations: ...` with non-empty buckets in fixed order (tasks, internal review, external review, evaluation, planning, other); idempotent; silent no-op when no sections were ever seen
+- [x] duration-format helper in `section_timer.go` following `Elapsed` conventions (>=1h → `1h23m`, else `5m30s`/`45s`); `Elapsed` itself stays untouched
+- [x] write tests in `pkg/progress/section_timer_test.go`: fake-clock sequences → exact emitted lines and summary; single section closed by `FinishRun`; `FinishRun` idempotence; `FinishRun` with zero sections emits nothing; bucket-mapping table covering every `SectionType` (incl. `SectionGeneric` "external review (...)" landing in other); format boundaries (59s, 61s, 1h+); one smoke assertion that a forwarded method delegates (no 7-method table — embedding covers the rest)
+- [x] run `go test ./pkg/progress/...` — must pass before task 2
 
 ### Task 2: Wire SectionTimer into the runner and plan-creation chains
 
