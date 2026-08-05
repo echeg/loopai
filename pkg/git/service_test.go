@@ -2292,6 +2292,28 @@ func TestService_AutoCommitAll(t *testing.T) {
 		assert.NotContains(t, runGit(t, dir, "diff", "--cached", "--name-only"), ".loopai/")
 	})
 
+	t.Run("succeeds when gitignored runtime artifacts exist on disk", func(t *testing.T) {
+		// regression: git add dies with "paths are ignored by one of your .gitignore files"
+		// when a command-line pathspec (even an :(exclude) one) names an existing ignored path
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		require.NoError(t, svc.EnsureLocalGitignore())
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "progress"), 0o750))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "worktrees", "feature"), 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "progress", "run.log"), []byte("log\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "worktrees", "feature", "file"), []byte("artifact\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("commit me\n"), 0o600))
+
+		committed, err := svc.AutoCommitAll("save with runtime artifacts present")
+		require.NoError(t, err)
+		assert.True(t, committed)
+		files := runGit(t, dir, "show", "--pretty=format:", "--name-only", "HEAD")
+		assert.Contains(t, files, "dirty.txt")
+		assert.NotContains(t, files, ".loopai/progress")
+		assert.NotContains(t, files, ".loopai/worktrees")
+	})
+
 	t.Run("clean tree is a no-op", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())

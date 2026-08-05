@@ -701,11 +701,12 @@ func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
 		return cause
 	}
 
-	// Runtime artifacts must never enter the source commit, even if a custom
-	// .loopai/.gitignore negates the repository-local exclusion rules.
-	_, err = e.run("add", "-A", "--", ".",
-		":(exclude).loopai/progress", ":(exclude).loopai/progress/**",
-		":(exclude).loopai/worktrees", ":(exclude).loopai/worktrees/**")
+	// No :(exclude) pathspecs here: git add dies with "paths are ignored by one of
+	// your .gitignore files" when any command-line pathspec — exclude magic included —
+	// names an existing ignored path, which .loopai/progress and .loopai/worktrees are
+	// on every run with prior history. Plain add -A skips ignored files natively; the
+	// reset below strips runtime paths staged through a negated custom .loopai/.gitignore.
+	_, err = e.run("add", "-A", "--", ".")
 	if err != nil {
 		return false, restoreOnError(fmt.Errorf("stage files: %w", err))
 	}
