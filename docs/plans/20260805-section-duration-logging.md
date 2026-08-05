@@ -87,11 +87,11 @@
 
 ### Task 4: [Final] Update documentation
 
-- [ ] README.md: document the `took` lines and the `phase durations:` summary in the progress-log section, including: `(N)` = section occurrences, bucket sums < total elapsed (pre-first-section time unattributed), durations include rate-limit waits
-- [ ] llms.txt: one-line mention of section timing in the progress format description
-- [ ] CLAUDE.md: note the SectionTimer position in the logger chain (below cmux WrapLogger, above dashboard broadcast) and the FinishRun call sites
-- [ ] keep `docs/superpowers/specs/2026-08-05-section-timing-design.md` linked from this plan
-- [ ] run `make test` and `make lint` one final time — must pass
+- [x] README.md: document the `took` lines and the `phase durations:` summary in the progress-log section, including: `(N)` = section occurrences, bucket sums < total elapsed (pre-first-section time unattributed), durations include rate-limit waits
+- [x] llms.txt: one-line mention of section timing in the progress format description
+- [x] CLAUDE.md: note the SectionTimer position in the logger chain (below cmux WrapLogger, above dashboard broadcast) and the FinishRun call sites
+- [x] keep `docs/superpowers/specs/2026-08-05-section-timing-design.md` linked from this plan
+- [x] run `make test` and `make lint` one final time — must pass
 
 ## Technical Details
 

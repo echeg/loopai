@@ -123,8 +123,13 @@ Standalone close-out routing happens before executor and notification dependenci
 and passes them to `cmux.Reporter`. Phase labels come from `status.PhaseHolder`;
 review iteration labels come from `Reporter.WrapLogger`, which observes
 structured `PrintSection` calls while forwarding the complete logger interface.
-Keep this wrapper in the logger chain after dashboard setup. A nil reporter must
-return the original logger unchanged.
+Keep `Reporter.WrapLogger` in the logger chain after dashboard setup. The
+`progress.SectionTimer` sits below that cmux wrapper and above the dashboard
+broadcast logger, preserving cmux's outermost rate-limit interfaces while timing
+the structured sections. Call `SectionTimer.FinishRun` immediately after
+`Runner.Run` returns in both the main runner and interactive plan-creation paths,
+before handling the run error; do not defer it because dashboard shutdown can
+close the underlying log first. A nil reporter must return the timer unchanged.
 
 ## Code style
 
