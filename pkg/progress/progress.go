@@ -614,11 +614,7 @@ func (l *Logger) LogDiffStats(files, additions, deletions int) {
 // Elapsed returns formatted elapsed time since start.
 // for durations >= 1 hour, truncates to minutes (e.g. "1h23m"); otherwise to seconds (e.g. "5m30s").
 func (l *Logger) Elapsed() string {
-	d := time.Since(l.startTime)
-	if d >= time.Hour {
-		return strings.TrimSuffix(d.Truncate(time.Minute).String(), "0s")
-	}
-	return d.Truncate(time.Second).String()
+	return formatSectionDuration(time.Since(l.startTime))
 }
 
 // SetFailed marks the logger as failed with the given reason. On Close, a "Failed:"

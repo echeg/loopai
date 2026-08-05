@@ -91,10 +91,10 @@ func (t *SectionTimer) FinishRun() {
 	if t.finished {
 		return
 	}
-	t.finished = true
 	if t.current == nil {
 		return
 	}
+	t.finished = true
 
 	t.closeCurrent(t.now())
 	parts := make([]string, 0, bucketCount)

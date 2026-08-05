@@ -84,12 +84,20 @@ func TestSectionTimer_FinishRunClosesSingleSectionOnce(t *testing.T) {
 }
 
 func TestSectionTimer_FinishRunWithoutSectionsIsSilent(t *testing.T) {
+	start := time.Date(2026, 8, 5, 10, 0, 0, 0, time.UTC)
 	inner := &recordingSectionLogger{}
-	timer := NewSectionTimer(inner, nil)
+	timer := NewSectionTimer(inner, clockSequence(t, start, start.Add(15*time.Second)))
 
 	timer.FinishRun()
-
 	assert.Empty(t, inner.calls)
+
+	timer.PrintSection(status.NewTaskIterationSection(1))
+	timer.FinishRun()
+	assert.Equal(t, []string{
+		"section: task iteration 1",
+		"print: task iteration 1 took 15s",
+		"print: phase durations: tasks 15s (1)",
+	}, inner.calls)
 }
 
 func TestSectionTimer_BucketMapping(t *testing.T) {
