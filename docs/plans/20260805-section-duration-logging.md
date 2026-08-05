@@ -70,12 +70,12 @@
 
 ### Task 2: Wire SectionTimer into the runner and plan-creation chains
 
-- [ ] extract a small seam in `cmd/loopai/main.go`: `buildRunnerLogger(rep *cmux.Reporter, inner progress.SectionLogger-compatible) (outermost processor.Logger, *progress.SectionTimer)` that applies timer-then-cmux order; use it in the runner path (replacing the inline `runnerLog = rep.WrapLogger(runnerLog)` at ~758)
-- [ ] runner path `FinishRun` wiring: hoist the run error out of the `if` at ~804 — `runErr := r.Run(ctx); timer.FinishRun(); if runErr != nil { ... }` — a single call site covering success, failure, and user abort; `defer` is FORBIDDEN (`keepDashboardAlive` closes the log explicitly at ~703 before deferred calls would fire)
-- [ ] plan-creation path: wrap `baseLog` with the timer before `rep.WrapLogger` (~2042) and call `FinishRun()` immediately after its `r.Run(ctx)` returns (~2102), before the error branch — NOT "at flow completion" (the flow continues into full implementation; early returns at ~2123/~2133 must not skip the summary)
-- [ ] compile-time interface assertions in `cmd/loopai` tests: `var _ processor.Logger = ...` / `var _ cmux.Logger = ...` on the timer-wrapped chain (this is where the import cycle allows it)
-- [ ] write tests against the new seam: recording inner logger receives `took` lines and summary in order; the outermost logger still satisfies the rate-limit optional interface (`_, ok := out.(interface{ LogLimitWait(string, string, string) })` with a non-nil reporter); nil reporter returns the timer itself unchanged
-- [ ] run `go test ./cmd/... ./pkg/progress/...` — must pass before task 3
+- [x] extract a small seam in `cmd/loopai/main.go`: `buildRunnerLogger(rep *cmux.Reporter, inner progress.SectionLogger-compatible) (outermost processor.Logger, *progress.SectionTimer)` that applies timer-then-cmux order; use it in the runner path (replacing the inline `runnerLog = rep.WrapLogger(runnerLog)` at ~758)
+- [x] runner path `FinishRun` wiring: hoist the run error out of the `if` at ~804 — `runErr := r.Run(ctx); timer.FinishRun(); if runErr != nil { ... }` — a single call site covering success, failure, and user abort; `defer` is FORBIDDEN (`keepDashboardAlive` closes the log explicitly at ~703 before deferred calls would fire)
+- [x] plan-creation path: wrap `baseLog` with the timer before `rep.WrapLogger` (~2042) and call `FinishRun()` immediately after its `r.Run(ctx)` returns (~2102), before the error branch — NOT "at flow completion" (the flow continues into full implementation; early returns at ~2123/~2133 must not skip the summary)
+- [x] compile-time interface assertions in `cmd/loopai` tests: `var _ processor.Logger = ...` / `var _ cmux.Logger = ...` on the timer-wrapped chain (this is where the import cycle allows it)
+- [x] write tests against the new seam: recording inner logger receives `took` lines and summary in order; the outermost logger still satisfies the rate-limit optional interface (`_, ok := out.(interface{ LogLimitWait(string, string, string) })` with a non-nil reporter); nil reporter returns the timer itself unchanged
+- [x] run `go test ./cmd/... ./pkg/progress/...` — must pass before task 3
 
 ### Task 3: Verify acceptance criteria
 

@@ -706,6 +706,16 @@ func keepDashboardAlive(ctx context.Context, o opts, req executePlanRequest, clo
 	<-ctx.Done()
 }
 
+// buildRunnerLogger installs section timing below the cmux wrapper so the outermost
+// logger retains cmux's optional rate-limit reporting methods.
+func buildRunnerLogger(rep *cmux.Reporter, inner progress.SectionLogger) (processor.Logger, *progress.SectionTimer) {
+	timer := progress.NewSectionTimer(inner, nil)
+	if rep == nil {
+		return timer, timer
+	}
+	return rep.WrapLogger(timer), timer
+}
+
 // executePlan runs the main execution loop for a plan file.
 // handles progress logging, web dashboard, runner execution, and post-execution tasks.
 // when req.ProgressLog and req.PhaseHolder are pre-created (worktree mode), uses them directly.
@@ -755,7 +765,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 			return wrapped
 		}
 	}
-	runnerLog = rep.WrapLogger(runnerLog)
+	runnerLog, sectionTimer := buildRunnerLogger(rep, runnerLog)
 
 	// subscribe the sidebar to phase changes after the dashboard so both observers coexist
 	plr.holder.OnChange(rep.OnPhase)
@@ -801,7 +811,9 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		r.SetPauseHandler(makePauseHandler(os.Stdin, os.Stdout))
 	}
 
-	if runErr := r.Run(ctx); runErr != nil {
+	runErr := r.Run(ctx)
+	sectionTimer.FinishRun()
+	if runErr != nil {
 		// mark logger as failed so Close writes "Failed:" footer, preserving history
 		// for restart. Applies to ErrUserAborted too — user aborts are not completions.
 		// abort keeps the raw error in the footer (self-descriptive); real failures
@@ -2039,7 +2051,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	}
 	rep.Start(ctx)
 	holder.OnChange(rep.OnPhase)
-	var planLog processor.Logger = rep.WrapLogger(baseLog)
+	planLog, sectionTimer := buildRunnerLogger(rep, baseLog)
 
 	maxIter := resolveMaxIterations(o.MaxIterations, req.Config)
 
@@ -2099,7 +2111,9 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	r.SetInputCollector(rep.WrapInput(collector))
 
 	// run the plan creation loop
-	if runErr := r.Run(ctx); runErr != nil {
+	runErr := r.Run(ctx)
+	sectionTimer.FinishRun()
+	if runErr != nil {
 		wrapped := fmt.Errorf("plan creation: %w", runErr)
 		planCreationErr = wrapped
 		notifyCmuxCompletion(rep, "", branch, baseLog.Elapsed(), runErr)

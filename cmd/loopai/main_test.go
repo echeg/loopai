@@ -33,6 +33,38 @@ import (
 	"github.com/umputun/ralphex/pkg/web"
 )
 
+var (
+	_ processor.Logger = (*progress.SectionTimer)(nil)
+	_ cmux.Logger      = (*progress.SectionTimer)(nil)
+)
+
+type runnerLoggerRecorder struct {
+	calls []string
+}
+
+func (l *runnerLoggerRecorder) Print(format string, args ...any) {
+	l.calls = append(l.calls, fmt.Sprintf("print: "+format, args...))
+}
+func (l *runnerLoggerRecorder) PrintRaw(format string, args ...any) {
+	l.calls = append(l.calls, fmt.Sprintf("raw: "+format, args...))
+}
+func (l *runnerLoggerRecorder) PrintSection(section status.Section) {
+	l.calls = append(l.calls, "section: "+section.Label)
+}
+func (l *runnerLoggerRecorder) PrintAligned(text string) {
+	l.calls = append(l.calls, "aligned: "+text)
+}
+func (l *runnerLoggerRecorder) LogQuestion(question string, _ []string) {
+	l.calls = append(l.calls, "question: "+question)
+}
+func (l *runnerLoggerRecorder) LogAnswer(answer string) {
+	l.calls = append(l.calls, "answer: "+answer)
+}
+func (l *runnerLoggerRecorder) LogDraftReview(action, _ string) {
+	l.calls = append(l.calls, "draft review: "+action)
+}
+func (l *runnerLoggerRecorder) Path() string { return "progress.log" }
+
 // TestMain isolates the suite from a live cmux terminal. cmux.New reads CMUX_WORKSPACE_ID from the
 // ambient environment, so running these tests inside cmux would drive the developer's real sidebar
 // and fire real notification banners — the same class of leak as touching the user's config dir.
@@ -44,6 +76,43 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	os.Exit(m.Run())
+}
+
+func TestBuildRunnerLoggerRecordsSectionsInOrder(t *testing.T) {
+	inner := &runnerLoggerRecorder{}
+	out, timer := buildRunnerLogger(nil, inner)
+
+	out.PrintSection(status.NewTaskIterationSection(1))
+	out.PrintSection(status.NewInternalReviewSection(1, ""))
+	timer.FinishRun()
+
+	require.Len(t, inner.calls, 5)
+	assert.Equal(t, "section: task iteration 1", inner.calls[0])
+	assert.Regexp(t, `^print: task iteration 1 took .+$`, inner.calls[1])
+	assert.Equal(t, "section: review 1", inner.calls[2])
+	assert.Regexp(t, `^print: review 1 took .+$`, inner.calls[3])
+	assert.Regexp(t, `^print: phase durations: tasks .+ \(1\), internal review .+ \(1\)$`, inner.calls[4])
+}
+
+func TestBuildRunnerLoggerKeepsCmuxOutermost(t *testing.T) {
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	rep := cmux.New("plan.md", cmux.Models{})
+	require.NotNil(t, rep)
+
+	out, _ := buildRunnerLogger(rep, &runnerLoggerRecorder{})
+	_, ok := out.(interface {
+		LogLimitWait(pattern, tool, waitLabel string)
+	})
+	assert.True(t, ok)
+}
+
+func TestBuildRunnerLoggerWithoutReporterReturnsTimer(t *testing.T) {
+	out, timer := buildRunnerLogger(nil, &runnerLoggerRecorder{})
+
+	assert.Same(t, timer, out)
 }
 
 // captureStdout runs fn while redirecting os.Stdout (and the fatih/color Output
