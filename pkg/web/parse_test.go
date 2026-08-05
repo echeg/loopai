@@ -158,6 +158,8 @@ func TestParseProgressLine_TableDriven(t *testing.T) {
 		{"timestamped error", "[26-01-22 10:30:45] ERROR: fail", false, ParsedLineTimestamp, false, "ERROR: fail", "", EventTypeError, ""},
 		{"timestamped warn", "[26-01-22 10:30:45] WARN: caution", false, ParsedLineTimestamp, false, "WARN: caution", "", EventTypeWarn, ""},
 		{"timestamped signal", "[26-01-22 10:30:45] <<<RALPHEX:FAILED>>>", false, ParsedLineTimestamp, false, "<<<RALPHEX:FAILED>>>", "", EventTypeSignal, "FAILED"},
+		{"section duration", "[26-08-05 10:30:45] task iteration 1 took 3m38s", false, ParsedLineTimestamp, false, "task iteration 1 took 3m38s", "", EventTypeOutput, ""},
+		{"phase duration summary", "[26-08-05 10:30:46] phase durations: tasks 3m38s (1), internal review 45s (1)", false, ParsedLineTimestamp, false, "phase durations: tasks 3m38s (1), internal review 45s (1)", "", EventTypeOutput, ""},
 		{"task section", "--- task iteration 3 ---", false, ParsedLineSection, false, "task iteration 3", "task iteration 3", EventTypeOutput, ""},
 		{"review section", "--- Review ---", false, ParsedLineSection, false, "Review", "Review", EventTypeOutput, ""},
 		{"codex section", "--- Codex Analysis ---", false, ParsedLineSection, false, "Codex Analysis", "Codex Analysis", EventTypeOutput, ""},
@@ -186,48 +188,6 @@ func TestParseProgressLine_TableDriven(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestParseProgressLine_SectionTimingCompatibility(t *testing.T) {
-	tests := []struct {
-		name string
-		line string
-		text string
-	}{
-		{
-			name: "section duration",
-			line: "[26-08-05 10:30:45] task iteration 1 took 3m38s",
-			text: "task iteration 1 took 3m38s",
-		},
-		{
-			name: "phase summary",
-			line: "[26-08-05 10:30:46] phase durations: tasks 3m38s (1), internal review 45s (1)",
-			text: "phase durations: tasks 3m38s (1), internal review 45s (1)",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			parsed, inHeader := parseProgressLine(tt.line, false)
-
-			assert.False(t, inHeader)
-			assert.Equal(t, ParsedLineTimestamp, parsed.Type)
-			assert.Equal(t, EventTypeOutput, parsed.EventType)
-			assert.Equal(t, tt.text, parsed.Text)
-			assert.False(t, sectionRegex.MatchString(tt.text))
-			assert.False(t, taskIterationRegex.MatchString(tt.text))
-			_, isDiffStats := parseDiffStats(tt.text)
-			assert.False(t, isDiffStats)
-		})
-	}
-
-	// Legacy section and stats lines retain their original interpretation.
-	legacySection, _ := parseProgressLine("--- task iteration 7 ---", false)
-	assert.Equal(t, ParsedLineSection, legacySection.Type)
-	assert.Equal(t, status.PhaseTask, legacySection.Phase)
-	stats, ok := parseDiffStats("DIFFSTATS: files=2 additions=10 deletions=3")
-	require.True(t, ok)
-	assert.Equal(t, DiffStats{Files: 2, Additions: 10, Deletions: 3}, stats)
 }
 
 func TestParseProgressLine_ParityTailVsReplay(t *testing.T) {

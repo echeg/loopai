@@ -122,14 +122,30 @@ func TestSectionTimer_BucketMapping(t *testing.T) {
 	}
 }
 
+func TestSectionTimer_AggregatesRepeatedBucketOccurrences(t *testing.T) {
+	start := time.Date(2026, 8, 5, 10, 0, 0, 0, time.UTC)
+	inner := &recordingSectionLogger{}
+	timer := NewSectionTimer(inner, clockSequence(t, start, start.Add(10*time.Second), start.Add(25*time.Second)))
+
+	timer.PrintSection(status.NewTaskIterationSection(1))
+	timer.PrintSection(status.NewTaskIterationSection(1))
+	timer.FinishRun()
+
+	require.Len(t, inner.calls, 5)
+	assert.Equal(t, "print: phase durations: tasks 25s (2)", inner.calls[4])
+}
+
 func TestFormatSectionDuration(t *testing.T) {
 	tests := []struct {
 		name     string
 		duration time.Duration
 		want     string
 	}{
+		{name: "zero", duration: 0, want: "0s"},
+		{name: "sub-second", duration: 999 * time.Millisecond, want: "0s"},
 		{name: "under a minute", duration: 59*time.Second + 900*time.Millisecond, want: "59s"},
 		{name: "over a minute", duration: 61*time.Second + 900*time.Millisecond, want: "1m1s"},
+		{name: "exactly one hour", duration: time.Hour, want: "1h0m"},
 		{name: "hour truncates seconds", duration: time.Hour + 2*time.Minute + 59*time.Second, want: "1h2m"},
 	}
 

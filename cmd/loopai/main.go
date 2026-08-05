@@ -710,10 +710,15 @@ func keepDashboardAlive(ctx context.Context, o opts, req executePlanRequest, clo
 // logger retains cmux's optional rate-limit reporting methods.
 func buildRunnerLogger(rep *cmux.Reporter, inner progress.SectionLogger) (processor.Logger, *progress.SectionTimer) {
 	timer := progress.NewSectionTimer(inner, nil)
-	if rep == nil {
-		return timer, timer
-	}
 	return rep.WrapLogger(timer), timer
+}
+
+// runWithSectionTiming guarantees the final section and aggregate summary are
+// written before callers handle the runner result.
+func runWithSectionTiming(ctx context.Context, run func(context.Context) error, timer *progress.SectionTimer) error {
+	runErr := run(ctx)
+	timer.FinishRun()
+	return runErr
 }
 
 // executePlan runs the main execution loop for a plan file.
@@ -811,8 +816,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		r.SetPauseHandler(makePauseHandler(os.Stdin, os.Stdout))
 	}
 
-	runErr := r.Run(ctx)
-	sectionTimer.FinishRun()
+	runErr := runWithSectionTiming(ctx, r.Run, sectionTimer)
 	if runErr != nil {
 		// mark logger as failed so Close writes "Failed:" footer, preserving history
 		// for restart. Applies to ErrUserAborted too — user aborts are not completions.
@@ -2111,8 +2115,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	r.SetInputCollector(rep.WrapInput(collector))
 
 	// run the plan creation loop
-	runErr := r.Run(ctx)
-	sectionTimer.FinishRun()
+	runErr := runWithSectionTiming(ctx, r.Run, sectionTimer)
 	if runErr != nil {
 		wrapped := fmt.Errorf("plan creation: %w", runErr)
 		planCreationErr = wrapped

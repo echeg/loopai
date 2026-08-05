@@ -115,6 +115,42 @@ func TestBuildRunnerLoggerWithoutReporterReturnsTimer(t *testing.T) {
 	assert.Same(t, timer, out)
 }
 
+func TestRunWithSectionTimingFinishesBeforeReturning(t *testing.T) {
+	tests := []struct {
+		name   string
+		runErr error
+	}{
+		{name: "success"},
+		{name: "failure", runErr: errors.New("runner failed")},
+		{name: "user abort", runErr: processor.ErrUserAborted},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inner := &runnerLoggerRecorder{}
+			timer := progress.NewSectionTimer(inner, nil)
+			run := func(context.Context) error {
+				timer.PrintSection(status.NewTaskIterationSection(1))
+				return tt.runErr
+			}
+
+			gotErr := runWithSectionTiming(t.Context(), run, timer)
+			inner.calls = append(inner.calls, "downstream result handling")
+
+			if tt.runErr == nil {
+				require.NoError(t, gotErr)
+			} else {
+				require.ErrorIs(t, gotErr, tt.runErr)
+			}
+			require.Len(t, inner.calls, 4)
+			assert.Equal(t, "section: task iteration 1", inner.calls[0])
+			assert.Regexp(t, `^print: task iteration 1 took .+$`, inner.calls[1])
+			assert.Regexp(t, `^print: phase durations: tasks .+ \(1\)$`, inner.calls[2])
+			assert.Equal(t, "downstream result handling", inner.calls[3])
+		})
+	}
+}
+
 // captureStdout runs fn while redirecting os.Stdout (and the fatih/color Output
 // target, which many progress prints use) to a pipe and returns the captured output.
 // uses defer to restore global state even if fn panics or calls t.FailNow, preventing

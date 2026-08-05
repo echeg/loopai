@@ -126,10 +126,11 @@ structured `PrintSection` calls while forwarding the complete logger interface.
 Keep `Reporter.WrapLogger` in the logger chain after dashboard setup. The
 `progress.SectionTimer` sits below that cmux wrapper and above the dashboard
 broadcast logger, preserving cmux's outermost rate-limit interfaces while timing
-the structured sections. Call `SectionTimer.FinishRun` immediately after
-`Runner.Run` returns in both the main runner and interactive plan-creation paths,
-before handling the run error; do not defer it because dashboard shutdown can
-close the underlying log first. A nil reporter must return the timer unchanged.
+the structured sections. Use `runWithSectionTiming` for both the main runner and
+interactive plan-creation paths; it calls `SectionTimer.FinishRun` immediately
+after `Runner.Run` returns and before either caller handles the run error. Do not
+defer it because dashboard shutdown can close the underlying log first. A nil
+reporter must return the timer unchanged.
 
 ## Code style
 
