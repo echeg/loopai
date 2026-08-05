@@ -435,6 +435,13 @@ Progress logs are written to `.loopai/progress/`. Watch the active run with:
 tail -f .loopai/progress/progress-*.txt
 ```
 
+Each section is followed by a wall-clock duration line such as `task iteration 1 took 3m38s`
+when the next section starts or the run ends. The end-of-run summary groups those durations by
+phase, for example `phase durations: tasks 32m26s (8), internal review 2h23m (10)`. The number in
+parentheses is the number of section occurrences, so retried iterations count again. Durations
+include rate-limit waits. Phase totals can be less than the footer's total elapsed time because
+time before the first section is unattributed.
+
 Start the dashboard:
 
 ```bash

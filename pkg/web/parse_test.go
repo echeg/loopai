@@ -158,6 +158,8 @@ func TestParseProgressLine_TableDriven(t *testing.T) {
 		{"timestamped error", "[26-01-22 10:30:45] ERROR: fail", false, ParsedLineTimestamp, false, "ERROR: fail", "", EventTypeError, ""},
 		{"timestamped warn", "[26-01-22 10:30:45] WARN: caution", false, ParsedLineTimestamp, false, "WARN: caution", "", EventTypeWarn, ""},
 		{"timestamped signal", "[26-01-22 10:30:45] <<<RALPHEX:FAILED>>>", false, ParsedLineTimestamp, false, "<<<RALPHEX:FAILED>>>", "", EventTypeSignal, "FAILED"},
+		{"section duration", "[26-08-05 10:30:45] task iteration 1 took 3m38s", false, ParsedLineTimestamp, false, "task iteration 1 took 3m38s", "", EventTypeOutput, ""},
+		{"phase duration summary", "[26-08-05 10:30:46] phase durations: tasks 3m38s (1), internal review 45s (1)", false, ParsedLineTimestamp, false, "phase durations: tasks 3m38s (1), internal review 45s (1)", "", EventTypeOutput, ""},
 		{"task section", "--- task iteration 3 ---", false, ParsedLineSection, false, "task iteration 3", "task iteration 3", EventTypeOutput, ""},
 		{"review section", "--- Review ---", false, ParsedLineSection, false, "Review", "Review", EventTypeOutput, ""},
 		{"codex section", "--- Codex Analysis ---", false, ParsedLineSection, false, "Codex Analysis", "Codex Analysis", EventTypeOutput, ""},

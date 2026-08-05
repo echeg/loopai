@@ -60,38 +60,38 @@
 
 ### Task 1: SectionTimer wrapper in pkg/progress
 
-- [ ] create `pkg/progress/section_timer.go`: exported interface `SectionLogger` (local mirror of the shared logger method set: Print, PrintRaw, PrintSection, PrintAligned, LogQuestion, LogAnswer, LogDraftReview, Path) with a comment documenting the import cycle (`cmux`/`processor` → `plan` → `progress`) as the reason the mirror exists and that drift is caught by compile-time assertions in `cmd/loopai` tests
-- [ ] `SectionTimer` struct: embeds/forwards `SectionLogger`, guarded by a `sync.Mutex` (the suite is race-enabled; the mutex is cheap — unconditional, not "if needed"); constructor `NewSectionTimer(inner SectionLogger, now func() time.Time)` with nil `now` defaulting to `time.Now`
-- [ ] `PrintSection`: when a section is open, emit the closing line via `inner.Print("%s took %s", label, dur)` (printf-safe — labels can contain `%` from reviewer names), add duration to the `SectionType` bucket, then forward the new header; first section just records the start
-- [ ] `FinishRun()` (named to avoid colliding with `cmux.Reporter.Finish` semantics): close the last open section (emit its `took` line), then emit `phase durations: ...` with non-empty buckets in fixed order (tasks, internal review, external review, evaluation, planning, other); idempotent; silent no-op when no sections were ever seen
-- [ ] duration-format helper in `section_timer.go` following `Elapsed` conventions (>=1h → `1h23m`, else `5m30s`/`45s`); `Elapsed` itself stays untouched
-- [ ] write tests in `pkg/progress/section_timer_test.go`: fake-clock sequences → exact emitted lines and summary; single section closed by `FinishRun`; `FinishRun` idempotence; `FinishRun` with zero sections emits nothing; bucket-mapping table covering every `SectionType` (incl. `SectionGeneric` "external review (...)" landing in other); format boundaries (59s, 61s, 1h+); one smoke assertion that a forwarded method delegates (no 7-method table — embedding covers the rest)
-- [ ] run `go test ./pkg/progress/...` — must pass before task 2
+- [x] create `pkg/progress/section_timer.go`: exported interface `SectionLogger` (local mirror of the shared logger method set: Print, PrintRaw, PrintSection, PrintAligned, LogQuestion, LogAnswer, LogDraftReview, Path) with a comment documenting the import cycle (`cmux`/`processor` → `plan` → `progress`) as the reason the mirror exists and that drift is caught by compile-time assertions in `cmd/loopai` tests
+- [x] `SectionTimer` struct: embeds/forwards `SectionLogger`, guarded by a `sync.Mutex` (the suite is race-enabled; the mutex is cheap — unconditional, not "if needed"); constructor `NewSectionTimer(inner SectionLogger, now func() time.Time)` with nil `now` defaulting to `time.Now`
+- [x] `PrintSection`: when a section is open, emit the closing line via `inner.Print("%s took %s", label, dur)` (printf-safe — labels can contain `%` from reviewer names), add duration to the `SectionType` bucket, then forward the new header; first section just records the start
+- [x] `FinishRun()` (named to avoid colliding with `cmux.Reporter.Finish` semantics): close the last open section (emit its `took` line), then emit `phase durations: ...` with non-empty buckets in fixed order (tasks, internal review, external review, evaluation, planning, other); idempotent; silent no-op when no sections were ever seen
+- [x] duration-format helper in `section_timer.go` following `Elapsed` conventions (>=1h → `1h23m`, else `5m30s`/`45s`); `Elapsed` delegates to the helper so section and footer formatting cannot drift
+- [x] write tests in `pkg/progress/section_timer_test.go`: fake-clock sequences → exact emitted lines and summary; single section closed by `FinishRun`; `FinishRun` idempotence; `FinishRun` with zero sections emits nothing; bucket-mapping table covering every `SectionType` (incl. `SectionGeneric` "external review (...)" landing in other); format boundaries (59s, 61s, 1h+); one smoke assertion that a forwarded method delegates (no 7-method table — embedding covers the rest)
+- [x] run `go test ./pkg/progress/...` — must pass before task 2
 
 ### Task 2: Wire SectionTimer into the runner and plan-creation chains
 
-- [ ] extract a small seam in `cmd/loopai/main.go`: `buildRunnerLogger(rep *cmux.Reporter, inner progress.SectionLogger-compatible) (outermost processor.Logger, *progress.SectionTimer)` that applies timer-then-cmux order; use it in the runner path (replacing the inline `runnerLog = rep.WrapLogger(runnerLog)` at ~758)
-- [ ] runner path `FinishRun` wiring: hoist the run error out of the `if` at ~804 — `runErr := r.Run(ctx); timer.FinishRun(); if runErr != nil { ... }` — a single call site covering success, failure, and user abort; `defer` is FORBIDDEN (`keepDashboardAlive` closes the log explicitly at ~703 before deferred calls would fire)
-- [ ] plan-creation path: wrap `baseLog` with the timer before `rep.WrapLogger` (~2042) and call `FinishRun()` immediately after its `r.Run(ctx)` returns (~2102), before the error branch — NOT "at flow completion" (the flow continues into full implementation; early returns at ~2123/~2133 must not skip the summary)
-- [ ] compile-time interface assertions in `cmd/loopai` tests: `var _ processor.Logger = ...` / `var _ cmux.Logger = ...` on the timer-wrapped chain (this is where the import cycle allows it)
-- [ ] write tests against the new seam: recording inner logger receives `took` lines and summary in order; the outermost logger still satisfies the rate-limit optional interface (`_, ok := out.(interface{ LogLimitWait(string, string, string) })` with a non-nil reporter); nil reporter returns the timer itself unchanged
-- [ ] run `go test ./cmd/... ./pkg/progress/...` — must pass before task 3
+- [x] extract a small seam in `cmd/loopai/main.go`: `buildRunnerLogger(rep *cmux.Reporter, inner progress.SectionLogger-compatible) (outermost processor.Logger, *progress.SectionTimer)` that applies timer-then-cmux order; use it in the runner path (replacing the inline `runnerLog = rep.WrapLogger(runnerLog)` at ~758)
+- [x] runner path `FinishRun` wiring: hoist the run error out of the `if` at ~804 — `runErr := r.Run(ctx); timer.FinishRun(); if runErr != nil { ... }` — a single call site covering success, failure, and user abort; `defer` is FORBIDDEN (`keepDashboardAlive` closes the log explicitly at ~703 before deferred calls would fire)
+- [x] plan-creation path: wrap `baseLog` with the timer before `rep.WrapLogger` (~2042) and call `FinishRun()` immediately after its `r.Run(ctx)` returns (~2102), before the error branch — NOT "at flow completion" (the flow continues into full implementation; early returns at ~2123/~2133 must not skip the summary)
+- [x] compile-time interface assertions in `cmd/loopai` tests: `var _ processor.Logger = ...` / `var _ cmux.Logger = ...` on the timer-wrapped chain (this is where the import cycle allows it)
+- [x] write tests against the new seam: recording inner logger receives `took` lines and summary in order; the outermost logger still satisfies the rate-limit optional interface (`_, ok := out.(interface{ LogLimitWait(string, string, string) })` with a non-nil reporter); nil reporter returns the timer itself unchanged
+- [x] run `go test ./cmd/... ./pkg/progress/...` — must pass before task 3
 
 ### Task 3: Verify acceptance criteria
 
-- [ ] verify every item in Overview → Acceptance criteria (including the documented live/replay phase-tag mismatch and the unattributed pre-first-section time)
-- [ ] verify old progress files (no `took` lines) are unaffected anywhere logs are read (dashboard file replay renders new lines as plain text; `taskIterationRegex`/`sectionRegex`/`diffStatsPattern` are anchored and unaffected)
-- [ ] run full test suite: `make test` — must pass
-- [ ] run `make lint` — all issues fixed
-- [ ] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify every item in Overview → Acceptance criteria (including the documented live/replay phase-tag mismatch and the unattributed pre-first-section time)
+- [x] verify old progress files (no `took` lines) are unaffected anywhere logs are read (dashboard file replay renders new lines as plain text; `taskIterationRegex`/`sectionRegex`/`diffStatsPattern` are anchored and unaffected)
+- [x] run full test suite: `make test` — must pass
+- [x] run `make lint` — all issues fixed
+- [x] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 4: [Final] Update documentation
 
-- [ ] README.md: document the `took` lines and the `phase durations:` summary in the progress-log section, including: `(N)` = section occurrences, bucket sums < total elapsed (pre-first-section time unattributed), durations include rate-limit waits
-- [ ] llms.txt: one-line mention of section timing in the progress format description
-- [ ] CLAUDE.md: note the SectionTimer position in the logger chain (below cmux WrapLogger, above dashboard broadcast) and the FinishRun call sites
-- [ ] keep `docs/superpowers/specs/2026-08-05-section-timing-design.md` linked from this plan
-- [ ] run `make test` and `make lint` one final time — must pass
+- [x] README.md: document the `took` lines and the `phase durations:` summary in the progress-log section, including: `(N)` = section occurrences, bucket sums < total elapsed (pre-first-section time unattributed), durations include rate-limit waits
+- [x] llms.txt: one-line mention of section timing in the progress format description
+- [x] CLAUDE.md: note the SectionTimer position in the logger chain (below cmux WrapLogger, above dashboard broadcast) and the FinishRun call sites
+- [x] keep `docs/superpowers/specs/2026-08-05-section-timing-design.md` linked from this plan
+- [x] run `make test` and `make lint` one final time — must pass
 
 ## Technical Details
 
