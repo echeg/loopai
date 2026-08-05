@@ -79,11 +79,11 @@
 
 ### Task 3: Verify acceptance criteria
 
-- [ ] verify every item in Overview → Acceptance criteria (including the documented live/replay phase-tag mismatch and the unattributed pre-first-section time)
-- [ ] verify old progress files (no `took` lines) are unaffected anywhere logs are read (dashboard file replay renders new lines as plain text; `taskIterationRegex`/`sectionRegex`/`diffStatsPattern` are anchored and unaffected)
-- [ ] run full test suite: `make test` — must pass
-- [ ] run `make lint` — all issues fixed
-- [ ] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify every item in Overview → Acceptance criteria (including the documented live/replay phase-tag mismatch and the unattributed pre-first-section time)
+- [x] verify old progress files (no `took` lines) are unaffected anywhere logs are read (dashboard file replay renders new lines as plain text; `taskIterationRegex`/`sectionRegex`/`diffStatsPattern` are anchored and unaffected)
+- [x] run full test suite: `make test` — must pass
+- [x] run `make lint` — all issues fixed
+- [x] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 4: [Final] Update documentation
 

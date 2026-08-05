@@ -104,7 +104,7 @@ func (t *SectionTimer) FinishRun() {
 		}
 		parts = append(parts, fmt.Sprintf("%s %s (%d)", bucketNames[i], formatSectionDuration(value.duration), value.count))
 	}
-	t.SectionLogger.Print("phase durations: %s", strings.Join(parts, ", "))
+	t.Print("phase durations: %s", strings.Join(parts, ", "))
 }
 
 func (t *SectionTimer) closeCurrent(now time.Time) {
@@ -112,7 +112,7 @@ func (t *SectionTimer) closeCurrent(now time.Time) {
 		return
 	}
 	duration := now.Sub(t.started)
-	t.SectionLogger.Print("%s took %s", t.current.Label, formatSectionDuration(duration))
+	t.Print("%s took %s", t.current.Label, formatSectionDuration(duration))
 	value := &t.buckets[bucketForSection(t.current.Type)]
 	value.duration += duration
 	value.count++
