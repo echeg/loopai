@@ -1396,6 +1396,13 @@ func TestResolveExternalReviewerChain(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, tasksOnly.Reviewers)
 
+	// --gen-agents never reviews, so a configured reviewer must not become a required dependency
+	genAgents, err := resolveExternalReviewSelection(opts{}, cfg, processor.ModeGenAgents)
+	require.NoError(t, err)
+	assert.True(t, genAgents.Resolved)
+	assert.False(t, genAgents.Explicit)
+	assert.Empty(t, genAgents.Reviewers)
+
 	bad := &config.Config{ExternalReviewers: "codex,", ExternalReviewersSet: true}
 	_, err = resolveExternalReviewSelection(opts{}, bad, processor.ModeFull)
 	require.ErrorContains(t, err, "parse external_reviewers")

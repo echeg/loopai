@@ -128,7 +128,10 @@ embedded external-reviewer prompts do not, though both placeholders are expanded
 on the external path too so customized prompts behave alike. The catalog pass runs
 after agent-reference expansion, so `agentBodyText` strips `{{agents:dynamic}}`
 from inlined agent bodies — otherwise raw catalog text lands inside an
-already-escaped codex `task='...'` literal. Which catalog entries actually run is decided by the model from
+already-escaped codex `task='...'` literal. The catalog also skips agents the same
+prompt already inlines through `{{agent:<name>}}` — `agentRefNames` collects those
+names before expansion — so a user copy of a base agent that carries a description
+is listed and launched once, not twice. Which catalog entries actually run is decided by the model from
 the descriptions — deliberately not by path or glob triggers in code — and the
 prompt bounds the selection to roughly 0-3 agents launched in the same parallel
 message as the base five.
@@ -146,7 +149,9 @@ apply and no review model is printed. It is routed before branch and worktree
 setup but still opens the repository to run `EnsureLocalGitignore`, since it tells
 the user to inspect `git status` afterwards. `validateGenAgentsFlags` must reject
 `--serve`/`--watch` alongside the other standalone modes: watch-only routing is
-decided before the `ModeGenAgents` branch.
+decided before the `ModeGenAgents` branch. Like `ModeTasksOnly`, the mode
+short-circuits `resolveExternalReviewSelection`: it runs no review phase, so a
+configured `external_reviewers` binary missing from `PATH` must not fail it.
 
 The primary executor owns all repository writes. External reviewers produce findings only; the primary evaluates and fixes them using `review_model`, falling back to `task_model`. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
 

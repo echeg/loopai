@@ -1741,7 +1741,7 @@ func TestRunner_expandDynamicAgentCatalog(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := &config.Config{Executor: tc.executor, CustomAgents: tc.agents}
 			r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
-			result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("Catalog:\n{{agents:dynamic}}\nEnd.")
+			result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("Catalog:\n{{agents:dynamic}}\nEnd.", nil)
 
 			assert.NotContains(t, result, "{{agents:dynamic}}")
 			assert.Contains(t, result, "Catalog:")
@@ -1763,7 +1763,7 @@ func TestRunner_expandDynamicAgentCatalog_SortedOrder(t *testing.T) {
 		{Name: "middle", Prompt: "m", Options: config.Options{Description: "m desc"}},
 	}}
 	r := &Runner{cfg: Config{AppConfig: appCfg}, log: newMockLogger()}
-	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}")
+	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}", nil)
 
 	assert.Less(t, strings.Index(result, "- alpha —"), strings.Index(result, "- middle —"))
 	assert.Less(t, strings.Index(result, "- middle —"), strings.Index(result, "- zebra —"))
@@ -1771,7 +1771,7 @@ func TestRunner_expandDynamicAgentCatalog_SortedOrder(t *testing.T) {
 
 func TestRunner_expandDynamicAgentCatalog_NilAppConfig(t *testing.T) {
 	r := &Runner{cfg: Config{AppConfig: nil}, log: newMockLogger()}
-	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}")
+	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}", nil)
 	assert.Equal(t, "(no project-specific agents configured)", result)
 }
 
@@ -1781,7 +1781,7 @@ func TestRunner_expandDynamicAgentCatalog_NoPlaceholder(t *testing.T) {
 	}}
 	r := &Runner{cfg: Config{AppConfig: appCfg}, log: newMockLogger()}
 	prompt := "no placeholders here"
-	assert.Equal(t, prompt, newPromptBuilderForTest(r).expandDynamicAgentCatalog(prompt))
+	assert.Equal(t, prompt, newPromptBuilderForTest(r).expandDynamicAgentCatalog(prompt, nil))
 }
 
 func TestRunner_expandDynamicAgentCatalog_AgentBodyVariablesExpanded(t *testing.T) {
@@ -1789,7 +1789,7 @@ func TestRunner_expandDynamicAgentCatalog_AgentBodyVariablesExpanded(t *testing.
 		{Name: "dyn", Prompt: "review {{PLAN_FILE}} on {{DEFAULT_BRANCH}}", Options: config.Options{Description: "desc"}},
 	}}
 	r := &Runner{cfg: Config{PlanFile: "docs/plans/test.md", DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
-	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}")
+	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}", nil)
 
 	assert.Contains(t, result, "review docs/plans/test.md on main")
 	assert.NotContains(t, result, "{{PLAN_FILE}}")
@@ -1800,7 +1800,7 @@ func TestRunner_expandDynamicAgentCatalog_SnippetIndentedUnderEntry(t *testing.T
 		{Name: "dyn", Prompt: "line one\n\nline two", Options: config.Options{Description: "desc"}},
 	}}
 	r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
-	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}")
+	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}", nil)
 
 	_, entry, found := strings.Cut(result, "- dyn — desc\n")
 	require.True(t, found, "catalog entry header present in %q", result)
@@ -1818,6 +1818,41 @@ func TestRunner_expandDynamicAgentCatalog_SnippetIndentedUnderEntry(t *testing.T
 	assert.Contains(t, result, "  line two")
 }
 
+// a described agent that the same prompt already inlines through {{agent:name}} must not
+// also appear in the catalog: the review prompt would carry its body twice and launch it twice.
+func TestRunner_replacePromptVariables_CatalogSkipsInlinedAgent(t *testing.T) {
+	appCfg := &config.Config{CustomAgents: []config.CustomAgent{
+		{Name: "quality", Prompt: "quality body", Options: config.Options{Description: "described base copy"}},
+		{Name: "sql", Prompt: "sql body", Options: config.Options{Description: "reviews raw SQL"}},
+	}}
+	r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+
+	result := newPromptBuilderForTest(r).replacePromptVariables("Step 2: {{agent:quality}}\nStep 2b:\n{{agents:dynamic}}")
+
+	assert.Equal(t, 1, strings.Count(result, "quality body"), "inlined agent body must appear once")
+	assert.NotContains(t, result, "- quality —", "inlined agent must not be listed in the catalog")
+	assert.Contains(t, result, "- sql — reviews raw SQL", "other dynamic agents still listed")
+}
+
+// with every dynamic agent inlined, the catalog renders as empty rather than as a partial list.
+func TestRunner_replacePromptVariables_CatalogEmptyWhenAllInlined(t *testing.T) {
+	appCfg := &config.Config{CustomAgents: []config.CustomAgent{
+		{Name: "quality", Prompt: "quality body", Options: config.Options{Description: "described base copy"}},
+	}}
+	r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+
+	result := newPromptBuilderForTest(r).replacePromptVariables("{{agent:quality}}\n{{agents:dynamic}}")
+
+	assert.Contains(t, result, emptyDynamicCatalog)
+	assert.Equal(t, 1, strings.Count(result, "quality body"))
+}
+
+func TestRunner_agentRefNames(t *testing.T) {
+	assert.Empty(t, agentRefNames("no refs here"))
+	assert.Equal(t, map[string]bool{"one": true, "two": true},
+		agentRefNames("{{agent:one}} {{agent:two}} {{agent:one}} {{agents:dynamic}}"))
+}
+
 func TestRunner_expandDynamicAgentCatalog_CodexWarnsFrontmatterDiscarded(t *testing.T) {
 	appCfg := &config.Config{Executor: config.ExecutorCodex, CustomAgents: []config.CustomAgent{
 		{Name: "dyn", Prompt: "body", Options: config.Options{Description: "desc", Model: "opus", AgentType: "code-reviewer"}},
@@ -1825,7 +1860,7 @@ func TestRunner_expandDynamicAgentCatalog_CodexWarnsFrontmatterDiscarded(t *test
 	mockLog := newMockLogger()
 	r := &Runner{cfg: Config{AppConfig: appCfg}, log: mockLog}
 
-	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}")
+	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}", nil)
 
 	assert.NotContains(t, result, "with model=opus", "codex snippet drops frontmatter overrides")
 	assertLogContains(t, mockLog, "codex mode ignores frontmatter")

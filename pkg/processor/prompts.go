@@ -108,8 +108,9 @@ If the dismissals are invalid, explain why the issues still exist.`, providerDis
 func (b *promptBuilder) replaceExternalVariablesWithIteration(prompt string, isFirstIteration bool, reviewer, evaluator, evaluatorResponse string) string {
 	result := b.replaceBaseVariables(prompt)
 	result = strings.ReplaceAll(result, "{{DIFF_INSTRUCTION}}", b.getDiffInstruction(isFirstIteration))
+	inlined := agentRefNames(result)
 	result = b.expandAgentReferences(result) // expand agents before inserting external content
-	result = b.expandDynamicAgentCatalog(result)
+	result = b.expandDynamicAgentCatalog(result, inlined)
 	result = strings.ReplaceAll(result, "{{PREVIOUS_REVIEW_CONTEXT}}", b.buildExternalPreviousContext(reviewer, evaluator, evaluatorResponse))
 	if reviewer == config.ExternalReviewToolClaude {
 		return result
@@ -316,25 +317,40 @@ func (b *promptBuilder) expandAgentReferences(prompt string) string {
 	})
 }
 
+// agentRefNames returns the names referenced by {{agent:name}} in prompt. Collected
+// before expansion so the catalog pass can skip agents the same prompt already inlines.
+func agentRefNames(prompt string) map[string]bool {
+	matches := agentRefPattern.FindAllStringSubmatch(prompt, -1)
+	names := make(map[string]bool, len(matches))
+	for _, match := range matches {
+		names[match[1]] = true
+	}
+	return names
+}
+
 // expandDynamicAgentCatalog replaces {{agents:dynamic}} with a catalog of the
 // project-specific agents — those whose frontmatter carries a non-empty
 // description. each entry lists the agent name, its description, and the same
 // ready-to-use invocation snippet {{agent:name}} would produce, so the primary
 // executor can pick relevant ones per diff without further lookups. renders
-// emptyDynamicCatalog when no dynamic agents are configured.
-func (b *promptBuilder) expandDynamicAgentCatalog(prompt string) string {
+// emptyDynamicCatalog when no dynamic agents are configured. inlined holds the
+// names the same prompt references directly and may be nil.
+func (b *promptBuilder) expandDynamicAgentCatalog(prompt string, inlined map[string]bool) string {
 	if !strings.Contains(prompt, agentsCatalogPlaceholder) {
 		return prompt
 	}
-	return strings.ReplaceAll(prompt, agentsCatalogPlaceholder, b.buildDynamicAgentCatalog())
+	return strings.ReplaceAll(prompt, agentsCatalogPlaceholder, b.buildDynamicAgentCatalog(inlined))
 }
 
 // buildDynamicAgentCatalog renders the dynamic agent catalog body, sorted by agent name.
-func (b *promptBuilder) buildDynamicAgentCatalog() string {
+// agents already inlined through {{agent:name}} in the same prompt are skipped: a user
+// copy of a base agent that carries a description would otherwise be listed twice and
+// launched twice in the same review iteration.
+func (b *promptBuilder) buildDynamicAgentCatalog(inlined map[string]bool) string {
 	var dynamic []config.CustomAgent
 	if b.cfg.AppConfig != nil {
 		for _, agent := range b.cfg.AppConfig.CustomAgents {
-			if strings.TrimSpace(agent.Description) != "" {
+			if strings.TrimSpace(agent.Description) != "" && !inlined[agent.Name] {
 				dynamic = append(dynamic, agent)
 			}
 		}
@@ -398,8 +414,9 @@ func (b *promptBuilder) warnCodexFrontmatterDiscarded(name string, opts config.O
 // note: {{CODEX_OUTPUT}} and {{PLAN_DESCRIPTION}} are handled by specific build functions.
 func (b *promptBuilder) replacePromptVariables(prompt string) string {
 	result := b.replaceBaseVariables(prompt)
+	inlined := agentRefNames(result)
 	result = b.expandAgentReferences(result)
-	result = b.expandDynamicAgentCatalog(result)
+	result = b.expandDynamicAgentCatalog(result, inlined)
 	return b.appendCommitTrailerInstruction(result)
 }
 

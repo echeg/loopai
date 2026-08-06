@@ -1372,7 +1372,9 @@ func resolveExternalReviewSelection(o opts, cfg *config.Config, mode processor.M
 	if cfg == nil {
 		return externalReviewSelection{Resolved: true}, nil
 	}
-	if mode == processor.ModeTasksOnly {
+	// modes that never run a review phase must not require reviewer binaries: --gen-agents
+	// only writes agent files, so a configured reviewer missing from PATH is irrelevant to it.
+	if mode == processor.ModeTasksOnly || mode == processor.ModeGenAgents {
 		return externalReviewSelection{Resolved: true}, nil
 	}
 
