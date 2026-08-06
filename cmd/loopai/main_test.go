@@ -6216,6 +6216,36 @@ func TestReportGeneratedAgents(t *testing.T) {
 		assert.NotContains(t, body, "(no description")
 	})
 
+	// the loader drops a body-less file and falls back to the embedded default, so
+	// reporting its description would announce an agent that never runs
+	t.Run("agent without body reported as ignored", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "hollow.txt"),
+			[]byte("---\ndescription: review sql migrations\n---\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "hollow — (no prompt body")
+		assert.NotContains(t, body, "review sql migrations")
+	})
+
+	// an unquoted description containing ": " makes the yaml block unparsable and the
+	// file then looks exactly like one without frontmatter
+	t.Run("unparsable frontmatter reported", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.txt"),
+			[]byte("---\ndescription: concurrency: goroutine lifetimes\n---\nbody\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		assert.Contains(t, out.String(), "broken — (unparsable frontmatter")
+	})
+
 	t.Run("unreadable file does not abort the report", func(t *testing.T) {
 		if os.Getuid() == 0 {
 			t.Skip("root bypasses file permissions")

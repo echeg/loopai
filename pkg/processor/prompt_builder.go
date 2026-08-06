@@ -11,6 +11,7 @@ type promptBuilder struct {
 	log                    Logger
 	locator                *planLocator
 	codexFrontmatterWarned map[string]bool
+	catalogMissingWarned   bool
 }
 
 type promptBuilderOpts struct {
@@ -36,6 +37,7 @@ func (b *promptBuilder) TaskPrompt() string {
 }
 
 func (b *promptBuilder) FirstReviewPrompt() string {
+	b.warnMissingDynamicCatalog(b.cfg.AppConfig.ReviewFirstPrompt)
 	return b.prependCodexReviewGuidance(b.replacePromptVariables(b.cfg.AppConfig.ReviewFirstPrompt))
 }
 

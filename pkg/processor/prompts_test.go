@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/umputun/ralphex/pkg/config"
+	"github.com/umputun/ralphex/pkg/processor/mocks"
 	"github.com/umputun/ralphex/pkg/status"
 )
 
@@ -1782,6 +1784,84 @@ func TestRunner_expandDynamicAgentCatalog_NoPlaceholder(t *testing.T) {
 	r := &Runner{cfg: Config{AppConfig: appCfg}, log: newMockLogger()}
 	prompt := "no placeholders here"
 	assert.Equal(t, prompt, newPromptBuilderForTest(r).expandDynamicAgentCatalog(prompt, nil))
+}
+
+// a review_first.txt copy installed before the catalog existed drops every dynamic
+// agent, so the drop must at least be visible in the progress log
+func TestPromptBuilder_FirstReviewPrompt_WarnsWhenCatalogPlaceholderMissing(t *testing.T) {
+	assertWarned := func(t *testing.T, log *mocks.LoggerMock, want bool) {
+		t.Helper()
+		var warned int
+		for _, call := range log.PrintCalls() {
+			if strings.Contains(fmt.Sprintf(call.Format, call.Args...), "has no {{agents:dynamic}} placeholder") {
+				warned++
+			}
+		}
+		if !want {
+			assert.Zero(t, warned, "unexpected warning: %#v", log.PrintCalls())
+			return
+		}
+		assert.Equal(t, 1, warned, "warn exactly once per run: %#v", log.PrintCalls())
+	}
+
+	t.Run("warns once for dropped dynamic agents", func(t *testing.T) {
+		appCfg := &config.Config{
+			ReviewFirstPrompt: "customized review prompt without the catalog",
+			CustomAgents: []config.CustomAgent{
+				{Name: "dyn", Prompt: "body", Options: config.Options{Description: "desc"}},
+				{Name: "quality", Prompt: "body"},
+			},
+		}
+		log := newMockLogger()
+		b := newPromptBuilderForTest(&Runner{cfg: Config{AppConfig: appCfg}, log: log})
+
+		b.FirstReviewPrompt()
+		b.FirstReviewPrompt()
+
+		assertWarned(t, log, true)
+		for _, call := range log.PrintCalls() {
+			if strings.Contains(call.Format, "placeholder") {
+				assert.Contains(t, fmt.Sprintf(call.Format, call.Args...), "dyn")
+			}
+		}
+	})
+
+	t.Run("silent without dynamic agents", func(t *testing.T) {
+		appCfg := &config.Config{
+			ReviewFirstPrompt: "customized review prompt without the catalog",
+			CustomAgents:      []config.CustomAgent{{Name: "quality", Prompt: "body"}},
+		}
+		log := newMockLogger()
+		newPromptBuilderForTest(&Runner{cfg: Config{AppConfig: appCfg}, log: log}).FirstReviewPrompt()
+
+		assertWarned(t, log, false)
+	})
+
+	t.Run("silent when the prompt inlines the agent directly", func(t *testing.T) {
+		appCfg := &config.Config{
+			ReviewFirstPrompt: "run {{agent:dyn}} now",
+			CustomAgents: []config.CustomAgent{
+				{Name: "dyn", Prompt: "body", Options: config.Options{Description: "desc"}},
+			},
+		}
+		log := newMockLogger()
+		newPromptBuilderForTest(&Runner{cfg: Config{AppConfig: appCfg}, log: log}).FirstReviewPrompt()
+
+		assertWarned(t, log, false)
+	})
+
+	t.Run("silent when the placeholder is present", func(t *testing.T) {
+		appCfg := &config.Config{
+			ReviewFirstPrompt: "catalog:\n{{agents:dynamic}}",
+			CustomAgents: []config.CustomAgent{
+				{Name: "dyn", Prompt: "body", Options: config.Options{Description: "desc"}},
+			},
+		}
+		log := newMockLogger()
+		newPromptBuilderForTest(&Runner{cfg: Config{AppConfig: appCfg}, log: log}).FirstReviewPrompt()
+
+		assertWarned(t, log, false)
+	})
 }
 
 func TestRunner_expandDynamicAgentCatalog_AgentBodyVariablesExpanded(t *testing.T) {

@@ -225,7 +225,7 @@ frontmatter with a one-line `description`:
 
 ```text
 ---
-description: check SQL migrations for irreversible or lock-heavy operations
+description: "check SQL migrations for irreversible or lock-heavy operations"
 ---
 
 Review the changed migration files for:
@@ -243,10 +243,15 @@ call based on your description, so write it as a precise statement of when the a
 An agent with no description is never offered in the catalog; it runs only where a prompt
 references it explicitly as `{{agent:name}}`.
 
+The frontmatter is YAML, so quote the description. An unquoted value containing `: ` or `#`
+makes the whole block unparsable, which looks exactly like having no frontmatter at all and
+leaves the agent inactive.
+
 The catalog exists only where `review_first.txt` says `{{agents:dynamic}}`. If you have
 customized that prompt, add the placeholder to your copy — a customized `review_first.txt`
-without it disables every dynamic agent, with no warning. `loopai --dump-defaults <dir>`
-shows the current default to compare against.
+without it disables every dynamic agent. The first review iteration logs a warning naming the
+agents it dropped, but nothing else signals it. `loopai --dump-defaults <dir>` shows the
+current default to compare against.
 
 To get started, let loopai draft agents for the repository:
 
@@ -259,7 +264,9 @@ writes 2-5 candidate agents into `.loopai/agents/`. It then lists every agent fi
 directory with its description, including ones that already existed. Nothing else changes:
 review the files with `git diff`, edit or delete what does not fit, and commit the ones worth
 keeping. Files that reuse a built-in agent name are reported with a warning, since they
-replace that built-in agent. The session runs with `task_model` (`--task-model`); `plan_model`
+replace that built-in agent. The listing reports each file as loopai will actually treat it:
+a file with no description, unparsable frontmatter, or no prompt body is flagged instead of
+being listed as an active agent. The session runs with `task_model` (`--task-model`); `plan_model`
 does not apply. The flag is standalone and is rejected together with a plan file, another
 standalone mode, or `--serve`/`--watch`.
 

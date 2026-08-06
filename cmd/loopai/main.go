@@ -2342,7 +2342,11 @@ func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *p
 	}
 
 	colors.Info().Printf("\nagent generation completed in %s\n", baseLog.Elapsed())
-	return reportGeneratedAgents(genAgentsDir(cfg), os.Stdout)
+	if reportErr := reportGeneratedAgents(genAgentsDir(cfg), os.Stdout); reportErr != nil {
+		genErr = reportErr
+		return genErr
+	}
+	return nil
 }
 
 // genAgentsDir resolves the directory the generation session writes agents to. The
@@ -2393,11 +2397,7 @@ func reportGeneratedAgents(dir string, w io.Writer) error {
 			// already written and the user still needs to see what to review
 			description = fmt.Sprintf("(unreadable: %v)", readErr)
 		default:
-			agentOpts, _ := config.ParseAgentOptions(string(content))
-			description = strings.TrimSpace(agentOpts.Description)
-			if description == "" {
-				description = "(no description - not offered to the review phase)"
-			}
+			description = describeAgentFile(string(content))
 		}
 		fmt.Fprintf(w, "  - %s — %s\n", name, description)
 		if slices.Contains(reservedAgentNames, name) {
@@ -2409,6 +2409,26 @@ func reportGeneratedAgents(dir string, w io.Writer) error {
 	}
 	fmt.Fprintln(w, "review the generated files (git diff / git status) and commit the ones worth keeping")
 	return nil
+}
+
+// describeAgentFile renders the report line for one agent file. It reports what the
+// agent loader will actually do with the file rather than the description alone: a
+// file without a prompt body is dropped in favor of the embedded default, and
+// frontmatter that fails to parse (an unquoted description containing ":" or "#" is
+// the likely cause) is indistinguishable from having none, so both would otherwise be
+// reported as working agents.
+func describeAgentFile(content string) string {
+	agentOpts, body := config.ParseAgentOptions(content)
+	switch {
+	case strings.TrimSpace(body) == "":
+		return "(no prompt body - file is ignored, embedded default used instead)"
+	case strings.HasPrefix(body, "---"):
+		return "(unparsable frontmatter - not offered to the review phase, quote the description if it contains \":\" or \"#\")"
+	case strings.TrimSpace(agentOpts.Description) == "":
+		return "(no description - not offered to the review phase)"
+	default:
+		return strings.TrimSpace(agentOpts.Description)
+	}
 }
 
 // runReset runs the interactive config reset flow.

@@ -61,7 +61,7 @@ quality, implementation, testing, simplification, documentation
 File format:
 
 ---
-description: one line saying when this agent should be selected
+description: "one line saying when this agent should be selected"
 ---
 <review instructions>
 
@@ -69,6 +69,9 @@ Rules for the file:
 
 - the `description` field is MANDATORY and must be a single line; without it the
   agent is never offered to the review phase
+- ALWAYS wrap the description in double quotes exactly as shown. The frontmatter
+  is YAML: an unquoted value containing ": " or "#" makes the whole block
+  unparsable and the agent is then silently ignored
 - the description names the trigger, e.g. "review changes to database migrations
   and schema definitions for backwards-compatibility and data-loss risks"
 - the body is a focused review checklist in the style of the built-in agents:

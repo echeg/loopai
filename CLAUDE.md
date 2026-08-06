@@ -134,7 +134,13 @@ names before expansion — so a user copy of a base agent that carries a descrip
 is listed and launched once, not twice. Which catalog entries actually run is decided by the model from
 the descriptions — deliberately not by path or glob triggers in code — and the
 prompt bounds the selection to roughly 0-3 agents launched in the same parallel
-message as the base five.
+message as the base five. `FirstReviewPrompt` calls `warnMissingDynamicCatalog`,
+which warns once per run when the project has dynamic agents but the effective
+`review_first.txt` carries no placeholder: a prompt copy installed by an earlier
+`--init` predates the catalog and would otherwise drop every dynamic agent
+without a trace. The check belongs there and not in `expandDynamicAgentCatalog`,
+which also runs for `review_second.txt` and the external prompts that
+deliberately omit the placeholder.
 
 `--gen-agents` is a standalone mode backed by `processor.ModeGenAgents` and
 `phase.GenAgentsPhase` rather than ad-hoc executor wiring, so retry/limit policy
@@ -142,7 +148,13 @@ and section timing match the other phases. It runs one session with
 `gen_agents.txt`, logs to `.loopai/progress/progress-gen-agents.txt`, then
 reports the agent files present with their descriptions using
 `config.ParseAgentOptions`; an unreadable file is reported inline rather than
-aborting the listing. Overwriting a reserved base name warns instead of
+aborting the listing. `describeAgentFile` reports what the loader will do with
+each file rather than its description alone: a body-less file is dropped in
+favor of the embedded default, and frontmatter that fails to parse — an
+unquoted `description` containing `: ` or `#` is the likely cause — is
+indistinguishable from having none, so both are flagged instead of being listed
+as working agents. `gen_agents.txt` therefore requires a double-quoted
+description. Overwriting a reserved base name warns instead of
 failing, because the user reviews the generated files with `git diff` before
 committing them. The session resolves `task_model` only — `plan_model` does not
 apply and no review model is printed. It is routed before branch and worktree

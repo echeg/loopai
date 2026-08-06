@@ -347,18 +347,10 @@ func (b *promptBuilder) expandDynamicAgentCatalog(prompt string, inlined map[str
 // copy of a base agent that carries a description would otherwise be listed twice and
 // launched twice in the same review iteration.
 func (b *promptBuilder) buildDynamicAgentCatalog(inlined map[string]bool) string {
-	var dynamic []config.CustomAgent
-	if b.cfg.AppConfig != nil {
-		for _, agent := range b.cfg.AppConfig.CustomAgents {
-			if strings.TrimSpace(agent.Description) != "" && !inlined[agent.Name] {
-				dynamic = append(dynamic, agent)
-			}
-		}
-	}
+	dynamic := b.dynamicAgents(inlined)
 	if len(dynamic) == 0 {
 		return emptyDynamicCatalog
 	}
-	sort.Slice(dynamic, func(i, j int) bool { return dynamic[i].Name < dynamic[j].Name })
 
 	var sb strings.Builder
 	sb.WriteString("### Available project-specific agents\n")
@@ -371,6 +363,44 @@ func (b *promptBuilder) buildDynamicAgentCatalog(inlined map[string]bool) string
 		fmt.Fprintf(&sb, "\n- %s — %s\n%s\n", agent.Name, strings.TrimSpace(agent.Description), indentBlock(snippet, "  "))
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// dynamicAgents returns the project-specific agents — those whose frontmatter carries
+// a non-empty description — sorted by name. agents the same prompt already inlines
+// through {{agent:name}} are skipped; inlined may be nil.
+func (b *promptBuilder) dynamicAgents(inlined map[string]bool) []config.CustomAgent {
+	if b.cfg.AppConfig == nil {
+		return nil
+	}
+	var dynamic []config.CustomAgent
+	for _, agent := range b.cfg.AppConfig.CustomAgents {
+		if strings.TrimSpace(agent.Description) != "" && !inlined[agent.Name] {
+			dynamic = append(dynamic, agent)
+		}
+	}
+	sort.Slice(dynamic, func(i, j int) bool { return dynamic[i].Name < dynamic[j].Name })
+	return dynamic
+}
+
+// warnMissingDynamicCatalog warns once when the project configures dynamic agents but
+// the active review prompt carries no {{agents:dynamic}} placeholder to expand. a
+// review_first.txt copy installed by an earlier --init predates the catalog, so it
+// silently disables every dynamic agent; without this the drop leaves no trace at all.
+func (b *promptBuilder) warnMissingDynamicCatalog(prompt string) {
+	if b.catalogMissingWarned || strings.Contains(prompt, agentsCatalogPlaceholder) {
+		return
+	}
+	dynamic := b.dynamicAgents(agentRefNames(prompt))
+	if len(dynamic) == 0 {
+		return
+	}
+	names := make([]string, 0, len(dynamic))
+	for _, agent := range dynamic {
+		names = append(names, agent.Name)
+	}
+	b.catalogMissingWarned = true
+	b.log.Print("[WARN] review prompt has no %s placeholder: project agents (%s) will not be offered to the review phase, add the placeholder to your customized review_first.txt",
+		agentsCatalogPlaceholder, strings.Join(names, ", "))
 }
 
 // agentBodyText prepares an agent file body for inlining into an invocation block.

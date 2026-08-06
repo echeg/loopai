@@ -43,7 +43,7 @@ pass_claude_md = true
 
 ### Prompt customization
 
-`review_first.txt` and `review_second.txt` are shared between Claude and Codex executors. A user's customized `~/.config/loopai/prompts/review_first.txt` applies under both `--codex` and default Claude. The `{{agent:<name>}}` and `{{agents:dynamic}}` expansions within those prompts switch syntax per executor (Task tool for Claude, `spawn_agent` for Codex), so the same prompt body works for both. A customized `review_first.txt` without `{{agents:dynamic}}` silently disables project-specific dynamic agents under both executors.
+`review_first.txt` and `review_second.txt` are shared between Claude and Codex executors. A user's customized `~/.config/loopai/prompts/review_first.txt` applies under both `--codex` and default Claude. The `{{agent:<name>}}` and `{{agents:dynamic}}` expansions within those prompts switch syntax per executor (Task tool for Claude, `spawn_agent` for Codex), so the same prompt body works for both. A customized `review_first.txt` without `{{agents:dynamic}}` disables project-specific dynamic agents under both executors; the first review iteration logs a warning naming the dropped agents.
 
 Under Codex all agents collapse into the single registered `reviewer` agent, so per-agent `model:` and `agent:` frontmatter is discarded with a `codex mode ignores frontmatter overrides for agent ...` warning (once per agent name). The agent body and its `description` are still used, so dynamic agent selection works the same under both executors.
 
