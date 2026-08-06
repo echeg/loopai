@@ -61,6 +61,24 @@ func AgentFileHasBody(content string) bool {
 	return body != ""
 }
 
+// AgentFrontmatterUnparsable reports whether content opens a frontmatter block that
+// neither parse attempt could read. Exported for the --gen-agents report: parsing
+// returns the whole content as the body both for a broken block and for a file with
+// no frontmatter at all, so the reported reason would otherwise be a guess. Checking
+// the parsed body for a "---" prefix is not enough — a working agent may open its
+// body with a markdown rule, and a broken block behind a leading comment line never
+// reaches the parsed form at all.
+func AgentFrontmatterUnparsable(content string) bool {
+	normalized := strings.TrimSpace(normalizeCRLF(content))
+	if !strings.HasPrefix(strings.TrimSpace(stripLeadingCommentLines(normalized)), "---\n") {
+		return false
+	}
+	// parseOptionsWithCommentRetry returns its input unchanged only when no attempt
+	// found parsable frontmatter; a parsed block always yields a shorter body
+	opts, body := parseOptionsWithCommentRetry(normalized)
+	return opts == (Options{}) && body == normalized
+}
+
 // agentPromptBody normalizes agent file content and returns the frontmatter options
 // and prompt body the loader sees. Comments are stripped before parsing so an
 // all-commented file reads as empty and a "# ..." header above "---" does not hide

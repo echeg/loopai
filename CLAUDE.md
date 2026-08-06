@@ -157,8 +157,13 @@ an unquoted `description` containing `: ` is the likely cause — is
 indistinguishable from having none, so both are flagged instead of being listed
 as working agents. An unquoted ` #` does not break parsing; YAML reads it as a
 comment and truncates the description, so `gen_agents.txt` requires a
-double-quoted description for both reasons. The description case is checked before
-the `---` prefix heuristic, since a valid agent body may open with a markdown rule.
+double-quoted description for both reasons. That distinction comes from
+`config.AgentFrontmatterUnparsable` and not from a `---` prefix on the parsed body:
+a working agent may open its body with a markdown rule, and a broken block written
+below a `# ...` header never reaches the parsed form at all, so the prefix check
+misdiagnoses both. The report also runs on the failure path — a session that writes
+files and then fails, times out, or is interrupted leaves them in the next run's
+catalog, and the reserved-name warning would otherwise be lost with the error.
 Overwriting a reserved base name warns instead of failing, because the user
 reviews the generated files with `git diff` before committing them, and the
 warning fires only for a file that actually has a body: a plain `--init` fills

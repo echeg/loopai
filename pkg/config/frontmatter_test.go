@@ -94,6 +94,32 @@ func TestParseAgentOptions(t *testing.T) {
 	}
 }
 
+func TestAgentFrontmatterUnparsable(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"unquoted description with colon", "---\ndescription: sql: migrations\n---\nbody", true},
+		{"broken block behind leading comment", "# written by loopai\n---\ndescription: sql: migrations\n---\nbody", true},
+		{"crlf broken block", "---\r\ndescription: sql: migrations\r\n---\r\nbody\r\n", true},
+		{"parsed frontmatter", "---\ndescription: reviews sql\n---\nbody", false},
+		// a working agent may open its body with a markdown rule; the block above it
+		// parsed fine and the file must not be reported as broken
+		{"body opens with markdown rule", "---\nmodel: opus\n---\n\n---\n\nchecklist", false},
+		{"no description but parsed", "---\nmodel: opus\n---\nbody", false},
+		{"unknown keys only", "---\nfoo: bar\n---\n---\nbody", false},
+		{"no frontmatter at all", "plain body", false},
+		{"comment only, no frontmatter", "# just a comment\nbody", false},
+		{"rule inside plain body", "intro\n\n---\n\nmore", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, AgentFrontmatterUnparsable(tt.input))
+		})
+	}
+}
+
 func TestOptions_String(t *testing.T) {
 	tests := []struct {
 		name string

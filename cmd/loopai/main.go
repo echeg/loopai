@@ -2338,6 +2338,13 @@ func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *p
 
 	if runErr := runWithSectionTiming(ctx, r.Run, sectionTimer); runErr != nil {
 		genErr = fmt.Errorf("agent generation: %w", runErr)
+		// a session that fails, times out, or is interrupted can still have written agent
+		// files, and those files join the review catalog on the next run. report them
+		// anyway: the reserved-name warning is the only signal that a generated file
+		// replaces a built-in agent, and it would be lost with the error otherwise
+		if reportErr := reportGeneratedAgents(genAgentsDir(cfg), os.Stdout); reportErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to report generated agents: %v\n", reportErr)
+		}
 		return genErr
 	}
 
@@ -2435,13 +2442,11 @@ func describeAgentFile(content string, reserved bool) agentFileReport {
 		}
 		return agentFileReport{detail: "(no prompt body - file is ignored)"}
 	}
-	agentOpts, body := config.ParseAgentOptions(content)
+	agentOpts, _ := config.ParseAgentOptions(content)
 	switch {
 	case strings.TrimSpace(agentOpts.Description) != "":
-		// checked before the "---" prefix: a described agent whose body opens with a
-		// markdown rule parses fine and must not be reported as broken
 		return agentFileReport{detail: strings.TrimSpace(agentOpts.Description), active: true}
-	case strings.HasPrefix(body, "---"):
+	case config.AgentFrontmatterUnparsable(content):
 		return agentFileReport{detail: "(unparsable frontmatter - not offered to the review phase, quote a description containing \": \")", active: true}
 	default:
 		return agentFileReport{detail: "(no description - not offered to the review phase)", active: true}
