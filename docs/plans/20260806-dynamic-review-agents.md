@@ -116,11 +116,11 @@ the project limit.
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview are implemented: description-marked agents form the catalog, model-side selection instructions in review_first, base 5 unchanged, `--gen-agents` writes reviewable files
-- [ ] verify edge cases: no dynamic agents (behavior identical to today), agent with empty description excluded, malformed frontmatter falls back to body-as-prompt, invalid model in dynamic agent still warns via `Options.Validate`
-- [ ] run full test suite via `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] verify test coverage of new code paths meets project standard
+- [x] verify all requirements from Overview are implemented: description-marked agents form the catalog, model-side selection instructions in review_first, base 5 unchanged, `--gen-agents` writes reviewable files
+- [x] verify edge cases: no dynamic agents (behavior identical to today), agent with empty description excluded, malformed frontmatter falls back to body-as-prompt, invalid model in dynamic agent still warns via `Options.Validate`
+- [x] run full test suite via `make test`
+- [x] run `make lint` - all issues must be fixed
+- [x] verify test coverage of new code paths meets project standard
 
 ### Task 7: Update documentation
 
