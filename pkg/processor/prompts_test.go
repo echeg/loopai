@@ -1810,6 +1810,69 @@ func TestRunner_replacePromptVariables_ExpandsDynamicCatalog(t *testing.T) {
 	assert.Contains(t, result, "dynamic body")
 }
 
+func TestRunner_replacePromptVariables_EmbeddedReviewFirstDynamicCatalog(t *testing.T) {
+	tests := []struct {
+		name        string
+		executor    string
+		withDynamic bool
+		contains    []string
+		notContains []string
+	}{
+		{
+			name:        "claude executor without dynamic agents",
+			contains:    []string{"(no project-specific agents configured)", "Step 2b"},
+			notContains: []string{"### Available project-specific agents"},
+		},
+		{
+			name:        "claude executor with dynamic agent",
+			withDynamic: true,
+			contains:    []string{"### Available project-specific agents", "- sql-guard — reviews raw SQL", "check sql queries"},
+			notContains: []string{"(no project-specific agents configured)"},
+		},
+		{
+			name:        "codex executor without dynamic agents",
+			executor:    config.ExecutorCodex,
+			contains:    []string{"(no project-specific agents configured)"},
+			notContains: []string{"### Available project-specific agents"},
+		},
+		{
+			name:        "codex executor with dynamic agent",
+			executor:    config.ExecutorCodex,
+			withDynamic: true,
+			contains:    []string{"- sql-guard — reviews raw SQL", "spawn_agent(agent='reviewer', task='"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			appCfg := testAppConfig(t)
+			appCfg.Executor = tc.executor
+			if tc.withDynamic {
+				appCfg.CustomAgents = append(appCfg.CustomAgents, config.CustomAgent{Name: "sql-guard",
+					Prompt: "check sql queries", Options: config.Options{Description: "reviews raw SQL"}})
+			}
+			r := &Runner{cfg: Config{PlanFile: "docs/plans/test.md", ProgressPath: "progress.txt",
+				DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+			prompt := newPromptBuilderForTest(r).replacePromptVariables(appCfg.ReviewFirstPrompt)
+
+			assert.NotContains(t, prompt, "{{agents:dynamic}}", "catalog placeholder must be expanded")
+			// the placeholder appears once in the template, so the catalog must not be duplicated
+			// (e.g. by a header comment line reintroducing the literal placeholder)
+			rendered := strings.Count(prompt, "### Available project-specific agents") +
+				strings.Count(prompt, "(no project-specific agents configured)")
+			assert.Equal(t, 1, rendered, "catalog must be rendered exactly once")
+			// the 5 base agents still expand unchanged
+			assert.Contains(t, prompt, "security issues")
+			for _, want := range tc.contains {
+				assert.Contains(t, prompt, want)
+			}
+			for _, notWant := range tc.notContains {
+				assert.NotContains(t, prompt, notWant)
+			}
+		})
+	}
+}
+
 func TestRunner_replaceExternalVariablesWithIteration_ExpandsDynamicCatalog(t *testing.T) {
 	appCfg := &config.Config{CustomAgents: []config.CustomAgent{
 		{Name: "dyn", Prompt: "dynamic body", Options: config.Options{Description: "project specific"}},

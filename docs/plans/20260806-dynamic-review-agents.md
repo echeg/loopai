@@ -86,11 +86,11 @@ The 5 built-in agents always run unchanged; dynamic agents are additive. Selecti
 
 ### Task 3: Update review_first.txt with dynamic agent step
 
-- [ ] write failing test asserting embedded `pkg/config/defaults/prompts/review_first.txt` contains `{{agents:dynamic}}`
-- [ ] add Step 2b to `review_first.txt`: from the `{{agents:dynamic}}` catalog select agents relevant to the changed files and the nature of the diff (typically 0-3); launch selected agents in the SAME parallel message as the 5 base agents; skipping all is valid; do not embed diffs into agent prompts
-- [ ] update the header comment block in `review_first.txt` documenting the new variable
-- [ ] verify prompt assembly produces no unexpanded `{{agents:dynamic}}` placeholder for both executors (extend existing prompt assembly tests)
-- [ ] run `go test ./pkg/config/... ./pkg/processor/...` - must pass before task 4
+- [x] write failing test asserting embedded `pkg/config/defaults/prompts/review_first.txt` contains `{{agents:dynamic}}`
+- [x] add Step 2b to `review_first.txt`: from the `{{agents:dynamic}}` catalog select agents relevant to the changed files and the nature of the diff (typically 0-3); launch selected agents in the SAME parallel message as the 5 base agents; skipping all is valid; do not embed diffs into agent prompts
+- [x] update the header comment block in `review_first.txt` documenting the new variable (documented as `{{agents:<dynamic>}}` — comment lines are not stripped from prompts, so the literal placeholder in a comment would render the catalog twice)
+- [x] verify prompt assembly produces no unexpanded `{{agents:dynamic}}` placeholder for both executors (extend existing prompt assembly tests)
+- [x] run `go test ./pkg/config/... ./pkg/processor/...` - must pass before task 4
 
 ### Task 4: Add gen_agents.txt embedded prompt
 
