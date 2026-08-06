@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -67,6 +68,7 @@ type opts struct {
 	ResumeWorktree          bool          `long:"resume-worktree" description:"continue in an existing interrupted worktree (implies --worktree)"`
 	Branch                  string        `long:"branch" description:"override branch name for worktree/branch creation (default: derived from plan filename)"`
 	PlanDescription         string        `long:"plan" description:"create plan interactively (enter plan description)"`
+	GenAgents               bool          `long:"gen-agents" description:"generate project-specific review agents into .loopai/agents/ and exit"`
 	Debug                   bool          `short:"d" long:"debug" description:"enable debug logging"`
 	NoColor                 bool          `long:"no-color" description:"disable color output"`
 	Version                 bool          `short:"v" long:"version" description:"print version and exit"`
@@ -125,7 +127,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 		"review", "external-only", "codex-only", "tasks-only", "base-ref", "wait",
 		"session-timeout", "idle-timeout", "skip-finalize", "preserve-anthropic-api-key",
 		"no-claude-swap", "codex", "pass-claude-md", "worktree", "resume-worktree",
-		"branch", "plan", "serve", "watch", "init", "reset", "dump-defaults",
+		"branch", "plan", "gen-agents", "serve", "watch", "init", "reset", "dump-defaults",
 	} {
 		if isFlagSet(parser, name) {
 			o.executionModeSet = true
@@ -353,13 +355,15 @@ func run(ctx context.Context, o opts) error {
 		return fmt.Errorf("execution context: %w", depErr)
 	}
 
-	// require running from repo root.
-	// when using a non-git vcs command, skip the .git check — rely on NewService's
-	// rev-parse --show-toplevel for repo validation instead (pure hg repos have no .git).
-	if cfg.VcsCommand == "" || cfg.VcsCommand == "git" {
-		if _, statErr := os.Stat(".git"); statErr != nil {
-			return errors.New("must run from repository root (no .git directory found); run from the repo root or 'git init' for a new project")
-		}
+	if repoErr := requireRepoRoot(cfg); repoErr != nil {
+		return repoErr
+	}
+
+	// agent generation is standalone: it needs the executor and the repository, but no
+	// branch, plan selection, or review pipeline. routed after the dependency check so a
+	// missing executor fails the same way it does for --plan.
+	if mode == processor.ModeGenAgents {
+		return runGenAgentsMode(ctx, o, cfg, colors, limitRecovery)
 	}
 
 	// open git repository via Service
@@ -420,6 +424,19 @@ func run(ctx context.Context, o opts) error {
 		ExternalReview: externalReview,
 		LimitRecovery:  limitRecovery,
 	}, selector)
+}
+
+// requireRepoRoot enforces that execution starts at a repository root.
+// when using a non-git vcs command, the .git check is skipped — NewService's
+// rev-parse --show-toplevel validates the repo instead (pure hg repos have no .git).
+func requireRepoRoot(cfg *config.Config) error {
+	if cfg.VcsCommand != "" && cfg.VcsCommand != "git" {
+		return nil
+	}
+	if _, err := os.Stat(".git"); err != nil {
+		return errors.New("must run from repository root (no .git directory found); run from the repo root or 'git init' for a new project")
+	}
+	return nil
 }
 
 func loadRunConfig(o opts) (*config.Config, error) {
@@ -1535,6 +1552,8 @@ func runWatchOnly(ctx context.Context, o opts, cfg *config.Config, colors *progr
 // determineMode returns the execution mode based on CLI flags.
 func determineMode(o opts) processor.Mode {
 	switch {
+	case o.GenAgents:
+		return processor.ModeGenAgents
 	case o.PlanDescription != "":
 		return processor.ModePlan
 	case o.TasksOnly:
@@ -1599,6 +1618,9 @@ func validateFlags(o opts) error {
 	if o.PlanDescription != "" && o.PlanFile != "" {
 		return errors.New("--plan flag conflicts with plan file argument; use one or the other")
 	}
+	if err := validateGenAgentsFlags(o); err != nil {
+		return err
+	}
 	if o.ResumeWorktree && o.PlanDescription != "" {
 		return errors.New("--resume-worktree cannot be used with --plan; resume requires an existing plan worktree")
 	}
@@ -1626,6 +1648,40 @@ func validateFlags(o opts) error {
 	return nil
 }
 
+// validateGenAgentsFlags keeps --gen-agents standalone: it neither executes a plan
+// nor runs any review phase, so combining it with execution modes is a user error
+// rather than something to silently ignore.
+func validateGenAgentsFlags(o opts) error {
+	if !o.GenAgents {
+		return nil
+	}
+	if o.PlanFile != "" {
+		return errors.New("--gen-agents cannot be combined with a plan file argument")
+	}
+	conflicts := []struct {
+		flag string
+		set  bool
+	}{
+		{"--plan", o.PlanDescription != ""},
+		{"--review", o.Review},
+		{"--external-only", o.ExternalOnly},
+		{"--codex-only", o.CodexOnly},
+		{"--tasks-only", o.TasksOnly},
+		{"--worktree", o.Worktree},
+		{"--resume-worktree", o.ResumeWorktree},
+		{"--commit", o.Commit},
+		{"--init", o.Init},
+		{"--reset", o.Reset},
+		{"--dump-defaults", o.DumpDefaults != ""},
+	}
+	for _, conflict := range conflicts {
+		if conflict.set {
+			return fmt.Errorf("--gen-agents cannot be combined with %s", conflict.flag)
+		}
+	}
+	return nil
+}
+
 func validateCommitFlags(o opts) error {
 	if !o.Commit {
 		return nil
@@ -1649,7 +1705,7 @@ func hasExecutionMode(o opts) bool {
 		o.BaseRef != "", o.waitSet || o.Wait != 0, o.sessionTimeoutSet || o.SessionTimeout != 0,
 		o.idleTimeoutSet || o.IdleTimeout != 0, o.SkipFinalize, o.PreserveAnthropicAPIKey,
 		o.NoClaudeSwap, o.Codex, o.PassClaudeMd, o.Worktree, o.Commit, o.ResumeWorktree, o.Branch != "",
-		o.Serve, len(o.Watch) != 0, o.Init, o.Reset, o.DumpDefaults != "",
+		o.Serve, len(o.Watch) != 0, o.Init, o.Reset, o.DumpDefaults != "", o.GenAgents,
 	} {
 		if set {
 			return true
@@ -2208,6 +2264,124 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		ExternalReview: req.ExternalReview,
 		LimitRecovery:  req.LimitRecovery,
 	})
+}
+
+// reservedAgentNames are the built-in review agent names. A generated file using one
+// of them replaces the built-in agent through per-file fallback, so it is reported as
+// a warning rather than rejected — the user still reviews the files before committing.
+var reservedAgentNames = []string{"quality", "implementation", "testing", "simplification", "documentation"}
+
+// runGenAgentsMode runs one executor session that writes project-specific review
+// agents into .loopai/agents/, then reports what ended up on disk. No branch, no
+// worktree, no notifications: the session only produces files for the user to review.
+func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors, recovery limits.Recovery) error {
+	holder := &status.PhaseHolder{}
+	baseLog, err := progress.NewLogger(progress.Config{
+		Mode:    string(processor.ModeGenAgents),
+		Params:  runHeaderParams(o, cfg, processor.ModeGenAgents),
+		NoColor: o.NoColor,
+	}, colors, holder)
+	if err != nil {
+		return fmt.Errorf("create progress logger: %w", err)
+	}
+	var genErr error
+	defer func() {
+		if genErr != nil {
+			baseLog.SetFailed(genErr)
+		}
+		if closeErr := baseLog.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to close progress log: %v\n", closeErr)
+		}
+	}()
+
+	genLog, sectionTimer := buildRunnerLogger(nil, baseLog)
+
+	colors.Info().Printf("generating project-specific review agents\n")
+	colors.Info().Printf("progress log: %s\n", toRelPath(baseLog.Path()))
+	printExecutorInfo(startupInfo{Executor: cfg.Executor, CodexSandbox: cfg.CodexExecutorSandbox()}, colors)
+	colors.Info().Printf("\n")
+
+	if recovery != nil {
+		genLog.Print("claude-swap detected: automatic Claude account failover enabled")
+	}
+	r := processor.New(processor.Config{
+		Mode:          processor.ModeGenAgents,
+		ProgressPath:  baseLog.Path(),
+		Debug:         o.Debug,
+		NoColor:       o.NoColor,
+		TaskModel:     resolveSpec(o.TaskModel, cfg.TaskModel),
+		AppConfig:     cfg,
+		LimitRecovery: recovery,
+	}, genLog, holder)
+
+	if runErr := runWithSectionTiming(ctx, r.Run, sectionTimer); runErr != nil {
+		genErr = fmt.Errorf("agent generation: %w", runErr)
+		return genErr
+	}
+
+	colors.Info().Printf("\nagent generation completed in %s\n", baseLog.Elapsed())
+	return reportGeneratedAgents(genAgentsDir(cfg), os.Stdout)
+}
+
+// genAgentsDir resolves the directory the generation session writes agents to. The
+// local config directory may not exist yet when the session starts, so an undetected
+// local dir falls back to the .loopai/agents/ path named in the prompt.
+func genAgentsDir(cfg *config.Config) string {
+	if localDir := cfg.LocalDir(); localDir != "" {
+		return filepath.Join(localDir, "agents")
+	}
+	return filepath.Join(".loopai", "agents")
+}
+
+// reportGeneratedAgents lists the agent files in dir with their descriptions, warns
+// about missing descriptions and reserved built-in names, and reminds the user to
+// review the result. A missing directory means the session wrote nothing.
+func reportGeneratedAgents(dir string, w io.Writer) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(w, "no agent files found in %s\n", toRelPath(dir))
+			return nil
+		}
+		return fmt.Errorf("read agents dir %s: %w", dir, err)
+	}
+
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	if len(names) == 0 {
+		fmt.Fprintf(w, "no agent files found in %s\n", toRelPath(dir))
+		return nil
+	}
+	slices.Sort(names)
+
+	fmt.Fprintf(w, "agents in %s:\n", toRelPath(dir))
+	var warnings []string
+	for _, filename := range names {
+		name := strings.TrimSuffix(filename, ".txt")
+		content, readErr := os.ReadFile(filepath.Join(dir, filename)) //nolint:gosec // path from the project config dir
+		if readErr != nil {
+			return fmt.Errorf("read agent file %s: %w", filename, readErr)
+		}
+		agentOpts, _ := config.ParseAgentOptions(string(content))
+		description := strings.TrimSpace(agentOpts.Description)
+		if description == "" {
+			description = "(no description - not offered to the review phase)"
+		}
+		fmt.Fprintf(w, "  - %s — %s\n", name, description)
+		if slices.Contains(reservedAgentNames, name) {
+			warnings = append(warnings, fmt.Sprintf("warning: %s uses the reserved built-in agent name %q and replaces the built-in agent", filename, name))
+		}
+	}
+	for _, warning := range warnings {
+		fmt.Fprintln(w, warning)
+	}
+	fmt.Fprintln(w, "review the generated files (git diff / git status) and commit the ones worth keeping")
+	return nil
 }
 
 // runReset runs the interactive config reset flow.

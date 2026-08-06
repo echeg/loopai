@@ -67,6 +67,26 @@ func TestParseOptions(t *testing.T) {
 	}
 }
 
+func TestParseAgentOptions(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		opts  Options
+		body  string
+	}{
+		{"frontmatter parsed", "---\ndescription: reviews migrations\nmodel: opus\n---\nthe body", Options{Model: "opus", Description: "reviews migrations"}, "the body"},
+		{"no frontmatter", "plain body", Options{}, "plain body"},
+		{"malformed frontmatter falls back to body", "---\n: :\n  bad:\n---\nbody", Options{}, "---\n: :\n  bad:\n---\nbody"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts, body := ParseAgentOptions(tt.input)
+			assert.Equal(t, tt.opts, opts)
+			assert.Equal(t, tt.body, body)
+		})
+	}
+}
+
 func TestOptions_String(t *testing.T) {
 	tests := []struct {
 		name string

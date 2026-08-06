@@ -87,6 +87,13 @@ func (b *promptBuilder) PlanPrompt() string {
 	return b.appendCommitTrailerInstruction(result)
 }
 
+// GenAgentsPrompt renders the prompt for the --gen-agents standalone mode. only base
+// variables are expanded: the session writes agent files rather than launching review
+// agents, so {{agent:name}} and {{agents:dynamic}} have no meaning here.
+func (b *promptBuilder) GenAgentsPrompt() string {
+	return b.replaceBaseVariables(b.cfg.AppConfig.GenAgentsPrompt)
+}
+
 func (b *promptBuilder) FinalizePrompt() string {
 	return b.replacePromptVariables(b.cfg.AppConfig.FinalizePrompt)
 }

@@ -6102,3 +6102,233 @@ func branchExists(t *testing.T, dir, branch string) bool {
 	require.NoError(t, err)
 	return strings.TrimSpace(string(out)) != ""
 }
+
+func TestGenAgentsFlagParsing(t *testing.T) {
+	t.Run("selects gen-agents mode", func(t *testing.T) {
+		o := parseTestOpts(t, "--gen-agents")
+		assert.True(t, o.GenAgents)
+		assert.Equal(t, processor.ModeGenAgents, determineMode(o))
+		assert.True(t, hasExecutionMode(o), "close-out commands must reject --gen-agents")
+		require.NoError(t, validateFlags(o))
+	})
+
+	t.Run("conflicts", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			args    []string
+			wantErr string
+		}{
+			{"plan file", []string{"--gen-agents", "docs/plans/foo.md"}, "plan file argument"},
+			{"plan mode", []string{"--gen-agents", "--plan", "add caching"}, "--plan"},
+			{"review", []string{"--gen-agents", "--review"}, "--review"},
+			{"external only", []string{"--gen-agents", "--external-only"}, "--external-only"},
+			{"tasks only", []string{"--gen-agents", "--tasks-only"}, "--tasks-only"},
+			{"worktree", []string{"--gen-agents", "--worktree"}, "--worktree"},
+			{"init", []string{"--gen-agents", "--init"}, "--init"},
+			{"merge", []string{"--gen-agents", "--merge"}, "--merge cannot be combined"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				err := validateFlags(parseTestOpts(t, tt.args...))
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			})
+		}
+	})
+}
+
+func TestReportGeneratedAgents(t *testing.T) {
+	t.Run("lists agents with descriptions", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "sql-safety.txt"),
+			[]byte("---\ndescription: review sql migrations\n---\nbody\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "concurrency.txt"),
+			[]byte("---\ndescription: review goroutine lifetimes\n---\nbody\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "notes.md"), []byte("ignored\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "concurrency — review goroutine lifetimes")
+		assert.Contains(t, body, "sql-safety — review sql migrations")
+		assert.Less(t, strings.Index(body, "concurrency"), strings.Index(body, "sql-safety"), "sorted by name")
+		assert.NotContains(t, body, "notes")
+		assert.Contains(t, body, "review the generated files")
+	})
+
+	t.Run("agent without description flagged", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "vague.txt"), []byte("just a body\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		assert.Contains(t, out.String(), "vague — (no description")
+	})
+
+	t.Run("reserved name warns", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "testing.txt"),
+			[]byte("---\ndescription: extra testing checks\n---\nbody\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "protocol.txt"),
+			[]byte("---\ndescription: protocol signals\n---\nbody\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, `warning: testing.txt uses the reserved built-in agent name "testing"`)
+		assert.NotContains(t, body, "warning: protocol.txt")
+	})
+
+	t.Run("missing dir reports nothing generated", func(t *testing.T) {
+		var out bytes.Buffer
+		require.NoError(t, reportGeneratedAgents(filepath.Join(t.TempDir(), "absent"), &out))
+		assert.Contains(t, out.String(), "no agent files found")
+	})
+
+	t.Run("empty dir reports nothing generated", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		var out bytes.Buffer
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+		assert.Contains(t, out.String(), "no agent files found")
+	})
+}
+
+func TestGenAgentsDir(t *testing.T) {
+	t.Run("uses detected local dir", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai"), 0o750))
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		cfg, err := config.LoadReadOnly(filepath.Join(t.TempDir(), "global"))
+		require.NoError(t, err)
+		require.NotEmpty(t, cfg.LocalDir())
+		assert.Equal(t, filepath.Join(cfg.LocalDir(), "agents"), genAgentsDir(cfg))
+		assert.True(t, strings.HasSuffix(genAgentsDir(cfg), filepath.Join(".loopai", "agents")))
+	})
+
+	t.Run("falls back to project path", func(t *testing.T) {
+		assert.Equal(t, filepath.Join(".loopai", "agents"), genAgentsDir(&config.Config{}))
+	})
+}
+
+func TestRunGenAgentsMode(t *testing.T) {
+	// stub claude records the prompt it receives on stdin and writes one agent file,
+	// standing in for the real generation session.
+	setup := func(t *testing.T, script string) (dir, promptLog string, cfg *config.Config) {
+		t.Helper()
+		dir = setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		binDir := t.TempDir()
+		promptLog = filepath.Join(binDir, "prompt.log")
+		writeExecutable(t, filepath.Join(binDir, "claude"), script)
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("GEN_AGENTS_PROMPT_LOG", promptLog)
+
+		cfg, err = config.LoadReadOnly(filepath.Join(t.TempDir(), "global"))
+		require.NoError(t, err)
+		return dir, promptLog, cfg
+	}
+
+	t.Run("runs session and reports generated agents", func(t *testing.T) {
+		script := "#!/bin/sh\ncat > \"$GEN_AGENTS_PROMPT_LOG\"\n" +
+			"mkdir -p .loopai/agents\n" +
+			"printf '%s\\n' '---' 'description: review protocol signals' '---' 'body' > .loopai/agents/protocol.txt\n"
+		dir, promptLog, cfg := setup(t, script)
+
+		err := runGenAgentsMode(t.Context(), opts{NoColor: true}, cfg, testColors(), nil)
+		require.NoError(t, err)
+
+		prompt, readErr := os.ReadFile(promptLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(prompt), "Generate project-specific review agents")
+		assert.Contains(t, string(prompt), filepath.Join(".loopai", "progress", "progress-gen-agents.txt"))
+
+		assert.FileExists(t, filepath.Join(dir, ".loopai", "agents", "protocol.txt"))
+		progressPath := filepath.Join(dir, ".loopai", "progress", "progress-gen-agents.txt")
+		require.FileExists(t, progressPath)
+		logged, readLogErr := os.ReadFile(progressPath) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readLogErr)
+		assert.Contains(t, string(logged), "agent generation")
+
+		var out bytes.Buffer
+		require.NoError(t, reportGeneratedAgents(genAgentsDir(cfg), &out))
+		assert.Contains(t, out.String(), "protocol — review protocol signals")
+	})
+
+	t.Run("session failure propagates", func(t *testing.T) {
+		_, _, cfg := setup(t, "#!/bin/sh\ncat > \"$GEN_AGENTS_PROMPT_LOG\"\necho boom >&2\nexit 3\n")
+
+		err := runGenAgentsMode(t.Context(), opts{NoColor: true}, cfg, testColors(), nil)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "agent generation")
+	})
+}
+
+func TestRunGenAgentsMissingExecutorFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgDir := filepath.Join(tmpDir, "config")
+	require.NoError(t, os.MkdirAll(cfgDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "config"),
+		[]byte("claude_command = missing-loopai-claude-command\n"), 0o600))
+
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	t.Setenv("PATH", t.TempDir())
+
+	err = run(t.Context(), parseTestOpts(t, "--config-dir", cfgDir, "--gen-agents"))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "install Claude Code")
+}
+
+func TestRequireRepoRoot(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *config.Config
+		gitDir  bool
+		wantErr bool
+	}{
+		{name: "git repo root", cfg: &config.Config{}, gitDir: true},
+		{name: "not a repo root", cfg: &config.Config{}, wantErr: true},
+		{name: "explicit git command needs .git", cfg: &config.Config{VcsCommand: "git"}, wantErr: true},
+		{name: "non-git vcs skips check", cfg: &config.Config{VcsCommand: "hg"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tt.gitDir {
+				require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o750))
+			}
+			origDir, err := os.Getwd()
+			require.NoError(t, err)
+			require.NoError(t, os.Chdir(dir))
+			t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+			err = requireRepoRoot(tt.cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "must run from repository root")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}

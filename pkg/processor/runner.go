@@ -26,6 +26,7 @@ const (
 	ModeCodexOnly Mode = "codex-only" // skip tasks and first review, start at external review
 	ModeTasksOnly Mode = "tasks-only" // run only task phase, skip all reviews
 	ModePlan      Mode = "plan"       // interactive plan creation mode
+	ModeGenAgents Mode = "gen-agents" // one-session generation of project-specific review agents
 )
 
 // Config holds runner configuration.
@@ -155,6 +156,10 @@ type planCreationPhaseRunner interface {
 	Run(ctx context.Context) error
 }
 
+type genAgentsPhaseRunner interface {
+	Run(ctx context.Context) error
+}
+
 type runnerPhases struct {
 	task          taskPhaseRunner
 	taskValidator taskPlanValidator
@@ -162,6 +167,7 @@ type runnerPhases struct {
 	external      externalReviewPhaseRunner
 	finalize      finalizePhaseRunner
 	planCreation  planCreationPhaseRunner
+	genAgents     genAgentsPhaseRunner
 }
 
 // New creates a new Runner with the given configuration and shared phase holder.
@@ -239,9 +245,13 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 		Cfg: phaseCfg, Log: log, Exec: execs.Task, Policy: policy, Prompts: prompts,
 		Deps: deps, PhaseHolder: holder, IterationDelay: iterDelay,
 	})
+	genAgentsPhase := phase.NewGenAgentsPhase(phase.GenAgentsPhaseOpts{
+		Cfg: phaseCfg, Log: log, Exec: execs.Task, Policy: policy, Prompts: prompts, PhaseHolder: holder,
+	})
 	phases := runnerPhases{
 		task: taskPhase, taskValidator: taskPhase, review: reviewPhase,
 		external: externalPhase, finalize: finalizePhase, planCreation: planCreationPhase,
+		genAgents: genAgentsPhase,
 	}
 
 	return &Runner{
@@ -305,6 +315,11 @@ func (r *Runner) Run(ctx context.Context) error {
 				return ErrUserRejectedPlan
 			}
 			return fmt.Errorf("plan creation phase: %w", err)
+		}
+		return nil
+	case ModeGenAgents:
+		if err := r.phases.genAgents.Run(ctx); err != nil {
+			return fmt.Errorf("agent generation phase: %w", err)
 		}
 		return nil
 	default:

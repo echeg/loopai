@@ -41,6 +41,13 @@ func (o Options) Validate() []string {
 	return warnings
 }
 
+// ParseAgentOptions extracts agent frontmatter options and the agent body from raw
+// agent file content. Exported for callers outside the loader: the --gen-agents mode
+// reports the descriptions of freshly written agent files without reloading config.
+func ParseAgentOptions(content string) (opts Options, body string) {
+	return parseOptions(content)
+}
+
 // normalizeModel extracts the keyword (haiku, sonnet, opus, fable) from a model string.
 // e.g. "claude-sonnet-4-5-20250929" → "sonnet", "opus" → "opus", "" → "".
 func normalizeModel(model string) string {

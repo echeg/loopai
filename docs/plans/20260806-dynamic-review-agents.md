@@ -101,11 +101,18 @@ The 5 built-in agents always run unchanged; dynamic agents are additive. Selecti
 
 ### Task 5: Add --gen-agents standalone mode
 
-- [ ] write failing tests for the new mode in `cmd/loopai`: flag parsing; mode runs a single executor session with the gen_agents prompt via a stubbed executor in `t.TempDir()`; created agent files are listed in output; a warning is emitted if a reserved base name file was written; missing executor produces the same error class as `--plan`
-- [ ] add `--gen-agents` flag to CLI options in `cmd/loopai/main.go`, mutually exclusive with plan-file argument and other standalone modes
-- [ ] implement the mode: resolve executor, run one session with the gen_agents prompt through `runWithSectionTiming`, log progress to `.loopai/progress/progress-gen-agents.txt`
-- [ ] after the session: scan `.loopai/agents/`, print created/updated agent files with their descriptions, warn on reserved-name overwrites, remind user to review via `git diff` and commit
-- [ ] run `go test ./cmd/... ./pkg/...` - must pass before task 6
+- [x] write failing tests for the new mode in `cmd/loopai`: flag parsing; mode runs a single executor session with the gen_agents prompt via a stubbed executor in `t.TempDir()`; created agent files are listed in output; a warning is emitted if a reserved base name file was written; missing executor produces the same error class as `--plan`
+- [x] add `--gen-agents` flag to CLI options in `cmd/loopai/main.go`, mutually exclusive with plan-file argument and other standalone modes
+- [x] implement the mode: resolve executor, run one session with the gen_agents prompt through `runWithSectionTiming`, log progress to `.loopai/progress/progress-gen-agents.txt`
+- [x] after the session: scan `.loopai/agents/`, print created/updated agent files with their descriptions, warn on reserved-name overwrites, remind user to review via `git diff` and commit
+- [x] run `go test ./cmd/... ./pkg/...` - must pass before task 6
+
+➕ implementation notes: the mode runs through a new `processor.ModeGenAgents` and
+`phase.GenAgentsPhase` (single session, failures propagate) rather than ad-hoc executor
+wiring in `cmd/loopai`, so retry/limit policy and section timing are shared with the other
+phases. `config.ParseAgentOptions` was exported so the post-run report can read descriptions
+without reloading config. `requireRepoRoot` was extracted from `run` to keep gocyclo under
+the project limit.
 
 ### Task 6: Verify acceptance criteria
 

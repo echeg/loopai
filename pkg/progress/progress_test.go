@@ -914,6 +914,7 @@ func TestGetProgressFilename(t *testing.T) {
 		{"branch override review mode", "docs/plans/tasks.md", "", "review", "my-feature", filepath.Join(progressDir, "progress-my-feature-review.txt")},
 		{"branch override codex-only mode", "docs/plans/tasks.md", "", "codex-only", "my-feature", filepath.Join(progressDir, "progress-my-feature-codex.txt")},
 		{"branch override no plan", "", "", "full", "my-feature", filepath.Join(progressDir, "progress-my-feature.txt")},
+		{"gen-agents mode", "", "", "gen-agents", "", filepath.Join(progressDir, "progress-gen-agents.txt")},
 	}
 
 	for _, tc := range tests {
