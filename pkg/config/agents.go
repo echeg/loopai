@@ -171,8 +171,7 @@ func (al *agentLoader) loadFileWithFallback(path, filename string) (string, erro
 	}
 	content := strings.TrimSpace(normalizeCRLF(string(data)))
 	// check if file has actual prompt body (strip comments only for emptiness check)
-	stripped := strings.TrimSpace(stripComments(content))
-	opts, body := parseOptions(stripped)
+	opts, body := agentPromptBody(content)
 	if body != "" {
 		return content, nil
 	}

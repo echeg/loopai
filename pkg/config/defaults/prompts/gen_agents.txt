@@ -54,6 +54,11 @@ agents do NOT already cover. Rules:
 Write each agent to `.loopai/agents/<name>.txt` where `<name>` is a short
 lowercase kebab-case slug matching the agent's focus.
 
+First list `.loopai/agents/` and read any file already there. Never overwrite an
+existing agent file: it may be hand-tuned and uncommitted. Pick a different slug,
+or skip the agent entirely if the existing file already covers that problem class,
+and say so in the report.
+
 RESERVED NAMES - never use these, they belong to the built-in agents and a file
 with one of these names would replace the built-in agent:
 quality, implementation, testing, simplification, documentation
@@ -70,8 +75,9 @@ Rules for the file:
 - the `description` field is MANDATORY and must be a single line; without it the
   agent is never offered to the review phase
 - ALWAYS wrap the description in double quotes exactly as shown. The frontmatter
-  is YAML: an unquoted value containing ": " or "#" makes the whole block
-  unparsable and the agent is then silently ignored
+  is YAML: an unquoted value containing ": " makes the whole block unparsable and
+  the agent is then silently ignored, and an unquoted " #" is read as a YAML
+  comment that silently truncates the description at that point
 - the description names the trigger, e.g. "review changes to database migrations
   and schema definitions for backwards-compatibility and data-loss risks"
 - the body is a focused review checklist in the style of the built-in agents:

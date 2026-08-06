@@ -149,14 +149,21 @@ and section timing match the other phases. It runs one session with
 reports the agent files present with their descriptions using
 `config.ParseAgentOptions`; an unreadable file is reported inline rather than
 aborting the listing. `describeAgentFile` reports what the loader will do with
-each file rather than its description alone: a body-less file is dropped in
-favor of the embedded default, and frontmatter that fails to parse — an
-unquoted `description` containing `: ` or `#` is the likely cause — is
+each file rather than its description alone, so it gates emptiness on
+`config.AgentFileHasBody` — the same comment-stripping check the loader uses.
+A file with no body is ignored (replaced by the embedded default only for a
+reserved name, dropped entirely otherwise), and frontmatter that fails to parse —
+an unquoted `description` containing `: ` is the likely cause — is
 indistinguishable from having none, so both are flagged instead of being listed
-as working agents. `gen_agents.txt` therefore requires a double-quoted
-description. Overwriting a reserved base name warns instead of
-failing, because the user reviews the generated files with `git diff` before
-committing them. The session resolves `task_model` only — `plan_model` does not
+as working agents. An unquoted ` #` does not break parsing; YAML reads it as a
+comment and truncates the description, so `gen_agents.txt` requires a
+double-quoted description for both reasons. The description case is checked before
+the `---` prefix heuristic, since a valid agent body may open with a markdown rule.
+Overwriting a reserved base name warns instead of failing, because the user
+reviews the generated files with `git diff` before committing them, and the
+warning fires only for a file that actually has a body: a plain `--init` fills
+`.loopai/agents/` with all-commented copies of the five base agents that override
+nothing. The session resolves `task_model` only — `plan_model` does not
 apply and no review model is printed. It is routed before branch and worktree
 setup but still opens the repository to run `EnsureLocalGitignore`, since it tells
 the user to inspect `git status` afterwards. `validateGenAgentsFlags` must reject

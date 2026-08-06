@@ -6246,6 +6246,70 @@ func TestReportGeneratedAgents(t *testing.T) {
 		assert.Contains(t, out.String(), "broken — (unparsable frontmatter")
 	})
 
+	// loopai --init fills .loopai/agents/ with all-commented copies of the built-in
+	// agents; those override nothing, so claiming they replace the built-ins is wrong
+	t.Run("all-commented reserved files override nothing", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "testing.txt"),
+			[]byte("# testing agent\n# review test coverage\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "testing — (no prompt body - file is ignored, built-in agent used instead)")
+		assert.NotContains(t, body, "warning:")
+	})
+
+	// the loader strips comments before its emptiness check, so a body of only comment
+	// lines is inert there and must not be listed as a working dynamic agent here
+	t.Run("comment-only body reported as ignored", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "commented.txt"),
+			[]byte("---\ndescription: review sql migrations\n---\n# nothing yet\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "commented — (no prompt body - file is ignored)")
+		assert.NotContains(t, body, "review sql migrations")
+	})
+
+	// a body-less file with a name no embedded default owns is dropped outright, so the
+	// report must not promise an embedded fallback that does not exist
+	t.Run("body-less custom name is dropped not defaulted", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "sql-safety.txt"),
+			[]byte("---\ndescription: review sql migrations\n---\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "sql-safety — (no prompt body - file is ignored)")
+		assert.NotContains(t, body, "built-in agent used instead")
+	})
+
+	// the "---" prefix only signals unparsable frontmatter when nothing parsed; a body
+	// opening with a markdown rule is a working agent
+	t.Run("body starting with markdown rule keeps its description", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ruled.txt"),
+			[]byte("---\ndescription: review protocol signals\n---\n\n---\n\nchecklist\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "ruled — review protocol signals")
+		assert.NotContains(t, body, "unparsable")
+	})
+
 	t.Run("unreadable file does not abort the report", func(t *testing.T) {
 		if os.Getuid() == 0 {
 			t.Skip("root bypasses file permissions")

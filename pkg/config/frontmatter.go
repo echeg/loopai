@@ -51,6 +51,26 @@ func ParseAgentOptions(content string) (opts Options, body string) {
 	return parseOptionsWithCommentRetry(strings.TrimSpace(normalizeCRLF(content)))
 }
 
+// AgentFileHasBody reports whether an agent file contributes a prompt body. A file
+// that is only comments, whitespace, or frontmatter is ignored by the loader in favor
+// of the embedded default with the same name, and dropped entirely when no embedded
+// default exists. Exported so the --gen-agents report agrees with the loader instead
+// of listing an inert file as a working agent.
+func AgentFileHasBody(content string) bool {
+	_, body := agentPromptBody(content)
+	return body != ""
+}
+
+// agentPromptBody normalizes agent file content and returns the frontmatter options
+// and prompt body the loader sees. Comments are stripped before parsing so an
+// all-commented file reads as empty and a "# ..." header above "---" does not hide
+// the frontmatter.
+func agentPromptBody(content string) (Options, string) {
+	normalized := strings.TrimSpace(normalizeCRLF(content))
+	stripped := strings.TrimSpace(stripComments(normalized))
+	return parseOptions(stripped)
+}
+
 // parseOptionsWithCommentRetry parses frontmatter, retrying after leading comment
 // lines are stripped so a "# ..." header written above "---" does not hide the
 // options. Returns the zero Options and the original content when neither attempt

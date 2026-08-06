@@ -243,9 +243,10 @@ call based on your description, so write it as a precise statement of when the a
 An agent with no description is never offered in the catalog; it runs only where a prompt
 references it explicitly as `{{agent:name}}`.
 
-The frontmatter is YAML, so quote the description. An unquoted value containing `: ` or `#`
-makes the whole block unparsable, which looks exactly like having no frontmatter at all and
-leaves the agent inactive.
+The frontmatter is YAML, so quote the description. An unquoted value containing `: ` makes
+the whole block unparsable, which looks exactly like having no frontmatter at all and leaves
+the agent inactive; an unquoted ` #` is read as a YAML comment and silently truncates the
+description at that point.
 
 The catalog exists only where `review_first.txt` says `{{agents:dynamic}}`. If you have
 customized that prompt, add the placeholder to your copy — a customized `review_first.txt`

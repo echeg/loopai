@@ -139,3 +139,30 @@ func TestOptions_Validate(t *testing.T) {
 		})
 	}
 }
+
+// AgentFileHasBody must agree with the agent loader, which strips comments before
+// deciding whether a file contributes a prompt at all
+func TestAgentFileHasBody(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"plain body", "review the diff\n", true},
+		{"frontmatter and body", "---\ndescription: review sql\n---\nchecklist\n", true},
+		{"leading comment then frontmatter", "# header\n---\ndescription: review sql\n---\nchecklist\n", true},
+		{"crlf body", "---\r\ndescription: review sql\r\n---\r\nchecklist\r\n", true},
+		{"body is a markdown rule", "---\ndescription: review sql\n---\n\n---\n\nchecklist\n", true},
+		{"unparsable frontmatter still a body", "---\ndescription: a: b\n---\nchecklist\n", true},
+		{"empty", "", false},
+		{"whitespace only", "   \n\n\t\n", false},
+		{"comments only", "# agent\n# review things\n", false},
+		{"frontmatter only", "---\ndescription: review sql\n---\n", false},
+		{"frontmatter with comment-only body", "---\ndescription: review sql\n---\n# nothing yet\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, AgentFileHasBody(tt.content))
+		})
+	}
+}

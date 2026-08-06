@@ -2389,18 +2389,22 @@ func reportGeneratedAgents(dir string, w io.Writer) error {
 	var warnings []string
 	for _, filename := range names {
 		name := strings.TrimSuffix(filename, ".txt")
-		var description string
+		reserved := slices.Contains(reservedAgentNames, name)
+		var report agentFileReport
 		content, readErr := os.ReadFile(filepath.Join(dir, filename)) //nolint:gosec // path from the project config dir
 		switch {
 		case readErr != nil:
 			// one unreadable file must not hide the rest of the report: the files are
 			// already written and the user still needs to see what to review
-			description = fmt.Sprintf("(unreadable: %v)", readErr)
+			report = agentFileReport{detail: fmt.Sprintf("(unreadable: %v)", readErr)}
 		default:
-			description = describeAgentFile(string(content))
+			report = describeAgentFile(string(content), reserved)
 		}
-		fmt.Fprintf(w, "  - %s — %s\n", name, description)
-		if slices.Contains(reservedAgentNames, name) {
+		fmt.Fprintf(w, "  - %s — %s\n", name, report.detail)
+		// an inert file (only comments or frontmatter) leaves the built-in agent in
+		// place, so warning that it replaces one would be wrong - a plain --init fills
+		// this directory with exactly such all-commented copies of the built-in agents
+		if reserved && report.active {
 			warnings = append(warnings, fmt.Sprintf("warning: %s uses the reserved built-in agent name %q and replaces the built-in agent", filename, name))
 		}
 	}
@@ -2411,23 +2415,36 @@ func reportGeneratedAgents(dir string, w io.Writer) error {
 	return nil
 }
 
+// agentFileReport is the outcome of inspecting one agent file: the text to print and
+// whether the loader will actually use the file. An inactive file overrides nothing.
+type agentFileReport struct {
+	detail string
+	active bool
+}
+
 // describeAgentFile renders the report line for one agent file. It reports what the
 // agent loader will actually do with the file rather than the description alone: a
-// file without a prompt body is dropped in favor of the embedded default, and
-// frontmatter that fails to parse (an unquoted description containing ":" or "#" is
-// the likely cause) is indistinguishable from having none, so both would otherwise be
-// reported as working agents.
-func describeAgentFile(content string) string {
+// file with no prompt body once comments are stripped is ignored — replaced by the
+// embedded default for a reserved name, dropped entirely otherwise — and frontmatter
+// that fails to parse (an unquoted description containing ": " is the likely cause) is
+// indistinguishable from having none, so both would be reported as working agents.
+func describeAgentFile(content string, reserved bool) agentFileReport {
+	if !config.AgentFileHasBody(content) {
+		if reserved {
+			return agentFileReport{detail: "(no prompt body - file is ignored, built-in agent used instead)"}
+		}
+		return agentFileReport{detail: "(no prompt body - file is ignored)"}
+	}
 	agentOpts, body := config.ParseAgentOptions(content)
 	switch {
-	case strings.TrimSpace(body) == "":
-		return "(no prompt body - file is ignored, embedded default used instead)"
+	case strings.TrimSpace(agentOpts.Description) != "":
+		// checked before the "---" prefix: a described agent whose body opens with a
+		// markdown rule parses fine and must not be reported as broken
+		return agentFileReport{detail: strings.TrimSpace(agentOpts.Description), active: true}
 	case strings.HasPrefix(body, "---"):
-		return "(unparsable frontmatter - not offered to the review phase, quote the description if it contains \":\" or \"#\")"
-	case strings.TrimSpace(agentOpts.Description) == "":
-		return "(no description - not offered to the review phase)"
+		return agentFileReport{detail: "(unparsable frontmatter - not offered to the review phase, quote a description containing \": \")", active: true}
 	default:
-		return strings.TrimSpace(agentOpts.Description)
+		return agentFileReport{detail: "(no description - not offered to the review phase)", active: true}
 	}
 }
 
