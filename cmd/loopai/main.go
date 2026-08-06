@@ -326,12 +326,6 @@ func run(ctx context.Context, o opts) error {
 	watchOnly := isWatchOnlyMode(o, cfg.WatchDirs)
 	resolveStaleCmuxStatus(watchOnly)
 
-	// create notification service (nil if no channels configured)
-	notifySvc, err := notify.New(cfg.NotifyParams, stderrLog{})
-	if err != nil {
-		return fmt.Errorf("create notification service: %w", err)
-	}
-
 	// watch-only mode: --serve with watch dirs (CLI or config) and no plan file
 	// runs web dashboard without plan execution, can run from any directory
 	if watchOnly {
@@ -364,6 +358,15 @@ func run(ctx context.Context, o opts) error {
 	// missing executor fails the same way it does for --plan.
 	if mode == processor.ModeGenAgents {
 		return runGenAgentsMode(ctx, o, cfg, colors, limitRecovery)
+	}
+
+	// create notification service (nil if no channels configured). notify.New validates the
+	// configured channels and fails fast on a misconfigured one, so it runs only on the paths
+	// that actually notify: watch-only, the close-out commands, and --gen-agents send nothing,
+	// and a half-filled slack or email block must not be what stops them from running.
+	notifySvc, err := notify.New(cfg.NotifyParams, stderrLog{})
+	if err != nil {
+		return fmt.Errorf("create notification service: %w", err)
 	}
 
 	// open git repository via Service

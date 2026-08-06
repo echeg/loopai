@@ -6574,6 +6574,37 @@ func TestRunGenAgentsMissingExecutorFails(t *testing.T) {
 	assert.Contains(t, err.Error(), "install Claude Code")
 }
 
+// --gen-agents sends no notifications, so a project whose notification block is
+// half-filled must still be able to generate agents. notify.New validates channels
+// eagerly and would otherwise fail the mode before it reaches the executor.
+func TestRunGenAgentsIgnoresMisconfiguredNotifications(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgDir := filepath.Join(tmpDir, "config")
+	require.NoError(t, os.MkdirAll(cfgDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "config"),
+		[]byte("notify_channels = telegram\n"), 0o600)) // no token, no chat: notify.New fails
+
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "claude"), "#!/bin/sh\ncat > /dev/null\n"+
+		"mkdir -p .loopai/agents\n"+
+		"printf '%s\\n' '---' 'description: review protocol signals' '---' 'body' > .loopai/agents/protocol.txt\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out := captureStdout(t, func() {
+		err = run(t.Context(), parseTestOpts(t, "--config-dir", cfgDir, "--gen-agents"))
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, out, "protocol — review protocol signals")
+	assert.FileExists(t, filepath.Join(dir, ".loopai", "agents", "protocol.txt"))
+}
+
 func TestRequireRepoRoot(t *testing.T) {
 	tests := []struct {
 		name    string

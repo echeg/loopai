@@ -179,7 +179,11 @@ the user to inspect `git status` afterwards. `validateGenAgentsFlags` must rejec
 `--serve`/`--watch` alongside the other standalone modes: watch-only routing is
 decided before the `ModeGenAgents` branch. Like `ModeTasksOnly`, the mode
 short-circuits `resolveExternalReviewSelection`: it runs no review phase, so a
-configured `external_reviewers` binary missing from `PATH` must not fail it.
+configured `external_reviewers` binary missing from `PATH` must not fail it. It is
+also routed before `notify.New`, which validates channels eagerly: the mode sends
+no notification, so a half-filled `notify_slack_*`/`notify_email_*` block must not
+be what stops it. Notification setup covers only the plan-executing paths — the
+close-out commands and watch-only mode return before it for the same reason.
 
 The primary executor owns all repository writes. External reviewers produce findings only; the primary evaluates and fixes them using `review_model`, falling back to `task_model`. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
 
