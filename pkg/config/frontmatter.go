@@ -70,13 +70,28 @@ func AgentFileHasBody(content string) bool {
 // reaches the parsed form at all.
 func AgentFrontmatterUnparsable(content string) bool {
 	normalized := strings.TrimSpace(normalizeCRLF(content))
-	if !strings.HasPrefix(strings.TrimSpace(stripLeadingCommentLines(normalized)), "---\n") {
+	if !hasFrontmatterBlock(strings.TrimSpace(stripLeadingCommentLines(normalized))) {
 		return false
 	}
 	// parseOptionsWithCommentRetry returns its input unchanged only when no attempt
 	// found parsable frontmatter; a parsed block always yields a shorter body
 	opts, body := parseOptionsWithCommentRetry(normalized)
 	return opts == (Options{}) && body == normalized
+}
+
+// hasFrontmatterBlock reports whether content opens a complete "---" delimited block.
+// the opening delimiter alone is not enough: an agent body may start with a markdown
+// horizontal rule, and calling that broken frontmatter sends the user chasing a YAML
+// quoting bug when the file simply carries no description. only a block that closes
+// properly and still fails to parse is genuinely unparsable.
+func hasFrontmatterBlock(content string) bool {
+	after, found := strings.CutPrefix(content, "---\n")
+	if !found {
+		return false
+	}
+	_, body, found := strings.Cut(after, "\n---")
+	// closing delimiter must be on its own line, same rule parseOptions applies
+	return found && (body == "" || body[0] == '\n')
 }
 
 // agentPromptBody normalizes agent file content and returns the frontmatter options

@@ -2354,9 +2354,12 @@ func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *p
 	}
 
 	colors.Info().Printf("\nagent generation completed in %s\n", baseLog.Elapsed())
+	// the session succeeded and the agent files are on disk; a listing that cannot be
+	// read is a warning, not a failed run. marking the log failed here would tell every
+	// later reader the generation itself failed, and the failure path above already
+	// treats the same error as a warning only
 	if reportErr := reportGeneratedAgents(genAgentsDir(cfg), os.Stdout); reportErr != nil {
-		genErr = reportErr
-		return genErr
+		fmt.Fprintf(os.Stderr, "warning: failed to report generated agents: %v\n", reportErr)
 	}
 	return nil
 }

@@ -165,7 +165,11 @@ double-quoted description for both reasons. That distinction comes from
 `config.AgentFrontmatterUnparsable` and not from a `---` prefix on the parsed body:
 a working agent may open its body with a markdown rule, and a broken block written
 below a `# ...` header never reaches the parsed form at all, so the prefix check
-misdiagnoses both. `parseOptionsWithCommentRetry` accepts its comment-stripped retry
+misdiagnoses both. It requires a *complete* `---` block — opening delimiter plus a
+closing one on its own line — before calling anything unparsable, because a file with
+no frontmatter whose body simply starts with a markdown rule matches the opening
+delimiter alone and its real gap is a missing `description`, not YAML quoting.
+`parseOptionsWithCommentRetry` accepts its comment-stripped retry
 whenever that parse consumed a frontmatter block, not only when the block carried a
 recognized key: a well-formed block holding only foreign keys must read the same
 behind a comment header as it does without one, otherwise its raw `---` lines stay in

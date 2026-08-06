@@ -125,6 +125,12 @@ func TestAgentFrontmatterUnparsable(t *testing.T) {
 		{"no frontmatter at all", "plain body", false},
 		{"comment only, no frontmatter", "# just a comment\nbody", false},
 		{"rule inside plain body", "intro\n\n---\n\nmore", false},
+		// no frontmatter block at all, the body just opens with a markdown rule. the
+		// gap is a missing description, not broken YAML, and saying otherwise sends the
+		// user chasing a quoting bug that does not exist
+		{"body opens with markdown rule, no frontmatter", "---\n\nchecklist\n", false},
+		{"unterminated opening delimiter", "---\ndescription: reviews sql\nbody", false},
+		{"closing delimiter not on its own line", "---\ndescription: sql: x\n--- trailing\nbody", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

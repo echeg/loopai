@@ -6349,6 +6349,23 @@ func TestReportGeneratedAgents(t *testing.T) {
 		assert.NotContains(t, body, "built-in agent used instead")
 	})
 
+	// a file with no frontmatter whose body opens with a markdown rule: the gap is a
+	// missing description, and reporting broken YAML sends the user after a quoting bug
+	// that does not exist
+	t.Run("markdown rule without frontmatter reports missing description", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ruled-only.txt"),
+			[]byte("---\n\nReview checklist\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "ruled-only — (no description - not offered to the review phase)")
+		assert.NotContains(t, body, "unparsable")
+	})
+
 	// the "---" prefix only signals unparsable frontmatter when nothing parsed; a body
 	// opening with a markdown rule is a working agent
 	t.Run("body starting with markdown rule keeps its description", func(t *testing.T) {

@@ -100,5 +100,8 @@ After writing the files, list what you created:
 Do not commit anything. The user reviews the generated files with `git diff` and
 commits the useful ones.
 
+If you cannot write any agent file - the repository cannot be analyzed or the
+agents directory cannot be written - output exactly: <<<RALPHEX:TASK_FAILED>>>
+
 OUTPUT FORMAT: No markdown formatting in your response text (no **bold**, `code`,
 # headers). Plain text and - lists are fine. The agent FILES use the format above.

@@ -845,6 +845,11 @@ func TestPromptLoader_Load_GenAgentsPrompt_EmbeddedDefault(t *testing.T) {
 	for _, reserved := range []string{"quality", "implementation", "testing", "simplification", "documentation"} {
 		assert.Contains(t, prompts.GenAgents, reserved, "embedded gen_agents.txt must mention reserved name %q", reserved)
 	}
+
+	// GenAgentsPhase fails the run on the FAILED signal; without the instruction that
+	// branch is dead and a session that wrote nothing still reports success
+	assert.Contains(t, prompts.GenAgents, "<<<RALPHEX:TASK_FAILED>>>",
+		"embedded gen_agents.txt must tell the session how to signal failure")
 }
 
 func TestPromptLoader_Load_GenAgentsPrompt_LocalOverridesGlobal(t *testing.T) {
