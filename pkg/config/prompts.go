@@ -18,6 +18,7 @@ type Prompts struct {
 	ReviewSecond         string
 	Codex                string
 	MakePlan             string
+	GenAgents            string
 	Finalize             string
 	CustomReview         string
 	CustomEval           string
@@ -64,6 +65,11 @@ func (p *promptLoader) Load(localDir, globalDir string) (Prompts, error) {
 	prompts.MakePlan, err = p.loadPromptWithLocalFallback(localDir, globalDir, makePlanPromptFile)
 	if err != nil {
 		return Prompts{}, fmt.Errorf("load make_plan prompt: %w", err)
+	}
+
+	prompts.GenAgents, err = p.loadPromptWithLocalFallback(localDir, globalDir, genAgentsPromptFile)
+	if err != nil {
+		return Prompts{}, fmt.Errorf("load gen_agents prompt: %w", err)
 	}
 
 	prompts.Finalize, err = p.loadPromptWithLocalFallback(localDir, globalDir, finalizePromptFile)

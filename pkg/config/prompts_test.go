@@ -828,3 +828,51 @@ func TestMakePlanPrompt_NoLLMDrivenPlanMove(t *testing.T) {
 			"embedded make_plan.txt must not contain %q (would re-introduce LLM-driven plan-file relocation)", sub)
 	}
 }
+
+func TestPromptLoader_Load_GenAgentsPrompt_EmbeddedDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	globalDir := filepath.Join(tmpDir, "nonexistent")
+
+	loader := newPromptLoader(defaultsFS)
+	prompts, err := loader.Load("", globalDir)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, prompts.GenAgents, "gen_agents prompt must fall back to the embedded default")
+	assert.Contains(t, prompts.GenAgents, ".loopai/agents/")
+	assert.Contains(t, prompts.GenAgents, "description")
+
+	// reserved base agent names must be listed so generated agents never shadow them
+	for _, reserved := range []string{"quality", "implementation", "testing", "simplification", "documentation"} {
+		assert.Contains(t, prompts.GenAgents, reserved, "embedded gen_agents.txt must mention reserved name %q", reserved)
+	}
+}
+
+func TestPromptLoader_Load_GenAgentsPrompt_LocalOverridesGlobal(t *testing.T) {
+	tmpDir := t.TempDir()
+	globalDir := filepath.Join(tmpDir, "global", "prompts")
+	localDir := filepath.Join(tmpDir, "local", "prompts")
+	require.NoError(t, os.MkdirAll(globalDir, 0o700))
+	require.NoError(t, os.MkdirAll(localDir, 0o700))
+
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "gen_agents.txt"), []byte("global gen agents"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(localDir, "gen_agents.txt"), []byte("local gen agents"), 0o600))
+
+	loader := newPromptLoader(defaultsFS)
+	prompts, err := loader.Load(localDir, globalDir)
+	require.NoError(t, err)
+
+	assert.Equal(t, "local gen agents", prompts.GenAgents)
+}
+
+func TestPromptLoader_Load_GenAgentsPrompt_GlobalOverridesEmbedded(t *testing.T) {
+	tmpDir := t.TempDir()
+	globalDir := filepath.Join(tmpDir, "prompts")
+	require.NoError(t, os.MkdirAll(globalDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "gen_agents.txt"), []byte("custom gen agents prompt"), 0o600))
+
+	loader := newPromptLoader(defaultsFS)
+	prompts, err := loader.Load("", globalDir)
+	require.NoError(t, err)
+
+	assert.Equal(t, "custom gen agents prompt", prompts.GenAgents)
+}

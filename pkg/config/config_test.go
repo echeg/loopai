@@ -223,6 +223,7 @@ func TestLoad_PopulatesAllFields(t *testing.T) {
 	assert.NotEmpty(t, cfg.CodexReviewPrompt)
 	assert.NotEmpty(t, cfg.ExternalClaudeReviewPrompt)
 	assert.NotEmpty(t, cfg.ExternalClaudeEvalPrompt)
+	assert.NotEmpty(t, cfg.GenAgentsPrompt)
 }
 
 func TestLoad_WithUserConfig(t *testing.T) {

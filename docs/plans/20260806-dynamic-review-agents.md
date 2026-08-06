@@ -94,10 +94,10 @@ The 5 built-in agents always run unchanged; dynamic agents are additive. Selecti
 
 ### Task 4: Add gen_agents.txt embedded prompt
 
-- [ ] write failing test asserting the embedded prompt `gen_agents.txt` exists, loads via the prompt loader with per-file fallback, and mentions the reserved base names
-- [ ] create `pkg/config/defaults/prompts/gen_agents.txt`: analyze stack, structure, CLAUDE.md, and commit history; propose 2-5 narrow agents covering problem classes the 5 base agents do not; write each to `.loopai/agents/<name>.txt` with YAML frontmatter containing a mandatory one-line `description`; never use the reserved names quality, implementation, testing, simplification, documentation; keep agent bodies focused review instructions in the style of embedded agents
-- [ ] expose the new prompt through the config prompt API (same pattern as `make_plan.txt`)
-- [ ] run `go test ./pkg/config/...` - must pass before task 5
+- [x] write failing test asserting the embedded prompt `gen_agents.txt` exists, loads via the prompt loader with per-file fallback, and mentions the reserved base names
+- [x] create `pkg/config/defaults/prompts/gen_agents.txt`: analyze stack, structure, CLAUDE.md, and commit history; propose 2-5 narrow agents covering problem classes the 5 base agents do not; write each to `.loopai/agents/<name>.txt` with YAML frontmatter containing a mandatory one-line `description`; never use the reserved names quality, implementation, testing, simplification, documentation; keep agent bodies focused review instructions in the style of embedded agents
+- [x] expose the new prompt through the config prompt API (same pattern as `make_plan.txt`)
+- [x] run `go test ./pkg/config/...` - must pass before task 5
 
 ### Task 5: Add --gen-agents standalone mode
 
