@@ -3,6 +3,7 @@ package processor
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/umputun/ralphex/pkg/config"
@@ -11,6 +12,14 @@ import (
 
 // agentRefPattern matches {{agent:name}} template syntax
 var agentRefPattern = regexp.MustCompile(`\{\{agent:([a-zA-Z0-9_-]+)\}\}`)
+
+// agentsCatalogPattern matches the {{agents:dynamic}} template syntax expanded
+// into the catalog of project-specific (dynamic) agents.
+var agentsCatalogPattern = regexp.MustCompile(`\{\{agents:dynamic\}\}`)
+
+// emptyDynamicCatalog is rendered in place of {{agents:dynamic}} when the
+// project defines no dynamic agents.
+const emptyDynamicCatalog = "(no project-specific agents configured)"
 
 // getGoal returns the goal string based on whether a plan file is configured.
 func (b *promptBuilder) getGoal() string {
@@ -97,6 +106,7 @@ func (b *promptBuilder) replaceExternalVariablesWithIteration(prompt string, isF
 	result := b.replaceBaseVariables(prompt)
 	result = strings.ReplaceAll(result, "{{DIFF_INSTRUCTION}}", b.getDiffInstruction(isFirstIteration))
 	result = b.expandAgentReferences(result) // expand agents before inserting external content
+	result = b.expandDynamicAgentCatalog(result)
 	result = strings.ReplaceAll(result, "{{PREVIOUS_REVIEW_CONTEXT}}", b.buildExternalPreviousContext(reviewer, evaluator, evaluatorResponse))
 	if reviewer == config.ExternalReviewToolClaude {
 		return result
@@ -306,6 +316,60 @@ func (b *promptBuilder) expandAgentReferences(prompt string) string {
 	})
 }
 
+// expandDynamicAgentCatalog replaces {{agents:dynamic}} with a catalog of the
+// project-specific agents — those whose frontmatter carries a non-empty
+// description. each entry lists the agent name, its description, and the same
+// ready-to-use invocation snippet {{agent:name}} would produce, so the primary
+// executor can pick relevant ones per diff without further lookups. renders
+// emptyDynamicCatalog when no dynamic agents are configured.
+func (b *promptBuilder) expandDynamicAgentCatalog(prompt string) string {
+	if !agentsCatalogPattern.MatchString(prompt) {
+		return prompt
+	}
+	return agentsCatalogPattern.ReplaceAllStringFunc(prompt, func(string) string { return b.buildDynamicAgentCatalog() })
+}
+
+// buildDynamicAgentCatalog renders the dynamic agent catalog body, sorted by agent name.
+func (b *promptBuilder) buildDynamicAgentCatalog() string {
+	var dynamic []config.CustomAgent
+	if b.cfg.AppConfig != nil {
+		for _, agent := range b.cfg.AppConfig.CustomAgents {
+			if strings.TrimSpace(agent.Description) != "" {
+				dynamic = append(dynamic, agent)
+			}
+		}
+	}
+	if len(dynamic) == 0 {
+		return emptyDynamicCatalog
+	}
+	sort.Slice(dynamic, func(i, j int) bool { return dynamic[i].Name < dynamic[j].Name })
+
+	var sb strings.Builder
+	sb.WriteString("### Available project-specific agents\n")
+	for _, agent := range dynamic {
+		b.log.Print("dynamic agent %q: %s", agent.Name, agent.Options)
+		if b.cfg.isCodexExecutor() && (agent.Model != "" || agent.AgentType != "") {
+			b.warnCodexFrontmatterDiscarded(agent.Name, agent.Options)
+		}
+		// agent bodies get the same base-variable expansion as {{agent:name}}; agent
+		// references inside a body are not expanded, to avoid recursion.
+		snippet := b.formatAgentExpansion(b.replaceBaseVariables(agent.Prompt), agent.Options)
+		fmt.Fprintf(&sb, "\n- %s — %s\n%s\n", agent.Name, strings.TrimSpace(agent.Description), indentBlock(snippet, "  "))
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// indentBlock prefixes every non-empty line of s with prefix.
+func indentBlock(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if line != "" {
+			lines[i] = prefix + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // warnCodexFrontmatterDiscarded logs a one-time-per-agent warning when codex
 // mode drops a per-agent Model/AgentType override.
 func (b *promptBuilder) warnCodexFrontmatterDiscarded(name string, opts config.Options) {
@@ -325,6 +389,7 @@ func (b *promptBuilder) warnCodexFrontmatterDiscarded(name string, opts config.O
 func (b *promptBuilder) replacePromptVariables(prompt string) string {
 	result := b.replaceBaseVariables(prompt)
 	result = b.expandAgentReferences(result)
+	result = b.expandDynamicAgentCatalog(result)
 	return b.appendCommitTrailerInstruction(result)
 }
 

@@ -78,11 +78,11 @@ The 5 built-in agents always run unchanged; dynamic agents are additive. Selecti
 
 ### Task 2: Implement {{agents:dynamic}} catalog expansion
 
-- [ ] write failing table-driven tests in `pkg/processor/prompts_test.go` for catalog expansion: no dynamic agents → `(no project-specific agents configured)`; one and several dynamic agents → catalog sorted by name with `- <name> — <description>` lines and invocation snippets; agents without description excluded; claude and codex executor snippet variants
-- [ ] add `agentsCatalogPattern` regexp matching `{{agents:dynamic}}` in `pkg/processor/prompts.go`
-- [ ] implement expansion that filters `CustomAgent` list to entries with non-empty `Description` and renders the catalog, reusing the existing per-executor invocation snippet builder used by `expandAgentReferences`
-- [ ] wire the new expansion into the same prompt-processing path that handles `{{agent:name}}`
-- [ ] run `go test ./pkg/processor/...` - must pass before task 3
+- [x] write failing table-driven tests in `pkg/processor/prompts_test.go` for catalog expansion: no dynamic agents → `(no project-specific agents configured)`; one and several dynamic agents → catalog sorted by name with `- <name> — <description>` lines and invocation snippets; agents without description excluded; claude and codex executor snippet variants
+- [x] add `agentsCatalogPattern` regexp matching `{{agents:dynamic}}` in `pkg/processor/prompts.go`
+- [x] implement expansion that filters `CustomAgent` list to entries with non-empty `Description` and renders the catalog, reusing the existing per-executor invocation snippet builder used by `expandAgentReferences`
+- [x] wire the new expansion into the same prompt-processing path that handles `{{agent:name}}`
+- [x] run `go test ./pkg/processor/...` - must pass before task 3
 
 ### Task 3: Update review_first.txt with dynamic agent step
 
