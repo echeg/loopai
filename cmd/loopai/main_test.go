@@ -6144,6 +6144,32 @@ func TestGenAgentsFlagParsing(t *testing.T) {
 	})
 }
 
+func TestReservedAgentNamesMatchEmbedded(t *testing.T) {
+	// the list is hardcoded here and repeated in gen_agents.txt; nothing else ties either
+	// to the embedded agents dir, so a sixth built-in agent would silently lose both the
+	// reserved-name warning and the "built-in agent used instead" report line
+	dir := filepath.Join(t.TempDir(), "defaults")
+	require.NoError(t, dumpDefaults(dir))
+
+	entries, err := os.ReadDir(filepath.Join(dir, "agents"))
+	require.NoError(t, err)
+	embedded := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+			continue
+		}
+		embedded = append(embedded, strings.TrimSuffix(entry.Name(), ".txt"))
+	}
+
+	assert.ElementsMatch(t, embedded, reservedAgentNames)
+
+	genAgents, err := os.ReadFile(filepath.Join(dir, "prompts", "gen_agents.txt")) //nolint:gosec // test
+	require.NoError(t, err)
+	for _, name := range embedded {
+		assert.Contains(t, string(genAgents), name, "gen_agents.txt must warn against the reserved name %q", name)
+	}
+}
+
 func TestReportGeneratedAgents(t *testing.T) {
 	t.Run("lists agents with descriptions", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "agents")

@@ -161,7 +161,11 @@ double-quoted description for both reasons. That distinction comes from
 `config.AgentFrontmatterUnparsable` and not from a `---` prefix on the parsed body:
 a working agent may open its body with a markdown rule, and a broken block written
 below a `# ...` header never reaches the parsed form at all, so the prefix check
-misdiagnoses both. The report also runs on the failure path — a session that writes
+misdiagnoses both. `parseOptionsWithCommentRetry` accepts its comment-stripped retry
+whenever that parse consumed a frontmatter block, not only when the block carried a
+recognized key: a well-formed block holding only foreign keys must read the same
+behind a comment header as it does without one, otherwise its raw `---` lines stay in
+the agent body and valid YAML gets reported as broken. The report also runs on the failure path — a session that writes
 files and then fails, times out, or is interrupted leaves them in the next run's
 catalog, and the reserved-name warning would otherwise be lost with the error.
 Overwriting a reserved base name warns instead of failing, because the user

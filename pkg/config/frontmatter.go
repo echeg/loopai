@@ -92,7 +92,11 @@ func agentPromptBody(content string) (Options, string) {
 // parseOptionsWithCommentRetry parses frontmatter, retrying after leading comment
 // lines are stripped so a "# ..." header written above "---" does not hide the
 // options. Returns the zero Options and the original content when neither attempt
-// finds frontmatter.
+// finds frontmatter. The retry is accepted whenever it consumed a frontmatter block,
+// not only when that block carried a recognized key: a well-formed block holding
+// only foreign keys (Claude-Code style "name"/"tools", say) must read the same behind
+// a comment header as it does without one — otherwise its raw "---" lines stay in the
+// agent body and AgentFrontmatterUnparsable reports valid YAML as broken.
 func parseOptionsWithCommentRetry(content string) (Options, string) {
 	opts, body := parseOptions(content)
 	if opts != (Options{}) || body != content {
@@ -102,7 +106,8 @@ func parseOptionsWithCommentRetry(content string) (Options, string) {
 	if stripped == content {
 		return opts, body
 	}
-	if strippedOpts, strippedBody := parseOptions(stripped); strippedOpts != (Options{}) {
+	// parseOptions returns its input unchanged when it finds no parsable frontmatter
+	if strippedOpts, strippedBody := parseOptions(stripped); strippedBody != stripped {
 		return strippedOpts, strippedBody
 	}
 	return Options{}, content

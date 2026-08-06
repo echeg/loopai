@@ -84,6 +84,11 @@ func TestParseAgentOptions(t *testing.T) {
 		{"crlf endings", "---\r\ndescription: reviews signals\r\n---\r\nbody\r\n", Options{Description: "reviews signals"}, "body"},
 		{"trailing whitespace", "---\ndescription: reviews docs\n---\nbody\n\n", Options{Description: "reviews docs"}, "body"},
 		{"comment only, no frontmatter", "# just a comment\nbody", Options{}, "# just a comment\nbody"},
+		// a well-formed block carrying only foreign keys must be consumed behind a comment
+		// header exactly as it is without one, or its raw "---" lines land in the agent body
+		{"foreign keys only", "---\nname: api\ntools: read\n---\nbody", Options{}, "body"},
+		{"foreign keys only behind comment", "# hdr\n---\nname: api\ntools: read\n---\nbody", Options{}, "body"},
+		{"empty description behind comment", "# hdr\n---\ndescription: \"\"\n---\nbody", Options{}, "body"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -109,6 +114,9 @@ func TestAgentFrontmatterUnparsable(t *testing.T) {
 		{"body opens with markdown rule", "---\nmodel: opus\n---\n\n---\n\nchecklist", false},
 		{"no description but parsed", "---\nmodel: opus\n---\nbody", false},
 		{"unknown keys only", "---\nfoo: bar\n---\n---\nbody", false},
+		// valid YAML that simply carries no loopai key is not broken frontmatter; reporting
+		// it as such sends the user to fix quoting when the real gap is a missing description
+		{"foreign keys only behind comment", "# hdr\n---\nname: api\ntools: read\n---\nbody", false},
 		{"no frontmatter at all", "plain body", false},
 		{"comment only, no frontmatter", "# just a comment\nbody", false},
 		{"rule inside plain body", "intro\n\n---\n\nmore", false},
