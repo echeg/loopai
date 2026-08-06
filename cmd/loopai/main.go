@@ -2340,7 +2340,9 @@ func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *p
 	}, genLog, holder)
 
 	if runErr := runWithSectionTiming(ctx, r.Run, sectionTimer); runErr != nil {
-		genErr = fmt.Errorf("agent generation: %w", runErr)
+		// the runner already scopes the message ("agent generation phase: ..."); wrapping
+		// again only repeats the same words in the stderr line and the progress footer
+		genErr = runErr
 		// a session that fails, times out, or is interrupted can still have written agent
 		// files, and those files join the review catalog on the next run. report them
 		// anyway: the reserved-name warning is the only signal that a generated file
@@ -2383,14 +2385,24 @@ func reportGeneratedAgents(dir string, w io.Writer) error {
 	}
 
 	names := make([]string, 0, len(entries))
+	var ignored []string
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+		if entry.IsDir() {
+			continue
+		}
+		// the agent loader reads .txt only, so a session that ignored the prompt and
+		// wrote .md leaves files git status shows but nothing ever loads. naming them
+		// here is the only signal the user gets
+		if !strings.HasSuffix(entry.Name(), ".txt") {
+			ignored = append(ignored, entry.Name())
 			continue
 		}
 		names = append(names, entry.Name())
 	}
+	slices.Sort(ignored)
 	if len(names) == 0 {
 		fmt.Fprintf(w, "no agent files found in %s\n", toRelPath(dir))
+		reportIgnoredAgentFiles(ignored, w)
 		return nil
 	}
 	slices.Sort(names)
@@ -2421,8 +2433,17 @@ func reportGeneratedAgents(dir string, w io.Writer) error {
 	for _, warning := range warnings {
 		fmt.Fprintln(w, warning)
 	}
+	reportIgnoredAgentFiles(ignored, w)
 	fmt.Fprintln(w, "review the generated files (git diff / git status) and commit the ones worth keeping")
 	return nil
+}
+
+// reportIgnoredAgentFiles warns about files in the agents directory the loader skips.
+func reportIgnoredAgentFiles(ignored []string, w io.Writer) {
+	if len(ignored) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "warning: ignoring non-.txt file(s) in the agents dir, agent files must use .txt: %s\n", strings.Join(ignored, ", "))
 }
 
 // agentFileReport is the outcome of inspecting one agent file: the text to print and
@@ -2505,7 +2526,10 @@ func clearCmuxStatus(stdout io.Writer) {
 }
 
 func clearStaleCmuxStatus(o opts) {
-	if o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || (o.Reset && isResetOnly(o)) {
+	// --gen-agents joins the config utilities here: it executes no plan and never
+	// constructs a reporter, so clearing would drop the previous run's completion pill
+	// with nothing to replace it
+	if o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || o.GenAgents || (o.Reset && isResetOnly(o)) {
 		return
 	}
 	cmux.New("", cmux.Models{}).Clear()

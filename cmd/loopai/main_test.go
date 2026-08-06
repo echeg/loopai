@@ -4191,6 +4191,7 @@ func TestClearStaleCmuxStatusSkipsConfigUtilities(t *testing.T) {
 		{Init: true},
 		{Reset: true},
 		{DumpDefaults: filepath.Join(t.TempDir(), "defaults")},
+		{GenAgents: true},
 	} {
 		clearStaleCmuxStatus(o)
 	}
@@ -6187,8 +6188,36 @@ func TestReportGeneratedAgents(t *testing.T) {
 		assert.Contains(t, body, "concurrency — review goroutine lifetimes")
 		assert.Contains(t, body, "sql-safety — review sql migrations")
 		assert.Less(t, strings.Index(body, "concurrency"), strings.Index(body, "sql-safety"), "sorted by name")
-		assert.NotContains(t, body, "notes")
+		assert.NotContains(t, body, "  - notes", "non-.txt file is not listed as an agent")
+		assert.Contains(t, body, "warning: ignoring non-.txt file(s) in the agents dir, agent files must use .txt: notes.md")
 		assert.Contains(t, body, "review the generated files")
+	})
+
+	t.Run("only non-txt files reported as ignored", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "sql-safety.md"),
+			[]byte("---\ndescription: review sql migrations\n---\nbody\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "concurrency.md"), []byte("body\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "no agent files found in")
+		assert.Contains(t, body, "warning: ignoring non-.txt file(s) in the agents dir, agent files must use .txt: concurrency.md, sql-safety.md")
+	})
+
+	t.Run("multi-line description collapsed to one line", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "sql-safety.txt"),
+			[]byte("---\ndescription: |\n  review sql migrations\n  and schema changes\n---\nbody\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		assert.Contains(t, out.String(), "  - sql-safety — review sql migrations and schema changes\n")
 	})
 
 	t.Run("agent without description flagged", func(t *testing.T) {

@@ -10,8 +10,11 @@
 #   {{agent:<name>}} - expands to the executor-appropriate agent invocation
 #                      (Task tool for claude, spawn_agent for codex)
 #   {{agents:<dynamic>}} - the literal placeholder, written without the angle
-#                      brackets (see Step 2b below), expands to a catalog of the
-#                      project-specific agents: every agent file whose frontmatter
+#                      brackets (see Step 2b below). this leading comment block is
+#                      stripped before expansion, but a header trimmed down to a
+#                      single "# ..." line is kept, and a literal placeholder left
+#                      there would render the catalog twice. expands to a catalog of
+#                      the project-specific agents: every agent file whose frontmatter
 #                      carries a non-empty description. each catalog entry lists the
 #                      agent name, its description, and a ready-to-use invocation
 #                      snippet. renders "(no project-specific agents configured)"

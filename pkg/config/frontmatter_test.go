@@ -89,6 +89,11 @@ func TestParseAgentOptions(t *testing.T) {
 		{"foreign keys only", "---\nname: api\ntools: read\n---\nbody", Options{}, "body"},
 		{"foreign keys only behind comment", "# hdr\n---\nname: api\ntools: read\n---\nbody", Options{}, "body"},
 		{"empty description behind comment", "# hdr\n---\ndescription: \"\"\n---\nbody", Options{}, "body"},
+		// the catalog renders the description as a single markdown list item; a block
+		// scalar must not push unindented continuation lines into that structure
+		{"block scalar description collapsed", "---\ndescription: |\n  reviews sql migrations\n  and schema changes\n---\nbody", Options{Description: "reviews sql migrations and schema changes"}, "body"},
+		{"folded scalar description collapsed", "---\ndescription: >\n  reviews goroutine\n  lifetimes\n---\nbody", Options{Description: "reviews goroutine lifetimes"}, "body"},
+		{"whitespace-only description is not dynamic", "---\ndescription: \"   \"\n---\nbody", Options{}, "body"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

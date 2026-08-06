@@ -151,6 +151,17 @@ func parseOptions(content string) (Options, string) {
 	}
 
 	opts.Model = normalizeModel(opts.Model)
+	opts.Description = normalizeDescription(opts.Description)
 
 	return opts, strings.TrimSpace(body)
+}
+
+// normalizeDescription collapses a description to a single space-separated line.
+// the {{agents:dynamic}} catalog renders it as one markdown list item followed by an
+// indented invocation snippet, so a YAML block scalar ("description: |") parsing into
+// several lines would push unindented continuation text between the entry header and
+// its snippet. a whitespace-only description collapses to empty, which keeps it from
+// marking the agent dynamic.
+func normalizeDescription(desc string) string {
+	return strings.Join(strings.Fields(desc), " ")
 }

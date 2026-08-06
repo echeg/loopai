@@ -651,6 +651,26 @@ func TestAgentLoader_Load_ParsesDescription(t *testing.T) {
 	assert.Empty(t, p.Description)
 }
 
+func TestAgentLoader_Load_CollapsesMultiLineDescription(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0o750))
+
+	// a YAML block scalar parses fine but yields an embedded newline; the dynamic catalog
+	// renders the description as one list item, so it has to reach CustomAgent as one line
+	content := "---\ndescription: |\n  reviews sql migrations\n  and schema changes\n---\nReview migrations."
+	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "migrations.txt"), []byte(content), 0o600))
+
+	loader := newAgentLoader(defaultsFS)
+	agents, err := loader.Load("", agentsDir)
+	require.NoError(t, err)
+
+	m := findAgent(agents, "migrations")
+	require.NotNil(t, m)
+	assert.Equal(t, "reviews sql migrations and schema changes", m.Description)
+	assert.NotContains(t, m.Description, "\n")
+}
+
 func TestAgentLoader_Load_EmbeddedAgentsHaveNoDescription(t *testing.T) {
 	loader := newAgentLoader(defaultsFS)
 	agents, err := loader.Load("", "")

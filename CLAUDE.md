@@ -94,6 +94,10 @@ execution overrides but preserves `Description`: catalog membership must not
 depend on an unrelated `model` typo. `config.ParseAgentOptions` applies the same
 CRLF/whitespace/leading-comment normalization the loader does, so any second
 reader of an agent file agrees with the review phase about its description.
+`parseOptions` collapses the description to a single space-separated line: a YAML
+block or folded scalar parses fine but yields embedded newlines, and the catalog
+renders the description as one Markdown list item followed by an indented
+invocation snippet, so continuation lines would land unindented between the two.
 
 `external_reviewers` configures an ordered comma-separated reviewer chain using
 `provider[:model[:effort]]` entries. It takes precedence over the legacy
@@ -172,7 +176,13 @@ Overwriting a reserved base name warns instead of failing, because the user
 reviews the generated files with `git diff` before committing them, and the
 warning fires only for a file that actually has a body: a plain `--init` fills
 `.loopai/agents/` with all-commented copies of the five base agents that override
-nothing. The session resolves `task_model` only — `plan_model` does not
+nothing. Non-`.txt` files in the directory are reported as ignored rather than
+skipped silently: the agent loader reads `.txt` only, so a session that disregards
+the prompt and writes `.md` would otherwise leave files `git status` shows and
+nothing ever loads. `clearStaleCmuxStatus` excludes the mode alongside the other
+config utilities — it executes no plan and constructs no reporter, so clearing
+would drop the previous run's completion pill with nothing to replace it. The
+session resolves `task_model` only — `plan_model` does not
 apply and no review model is printed. It is routed before branch and worktree
 setup but still opens the repository to run `EnsureLocalGitignore`, since it tells
 the user to inspect `git status` afterwards. `validateGenAgentsFlags` must reject
