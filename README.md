@@ -12,6 +12,7 @@ This repository is a personal fork. It is installed by building from source; no 
 - Creates plans interactively with `--plan`
 - Supports Claude Code and Codex as primary executors
 - Runs configurable internal and external review phases
+- Adds project-specific review agents, drafted for the repository by `--gen-agents`
 - Creates a branch automatically and optionally uses isolated Git worktrees
 - Commits after completed tasks and review fixes
 - Streams timestamped progress to `.loopai/progress/`
@@ -180,6 +181,9 @@ loopai --worktree --commit docs/plans/feature.md
 # continue an interrupted isolated worktree
 loopai --resume-worktree docs/plans/feature.md
 
+# generate project-specific review agents into .loopai/agents/
+loopai --gen-agents
+
 # initialize project-local configuration
 loopai --init
 
@@ -200,13 +204,60 @@ Use `loopai --help` for the complete flag list.
 The full pipeline has four phases:
 
 1. Task execution finds the first incomplete `### Task N:` or `### Iteration N:` section, runs the selected executor, validates the result, marks the task complete, and commits it.
-2. First review launches the configured review agents in parallel through the primary executor.
+2. First review launches the review agents in parallel through the primary executor: five built-in agents plus any project-specific agents the executor selects (see [Review agents](#review-agents)).
 3. External review runs the configured reviewer or reviewer chain for findings. The primary executor evaluates findings and owns all fixes.
 4. Second review checks the final changes for critical or major regressions.
 
 An optional finalize step can run after review. It is disabled by default and controlled with `finalize_enabled`; `--skip-finalize` disables it for one invocation.
 
 Press Ctrl+\ during a task iteration to pause it, edit the plan, and retry the same task in a fresh session. During external review, Ctrl+\ terminates the entire reviewer chain and skips all remaining reviewers. This shortcut is not available on Windows.
+
+## Review agents
+
+A review agent is a plain-text file of review instructions. The first internal review always
+launches the five built-in agents in parallel: quality, implementation, testing,
+simplification, and documentation. These cover problems that apply to any codebase.
+
+Projects can add their own agents for problem classes the built-in five miss — a migration
+checker, a schema-compatibility reviewer, an accessibility pass. Drop a `.txt` file into
+`.loopai/agents/` (project) or `~/.config/loopai/agents/` (all projects) and give it YAML
+frontmatter with a one-line `description`:
+
+```text
+---
+description: check SQL migrations for irreversible or lock-heavy operations
+---
+
+Review the changed migration files for:
+
+1. Missing or incorrect down-migrations
+2. Operations that take long-lived locks on large tables
+...
+```
+
+The `description` is what makes the agent active. `review_first.txt` expands the
+`{{agents:dynamic}}` variable into a catalog of every described agent, and the primary
+executor reads that catalog and launches the ones relevant to the current diff — typically
+none to three — in the same parallel message as the built-in five. Selection is the model's
+call based on your description, so write it as a precise statement of when the agent applies.
+An agent with no description is never offered in the catalog; it runs only where a prompt
+references it explicitly as `{{agent:name}}`.
+
+To get started, let loopai draft agents for the repository:
+
+```bash
+loopai --gen-agents
+```
+
+One executor session inspects the stack, layout, project instructions, and commit history,
+writes 2-5 candidate agents into `.loopai/agents/`, and lists them with their descriptions.
+Nothing else changes: review the files with `git diff`, edit or delete what does not fit, and
+commit the ones worth keeping. Generated files that reuse a built-in agent name are reported
+with a warning, since they replace that built-in agent.
+
+Agent frontmatter also accepts `model` (`haiku`, `sonnet`, `opus`, or `fable` for that agent
+alone) and `agent` (a named subagent type instead of the default `general-purpose`). Both are
+optional, and an unknown model value is reported as a warning.
 
 ## Plan format
 
@@ -406,7 +457,7 @@ The embedded configuration documents every option. Extract it with:
 loopai --dump-defaults /tmp/loopai-defaults
 ```
 
-Custom prompts and agents use the same filenames as the embedded defaults. The `{{agent:name}}` template syntax expands configured review agents at runtime.
+Custom prompts and agents use the same filenames as the embedded defaults. At runtime the `{{agent:name}}` template syntax expands one named review agent, and `{{agents:dynamic}}` expands the catalog of project-specific agents described in [Review agents](#review-agents).
 
 ## Alternative providers
 

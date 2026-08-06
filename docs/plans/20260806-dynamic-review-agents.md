@@ -124,10 +124,10 @@ the project limit.
 
 ### Task 7: Update documentation
 
-- [ ] update `CLAUDE.md`: dynamic agent concept, `description` frontmatter, `{{agents:dynamic}}`, `--gen-agents` mode
-- [ ] update `llms.txt`: new flag and agent format notes
-- [ ] update `README.md` user documentation for project-specific review agents and `--gen-agents`
-- [ ] update embedded config/prompt comments where behavior is described
+- [x] update `CLAUDE.md`: dynamic agent concept, `description` frontmatter, `{{agents:dynamic}}`, `--gen-agents` mode
+- [x] update `llms.txt`: new flag and agent format notes
+- [x] update `README.md` user documentation for project-specific review agents and `--gen-agents`
+- [x] update embedded config/prompt comments where behavior is described (the `review_first.txt` and `gen_agents.txt` header comments already document the new behavior from tasks 3-4; `pkg/config/defaults/config` describes no agent options, so it needed no change)
 
 ## Technical Details
 

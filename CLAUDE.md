@@ -82,6 +82,15 @@ links.
 
 Local files override global files, which override embedded defaults. Embedded defaults remain the per-file fallback, so deleting an installed prompt or agent does not disable it. Remove its template reference to disable an agent.
 
+Agent files may carry YAML frontmatter parsed into `config.Options` (`model`,
+`agent`, `description`). A non-empty `description` marks the file as a *dynamic
+agent*: it is offered to the internal review phase through the
+`{{agents:dynamic}}` catalog instead of requiring a hard-wired
+`{{agent:<name>}}` reference. The five embedded agents (quality,
+implementation, testing, simplification, documentation) carry no description and
+always run as the base set. `loopai --gen-agents` writes starter dynamic agents
+into `.loopai/agents/`.
+
 `external_reviewers` configures an ordered comma-separated reviewer chain using
 `provider[:model[:effort]]` entries. It takes precedence over the legacy
 `external_review_tool` and `external_review_model` keys. `custom` entries use
@@ -104,6 +113,26 @@ Tests must redirect HOME or config paths to `t.TempDir()` and must never touch e
 - `pkg/config/defaults` contains embedded config, prompts, and agents.
 
 Task plans use `### Task N:` or `### Iteration N:` headings and Markdown checkboxes. The task phase handles only the first incomplete section per executor iteration.
+
+`pkg/processor/prompts.go` expands two agent placeholders with the same
+per-executor invocation snippet builder (Task tool for Claude, `spawn_agent` for
+Codex): `{{agent:<name>}}` inlines one named agent, and `{{agents:dynamic}}`
+renders the dynamic-agent catalog sorted by name, or
+`(no project-specific agents configured)` when the project defines none. Only
+`review_first.txt` uses the catalog; `review_second.txt` and external reviewers
+are unaffected. Which catalog entries actually run is decided by the model from
+the descriptions — deliberately not by path or glob triggers in code — and the
+prompt bounds the selection to roughly 0-3 agents launched in the same parallel
+message as the base five.
+
+`--gen-agents` is a standalone mode backed by `processor.ModeGenAgents` and
+`phase.GenAgentsPhase` rather than ad-hoc executor wiring, so retry/limit policy
+and section timing match the other phases. It runs one session with
+`gen_agents.txt`, logs to `.loopai/progress/progress-gen-agents.txt`, then
+reports the agent files present with their descriptions using
+`config.ParseAgentOptions`. Overwriting a reserved base name warns instead of
+failing, because the user reviews the generated files with `git diff` before
+committing them.
 
 The primary executor owns all repository writes. External reviewers produce findings only; the primary evaluates and fixes them using `review_model`, falling back to `task_model`. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
 
