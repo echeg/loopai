@@ -71,10 +71,10 @@ The 5 built-in agents always run unchanged; dynamic agents are additive. Selecti
 
 ### Task 1: Add description field to agent frontmatter
 
-- [ ] write failing tests in `pkg/config/frontmatter_test.go`: `description:` parsed into `Options.Description` (present, absent, empty, multi-word); `Options.String()` unchanged for agents without description
-- [ ] add `Description string \`yaml:"description"\`` to `Options` in `pkg/config/frontmatter.go`
-- [ ] add test in `pkg/config/agents_test.go`: agent file with description frontmatter loads into `CustomAgent` with `Description` set and body free of frontmatter
-- [ ] run `go test ./pkg/config/...` - must pass before task 2
+- [x] write failing tests in `pkg/config/frontmatter_test.go`: `description:` parsed into `Options.Description` (present, absent, empty, multi-word); `Options.String()` unchanged for agents without description
+- [x] add `Description string \`yaml:"description"\`` to `Options` in `pkg/config/frontmatter.go`
+- [x] add test in `pkg/config/agents_test.go`: agent file with description frontmatter loads into `CustomAgent` with `Description` set and body free of frontmatter
+- [x] run `go test ./pkg/config/...` - must pass before task 2
 
 ### Task 2: Implement {{agents:dynamic}} catalog expansion
 

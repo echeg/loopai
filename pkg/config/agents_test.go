@@ -571,6 +571,41 @@ func TestAgentLoader_Load_ParsesOptions(t *testing.T) {
 	assert.Equal(t, "code-reviewer", q.AgentType)
 }
 
+func TestAgentLoader_Load_ParsesDescription(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0o750))
+
+	content := "---\nmodel: sonnet\ndescription: reviews sql migrations for unsafe ddl\n---\nReview migrations."
+	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "migrations.txt"), []byte(content), 0o600))
+	// agent without description stays a base agent
+	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "plain.txt"), []byte("---\nmodel: haiku\n---\nReview code."), 0o600))
+
+	loader := newAgentLoader(defaultsFS)
+	agents, err := loader.Load("", agentsDir)
+	require.NoError(t, err)
+
+	m := findAgent(agents, "migrations")
+	require.NotNil(t, m)
+	assert.Equal(t, "Review migrations.", m.Prompt, "body must be free of frontmatter")
+	assert.Equal(t, "reviews sql migrations for unsafe ddl", m.Description)
+	assert.Equal(t, "sonnet", m.Model)
+
+	p := findAgent(agents, "plain")
+	require.NotNil(t, p)
+	assert.Empty(t, p.Description)
+}
+
+func TestAgentLoader_Load_EmbeddedAgentsHaveNoDescription(t *testing.T) {
+	loader := newAgentLoader(defaultsFS)
+	agents, err := loader.Load("", "")
+	require.NoError(t, err)
+	require.NotEmpty(t, agents)
+	for _, a := range agents {
+		assert.Empty(t, a.Description, "embedded agent %s must stay a base agent", a.Name)
+	}
+}
+
 func TestAgentLoader_Load_ParsesOptionsWithSingleLeadingComment(t *testing.T) {
 	dir := t.TempDir()
 	agentsDir := filepath.Join(dir, "agents")

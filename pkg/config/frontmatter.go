@@ -8,9 +8,12 @@ import (
 )
 
 // Options holds agent options parsed from YAML frontmatter in agent files.
+// a non-empty Description marks the agent as dynamic (project-specific): it is
+// listed in the {{agents:dynamic}} catalog for model-side selection during review.
 type Options struct {
-	Model     string `yaml:"model"`
-	AgentType string `yaml:"agent"`
+	Model       string `yaml:"model"`
+	AgentType   string `yaml:"agent"`
+	Description string `yaml:"description"`
 }
 
 var validModels = map[string]bool{"haiku": true, "sonnet": true, "opus": true, "fable": true}

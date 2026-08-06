@@ -46,6 +46,17 @@ func TestParseOptions(t *testing.T) {
 
 		// body with dashes
 		{"body contains triple dashes", "---\nmodel: haiku\n---\nsome text\n---\nmore text", Options{Model: "haiku"}, "some text\n---\nmore text"},
+
+		// description marks an agent as dynamic (project-specific)
+		{"description only", "---\ndescription: reviews sql migrations\n---\nbody", Options{Description: "reviews sql migrations"}, "body"},
+		{"description absent", "---\nmodel: haiku\n---\nbody", Options{Model: "haiku"}, "body"},
+		{"description empty", "---\ndescription: \n---\nbody", Options{}, "body"},
+		{"description quoted empty", `---` + "\n" + `description: ""` + "\n---\nbody", Options{}, "body"},
+		{"description multi-word with punctuation", "---\ndescription: checks HTTP handlers for auth, logging & errors\n---\nbody",
+			Options{Description: "checks HTTP handlers for auth, logging & errors"}, "body"},
+		{"description with all fields", "---\nmodel: opus\nagent: code-reviewer\ndescription: reviews migrations\n---\nbody",
+			Options{Model: "opus", AgentType: "code-reviewer", Description: "reviews migrations"}, "body"},
+		{"description whitespace trimmed by yaml", "---\ndescription:   spaced out   \n---\nbody", Options{Description: "spaced out"}, "body"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -66,6 +77,9 @@ func TestOptions_String(t *testing.T) {
 		{"model only", Options{Model: "haiku"}, "model=haiku, subagent=general-purpose"},
 		{"agent only", Options{AgentType: "code-reviewer"}, "model=default, subagent=code-reviewer"},
 		{"both fields", Options{Model: "opus", AgentType: "code-reviewer"}, "model=opus, subagent=code-reviewer"},
+		// description is catalog metadata, not an execution option: String() stays unchanged
+		{"description only", Options{Description: "reviews migrations"}, "model=default, subagent=general-purpose"},
+		{"description with model", Options{Model: "haiku", Description: "reviews migrations"}, "model=haiku, subagent=general-purpose"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -88,6 +102,9 @@ func TestOptions_Validate(t *testing.T) {
 		{"unknown model", Options{Model: "gpt-5"}, []string{`unknown model "gpt-5", must be one of: haiku, sonnet, opus, fable`}},
 		{"agent type not validated", Options{AgentType: "anything-goes"}, nil},
 		{"unknown model with agent", Options{Model: "bad", AgentType: "reviewer"}, []string{`unknown model "bad", must be one of: haiku, sonnet, opus, fable`}},
+		{"description not validated", Options{Description: "anything goes"}, nil},
+		{"unknown model with description still warns", Options{Model: "bad", Description: "reviews migrations"},
+			[]string{`unknown model "bad", must be one of: haiku, sonnet, opus, fable`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

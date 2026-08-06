@@ -177,7 +177,7 @@ func (al *agentLoader) loadFileWithFallback(path, filename string) (string, erro
 		return content, nil
 	}
 	// warn only when frontmatter options are being dropped; silent fallback for all-commented files
-	if opts.Model != "" || opts.AgentType != "" {
+	if opts.Model != "" || opts.AgentType != "" || opts.Description != "" {
 		log.Printf("[WARN] agent %s: no prompt body, falling back to embedded default (frontmatter options dropped)", filename)
 	}
 	return al.loadFromEmbedFS(filename)
