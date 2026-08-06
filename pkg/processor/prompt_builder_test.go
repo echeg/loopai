@@ -73,6 +73,7 @@ func TestPromptBuilder_NilConfigDependencies(t *testing.T) {
 		assert.Empty(t, builder.FirstReviewPrompt())
 		assert.Empty(t, builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"))
 		assert.Empty(t, builder.FinalizePrompt())
+		assert.Empty(t, builder.GenAgentsPrompt())
 	})
 }
 

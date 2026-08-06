@@ -77,6 +77,13 @@ func TestParseAgentOptions(t *testing.T) {
 		{"frontmatter parsed", "---\ndescription: reviews migrations\nmodel: opus\n---\nthe body", Options{Model: "opus", Description: "reviews migrations"}, "the body"},
 		{"no frontmatter", "plain body", Options{}, "plain body"},
 		{"malformed frontmatter falls back to body", "---\n: :\n  bad:\n---\nbody", Options{}, "---\n: :\n  bad:\n---\nbody"},
+		// the loader normalizes before parsing; the exported parser must match it or the
+		// --gen-agents report contradicts what the review phase actually loads
+		{"leading blank line", "\n---\ndescription: reviews races\n---\nbody", Options{Description: "reviews races"}, "body"},
+		{"leading comment line", "# written by loopai\n---\ndescription: reviews sql\n---\nbody", Options{Description: "reviews sql"}, "body"},
+		{"crlf endings", "---\r\ndescription: reviews signals\r\n---\r\nbody\r\n", Options{Description: "reviews signals"}, "body"},
+		{"trailing whitespace", "---\ndescription: reviews docs\n---\nbody\n\n", Options{Description: "reviews docs"}, "body"},
+		{"comment only, no frontmatter", "# just a comment\nbody", Options{}, "# just a comment\nbody"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

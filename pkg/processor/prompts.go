@@ -13,9 +13,10 @@ import (
 // agentRefPattern matches {{agent:name}} template syntax
 var agentRefPattern = regexp.MustCompile(`\{\{agent:([a-zA-Z0-9_-]+)\}\}`)
 
-// agentsCatalogPattern matches the {{agents:dynamic}} template syntax expanded
-// into the catalog of project-specific (dynamic) agents.
-var agentsCatalogPattern = regexp.MustCompile(`\{\{agents:dynamic\}\}`)
+// agentsCatalogPlaceholder is the fixed template token expanded into the catalog
+// of project-specific (dynamic) agents. Unlike {{agent:name}} it carries no
+// variable part, so plain string replacement is enough.
+const agentsCatalogPlaceholder = "{{agents:dynamic}}"
 
 // emptyDynamicCatalog is rendered in place of {{agents:dynamic}} when the
 // project defines no dynamic agents.
@@ -100,7 +101,9 @@ If the dismissals are invalid, explain why the issues still exist.`, providerDis
 
 // replaceVariablesWithIteration replaces all template variables including iteration-aware ones.
 // supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}},
-// {{DIFF_INSTRUCTION}}, {{PREVIOUS_REVIEW_CONTEXT}}, {{agent:name}}
+// {{DIFF_INSTRUCTION}}, {{PREVIOUS_REVIEW_CONTEXT}}, {{agent:name}}, {{agents:dynamic}}
+// the embedded external-review prompts use neither agent token; both are expanded here so
+// a customized external prompt behaves like the internal ones.
 // this variant is used when iteration context is needed (e.g., external review prompts).
 func (b *promptBuilder) replaceExternalVariablesWithIteration(prompt string, isFirstIteration bool, reviewer, evaluator, evaluatorResponse string) string {
 	result := b.replaceBaseVariables(prompt)
@@ -309,10 +312,7 @@ func (b *promptBuilder) expandAgentReferences(prompt string) string {
 			b.warnCodexFrontmatterDiscarded(name, agent.Options)
 		}
 
-		// expand variables in agent content (no agent expansion to avoid recursion)
-		agentPrompt := b.replaceBaseVariables(agent.Prompt)
-
-		return b.formatAgentExpansion(agentPrompt, agent.Options)
+		return b.formatAgentExpansion(b.agentBodyText(agent.Prompt), agent.Options)
 	})
 }
 
@@ -323,10 +323,10 @@ func (b *promptBuilder) expandAgentReferences(prompt string) string {
 // executor can pick relevant ones per diff without further lookups. renders
 // emptyDynamicCatalog when no dynamic agents are configured.
 func (b *promptBuilder) expandDynamicAgentCatalog(prompt string) string {
-	if !agentsCatalogPattern.MatchString(prompt) {
+	if !strings.Contains(prompt, agentsCatalogPlaceholder) {
 		return prompt
 	}
-	return agentsCatalogPattern.ReplaceAllStringFunc(prompt, func(string) string { return b.buildDynamicAgentCatalog() })
+	return strings.ReplaceAll(prompt, agentsCatalogPlaceholder, b.buildDynamicAgentCatalog())
 }
 
 // buildDynamicAgentCatalog renders the dynamic agent catalog body, sorted by agent name.
@@ -351,12 +351,21 @@ func (b *promptBuilder) buildDynamicAgentCatalog() string {
 		if b.cfg.isCodexExecutor() && (agent.Model != "" || agent.AgentType != "") {
 			b.warnCodexFrontmatterDiscarded(agent.Name, agent.Options)
 		}
-		// agent bodies get the same base-variable expansion as {{agent:name}}; agent
-		// references inside a body are not expanded, to avoid recursion.
-		snippet := b.formatAgentExpansion(b.replaceBaseVariables(agent.Prompt), agent.Options)
+		snippet := b.formatAgentExpansion(b.agentBodyText(agent.Prompt), agent.Options)
 		fmt.Fprintf(&sb, "\n- %s — %s\n%s\n", agent.Name, strings.TrimSpace(agent.Description), indentBlock(snippet, "  "))
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// agentBodyText prepares an agent file body for inlining into an invocation block.
+// base variables are expanded, but nested agent tokens are not: {{agent:name}} is
+// left literal because the replacer does not rescan its own output, and
+// {{agents:dynamic}} is removed outright because the catalog pass runs after this
+// one and would otherwise inject raw multi-line catalog text into an already
+// formatted block — under codex that text sits inside a single-quoted task='...'
+// literal and its newlines and apostrophes break the spawn_agent call.
+func (b *promptBuilder) agentBodyText(prompt string) string {
+	return strings.ReplaceAll(b.replaceBaseVariables(prompt), agentsCatalogPlaceholder, "")
 }
 
 // indentBlock prefixes every non-empty line of s with prefix.
@@ -384,7 +393,8 @@ func (b *promptBuilder) warnCodexFrontmatterDiscarded(name string, opts config.O
 }
 
 // replacePromptVariables replaces all template variables including agent references.
-// supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}}, {{agent:name}}
+// supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}},
+// {{agent:name}}, {{agents:dynamic}}
 // note: {{CODEX_OUTPUT}} and {{PLAN_DESCRIPTION}} are handled by specific build functions.
 func (b *promptBuilder) replacePromptVariables(prompt string) string {
 	result := b.replaceBaseVariables(prompt)

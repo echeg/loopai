@@ -89,7 +89,11 @@ agent*: it is offered to the internal review phase through the
 `{{agent:<name>}}` reference. The five embedded agents (quality,
 implementation, testing, simplification, documentation) carry no description and
 always run as the base set. `loopai --gen-agents` writes starter dynamic agents
-into `.loopai/agents/`.
+into `.loopai/agents/`. When `Options.Validate` warns, `buildAgent` drops the
+execution overrides but preserves `Description`: catalog membership must not
+depend on an unrelated `model` typo. `config.ParseAgentOptions` applies the same
+CRLF/whitespace/leading-comment normalization the loader does, so any second
+reader of an agent file agrees with the review phase about its description.
 
 `external_reviewers` configures an ordered comma-separated reviewer chain using
 `provider[:model[:effort]]` entries. It takes precedence over the legacy
@@ -119,8 +123,12 @@ per-executor invocation snippet builder (Task tool for Claude, `spawn_agent` for
 Codex): `{{agent:<name>}}` inlines one named agent, and `{{agents:dynamic}}`
 renders the dynamic-agent catalog sorted by name, or
 `(no project-specific agents configured)` when the project defines none. Only
-`review_first.txt` uses the catalog; `review_second.txt` and external reviewers
-are unaffected. Which catalog entries actually run is decided by the model from
+the embedded `review_first.txt` uses the catalog; `review_second.txt` and the
+embedded external-reviewer prompts do not, though both placeholders are expanded
+on the external path too so customized prompts behave alike. The catalog pass runs
+after agent-reference expansion, so `agentBodyText` strips `{{agents:dynamic}}`
+from inlined agent bodies — otherwise raw catalog text lands inside an
+already-escaped codex `task='...'` literal. Which catalog entries actually run is decided by the model from
 the descriptions — deliberately not by path or glob triggers in code — and the
 prompt bounds the selection to roughly 0-3 agents launched in the same parallel
 message as the base five.
@@ -130,9 +138,15 @@ message as the base five.
 and section timing match the other phases. It runs one session with
 `gen_agents.txt`, logs to `.loopai/progress/progress-gen-agents.txt`, then
 reports the agent files present with their descriptions using
-`config.ParseAgentOptions`. Overwriting a reserved base name warns instead of
+`config.ParseAgentOptions`; an unreadable file is reported inline rather than
+aborting the listing. Overwriting a reserved base name warns instead of
 failing, because the user reviews the generated files with `git diff` before
-committing them.
+committing them. The session resolves `task_model` only — `plan_model` does not
+apply and no review model is printed. It is routed before branch and worktree
+setup but still opens the repository to run `EnsureLocalGitignore`, since it tells
+the user to inspect `git status` afterwards. `validateGenAgentsFlags` must reject
+`--serve`/`--watch` alongside the other standalone modes: watch-only routing is
+decided before the `ModeGenAgents` branch.
 
 The primary executor owns all repository writes. External reviewers produce findings only; the primary evaluates and fixes them using `review_model`, falling back to `task_model`. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
 

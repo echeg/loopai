@@ -1673,6 +1673,10 @@ func validateGenAgentsFlags(o opts) error {
 		{"--init", o.Init},
 		{"--reset", o.Reset},
 		{"--dump-defaults", o.DumpDefaults != ""},
+		// watch-only routing is decided before the gen-agents branch, so without these
+		// two entries "--gen-agents --serve" would silently start the dashboard instead
+		{"--serve", o.Serve},
+		{"--watch", len(o.Watch) > 0},
 	}
 	for _, conflict := range conflicts {
 		if conflict.set {
@@ -1955,6 +1959,12 @@ func runHeaderParams(o opts, cfg *config.Config, mode processor.Mode, external .
 	}
 	if mode == processor.ModePlan {
 		p.PlanModel = resolvePlanSpec(o, cfg)
+		return p
+	}
+	if mode == processor.ModeGenAgents {
+		// one analysis session driven by task_model; no review phase runs, so do not
+		// print a review model the mode never uses
+		p.TaskModel = resolveSpec(o.TaskModel, cfg.TaskModel)
 		return p
 	}
 	p.TaskModel = resolveSpec(o.TaskModel, cfg.TaskModel)
@@ -2275,6 +2285,16 @@ var reservedAgentNames = []string{"quality", "implementation", "testing", "simpl
 // agents into .loopai/agents/, then reports what ended up on disk. No branch, no
 // worktree, no notifications: the session only produces files for the user to review.
 func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors, recovery limits.Recovery) error {
+	// the session writes a progress log under .loopai/ and then asks the user to inspect
+	// git status, so ignore those artifacts the way every other mode does before starting.
+	gitSvc, err := openGitService(colors, cfg.VcsCommand)
+	if err != nil {
+		return fmt.Errorf("open git repo: %w", err)
+	}
+	if ignoreErr := gitSvc.EnsureLocalGitignore(); ignoreErr != nil {
+		return fmt.Errorf("ensure gitignore: %w", ignoreErr)
+	}
+
 	holder := &status.PhaseHolder{}
 	baseLog, err := progress.NewLogger(progress.Config{
 		Mode:    string(processor.ModeGenAgents),
@@ -2363,14 +2383,19 @@ func reportGeneratedAgents(dir string, w io.Writer) error {
 	var warnings []string
 	for _, filename := range names {
 		name := strings.TrimSuffix(filename, ".txt")
+		var description string
 		content, readErr := os.ReadFile(filepath.Join(dir, filename)) //nolint:gosec // path from the project config dir
-		if readErr != nil {
-			return fmt.Errorf("read agent file %s: %w", filename, readErr)
-		}
-		agentOpts, _ := config.ParseAgentOptions(string(content))
-		description := strings.TrimSpace(agentOpts.Description)
-		if description == "" {
-			description = "(no description - not offered to the review phase)"
+		switch {
+		case readErr != nil:
+			// one unreadable file must not hide the rest of the report: the files are
+			// already written and the user still needs to see what to review
+			description = fmt.Sprintf("(unreadable: %v)", readErr)
+		default:
+			agentOpts, _ := config.ParseAgentOptions(string(content))
+			description = strings.TrimSpace(agentOpts.Description)
+			if description == "" {
+				description = "(no description - not offered to the review phase)"
+			}
 		}
 		fmt.Fprintf(w, "  - %s — %s\n", name, description)
 		if slices.Contains(reservedAgentNames, name) {

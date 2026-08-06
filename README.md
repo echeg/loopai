@@ -243,21 +243,32 @@ call based on your description, so write it as a precise statement of when the a
 An agent with no description is never offered in the catalog; it runs only where a prompt
 references it explicitly as `{{agent:name}}`.
 
+The catalog exists only where `review_first.txt` says `{{agents:dynamic}}`. If you have
+customized that prompt, add the placeholder to your copy — a customized `review_first.txt`
+without it disables every dynamic agent, with no warning. `loopai --dump-defaults <dir>`
+shows the current default to compare against.
+
 To get started, let loopai draft agents for the repository:
 
 ```bash
 loopai --gen-agents
 ```
 
-One executor session inspects the stack, layout, project instructions, and commit history,
-writes 2-5 candidate agents into `.loopai/agents/`, and lists them with their descriptions.
-Nothing else changes: review the files with `git diff`, edit or delete what does not fit, and
-commit the ones worth keeping. Generated files that reuse a built-in agent name are reported
-with a warning, since they replace that built-in agent.
+One executor session inspects the stack, layout, project instructions, and commit history and
+writes 2-5 candidate agents into `.loopai/agents/`. It then lists every agent file in that
+directory with its description, including ones that already existed. Nothing else changes:
+review the files with `git diff`, edit or delete what does not fit, and commit the ones worth
+keeping. Files that reuse a built-in agent name are reported with a warning, since they
+replace that built-in agent. The session runs with `task_model` (`--task-model`); `plan_model`
+does not apply. The flag is standalone and is rejected together with a plan file, another
+standalone mode, or `--serve`/`--watch`.
 
 Agent frontmatter also accepts `model` (`haiku`, `sonnet`, `opus`, or `fable` for that agent
 alone) and `agent` (a named subagent type instead of the default `general-purpose`). Both are
-optional, and an unknown model value is reported as a warning.
+optional. An unknown model value is reported as a warning and drops both execution overrides
+for that agent; the `description` is kept, so the agent still runs from the catalog with
+default settings. Under `--codex` a single shared reviewer agent is used, so `model` and
+`agent` are ignored there and logged as a warning — `description` still works.
 
 ## Plan format
 

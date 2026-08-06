@@ -201,18 +201,7 @@ func (al *agentLoader) loadFromEmbedFS(filename string) (string, error) {
 // leading comment lines (any count, including single) are stripped before
 // frontmatter parsing so that comment lines before "---" don't prevent frontmatter detection.
 func (al *agentLoader) buildAgent(name, prompt string) CustomAgent {
-	// try frontmatter on raw content first, then with leading comments stripped
-	opts, body := parseOptions(prompt)
-	if opts == (Options{}) && body == prompt {
-		// no frontmatter found in raw content, try after stripping leading comment lines
-		if stripped := stripLeadingCommentLines(prompt); stripped != prompt {
-			opts, body = parseOptions(stripped)
-			if opts == (Options{}) {
-				// still no frontmatter, use original prompt
-				return CustomAgent{Name: name, Prompt: prompt}
-			}
-		}
-	}
+	opts, body := parseOptionsWithCommentRetry(prompt)
 	if body == "" {
 		return CustomAgent{Name: name, Prompt: prompt}
 	}
@@ -220,7 +209,10 @@ func (al *agentLoader) buildAgent(name, prompt string) CustomAgent {
 		for _, w := range warnings {
 			log.Printf("[WARN] agent %s: %s", name, w)
 		}
-		opts = Options{}
+		// drop the invalid overrides but keep Description: it decides whether the agent
+		// is offered in the dynamic catalog at all, and an unrelated model typo must not
+		// silently remove the agent from review.
+		opts = Options{Description: opts.Description}
 	}
 	return CustomAgent{Name: name, Prompt: body, Options: opts}
 }

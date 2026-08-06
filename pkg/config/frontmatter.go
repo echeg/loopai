@@ -44,8 +44,30 @@ func (o Options) Validate() []string {
 // ParseAgentOptions extracts agent frontmatter options and the agent body from raw
 // agent file content. Exported for callers outside the loader: the --gen-agents mode
 // reports the descriptions of freshly written agent files without reloading config.
+// It applies the same normalization the loader does (CRLF endings, surrounding
+// whitespace, leading comment lines) so the reported description always matches the
+// one the review phase will use.
 func ParseAgentOptions(content string) (opts Options, body string) {
-	return parseOptions(content)
+	return parseOptionsWithCommentRetry(strings.TrimSpace(normalizeCRLF(content)))
+}
+
+// parseOptionsWithCommentRetry parses frontmatter, retrying after leading comment
+// lines are stripped so a "# ..." header written above "---" does not hide the
+// options. Returns the zero Options and the original content when neither attempt
+// finds frontmatter.
+func parseOptionsWithCommentRetry(content string) (Options, string) {
+	opts, body := parseOptions(content)
+	if opts != (Options{}) || body != content {
+		return opts, body
+	}
+	stripped := stripLeadingCommentLines(content)
+	if stripped == content {
+		return opts, body
+	}
+	if strippedOpts, strippedBody := parseOptions(stripped); strippedOpts != (Options{}) {
+		return strippedOpts, strippedBody
+	}
+	return Options{}, content
 }
 
 // normalizeModel extracts the keyword (haiku, sonnet, opus, fable) from a model string.

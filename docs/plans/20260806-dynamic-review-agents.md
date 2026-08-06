@@ -150,10 +150,12 @@ the project limit.
 
 ## Post-Completion
 
-**Manual verification**:
+**Manual verification** — still outstanding, these are the only end-to-end proofs that the
+catalog reaches a real executor. Automated coverage exists for the prompt text and the
+`--gen-agents` session, but not for a live run:
 
-- run `loopai --gen-agents` on this repository, review generated agents in `.loopai/agents/`, commit the useful ones
-- run a full `loopai` cycle on a toy repo (`make e2e-prep`) with one dynamic agent configured and confirm the review phase launches it alongside the base 5
-- run the same cycle with `--codex` to confirm codex-side spawn_agent snippets work
+- [ ] run `loopai --gen-agents` on this repository, review generated agents in `.loopai/agents/`, commit the useful ones
+- [ ] run a full `loopai` cycle on a toy repo (`make e2e-prep`) with one dynamic agent configured and confirm the review phase launches it alongside the base 5
+- [ ] run the same cycle with `--codex` to confirm codex-side spawn_agent snippets work
 
 **External system updates**: none — feature is fully local to loopai

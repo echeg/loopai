@@ -1795,6 +1795,65 @@ func TestRunner_expandDynamicAgentCatalog_AgentBodyVariablesExpanded(t *testing.
 	assert.NotContains(t, result, "{{PLAN_FILE}}")
 }
 
+func TestRunner_expandDynamicAgentCatalog_SnippetIndentedUnderEntry(t *testing.T) {
+	appCfg := &config.Config{CustomAgents: []config.CustomAgent{
+		{Name: "dyn", Prompt: "line one\n\nline two", Options: config.Options{Description: "desc"}},
+	}}
+	r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}")
+
+	_, entry, found := strings.Cut(result, "- dyn — desc\n")
+	require.True(t, found, "catalog entry header present in %q", result)
+
+	var indented int
+	for line := range strings.SplitSeq(entry, "\n") {
+		if line == "" {
+			continue
+		}
+		assert.True(t, strings.HasPrefix(line, "  "), "snippet line must be indented under its entry: %q", line)
+		indented++
+	}
+	assert.Positive(t, indented, "entry must carry an invocation snippet")
+	assert.Contains(t, result, "  line one")
+	assert.Contains(t, result, "  line two")
+}
+
+func TestRunner_expandDynamicAgentCatalog_CodexWarnsFrontmatterDiscarded(t *testing.T) {
+	appCfg := &config.Config{Executor: config.ExecutorCodex, CustomAgents: []config.CustomAgent{
+		{Name: "dyn", Prompt: "body", Options: config.Options{Description: "desc", Model: "opus", AgentType: "code-reviewer"}},
+	}}
+	mockLog := newMockLogger()
+	r := &Runner{cfg: Config{AppConfig: appCfg}, log: mockLog}
+
+	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}")
+
+	assert.NotContains(t, result, "with model=opus", "codex snippet drops frontmatter overrides")
+	assertLogContains(t, mockLog, "codex mode ignores frontmatter")
+}
+
+// a {{agents:dynamic}} token inside an agent body must not survive into the catalog pass:
+// it would be substituted after the body was already escaped into the codex task='...'
+// literal, whose quoting the raw catalog text breaks.
+func TestRunner_replacePromptVariables_CatalogPlaceholderInsideAgentBody(t *testing.T) {
+	appCfg := &config.Config{Executor: config.ExecutorCodex, CustomAgents: []config.CustomAgent{
+		{Name: "base", Prompt: "base body\n{{agents:dynamic}}\ntail"},
+		{Name: "dyn", Prompt: "dynamic body", Options: config.Options{Description: "won't be nested"}},
+	}}
+	r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+
+	result := newPromptBuilderForTest(r).replacePromptVariables("{{agent:base}}")
+
+	assert.NotContains(t, result, "{{agents:dynamic}}", "placeholder is stripped from agent bodies")
+	assert.NotContains(t, result, "- dyn — won't be nested", "catalog must not be nested inside an agent block")
+	assert.Contains(t, result, "base body")
+	assert.Contains(t, result, "tail")
+	assert.Equal(t, 1, strings.Count(result, "spawn_agent(agent='reviewer', task='"), "exactly one spawn_agent block")
+	// the only unescaped apostrophes are the four spawn_agent delimiters:
+	// agent='reviewer' and task='...'
+	unescaped := strings.Count(result, "'") - strings.Count(result, `\'`)
+	assert.Equal(t, 4, unescaped, "catalog text must not inject unescaped quotes into the codex literal")
+}
+
 func TestRunner_replacePromptVariables_ExpandsDynamicCatalog(t *testing.T) {
 	appCfg := &config.Config{CustomAgents: []config.CustomAgent{
 		{Name: "base", Prompt: "base body"},
