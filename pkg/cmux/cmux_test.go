@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -30,13 +31,18 @@ type fakeRunner struct {
 }
 
 type fakeOutputRunner struct {
-	output string
-	err    error
-	calls  [][]string
+	output         string
+	err            error
+	waitForContext bool
+	calls          [][]string
 }
 
-func (f *fakeOutputRunner) runOutput(_ context.Context, args ...string) (string, error) {
+func (f *fakeOutputRunner) runOutput(ctx context.Context, args ...string) (string, error) {
 	f.calls = append(f.calls, append([]string(nil), args...))
+	if f.waitForContext {
+		<-ctx.Done()
+		return "", ctx.Err() //nolint:wrapcheck // test double
+	}
 	return f.output, f.err
 }
 
@@ -130,6 +136,15 @@ func writePlan(t *testing.T, content string) string {
 	path := filepath.Join(t.TempDir(), "plan.md")
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 	return path
+}
+
+func killProcess(t *testing.T, rawPID string) {
+	t.Helper()
+	pid, err := strconv.Atoi(strings.TrimSpace(rawPID))
+	require.NoError(t, err)
+	proc, err := os.FindProcess(pid)
+	require.NoError(t, err)
+	_ = proc.Kill() // the process may already have exited; cleanup is best-effort
 }
 
 // writeFakeBin creates an executable file in dir so exec.LookPath can find it.
@@ -421,6 +436,29 @@ func TestReporterSidebarCommands(t *testing.T) {
 			assert.Equal(t, tt.want, runner.recorded())
 		})
 	}
+}
+
+func TestReporterReserve(t *testing.T) {
+	t.Run("installs starting pill", func(t *testing.T) {
+		runner := &fakeRunner{}
+		rep := testReporter(t, runner)
+
+		require.NoError(t, rep.Reserve())
+		assert.Equal(t, [][]string{{
+			"set-status", "loopai", "starting", "--icon", "hourglass", "--color", "#3b82f6", "--priority", "90",
+		}}, runner.recorded())
+	})
+
+	t.Run("reports command failure", func(t *testing.T) {
+		wantErr := errors.New("cmux refused")
+		err := testReporter(t, &fakeRunner{err: wantErr}).Reserve()
+		require.ErrorIs(t, err, wantErr)
+	})
+
+	t.Run("nil reporter reports unavailable cmux", func(t *testing.T) {
+		var rep *Reporter
+		assert.ErrorIs(t, rep.Reserve(), ErrNotInCmux)
+	})
 }
 
 func TestReporterFinish(t *testing.T) {
@@ -1041,7 +1079,9 @@ func TestReporterStartPolls(t *testing.T) {
 	calls := runner.waitForCalls(t, 3)
 	r.Stop()
 
-	assert.Equal(t, []string{"clear-status", "loopai"}, calls[0], "start must remove a stale final pill")
+	assert.Equal(t, []string{
+		"set-status", "loopai", "starting", "--icon", "hourglass", "--color", "#3b82f6", "--priority", "90",
+	}, calls[0], "start must replace a stale final pill with an observable startup state")
 	assert.Equal(t, []string{"workspace", "loading", "on", "--id", "loopai"}, calls[1], "start must show the spinner")
 	assert.Equal(t, []string{"set-progress", "0.50", "--label", "1/2 tasks"}, calls[2])
 }
@@ -1055,7 +1095,7 @@ func TestReporterStartReportsBeforeFirstTick(t *testing.T) {
 	defer r.Stop()
 
 	assert.Equal(t, [][]string{
-		{"clear-status", "loopai"},
+		{"set-status", "loopai", "starting", "--icon", "hourglass", "--color", "#3b82f6", "--priority", "90"},
 		{"workspace", "loading", "on", "--id", "loopai"},
 		{"set-progress", "0.50", "--label", "1/2 tasks"},
 	}, runner.recorded(), "the bar must be there from the start, not one poll interval later")
@@ -1070,9 +1110,9 @@ func TestReporterStartWithoutPlanFile(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	assert.Equal(t, [][]string{
-		{"clear-status", "loopai"},
+		{"set-status", "loopai", "starting", "--icon", "hourglass", "--color", "#3b82f6", "--priority", "90"},
 		{"workspace", "loading", "on", "--id", "loopai"},
-	}, runner.recorded(), "plan creation mode clears a stale pill and reports only the spinner")
+	}, runner.recorded(), "plan creation mode reports startup and the spinner")
 
 	r.mu.Lock()
 	pollDone := r.pollDone
@@ -1089,7 +1129,7 @@ func TestReporterStartSurvivesBrokenPlan(t *testing.T) {
 	r.planFile = filepath.Join(t.TempDir(), "appears-later.md")
 
 	r.Start(t.Context())
-	runner.waitForCalls(t, 2) // stale-pill cleanup and spinner only; the plan file does not exist yet
+	runner.waitForCalls(t, 2) // startup pill and spinner only; the plan file does not exist yet
 
 	require.NoError(t, os.WriteFile(r.planFile, []byte("# plan\n\n### Task 1: one\n\n- [x] a\n"), 0o600))
 	calls := runner.waitForCalls(t, 3)
@@ -1187,7 +1227,9 @@ func TestReporterStopCancelsStartBeforeCleanup(t *testing.T) {
 
 	calls := runner.recorded()
 	require.GreaterOrEqual(t, len(calls), 4)
-	assert.Equal(t, []string{"clear-status", "loopai"}, calls[0])
+	assert.Equal(t, []string{
+		"set-status", "loopai", "starting", "--icon", "hourglass", "--color", "#3b82f6", "--priority", "90",
+	}, calls[0])
 	assert.Equal(t, []string{"workspace", "loading", "off", "--id", "loopai"}, calls[1])
 	assert.NotContains(t, calls[2:], []string{"workspace", "loading", "on", "--id", "loopai"},
 		"Start must not recreate the spinner after Stop begins")
@@ -1284,13 +1326,19 @@ func TestExecRunner(t *testing.T) {
 		// stdout/stderr must not be wired to a pipe: the copy goroutine cmd.Wait joins only sees EOF
 		// once every inheritor of the write end is gone, so a surviving grandchild would block the
 		// call well past its context deadline and stall the execution goroutine calling it
+		pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
 		r := &execRunner{bin: "sh"}
 		done := make(chan error, 1)
-		go func() { done <- r.run(t.Context(), "-c", "sleep 10 &") }()
+		go func() {
+			done <- r.run(t.Context(), "-c", `sleep 10 & printf '%s' "$!" > "$1"`, "sh", pidFile)
+		}()
 
 		select {
 		case err := <-done:
 			require.NoError(t, err)
+			pid, readErr := os.ReadFile(pidFile) //nolint:gosec // test-owned temporary path
+			require.NoError(t, readErr)
+			killProcess(t, string(pid))
 		case <-time.After(3 * time.Second):
 			t.Fatal("run must not wait for a grandchild holding the inherited output")
 		}
@@ -1311,10 +1359,15 @@ func TestExecRunnerOutput(t *testing.T) {
 	})
 
 	t.Run("grandchild holding stdout is bounded", func(t *testing.T) {
+		pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
 		start := time.Now()
-		_, err := (&execRunner{bin: "sh"}).runOutput(t.Context(), "-c", "sleep 10 & printf ready")
+		_, err := (&execRunner{bin: "sh"}).runOutput(
+			t.Context(), "-c", `sleep 10 & printf '%s' "$!" > "$1"`, "sh", pidFile)
+		pid, readErr := os.ReadFile(pidFile) //nolint:gosec // test-owned temporary path
+		require.NoError(t, readErr)
+		killProcess(t, string(pid))
 		require.Error(t, err)
-		assert.Less(t, time.Since(start), time.Second)
+		assert.Less(t, time.Since(start), 3*time.Second)
 		assert.ErrorIs(t, err, exec.ErrWaitDelay)
 	})
 }
@@ -1374,6 +1427,16 @@ func TestWorkspaceBusy(t *testing.T) {
 		busy, err := workspaceBusy(runner, time.Second)
 		require.NoError(t, err)
 		assert.True(t, busy)
+		assert.Equal(t, [][]string{{"list-status"}}, runner.calls)
+	})
+
+	t.Run("query observes its deadline", func(t *testing.T) {
+		runner := &fakeOutputRunner{waitForContext: true}
+		start := time.Now()
+		busy, err := workspaceBusy(runner, 20*time.Millisecond)
+		assert.False(t, busy)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Less(t, time.Since(start), time.Second)
 		assert.Equal(t, [][]string{{"list-status"}}, runner.calls)
 	})
 }

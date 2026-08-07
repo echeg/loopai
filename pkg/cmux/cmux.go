@@ -62,6 +62,7 @@ const (
 	// consumer of the persistent completion status cannot drift apart.
 	finalDonePrefix   = "done"
 	finalFailedPrefix = "failed"
+	startingStatus    = "starting"
 
 	// notifyTitle is the title of every notification loopai raises, i.e. the app name on the banner.
 	// same text as statusKey but a separate constant: one is a cmux entry key, the other is user-visible.
@@ -376,6 +377,10 @@ func (r *Reporter) loadingOff() { r.exec("workspace", "loading", "off", "--id", 
 // setStatus sets the loopai pill in the tab row. empty icon or color skip their own flags,
 // leaving the cmux-side default instead of passing an empty value.
 func (r *Reporter) setStatus(text, icon, color string) {
+	r.exec(statusArgs(text, icon, color)...)
+}
+
+func statusArgs(text, icon, color string) []string {
 	args := []string{"set-status", statusKey, text}
 	if icon != "" {
 		args = append(args, "--icon", icon)
@@ -384,7 +389,7 @@ func (r *Reporter) setStatus(text, icon, color string) {
 		args = append(args, "--color", color)
 	}
 	args = append(args, "--priority", statusPriority)
-	r.exec(args...)
+	return args
 }
 
 // clearStatus removes the loopai pill.
@@ -393,6 +398,25 @@ func (r *Reporter) clearStatus() { r.exec("clear-status", statusKey) }
 // Clear removes the persistent loopai status pill. It is nil-safe so standalone commands
 // can call it without checking whether they are running inside cmux.
 func (r *Reporter) Clear() { r.clearStatus() }
+
+// Reserve installs a non-final pill before normal startup reaches its first execution phase.
+// Auto-workspace mode uses it to close the otherwise-unobservable preflight window: a later
+// invocation sees "starting" as busy and hands off. The returned error lets the caller retry or
+// clear stale state normally instead of assuming the reservation replaced it.
+func (r *Reporter) Reserve() error {
+	if r == nil {
+		return ErrNotInCmux
+	}
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
+	defer cancel()
+	if err := r.runner.run(ctx, statusArgs(startingStatus, "hourglass", "#3b82f6")...); err != nil {
+		return fmt.Errorf("reserve cmux workspace status: %w", err)
+	}
+	return nil
+}
 
 // setProgress sets the sidebar progress bar. ratio is expected in [0, 1]: reportProgress, the
 // only caller, derives it from a task count it has already checked, so it cannot fall outside.
@@ -453,9 +477,9 @@ func (r *Reporter) Finish(success bool, detail string) {
 	r.finished = true
 }
 
-// Start shows the spinner and begins polling the plan file for task progress in the background.
-// polling is used instead of hooking into the phase engines so the progress bar keeps moving
-// during a long task phase without touching pkg/processor.
+// Start publishes the startup reservation, shows the spinner, and begins polling the plan file for
+// task progress in the background. polling is used instead of hooking into the phase engines so the
+// progress bar keeps moving during a long task phase without touching pkg/processor.
 func (r *Reporter) Start(ctx context.Context) {
 	if r == nil {
 		return
@@ -477,7 +501,7 @@ func (r *Reporter) Start(ctx context.Context) {
 	r.statusMu.Unlock()
 	defer close(startDone)
 
-	r.execContext(startCtx, "clear-status", statusKey)
+	r.execContext(startCtx, statusArgs(startingStatus, "hourglass", "#3b82f6")...)
 	if startCtx.Err() != nil {
 		return
 	}

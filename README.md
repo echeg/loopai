@@ -539,8 +539,10 @@ loopai --cmux-workspace --worktree docs/plans/feature.md
 Use `--cmux-workspace=auto` to keep the first run in the current workspace and give only parallel
 runs their own cards. Auto mode reads `cmux list-status`: a `loopai` pill whose text starts with
 `done` or `failed` is final, and no `loopai` pill is also free; any other `loopai` pill means a run
-is active, so loopai hands off. The value is optional but must use the attached `=auto` form, not
-`--cmux-workspace auto`.
+is active, so loopai hands off. A run that stays local immediately replaces the free state with a
+`starting` pill; the normal reporter takes it over after preflight, so another invocation started
+during config, dependency, or worktree setup also sees the workspace as busy. The value is optional
+but must use the attached `=auto` form, not `--cmux-workspace auto`.
 
 ```bash
 loopai --cmux-workspace=auto --worktree docs/plans/feature.md
@@ -550,18 +552,18 @@ This detection is deliberately best-effort. A run killed before it can write a f
 leave a stale phase pill, causing one unnecessary hand-off. Two auto-mode runs started at the same
 time can also both observe a free workspace and stay there.
 
-Hand-off is best-effort like the rest of the cmux integration and never blocks a run. Outside
+Hand-off is best-effort like the rest of the cmux integration. Outside
 cmux, auto mode executes normally in the current terminal without warning; any other auto-mode
 status-query failure has the same quiet fallback (and is visible with `--debug`). Unconditional
-mode, or auto mode after detecting a busy workspace, prints a warning and runs locally when cmux
-refuses to create the workspace. The local run keeps the sidebar status it would have had without
-the flag. A successful hand-off leaves the previous run's pill in the workspace it was started
-from, since the new run reports into its own card instead.
+mode prints a warning and runs locally when cmux refuses to create the workspace. After auto mode
+has positively detected a busy workspace, however, any pre-spawn refusal or creation failure stops
+with an error instead of starting a conflicting local run. A successful hand-off leaves the
+previous run's pill in the workspace it was started from, since the new run reports into its own
+card instead.
 
-The one failure that stops instead of falling back is a creation that times out: cmux may already
-have created the workspace and started the run there, and starting a second one here would put two
-agents on the same checkout. loopai exits with an error, and the sidebar shows whether the
-workspace exists — close it and re-run, or let it finish.
+A creation timeout also stops instead of falling back: cmux may already have created the workspace
+and started the run there. loopai exits with an error, and the sidebar shows whether the workspace
+exists — close it and re-run, or let it finish.
 
 An invocation that could not run anyway is also kept in the current terminal, so its error appears
 where it was typed instead of in a new card that closes immediately: a named plan file that does

@@ -299,6 +299,7 @@ func run(ctx context.Context, o opts) error {
 	// workspace loading spinner, so a run that exits without clearing it leaves it in the
 	// sidebar until cmux itself restarts.
 	cmuxStop := &cleanupHolder{}
+	defer cmuxStop.call()
 
 	// print immediate feedback when context is canceled (Ctrl+C).
 	// returned cleanup ensures goroutine exits when run() returns, avoiding leaks in tests.
@@ -321,6 +322,8 @@ func run(ctx context.Context, o opts) error {
 		resolveStaleCmuxStatus(handOffSucceeded(o, err))
 		return err
 	}
+	autoWorkspaceReserved := ensureAutoWorkspaceReservation(
+		o, !mayBeWatchOnlyMode(o), false, cmuxStop, os.Stderr)
 	// load config first to get custom command paths
 	cfg, err := loadRunConfig(o)
 	if err != nil {
@@ -336,7 +339,9 @@ func run(ctx context.Context, o opts) error {
 		return runCloseoutCommand(ctx, o, cfg, colors)
 	}
 	watchOnly := isWatchOnlyMode(o, cfg.WatchDirs)
-	resolveStaleCmuxStatus(watchOnly)
+	autoWorkspaceReserved = ensureAutoWorkspaceReservation(
+		o, !watchOnly, autoWorkspaceReserved, cmuxStop, os.Stderr)
+	resolveStaleCmuxStatus(preserveLocalCmuxStatus(watchOnly, autoWorkspaceReserved))
 
 	// create notification service (nil if no channels configured)
 	notifySvc, err := notify.New(cfg.NotifyParams, stderrLog{})
@@ -2320,14 +2325,16 @@ func clearCmuxStatus(stdout io.Writer) {
 // the rest of the cmux integration: outside cmux, or when workspace creation is cleanly refused, a
 // warning is printed and (false, nil) is returned so the run continues in the current terminal.
 // auto mode also continues locally when the workspace is free or its status cannot be queried, but
-// stays quiet unless debug logging is enabled. the one exception is an ambiguous creation timeout,
-// which stops with an error rather than risking a second run of the same plan. standalone commands
+// stays quiet unless debug logging is enabled. after it positively detects a busy workspace, every
+// refusal or spawn failure stops instead of starting a conflicting run here. an ambiguous creation
+// timeout stops in either mode because cmux may already have launched the plan. standalone commands
 // are excluded, they are short synchronous commands whose output belongs to the terminal the user
 // typed them in.
 func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bool, error) {
 	if o.CmuxWorkspace == "" || isStandaloneCommand(o) {
 		return false, nil
 	}
+	handOffRequired := false
 	if o.CmuxWorkspace == "auto" {
 		busy, err := cmux.WorkspaceBusy()
 		if err != nil {
@@ -2339,17 +2346,16 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bo
 		if !busy {
 			return false, nil
 		}
+		handOffRequired = true
 	}
 
 	exe, exeErr := os.Executable()
 	if reason := executableHandOffRefusal(exe, exeErr); reason != "" {
-		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: %s\n", reason)
-		return false, nil
+		return handOffRefusal(reason, handOffRequired, stderr)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: resolve working directory: %v\n", err)
-		return false, nil
+		return handOffRefusal("resolve working directory: "+err.Error(), handOffRequired, stderr)
 	}
 
 	// the repository-root requirement is otherwise only enforced in the child, and for the same
@@ -2359,8 +2365,7 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bo
 	// only its absence consults read-only config, for the two invocations that legitimately have no
 	// marker.
 	if !fileExists(".git") && !handOffAllowedOutsideRepo(o) {
-		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: not a repository root: %s\n", cwd)
-		return false, nil
+		return handOffRefusal("not a repository root: "+cwd, handOffRequired, stderr)
 	}
 
 	// an unusable plan file is otherwise only detected in the child, long after the workspace was
@@ -2368,18 +2373,40 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bo
 	// the new card dies immediately, leaving an orphan to close by hand.
 	if o.PlanFile != "" {
 		if reason := planFileHandOffRefusal(o.PlanFile); reason != "" {
-			fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: %s\n", reason)
-			return false, nil
+			return handOffRefusal(reason, handOffRequired, stderr)
 		}
 	}
 
 	name := cmuxWorkspaceName(o)
 	if err := cmux.SpawnWorkspace(name, cwd, cmuxHandOffArgv(exe, args)); err != nil {
-		return handOffSpawnFailure(err, stderr)
+		return handOffSpawnFailure(err, handOffRequired, stderr)
 	}
 	warnAPIKeyNotCarried(o, stderr)
 	fmt.Fprintf(stdout, "handed off to cmux workspace %s\n", name)
 	return true, nil
+}
+
+// ensureAutoWorkspaceReservation marks an eligible local auto-mode run busy before lengthy
+// startup. Possible watch-only runs are ineligible until config resolves their watch directories.
+// The cleanup holder owns the reservation until a normal reporter replaces it, clearing "starting"
+// on every startup error and on interrupts without erasing a later final pill.
+func ensureAutoWorkspaceReservation(o opts, eligible, reserved bool, cmuxStop *cleanupHolder, stderr io.Writer) bool {
+	if o.CmuxWorkspace != "auto" || !eligible || reserved {
+		return reserved
+	}
+	rep := cmux.New("", cmux.Models{})
+	if err := rep.Reserve(); err != nil {
+		if o.Debug && !errors.Is(err, cmux.ErrNotInCmux) {
+			fmt.Fprintf(stderr, "debug: cmux workspace auto reservation failed: %v\n", err)
+		}
+		return false
+	}
+	cmuxStop.set(rep.Stop)
+	return true
+}
+
+func preserveLocalCmuxStatus(watchOnly, autoWorkspaceReserved bool) bool {
+	return watchOnly || autoWorkspaceReserved
 }
 
 // anthropicAPIKeyEnv is the credential --preserve-anthropic-api-key opts into passing through to
@@ -2417,16 +2444,27 @@ func preserveAPIKeyRequested(o opts) bool {
 	return err == nil && cfg.PreserveAnthropicAPIKey
 }
 
-// handOffSpawnFailure turns a workspace creation failure into the caller's verdict. a clean refusal
-// warns and continues here, which is the best-effort contract. an ambiguous timeout does not: cmux
-// may already have created the workspace and started the same plan there, so running it here too
-// would put two agents on one checkout. stopping is the one outcome that cannot be made worse, and
-// the sidebar tells the user whether the workspace exists.
-func handOffSpawnFailure(err error, stderr io.Writer) (bool, error) {
+// handOffSpawnFailure turns a workspace creation failure into the caller's verdict. unconditional
+// mode warns and continues after a clean refusal, which is its best-effort contract. auto mode must
+// stop once a busy workspace made hand-off mandatory. an ambiguous timeout stops in either mode:
+// cmux may already have created the workspace and started the same plan there, so running it here
+// too would put two agents on one checkout.
+func handOffSpawnFailure(err error, required bool, stderr io.Writer) (bool, error) {
 	if errors.Is(err, cmux.ErrSpawnAmbiguous) {
 		return true, fmt.Errorf("cmux workspace hand-off: %w; not running here, check the sidebar and re-run", err)
 	}
+	if required {
+		return true, fmt.Errorf("cmux workspace hand-off required because the current workspace is busy: %w; not running here", err)
+	}
 	fmt.Fprintf(stderr, "warning: cmux workspace hand-off failed, running here: %v\n", err)
+	return false, nil
+}
+
+func handOffRefusal(reason string, required bool, stderr io.Writer) (bool, error) {
+	if required {
+		return true, fmt.Errorf("cmux workspace hand-off required because the current workspace is busy: %s; not running here", reason)
+	}
+	fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: %s\n", reason)
 	return false, nil
 }
 

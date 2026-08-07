@@ -7665,6 +7665,10 @@ func cmuxSpawnStub(t *testing.T, exitCode int) string {
 // cmuxAutoStub installs a cmux binary that serves list-status output and records all commands.
 // It lets auto-mode tests exercise the public WorkspaceBusy query without a live cmux socket.
 func cmuxAutoStub(t *testing.T, statusOutput string, queryExitCode int) string {
+	return cmuxAutoSpawnStub(t, statusOutput, queryExitCode, 0)
+}
+
+func cmuxAutoSpawnStub(t *testing.T, statusOutput string, queryExitCode, spawnExitCode int) string {
 	t.Helper()
 	clearCmuxEnvOptions(t)
 	binDir := t.TempDir()
@@ -7675,8 +7679,8 @@ if [ "$1" = "list-status" ]; then
   printf '%%s' "$CMUX_STATUS_OUTPUT"
   exit %d
 fi
-exit 0
-`, queryExitCode))
+exit %d
+`, queryExitCode, spawnExitCode))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CMUX_ARGV_LOG", argvLog)
 	t.Setenv("CMUX_STATUS_OUTPUT", statusOutput)
@@ -7780,6 +7784,44 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		assert.Contains(t, string(recorded), "list-status")
 		assert.Contains(t, string(recorded), "new-workspace")
 		assert.NotContains(t, string(recorded), "cmux-workspace", "the child must not re-evaluate hand-off")
+	})
+
+	t.Run("auto busy spawn failure stops instead of running locally", func(t *testing.T) {
+		argvLog := cmuxAutoSpawnStub(t, "loopai=task icon=hammer\n", 0, 1)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		stop, handOffErr := handOffToCmuxWorkspace(
+			opts{CmuxWorkspace: "auto", PlanFile: "p.md"}, []string{"--cmux-workspace=auto", "p.md"}, stdout, stderr)
+		assert.True(t, stop)
+		require.ErrorContains(t, handOffErr, "required because the current workspace is busy")
+		assert.Contains(t, handOffErr.Error(), "not running here")
+		assert.Empty(t, stdout.String())
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "list-status")
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("auto busy pre-spawn refusal stops instead of running locally", func(t *testing.T) {
+		argvLog := cmuxAutoStub(t, "loopai=task icon=hammer\n", 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirRepoRoot(t)
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		stop, handOffErr := handOffToCmuxWorkspace(
+			opts{CmuxWorkspace: "auto", PlanFile: "docs/plans/missing.md"}, nil, stdout, stderr)
+		assert.True(t, stop)
+		require.ErrorContains(t, handOffErr, "required because the current workspace is busy")
+		assert.Contains(t, handOffErr.Error(), "plan file not found")
+		assert.Empty(t, stdout.String())
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "list-status")
+		assert.NotContains(t, string(recorded), "new-workspace")
 	})
 
 	for _, tc := range []struct {
@@ -8130,7 +8172,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		// cmux may already have created the workspace and started the plan there, so the local
 		// fallback every other failure takes would give two agents one checkout.
 		stderr := &bytes.Buffer{}
-		stop, err := handOffSpawnFailure(fmt.Errorf("create cmux workspace: %w", cmux.ErrSpawnAmbiguous), stderr)
+		stop, err := handOffSpawnFailure(fmt.Errorf("create cmux workspace: %w", cmux.ErrSpawnAmbiguous), false, stderr)
 		assert.True(t, stop)
 		require.Error(t, err)
 		require.ErrorIs(t, err, cmux.ErrSpawnAmbiguous)
@@ -8140,7 +8182,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 
 	t.Run("clean spawn refusal continues here", func(t *testing.T) {
 		stderr := &bytes.Buffer{}
-		stop, err := handOffSpawnFailure(errors.New("cmux refused"), stderr)
+		stop, err := handOffSpawnFailure(errors.New("cmux refused"), false, stderr)
 		assert.False(t, stop)
 		require.NoError(t, err)
 		assert.Contains(t, stderr.String(), "hand-off failed, running here: cmux refused")
@@ -8151,15 +8193,17 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		for _, o := range []opts{
-			{CmuxWorkspace: "always", mergeSet: true},
-			{CmuxWorkspace: "always", prSet: true},
-			{CmuxWorkspace: "always", Clear: true},
-			{CmuxWorkspace: "always", Init: true},
-			{CmuxWorkspace: "always", DumpDefaults: t.TempDir()},
-			{CmuxWorkspace: "always", Reset: true},
-		} {
-			assert.False(t, handOffStops(t, o, nil, stdout, stderr))
+		for _, mode := range []string{"always", "auto"} {
+			for _, o := range []opts{
+				{CmuxWorkspace: mode, mergeSet: true},
+				{CmuxWorkspace: mode, prSet: true},
+				{CmuxWorkspace: mode, Clear: true},
+				{CmuxWorkspace: mode, Init: true},
+				{CmuxWorkspace: mode, DumpDefaults: t.TempDir()},
+				{CmuxWorkspace: mode, Reset: true},
+			} {
+				assert.False(t, handOffStops(t, o, nil, stdout, stderr))
+			}
 		}
 		assert.Empty(t, stdout.String())
 		assert.Empty(t, stderr.String())
@@ -8198,6 +8242,33 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 		assert.Contains(t, string(recorded), "new-workspace")
 		assert.Contains(t, string(recorded), "\nloopai\n") // no plan file yet, falls back to the app name
 	})
+
+	for _, tc := range []struct {
+		name      string
+		status    string
+		queryCode int
+	}{
+		{name: "auto free workspace reserves before config load", status: "loopai=done in 1m icon=bolt\n"},
+		{name: "auto query failure still reserves when status updates work", queryCode: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			argvLog := cmuxAutoStub(t, tc.status, tc.queryCode)
+			t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+			chdirWithPlan(t, "p.md")
+
+			err := run(t.Context(), opts{CmuxWorkspace: "auto", ConfigDir: badConfigDir, PlanFile: "p.md"})
+			require.ErrorContains(t, err, "load config", "auto fallback must continue normal startup")
+			recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+			require.NoError(t, readErr)
+			commands := string(recorded)
+			queryAt := strings.Index(commands, "list-status")
+			reserveAt := strings.Index(commands, "set-status\nloopai\nstarting")
+			assert.GreaterOrEqual(t, queryAt, 0)
+			assert.Greater(t, reserveAt, queryAt, "the local run must publish its reservation after the query")
+			assert.Contains(t, commands, "clear-status", "startup failure must clear the reservation")
+			assert.NotContains(t, commands, "new-workspace")
+		})
+	}
 
 	t.Run("failed hand-off continues the normal run", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 1)
@@ -8367,23 +8438,25 @@ func TestPrepareStaleCmuxStatusDefersForHandOff(t *testing.T) {
 		assert.Equal(t, "clear-status loopai\n", string(recorded))
 	})
 
-	t.Run("preserved hand-off never clears", func(t *testing.T) {
-		argvLog := stub(t)
-		resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: "always", PlanFile: "plan.md"})
-		_, err := os.Stat(argvLog)
-		require.ErrorIs(t, err, os.ErrNotExist, "the hand-off verdict is not known yet")
+	for _, mode := range []string{"always", "auto"} {
+		t.Run(mode+" preserved state never clears", func(t *testing.T) {
+			argvLog := stub(t)
+			resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: mode, PlanFile: "plan.md"})
+			_, err := os.Stat(argvLog)
+			require.ErrorIs(t, err, os.ErrNotExist, "the hand-off or reservation verdict is not known yet")
 
-		resolve(true)
-		_, err = os.Stat(argvLog)
-		require.ErrorIs(t, err, os.ErrNotExist, "the run moved to another workspace")
-	})
+			resolve(true)
+			_, err = os.Stat(argvLog)
+			require.ErrorIs(t, err, os.ErrNotExist, "the run moved or owns a reservation")
+		})
 
-	t.Run("failed hand-off clears on resolution", func(t *testing.T) {
-		argvLog := stub(t)
-		resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: "always", PlanFile: "plan.md"})
-		resolve(false)
-		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
-		require.NoError(t, err)
-		assert.Equal(t, "clear-status loopai\n", string(recorded))
-	})
+		t.Run(mode+" unpreserved state clears on resolution", func(t *testing.T) {
+			argvLog := stub(t)
+			resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: mode, PlanFile: "plan.md"})
+			resolve(false)
+			recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+			require.NoError(t, err)
+			assert.Equal(t, "clear-status loopai\n", string(recorded))
+		})
+	}
 }

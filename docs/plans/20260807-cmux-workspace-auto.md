@@ -3,7 +3,7 @@
 ## Overview
 - Extend the shipped `--cmux-workspace` flag with an optional value: bare `--cmux-workspace` keeps today's behavior (always hand off to a new cmux workspace), while `--cmux-workspace=auto` hands off only when the current workspace is already busy with another active loopai run; otherwise the run stays in the current terminal and workspace.
 - Problem it solves: with `always`, every run spawns a workspace even when the current one is free, which litters the sidebar. `auto` gives "first run stays here, parallel runs get their own card" without the user tracking which workspace is occupied.
-- Busy detection reads loopai's own protocol: an active run always has a `loopai` status pill whose text is a phase label (`task`, `review`, `external review · iteration N`, `planning`, `rate limited`, ...), while a finished run's pill starts with `done` or `failed` (installed by `Reporter.Finish`, deliberately persistent). A pill with a non-final text therefore means the workspace is busy. Verified empirically against live workspaces: active run shows `loopai=external review (gpt-5.6-sol:high) · iteration 2`, idle ones show `loopai=done in 3h39m` or no pill.
+- Busy detection reads loopai's own protocol: an active run has a non-final `loopai` status pill (`starting` during startup, then a phase label such as `task`, `review`, `external review · iteration N`, `planning`, or `rate limited`), while a finished run's pill starts with `done` or `failed` (installed by `Reporter.Finish`, deliberately persistent). A pill with a non-final text therefore means the workspace is busy. Verified empirically against live workspaces: active run shows `loopai=external review (gpt-5.6-sol:high) · iteration 2`, idle ones show `loopai=done in 3h39m` or no pill.
 
 ## Context (from discovery)
 - Files/components involved:
@@ -60,6 +60,8 @@
 - [x] update `stripCmuxWorkspaceArg` to strip `--cmux-workspace=auto`/`=always` value forms as well (bare form already handled) — the relaunched child must never re-evaluate hand-off
 - [x] update existing flag/hand-off tests for the bool→string change; keep a test proving bare `--cmux-workspace` still means unconditional hand-off (backward compatibility)
 - [x] write tests for auto mode: busy workspace (stubbed list-status with phase pill) → spawn invoked and hand-off reported; free workspace (final pill or no pill) → no spawn, normal run proceeds; outside cmux → normal run proceeds without warning
+- [x] ➕ reserve a free/query-fallback workspace with a non-final `starting` pill before lengthy startup; clear it on startup failure and hand cleanup ownership to the normal reporter
+- [x] ➕ after a positive busy verdict, stop on every pre-spawn refusal or spawn failure instead of falling back into the occupied workspace
 - [x] write tests for arg stripping of the value forms (table-driven: `=auto`, `=always`, mixed with other flags, repeated)
 - [x] run tests - must pass before next task
 
@@ -77,7 +79,7 @@
 - [x] update llms.txt if it enumerates CLI flags
 
 ## Technical Details
-- Busy signature (verified live): active → `loopai=external review (gpt-5.6-sol:high) · iteration 2 icon=person.2 color=#a855f7 priority=90`; finished → `loopai=done in 3h39m icon=bolt color=#34c759 priority=90`; never ran → no `loopai=` line.
+- Busy signature: startup → `loopai=starting`; active phase (verified live) → `loopai=external review (gpt-5.6-sol:high) · iteration 2 icon=person.2 color=#a855f7 priority=90`; finished → `loopai=done in 3h39m icon=bolt color=#34c759 priority=90`; never ran → no `loopai=` line.
 - Detection deliberately keys on pill text, not progress or spinner: plan creation has no progress bar, and cmux exposes no queryable loading state (`sidebar-state` has no loading field even for an active workspace).
 - The checker and the pill producer live in the same package: `Finish` writes `done ...`/`failed ...`, phase pills come from `phaseStyles`; shared prefix constants make the coupling explicit.
 - Output capture is new to the runner layer: the existing discard-output design exists to avoid pipe-EOF hangs from grandchildren; the capturing path must set `WaitDelay` (or equivalent) to keep the same bound. `cmux list-status` spawns no children, so this is defense in depth.
