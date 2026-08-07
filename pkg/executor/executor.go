@@ -323,7 +323,7 @@ type ClaudeExecutor struct {
 	Model                string                                // model override (e.g., "fable", "opus", "sonnet", "haiku"); empty = CLI default
 	Effort               string                                // reasoning effort override (e.g., "low", "medium", "high", "xhigh", "max"); empty = CLI default
 	OutputHandler        func(text string)                     // called for each text chunk, can be nil
-	CommandTimingHandler func(command string, d time.Duration) // called for each completed Bash command using arrival-time duration; can be nil
+	CommandTimingHandler func(command string, d time.Duration) // called for each completed foreground Bash command using arrival-time duration; can be nil
 	Debug                bool                                  // enable debug output
 	ErrorPatterns        []string                              // patterns to detect in output (e.g., rate limit messages)
 	LimitPatterns        []string                              // patterns to detect rate limits (checked before error patterns)

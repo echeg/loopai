@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestMatchesCommand(t *testing.T) {
+func TestMatchCommand(t *testing.T) {
 	tests := []struct {
 		name    string
 		command string
@@ -23,7 +23,8 @@ func TestMatchesCommand(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, MatchesCommand(tt.command, tt.entries))
+			_, got := MatchCommand(tt.command, tt.entries)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

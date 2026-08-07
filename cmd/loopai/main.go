@@ -727,14 +727,6 @@ func runWithSectionTiming(ctx context.Context, run func(context.Context) error, 
 // when req.MainGitSvc is set, uses it for plan file operations (plan is in main repo).
 func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	branch := getCurrentBranch(req.GitSvc)
-	validationCommands := make([]string, 0)
-	if req.PlanFile != "" {
-		parsedPlan, parseErr := plan.ParsePlanFile(req.PlanFile)
-		if parseErr != nil {
-			return fmt.Errorf("parse plan validation commands: %w", parseErr)
-		}
-		validationCommands = parsedPlan.ValidationCommands
-	}
 
 	// set up progress logger and phase holder
 	plr, err := setupProgressLogger(o, req, branch)
@@ -751,6 +743,18 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		req.CmuxStop.set(rep.Stop)
 	}
 	rep.Start(ctx)
+
+	validationCommands := make([]string, 0)
+	if req.PlanFile != "" {
+		parsedPlan, parseErr := plan.ParsePlanFile(req.PlanFile)
+		if parseErr != nil {
+			wrapped := fmt.Errorf("parse plan validation commands: %w", parseErr)
+			plr.baseLog.SetFailed(wrapped)
+			notifyCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), wrapped)
+			return wrapped
+		}
+		validationCommands = parsedPlan.ValidationCommands
+	}
 
 	// wrap logger with broadcast logger if --serve is enabled
 	var runnerLog processor.Logger = plr.baseLog

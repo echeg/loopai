@@ -2098,6 +2098,51 @@ func TestCodexExecutor_trackRolloutCommandTiming_CustomExecRequiresCompletionPro
 	assert.Len(t, state.unproven, 1)
 }
 
+func TestCodexExecutor_trackRolloutCommandTiming_RawJSONStdoutIsNotCompletionProof(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	for _, line := range []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":[{"type":"input_text","text":"Script completed\nWall time 0.4 seconds\nOutput:\n"},{"type":"input_text","text":"{\"exit_code\":0}"}]}}`,
+	} {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Empty(t, captured)
+	assert.Len(t, state.unproven, 1)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_IgnoresUnawaitedAndConditionalCalls(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	for _, input := range []string{
+		`tools.exec_command({cmd:"make test"}); text("done");`,
+		`if (false) { const r = await tools.exec_command({cmd:"make test"}); text(r.output); }`,
+	} {
+		state := newCodexTimingState()
+		e.trackCustomToolCall(rolloutPayload{Name: "exec", CallID: "start", Input: input}, time.Now(), state, time.Now)
+		e.trackToolOutput(rolloutPayload{CallID: "start", Output: json.RawMessage(`"Script completed"`)}, time.Now().Add(time.Second), state, time.Now)
+		assert.Empty(t, state.starts)
+	}
+	assert.Empty(t, captured)
+}
+
+func TestCustomExecCallIsAwaited_AcceptsStraightLinePromiseDestructuring(t *testing.T) {
+	input := `const [test, lint] = await Promise.all([tools.exec_command({cmd:"make test"}),tools.exec_command({cmd:"make lint"})]);`
+	matches := customExecCommandPattern.FindAllStringSubmatchIndex(input, -1)
+	require.Len(t, matches, 2)
+
+	assert.True(t, customExecCallIsAwaited(input, matches[0][0]))
+	assert.True(t, customExecCallIsAwaited(input, matches[1][0]))
+}
+
 func TestCodexExecutor_trackRolloutCommandTiming_CustomExecInfersCompletionBeforeYield(t *testing.T) {
 	var captured []struct {
 		command  string
@@ -2159,6 +2204,34 @@ func TestCodexExecutor_trackRolloutCommandTiming_UnprovenExecAttachesToContinuat
 	assert.Empty(t, state.sessions)
 }
 
+func TestCodexExecutor_trackRolloutCommandTiming_MixedContinuationPreservesBatchIndexes(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	started := time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)
+	state := newCodexTimingState()
+	state.sessions["42"] = codexPendingCommand{
+		start:         codexCommandStart{command: "make test", eventTime: started, arrival: started},
+		sessionID:     "42",
+		requiresProof: true,
+	}
+
+	e.trackCustomToolCall(rolloutPayload{
+		Name:   "exec",
+		CallID: "poll",
+		Input:  `const r = await Promise.all([tools.write_stdin({session_id:99}),tools.write_stdin({session_id:42})]); r.forEach((x,i)=>text(JSON.stringify({index:i+1,...x})));`,
+	}, started.Add(time.Second), state, func() time.Time { return started.Add(time.Second) })
+	e.trackToolOutput(rolloutPayload{
+		CallID: "poll",
+		Output: json.RawMessage(`[{"text":"{\"index\":1,\"session_id\":99}"},{"text":"{\"index\":2,\"exit_code\":0}"}]`),
+	}, started.Add(5*time.Second), state, func() time.Time { return started.Add(5 * time.Second) })
+
+	assert.Equal(t, []string{"make test"}, captured)
+	assert.NotContains(t, state.sessions, "99")
+	assert.NotContains(t, state.sessions, "42")
+}
+
 func TestCodexExecutor_trackRolloutCommandTiming_StaleUnprovenExecDoesNotAttach(t *testing.T) {
 	var captured []string
 	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
@@ -2199,8 +2272,8 @@ func TestCodexExecutor_trackRolloutCommandTiming_StaleUnprovenExecPreservesKnown
 		unprovenArrival:   time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC),
 	}}
 	fixtures := []string{
-		`{"timestamp":"2026-08-07T09:01:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const results = await Promise.all([tools.write_stdin({session_id:41}), tools.write_stdin({session_id:42})]);"}}`,
-		`{"timestamp":"2026-08-07T09:01:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"{\"exit_code\":0}"}}`,
+		`{"timestamp":"2026-08-07T09:01:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const results = await Promise.all([tools.write_stdin({session_id:41}), tools.write_stdin({session_id:42})]); results.forEach((x,i)=>text(JSON.stringify({index:i+1,...x})));"}}`,
+		`{"timestamp":"2026-08-07T09:01:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"{\"index\":1,\"exit_code\":0}"}}`,
 	}
 	for _, line := range fixtures {
 		ev, payload, ok := parseRolloutRecord([]byte(line))
@@ -2409,7 +2482,7 @@ func TestCodexExecutor_trackRolloutCommandTiming_CustomExecStringLiterals(t *tes
 		captured = append(captured, command)
 	}}
 	state := newCodexTimingState()
-	input := "const r = await Promise.all([tools.exec_command({cmd:'make test'}),tools.exec_command({cmd:`make lint\\n--fix`})]);"
+	input := "const r = await Promise.all([tools.exec_command({cmd:'make test'}),tools.exec_command({cmd:`make lint\\n--fix`})]); r.forEach((x,i)=>text(JSON.stringify({index:i+1,...x})));"
 	e.trackCustomToolCall(rolloutPayload{Type: "custom_tool_call", Name: "exec", CallID: "batch", Input: input}, time.Time{}, state, time.Now)
 	e.trackToolOutput(rolloutPayload{
 		Type:   "custom_tool_call_output",
@@ -2693,6 +2766,35 @@ func TestCodexExecutor_tailRolloutFile_TracksChildSessionCustomExec(t *testing.T
 	<-done
 }
 
+func TestCodexExecutor_discoverRolloutStates_FindsOlderChildAcrossMidnight(t *testing.T) {
+	dir := t.TempDir()
+	rootID := "019e3bbe-9788-79f1-b668-acde00000020"
+	childID := "019e3bbe-9788-79f1-b668-acde00000021"
+	rootDir := filepath.Join(dir, "sessions", "2026", "08", "07")
+	childDir := filepath.Join(dir, "sessions", "2026", "08", "08")
+	require.NoError(t, os.MkdirAll(rootDir, 0o750))
+	require.NoError(t, os.MkdirAll(childDir, 0o750))
+	rootPath := filepath.Join(rootDir, "rollout-2026-08-07T23-59-59-"+rootID+".jsonl")
+	childPath := filepath.Join(childDir, "rollout-2026-08-08T00-00-01-"+childID+".jsonl")
+	require.NoError(t, os.WriteFile(rootPath, []byte(`{"type":"session_meta","payload":{"session_id":"`+rootID+`","source":"exec"}}`+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(childPath, []byte(`{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"`+rootID+`"}}}}}`+"\n"), 0o600))
+	rootTime := time.Date(2026, 8, 8, 0, 1, 0, 0, time.Local)
+	require.NoError(t, os.Chtimes(rootPath, rootTime, rootTime))
+	require.NoError(t, os.Chtimes(childPath, rootTime.Add(-time.Minute), rootTime.Add(-time.Minute)))
+
+	e := &CodexExecutor{CommandTimingHandler: func(string, time.Duration) {}}
+	states := make(map[string]*rolloutTailState)
+	t.Cleanup(func() {
+		for _, state := range states {
+			require.NoError(t, state.file.Close())
+		}
+	})
+	e.discoverRolloutStates(rootPath, states, map[string]bool{rootID: true}, newRolloutDiscovery())
+
+	assert.Contains(t, states, rootPath)
+	assert.Contains(t, states, childPath)
+}
+
 func TestCodexExecutor_discoverRolloutStates_CachesStableUnrelatedFilesAndRetriesIncompleteFiles(t *testing.T) {
 	dir := t.TempDir()
 	rootID := "019e3bbe-9788-79f1-b668-acde00000010"
@@ -2704,9 +2806,6 @@ func TestCodexExecutor_discoverRolloutStates_CachesStableUnrelatedFilesAndRetrie
 	require.NoError(t, os.WriteFile(rootPath, []byte(`{"type":"session_meta","payload":{"session_id":"`+rootID+`","source":"exec"}}`+"\n"), 0o600))
 	require.NoError(t, os.WriteFile(unrelatedPath, []byte(`{"type":"session_meta","payload":{"session_id":"`+unrelatedID+`","source":"exec"}}`+"\n"), 0o600))
 	require.NoError(t, os.WriteFile(incompletePath, nil, 0o600))
-	rootInfo, err := os.Stat(rootPath)
-	require.NoError(t, err)
-
 	e := &CodexExecutor{CommandTimingHandler: func(string, time.Duration) {}}
 	states := make(map[string]*rolloutTailState)
 	t.Cleanup(func() {
@@ -2716,7 +2815,7 @@ func TestCodexExecutor_discoverRolloutStates_CachesStableUnrelatedFilesAndRetrie
 	})
 	knownParents := map[string]bool{rootID: true}
 	discovery := newRolloutDiscovery()
-	e.discoverRolloutStates(rootPath, rootInfo, states, knownParents, discovery)
+	e.discoverRolloutStates(rootPath, states, knownParents, discovery)
 	assert.Contains(t, states, rootPath)
 	assert.NotContains(t, states, unrelatedPath)
 	assert.NotContains(t, states, incompletePath)
@@ -2726,7 +2825,7 @@ func TestCodexExecutor_discoverRolloutStates_CachesStableUnrelatedFilesAndRetrie
 	relatedMeta := []byte(`{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"` + rootID + `"}}}}}` + "\n")
 	require.NoError(t, os.WriteFile(unrelatedPath, relatedMeta, 0o600))
 	require.NoError(t, os.WriteFile(incompletePath, relatedMeta, 0o600))
-	e.discoverRolloutStates(rootPath, rootInfo, states, knownParents, discovery)
+	e.discoverRolloutStates(rootPath, states, knownParents, discovery)
 
 	assert.NotContains(t, states, unrelatedPath, "a complete unrelated first record is immutable and should not be reparsed")
 	assert.Contains(t, states, incompletePath, "an incomplete first record must be retried after more data arrives")

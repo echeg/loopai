@@ -60,7 +60,7 @@ loopai's `ClaudeExecutor` runs the configured command and passes the prompt via 
 | `content_block_delta` | `delta.type` ("text_delta"), `delta.text` | Streaming text output |
 | `result` | `result` (string or `{"output": "..."}`) | End of execution |
 | `assistant` | `message.content[].text` | Full message (alternative to streaming) |
-| `assistant` | Bash `message.content[]` tool-use blocks (`id`, `name`, `input.command`) | Start optional validation-command timing |
+| `assistant` | Bash `message.content[]` tool-use blocks (`id`, `name`, `input.command`, optional `input.run_in_background`) | Start optional foreground validation-command timing |
 | `user` | `message.content[]` tool-result blocks (`tool_use_id`) | Complete optional validation-command timing |
 | `message_stop` | `message.content[].text` | Final message (same structure as `assistant`) |
 
@@ -68,6 +68,8 @@ The executor also recognizes `message_stop` events, but wrapper scripts don't ne
 
 Tool events are optional. Wrappers that emit only text and result events, including the bundled
 compatibility wrappers, continue to work but cannot produce `validation:` timing lines.
+Background Bash uses and unmatched tool-use/tool-result pairs are intentionally not timed; foreground
+durations are measured between the paired events' arrival times.
 
 ### Signal detection
 

@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/umputun/ralphex/internal/validation"
 )
 
 // TaskStatus represents the execution status of a task.
@@ -36,8 +38,10 @@ type Task struct {
 
 // Plan represents a parsed plan file.
 type Plan struct {
-	Title              string   `json:"title"`
-	Tasks              []Task   `json:"tasks"`
+	Title string `json:"title"`
+	Tasks []Task `json:"tasks"`
+	// ValidationCommands contains normalized plain-list entries parsed from the
+	// exact `## Validation Commands` section.
 	ValidationCommands []string `json:"validation_commands"`
 }
 
@@ -156,15 +160,10 @@ func trackValidationCommand(p *Plan, line string, inSection *bool) {
 		if len(matches) == 0 || validationCheckboxPattern.MatchString(matches[1]) {
 			return
 		}
-		if command := normalizeCommand(matches[1]); command != "" {
+		if command := validation.NormalizeCommand(matches[1]); command != "" {
 			p.ValidationCommands = append(p.ValidationCommands, command)
 		}
 	}
-}
-
-func normalizeCommand(command string) string {
-	command = strings.Trim(strings.TrimSpace(command), "`")
-	return strings.Join(strings.Fields(command), " ")
 }
 
 // ParsePlanFile reads and parses a plan file from disk.

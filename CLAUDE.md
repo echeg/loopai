@@ -144,7 +144,8 @@ by tool-use ID and measures their arrival times; background Bash calls are
 omitted because their first result is not process completion. Codex accepts both
 legacy `exec_command` function calls and current custom `exec` rollout records,
 follows yielded sessions through continuation/wait events, and tails child-agent
-rollouts. For output-only custom records, it uses valid native timestamps to prove
+rollouts, including child rollouts stored on the next calendar day. For output-only
+custom records, it uses valid native timestamps to prove
 that a command returned before its configured yield threshold; calls at or beyond
 the threshold attach to a later session continuation only when the association is
 unique. Ambiguous batches are omitted rather than paired by order. It otherwise

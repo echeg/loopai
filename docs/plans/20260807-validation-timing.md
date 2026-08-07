@@ -129,10 +129,10 @@ Validation time is included in (not additive to) the phase buckets; with paralle
 
 ## Technical Details
 
-- Event shape: `(command string, duration time.Duration)`; executors do not classify — all completed shell commands are reported, the `ValidationTimer` filters by the plan's list
+- Event shape: `(command string, duration time.Duration)`; executors do not classify validation commands — supported completed foreground shell records are reported, and the `ValidationTimer` filters by the plan's list
 - Claude pairing: `tool_use` block (name `Bash`, `input.command`) → `tool_result` with same `tool_use_id`; arrival-time stamping with injectable `now()`
 - Codex pairing: legacy rollout `function_call` (`exec_command`) or current custom `exec` tool call → matching output; yielded sessions remain pending through continuation/wait records, and child-agent rollouts are followed; prefer valid native rollout timestamps
-- Matching rule: normalized command equals a validation entry, or starts with entry + whitespace separator (token boundary); entries come from `## Validation Commands` list items with backticks stripped
+- Matching rule: normalized command equals a validation entry, or starts with entry + whitespace separator (token boundary); entries come from plain, non-checkbox list items under `## Validation Commands`, stop at the next heading, and have surrounding backticks stripped
 - Per-run log line: `validation: go test ./... took 1m12s`; aggregate: `validation: 14m32s (23 runs)` printed after `phase durations:`
 - Validation time overlaps phase buckets by design; it is reported as a separate line, never added to the phase sum
 - Wrapper providers (`copilot-as-claude`, `pi-as-claude`) that do not emit tool events degrade to zero matched runs; note it in `docs/custom-providers.md` if their docs list supported features

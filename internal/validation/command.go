@@ -4,24 +4,17 @@ package validation
 
 import "strings"
 
-// MatchesCommand reports whether command equals or extends one of entries at a
-// whitespace boundary.
-func MatchesCommand(command string, entries []string) bool {
-	_, ok := MatchCommand(command, entries)
-	return ok
-}
-
 // MatchCommand returns the normalized configured entry matched by command.
 // Returning the configured label lets callers report validation activity
 // without persisting provider-supplied arguments or control characters.
 func MatchCommand(command string, entries []string) (string, bool) {
-	command = normalize(command)
+	command = NormalizeCommand(command)
 	if command == "" {
 		return "", false
 	}
 
 	for _, entry := range entries {
-		entry = normalize(entry)
+		entry = NormalizeCommand(entry)
 		if entry != "" && (command == entry || strings.HasPrefix(command, entry+" ")) {
 			return entry, true
 		}
@@ -29,7 +22,9 @@ func MatchCommand(command string, entries []string) (string, bool) {
 	return "", false
 }
 
-func normalize(command string) string {
+// NormalizeCommand strips optional surrounding backticks and collapses
+// whitespace so plan parsing and runtime matching use one canonical form.
+func NormalizeCommand(command string) string {
 	command = strings.Trim(strings.TrimSpace(command), "`")
 	return strings.Join(strings.Fields(command), " ")
 }

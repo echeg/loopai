@@ -200,8 +200,87 @@ printf '%s\n' '{"type":"result","result":""}'
 	content, err := os.ReadFile(logs[0])
 	require.NoError(t, err)
 	assert.Contains(t, string(content), "validation: make test took ")
-	assert.Contains(t, string(content), "validation: 0s (1 runs)")
+	assert.Regexp(t, `validation: \S+ \(1 runs\)`, string(content))
 	assert.NotContains(t, string(content), "--token secret")
+}
+
+func TestExecutePlan_ValidationSummaryIsWrittenOnRunnerFailure(t *testing.T) {
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	planPath := filepath.Join(dir, "docs", "plans", "validation-failure.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath, []byte(`# Validation failure
+
+## Validation Commands
+
+- make test
+
+### Task 1: Incomplete
+
+- [ ] still incomplete
+`), 0o600))
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"make test"}}]}}'
+printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"failed"}]}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	err = executePlan(t.Context(), opts{TasksOnly: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
+		Config: &config.Config{ClaudeCommand: fakeClaude}, Colors: testColors(), BaseRef: "master",
+	})
+	require.Error(t, err)
+
+	logs, globErr := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "progress-*.txt"))
+	require.NoError(t, globErr)
+	require.Len(t, logs, 1)
+	content, readErr := os.ReadFile(logs[0])
+	require.NoError(t, readErr)
+	assert.Regexp(t, `validation: \S+ \(1 runs\)`, string(content))
+	assert.Contains(t, string(content), "Failed:")
+}
+
+func TestExecutePlan_PlanParseFailureUsesReporterAfterWorktreeHandoff(t *testing.T) {
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + argvLog + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "cmux"), []byte(script), 0o755)) //nolint:gosec // executable test fixture
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	missingPlan := filepath.Join(dir, "docs", "plans", "removed.md")
+	err = executePlan(t.Context(), opts{NoColor: true}, executePlanRequest{
+		PlanFile: missingPlan, Mode: processor.ModeFull, GitSvc: gitSvc,
+		Config: &config.Config{}, Colors: testColors(), BaseRef: "master",
+	})
+	require.ErrorContains(t, err, "parse plan validation commands")
+
+	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path is a test-owned file under t.TempDir
+	require.NoError(t, readErr)
+	assert.Equal(t, 1, strings.Count(string(recorded), "notify --title"))
+	logs, globErr := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "progress-*.txt"))
+	require.NoError(t, globErr)
+	require.Len(t, logs, 1)
+	content, logErr := os.ReadFile(logs[0])
+	require.NoError(t, logErr)
+	assert.Contains(t, string(content), "Failed:")
+	assert.Contains(t, string(content), "parse plan validation commands")
 }
 
 // captureStdout runs fn while redirecting os.Stdout (and the fatih/color Output

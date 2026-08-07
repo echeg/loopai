@@ -137,8 +137,9 @@ Describe the intended outcome.
 ```
 
 Validation timing recognizes the exact, case-sensitive H2 heading `## Validation Commands`.
-Commands must be Markdown list items; prose and fenced examples are ignored. Optional surrounding
-backticks are stripped and whitespace is normalized before matching.
+Commands must be plain, non-checkbox Markdown list items before the next heading. Checkbox items,
+prose, and fenced examples are ignored. Optional surrounding backticks are stripped and whitespace
+is normalized before matching.
 
 Run it:
 

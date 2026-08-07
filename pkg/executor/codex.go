@@ -109,7 +109,7 @@ type CodexExecutor struct {
 	Sandbox              string                                // sandbox mode, defaults to "read-only"
 	ProjectDoc           string                                // path to project documentation file
 	OutputHandler        func(text string)                     // called for each filtered output line in real-time
-	CommandTimingHandler func(command string, d time.Duration) // called for each completed exec_command; can be nil
+	CommandTimingHandler func(command string, d time.Duration) // called for supported completed exec/exec_command records, including continuations and child rollouts; can be nil
 	Debug                bool                                  // enable debug output
 	ErrorPatterns        []string                              // patterns to detect in output (e.g., rate limit messages)
 	LimitPatterns        []string                              // patterns to detect rate limits (checked before error patterns)
@@ -725,8 +725,7 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 	states := make(map[string]*rolloutTailState)
 	knownParents := map[string]bool{sessionID: true}
 	discovery := newRolloutDiscovery()
-	rootInfo, _ := os.Stat(path)
-	e.discoverRolloutStates(path, rootInfo, states, knownParents, discovery)
+	e.discoverRolloutStates(path, states, knownParents, discovery)
 	if _, ok := states[path]; !ok {
 		log.Printf("codex rollout file open failed (%s); assistant output streaming disabled for this session", path)
 		return
@@ -738,14 +737,14 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 	}()
 
 	for {
-		e.discoverRolloutStates(path, rootInfo, states, knownParents, discovery)
+		e.discoverRolloutStates(path, states, knownParents, discovery)
 		for _, state := range states {
 			e.drainRolloutState(state, now, idleTouch, false)
 		}
 		select {
 		case <-ctx.Done():
 			// final drain after codex exits — pick up any late-flushed events
-			e.discoverRolloutStates(path, rootInfo, states, knownParents, discovery)
+			e.discoverRolloutStates(path, states, knownParents, discovery)
 			for _, state := range states {
 				e.drainRolloutState(state, now, idleTouch, true)
 			}
@@ -765,20 +764,23 @@ func newRolloutDiscovery() *rolloutDiscovery {
 
 func (e *CodexExecutor) discoverRolloutStates(
 	rootPath string,
-	rootInfo os.FileInfo,
 	states map[string]*rolloutTailState,
 	knownParents map[string]bool,
 	discovery *rolloutDiscovery,
 ) {
 	for {
 		added := false
-		matches, _ := filepath.Glob(filepath.Join(filepath.Dir(rootPath), "rollout-*.jsonl"))
-		for _, candidate := range matches {
+		var candidates []string
+		for _, dir := range rolloutDiscoveryDirs(rootPath) {
+			matches, _ := filepath.Glob(filepath.Join(dir, "rollout-*.jsonl"))
+			candidates = append(candidates, matches...)
+		}
+		for _, candidate := range candidates {
 			if _, exists := states[candidate]; exists {
 				continue
 			}
 			render := candidate == rootPath
-			if !render && !e.shouldDiscoverChildRollout(candidate, rootInfo, knownParents, discovery) {
+			if !render && !e.shouldDiscoverChildRollout(candidate, knownParents, discovery) {
 				continue
 			}
 			state, err := newRolloutTailState(candidate, render)
@@ -797,8 +799,23 @@ func (e *CodexExecutor) discoverRolloutStates(
 	}
 }
 
+// rolloutDiscoveryDirs covers the root session's day and the following day.
+// Codex stores rollouts under local YYYY/MM/DD directories, so a session that
+// crosses midnight can place newly spawned child agents beside neither root.
+func rolloutDiscoveryDirs(rootPath string) []string {
+	rootDir := filepath.Dir(rootPath)
+	dayPath := filepath.Join(filepath.Base(filepath.Dir(filepath.Dir(rootDir))), filepath.Base(filepath.Dir(rootDir)), filepath.Base(rootDir))
+	day, err := time.Parse("2006/01/02", filepath.ToSlash(dayPath))
+	if err != nil {
+		return []string{rootDir}
+	}
+	sessionsDir := filepath.Dir(filepath.Dir(filepath.Dir(rootDir)))
+	next := day.AddDate(0, 0, 1)
+	return []string{rootDir, filepath.Join(sessionsDir, next.Format("2006"), next.Format("01"), next.Format("02"))}
+}
+
 func (e *CodexExecutor) shouldDiscoverChildRollout(
-	path string, rootInfo os.FileInfo, knownParents map[string]bool, discovery *rolloutDiscovery,
+	path string, knownParents map[string]bool, discovery *rolloutDiscovery,
 ) bool {
 	if e.CommandTimingHandler == nil {
 		return false
@@ -806,7 +823,7 @@ func (e *CodexExecutor) shouldDiscoverChildRollout(
 	if parentID, inspected := discovery.parents[path]; inspected {
 		return knownParents[parentID]
 	}
-	parentID, ready := inspectRolloutParent(path, rootInfo)
+	parentID, ready := inspectRolloutParent(path)
 	if !ready {
 		return false
 	}
@@ -814,14 +831,7 @@ func (e *CodexExecutor) shouldDiscoverChildRollout(
 	return knownParents[parentID]
 }
 
-func inspectRolloutParent(path string, rootInfo os.FileInfo) (string, bool) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", false
-	}
-	if rootInfo != nil && info.ModTime().Before(rootInfo.ModTime()) {
-		return "", true
-	}
+func inspectRolloutParent(path string) (string, bool) {
 	return rolloutParentThreadID(path)
 }
 
@@ -957,6 +967,7 @@ type codexPendingCommand struct {
 	start             codexCommandStart
 	sessionID         string
 	requiresProof     bool
+	structuredProof   bool
 	yieldAfter        time.Duration
 	unprovenEventTime time.Time
 	unprovenArrival   time.Time
@@ -986,6 +997,11 @@ var (
 	customExecCommandPattern = regexp.MustCompile("(?s)tools\\.exec_command\\s*\\(\\s*\\{.*?(?:\"cmd\"|'cmd'|\\bcmd)\\s*:\\s*(\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|`(?:\\\\.|[^`\\\\])*`)")
 	customExecYieldPattern   = regexp.MustCompile(`(?s)(?:"yield_time_ms"|'yield_time_ms'|\byield_time_ms)\s*:\s*(\d+)`)
 	customWriteStdinPattern  = regexp.MustCompile(`(?s)tools\.write_stdin\s*\(\s*\{.*?(?:"session_id"|'session_id'|\bsession_id)\s*:\s*(?:"([^"]+)"|'([^']+)'|(\d+))`)
+	customDirectAwaitPattern = regexp.MustCompile(`(?s)^\s*(?:(?://[^\n]*\n)\s*)*(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*await\s*$`)
+	customAssignmentPattern  = regexp.MustCompile(`(?s)^\s*(?:(?://[^\n]*\n)\s*)*(?:const|let|var)\s+(?:[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]\n]+\]|\{[^}\n]+\})\s*=\s*$`)
+	customPromiseAllPattern  = regexp.MustCompile(`await\s+Promise\.all\s*\(\s*\[`)
+	customStructuredOutput   = regexp.MustCompile(`\btext\s*\(\s*JSON\.stringify\s*\(`)
+	customRawOutput          = regexp.MustCompile(`\btext\s*\(\s*[A-Za-z_$][A-Za-z0-9_$]*\.output\s*\)`)
 	outputSessionIDPattern   = regexp.MustCompile(`(?im)^(?:SESSION_ID\s*=|session(?:_|\s+)id["']?\s*[:=]\s*|Process running with session ID\s+)(\d+)\s*$`)
 	outputCellIDPattern      = regexp.MustCompile(`(?im)^(?:Script running with cell ID\s*|cell_id["']?\s*[:=]\s*)(\d+)\s*$`)
 	exitCodePattern          = regexp.MustCompile(`(?im)^(?:EXIT_CODE\s*=|exit_code["']?\s*:\s*|Process exited with code\s+)(-?\d+)\s*$`)
@@ -1058,6 +1074,9 @@ func (e *CodexExecutor) trackFunctionCall(payload rolloutPayload, eventTime time
 		if cellID := cellIDFromArguments(payload.Arguments); cellID != "" {
 			if pending, ok := state.cells[cellID]; ok {
 				delete(state.cells, cellID)
+				for index := range pending {
+					pending[index].structuredProof = true
+				}
 				state.waits[payload.CallID] = pending
 			}
 		}
@@ -1069,57 +1088,100 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 		return
 	}
 	if allMatches := customExecCommandPattern.FindAllStringSubmatchIndex(payload.Input, -1); len(allMatches) > 0 {
-		arrival := now()
-		pending := make([]codexPendingCommand, 0, len(allMatches))
-		for index, matches := range allMatches {
-			literal := payload.Input[matches[2]:matches[3]]
-			if command, ok := decodeJSStringLiteral(literal); ok && command != "" {
-				end := len(payload.Input)
-				if index+1 < len(allMatches) {
-					end = allMatches[index+1][0]
-				}
-				pending = append(pending, codexPendingCommand{
-					start:         codexCommandStart{command: command, eventTime: eventTime, arrival: arrival},
-					requiresProof: true,
-					yieldAfter:    customExecYieldAfter(payload.Input[matches[0]:end]),
-				})
-			}
-		}
+		pending := customExecPendingCommands(payload.Input, allMatches, eventTime, now())
 		if len(pending) > 0 {
 			state.starts[payload.CallID] = pending
 		}
 		return
 	}
 	allMatches := customWriteStdinPattern.FindAllStringSubmatch(payload.Input, -1)
-	pending := make([]codexPendingCommand, 0, len(allMatches))
-	unknownSessions := make([]string, 0, len(allMatches))
-	for _, matches := range allMatches {
+	pending := make([]codexPendingCommand, len(allMatches))
+	unknownIndexes := make([]int, 0, len(allMatches))
+	tracked := 0
+	structuredProof := customToolEmitsStructuredResults(payload.Input)
+	for index, matches := range allMatches {
 		sessionID := firstNonEmpty(matches[1:]...)
 		if command, ok := state.sessions[sessionID]; ok {
-			pending = append(pending, command)
+			command.structuredProof = structuredProof
+			pending[index] = command
+			tracked++
 			continue
 		}
-		unknownSessions = append(unknownSessions, sessionID)
+		unknownIndexes = append(unknownIndexes, index)
 	}
-	if len(unknownSessions) == 1 && len(state.unproven) == 1 {
+	if len(unknownIndexes) == 1 && len(state.unproven) == 1 {
 		if !unprovenAssociationIsFresh(state.unproven[0], eventTime, now()) {
 			state.unproven = nil
 		} else {
 			command := state.unproven[0]
 			state.unproven = nil
-			command.sessionID = unknownSessions[0]
+			sessionID := firstNonEmpty(allMatches[unknownIndexes[0]][1:]...)
+			command.sessionID = sessionID
 			command.requiresProof = true
-			state.sessions[unknownSessions[0]] = command
-			pending = append(pending, command)
+			command.structuredProof = structuredProof
+			state.sessions[sessionID] = command
+			pending[unknownIndexes[0]] = command
+			tracked++
 		}
-	} else if len(unknownSessions) > 0 && len(state.unproven) > 0 {
+	} else if len(unknownIndexes) > 0 && len(state.unproven) > 0 {
 		// Multiple unresolved commands or unknown sessions have no stable
 		// association. Drop them instead of guessing by call order.
 		state.unproven = nil
 	}
-	if len(pending) > 0 {
+	if tracked > 0 {
 		state.continuations[payload.CallID] = pending
 	}
+}
+
+func customExecPendingCommands(input string, matches [][]int, eventTime, arrival time.Time) []codexPendingCommand {
+	accepted := make([][]int, 0, len(matches))
+	for _, match := range matches {
+		if customExecCallIsAwaited(input, match[0]) {
+			accepted = append(accepted, match)
+		}
+	}
+	structuredProof := customToolEmitsStructuredResults(input)
+	pending := make([]codexPendingCommand, 0, len(accepted))
+	for index, match := range accepted {
+		literal := input[match[2]:match[3]]
+		command, ok := decodeJSStringLiteral(literal)
+		if !ok || command == "" {
+			continue
+		}
+		end := len(input)
+		if index+1 < len(accepted) {
+			end = accepted[index+1][0]
+		}
+		pending = append(pending, codexPendingCommand{
+			start:           codexCommandStart{command: command, eventTime: eventTime, arrival: arrival},
+			requiresProof:   true,
+			structuredProof: structuredProof,
+			yieldAfter:      customExecYieldAfter(input[match[0]:end]),
+		})
+	}
+	return pending
+}
+
+func customExecCallIsAwaited(input string, callStart int) bool {
+	if callStart < 0 || callStart > len(input) {
+		return false
+	}
+	if customDirectAwaitPattern.MatchString(input[:callStart]) {
+		return true
+	}
+	for _, location := range customPromiseAllPattern.FindAllStringIndex(input, -1) {
+		if location[1] > callStart || !customAssignmentPattern.MatchString(input[:location[0]]) {
+			continue
+		}
+		if closeIndex := strings.Index(input[location[1]:], "]"); closeIndex >= 0 && callStart < location[1]+closeIndex {
+			return true
+		}
+	}
+	return false
+}
+
+func customToolEmitsStructuredResults(input string) bool {
+	return customStructuredOutput.MatchString(input) && !customRawOutput.MatchString(input)
 }
 
 func (e *CodexExecutor) trackToolOutput(payload rolloutPayload, eventTime time.Time, state *codexTimingState, now func() time.Time) {
@@ -1151,7 +1213,7 @@ type codexCommandResult struct {
 }
 
 func (e *CodexExecutor) resolvePendingOutputs(pending []codexPendingCommand, outputs []string, eventTime time.Time, state *codexTimingState, now func() time.Time) {
-	results := parseCodexCommandResults(outputs, len(pending))
+	results := trustedPendingResults(pending, outputs)
 	if len(pending) > 1 && len(results) == 0 {
 		if outer, found := parseTextCommandResult(strings.Join(outputs, "\n")); found && outer.cellID != "" {
 			state.cells[outer.cellID] = append(state.cells[outer.cellID], pending...)
@@ -1160,6 +1222,9 @@ func (e *CodexExecutor) resolvePendingOutputs(pending []codexPendingCommand, out
 	}
 	arrival := now()
 	for index, command := range pending {
+		if command.start.command == "" {
+			continue
+		}
 		result, hasResult := results[index]
 		if !command.requiresProof && !hasResult {
 			e.emitResolvedCommandTiming(command, len(pending), codexCommandResult{}, eventTime, arrival)
@@ -1196,6 +1261,28 @@ func (e *CodexExecutor) resolvePendingOutputs(pending []codexPendingCommand, out
 			continue
 		}
 	}
+}
+
+func trustedPendingResults(pending []codexPendingCommand, outputs []string) map[int]codexCommandResult {
+	structuredProof := true
+	tracked := 0
+	for _, command := range pending {
+		if command.start.command == "" {
+			continue
+		}
+		tracked++
+		structuredProof = structuredProof && command.structuredProof
+	}
+	if structuredProof && tracked > 0 {
+		return parseCodexCommandResults(outputs, len(pending))
+	}
+	results := make(map[int]codexCommandResult)
+	if len(pending) == 1 {
+		if result, found := parseTextCommandResult(strings.Join(outputs, "\n")); found {
+			results[0] = result
+		}
+	}
+	return results
 }
 
 func (e *CodexExecutor) emitResolvedCommandTiming(command codexPendingCommand, pendingCount int, result codexCommandResult, eventTime, arrival time.Time) {
