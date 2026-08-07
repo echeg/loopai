@@ -60,6 +60,7 @@ assert_contains "missing zero-findings handling" 'If no verified findings surviv
 assert_contains "missing plan-off Codex requirement" 'Plan-off requires Codex.'
 assert_contains "missing shared loopai-plan template" 'Both candidates must receive the same requirements and the same template.'
 assert_contains "missing plugin-root template lookup" 'CLAUDE_PLUGIN_ROOT'
+assert_contains "missing standalone sibling template lookup" "\${CLAUDE_SKILL_DIR}/../loopai-plan/SKILL.md"
 assert_contains "missing symmetric cross-judging" 'Have Claude and Codex each score both complete drafts'
 assert_contains "missing blind Claude judge" 'Launch the Claude judgment in a fresh Agent'
 assert_contains "missing judge validation" 'Validate each judgment before calculating totals'
@@ -126,11 +127,31 @@ expect_failure "dangling output symlink was accepted" run_paths check-output "$f
 printf '# forbidden source\n' >"$fixture/repo/.loopai/final-draft.md"
 expect_failure "final draft under .loopai was read" run_paths write-final "$fixture/repo" docs/plans/20260807-forbidden.md "$fixture/repo/.loopai/final-draft.md"
 
+mkdir -p "$fixture/standalone/loopai-grill" "$fixture/standalone/loopai-plan"
+printf '%s\n' '# canonical template' >"$fixture/standalone/loopai-plan/SKILL.md"
+standalone_skill_dir="$fixture/standalone/loopai-grill"
+standalone_template="$standalone_skill_dir/../loopai-plan/SKILL.md"
+[[ -f "$standalone_template" && -r "$standalone_template" && ! -L "$standalone_template" ]] ||
+	fail "documented standalone layout did not expose the sibling loopai-plan template"
+
+mkdir -p "$fixture/repo/.git"
+printf '%s\n' 'private git metadata' >"$fixture/repo/.git/config"
 mkdir -p "$fixture/fake-bin" "$fixture/empty-bin"
 # shellcheck disable=SC2016 # The generated fixture expands these variables when it runs.
 printf '%s\n' \
 	'#!/usr/bin/env bash' \
 	'printf "%s\\n" "$@" >"$CODEX_ARGS_LOG"' \
+	'codex_cwd=' \
+	'previous=' \
+	'for argument in "$@"; do' \
+	'  if [[ "$previous" == "-C" ]]; then codex_cwd="$argument"; fi' \
+	'  previous="$argument"' \
+	'done' \
+	'[[ -n "$codex_cwd" ]] || exit 97' \
+	'[[ -f "$codex_cwd/repository/docs/plans/current.md" ]] || exit 98' \
+	'[[ ! -e "$codex_cwd/repository/.loopai" ]] || exit 99' \
+	'[[ ! -e "$codex_cwd/repository/.git" ]] || exit 100' \
+	'find "$codex_cwd/repository" -print >"$CODEX_SNAPSHOT_LOG"' \
 	'cat >"$CODEX_STDIN_LOG"' \
 	'printf "codex result\\n"' \
 	'if [[ "${CODEX_EXIT_CODE:-0}" != 0 ]]; then printf "codex failed\\n" >&2; fi' \
@@ -138,22 +159,35 @@ printf '%s\n' \
 chmod +x "$fixture/fake-bin/codex"
 printf 'review this plan\n' >"$fixture/codex-prompt.txt"
 
-CODEX_ARGS_LOG="$fixture/codex.args" CODEX_STDIN_LOG="$fixture/codex.stdin" TMPDIR="$fixture" PATH="$fixture/fake-bin:/usr/bin:/bin" \
+CODEX_ARGS_LOG="$fixture/codex.args" CODEX_SNAPSHOT_LOG="$fixture/codex.snapshot" CODEX_STDIN_LOG="$fixture/codex.stdin" TMPDIR="$fixture" PATH="$fixture/fake-bin:/usr/bin:/bin" \
 	bash "$codex_wrapper" "$fixture/repo" "$fixture/codex-prompt.txt" "$fixture/codex.stdout" "$fixture/codex.stderr"
 [[ "$(<"$fixture/codex.stdout")" == "codex result" ]] || fail "Codex stdout was not captured"
 [[ ! -s "$fixture/codex.stderr" ]] || fail "successful Codex stderr was not captured separately"
-canonical_fixture_repo="$(cd "$fixture/repo" && pwd -P)"
 codex_isolation_dir="$(awk 'previous == "-C" { print; exit } { previous = $0 }' "$fixture/codex.args")"
 [[ "$codex_isolation_dir" == "$fixture"/loopai-grill-codex.* ]] || fail "Codex did not use an isolated working directory"
 [[ ! -e "$codex_isolation_dir" ]] || fail "isolated Codex working directory was not removed"
-grep -Fq "Inspect only the repository at $canonical_fixture_repo." "$fixture/codex.stdin" || fail "Codex prompt omitted the repository root"
+grep -Fq 'repository/docs/plans/current.md' "$fixture/codex.snapshot" || fail "sanitized snapshot omitted repository files"
+if grep -Eq '/(\.loopai|\.git)(/|$)' "$fixture/codex.snapshot"; then
+	fail "sanitized snapshot included private repository metadata"
+fi
+grep -Fq 'Inspect only the sanitized repository snapshot in repository/' "$fixture/codex.stdin" || fail "Codex prompt omitted the sanitized snapshot boundary"
 grep -Fq 'review this plan' "$fixture/codex.stdin" || fail "Codex prompt file was not forwarded"
 printf '%s\n' \
+	--ask-for-approval \
+	never \
 	exec \
 	--ignore-user-config \
 	--ignore-rules \
 	-c \
 	'mcp_servers={}' \
+	-c \
+	'default_permissions="loopai_grill"' \
+	-c \
+	'permissions.loopai_grill.filesystem.:minimal="read"' \
+	-c \
+	'permissions.loopai_grill.filesystem.:workspace_roots="read"' \
+	-c \
+	'permissions.loopai_grill.network.enabled=false' \
 	-c \
 	'shell_environment_policy.inherit="core"' \
 	-c \
@@ -170,14 +204,12 @@ printf '%s\n' \
 	--disable in_app_browser \
 	--disable plugins \
 	--disable remote_plugin \
+	--disable skill_search \
 	--disable skill_mcp_dependency_install \
 	--disable standalone_web_search \
 	--disable tool_call_mcp_elicitation \
-	--sandbox read-only \
-	--ask-for-approval never \
 	--ephemeral \
 	-C "$codex_isolation_dir" \
-	--add-dir "$canonical_fixture_repo" \
 	--skip-git-repo-check \
 	- >"$fixture/expected-codex.args"
 diff -u "$fixture/expected-codex.args" "$fixture/codex.args" || fail "Codex isolation arguments changed"
@@ -186,7 +218,7 @@ expect_failure "missing Codex binary was not reported" env PATH="$fixture/empty-
 	"$fixture/repo" "$fixture/codex-prompt.txt" "$fixture/missing.stdout" "$fixture/missing.stderr"
 grep -Fq 'codex binary is required' "$fixture/failure.stderr" || fail "missing Codex error was not actionable"
 
-if CODEX_EXIT_CODE=42 CODEX_ARGS_LOG="$fixture/codex-failure.args" CODEX_STDIN_LOG="$fixture/codex-failure.stdin" TMPDIR="$fixture" PATH="$fixture/fake-bin:/usr/bin:/bin" \
+if CODEX_EXIT_CODE=42 CODEX_ARGS_LOG="$fixture/codex-failure.args" CODEX_SNAPSHOT_LOG="$fixture/codex-failure.snapshot" CODEX_STDIN_LOG="$fixture/codex-failure.stdin" TMPDIR="$fixture" PATH="$fixture/fake-bin:/usr/bin:/bin" \
 	bash "$codex_wrapper" "$fixture/repo" "$fixture/codex-prompt.txt" "$fixture/failed.stdout" "$fixture/failed.stderr"; then
 	fail "failing Codex invocation returned success"
 fi
@@ -194,5 +226,23 @@ fi
 grep -Fq 'codex failed' "$fixture/failed.stderr" || fail "failing Codex stderr was discarded"
 failed_isolation_dir="$(awk 'previous == "-C" { print; exit } { previous = $0 }' "$fixture/codex-failure.args")"
 [[ ! -e "$failed_isolation_dir" ]] || fail "failed Codex invocation left its isolated working directory"
+
+if command -v codex >/dev/null 2>&1 && codex sandbox --help 2>&1 | grep -Fq -- '--permission-profile'; then
+	mkdir -p "$fixture/empty-codex-home" "$fixture/containment-allowed" "$fixture/containment-denied"
+	printf 'allowed\n' >"$fixture/containment-allowed/sentinel"
+	printf 'denied\n' >"$fixture/containment-denied/sentinel"
+	env CODEX_HOME="$fixture/empty-codex-home" codex sandbox -P loopai_grill \
+		-c 'permissions.loopai_grill.filesystem.:minimal="read"' \
+		-c 'permissions.loopai_grill.filesystem.:workspace_roots="read"' \
+		-c 'permissions.loopai_grill.network.enabled=false' \
+		-C "$fixture/containment-allowed" -- /bin/cat "$fixture/containment-allowed/sentinel" \
+		>"$fixture/containment.stdout" 2>"$fixture/containment.stderr" || fail "restricted profile blocked its workspace"
+	grep -Fq 'allowed' "$fixture/containment.stdout" || fail "restricted profile did not read its workspace"
+	expect_failure "restricted profile read a file outside its workspace" env CODEX_HOME="$fixture/empty-codex-home" codex sandbox -P loopai_grill \
+		-c 'permissions.loopai_grill.filesystem.:minimal="read"' \
+		-c 'permissions.loopai_grill.filesystem.:workspace_roots="read"' \
+		-c 'permissions.loopai_grill.network.enabled=false' \
+		-C "$fixture/containment-allowed" -- /bin/cat "$fixture/containment-denied/sentinel"
+fi
 
 printf 'loopai-grill acceptance tests passed\n'
