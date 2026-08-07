@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -6101,4 +6102,110 @@ func branchExists(t *testing.T, dir, branch string) bool {
 	out, err := cmd.Output()
 	require.NoError(t, err)
 	return strings.TrimSpace(string(out)) != ""
+}
+
+// fakeBranchChecker reports branch existence from a fixed set.
+type fakeBranchChecker struct{ branches []string }
+
+func (f fakeBranchChecker) BranchExists(name string) bool {
+	return slices.Contains(f.branches, name)
+}
+
+func TestResolveFeatureBranch(t *testing.T) {
+	plansDir := t.TempDir()
+	completedDir := filepath.Join(plansDir, "completed")
+	require.NoError(t, os.MkdirAll(completedDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260806-dynamic-review-agents.md"), []byte("# plan\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(completedDir, "20260805-section-duration-logging.md"), []byte("# plan\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260801-already-merged.md"), []byte("# plan\n"), 0o600))
+	// plan file whose derived branch collides with an unrelated existing branch name
+	require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260807-feature.md"), []byte("# plan\n"), 0o600))
+
+	branches := []string{"master", "dynamic-review-agents", "section-duration-logging", "feature", "20260807-feature"}
+
+	tests := []struct {
+		name       string
+		arg        string
+		want       string
+		wantErr    string
+		errFrags   []string
+		checkerNil bool
+	}{
+		{name: "existing branch name", arg: "dynamic-review-agents", want: "dynamic-review-agents"},
+		{name: "plan basename with extension", arg: "20260806-dynamic-review-agents.md", want: "dynamic-review-agents"},
+		{name: "plan basename without extension", arg: "20260806-dynamic-review-agents", want: "dynamic-review-agents"},
+		{name: "plan in completed dir", arg: "20260805-section-duration-logging", want: "section-duration-logging"},
+		{
+			name: "plan path",
+			arg:  filepath.Join(plansDir, "20260806-dynamic-review-agents.md"),
+			want: "dynamic-review-agents",
+		},
+		{
+			name: "plan path in completed dir",
+			arg:  filepath.Join(completedDir, "20260805-section-duration-logging.md"),
+			want: "section-duration-logging",
+		},
+		{
+			name: "stale plan path falls back to completed lookup",
+			arg:  filepath.Join(plansDir, "20260805-section-duration-logging.md"),
+			want: "section-duration-logging",
+		},
+		{name: "branch match wins over plan match", arg: "20260807-feature", want: "20260807-feature"},
+		{name: "whitespace is trimmed", arg: "  dynamic-review-agents  ", want: "dynamic-review-agents"},
+		{name: "empty identifier", arg: "   ", wantErr: "empty feature identifier"},
+		{
+			name:     "unknown identifier lists searched locations",
+			arg:      "no-such-thing",
+			errFrags: []string{"no-such-thing", plansDir, completedDir},
+		},
+		{
+			name:     "plan resolves to missing branch",
+			arg:      "20260801-already-merged",
+			errFrags: []string{"already-merged", "already merged"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, plansDir, tt.arg)
+			if tt.wantErr != "" || len(tt.errFrags) > 0 {
+				require.Error(t, err)
+				assert.Empty(t, got)
+				if tt.wantErr != "" {
+					assert.Contains(t, err.Error(), tt.wantErr)
+				}
+				for _, frag := range tt.errFrags {
+					assert.Contains(t, err.Error(), frag)
+				}
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestResolveFeatureBranchRelativePlansDir(t *testing.T) {
+	repo := t.TempDir()
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260807-relative-plan.md"), []byte("# plan\n"), 0o600))
+
+	t.Chdir(repo)
+
+	checker := fakeBranchChecker{branches: []string{"relative-plan"}}
+	got, err := resolveFeatureBranch(checker, filepath.Join("docs", "plans"), "20260807-relative-plan")
+	require.NoError(t, err)
+	assert.Equal(t, "relative-plan", got)
+
+	got, err = resolveFeatureBranch(checker, filepath.Join("docs", "plans"), filepath.Join("docs", "plans", "20260807-relative-plan.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "relative-plan", got)
+}
+
+func TestResolveFeatureBranchMissingPlansDir(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent")
+	_, err := resolveFeatureBranch(fakeBranchChecker{}, missing, "whatever")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "whatever")
 }

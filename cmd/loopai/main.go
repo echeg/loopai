@@ -2284,6 +2284,71 @@ type cmuxStatusClearer interface {
 	Clear()
 }
 
+// branchExistenceChecker reports whether a local branch exists; satisfied by *git.Service.
+type branchExistenceChecker interface {
+	BranchExists(name string) bool
+}
+
+// resolveFeatureBranch resolves a feature identifier supplied to --merge/--pr into a local
+// branch name. resolution is deterministic: an exact local branch match wins, then a plan file
+// located by path or by basename in plansDir and plansDir/completed, whose derived branch must
+// still exist locally.
+func resolveFeatureBranch(gitSvc branchExistenceChecker, plansDir, arg string) (string, error) {
+	identifier := strings.TrimSpace(arg)
+	if identifier == "" {
+		return "", errors.New("empty feature identifier")
+	}
+	if gitSvc.BranchExists(identifier) {
+		return identifier, nil
+	}
+
+	completedDir := filepath.Join(plansDir, "completed")
+	planFile := findFeaturePlanFile(identifier, plansDir, completedDir)
+	if planFile == "" {
+		return "", fmt.Errorf("unknown feature %q: no local branch with this name and no plan file in %q or %q",
+			identifier, plansDir, completedDir)
+	}
+
+	branch := plan.ExtractBranchName(planFile)
+	if !gitSvc.BranchExists(branch) {
+		return "", fmt.Errorf("plan %q resolves to branch %q, which does not exist locally (already merged?)",
+			filepath.Base(planFile), branch)
+	}
+	return branch, nil
+}
+
+// findFeaturePlanFile locates a plan file for identifier, accepting an explicit path or a
+// basename with an optional .md extension. an unresolvable path falls back to a basename lookup
+// in dirs, covering plans already moved to the completed directory.
+func findFeaturePlanFile(identifier string, dirs ...string) string {
+	if filepath.Base(identifier) != identifier {
+		if path := existingPlanFile(identifier); path != "" {
+			return path
+		}
+	}
+	base := filepath.Base(identifier)
+	for _, dir := range dirs {
+		if path := existingPlanFile(filepath.Join(dir, base)); path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+// existingPlanFile returns path if it names a regular file, retrying with an added .md extension.
+func existingPlanFile(path string) string {
+	candidates := []string{path}
+	if filepath.Ext(path) != ".md" {
+		candidates = append(candidates, path+".md")
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+			return candidate
+		}
+	}
+	return ""
+}
+
 // runMergeCommand merges the current feature branch into an explicit or detected base.
 // The completion pill is deliberately retained on every failure so the pending action stays visible.
 func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase string, rep cmuxStatusClearer, stdout io.Writer) error {

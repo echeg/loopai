@@ -73,10 +73,10 @@ This directly fixes the workflow gap where a finished worktree run cannot be clo
 
 ### Task 1: Add feature identifier resolver
 
-- [ ] write failing table-driven tests for `resolveFeatureBranch(gitSvc, plansDir, arg)` in `cmd/loopai`: existing branch name wins; plan path resolves via `plan.ExtractBranchName`; plan basename with and without `.md`; plan found in `plansDir/completed/`; branch match takes priority over plan match; unknown identifier returns error listing searched locations; plan resolving to a nonexistent branch returns "already merged?" error; resolved branch equal to base is rejected by callers (covered in later tasks)
-- [ ] implement `resolveFeatureBranch` in `cmd/loopai/main.go`: check local branch existence first, then plan file lookup in `plansDir` and `plansDir/completed/`, derive branch with `plan.ExtractBranchName`, verify derived branch exists
-- [ ] use `filepath` for all path handling; accept both relative and absolute plan paths
-- [ ] run `go test ./cmd/...` - must pass before task 2
+- [x] write failing table-driven tests for `resolveFeatureBranch(gitSvc, plansDir, arg)` in `cmd/loopai`: existing branch name wins; plan path resolves via `plan.ExtractBranchName`; plan basename with and without `.md`; plan found in `plansDir/completed/`; branch match takes priority over plan match; unknown identifier returns error listing searched locations; plan resolving to a nonexistent branch returns "already merged?" error; resolved branch equal to base is rejected by callers (covered in later tasks)
+- [x] implement `resolveFeatureBranch` in `cmd/loopai/main.go`: check local branch existence first, then plan file lookup in `plansDir` and `plansDir/completed/`, derive branch with `plan.ExtractBranchName`, verify derived branch exists
+- [x] use `filepath` for all path handling; accept both relative and absolute plan paths
+- [x] run `go test ./cmd/...` - must pass before task 2
 
 ### Task 2: Wire positional argument into standalone mode routing
 
