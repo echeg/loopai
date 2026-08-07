@@ -997,11 +997,15 @@ var (
 	customExecCommandPattern = regexp.MustCompile("(?s)tools\\.exec_command\\s*\\(\\s*\\{.*?(?:\"cmd\"|'cmd'|\\bcmd)\\s*:\\s*(\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|`(?:\\\\.|[^`\\\\])*`)")
 	customExecYieldPattern   = regexp.MustCompile(`(?s)(?:"yield_time_ms"|'yield_time_ms'|\byield_time_ms)\s*:\s*(\d+)`)
 	customWriteStdinPattern  = regexp.MustCompile(`(?s)tools\.write_stdin\s*\(\s*\{.*?(?:"session_id"|'session_id'|\bsession_id)\s*:\s*(?:"([^"]+)"|'([^']+)'|(\d+))`)
-	customDirectAwaitPattern = regexp.MustCompile(`(?s)^\s*(?:(?://[^\n]*\n)\s*)*(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*await\s*$`)
+	customDirectAwaitPattern = regexp.MustCompile(`(?s)^\s*(?:(?://[^\n]*\n)\s*)*(?:const|let|var)(?:\s+[A-Za-z_$][A-Za-z0-9_$]*|\s*\[[^\]\n]+\]|\s*\{[^}\n]+\})\s*=\s*await\s*$`)
 	customAssignmentPattern  = regexp.MustCompile(`(?s)^\s*(?:(?://[^\n]*\n)\s*)*(?:const|let|var)\s+(?:[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]\n]+\]|\{[^}\n]+\})\s*=\s*$`)
 	customPromiseAllPattern  = regexp.MustCompile(`await\s+Promise\.all\s*\(\s*\[`)
-	customStructuredOutput   = regexp.MustCompile(`\btext\s*\(\s*JSON\.stringify\s*\(`)
+	customAnyPromiseAll      = regexp.MustCompile(`await\s+Promise\.all\s*\(`)
+	customMapPattern         = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\.map\s*\(`)
+	customExecCallPattern    = regexp.MustCompile(`\btools\.exec_command\s*\(`)
+	customTextCallPattern    = regexp.MustCompile(`\btext\s*\(`)
 	customRawOutput          = regexp.MustCompile(`\btext\s*\(\s*[A-Za-z_$][A-Za-z0-9_$]*\.output\s*\)`)
+	customDestructuredRest   = regexp.MustCompile(`(?s)(?:const|let|var)\s*\{[^}]*\.\.\.\s*([A-Za-z_$][A-Za-z0-9_$]*)[^}]*\}\s*=\s*await\s+tools\.exec_command`)
 	outputSessionIDPattern   = regexp.MustCompile(`(?im)^(?:SESSION_ID\s*=|session(?:_|\s+)id["']?\s*[:=]\s*|Process running with session ID\s+)(\d+)\s*$`)
 	outputCellIDPattern      = regexp.MustCompile(`(?im)^(?:Script running with cell ID\s*|cell_id["']?\s*[:=]\s*)(\d+)\s*$`)
 	exitCodePattern          = regexp.MustCompile(`(?im)^(?:EXIT_CODE\s*=|exit_code["']?\s*:\s*|Process exited with code\s+)(-?\d+)\s*$`)
@@ -1091,7 +1095,11 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 		pending := customExecPendingCommands(payload.Input, allMatches, eventTime, now())
 		if len(pending) > 0 {
 			state.starts[payload.CallID] = pending
+			return
 		}
+	}
+	if pending := customMappedExecPendingCommands(payload.Input, eventTime, now()); len(pending) > 0 {
+		state.starts[payload.CallID] = pending
 		return
 	}
 	allMatches := customWriteStdinPattern.FindAllStringSubmatch(payload.Input, -1)
@@ -1160,6 +1168,309 @@ func customExecPendingCommands(input string, matches [][]int, eventTime, arrival
 		})
 	}
 	return pending
+}
+
+func customMappedExecPendingCommands(input string, eventTime, arrival time.Time) []codexPendingCommand {
+	structuredProof := customToolEmitsStructuredResults(input)
+	pending := make([]codexPendingCommand, 0)
+	for _, match := range customMapPattern.FindAllStringSubmatchIndex(input, -1) {
+		if len(match) < 4 || !customPositionInAwaitedPromiseAll(input, match[0]) {
+			continue
+		}
+		mapEnd, ok := customDelimitedEnd(input, match[1]-1)
+		if !ok {
+			continue
+		}
+		expression, call, params, ok := customMapCommandExpression(input[match[1]:mapEnd])
+		if !ok {
+			continue
+		}
+		source := input[match[2]:match[3]]
+		items, ok := customStaticArrayValues(input, source, match[0])
+		if !ok {
+			continue
+		}
+		selector, ok := customMapValueSelector(params, expression)
+		if !ok {
+			continue
+		}
+		for _, item := range items {
+			value, ok := selector(item)
+			if !ok {
+				continue
+			}
+			command, ok := customCommandFromStaticValue(value)
+			if !ok || command == "" {
+				continue
+			}
+			pending = append(pending, codexPendingCommand{
+				start:           codexCommandStart{command: command, eventTime: eventTime, arrival: arrival},
+				requiresProof:   true,
+				structuredProof: structuredProof,
+				yieldAfter:      customExecYieldAfter(call + "\n" + value),
+			})
+		}
+	}
+	return pending
+}
+
+func customPositionInAwaitedPromiseAll(input string, position int) bool {
+	for _, location := range customAnyPromiseAll.FindAllStringIndex(input, -1) {
+		if location[1] > position {
+			continue
+		}
+		statementStart, ok := customTopLevelStatementStart(input, location[0])
+		if !ok || !customAssignmentPattern.MatchString(input[statementStart:location[0]]) {
+			continue
+		}
+		end, ok := customDelimitedEnd(input, location[1]-1)
+		if ok && position < end {
+			return true
+		}
+	}
+	return false
+}
+
+func customMapCommandExpression(callback string) (expression, call, params string, ok bool) {
+	params, body, found := strings.Cut(callback, "=>")
+	if !found {
+		return "", "", "", false
+	}
+	params = strings.TrimSpace(params)
+	params = strings.TrimSpace(strings.TrimPrefix(params, "async"))
+	if strings.HasPrefix(params, "(") {
+		end, closed := customDelimitedEnd(params, 0)
+		if !closed || end != len(params)-1 {
+			return "", "", "", false
+		}
+		params = strings.TrimSpace(params[1:end])
+	}
+	matches := customExecCallPattern.FindAllStringIndex(body, -1)
+	if len(matches) != 1 {
+		return "", "", "", false
+	}
+	end, found := customDelimitedEnd(body, matches[0][1]-1)
+	if !found {
+		return "", "", "", false
+	}
+	call = body[matches[0][0] : end+1]
+	arguments := strings.TrimSpace(body[matches[0][1]:end])
+	parts, found := splitCustomTopLevel(arguments, ',')
+	if !found || len(parts) != 1 {
+		return "", "", "", false
+	}
+	expression = strings.TrimSpace(parts[0])
+	if isCustomIdentifier(expression) {
+		return expression, call, params, true
+	}
+	if !strings.HasPrefix(expression, "{") {
+		return "", "", "", false
+	}
+	value, found := customObjectProperty(expression, "cmd")
+	if !found {
+		return "", "", "", false
+	}
+	return value, call, params, true
+}
+
+func customStaticArrayValues(input, name string, before int) ([]string, bool) {
+	pattern := regexp.MustCompile(`\b(?:const|let|var)\s+` + regexp.QuoteMeta(name) + `\s*=\s*\[`)
+	var selected []string
+	for _, location := range pattern.FindAllStringIndex(input[:before], -1) {
+		end, ok := customDelimitedEnd(input, location[1]-1)
+		if !ok || end >= before {
+			continue
+		}
+		values, ok := splitCustomTopLevel(input[location[1]:end], ',')
+		if ok {
+			selected = values
+		}
+	}
+	return selected, len(selected) > 0
+}
+
+func customMapValueSelector(params, expression string) (func(string) (string, bool), bool) {
+	if _, ok := decodeJSStringLiteral(expression); ok {
+		return func(string) (string, bool) { return expression, true }, true
+	}
+	if !isCustomIdentifier(expression) {
+		return nil, false
+	}
+	if isCustomIdentifier(params) && params == expression {
+		return func(item string) (string, bool) { return strings.TrimSpace(item), true }, true
+	}
+	params = strings.TrimSpace(params)
+	if !strings.HasPrefix(params, "[") {
+		return nil, false
+	}
+	end, ok := customDelimitedEnd(params, 0)
+	if !ok || end != len(params)-1 {
+		return nil, false
+	}
+	bindings, ok := splitCustomTopLevel(params[1:end], ',')
+	if !ok {
+		return nil, false
+	}
+	selected := -1
+	for index, binding := range bindings {
+		if strings.TrimSpace(binding) == expression {
+			selected = index
+			break
+		}
+	}
+	if selected < 0 {
+		return nil, false
+	}
+	return func(item string) (string, bool) {
+		item = strings.TrimSpace(item)
+		if !strings.HasPrefix(item, "[") {
+			return "", false
+		}
+		itemEnd, found := customDelimitedEnd(item, 0)
+		if !found || itemEnd != len(item)-1 {
+			return "", false
+		}
+		values, found := splitCustomTopLevel(item[1:itemEnd], ',')
+		if !found || selected >= len(values) {
+			return "", false
+		}
+		return strings.TrimSpace(values[selected]), true
+	}, true
+}
+
+func customCommandFromStaticValue(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if command, ok := decodeJSStringLiteral(value); ok {
+		return command, true
+	}
+	if !strings.HasPrefix(value, "{") {
+		return "", false
+	}
+	command, ok := customObjectProperty(value, "cmd")
+	if !ok {
+		return "", false
+	}
+	return decodeJSStringLiteral(strings.TrimSpace(command))
+}
+
+func customObjectProperty(object, wanted string) (string, bool) {
+	object = strings.TrimSpace(object)
+	if !strings.HasPrefix(object, "{") {
+		return "", false
+	}
+	end, ok := customDelimitedEnd(object, 0)
+	if !ok || end != len(object)-1 {
+		return "", false
+	}
+	properties, ok := splitCustomTopLevel(object[1:end], ',')
+	if !ok {
+		return "", false
+	}
+	for _, property := range properties {
+		parts, valid := splitCustomTopLevel(property, ':')
+		if !valid || len(parts) > 2 {
+			continue
+		}
+		key := strings.Trim(strings.TrimSpace(parts[0]), "\"'")
+		if key != wanted {
+			continue
+		}
+		if len(parts) == 1 {
+			return wanted, true
+		}
+		return strings.TrimSpace(parts[1]), true
+	}
+	return "", false
+}
+
+func splitCustomTopLevel(input string, delimiter byte) ([]string, bool) {
+	result := make([]string, 0)
+	start := 0
+	braces, brackets, parentheses := 0, 0, 0
+	for index := 0; index < len(input); {
+		next, token, ok := nextCustomExecSyntax(input, index, len(input))
+		if !ok {
+			return nil, false
+		}
+		if token == delimiter && braces == 0 && brackets == 0 && parentheses == 0 {
+			result = append(result, strings.TrimSpace(input[start:index]))
+			start = next
+			index = next
+			continue
+		}
+		switch token {
+		case '{':
+			braces++
+		case '}':
+			braces--
+		case '[':
+			brackets++
+		case ']':
+			brackets--
+		case '(':
+			parentheses++
+		case ')':
+			parentheses--
+		}
+		if braces < 0 || brackets < 0 || parentheses < 0 {
+			return nil, false
+		}
+		index = next
+	}
+	if braces != 0 || brackets != 0 || parentheses != 0 {
+		return nil, false
+	}
+	result = append(result, strings.TrimSpace(input[start:]))
+	return result, true
+}
+
+func customDelimitedEnd(input string, open int) (int, bool) {
+	if open < 0 || open >= len(input) {
+		return 0, false
+	}
+	opening := input[open]
+	closing := map[byte]byte{'(': ')', '[': ']', '{': '}'}[opening]
+	if closing == 0 {
+		return 0, false
+	}
+	depth := 0
+	for index := open; index < len(input); {
+		next, token, ok := nextCustomExecSyntax(input, index, len(input))
+		if !ok {
+			return 0, false
+		}
+		switch token {
+		case opening:
+			depth++
+		case closing:
+			depth--
+			if depth == 0 {
+				return index, true
+			}
+		}
+		index = next
+	}
+	return 0, false
+}
+
+func isCustomIdentifier(value string) bool {
+	if value == "" || !isCustomIdentifierStart(value[0]) {
+		return false
+	}
+	for index := 1; index < len(value); index++ {
+		if !isCustomIdentifierPart(value[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isCustomIdentifierStart(char byte) bool {
+	return char == '_' || char == '$' || char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z'
+}
+
+func isCustomIdentifierPart(char byte) bool {
+	return isCustomIdentifierStart(char) || char >= '0' && char <= '9'
 }
 
 func customExecCallIsAwaited(input string, callStart int) bool {
@@ -1260,7 +1571,36 @@ func skipCustomExecQuoted(input string, start, end int) (int, bool) {
 }
 
 func customToolEmitsStructuredResults(input string) bool {
-	return customStructuredOutput.MatchString(input) && !customRawOutput.MatchString(input)
+	arguments := customTextCallArguments(input)
+	if !customRawOutput.MatchString(input) {
+		for _, argument := range arguments {
+			if strings.Contains(argument, "JSON.stringify(") {
+				return true
+			}
+		}
+	}
+	for _, match := range customDestructuredRest.FindAllStringSubmatch(input, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		for _, argument := range arguments {
+			if strings.TrimSpace(argument) == match[1] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func customTextCallArguments(input string) []string {
+	arguments := make([]string, 0)
+	for _, location := range customTextCallPattern.FindAllStringIndex(input, -1) {
+		end, ok := customDelimitedEnd(input, location[1]-1)
+		if ok {
+			arguments = append(arguments, input[location[1]:end])
+		}
+	}
+	return arguments
 }
 
 func (e *CodexExecutor) trackToolOutput(payload rolloutPayload, eventTime time.Time, state *codexTimingState, now func() time.Time) {
@@ -1512,6 +1852,25 @@ func indexedBatchResults(parsed []codexCommandResult, pendingCount int) (map[int
 }
 
 func parseStructuredCommandResult(output string) (codexCommandResult, bool) {
+	if result, ok := parseStructuredCommandResultJSON(strings.TrimSpace(output)); ok {
+		return result, true
+	}
+	var result codexCommandResult
+	found := false
+	for line := range strings.Lines(output) {
+		candidate, ok := parseStructuredCommandResultJSON(strings.TrimSpace(line))
+		if !ok {
+			continue
+		}
+		if found {
+			return codexCommandResult{}, false
+		}
+		result, found = candidate, true
+	}
+	return result, found
+}
+
+func parseStructuredCommandResultJSON(output string) (codexCommandResult, bool) {
 	var raw struct {
 		Index           *int            `json:"index"`
 		SessionID       json.RawMessage `json:"session_id"`
@@ -1519,7 +1878,7 @@ func parseStructuredCommandResult(output string) (codexCommandResult, bool) {
 		ExitCode        json.RawMessage `json:"exit_code"`
 		WallTimeSeconds *float64        `json:"wall_time_seconds"`
 	}
-	if json.Unmarshal([]byte(strings.TrimSpace(output)), &raw) != nil {
+	if json.Unmarshal([]byte(output), &raw) != nil {
 		return codexCommandResult{}, false
 	}
 	result := codexCommandResult{}
