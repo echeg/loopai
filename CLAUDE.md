@@ -21,7 +21,7 @@ The fork does not contain upstream packaging/release infrastructure or the upstr
 ```bash
 make build      # build .bin/loopai
 make test       # asset checks, race-enabled unit tests with coverage, provider-wrapper suites
-make check-symlinks # validate the five Claude skill assets and links
+make check-symlinks # validate the six Claude skill assets and links
 make test-symlinks  # regression tests for Claude skill asset validation
 make check-plugin   # validate Claude plugin and marketplace manifests
 make test-plugin    # regression tests for manifest validation
@@ -74,11 +74,12 @@ The top-level `assets/claude/loopai*.md` files are symlinks to the matching
 `assets/claude/skills/loopai*/SKILL.md` sources. Keep the command name,
 directory name, and link target aligned; `make check-symlinks` rejects broken,
 missing, incorrect, and orphan links, requires skill descriptions, and verifies
-the exact skill inventory. The current set is `loopai`, `loopai-plan`, `loopai-brainstorm`,
-`loopai-adopt`, and `loopai-update`; every added skill needs the matching
-top-level symlink. When adding or removing a skill, update `expected_skills` in
-`scripts/check-symlinks.sh`, update the valid fixture inventory in
-`scripts/check-symlinks_test.sh`, and bump both manifest versions.
+the exact skill inventory. The current set is `loopai`, `loopai-plan`,
+`loopai-brainstorm`, `loopai-adopt`, `loopai-update`, and `loopai-grill`; every
+added skill needs the matching top-level symlink. When adding or removing a
+skill, update `expected_skills` in `scripts/check-symlinks.sh` and the valid
+fixture inventory in `scripts/check-symlinks_test.sh`, then bump both manifest
+versions.
 
 `.claude-plugin/marketplace.json` exposes this repository as the `loopai`
 marketplace, and `.claude-plugin/plugin.json` points Claude Code at the skill

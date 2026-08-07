@@ -87,7 +87,7 @@ claude plugin marketplace add echeg/loopai
 claude plugin install loopai@loopai
 ```
 
-The plugin provides five skills:
+The plugin provides six skills:
 
 - `loopai:loopai` launches loopai, monitors progress, and resumes active runs
 - `loopai:loopai-plan` creates an executable implementation plan
@@ -96,6 +96,8 @@ The plugin provides five skills:
 - `loopai:loopai-adopt` converts an existing specification or issue into a plan
 - `loopai:loopai-update` merges updated embedded defaults into local
   customizations
+- `loopai:loopai-grill` critiques an existing plan with Claude and Codex, or
+  runs a plan-off that compares and synthesizes competing plans
 
 The CLI remains the execution engine. The plugin adds Claude Code workflows
 for planning and operating it. Refresh the marketplace and plugin when a new

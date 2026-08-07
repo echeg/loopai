@@ -71,9 +71,9 @@
 - [x] verify the skill file passes the frontmatter validation in check-symlinks (quoted description, no unquoted `: ` or ` #`)
 
 ### Task 4: [Final] Update documentation
-- [ ] update README.md plugin section: "five skills" → "six skills" with the `loopai:loopai-grill` bullet describing both modes
-- [ ] update CLAUDE.md skill/symlink inventory notes if they enumerate skills
-- [ ] update llms.txt plugin/skill enumeration if present
+- [x] update README.md plugin section: "five skills" → "six skills" with the `loopai:loopai-grill` bullet describing both modes
+- [x] update CLAUDE.md skill/symlink inventory notes if they enumerate skills
+- [x] update llms.txt plugin/skill enumeration if present
 
 ## Technical Details
 - Codex invocation is direct `codex exec` (non-interactive), NOT `loopai --codex --plan`: loopai's plan creation is interactive and writes files; the grill needs a captive draft/critique as text the skill controls.
