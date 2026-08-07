@@ -36,10 +36,16 @@ claude plugin install loopai@loopai
 ```
 
 The plugin provides `loopai:loopai`, `loopai:loopai-plan`,
-`loopai:loopai-brainstorm`, `loopai:loopai-adopt`, and
-`loopai:loopai-update`, and `loopai:loopai-grill`. The CLI remains the execution
+`loopai:loopai-brainstorm`, `loopai:loopai-adopt`, `loopai:loopai-update`, and
+`loopai:loopai-grill`. The CLI remains the execution
 engine. `loopai:loopai-grill` critiques an existing plan with Claude and Codex;
 its `compare` mode generates, judges, and synthesizes competing plans.
+
+Invoke `/loopai:loopai-grill [docs/plans/X.md]` for an active-plan critique or
+`/loopai:loopai-grill compare <description-or-active-plan>` for a plan-off.
+Grill mode continues Claude-only when Codex is unavailable; compare mode
+requires Codex and stops without creating a plan. Neither mode accepts completed,
+symlinked, or `.loopai/` plans.
 
 Use `loopai:loopai-brainstorm` when a feature needs design exploration. It asks
 one question at a time, compares approaches, and seeks section-by-section

@@ -1,6 +1,6 @@
 {
   "name": "loopai",
-  "description": "Claude Code workflows for planning and operating loopai",
+  "description": "Claude Code workflows for autonomous execution, planning, adversarial plan critique, and cross-model plan comparison",
   "owner": {
     "name": "echeg"
   },
@@ -8,7 +8,7 @@
     {
       "name": "loopai",
       "source": "./",
-      "description": "Autonomous plan execution with Claude Code, including task execution, monitoring, and plan creation",
+      "description": "Claude Code workflows for autonomous execution, planning, adversarial plan critique, and cross-model plan comparison",
       "version": "0.2.0",
       "author": {
         "name": "echeg"

@@ -2,10 +2,15 @@
 
 ## Overview
 - Add a sixth skill `loopai-grill` to the Claude Code plugin with two modes:
-  - **Grill mode** (default, `/loopai-grill [docs/plans/X.md]`): adversarial critique of an existing plan by parallel Claude subagent lenses plus an independent Codex critique via `codex exec`; verified findings are presented for selection and applied to the plan file.
-  - **Plan-off mode** (`/loopai-grill compare <description or plan file>`): Claude and Codex independently produce competing loopai-format plans from the same requirements, each model then judges BOTH plans against fixed criteria, and a synthesis step merges the winner with the loser's best ideas into the final `docs/plans/*.md`.
+  - **Grill mode** (default, `/loopai:loopai-grill [docs/plans/X.md]`): adversarial critique of an existing plan by parallel Claude subagent lenses plus an independent Codex critique via `codex exec`; verified findings are presented for selection and applied to the plan file.
+  - **Plan-off mode** (`/loopai:loopai-grill compare <description or plan file>`): Claude and Codex independently produce competing loopai-format plans from the same requirements, each model then judges BOTH plans against fixed criteria, and a synthesis step merges the winner with the loser's best ideas into the final `docs/plans/*.md`.
 - Problem it solves: a single-model plan inherits that model's blind spots. Cross-model critique and comparison surface missing tasks, hidden dependencies, and over-engineering before an expensive autonomous run burns hours on a flawed plan.
 - Integrates as a pure plugin asset: no Go changes, distributed via the existing marketplace (`claude plugin update loopai@loopai`).
+
+## Status
+- Implementation and automated validation are complete.
+- Code-review fixes are applied; the plan remains active until the review loop confirms a clean iteration.
+- Post-Completion manual checks remain pending and do not block implementation completion.
 
 ## Context (from discovery)
 - Files/components involved:
@@ -13,6 +18,7 @@
   - `assets/claude/loopai-grill.md` — new top-level symlink to `./skills/loopai-grill/SKILL.md` (relative link, like the existing five)
   - `scripts/check-symlinks.sh:9` — `expected_skills` list must gain `loopai-grill`
   - `scripts/check-plugin.sh` — validates manifests; check whether it pins a skill count or list
+  - `scripts/check-grill-skill_test.sh` and `Makefile` — focused metadata/workflow-contract checks wired into `make test`
   - `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` — version bump (0.1.3 → 0.2.0, new skill = minor)
   - `README.md` ("The plugin provides five skills" list), `llms.txt`, `CLAUDE.md` (skill inventory notes)
 - Related patterns found:
@@ -26,7 +32,7 @@
 - Complete each task fully before moving to the next
 - Make small, focused changes
 - **CRITICAL: every task MUST include new/updated tests** for changes in that task
-  - this plan's code is shell/assets: "tests" are the retained shell suites (`scripts/check-symlinks_test.sh`, `scripts/check-plugin_test.sh`) and `make test` asset checks — update them with the inventory change
+  - this plan's code is shell/assets: tests are the retained shell suites (`scripts/check-symlinks_test.sh`, `scripts/check-plugin_test.sh`), the focused `scripts/check-grill-skill_test.sh` contract suite, and `make test` asset checks
   - tests cover both success and error scenarios
 - **CRITICAL: all tests must pass before starting next task** - no exceptions
 - **CRITICAL: update this plan file when scope changes during implementation**
@@ -34,7 +40,7 @@
 - Maintain backward compatibility: existing five skills unchanged
 
 ## Testing Strategy
-- **Unit tests**: shell suites for symlink and plugin manifest validation (they run inside `make test`)
+- **Unit tests**: shell suites for symlink and plugin manifest validation plus focused loopai-grill metadata, routing, path-safety, degradation, judging, and output-contract checks (they run inside `make test`)
 - **E2E tests**: none (no dashboard changes); manual skill invocation checks go to Post-Completion
 
 ## Progress Tracking
@@ -64,6 +70,7 @@
 - [x] run `make test` (asset checks + full suite) - must pass before next task
 
 ### Task 3: Verify acceptance criteria
+- [x] add `scripts/check-grill-skill_test.sh`, wire `make test-grill-skill` into `make test`, and cover routing, edge cases, Codex degradation, shared-template judging, and output-format contracts
 - [x] verify all requirements from Overview are implemented (two modes, mode routing, codex degradation, format-consistent output)
 - [x] verify edge cases: no plans in docs/plans/, plan path with wrong case, `compare` with no description, codex absent
 - [x] run full test suite (`make test`)
@@ -87,8 +94,8 @@
 
 **Manual verification**:
 - Reinstall/update the plugin (`claude plugin marketplace update loopai && claude plugin update loopai@loopai`, restart Claude Code), then:
-  - `/loopai-grill` on a real plan → findings appear, selected ones edit the file
-  - `/loopai-grill compare "small real feature"` → two candidate plans, score table, one synthesized plan lands in docs/plans/
+  - `/loopai:loopai-grill` on a real plan → findings appear, selected ones edit the file
+  - `/loopai:loopai-grill compare "small real feature"` → two candidate plans, score table, one synthesized plan lands in docs/plans/
   - temporarily rename `codex` from PATH → grill degrades with warning, plan-off refuses cleanly
 
 **External system updates**: none — plugin is distributed from this repository

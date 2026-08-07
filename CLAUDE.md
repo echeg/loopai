@@ -25,6 +25,7 @@ make check-symlinks # validate the six Claude skill assets and links
 make test-symlinks  # regression tests for Claude skill asset validation
 make check-plugin   # validate Claude plugin and marketplace manifests
 make test-plugin    # regression tests for manifest validation
+make test-grill-skill # validate loopai-grill metadata and workflow contracts
 make test-wrappers # all retained provider-wrapper and wrapper-doc suites
 make lint       # golangci-lint
 make fmt        # gofmt and goimports
@@ -86,6 +87,15 @@ marketplace, and `.claude-plugin/plugin.json` points Claude Code at the skill
 directory. Whenever any skill changes, bump the version in both manifests so
 installed copies receive the update. Keep the marketplace entry version equal
 to the plugin version.
+
+`loopai-grill` has two safety-sensitive routes. Grill mode critiques an active
+plan and applies only user-selected verified findings; plan-off creates one new
+plan and never edits its source. Both reject completed, symlinked, nested, and
+`.loopai/` plans. Every direct Codex call is non-interactive, read-only, and
+ephemeral, and all scratch files live outside `docs/plans/` and are removed on
+every exit. Grill mode reports Codex failure and degrades to Claude-only;
+plan-off requires Codex and fails closed. When these contracts change, update
+and run `scripts/check-grill-skill_test.sh`.
 
 ## Configuration
 
@@ -299,8 +309,10 @@ The full suite is required because configuration and progress paths cross packag
 `make test` first validates Claude skill assets and plugin manifests, runs their
 regression suites and shell-completion checks, then runs the race-enabled Go
 suite with coverage and every retained provider-wrapper and wrapper-documentation
-shell suite. The asset and manifest checks require Bash and `jq`. CI runs the
-same focused asset, manifest, completion, and wrapper checks.
+shell suite. The asset and manifest checks require Bash and `jq`; the focused
+`test-grill-skill` suite checks the grill skill's metadata and operational
+contracts. CI runs the same focused asset, manifest, grill-skill, completion,
+and wrapper checks.
 
 Dashboard e2e:
 

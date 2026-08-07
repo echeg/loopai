@@ -27,12 +27,12 @@ jq -e '
     (.plugins | type == "array" and length == 1) and
     (.plugins[0].name == "loopai") and
     (.plugins[0].source == "./") and
-    (.plugins[0].version | type == "string" and length > 0)
+    (.plugins[0].version | type == "string" and test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"))
 ' "$marketplace" >/dev/null || fail "marketplace.json must describe the owned single loopai plugin with source ./ and a version"
 
 jq -e '
     (.name == "loopai") and
-    (.version | type == "string" and length > 0) and
+    (.version | type == "string" and test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$")) and
     (.skills == "./assets/claude/skills/")
 ' "$plugin" >/dev/null || fail "plugin.json must name loopai and use ./assets/claude/skills/"
 

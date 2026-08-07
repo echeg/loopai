@@ -99,6 +99,23 @@ The plugin provides six skills:
 - `loopai:loopai-grill` critiques an existing plan with Claude and Codex, or
   runs a plan-off that compares and synthesizes competing plans
 
+Use the namespaced plugin command to review the newest active plan, review a
+specific plan, or generate a competing-plan comparison:
+
+```text
+/loopai:loopai-grill
+/loopai:loopai-grill docs/plans/example.md
+/loopai:loopai-grill compare "add a small feature"
+/loopai:loopai-grill compare docs/plans/example.md
+```
+
+With no path, the skill proposes the newest active plan for confirmation. Grill
+mode applies only the verified findings you select; if Codex is unavailable or
+fails, it reports that and continues with Claude critics. Compare mode requires
+Codex, never edits a source plan, and writes one new plan. Both modes reject
+completed plans, symlinked plans, and anything under `.loopai/`. Standalone
+command copies use `/loopai-grill` instead of the namespaced plugin command.
+
 The CLI remains the execution engine. The plugin adds Claude Code workflows
 for planning and operating it. Refresh the marketplace and plugin when a new
 version is published, then restart Claude Code to apply the update:
