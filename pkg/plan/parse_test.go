@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -493,6 +494,95 @@ Just some text, no checkboxes.
 		assert.Equal(t, "real done", p.Tasks[0].Checkboxes[0].Text)
 		assert.False(t, p.Tasks[0].HasUncompletedActionableWork())
 	})
+}
+
+func TestParsePlan_ValidationCommands(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{
+			name: "extracts and normalizes list entries",
+			content: `# Plan
+
+## Validation Commands
+
+- ` + "`go   test ./...`" + `
+* make    lint
++ ` + "` npm  test `" + `
+1. cargo   test
+
+## Implementation Steps
+
+### Task 1: Work
+
+- [ ] implement
+`,
+			want: []string{"go test ./...", "make lint", "npm test", "cargo test"},
+		},
+		{
+			name: "section missing",
+			content: `# Plan
+
+### Task 1: Work
+
+- [ ] implement
+`,
+			want: []string{},
+		},
+		{
+			name: "section empty",
+			content: `# Plan
+
+## Validation Commands
+
+## Implementation Steps
+`,
+			want: []string{},
+		},
+		{
+			name: "subheading closes section and checkboxes are ignored",
+			content: `# Plan
+
+## Validation Commands
+
+- make test
+- [x] make lint
+
+### Notes
+
+- go
+`,
+			want: []string{"make test"},
+		},
+		{
+			name: "ignores non-list content",
+			content: `# Plan
+
+## Validation Commands
+
+Run go test ./... before committing.
+` + "```text\n- ignored fenced entry\n```" + `
+
+## Implementation Steps
+`,
+			want: []string{},
+		},
+		{
+			name:    "supports long lines and CRLF",
+			content: "# Plan\r\n\r\n" + strings.Repeat("x", 128*1024) + "\r\n\r\n## Validation Commands\r\n\r\n- `make test`\r\n",
+			want:    []string{"make test"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := plan.ParsePlan(tt.content)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, p.ValidationCommands)
+		})
+	}
 }
 
 func TestParsePlanFile(t *testing.T) {

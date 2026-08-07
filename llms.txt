@@ -26,6 +26,33 @@ Requirements:
 
 Run loopai from a Git repository root.
 
+## Claude Code plugin
+
+Install the optional Claude Code workflows from this repository's marketplace:
+
+```bash
+claude plugin marketplace add echeg/loopai
+claude plugin install loopai@loopai
+```
+
+The plugin provides `loopai:loopai`, `loopai:loopai-plan`,
+`loopai:loopai-brainstorm`, `loopai:loopai-adopt`, and
+`loopai:loopai-update`. The CLI remains the execution engine.
+
+Use `loopai:loopai-brainstorm` when a feature needs design exploration. It asks
+one question at a time, compares approaches, and seeks section-by-section
+approval. It then invokes `loopai:loopai-plan`, which records the approved
+context, chosen approach, rejected alternatives, and verified facts in the
+plan's `## Decisions` section. This pipeline does not create an intermediate
+spec file or invoke `superpowers:writing-plans`.
+
+Superpowers may remain installed for its other skills. When migrating from the
+upstream ralphex plugin, run `claude plugin uninstall ralphex` and
+`claude plugin marketplace remove ralphex` after installing loopai. In shared
+projects, a `CLAUDE.md` directive can require plan creation through
+`loopai:loopai-brainstorm` and `loopai:loopai-plan` instead of
+`superpowers:writing-plans`.
+
 ## Core commands
 
 ```bash
@@ -43,8 +70,13 @@ loopai --serve docs/plans/feature.md
 loopai --clear
 loopai --merge
 loopai --merge=release/13
+loopai --merge dynamic-review-agents
+loopai --merge 20260806-dynamic-review-agents
+loopai --merge docs/plans/20260806-dynamic-review-agents.md
+loopai --merge=release/13 dynamic-review-agents
 loopai --pr
 loopai --pr=release/13
+loopai --pr dynamic-review-agents
 loopai --gen-agents
 loopai --init
 loopai --reset
@@ -121,13 +153,17 @@ An agent file with a non-empty `description` is a dynamic agent. Dynamic agents 
 
 `loopai --gen-agents` runs one executor session that analyzes the repository and writes 2-5 project-specific agent files into `.loopai/agents/`, then lists every agent file in that directory with its description (pre-existing ones included), flagging files with no description, unparsable frontmatter, or no prompt body instead of listing them as active. It runs with `task_model`, logs to `.loopai/progress/progress-gen-agents.txt`, warns when a file takes a reserved built-in name, and changes nothing else — review the files with `git diff` and commit the useful ones. The flag is standalone: combining it with a plan file, another standalone mode, `--serve`, or `--watch` is an error.
 
-Progress is available at `.loopai/progress/progress-*.txt`; section closures include `<label> took <duration>` lines and runs include a `phase durations:` summary. The dashboard starts with `loopai --serve` and listens on `127.0.0.1:8080` by default; use `--host`, `--port`, or `LOOPAI_WEB_HOST` to change it.
+Progress is available at `.loopai/progress/progress-*.txt`; section closures include `<label> took <duration>` lines and runs include a `phase durations:` summary. Commands matching plain, non-checkbox list items after the exact, case-sensitive `## Validation Commands` H2 and before the next heading add per-run lines such as `validation: make test took 42s` and an end-of-run aggregate such as `validation: 2m15s (3 runs)`. The validation aggregate sums command durations and can exceed wall-clock time when commands overlap. Claude uses stream-event arrival time; Codex prefers rollout timestamps and otherwise uses approximate arrival time. Runs without matched command events omit these lines. The dashboard starts with `loopai --serve` and listens on `127.0.0.1:8080` by default; use `--host`, `--port`, or `LOOPAI_WEB_HOST` to change it.
 
 `--worktree` creates a new plan branch from the current `HEAD`, including a non-default branch or detached HEAD, and checks it out under `.loopai/worktrees/<branch>`. An existing plan branch is reused only when it contains the source `HEAD` seen before any auto-commit; otherwise merge or rebase the source changes first. The source checkout must be clean unless `-c`/`--commit` is used; that flag runs `git add -A` and commits all non-ignored changes in the source checkout, advancing its branch or detached `HEAD`, and is a no-op when clean. When a valid existing plan branch is reused, the new source commit is merged into it. An uncommitted plan may be the only change without `--commit` and is then committed in the feature worktree. The flag requires `--worktree` and does not apply to `--resume-worktree`. The deprecated `-c` alias for `--codex-only` was removed; use the long form. Worktree creation does not record a base branch: reviews still diff against `--base-ref`, `default_branch`, or detected `main`/`master`, and merging back to a non-default source requires an explicit base such as `--merge=release/13`. Non-worktree branch mode is unchanged.
 
 Inside cmux, a started implementation or review run leaves a green `done in <elapsed>` status pill on success and a red `failed` pill on non-abort execution failure. Startup/preflight and plan-creation failures do not leave a pill; Ctrl+C clears run status. A later run replaces the pill, and `loopai --clear` removes it explicitly (`--clear` is a successful no-op outside cmux).
 
+`--cmux-workspace` hands the run off to its own cmux workspace: loopai creates a workspace named after the branch the run will use (`--branch` override, else the plan-derived name, else `loopai`), relaunches itself there without the flag, prints `handed off to cmux workspace <name>`, and exits. Because the pill key is fixed and the progress bar is per workspace, this is what makes parallel runs independent instead of overwriting each other's status. Hand-off is best-effort: outside cmux or on a refused creation, loopai warns and runs normally in the current terminal and keeps the sidebar status it would have had without the flag; after a successful hand-off the originating workspace keeps its previous pill. A creation that times out is the exception: cmux may already have started the run in the new workspace, so loopai exits with an error instead of duplicating it here. An invocation that could not run anyway is also kept in the current terminal so its error lands where it was typed rather than in a card that closes immediately: a named plan file that does not exist, and a working directory that is not the repository root (a non-git `vcs_command` and a watch-only `--serve`, which run without a `.git` marker, are unaffected). Standalone commands (`--clear`, `--merge`, `--pr`, `--init`, `--dump-defaults`, `--reset` on its own) are never handed off, while `--reset` in front of a plan is performed once in the new workspace; with `--plan` the interactive dialog happens there too. The new workspace runs a fresh shell that inherits nothing from the current terminal, so only `LOOPAI_CONFIG_DIR` and `LOOPAI_WEB_HOST` travel with the command and everything else must come from the shell profile. An `ANTHROPIC_API_KEY` pass-through requested by either `--preserve-anthropic-api-key` or `preserve_anthropic_api_key` survives the hand-off while the key itself does not, so a key set only in the current terminal is warned about at hand-off.
+
 Close-out commands are standalone modes. `loopai --merge[=base]` requires clean feature and base worktrees (including no untracked files), resolves a missing base as `main` then `master`, merges the current feature branch in the base worktree, overrides squash/no-commit merge defaults, verifies the feature commit was incorporated, safely removes only a clean linked worktree registered for that feature branch, deletes the branch, and clears the pill on success. Ignored files do not count as dirty and are deleted with the linked worktree, so preserve local-only ignored files before merging. `loopai --pr[=base]` requires authenticated `gh` and a GitHub `origin` whose effective push URLs all identify the same repository, pushes committed branch state, creates a PR using the associated plan and diff statistics, keeps the branch/worktree, and clears the pill on success. Commit intended changes before `--pr`; failures retain the pill. Use `=` to supply the optional base value, for example `--merge=release/13`.
+
+Both close-out commands accept an optional positional argument naming the feature, so they can run from the root of the primary checkout or any other registered worktree instead of the feature worktree (a checkout root is still required): a local branch name, a plan basename with or without `.md`, or a plan path. Resolution is deterministic — an exact local branch first, then a plan file in the invoking checkout's `plans_dir` and its `completed/` subdirectory. A located plan resolves to the branch recorded for it under `.loopai/progress/`, so a `--branch` override closes out the branch the run actually created; without a record the branch is derived from the plan filename. The resolved branch must exist locally. It combines with an explicit base, for example `--merge=release/13 dynamic-review-agents`. With an explicit feature, `--merge` merges a branch that is not checked out anywhere and then deletes it without any worktree cleanup; when a feature worktree is registered, the usual cleanliness checks and safe removal still apply, but uncommitted work in an invoking checkout that is neither the feature worktree nor the worktree the merge runs in does not block the merge. The merge runs in the base worktree, or in the primary checkout when the base branch is not checked out anywhere; a feature checked out in the primary checkout while the base occupies a linked worktree is refused, since the merge would have to run in the primary. `--pr <feature>` pushes and opens the PR for a branch that need not be checked out, deriving title and body from the plan as seen from the invoking checkout. A feature resolving to the base branch is an error, as is an identifier matching neither a branch nor a plan, and so is a second positional argument: `--merge release/13 dynamic-review-agents` is the `--merge=release/13 dynamic-review-agents` form with the `=` forgotten and would otherwise close out `release/13` itself. A successful `--merge` names the worktree it removed, since with an explicit feature that directory is not the invoking one.
 
 ## Useful options
 
@@ -143,8 +179,9 @@ Close-out commands are standalone modes. `loopai --merge[=base]` requires clean 
 - `-c`, `--commit` (auto-commit the source checkout before creating a fresh worktree; requires `--worktree`)
 - `--gen-agents`
 - `--clear`
-- `--merge[=base]`
-- `--pr[=base]`
+- `--cmux-workspace` (relaunch the run in a new cmux workspace; warns and runs locally outside cmux)
+- `--merge[=base] [feature]`
+- `--pr[=base] [feature]`
 - `--wait=duration` (default `10m`; `--wait 0` disables limit retries)
 - `--session-timeout=duration`
 - `--idle-timeout=duration`

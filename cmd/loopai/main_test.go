@@ -10,6 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -129,12 +132,15 @@ func TestRunWithSectionTimingFinishesBeforeReturning(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			inner := &runnerLoggerRecorder{}
 			timer := progress.NewSectionTimer(inner, nil)
+			validationTimer := progress.NewValidationTimer([]string{"make test"}, inner)
 			run := func(context.Context) error {
 				timer.PrintSection(status.NewTaskIterationSection(1))
+				validationTimer.Handler()("make test", 2*time.Second)
 				return tt.runErr
 			}
 
 			gotErr := runWithSectionTiming(t.Context(), run, timer)
+			validationTimer.FinishRun()
 			inner.calls = append(inner.calls, "downstream result handling")
 
 			if tt.runErr == nil {
@@ -142,13 +148,142 @@ func TestRunWithSectionTimingFinishesBeforeReturning(t *testing.T) {
 			} else {
 				require.ErrorIs(t, gotErr, tt.runErr)
 			}
-			require.Len(t, inner.calls, 4)
+			require.Len(t, inner.calls, 6)
 			assert.Equal(t, "section: task iteration 1", inner.calls[0])
-			assert.Regexp(t, `^print: task iteration 1 took .+$`, inner.calls[1])
-			assert.Regexp(t, `^print: phase durations: tasks .+ \(1\)$`, inner.calls[2])
-			assert.Equal(t, "downstream result handling", inner.calls[3])
+			assert.Equal(t, "print: validation: make test took 2s", inner.calls[1])
+			assert.Regexp(t, `^print: task iteration 1 took .+$`, inner.calls[2])
+			assert.Regexp(t, `^print: phase durations: tasks .+ \(1\)$`, inner.calls[3])
+			assert.Equal(t, "print: validation: 2s (1 runs)", inner.calls[4])
+			assert.Equal(t, "downstream result handling", inner.calls[5])
 		})
 	}
+}
+
+func TestExecutePlan_ValidationTimingFromClaudeStreamReachesProgressLog(t *testing.T) {
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	planPath := filepath.Join(dir, "docs", "plans", "validation-wiring.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath, []byte(`# Validation wiring
+
+## Validation Commands
+
+- `+"`make test`"+`
+
+## Implementation Steps
+
+### Task 1: Done
+
+- [x] already complete
+`), 0o600))
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"make test --token secret"}}]}}'
+printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}'
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	err = executePlan(t.Context(), opts{TasksOnly: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
+		Config: &config.Config{ClaudeCommand: fakeClaude}, Colors: testColors(), BaseRef: "master",
+	})
+	require.NoError(t, err)
+
+	logs, err := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "progress-*.txt"))
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	content, err := os.ReadFile(logs[0])
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "validation: make test took ")
+	assert.Regexp(t, `validation: \S+ \(1 runs\)`, string(content))
+	assert.NotContains(t, string(content), "--token secret")
+}
+
+func TestExecutePlan_ValidationSummaryIsWrittenOnRunnerFailure(t *testing.T) {
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	planPath := filepath.Join(dir, "docs", "plans", "validation-failure.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath, []byte(`# Validation failure
+
+## Validation Commands
+
+- make test
+
+### Task 1: Incomplete
+
+- [ ] still incomplete
+`), 0o600))
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"make test"}}]}}'
+printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"failed"}]}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	err = executePlan(t.Context(), opts{TasksOnly: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
+		Config: &config.Config{ClaudeCommand: fakeClaude}, Colors: testColors(), BaseRef: "master",
+	})
+	require.Error(t, err)
+
+	logs, globErr := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "progress-*.txt"))
+	require.NoError(t, globErr)
+	require.Len(t, logs, 1)
+	content, readErr := os.ReadFile(logs[0])
+	require.NoError(t, readErr)
+	assert.Regexp(t, `validation: \S+ \(1 runs\)`, string(content))
+	assert.Contains(t, string(content), "Failed:")
+}
+
+func TestExecutePlan_PlanParseFailureUsesReporterAfterWorktreeHandoff(t *testing.T) {
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + argvLog + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "cmux"), []byte(script), 0o755)) //nolint:gosec // executable test fixture
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	missingPlan := filepath.Join(dir, "docs", "plans", "removed.md")
+	err = executePlan(t.Context(), opts{NoColor: true}, executePlanRequest{
+		PlanFile: missingPlan, Mode: processor.ModeFull, GitSvc: gitSvc,
+		Config: &config.Config{}, Colors: testColors(), BaseRef: "master",
+	})
+	require.ErrorContains(t, err, "parse plan validation commands")
+
+	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path is a test-owned file under t.TempDir
+	require.NoError(t, readErr)
+	assert.Equal(t, 1, strings.Count(string(recorded), "notify --title"))
+	logs, globErr := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "progress-*.txt"))
+	require.NoError(t, globErr)
+	require.Len(t, logs, 1)
+	content, logErr := os.ReadFile(logs[0])
+	require.NoError(t, logErr)
+	assert.Contains(t, string(content), "Failed:")
+	assert.Contains(t, string(content), "parse plan validation commands")
 }
 
 // captureStdout runs fn while redirecting os.Stdout (and the fatih/color Output
@@ -294,6 +429,24 @@ func TestMergeFlagParsing(t *testing.T) {
 		assert.True(t, o.Worktree)
 		require.Error(t, validateFlags(o))
 	})
+
+	// the whole feature argument rests on optional-value leaving the next token positional; were
+	// it consumed as the base, "--merge myfeature" would silently merge the current branch into a
+	// branch named myfeature instead of closing out myfeature
+	t.Run("bare flag leaves the feature argument positional", func(t *testing.T) {
+		o := parseTestOpts(t, "--merge", "myfeature")
+		assert.True(t, o.mergeSet)
+		assert.Empty(t, o.Merge)
+		assert.Equal(t, "myfeature", o.PlanFile)
+		require.NoError(t, validateFlags(o))
+	})
+
+	t.Run("explicit base keeps the feature argument positional", func(t *testing.T) {
+		o := parseTestOpts(t, "--merge=develop", "myfeature")
+		assert.Equal(t, "develop", o.Merge)
+		assert.Equal(t, "myfeature", o.PlanFile)
+		require.NoError(t, validateFlags(o))
+	})
 }
 
 func TestPRFlagParsing(t *testing.T) {
@@ -314,6 +467,14 @@ func TestPRFlagParsing(t *testing.T) {
 		assert.True(t, o.prSet)
 		assert.True(t, o.Codex)
 		require.Error(t, validateFlags(o))
+	})
+
+	t.Run("bare flag leaves the feature argument positional", func(t *testing.T) {
+		o := parseTestOpts(t, "--pr", "myfeature")
+		assert.True(t, o.prSet)
+		assert.Empty(t, o.PR)
+		assert.Equal(t, "myfeature", o.PlanFile)
+		require.NoError(t, validateFlags(o))
 	})
 }
 
@@ -753,7 +914,7 @@ func TestCreateRunner(t *testing.T) {
 		defer log.Close()
 
 		req := executePlanRequest{PlanFile: "/path/to/plan.md", Mode: processor.ModeFull, Config: cfg, DefaultBranch: "master"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 	})
 
@@ -775,7 +936,7 @@ func TestCreateRunner(t *testing.T) {
 
 		// tests that codex-only mode code path runs without panic
 		req := executePlanRequest{Mode: processor.ModeCodexOnly, Config: cfg, DefaultBranch: "main"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 	})
 
@@ -798,7 +959,7 @@ func TestCreateRunner(t *testing.T) {
 		// verify the resolution logic: CLI=5 should win over config=10
 		// the resolve logic: maxExtIter = config(10), then CLI > 0 so maxExtIter = 5
 		req := executePlanRequest{Mode: processor.ModeFull, Config: cfg, DefaultBranch: "main"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 		// can't inspect Runner.cfg directly, but the wiring code is exercised
 		// behavioral verification is in runner_test.go (TestRunner_MaxExternalIterations_ExplicitLimit)
@@ -822,7 +983,7 @@ func TestCreateRunner(t *testing.T) {
 
 		// verify the resolution logic: CLI=3 should win over config=5
 		req := executePlanRequest{Mode: processor.ModeFull, Config: cfg, DefaultBranch: "main"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 		// behavioral verification is in runner_test.go
 	})
@@ -1104,7 +1265,7 @@ func TestSkipFinalizeFlag(t *testing.T) {
 
 		// verify createRunner receives the overridden config
 		req := executePlanRequest{Mode: processor.ModeFull, Config: cfg, DefaultBranch: "main"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 		assert.False(t, cfg.FinalizeEnabled, "skip-finalize should override config")
 	})
@@ -1768,14 +1929,14 @@ func TestValidateFlags(t *testing.T) {
 		{name: "clear_with_init_mode_conflicts", opts: opts{Clear: true, Init: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "merge_only_is_valid", opts: opts{mergeSet: true}, wantErr: false},
 		{name: "merge_with_explicit_base_is_valid", opts: opts{Merge: "develop"}, wantErr: false},
-		{name: "merge_with_plan_file_conflicts", opts: opts{mergeSet: true, PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "--merge cannot be combined"},
+		{name: "merge_with_feature_argument_is_valid", opts: opts{mergeSet: true, PlanFile: "docs/plans/test.md"}, wantErr: false},
 		{name: "merge_with_review_conflicts", opts: opts{mergeSet: true, Review: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "merge_with_branch_conflicts", opts: opts{mergeSet: true, Branch: "feature"}, wantErr: true, errMsg: "other mode flags"},
 		{name: "merge_with_executor_option_conflicts", opts: opts{mergeSet: true, Codex: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "merge_with_clear_conflicts", opts: opts{mergeSet: true, Clear: true}, wantErr: true, errMsg: "--clear cannot be combined"},
 		{name: "pr_only_is_valid", opts: opts{prSet: true}, wantErr: false},
 		{name: "pr_with_explicit_base_is_valid", opts: opts{PR: "develop"}, wantErr: false},
-		{name: "pr_with_plan_file_conflicts", opts: opts{prSet: true, PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "--pr cannot be combined"},
+		{name: "pr_with_feature_argument_is_valid", opts: opts{prSet: true, PlanFile: "docs/plans/test.md"}, wantErr: false},
 		{name: "pr_with_review_conflicts", opts: opts{prSet: true, Review: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "pr_with_base_ref_conflicts", opts: opts{prSet: true, BaseRef: "develop"}, wantErr: true, errMsg: "other mode flags"},
 		{name: "pr_with_model_conflicts", opts: opts{prSet: true, TaskModel: "opus"}, wantErr: true, errMsg: "other mode flags"},
@@ -1825,6 +1986,35 @@ func TestValidateFlags(t *testing.T) {
 			o.markFlagsSet(p)
 			assert.NoError(t, validateFlags(o), "bare %v must be valid", args)
 		}
+	})
+
+	// "--merge <base> <feature>" is the documented "--merge=<base> <feature>" form with the "="
+	// forgotten. go-flags leaves --merge empty and hands both tokens back as positionals, so the
+	// base would be closed out as the feature. reject it end to end, from a real parse.
+	t.Run("parsed_closeout_rejects_surplus_positional", func(t *testing.T) {
+		for _, tc := range []struct{ flag, args string }{{"--merge", "--merge"}, {"--pr", "--pr"}} {
+			var o opts
+			p := flags.NewParser(&o, flags.Default)
+			args, err := p.ParseArgs([]string{tc.args, "release/13", "feature"})
+			require.NoError(t, err)
+			o.markFlagsSet(p)
+			o.applyPositionalArgs(args)
+			assert.Equal(t, "release/13", o.PlanFile)
+			assert.Equal(t, []string{"feature"}, o.extraArgs)
+			require.ErrorContains(t, validateFlags(o), tc.flag+" accepts at most one feature argument")
+		}
+	})
+
+	t.Run("parsed_closeout_accepts_single_positional", func(t *testing.T) {
+		var o opts
+		p := flags.NewParser(&o, flags.Default)
+		args, err := p.ParseArgs([]string{"--merge", "feature"})
+		require.NoError(t, err)
+		o.markFlagsSet(p)
+		o.applyPositionalArgs(args)
+		assert.Equal(t, "feature", o.PlanFile)
+		assert.Empty(t, o.extraArgs)
+		assert.NoError(t, validateFlags(o))
 	})
 
 	t.Run("parsed_explicit_zero_execution_flag_still_conflicts", func(t *testing.T) {
@@ -3332,7 +3522,7 @@ func TestRunMergeCommand(t *testing.T) {
 		clearer := &recordingStatusClearer{}
 		var output bytes.Buffer
 
-		require.NoError(t, runMergeCommand(t.Context(), svc, "", clearer, &output))
+		require.NoError(t, runMergeCommand(t.Context(), svc, "", closeoutTarget{}, clearer, &output))
 		assert.Equal(t, "master", currentGitBranch(t, dir))
 		assert.False(t, branchExists(t, dir, "feature"))
 		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
@@ -3350,7 +3540,7 @@ func TestRunMergeCommand(t *testing.T) {
 		runGit(t, dir, "config", "branch.master.mergeOptions", "--squash --no-commit")
 		runGit(t, dir, "checkout", "feature")
 
-		require.NoError(t, runMergeCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard))
 		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "master:feature.txt"))
 		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
 		assert.False(t, branchExists(t, dir, "feature"))
@@ -3367,7 +3557,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		require.NoError(t, runMergeCommand(t.Context(), svc, "master", clearer, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard))
 		assert.NoDirExists(t, worktreePath)
 		assert.False(t, branchExists(t, dir, "feature"))
 		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
@@ -3386,7 +3576,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", clearer, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", closeoutTarget{}, clearer, io.Discard))
 		assert.NoDirExists(t, worktreePath)
 		assert.False(t, branchExists(t, dir, "feature"))
 		assert.Equal(t, 1, clearer.calls)
@@ -3402,7 +3592,7 @@ func TestRunMergeCommand(t *testing.T) {
 		featureSvc, err := git.NewService(worktreePath, noopLogger())
 		require.NoError(t, err)
 
-		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", &recordingStatusClearer{}, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard))
 		assert.Equal(t, "develop", currentGitBranch(t, dir))
 		assert.NoDirExists(t, worktreePath)
 		assert.False(t, branchExists(t, dir, "feature"))
@@ -3419,7 +3609,7 @@ func TestRunMergeCommand(t *testing.T) {
 		featureSvc, err := git.NewService(worktreePath, noopLogger())
 		require.NoError(t, err)
 
-		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", &recordingStatusClearer{}, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard))
 		assert.Empty(t, currentGitBranch(t, dir))
 		assert.Equal(t, originalHead, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
 		assert.NoDirExists(t, worktreePath)
@@ -3438,7 +3628,7 @@ func TestRunMergeCommand(t *testing.T) {
 		runGit(t, dir, "checkout", "feature")
 		var output bytes.Buffer
 
-		require.NoError(t, runMergeCommand(t.Context(), svc, "master", &recordingStatusClearer{}, &output))
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, &recordingStatusClearer{}, &output))
 		assert.Contains(t, output.String(), "feature into master (already up to date)")
 		assert.False(t, branchExists(t, dir, "feature"))
 	})
@@ -3452,7 +3642,7 @@ func TestRunMergeCommand(t *testing.T) {
 		runGit(t, dir, "worktree", "add", worktreePath, "unrelated")
 		t.Cleanup(func() { _ = svc.RemoveWorktree(worktreePath) })
 
-		require.NoError(t, runMergeCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard))
 		assert.DirExists(t, worktreePath)
 		assert.Equal(t, "unrelated", currentGitBranch(t, worktreePath))
 	})
@@ -3470,7 +3660,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		err = runMergeCommand(t.Context(), featureSvc, "master", clearer, io.Discard)
+		err = runMergeCommand(t.Context(), featureSvc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "clean base worktree")
 		assert.Equal(t, "master", currentGitBranch(t, dir))
@@ -3500,7 +3690,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		err = runMergeCommand(t.Context(), featureSvc, "master", clearer, io.Discard)
+		err = runMergeCommand(t.Context(), featureSvc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.ErrorContains(t, err, "merge \"feature\" into \"master\" failed")
 		content, readErr := os.ReadFile(filepath.Join(dir, "secret.env")) //nolint:gosec // test fixture
 		require.NoError(t, readErr)
@@ -3517,7 +3707,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("dirty\n"), 0o600))
 		clearer := &recordingStatusClearer{}
 
-		err := runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err := runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "clean working tree")
 		assert.Equal(t, "feature", currentGitBranch(t, dir))
@@ -3531,7 +3721,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("keep\n"), 0o600))
 		clearer := &recordingStatusClearer{}
 
-		err := runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err := runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "clean working tree")
 		assert.Equal(t, "feature", currentGitBranch(t, dir))
@@ -3554,7 +3744,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		err = runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err = runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.ErrorContains(t, err, "check out base branch")
 		assert.Equal(t, "feature", currentGitBranch(t, dir))
 		content, readErr := os.ReadFile(filepath.Join(dir, "secret.env")) //nolint:gosec // test fixture
@@ -3570,7 +3760,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		err = runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err = runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "already the base branch")
 		assert.Equal(t, "master", currentGitBranch(t, dir))
@@ -3590,7 +3780,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		err = runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err = runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		require.ErrorIs(t, err, git.ErrMergeConflict)
 		assert.Contains(t, err.Error(), "conflicted and was aborted")
@@ -3619,7 +3809,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		root := t.TempDir()
 		writePlan(t, root, "20260802-feature.md", "# A useful feature\n\n## Overview\n\nAdds the useful behavior.\n\n## Context\n\nDetails.\n")
 
-		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{Files: 3, Additions: 12, Deletions: 4})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "feature", git.DiffStats{Files: 3, Additions: 12, Deletions: 4})
 		require.NoError(t, err)
 		assert.Equal(t, "A useful feature", title)
 		assert.Contains(t, body, "Adds the useful behavior.")
@@ -3629,18 +3819,58 @@ func TestBuildPRTitleBody(t *testing.T) {
 		assert.NotContains(t, body, "Details.")
 	})
 
+	t.Run("configured plans dir is used", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, "plans", "completed")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "20260802-feature.md"),
+			[]byte("# Custom dir feature\n\n## Overview\n\nLives outside docs/plans.\n"), 0o600))
+
+		title, body, err := buildPRTitleBody(root, "plans", "feature", git.DiffStats{Files: 2})
+		require.NoError(t, err)
+		assert.Equal(t, "Custom dir feature", title)
+		assert.Contains(t, body, "Lives outside docs/plans.")
+	})
+
+	t.Run("empty plans dir falls back to the default", func(t *testing.T) {
+		root := t.TempDir()
+		writePlan(t, root, "20260802-feature.md", "# Default dir feature\n\n## Overview\n\nStill found.\n")
+
+		title, body, err := buildPRTitleBody(root, "", "feature", git.DiffStats{})
+		require.NoError(t, err)
+		assert.Equal(t, "Default dir feature", title)
+		assert.Contains(t, body, "Still found.")
+	})
+
 	t.Run("plan missing", func(t *testing.T) {
-		title, body, err := buildPRTitleBody(t.TempDir(), "feature/missing", git.DiffStats{})
+		title, body, err := buildPRTitleBody(t.TempDir(), "docs/plans", "feature/missing", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "feature/missing", title)
 		assert.Equal(t, "## Changes\n\n- Files changed: 0\n- Additions: 0\n- Deletions: 0", body)
+	})
+
+	t.Run("plans dir outside the repository degrades to stats only", func(t *testing.T) {
+		parent := t.TempDir()
+		root := filepath.Join(parent, "repo")
+		require.NoError(t, os.MkdirAll(root, 0o750))
+		outside := filepath.Join(parent, "shared-plans", "completed")
+		require.NoError(t, os.MkdirAll(outside, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(outside, "20260802-feature.md"),
+			[]byte("# Out of tree feature\n\n## Overview\n\nUnreadable from the repository.\n"), 0o600))
+
+		for _, plansDir := range []string{filepath.Join("..", "shared-plans"), filepath.Join(parent, "shared-plans")} {
+			title, body, err := buildPRTitleBody(root, plansDir, "feature", git.DiffStats{Files: 2})
+			require.NoError(t, err, plansDir)
+			assert.Equal(t, "feature", title, plansDir)
+			assert.Equal(t, "## Changes\n\n- Files changed: 2\n- Additions: 0\n- Deletions: 0", body, plansDir)
+		}
 	})
 
 	t.Run("no Overview section", func(t *testing.T) {
 		root := t.TempDir()
 		writePlan(t, root, "feature.md", "# Feature without overview\n\n## Context\n\nOnly context.\n")
 
-		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{Files: 1})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "feature", git.DiffStats{Files: 1})
 		require.NoError(t, err)
 		assert.Equal(t, "Feature without overview", title)
 		assert.NotContains(t, body, "Only context.")
@@ -3656,7 +3886,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		newTime := time.Now()
 		require.NoError(t, os.Chtimes(newPath, newTime, newTime))
 
-		title, _, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
+		title, _, err := buildPRTitleBody(root, "docs/plans", "special-branch", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "New plan", title)
 	})
@@ -3665,7 +3895,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		root := t.TempDir()
 		writePlan(t, root, "unrelated.md", "# Unrelated plan\n\nReferences prefix behavior, fix.release, fixfix, and authentication.\n")
 
-		title, _, err := buildPRTitleBody(root, "fix", git.DiffStats{})
+		title, _, err := buildPRTitleBody(root, "docs/plans", "fix", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "fix", title)
 	})
@@ -3678,7 +3908,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, os.MkdirAll(plansDir, 0o750))
 		require.NoError(t, os.Symlink(outside, filepath.Join(plansDir, "20260802-feature.md")))
 
-		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "feature", git.DiffStats{})
 		require.ErrorContains(t, err, "symlink")
 		assert.Empty(t, title)
 		assert.Empty(t, body)
@@ -3688,7 +3918,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		root := t.TempDir()
 		writePlan(t, root, "20260802-feature.md", strings.Repeat("x", int(maxPRPlanSize)+1))
 
-		_, _, err := buildPRTitleBody(root, "feature", git.DiffStats{})
+		_, _, err := buildPRTitleBody(root, "docs/plans", "feature", git.DiffStats{})
 		require.ErrorContains(t, err, "size limit")
 	})
 
@@ -3704,7 +3934,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		newTime := time.Now()
 		require.NoError(t, os.Chtimes(fallbackPath, newTime, newTime))
 
-		title, body, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "special-branch", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "Exact active plan", title)
 		assert.Contains(t, body, "Exact.")
@@ -3718,7 +3948,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(activeDir, "20260802-feature.md"),
 			[]byte("# Active feature plan\n\n## Overview\n\nSelected.\n"), 0o600))
 
-		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "feature", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "Active feature plan", title)
 		assert.Contains(t, body, "Selected.")
@@ -3732,7 +3962,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, os.Symlink(outside,
 			filepath.Join(root, "docs", "plans", "completed", "unrelated.md")))
 
-		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "feature", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "Feature plan", title)
 		assert.Contains(t, body, "Selected.")
@@ -3746,7 +3976,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, os.Symlink(outside,
 			filepath.Join(root, "docs", "plans", "completed", "unrelated.md")))
 
-		title, _, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
+		title, _, err := buildPRTitleBody(root, "docs/plans", "special-branch", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "Valid fallback", title)
 	})
@@ -3760,7 +3990,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		newTime := time.Now()
 		require.NoError(t, os.Chtimes(newPath, newTime, newTime))
 
-		title, _, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
+		title, _, err := buildPRTitleBody(root, "docs/plans", "special-branch", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "New exact", title)
 	})
@@ -3773,7 +4003,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(progressDir, "progress-team-custom.txt"), []byte(
 			"# Loopai Progress Log\nPlan: docs/plans/completed/20260802-original-plan.md\nBranch: team/custom\nMode: full\n"), 0o600))
 
-		title, body, err := buildPRTitleBody(root, "team/custom", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "team/custom", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "Override plan", title)
 		assert.Contains(t, body, "Exact association.")
@@ -3791,17 +4021,38 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(progressDir, "progress-team-custom.txt"), []byte(
 			"# Loopai Progress Log\nPlan: docs/plans/original-plan.md\nBranch: team/custom\nMode: full\n"), 0o600))
 
-		title, body, err := buildPRTitleBody(root, "team/custom", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "team/custom", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "Completed copy", title)
 		assert.Contains(t, body, "Finished.")
+	})
+
+	t.Run("progress association outside the repository degrades to stats only", func(t *testing.T) {
+		parent := t.TempDir()
+		root := filepath.Join(parent, "repo")
+		require.NoError(t, os.MkdirAll(root, 0o750))
+		outside := filepath.Join(parent, "shared-plans")
+		require.NoError(t, os.MkdirAll(outside, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(outside, "20260802-original-plan.md"),
+			[]byte("# Out of tree feature\n\n## Overview\n\nUnreadable from the repository.\n"), 0o600))
+		progressDir := filepath.Join(root, ".loopai", "progress")
+		require.NoError(t, os.MkdirAll(progressDir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(progressDir, "progress-team-custom.txt"), []byte(
+			"# Loopai Progress Log\nPlan: "+filepath.Join(outside, "20260802-original-plan.md")+
+				"\nBranch: team/custom\nMode: full\n"), 0o600))
+
+		// the branch lookup accepts this record, but PR metadata must still not read outside the repo
+		title, body, err := buildPRTitleBody(root, "docs/plans", "team/custom", git.DiffStats{Files: 2})
+		require.NoError(t, err)
+		assert.Equal(t, "team/custom", title)
+		assert.Equal(t, "## Changes\n\n- Files changed: 2\n- Additions: 0\n- Deletions: 0", body)
 	})
 
 	t.Run("branch basename does not select unrelated plan", func(t *testing.T) {
 		root := t.TempDir()
 		writePlan(t, root, "20260802-foo.md", "# Unrelated foo plan\n\n## Overview\n\nWrong plan.\n")
 
-		title, body, err := buildPRTitleBody(root, "feature/foo", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "feature/foo", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "feature/foo", title)
 		assert.NotContains(t, body, "Wrong plan.")
@@ -3884,7 +4135,7 @@ func TestRunPRCommand(t *testing.T) {
 		clearer := &recordingStatusClearer{}
 		var output bytes.Buffer
 
-		require.NoError(t, runPRCommand(t.Context(), svc, "master", clearer, &output))
+		require.NoError(t, runPRCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, &output))
 		assert.Equal(t, "https://github.com/acme/repo/pull/42\n", output.String())
 		assert.Equal(t, 1, clearer.calls)
 		assert.Equal(t, "feature", currentGitBranch(t, dir))
@@ -3908,7 +4159,7 @@ func TestRunPRCommand(t *testing.T) {
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		clearer := &recordingStatusClearer{}
 
-		err := runPRCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err := runPRCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "authentication required")
 		assert.Zero(t, clearer.calls)
@@ -3926,7 +4177,7 @@ func TestRunPRCommand(t *testing.T) {
 		t.Setenv("GH_INVOKED", invoked)
 		clearer := &recordingStatusClearer{}
 
-		err := runPRCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err := runPRCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.ErrorContains(t, err, "PR body exceeds")
 		assert.NoFileExists(t, invoked)
 		cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/feature")
@@ -3954,7 +4205,7 @@ func TestRunPRCommand(t *testing.T) {
 		t.Setenv("GH_INVOKED", invoked)
 		clearer := &recordingStatusClearer{}
 
-		err = runPRCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err = runPRCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "push PR branch")
 		assert.NoFileExists(t, invoked)
@@ -3985,7 +4236,7 @@ func TestRunPRCommand(t *testing.T) {
 			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			t.Setenv("GH_INVOKED", invoked)
 
-			err = runPRCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard)
+			err = runPRCommand(t.Context(), svc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard)
 			require.ErrorContains(t, err, "does not match PR repository")
 			assert.NoFileExists(t, invoked)
 		})
@@ -4006,7 +4257,7 @@ func TestRunPRCommand(t *testing.T) {
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("GH_INVOKED", invoked)
 
-		err = runPRCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard)
+		err = runPRCommand(t.Context(), svc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard)
 		require.Error(t, err)
 		assert.NotContains(t, err.Error(), credential)
 		assert.NoFileExists(t, invoked)
@@ -4026,7 +4277,7 @@ func TestRunPRCommand(t *testing.T) {
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("GH_INVOKED", invoked)
 
-		err = runPRCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard)
+		err = runPRCommand(t.Context(), svc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard)
 		require.ErrorContains(t, err, "not a GitHub repository URL")
 		assert.NoFileExists(t, invoked)
 		cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/feature")
@@ -4039,7 +4290,7 @@ func TestRunPRCommand(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
 		clearer := &recordingStatusClearer{}
 
-		err := runPRCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err := runPRCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "install")
 		assert.Zero(t, clearer.calls)
@@ -6683,4 +6934,1910 @@ func TestRequireRepoRoot(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+// fakeBranchChecker reports branch existence from a fixed set and derives branch names the way
+// git.Service does for an exact-case plan path.
+type fakeBranchChecker struct{ branches []string }
+
+func (f fakeBranchChecker) BranchExists(name string) bool {
+	return slices.Contains(f.branches, name)
+}
+
+func (f fakeBranchChecker) EffectiveBranchName(planFile, branchOverride string) string {
+	if branchOverride != "" {
+		return branchOverride
+	}
+	return plan.ExtractBranchName(planFile)
+}
+
+func TestResolveFeatureBranch(t *testing.T) {
+	plansDir := t.TempDir()
+	completedDir := filepath.Join(plansDir, "completed")
+	require.NoError(t, os.MkdirAll(completedDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260806-dynamic-review-agents.md"), []byte("# plan\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(completedDir, "20260805-section-duration-logging.md"), []byte("# plan\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260801-already-merged.md"), []byte("# plan\n"), 0o600))
+	// plan file whose derived branch collides with an unrelated existing branch name
+	require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260807-feature.md"), []byte("# plan\n"), 0o600))
+
+	branches := []string{"master", "dynamic-review-agents", "section-duration-logging", "feature", "20260807-feature"}
+
+	tests := []struct {
+		name     string
+		arg      string
+		want     string
+		wantErr  string
+		errFrags []string
+	}{
+		{name: "existing branch name", arg: "dynamic-review-agents", want: "dynamic-review-agents"},
+		{name: "plan basename with extension", arg: "20260806-dynamic-review-agents.md", want: "dynamic-review-agents"},
+		{name: "plan basename without extension", arg: "20260806-dynamic-review-agents", want: "dynamic-review-agents"},
+		{name: "plan in completed dir", arg: "20260805-section-duration-logging", want: "section-duration-logging"},
+		{
+			name: "plan path",
+			arg:  filepath.Join(plansDir, "20260806-dynamic-review-agents.md"),
+			want: "dynamic-review-agents",
+		},
+		{
+			name: "plan path in completed dir",
+			arg:  filepath.Join(completedDir, "20260805-section-duration-logging.md"),
+			want: "section-duration-logging",
+		},
+		{
+			name: "stale plan path falls back to completed lookup",
+			arg:  filepath.Join(plansDir, "20260805-section-duration-logging.md"),
+			want: "section-duration-logging",
+		},
+		{name: "branch match wins over plan match", arg: "20260807-feature", want: "20260807-feature"},
+		{
+			// a namespaced branch name must never be reduced to its last segment: doing so would
+			// resolve 20260806-dynamic-review-agents.md and close out an unnamed branch
+			name:     "missing namespaced branch does not fall back to plan basename",
+			arg:      "feature/20260806-dynamic-review-agents",
+			errFrags: []string{"feature/20260806-dynamic-review-agents", "no local branch with this name"},
+		},
+		{
+			name:     "missing worktree path does not fall back to plan basename",
+			arg:      filepath.Join(".loopai", "worktrees", "20260806-dynamic-review-agents"),
+			errFrags: []string{"20260806-dynamic-review-agents", "no local branch with this name"},
+		},
+		{name: "whitespace is trimmed", arg: "  dynamic-review-agents  ", want: "dynamic-review-agents"},
+		{name: "empty identifier", arg: "   ", wantErr: "empty feature identifier"},
+		{
+			name:     "unknown identifier lists searched locations",
+			arg:      "no-such-thing",
+			errFrags: []string{"no-such-thing", plansDir, completedDir},
+		},
+		{
+			name:     "plan resolves to missing branch",
+			arg:      "20260801-already-merged",
+			errFrags: []string{"already-merged", "already merged"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, []string{t.TempDir()}, plansDir, tt.arg)
+			if tt.wantErr != "" || len(tt.errFrags) > 0 {
+				require.Error(t, err)
+				assert.Empty(t, got)
+				if tt.wantErr != "" {
+					assert.Contains(t, err.Error(), tt.wantErr)
+				}
+				for _, frag := range tt.errFrags {
+					assert.Contains(t, err.Error(), frag)
+				}
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestResolveFeatureBranchRelativePlansDir(t *testing.T) {
+	repo := t.TempDir()
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260807-relative-plan.md"), []byte("# plan\n"), 0o600))
+
+	t.Chdir(repo)
+
+	checker := fakeBranchChecker{branches: []string{"relative-plan"}}
+	got, err := resolveFeatureBranch(checker, []string{repo}, filepath.Join("docs", "plans"), "20260807-relative-plan")
+	require.NoError(t, err)
+	assert.Equal(t, "relative-plan", got)
+
+	got, err = resolveFeatureBranch(checker, []string{repo}, filepath.Join("docs", "plans"),
+		filepath.Join("docs", "plans", "20260807-relative-plan.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "relative-plan", got)
+}
+
+func TestResolveFeatureBranchMissingPlansDir(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent")
+	_, err := resolveFeatureBranch(fakeBranchChecker{}, []string{t.TempDir()}, missing, "whatever")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "whatever")
+}
+
+func TestResolveFeatureBranchCaseInsensitiveFilesystem(t *testing.T) {
+	repo := setupTestRepo(t)
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260807-MixedCase.md"), []byte("# plan\n"), 0o600))
+	if _, err := os.Stat(filepath.Join(plansDir, "20260807-mixedcase.md")); err != nil {
+		t.Skip("case-sensitive filesystem")
+	}
+	runGit(t, repo, "branch", "MixedCase")
+	svc, err := git.NewService(repo, noopLogger())
+	require.NoError(t, err)
+
+	// the branch must come from the on-disk plan name, not from the case the caller typed
+	got, err := resolveFeatureBranch(svc, []string{repo}, plansDir, "20260807-mixedcase")
+	require.NoError(t, err)
+	assert.Equal(t, "MixedCase", got)
+}
+
+func TestResolveFeatureBranchPrefersRecordedBranch(t *testing.T) {
+	repo := setupTestRepo(t)
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	planFile := filepath.Join(plansDir, "20260806-login.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+	writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
+
+	// "login" exists but is unrelated: the run recorded fix/login via --branch, so resolving the
+	// plan must never hand --merge the collision victim
+	checker := fakeBranchChecker{branches: []string{"master", "login", "fix/login"}}
+	got, err := resolveFeatureBranch(checker, []string{repo}, plansDir, "20260806-login")
+	require.NoError(t, err)
+	assert.Equal(t, "fix/login", got)
+
+	t.Run("recorded branch deleted reports the recorded name", func(t *testing.T) {
+		_, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"master", "login"}}, []string{repo}, plansDir,
+			"20260806-login")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "fix/login")
+		assert.Contains(t, err.Error(), "already merged")
+	})
+
+	t.Run("unrecorded plan still derives from the filename", func(t *testing.T) {
+		other := filepath.Join(plansDir, "20260807-signup.md")
+		require.NoError(t, os.WriteFile(other, []byte("# plan\n"), 0o600))
+		got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"signup"}}, []string{repo}, plansDir,
+			"20260807-signup")
+		require.NoError(t, err)
+		assert.Equal(t, "signup", got)
+	})
+
+	t.Run("newest record wins", func(t *testing.T) {
+		writeProgressRecord(t, repo, "progress-login-rerun.txt", planFile, "fix/login-v2", 2)
+		got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"fix/login", "fix/login-v2"}},
+			[]string{repo}, plansDir, "20260806-login")
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login-v2", got)
+	})
+}
+
+// TestResolveFeatureBranchIgnoresNonBranchCreatingRecords covers the review, codex-only, and plan
+// runs that write their own record for the same plan, in the same directory and with a later
+// mtime. their Branch header names whatever was checked out at the time, so honoring it would
+// resolve the close-out to an unrelated branch that --merge then merges into base and deletes.
+func TestResolveFeatureBranchIgnoresNonBranchCreatingRecords(t *testing.T) {
+	branches := []string{"master", "fix/login", "unrelated"}
+
+	for _, mode := range []string{"review", "codex-only", "plan"} {
+		t.Run(mode+" record does not override the implementation run", func(t *testing.T) {
+			repo := setupTestRepo(t)
+			plansDir := filepath.Join(repo, "docs", "plans")
+			require.NoError(t, os.MkdirAll(plansDir, 0o750))
+			planFile := filepath.Join(plansDir, "20260806-login.md")
+			require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+			writeProgressRecord(t, repo, "progress-20260806-login.txt", planFile, "fix/login", 1)
+			writeProgressRecordMode(t, repo, "progress-20260806-login-"+mode+".txt", planFile, "unrelated", mode, 2)
+
+			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, []string{repo}, plansDir, "20260806-login")
+			require.NoError(t, err)
+			assert.Equal(t, "fix/login", got)
+		})
+	}
+
+	t.Run("review-only record falls back to filename derivation", func(t *testing.T) {
+		repo := setupTestRepo(t)
+		plansDir := filepath.Join(repo, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "20260806-login.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+		// a --review run on the base branch is the case that once produced the misleading
+		// "already the base branch" error for a plan with a perfectly good feature branch
+		writeProgressRecordMode(t, repo, "progress-20260806-login-review.txt", planFile, "master", "review", 1)
+
+		got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"master", "login"}}, []string{repo}, plansDir,
+			"20260806-login")
+		require.NoError(t, err)
+		assert.Equal(t, "login", got)
+	})
+
+	t.Run("tasks-only and unknown modes still supply the branch", func(t *testing.T) {
+		for _, mode := range []string{"tasks-only", "", "future-mode"} {
+			repo := setupTestRepo(t)
+			plansDir := filepath.Join(repo, "docs", "plans")
+			require.NoError(t, os.MkdirAll(plansDir, 0o750))
+			planFile := filepath.Join(plansDir, "20260806-login.md")
+			require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+			writeProgressRecordMode(t, repo, "progress-20260806-login.txt", planFile, "fix/login", mode, 1)
+
+			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, []string{repo}, plansDir, "20260806-login")
+			require.NoError(t, err, "mode %q", mode)
+			assert.Equal(t, "fix/login", got, "mode %q", mode)
+		}
+	})
+}
+
+// TestResolveFeatureBranchMatchesRecordAcrossPathSpellings covers the ways the located plan path
+// and the recorded one legitimately differ. A miss falls back to deriving the branch from the
+// filename, so each of these once resolved the unrelated "login" branch that --merge would then
+// merge into base and delete.
+func TestResolveFeatureBranchMatchesRecordAcrossPathSpellings(t *testing.T) {
+	checker := fakeBranchChecker{branches: []string{"master", "login", "fix/login"}}
+
+	t.Run("identifier typed in a different case", func(t *testing.T) {
+		repo := setupTestRepo(t)
+		plansDir := filepath.Join(repo, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "20260806-login.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+		if _, err := os.Stat(filepath.Join(plansDir, "20260806-LOGIN.md")); err != nil {
+			t.Skip("case-sensitive filesystem")
+		}
+		writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
+
+		got, err := resolveFeatureBranch(checker, []string{repo}, plansDir, "20260806-LOGIN")
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login", got)
+	})
+
+	t.Run("plan present in both the active and completed directories", func(t *testing.T) {
+		repo := setupTestRepo(t)
+		plansDir := filepath.Join(repo, "docs", "plans")
+		require.NoError(t, os.MkdirAll(filepath.Join(plansDir, "completed"), 0o750))
+		planFile := filepath.Join(plansDir, "20260806-login.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "completed", "20260806-login.md"),
+			[]byte("# plan\n"), 0o600))
+		writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
+
+		got, err := resolveFeatureBranch(checker, []string{repo}, plansDir, "20260806-login")
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login", got)
+	})
+}
+
+// TestResolveFeatureBranchMatchesRecordOutsideRepo covers records whose plan path names no file
+// inside the repository: a supported out-of-tree plans_dir, and a checkout moved after the run.
+// Resolving the plan to a repo-contained file is what the PR-metadata half of the scan needs, not
+// the branch lookup, and dropping the record here silently falls back to filename derivation - so
+// --merge would merge and delete the unrelated "login" branch instead of the recorded "fix/login".
+func TestResolveFeatureBranchMatchesRecordOutsideRepo(t *testing.T) {
+	checker := fakeBranchChecker{branches: []string{"master", "login", "fix/login"}}
+
+	t.Run("plans dir outside the repository", func(t *testing.T) {
+		repo := setupTestRepo(t)
+		plansDir := filepath.Join(t.TempDir(), "shared-plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "20260806-login.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+		writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
+
+		got, err := resolveFeatureBranch(checker, []string{repo}, plansDir, "20260806-login")
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login", got)
+	})
+
+	t.Run("record naming a path the checkout no longer has", func(t *testing.T) {
+		repo := setupTestRepo(t)
+		plansDir := filepath.Join(repo, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260806-login.md"), []byte("# plan\n"), 0o600))
+		// the run recorded the absolute path of a checkout that has since been moved
+		stale := filepath.Join(t.TempDir(), "old-checkout", "docs", "plans", "20260806-login.md")
+		writeProgressRecord(t, repo, "progress-login.txt", stale, "fix/login", 1)
+
+		got, err := resolveFeatureBranch(checker, []string{repo}, plansDir, "20260806-login")
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login", got)
+	})
+}
+
+// TestResolveCloseoutBranchReadsProgressFromPrimaryWorktree covers a close-out invoked from a
+// linked worktree, which README advertises. A run started from the primary checkout records
+// there, so scanning only the invoking worktree found no association and silently derived "login".
+func TestResolveCloseoutBranchReadsProgressFromPrimaryWorktree(t *testing.T) {
+	repo := setupTestRepo(t)
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	planFile := filepath.Join(plansDir, "20260806-login.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "add plan")
+	writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
+	runGit(t, repo, "branch", "fix/login")
+	runGit(t, repo, "branch", "login")
+	linked := filepath.Join(t.TempDir(), "wt")
+	runGit(t, repo, "worktree", "add", linked, "fix/login")
+
+	svc, err := git.NewService(linked, noopLogger())
+	require.NoError(t, err)
+	target := closeoutTarget{identifier: "20260806-login", plansDir: filepath.Join("docs", "plans")}
+	got, err := resolveCloseoutBranch(svc, target, "--merge")
+	require.NoError(t, err)
+	assert.Equal(t, "fix/login", got)
+}
+
+// TestResolveCloseoutBranchReadsProgressFromInvokingWorktree covers the mirror case: the run was
+// started inside a linked worktree, so the progress logger resolved .loopai/progress against that
+// checkout and the record never reached the primary. Anchoring the scan at the primary alone
+// missed it and fell back to deriving "login" from the plan filename - the unrelated branch
+// --merge would then merge into base and delete.
+func TestResolveCloseoutBranchReadsProgressFromInvokingWorktree(t *testing.T) {
+	repo := setupTestRepo(t)
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	planFile := filepath.Join(plansDir, "20260806-login.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "add plan")
+	runGit(t, repo, "branch", "fix/login")
+	runGit(t, repo, "branch", "login")
+	linked := filepath.Join(t.TempDir(), "wt")
+	runGit(t, repo, "worktree", "add", linked, "fix/login")
+	// the record lives only in the linked worktree, mirroring a run launched from inside it
+	writeProgressRecord(t, linked, "progress-login.txt", planFile, "fix/login", 1)
+
+	svc, err := git.NewService(linked, noopLogger())
+	require.NoError(t, err)
+	target := closeoutTarget{identifier: "20260806-login", plansDir: filepath.Join("docs", "plans")}
+	got, err := resolveCloseoutBranch(svc, target, "--merge")
+	require.NoError(t, err)
+	assert.Equal(t, "fix/login", got)
+}
+
+// TestResolveCloseoutBranchReadsProgressFromThirdWorktree covers a run started inside a linked
+// worktree that is neither the primary nor the checkout the close-out runs from. Scanning only
+// those two missed the record and fell back to deriving "login" from the plan filename - the
+// unrelated branch --merge would then merge into base and delete.
+func TestResolveCloseoutBranchReadsProgressFromThirdWorktree(t *testing.T) {
+	repo := setupTestRepo(t)
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	planFile := filepath.Join(plansDir, "20260806-login.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "add plan")
+	runGit(t, repo, "branch", "fix/login")
+	runGit(t, repo, "branch", "login")
+	runGit(t, repo, "branch", "scratch")
+	other := filepath.Join(t.TempDir(), "wt-other")
+	runGit(t, repo, "worktree", "add", other, "scratch")
+	// the record lives only in that third worktree, and the close-out runs from the primary
+	writeProgressRecord(t, other, "progress-login.txt", planFile, "fix/login", 1)
+
+	svc, err := git.NewService(repo, noopLogger())
+	require.NoError(t, err)
+	target := closeoutTarget{identifier: "20260806-login", plansDir: filepath.Join("docs", "plans")}
+	got, err := resolveCloseoutBranch(svc, target, "--merge")
+	require.NoError(t, err)
+	assert.Equal(t, "fix/login", got)
+}
+
+// TestRecordedBranchForPlanAcrossRoots locks the cross-root precedence: both checkouts can hold
+// records for the same plan, and the newest wins regardless of which root it came from.
+func TestRecordedBranchForPlanAcrossRoots(t *testing.T) {
+	primary, linked := t.TempDir(), t.TempDir()
+	planFile := filepath.Join(primary, "docs", "plans", "20260806-login.md")
+
+	t.Run("record found in the second root", func(t *testing.T) {
+		writeProgressRecord(t, linked, "progress-login.txt", planFile, "fix/login", 1)
+		got, err := recordedBranchForPlan([]string{primary, linked}, planFile)
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login", got)
+	})
+
+	t.Run("newest record wins across roots", func(t *testing.T) {
+		writeProgressRecord(t, primary, "progress-login-rerun.txt", planFile, "fix/login-v2", 2)
+		got, err := recordedBranchForPlan([]string{primary, linked}, planFile)
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login-v2", got)
+	})
+
+	t.Run("missing progress directory is not an error", func(t *testing.T) {
+		got, err := recordedBranchForPlan([]string{t.TempDir()}, planFile)
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+}
+
+// TestProgressRecordRoots checks that every registered worktree is scanned, with the primary
+// first and the invoking checkout second, and that no directory is listed twice.
+func TestProgressRecordRoots(t *testing.T) {
+	repo := setupTestRepo(t)
+	runGit(t, repo, "branch", "feature")
+	runGit(t, repo, "branch", "other")
+	linked := filepath.Join(t.TempDir(), "wt")
+	runGit(t, repo, "worktree", "add", linked, "feature")
+	third := filepath.Join(t.TempDir(), "wt-third")
+	runGit(t, repo, "worktree", "add", third, "other")
+
+	t.Run("invoked from the primary still covers the linked worktrees", func(t *testing.T) {
+		svc, err := git.NewService(repo, noopLogger())
+		require.NoError(t, err)
+		roots, err := progressRecordRoots(svc)
+		require.NoError(t, err)
+		require.Len(t, roots, 3)
+		assert.True(t, sameProgressRoot(repo, roots[0]))
+		assert.True(t, containsProgressRoot(roots, linked))
+		assert.True(t, containsProgressRoot(roots, third))
+	})
+
+	t.Run("invoked from a linked worktree yields primary then invoking", func(t *testing.T) {
+		svc, err := git.NewService(third, noopLogger())
+		require.NoError(t, err)
+		roots, err := progressRecordRoots(svc)
+		require.NoError(t, err)
+		require.Len(t, roots, 3)
+		assert.True(t, sameProgressRoot(repo, roots[0]))
+		assert.True(t, sameProgressRoot(third, roots[1]))
+		assert.True(t, containsProgressRoot(roots, linked))
+	})
+}
+
+// containsProgressRoot reports whether roots names dir, comparing the way progressRecordRoots
+// itself dedupes so a symlinked temp directory does not fail the assertion.
+func containsProgressRoot(roots []string, dir string) bool {
+	for _, root := range roots {
+		if sameProgressRoot(root, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRecordedPlanInRepo(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	inside := filepath.Join(plansDir, "20260806-login.md")
+	require.NoError(t, os.WriteFile(inside, []byte("# plan\n"), 0o600))
+
+	t.Run("plain containment returns the path unchanged", func(t *testing.T) {
+		assert.Equal(t, inside, recordedPlanInRepo(repo, inside))
+	})
+
+	t.Run("path behind a symlinked root is re-anchored at the root", func(t *testing.T) {
+		link := filepath.Join(parent, "link")
+		require.NoError(t, os.Symlink(repo, link))
+		// spelled through the link, so a lexical test alone would reject it
+		got := recordedPlanInRepo(repo, filepath.Join(link, "docs", "plans", "20260806-login.md"))
+		assert.Equal(t, inside, got)
+	})
+
+	t.Run("plan genuinely outside the repository is rejected", func(t *testing.T) {
+		outside := filepath.Join(parent, "elsewhere.md")
+		require.NoError(t, os.WriteFile(outside, []byte("# plan\n"), 0o600))
+		assert.Empty(t, recordedPlanInRepo(repo, outside))
+	})
+
+	t.Run("symlinked plan is rejected without following it", func(t *testing.T) {
+		outside := filepath.Join(parent, "secret.md")
+		require.NoError(t, os.WriteFile(outside, []byte("# secret\n"), 0o600))
+		linked := filepath.Join(plansDir, "20260806-linked.md")
+		require.NoError(t, os.Symlink(outside, linked))
+		assert.Empty(t, recordedPlanInRepo(repo, linked))
+	})
+
+	t.Run("missing path is rejected", func(t *testing.T) {
+		assert.Empty(t, recordedPlanInRepo(repo, filepath.Join(plansDir, "absent.md")))
+	})
+
+	t.Run("directory is rejected", func(t *testing.T) {
+		assert.Empty(t, recordedPlanInRepo(repo, plansDir))
+	})
+}
+
+// writeProgressRecord creates a progress file carrying the plan-to-branch association header.
+// age orders the fixture's mtime explicitly so newest-record-wins tie-breaks are deterministic.
+func writeProgressRecord(t *testing.T, repo, name, planFile, branch string, age int) {
+	t.Helper()
+	writeProgressRecordMode(t, repo, name, planFile, branch, "full", age)
+}
+
+// writeProgressRecordMode is writeProgressRecord with an explicit Mode header, covering the
+// non-branch-creating runs whose Branch line names the checked-out branch rather than a feature.
+func writeProgressRecordMode(t *testing.T, repo, name, planFile, branch, mode string, age int) {
+	t.Helper()
+	dir := filepath.Join(repo, ".loopai", "progress")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	path := filepath.Join(dir, name)
+	body := fmt.Sprintf("Plan: %s\nBranch: %s\nMode: %s\n", planFile, branch, mode)
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	stamp := time.Date(2026, 8, 7, 12, 0, age, 0, time.UTC)
+	require.NoError(t, os.Chtimes(path, stamp, stamp))
+}
+
+// TestParseProgressAssociationStopsAtHeader locks the header-block boundary. Records written
+// before the header carried Mode never satisfy a three-field stop condition, so a scan that keyed
+// on collected fields ran into the log body, where executor output beginning with "Branch: " would
+// replace the recorded branch - the branch --merge <plan> then merges into base and deletes.
+func TestParseProgressAssociationStopsAtHeader(t *testing.T) {
+	// an un-prefixed body line is what the boundary has to defend against: the current logger
+	// timestamps everything it streams, but the parser must not depend on that to stay correct
+	const body = "----\nBranch: other-branch\nPlan: /tmp/other.md\n"
+	tests := []struct {
+		name                 string
+		content              string
+		wantPlan, wantBranch string
+		wantMode             string
+	}{
+		{
+			name:       "complete header",
+			content:    "# Loopai Progress Log\nPlan: docs/plans/login.md\nBranch: fix/login\nMode: full\n" + separatorLine() + "\n\n" + body,
+			wantPlan:   "docs/plans/login.md",
+			wantBranch: "fix/login",
+			wantMode:   "full",
+		},
+		{
+			name:       "legacy header without mode",
+			content:    "# Loopai Progress Log\nPlan: docs/plans/login.md\nBranch: fix/login\n" + separatorLine() + "\n\n" + body,
+			wantPlan:   "docs/plans/login.md",
+			wantBranch: "fix/login",
+		},
+		{
+			name:       "legacy header with crlf line endings",
+			content:    "# Loopai Progress Log\r\nPlan: docs/plans/login.md\r\nBranch: fix/login\r\n" + separatorLine() + "\r\n\r\n" + body,
+			wantPlan:   "docs/plans/login.md",
+			wantBranch: "fix/login",
+		},
+		{
+			name:       "truncated record with no separator",
+			content:    "# Loopai Progress Log\nPlan: docs/plans/login.md\nBranch: fix/login\n",
+			wantPlan:   "docs/plans/login.md",
+			wantBranch: "fix/login",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			planPath, branch, mode := parseProgressAssociation(tc.content)
+			assert.Equal(t, tc.wantPlan, planPath)
+			assert.Equal(t, tc.wantBranch, branch)
+			assert.Equal(t, tc.wantMode, mode)
+		})
+	}
+}
+
+// TestResolveFeatureBranchIgnoresBranchLineInLogBody is the end-to-end form of the same guarantee:
+// a legacy record whose body mentions another branch must still resolve the close-out to the
+// branch its header names.
+func TestResolveFeatureBranchIgnoresBranchLineInLogBody(t *testing.T) {
+	repo := setupTestRepo(t)
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	planFile := filepath.Join(plansDir, "20260806-login.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+
+	progressDir := filepath.Join(repo, ".loopai", "progress")
+	require.NoError(t, os.MkdirAll(progressDir, 0o750))
+	record := fmt.Sprintf("# Loopai Progress Log\nPlan: %s\nBranch: fix/login\n%s\n\nBranch: master\n",
+		planFile, separatorLine())
+	require.NoError(t, os.WriteFile(filepath.Join(progressDir, "progress-20260806-login.txt"), []byte(record), 0o600))
+
+	got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"master", "login", "fix/login"}},
+		[]string{repo}, plansDir, "20260806-login")
+	require.NoError(t, err)
+	assert.Equal(t, "fix/login", got)
+}
+
+// separatorLine mirrors the 60-dash header terminator pkg/progress writes.
+func separatorLine() string {
+	return strings.Repeat("-", 60)
+}
+
+func TestResolveCloseoutBranchAnchorsPlansDirAtRepoRoot(t *testing.T) {
+	dir := setupTestRepo(t)
+	runGit(t, dir, "branch", "feature")
+	writeFeaturePlan(t, dir)
+	svc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	nested := filepath.Join(dir, "nested")
+	require.NoError(t, os.MkdirAll(nested, 0o750))
+	t.Chdir(nested)
+
+	target := closeoutTarget{identifier: "20260807-feature", plansDir: filepath.Join("docs", "plans")}
+	got, err := resolveCloseoutBranch(svc, target, "--merge")
+	require.NoError(t, err)
+	assert.Equal(t, "feature", got)
+}
+
+func TestValidateCloseoutFlagsFeatureArgument(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    opts
+		wantErr string
+	}{
+		{name: "merge with feature argument", opts: opts{mergeSet: true, PlanFile: "dynamic-review-agents"}},
+		{name: "merge with base and feature argument", opts: opts{Merge: "release/13", PlanFile: "docs/plans/20260807-x.md"}},
+		{name: "pr with feature argument", opts: opts{prSet: true, PlanFile: "dynamic-review-agents"}},
+		{name: "plan file alone stays a run", opts: opts{PlanFile: "docs/plans/20260807-x.md"}},
+		{
+			name:    "merge with feature argument and mode flag",
+			opts:    opts{mergeSet: true, PlanFile: "feature", Review: true},
+			wantErr: "--merge cannot be combined",
+		},
+		{
+			name:    "pr with feature argument and mode flag",
+			opts:    opts{prSet: true, PlanFile: "feature", Worktree: true},
+			wantErr: "--pr cannot be combined",
+		},
+		{
+			name:    "merge and pr together",
+			opts:    opts{mergeSet: true, prSet: true, PlanFile: "feature"},
+			wantErr: "--pr cannot be combined",
+		},
+		{
+			name:    "clear with feature argument",
+			opts:    opts{Clear: true, PlanFile: "feature"},
+			wantErr: "--clear cannot be combined",
+		},
+		{
+			name:    "clear with merge and feature argument",
+			opts:    opts{Clear: true, mergeSet: true, PlanFile: "feature"},
+			wantErr: "--clear cannot be combined",
+		},
+		{
+			// "--merge release/13 feature" parses release/13 as the feature, so accepting the
+			// surplus positional would merge and delete the base branch the caller meant to set
+			name:    "merge with surplus positional",
+			opts:    opts{mergeSet: true, PlanFile: "release/13", extraArgs: []string{"feature"}},
+			wantErr: "--merge accepts at most one feature argument, got 2; use --merge=<base>",
+		},
+		{
+			name:    "pr with surplus positional",
+			opts:    opts{prSet: true, PlanFile: "release/13", extraArgs: []string{"feature"}},
+			wantErr: "--pr accepts at most one feature argument, got 2; use --pr=<base>",
+		},
+		{
+			name:    "merge with two surplus positionals",
+			opts:    opts{mergeSet: true, PlanFile: "a", extraArgs: []string{"b", "c"}},
+			wantErr: "got 3",
+		},
+		{name: "surplus positional without closeout stays a run", opts: opts{PlanFile: "a", extraArgs: []string{"b"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateFlags(tt.opts)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// writeFeaturePlan creates a plan file for the "feature" branch in repo's plans directory
+// and returns the plans directory.
+func writeFeaturePlan(t *testing.T, repo string) string {
+	t.Helper()
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	planFile := filepath.Join(plansDir, "20260807-feature.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# plan\n\n## Overview\n\nplan body\n"), 0o600))
+	return plansDir
+}
+
+func TestRunMergeCommandExplicitFeature(t *testing.T) {
+	makeFeature := func(t *testing.T, dir string) *git.Service {
+		t.Helper()
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		return svc
+	}
+
+	t.Run("plan basename resolves to feature branch", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		plansDir := writeFeaturePlan(t, dir)
+		runGit(t, dir, "add", "docs")
+		runGit(t, dir, "commit", "-m", "add plan")
+		target := closeoutTarget{identifier: "20260807-feature", plansDir: plansDir}
+
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", target, &recordingStatusClearer{}, io.Discard))
+		assert.False(t, branchExists(t, dir, "feature"))
+	})
+
+	t.Run("unknown feature reports resolver error", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		plansDir := writeFeaturePlan(t, dir)
+		runGit(t, dir, "add", "docs")
+		runGit(t, dir, "commit", "-m", "add plan")
+		clearer := &recordingStatusClearer{}
+
+		err := runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "no-such-feature", plansDir: plansDir}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no-such-feature")
+		assert.Zero(t, clearer.calls)
+		assert.True(t, branchExists(t, dir, "feature"))
+	})
+
+	t.Run("merges from primary checkout without a feature worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		runGit(t, dir, "checkout", "master")
+		clearer := &recordingStatusClearer{}
+		var output bytes.Buffer
+
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, &output))
+		assert.Equal(t, "master", currentGitBranch(t, dir))
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
+		assert.Equal(t, 1, clearer.calls)
+		assert.Contains(t, output.String(), "feature into master (fast-forward)")
+		assert.NotContains(t, output.String(), "worktree", "nothing was removed, so name no worktree")
+	})
+
+	t.Run("merges from primary checkout with a base merge commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		runGit(t, dir, "checkout", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o600))
+		runGit(t, dir, "add", "base.txt")
+		runGit(t, dir, "commit", "-m", "advance base")
+		var output bytes.Buffer
+
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "feature"}, &recordingStatusClearer{}, &output))
+		assert.Equal(t, "master", currentGitBranch(t, dir))
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Contains(t, output.String(), "feature into master (merge commit)")
+		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "master:feature.txt"))
+	})
+
+	t.Run("merges from an unrelated worktree without a feature worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "checkout", "master")
+		runGit(t, dir, "branch", "sidebar", "master")
+		sidePath := filepath.Join(t.TempDir(), "sidebar")
+		runGit(t, dir, "worktree", "add", sidePath, "sidebar")
+		t.Cleanup(func() { _ = mainSvc.RemoveWorktree(sidePath) })
+		sideSvc, err := git.NewService(sidePath, noopLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, runMergeCommand(t.Context(), sideSvc, "master",
+			closeoutTarget{identifier: "feature"}, &recordingStatusClearer{}, io.Discard))
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "master:feature.txt"))
+		assert.Equal(t, "master", currentGitBranch(t, dir))
+		assert.Equal(t, "sidebar", currentGitBranch(t, sidePath))
+	})
+
+	t.Run("removes a registered feature worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "checkout", "master")
+		worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
+		runGit(t, dir, "worktree", "add", worktreePath, "feature")
+		clearer := &recordingStatusClearer{}
+		var output bytes.Buffer
+
+		require.NoError(t, runMergeCommand(t.Context(), mainSvc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, &output))
+		assert.NoDirExists(t, worktreePath)
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
+		assert.Equal(t, 1, clearer.calls)
+		// with an explicit feature the removed directory is resolved from the worktree list rather
+		// than being the caller's own, so name it: removal takes ignored files with it. the printed
+		// path is Git's, which resolves symlinks such as macOS /var -> /private/var
+		assert.Contains(t, output.String(), "deleted branch feature and worktree ")
+		assert.Contains(t, output.String(), filepath.Join(".loopai", "worktrees", "feature"))
+	})
+
+	t.Run("stale feature worktree registration reports prune guidance", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "checkout", "master")
+		worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
+		runGit(t, dir, "worktree", "add", worktreePath, "feature")
+		// the registration survives a hand-deleted directory until it is pruned
+		require.NoError(t, os.RemoveAll(worktreePath))
+		t.Cleanup(func() { runGit(t, dir, "worktree", "prune") })
+		clearer := &recordingStatusClearer{}
+
+		err := runMergeCommand(t.Context(), mainSvc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "git worktree prune")
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("dirty feature worktree is refused", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "checkout", "master")
+		worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
+		runGit(t, dir, "worktree", "add", worktreePath, "feature")
+		t.Cleanup(func() { _ = mainSvc.RemoveWorktree(worktreePath) })
+		require.NoError(t, os.WriteFile(filepath.Join(worktreePath, "feature.txt"), []byte("dirty\n"), 0o600))
+		clearer := &recordingStatusClearer{}
+
+		err := runMergeCommand(t.Context(), mainSvc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "clean feature worktree")
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.DirExists(t, worktreePath)
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("dirty primary checkout holding the feature is refused", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "branch", "sidebar", "master")
+		sidePath := filepath.Join(t.TempDir(), "sidebar")
+		runGit(t, dir, "worktree", "add", sidePath, "sidebar")
+		t.Cleanup(func() { _ = mainSvc.RemoveWorktree(sidePath) })
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("dirty\n"), 0o600))
+		sideSvc, err := git.NewService(sidePath, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		err = runMergeCommand(t.Context(), sideSvc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "clean feature worktree")
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature", currentGitBranch(t, dir))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("feature resolving to the base branch is refused", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		runGit(t, dir, "checkout", "master")
+		clearer := &recordingStatusClearer{}
+
+		err := runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "master"}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "already the base branch")
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("conflict aborts and keeps the feature branch", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "commit", "-am", "feature change")
+		runGit(t, dir, "checkout", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("base\n"), 0o600))
+		runGit(t, dir, "commit", "-am", "base change")
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		err = runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, io.Discard)
+		require.ErrorIs(t, err, git.ErrMergeConflict)
+		assert.Contains(t, err.Error(), "conflicted and was aborted")
+		assert.Equal(t, "master", currentGitBranch(t, dir))
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
+	})
+
+	t.Run("explicit base combines with an explicit feature", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "release/13")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "release.txt"), []byte("release\n"), 0o600))
+		runGit(t, dir, "add", "release.txt")
+		runGit(t, dir, "commit", "-m", "release")
+		makeFeature(t, dir)
+		runGit(t, dir, "checkout", "master")
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, runMergeCommand(t.Context(), svc, "release/13",
+			closeoutTarget{identifier: "feature"}, &recordingStatusClearer{}, io.Discard))
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "release/13:feature.txt"))
+		assert.Equal(t, "master", currentGitBranch(t, dir), "the invoking checkout must be restored")
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "ls-tree", "--name-only", "master", "feature.txt")),
+			"master must not receive the merge when an explicit base is given")
+	})
+
+	t.Run("dirty unrelated worktree does not block the merge", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "checkout", "master")
+		runGit(t, dir, "branch", "sidebar", "master")
+		sidePath := filepath.Join(t.TempDir(), "sidebar")
+		runGit(t, dir, "worktree", "add", sidePath, "sidebar")
+		t.Cleanup(func() { _ = mainSvc.RemoveWorktree(sidePath) })
+		require.NoError(t, os.WriteFile(filepath.Join(sidePath, "scratch.txt"), []byte("wip\n"), 0o600))
+		sideSvc, err := git.NewService(sidePath, noopLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, runMergeCommand(t.Context(), sideSvc, "master",
+			closeoutTarget{identifier: "feature"}, &recordingStatusClearer{}, io.Discard))
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "master:feature.txt"))
+		assert.FileExists(t, filepath.Join(sidePath, "scratch.txt"))
+	})
+
+	t.Run("dirty invoking checkout holding the feature is refused", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("dirty\n"), 0o600))
+		clearer := &recordingStatusClearer{}
+
+		err := runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "clean feature worktree")
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("base checked out in another worktree is refused", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		basePath := filepath.Join(t.TempDir(), "base")
+		runGit(t, dir, "worktree", "add", basePath, "master")
+		t.Cleanup(func() { _ = mainSvc.RemoveWorktree(basePath) })
+		baseSvc, err := git.NewService(basePath, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		err = runMergeCommand(t.Context(), baseSvc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `is checked out at`)
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature", currentGitBranch(t, dir))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("detached HEAD without an identifier names the flag", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		makeFeature(t, dir)
+		runGit(t, dir, "checkout", "--detach", "master")
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		err = runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--merge requires a checked-out feature branch")
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("detached primary checkout merges an explicit feature", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		makeFeature(t, dir)
+		runGit(t, dir, "checkout", "--detach", "master")
+		originalHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "feature"}, &recordingStatusClearer{}, io.Discard))
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "master:feature.txt"))
+		assert.Empty(t, currentGitBranch(t, dir))
+		assert.Equal(t, originalHead, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+	})
+}
+
+func TestRunPRCommandExplicitFeatureResolverError(t *testing.T) {
+	dir := setupTestRepo(t)
+	plansDir := writeFeaturePlan(t, dir)
+	svc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	clearer := &recordingStatusClearer{}
+
+	err = runPRCommand(t.Context(), svc, "master",
+		closeoutTarget{identifier: "no-such-feature", plansDir: plansDir}, clearer, io.Discard)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no-such-feature")
+	assert.Zero(t, clearer.calls)
+}
+
+func TestRunPRCommandDetachedHeadWithoutIdentifier(t *testing.T) {
+	dir := setupTestRepo(t)
+	runGit(t, dir, "checkout", "--detach", "master")
+	svc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	clearer := &recordingStatusClearer{}
+
+	err = runPRCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--pr requires a checked-out feature branch")
+	assert.Zero(t, clearer.calls)
+}
+
+func TestRunPRCommandExplicitFeature(t *testing.T) {
+	// setupBaseCheckout builds a repo whose primary checkout stays on master while the feature
+	// branch carries the commits, mirroring a close-out started from the main checkout.
+	setupBaseCheckout := func(t *testing.T) (dir, remote string, svc *git.Service) {
+		t.Helper()
+		dir = setupTestRepo(t)
+		remote = filepath.Join(t.TempDir(), "origin.git")
+		runGit(t, filepath.Dir(remote), "init", "--bare", remote)
+		runGit(t, dir, "remote", "add", "origin", "https://github.com/acme/repo.git")
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("one\ntwo\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+		runGit(t, dir, "checkout", "master")
+
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260802-feature.md"),
+			[]byte("# Feature PR\n\n## Overview\n\nImplements feature.\n"), 0o600))
+
+		realGit, err := exec.LookPath("git")
+		require.NoError(t, err)
+		t.Setenv("PR_TEST_REAL_GIT", realGit)
+		t.Setenv("PR_TEST_REMOTE", remote)
+		gitWrapper := filepath.Join(t.TempDir(), "git-wrapper")
+		writeExecutable(t, gitWrapper, "#!/bin/sh\nif [ \"$1\" = push ]; then\n  refspec=$4\n  \"$PR_TEST_REAL_GIT\" push \"$PR_TEST_REMOTE\" \"$refspec\" || exit $?\n  exit 0\nfi\nexec \"$PR_TEST_REAL_GIT\" \"$@\"\n")
+		svc, err = git.NewService(dir, noopLogger(), gitWrapper)
+		require.NoError(t, err)
+		return dir, remote, svc
+	}
+
+	stubGh := func(t *testing.T) (argsLog, bodyLog string) {
+		t.Helper()
+		binDir := t.TempDir()
+		argsLog = filepath.Join(binDir, "gh-args.log")
+		bodyLog = filepath.Join(binDir, "gh-body.log")
+		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nif [ \"$1\" = repo ]; then\n  printf '%s\\n' 'acme/repo'\n  exit 0\nfi\nprintf '%s\\n' \"$@\" > \"$GH_ARGS_LOG\"\ncat > \"$GH_BODY_LOG\"\nprintf '%s\\n' 'https://github.com/acme/repo/pull/7'\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("GH_ARGS_LOG", argsLog)
+		t.Setenv("GH_BODY_LOG", bodyLog)
+		return argsLog, bodyLog
+	}
+
+	t.Run("branch name pushes and creates the PR without checking it out", func(t *testing.T) {
+		dir, remote, svc := setupBaseCheckout(t)
+		argsLog, bodyLog := stubGh(t)
+		clearer := &recordingStatusClearer{}
+		var output bytes.Buffer
+
+		require.NoError(t, runPRCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "feature", plansDir: filepath.Join(dir, "docs", "plans")}, clearer, &output))
+		assert.Equal(t, "https://github.com/acme/repo/pull/7\n", output.String())
+		assert.Equal(t, 1, clearer.calls)
+		assert.Equal(t, "master", currentGitBranch(t, dir), "the primary checkout must stay on the base branch")
+		assert.True(t, branchExists(t, dir, "feature"))
+
+		args, err := os.ReadFile(argsLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(args), "--base\nmaster\n--head\nfeature\n--title\nFeature PR\n")
+		body, err := os.ReadFile(bodyLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(body), "Implements feature.")
+		assert.Contains(t, string(body), "- Files changed: 1", "diff stats must describe the named branch, not HEAD")
+		assert.Contains(t, string(body), "- Additions: 2")
+
+		localHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "feature"))
+		assert.Equal(t, localHead, strings.TrimSpace(gitOutput(t, remote, "rev-parse", "refs/heads/feature")))
+	})
+
+	t.Run("plan basename resolves to the feature branch", func(t *testing.T) {
+		dir, _, svc := setupBaseCheckout(t)
+		argsLog, _ := stubGh(t)
+
+		require.NoError(t, runPRCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "20260802-feature", plansDir: filepath.Join(dir, "docs", "plans")},
+			&recordingStatusClearer{}, io.Discard))
+		args, err := os.ReadFile(argsLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(args), "--head\nfeature\n")
+	})
+
+	t.Run("plan path resolves to the feature branch", func(t *testing.T) {
+		dir, _, svc := setupBaseCheckout(t)
+		argsLog, _ := stubGh(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+
+		require.NoError(t, runPRCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: filepath.Join(plansDir, "20260802-feature.md"), plansDir: plansDir},
+			&recordingStatusClearer{}, io.Discard))
+		args, err := os.ReadFile(argsLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(args), "--head\nfeature\n")
+	})
+
+	t.Run("feature resolving to the base branch is refused", func(t *testing.T) {
+		dir, _, svc := setupBaseCheckout(t)
+		stubGh(t)
+		clearer := &recordingStatusClearer{}
+
+		err := runPRCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "master", plansDir: filepath.Join(dir, "docs", "plans")}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "already the base branch")
+		assert.Contains(t, err.Error(), "name a different feature")
+		assert.Zero(t, clearer.calls)
+	})
+}
+
+func TestRunCloseoutCommandRoutesPositionalFeature(t *testing.T) {
+	dir := setupTestRepo(t)
+	plansDir := writeFeaturePlan(t, dir)
+	runGit(t, dir, "add", "docs")
+	runGit(t, dir, "commit", "-m", "add plan")
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Chdir(dir)
+	cfg := &config.Config{PlansDir: plansDir}
+
+	t.Run("merge", func(t *testing.T) {
+		err := runCloseoutCommand(t.Context(), opts{mergeSet: true, PlanFile: "no-such-feature"}, cfg, testColors())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no-such-feature")
+	})
+
+	t.Run("pr", func(t *testing.T) {
+		err := runCloseoutCommand(t.Context(), opts{prSet: true, PlanFile: "no-such-feature"}, cfg, testColors())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no-such-feature")
+	})
+}
+
+func TestStripCmuxWorkspaceArg(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{name: "no args", args: nil, want: []string{}},
+		{name: "flag absent", args: []string{"plan.md", "--worktree"}, want: []string{"plan.md", "--worktree"}},
+		{name: "bare flag", args: []string{"--cmux-workspace"}, want: []string{}},
+		{name: "value form", args: []string{"--cmux-workspace=true", "plan.md"}, want: []string{"plan.md"}},
+		{name: "repeated", args: []string{"--cmux-workspace", "--cmux-workspace=false"}, want: []string{}},
+		{
+			name: "mixed among other args",
+			args: []string{"-m", "3", "--cmux-workspace", "docs/plans/p.md", "--worktree"},
+			want: []string{"-m", "3", "docs/plans/p.md", "--worktree"},
+		},
+		{
+			name: "similar flag kept",
+			args: []string{"--cmux-workspace-name", "x", "--cmux-workspace"},
+			want: []string{"--cmux-workspace-name", "x"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, stripCmuxWorkspaceArg(tc.args))
+		})
+	}
+}
+
+func TestCmuxWorkspaceName(t *testing.T) {
+	tests := []struct {
+		name string
+		o    opts
+		want string
+	}{
+		{name: "no plan file", o: opts{}, want: "loopai"},
+		{name: "plan file", o: opts{PlanFile: "docs/plans/20260807-my-feature.md"}, want: "my-feature"},
+		{name: "plan file without date", o: opts{PlanFile: "docs/plans/feature.md"}, want: "feature"},
+		{name: "branch override wins", o: opts{PlanFile: "docs/plans/p.md", Branch: "custom"}, want: "custom"},
+		{name: "blank branch override ignored", o: opts{PlanFile: "p.md", Branch: "  "}, want: "p"},
+		// a plan path whose base is nothing but the extension derives an empty branch, which would
+		// title the sidebar card with nothing at all.
+		{name: "empty derived name falls back", o: opts{PlanFile: "docs/plans/.md"}, want: "loopai"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, cmuxWorkspaceName(tc.o))
+		})
+	}
+}
+
+// clearCmuxEnvOptions removes the environment-provided options for the duration of the test, so
+// hand-off argv assertions do not depend on the environment the suite happens to run in.
+func clearCmuxEnvOptions(t *testing.T) {
+	t.Helper()
+	for _, key := range cmuxEnvOptions {
+		value, ok := os.LookupEnv(key)
+		if !ok {
+			continue
+		}
+		require.NoError(t, os.Unsetenv(key))
+		t.Cleanup(func() { require.NoError(t, os.Setenv(key, value)) })
+	}
+}
+
+// chdirWithPlan moves into a fresh directory holding rel, so hand-off sees a plan file that
+// resolves exactly as the plan selector resolves it in the workspace the run is handed to.
+func chdirWithPlan(t *testing.T, rel string) {
+	t.Helper()
+	chdirRepoRoot(t)
+	require.NoError(t, os.MkdirAll(filepath.Dir(rel), 0o750))
+	require.NoError(t, os.WriteFile(rel, []byte("# plan\n"), 0o600))
+}
+
+// chdirRepoRoot moves into an empty directory carrying the .git marker the hand-off requires,
+// so a test exercises the check it is about rather than the repository-root guard.
+func chdirRepoRoot(t *testing.T) {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	require.NoError(t, os.Mkdir(".git", 0o750))
+}
+
+// cmuxSpawnStub installs a cmux binary in PATH recording every argument on its own line and
+// returns the log path. exitCode lets a test make the spawn fail.
+func cmuxSpawnStub(t *testing.T, exitCode int) string {
+	t.Helper()
+	clearCmuxEnvOptions(t)
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "cmux-argv.log")
+	writeExecutable(t, filepath.Join(binDir, "cmux"),
+		fmt.Sprintf("#!/bin/sh\nfor a in \"$@\"; do printf '%%s\\n' \"$a\" >> \"$CMUX_ARGV_LOG\"; done\nexit %d\n", exitCode))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_ARGV_LOG", argvLog)
+	return argvLog
+}
+
+// handOffStops runs the hand-off and returns its stop verdict, asserting it did not stop with an
+// error. only the ambiguous-spawn case does, and it has its own test.
+func handOffStops(t *testing.T, o opts, args []string, stdout, stderr io.Writer) bool {
+	t.Helper()
+	stop, err := handOffToCmuxWorkspace(o, args, stdout, stderr)
+	require.NoError(t, err)
+	return stop
+}
+
+func TestExecutableHandOffRefusal(t *testing.T) {
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	missing := filepath.Join(t.TempDir(), "gone")
+
+	tests := []struct {
+		name string
+		exe  string
+		err  error
+		want string
+	}{
+		{name: "resolvable executable is handed off", exe: exe},
+		{name: "resolution failure", err: errors.New("boom"), want: "resolve executable: boom"},
+		{name: "missing path", exe: missing, want: "executable not found: " + missing},
+		// os.Executable reads /proc/self/exe on Linux, which keeps naming an unlinked binary with
+		// this suffix. a "go run" binary is still on disk while this runs and is not covered.
+		{name: "deleted binary", exe: exe + " (deleted)", want: "executable not found: " + exe + " (deleted)"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, executableHandOffRefusal(tc.exe, tc.err))
+		})
+	}
+}
+
+func TestHandOffToCmuxWorkspace(t *testing.T) {
+	exe, err := os.Executable()
+	require.NoError(t, err)
+
+	// a key inherited from the developer's own shell would make the pass-through warning depend on
+	// their environment, and answering it from config would read their real configuration directory.
+	// the subtest that exercises the warning sets the variable itself, overriding this baseline.
+	t.Setenv(anthropicAPIKeyEnv, "")
+
+	t.Run("hands off inside cmux", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/20260807-my feature.md")
+		cwd, wdErr := os.Getwd()
+		require.NoError(t, wdErr)
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/20260807-my feature.md"}
+		args := []string{"--cmux-workspace", "docs/plans/20260807-my feature.md", "--worktree"}
+		require.True(t, handOffStops(t, o, args, stdout, stderr))
+
+		assert.Contains(t, stdout.String(), "handed off to cmux workspace my feature")
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Equal(t, []string{
+			"new-workspace", "--name", "my feature", "--cwd", cwd, "--focus", "true", "--command",
+			fmt.Sprintf("'%s' 'docs/plans/20260807-my feature.md' '--worktree'", exe),
+		}, strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n"))
+	})
+
+	t.Run("outside cmux continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "")
+		chdirRepoRoot(t)
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: true}, nil, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off failed, running here")
+		assert.Contains(t, stderr.String(), "not running inside cmux")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("spawn failure continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 1)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: true, PlanFile: "p.md"}, nil, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off failed, running here")
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("flag unset is a no-op", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		assert.False(t, handOffStops(t, opts{PlanFile: "p.md"}, nil, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Empty(t, stderr.String())
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("unresolvable working directory continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+		// the new workspace needs a --cwd, so a working directory that no longer exists is the same
+		// kind of unusable environment as a missing executable: warn and run here instead.
+		dir := filepath.Join(t.TempDir(), "gone")
+		require.NoError(t, os.Mkdir(dir, 0o750))
+		t.Chdir(dir)
+		// removing the current directory is refused on some platforms and left resolvable on others,
+		// so the branch is only exercised where the environment actually becomes unusable.
+		if err := os.Remove(dir); err != nil {
+			t.Skipf("platform keeps the working directory: %v", err)
+		}
+		if _, err := os.Getwd(); err == nil {
+			t.Skip("platform resolves the working directory of a removed directory")
+		}
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: true, PlanFile: "p.md"}, nil, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: resolve working directory")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("api key passthrough warns about the fresh environment", func(t *testing.T) {
+		cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Setenv(anthropicAPIKeyEnv, "sk-ant-secret")
+		chdirWithPlan(t, "p.md")
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "p.md", PreserveAnthropicAPIKey: true}
+		require.True(t, handOffStops(t, o, nil, stdout, stderr))
+
+		assert.Contains(t, stdout.String(), "handed off to cmux workspace")
+		assert.Contains(t, stderr.String(), "the API key pass-through applies there only if")
+		assert.NotContains(t, stderr.String(), "sk-ant-secret", "the key itself must never be echoed")
+	})
+
+	t.Run("environment-provided options travel with the command", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Setenv("LOOPAI_CONFIG_DIR", "/custom/config dir")
+		chdirWithPlan(t, "p.md")
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "p.md"}
+		require.True(t, handOffStops(t, o, []string{"p.md"}, stdout, stderr))
+
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		lines := strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n")
+		assert.Equal(t, fmt.Sprintf("'env' 'LOOPAI_CONFIG_DIR=/custom/config dir' '%s' 'p.md'", exe), lines[len(lines)-1],
+			"the new workspace shell does not inherit this process's environment")
+	})
+
+	t.Run("reset preceding a run is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+		chdirWithPlan(t, "docs/plans/p.md")
+
+		// --reset alone is a standalone command, but combined with a run it is part of that run and
+		// must happen once, in the workspace the run lands in.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, Reset: true, PlanFile: "docs/plans/p.md"}
+		require.True(t, handOffStops(t, o, []string{"--reset", "docs/plans/p.md"}, stdout, stderr))
+
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "--reset")
+	})
+
+	t.Run("missing plan file continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirRepoRoot(t)
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/typo.md"}
+		assert.False(t, handOffStops(t, o, []string{"docs/plans/typo.md"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file not found: docs/plans/typo.md")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the missing plan itself")
+	})
+
+	t.Run("plan file that is a directory continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/p.md")
+
+		// "loopai docs/plans" with the filename forgotten stats fine, so only this check stands
+		// between the user and a workspace whose run dies once it tries to read the plan.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans"}
+		assert.False(t, handOffStops(t, o, []string{"docs/plans"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file is not a regular file: docs/plans")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the unusable plan itself")
+	})
+
+	t.Run("unreadable plan file continues locally", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("os.Chmod doesn't restrict read access on Windows")
+		}
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses file permissions, can't simulate unreadable file")
+		}
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/p.md")
+		require.NoError(t, os.Chmod("docs/plans/p.md", 0o000))
+		t.Cleanup(func() { _ = os.Chmod("docs/plans/p.md", 0o600) }) // restore for cleanup
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/p.md"}
+		assert.False(t, handOffStops(t, o, []string{"docs/plans/p.md"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file not readable: docs/plans/p.md")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the unusable plan itself")
+	})
+
+	t.Run("symlinked plan file is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/p.md")
+		require.NoError(t, os.Symlink("p.md", filepath.Join("docs", "plans", "link.md")))
+
+		// the readability checks resolve the link like the child's own read does, so a plan the
+		// run could execute is not refused.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/link.md"}
+		require.True(t, handOffStops(t, o, []string{"docs/plans/link.md"}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("plan creation without a plan file is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirRepoRoot(t)
+
+		// --plan has no plan file yet, so the existence check must not apply to it.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanDescription: "add a feature"}
+		require.True(t, handOffStops(t, o, []string{"--plan", "add a feature"}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("subdirectory of a repository continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/p.md")
+		t.Chdir("docs")
+
+		// the plan path still resolves from here, so only the repository-root check stands between
+		// the user and a focused workspace whose run dies on "must run from repository root".
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		// a subdirectory has no .git, so the refusal consults read-only config; ConfigDir keeps that
+		// lookup off the developer's real ~/.config/loopai, whose vcs_command would decide this test.
+		o := opts{CmuxWorkspace: true, ConfigDir: t.TempDir(), PlanFile: "plans/p.md"}
+		assert.False(t, handOffStops(t, o, []string{"plans/p.md"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: not a repository root")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the wrong directory itself")
+	})
+
+	t.Run("custom vcs backend without a git marker is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Chdir(t.TempDir())
+		require.NoError(t, os.WriteFile("p.md", []byte("# plan\n"), 0o600))
+
+		// a non-git backend has no .git to find, and the run skips the marker check for it too.
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte("vcs_command = jj\n"), 0o600))
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, ConfigDir: configDir, PlanFile: "p.md"}
+		require.True(t, handOffStops(t, o, []string{"p.md"}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("watch-only serve outside a repository is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		watched := t.TempDir()
+		t.Chdir(t.TempDir())
+
+		// watch-only --serve never reaches the repository-root check, it runs from any directory.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, Serve: true, Watch: []string{watched}, ConfigDir: t.TempDir()}
+		require.True(t, handOffStops(t, o, []string{"--serve", "--watch", watched}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("watch-only serve from configured watch dirs is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		watched := t.TempDir()
+		t.Chdir(t.TempDir())
+
+		// watch dirs reach the dashboard from config just as well as from the CLI.
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"),
+			fmt.Appendf(nil, "watch_dirs = %s\n", watched), 0o600))
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, Serve: true, ConfigDir: configDir}
+		require.True(t, handOffStops(t, o, []string{"--serve"}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("serve without watch dirs outside a repository continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Chdir(t.TempDir())
+
+		// bare --serve with no watch dirs anywhere is a normal run, not a dashboard: it does reach
+		// the repository-root check and would die there, leaving an orphan card behind.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, Serve: true, ConfigDir: t.TempDir()}
+		assert.False(t, handOffStops(t, o, []string{"--serve"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: not a repository root")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("ambiguous spawn stops instead of running here", func(t *testing.T) {
+		// cmux may already have created the workspace and started the plan there, so the local
+		// fallback every other failure takes would give two agents one checkout.
+		stderr := &bytes.Buffer{}
+		stop, err := handOffSpawnFailure(fmt.Errorf("create cmux workspace: %w", cmux.ErrSpawnAmbiguous), stderr)
+		assert.True(t, stop)
+		require.Error(t, err)
+		require.ErrorIs(t, err, cmux.ErrSpawnAmbiguous)
+		assert.Contains(t, err.Error(), "not running here")
+		assert.Empty(t, stderr.String(), "the error carries the message, it is not a warning")
+	})
+
+	t.Run("clean spawn refusal continues here", func(t *testing.T) {
+		stderr := &bytes.Buffer{}
+		stop, err := handOffSpawnFailure(errors.New("cmux refused"), stderr)
+		assert.False(t, stop)
+		require.NoError(t, err)
+		assert.Contains(t, stderr.String(), "hand-off failed, running here: cmux refused")
+	})
+
+	t.Run("standalone commands are not handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		for _, o := range []opts{
+			{CmuxWorkspace: true, mergeSet: true},
+			{CmuxWorkspace: true, prSet: true},
+			{CmuxWorkspace: true, Clear: true},
+			{CmuxWorkspace: true, Init: true},
+			{CmuxWorkspace: true, DumpDefaults: t.TempDir()},
+			{CmuxWorkspace: true, Reset: true},
+		} {
+			assert.False(t, handOffStops(t, o, nil, stdout, stderr))
+		}
+		assert.Empty(t, stdout.String())
+		assert.Empty(t, stderr.String())
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+}
+
+func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
+	badConfigDir := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(badConfigDir, []byte("x"), 0o600))
+
+	t.Run("successful hand-off exits before config load", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
+
+		require.NoError(t, run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"}))
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(recorded), "new-workspace")
+		assert.Contains(t, string(recorded), "\np\n") // workspace named after the plan branch
+		assert.NotContains(t, string(recorded), "clear-status",
+			"the run happens in the new workspace, so this one's completion pill stays")
+	})
+
+	t.Run("interactive plan creation is handed off too", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirRepoRoot(t)
+
+		o := opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanDescription: "add a feature"}
+		require.NoError(t, run(t.Context(), o))
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(recorded), "new-workspace")
+		assert.Contains(t, string(recorded), "\nloopai\n") // no plan file yet, falls back to the app name
+	})
+
+	t.Run("failed hand-off continues the normal run", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 1)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
+
+		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"})
+		require.ErrorContains(t, err, "load config")
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "clear-status",
+			"the run stayed here after all, so it takes over the stale pill even though startup failed")
+	})
+
+	t.Run("outside cmux continues the normal run", func(t *testing.T) {
+		cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "")
+		chdirWithPlan(t, "p.md")
+
+		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"})
+		require.ErrorContains(t, err, "load config")
+	})
+
+	t.Run("unresolvable plan file continues the normal run", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirRepoRoot(t) // the marker keeps the repository-root guard from refusing first
+
+		// handing off would create and focus a workspace whose run dies on the same missing file,
+		// while this terminal reported success and exited 0.
+		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "docs/plans/typo.md"})
+		require.ErrorContains(t, err, "load config")
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.NotContains(t, string(recorded), "new-workspace",
+			"no workspace is created for an invocation that cannot run")
+		assert.Contains(t, string(recorded), "clear-status",
+			"the run stayed here, so it takes over the stale pill")
+	})
+}
+
+func TestCmuxEnvOptionsCoversOptionTags(t *testing.T) {
+	var tagged []string
+	for field := range reflect.TypeFor[opts]().Fields() {
+		if key := field.Tag.Get("env"); key != "" {
+			tagged = append(tagged, key)
+		}
+	}
+
+	require.NotEmpty(t, tagged, "the reflection walk must find the env-backed options")
+	assert.ElementsMatch(t, tagged, cmuxEnvOptions,
+		"an option readable from the environment is lost on hand-off unless cmuxEnvOptions lists it")
+}
+
+func TestWarnAPIKeyNotCarried(t *testing.T) {
+	tests := []struct {
+		name     string
+		preserve bool
+		config   string
+		key      string
+		wantWarn bool
+	}{
+		{name: "flag passthrough with a key set here warns", preserve: true, key: "sk-ant-1", wantWarn: true},
+		{name: "flag passthrough without a key stays quiet", preserve: true, key: "", wantWarn: false},
+		{name: "key without passthrough stays quiet", preserve: false, key: "sk-ant-1", wantWarn: false},
+		{name: "neither stays quiet", preserve: false, key: "", wantWarn: false},
+		{
+			name:   "config passthrough with a key set here warns",
+			config: "preserve_anthropic_api_key = true\n", key: "sk-ant-1", wantWarn: true,
+		},
+		{
+			name:   "config passthrough turned off stays quiet",
+			config: "preserve_anthropic_api_key = false\n", key: "sk-ant-1", wantWarn: false,
+		},
+		{
+			name:     "config passthrough plus the flag still warns",
+			preserve: true, config: "preserve_anthropic_api_key = true\n", key: "sk-ant-1", wantWarn: true,
+		},
+		{
+			name:   "unparsable config falls back to the flag",
+			config: "preserve_anthropic_api_key = notabool\n", key: "sk-ant-1", wantWarn: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(anthropicAPIKeyEnv, tt.key)
+
+			// an empty ConfigDir would resolve to the real user configuration directory
+			configDir := t.TempDir()
+			if tt.config != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(tt.config), 0o600))
+			}
+
+			stderr := &bytes.Buffer{}
+			warnAPIKeyNotCarried(opts{PreserveAnthropicAPIKey: tt.preserve, ConfigDir: configDir}, stderr)
+			if !tt.wantWarn {
+				assert.Empty(t, stderr.String())
+				return
+			}
+			assert.Contains(t, stderr.String(), "ANTHROPIC_API_KEY is not carried into the new cmux workspace")
+		})
+	}
+}
+
+func TestCmuxHandOffArgv(t *testing.T) {
+	t.Run("no environment options", func(t *testing.T) {
+		clearCmuxEnvOptions(t)
+		argv := cmuxHandOffArgv("/bin/loopai", []string{"--cmux-workspace", "p.md"})
+		assert.Equal(t, []string{"/bin/loopai", "p.md"}, argv)
+	})
+
+	t.Run("empty value is still forwarded", func(t *testing.T) {
+		clearCmuxEnvOptions(t)
+		t.Setenv("LOOPAI_CONFIG_DIR", "")
+		argv := cmuxHandOffArgv("/bin/loopai", nil)
+		assert.Equal(t, []string{"env", "LOOPAI_CONFIG_DIR=", "/bin/loopai"}, argv,
+			"an explicitly empty value means something different than an unset one")
+	})
+
+	t.Run("every environment option is forwarded", func(t *testing.T) {
+		clearCmuxEnvOptions(t)
+		t.Setenv("LOOPAI_CONFIG_DIR", "/cfg")
+		t.Setenv("LOOPAI_WEB_HOST", "0.0.0.0")
+		argv := cmuxHandOffArgv("/bin/loopai", []string{"--serve"})
+		assert.Equal(t, []string{"env", "LOOPAI_CONFIG_DIR=/cfg", "LOOPAI_WEB_HOST=0.0.0.0", "/bin/loopai", "--serve"}, argv)
+	})
+}
+
+func TestHandOffSucceeded(t *testing.T) {
+	tests := []struct {
+		name     string
+		o        opts
+		earlyErr error
+		want     bool
+	}{
+		{name: "hand-off with no error", o: opts{CmuxWorkspace: true}, want: true},
+		{name: "hand-off flag with an error", o: opts{CmuxWorkspace: true}, earlyErr: errors.New("reset failed")},
+		{name: "flag unset", o: opts{}},
+		{name: "flag unset with an error", o: opts{}, earlyErr: errors.New("init failed")},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, handOffSucceeded(tc.o, tc.earlyErr))
+		})
+	}
+}
+
+func TestPrepareStaleCmuxStatusDefersForHandOff(t *testing.T) {
+	// cmux stub shared by the subtests, each gets its own log through CMUX_ARGV_LOG.
+	stub := func(t *testing.T) string {
+		t.Helper()
+		binDir := t.TempDir()
+		argvLog := filepath.Join(binDir, "cmux-argv.log")
+		writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Setenv("CMUX_ARGV_LOG", argvLog)
+		return argvLog
+	}
+
+	t.Run("without the flag the clear is immediate", func(t *testing.T) {
+		argvLog := stub(t)
+		prepareStaleCmuxStatus(opts{PlanFile: "plan.md"})
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Equal(t, "clear-status loopai\n", string(recorded))
+	})
+
+	t.Run("preserved hand-off never clears", func(t *testing.T) {
+		argvLog := stub(t)
+		resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: true, PlanFile: "plan.md"})
+		_, err := os.Stat(argvLog)
+		require.ErrorIs(t, err, os.ErrNotExist, "the hand-off verdict is not known yet")
+
+		resolve(true)
+		_, err = os.Stat(argvLog)
+		require.ErrorIs(t, err, os.ErrNotExist, "the run moved to another workspace")
+	})
+
+	t.Run("failed hand-off clears on resolution", func(t *testing.T) {
+		argvLog := stub(t)
+		resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: true, PlanFile: "plan.md"})
+		resolve(false)
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Equal(t, "clear-status loopai\n", string(recorded))
+	})
 }

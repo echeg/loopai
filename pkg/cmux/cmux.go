@@ -7,7 +7,9 @@ package cmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -23,12 +25,23 @@ const (
 	// execTimeout bounds a single cmux CLI call, the socket is local so a hanging call must not stall the run.
 	execTimeout = 2 * time.Second
 
+	// spawnTimeout bounds cmux new-workspace. it is far more generous than execTimeout because
+	// creating a workspace starts a terminal instead of updating a label, and because a timeout here
+	// is ambiguous rather than merely cosmetic: cmux may have created the workspace already while the
+	// caller reads the error as a failure and runs the plan locally as well, giving two concurrent
+	// runs over one repository.
+	spawnTimeout = 10 * time.Second
+
 	// pollInterval is how often the plan file is re-read for the progress bar. a task iteration
 	// takes minutes, so a tighter interval would only re-read the file for nothing.
 	pollInterval = 10 * time.Second
 
 	// workspaceEnv is injected by cmux into every terminal it owns and inherited by child processes.
 	workspaceEnv = "CMUX_WORKSPACE_ID"
+
+	// quietEnv silences cmux's own advisory notices, leaving its errors alone. spawnRunner sets it
+	// so a legacy-verb deprecation hint cannot crowd the refusal reason out of the stderr excerpt.
+	quietEnv = "CMUX_QUIET"
 
 	// binName is the cmux CLI binary looked up in PATH.
 	binName = "cmux"
@@ -54,6 +67,11 @@ const (
 
 	// unknownPhaseIcon is used for a phase missing from phaseStyles.
 	unknownPhaseIcon = "circle"
+
+	// stderrDetailLimit bounds the cmux stderr excerpt carried in a workspace creation error. the
+	// message ends up in a single warning line, so a verbose refusal is truncated rather than
+	// flooding the terminal.
+	stderrDetailLimit = 200
 )
 
 // commandRunner runs a single cmux CLI invocation. defined here because the reporter is the only
@@ -78,6 +96,64 @@ func (r *execRunner) run(ctx context.Context, args ...string) error {
 		return fmt.Errorf("run %s %s: %w", r.bin, strings.Join(args, " "), err)
 	}
 	return nil
+}
+
+// spawnRunner runs cmux new-workspace and carries what cmux printed on stderr into the error. the
+// Reporter's failures are swallowed, so execRunner can discard output, but this is the one cmux
+// call whose error reaches the user, and "exit status 1" on its own says nothing about why the
+// workspace was refused. stderr goes to a temp file rather than a pipe: os/exec hands an *os.File
+// to the child directly and starts no copy goroutine, so a grandchild inheriting the descriptor
+// cannot keep cmd.Wait blocked past the deadline the way the pipe execRunner avoids would.
+type spawnRunner struct {
+	bin string
+}
+
+func (r *spawnRunner) run(ctx context.Context, args ...string) error {
+	cmd := exec.CommandContext(ctx, r.bin, args...)
+	cmd.Stdout = nil // as in execRunner, the child's stdout belongs to /dev/null
+	// new-workspace is a legacy alias for "workspace create", and cmux prints a ~150-character
+	// deprecation hint on stderr ahead of anything else on every call. that alone fills most of
+	// stderrDetailLimit, so the refusal reason this capture exists to surface would be truncated
+	// away. quietEnv silences the hint only, cmux's own "Error: ..." line still arrives. the
+	// inherited environment is kept, the client needs it to find the socket and its own workspace.
+	cmd.Env = append(os.Environ(), quietEnv+"=1")
+	capture, err := os.CreateTemp("", "loopai-cmux-spawn-*.err")
+	if err == nil {
+		defer func() { _ = capture.Close(); _ = os.Remove(capture.Name()) }()
+		cmd.Stderr = capture
+	}
+	// a capture file that could not be created only makes the diagnostics poorer, the call itself
+	// still has to happen, so cmd.Stderr is left nil and the error carries no detail.
+	runErr := cmd.Run()
+	if runErr == nil {
+		return nil
+	}
+	if detail := stderrDetail(capture); detail != "" {
+		return fmt.Errorf("run %s %s: %w: %s", r.bin, strings.Join(args, " "), runErr, detail)
+	}
+	return fmt.Errorf("run %s %s: %w", r.bin, strings.Join(args, " "), runErr)
+}
+
+// stderrDetail reads back what the child wrote to the capture file and folds it into one bounded
+// line. a nil file is the "capture unavailable" case and yields no detail, as does an unreadable
+// one, since a missing reason must not replace the exit status the caller already has.
+func stderrDetail(f *os.File) string {
+	if f == nil {
+		return ""
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return ""
+	}
+	// four bytes per rune is the widest UTF-8 encoding, so this always covers stderrDetailLimit runes
+	data, err := io.ReadAll(io.LimitReader(f, 4*stderrDetailLimit))
+	if err != nil {
+		return ""
+	}
+	detail := strings.Join(strings.Fields(string(data)), " ")
+	if runes := []rune(detail); len(runes) > stderrDetailLimit {
+		detail = string(runes[:stderrDetailLimit]) + "…"
+	}
+	return detail
 }
 
 // Reporter pushes sidebar state to cmux for the current workspace.
@@ -135,6 +211,70 @@ func New(planFile string, models Models) *Reporter {
 		lastDone:  -1,
 		lastTotal: -1,
 	}
+}
+
+// ErrNotInCmux reports that loopai does not run inside cmux, so no workspace can be created.
+// callers match it with errors.Is to tell "cmux is absent" apart from "cmux refused the request".
+var ErrNotInCmux = errors.New("not running inside cmux")
+
+// ErrSpawnAmbiguous reports that workspace creation neither succeeded nor cleanly failed: the
+// deadline expired, which kills the local cmux client but says nothing about the request it may
+// already have delivered. callers match it with errors.Is to refuse the local fallback they take
+// on a clean refusal, since falling back to a run cmux may already have started duplicates it.
+var ErrSpawnAmbiguous = errors.New("workspace creation timed out with an unknown outcome")
+
+// SpawnWorkspace creates a new cmux workspace running argv in cwd and titled name.
+//
+// unlike the Reporter methods this is not best-effort: the error is returned so the caller can
+// choose between exiting after a successful hand-off and continuing the run locally. availability
+// is detected exactly like New does, and a missing workspace env or binary yields ErrNotInCmux.
+// it uses spawnRunner rather than execRunner, so a refusal reaches the caller with cmux's own
+// message instead of a bare exit status.
+func SpawnWorkspace(name, cwd string, argv []string) error {
+	if strings.TrimSpace(os.Getenv(workspaceEnv)) == "" {
+		return fmt.Errorf("%s is not set: %w", workspaceEnv, ErrNotInCmux)
+	}
+	bin, err := exec.LookPath(binName)
+	if err != nil {
+		return fmt.Errorf("no %s binary in PATH: %w", binName, ErrNotInCmux)
+	}
+	return spawnWorkspace(&spawnRunner{bin: bin}, spawnTimeout, name, cwd, argv)
+}
+
+// spawnWorkspace is the runner-injectable core of SpawnWorkspace, kept separate so tests can
+// record argv without a live cmux socket and bound a blocking call without waiting spawnTimeout.
+func spawnWorkspace(runner commandRunner, timeout time.Duration, name, cwd string, argv []string) error {
+	if len(argv) == 0 {
+		return errors.New("no command for the new workspace")
+	}
+
+	// --command is delivered to the new workspace's shell as text plus Enter, so argv has to survive
+	// one round of shell word splitting. every element is single-quoted, which is the only escaping
+	// form that needs no knowledge of the target shell's expansions.
+	quoted := make([]string, 0, len(argv))
+	for _, a := range argv {
+		quoted = append(quoted, shellQuote(a))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	args := []string{"new-workspace", "--name", name, "--cwd", cwd, "--focus", "true", "--command", strings.Join(quoted, " ")}
+	if err := runner.run(ctx, args...); err != nil {
+		// the deadline kills the local cmux client, not the request it already delivered, so the
+		// outcome is unknown and the caller must not fall back to a local run.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("create cmux workspace %q: %w: %w", name, ErrSpawnAmbiguous, err)
+		}
+		return fmt.Errorf("create cmux workspace %q: %w", name, err)
+	}
+	return nil
+}
+
+// shellQuote wraps s in POSIX single quotes, ending and reopening the quoted run around every
+// literal quote ('\''). the result is safe in sh, bash and zsh alike, since nothing but the closing
+// quote is special inside a single-quoted string.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // exec runs a cmux command best-effort. errors are swallowed on purpose: the sidebar is an

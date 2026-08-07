@@ -4,7 +4,9 @@ Autonomous implementation-plan execution with Claude Code or OpenAI Codex.
 
 loopai is a local CLI for running structured engineering plans from the root of a Git repository. Each task runs in a fresh agent session, validation is performed between tasks, and completed work can pass through internal and cross-provider review phases. The result is committed work with a persistent progress log, without requiring an IDE plugin or hosted service.
 
-This repository is a personal fork. It is installed by building from source; no packaged releases are published here.
+This repository is a personal fork. The loopai CLI is installed by building
+from source; no packaged CLI releases are published here. Optional Claude Code
+workflows are distributed through this repository's plugin marketplace.
 
 ## Features
 
@@ -18,6 +20,7 @@ This repository is a personal fork. It is installed by building from source; no 
 - Streams timestamped progress to `.loopai/progress/`
 - Serves a real-time web dashboard with `--serve`
 - Reports live and persistent completion status to the cmux sidebar when available
+- Optionally hands a run off to its own cmux workspace with `--cmux-workspace`
 - Sends optional Telegram, email, Slack, webhook, or custom-script notifications
 
 ## Requirements
@@ -31,7 +34,8 @@ This repository is a personal fork. It is installed by building from source; no 
 - Optional: `fzf` for interactive selection; a numbered fallback is built in
 - Optional for `--pr`: authenticated GitHub CLI (`gh auth login`) and a GitHub
   repository remote named `origin`
-- Development: Bash and `jq` for the included provider-wrapper test suites
+- Development: Bash and `jq` for the full test suite, including plugin manifest
+  validation and provider-wrapper tests
 - Optional for development: `golangci-lint`
 
 loopai must be run from the repository root. A custom `vcs_command` must accept
@@ -74,19 +78,69 @@ install -d ~/.config/fish/completions
 install -m 0644 completions/loopai.fish ~/.config/fish/completions/loopai.fish
 ```
 
-### Optional Claude Code commands
+### Claude Code plugin
 
-The retained command assets provide `/loopai`, `/loopai-plan`, `/loopai-adopt`,
-and `/loopai-update`. Install standalone copies with:
+Add this repository as a Claude Code marketplace and install its plugin:
+
+```bash
+claude plugin marketplace add echeg/loopai
+claude plugin install loopai@loopai
+```
+
+The plugin provides five skills:
+
+- `loopai:loopai` launches loopai, monitors progress, and resumes active runs
+- `loopai:loopai-plan` creates an executable implementation plan
+- `loopai:loopai-brainstorm` designs a feature interactively, then hands the
+  approved design to `loopai:loopai-plan`
+- `loopai:loopai-adopt` converts an existing specification or issue into a plan
+- `loopai:loopai-update` merges updated embedded defaults into local
+  customizations
+
+The CLI remains the execution engine. The plugin adds Claude Code workflows
+for planning and operating it. Refresh the marketplace and plugin when a new
+version is published, then restart Claude Code to apply the update:
+
+```bash
+claude plugin marketplace update loopai
+claude plugin update loopai@loopai
+```
+
+To remove the workflows:
+
+```bash
+claude plugin uninstall loopai@loopai
+claude plugin marketplace remove loopai
+```
+
+To install standalone command copies instead:
 
 ```bash
 install -d ~/.claude/commands
 cp -L assets/claude/loopai*.md ~/.claude/commands/
 ```
 
-The commands respectively launch/monitor loopai, create a plan, convert an
-existing specification into a plan, and merge updated embedded defaults into
-customized configuration.
+Standalone copies are not managed by Claude Code's plugin updater. After
+pulling a newer repository version, rerun the copy command to refresh them.
+
+When migrating from umputun's upstream plugin, remove its plugin and marketplace
+after installing this one:
+
+```bash
+claude plugin uninstall ralphex
+claude plugin marketplace remove ralphex
+```
+
+Superpowers can remain installed for debugging, TDD, code review, and its other
+orthogonal workflows. `loopai-brainstorm` replaces only its brainstorming-to-
+plan-writing path: it sends approved decisions directly to `loopai-plan` and
+does not create a separate spec. For projects shared with teammates who keep
+Superpowers, add a directive like this to the project's `CLAUDE.md`:
+
+```text
+Create implementation plans with loopai:loopai-brainstorm and
+loopai:loopai-plan. Do not use superpowers:writing-plans to create plan files.
+```
 
 ### Migrating from upstream ralphex
 
@@ -109,10 +163,9 @@ The executable is now `loopai`. Replace `RALPHEX_CONFIG_DIR` with
 project-root dashboard scan.
 
 This fork also removes the upstream Docker/Bedrock path, built-in Mercurial
-adapter, packaged releases (Homebrew, deb, rpm, and release binaries), hosted
-documentation site, and Claude plugin marketplace metadata. Source builds and
-the optional standalone Claude command assets above are the supported
-distribution paths.
+adapter, packaged releases (Homebrew, deb, rpm, and release binaries), and
+hosted documentation site. Source builds and this repository's Claude Code
+plugin marketplace are the supported distribution paths.
 
 ## Quick start
 
@@ -136,6 +189,11 @@ Describe the intended outcome.
 - [ ] Add or update tests
 - [ ] Run validation
 ```
+
+Validation timing recognizes the exact, case-sensitive H2 heading `## Validation Commands`.
+Commands must be plain, non-checkbox Markdown list items before the next heading. Checkbox items,
+prose, and fenced examples are ignored. Optional surrounding backticks are stripped and whitespace
+is normalized before matching.
 
 Run it:
 
@@ -174,6 +232,9 @@ loopai --codex --pass-claude-md docs/plans/feature.md
 
 # execute in an isolated worktree
 loopai --worktree docs/plans/feature.md
+
+# hand the run off to its own cmux workspace, so it gets its own sidebar card
+loopai --cmux-workspace --worktree docs/plans/feature.md
 
 # commit local changes, then execute from a new isolated worktree
 loopai --worktree --commit docs/plans/feature.md
@@ -316,6 +377,13 @@ loopai --merge=release/13
 # Push the current feature branch and open a GitHub pull request via gh.
 loopai --pr
 loopai --pr=release/13
+
+# Name the feature explicitly to close it out from the primary checkout.
+loopai --merge dynamic-review-agents
+loopai --merge 20260806-dynamic-review-agents
+loopai --merge docs/plans/20260806-dynamic-review-agents.md
+loopai --merge=release/13 dynamic-review-agents
+loopai --pr dynamic-review-agents
 ```
 
 `--merge` requires clean feature and base worktrees, including no untracked files. It
@@ -328,8 +396,39 @@ origin push URL must identify that same GitHub repository. It pushes committed b
 state, builds the title and body from the associated plan and diff
 statistics, and keeps the feature branch and worktree. Commit intended changes before
 running `--pr`. Each command clears the completion pill only after it succeeds, so a
-failed close-out remains visible. These commands cannot be combined with a plan file or
-execution options.
+failed close-out remains visible.
+
+Without an argument both commands close out the current branch and must run from the
+feature worktree or checkout. The optional positional argument names the feature instead,
+so either command can run from the primary checkout or from any other registered worktree.
+Like every close-out invocation it still has to start at the root of a checkout, not in a
+subdirectory. It accepts a local branch name, a plan basename with or without `.md`, or a
+plan path, and combines with an explicit base such as
+`--merge=release/13 dynamic-review-agents`. loopai first looks for a branch of that exact
+name, then for a plan file in the plans directory and its `completed/` subdirectory. For a
+plan it uses the branch recorded for that plan under `.loopai/progress/`, so a run started
+with `--branch` closes out the branch it actually created rather than the one the plan
+filename implies; without such a record the branch is derived from the filename. Either
+way that branch has to exist locally. The plan lookup uses
+the `plans_dir` of the checkout you run from, so a plan that exists only inside the
+unmerged feature worktree is not visible from the primary checkout; name the branch in that
+case. When the named feature has no registered worktree, `--merge` merges and deletes the
+branch without any worktree cleanup; with a worktree the usual cleanliness checks and safe
+removal apply. Only the feature worktree and the worktree the merge runs in have to be
+clean, so unrelated uncommitted work in an invoking checkout that is neither one does not
+block the merge. The merge runs in the base worktree, or in the primary checkout when the
+base branch is not checked out anywhere. One arrangement is still refused: when the feature
+is checked out in the primary checkout while the base is checked out in a linked worktree,
+the merge would have to run in the primary and cannot, so switch the primary off the feature
+branch first. `--pr <feature>`
+pushes and opens the pull request for a branch that is not checked out anywhere; its title
+and body still come from the plan as seen from the invoking checkout, falling back to a
+stats-only body when that plan is not present there. Naming the base branch as the feature
+is an error, and so is a second positional argument: `--merge release/13 dynamic-review-agents`
+is `--merge=release/13 dynamic-review-agents` with the `=` forgotten, which would otherwise
+close out `release/13` itself. Apart from this argument, the close-out commands cannot be
+combined with a plan file or execution options. On success `--merge` names the worktree it
+removed, since with an explicit feature that directory is not the one you ran from.
 
 ## Executors and reviews
 
@@ -512,6 +611,29 @@ parentheses is the number of section occurrences, so retried iterations count ag
 include rate-limit waits. Phase totals can be less than the footer's total elapsed time because
 time before the first section is unattributed.
 
+Shell commands that equal an entry in the plan's `## Validation Commands` section, or start with
+that entry followed by whitespace, are timed separately. Each completed match is logged as it
+finishes, followed by an aggregate after the phase summary:
+
+```text
+validation: make test took 1m12s
+validation: make lint took 18s
+phase durations: tasks 8m41s (2), internal review 2m3s (1)
+validation: 1m30s (2 runs)
+```
+
+Validation time is already included in the phase durations; it is not additional elapsed time.
+The aggregate is the sum of matched command durations, so concurrent commands can overlap and
+make it larger than section or run wall-clock time. Plans without validation commands, unmatched
+commands, incomplete commands, and provider streams without shell tool events produce no
+`validation:` lines. Claude measures stream-event arrival time. Codex prefers native rollout
+timestamps and falls back to approximate arrival time when timestamps are absent or invalid.
+For current Codex custom-tool records that expose only command output, native timestamps can
+prove completion when the call returns before its configured yield threshold. Calls at or beyond
+that threshold are paired with a later session continuation only when the association is unique;
+ambiguous or abandoned calls produce no timing line. Batched calls use native per-command wall
+times when available and are omitted when only the enclosing call's duration is known.
+
 Start the dashboard:
 
 ```bash
@@ -521,6 +643,47 @@ loopai --serve --watch=/path/to/project-a --watch=/path/to/project-b
 ```
 
 When loopai runs inside cmux, it reports the phase and effective model, review iteration, task count, spinner, and completion notifications through the public cmux CLI. Started implementation and review runs retain the completion pill described above after success or non-abort execution failure; startup/preflight failures, plan-creation failures, and aborts do not. Outside cmux this integration is a no-op.
+
+The cmux status pill and progress bar belong to the workspace, not to an individual run, so
+several runs started from one workspace overwrite each other's status. `--cmux-workspace` avoids
+that by handing the run off: loopai creates a new cmux workspace named after the branch the run
+will use, relaunches itself there without the flag, prints `handed off to cmux workspace <name>`,
+and exits. The run then owns its own sidebar card, pill, spinner, and progress bar, which makes
+parallel runs independent.
+
+```bash
+loopai --cmux-workspace --worktree docs/plans/feature.md
+```
+
+Hand-off is best-effort like the rest of the cmux integration and never blocks a run. Outside
+cmux, or when cmux refuses to create the workspace, loopai prints a warning and executes normally
+in the current terminal, where it keeps the sidebar status it would have had without the flag. A
+successful hand-off leaves the previous run's pill in the workspace it was started from, since the
+new run reports into its own card instead.
+
+The one failure that stops instead of falling back is a creation that times out: cmux may already
+have created the workspace and started the run there, and starting a second one here would put two
+agents on the same checkout. loopai exits with an error, and the sidebar shows whether the
+workspace exists — close it and re-run, or let it finish.
+
+An invocation that could not run anyway is also kept in the current terminal, so its error appears
+where it was typed instead of in a new card that closes immediately: a named plan file that does
+not exist, and a working directory that is not the repository root. Both are reported by the local
+run as usual.
+
+Close-out and configuration commands (`--clear`, `--merge`, `--pr`, `--init`, `--dump-defaults`,
+and `--reset` on its own) are never handed off; `--reset` in front of a plan belongs to that run
+and is performed once, in the new workspace. With `--plan`, the interactive plan dialog happens in
+the new workspace's terminal.
+
+The new workspace starts a fresh shell, so it does not inherit the environment of the terminal the
+run was started from. `LOOPAI_CONFIG_DIR` and `LOOPAI_WEB_HOST` are carried over with the command;
+anything else the run needs, such as provider credentials, has to come from the shell profile.
+The `ANTHROPIC_API_KEY` pass-through travels with the command but the key does not, so loopai warns
+at hand-off when `ANTHROPIC_API_KEY` is set in the current terminal: unless the key also comes from
+the shell profile, the handed-off run falls back to OAuth or the keychain. The warning covers both
+ways of asking for the pass-through, `--preserve-anthropic-api-key` and the
+`preserve_anthropic_api_key` config key.
 
 Provider session and rate limits are retried every 10 minutes by default until the provider
 recovers or the run is canceled with `Ctrl+C`. During the wait, progress output is red and cmux

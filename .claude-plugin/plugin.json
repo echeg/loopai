@@ -1,0 +1,11 @@
+{
+  "name": "loopai",
+  "version": "0.1.3",
+  "description": "Autonomous plan execution with Claude Code, including task execution, monitoring, and plan creation",
+  "author": {
+    "name": "echeg"
+  },
+  "repository": "https://github.com/echeg/loopai",
+  "license": "MIT",
+  "skills": "./assets/claude/skills/"
+}

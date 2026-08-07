@@ -287,13 +287,19 @@ func filterEnv(env []string, keysToRemove ...string) []string {
 }
 
 // streamEvent represents a JSON event from claude CLI stream output.
+type streamContentBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	ToolUseID string          `json:"tool_use_id"`
+	Input     json.RawMessage `json:"input"`
+}
+
 type streamEvent struct {
 	Type    string `json:"type"`
 	Message struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
+		Content []streamContentBlock `json:"content"`
 	} `json:"message"`
 	ContentBlock struct {
 		Type string `json:"type"`
@@ -307,21 +313,25 @@ type streamEvent struct {
 }
 
 // ClaudeExecutor runs claude CLI commands with streaming JSON parsing.
+// Completed Bash command durations use tool event arrival times, and concurrent
+// commands can overlap.
 type ClaudeExecutor struct {
-	Command        string            // command to execute, defaults to "claude"
-	Args           string            // additional arguments (space-separated), defaults to standard args
-	ArgsSet        bool              // true when Args was explicitly set, including an empty value
-	ExternalReview bool              // enforce the read-only-intent external review argument policy
-	Model          string            // model override (e.g., "fable", "opus", "sonnet", "haiku"); empty = CLI default
-	Effort         string            // reasoning effort override (e.g., "low", "medium", "high", "xhigh", "max"); empty = CLI default
-	OutputHandler  func(text string) // called for each text chunk, can be nil
-	Debug          bool              // enable debug output
-	ErrorPatterns  []string          // patterns to detect in output (e.g., rate limit messages)
-	LimitPatterns  []string          // patterns to detect rate limits (checked before error patterns)
-	RetryPatterns  []string          // patterns to detect transient errors that should retry like timeouts
-	IdleTimeout    time.Duration     // kill session after this duration of no output, zero = disabled
-	PreserveAPIKey bool              // when true, ANTHROPIC_API_KEY is passed through to the child; default false strips it
-	cmdRunner      CommandRunner     // for testing, nil uses default
+	Command              string                                // command to execute, defaults to "claude"
+	Args                 string                                // additional arguments (space-separated), defaults to standard args
+	ArgsSet              bool                                  // true when Args was explicitly set, including an empty value
+	ExternalReview       bool                                  // enforce the read-only-intent external review argument policy
+	Model                string                                // model override (e.g., "fable", "opus", "sonnet", "haiku"); empty = CLI default
+	Effort               string                                // reasoning effort override (e.g., "low", "medium", "high", "xhigh", "max"); empty = CLI default
+	OutputHandler        func(text string)                     // called for each text chunk, can be nil
+	CommandTimingHandler func(command string, d time.Duration) // called for each completed foreground Bash command using arrival-time duration; can be nil
+	Debug                bool                                  // enable debug output
+	ErrorPatterns        []string                              // patterns to detect in output (e.g., rate limit messages)
+	LimitPatterns        []string                              // patterns to detect rate limits (checked before error patterns)
+	RetryPatterns        []string                              // patterns to detect transient errors that should retry like timeouts
+	IdleTimeout          time.Duration                         // kill session after this duration of no output, zero = disabled
+	PreserveAPIKey       bool                                  // when true, ANTHROPIC_API_KEY is passed through to the child; default false strips it
+	cmdRunner            CommandRunner                         // for testing, nil uses default
+	now                  func() time.Time                      // arrival clock for command timing; nil uses time.Now
 }
 
 // Run executes claude CLI with the given prompt and parses streaming JSON output.
@@ -458,6 +468,14 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 	var signal string
 	var recentBlocks [recentBlockCount]string
 	var blockIdx int
+	commandStarts := make(map[string]struct {
+		command string
+		started time.Time
+	})
+	now := e.now
+	if now == nil {
+		now = time.Now
+	}
 
 	err := readLines(ctx, r, func(line string) {
 		idleTouch() // reset idle timer on every line of pipe activity
@@ -479,6 +497,10 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 				e.OutputHandler(line + "\n")
 			}
 			return
+		}
+
+		if e.CommandTimingHandler != nil {
+			e.trackCommandTiming(&event, commandStarts, now)
 		}
 
 		text := e.extractText(&event)
@@ -517,6 +539,36 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 	}
 
 	return Result{Output: output.String(), RecentText: recent.String(), Signal: signal}
+}
+
+// trackCommandTiming pairs Bash tool uses with their results using stream arrival time.
+func (e *ClaudeExecutor) trackCommandTiming(event *streamEvent, starts map[string]struct {
+	command string
+	started time.Time
+}, now func() time.Time) {
+	for _, block := range event.Message.Content {
+		switch {
+		case block.Type == "tool_use" && block.Name == "Bash" && block.ID != "":
+			var input struct {
+				Command         string `json:"command"`
+				RunInBackground bool   `json:"run_in_background"`
+			}
+			if json.Unmarshal(block.Input, &input) != nil || input.Command == "" || input.RunInBackground {
+				continue
+			}
+			starts[block.ID] = struct {
+				command string
+				started time.Time
+			}{command: input.Command, started: now()}
+		case block.Type == "tool_result" && block.ToolUseID != "":
+			start, found := starts[block.ToolUseID]
+			if !found {
+				continue
+			}
+			delete(starts, block.ToolUseID)
+			e.CommandTimingHandler(start.command, now().Sub(start.started))
+		}
+	}
 }
 
 // extractText extracts text content from various event types.

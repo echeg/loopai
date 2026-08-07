@@ -191,7 +191,8 @@ func (cfg Config) buildClaudeExecutors(log Logger) (*executor.ClaudeExecutor, Ex
 		OutputHandler: func(text string) {
 			log.PrintAligned(text)
 		},
-		Debug: cfg.Debug,
+		CommandTimingHandler: cfg.CommandTimingHandler,
+		Debug:                cfg.Debug,
 	}
 	cfg.applyClaudeAppConfig(claudeExec)
 
@@ -208,10 +209,11 @@ func (cfg Config) buildClaudeExecutors(log Logger) (*executor.ClaudeExecutor, Ex
 	}
 
 	reviewExec := &executor.ClaudeExecutor{
-		OutputHandler: claudeExec.OutputHandler,
-		Debug:         cfg.Debug,
-		Model:         reviewModel,
-		Effort:        reviewEffort,
+		OutputHandler:        claudeExec.OutputHandler,
+		CommandTimingHandler: cfg.CommandTimingHandler,
+		Debug:                cfg.Debug,
+		Model:                reviewModel,
+		Effort:               reviewEffort,
 	}
 	cfg.applyClaudeAppConfig(reviewExec)
 	return claudeExec, reviewExec
@@ -237,11 +239,12 @@ func (cfg Config) applyClaudeAppConfig(e *executor.ClaudeExecutor) {
 // authentication, and pattern handling while enabling the review-only policy.
 func (cfg Config) buildExternalClaudeExecutor(log Logger, model, effort string) *executor.ClaudeExecutor {
 	e := &executor.ClaudeExecutor{
-		OutputHandler:  func(text string) { log.PrintAligned(text) },
-		Debug:          cfg.Debug,
-		ExternalReview: true,
-		Model:          model,
-		Effort:         effort,
+		OutputHandler:        func(text string) { log.PrintAligned(text) },
+		CommandTimingHandler: cfg.CommandTimingHandler,
+		Debug:                cfg.Debug,
+		ExternalReview:       true,
+		Model:                model,
+		Effort:               effort,
 	}
 	cfg.applyClaudeAppConfig(e)
 	return e
@@ -316,8 +319,9 @@ func (cfg Config) buildCodexExecutors(log Logger) (*executor.CodexExecutor, Exec
 // buildCodexExecutor where the user opted into --codex.
 func (cfg Config) newBaseCodexExecutor(log Logger) *executor.CodexExecutor {
 	e := &executor.CodexExecutor{
-		OutputHandler: func(text string) { log.PrintAligned(text) },
-		Debug:         cfg.Debug,
+		OutputHandler:        func(text string) { log.PrintAligned(text) },
+		CommandTimingHandler: cfg.CommandTimingHandler,
+		Debug:                cfg.Debug,
 	}
 	if cfg.AppConfig == nil {
 		return e
