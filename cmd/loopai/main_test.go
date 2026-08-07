@@ -6376,6 +6376,61 @@ func TestResolveFeatureBranchPrefersRecordedBranch(t *testing.T) {
 	})
 }
 
+// TestResolveFeatureBranchIgnoresNonBranchCreatingRecords covers the review, codex-only, and plan
+// runs that write their own record for the same plan, in the same directory and with a later
+// mtime. their Branch header names whatever was checked out at the time, so honoring it would
+// resolve the close-out to an unrelated branch that --merge then merges into base and deletes.
+func TestResolveFeatureBranchIgnoresNonBranchCreatingRecords(t *testing.T) {
+	branches := []string{"master", "fix/login", "unrelated"}
+
+	for _, mode := range []string{"review", "codex-only", "plan"} {
+		t.Run(mode+" record does not override the implementation run", func(t *testing.T) {
+			repo := setupTestRepo(t)
+			plansDir := filepath.Join(repo, "docs", "plans")
+			require.NoError(t, os.MkdirAll(plansDir, 0o750))
+			planFile := filepath.Join(plansDir, "20260806-login.md")
+			require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+			writeProgressRecord(t, repo, "progress-20260806-login.txt", planFile, "fix/login", 1)
+			writeProgressRecordMode(t, repo, "progress-20260806-login-"+mode+".txt", planFile, "unrelated", mode, 2)
+
+			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, repo, plansDir, "20260806-login")
+			require.NoError(t, err)
+			assert.Equal(t, "fix/login", got)
+		})
+	}
+
+	t.Run("review-only record falls back to filename derivation", func(t *testing.T) {
+		repo := setupTestRepo(t)
+		plansDir := filepath.Join(repo, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "20260806-login.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+		// a --review run on the base branch is the case that once produced the misleading
+		// "already the base branch" error for a plan with a perfectly good feature branch
+		writeProgressRecordMode(t, repo, "progress-20260806-login-review.txt", planFile, "master", "review", 1)
+
+		got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"master", "login"}}, repo, plansDir,
+			"20260806-login")
+		require.NoError(t, err)
+		assert.Equal(t, "login", got)
+	})
+
+	t.Run("tasks-only and unknown modes still supply the branch", func(t *testing.T) {
+		for _, mode := range []string{"tasks-only", "", "future-mode"} {
+			repo := setupTestRepo(t)
+			plansDir := filepath.Join(repo, "docs", "plans")
+			require.NoError(t, os.MkdirAll(plansDir, 0o750))
+			planFile := filepath.Join(plansDir, "20260806-login.md")
+			require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+			writeProgressRecordMode(t, repo, "progress-20260806-login.txt", planFile, "fix/login", mode, 1)
+
+			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, repo, plansDir, "20260806-login")
+			require.NoError(t, err, "mode %q", mode)
+			assert.Equal(t, "fix/login", got, "mode %q", mode)
+		}
+	})
+}
+
 // TestResolveFeatureBranchMatchesRecordAcrossPathSpellings covers the ways the located plan path
 // and the recorded one legitimately differ. A miss falls back to deriving the branch from the
 // filename, so each of these once resolved the unrelated "login" branch that --merge would then
@@ -6523,10 +6578,17 @@ func TestRecordedPlanInRepo(t *testing.T) {
 // age orders the fixture's mtime explicitly so newest-record-wins tie-breaks are deterministic.
 func writeProgressRecord(t *testing.T, repo, name, planFile, branch string, age int) {
 	t.Helper()
+	writeProgressRecordMode(t, repo, name, planFile, branch, "full", age)
+}
+
+// writeProgressRecordMode is writeProgressRecord with an explicit Mode header, covering the
+// non-branch-creating runs whose Branch line names the checked-out branch rather than a feature.
+func writeProgressRecordMode(t *testing.T, repo, name, planFile, branch, mode string, age int) {
+	t.Helper()
 	dir := filepath.Join(repo, ".loopai", "progress")
 	require.NoError(t, os.MkdirAll(dir, 0o750))
 	path := filepath.Join(dir, name)
-	body := fmt.Sprintf("Plan: %s\nBranch: %s\nMode: full\n", planFile, branch)
+	body := fmt.Sprintf("Plan: %s\nBranch: %s\nMode: %s\n", planFile, branch, mode)
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	stamp := time.Date(2026, 8, 7, 12, 0, age, 0, time.UTC)
 	require.NoError(t, os.Chtimes(path, stamp, stamp))

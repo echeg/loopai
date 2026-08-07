@@ -3142,6 +3142,13 @@ func recordedBranchForPlan(progressRoot, planFile string) (string, error) {
 		if planAssociationKey(assoc.recordedPlan) != target {
 			continue
 		}
+		// a review-only or plan-creation run over the same plan writes its own record, in the same
+		// directory and with a later mtime than the run that created the branch. its Branch header
+		// names whatever was checked out then, so honoring it would resolve the close-out to an
+		// unrelated branch and merge and delete it
+		if !recordedBranchIsFeature(assoc.mode) {
+			continue
+		}
 		if matched == "" || assoc.modTime.After(matchedTime) {
 			matched, matchedTime = assoc.branch, assoc.modTime
 		}
@@ -3167,7 +3174,23 @@ type progressAssociation struct {
 	recordedPlan string // plan path exactly as the record names it
 	planPath     string // recordedPlan resolved inside repoRoot, empty when it names no file there
 	branch       string
+	mode         string // run mode from the record header, empty when the record names none
 	modTime      time.Time
+}
+
+// recordedBranchIsFeature reports whether a record's mode means its Branch header names the
+// branch that run created. only task-executing modes create one; --review, --codex-only, and
+// plan creation all record whatever branch happened to be checked out, which is unrelated to the
+// plan and may be the base branch or "unknown" on detached HEAD. an unrecognized or absent mode
+// is accepted, since dropping a valid association falls back to deriving the branch from the plan
+// filename - exactly what the recorded value exists to override.
+func recordedBranchIsFeature(mode string) bool {
+	switch processor.Mode(mode) {
+	case processor.ModeReview, processor.ModeCodexOnly, processor.ModePlan:
+		return false
+	default:
+		return true
+	}
 }
 
 // readProgressAssociations collects the branch-to-plan pairings recorded in progress headers.
@@ -3208,7 +3231,7 @@ func readProgressAssociations(repoRoot string) ([]progressAssociation, error) {
 		if closeErr != nil {
 			return nil, fmt.Errorf("close progress record %q: %w", entry.Name(), closeErr)
 		}
-		planPath, branch := parseProgressAssociation(string(content))
+		planPath, branch, mode := parseProgressAssociation(string(content))
 		if branch == "" || planPath == "" || planPath == "(no plan - review only)" {
 			continue
 		}
@@ -3216,13 +3239,14 @@ func readProgressAssociations(repoRoot string) ([]progressAssociation, error) {
 			recordedPlan: planPath,
 			planPath:     resolveRecordedPlan(repoRoot, planPath),
 			branch:       branch,
+			mode:         mode,
 			modTime:      info.ModTime(),
 		})
 	}
 	return assocs, nil
 }
 
-func parseProgressAssociation(content string) (planPath, branch string) {
+func parseProgressAssociation(content string) (planPath, branch, mode string) {
 	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSuffix(line, "\r")
 		switch {
@@ -3230,12 +3254,14 @@ func parseProgressAssociation(content string) (planPath, branch string) {
 			planPath = strings.TrimSpace(strings.TrimPrefix(line, "Plan: "))
 		case strings.HasPrefix(line, "Branch: "):
 			branch = strings.TrimSpace(strings.TrimPrefix(line, "Branch: "))
+		case strings.HasPrefix(line, "Mode: "):
+			mode = strings.TrimSpace(strings.TrimPrefix(line, "Mode: "))
 		}
-		if planPath != "" && branch != "" {
-			return planPath, branch
+		if planPath != "" && branch != "" && mode != "" {
+			return planPath, branch, mode
 		}
 	}
-	return planPath, branch
+	return planPath, branch, mode
 }
 
 func resolveRecordedPlan(repoRoot, recorded string) string {
