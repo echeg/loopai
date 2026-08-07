@@ -46,10 +46,12 @@ Invoke `/loopai:loopai-grill [docs/plans/X.md]` for an active-plan critique or
 Grill mode continues Claude-only when Codex is unavailable; compare mode
 requires Codex and stops without creating a plan. Neither mode accepts completed,
 symlinked, or `.loopai/` plans, and final plan creation never overwrites an
-existing path. Active-plan replacement is content-token guarded. The skill
+existing path. Active-plan replacement is identity-and-content guarded and uses
+no-clobber publication so concurrent writers are preserved. The skill
 pre-approves no tools and runs Codex against a read-confined snapshot containing
-only tracked and non-ignored untracked files. Python 3, Git, and `tar` are
-required for deterministic path checks and snapshot creation.
+only tracked and non-ignored untracked regular files without symlink components.
+Python 3, Git, and `tar` are required for deterministic path checks and snapshot
+creation.
 
 Use `loopai:loopai-brainstorm` when a feature needs design exploration. It asks
 one question at a time, compares approaches, and seeks section-by-section

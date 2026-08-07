@@ -115,10 +115,11 @@ fails, it reports that and continues with Claude critics. Compare mode requires
 Codex, never edits a source plan, and creates one new plan without overwriting
 an existing path. Both modes reject completed plans, symlinked plans or plan
 directories, and anything under `.loopai/`; normal Claude Code tool permissions
-remain in effect. Active-plan edits fail if the reviewed file changes before
-replacement. The skill requires Python 3 for its deterministic path helper and
-Git plus `tar` for a Codex snapshot that excludes ignored files. Standalone skill copies use
-`/loopai-grill` instead of the namespaced plugin command.
+remain in effect. Active-plan edits fail if the reviewed file identity or content
+changes, and no-clobber publication preserves concurrent writers. The skill
+requires Python 3 for its deterministic path helper and Git plus `tar` for a
+Codex snapshot that excludes ignored files and every symlink path. Standalone
+skill copies use `/loopai-grill` instead of the namespaced plugin command.
 
 The CLI remains the execution engine. The plugin adds Claude Code workflows
 for planning and operating it. Refresh the marketplace and plugin when a new

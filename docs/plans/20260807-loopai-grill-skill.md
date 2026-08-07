@@ -21,7 +21,7 @@
   - `scripts/check-symlinks.sh:9` — `expected_skills` list must gain `loopai-grill`
   - `scripts/check-plugin.sh` — validates manifests; check whether it pins a skill count or list
   - `scripts/check-grill-skill_test.sh` and `Makefile` — focused metadata/workflow-contract checks wired into `make test`
-  - `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` — initial version bump 0.1.3 → 0.2.0 for the new skill, then patch bumps for review hardening (currently 0.2.2)
+  - `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` — initial version bump 0.1.3 → 0.2.0 for the new skill, then patch bumps for review hardening (currently 0.2.3)
   - `README.md` ("The plugin provides five skills" list and standalone full-directory installation), `llms.txt`, `CLAUDE.md` (skill inventory notes)
 - Related patterns found:
   - Existing SKILL.md frontmatter styles include optional `allowed-tools`, but this safety-sensitive skill deliberately pre-approves no tools; check-symlinks validates frontmatter shape
@@ -90,7 +90,7 @@
 - Plan-off prompts must pin the output format by embedding the loopai plan template (Task N headings, checkbox rules, tests-per-task requirements) so both candidate plans are structurally comparable and the final file is executable by loopai.
 - Cross-judging is deliberately symmetric (each model scores both plans) to cancel self-preference bias; criteria are fixed in the skill text so runs are comparable.
 - The skill never edits plans under `docs/plans/completed/` and never touches `.loopai/`.
-- All plan reads and writes go through the bundled path helper. Active plans are read into an outside-repository snapshot and replaced only when a content token and inode check confirm the reviewed file is unchanged; final plan output is created atomically without clobbering an existing file.
+- All plan reads and writes go through the bundled path helper. Active plans are read into an outside-repository snapshot and replaced only when an identity-bound content token confirms the reviewed file is unchanged; publication displaces the reviewed version to a private recovery path and installs the edit with a no-clobber link so a concurrent writer is never overwritten. Final plan output is fully written and synced under a hidden name before atomic no-clobber publication.
 - Symlink must be relative (`./skills/...`) like the existing five; `make check-symlinks` rejects broken or absolute links.
 
 ## Post-Completion

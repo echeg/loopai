@@ -64,6 +64,11 @@ assert_contains "missing plan-off Codex requirement" 'Plan-off requires Codex.'
 assert_contains "missing shared loopai-plan template" 'Both candidates must receive the same requirements and the same template.'
 assert_contains "missing plugin-root template lookup" 'CLAUDE_PLUGIN_ROOT'
 assert_contains "missing standalone sibling template lookup" "\${CLAUDE_SKILL_DIR}/../loopai-plan/SKILL.md"
+assert_contains "missing untrusted template fallback rejection" 'never fall back to a repository-relative path'
+# shellcheck disable=SC2016 # Backticks are literal skill text, not shell syntax.
+if grep -Fq 'then `assets/claude/skills/loopai-plan/SKILL.md`' "$skill_file"; then
+	fail "plan-off trusts a repository-relative template fallback"
+fi
 assert_contains "missing symmetric cross-judging" 'Have Claude and Codex each score both complete drafts'
 assert_contains "missing blind Claude judge" 'Launch the Claude judgment in a fresh Agent'
 assert_contains "missing judge validation" 'Validate each judgment before calculating totals'
@@ -104,7 +109,7 @@ printf '# mutable\n' >"$fixture/repo/docs/plans/mutable.md"
 IFS=$'\t' read -r snapshot_relative snapshot_token < <(
 	run_paths read-active "$fixture/repo" docs/plans/mutable.md "$fixture/active-scratch/mutable-snapshot.md"
 )
-[[ "$snapshot_relative" == "docs/plans/mutable.md" && "$snapshot_token" =~ ^[0-9a-f]{64}$ ]] ||
+[[ "$snapshot_relative" == "docs/plans/mutable.md" && "$snapshot_token" =~ ^v1:[0-9]+:[0-9]+:[0-9a-f]{64}$ ]] ||
 	fail "guarded active-plan read did not return its path and content token"
 [[ "$(<"$fixture/active-scratch/mutable-snapshot.md")" == "# mutable" ]] ||
 	fail "guarded active-plan snapshot did not preserve content"
@@ -114,6 +119,16 @@ printf '# edited\n' >"$fixture/active-scratch/mutable-edited.md"
 [[ "$(<"$fixture/repo/docs/plans/mutable.md")" == "# edited" ]] ||
 	fail "guarded active-plan replacement did not install the edited draft"
 
+IFS=$'\t' read -r _ identity_token < <(
+	run_paths read-active "$fixture/repo" docs/plans/mutable.md "$fixture/active-scratch/identity-snapshot.md"
+)
+mv "$fixture/repo/docs/plans/mutable.md" "$fixture/active-scratch/identity-original.md"
+printf '# edited\n' >"$fixture/repo/docs/plans/mutable.md"
+printf '# identity replacement\n' >"$fixture/active-scratch/identity-edited.md"
+expect_failure "same-content replacement inode was accepted" run_paths replace-active "$fixture/repo" docs/plans/mutable.md "$identity_token" "$fixture/active-scratch/identity-edited.md"
+[[ "$(<"$fixture/repo/docs/plans/mutable.md")" == "# edited" ]] ||
+	fail "identity conflict changed the recreated active plan"
+
 IFS=$'\t' read -r _ stale_token < <(
 	run_paths read-active "$fixture/repo" docs/plans/mutable.md "$fixture/active-scratch/stale-snapshot.md"
 )
@@ -122,6 +137,72 @@ printf '# stale replacement\n' >"$fixture/active-scratch/stale-edited.md"
 expect_failure "concurrently changed active plan was overwritten" run_paths replace-active "$fixture/repo" docs/plans/mutable.md "$stale_token" "$fixture/active-scratch/stale-edited.md"
 [[ "$(<"$fixture/repo/docs/plans/mutable.md")" == "# concurrent change" ]] ||
 	fail "failed guarded replacement changed concurrent plan content"
+
+printf '# race original\n' >"$fixture/repo/docs/plans/race.md"
+IFS=$'\t' read -r _ race_token < <(
+	run_paths read-active "$fixture/repo" docs/plans/race.md "$fixture/active-scratch/race-snapshot.md"
+)
+printf '# race replacement\n' >"$fixture/active-scratch/race-edited.md"
+python3 - "$path_helper" "$fixture/repo" "$race_token" "$fixture/active-scratch/race-edited.md" <<'PY'
+import importlib.util
+import os
+import pathlib
+import sys
+
+helper_path, repository, token, edited = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("plan_paths", helper_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("cannot load plan-path helper")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+real_link = module.os.link
+injected = False
+
+
+def racing_link(source, destination, *args, src_dir_fd=None, dst_dir_fd=None, **kwargs):
+    global injected
+    if not injected and destination == "race.md" and source.startswith(".race.md.loopai-grill-"):
+        injected = True
+        concurrent_fd = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o644,
+            dir_fd=dst_dir_fd,
+        )
+        try:
+            os.write(concurrent_fd, b"# race concurrent\n")
+            os.fsync(concurrent_fd)
+        finally:
+            os.close(concurrent_fd)
+    return real_link(
+        source,
+        destination,
+        *args,
+        src_dir_fd=src_dir_fd,
+        dst_dir_fd=dst_dir_fd,
+        **kwargs,
+    )
+
+
+module.os.link = racing_link
+try:
+    module.replace_active(repository, "docs/plans/race.md", token, edited)
+except module.PathError as exc:
+    if "current path was not overwritten" not in str(exc):
+        raise
+else:
+    raise SystemExit("concurrent publication unexpectedly succeeded")
+
+current = pathlib.Path(repository, "docs/plans/race.md").read_text()
+if current != "# race concurrent\n":
+    raise SystemExit("concurrent writer was overwritten")
+recoveries = list(pathlib.Path(repository).glob(".loopai-grill-recovery-*/original-plan"))
+if len(recoveries) != 1 or recoveries[0].read_text() != "# race original\n":
+    raise SystemExit("displaced plan was not preserved for recovery")
+PY
+if find "$fixture/repo/docs/plans" -maxdepth 1 -name '.race.md.loopai-grill-*' -print -quit | grep -q .; then
+	fail "conflicted guarded replacement left a temporary plan file"
+fi
 
 IFS=$'\t' read -r _ symlink_token < <(
 	run_paths read-active "$fixture/repo" docs/plans/mutable.md "$fixture/active-scratch/symlink-snapshot.md"
@@ -156,12 +237,45 @@ ln -s real-docs "$fixture/symlink-docs-root/docs"
 printf '# escaped docs\n' >"$fixture/symlink-docs-root/real-docs/plans/escaped.md"
 expect_failure "symlinked docs root was accepted" run_paths validate-active "$fixture/symlink-docs-root" docs/plans/escaped.md
 
+mkdir -p "$fixture/symlink-loopai-root/docs/plans" "$fixture/private-loopai"
+ln -s "$fixture/private-loopai" "$fixture/symlink-loopai-root/.loopai"
+printf '# private draft\n' >"$fixture/private-loopai/draft.md"
+expect_failure "symlinked .loopai root was accepted as a draft source" run_paths write-final \
+	"$fixture/symlink-loopai-root" docs/plans/20260807-private.md "$fixture/symlink-loopai-root/.loopai/draft.md"
+
 printf '# final\n' >"$fixture/final-draft.md"
 run_paths check-output "$fixture/repo" docs/plans/20260807-safe-plan.md >/dev/null
 [[ "$(run_paths write-final "$fixture/repo" docs/plans/20260807-safe-plan.md "$fixture/final-draft.md")" == "docs/plans/20260807-safe-plan.md" ]] ||
 	fail "safe final plan was not created"
 [[ "$(<"$fixture/repo/docs/plans/20260807-safe-plan.md")" == "# final" ]] ||
 	fail "final plan content was not preserved"
+python3 - "$path_helper" "$fixture/repo" "$fixture/final-draft.md" <<'PY'
+import importlib.util
+import os
+import pathlib
+import sys
+
+helper_path, repository, source = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("plan_paths", helper_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("cannot load plan-path helper")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+target = pathlib.Path(repository, "docs/plans/20260807-atomic-plan.md")
+real_write_all = module.write_all
+
+
+def verify_hidden_write(file_fd, payload):
+    if target.exists() or target.is_symlink():
+        raise SystemExit("final destination became visible before its content was complete")
+    real_write_all(file_fd, payload)
+
+
+module.write_all = verify_hidden_write
+result = module.write_final(repository, "docs/plans/20260807-atomic-plan.md", source)
+if result != "docs/plans/20260807-atomic-plan.md" or target.read_text() != "# final\n":
+    raise SystemExit("atomic final publication failed")
+PY
 printf '# replacement\n' >"$fixture/replacement.md"
 expect_failure "existing final plan was overwritten" run_paths write-final "$fixture/repo" docs/plans/20260807-safe-plan.md "$fixture/replacement.md"
 [[ "$(<"$fixture/repo/docs/plans/20260807-safe-plan.md")" == "# final" ]] ||
@@ -186,10 +300,19 @@ printf '%s\n' 'ignored secret' >"$fixture/repo/.env"
 mkdir -p "$fixture/repo/ignored-cache"
 printf '%s\n' 'ignored artifact' >"$fixture/repo/ignored-cache/artifact"
 printf '%s\n' 'visible untracked file' >"$fixture/repo/visible-untracked.txt"
+printf '%s\n' 'outside symlink secret' >"$fixture/outside-secret.txt"
+ln -s "$fixture/outside-secret.txt" "$fixture/repo/absolute-secret-link"
+ln -s ../outside-secret.txt "$fixture/repo/relative-secret-link"
+mkdir -p "$fixture/repo/tracked-parent" "$fixture/outside-parent"
+printf '%s\n' 'safe indexed file' >"$fixture/repo/tracked-parent/file.txt"
+printf '%s\n' 'outside parent secret' >"$fixture/outside-parent/file.txt"
 git -C "$fixture/repo" init -q
 printf '%s\n' 'private git metadata' >"$fixture/repo/.git/private"
-git -C "$fixture/repo" add .gitignore docs/plans/current.md docs/plans/older.md
+git -C "$fixture/repo" add .gitignore docs/plans/current.md docs/plans/older.md \
+	absolute-secret-link relative-secret-link tracked-parent/file.txt
 git -C "$fixture/repo" add -f .loopai/secret.md
+mv "$fixture/repo/tracked-parent" "$fixture/tracked-parent-indexed"
+ln -s ../outside-parent "$fixture/repo/tracked-parent"
 mkdir -p "$fixture/fake-bin" "$fixture/empty-bin"
 # shellcheck disable=SC2016 # The generated fixture expands these variables when it runs.
 printf '%s\n' \
@@ -208,6 +331,10 @@ printf '%s\n' \
 	'[[ ! -e "$codex_cwd/repository/.env" ]] || exit 101' \
 	'[[ ! -e "$codex_cwd/repository/ignored-cache" ]] || exit 102' \
 	'[[ -f "$codex_cwd/repository/visible-untracked.txt" ]] || exit 103' \
+	'[[ ! -e "$codex_cwd/repository/absolute-secret-link" ]] || exit 104' \
+	'[[ ! -e "$codex_cwd/repository/relative-secret-link" ]] || exit 105' \
+	'[[ ! -e "$codex_cwd/repository/tracked-parent" ]] || exit 106' \
+	'if compgen -G "$codex_cwd/repository/.loopai-grill-recovery-*" >/dev/null; then exit 107; fi' \
 	'find "$codex_cwd/repository" -print >"$CODEX_SNAPSHOT_LOG"' \
 	'if [[ "${CODEX_CREATE_READONLY:-0}" == 1 ]]; then' \
 	'  mkdir "$codex_cwd/repository/readonly-cleanup"' \
@@ -226,7 +353,8 @@ CODEX_CREATE_READONLY=1 CODEX_ARGS_LOG="$fixture/codex.args" CODEX_SNAPSHOT_LOG=
 [[ "$(<"$fixture/codex.stdout")" == "codex result" ]] || fail "Codex stdout was not captured"
 [[ ! -s "$fixture/codex.stderr" ]] || fail "successful Codex stderr was not captured separately"
 codex_isolation_dir="$(awk 'previous == "-C" { print; exit } { previous = $0 }' "$fixture/codex.args")"
-[[ "$codex_isolation_dir" == "$fixture"/loopai-grill-codex.* ]] || fail "Codex did not use an isolated working directory"
+canonical_fixture="$(cd "$fixture" && pwd -P)"
+[[ "$codex_isolation_dir" == "$canonical_fixture"/loopai-grill-codex.* ]] || fail "Codex did not use an isolated working directory"
 [[ ! -e "$codex_isolation_dir" ]] || fail "isolated Codex working directory was not removed"
 grep -Fq 'repository/docs/plans/current.md' "$fixture/codex.snapshot" || fail "sanitized snapshot omitted repository files"
 grep -Fq 'repository/visible-untracked.txt' "$fixture/codex.snapshot" || fail "sanitized snapshot omitted non-ignored untracked files"
@@ -235,6 +363,12 @@ if grep -Eq '/(\.loopai|\.git)(/|$)' "$fixture/codex.snapshot"; then
 fi
 if grep -Eq '/(\.env|ignored-cache)(/|$)' "$fixture/codex.snapshot"; then
 	fail "sanitized snapshot included ignored private artifacts"
+fi
+if grep -Eq '/(absolute-secret-link|relative-secret-link|tracked-parent)(/|$)' "$fixture/codex.snapshot"; then
+	fail "sanitized snapshot included a symlink or symlink-descended file"
+fi
+if grep -Eq '/\.loopai-grill-recovery-' "$fixture/codex.snapshot"; then
+	fail "sanitized snapshot included active-plan recovery data"
 fi
 grep -Fq 'Inspect only the sanitized repository snapshot in repository/' "$fixture/codex.stdin" || fail "Codex prompt omitted the sanitized snapshot boundary"
 grep -Fq 'review this plan' "$fixture/codex.stdin" || fail "Codex prompt file was not forwarded"
@@ -279,6 +413,20 @@ printf '%s\n' \
 	--skip-git-repo-check \
 	- >"$fixture/expected-codex.args"
 diff -u "$fixture/expected-codex.args" "$fixture/codex.args" || fail "Codex isolation arguments changed"
+
+expect_failure "repository-local TMPDIR was accepted for Codex isolation" env \
+	CODEX_ARGS_LOG="$fixture/local-tmp.args" \
+	CODEX_SNAPSHOT_LOG="$fixture/local-tmp.snapshot" \
+	CODEX_STDIN_LOG="$fixture/local-tmp.stdin" \
+	TMPDIR="$fixture/repo/.loopai" \
+	PATH="$fixture/fake-bin:/usr/bin:/bin" \
+	/bin/bash "$codex_wrapper" "$fixture/repo" "$fixture/codex-prompt.txt" \
+	"$fixture/local-tmp.stdout" "$fixture/local-tmp.stderr"
+grep -Fq 'must be outside the repository' "$fixture/failure.stderr" ||
+	fail "repository-local TMPDIR error was not actionable"
+if find "$fixture/repo/.loopai" -maxdepth 1 -name 'loopai-grill-codex.*' -print -quit | grep -q .; then
+	fail "rejected repository-local isolation directory was not removed"
+fi
 
 expect_failure "missing Codex binary was not reported" env PATH="$fixture/empty-bin" /bin/bash "$codex_wrapper" \
 	"$fixture/repo" "$fixture/codex-prompt.txt" "$fixture/missing.stdout" "$fixture/missing.stderr"

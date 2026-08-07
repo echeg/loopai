@@ -62,6 +62,15 @@ on_exit() {
 }
 trap on_exit EXIT
 
+if ! codex_isolation_dir="$(cd "$codex_isolation_dir" && pwd -P)"; then
+	printf 'cannot resolve isolated Codex working directory\n' >&2
+	exit 67
+fi
+if [[ "$codex_isolation_dir" == "$canonical_root" || "$codex_isolation_dir" == "$canonical_root"/* ]]; then
+	printf 'isolated Codex working directory must be outside the repository: %s\n' "$codex_isolation_dir" >&2
+	exit 67
+fi
+
 repository_snapshot="$codex_isolation_dir/repository"
 if ! mkdir "$repository_snapshot"; then
 	printf 'cannot create sanitized repository snapshot\n' >&2
@@ -70,14 +79,31 @@ fi
 snapshot_file_list="$codex_isolation_dir/repository-files"
 if ! (
 	cd "$canonical_root" || exit 1
+	contains_symlink_component() {
+		local snapshot_component
+		local snapshot_prefix=""
+		local -a snapshot_components
+
+		IFS='/' read -r -a snapshot_components <<<"$1"
+		for snapshot_component in "${snapshot_components[@]}"; do
+			[[ -n "$snapshot_component" ]] || continue
+			if [[ -n "$snapshot_prefix" ]]; then
+				snapshot_prefix="$snapshot_prefix/$snapshot_component"
+			else
+				snapshot_prefix="$snapshot_component"
+			fi
+			[[ ! -L "$snapshot_prefix" ]] || return 0
+		done
+		return 1
+	}
 	git ls-files --cached --others --exclude-standard -z |
 		while IFS= read -r -d '' snapshot_path; do
 			case "$snapshot_path" in
-				.git | .git/* | .loopai | .loopai/*) continue ;;
+				.git | .git/* | .loopai | .loopai/* | .loopai-grill-recovery-*) continue ;;
 			esac
-		if [[ -f "$snapshot_path" || -L "$snapshot_path" ]]; then
-			printf './%s\0' "$snapshot_path"
-		fi
+			if [[ -f "$snapshot_path" ]] && ! contains_symlink_component "$snapshot_path"; then
+				printf './%s\0' "$snapshot_path"
+			fi
 		done
 ) >"$snapshot_file_list"; then
 	printf 'cannot enumerate sanitized repository files\n' >&2
