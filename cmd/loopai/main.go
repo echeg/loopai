@@ -777,7 +777,18 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// cmux sidebar reporter, nil and fully no-op outside cmux. Stop is also registered with the
 	// interrupt handler because defers are skipped on the force-exit path.
 	rep := cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview))
-	defer rep.Stop()
+	var cmuxCleanupOnce sync.Once
+	completeCmux := func(elapsed string, runErr error) {
+		cmuxCleanupOnce.Do(func() {
+			finishCmuxAfterCleanup(req, plr, rep, branch, elapsed, runErr)
+		})
+	}
+	defer func() {
+		cmuxCleanupOnce.Do(func() {
+			stopCmuxAfterCleanup(req, plr, rep)
+		})
+		rep.Stop()
+	}()
 	if req.CmuxStop != nil {
 		req.CmuxStop.set(rep.Stop)
 	}
@@ -886,7 +897,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		wrapped := fmt.Errorf("runner: %w", runErr)
 		plr.baseLog.SetFailed(wrapped)
 		sendNotification(req, branch, plr.baseLog.Elapsed(), git.DiffStats{}, runErr)
-		finishCmuxAfterCleanup(req, plr, rep, branch, plr.baseLog.Elapsed(), runErr)
+		completeCmux(plr.baseLog.Elapsed(), runErr)
 		return wrapped
 	}
 
@@ -922,7 +933,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 
 	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved)
-	finishCmuxAfterCleanup(req, plr, rep, branch, elapsed, nil)
+	completeCmux(elapsed, nil)
 
 	// clear the sidebar before the dashboard idles: with --serve the run is done but the process
 	// stays alive until Ctrl+C, and a spinner left spinning reports it as still working
@@ -930,6 +941,18 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	keepDashboardAlive(ctx, o, req, plr.closeLog)
 
 	return nil
+}
+
+// stopCmuxAfterCleanup removes a non-final pill only after every operation that must stay isolated
+// from a subsequent local auto run. It covers preflight failures and user aborts, which deliberately
+// do not publish a persistent completion pill.
+func stopCmuxAfterCleanup(req executePlanRequest, plr progressLogResult, rep *cmux.Reporter) {
+	rep.Quiesce()
+	plr.closeLog()
+	if req.BeforeCmuxFinish != nil {
+		req.BeforeCmuxFinish(false)
+	}
+	rep.Stop()
 }
 
 // finishCmuxAfterCleanup publishes the final/free pill only after every operation that must stay

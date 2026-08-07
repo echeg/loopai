@@ -6536,6 +6536,40 @@ func TestFinishCmuxAfterCleanupPublishesFinalStatusLast(t *testing.T) {
 	assert.Equal(t, beforeStop, string(recorded), "no old-reporter cleanup may follow the final/free pill")
 }
 
+func TestStopCmuxAfterCleanupClearsStatusLast(t *testing.T) {
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "cmux"), []byte(script), 0o755)) //nolint:gosec // test fixture must be executable
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	t.Setenv("CMUX_ARGV_LOG", argvLog)
+
+	rep := cmux.New("plan.md", cmux.Models{})
+	require.NotNil(t, rep)
+	rep.Start(t.Context())
+
+	logClosed := false
+	plr := progressLogResult{closeLog: func() {
+		logClosed = true
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
+		require.NoError(t, err)
+		assert.NotContains(t, string(recorded), "clear-status loopai", "status must remain busy through log cleanup")
+	}}
+	req := executePlanRequest{BeforeCmuxFinish: func(success bool) {
+		assert.False(t, success)
+		assert.True(t, logClosed)
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
+		require.NoError(t, err)
+		assert.NotContains(t, string(recorded), "clear-status loopai", "status must remain busy through repository cleanup")
+	}}
+
+	stopCmuxAfterCleanup(req, plr, rep)
+	recorded, err := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(strings.TrimSpace(string(recorded)), "clear-status loopai"))
+}
+
 func TestRunCleanupBounded(t *testing.T) {
 	tests := []struct {
 		name        string
