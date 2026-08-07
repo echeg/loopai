@@ -948,36 +948,36 @@ type codexCommandStart struct {
 	arrival   time.Time
 }
 
-type codexPendingCommands struct {
-	starts    []codexCommandStart
-	sessionID string
-	initial   bool
+type codexPendingCommand struct {
+	start         codexCommandStart
+	sessionID     string
+	requiresProof bool
 }
 
 type codexTimingState struct {
-	starts        map[string][]codexCommandStart
-	sessions      map[string][]codexCommandStart
-	continuations map[string]codexPendingCommands
-	cells         map[string]codexPendingCommands
-	waits         map[string]codexPendingCommands
+	starts        map[string][]codexPendingCommand
+	sessions      map[string]codexPendingCommand
+	continuations map[string][]codexPendingCommand
+	cells         map[string][]codexPendingCommand
+	waits         map[string][]codexPendingCommand
 }
 
 func newCodexTimingState() *codexTimingState {
 	return &codexTimingState{
-		starts:        make(map[string][]codexCommandStart),
-		sessions:      make(map[string][]codexCommandStart),
-		continuations: make(map[string]codexPendingCommands),
-		cells:         make(map[string]codexPendingCommands),
-		waits:         make(map[string]codexPendingCommands),
+		starts:        make(map[string][]codexPendingCommand),
+		sessions:      make(map[string]codexPendingCommand),
+		continuations: make(map[string][]codexPendingCommand),
+		cells:         make(map[string][]codexPendingCommand),
+		waits:         make(map[string][]codexPendingCommand),
 	}
 }
 
 var (
-	customExecCommandPattern = regexp.MustCompile(`(?s)tools\.exec_command\s*\(\s*\{.*?(?:"cmd"|'cmd'|\bcmd)\s*:\s*("(?:\\.|[^"\\])*")`)
+	customExecCommandPattern = regexp.MustCompile("(?s)tools\\.exec_command\\s*\\(\\s*\\{.*?(?:\"cmd\"|'cmd'|\\bcmd)\\s*:\\s*(\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|`(?:\\\\.|[^`\\\\])*`)")
 	customWriteStdinPattern  = regexp.MustCompile(`(?s)tools\.write_stdin\s*\(\s*\{.*?(?:"session_id"|'session_id'|\bsession_id)\s*:\s*(?:"([^"]+)"|'([^']+)'|(\d+))`)
 	outputSessionIDPattern   = regexp.MustCompile(`(?i)(?:SESSION_ID\s*=|session(?:_|\s+)id["']?\s*[:=]\s*|Process running with session ID\s+)(\d+)`)
 	outputCellIDPattern      = regexp.MustCompile(`(?i)(?:Script running with cell ID\s*|cell_id["']?\s*[:=]\s*)(\d+)`)
-	exitCodePattern          = regexp.MustCompile(`(?i)(?:EXIT_CODE\s*=|Process exited with code\s+)(-?\d+)`)
+	exitCodePattern          = regexp.MustCompile(`(?i)(?:EXIT_CODE\s*=|exit_code["']?\s*:\s*|Process exited with code\s+)(-?\d+)`)
 )
 
 func parseRolloutRecord(line []byte) (rolloutEvent, rolloutPayload, bool) {
@@ -1032,12 +1032,15 @@ func (e *CodexExecutor) trackFunctionCall(payload rolloutPayload, eventTime time
 			Cmd string `json:"cmd"`
 		}
 		if json.Unmarshal([]byte(payload.Arguments), &args) == nil && args.Cmd != "" {
-			state.starts[payload.CallID] = []codexCommandStart{{command: args.Cmd, eventTime: eventTime, arrival: now()}}
+			state.starts[payload.CallID] = []codexPendingCommand{{
+				start: codexCommandStart{command: args.Cmd, eventTime: eventTime, arrival: now()},
+			}}
 		}
 	case "write_stdin":
 		if sessionID := sessionIDFromArguments(payload.Arguments); sessionID != "" {
-			if starts, ok := state.sessions[sessionID]; ok {
-				state.continuations[payload.CallID] = codexPendingCommands{starts: starts, sessionID: sessionID}
+			if pending, ok := state.sessions[sessionID]; ok {
+				pending.requiresProof = true
+				state.continuations[payload.CallID] = []codexPendingCommand{pending}
 			}
 		}
 	case "wait":
@@ -1059,66 +1062,90 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 	}
 	if allMatches := customExecCommandPattern.FindAllStringSubmatch(payload.Input, -1); len(allMatches) > 0 {
 		arrival := now()
-		starts := make([]codexCommandStart, 0, len(allMatches))
+		pending := make([]codexPendingCommand, 0, len(allMatches))
 		for _, matches := range allMatches {
-			var command string
-			if json.Unmarshal([]byte(matches[1]), &command) == nil && command != "" {
-				starts = append(starts, codexCommandStart{command: command, eventTime: eventTime, arrival: arrival})
+			if command, ok := decodeJSStringLiteral(matches[1]); ok && command != "" {
+				pending = append(pending, codexPendingCommand{
+					start:         codexCommandStart{command: command, eventTime: eventTime, arrival: arrival},
+					requiresProof: true,
+				})
 			}
 		}
-		if len(starts) > 0 {
-			state.starts[payload.CallID] = starts
+		if len(pending) > 0 {
+			state.starts[payload.CallID] = pending
 		}
 		return
 	}
-	if matches := customWriteStdinPattern.FindStringSubmatch(payload.Input); len(matches) == 4 {
+	allMatches := customWriteStdinPattern.FindAllStringSubmatch(payload.Input, -1)
+	pending := make([]codexPendingCommand, 0, len(allMatches))
+	for _, matches := range allMatches {
 		sessionID := firstNonEmpty(matches[1:]...)
-		if starts, ok := state.sessions[sessionID]; ok {
-			state.continuations[payload.CallID] = codexPendingCommands{starts: starts, sessionID: sessionID}
+		if command, ok := state.sessions[sessionID]; ok {
+			pending = append(pending, command)
 		}
+	}
+	if len(pending) > 0 {
+		state.continuations[payload.CallID] = pending
 	}
 }
 
 func (e *CodexExecutor) trackToolOutput(payload rolloutPayload, eventTime time.Time, state *codexTimingState, now func() time.Time) {
-	text := rolloutOutputText(payload.Output)
-	if starts, ok := state.starts[payload.CallID]; ok {
+	outputs := rolloutOutputTexts(payload.Output)
+	if pending, ok := state.starts[payload.CallID]; ok {
 		delete(state.starts, payload.CallID)
-		e.resolvePendingOutput(codexPendingCommands{starts: starts, initial: true}, text, eventTime, state, now)
+		e.resolvePendingOutputs(pending, outputs, eventTime, state, now)
 		return
 	}
 	if pending, ok := state.continuations[payload.CallID]; ok {
 		delete(state.continuations, payload.CallID)
-		e.resolvePendingOutput(pending, text, eventTime, state, now)
+		e.resolvePendingOutputs(pending, outputs, eventTime, state, now)
 		return
 	}
 	if pending, ok := state.waits[payload.CallID]; ok {
 		delete(state.waits, payload.CallID)
-		e.resolvePendingOutput(pending, text, eventTime, state, now)
+		e.resolvePendingOutputs(pending, outputs, eventTime, state, now)
 	}
 }
 
-func (e *CodexExecutor) resolvePendingOutput(pending codexPendingCommands, output string, eventTime time.Time, state *codexTimingState, now func() time.Time) {
-	if sessionID := extractPatternValue(outputSessionIDPattern, output); sessionID != "" {
-		pending.sessionID = sessionID
-		pending.initial = false
-		state.sessions[sessionID] = pending.starts
-		return
-	}
-	if cellID := extractPatternValue(outputCellIDPattern, output); cellID != "" {
-		state.cells[cellID] = pending
-		return
-	}
+type codexCommandResult struct {
+	index     int
+	sessionID string
+	cellID    string
+	hasExit   bool
+}
 
-	_, hasExit := parseExitCode(output)
-	if !pending.initial && !hasExit {
-		return
-	}
-	if pending.sessionID != "" {
-		delete(state.sessions, pending.sessionID)
-	}
+func (e *CodexExecutor) resolvePendingOutputs(pending []codexPendingCommand, outputs []string, eventTime time.Time, state *codexTimingState, now func() time.Time) {
+	results := parseCodexCommandResults(outputs, len(pending))
 	arrival := now()
-	for _, start := range pending.starts {
-		e.emitCommandTiming(start, eventTime, arrival)
+	for index, command := range pending {
+		result, hasResult := results[index]
+		if !command.requiresProof && !hasResult {
+			e.emitCommandTiming(command.start, eventTime, arrival)
+			continue
+		}
+		if !hasResult {
+			continue
+		}
+		if result.sessionID != "" {
+			if command.sessionID != "" && command.sessionID != result.sessionID {
+				delete(state.sessions, command.sessionID)
+			}
+			command.sessionID = result.sessionID
+			command.requiresProof = true
+			state.sessions[result.sessionID] = command
+			continue
+		}
+		if result.cellID != "" {
+			state.cells[result.cellID] = append(state.cells[result.cellID], command)
+			continue
+		}
+		if !result.hasExit {
+			continue
+		}
+		if command.sessionID != "" {
+			delete(state.sessions, command.sessionID)
+		}
+		e.emitCommandTiming(command.start, eventTime, arrival)
 	}
 }
 
@@ -1133,26 +1160,177 @@ func (e *CodexExecutor) emitCommandTiming(start codexCommandStart, eventTime, ar
 	e.CommandTimingHandler(start.command, duration)
 }
 
-func rolloutOutputText(raw json.RawMessage) string {
+func rolloutOutputTexts(raw json.RawMessage) []string {
 	if len(raw) == 0 {
-		return ""
+		return nil
 	}
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
-		return text
+		return []string{text}
 	}
 	var blocks []struct {
 		Text string `json:"text"`
 	}
 	if json.Unmarshal(raw, &blocks) != nil {
+		return nil
+	}
+	result := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		result = append(result, block.Text)
+	}
+	return result
+}
+
+func parseCodexCommandResults(outputs []string, pendingCount int) map[int]codexCommandResult {
+	results := make(map[int]codexCommandResult)
+	next := 0
+	for _, output := range outputs {
+		result, ok := parseStructuredCommandResult(output)
+		if !ok {
+			continue
+		}
+		index := result.index - 1
+		if result.index == 0 {
+			for next < pendingCount {
+				if _, exists := results[next]; !exists {
+					break
+				}
+				next++
+			}
+			index = next
+		}
+		if index >= 0 && index < pendingCount {
+			results[index] = result
+			next = index + 1
+		}
+	}
+	if pendingCount == 1 {
+		if _, ok := results[0]; !ok {
+			if result, found := parseTextCommandResult(strings.Join(outputs, "\n")); found {
+				results[0] = result
+			}
+		}
+	}
+	return results
+}
+
+func parseStructuredCommandResult(output string) (codexCommandResult, bool) {
+	var raw struct {
+		Index     int             `json:"index"`
+		SessionID json.RawMessage `json:"session_id"`
+		CellID    json.RawMessage `json:"cell_id"`
+		ExitCode  json.RawMessage `json:"exit_code"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(output)), &raw) != nil {
+		return codexCommandResult{}, false
+	}
+	result := codexCommandResult{index: raw.Index}
+	result.sessionID = rawIDString(raw.SessionID)
+	result.cellID = rawIDString(raw.CellID)
+	var exitCode int
+	result.hasExit = json.Unmarshal(raw.ExitCode, &exitCode) == nil
+	return result, result.sessionID != "" || result.cellID != "" || result.hasExit
+}
+
+func parseTextCommandResult(output string) (codexCommandResult, bool) {
+	result := codexCommandResult{
+		sessionID: extractPatternValue(outputSessionIDPattern, output),
+		cellID:    extractPatternValue(outputCellIDPattern, output),
+	}
+	_, result.hasExit = parseExitCode(output)
+	return result, result.sessionID != "" || result.cellID != "" || result.hasExit
+}
+
+func rawIDString(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
 		return ""
 	}
-	var result strings.Builder
-	for _, block := range blocks {
-		result.WriteString(block.Text)
-		result.WriteByte('\n')
+	var value string
+	if json.Unmarshal(raw, &value) == nil {
+		return value
 	}
-	return result.String()
+	var number int64
+	if json.Unmarshal(raw, &number) == nil {
+		return strconv.FormatInt(number, 10)
+	}
+	return ""
+}
+
+func decodeJSStringLiteral(literal string) (string, bool) {
+	if len(literal) < 2 {
+		return "", false
+	}
+	delimiter := literal[0]
+	if literal[len(literal)-1] != delimiter || (delimiter != '"' && delimiter != '\'' && delimiter != '`') {
+		return "", false
+	}
+	if delimiter == '"' {
+		var value string
+		if json.Unmarshal([]byte(literal), &value) == nil {
+			return value, true
+		}
+	}
+	content := literal[1 : len(literal)-1]
+	if delimiter == '`' && containsTemplateInterpolation(content) {
+		return "", false
+	}
+	var result strings.Builder
+	index := 0
+	for index < len(content) {
+		if content[index] != '\\' {
+			result.WriteByte(content[index])
+			index++
+			continue
+		}
+		if !writeJSStringEscape(&result, content, &index) {
+			return "", false
+		}
+		index++
+	}
+	return result.String(), true
+}
+
+func writeJSStringEscape(result *strings.Builder, content string, index *int) bool {
+	(*index)++
+	if *index >= len(content) {
+		return false
+	}
+	switch content[*index] {
+	case 'n':
+		result.WriteByte('\n')
+	case 'r':
+		result.WriteByte('\r')
+	case 't':
+		result.WriteByte('\t')
+	case 'b':
+		result.WriteByte('\b')
+	case 'f':
+		result.WriteByte('\f')
+	case 'v':
+		result.WriteByte('\v')
+	case '\n':
+		// JavaScript line continuation contributes no character.
+	case '\r':
+		if *index+1 < len(content) && content[*index+1] == '\n' {
+			(*index)++
+		}
+	default:
+		result.WriteByte(content[*index])
+	}
+	return true
+}
+
+func containsTemplateInterpolation(content string) bool {
+	for index := 0; index+1 < len(content); index++ {
+		if content[index] == '\\' {
+			index++
+			continue
+		}
+		if content[index] == '$' && content[index+1] == '{' {
+			return true
+		}
+	}
+	return false
 }
 
 func sessionIDFromArguments(arguments string) string {
@@ -1162,15 +1340,7 @@ func sessionIDFromArguments(arguments string) string {
 	if json.Unmarshal([]byte(arguments), &args) != nil || len(args.SessionID) == 0 {
 		return ""
 	}
-	var value string
-	if json.Unmarshal(args.SessionID, &value) == nil {
-		return value
-	}
-	var number int64
-	if json.Unmarshal(args.SessionID, &number) == nil {
-		return strconv.FormatInt(number, 10)
-	}
-	return ""
+	return rawIDString(args.SessionID)
 }
 
 func extractPatternValue(pattern *regexp.Regexp, value string) string {
