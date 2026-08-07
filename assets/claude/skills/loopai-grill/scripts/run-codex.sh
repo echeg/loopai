@@ -24,24 +24,76 @@ if ! command -v codex >/dev/null 2>&1; then
 	printf 'codex binary is required but was not found on PATH\n' >&2
 	exit 127
 fi
+if ! command -v git >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1; then
+	printf 'git and tar are required to create the sanitized repository snapshot\n' >&2
+	exit 127
+fi
+if [[ "$(git -C "$canonical_root" rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]]; then
+	printf 'repository root is not inside a Git working tree: %s\n' "$canonical_root" >&2
+	exit 65
+fi
 
 codex_isolation_dir="$(mktemp -d "${TMPDIR:-/tmp}/loopai-grill-codex.XXXXXX")" || {
 	printf 'cannot create isolated Codex working directory\n' >&2
 	exit 67
 }
 cleanup() {
-	find "$codex_isolation_dir" -depth -delete 2>/dev/null || true
+	local cleanup_status=0
+
+	if [[ -e "$codex_isolation_dir" ]]; then
+		chmod u+rwx "$codex_isolation_dir" 2>/dev/null || cleanup_status=1
+		find "$codex_isolation_dir" -type d -exec chmod u+rwx {} \; 2>/dev/null || cleanup_status=1
+		find "$codex_isolation_dir" -depth -delete 2>/dev/null || cleanup_status=1
+	fi
+	[[ ! -e "$codex_isolation_dir" ]] || cleanup_status=1
+	return "$cleanup_status"
 }
-trap cleanup EXIT
+on_exit() {
+	local command_status=$?
+
+	trap - EXIT
+	if ! cleanup; then
+		printf 'cannot remove isolated Codex working directory: %s\n' "$codex_isolation_dir" >&2
+		if [[ "$command_status" -eq 0 ]]; then
+			command_status=69
+		fi
+	fi
+	exit "$command_status"
+}
+trap on_exit EXIT
 
 repository_snapshot="$codex_isolation_dir/repository"
 if ! mkdir "$repository_snapshot"; then
 	printf 'cannot create sanitized repository snapshot\n' >&2
 	exit 68
 fi
-if ! (cd "$canonical_root" && command tar --exclude='./.git' --exclude='./.loopai' -cf - .) |
+snapshot_file_list="$codex_isolation_dir/repository-files"
+if ! (
+	cd "$canonical_root" || exit 1
+	git ls-files --cached --others --exclude-standard -z |
+		while IFS= read -r -d '' snapshot_path; do
+			case "$snapshot_path" in
+				.git | .git/* | .loopai | .loopai/*) continue ;;
+			esac
+		if [[ -f "$snapshot_path" || -L "$snapshot_path" ]]; then
+			printf './%s\0' "$snapshot_path"
+		fi
+		done
+) >"$snapshot_file_list"; then
+	printf 'cannot enumerate sanitized repository files\n' >&2
+	exit 68
+fi
+if ! (cd "$canonical_root" && command tar -cf - --null -T "$snapshot_file_list") |
 	(cd "$repository_snapshot" && command tar -xf -); then
 	printf 'cannot create sanitized repository snapshot\n' >&2
+	exit 68
+fi
+if ! find "$repository_snapshot" -type d -exec chmod u+rx {} \; 2>/dev/null; then
+	printf 'cannot make sanitized repository snapshot readable\n' >&2
+	exit 68
+fi
+if ! rm -f "$snapshot_file_list"; then
+	printf 'cannot remove temporary repository file list\n' >&2
 	exit 68
 fi
 

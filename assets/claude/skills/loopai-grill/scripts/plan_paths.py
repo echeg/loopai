@@ -4,12 +4,16 @@
 
 from __future__ import annotations
 
+import errno
+import hashlib
 import os
 import re
+import secrets
 import stat
 import sys
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import NoReturn
+from typing import Iterator, NoReturn
 
 
 OUTPUT_RE = re.compile(
@@ -69,31 +73,196 @@ def direct_plan_relative(literal: str) -> tuple[str, str]:
 
 
 def validate_active(root_arg: str, literal: str) -> tuple[Path, str]:
-    root, plans, loopai = repository_layout(root_arg)
+    with open_active(root_arg, literal) as (_, plans, relative, basename, _, _, _):
+        return plans / basename, relative
+
+
+def directory_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+@contextmanager
+def open_active(
+    root_arg: str, literal: str
+) -> Iterator[tuple[Path, Path, str, str, int, int, os.stat_result]]:
+    root, plans, _ = repository_layout(root_arg)
     relative, basename = direct_plan_relative(literal)
-    candidate = plans / basename
-    if candidate.is_symlink():
-        raise PathError("plan must not be a symbolic link")
+    root_fd = os.open(root, directory_open_flags())
+    docs_fd: int | None = None
+    plans_fd: int | None = None
+    plan_fd: int | None = None
     try:
-        mode = candidate.lstat().st_mode
-    except OSError as exc:
+        docs_fd = os.open("docs", directory_open_flags(), dir_fd=root_fd)
+        plans_fd = os.open("plans", directory_open_flags(), dir_fd=docs_fd)
+        plan_fd = os.open(
+            basename,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=plans_fd,
+        )
+        plan_stat = os.fstat(plan_fd)
+        if not stat.S_ISREG(plan_stat.st_mode):
+            raise PathError("active plan is not a regular file")
+        if basename not in os.listdir(plans_fd):
+            raise PathError("plan path case does not match the filesystem entry")
+        yield root, plans, relative, basename, plans_fd, plan_fd, plan_stat
+    except FileNotFoundError as exc:
         raise PathError(f"active plan does not exist: {relative}") from exc
-    if not stat.S_ISREG(mode):
-        raise PathError("active plan is not a regular file")
-    if not any(entry.name == basename for entry in os.scandir(plans)):
-        raise PathError("plan path case does not match the filesystem entry")
-    resolved = candidate.resolve(strict=True)
-    if resolved.parent != plans or resolved == loopai or loopai in resolved.parents:
-        raise PathError("active plan resolves outside the repository plans directory")
-    return resolved, relative
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise PathError("plan must not be a symbolic link") from exc
+        raise
+    finally:
+        if plan_fd is not None:
+            os.close(plan_fd)
+        if plans_fd is not None:
+            os.close(plans_fd)
+        if docs_fd is not None:
+            os.close(docs_fd)
+        os.close(root_fd)
+
+
+def read_all(file_fd: int) -> bytes:
+    chunks: list[bytes] = []
+    while chunk := os.read(file_fd, 1024 * 1024):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def write_all(file_fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(file_fd, view)
+        if written == 0:
+            raise OSError("write returned zero bytes")
+        view = view[written:]
+
+
+def resolve_scratch_source(root: Path, plans: Path, source_arg: str) -> Path:
+    source = Path(source_arg)
+    if source.is_symlink():
+        raise PathError("draft source must not be a symbolic link")
+    try:
+        resolved_source = source.resolve(strict=True)
+    except OSError as exc:
+        raise PathError(f"cannot resolve draft source: {exc}") from exc
+    loopai = root / ".loopai"
+    if loopai == resolved_source or loopai in resolved_source.parents:
+        raise PathError("draft source must not be under .loopai")
+    if plans == resolved_source or plans in resolved_source.parents:
+        raise PathError("draft source must be outside docs/plans")
+    return resolved_source
+
+
+def read_active(root_arg: str, literal: str, destination_arg: str) -> tuple[str, str]:
+    with open_active(root_arg, literal) as (root, _, relative, _, _, plan_fd, _):
+        payload = read_all(plan_fd)
+
+    destination = Path(destination_arg)
+    try:
+        destination_parent = destination.parent.resolve(strict=True)
+    except OSError as exc:
+        raise PathError(f"cannot resolve snapshot directory: {exc}") from exc
+    destination = destination_parent / destination.name
+    if root == destination or root in destination.parents:
+        raise PathError("active-plan snapshot must be outside the repository")
+    snapshot_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    snapshot_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    snapshot_fd: int | None = None
+    created = False
+    try:
+        snapshot_fd = os.open(destination, snapshot_flags, 0o600)
+        created = True
+        write_all(snapshot_fd, payload)
+        os.fsync(snapshot_fd)
+    except Exception:
+        if created:
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+        raise
+    finally:
+        if snapshot_fd is not None:
+            os.close(snapshot_fd)
+    return relative, hashlib.sha256(payload).hexdigest()
+
+
+def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{64}", token) is None:
+        raise PathError("active-plan token is invalid")
+    with open_active(root_arg, literal) as (
+        root,
+        plans,
+        relative,
+        basename,
+        plans_fd,
+        plan_fd,
+        plan_stat,
+    ):
+        if hashlib.sha256(read_all(plan_fd)).hexdigest() != token:
+            raise PathError("active plan changed after it was read; refusing to replace it")
+
+        resolved_source = resolve_scratch_source(root, plans, source_arg)
+        source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        source_fd = os.open(resolved_source, source_flags)
+        try:
+            if not stat.S_ISREG(os.fstat(source_fd).st_mode):
+                raise PathError("edited plan draft is not a regular file")
+            payload = read_all(source_fd)
+        finally:
+            os.close(source_fd)
+
+        temporary_name = f".{basename}.loopai-grill-{secrets.token_hex(8)}"
+        temporary_fd: int | None = None
+        temporary_created = False
+        replaced = False
+        try:
+            temporary_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            temporary_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            temporary_fd = os.open(
+                temporary_name,
+                temporary_flags,
+                stat.S_IMODE(plan_stat.st_mode),
+                dir_fd=plans_fd,
+            )
+            temporary_created = True
+            os.fchmod(temporary_fd, stat.S_IMODE(plan_stat.st_mode))
+            write_all(temporary_fd, payload)
+            os.fsync(temporary_fd)
+            os.close(temporary_fd)
+            temporary_fd = None
+
+            current_stat = os.stat(basename, dir_fd=plans_fd, follow_symlinks=False)
+            if (current_stat.st_dev, current_stat.st_ino) != (plan_stat.st_dev, plan_stat.st_ino):
+                raise PathError("active plan changed before replacement; refusing to replace it")
+            os.lseek(plan_fd, 0, os.SEEK_SET)
+            if hashlib.sha256(read_all(plan_fd)).hexdigest() != token:
+                raise PathError("active plan changed before replacement; refusing to replace it")
+            os.replace(temporary_name, basename, src_dir_fd=plans_fd, dst_dir_fd=plans_fd)
+            replaced = True
+            os.fsync(plans_fd)
+        finally:
+            if temporary_fd is not None:
+                os.close(temporary_fd)
+            if temporary_created and not replaced:
+                try:
+                    os.unlink(temporary_name, dir_fd=plans_fd)
+                except OSError:
+                    pass
+    return relative
 
 
 def looks_path_like(value: str) -> bool:
     stripped = value.strip()
+    single_token = not any(character.isspace() for character in stripped)
     return (
-        stripped.startswith(("/", "./", "../", "~/", "docs/"))
-        or stripped.endswith(".md")
-        or "\\" in stripped
+        stripped.startswith(("/", "./", "../", "~/", "docs/plans/"))
+        or (single_token and (stripped.endswith(".md") or "\\" in stripped))
     )
 
 
@@ -160,18 +329,7 @@ def ensure_no_collision(root_arg: str, relative: str) -> tuple[Path, Path, str]:
 
 def write_final(root_arg: str, relative: str, source_arg: str) -> str:
     root, plans, basename = ensure_no_collision(root_arg, relative)
-    source = Path(source_arg)
-    if source.is_symlink():
-        raise PathError("final draft source must not be a symbolic link")
-    try:
-        resolved_source = source.resolve(strict=True)
-    except OSError as exc:
-        raise PathError(f"cannot resolve final draft source: {exc}") from exc
-    loopai = root / ".loopai"
-    if loopai == resolved_source or loopai in resolved_source.parents:
-        raise PathError("final draft source must not be under .loopai")
-    if plans == resolved_source or plans in resolved_source.parents:
-        raise PathError("final draft source must be outside docs/plans")
+    resolved_source = resolve_scratch_source(root, plans, source_arg)
 
     directory_flags = os.O_RDONLY
     directory_flags |= getattr(os, "O_DIRECTORY", 0)
@@ -182,14 +340,11 @@ def write_final(root_arg: str, relative: str, source_arg: str) -> str:
     file_flags |= getattr(os, "O_NOFOLLOW", 0)
     source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
 
-    source_fd = os.open(source, source_flags)
+    source_fd = os.open(resolved_source, source_flags)
     try:
         if not stat.S_ISREG(os.fstat(source_fd).st_mode):
             raise PathError("final draft source is not a regular file")
-        chunks: list[bytes] = []
-        while chunk := os.read(source_fd, 1024 * 1024):
-            chunks.append(chunk)
-        payload = b"".join(chunks)
+        payload = read_all(source_fd)
     finally:
         os.close(source_fd)
 
@@ -203,10 +358,7 @@ def write_final(root_arg: str, relative: str, source_arg: str) -> str:
         directory_fd = os.open("plans", directory_flags, dir_fd=docs_fd)
         target_fd = os.open(basename, file_flags, 0o644, dir_fd=directory_fd)
         created = True
-        view = memoryview(payload)
-        while view:
-            written = os.write(target_fd, view)
-            view = view[written:]
+        write_all(target_fd, payload)
         os.fsync(target_fd)
     except FileExistsError as exc:
         raise PathError("output plan appeared before it could be created") from exc
@@ -230,11 +382,15 @@ def write_final(root_arg: str, relative: str, source_arg: str) -> str:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 3:
-        fail("usage: plan_paths.py <validate-active|classify|newest-active|check-output|write-final> <repository-root> [arguments]")
+        fail("usage: plan_paths.py <validate-active|read-active|replace-active|classify|newest-active|check-output|write-final> <repository-root> [arguments]")
     command, root_arg, *args = argv[1:]
     try:
         if command == "validate-active" and len(args) == 1:
             print(validate_active(root_arg, args[0])[1])
+        elif command == "read-active" and len(args) == 2:
+            print("\t".join(read_active(root_arg, args[0], args[1])))
+        elif command == "replace-active" and len(args) == 3:
+            print(replace_active(root_arg, args[0], args[1], args[2]))
         elif command == "classify" and len(args) == 1:
             print(classify(root_arg, args[0]))
         elif command == "newest-active" and not args:

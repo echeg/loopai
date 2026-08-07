@@ -97,12 +97,13 @@ to the plugin version.
 plan and applies only user-selected verified findings; plan-off creates one new
 plan and never edits its source. Both reject completed, symlinked, nested, and
 `.loopai/` plans. The skill pre-approves no Claude tools. Its bundled path
-helper rejects symlinked plan roots and performs no-clobber final creation; its
-Codex wrapper creates a sanitized repository snapshot without `.git/` or
-`.loopai/`, confines Codex reads to that isolated temporary directory and
-minimal runtime files, disables user/project config, rules, MCP and external
-tools, strips credential-like shell variables, and starts an ephemeral session
-without approval escalation. All scratch files live outside
+helper rejects symlinked plan roots, token-guards active-plan replacements, and
+performs no-clobber final creation. Its Codex wrapper snapshots only tracked and
+non-ignored untracked files while excluding `.git/` and `.loopai/`, confines
+Codex reads to that isolated temporary directory and minimal runtime files,
+disables user/project config, rules, MCP and external tools, strips
+credential-like shell variables, and starts an ephemeral session without
+approval escalation. All scratch files live outside
 `docs/plans/` and are removed on every exit. Grill mode reports Codex failure
 and degrades to Claude-only; plan-off requires Codex and fails closed. When
 these contracts change, update and run `scripts/check-grill-skill_test.sh`.
