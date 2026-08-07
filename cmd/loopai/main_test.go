@@ -295,6 +295,24 @@ func TestMergeFlagParsing(t *testing.T) {
 		assert.True(t, o.Worktree)
 		require.Error(t, validateFlags(o))
 	})
+
+	// the whole feature argument rests on optional-value leaving the next token positional; were
+	// it consumed as the base, "--merge myfeature" would silently merge the current branch into a
+	// branch named myfeature instead of closing out myfeature
+	t.Run("bare flag leaves the feature argument positional", func(t *testing.T) {
+		o := parseTestOpts(t, "--merge", "myfeature")
+		assert.True(t, o.mergeSet)
+		assert.Empty(t, o.Merge)
+		assert.Equal(t, "myfeature", o.PlanFile)
+		require.NoError(t, validateFlags(o))
+	})
+
+	t.Run("explicit base keeps the feature argument positional", func(t *testing.T) {
+		o := parseTestOpts(t, "--merge=develop", "myfeature")
+		assert.Equal(t, "develop", o.Merge)
+		assert.Equal(t, "myfeature", o.PlanFile)
+		require.NoError(t, validateFlags(o))
+	})
 }
 
 func TestPRFlagParsing(t *testing.T) {
@@ -315,6 +333,14 @@ func TestPRFlagParsing(t *testing.T) {
 		assert.True(t, o.prSet)
 		assert.True(t, o.Codex)
 		require.Error(t, validateFlags(o))
+	})
+
+	t.Run("bare flag leaves the feature argument positional", func(t *testing.T) {
+		o := parseTestOpts(t, "--pr", "myfeature")
+		assert.True(t, o.prSet)
+		assert.Empty(t, o.PR)
+		assert.Equal(t, "myfeature", o.PlanFile)
+		require.NoError(t, validateFlags(o))
 	})
 }
 
@@ -6326,6 +6352,113 @@ func TestResolveFeatureBranchPrefersRecordedBranch(t *testing.T) {
 			plansDir, "20260806-login")
 		require.NoError(t, err)
 		assert.Equal(t, "fix/login-v2", got)
+	})
+}
+
+// TestResolveFeatureBranchMatchesRecordAcrossPathSpellings covers the ways the located plan path
+// and the recorded one legitimately differ. A miss falls back to deriving the branch from the
+// filename, so each of these once resolved the unrelated "login" branch that --merge would then
+// merge into base and delete.
+func TestResolveFeatureBranchMatchesRecordAcrossPathSpellings(t *testing.T) {
+	checker := fakeBranchChecker{branches: []string{"master", "login", "fix/login"}}
+
+	t.Run("identifier typed in a different case", func(t *testing.T) {
+		repo := setupTestRepo(t)
+		plansDir := filepath.Join(repo, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "20260806-login.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+		if _, err := os.Stat(filepath.Join(plansDir, "20260806-LOGIN.md")); err != nil {
+			t.Skip("case-sensitive filesystem")
+		}
+		writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
+
+		got, err := resolveFeatureBranch(checker, repo, plansDir, "20260806-LOGIN")
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login", got)
+	})
+
+	t.Run("plan present in both the active and completed directories", func(t *testing.T) {
+		repo := setupTestRepo(t)
+		plansDir := filepath.Join(repo, "docs", "plans")
+		require.NoError(t, os.MkdirAll(filepath.Join(plansDir, "completed"), 0o750))
+		planFile := filepath.Join(plansDir, "20260806-login.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "completed", "20260806-login.md"),
+			[]byte("# plan\n"), 0o600))
+		writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
+
+		got, err := resolveFeatureBranch(checker, repo, plansDir, "20260806-login")
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login", got)
+	})
+}
+
+// TestResolveCloseoutBranchReadsProgressFromPrimaryWorktree covers a close-out invoked from a
+// linked worktree, which README advertises. Progress records only ever exist in the primary
+// checkout, so scanning the invoking one found no association and silently derived "login".
+func TestResolveCloseoutBranchReadsProgressFromPrimaryWorktree(t *testing.T) {
+	repo := setupTestRepo(t)
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	planFile := filepath.Join(plansDir, "20260806-login.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "add plan")
+	writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
+	runGit(t, repo, "branch", "fix/login")
+	runGit(t, repo, "branch", "login")
+	linked := filepath.Join(t.TempDir(), "wt")
+	runGit(t, repo, "worktree", "add", linked, "fix/login")
+
+	svc, err := git.NewService(linked, noopLogger())
+	require.NoError(t, err)
+	target := closeoutTarget{identifier: "20260806-login", plansDir: filepath.Join("docs", "plans")}
+	got, err := resolveCloseoutBranch(svc, target, "--merge")
+	require.NoError(t, err)
+	assert.Equal(t, "fix/login", got)
+}
+
+func TestRecordedPlanInRepo(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	inside := filepath.Join(plansDir, "20260806-login.md")
+	require.NoError(t, os.WriteFile(inside, []byte("# plan\n"), 0o600))
+
+	t.Run("plain containment returns the path unchanged", func(t *testing.T) {
+		assert.Equal(t, inside, recordedPlanInRepo(repo, inside))
+	})
+
+	t.Run("path behind a symlinked root is re-anchored at the root", func(t *testing.T) {
+		link := filepath.Join(parent, "link")
+		require.NoError(t, os.Symlink(repo, link))
+		// spelled through the link, so a lexical test alone would reject it
+		got := recordedPlanInRepo(repo, filepath.Join(link, "docs", "plans", "20260806-login.md"))
+		assert.Equal(t, inside, got)
+	})
+
+	t.Run("plan genuinely outside the repository is rejected", func(t *testing.T) {
+		outside := filepath.Join(parent, "elsewhere.md")
+		require.NoError(t, os.WriteFile(outside, []byte("# plan\n"), 0o600))
+		assert.Empty(t, recordedPlanInRepo(repo, outside))
+	})
+
+	t.Run("symlinked plan is rejected without following it", func(t *testing.T) {
+		outside := filepath.Join(parent, "secret.md")
+		require.NoError(t, os.WriteFile(outside, []byte("# secret\n"), 0o600))
+		linked := filepath.Join(plansDir, "20260806-linked.md")
+		require.NoError(t, os.Symlink(outside, linked))
+		assert.Empty(t, recordedPlanInRepo(repo, linked))
+	})
+
+	t.Run("missing path is rejected", func(t *testing.T) {
+		assert.Empty(t, recordedPlanInRepo(repo, filepath.Join(plansDir, "absent.md")))
+	})
+
+	t.Run("directory is rejected", func(t *testing.T) {
+		assert.Empty(t, recordedPlanInRepo(repo, plansDir))
 	})
 }
 

@@ -2305,7 +2305,9 @@ type featureBranchResolver interface {
 // located by path or by basename in plansDir and plansDir/completed. the branch a run recorded
 // for that plan wins over the name derived from the filename, because a --branch override makes
 // the filename imply a branch the run never created; either way the branch must still exist.
-func resolveFeatureBranch(gitSvc featureBranchResolver, repoRoot, plansDir, arg string) (string, error) {
+// progressRoot names the checkout holding .loopai/progress, which is not always the one plansDir
+// sits in.
+func resolveFeatureBranch(gitSvc featureBranchResolver, progressRoot, plansDir, arg string) (string, error) {
 	identifier := strings.TrimSpace(arg)
 	if identifier == "" {
 		return "", errors.New("empty feature identifier")
@@ -2321,7 +2323,7 @@ func resolveFeatureBranch(gitSvc featureBranchResolver, repoRoot, plansDir, arg 
 			identifier, plansDir, completedDir)
 	}
 
-	branch, err := recordedBranchForPlan(repoRoot, planFile)
+	branch, err := recordedBranchForPlan(progressRoot, planFile)
 	if err != nil {
 		return "", err
 	}
@@ -2391,7 +2393,11 @@ func resolveCloseoutBranch(gitSvc *git.Service, target closeoutTarget, flagName 
 		// anchor the plans directory at the invoking checkout's root, matching the PR metadata
 		// lookup, so a basename identifier resolves the same from any directory in the checkout
 		root := gitSvc.Root()
-		return resolveFeatureBranch(gitSvc, root, plansDirPath(root, target.plansDir), target.identifier)
+		progressRoot, err := progressRecordRoot(gitSvc)
+		if err != nil {
+			return "", err
+		}
+		return resolveFeatureBranch(gitSvc, progressRoot, plansDirPath(root, target.plansDir), target.identifier)
 	}
 	branch, err := gitSvc.CurrentBranch()
 	if err != nil {
@@ -2401,6 +2407,22 @@ func resolveCloseoutBranch(gitSvc *git.Service, target closeoutTarget, flagName 
 		return "", fmt.Errorf("%s requires a checked-out feature branch; detached HEAD is not supported", flagName)
 	}
 	return branch, nil
+}
+
+// progressRecordRoot returns the checkout that owns .loopai/progress. the progress logger is
+// created before loopai changes into a worktree, so records always land in the primary worktree
+// even for runs that executed in a linked one. scanning the invoking checkout would find none of
+// them when a close-out runs from a worktree, silently disabling the recorded-branch lookup that
+// keeps --merge off an unrelated branch carrying the derived name.
+func progressRecordRoot(gitSvc *git.Service) (string, error) {
+	worktrees, err := gitSvc.Worktrees()
+	if err != nil {
+		return "", fmt.Errorf("inspect repository worktrees: %w", err)
+	}
+	if len(worktrees) == 0 {
+		return "", errors.New("inspect repository worktrees: Git returned no registered worktrees")
+	}
+	return worktrees[0].Path, nil
 }
 
 // runMergeCommand merges the feature branch into an explicit or detected base.
@@ -3102,20 +3124,17 @@ func findRecordedPRPlan(repoRoot, branch string) (string, error) {
 // empty string when no run recorded it. A plan filename only implies a branch when the run used
 // no --branch override, so close-out resolution consults the recorded association first rather
 // than merging and deleting an unrelated branch that happens to carry the derived name.
-func recordedBranchForPlan(repoRoot, planFile string) (string, error) {
-	target, err := filepath.Abs(planFile)
-	if err != nil {
-		return "", fmt.Errorf("resolve plan path %q: %w", planFile, err)
-	}
-	assocs, err := readProgressAssociations(repoRoot)
+// progressRoot is the checkout holding the records, which progressRecordRoot resolves.
+func recordedBranchForPlan(progressRoot, planFile string) (string, error) {
+	target := planAssociationKey(planFile)
+	assocs, err := readProgressAssociations(progressRoot)
 	if err != nil {
 		return "", err
 	}
 	var matched string
 	var matchedTime time.Time
 	for _, assoc := range assocs {
-		recorded, absErr := filepath.Abs(assoc.planPath)
-		if absErr != nil || recorded != target {
+		if planAssociationKey(assoc.planPath) != target {
 			continue
 		}
 		if matched == "" || assoc.modTime.After(matchedTime) {
@@ -3123,6 +3142,18 @@ func recordedBranchForPlan(repoRoot, planFile string) (string, error) {
 		}
 	}
 	return matched, nil
+}
+
+// planAssociationKey reduces a plan path to the identity used to match a progress record against a
+// resolved plan file. loopai already keys plans by filename everywhere - branch derivation, PR plan
+// lookup, and completed/ archiving all do - and matching that way survives the three ways the two
+// paths legitimately diverge: a case-insensitive filesystem handing back the caller's spelling, the
+// record naming the completed/ copy while the lookup found the active one, and the record living in
+// the primary checkout while the lookup ran in a linked worktree. Comparing absolute paths misses
+// all three, and a miss is the dangerous direction: it falls back to deriving the branch from the
+// filename, which is exactly what the recorded value exists to override.
+func planAssociationKey(path string) string {
+	return strings.ToLower(filepath.Base(path))
 }
 
 // progressAssociation pairs a branch with the plan file a past run recorded for it.
@@ -3205,14 +3236,38 @@ func resolveRecordedPlan(repoRoot, recorded string) string {
 	}
 	if filepath.Base(filepath.Dir(candidate)) != "completed" {
 		completed := filepath.Join(filepath.Dir(candidate), "completed", filepath.Base(candidate))
-		if info, err := os.Lstat(completed); err == nil && info.Mode().IsRegular() && pathWithin(completed, repoRoot) {
-			return completed
+		if resolved := recordedPlanInRepo(repoRoot, completed); resolved != "" {
+			return resolved
 		}
 	}
-	if info, err := os.Lstat(candidate); err == nil && info.Mode().IsRegular() && pathWithin(candidate, repoRoot) {
-		return candidate
+	return recordedPlanInRepo(repoRoot, candidate)
+}
+
+// recordedPlanInRepo returns path re-anchored at repoRoot when it names a regular file inside the
+// repository, and an empty string otherwise. A progress record stores the path the run saw, while
+// Git reports worktree roots with symlinks resolved, so a purely lexical containment test drops
+// valid records wherever the checkout sits behind a symlink - every macOS temporary directory,
+// via /var and /tmp. Re-anchoring rather than returning the recorded spelling keeps the result
+// acceptable to readPRPlan's own containment check.
+func recordedPlanInRepo(repoRoot, path string) string {
+	// Lstat, not Stat: a symlinked plan is not a regular file and must not resolve
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+		return ""
 	}
-	return ""
+	if pathWithin(path, repoRoot) {
+		return path
+	}
+	root, rootErr := filepath.EvalSymlinks(repoRoot)
+	dir, dirErr := filepath.EvalSymlinks(filepath.Dir(path))
+	if rootErr != nil || dirErr != nil {
+		return ""
+	}
+	resolved := filepath.Join(dir, filepath.Base(path))
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || !pathWithin(resolved, root) {
+		return ""
+	}
+	return filepath.Join(repoRoot, rel)
 }
 
 func planMentionsBranch(content, branch string) bool {
