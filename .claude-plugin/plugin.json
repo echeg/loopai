@@ -1,6 +1,6 @@
 {
   "name": "loopai",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Claude Code workflows for autonomous execution, planning, adversarial plan critique, and cross-model plan comparison",
   "author": {
     "name": "echeg"

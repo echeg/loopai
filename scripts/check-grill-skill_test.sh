@@ -55,6 +55,8 @@ assert_contains "missing explicit-path validation" 'plan_paths.py validate-activ
 assert_contains "missing newest-plan validation" 'plan_paths.py newest-active'
 assert_contains "missing guarded active-plan read" 'plan_paths.py read-active'
 assert_contains "missing guarded active-plan replacement" 'plan_paths.py replace-active'
+assert_contains "missing successful-replacement recovery reporting" 'report the recovery path to the user'
+assert_contains "missing open-descriptor recovery contract" 'writes through a descriptor opened before publication cannot be lost'
 assert_contains "missing outside-repository scratch validation" 'plan_paths.py validate-scratch'
 assert_contains "missing compare input classification" 'plan_paths.py classify'
 assert_contains "missing empty compare handling" 'If it is empty or whitespace, stop and ask the user'
@@ -177,10 +179,54 @@ IFS=$'\t' read -r snapshot_relative snapshot_token < <(
 [[ "$(<"$fixture/active-scratch/mutable-snapshot.md")" == "# mutable" ]] ||
 	fail "guarded active-plan snapshot did not preserve content"
 printf '# edited\n' >"$fixture/active-scratch/mutable-edited.md"
-[[ "$(run_paths replace-active "$fixture/repo" docs/plans/mutable.md "$snapshot_token" "$fixture/active-scratch/mutable-edited.md")" == "docs/plans/mutable.md" ]] ||
+IFS=$'\t' read -r replacement_relative replacement_recovery < <(
+	run_paths replace-active "$fixture/repo" docs/plans/mutable.md "$snapshot_token" "$fixture/active-scratch/mutable-edited.md"
+)
+[[ "$replacement_relative" == "docs/plans/mutable.md" && "$replacement_recovery" =~ ^\.loopai-grill-recovery-[0-9a-f]{32}/original-plan$ ]] ||
 	fail "guarded active-plan replacement failed"
 [[ "$(<"$fixture/repo/docs/plans/mutable.md")" == "# edited" ]] ||
 	fail "guarded active-plan replacement did not install the edited draft"
+[[ "$(<"$fixture/repo/$replacement_recovery")" == "# mutable" ]] ||
+	fail "guarded active-plan replacement did not preserve and report the prior version"
+
+printf '# open descriptor original\n' >"$fixture/repo/docs/plans/open-descriptor.md"
+IFS=$'\t' read -r _ open_descriptor_token < <(
+	run_paths read-active "$fixture/repo" docs/plans/open-descriptor.md "$fixture/active-scratch/open-descriptor-snapshot.md"
+)
+printf '# open descriptor replacement\n' >"$fixture/active-scratch/open-descriptor-edited.md"
+python3 - "$path_helper" "$fixture/repo" "$open_descriptor_token" "$fixture/active-scratch/open-descriptor-edited.md" <<'PY'
+import importlib.util
+import os
+import pathlib
+import sys
+
+helper_path, repository, token, edited = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("plan_paths", helper_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("cannot load plan-path helper")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+plan = pathlib.Path(repository, "docs/plans/open-descriptor.md")
+writer_fd = os.open(plan, os.O_WRONLY | os.O_APPEND)
+try:
+    relative, recovery = module.replace_active(
+        repository,
+        "docs/plans/open-descriptor.md",
+        token,
+        edited,
+    )
+    os.write(writer_fd, b"# late concurrent write\n")
+    os.fsync(writer_fd)
+finally:
+    os.close(writer_fd)
+if relative != "docs/plans/open-descriptor.md":
+    raise SystemExit("open-descriptor replacement returned the wrong active path")
+if plan.read_text() != "# open descriptor replacement\n":
+    raise SystemExit("open-descriptor replacement was not published")
+recovery_path = pathlib.Path(repository, recovery)
+if recovery_path.read_text() != "# open descriptor original\n# late concurrent write\n":
+    raise SystemExit("late open-descriptor write was not retained in the reported recovery file")
+PY
 
 IFS=$'\t' read -r _ current_token < <(
 	run_paths read-active "$fixture/repo" docs/plans/current.md "$fixture/active-scratch/current-snapshot.md"
@@ -304,8 +350,12 @@ else:
 current = pathlib.Path(repository, "docs/plans/race.md").read_text()
 if current != "# race concurrent\n":
     raise SystemExit("concurrent writer was overwritten")
-recoveries = list(pathlib.Path(repository).glob(".loopai-grill-recovery-*/original-plan"))
-if len(recoveries) != 1 or recoveries[0].read_text() != "# race original\n":
+recoveries = [
+    path
+    for path in pathlib.Path(repository).glob(".loopai-grill-recovery-*/original-plan")
+    if path.read_text() == "# race original\n"
+]
+if len(recoveries) != 1:
     raise SystemExit("displaced plan was not preserved for recovery")
 PY
 if find "$fixture/repo/docs/plans" -maxdepth 1 -name '.race.md.loopai-grill-*' -print -quit | grep -q .; then

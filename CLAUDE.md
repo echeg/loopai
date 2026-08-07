@@ -99,7 +99,9 @@ plan and never edits its source. Both reject completed, symlinked, nested, and
 `.loopai/` plans. The skill pre-approves no Claude tools. Its bundled path
 helper rejects symlinked plan and `.loopai` roots, rejects hard-linked plans,
 validates outside-repository scratch directories, identity-and-content-guards
-active-plan replacements without overwriting concurrent writers, and performs
+active-plan replacements without overwriting concurrent writers, retains and
+reports each displaced inode so late pre-opened-descriptor writes remain
+recoverable, and performs
 locked atomic no-clobber final creation. Its Codex wrapper snapshots only tracked
 and non-ignored untracked single-link regular files through descriptor-anchored
 no-follow reads while excluding `.git/` and `.loopai/`, confines Codex reads to

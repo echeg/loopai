@@ -266,7 +266,7 @@ def restore_recovery(
     return True
 
 
-def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> str:
+def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> tuple[str, str]:
     expected_device, expected_inode, expected_digest = parse_active_token(token)
     with open_active(root_arg, literal) as (
         root,
@@ -335,6 +335,7 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
             prior_preserved = True
             os.fsync(plans_fd)
             os.fsync(recovery_fd)
+            os.fsync(root_fd)
 
             displaced_fd = os.open(
                 "original-plan",
@@ -363,12 +364,6 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
             os.unlink(temporary_name, dir_fd=plans_fd)
             temporary_created = False
             os.fsync(plans_fd)
-            os.unlink("original-plan", dir_fd=recovery_fd)
-            displaced = False
-            prior_preserved = False
-            os.rmdir(recovery_name, dir_fd=root_fd)
-            recovery_created = False
-            os.fsync(root_fd)
         except Exception as exc:
             if published:
                 if prior_preserved:
@@ -419,7 +414,7 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
                     pass
             if root_fd is not None:
                 os.close(root_fd)
-    return relative
+    return relative, recovery_display
 
 
 def looks_path_like(value: str) -> bool:
@@ -598,7 +593,7 @@ def main(argv: list[str]) -> int:
         elif command == "read-active" and len(args) == 2:
             print("\t".join(read_active(root_arg, args[0], args[1])))
         elif command == "replace-active" and len(args) == 3:
-            print(replace_active(root_arg, args[0], args[1], args[2]))
+            print("\t".join(replace_active(root_arg, args[0], args[1], args[2])))
         elif command == "validate-scratch" and len(args) == 1:
             print(validate_scratch(root_arg, args[0]))
         elif command == "classify" and len(args) == 1:

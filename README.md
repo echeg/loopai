@@ -116,7 +116,9 @@ Codex, never edits a source plan, and creates one new plan without overwriting
 an existing path. Both modes reject completed plans, symlinked plans or plan
 directories, and anything under `.loopai/`; normal Claude Code tool permissions
 remain in effect. Active-plan edits fail if the reviewed file identity or content
-changes, and no-clobber publication preserves concurrent writers. The skill
+changes, and no-clobber publication preserves concurrent writers. Successful
+edits report and retain the displaced plan under a private recovery path so a
+late write through a previously opened descriptor remains recoverable. The skill
 requires Python 3 and Git for a descriptor-anchored Codex snapshot that excludes
 ignored files, hard-linked files, and every symlink path. Standalone
 skill copies use `/loopai-grill` instead of the namespaced plugin command.
