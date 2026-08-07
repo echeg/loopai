@@ -56,12 +56,12 @@
 - [x] run `bash scripts/check-symlinks.sh` — expected to fail on inventory (fixed in Task 2); confirm no other failure mode
 
 ### Task 2: Register the skill in validation and manifests
-- [ ] add `loopai-grill` to `expected_skills` in `scripts/check-symlinks.sh`
-- [ ] inspect `scripts/check-plugin.sh` and `scripts/check-plugin_test.sh` for any skill-count or skill-list assertions; update if present
-- [ ] bump `version` to `0.2.0` in `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` (keep both in sync — check-plugin verifies)
-- [ ] update `scripts/check-symlinks_test.sh` fixtures/expectations for the six-skill inventory
-- [ ] run `bash scripts/check-symlinks_test.sh` and `bash scripts/check-plugin_test.sh` - must pass
-- [ ] run `make test` (asset checks + full suite) - must pass before next task
+- [x] add `loopai-grill` to `expected_skills` in `scripts/check-symlinks.sh`
+- [x] inspect `scripts/check-plugin.sh` and `scripts/check-plugin_test.sh` for any skill-count or skill-list assertions; update if present
+- [x] bump `version` to `0.2.0` in `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` (keep both in sync — check-plugin verifies)
+- [x] update `scripts/check-symlinks_test.sh` fixtures/expectations for the six-skill inventory
+- [x] run `bash scripts/check-symlinks_test.sh` and `bash scripts/check-plugin_test.sh` - must pass
+- [x] run `make test` (asset checks + full suite) - must pass before next task
 
 ### Task 3: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented (two modes, mode routing, codex degradation, format-consistent output)
