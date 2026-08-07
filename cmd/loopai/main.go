@@ -2409,13 +2409,15 @@ func resolveCloseoutBranch(gitSvc *git.Service, target closeoutTarget, flagName 
 	return branch, nil
 }
 
-// progressRecordRoots returns every checkout that can own .loopai/progress, primary first. the
-// progress logger resolves its path against the working directory before loopai changes into a
-// worktree, so a run started from the primary checkout records there even when it executed in a
-// linked worktree, while a run started inside a linked worktree records in that worktree. scanning
-// only one of the two silently disables the recorded-branch lookup for runs started in the other,
-// and a miss is the dangerous direction: it falls back to deriving the branch from the plan
-// filename, which is what --merge needs the record to override to stay off an unrelated branch.
+// progressRecordRoots returns every checkout that can own .loopai/progress: the primary first, the
+// invoking checkout next, then every other registered worktree. the progress logger resolves its
+// path against the working directory before loopai changes into a worktree, so a run started from
+// the primary checkout records there even when it executed in a linked worktree, while a run
+// started inside any linked worktree records in that worktree. scanning only the primary and the
+// invoking checkout silently disables the recorded-branch lookup for a run started in a third
+// worktree, and a miss is the dangerous direction: it falls back to deriving the branch from the
+// plan filename, which is what --merge needs the record to override to stay off an unrelated
+// branch. a worktree holding no progress directory simply contributes nothing.
 func progressRecordRoots(gitSvc *git.Service) ([]string, error) {
 	worktrees, err := gitSvc.Worktrees()
 	if err != nil {
@@ -2425,8 +2427,22 @@ func progressRecordRoots(gitSvc *git.Service) ([]string, error) {
 		return nil, errors.New("inspect repository worktrees: Git returned no registered worktrees")
 	}
 	roots := []string{worktrees[0].Path}
-	if invoking := gitSvc.Root(); !sameProgressRoot(invoking, worktrees[0].Path) {
-		roots = append(roots, invoking)
+	appendRoot := func(candidate string) {
+		if candidate == "" {
+			return
+		}
+		for _, root := range roots {
+			if sameProgressRoot(candidate, root) {
+				return
+			}
+		}
+		roots = append(roots, candidate)
+	}
+	// the invoking checkout keeps second place: it is the likeliest owner of the record after the
+	// primary, and it stays in the list even in the unlikely event Git does not report it
+	appendRoot(gitSvc.Root())
+	for _, wt := range worktrees[1:] {
+		appendRoot(wt.Path)
 	}
 	return roots, nil
 }

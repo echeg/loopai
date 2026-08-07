@@ -6559,6 +6559,34 @@ func TestResolveCloseoutBranchReadsProgressFromInvokingWorktree(t *testing.T) {
 	assert.Equal(t, "fix/login", got)
 }
 
+// TestResolveCloseoutBranchReadsProgressFromThirdWorktree covers a run started inside a linked
+// worktree that is neither the primary nor the checkout the close-out runs from. Scanning only
+// those two missed the record and fell back to deriving "login" from the plan filename - the
+// unrelated branch --merge would then merge into base and delete.
+func TestResolveCloseoutBranchReadsProgressFromThirdWorktree(t *testing.T) {
+	repo := setupTestRepo(t)
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	planFile := filepath.Join(plansDir, "20260806-login.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "add plan")
+	runGit(t, repo, "branch", "fix/login")
+	runGit(t, repo, "branch", "login")
+	runGit(t, repo, "branch", "scratch")
+	other := filepath.Join(t.TempDir(), "wt-other")
+	runGit(t, repo, "worktree", "add", other, "scratch")
+	// the record lives only in that third worktree, and the close-out runs from the primary
+	writeProgressRecord(t, other, "progress-login.txt", planFile, "fix/login", 1)
+
+	svc, err := git.NewService(repo, noopLogger())
+	require.NoError(t, err)
+	target := closeoutTarget{identifier: "20260806-login", plansDir: filepath.Join("docs", "plans")}
+	got, err := resolveCloseoutBranch(svc, target, "--merge")
+	require.NoError(t, err)
+	assert.Equal(t, "fix/login", got)
+}
+
 // TestRecordedBranchForPlanAcrossRoots locks the cross-root precedence: both checkouts can hold
 // records for the same plan, and the newest wins regardless of which root it came from.
 func TestRecordedBranchForPlanAcrossRoots(t *testing.T) {
@@ -6586,32 +6614,49 @@ func TestRecordedBranchForPlanAcrossRoots(t *testing.T) {
 	})
 }
 
-// TestProgressRecordRoots checks that the primary checkout comes first and the invoking one is
-// added only when it is a different directory, so the primary is never scanned twice.
+// TestProgressRecordRoots checks that every registered worktree is scanned, with the primary
+// first and the invoking checkout second, and that no directory is listed twice.
 func TestProgressRecordRoots(t *testing.T) {
 	repo := setupTestRepo(t)
 	runGit(t, repo, "branch", "feature")
+	runGit(t, repo, "branch", "other")
 	linked := filepath.Join(t.TempDir(), "wt")
 	runGit(t, repo, "worktree", "add", linked, "feature")
+	third := filepath.Join(t.TempDir(), "wt-third")
+	runGit(t, repo, "worktree", "add", third, "other")
 
-	t.Run("invoked from the primary yields a single root", func(t *testing.T) {
+	t.Run("invoked from the primary still covers the linked worktrees", func(t *testing.T) {
 		svc, err := git.NewService(repo, noopLogger())
 		require.NoError(t, err)
 		roots, err := progressRecordRoots(svc)
 		require.NoError(t, err)
-		require.Len(t, roots, 1)
+		require.Len(t, roots, 3)
 		assert.True(t, sameProgressRoot(repo, roots[0]))
+		assert.True(t, containsProgressRoot(roots, linked))
+		assert.True(t, containsProgressRoot(roots, third))
 	})
 
 	t.Run("invoked from a linked worktree yields primary then invoking", func(t *testing.T) {
-		svc, err := git.NewService(linked, noopLogger())
+		svc, err := git.NewService(third, noopLogger())
 		require.NoError(t, err)
 		roots, err := progressRecordRoots(svc)
 		require.NoError(t, err)
-		require.Len(t, roots, 2)
+		require.Len(t, roots, 3)
 		assert.True(t, sameProgressRoot(repo, roots[0]))
-		assert.True(t, sameProgressRoot(linked, roots[1]))
+		assert.True(t, sameProgressRoot(third, roots[1]))
+		assert.True(t, containsProgressRoot(roots, linked))
 	})
+}
+
+// containsProgressRoot reports whether roots names dir, comparing the way progressRecordRoots
+// itself dedupes so a symlinked temp directory does not fail the assertion.
+func containsProgressRoot(roots []string, dir string) bool {
+	for _, root := range roots {
+		if sameProgressRoot(root, dir) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRecordedPlanInRepo(t *testing.T) {

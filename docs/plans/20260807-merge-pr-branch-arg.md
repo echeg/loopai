@@ -124,6 +124,7 @@ This directly fixes the workflow gap where a finished worktree run cannot be clo
 - [x] update `--help` texts if not already done in task 2 (already covered: `--merge`/`--pr` descriptions and the `plan-file` positional description document the feature argument)
 - ➕ `CLAUDE.md` also records the `mergeTargets` refactor and the new `git.BranchHash`/`git.BranchDiffStats` helpers, since they are architectural notes future work needs
 - ➕ README's "cannot be combined with a plan file" sentence was corrected to except the feature argument
+- ➕ `progressRecordRoots` scans every registered worktree, not just the primary and the invoking checkout: a run started inside a third worktree records there, and missing that record falls back to the filename derivation the record exists to override
 
 ## Technical Details
 
