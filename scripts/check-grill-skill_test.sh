@@ -89,6 +89,61 @@ touch -t 202601020101 "$fixture/repo/docs/plans/current.md"
 	fail "valid repository-relative active plan was rejected"
 [[ "$(run_paths newest-active "$fixture/repo")" == "docs/plans/current.md" ]] ||
 	fail "newest safe active plan was not selected"
+python3 - "$path_helper" "$fixture/repo" <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+helper_path, repository = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("plan_paths", helper_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("cannot load plan-path helper")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+locked = pathlib.Path(repository, "docs/plans/locked.md")
+locked.write_text("# unreadable candidate\n")
+real_validate_active = module.validate_active
+
+
+def reject_locked(root, literal):
+    if literal == "docs/plans/locked.md":
+        raise PermissionError(13, "Permission denied", "locked.md")
+    return real_validate_active(root, literal)
+
+
+module.validate_active = reject_locked
+try:
+    if module.newest_active(repository) != "docs/plans/current.md":
+        raise SystemExit("newest-active did not skip an unreadable candidate")
+finally:
+    locked.unlink()
+PY
+mkfifo "$fixture/repo/docs/plans/trap.md"
+python3 - "$path_helper" "$fixture/repo" <<'PY'
+import subprocess
+import sys
+
+helper_path, repository = sys.argv[1:]
+validate = subprocess.run(
+    [sys.executable, helper_path, "validate-active", repository, "docs/plans/trap.md"],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True,
+    timeout=3,
+)
+if validate.returncode == 0 or "not a regular file" not in validate.stderr:
+    raise SystemExit(f"active-plan FIFO was not rejected safely: {validate.stderr}")
+newest = subprocess.run(
+    [sys.executable, helper_path, "newest-active", repository],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True,
+    timeout=3,
+)
+if newest.returncode != 0 or newest.stdout.strip() != "docs/plans/current.md":
+    raise SystemExit(f"newest-active did not skip a FIFO: {newest.stderr}")
+PY
+rm "$fixture/repo/docs/plans/trap.md"
 [[ "$(run_paths classify "$fixture/repo" docs/plans/current.md)" == $'plan\tdocs/plans/current.md' ]] ||
 	fail "valid compare-source plan was not classified as a plan"
 [[ "$(run_paths classify "$fixture/repo" 'add a small feature')" == "description" ]] ||
@@ -126,6 +181,51 @@ printf '# edited\n' >"$fixture/active-scratch/mutable-edited.md"
 	fail "guarded active-plan replacement failed"
 [[ "$(<"$fixture/repo/docs/plans/mutable.md")" == "# edited" ]] ||
 	fail "guarded active-plan replacement did not install the edited draft"
+
+IFS=$'\t' read -r _ current_token < <(
+	run_paths read-active "$fixture/repo" docs/plans/current.md "$fixture/active-scratch/current-snapshot.md"
+)
+mkfifo "$fixture/active-scratch/draft-fifo.md"
+python3 - "$path_helper" "$fixture/repo" "$current_token" "$fixture/active-scratch/draft-fifo.md" <<'PY'
+import subprocess
+import sys
+
+helper_path, repository, token, fifo = sys.argv[1:]
+commands = [
+    [
+        sys.executable,
+        helper_path,
+        "replace-active",
+        repository,
+        "docs/plans/current.md",
+        token,
+        fifo,
+    ],
+    [
+        sys.executable,
+        helper_path,
+        "write-final",
+        repository,
+        "docs/plans/20260807-fifo-draft.md",
+        fifo,
+    ],
+]
+for command in commands:
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=3,
+    )
+    if result.returncode == 0 or "not a regular file" not in result.stderr:
+        raise SystemExit(f"draft FIFO was not rejected safely: {result.stderr}")
+PY
+rm "$fixture/active-scratch/draft-fifo.md"
+[[ "$(<"$fixture/repo/docs/plans/current.md")" == "# current" ]] ||
+	fail "FIFO draft rejection changed the active plan"
+[[ ! -e "$fixture/repo/docs/plans/20260807-fifo-draft.md" ]] ||
+	fail "FIFO draft rejection created a final plan"
 
 IFS=$'\t' read -r _ identity_token < <(
 	run_paths read-active "$fixture/repo" docs/plans/mutable.md "$fixture/active-scratch/identity-snapshot.md"
@@ -366,6 +466,7 @@ ln -s "$fixture/outside-secret.txt" "$fixture/repo/absolute-secret-link"
 ln -s ../outside-secret.txt "$fixture/repo/relative-secret-link"
 mkdir -p "$fixture/repo/tracked-parent" "$fixture/outside-parent"
 printf '%s\n' 'safe indexed file' >"$fixture/repo/tracked-parent/file.txt"
+printf '%s\n' 'indexed FIFO placeholder' >"$fixture/repo/tracked-fifo"
 printf '%s\n' 'outside parent secret' >"$fixture/outside-parent/file.txt"
 mkdir -p "$fixture/repo/race-parent" "$fixture/outside-race-parent"
 printf '%s\n' 'safe race file' >"$fixture/repo/race-parent/file.txt"
@@ -373,8 +474,29 @@ printf '%s\n' 'outside race secret' >"$fixture/outside-race-parent/file.txt"
 git -C "$fixture/repo" init -q
 printf '%s\n' 'private git metadata' >"$fixture/repo/.git/private"
 git -C "$fixture/repo" add .gitignore docs/plans/current.md docs/plans/older.md \
-	absolute-secret-link relative-secret-link race-parent/file.txt tracked-parent/file.txt
+	absolute-secret-link relative-secret-link race-parent/file.txt tracked-parent/file.txt tracked-fifo
 git -C "$fixture/repo" add -f .loopai/secret.md
+rm "$fixture/repo/tracked-fifo"
+mkfifo "$fixture/repo/tracked-fifo"
+mkdir "$fixture/fifo-snapshot"
+python3 - "$snapshot_helper" "$fixture/repo" "$fixture/fifo-snapshot" <<'PY'
+import pathlib
+import subprocess
+import sys
+
+helper_path, repository, destination = sys.argv[1:]
+result = subprocess.run(
+    [sys.executable, helper_path, repository, destination],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True,
+    timeout=3,
+)
+if result.returncode != 0:
+    raise SystemExit(f"snapshot failed while skipping a tracked FIFO: {result.stderr}")
+if pathlib.Path(destination, "tracked-fifo").exists():
+    raise SystemExit("snapshot copied a tracked FIFO")
+PY
 ln "$fixture/repo/.loopai/secret.md" "$fixture/repo/hard-visible.txt"
 mkdir "$fixture/race-snapshot"
 python3 - "$snapshot_helper" "$fixture/repo" "$fixture/race-snapshot" "$fixture/outside-race-parent" <<'PY'

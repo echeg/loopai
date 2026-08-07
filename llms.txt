@@ -50,8 +50,7 @@ existing path. Active-plan replacement is identity-and-content guarded and uses
 no-clobber publication so concurrent writers are preserved. The skill
 pre-approves no tools and runs Codex against a read-confined snapshot containing
 only tracked and non-ignored untracked regular files without symlink components.
-Python 3, Git, and `tar` are required for deterministic path checks and snapshot
-creation.
+Python 3 and Git are required for deterministic path checks and snapshot creation.
 
 Use `loopai:loopai-brainstorm` when a feature needs design exploration. It asks
 one question at a time, compares approaches, and seeks section-by-section

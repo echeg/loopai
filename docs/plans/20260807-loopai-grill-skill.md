@@ -22,7 +22,7 @@
   - `scripts/check-symlinks.sh:9` — `expected_skills` list must gain `loopai-grill`
   - `scripts/check-plugin.sh` — validates manifests; check whether it pins a skill count or list
   - `scripts/check-grill-skill_test.sh` and `Makefile` — focused metadata/workflow-contract checks wired into `make test`
-  - `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` — initial version bump 0.1.3 → 0.2.0 for the new skill, then patch bumps for review hardening (currently 0.2.4)
+  - `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` — initial version bump 0.1.3 → 0.2.0 for the new skill, then patch bumps for review hardening (currently 0.2.5)
   - `README.md` ("The plugin provides five skills" list and standalone full-directory installation), `llms.txt`, `CLAUDE.md` (skill inventory notes)
 - Related patterns found:
   - Existing SKILL.md frontmatter styles include optional `allowed-tools`, but this safety-sensitive skill deliberately pre-approves no tools; check-symlinks validates frontmatter shape

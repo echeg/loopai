@@ -92,6 +92,15 @@ def directory_open_flags() -> int:
     )
 
 
+def file_read_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+
+
 @contextmanager
 def open_active(
     root_arg: str, literal: str
@@ -105,11 +114,7 @@ def open_active(
     try:
         docs_fd = os.open("docs", directory_open_flags(), dir_fd=root_fd)
         plans_fd = os.open("plans", directory_open_flags(), dir_fd=docs_fd)
-        plan_fd = os.open(
-            basename,
-            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-            dir_fd=plans_fd,
-        )
+        plan_fd = os.open(basename, file_read_flags(), dir_fd=plans_fd)
         plan_stat = os.fstat(plan_fd)
         if not stat.S_ISREG(plan_stat.st_mode):
             raise PathError("active plan is not a regular file")
@@ -278,8 +283,7 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
             raise PathError("active plan changed after it was read; refusing to replace it")
 
         resolved_source = resolve_scratch_source(root, plans, source_arg)
-        source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        source_fd = os.open(resolved_source, source_flags)
+        source_fd = os.open(resolved_source, file_read_flags())
         try:
             source_stat = os.fstat(source_fd)
             if not stat.S_ISREG(source_stat.st_mode):
@@ -334,7 +338,7 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
 
             displaced_fd = os.open(
                 "original-plan",
-                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+                file_read_flags(),
                 dir_fd=recovery_fd,
             )
             try:
@@ -446,9 +450,10 @@ def newest_active(root_arg: str) -> str:
             continue
         try:
             path, _ = validate_active(root_arg, relative)
-        except PathError:
+            modified = path.stat().st_mtime_ns
+        except (OSError, PathError):
             continue
-        candidates.append((path.stat().st_mtime_ns, relative))
+        candidates.append((modified, relative))
     if not candidates:
         raise PathError("no safe active plan found")
     return max(candidates, key=lambda item: (item[0], item[1]))[1]
@@ -527,9 +532,7 @@ def write_final(root_arg: str, relative: str, source_arg: str) -> str:
     file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     file_flags |= getattr(os, "O_CLOEXEC", 0)
     file_flags |= getattr(os, "O_NOFOLLOW", 0)
-    source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-
-    source_fd = os.open(resolved_source, source_flags)
+    source_fd = os.open(resolved_source, file_read_flags())
     try:
         source_stat = os.fstat(source_fd)
         if not stat.S_ISREG(source_stat.st_mode):

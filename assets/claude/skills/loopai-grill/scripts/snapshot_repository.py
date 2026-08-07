@@ -32,7 +32,12 @@ def directory_flags() -> int:
 
 
 def file_read_flags() -> int:
-    return os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
 
 
 def git_visible_paths(root: Path) -> list[str]:
