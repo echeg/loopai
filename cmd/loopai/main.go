@@ -84,6 +84,10 @@ type opts struct {
 
 	PlanFile string `positional-arg-name:"plan-file" description:"path to plan file (optional, uses fzf if omitted); with --merge/--pr it names the feature to close out"`
 
+	// positional arguments beyond the first, recorded by main so close-out validation can reject
+	// them instead of silently acting on the wrong feature
+	extraArgs []string
+
 	// set by markFlagsSet after parsing; true when the flag was explicitly provided on the CLI
 	waitSet           bool
 	sessionTimeoutSet bool
@@ -98,6 +102,17 @@ type opts struct {
 	externalReviewModelSet bool
 	externalReviewersSet   bool
 	customReviewScriptSet  bool
+}
+
+// applyPositionalArgs records the parsed positional arguments: the first names the plan file, or
+// the feature to close out under --merge/--pr. the rest are kept so close-out validation can reject
+// them; go-flags never fills a positional field beyond the first one declared.
+func (o *opts) applyPositionalArgs(args []string) {
+	if len(args) == 0 {
+		return
+	}
+	o.PlanFile = args[0]
+	o.extraArgs = args[1:]
 }
 
 // markFlagsSet detects options whose explicit presence matters even when their parsed value is
@@ -253,10 +268,8 @@ func main() {
 		os.Exit(0)
 	}
 
-	// handle positional argument
-	if len(args) > 0 {
-		o.PlanFile = args[0]
-	}
+	// handle positional arguments
+	o.applyPositionalArgs(args)
 
 	// setup context with signal handling
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -1683,6 +1696,18 @@ func validateCloseoutFlags(o opts) error {
 	if pr && (merge || closeoutExecution) {
 		return errors.New("--pr cannot be combined with other mode flags")
 	}
+	if (merge || pr) && len(o.extraArgs) > 0 {
+		// --merge and --pr take an optional base value only in the --merge=<base> form, so
+		// "--merge <base> <feature>" parses <base> as the feature and would merge and delete it.
+		// a surplus positional is the only observable trace of that mistake: reject it rather than
+		// silently closing out a branch the caller never named.
+		flag := "--merge"
+		if pr {
+			flag = "--pr"
+		}
+		return fmt.Errorf("%s accepts at most one feature argument, got %d; use %s=<base> to set the base branch",
+			flag, len(o.extraArgs)+1, flag)
+	}
 	return nil
 }
 
@@ -2508,6 +2533,7 @@ func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase stri
 		return err
 	}
 
+	removedWorktree := targets.removableWorktree()
 	if cleanupErr := cleanupMergedWorktree(targets, feature); cleanupErr != nil {
 		return restoreMergeWorktree(targets.mergeSvc, mergeResult, cleanupErr)
 	}
@@ -2519,6 +2545,14 @@ func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase stri
 	}
 	if rep != nil {
 		rep.Clear()
+	}
+	// name the removed directory: with an explicit feature the removal target is resolved from the
+	// worktree list rather than being the caller's own directory, so it is otherwise invisible, and
+	// removal takes ignored files such as .env with it.
+	if removedWorktree != "" {
+		fmt.Fprintf(stdout, "merged %s into %s (%s); deleted branch %s and worktree %s\n",
+			feature, base, mergeResult.mergeType, feature, removedWorktree)
+		return nil
 	}
 	fmt.Fprintf(stdout, "merged %s into %s (%s); deleted branch %s\n", feature, base, mergeResult.mergeType, feature)
 	return nil
@@ -2532,6 +2566,16 @@ type mergeTargets struct {
 	featureSvc  *git.Service
 	featurePath string
 	primaryPath string
+}
+
+// removableWorktree returns the linked worktree the close-out removes after a successful merge, or
+// an empty string when nothing is removed: the feature has no worktree of its own, or it shares the
+// primary worktree, which is never removed.
+func (t mergeTargets) removableWorktree() string {
+	if t.featurePath == "" || filepath.Clean(t.featurePath) == filepath.Clean(t.primaryPath) {
+		return ""
+	}
+	return t.featurePath
 }
 
 // prepareMergeWorktrees locates the worktree the merge runs in and the feature worktree to clean
@@ -2735,7 +2779,7 @@ func restoreCheckout(gitSvc *git.Service, branch, head string) error {
 // the feature has no worktree of its own, either because it was never checked out or because it
 // shares the primary worktree.
 func cleanupMergedWorktree(targets mergeTargets, feature string) error {
-	if targets.featurePath == "" || filepath.Clean(targets.featurePath) == filepath.Clean(targets.primaryPath) {
+	if targets.removableWorktree() == "" {
 		return nil
 	}
 	// Revalidate both identity and cleanliness immediately before removal. The standalone

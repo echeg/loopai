@@ -1847,6 +1847,35 @@ func TestValidateFlags(t *testing.T) {
 		}
 	})
 
+	// "--merge <base> <feature>" is the documented "--merge=<base> <feature>" form with the "="
+	// forgotten. go-flags leaves --merge empty and hands both tokens back as positionals, so the
+	// base would be closed out as the feature. reject it end to end, from a real parse.
+	t.Run("parsed_closeout_rejects_surplus_positional", func(t *testing.T) {
+		for _, tc := range []struct{ flag, args string }{{"--merge", "--merge"}, {"--pr", "--pr"}} {
+			var o opts
+			p := flags.NewParser(&o, flags.Default)
+			args, err := p.ParseArgs([]string{tc.args, "release/13", "feature"})
+			require.NoError(t, err)
+			o.markFlagsSet(p)
+			o.applyPositionalArgs(args)
+			assert.Equal(t, "release/13", o.PlanFile)
+			assert.Equal(t, []string{"feature"}, o.extraArgs)
+			require.ErrorContains(t, validateFlags(o), tc.flag+" accepts at most one feature argument")
+		}
+	})
+
+	t.Run("parsed_closeout_accepts_single_positional", func(t *testing.T) {
+		var o opts
+		p := flags.NewParser(&o, flags.Default)
+		args, err := p.ParseArgs([]string{"--merge", "feature"})
+		require.NoError(t, err)
+		o.markFlagsSet(p)
+		o.applyPositionalArgs(args)
+		assert.Equal(t, "feature", o.PlanFile)
+		assert.Empty(t, o.extraArgs)
+		assert.NoError(t, validateFlags(o))
+	})
+
 	t.Run("parsed_explicit_zero_execution_flag_still_conflicts", func(t *testing.T) {
 		var o opts
 		p := flags.NewParser(&o, flags.Default)
@@ -6850,6 +6879,24 @@ func TestValidateCloseoutFlagsFeatureArgument(t *testing.T) {
 			opts:    opts{Clear: true, mergeSet: true, PlanFile: "feature"},
 			wantErr: "--clear cannot be combined",
 		},
+		{
+			// "--merge release/13 feature" parses release/13 as the feature, so accepting the
+			// surplus positional would merge and delete the base branch the caller meant to set
+			name:    "merge with surplus positional",
+			opts:    opts{mergeSet: true, PlanFile: "release/13", extraArgs: []string{"feature"}},
+			wantErr: "--merge accepts at most one feature argument, got 2; use --merge=<base>",
+		},
+		{
+			name:    "pr with surplus positional",
+			opts:    opts{prSet: true, PlanFile: "release/13", extraArgs: []string{"feature"}},
+			wantErr: "--pr accepts at most one feature argument, got 2; use --pr=<base>",
+		},
+		{
+			name:    "merge with two surplus positionals",
+			opts:    opts{mergeSet: true, PlanFile: "a", extraArgs: []string{"b", "c"}},
+			wantErr: "got 3",
+		},
+		{name: "surplus positional without closeout stays a run", opts: opts{PlanFile: "a", extraArgs: []string{"b"}}},
 	}
 
 	for _, tt := range tests {
@@ -6930,6 +6977,7 @@ func TestRunMergeCommandExplicitFeature(t *testing.T) {
 		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
 		assert.Equal(t, 1, clearer.calls)
 		assert.Contains(t, output.String(), "feature into master (fast-forward)")
+		assert.NotContains(t, output.String(), "worktree", "nothing was removed, so name no worktree")
 	})
 
 	t.Run("merges from primary checkout with a base merge commit", func(t *testing.T) {
@@ -6977,13 +7025,19 @@ func TestRunMergeCommandExplicitFeature(t *testing.T) {
 		worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
 		runGit(t, dir, "worktree", "add", worktreePath, "feature")
 		clearer := &recordingStatusClearer{}
+		var output bytes.Buffer
 
 		require.NoError(t, runMergeCommand(t.Context(), mainSvc, "master",
-			closeoutTarget{identifier: "feature"}, clearer, io.Discard))
+			closeoutTarget{identifier: "feature"}, clearer, &output))
 		assert.NoDirExists(t, worktreePath)
 		assert.False(t, branchExists(t, dir, "feature"))
 		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
 		assert.Equal(t, 1, clearer.calls)
+		// with an explicit feature the removed directory is resolved from the worktree list rather
+		// than being the caller's own, so name it: removal takes ignored files with it. the printed
+		// path is Git's, which resolves symlinks such as macOS /var -> /private/var
+		assert.Contains(t, output.String(), "deleted branch feature and worktree ")
+		assert.Contains(t, output.String(), filepath.Join(".loopai", "worktrees", "feature"))
 	})
 
 	t.Run("stale feature worktree registration reports prune guidance", func(t *testing.T) {

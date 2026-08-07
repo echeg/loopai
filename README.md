@@ -293,8 +293,11 @@ branch first. `--pr <feature>`
 pushes and opens the pull request for a branch that is not checked out anywhere; its title
 and body still come from the plan as seen from the invoking checkout, falling back to a
 stats-only body when that plan is not present there. Naming the base branch as the feature
-is an error. Apart from this argument, the close-out commands cannot be combined with a
-plan file or execution options.
+is an error, and so is a second positional argument: `--merge release/13 dynamic-review-agents`
+is `--merge=release/13 dynamic-review-agents` with the `=` forgotten, which would otherwise
+close out `release/13` itself. Apart from this argument, the close-out commands cannot be
+combined with a plan file or execution options. On success `--merge` names the worktree it
+removed, since with an explicit feature that directory is not the one you ran from.
 
 ## Executors and reviews
 
