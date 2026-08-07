@@ -96,22 +96,24 @@ func (r *execCodexRunner) Run(ctx context.Context, name string, args ...string) 
 
 // CodexExecutor runs codex CLI commands and filters output.
 type CodexExecutor struct {
-	Command         string            // command to execute, defaults to "codex"
-	Model           string            // model override; empty means inherit from ~/.codex/config.toml (no -c model= flag emitted)
-	ReasoningEffort string            // reasoning effort override; empty means inherit from ~/.codex/config.toml
-	TimeoutMs       int               // stream idle timeout in ms, defaults to 3600000
-	Sandbox         string            // sandbox mode, defaults to "read-only"
-	ProjectDoc      string            // path to project documentation file
-	OutputHandler   func(text string) // called for each filtered output line in real-time
-	Debug           bool              // enable debug output
-	ErrorPatterns   []string          // patterns to detect in output (e.g., rate limit messages)
-	LimitPatterns   []string          // patterns to detect rate limits (checked before error patterns)
-	MultiAgent      bool              // enable codex multi_agent feature + reviewer agent registration; set to true on the review-phase codex instance built by processor.New() for first-class --codex mode
-	PassClaudeMd    bool              // pass project-level CLAUDE.md to codex via project_doc_fallback_filenames (set by processor.New() only when cfg.AppConfig.Executor == ExecutorCodex)
-	ForceReadOnly   bool              // require the read-only sandbox even when the runtime disables its default sandbox; used by external review so it cannot modify the project
-	IdleTimeout     time.Duration     // kill session after this duration of no output, zero = disabled
-	headerEmitted   atomic.Bool       // tracks first invocation across Run() calls; false until first task/review then suppressed permanently — used to emit codex's resolved model/sandbox/effort once at the top of the run
-	runner          CodexRunner       // for testing, nil uses default
+	Command              string                                // command to execute, defaults to "codex"
+	Model                string                                // model override; empty means inherit from ~/.codex/config.toml (no -c model= flag emitted)
+	ReasoningEffort      string                                // reasoning effort override; empty means inherit from ~/.codex/config.toml
+	TimeoutMs            int                                   // stream idle timeout in ms, defaults to 3600000
+	Sandbox              string                                // sandbox mode, defaults to "read-only"
+	ProjectDoc           string                                // path to project documentation file
+	OutputHandler        func(text string)                     // called for each filtered output line in real-time
+	CommandTimingHandler func(command string, d time.Duration) // called for each completed exec_command, can be nil
+	Debug                bool                                  // enable debug output
+	ErrorPatterns        []string                              // patterns to detect in output (e.g., rate limit messages)
+	LimitPatterns        []string                              // patterns to detect rate limits (checked before error patterns)
+	MultiAgent           bool                                  // enable codex multi_agent feature + reviewer agent registration; set to true on the review-phase codex instance built by processor.New() for first-class --codex mode
+	PassClaudeMd         bool                                  // pass project-level CLAUDE.md to codex via project_doc_fallback_filenames (set by processor.New() only when cfg.AppConfig.Executor == ExecutorCodex)
+	ForceReadOnly        bool                                  // require the read-only sandbox even when the runtime disables its default sandbox; used by external review so it cannot modify the project
+	IdleTimeout          time.Duration                         // kill session after this duration of no output, zero = disabled
+	headerEmitted        atomic.Bool                           // tracks first invocation across Run() calls; false until first task/review then suppressed permanently — used to emit codex's resolved model/sandbox/effort once at the top of the run
+	runner               CodexRunner                           // for testing, nil uses default
+	now                  func() time.Time                      // arrival clock fallback for rollout events without timestamps; nil uses time.Now
 }
 
 // CodexReviewerAgentName is the agent name registered with codex when
@@ -641,8 +643,8 @@ func (e *CodexExecutor) extractSessionID(line string) string {
 // sessionIDCh, then follows codex's session rollout file until the returned
 // cancel is called. caller must invoke tailCancel and wait on tailDone before
 // returning so the tailer drains remaining file content and exits cleanly.
-// the goroutine is a no-op when OutputHandler is nil — extracted from Run()
-// to keep its cyclomatic complexity in check.
+// the goroutine is a no-op when both rollout handlers are nil — extracted
+// from Run() to keep its cyclomatic complexity in check.
 func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-chan string, idleTouch func()) (context.CancelFunc, <-chan struct{}) {
 	tailCtx, tailCancel := context.WithCancel(parent)
 	done := make(chan struct{})
@@ -694,7 +696,7 @@ func (e *CodexExecutor) findRolloutFile(ctx context.Context, sessionID string) s
 // lines before returning so late writes (e.g. codex flushing the final
 // assistant message just before exit) are not lost.
 func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, idleTouch func()) {
-	if e.OutputHandler == nil {
+	if e.OutputHandler == nil && e.CommandTimingHandler == nil {
 		return
 	}
 	path := e.findRolloutFile(ctx, sessionID)
@@ -718,6 +720,11 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 	// will complete the line.
 	var acc []byte
 	chunk := make([]byte, 4096)
+	commandStarts := make(map[string]codexCommandStart)
+	now := e.now
+	if now == nil {
+		now = time.Now
+	}
 	drainOnce := func() {
 		for {
 			n, readErr := f.Read(chunk)
@@ -735,7 +742,9 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 					if i < 0 {
 						break
 					}
-					if msg := e.formatRolloutEvent(acc[:i]); msg != "" {
+					line := acc[:i]
+					e.trackRolloutCommandTiming(line, commandStarts, now)
+					if msg := e.formatRolloutEvent(line); msg != "" && e.OutputHandler != nil {
 						e.OutputHandler(msg)
 					}
 					acc = acc[i+1:]
@@ -766,8 +775,9 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 // JSONL file. only `type` and `payload` are needed; we re-parse payload based
 // on the type.
 type rolloutEvent struct {
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload"`
+	Timestamp string          `json:"timestamp"`
+	Type      string          `json:"type"`
+	Payload   json.RawMessage `json:"payload"`
 }
 
 // rolloutPayload covers the response_item payload shape we render: assistant
@@ -776,12 +786,64 @@ type rolloutEvent struct {
 // fields would be read, so the struct only carries the subset we actually
 // consume.
 type rolloutPayload struct {
-	Type    string `json:"type"`
-	Role    string `json:"role"`
-	Content []struct {
+	Type      string `json:"type"`
+	Role      string `json:"role"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	CallID    string `json:"call_id"`
+	Content   []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
+}
+
+type codexCommandStart struct {
+	command   string
+	eventTime time.Time
+	arrival   time.Time
+}
+
+// trackRolloutCommandTiming pairs exec_command calls with outputs by call id.
+// native rollout timestamps are preferred so a final file drain cannot inflate
+// durations; arrival time is retained as a fallback for older event formats.
+func (e *CodexExecutor) trackRolloutCommandTiming(line []byte, starts map[string]codexCommandStart, now func() time.Time) {
+	if e.CommandTimingHandler == nil || len(bytes.TrimSpace(line)) == 0 {
+		return
+	}
+	var ev rolloutEvent
+	if err := json.Unmarshal(line, &ev); err != nil || ev.Type != "response_item" {
+		return
+	}
+	var payload rolloutPayload
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		return
+	}
+	eventTime, _ := time.Parse(time.RFC3339Nano, ev.Timestamp)
+	switch payload.Type {
+	case "function_call":
+		if payload.Name != "exec_command" || payload.CallID == "" {
+			return
+		}
+		var args struct {
+			Cmd string `json:"cmd"`
+		}
+		if err := json.Unmarshal([]byte(payload.Arguments), &args); err != nil || args.Cmd == "" {
+			return
+		}
+		starts[payload.CallID] = codexCommandStart{command: args.Cmd, eventTime: eventTime, arrival: now()}
+	case "function_call_output":
+		start, found := starts[payload.CallID]
+		if !found {
+			return
+		}
+		delete(starts, payload.CallID)
+		arrival := now()
+		duration := arrival.Sub(start.arrival)
+		if !start.eventTime.IsZero() && !eventTime.IsZero() {
+			duration = eventTime.Sub(start.eventTime)
+		}
+		e.CommandTimingHandler(start.command, duration)
+	}
 }
 
 // formatRolloutEvent turns one JSONL rollout line into a display string for

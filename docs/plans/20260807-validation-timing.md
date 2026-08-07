@@ -88,10 +88,10 @@ Validation time is included in (not additive to) the phase buckets; with paralle
 
 ### Task 3: Command timing events from the Codex executor
 
-- [ ] inspect the rollout JSONL format for native per-event timestamps; if present use them for durations, otherwise use tail arrival time and document Codex durations as approximate (final drain can flush events late)
-- [ ] write failing tests with synthetic rollout fixtures: `function_call` (exec_command) paired with `function_call_output` by `call_id` emits `(command, duration)`; command text extracted from exec_command arguments; unmatched outputs ignored; unclosed calls emit nothing; assistant-message rendering (`formatRolloutEvent`) unchanged; nil handler keeps current behavior
-- [ ] add the same optional `CommandTimingHandler` to `CodexExecutor` and extend the rollout parser to track call pairs without changing what is forwarded to `OutputHandler`
-- [ ] run `go test ./pkg/executor/...` - must pass before task 4
+- [x] inspect the rollout JSONL format for native per-event timestamps; if present use them for durations, otherwise use tail arrival time and document Codex durations as approximate (final drain can flush events late)
+- [x] write failing tests with synthetic rollout fixtures: `function_call` (exec_command) paired with `function_call_output` by `call_id` emits `(command, duration)`; command text extracted from exec_command arguments; unmatched outputs ignored; unclosed calls emit nothing; assistant-message rendering (`formatRolloutEvent`) unchanged; nil handler keeps current behavior
+- [x] add the same optional `CommandTimingHandler` to `CodexExecutor` and extend the rollout parser to track call pairs without changing what is forwarded to `OutputHandler`
+- [x] run `go test ./pkg/executor/...` - must pass before task 4
 
 ### Task 4: ValidationTimer aggregation and wiring
 
