@@ -43,8 +43,13 @@ loopai --serve docs/plans/feature.md
 loopai --clear
 loopai --merge
 loopai --merge=release/13
+loopai --merge dynamic-review-agents
+loopai --merge 20260806-dynamic-review-agents
+loopai --merge docs/plans/20260806-dynamic-review-agents.md
+loopai --merge=release/13 dynamic-review-agents
 loopai --pr
 loopai --pr=release/13
+loopai --pr dynamic-review-agents
 loopai --init
 loopai --reset
 loopai --dump-defaults /tmp/loopai-defaults
@@ -120,6 +125,8 @@ Inside cmux, a started implementation or review run leaves a green `done in <ela
 
 Close-out commands are standalone modes. `loopai --merge[=base]` requires clean feature and base worktrees (including no untracked files), resolves a missing base as `main` then `master`, merges the current feature branch in the base worktree, overrides squash/no-commit merge defaults, verifies the feature commit was incorporated, safely removes only a clean linked worktree registered for that feature branch, deletes the branch, and clears the pill on success. Ignored files do not count as dirty and are deleted with the linked worktree, so preserve local-only ignored files before merging. `loopai --pr[=base]` requires authenticated `gh` and a GitHub `origin` whose effective push URLs all identify the same repository, pushes committed branch state, creates a PR using the associated plan and diff statistics, keeps the branch/worktree, and clears the pill on success. Commit intended changes before `--pr`; failures retain the pill. Use `=` to supply the optional base value, for example `--merge=release/13`.
 
+Both close-out commands accept an optional positional argument naming the feature, so they can run from the root of the primary checkout or any other registered worktree instead of the feature worktree (a checkout root is still required): a local branch name, a plan basename with or without `.md`, or a plan path. Resolution is deterministic — an exact local branch first, then a plan file in the invoking checkout's `plans_dir` and its `completed/` subdirectory. A located plan resolves to the branch recorded for it under `.loopai/progress/`, so a `--branch` override closes out the branch the run actually created; without a record the branch is derived from the plan filename. The resolved branch must exist locally. It combines with an explicit base, for example `--merge=release/13 dynamic-review-agents`. With an explicit feature, `--merge` merges a branch that is not checked out anywhere and then deletes it without any worktree cleanup; when a feature worktree is registered, the usual cleanliness checks and safe removal still apply, but uncommitted work in an invoking checkout that is neither the feature worktree nor the worktree the merge runs in does not block the merge. The merge runs in the base worktree, or in the primary checkout when the base branch is not checked out anywhere; a feature checked out in the primary checkout while the base occupies a linked worktree is refused, since the merge would have to run in the primary. `--pr <feature>` pushes and opens the PR for a branch that need not be checked out, deriving title and body from the plan as seen from the invoking checkout. A feature resolving to the base branch is an error, as is an identifier matching neither a branch nor a plan, and so is a second positional argument: `--merge release/13 dynamic-review-agents` is the `--merge=release/13 dynamic-review-agents` form with the `=` forgotten and would otherwise close out `release/13` itself. A successful `--merge` names the worktree it removed, since with an explicit feature that directory is not the invoking one.
+
 ## Useful options
 
 - `--max-iterations=N`
@@ -133,8 +140,8 @@ Close-out commands are standalone modes. `loopai --merge[=base]` requires clean 
 - `--base-ref=branch-or-commit`
 - `-c`, `--commit` (auto-commit the source checkout before creating a fresh worktree; requires `--worktree`)
 - `--clear`
-- `--merge[=base]`
-- `--pr[=base]`
+- `--merge[=base] [feature]`
+- `--pr[=base] [feature]`
 - `--wait=duration` (default `10m`; `--wait 0` disables limit retries)
 - `--session-timeout=duration`
 - `--idle-timeout=duration`

@@ -77,12 +77,16 @@ type opts struct {
 	Init                    bool          `long:"init" description:"initialize local .loopai/ config directory in current project"`
 	Reset                   bool          `long:"reset" description:"interactively reset global config to embedded defaults"`
 	Clear                   bool          `long:"clear" description:"remove loopai cmux status pill"`
-	Merge                   string        `long:"merge" optional:"true" optional-value:"" value-name:"base" description:"merge current feature branch into base branch"`
-	PR                      string        `long:"pr" optional:"true" optional-value:"" value-name:"base" description:"push current feature branch and create a GitHub pull request"`
+	Merge                   string        `long:"merge" optional:"true" optional-value:"" value-name:"base" description:"merge feature branch into base branch; positional argument names the feature (branch or plan), default current branch"`
+	PR                      string        `long:"pr" optional:"true" optional-value:"" value-name:"base" description:"push feature branch and create a GitHub pull request; positional argument names the feature (branch or plan), default current branch"`
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
 	ConfigDir               string        `long:"config-dir" env:"LOOPAI_CONFIG_DIR" description:"custom config directory"`
 
-	PlanFile string `positional-arg-name:"plan-file" description:"path to plan file (optional, uses fzf if omitted)"`
+	PlanFile string `positional-arg-name:"plan-file" description:"path to plan file (optional, uses fzf if omitted); with --merge/--pr it names the feature to close out"`
+
+	// positional arguments beyond the first, recorded by main so close-out validation can reject
+	// them instead of silently acting on the wrong feature
+	extraArgs []string
 
 	// set by markFlagsSet after parsing; true when the flag was explicitly provided on the CLI
 	waitSet           bool
@@ -98,6 +102,17 @@ type opts struct {
 	externalReviewModelSet bool
 	externalReviewersSet   bool
 	customReviewScriptSet  bool
+}
+
+// applyPositionalArgs records the parsed positional arguments: the first names the plan file, or
+// the feature to close out under --merge/--pr. the rest are kept so close-out validation can reject
+// them; go-flags never fills a positional field beyond the first one declared.
+func (o *opts) applyPositionalArgs(args []string) {
+	if len(args) == 0 {
+		return
+	}
+	o.PlanFile = args[0]
+	o.extraArgs = args[1:]
 }
 
 // markFlagsSet detects options whose explicit presence matters even when their parsed value is
@@ -253,10 +268,8 @@ func main() {
 		os.Exit(0)
 	}
 
-	// handle positional argument
-	if len(args) > 0 {
-		o.PlanFile = args[0]
-	}
+	// handle positional arguments
+	o.applyPositionalArgs(args)
 
 	// setup context with signal handling
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -1669,11 +1682,31 @@ func validateCloseoutFlags(o opts) error {
 	if o.Clear && (merge || pr || execution) {
 		return errors.New("--clear cannot be combined with a plan file or other mode flags")
 	}
-	if merge && execution {
-		return errors.New("--merge cannot be combined with a plan file or other mode flags")
+	// with --merge/--pr the positional argument names the feature to close out instead of
+	// selecting a plan to run, so it does not count as an execution mode for these checks.
+	closeoutExecution := execution
+	if merge || pr {
+		bare := o
+		bare.PlanFile = ""
+		closeoutExecution = hasExecutionMode(bare)
 	}
-	if pr && (merge || execution) {
-		return errors.New("--pr cannot be combined with a plan file or other mode flags")
+	if merge && closeoutExecution {
+		return errors.New("--merge cannot be combined with other mode flags")
+	}
+	if pr && (merge || closeoutExecution) {
+		return errors.New("--pr cannot be combined with other mode flags")
+	}
+	if (merge || pr) && len(o.extraArgs) > 0 {
+		// --merge and --pr take an optional base value only in the --merge=<base> form, so
+		// "--merge <base> <feature>" parses <base> as the feature and would merge and delete it.
+		// a surplus positional is the only observable trace of that mistake: reject it rather than
+		// silently closing out a branch the caller never named.
+		flag := "--merge"
+		if pr {
+			flag = "--pr"
+		}
+		return fmt.Errorf("%s accepts at most one feature argument, got %d; use %s=<base> to set the base branch",
+			flag, len(o.extraArgs)+1, flag)
 	}
 	return nil
 }
@@ -2284,99 +2317,372 @@ type cmuxStatusClearer interface {
 	Clear()
 }
 
-// runMergeCommand merges the current feature branch into an explicit or detected base.
-// The completion pill is deliberately retained on every failure so the pending action stays visible.
-func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase string, rep cmuxStatusClearer, stdout io.Writer) error {
-	dirty, err := gitSvc.IsDirtyAll()
-	if err != nil {
-		return fmt.Errorf("check working tree: %w", err)
+// featureBranchResolver reports whether a local branch exists and derives the branch a plan file
+// implies; satisfied by *git.Service. Deriving through the service keeps --merge/--pr resolution
+// byte-identical to the name worktree creation produced, including on-disk filename case.
+type featureBranchResolver interface {
+	BranchExists(name string) bool
+	EffectiveBranchName(planFile, branchOverride string) string
+}
+
+// resolveFeatureBranch resolves a feature identifier supplied to --merge/--pr into a local
+// branch name. resolution is deterministic: an exact local branch match wins, then a plan file
+// located by path or by basename in plansDir and plansDir/completed. the branch a run recorded
+// for that plan wins over the name derived from the filename, because a --branch override makes
+// the filename imply a branch the run never created; either way the branch must still exist.
+// progressRoots names the checkouts that can hold .loopai/progress, which are not always the one
+// plansDir sits in.
+func resolveFeatureBranch(gitSvc featureBranchResolver, progressRoots []string, plansDir, arg string) (string, error) {
+	identifier := strings.TrimSpace(arg)
+	if identifier == "" {
+		return "", errors.New("empty feature identifier")
 	}
-	if dirty {
-		return errors.New("--merge requires a clean working tree; commit, stash, or remove changes first")
+	if gitSvc.BranchExists(identifier) {
+		return identifier, nil
 	}
 
-	feature, err := gitSvc.CurrentBranch()
-	if err != nil {
-		return fmt.Errorf("read current branch: %w", err)
+	completedDir := filepath.Join(plansDir, "completed")
+	planFile := findFeaturePlanFile(identifier, plansDir, completedDir)
+	if planFile == "" {
+		return "", fmt.Errorf("unknown feature %q: no local branch with this name and no plan file in %q or %q",
+			identifier, plansDir, completedDir)
 	}
-	if feature == "" {
-		return errors.New("--merge requires a checked-out feature branch; detached HEAD is not supported")
+
+	branch, err := recordedBranchForPlan(progressRoots, planFile)
+	if err != nil {
+		return "", err
+	}
+	if branch == "" {
+		branch = gitSvc.EffectiveBranchName(planFile, "")
+	}
+	if !gitSvc.BranchExists(branch) {
+		return "", fmt.Errorf("plan %q resolves to branch %q, which does not exist locally (already merged?)",
+			filepath.Base(planFile), branch)
+	}
+	return branch, nil
+}
+
+// findFeaturePlanFile locates a plan file for identifier, accepting an explicit path or a
+// basename with an optional .md extension. an unresolvable plan path falls back to a basename
+// lookup in dirs, covering plans already moved to the completed directory.
+func findFeaturePlanFile(identifier string, dirs ...string) string {
+	if filepath.Base(identifier) != identifier {
+		if path := existingPlanFile(identifier); path != "" {
+			return path
+		}
+		if filepath.Ext(identifier) != ".md" {
+			// a path-shaped identifier that names no plan file is a namespaced branch name such
+			// as feature/login. reducing it to its last segment would resolve an unrelated plan,
+			// and --merge then merges and deletes a branch the caller never named
+			return ""
+		}
+	}
+	base := filepath.Base(identifier)
+	for _, dir := range dirs {
+		if path := existingPlanFile(filepath.Join(dir, base)); path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+// existingPlanFile returns path if it names a regular file, retrying with an added .md extension.
+// os.Stat matches case-insensitively on macOS and Windows, so the returned path may carry the
+// caller's case; git.Service.EffectiveBranchName resolves it to the on-disk name before deriving
+// the branch.
+func existingPlanFile(path string) string {
+	candidates := []string{path}
+	if filepath.Ext(path) != ".md" {
+		candidates = append(candidates, path+".md")
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// closeoutTarget carries the optional feature identifier supplied as the positional argument of
+// --merge/--pr together with the plans directory used to resolve it. a zero value means the
+// close-out applies to the currently checked-out branch.
+type closeoutTarget struct {
+	identifier string
+	plansDir   string
+}
+
+// resolveCloseoutBranch determines the feature branch a close-out command operates on: the
+// explicitly named feature when given, otherwise the currently checked-out branch.
+func resolveCloseoutBranch(gitSvc *git.Service, target closeoutTarget, flagName string) (string, error) {
+	if strings.TrimSpace(target.identifier) != "" {
+		// anchor the plans directory at the invoking checkout's root, matching the PR metadata
+		// lookup, so a basename identifier resolves the same from any directory in the checkout
+		root := gitSvc.Root()
+		progressRoots, err := progressRecordRoots(gitSvc)
+		if err != nil {
+			return "", err
+		}
+		return resolveFeatureBranch(gitSvc, progressRoots, plansDirPath(root, target.plansDir), target.identifier)
+	}
+	branch, err := gitSvc.CurrentBranch()
+	if err != nil {
+		return "", fmt.Errorf("read current branch: %w", err)
+	}
+	if branch == "" {
+		return "", fmt.Errorf("%s requires a checked-out feature branch; detached HEAD is not supported", flagName)
+	}
+	return branch, nil
+}
+
+// progressRecordRoots returns every checkout that can own .loopai/progress: the primary first, the
+// invoking checkout next, then every other registered worktree. the progress logger resolves its
+// path against the working directory before loopai changes into a worktree, so a run started from
+// the primary checkout records there even when it executed in a linked worktree, while a run
+// started inside any linked worktree records in that worktree. scanning only the primary and the
+// invoking checkout silently disables the recorded-branch lookup for a run started in a third
+// worktree, and a miss is the dangerous direction: it falls back to deriving the branch from the
+// plan filename, which is what --merge needs the record to override to stay off an unrelated
+// branch. a worktree holding no progress directory simply contributes nothing.
+func progressRecordRoots(gitSvc *git.Service) ([]string, error) {
+	worktrees, err := gitSvc.Worktrees()
+	if err != nil {
+		return nil, fmt.Errorf("inspect repository worktrees: %w", err)
+	}
+	if len(worktrees) == 0 {
+		return nil, errors.New("inspect repository worktrees: Git returned no registered worktrees")
+	}
+	roots := []string{worktrees[0].Path}
+	appendRoot := func(candidate string) {
+		if candidate == "" {
+			return
+		}
+		for _, root := range roots {
+			if sameProgressRoot(candidate, root) {
+				return
+			}
+		}
+		roots = append(roots, candidate)
+	}
+	// the invoking checkout keeps second place: it is the likeliest owner of the record after the
+	// primary, and it stays in the list even in the unlikely event Git does not report it
+	appendRoot(gitSvc.Root())
+	for _, wt := range worktrees[1:] {
+		appendRoot(wt.Path)
+	}
+	return roots, nil
+}
+
+// sameProgressRoot reports whether two checkout roots name the same directory, resolving symlinks
+// so a primary worktree reached through one does not get scanned twice.
+func sameProgressRoot(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	resolvedA, errA := filepath.EvalSymlinks(a)
+	resolvedB, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return filepath.Clean(resolvedA) == filepath.Clean(resolvedB)
+}
+
+// runMergeCommand merges the feature branch into an explicit or detected base.
+// The completion pill is deliberately retained on every failure so the pending action stays visible.
+func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase string, target closeoutTarget,
+	rep cmuxStatusClearer, stdout io.Writer) error {
+	explicit := strings.TrimSpace(target.identifier) != ""
+	// without an explicit feature the invoking checkout is the feature worktree and must be clean.
+	// with one the merge touches only the feature and base worktrees, both validated separately by
+	// prepareMergeWorktrees, so unrelated work in the invoking checkout must not block the close-out.
+	if !explicit {
+		dirty, dirtyErr := gitSvc.IsDirtyAll()
+		if dirtyErr != nil {
+			return fmt.Errorf("check working tree: %w", dirtyErr)
+		}
+		if dirty {
+			return errors.New("--merge requires a clean working tree; commit, stash, or remove changes first")
+		}
+	}
+
+	feature, err := resolveCloseoutBranch(gitSvc, target, "--merge")
+	if err != nil {
+		return err
 	}
 	base, err := gitSvc.ResolveBaseBranch(explicitBase)
 	if err != nil {
 		return fmt.Errorf("resolve merge base branch: %w", err)
 	}
 	if feature == base {
+		if explicit {
+			return fmt.Errorf("feature %q is already the base branch; name a different feature", base)
+		}
 		return fmt.Errorf("current branch %q is already the base branch; check out the feature branch first", base)
 	}
 
-	mergeSvc, featurePath, primaryPath, err := prepareMergeWorktrees(gitSvc, feature, base)
+	targets, err := prepareMergeWorktrees(gitSvc, feature, base, explicit)
 	if err != nil {
 		return err
 	}
 
-	featureHead, err := gitSvc.HeadHash()
+	featureHead, err := gitSvc.BranchHash(feature)
 	if err != nil {
 		return fmt.Errorf("read feature branch head: %w", err)
 	}
-	mergeResult, err := mergeForCloseout(ctx, mergeSvc, feature, base, featureHead)
+	mergeResult, err := mergeForCloseout(ctx, targets.mergeSvc, feature, base, featureHead)
 	if err != nil {
 		return err
 	}
 
-	if cleanupErr := cleanupMergedWorktree(gitSvc, mergeSvc, feature, featurePath, primaryPath); cleanupErr != nil {
-		return restoreMergeWorktree(mergeSvc, mergeResult, cleanupErr)
+	removedWorktree := targets.removableWorktree()
+	if cleanupErr := cleanupMergedWorktree(targets, feature); cleanupErr != nil {
+		return restoreMergeWorktree(targets.mergeSvc, mergeResult, cleanupErr)
 	}
-	if deleteErr := mergeSvc.DeleteBranch(feature); deleteErr != nil {
-		return restoreMergeWorktree(mergeSvc, mergeResult, fmt.Errorf("delete merged feature branch: %w", deleteErr))
+	if deleteErr := targets.mergeSvc.DeleteBranch(feature); deleteErr != nil {
+		return restoreMergeWorktree(targets.mergeSvc, mergeResult, fmt.Errorf("delete merged feature branch: %w", deleteErr))
 	}
-	if restoreErr := restoreMergeWorktree(mergeSvc, mergeResult, nil); restoreErr != nil {
+	if restoreErr := restoreMergeWorktree(targets.mergeSvc, mergeResult, nil); restoreErr != nil {
 		return restoreErr
 	}
 	if rep != nil {
 		rep.Clear()
 	}
+	// name the removed directory: with an explicit feature the removal target is resolved from the
+	// worktree list rather than being the caller's own directory, so it is otherwise invisible, and
+	// removal takes ignored files such as .env with it.
+	if removedWorktree != "" {
+		fmt.Fprintf(stdout, "merged %s into %s (%s); deleted branch %s and worktree %s\n",
+			feature, base, mergeResult.mergeType, feature, removedWorktree)
+		return nil
+	}
 	fmt.Fprintf(stdout, "merged %s into %s (%s); deleted branch %s\n", feature, base, mergeResult.mergeType, feature)
 	return nil
 }
 
-func prepareMergeWorktrees(gitSvc *git.Service, feature, base string) (mergeSvc *git.Service, featurePath, primaryPath string, err error) {
+// mergeTargets describes where a close-out merge executes and which feature worktree, if any,
+// must be cleaned up afterwards. featureSvc and featurePath are empty when the feature branch is
+// not checked out in any registered worktree, in which case the merge only deletes the branch.
+type mergeTargets struct {
+	mergeSvc    *git.Service
+	featureSvc  *git.Service
+	featurePath string
+	primaryPath string
+}
+
+// removableWorktree returns the linked worktree the close-out removes after a successful merge, or
+// an empty string when nothing is removed: the feature has no worktree of its own, or it shares the
+// primary worktree, which is never removed.
+func (t mergeTargets) removableWorktree() string {
+	if t.featurePath == "" || filepath.Clean(t.featurePath) == filepath.Clean(t.primaryPath) {
+		return ""
+	}
+	return t.featurePath
+}
+
+// prepareMergeWorktrees locates the worktree the merge runs in and the feature worktree to clean
+// up. without an explicit feature the feature branch must be checked out at gitSvc's root, which
+// keeps the no-argument close-out behavior unchanged. with an explicit feature the command may run
+// from anywhere in the repository and the feature may have no worktree at all.
+func prepareMergeWorktrees(gitSvc *git.Service, feature, base string, explicit bool) (mergeTargets, error) {
 	worktrees, err := gitSvc.Worktrees()
 	if err != nil {
-		return nil, "", "", fmt.Errorf("inspect repository worktrees: %w", err)
+		return mergeTargets{}, fmt.Errorf("inspect repository worktrees: %w", err)
 	}
 	if len(worktrees) == 0 {
-		return nil, "", "", errors.New("inspect repository worktrees: Git returned no registered worktrees")
+		return mergeTargets{}, errors.New("inspect repository worktrees: Git returned no registered worktrees")
 	}
-	primaryPath = worktrees[0].Path
-	featurePath = worktreePathForBranch(worktrees, feature)
+	primaryPath := worktrees[0].Path
+	featurePath := worktreePathForBranch(worktrees, feature)
 	basePath := worktreePathForBranch(worktrees, base)
-	if featurePath == "" || filepath.Clean(featurePath) != filepath.Clean(gitSvc.Root()) {
-		return nil, "", "", fmt.Errorf("current branch %q is not registered at repository root %q", feature, gitSvc.Root())
+	if !explicit && (featurePath == "" || filepath.Clean(featurePath) != filepath.Clean(gitSvc.Root())) {
+		return mergeTargets{}, fmt.Errorf("current branch %q is not registered at repository root %q", feature, gitSvc.Root())
 	}
-	if filepath.Clean(featurePath) == filepath.Clean(primaryPath) {
-		if basePath != "" && filepath.Clean(basePath) != filepath.Clean(primaryPath) {
-			return nil, "", "", fmt.Errorf("cannot close branch %q from the primary worktree while base branch %q is checked out at %q", feature, base, basePath)
-		}
-		return gitSvc, featurePath, primaryPath, nil
+
+	if featurePath != "" && filepath.Clean(featurePath) == filepath.Clean(primaryPath) {
+		return primaryMergeTargets(gitSvc, feature, base, basePath, primaryPath)
 	}
 
 	mergePath := primaryPath
 	if basePath != "" {
 		mergePath = basePath
 	}
-	mergeSvc, err = gitSvc.OpenWorktree(mergePath)
+	mergeSvc, err := openMergeWorktree(gitSvc, mergePath)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("open base worktree %q: %w", mergePath, err)
+		return mergeTargets{}, err
 	}
 	baseDirty, err := mergeSvc.IsDirtyAll()
 	if err != nil {
-		return nil, "", "", fmt.Errorf("check base worktree: %w", err)
+		return mergeTargets{}, fmt.Errorf("check base worktree: %w", err)
 	}
 	if baseDirty {
-		return nil, "", "", fmt.Errorf("--merge requires a clean base worktree at %s", mergeSvc.Root())
+		if basePath == "" {
+			// the merge checks base out here, so name why this worktree has to be clean
+			return mergeTargets{}, fmt.Errorf("--merge requires a clean base worktree at %s: base branch %q is not checked out anywhere, so the merge runs in the primary worktree",
+				mergeSvc.Root(), base)
+		}
+		return mergeTargets{}, fmt.Errorf("--merge requires a clean base worktree at %s", mergeSvc.Root())
 	}
-	return mergeSvc, featurePath, primaryPath, nil
+	if featurePath == "" {
+		return mergeTargets{mergeSvc: mergeSvc, primaryPath: primaryPath}, nil
+	}
+
+	featureSvc, err := openMergeWorktree(gitSvc, featurePath)
+	if err != nil {
+		return mergeTargets{}, err
+	}
+	if cleanErr := requireCleanFeatureWorktree(featureSvc); cleanErr != nil {
+		return mergeTargets{}, cleanErr
+	}
+	return mergeTargets{mergeSvc: mergeSvc, featureSvc: featureSvc, featurePath: featurePath, primaryPath: primaryPath}, nil
+}
+
+// primaryMergeTargets handles the case where the feature branch is checked out in the primary
+// worktree: the merge runs there, and no worktree is removed afterwards.
+func primaryMergeTargets(gitSvc *git.Service, feature, base, basePath, primaryPath string) (mergeTargets, error) {
+	if basePath != "" && filepath.Clean(basePath) != filepath.Clean(primaryPath) {
+		return mergeTargets{}, fmt.Errorf("cannot close branch %q: it is checked out in the primary worktree %q while base branch %q is checked out at %q",
+			feature, primaryPath, base, basePath)
+	}
+	primarySvc, err := openMergeWorktree(gitSvc, primaryPath)
+	if err != nil {
+		return mergeTargets{}, err
+	}
+	// the merge runs in the feature's own worktree here, so it must be clean no matter where the
+	// command was invoked from
+	if cleanErr := requireCleanFeatureWorktree(primarySvc); cleanErr != nil {
+		return mergeTargets{}, cleanErr
+	}
+	return mergeTargets{mergeSvc: primarySvc, featureSvc: primarySvc, featurePath: primaryPath, primaryPath: primaryPath}, nil
+}
+
+// requireCleanFeatureWorktree rejects a feature worktree with uncommitted changes before the merge
+// touches it, so no work is lost by the later cleanup.
+func requireCleanFeatureWorktree(featureSvc *git.Service) error {
+	dirty, err := featureSvc.IsDirtyAll()
+	if err != nil {
+		return fmt.Errorf("check feature worktree: %w", err)
+	}
+	if dirty {
+		return fmt.Errorf("--merge requires a clean feature worktree at %s", featureSvc.Root())
+	}
+	return nil
+}
+
+// openMergeWorktree returns gitSvc itself when path already names its root, avoiding a redundant
+// repository open for the common single-worktree case.
+func openMergeWorktree(gitSvc *git.Service, path string) (*git.Service, error) {
+	if filepath.Clean(path) == filepath.Clean(gitSvc.Root()) {
+		return gitSvc, nil
+	}
+	// a worktree whose directory was deleted by hand stays registered until it is pruned, and the
+	// close-out must not delete a branch Git still considers checked out there
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("registered worktree %q is missing; run \"git worktree prune\" and retry: %w", path, err)
+	}
+	svc, err := gitSvc.OpenWorktree(path)
+	if err != nil {
+		return nil, fmt.Errorf("open worktree %q: %w", path, err)
+	}
+	return svc, nil
 }
 
 func worktreePathForBranch(worktrees []git.Worktree, branch string) string {
@@ -2469,30 +2775,33 @@ func restoreCheckout(gitSvc *git.Service, branch, head string) error {
 	return nil
 }
 
-func cleanupMergedWorktree(featureSvc, mergeSvc *git.Service, feature, featurePath, primaryPath string) error {
-	if filepath.Clean(featurePath) == filepath.Clean(primaryPath) {
+// cleanupMergedWorktree removes the feature worktree after a successful merge. it is a no-op when
+// the feature has no worktree of its own, either because it was never checked out or because it
+// shares the primary worktree.
+func cleanupMergedWorktree(targets mergeTargets, feature string) error {
+	if targets.removableWorktree() == "" {
 		return nil
 	}
 	// Revalidate both identity and cleanliness immediately before removal. The standalone
 	// close-out command must never force-delete an unrelated or newly modified worktree.
-	latest, err := mergeSvc.Worktrees()
+	latest, err := targets.mergeSvc.Worktrees()
 	if err != nil {
 		return fmt.Errorf("revalidate feature worktree: %w", err)
 	}
-	if registeredPath := worktreePathForBranch(latest, feature); filepath.Clean(registeredPath) != filepath.Clean(featurePath) {
-		return fmt.Errorf("refuse to remove worktree %q: it is no longer registered for branch %q", featurePath, feature)
+	if registeredPath := worktreePathForBranch(latest, feature); filepath.Clean(registeredPath) != filepath.Clean(targets.featurePath) {
+		return fmt.Errorf("refuse to remove worktree %q: it is no longer registered for branch %q", targets.featurePath, feature)
 	}
-	dirty, err := featureSvc.IsDirtyAll()
+	dirty, err := targets.featureSvc.IsDirtyAll()
 	if err != nil {
 		return fmt.Errorf("recheck feature worktree: %w", err)
 	}
 	if dirty {
-		return fmt.Errorf("refuse to remove modified feature worktree at %s", featurePath)
+		return fmt.Errorf("refuse to remove modified feature worktree at %s", targets.featurePath)
 	}
-	if err := leaveWorktreeBeforeRemoval(featurePath, mergeSvc.Root()); err != nil {
+	if err := leaveWorktreeBeforeRemoval(targets.featurePath, targets.mergeSvc.Root()); err != nil {
 		return err
 	}
-	if err := mergeSvc.RemoveWorktreeSafe(featurePath); err != nil {
+	if err := targets.mergeSvc.RemoveWorktreeSafe(targets.featurePath); err != nil {
 		return fmt.Errorf("clean up worktree for %q: %w", feature, err)
 	}
 	return nil
@@ -2517,33 +2826,37 @@ func pathWithin(path, root string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// runPRCommand pushes the current feature branch and creates a GitHub pull request.
+// runPRCommand pushes the feature branch and creates a GitHub pull request.
 // The completion pill is retained until gh confirms that the PR was created.
-func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string, rep cmuxStatusClearer, stdout io.Writer) error {
+func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string, target closeoutTarget,
+	rep cmuxStatusClearer, stdout io.Writer) error {
 	ghPath, err := exec.LookPath("gh")
 	if err != nil {
 		return errors.New("--pr requires GitHub CLI (gh) in PATH; install it from https://cli.github.com/")
 	}
 
-	branch, err := gitSvc.CurrentBranch()
+	explicit := strings.TrimSpace(target.identifier) != ""
+	branch, err := resolveCloseoutBranch(gitSvc, target, "--pr")
 	if err != nil {
-		return fmt.Errorf("read current branch: %w", err)
-	}
-	if branch == "" {
-		return errors.New("--pr requires a checked-out feature branch; detached HEAD is not supported")
+		return err
 	}
 	base, err := gitSvc.ResolveBaseBranch(explicitBase)
 	if err != nil {
 		return fmt.Errorf("resolve PR base branch: %w", err)
 	}
 	if branch == base {
+		if explicit {
+			return fmt.Errorf("feature %q is already the base branch; name a different feature", base)
+		}
 		return fmt.Errorf("current branch %q is already the base branch; check out the feature branch first", base)
 	}
-	stats, err := gitSvc.DiffStats(base)
+	// measured against the branch tip, so an explicitly named feature need not be checked out
+	stats, err := gitSvc.BranchDiffStats(base, branch)
 	if err != nil {
-		return fmt.Errorf("calculate PR diff stats: %w", err)
+		return fmt.Errorf("calculate PR diff stats for %q against %q: %w", branch, base, err)
 	}
-	title, body, err := buildPRTitleBody(gitSvc.Root(), branch, stats)
+
+	title, body, err := buildPRTitleBody(gitSvc.Root(), target.plansDir, branch, stats)
 	if err != nil {
 		return err
 	}
@@ -2661,18 +2974,19 @@ func runCloseoutCommand(ctx context.Context, o opts, cfg *config.Config, colors 
 		return fmt.Errorf("open git repo: %w", err)
 	}
 	rep := cmux.New("", cmux.Models{})
+	target := closeoutTarget{identifier: o.PlanFile, plansDir: cfg.PlansDir}
 	if mergeRequested(o) {
-		return runMergeCommand(ctx, gitSvc, o.Merge, rep, os.Stdout)
+		return runMergeCommand(ctx, gitSvc, o.Merge, target, rep, os.Stdout)
 	}
-	return runPRCommand(ctx, gitSvc, o.PR, rep, os.Stdout)
+	return runPRCommand(ctx, gitSvc, o.PR, target, rep, os.Stdout)
 }
 
 // buildPRTitleBody derives PR metadata from the plan associated with branch. Completed plans
 // are preferred, while the active plans directory covers worktree runs whose archival commit
 // exists only on the base branch.
-func buildPRTitleBody(repoRoot, branch string, stats git.DiffStats) (title, body string, err error) {
+func buildPRTitleBody(repoRoot, plansDir, branch string, stats git.DiffStats) (title, body string, err error) {
 	title = branch
-	planPath, err := findPRPlan(repoRoot, branch)
+	planPath, err := findPRPlan(repoRoot, plansDir, branch)
 	if err != nil {
 		return "", "", err
 	}
@@ -2766,7 +3080,30 @@ func readPRPlan(repoRoot, path string) ([]byte, error) {
 	return content, nil
 }
 
-func findPRPlan(repoRoot, branch string) (string, error) {
+// plansDirPath resolves the configured plans directory against repoRoot. an empty setting falls
+// back to the embedded default so PR metadata keeps working without loaded configuration, and an
+// absolute setting inside the repository is re-anchored at repoRoot so the resulting plan paths
+// stay comparable to the root Git reports even when the checkout sits behind a symlink.
+func plansDirPath(repoRoot, plansDir string) string {
+	if plansDir == "" {
+		plansDir = filepath.Join("docs", "plans")
+	}
+	if !filepath.IsAbs(plansDir) {
+		return filepath.Join(repoRoot, plansDir)
+	}
+	root, rootErr := filepath.EvalSymlinks(repoRoot)
+	dir, dirErr := filepath.EvalSymlinks(plansDir)
+	if rootErr != nil || dirErr != nil {
+		return plansDir
+	}
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return plansDir
+	}
+	return filepath.Join(repoRoot, rel)
+}
+
+func findPRPlan(repoRoot, plansDir, branch string) (string, error) {
 	recordedPath, err := findRecordedPRPlan(repoRoot, branch)
 	if err != nil {
 		return "", err
@@ -2775,10 +3112,13 @@ func findPRPlan(repoRoot, branch string) (string, error) {
 		return recordedPath, nil
 	}
 
-	dirs := []string{
-		filepath.Join(repoRoot, "docs", "plans", "completed"),
-		filepath.Join(repoRoot, "docs", "plans"),
+	root := plansDirPath(repoRoot, plansDir)
+	if !pathWithin(root, repoRoot) {
+		// readPRPlan confines plan reads to the repository, so a plans_dir pointing outside it
+		// yields no metadata and a stats-only PR body rather than a fatal read error
+		return "", nil
 	}
+	dirs := []string{filepath.Join(root, "completed"), root}
 	var fallbackPath string
 	for _, dir := range dirs {
 		exactPath, candidateFallback, findErr := findPRPlanInDir(repoRoot, dir, branch)
@@ -2843,17 +3183,115 @@ func findPRPlanInDir(repoRoot, dir, branch string) (exactPath, fallbackPath stri
 // findRecordedPRPlan uses the progress header's exact branch-to-plan association. This covers
 // arbitrary --branch overrides without guessing from a slash-delimited branch basename.
 func findRecordedPRPlan(repoRoot, branch string) (string, error) {
+	assocs, err := readProgressAssociations(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	var matched string
+	var matchedTime time.Time
+	for _, assoc := range assocs {
+		// planPath is empty when the recorded plan names no file inside the repository; the PR body
+		// is read from it, so only a repo-contained path is usable here
+		if assoc.branch != branch || assoc.planPath == "" {
+			continue
+		}
+		if matched == "" || assoc.modTime.After(matchedTime) {
+			matched, matchedTime = assoc.planPath, assoc.modTime
+		}
+	}
+	return matched, nil
+}
+
+// recordedBranchForPlan returns the branch the most recent run associated with planFile, or an
+// empty string when no run recorded it. A plan filename only implies a branch when the run used
+// no --branch override, so close-out resolution consults the recorded association first rather
+// than merging and deleting an unrelated branch that happens to carry the derived name.
+// progressRoots are the checkouts that can hold the records, which progressRecordRoots resolves;
+// the newest matching record across all of them wins.
+func recordedBranchForPlan(progressRoots []string, planFile string) (string, error) {
+	target := planAssociationKey(planFile)
+	var assocs []progressAssociation
+	for _, root := range progressRoots {
+		found, err := readProgressAssociations(root)
+		if err != nil {
+			return "", err
+		}
+		assocs = append(assocs, found...)
+	}
+	var matched string
+	var matchedTime time.Time
+	for _, assoc := range assocs {
+		// match the path the record actually names, not its repo-contained resolution: this lookup
+		// only needs the branch, so a plan the repository does not contain - an out-of-tree
+		// plans_dir, or a checkout moved since the run - must still supply it
+		if planAssociationKey(assoc.recordedPlan) != target {
+			continue
+		}
+		// a review-only or plan-creation run over the same plan writes its own record, in the same
+		// directory and with a later mtime than the run that created the branch. its Branch header
+		// names whatever was checked out then, so honoring it would resolve the close-out to an
+		// unrelated branch and merge and delete it
+		if !recordedBranchIsFeature(assoc.mode) {
+			continue
+		}
+		if matched == "" || assoc.modTime.After(matchedTime) {
+			matched, matchedTime = assoc.branch, assoc.modTime
+		}
+	}
+	return matched, nil
+}
+
+// planAssociationKey reduces a plan path to the identity used to match a progress record against a
+// resolved plan file. loopai already keys plans by filename everywhere - branch derivation, PR plan
+// lookup, and completed/ archiving all do - and matching that way survives the ways the two paths
+// legitimately diverge: a case-insensitive filesystem handing back the caller's spelling, the
+// record naming the completed/ copy while the lookup found the active one, the record living in
+// the primary checkout while the lookup ran in a linked worktree, and a plans directory outside
+// the repository. Comparing absolute paths misses all of them, and a miss is the dangerous
+// direction: it falls back to deriving the branch from the filename, which is exactly what the
+// recorded value exists to override.
+func planAssociationKey(path string) string {
+	return strings.ToLower(filepath.Base(path))
+}
+
+// progressAssociation pairs a branch with the plan file a past run recorded for it.
+type progressAssociation struct {
+	recordedPlan string // plan path exactly as the record names it
+	planPath     string // recordedPlan resolved inside repoRoot, empty when it names no file there
+	branch       string
+	mode         string // run mode from the record header, empty when the record names none
+	modTime      time.Time
+}
+
+// recordedBranchIsFeature reports whether a record's mode means its Branch header names the
+// branch that run created. only task-executing modes create one; --review, --codex-only, and
+// plan creation all record whatever branch happened to be checked out, which is unrelated to the
+// plan and may be the base branch or "unknown" on detached HEAD. an unrecognized or absent mode
+// is accepted, since dropping a valid association falls back to deriving the branch from the plan
+// filename - exactly what the recorded value exists to override.
+func recordedBranchIsFeature(mode string) bool {
+	switch processor.Mode(mode) {
+	case processor.ModeReview, processor.ModeCodexOnly, processor.ModePlan:
+		return false
+	default:
+		return true
+	}
+}
+
+// readProgressAssociations collects the branch-to-plan pairings recorded in progress headers.
+// records naming no plan at all are skipped; a plan the repository does not contain still yields a
+// pair with an empty planPath, since only the PR-metadata consumer needs a readable in-repo file.
+func readProgressAssociations(repoRoot string) ([]progressAssociation, error) {
 	dir := filepath.Join(repoRoot, ".loopai", "progress")
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+		return nil, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("list progress records: %w", err)
+		return nil, fmt.Errorf("list progress records: %w", err)
 	}
 
-	var matched string
-	var matchedTime time.Time
+	var assocs []progressAssociation
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".txt" || entry.Type()&os.ModeSymlink != 0 {
 			continue
@@ -2861,49 +3299,59 @@ func findRecordedPRPlan(repoRoot, branch string) (string, error) {
 		path := filepath.Join(dir, entry.Name())
 		info, infoErr := entry.Info()
 		if infoErr != nil {
-			return "", fmt.Errorf("inspect progress record %q: %w", entry.Name(), infoErr)
+			return nil, fmt.Errorf("inspect progress record %q: %w", entry.Name(), infoErr)
 		}
 		if !info.Mode().IsRegular() {
 			continue
 		}
 		f, openErr := os.Open(path) //nolint:gosec // direct regular-file child of the fixed progress directory
 		if openErr != nil {
-			return "", fmt.Errorf("open progress record %q: %w", entry.Name(), openErr)
+			return nil, fmt.Errorf("open progress record %q: %w", entry.Name(), openErr)
 		}
 		content, readErr := io.ReadAll(io.LimitReader(f, maxPRProgressHeaderSize))
 		closeErr := f.Close()
 		if readErr != nil {
-			return "", fmt.Errorf("read progress record %q: %w", entry.Name(), readErr)
+			return nil, fmt.Errorf("read progress record %q: %w", entry.Name(), readErr)
 		}
 		if closeErr != nil {
-			return "", fmt.Errorf("close progress record %q: %w", entry.Name(), closeErr)
+			return nil, fmt.Errorf("close progress record %q: %w", entry.Name(), closeErr)
 		}
-		planPath, recordedBranch := parseProgressAssociation(string(content))
-		if recordedBranch != branch || planPath == "" || planPath == "(no plan - review only)" {
+		planPath, branch, mode := parseProgressAssociation(string(content))
+		if branch == "" || planPath == "" || planPath == "(no plan - review only)" {
 			continue
 		}
-		candidate := resolveRecordedPlan(repoRoot, planPath)
-		if candidate != "" && (matched == "" || info.ModTime().After(matchedTime)) {
-			matched, matchedTime = candidate, info.ModTime()
-		}
+		assocs = append(assocs, progressAssociation{
+			recordedPlan: planPath,
+			planPath:     resolveRecordedPlan(repoRoot, planPath),
+			branch:       branch,
+			mode:         mode,
+			modTime:      info.ModTime(),
+		})
 	}
-	return matched, nil
+	return assocs, nil
 }
 
-func parseProgressAssociation(content string) (planPath, branch string) {
+// parseProgressAssociation reads the association fields from a progress record's header block.
+// Parsing stops at the dashed separator or blank line that closes the header, never at a set of
+// collected fields: Mode is absent from records written before the header carried it, so requiring
+// it would run the scan into the log body, where executor output beginning with "Plan: " or
+// "Branch: " would overwrite the header values and misdirect the close-out to another branch.
+func parseProgressAssociation(content string) (planPath, branch, mode string) {
 	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSuffix(line, "\r")
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "---") {
+			break
+		}
 		switch {
 		case strings.HasPrefix(line, "Plan: "):
 			planPath = strings.TrimSpace(strings.TrimPrefix(line, "Plan: "))
 		case strings.HasPrefix(line, "Branch: "):
 			branch = strings.TrimSpace(strings.TrimPrefix(line, "Branch: "))
-		}
-		if planPath != "" && branch != "" {
-			return planPath, branch
+		case strings.HasPrefix(line, "Mode: "):
+			mode = strings.TrimSpace(strings.TrimPrefix(line, "Mode: "))
 		}
 	}
-	return planPath, branch
+	return planPath, branch, mode
 }
 
 func resolveRecordedPlan(repoRoot, recorded string) string {
@@ -2913,14 +3361,38 @@ func resolveRecordedPlan(repoRoot, recorded string) string {
 	}
 	if filepath.Base(filepath.Dir(candidate)) != "completed" {
 		completed := filepath.Join(filepath.Dir(candidate), "completed", filepath.Base(candidate))
-		if info, err := os.Lstat(completed); err == nil && info.Mode().IsRegular() {
-			return completed
+		if resolved := recordedPlanInRepo(repoRoot, completed); resolved != "" {
+			return resolved
 		}
 	}
-	if info, err := os.Lstat(candidate); err == nil && info.Mode().IsRegular() {
-		return candidate
+	return recordedPlanInRepo(repoRoot, candidate)
+}
+
+// recordedPlanInRepo returns path re-anchored at repoRoot when it names a regular file inside the
+// repository, and an empty string otherwise. A progress record stores the path the run saw, while
+// Git reports worktree roots with symlinks resolved, so a purely lexical containment test drops
+// valid records wherever the checkout sits behind a symlink - every macOS temporary directory,
+// via /var and /tmp. Re-anchoring rather than returning the recorded spelling keeps the result
+// acceptable to readPRPlan's own containment check.
+func recordedPlanInRepo(repoRoot, path string) string {
+	// Lstat, not Stat: a symlinked plan is not a regular file and must not resolve
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+		return ""
 	}
-	return ""
+	if pathWithin(path, repoRoot) {
+		return path
+	}
+	root, rootErr := filepath.EvalSymlinks(repoRoot)
+	dir, dirErr := filepath.EvalSymlinks(filepath.Dir(path))
+	if rootErr != nil || dirErr != nil {
+		return ""
+	}
+	resolved := filepath.Join(dir, filepath.Base(path))
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || !pathWithin(resolved, root) {
+		return ""
+	}
+	return filepath.Join(repoRoot, rel)
 }
 
 func planMentionsBranch(content, branch string) bool {

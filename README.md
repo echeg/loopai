@@ -246,6 +246,13 @@ loopai --merge=release/13
 # Push the current feature branch and open a GitHub pull request via gh.
 loopai --pr
 loopai --pr=release/13
+
+# Name the feature explicitly to close it out from the primary checkout.
+loopai --merge dynamic-review-agents
+loopai --merge 20260806-dynamic-review-agents
+loopai --merge docs/plans/20260806-dynamic-review-agents.md
+loopai --merge=release/13 dynamic-review-agents
+loopai --pr dynamic-review-agents
 ```
 
 `--merge` requires clean feature and base worktrees, including no untracked files. It
@@ -258,8 +265,39 @@ origin push URL must identify that same GitHub repository. It pushes committed b
 state, builds the title and body from the associated plan and diff
 statistics, and keeps the feature branch and worktree. Commit intended changes before
 running `--pr`. Each command clears the completion pill only after it succeeds, so a
-failed close-out remains visible. These commands cannot be combined with a plan file or
-execution options.
+failed close-out remains visible.
+
+Without an argument both commands close out the current branch and must run from the
+feature worktree or checkout. The optional positional argument names the feature instead,
+so either command can run from the primary checkout or from any other registered worktree.
+Like every close-out invocation it still has to start at the root of a checkout, not in a
+subdirectory. It accepts a local branch name, a plan basename with or without `.md`, or a
+plan path, and combines with an explicit base such as
+`--merge=release/13 dynamic-review-agents`. loopai first looks for a branch of that exact
+name, then for a plan file in the plans directory and its `completed/` subdirectory. For a
+plan it uses the branch recorded for that plan under `.loopai/progress/`, so a run started
+with `--branch` closes out the branch it actually created rather than the one the plan
+filename implies; without such a record the branch is derived from the filename. Either
+way that branch has to exist locally. The plan lookup uses
+the `plans_dir` of the checkout you run from, so a plan that exists only inside the
+unmerged feature worktree is not visible from the primary checkout; name the branch in that
+case. When the named feature has no registered worktree, `--merge` merges and deletes the
+branch without any worktree cleanup; with a worktree the usual cleanliness checks and safe
+removal apply. Only the feature worktree and the worktree the merge runs in have to be
+clean, so unrelated uncommitted work in an invoking checkout that is neither one does not
+block the merge. The merge runs in the base worktree, or in the primary checkout when the
+base branch is not checked out anywhere. One arrangement is still refused: when the feature
+is checked out in the primary checkout while the base is checked out in a linked worktree,
+the merge would have to run in the primary and cannot, so switch the primary off the feature
+branch first. `--pr <feature>`
+pushes and opens the pull request for a branch that is not checked out anywhere; its title
+and body still come from the plan as seen from the invoking checkout, falling back to a
+stats-only body when that plan is not present there. Naming the base branch as the feature
+is an error, and so is a second positional argument: `--merge release/13 dynamic-review-agents`
+is `--merge=release/13 dynamic-review-agents` with the `=` forgotten, which would otherwise
+close out `release/13` itself. Apart from this argument, the close-out commands cannot be
+combined with a plan file or execution options. On success `--merge` names the worktree it
+removed, since with an explicit feature that directory is not the one you ran from.
 
 ## Executors and reviews
 

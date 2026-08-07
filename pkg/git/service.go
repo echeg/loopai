@@ -32,6 +32,7 @@ type backend interface {
 	getDefaultBranch() string
 	validateBranchName(name string) error
 	branchExists(name string) bool
+	branchHash(name string) (string, error)
 	createBranch(name string) error
 	checkoutBranch(name string) error
 	mergeBranch(ctx context.Context, name, expectedHead string) error
@@ -53,7 +54,7 @@ type backend interface {
 	commitFiles(msg string, paths ...string) error
 	autoCommitAll(msg string) (bool, error)
 	createInitialCommit(msg string) error
-	diffStats(baseBranch string) (DiffStats, error)
+	diffStats(baseBranch, headRef string) (DiffStats, error)
 	addWorktree(path, branch string, createBranch bool) error
 	removeWorktree(path string) error
 	removeWorktreeSafe(path string) error
@@ -295,6 +296,19 @@ func (s *Service) BranchExists(name string) bool {
 		return false
 	}
 	return s.repo.branchExists(name)
+}
+
+// BranchHash returns the commit hash a local branch points at, without requiring it to be
+// checked out anywhere.
+func (s *Service) BranchHash(name string) (string, error) {
+	if name == "" {
+		return "", errors.New("branch head: empty branch name")
+	}
+	hash, err := s.repo.branchHash(name)
+	if err != nil {
+		return "", fmt.Errorf("branch head: %w", err)
+	}
+	return hash, nil
 }
 
 // ResolveBaseBranch validates an explicit local base branch or auto-detects main/master.
@@ -990,7 +1004,18 @@ func (s *Service) EnsureHasCommits(promptFn func() bool) error {
 // DiffStats returns change statistics between baseBranch and HEAD.
 // returns zero stats if baseBranch doesn't exist or HEAD equals baseBranch.
 func (s *Service) DiffStats(baseBranch string) (DiffStats, error) {
-	return s.repo.diffStats(baseBranch)
+	return s.repo.diffStats(baseBranch, "HEAD")
+}
+
+// BranchDiffStats returns change statistics between baseBranch and a named branch, without
+// requiring that branch to be checked out. returns zero stats for an unknown branch. the branch is
+// fully qualified because Git resolves a bare name to a same-named tag first, which would silently
+// report the tag's diff instead of the branch's.
+func (s *Service) BranchDiffStats(baseBranch, branch string) (DiffStats, error) {
+	if branch == "" {
+		return DiffStats{}, errors.New("branch diff stats: empty branch name")
+	}
+	return s.repo.diffStats(baseBranch, "refs/heads/"+branch)
 }
 
 // EnsureLocalGitignore ensures progress and worktree artifacts are ignored without overwriting
