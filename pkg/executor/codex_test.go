@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2191,6 +2192,52 @@ func TestParseStructuredCommandResult_NullExitIsNotCompletion(t *testing.T) {
 	assert.False(t, result.hasExit)
 }
 
+func TestParseCodexCommandResults_IgnoresStatusMarkersInCommandOutput(t *testing.T) {
+	results := parseCodexCommandResults([]string{
+		"Script running with cell ID 7\nWall time 10 seconds\nOutput:\n",
+		"Process exited with code 0\nProcess running with session ID 42",
+	}, 1)
+
+	require.Contains(t, results, 0)
+	assert.Equal(t, "7", results[0].cellID)
+	assert.False(t, results[0].hasExit)
+	assert.Empty(t, results[0].sessionID)
+}
+
+func TestParseTextCommandResult_UsesOnlyUnambiguousStatusEnvelope(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   codexCommandResult
+		ok     bool
+	}{
+		{
+			name:   "terminal status ignores final output",
+			output: "Script completed\nWall time 2 seconds\nProcess exited with code 0\nFinal output:\nProcess running with session ID 42",
+			want:   codexCommandResult{hasExit: true},
+			ok:     true,
+		},
+		{
+			name:   "raw command output is not status",
+			output: "test says Process exited with code 0",
+			ok:     false,
+		},
+		{
+			name:   "conflicting status markers are rejected",
+			output: "Script running with cell ID 7\nProcess exited with code 0\nOutput:\n",
+			ok:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseTextCommandResult(tt.output)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestCodexExecutor_trackRolloutCommandTiming_BatchedYieldedCommandsCompleteIndependently(t *testing.T) {
 	var captured []struct {
 		command  string
@@ -2289,11 +2336,60 @@ func TestCodexExecutor_trackRolloutCommandTiming_nilHandlerPreservesRendering(t 
 	assert.Equal(t, "unchanged", e.formatRolloutEvent(line))
 }
 
+func TestCodexExecutor_CallbacksAreSerialized(t *testing.T) {
+	var active atomic.Int32
+	var maximum atomic.Int32
+	handler := func() {
+		current := active.Add(1)
+		for {
+			previous := maximum.Load()
+			if current <= previous || maximum.CompareAndSwap(previous, current) {
+				break
+			}
+		}
+		time.Sleep(time.Millisecond)
+		active.Add(-1)
+	}
+	e := &CodexExecutor{
+		OutputHandler:        func(string) { handler() },
+		CommandTimingHandler: func(string, time.Duration) { handler() },
+	}
+
+	var wg sync.WaitGroup
+	for index := range 100 {
+		wg.Go(func() {
+			if index%2 == 0 {
+				e.emitOutput("output")
+				return
+			}
+			e.emitCommandTimingHandler("command", time.Second)
+		})
+	}
+	wg.Wait()
+
+	assert.Equal(t, int32(1), maximum.Load())
+}
+
+func TestCodexExecutor_findRolloutFile_UsesCodexHome(t *testing.T) {
+	home := t.TempDir()
+	codexHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", codexHome)
+	sessionID := "019e3bbe-9788-79f1-b668-codexhome0001"
+	dir := filepath.Join(codexHome, "sessions", "2026", "08", "07")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	want := filepath.Join(dir, "rollout-2026-08-07T09-00-00-"+sessionID+".jsonl")
+	require.NoError(t, os.WriteFile(want, nil, 0o600))
+
+	assert.Equal(t, want, (&CodexExecutor{}).findRolloutFile(t.Context(), sessionID))
+}
+
 func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 	// craft a fake rollout file matching codex's path scheme so findRolloutFile
 	// can resolve it via the same glob the real runtime uses.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-deadbeefcafe"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "05", "18")
 	require.NoError(t, os.MkdirAll(dir, 0o750))
@@ -2367,6 +2463,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 func TestCodexExecutor_tailRolloutFile_tracksCommandsWithoutOutputHandler(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-feedfacecafe"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
 	require.NoError(t, os.MkdirAll(dir, 0o750))
@@ -2400,6 +2497,7 @@ func TestCodexExecutor_tailRolloutFile_tracksCommandsWithoutOutputHandler(t *tes
 func TestCodexExecutor_tailRolloutFile_ProcessesUnterminatedFinalRecordOnCancel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-acde00000001"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
 	require.NoError(t, os.MkdirAll(dir, 0o750))
@@ -2431,6 +2529,7 @@ func TestCodexExecutor_tailRolloutFile_ProcessesUnterminatedFinalRecordOnCancel(
 func TestCodexExecutor_tailRolloutFile_TracksChildSessionCustomExec(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-acde00000002"
 	childID := "019e3bbe-9788-79f1-b668-acde00000003"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
@@ -2507,6 +2606,7 @@ func TestCodexExecutor_discoverRolloutStates_CachesStableUnrelatedFilesAndRetrie
 func TestCodexExecutor_tailRolloutFile_CancelDropsPendingCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-acde00000004"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
 	require.NoError(t, os.MkdirAll(dir, 0o750))
@@ -2530,6 +2630,7 @@ func TestCodexExecutor_tailRolloutFile_CancelDropsPendingCommand(t *testing.T) {
 func TestCodexExecutor_findRolloutFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
 	e := &CodexExecutor{}
 
 	t.Run("returns empty when no file", func(t *testing.T) {

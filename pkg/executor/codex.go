@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -117,6 +118,7 @@ type CodexExecutor struct {
 	ForceReadOnly        bool                                  // require the read-only sandbox even when the runtime disables its default sandbox; used by external review so it cannot modify the project
 	IdleTimeout          time.Duration                         // kill session after this duration of no output, zero = disabled
 	headerEmitted        atomic.Bool                           // tracks first invocation across Run() calls; false until first task/review then suppressed permanently — used to emit codex's resolved model/sandbox/effort once at the top of the run
+	callbackMu           sync.Mutex                            // serializes output and timing handlers; runner loggers require serialized calls
 	runner               CodexRunner                           // for testing, nil uses default
 	now                  func() time.Time                      // arrival clock fallback for rollout events without timestamps; nil uses time.Now
 }
@@ -486,9 +488,7 @@ func (e *CodexExecutor) processStderr(ctx context.Context, r io.Reader, opts std
 		}
 
 		if show, filtered := e.shouldDisplay(line, state); show {
-			if e.OutputHandler != nil {
-				e.OutputHandler(filtered + "\n")
-			}
+			e.emitOutput(filtered + "\n")
 		}
 	})
 
@@ -667,16 +667,21 @@ func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-c
 
 // findRolloutFile resolves the path to codex's session-rollout JSONL file
 // for the given session id. codex stores the file under
-// ~/.codex/sessions/<year>/<month>/<day>/rollout-<timestamp>-<session-id>.jsonl
+// $CODEX_HOME/sessions/<year>/<month>/<day>/rollout-<timestamp>-<session-id>.jsonl,
+// falling back to ~/.codex/sessions when CODEX_HOME is unset,
 // and may take a while to create it after printing the session-id banner,
 // especially under load, so we poll up to ~30s. returns "" when the file
 // cannot be located.
 func (e *CodexExecutor) findRolloutFile(ctx context.Context, sessionID string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	root := os.Getenv("CODEX_HOME")
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		root = filepath.Join(home, ".codex")
 	}
-	pattern := filepath.Join(home, ".codex", "sessions", "*", "*", "*", "rollout-*-"+sessionID+".jsonl")
+	pattern := filepath.Join(root, "sessions", "*", "*", "*", "rollout-*-"+sessionID+".jsonl")
 
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -979,9 +984,9 @@ var (
 	customExecCommandPattern = regexp.MustCompile("(?s)tools\\.exec_command\\s*\\(\\s*\\{.*?(?:\"cmd\"|'cmd'|\\bcmd)\\s*:\\s*(\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|`(?:\\\\.|[^`\\\\])*`)")
 	customExecYieldPattern   = regexp.MustCompile(`(?s)(?:"yield_time_ms"|'yield-time_ms'|\byield_time_ms)\s*:\s*(\d+)`)
 	customWriteStdinPattern  = regexp.MustCompile(`(?s)tools\.write_stdin\s*\(\s*\{.*?(?:"session_id"|'session_id'|\bsession_id)\s*:\s*(?:"([^"]+)"|'([^']+)'|(\d+))`)
-	outputSessionIDPattern   = regexp.MustCompile(`(?i)(?:SESSION_ID\s*=|session(?:_|\s+)id["']?\s*[:=]\s*|Process running with session ID\s+)(\d+)`)
-	outputCellIDPattern      = regexp.MustCompile(`(?i)(?:Script running with cell ID\s*|cell_id["']?\s*[:=]\s*)(\d+)`)
-	exitCodePattern          = regexp.MustCompile(`(?i)(?:EXIT_CODE\s*=|exit_code["']?\s*:\s*|Process exited with code\s+)(-?\d+)`)
+	outputSessionIDPattern   = regexp.MustCompile(`(?im)^(?:SESSION_ID\s*=|session(?:_|\s+)id["']?\s*[:=]\s*|Process running with session ID\s+)(\d+)\s*$`)
+	outputCellIDPattern      = regexp.MustCompile(`(?im)^(?:Script running with cell ID\s*|cell_id["']?\s*[:=]\s*)(\d+)\s*$`)
+	exitCodePattern          = regexp.MustCompile(`(?im)^(?:EXIT_CODE\s*=|exit_code["']?\s*:\s*|Process exited with code\s+)(-?\d+)\s*$`)
 )
 
 func parseRolloutRecord(line []byte) (rolloutEvent, rolloutPayload, bool) {
@@ -1006,7 +1011,7 @@ func (e *CodexExecutor) processRolloutLine(line []byte, state *codexTimingState,
 	}
 	if render && e.OutputHandler != nil {
 		if msg := formatParsedRolloutEvent(payload); msg != "" {
-			e.OutputHandler(msg)
+			e.emitOutput(msg)
 		}
 	}
 }
@@ -1189,7 +1194,7 @@ func (e *CodexExecutor) resolvePendingOutputs(pending []codexPendingCommand, out
 
 func (e *CodexExecutor) emitResolvedCommandTiming(command codexPendingCommand, pendingCount int, result codexCommandResult, eventTime, arrival time.Time) {
 	if result.hasDuration && command.sessionID == "" {
-		e.CommandTimingHandler(command.start.command, result.duration)
+		e.emitCommandTimingHandler(command.start.command, result.duration)
 		return
 	}
 	if pendingCount == 1 || command.sessionID != "" {
@@ -1229,7 +1234,25 @@ func (e *CodexExecutor) emitCommandTiming(start codexCommandStart, eventTime, ar
 	if duration < 0 {
 		duration = 0
 	}
-	e.CommandTimingHandler(start.command, duration)
+	e.emitCommandTimingHandler(start.command, duration)
+}
+
+func (e *CodexExecutor) emitOutput(text string) {
+	if e.OutputHandler == nil {
+		return
+	}
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	e.OutputHandler(text)
+}
+
+func (e *CodexExecutor) emitCommandTimingHandler(command string, duration time.Duration) {
+	if e.CommandTimingHandler == nil {
+		return
+	}
+	e.callbackMu.Lock()
+	defer e.callbackMu.Unlock()
+	e.CommandTimingHandler(command, duration)
 }
 
 func rolloutOutputTexts(raw json.RawMessage) []string {
@@ -1310,12 +1333,46 @@ func parseStructuredCommandResult(output string) (codexCommandResult, bool) {
 }
 
 func parseTextCommandResult(output string) (codexCommandResult, bool) {
+	output, ok := commandStatusEnvelope(output)
+	if !ok {
+		return codexCommandResult{}, false
+	}
 	result := codexCommandResult{
 		sessionID: extractPatternValue(outputSessionIDPattern, output),
 		cellID:    extractPatternValue(outputCellIDPattern, output),
 	}
 	_, result.hasExit = parseExitCode(output)
-	return result, result.sessionID != "" || result.cellID != "" || result.hasExit
+	markers := 0
+	if result.sessionID != "" {
+		markers++
+	}
+	if result.cellID != "" {
+		markers++
+	}
+	if result.hasExit {
+		markers++
+	}
+	if markers != 1 {
+		return codexCommandResult{}, false
+	}
+	return result, true
+}
+
+// commandStatusEnvelope returns only the tool-generated status prefix. Current
+// custom exec output can append arbitrary process stdout after one of these
+// payload headers; that content must not be interpreted as session or exit
+// metadata.
+func commandStatusEnvelope(output string) (string, bool) {
+	output = strings.ReplaceAll(output, "\r\n", "\n")
+	lines := strings.Split(output, "\n")
+	for index, line := range lines {
+		if line == "Live output:" || line == "Final output:" || line == "Output:" {
+			output = strings.Join(lines[:index], "\n")
+			break
+		}
+	}
+	output = strings.TrimSpace(output)
+	return output, strings.HasPrefix(output, "Script ") || strings.HasPrefix(output, "Process ")
 }
 
 func rawIDString(raw json.RawMessage) string {
