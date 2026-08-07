@@ -2334,15 +2334,13 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bo
 		return false, nil
 	}
 
-	// a missing plan file is otherwise only detected in the child, long after the workspace was
+	// an unusable plan file is otherwise only detected in the child, long after the workspace was
 	// created and focused: the terminal the user typed in prints a success line and exits 0 while
-	// the new card dies immediately, leaving an orphan to close by hand. this is the same stat the
-	// plan selector performs on a non-empty plan file, resolved against the same working directory,
-	// so it never skips a hand-off that would have worked.
+	// the new card dies immediately, leaving an orphan to close by hand.
 	if o.PlanFile != "" {
-		if _, statErr := os.Stat(o.PlanFile); statErr != nil {
-			fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: plan file not found: %s\n", o.PlanFile)
-			return false, nil //nolint:nilerr // the local run reports the missing plan itself, this is only a skip
+		if reason := planFileHandOffRefusal(o.PlanFile); reason != "" {
+			fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: %s\n", reason)
+			return false, nil
 		}
 	}
 
@@ -2365,6 +2363,30 @@ func handOffSpawnFailure(err error, stderr io.Writer) (bool, error) {
 	}
 	fmt.Fprintf(stderr, "warning: cmux workspace hand-off failed, running here: %v\n", err)
 	return false, nil
+}
+
+// planFileHandOffRefusal reports why a non-empty plan path cannot produce a run that survives, or ""
+// when it can. existence is the plan selector's whole test, resolved here against the same working
+// directory, but it is not enough on its own: a directory stats fine, so "loopai --cmux-workspace
+// docs/plans" (the filename forgotten) would hand off, and the child would only fail once it read
+// the plan, in full mode after the branch already exists. an unreadable file fails the same read.
+// both are refused here for the same reason a missing plan is, and neither refuses a hand-off that
+// would have worked, since the child cannot read either one. the regular-file test comes before the
+// open because opening a fifo blocks until a writer appears, and this check must not hang.
+func planFileHandOffRefusal(planFile string) string {
+	info, err := os.Stat(planFile)
+	if err != nil {
+		return "plan file not found: " + planFile
+	}
+	if !info.Mode().IsRegular() {
+		return "plan file is not a regular file: " + planFile
+	}
+	f, err := os.Open(planFile) //nolint:gosec // the plan path is the user's own argument, only opened to test readability
+	if err != nil {
+		return "plan file not readable: " + planFile
+	}
+	_ = f.Close()
+	return ""
 }
 
 // handOffAllowedOutsideRepo reports whether a hand-off from a directory without a .git marker still

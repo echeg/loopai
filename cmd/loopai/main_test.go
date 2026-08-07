@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -7657,6 +7658,61 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file not found: docs/plans/typo.md")
 		_, statErr := os.Stat(argvLog)
 		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the missing plan itself")
+	})
+
+	t.Run("plan file that is a directory continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/p.md")
+
+		// "loopai docs/plans" with the filename forgotten stats fine, so only this check stands
+		// between the user and a workspace whose run dies once it tries to read the plan.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans"}
+		assert.False(t, handOffStops(t, o, []string{"docs/plans"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file is not a regular file: docs/plans")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the unusable plan itself")
+	})
+
+	t.Run("unreadable plan file continues locally", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("os.Chmod doesn't restrict read access on Windows")
+		}
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses file permissions, can't simulate unreadable file")
+		}
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/p.md")
+		require.NoError(t, os.Chmod("docs/plans/p.md", 0o000))
+		t.Cleanup(func() { _ = os.Chmod("docs/plans/p.md", 0o600) }) // restore for cleanup
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/p.md"}
+		assert.False(t, handOffStops(t, o, []string{"docs/plans/p.md"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file not readable: docs/plans/p.md")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the unusable plan itself")
+	})
+
+	t.Run("symlinked plan file is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/p.md")
+		require.NoError(t, os.Symlink("p.md", filepath.Join("docs", "plans", "link.md")))
+
+		// the readability checks resolve the link like the child's own read does, so a plan the
+		// run could execute is not refused.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/link.md"}
+		require.True(t, handOffStops(t, o, []string{"docs/plans/link.md"}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
 	})
 
 	t.Run("plan creation without a plan file is handed off", func(t *testing.T) {
