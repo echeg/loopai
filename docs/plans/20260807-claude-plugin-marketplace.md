@@ -66,10 +66,10 @@ Deliberately out of scope: superpowers stays installed and untouched — no othe
 
 ### Task 1: Add manifest validation check
 
-- [ ] add a `check-plugin` step (script under `scripts/` + make target, matching existing asset-check style) that fails when `.claude-plugin/marketplace.json` or `.claude-plugin/plugin.json` is missing, is invalid JSON, lacks required fields (marketplace: name, plugins with name+source; plugin: name, version, skills path), names anything `ralphex`, or points `skills` at a nonexistent directory
-- [ ] wire the check into `make test` alongside `check-symlinks`
-- [ ] verify the check fails before the manifests exist (red), including on a hand-broken fixture invocation if the script supports a path argument
-- [ ] run `make test` - expected red on missing manifests; proceed to task 2 to turn it green
+- [x] add a `check-plugin` step (script under `scripts/` + make target, matching existing asset-check style) that fails when `.claude-plugin/marketplace.json` or `.claude-plugin/plugin.json` is missing, is invalid JSON, lacks required fields (marketplace: name, plugins with name+source; plugin: name, version, skills path), names anything `ralphex`, or points `skills` at a nonexistent directory
+- [x] wire the check into `make test` alongside `check-symlinks`
+- [x] verify the check fails before the manifests exist (red), including on a hand-broken fixture invocation if the script supports a path argument
+- [x] run `make test` - expected red on missing manifests; proceed to task 2 to turn it green
 
 ### Task 2: Add plugin and marketplace manifests
 
