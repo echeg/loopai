@@ -2049,6 +2049,76 @@ func TestCodexExecutor_trackRolloutCommandTiming_CustomExecRequiresCompletionPro
 
 	assert.Empty(t, captured, "an output-only custom tool result does not prove that the nested process completed")
 	assert.Empty(t, state.starts)
+	assert.Len(t, state.unproven, 1)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecInfersCompletionBeforeYield(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, duration time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: duration})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\"}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":[{"type":"input_text","text":"Script completed\nWall time 0.4 seconds\nOutput:\n"},{"type":"input_text","text":"ok"}]}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{{command: "make test", duration: 400 * time.Millisecond}}, captured)
+	assert.Empty(t, state.unproven)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_UnprovenExecAttachesToContinuation(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, duration time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: duration})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":"Script completed\nWall time 0.4 seconds\nOutput:\n"}}`,
+		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({session_id:42}); text(JSON.stringify(r));"}}`,
+		`{"timestamp":"2026-08-07T09:00:03Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"{\"session_id\":42,\"exit_code\":0,\"output\":\"ok\"}"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{{command: "make test", duration: 3 * time.Second}}, captured)
+	assert.Empty(t, state.unproven)
+	assert.Empty(t, state.sessions)
+}
+
+func TestParseStructuredCommandResult_NullExitIsNotCompletion(t *testing.T) {
+	result, ok := parseStructuredCommandResult(`{"session_id":42,"exit_code":null}`)
+
+	require.True(t, ok)
+	assert.Equal(t, "42", result.sessionID)
+	assert.False(t, result.hasExit)
 }
 
 func TestCodexExecutor_trackRolloutCommandTiming_BatchedYieldedCommandsCompleteIndependently(t *testing.T) {
@@ -2299,8 +2369,8 @@ func TestCodexExecutor_tailRolloutFile_TracksChildSessionCustomExec(t *testing.T
 	require.NoError(t, os.WriteFile(rootPath, []byte(`{"type":"session_meta","payload":{"session_id":"`+sessionID+`","source":"exec"}}`+"\n"), 0o600))
 	childPath := filepath.Join(dir, "rollout-2026-08-07T09-00-01-"+childID+".jsonl")
 	child := `{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"` + sessionID + `"}}}}}` + "\n" +
-		`{"timestamp":"2026-08-07T09:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"custom-one","input":"const r = await tools.exec_command({cmd:\"make test\"}); text(JSON.stringify(r));"}}` + "\n" +
-		`{"timestamp":"2026-08-07T09:00:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"custom-one","output":[{"type":"input_text","text":"{\"exit_code\":0,\"output\":\"ok\"}"}]}}` + "\n"
+		`{"timestamp":"2026-08-07T09:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"custom-one","input":"const r = await tools.exec_command({cmd:\"make test\"}); text(r.output);"}}` + "\n" +
+		`{"timestamp":"2026-08-07T09:00:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"custom-one","output":[{"type":"input_text","text":"Script completed\nWall time 3 seconds\nOutput:\n"},{"type":"input_text","text":"ok"}]}}` + "\n"
 	require.NoError(t, os.WriteFile(childPath, []byte(child), 0o600))
 
 	timing := make(chan time.Duration, 1)

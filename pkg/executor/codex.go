@@ -952,6 +952,7 @@ type codexPendingCommand struct {
 	start         codexCommandStart
 	sessionID     string
 	requiresProof bool
+	yieldAfter    time.Duration
 }
 
 type codexTimingState struct {
@@ -960,6 +961,7 @@ type codexTimingState struct {
 	continuations map[string][]codexPendingCommand
 	cells         map[string][]codexPendingCommand
 	waits         map[string][]codexPendingCommand
+	unproven      []codexPendingCommand
 }
 
 func newCodexTimingState() *codexTimingState {
@@ -973,7 +975,9 @@ func newCodexTimingState() *codexTimingState {
 }
 
 var (
+	customExecYieldKey       = regexp.MustCompile("(?:\\\"yield-time_ms\\\"|'yield-time_ms'|\\byield_time_ms)\\s*:")
 	customExecCommandPattern = regexp.MustCompile("(?s)tools\\.exec_command\\s*\\(\\s*\\{.*?(?:\"cmd\"|'cmd'|\\bcmd)\\s*:\\s*(\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|`(?:\\\\.|[^`\\\\])*`)")
+	customExecYieldPattern   = regexp.MustCompile(`(?s)(?:"yield_time_ms"|'yield-time_ms'|\byield_time_ms)\s*:\s*(\d+)`)
 	customWriteStdinPattern  = regexp.MustCompile(`(?s)tools\.write_stdin\s*\(\s*\{.*?(?:"session_id"|'session_id'|\bsession_id)\s*:\s*(?:"([^"]+)"|'([^']+)'|(\d+))`)
 	outputSessionIDPattern   = regexp.MustCompile(`(?i)(?:SESSION_ID\s*=|session(?:_|\s+)id["']?\s*[:=]\s*|Process running with session ID\s+)(\d+)`)
 	outputCellIDPattern      = regexp.MustCompile(`(?i)(?:Script running with cell ID\s*|cell_id["']?\s*[:=]\s*)(\d+)`)
@@ -1060,14 +1064,20 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 	if payload.Name != "exec" || payload.CallID == "" {
 		return
 	}
-	if allMatches := customExecCommandPattern.FindAllStringSubmatch(payload.Input, -1); len(allMatches) > 0 {
+	if allMatches := customExecCommandPattern.FindAllStringSubmatchIndex(payload.Input, -1); len(allMatches) > 0 {
 		arrival := now()
 		pending := make([]codexPendingCommand, 0, len(allMatches))
-		for _, matches := range allMatches {
-			if command, ok := decodeJSStringLiteral(matches[1]); ok && command != "" {
+		for index, matches := range allMatches {
+			literal := payload.Input[matches[2]:matches[3]]
+			if command, ok := decodeJSStringLiteral(literal); ok && command != "" {
+				end := len(payload.Input)
+				if index+1 < len(allMatches) {
+					end = allMatches[index+1][0]
+				}
 				pending = append(pending, codexPendingCommand{
 					start:         codexCommandStart{command: command, eventTime: eventTime, arrival: arrival},
 					requiresProof: true,
+					yieldAfter:    customExecYieldAfter(payload.Input[matches[0]:end]),
 				})
 			}
 		}
@@ -1081,6 +1091,15 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 	for _, matches := range allMatches {
 		sessionID := firstNonEmpty(matches[1:]...)
 		if command, ok := state.sessions[sessionID]; ok {
+			pending = append(pending, command)
+			continue
+		}
+		if len(state.unproven) > 0 {
+			command := state.unproven[0]
+			state.unproven = state.unproven[1:]
+			command.sessionID = sessionID
+			command.requiresProof = true
+			state.sessions[sessionID] = command
 			pending = append(pending, command)
 		}
 	}
@@ -1124,6 +1143,18 @@ func (e *CodexExecutor) resolvePendingOutputs(pending []codexPendingCommand, out
 			continue
 		}
 		if !hasResult {
+			if commandCompletedBeforeYield(command, eventTime) {
+				e.emitCommandTiming(command.start, eventTime, arrival)
+			} else if command.sessionID == "" {
+				state.unproven = append(state.unproven, command)
+			}
+			continue
+		}
+		if result.hasExit {
+			if command.sessionID != "" {
+				delete(state.sessions, command.sessionID)
+			}
+			e.emitCommandTiming(command.start, eventTime, arrival)
 			continue
 		}
 		if result.sessionID != "" {
@@ -1139,14 +1170,31 @@ func (e *CodexExecutor) resolvePendingOutputs(pending []codexPendingCommand, out
 			state.cells[result.cellID] = append(state.cells[result.cellID], command)
 			continue
 		}
-		if !result.hasExit {
-			continue
-		}
-		if command.sessionID != "" {
-			delete(state.sessions, command.sessionID)
-		}
-		e.emitCommandTiming(command.start, eventTime, arrival)
 	}
+}
+
+func customExecYieldAfter(call string) time.Duration {
+	const defaultYield = 10 * time.Second
+	matches := customExecYieldPattern.FindStringSubmatch(call)
+	if len(matches) < 2 {
+		if customExecYieldKey.MatchString(call) {
+			return 0
+		}
+		return defaultYield
+	}
+	milliseconds, err := strconv.ParseInt(matches[1], 10, 64)
+	if err != nil || milliseconds <= 0 {
+		return 0
+	}
+	return time.Duration(milliseconds) * time.Millisecond
+}
+
+func commandCompletedBeforeYield(command codexPendingCommand, eventTime time.Time) bool {
+	const timestampMargin = 100 * time.Millisecond
+	if command.yieldAfter <= timestampMargin || command.start.eventTime.IsZero() || eventTime.IsZero() || eventTime.Before(command.start.eventTime) {
+		return false
+	}
+	return eventTime.Sub(command.start.eventTime)+timestampMargin < command.yieldAfter
 }
 
 func (e *CodexExecutor) emitCommandTiming(start codexCommandStart, eventTime, arrival time.Time) {
@@ -1227,8 +1275,8 @@ func parseStructuredCommandResult(output string) (codexCommandResult, bool) {
 	result := codexCommandResult{index: raw.Index}
 	result.sessionID = rawIDString(raw.SessionID)
 	result.cellID = rawIDString(raw.CellID)
-	var exitCode int
-	result.hasExit = json.Unmarshal(raw.ExitCode, &exitCode) == nil
+	var exitCode *int
+	result.hasExit = json.Unmarshal(raw.ExitCode, &exitCode) == nil && exitCode != nil
 	return result, result.sessionID != "" || result.cellID != "" || result.hasExit
 }
 

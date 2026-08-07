@@ -143,14 +143,14 @@ by tool-use ID and measures their arrival times; background Bash calls are
 omitted because their first result is not process completion. Codex accepts both
 legacy `exec_command` function calls and current custom `exec` rollout records,
 follows yielded sessions through continuation/wait events, and tails child-agent
-rollouts. Custom `exec` records must expose structured `session_id`/`exit_code`
-results; output-only records are omitted because they cannot prove whether the
-nested process completed or merely yielded. It prefers valid native event timestamps
-and falls back to arrival times; the fallback is approximate because the final drain
-can deliver buffered events late. Executors report completed shell commands; `ValidationTimer` alone
-performs classification and logs the canonical configured label rather than raw
-provider arguments. Unpaired commands and providers that omit tool events
-produce no timing lines.
+rollouts. For output-only custom records, it uses valid native timestamps to prove
+that a command returned before its configured yield threshold; calls at or beyond
+the threshold remain pending and attach to later session continuations. It otherwise
+prefers valid native event timestamps and falls back to arrival times; the fallback
+is approximate because the final drain can deliver buffered events late. Executors
+report completed shell commands; `ValidationTimer` alone performs classification
+and logs the canonical configured label rather than raw provider arguments.
+Unpaired commands and providers that omit tool events produce no timing lines.
 
 ## Code style
 

@@ -463,9 +463,10 @@ make it larger than section or run wall-clock time. Plans without validation com
 commands, incomplete commands, and provider streams without shell tool events produce no
 `validation:` lines. Claude measures stream-event arrival time. Codex prefers native rollout
 timestamps and falls back to approximate arrival time when timestamps are absent or invalid.
-Current Codex custom-tool records that expose only command output are omitted because they do
-not distinguish a completed nested process from one that yielded; structured session/exit
-results are required for timing those records safely.
+For current Codex custom-tool records that expose only command output, native timestamps can
+prove completion when the call returns before its configured yield threshold. Calls at or beyond
+that threshold remain pending and are paired with a later session continuation; ambiguous or
+abandoned calls produce no timing line.
 
 Start the dashboard:
 
