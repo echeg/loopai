@@ -1782,9 +1782,48 @@ func customExecCallIsAwaited(input string, callStart int) bool {
 		if location[1] > callStart || !ok || !customAssignmentPattern.MatchString(input[statementStart:location[0]]) {
 			continue
 		}
-		if closeIndex := strings.Index(input[location[1]:], "]"); closeIndex >= 0 && callStart < location[1]+closeIndex {
+		arrayOpen := location[1] - 1
+		arrayClose, closed := customDelimitedEnd(input, arrayOpen)
+		if closed && callStart < arrayClose && customDirectArrayElement(input, arrayOpen, arrayClose, callStart) {
 			return true
 		}
+	}
+	return false
+}
+
+// customDirectArrayElement reports whether callStart begins the complete array
+// element that contains it. Compound expressions can skip a textual call at
+// runtime, so they are not safe inputs for output-only completion inference.
+func customDirectArrayElement(input string, arrayOpen, arrayClose, callStart int) bool {
+	if arrayOpen < 0 || arrayClose > len(input) || arrayOpen >= arrayClose ||
+		callStart <= arrayOpen || callStart >= arrayClose {
+		return false
+	}
+	location := customExecCallPattern.FindStringIndex(input[callStart:arrayClose])
+	if len(location) != 2 || location[0] != 0 {
+		return false
+	}
+	callEnd, ok := customDelimitedEnd(input, callStart+location[1]-1)
+	if !ok || callEnd >= arrayClose {
+		return false
+	}
+
+	elements, valid := splitCustomTopLevel(input[arrayOpen+1:arrayClose], ',')
+	if !valid {
+		return false
+	}
+	cursor := arrayOpen + 1
+	for _, element := range elements {
+		offset := strings.Index(input[cursor:arrayClose], element)
+		if offset < 0 {
+			return false
+		}
+		elementStart := cursor + offset
+		elementEnd := elementStart + len(element)
+		if callStart >= elementStart && callStart < elementEnd {
+			return element == input[callStart:callEnd+1]
+		}
+		cursor = elementEnd
 	}
 	return false
 }
@@ -2047,12 +2086,19 @@ func (e *CodexExecutor) emitResolvedCommandTiming(command codexPendingCommand, p
 }
 
 func customExecYieldAfter(call string) time.Duration {
-	const defaultYield = 10 * time.Second
+	const (
+		defaultYield = 10 * time.Second
+		minYield     = 250 * time.Millisecond
+		maxYield     = 30 * time.Second
+	)
 	yieldAfter, configured := explicitYieldAfter(call)
-	if configured {
-		return yieldAfter
+	if !configured {
+		return defaultYield
 	}
-	return defaultYield
+	if yieldAfter <= 0 {
+		return 0
+	}
+	return max(minYield, min(yieldAfter, maxYield))
 }
 
 func customWriteStdinYieldAfter(call string) time.Duration {

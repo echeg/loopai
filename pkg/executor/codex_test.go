@@ -2426,6 +2426,7 @@ func TestCodexExecutor_trackRolloutCommandTiming_IgnoresUnawaitedAndConditionalC
 		`if (false) { const r = await tools.exec_command({cmd:"make test"}); text(r.output); }`,
 		`if (false) { text("skip"); const r = await tools.exec_command({cmd:"make test"}); text(r.output); }`,
 		`const commands = ["make test"]; if (false) { const r = await Promise.all(commands.map(cmd => tools.exec_command({cmd}))); text(JSON.stringify(r)); }`,
+		`const r = await Promise.all([false && tools.exec_command({cmd:"make test"})]); text(JSON.stringify(r));`,
 	} {
 		state := newCodexTimingState()
 		e.trackCustomToolCall(rolloutPayload{Name: "exec", CallID: "start", Input: input}, time.Now(), state, time.Now)
@@ -2523,6 +2524,26 @@ func TestCodexExecutor_trackRolloutCommandTiming_CustomExecInfersCompletionBefor
 		duration time.Duration
 	}{{command: "make test", duration: 400 * time.Millisecond}}, captured)
 	assert.Empty(t, state.unproven)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_ExecYieldMaximumRequiresCompletionProof(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:100000}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:30Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":"Script completed\nWall time 30 seconds\nOutput:\n"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Empty(t, captured)
+	assert.Len(t, state.unproven, 1)
 }
 
 func TestCodexExecutor_trackRolloutCommandTiming_UnprovenExecAttachesToContinuation(t *testing.T) {
@@ -2816,6 +2837,8 @@ func TestCustomExecYieldAfter_QuotedKeys(t *testing.T) {
 		{name: "double quoted literal", call: `{"yield_time_ms": 250}`, want: 250 * time.Millisecond},
 		{name: "single quoted literal", call: `{'yield_time_ms': 250}`, want: 250 * time.Millisecond},
 		{name: "bare literal", call: `{yield_time_ms: 250}`, want: 250 * time.Millisecond},
+		{name: "literal clamps minimum", call: `{yield_time_ms: 1}`, want: 250 * time.Millisecond},
+		{name: "literal clamps maximum", call: `{yield_time_ms: 100000}`, want: 30 * time.Second},
 		{name: "double quoted dynamic", call: `{"yield_time_ms": someVar}`, want: 0},
 		{name: "single quoted dynamic", call: `{'yield_time_ms': someVar}`, want: 0},
 	}
