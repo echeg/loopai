@@ -3857,6 +3857,27 @@ func TestBuildPRTitleBody(t *testing.T) {
 		assert.Contains(t, body, "Finished.")
 	})
 
+	t.Run("progress association outside the repository degrades to stats only", func(t *testing.T) {
+		parent := t.TempDir()
+		root := filepath.Join(parent, "repo")
+		require.NoError(t, os.MkdirAll(root, 0o750))
+		outside := filepath.Join(parent, "shared-plans")
+		require.NoError(t, os.MkdirAll(outside, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(outside, "20260802-original-plan.md"),
+			[]byte("# Out of tree feature\n\n## Overview\n\nUnreadable from the repository.\n"), 0o600))
+		progressDir := filepath.Join(root, ".loopai", "progress")
+		require.NoError(t, os.MkdirAll(progressDir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(progressDir, "progress-team-custom.txt"), []byte(
+			"# Loopai Progress Log\nPlan: "+filepath.Join(outside, "20260802-original-plan.md")+
+				"\nBranch: team/custom\nMode: full\n"), 0o600))
+
+		// the branch lookup accepts this record, but PR metadata must still not read outside the repo
+		title, body, err := buildPRTitleBody(root, "docs/plans", "team/custom", git.DiffStats{Files: 2})
+		require.NoError(t, err)
+		assert.Equal(t, "team/custom", title)
+		assert.Equal(t, "## Changes\n\n- Files changed: 2\n- Additions: 0\n- Deletions: 0", body)
+	})
+
 	t.Run("branch basename does not select unrelated plan", func(t *testing.T) {
 		root := t.TempDir()
 		writePlan(t, root, "20260802-foo.md", "# Unrelated foo plan\n\n## Overview\n\nWrong plan.\n")
@@ -6387,6 +6408,42 @@ func TestResolveFeatureBranchMatchesRecordAcrossPathSpellings(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "completed", "20260806-login.md"),
 			[]byte("# plan\n"), 0o600))
 		writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
+
+		got, err := resolveFeatureBranch(checker, repo, plansDir, "20260806-login")
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login", got)
+	})
+}
+
+// TestResolveFeatureBranchMatchesRecordOutsideRepo covers records whose plan path names no file
+// inside the repository: a supported out-of-tree plans_dir, and a checkout moved after the run.
+// Resolving the plan to a repo-contained file is what the PR-metadata half of the scan needs, not
+// the branch lookup, and dropping the record here silently falls back to filename derivation - so
+// --merge would merge and delete the unrelated "login" branch instead of the recorded "fix/login".
+func TestResolveFeatureBranchMatchesRecordOutsideRepo(t *testing.T) {
+	checker := fakeBranchChecker{branches: []string{"master", "login", "fix/login"}}
+
+	t.Run("plans dir outside the repository", func(t *testing.T) {
+		repo := setupTestRepo(t)
+		plansDir := filepath.Join(t.TempDir(), "shared-plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "20260806-login.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+		writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
+
+		got, err := resolveFeatureBranch(checker, repo, plansDir, "20260806-login")
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login", got)
+	})
+
+	t.Run("record naming a path the checkout no longer has", func(t *testing.T) {
+		repo := setupTestRepo(t)
+		plansDir := filepath.Join(repo, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260806-login.md"), []byte("# plan\n"), 0o600))
+		// the run recorded the absolute path of a checkout that has since been moved
+		stale := filepath.Join(t.TempDir(), "old-checkout", "docs", "plans", "20260806-login.md")
+		writeProgressRecord(t, repo, "progress-login.txt", stale, "fix/login", 1)
 
 		got, err := resolveFeatureBranch(checker, repo, plansDir, "20260806-login")
 		require.NoError(t, err)

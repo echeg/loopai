@@ -3110,7 +3110,9 @@ func findRecordedPRPlan(repoRoot, branch string) (string, error) {
 	var matched string
 	var matchedTime time.Time
 	for _, assoc := range assocs {
-		if assoc.branch != branch {
+		// planPath is empty when the recorded plan names no file inside the repository; the PR body
+		// is read from it, so only a repo-contained path is usable here
+		if assoc.branch != branch || assoc.planPath == "" {
 			continue
 		}
 		if matched == "" || assoc.modTime.After(matchedTime) {
@@ -3134,7 +3136,10 @@ func recordedBranchForPlan(progressRoot, planFile string) (string, error) {
 	var matched string
 	var matchedTime time.Time
 	for _, assoc := range assocs {
-		if planAssociationKey(assoc.planPath) != target {
+		// match the path the record actually names, not its repo-contained resolution: this lookup
+		// only needs the branch, so a plan the repository does not contain - an out-of-tree
+		// plans_dir, or a checkout moved since the run - must still supply it
+		if planAssociationKey(assoc.recordedPlan) != target {
 			continue
 		}
 		if matched == "" || assoc.modTime.After(matchedTime) {
@@ -3146,25 +3151,28 @@ func recordedBranchForPlan(progressRoot, planFile string) (string, error) {
 
 // planAssociationKey reduces a plan path to the identity used to match a progress record against a
 // resolved plan file. loopai already keys plans by filename everywhere - branch derivation, PR plan
-// lookup, and completed/ archiving all do - and matching that way survives the three ways the two
-// paths legitimately diverge: a case-insensitive filesystem handing back the caller's spelling, the
-// record naming the completed/ copy while the lookup found the active one, and the record living in
-// the primary checkout while the lookup ran in a linked worktree. Comparing absolute paths misses
-// all three, and a miss is the dangerous direction: it falls back to deriving the branch from the
-// filename, which is exactly what the recorded value exists to override.
+// lookup, and completed/ archiving all do - and matching that way survives the ways the two paths
+// legitimately diverge: a case-insensitive filesystem handing back the caller's spelling, the
+// record naming the completed/ copy while the lookup found the active one, the record living in
+// the primary checkout while the lookup ran in a linked worktree, and a plans directory outside
+// the repository. Comparing absolute paths misses all of them, and a miss is the dangerous
+// direction: it falls back to deriving the branch from the filename, which is exactly what the
+// recorded value exists to override.
 func planAssociationKey(path string) string {
 	return strings.ToLower(filepath.Base(path))
 }
 
 // progressAssociation pairs a branch with the plan file a past run recorded for it.
 type progressAssociation struct {
-	planPath string // existing plan path inside repoRoot, resolved from the recorded value
-	branch   string
-	modTime  time.Time
+	recordedPlan string // plan path exactly as the record names it
+	planPath     string // recordedPlan resolved inside repoRoot, empty when it names no file there
+	branch       string
+	modTime      time.Time
 }
 
 // readProgressAssociations collects the branch-to-plan pairings recorded in progress headers.
-// records naming no usable plan are skipped, so every returned pair carries both halves.
+// records naming no plan at all are skipped; a plan the repository does not contain still yields a
+// pair with an empty planPath, since only the PR-metadata consumer needs a readable in-repo file.
 func readProgressAssociations(repoRoot string) ([]progressAssociation, error) {
 	dir := filepath.Join(repoRoot, ".loopai", "progress")
 	entries, err := os.ReadDir(dir)
@@ -3204,11 +3212,12 @@ func readProgressAssociations(repoRoot string) ([]progressAssociation, error) {
 		if branch == "" || planPath == "" || planPath == "(no plan - review only)" {
 			continue
 		}
-		resolved := resolveRecordedPlan(repoRoot, planPath)
-		if resolved == "" {
-			continue
-		}
-		assocs = append(assocs, progressAssociation{planPath: resolved, branch: branch, modTime: info.ModTime()})
+		assocs = append(assocs, progressAssociation{
+			recordedPlan: planPath,
+			planPath:     resolveRecordedPlan(repoRoot, planPath),
+			branch:       branch,
+			modTime:      info.ModTime(),
+		})
 	}
 	return assocs, nil
 }
