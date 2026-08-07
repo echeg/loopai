@@ -55,14 +55,17 @@
 - [x] run tests - must pass before next task
 
 ### Task 2: Wire --cmux-workspace flag and hand-off in cmd/loopai
-- [ ] add `CmuxWorkspace bool` option with `long:"cmux-workspace"` and description "relaunch this run in a new cmux workspace so it gets its own sidebar card (no-op with a warning outside cmux)" to the options struct in `cmd/loopai/main.go`
-- [ ] add an arg-rebuild helper that takes `os.Args[1:]` and strips `--cmux-workspace` (bare and `=value` forms) — this is the recursion guard for the relaunched command
-- [ ] resolve the self-executable via `os.Executable()` and build `argv = [exe, filteredArgs...]`
-- [ ] add hand-off routing early in the run path (before executor resolution, config-independent, alongside the standalone close-out routing): when the flag is set, derive the workspace name from `plan.ExtractBranchName(planFile)` (fallback: `loopai`), call `cmux.SpawnWorkspace(name, cwd, argv)`; on success print "handed off to cmux workspace <name>" and exit 0; on `ErrNotInCmux` or any spawn failure print a warning and continue the normal run in the current terminal
-- [ ] ensure hand-off applies to both plan-execution and interactive `--plan` creation paths (interaction then happens in the new workspace terminal)
-- [ ] write table-driven tests for the arg-strip helper (flag absent, bare flag, `--cmux-workspace=true`, flag repeated, flag mixed among other args)
-- [ ] write tests for hand-off routing: outside cmux → warning and normal run continues (env unset); inside cmux with PATH-injected `cmux` stub → stub receives `new-workspace` call with expected name/cwd/command and process path exits before executor resolution; stub failing → warning and normal run continues
-- [ ] run tests - must pass before next task
+- [x] add `CmuxWorkspace bool` option with `long:"cmux-workspace"` and description "relaunch this run in a new cmux workspace so it gets its own sidebar card (no-op with a warning outside cmux)" to the options struct in `cmd/loopai/main.go`
+- [x] add an arg-rebuild helper that takes `os.Args[1:]` and strips `--cmux-workspace` (bare and `=value` forms) — this is the recursion guard for the relaunched command
+- [x] resolve the self-executable via `os.Executable()` and build `argv = [exe, filteredArgs...]`
+- [x] add hand-off routing early in the run path (before executor resolution, config-independent, alongside the standalone close-out routing): when the flag is set, derive the workspace name from `plan.ExtractBranchName(planFile)` (fallback: `loopai`), call `cmux.SpawnWorkspace(name, cwd, argv)`; on success print "handed off to cmux workspace <name>" and exit 0; on `ErrNotInCmux` or any spawn failure print a warning and continue the normal run in the current terminal
+- [x] ensure hand-off applies to both plan-execution and interactive `--plan` creation paths (interaction then happens in the new workspace terminal)
+- [x] write table-driven tests for the arg-strip helper (flag absent, bare flag, `--cmux-workspace=true`, flag repeated, flag mixed among other args)
+- [x] write tests for hand-off routing: outside cmux → warning and normal run continues (env unset); inside cmux with PATH-injected `cmux` stub → stub receives `new-workspace` call with expected name/cwd/command and process path exits before executor resolution; stub failing → warning and normal run continues
+- [x] run tests - must pass before next task
+- ➕ hand-off is routed from `handleEarlyFlags` (still config-independent, before executor resolution) instead of a separate branch in `run`, which keeps `run` under the gocyclo limit
+- ➕ standalone commands (`--clear`, `--merge`, `--pr`, `--init`, `--dump-defaults`, reset-only) are never handed off; the existing predicate in `clearStaleCmuxStatus` was extracted as `isStandaloneCommand` and shared
+- ➕ a `--branch` override wins over the plan-derived name, matching the branch the worktree run will actually use
 
 ### Task 3: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented (own card per run inside cmux, warning fallback outside cmux, no recursion, no behavior change without the flag)

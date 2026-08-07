@@ -77,6 +77,7 @@ type opts struct {
 	Init                    bool          `long:"init" description:"initialize local .loopai/ config directory in current project"`
 	Reset                   bool          `long:"reset" description:"interactively reset global config to embedded defaults"`
 	Clear                   bool          `long:"clear" description:"remove loopai cmux status pill"`
+	CmuxWorkspace           bool          `long:"cmux-workspace" description:"relaunch this run in a new cmux workspace so it gets its own sidebar card (no-op with a warning outside cmux)"`
 	Merge                   string        `long:"merge" optional:"true" optional-value:"" value-name:"base" description:"merge feature branch into base branch; positional argument names the feature (branch or plan), default current branch"`
 	PR                      string        `long:"pr" optional:"true" optional-value:"" value-name:"base" description:"push feature branch and create a GitHub pull request; positional argument names the feature (branch or plan), default current branch"`
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
@@ -2255,6 +2256,14 @@ func runReset(configDir string, stdin io.Reader, stdout io.Writer) error {
 // handleEarlyFlags processes flags that should run before full config load (--clear, --reset, --dump-defaults).
 // returns (true, nil) if an early exit occurred, (true, err) on error, or (false, nil) to continue.
 func handleEarlyFlags(o opts) (bool, error) {
+	// hand the run over to a fresh cmux workspace before any dependency is built, so the actual
+	// run inherits that workspace and owns its sidebar card alone. it comes before the utilities
+	// below so a --reset preceding a run is performed once, in the new workspace. config is
+	// deliberately not needed here, the child re-reads it there.
+	if handOffToCmuxWorkspace(o, os.Args[1:], os.Stdout, os.Stderr) {
+		return true, nil
+	}
+
 	if o.Clear {
 		clearCmuxStatus(os.Stdout)
 		return true, nil
@@ -2291,11 +2300,81 @@ func clearCmuxStatus(stdout io.Writer) {
 	rep.Clear()
 }
 
+// handOffToCmuxWorkspace relaunches this invocation in a new cmux workspace and reports whether
+// the caller must stop. hand-off is best-effort like the rest of the cmux integration: outside
+// cmux, or when workspace creation fails, a warning is printed and false is returned so the run
+// continues in the current terminal. standalone commands are excluded, they are short synchronous
+// commands whose output belongs to the terminal the user typed them in.
+func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) bool {
+	if !o.CmuxWorkspace || isStandaloneCommand(o) {
+		return false
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: resolve executable: %v\n", err)
+		return false
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: resolve working directory: %v\n", err)
+		return false
+	}
+
+	name := cmuxWorkspaceName(o)
+	argv := append([]string{exe}, stripCmuxWorkspaceArg(args)...)
+	if err := cmux.SpawnWorkspace(name, cwd, argv); err != nil {
+		fmt.Fprintf(stderr, "warning: cmux workspace hand-off failed, running here: %v\n", err)
+		return false
+	}
+	fmt.Fprintf(stdout, "handed off to cmux workspace %s\n", name)
+	return true
+}
+
+// cmuxWorkspaceName titles the new workspace after the branch the run will use, so sidebar cards
+// line up with .loopai/worktrees/<branch>. plan creation has no plan file yet and falls back to
+// the app name.
+func cmuxWorkspaceName(o opts) string {
+	if name := strings.TrimSpace(o.Branch); name != "" {
+		return name
+	}
+	// an empty plan file must not reach ExtractBranchName: filepath.Base("") is "."
+	if strings.TrimSpace(o.PlanFile) == "" {
+		return "loopai"
+	}
+	if name := strings.TrimSpace(plan.ExtractBranchName(o.PlanFile)); name != "" {
+		return name
+	}
+	return "loopai"
+}
+
+// stripCmuxWorkspaceArg removes --cmux-workspace from the arguments the new workspace is
+// relaunched with, which is the recursion guard: the child performs a normal run. the flag is
+// boolean, so it never consumes a following argument and only its own token has to go.
+func stripCmuxWorkspaceArg(args []string) []string {
+	const flag = "--cmux-workspace"
+	filtered := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == flag || strings.HasPrefix(a, flag+"=") {
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	return filtered
+}
+
 func clearStaleCmuxStatus(o opts) {
-	if o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || (o.Reset && isResetOnly(o)) {
+	if isStandaloneCommand(o) {
 		return
 	}
 	cmux.New("", cmux.Models{}).Clear()
+}
+
+// isStandaloneCommand reports whether the invocation is a config utility or close-out command
+// rather than a run. those own no sidebar state, so they neither replace a previous run's pill
+// nor get handed over to a new cmux workspace.
+func isStandaloneCommand(o opts) bool {
+	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || (o.Reset && isResetOnly(o))
 }
 
 // prepareStaleCmuxStatus clears immediately for definite runs. When --serve might become
