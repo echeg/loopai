@@ -499,6 +499,59 @@ func TestReporterFinish(t *testing.T) {
 	}
 }
 
+func TestReporterFailedFinishFallsBackToClearingStatus(t *testing.T) {
+	runner := &fakeRunner{err: errors.New("cmux refused final status")}
+	r := testReporter(t, runner)
+
+	r.Finish(true, "12s")
+	assert.False(t, r.finished, "a failed final write must not make the active pill persistent")
+	r.Stop()
+
+	assert.Equal(t, [][]string{
+		{"set-status", "loopai", "done in 12s", "--icon", "bolt", "--color", "#34c759", "--priority", "90"},
+		{"workspace", "loading", "off", "--id", "loopai"},
+		{"clear-progress"},
+		{"clear-status", "loopai"},
+	}, runner.recorded())
+}
+
+func TestReporterQuiesceMakesFinalStatusTheLastSidebarCommand(t *testing.T) {
+	runner := &fakeRunner{}
+	r := testReporter(t, runner)
+
+	r.Start(t.Context())
+	r.Quiesce()
+	r.Finish(true, "12s")
+	afterFinish := runner.recorded()
+	r.Stop()
+
+	assert.Equal(t, afterFinish, runner.recorded(), "Stop after final publication must issue no later cleanup")
+	assert.Equal(t, [][]string{
+		{"set-status", "loopai", "starting", "--icon", "hourglass", "--color", "#3b82f6", "--priority", "90"},
+		{"workspace", "loading", "on", "--id", "loopai"},
+		{"workspace", "loading", "off", "--id", "loopai"},
+		{"clear-progress"},
+		{"set-status", "loopai", "done in 12s", "--icon", "bolt", "--color", "#34c759", "--priority", "90"},
+	}, afterFinish)
+}
+
+func TestReporterReleasePreservesPillAcrossSuccessorStartup(t *testing.T) {
+	runner := &fakeRunner{}
+	predecessor := testReporter(t, runner)
+	successor := testReporter(t, runner)
+
+	predecessor.Start(t.Context())
+	predecessor.Quiesce()
+	successor.Start(t.Context())
+	predecessor.Release()
+	afterRelease := runner.recorded()
+	predecessor.Stop()
+
+	assert.Equal(t, afterRelease, runner.recorded(), "the predecessor must not erase successor state")
+	assert.NotContains(t, afterRelease, []string{"clear-status", "loopai"})
+	successor.Stop()
+}
+
 func TestReporterStopAfterFinishPreservesPill(t *testing.T) {
 	runner := &fakeRunner{}
 	r := testReporter(t, runner)
@@ -817,8 +870,8 @@ func TestReporterOnPhaseAfterStop(t *testing.T) {
 
 	assert.Equal(t, [][]string{
 		{"workspace", "loading", "off", "--id", "loopai"},
-		{"clear-status", "loopai"},
 		{"clear-progress"},
+		{"clear-status", "loopai"},
 	}, runner.recorded(), "a phase change after stop must not re-add the pill")
 }
 
@@ -831,8 +884,8 @@ func TestReporterOnSectionAfterStop(t *testing.T) {
 
 	assert.Equal(t, [][]string{
 		{"workspace", "loading", "off", "--id", "loopai"},
-		{"clear-status", "loopai"},
 		{"clear-progress"},
+		{"clear-status", "loopai"},
 	}, runner.recorded(), "a review section after stop must not re-add the pill")
 }
 
@@ -863,8 +916,8 @@ func TestReporterStopWaitsForSectionUpdateInFlight(t *testing.T) {
 	assert.Equal(t, [][]string{
 		{"set-status", "loopai", "review · iteration 2", "--icon", "magnifyingglass", "--color", "#06b6d4", "--priority", "90"},
 		{"workspace", "loading", "off", "--id", "loopai"},
-		{"clear-status", "loopai"},
 		{"clear-progress"},
+		{"clear-status", "loopai"},
 	}, runner.recorded())
 }
 
@@ -901,8 +954,8 @@ func TestReporterStopWaitsForPillUpdateInFlight(t *testing.T) {
 	assert.Equal(t, [][]string{
 		{"set-status", "loopai", "review", "--icon", "magnifyingglass", "--color", "#06b6d4", "--priority", "90"},
 		{"workspace", "loading", "off", "--id", "loopai"},
-		{"clear-status", "loopai"},
 		{"clear-progress"},
+		{"clear-status", "loopai"},
 	}, runner.recorded(), "the pill clear must land after the update it waited out")
 }
 
@@ -1157,8 +1210,8 @@ func TestReporterStop(t *testing.T) {
 	require.GreaterOrEqual(t, len(afterFirst), 5)
 	assert.Equal(t, [][]string{
 		{"workspace", "loading", "off", "--id", "loopai"},
-		{"clear-status", "loopai"},
 		{"clear-progress"},
+		{"clear-status", "loopai"},
 	}, afterFirst[len(afterFirst)-3:], "stop must clear every sidebar artifact")
 
 	r.mu.Lock()
@@ -1242,8 +1295,8 @@ func TestReporterStopWithoutStart(t *testing.T) {
 	assert.NotPanics(t, func() { r.Stop() })
 	assert.Equal(t, [][]string{
 		{"workspace", "loading", "off", "--id", "loopai"},
-		{"clear-status", "loopai"},
 		{"clear-progress"},
+		{"clear-status", "loopai"},
 	}, runner.recorded(), "stop without start must still clear the sidebar")
 }
 
@@ -1265,8 +1318,8 @@ func TestReporterStopConcurrent(t *testing.T) {
 	calls := runner.recorded()
 	assert.Equal(t, [][]string{
 		{"workspace", "loading", "off", "--id", "loopai"},
-		{"clear-status", "loopai"},
 		{"clear-progress"},
+		{"clear-status", "loopai"},
 	}, calls[len(calls)-3:], "concurrent stops must clear exactly once")
 }
 

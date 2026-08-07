@@ -72,6 +72,10 @@
 - [x] run linter (`make lint`) - all issues must be fixed
 - [x] verify test coverage meets project standard (80%+) for the new code paths
 - [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] ➕ quiesce reporter polling/spinner/progress before repository cleanup and publish the final/free pill last
+- [x] ➕ retain the non-final reservation while interactive plan creation hands off through branch/worktree setup
+- [x] ➕ reserve ambiguous combined `--reset --serve` startup before its prompt, then clear it if config confirms watch-only mode
+- [x] ➕ clear an active pill when the final status write fails instead of treating the failed write as persistent
 
 ### Task 4: [Final] Update documentation
 - [x] update README.md: `--cmux-workspace[=always|auto]` semantics and the busy-detection rule

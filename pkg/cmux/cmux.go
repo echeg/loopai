@@ -191,16 +191,18 @@ type Reporter struct {
 	timeout  time.Duration // per-call timeout
 	interval time.Duration // plan file poll interval
 
-	mu        sync.Mutex         // guards the poller handles below, Stop may run on another goroutine
-	cancel    context.CancelFunc // stops the poll goroutine, nil until Start
-	startDone chan struct{}      // closed when synchronous Start setup has returned
-	pollDone  chan struct{}      // closed by the poll goroutine on exit, nil until Start
-	stopOnce  sync.Once          // Stop runs at most once, it is called from a defer and from the interrupt handler
+	mu          sync.Mutex         // guards the poller handles below, Stop may run on another goroutine
+	cancel      context.CancelFunc // stops the poll goroutine, nil until Start
+	startDone   chan struct{}      // closed when synchronous Start setup has returned
+	pollDone    chan struct{}      // closed by the poll goroutine on exit, nil until Start
+	quiesceOnce sync.Once          // transient reporting is torn down at most once
+	stopOnce    sync.Once          // Stop runs at most once, it is called from a defer and from the interrupt handler
 
 	// statusMu is held across a pill update, so Stop taking it waits out an update in flight and
 	// the clear can never be overtaken by a set. stopped gates updates once Stop began.
 	statusMu sync.Mutex
 	started  bool
+	quiesced bool
 	stopped  bool
 	finished bool
 
@@ -357,12 +359,16 @@ func (r *Reporter) exec(args ...string) {
 // execContext is exec with caller cancellation. Start and the progress poller use it so Stop can
 // cancel an in-flight setup/update before issuing the final cleanup commands.
 func (r *Reporter) execContext(parent context.Context, args ...string) {
+	_ = r.execResult(parent, args...)
+}
+
+func (r *Reporter) execResult(parent context.Context, args ...string) error {
 	if r == nil || r.runner == nil {
-		return
+		return ErrNotInCmux
 	}
 	ctx, cancel := context.WithTimeout(parent, r.timeout)
 	defer cancel()
-	_ = r.runner.run(ctx, args...) // best-effort by design, the error is intentionally dropped
+	return r.runner.run(ctx, args...)
 }
 
 // loadingOnContext shows the spinner in the sidebar and moves the workspace lane to "working".
@@ -377,7 +383,11 @@ func (r *Reporter) loadingOff() { r.exec("workspace", "loading", "off", "--id", 
 // setStatus sets the loopai pill in the tab row. empty icon or color skip their own flags,
 // leaving the cmux-side default instead of passing an empty value.
 func (r *Reporter) setStatus(text, icon, color string) {
-	r.exec(statusArgs(text, icon, color)...)
+	_ = r.setStatusResult(text, icon, color)
+}
+
+func (r *Reporter) setStatusResult(text, icon, color string) error {
+	return r.execResult(context.Background(), statusArgs(text, icon, color)...)
 }
 
 func statusArgs(text, icon, color string) []string {
@@ -410,9 +420,7 @@ func (r *Reporter) Reserve() error {
 	r.statusMu.Lock()
 	defer r.statusMu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
-	defer cancel()
-	if err := r.runner.run(ctx, statusArgs(startingStatus, "hourglass", "#3b82f6")...); err != nil {
+	if err := r.setStatusResult(startingStatus, "hourglass", "#3b82f6"); err != nil {
 		return fmt.Errorf("reserve cmux workspace status: %w", err)
 	}
 	return nil
@@ -461,20 +469,23 @@ func (r *Reporter) Finish(success bool, detail string) {
 	}
 
 	detail = strings.TrimSpace(detail)
+	var err error
 	if success {
 		text := finalDonePrefix
 		if detail != "" {
 			text += " in " + detail
 		}
-		r.setStatus(text, "bolt", "#34c759")
+		err = r.setStatusResult(text, "bolt", "#34c759")
 	} else {
 		text := finalFailedPrefix
 		if detail != "" && len([]rune(detail)) <= failureDetailLimit {
 			text += " · " + detail
 		}
-		r.setStatus(text, "exclamationmark.triangle", "#ff3b30")
+		err = r.setStatusResult(text, "exclamationmark.triangle", "#ff3b30")
 	}
-	r.finished = true
+	if err == nil {
+		r.finished = true
+	}
 }
 
 // Start publishes the startup reservation, shows the spinner, and begins polling the plan file for
@@ -488,7 +499,7 @@ func (r *Reporter) Start(ctx context.Context) {
 	startDone := make(chan struct{})
 
 	r.statusMu.Lock()
-	if r.started || r.stopped || r.finished {
+	if r.started || r.quiesced || r.stopped || r.finished {
 		r.statusMu.Unlock()
 		cancel()
 		return
@@ -588,20 +599,19 @@ func (r *Reporter) reportProgressContext(ctx context.Context) {
 	r.setProgressContext(ctx, float64(done)/float64(total), fmt.Sprintf("%d/%d tasks", done, total))
 }
 
-// Stop ends background polling, waits for the goroutine to exit and removes transient sidebar
-// artifacts. A final pill installed by Finish is preserved. Stop is safe to call twice and safe
-// to call without a preceding Start, which matters because it runs both from a defer and from the
-// interrupt handler.
-func (r *Reporter) Stop() {
+// Quiesce ends background polling and removes the spinner and progress bar while preserving the
+// current non-final pill. Completion paths use it before repository cleanup so Finish can publish
+// the final/free pill as the last sidebar operation.
+func (r *Reporter) Quiesce() {
 	if r == nil {
 		return
 	}
-	r.stopOnce.Do(func() {
+	r.quiesceOnce.Do(func() {
 		// Cancel Start/poll commands before cleanup. Waiting for the synchronous Start section is
 		// bounded by the current command's context-aware timeout, so a loading-on call cannot land
 		// after loading-off and recreate a stale spinner.
 		r.mu.Lock()
-		cancel, startDone, pollDone := r.cancel, r.startDone, r.pollDone
+		cancel, startDone := r.cancel, r.startDone
 		r.mu.Unlock()
 
 		if cancel != nil {
@@ -610,24 +620,60 @@ func (r *Reporter) Stop() {
 		if startDone != nil {
 			<-startDone
 		}
+		r.mu.Lock()
+		pollDone := r.pollDone
+		r.mu.Unlock()
 		// the spinner is cleared before joining the poller; its in-flight command was canceled above
 		r.loadingOff()
 
-		// Gate pill producers before clearing status. Taking statusMu waits out an update in flight,
-		// so no set-status call can land after the clear below.
+		// Gate non-final pill producers while still allowing Finish to install the outcome later.
 		r.statusMu.Lock()
-		r.stopped = true
-		finished := r.finished
+		r.quiesced = true
 		r.statusMu.Unlock()
 
 		if pollDone != nil {
 			<-pollDone
 		}
 		// after the poller is gone, so a tick in flight cannot re-add the bar behind the clear
+		r.clearProgress()
+	})
+}
+
+// Release transfers ownership of the preserved pill to a successor reporter. It is used when
+// interactive plan creation continues into execution: setup remains visibly busy, while the old
+// reporter's deferred Stop cannot erase the successor's state.
+func (r *Reporter) Release() {
+	if r == nil {
+		return
+	}
+	r.Quiesce()
+	r.statusMu.Lock()
+	r.stopped = true
+	r.statusMu.Unlock()
+}
+
+// Stop ends reporting and removes non-final status. A successfully installed final pill is
+// preserved. Stop is safe to call twice and safe to call without a preceding Start.
+func (r *Reporter) Stop() {
+	if r == nil {
+		return
+	}
+	r.stopOnce.Do(func() {
+		r.Quiesce()
+
+		// Taking statusMu waits out an update in flight, so no set-status call can overtake the clear.
+		r.statusMu.Lock()
+		if r.stopped {
+			r.statusMu.Unlock()
+			return
+		}
+		r.stopped = true
+		finished := r.finished
+		r.statusMu.Unlock()
+
 		if !finished {
 			r.clearStatus()
 		}
-		r.clearProgress()
 	})
 }
 
@@ -714,8 +760,8 @@ func (c *notifyingCollector) AskDraftReview(ctx context.Context, question, planC
 }
 
 // OnPhase updates the pill on a phase change, the signature matches status.PhaseHolder.OnChange.
-// after Stop it does nothing: the observer is called from the execution goroutine, which outlives
-// the sidebar teardown on the force-exit path, and a late pill would then never be cleared.
+// after Quiesce or Stop it does nothing: the observer is called from the execution goroutine, which
+// may outlive sidebar teardown, and a late pill would then never be cleared.
 // Notify is deliberately not gated the same way — a banner is transient and needs no cleanup.
 func (r *Reporter) OnPhase(_, cur status.Phase) {
 	if r == nil {
@@ -723,7 +769,7 @@ func (r *Reporter) OnPhase(_, cur status.Phase) {
 	}
 	r.statusMu.Lock()
 	defer r.statusMu.Unlock()
-	if r.stopped || r.finished {
+	if r.quiesced || r.stopped || r.finished {
 		return
 	}
 	s := styleForPhase(cur)
@@ -737,7 +783,7 @@ func (r *Reporter) OnLimitWait(waitLabel string) {
 	}
 	r.statusMu.Lock()
 	defer r.statusMu.Unlock()
-	if r.stopped || r.finished {
+	if r.quiesced || r.stopped || r.finished {
 		return
 	}
 	s := styleForPhase(status.PhaseLimitWait)
@@ -752,7 +798,7 @@ func (r *Reporter) OnLimitRecovery(text string) {
 	}
 	r.statusMu.Lock()
 	defer r.statusMu.Unlock()
-	if r.stopped || r.finished {
+	if r.quiesced || r.stopped || r.finished {
 		return
 	}
 	s := styleForPhase(status.PhaseLimitWait)
@@ -778,7 +824,7 @@ func (r *Reporter) OnSection(section status.Section) {
 
 	r.statusMu.Lock()
 	defer r.statusMu.Unlock()
-	if r.stopped || r.finished {
+	if r.quiesced || r.stopped || r.finished {
 		return
 	}
 	s := styleForPhase(phase)

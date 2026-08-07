@@ -217,6 +217,7 @@ type executePlanRequest struct {
 	BranchOverride   string              // branch name override (--branch flag); empty = derive from plan filename
 	WtCleanup        *cleanupHolder      // worktree cleanup for interrupt handler; nil when not in worktree mode
 	CmuxStop         *cleanupHolder      // cmux sidebar reset for interrupt handler; nil when not wired
+	CmuxHandoff      func()              // releases a quiesced predecessor after this reporter starts
 	BeforeCmuxFinish func(bool)          // final repository/log cleanup; bool reports execution success
 	ProgressLog      *progress.Logger    // pre-created logger (worktree mode); nil in normal mode
 	PhaseHolder      *status.PhaseHolder // pre-created holder (worktree mode); nil in normal mode
@@ -341,8 +342,8 @@ func run(ctx context.Context, o opts) error {
 		return runCloseoutCommand(ctx, o, cfg, colors)
 	}
 	watchOnly := isWatchOnlyMode(o, cfg.WatchDirs)
-	autoWorkspaceReserved = ensureAutoWorkspaceReservation(
-		o, !watchOnly, autoWorkspaceReserved, cmuxStop, os.Stderr)
+	autoWorkspaceReserved = resolveAutoWorkspaceReservationAfterConfig(
+		o, watchOnly, autoWorkspaceReserved, cmuxStop, os.Stderr)
 	resolveStaleCmuxStatus(preserveLocalCmuxStatus(watchOnly, autoWorkspaceReserved))
 
 	// create notification service (nil if no channels configured)
@@ -445,13 +446,15 @@ func run(ctx context.Context, o opts) error {
 
 // prepareRunBeforeConfig decides hand-off before taking a local reservation: otherwise auto mode
 // would see its own "starting" pill and always classify the workspace as busy. Local utilities run
-// after reservation because a combined --reset + run may block for input at its first prompt.
+// after reservation because a combined --reset + run may block for input at its first prompt. A
+// maybe-watch-only reset also reserves until the post-reset config proves whether execution follows.
 func prepareRunBeforeConfig(o opts, cmuxStop *cleanupHolder) (done, reserved, preserve bool, err error) {
 	if stop, handOffErr := handOffToCmuxWorkspace(o, os.Args[1:], os.Stdout, os.Stderr); handOffErr != nil || stop {
 		return stop, false, handOffSucceeded(o, handOffErr), handOffErr
 	}
 
-	reserved = ensureAutoWorkspaceReservation(o, !mayBeWatchOnlyMode(o), false, cmuxStop, os.Stderr)
+	reserveBeforeConfig := !mayBeWatchOnlyMode(o) || o.Reset
+	reserved = ensureAutoWorkspaceReservation(o, reserveBeforeConfig, false, cmuxStop, os.Stderr)
 	if earlyDone, earlyErr := handleEarlyFlags(o); earlyErr != nil || earlyDone {
 		return earlyDone, reserved, preserveLocalCmuxStatus(false, reserved), earlyErr
 	}
@@ -779,6 +782,9 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		req.CmuxStop.set(rep.Stop)
 	}
 	rep.Start(ctx)
+	if req.CmuxHandoff != nil {
+		req.CmuxHandoff()
+	}
 
 	validationCommands := make([]string, 0)
 	if req.PlanFile != "" {
@@ -937,6 +943,7 @@ func finishCmuxAfterCleanup(
 	branch, elapsed string,
 	runErr error,
 ) {
+	rep.Quiesce()
 	plr.closeLog()
 	if req.BeforeCmuxFinish != nil {
 		req.BeforeCmuxFinish(runErr == nil)
@@ -1089,6 +1096,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		BaseRef:          req.BaseRef,
 		NotifySvc:        req.NotifySvc,
 		CmuxStop:         req.CmuxStop,
+		CmuxHandoff:      req.CmuxHandoff,
 		BeforeCmuxFinish: beforeCmuxFinish,
 		ProgressLog:      baseLog,
 		PhaseHolder:      holder,
@@ -2268,9 +2276,10 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	// continue with plan implementation
 	req.Colors.Info().Printf("\ncontinuing with plan implementation...\n")
 
-	// hand the sidebar over to the execution reporter: stop this one before the next one takes
-	// the same keys, otherwise the deferred Stop would clear the execution run's own state
-	rep.Stop()
+	// Keep the non-final pill in place across branch/worktree setup, but tear down this reporter's
+	// spinner and polling before the execution reporter takes ownership.
+	rep.Quiesce()
+	cmuxHandoff := rep.Release
 
 	// worktree mode: create worktree and run from there
 	if req.Config.WorktreeEnabled {
@@ -2285,6 +2294,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 			NotifySvc:      req.NotifySvc,
 			WtCleanup:      req.WtCleanup,
 			CmuxStop:       req.CmuxStop,
+			CmuxHandoff:    cmuxHandoff,
 			BranchOverride: req.BranchOverride,
 			ExternalReview: req.ExternalReview,
 			LimitRecovery:  req.LimitRecovery,
@@ -2295,7 +2305,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	if err := req.GitSvc.CreateBranchForPlan(planFile, req.DefaultBranch, req.BranchOverride); err != nil {
 		wrapped := fmt.Errorf("create branch for plan: %w", err)
 		// the handoff dies before executePlan gets its own reporter, so this one raises the banner.
-		// Stop above only tore down the sidebar; notifications are not sidebar state and still go out
+		// Quiesce only tore down transient state; the deferred Stop clears the preserved pill.
 		notifyCmuxCompletion(rep, planFile, branch, baseLog.Elapsed(), wrapped)
 		return wrapped
 	}
@@ -2310,6 +2320,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		BaseRef:        req.BaseRef,
 		NotifySvc:      req.NotifySvc,
 		CmuxStop:       req.CmuxStop,
+		CmuxHandoff:    cmuxHandoff,
 		ExternalReview: req.ExternalReview,
 		LimitRecovery:  req.LimitRecovery,
 	})
@@ -2432,7 +2443,8 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bo
 }
 
 // ensureAutoWorkspaceReservation marks an eligible local auto-mode run busy before lengthy
-// startup. Possible watch-only runs are ineligible until config resolves their watch directories.
+// startup. Possible watch-only runs are normally ineligible until config resolves their watch
+// directories; combined resets opt in earlier because their prompt may change that configuration.
 // The cleanup holder owns the reservation until a normal reporter replaces it, clearing "starting"
 // on every startup error and on interrupts without erasing a later final pill.
 func ensureAutoWorkspaceReservation(o opts, eligible, reserved bool, cmuxStop *cleanupHolder, stderr io.Writer) bool {
@@ -2448,6 +2460,23 @@ func ensureAutoWorkspaceReservation(o opts, eligible, reserved bool, cmuxStop *c
 	}
 	cmuxStop.set(rep.Stop)
 	return true
+}
+
+func resolveAutoWorkspaceReservationAfterConfig(
+	o opts,
+	watchOnly, reserved bool,
+	cmuxStop *cleanupHolder,
+	stderr io.Writer,
+) bool {
+	reserved = ensureAutoWorkspaceReservation(o, !watchOnly, reserved, cmuxStop, stderr)
+	if !watchOnly || !reserved {
+		return reserved
+	}
+	// A combined reset may have needed a reservation while its prompt was blocking, before
+	// configuration could prove the invocation was dashboard-only. Release that temporary
+	// ownership once no execution run will follow.
+	cmuxStop.call()
+	return false
 }
 
 func preserveLocalCmuxStatus(watchOnly, autoWorkspaceReserved bool) bool {

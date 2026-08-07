@@ -268,11 +268,14 @@ func TestExecutePlan_PlanParseFailureUsesReporterAfterWorktreeHandoff(t *testing
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
 	missingPlan := filepath.Join(dir, "docs", "plans", "removed.md")
+	handedOff := false
 	err = executePlan(t.Context(), opts{NoColor: true}, executePlanRequest{
 		PlanFile: missingPlan, Mode: processor.ModeFull, GitSvc: gitSvc,
 		Config: &config.Config{}, Colors: testColors(), BaseRef: "master",
+		CmuxHandoff: func() { handedOff = true },
 	})
 	require.ErrorContains(t, err, "parse plan validation commands")
+	assert.True(t, handedOff, "the predecessor must release ownership once the execution reporter starts")
 
 	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path is a test-owned file under t.TempDir
 	require.NoError(t, readErr)
@@ -6364,6 +6367,50 @@ func TestFinishCmuxCompletion_NilReporter(t *testing.T) {
 	})
 }
 
+func TestFinishCmuxAfterCleanupPublishesFinalStatusLast(t *testing.T) {
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "cmux"), []byte(script), 0o755)) //nolint:gosec // test fixture must be executable
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	t.Setenv("CMUX_ARGV_LOG", argvLog)
+
+	rep := cmux.New("plan.md", cmux.Models{})
+	require.NotNil(t, rep)
+	rep.Start(t.Context())
+
+	logClosed := false
+	plr := progressLogResult{closeLog: func() {
+		logClosed = true
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
+		require.NoError(t, err)
+		commands := string(recorded)
+		assert.Contains(t, commands, "workspace loading off --id loopai")
+		assert.Contains(t, commands, "clear-progress")
+		assert.NotContains(t, commands, "set-status loopai done", "final status must follow log cleanup")
+	}}
+	req := executePlanRequest{PlanFile: "plan.md", BeforeCmuxFinish: func(success bool) {
+		assert.True(t, success)
+		assert.True(t, logClosed)
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
+		require.NoError(t, err)
+		assert.NotContains(t, string(recorded), "set-status loopai done", "final status must follow repository cleanup")
+	}}
+
+	finishCmuxAfterCleanup(req, plr, rep, "branch", "12s", nil)
+	recorded, err := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
+	require.NoError(t, err)
+	beforeStop := string(recorded)
+	assert.True(t, strings.HasSuffix(strings.TrimSpace(beforeStop),
+		"set-status loopai done in 12s --icon bolt --color #34c759 --priority 90"))
+
+	rep.Stop()
+	recorded, err = os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
+	require.NoError(t, err)
+	assert.Equal(t, beforeStop, string(recorded), "no old-reporter cleanup may follow the final/free pill")
+}
+
 func TestRunCleanupBounded(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -8422,6 +8469,107 @@ func TestRunAutoReservesBeforeCombinedResetPrompt(t *testing.T) {
 		require.Error(t, runErr, "the synthetic .git marker is not a usable repository")
 	case <-time.After(5 * time.Second):
 		t.Fatal("run did not return after reset input was released")
+	}
+}
+
+func TestRunAutoReservesBeforeAmbiguousResetServePrompt(t *testing.T) {
+	argvLog := cmuxAutoStub(t, "loopai=done in 1m icon=bolt\n", 0)
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	chdirRepoRoot(t)
+
+	stdinReader, stdinWriter, err := os.Pipe()
+	require.NoError(t, err)
+	originalStdin := os.Stdin
+	os.Stdin = stdinReader
+	t.Cleanup(func() {
+		os.Stdin = originalStdin
+		_ = stdinReader.Close()
+		_ = stdinWriter.Close()
+	})
+
+	done := make(chan error, 1)
+	configDir := t.TempDir()
+	go func() {
+		done <- run(t.Context(), opts{
+			CmuxWorkspace: "auto",
+			Reset:         true,
+			Serve:         true,
+			ConfigDir:     configDir,
+			NoColor:       true,
+		})
+	}()
+
+	require.Eventually(t, func() bool {
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
+		return readErr == nil && strings.Contains(string(recorded), "set-status\nloopai\nstarting")
+	}, 2*time.Second, 10*time.Millisecond,
+		"bare --serve may become a normal run, so reset must reserve before blocking")
+
+	_, err = stdinWriter.WriteString("n\nn\nn\n")
+	require.NoError(t, err)
+	require.NoError(t, stdinWriter.Close())
+
+	select {
+	case runErr := <-done:
+		require.Error(t, runErr, "the synthetic .git marker is not a usable repository")
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return after reset input was released")
+	}
+}
+
+func TestRunAutoReleasesResetReservationForConfirmedWatchOnlyMode(t *testing.T) {
+	argvLog := cmuxAutoStub(t, "loopai=done in 1m icon=bolt\n", 0)
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	t.Chdir(t.TempDir())
+
+	configDir := t.TempDir()
+	watchDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"),
+		fmt.Appendf(nil, "watch_dirs = %s\n", watchDir), 0o600))
+
+	stdinReader, stdinWriter, err := os.Pipe()
+	require.NoError(t, err)
+	originalStdin := os.Stdin
+	os.Stdin = stdinReader
+	t.Cleanup(func() {
+		os.Stdin = originalStdin
+		_ = stdinReader.Close()
+		_ = stdinWriter.Close()
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, opts{
+			CmuxWorkspace: "auto",
+			Reset:         true,
+			Serve:         true,
+			Port:          0,
+			ConfigDir:     configDir,
+			NoColor:       true,
+		})
+	}()
+
+	require.Eventually(t, func() bool {
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
+		return readErr == nil && strings.Contains(string(recorded), "set-status\nloopai\nstarting")
+	}, 2*time.Second, 10*time.Millisecond)
+	_, err = stdinWriter.WriteString("n\nn\nn\n")
+	require.NoError(t, err)
+	require.NoError(t, stdinWriter.Close())
+
+	require.Eventually(t, func() bool {
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
+		return readErr == nil && strings.Contains(string(recorded), "clear-status\nloopai")
+	}, 3*time.Second, 10*time.Millisecond,
+		"the temporary reset reservation must be cleared once config proves the run is dashboard-only")
+	cancel()
+
+	select {
+	case runErr := <-done:
+		require.NoError(t, runErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("watch-only run did not stop after cancellation")
 	}
 }
 
