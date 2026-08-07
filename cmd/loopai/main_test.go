@@ -7739,7 +7739,9 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		// the plan path still resolves from here, so only the repository-root check stands between
 		// the user and a focused workspace whose run dies on "must run from repository root".
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, PlanFile: "plans/p.md"}
+		// a subdirectory has no .git, so the refusal consults read-only config; ConfigDir keeps that
+		// lookup off the developer's real ~/.config/loopai, whose vcs_command would decide this test.
+		o := opts{CmuxWorkspace: true, ConfigDir: t.TempDir(), PlanFile: "plans/p.md"}
 		assert.False(t, handOffStops(t, o, []string{"plans/p.md"}, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off skipped, running here: not a repository root")
@@ -7916,7 +7918,7 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 	t.Run("unresolvable plan file continues the normal run", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
-		t.Chdir(t.TempDir())
+		chdirRepoRoot(t) // the marker keeps the repository-root guard from refusing first
 
 		// handing off would create and focus a workspace whose run dies on the same missing file,
 		// while this terminal reported success and exited 0.
