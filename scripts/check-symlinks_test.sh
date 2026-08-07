@@ -34,6 +34,10 @@ add_skill loopai-plan
 add_skill loopai-update
 "$checker" "$fixture"
 
+rm "$fixture/assets/claude/skills/loopai-plan/SKILL.md" "$fixture/assets/claude/loopai-plan.md"
+expect_failure "missing skill file"
+add_skill loopai-plan
+
 printf '%s\n' '# missing frontmatter' >"$fixture/assets/claude/skills/loopai/SKILL.md"
 expect_failure "invalid skill frontmatter"
 printf '%s\n' '---' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai/SKILL.md"

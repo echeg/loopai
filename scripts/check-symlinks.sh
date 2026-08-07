@@ -23,10 +23,15 @@ if [[ "$actual_skills" != "$expected_skills" ]]; then
 	fail "unexpected skill inventory (expected: $(tr '\n' ' ' <<<"$expected_skills"))"
 fi
 
-while IFS= read -r skill_file; do
-	skill_name="$(basename "$(dirname "$skill_file")")"
+while IFS= read -r skill_name; do
+	skill_file="$skills_dir/$skill_name/SKILL.md"
 	link="$claude_dir/$skill_name.md"
 	expected_target="./skills/$skill_name/SKILL.md"
+
+	if [[ ! -f "$skill_file" ]]; then
+		fail "missing skill file: $skill_file"
+		continue
+	fi
 
 	if [[ "$(sed -n '1p' "$skill_file")" != "---" ]] ||
 		! awk 'NR > 1 && /^description:[[:space:]]*[^[:space:]]/ { description = 1 }
@@ -49,7 +54,7 @@ while IFS= read -r skill_file; do
 		fail "broken skill symlink: $link -> $actual_target"
 	fi
 
-done < <(find "$skills_dir" -mindepth 2 -maxdepth 2 -type f -name SKILL.md -print | sort)
+done <<<"$expected_skills"
 
 while IFS= read -r link; do
 	skill_name="$(basename "$link" .md)"
