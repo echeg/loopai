@@ -6492,6 +6492,23 @@ func TestWorktreeCmuxFinishCleanup(t *testing.T) {
 	}
 }
 
+func TestWorktreeFinishStateTracksExecutionOutcomeIndependentlyOfReturnValue(t *testing.T) {
+	var cleanupOutcomes []bool
+	state := worktreeFinishState{cleanup: func(success bool) {
+		cleanupOutcomes = append(cleanupOutcomes, success)
+	}}
+
+	state.beforeCmuxFinish(false)
+
+	assert.False(t, state.succeeded, "a user abort must not become worktree success when executePlan returns nil")
+	assert.Equal(t, []bool{false}, cleanupOutcomes)
+
+	state.beforeCmuxFinish(true)
+
+	assert.True(t, state.succeeded)
+	assert.Equal(t, []bool{false, true}, cleanupOutcomes)
+}
+
 func TestFinishCmuxAfterCleanupPublishesFinalStatusLast(t *testing.T) {
 	binDir := t.TempDir()
 	argvLog := filepath.Join(binDir, "argv.log")

@@ -1080,21 +1080,23 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		restoreCWD()
 		removeWorktree()
 	}
-	beforeCmuxFinish := worktreeCmuxFinishCleanup(
+	finishState := worktreeFinishState{cleanup: worktreeCmuxFinishCleanup(
 		wt.resumed, o.Serve, restoreCWD, removeWorktree, closeLog,
 		func() {
 			// During execution, resumed worktrees must survive interruption. Once execution has
 			// succeeded and only the dashboard is alive, force-exit cleanup may remove it too.
 			req.WtCleanup.set(cleanup)
 		},
-	)
+	)}
 
 	setupDone = true // disable safety-net defer, main cleanup takes over
 	if wt.resumed {
 		req.WtCleanup.set(restoreCWD)
 		defer func() {
 			restoreCWD()
-			if err == nil {
+			// executePlan deliberately returns nil for a user abort. Use its internal completion
+			// outcome instead of the public return value so aborted work remains resumable.
+			if finishState.succeeded {
 				removeWorktree()
 				return
 			}
@@ -1128,12 +1130,25 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		NotifySvc:        req.NotifySvc,
 		CmuxStop:         req.CmuxStop,
 		CmuxHandoff:      req.CmuxHandoff,
-		BeforeCmuxFinish: beforeCmuxFinish,
+		BeforeCmuxFinish: finishState.beforeCmuxFinish,
 		ProgressLog:      baseLog,
 		PhaseHolder:      holder,
 		ExternalReview:   req.ExternalReview,
 		LimitRecovery:    req.LimitRecovery,
 	})
+}
+
+// worktreeFinishState keeps repository cleanup keyed to execution completion rather than the
+// public executePlan error. User abort is intentionally a successful CLI exit, but it is not a
+// completed execution and a resumed worktree must remain available for retry.
+type worktreeFinishState struct {
+	succeeded bool
+	cleanup   func(bool)
+}
+
+func (s *worktreeFinishState) beforeCmuxFinish(success bool) {
+	s.succeeded = success
+	s.cleanup(success)
 }
 
 func worktreeCmuxFinishCleanup(
