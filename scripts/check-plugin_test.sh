@@ -40,6 +40,14 @@ expect_success() {
 write_valid_manifests
 expect_success "valid manifests are accepted"
 
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"./","version":"1.2.3-rc.1+build.5"}]}' > "$fixture/.claude-plugin/marketplace.json"
+printf '%s\n' '{"name":"loopai","version":"1.2.3-rc.1+build.5","skills":"./assets/claude/skills/"}' > "$fixture/.claude-plugin/plugin.json"
+expect_success "semantic prerelease manifest versions are accepted"
+
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"./","version":"banana"}]}' > "$fixture/.claude-plugin/marketplace.json"
+printf '%s\n' '{"name":"loopai","version":"banana","skills":"./assets/claude/skills/"}' > "$fixture/.claude-plugin/plugin.json"
+expect_failure "non-semantic manifest versions are rejected" "marketplace.json must describe"
+
 rm "$fixture/.claude-plugin/marketplace.json"
 expect_failure "a missing marketplace manifest is rejected" "missing .claude-plugin/marketplace.json"
 

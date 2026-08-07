@@ -1,7 +1,7 @@
 {
   "name": "loopai",
-  "version": "0.1.3",
-  "description": "Autonomous plan execution with Claude Code, including task execution, monitoring, and plan creation",
+  "version": "0.2.9",
+  "description": "Claude Code workflows for autonomous execution, planning, adversarial plan critique, and cross-model plan comparison",
   "author": {
     "name": "echeg"
   },

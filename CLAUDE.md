@@ -21,10 +21,11 @@ The fork does not contain upstream packaging/release infrastructure or the upstr
 ```bash
 make build      # build .bin/loopai
 make test       # asset checks, race-enabled unit tests with coverage, provider-wrapper suites
-make check-symlinks # validate the five Claude skill assets and links
+make check-symlinks # validate the six Claude skill assets and links
 make test-symlinks  # regression tests for Claude skill asset validation
 make check-plugin   # validate Claude plugin and marketplace manifests
 make test-plugin    # regression tests for manifest validation
+make test-grill-skill # validate loopai-grill metadata and workflow contracts
 make test-wrappers # all retained provider-wrapper and wrapper-doc suites
 make lint       # golangci-lint
 make fmt        # gofmt and goimports
@@ -65,7 +66,7 @@ scripts/             provider wrappers and internal test helpers
 scripts/copilot-as-claude/ # GitHub Copilot CLI wrapper for Claude-compatible output
 scripts/pi-as-claude/ # pi wrapper for Claude-compatible output
 assets/claude/skills/ canonical Claude Code plugin skill sources
-assets/claude/loopai*.md standalone-command compatibility symlinks
+assets/claude/loopai*.md legacy standalone-command compatibility symlinks
 .claude-plugin/      Claude Code plugin and marketplace manifests
 docs/                focused operational documentation and plans
 ```
@@ -74,17 +75,49 @@ The top-level `assets/claude/loopai*.md` files are symlinks to the matching
 `assets/claude/skills/loopai*/SKILL.md` sources. Keep the command name,
 directory name, and link target aligned; `make check-symlinks` rejects broken,
 missing, incorrect, and orphan links, requires skill descriptions, and verifies
-the exact skill inventory. The current set is `loopai`, `loopai-plan`, `loopai-brainstorm`,
-`loopai-adopt`, and `loopai-update`; every added skill needs the matching
-top-level symlink. When adding or removing a skill, update `expected_skills` in
-`scripts/check-symlinks.sh`, update the valid fixture inventory in
-`scripts/check-symlinks_test.sh`, and bump both manifest versions.
+the exact skill inventory. The current set is `loopai`, `loopai-plan`,
+`loopai-brainstorm`, `loopai-adopt`, `loopai-update`, and `loopai-grill`; every
+added skill needs the matching top-level symlink. When adding or removing a
+skill, update `expected_skills` in `scripts/check-symlinks.sh` and the valid
+fixture inventory in `scripts/check-symlinks_test.sh`, then bump both manifest
+versions.
+
+Standalone installation must copy the complete directories under
+`assets/claude/skills/`, not dereference only the top-level Markdown symlinks;
+`loopai-grill` depends on bundled scripts addressed through
+`${CLAUDE_SKILL_DIR}` and requires Python 3 in a POSIX environment (Linux,
+macOS, or Windows via WSL) for its path helper.
 
 `.claude-plugin/marketplace.json` exposes this repository as the `loopai`
 marketplace, and `.claude-plugin/plugin.json` points Claude Code at the skill
 directory. Whenever any skill changes, bump the version in both manifests so
 installed copies receive the update. Keep the marketplace entry version equal
 to the plugin version.
+
+`loopai-grill` has two safety-sensitive routes. Grill mode critiques an active
+plan and applies only user-selected verified findings; plan-off creates one new
+plan and never edits its source. Both reject completed, symlinked, nested, and
+`.loopai/` plans. The skill pre-approves no Claude tools. Its bundled path
+helper rejects symlinked plan and `.loopai` roots, rejects hard-linked plans,
+validates outside-repository scratch directories, identity-and-content-guards
+active-plan replacements without overwriting concurrent writers, retains and
+reports each displaced inode in Git-private non-stageable storage so late
+pre-opened-descriptor writes remain recoverable, and performs
+locked atomic no-clobber final creation. Plan and draft reads are capped at
+8 MiB. Its Claude and Codex wrappers snapshot
+only tracked and non-ignored untracked single-link regular files through
+descriptor-anchored no-follow reads while excluding `.git/`, `.loopai/`,
+recovery paths, and their case aliases, reject files over 64 MiB and snapshots
+over 512 MiB, confine model reads to isolated temporary directories, and reject
+in-worktree alternate Git directories. The Claude wrapper exposes only
+read-only repository tools and disables user/project customizations; the Codex
+wrapper requires strict-config and permission-profile support, disables
+user/project config, rules, MCP and external tools, strips
+credential-like shell variables, and starts an ephemeral session without
+approval escalation. Candidate and judging scratch files live outside the
+repository and are removed on every exit. Grill mode reports Codex failure
+and degrades to Claude-only; plan-off requires Codex and fails closed. When
+these contracts change, update and run `scripts/check-grill-skill_test.sh`.
 
 ## Configuration
 
@@ -298,8 +331,10 @@ The full suite is required because configuration and progress paths cross packag
 `make test` first validates Claude skill assets and plugin manifests, runs their
 regression suites and shell-completion checks, then runs the race-enabled Go
 suite with coverage and every retained provider-wrapper and wrapper-documentation
-shell suite. The asset and manifest checks require Bash and `jq`. CI runs the
-same focused asset, manifest, completion, and wrapper checks.
+shell suite. The asset and manifest checks require Bash and `jq`; the focused
+`test-grill-skill` suite checks the grill skill's metadata and operational
+contracts. CI runs the same focused asset, manifest, grill-skill, completion,
+and wrapper checks.
 
 Dashboard e2e:
 

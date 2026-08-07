@@ -30,6 +30,7 @@ expect_failure() {
 add_skill loopai
 add_skill loopai-adopt
 add_skill loopai-brainstorm
+add_skill loopai-grill
 add_skill loopai-plan
 add_skill loopai-update
 "$checker" "$fixture"

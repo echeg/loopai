@@ -87,7 +87,7 @@ claude plugin marketplace add echeg/loopai
 claude plugin install loopai@loopai
 ```
 
-The plugin provides five skills:
+The plugin provides six skills:
 
 - `loopai:loopai` launches loopai, monitors progress, and resumes active runs
 - `loopai:loopai-plan` creates an executable implementation plan
@@ -96,6 +96,37 @@ The plugin provides five skills:
 - `loopai:loopai-adopt` converts an existing specification or issue into a plan
 - `loopai:loopai-update` merges updated embedded defaults into local
   customizations
+- `loopai:loopai-grill` critiques an existing plan with Claude and Codex, or
+  runs a plan-off that compares and synthesizes competing plans
+
+Use the namespaced plugin command to review the newest active plan, review a
+specific plan, or generate a competing-plan comparison:
+
+```text
+/loopai:loopai-grill
+/loopai:loopai-grill docs/plans/example.md
+/loopai:loopai-grill compare "add a small feature"
+/loopai:loopai-grill compare docs/plans/example.md
+```
+
+With no path, the skill proposes the newest active plan for confirmation. Grill
+mode applies only the verified findings you select; if Codex is unavailable or
+fails, it reports that and continues with Claude critics. Compare mode requires
+Codex, never edits a source plan, and creates one new plan without overwriting
+an existing path. Both modes reject completed plans, symlinked plans or plan
+directories, and anything under `.loopai/`; plan-consuming Claude calls run
+with read-only tools against an equivalent sanitized snapshot to Codex.
+Active-plan edits fail if the reviewed file identity or content
+changes, and no-clobber publication preserves concurrent writers. Successful
+edits report and retain the displaced plan under a Git-private, non-stageable
+recovery path so a late write through a previously opened descriptor remains
+recoverable. The skill requires a POSIX environment (Linux, macOS, or Windows
+via WSL), Python 3, and Git for descriptor-anchored Claude and Codex snapshots
+that exclude ignored files, hard-linked files, every symlink path, and case
+aliases of private directories, reject individual files over 64 MiB and
+snapshots over 512 MiB, and reject in-worktree alternate Git directories.
+Active plans and generated drafts are limited to 8 MiB. Standalone
+skill copies use `/loopai-grill` instead of the namespaced plugin command.
 
 The CLI remains the execution engine. The plugin adds Claude Code workflows
 for planning and operating it. Refresh the marketplace and plugin when a new
@@ -113,15 +144,18 @@ claude plugin uninstall loopai@loopai
 claude plugin marketplace remove loopai
 ```
 
-To install standalone command copies instead:
+To install standalone skill copies instead:
 
 ```bash
-install -d ~/.claude/commands
-cp -L assets/claude/loopai*.md ~/.claude/commands/
+install -d ~/.claude/skills
+cp -R assets/claude/skills/loopai* ~/.claude/skills/
 ```
 
-Standalone copies are not managed by Claude Code's plugin updater. After
-pulling a newer repository version, rerun the copy command to refresh them.
+This keeps each skill's bundled resources, including the safety helpers used by
+`loopai-grill`. Standalone copies are not managed by Claude Code's plugin
+updater. After pulling a newer repository version, rerun the copy command to
+refresh them. If replacing older command-file copies, remove only the
+`~/.claude/commands/loopai*.md` files that you previously installed.
 
 When migrating from umputun's upstream plugin, remove its plugin and marketplace
 after installing this one:
