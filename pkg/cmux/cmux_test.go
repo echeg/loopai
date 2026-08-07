@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -26,6 +27,17 @@ type fakeRunner struct {
 	block  time.Duration  // when set, run waits for it or for ctx cancellation
 	ctxErr error          // context error observed by the last blocking call
 	onCall func([]string) // when set, called with argv before run returns
+}
+
+type fakeOutputRunner struct {
+	output string
+	err    error
+	calls  [][]string
+}
+
+func (f *fakeOutputRunner) runOutput(_ context.Context, args ...string) (string, error) {
+	f.calls = append(f.calls, append([]string(nil), args...))
+	return f.output, f.err
 }
 
 func (f *fakeRunner) run(ctx context.Context, args ...string) error {
@@ -121,9 +133,9 @@ func writePlan(t *testing.T, content string) string {
 }
 
 // writeFakeBin creates an executable file in dir so exec.LookPath can find it.
-func writeFakeBin(t *testing.T, dir, name string) {
+func writeFakeBin(t *testing.T, dir string) {
 	t.Helper()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755)) //nolint:gosec // test fixture must be executable
+	require.NoError(t, os.WriteFile(filepath.Join(dir, binName), []byte("#!/bin/sh\nexit 0\n"), 0o755)) //nolint:gosec // test fixture must be executable
 }
 
 // writeStderrBin writes an executable that echoes CMUX_TEST_STDERR on stderr and exits with code,
@@ -213,7 +225,7 @@ func TestStderrDetail(t *testing.T) {
 
 func TestNew(t *testing.T) {
 	binDir := t.TempDir()
-	writeFakeBin(t, binDir, binName)
+	writeFakeBin(t, binDir)
 	emptyDir := t.TempDir()
 
 	tests := []struct {
@@ -254,7 +266,7 @@ func TestNew(t *testing.T) {
 
 func TestNewUnsetWorkspaceEnv(t *testing.T) {
 	binDir := t.TempDir()
-	writeFakeBin(t, binDir, binName)
+	writeFakeBin(t, binDir)
 	t.Setenv("PATH", binDir)
 	t.Setenv(workspaceEnv, "ws-1")
 	require.NoError(t, os.Unsetenv(workspaceEnv))
@@ -1285,6 +1297,87 @@ func TestExecRunner(t *testing.T) {
 	})
 }
 
+func TestExecRunnerOutput(t *testing.T) {
+	t.Run("captures stdout", func(t *testing.T) {
+		out, err := (&execRunner{bin: "sh"}).runOutput(t.Context(), "-c", "printf 'loopai=task'")
+		require.NoError(t, err)
+		assert.Equal(t, "loopai=task", out)
+	})
+
+	t.Run("command failure is wrapped", func(t *testing.T) {
+		_, err := (&execRunner{bin: "sh"}).runOutput(t.Context(), "-c", "exit 4")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exit status 4")
+	})
+
+	t.Run("grandchild holding stdout is bounded", func(t *testing.T) {
+		start := time.Now()
+		_, err := (&execRunner{bin: "sh"}).runOutput(t.Context(), "-c", "sleep 10 & printf ready")
+		require.Error(t, err)
+		assert.Less(t, time.Since(start), time.Second)
+		assert.ErrorIs(t, err, exec.ErrWaitDelay)
+	})
+}
+
+func TestWorkspaceBusyFromStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{name: "no loopai pill", out: "claude_code=working icon=brain\nprogress=2/4", want: false},
+		{name: "final done pill", out: "loopai=done in 3h39m icon=bolt color=#34c759 priority=90", want: false},
+		{name: "final failed pill", out: "loopai=failed · detail icon=exclamationmark.triangle color=#ff3b30", want: false},
+		{name: "active phase pill", out: "loopai=external review (gpt-5.6-sol:high) · iteration 2 icon=person.2 color=#a855f7 priority=90", want: true},
+		{name: "other agents before loopai", out: "claude_code=done icon=brain\nloopai=task priority=90\ncodex=review", want: true},
+		{name: "empty output", out: "", want: false},
+		{name: "malformed lines", out: "loopai task\n=missing-key\nloopai", want: false},
+		{name: "metadata can begin with any supported field", out: "loopai=planning priority=90 icon=hammer", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, workspaceBusyFromStatus(tt.out))
+		})
+	}
+}
+
+func TestWorkspaceBusy(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeBin(t, binDir)
+
+	t.Run("no workspace env", func(t *testing.T) {
+		t.Setenv("PATH", binDir)
+		t.Setenv(workspaceEnv, "")
+		_, err := WorkspaceBusy()
+		assert.ErrorIs(t, err, ErrNotInCmux)
+	})
+
+	t.Run("no binary in path", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		t.Setenv(workspaceEnv, "ws-1")
+		_, err := WorkspaceBusy()
+		assert.ErrorIs(t, err, ErrNotInCmux)
+	})
+
+	t.Run("runner failure is propagated", func(t *testing.T) {
+		wantErr := errors.New("list-status failed")
+		runner := &fakeOutputRunner{err: wantErr}
+		busy, err := workspaceBusy(runner, time.Second)
+		assert.False(t, busy)
+		require.ErrorIs(t, err, wantErr)
+		assert.Equal(t, [][]string{{"list-status"}}, runner.calls)
+	})
+
+	t.Run("successful query is parsed", func(t *testing.T) {
+		runner := &fakeOutputRunner{output: "loopai=task icon=hammer"}
+		busy, err := workspaceBusy(runner, time.Second)
+		require.NoError(t, err)
+		assert.True(t, busy)
+		assert.Equal(t, [][]string{{"list-status"}}, runner.calls)
+	})
+}
+
 // fakeCollector records the arguments it receives and returns canned values.
 type fakeCollector struct {
 	question    string
@@ -1430,7 +1523,7 @@ func TestShellQuote(t *testing.T) {
 
 func TestSpawnWorkspace(t *testing.T) {
 	binDir := t.TempDir()
-	writeFakeBin(t, binDir, binName)
+	writeFakeBin(t, binDir)
 
 	t.Run("no workspace env", func(t *testing.T) {
 		t.Setenv("PATH", binDir)

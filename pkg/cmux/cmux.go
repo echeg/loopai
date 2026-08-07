@@ -25,6 +25,10 @@ const (
 	// execTimeout bounds a single cmux CLI call, the socket is local so a hanging call must not stall the run.
 	execTimeout = 2 * time.Second
 
+	// outputWaitDelay bounds waiting for output pipes after the cmux client exits or its context is
+	// canceled. This protects output-capturing calls from a grandchild that inherited stdout.
+	outputWaitDelay = 100 * time.Millisecond
+
 	// spawnTimeout bounds cmux new-workspace. it is far more generous than execTimeout because
 	// creating a workspace starts a terminal instead of updating a label, and because a timeout here
 	// is ambiguous rather than merely cosmetic: cmux may have created the workspace already while the
@@ -54,6 +58,11 @@ const (
 	// statusPriority orders the loopai pill among other pills in the tab row.
 	statusPriority = "90"
 
+	// final pill prefixes are shared by Finish and workspace busy detection so the producer and
+	// consumer of the persistent completion status cannot drift apart.
+	finalDonePrefix   = "done"
+	finalFailedPrefix = "failed"
+
 	// notifyTitle is the title of every notification loopai raises, i.e. the app name on the banner.
 	// same text as statusKey but a separate constant: one is a cmux entry key, the other is user-visible.
 	notifyTitle = "loopai"
@@ -80,6 +89,12 @@ type commandRunner interface {
 	run(ctx context.Context, args ...string) error
 }
 
+// outputRunner runs a cmux query and returns stdout. It is deliberately separate from
+// commandRunner because reporter commands must continue discarding all output.
+type outputRunner interface {
+	runOutput(ctx context.Context, args ...string) (string, error)
+}
+
 // execRunner is the default runner shelling out to the cmux binary, output is discarded.
 type execRunner struct {
 	bin string
@@ -96,6 +111,16 @@ func (r *execRunner) run(ctx context.Context, args ...string) error {
 		return fmt.Errorf("run %s %s: %w", r.bin, strings.Join(args, " "), err)
 	}
 	return nil
+}
+
+func (r *execRunner) runOutput(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, r.bin, args...)
+	cmd.WaitDelay = outputWaitDelay
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("run %s %s: %w", r.bin, strings.Join(args, " "), err)
+	}
+	return string(out), nil
 }
 
 // spawnRunner runs cmux new-workspace and carries what cmux printed on stderr into the error. the
@@ -223,6 +248,51 @@ var ErrNotInCmux = errors.New("not running inside cmux")
 // on a clean refusal, since falling back to a run cmux may already have started duplicates it.
 var ErrSpawnAmbiguous = errors.New("workspace creation timed out with an unknown outcome")
 
+// WorkspaceBusy reports whether the current cmux workspace has a non-final loopai status pill.
+// The absence of cmux itself is reported with ErrNotInCmux, matching SpawnWorkspace.
+func WorkspaceBusy() (bool, error) {
+	if strings.TrimSpace(os.Getenv(workspaceEnv)) == "" {
+		return false, fmt.Errorf("%s is not set: %w", workspaceEnv, ErrNotInCmux)
+	}
+	bin, err := exec.LookPath(binName)
+	if err != nil {
+		return false, fmt.Errorf("no %s binary in PATH: %w", binName, ErrNotInCmux)
+	}
+	return workspaceBusy(&execRunner{bin: bin}, execTimeout)
+}
+
+// workspaceBusy is the runner-injectable core of WorkspaceBusy.
+func workspaceBusy(runner outputRunner, timeout time.Duration) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	out, err := runner.runOutput(ctx, "list-status")
+	if err != nil {
+		return false, fmt.Errorf("query cmux workspace status: %w", err)
+	}
+	return workspaceBusyFromStatus(out), nil
+}
+
+// workspaceBusyFromStatus parses cmux list-status output. Metadata begins at a documented
+// space-prefixed field, so spaces and suffixes in the human-readable pill text are preserved.
+func workspaceBusyFromStatus(out string) bool {
+	for line := range strings.SplitSeq(out, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) != statusKey {
+			continue
+		}
+		text := value
+		for _, suffix := range []string{" icon=", " color=", " priority="} {
+			if i := strings.Index(text, suffix); i >= 0 {
+				text = text[:i]
+			}
+		}
+		text = strings.TrimSpace(text)
+		return !strings.HasPrefix(text, finalDonePrefix) && !strings.HasPrefix(text, finalFailedPrefix)
+	}
+	return false
+}
+
 // SpawnWorkspace creates a new cmux workspace running argv in cwd and titled name.
 //
 // unlike the Reporter methods this is not best-effort: the error is returned so the caller can
@@ -271,7 +341,7 @@ func spawnWorkspace(runner commandRunner, timeout time.Duration, name, cwd strin
 }
 
 // shellQuote wraps s in POSIX single quotes, ending and reopening the quoted run around every
-// literal quote ('\''). the result is safe in sh, bash and zsh alike, since nothing but the closing
+// literal quote ('\”). the result is safe in sh, bash and zsh alike, since nothing but the closing
 // quote is special inside a single-quoted string.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
@@ -368,13 +438,13 @@ func (r *Reporter) Finish(success bool, detail string) {
 
 	detail = strings.TrimSpace(detail)
 	if success {
-		text := "done"
+		text := finalDonePrefix
 		if detail != "" {
 			text += " in " + detail
 		}
 		r.setStatus(text, "bolt", "#34c759")
 	} else {
-		text := "failed"
+		text := finalFailedPrefix
 		if detail != "" && len([]rune(detail)) <= failureDetailLimit {
 			text += " · " + detail
 		}

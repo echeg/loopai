@@ -47,12 +47,12 @@
 ## Implementation Steps
 
 ### Task 1: Add busy-workspace query to pkg/cmux
-- [ ] extend the runner layer with output capture: add an output-returning call (e.g. `runOutput(ctx, args...) (string, error)` on `execRunner`, surfaced through a small interface the query function accepts) — keep the existing discard-output `run` untouched for all reporter paths; set `cmd.WaitDelay` on the capturing path so a grandchild inheriting the pipe cannot block `Wait` past the context deadline (the exact hazard the discard-output design avoids)
-- [ ] extract the final-pill prefixes used by `Reporter.Finish` (`done`, `failed`) into shared unexported constants so `Finish` and the busy check cannot drift apart
-- [ ] add `WorkspaceBusy() (bool, error)`: availability check like `SpawnWorkspace` (missing env or binary → `ErrNotInCmux`); run `cmux list-status`, parse lines for a `loopai=` entry (key up to first `=`, text up to the ` icon=`/` color=`/` priority=` suffix or line end); busy = pill present and its text does not start with a final-pill prefix; no pill or final pill → not busy
-- [ ] write table-driven tests for the list-status line parsing (no loopai pill, final `done in 3h39m` pill, final `failed · detail` pill, phase pill with model and iteration suffix, other agents' pills present, empty output, malformed lines)
-- [ ] write tests for `WorkspaceBusy` availability errors (missing env, missing binary → `ErrNotInCmux`) and runner failure propagation
-- [ ] run tests - must pass before next task
+- [x] extend the runner layer with output capture: add an output-returning call (e.g. `runOutput(ctx, args...) (string, error)` on `execRunner`, surfaced through a small interface the query function accepts) — keep the existing discard-output `run` untouched for all reporter paths; set `cmd.WaitDelay` on the capturing path so a grandchild inheriting the pipe cannot block `Wait` past the context deadline (the exact hazard the discard-output design avoids)
+- [x] extract the final-pill prefixes used by `Reporter.Finish` (`done`, `failed`) into shared unexported constants so `Finish` and the busy check cannot drift apart
+- [x] add `WorkspaceBusy() (bool, error)`: availability check like `SpawnWorkspace` (missing env or binary → `ErrNotInCmux`); run `cmux list-status`, parse lines for a `loopai=` entry (key up to first `=`, text up to the ` icon=`/` color=`/` priority=` suffix or line end); busy = pill present and its text does not start with a final-pill prefix; no pill or final pill → not busy
+- [x] write table-driven tests for the list-status line parsing (no loopai pill, final `done in 3h39m` pill, final `failed · detail` pill, phase pill with model and iteration suffix, other agents' pills present, empty output, malformed lines)
+- [x] write tests for `WorkspaceBusy` availability errors (missing env, missing binary → `ErrNotInCmux`) and runner failure propagation
+- [x] run tests - must pass before next task
 
 ### Task 2: Evolve --cmux-workspace flag to optional always/auto
 - [ ] change `CmuxWorkspace` in the options struct from `bool` to `string` with `long:"cmux-workspace" optional:"true" optional-value:"always" choice:"always" choice:"auto"` and an updated description ("relaunch in a new cmux workspace: bare/always = unconditionally, auto = only when the current workspace already runs loopai")
