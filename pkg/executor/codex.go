@@ -719,8 +719,9 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 	}
 	states := make(map[string]*rolloutTailState)
 	knownParents := map[string]bool{sessionID: true}
+	discovery := newRolloutDiscovery()
 	rootInfo, _ := os.Stat(path)
-	e.discoverRolloutStates(path, rootInfo, states, knownParents)
+	e.discoverRolloutStates(path, rootInfo, states, knownParents, discovery)
 	if _, ok := states[path]; !ok {
 		log.Printf("codex rollout file open failed (%s); assistant output streaming disabled for this session", path)
 		return
@@ -732,14 +733,14 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 	}()
 
 	for {
-		e.discoverRolloutStates(path, rootInfo, states, knownParents)
+		e.discoverRolloutStates(path, rootInfo, states, knownParents, discovery)
 		for _, state := range states {
 			e.drainRolloutState(state, now, idleTouch, false)
 		}
 		select {
 		case <-ctx.Done():
 			// final drain after codex exits — pick up any late-flushed events
-			e.discoverRolloutStates(path, rootInfo, states, knownParents)
+			e.discoverRolloutStates(path, rootInfo, states, knownParents, discovery)
 			for _, state := range states {
 				e.drainRolloutState(state, now, idleTouch, true)
 			}
@@ -749,7 +750,21 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 	}
 }
 
-func (e *CodexExecutor) discoverRolloutStates(rootPath string, rootInfo os.FileInfo, states map[string]*rolloutTailState, knownParents map[string]bool) {
+type rolloutDiscovery struct {
+	parents map[string]string
+}
+
+func newRolloutDiscovery() *rolloutDiscovery {
+	return &rolloutDiscovery{parents: make(map[string]string)}
+}
+
+func (e *CodexExecutor) discoverRolloutStates(
+	rootPath string,
+	rootInfo os.FileInfo,
+	states map[string]*rolloutTailState,
+	knownParents map[string]bool,
+	discovery *rolloutDiscovery,
+) {
 	for {
 		added := false
 		matches, _ := filepath.Glob(filepath.Join(filepath.Dir(rootPath), "rollout-*.jsonl"))
@@ -758,7 +773,7 @@ func (e *CodexExecutor) discoverRolloutStates(rootPath string, rootInfo os.FileI
 				continue
 			}
 			render := candidate == rootPath
-			if !render && !e.isRelatedChildRollout(candidate, rootInfo, knownParents) {
+			if !render && !e.shouldDiscoverChildRollout(candidate, rootInfo, knownParents, discovery) {
 				continue
 			}
 			state, err := newRolloutTailState(candidate, render)
@@ -777,16 +792,32 @@ func (e *CodexExecutor) discoverRolloutStates(rootPath string, rootInfo os.FileI
 	}
 }
 
-func (e *CodexExecutor) isRelatedChildRollout(path string, rootInfo os.FileInfo, knownParents map[string]bool) bool {
+func (e *CodexExecutor) shouldDiscoverChildRollout(
+	path string, rootInfo os.FileInfo, knownParents map[string]bool, discovery *rolloutDiscovery,
+) bool {
 	if e.CommandTimingHandler == nil {
 		return false
 	}
-	info, err := os.Stat(path)
-	if err != nil || (rootInfo != nil && info.ModTime().Before(rootInfo.ModTime())) {
+	if parentID, inspected := discovery.parents[path]; inspected {
+		return knownParents[parentID]
+	}
+	parentID, ready := inspectRolloutParent(path, rootInfo)
+	if !ready {
 		return false
 	}
-	parentID, ready := rolloutParentThreadID(path)
-	return ready && knownParents[parentID]
+	discovery.parents[path] = parentID
+	return knownParents[parentID]
+}
+
+func inspectRolloutParent(path string, rootInfo os.FileInfo) (string, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
+	if rootInfo != nil && info.ModTime().Before(rootInfo.ModTime()) {
+		return "", true
+	}
+	return rolloutParentThreadID(path)
 }
 
 type rolloutTailState struct {
@@ -853,19 +884,26 @@ func rolloutParentThreadID(path string) (string, bool) {
 	var meta struct {
 		Type    string `json:"type"`
 		Payload struct {
-			Source struct {
-				Subagent struct {
-					ThreadSpawn struct {
-						ParentThreadID string `json:"parent_thread_id"`
-					} `json:"thread_spawn"`
-				} `json:"subagent"`
-			} `json:"source"`
+			Source json.RawMessage `json:"source"`
 		} `json:"payload"`
 	}
-	if json.Unmarshal(bytes.TrimSpace(line), &meta) != nil || meta.Type != "session_meta" {
+	if json.Unmarshal(bytes.TrimSpace(line), &meta) != nil {
 		return "", false
 	}
-	return meta.Payload.Source.Subagent.ThreadSpawn.ParentThreadID, true
+	if meta.Type != "session_meta" {
+		return "", true
+	}
+	var source struct {
+		Subagent struct {
+			ThreadSpawn struct {
+				ParentThreadID string `json:"parent_thread_id"`
+			} `json:"thread_spawn"`
+		} `json:"subagent"`
+	}
+	if json.Unmarshal(meta.Payload.Source, &source) != nil {
+		return "", true
+	}
+	return source.Subagent.ThreadSpawn.ParentThreadID, true
 }
 
 func rolloutIDFromPath(path string) string {
@@ -910,33 +948,33 @@ type codexCommandStart struct {
 	arrival   time.Time
 }
 
-type codexPendingCommand struct {
-	start     codexCommandStart
+type codexPendingCommands struct {
+	starts    []codexCommandStart
 	sessionID string
 	initial   bool
 }
 
 type codexTimingState struct {
-	starts        map[string]codexCommandStart
-	sessions      map[string]codexCommandStart
-	continuations map[string]codexPendingCommand
-	cells         map[string]codexPendingCommand
-	waits         map[string]codexPendingCommand
+	starts        map[string][]codexCommandStart
+	sessions      map[string][]codexCommandStart
+	continuations map[string]codexPendingCommands
+	cells         map[string]codexPendingCommands
+	waits         map[string]codexPendingCommands
 }
 
 func newCodexTimingState() *codexTimingState {
 	return &codexTimingState{
-		starts:        make(map[string]codexCommandStart),
-		sessions:      make(map[string]codexCommandStart),
-		continuations: make(map[string]codexPendingCommand),
-		cells:         make(map[string]codexPendingCommand),
-		waits:         make(map[string]codexPendingCommand),
+		starts:        make(map[string][]codexCommandStart),
+		sessions:      make(map[string][]codexCommandStart),
+		continuations: make(map[string]codexPendingCommands),
+		cells:         make(map[string]codexPendingCommands),
+		waits:         make(map[string]codexPendingCommands),
 	}
 }
 
 var (
-	customExecCommandPattern = regexp.MustCompile(`(?s)tools\.exec_command\s*\(\s*\{.*?\bcmd\s*:\s*("(?:\\.|[^"\\])*")`)
-	customWriteStdinPattern  = regexp.MustCompile(`(?s)tools\.write_stdin\s*\(\s*\{.*?\bsession_id\s*:\s*(?:"([^"]+)"|'([^']+)'|(\d+))`)
+	customExecCommandPattern = regexp.MustCompile(`(?s)tools\.exec_command\s*\(\s*\{.*?(?:"cmd"|'cmd'|\bcmd)\s*:\s*("(?:\\.|[^"\\])*")`)
+	customWriteStdinPattern  = regexp.MustCompile(`(?s)tools\.write_stdin\s*\(\s*\{.*?(?:"session_id"|'session_id'|\bsession_id)\s*:\s*(?:"([^"]+)"|'([^']+)'|(\d+))`)
 	outputSessionIDPattern   = regexp.MustCompile(`(?i)(?:SESSION_ID\s*=|session(?:_|\s+)id["']?\s*[:=]\s*|Process running with session ID\s+)(\d+)`)
 	outputCellIDPattern      = regexp.MustCompile(`(?i)(?:Script running with cell ID\s*|cell_id["']?\s*[:=]\s*)(\d+)`)
 	exitCodePattern          = regexp.MustCompile(`(?i)(?:EXIT_CODE\s*=|Process exited with code\s+)(-?\d+)`)
@@ -994,12 +1032,12 @@ func (e *CodexExecutor) trackFunctionCall(payload rolloutPayload, eventTime time
 			Cmd string `json:"cmd"`
 		}
 		if json.Unmarshal([]byte(payload.Arguments), &args) == nil && args.Cmd != "" {
-			state.starts[payload.CallID] = codexCommandStart{command: args.Cmd, eventTime: eventTime, arrival: now()}
+			state.starts[payload.CallID] = []codexCommandStart{{command: args.Cmd, eventTime: eventTime, arrival: now()}}
 		}
 	case "write_stdin":
 		if sessionID := sessionIDFromArguments(payload.Arguments); sessionID != "" {
-			if start, ok := state.sessions[sessionID]; ok {
-				state.continuations[payload.CallID] = codexPendingCommand{start: start, sessionID: sessionID}
+			if starts, ok := state.sessions[sessionID]; ok {
+				state.continuations[payload.CallID] = codexPendingCommands{starts: starts, sessionID: sessionID}
 			}
 		}
 	case "wait":
@@ -1019,26 +1057,33 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 	if payload.Name != "exec" || payload.CallID == "" {
 		return
 	}
-	if matches := customExecCommandPattern.FindStringSubmatch(payload.Input); len(matches) == 2 {
-		var command string
-		if json.Unmarshal([]byte(matches[1]), &command) == nil && command != "" {
-			state.starts[payload.CallID] = codexCommandStart{command: command, eventTime: eventTime, arrival: now()}
+	if allMatches := customExecCommandPattern.FindAllStringSubmatch(payload.Input, -1); len(allMatches) > 0 {
+		arrival := now()
+		starts := make([]codexCommandStart, 0, len(allMatches))
+		for _, matches := range allMatches {
+			var command string
+			if json.Unmarshal([]byte(matches[1]), &command) == nil && command != "" {
+				starts = append(starts, codexCommandStart{command: command, eventTime: eventTime, arrival: arrival})
+			}
+		}
+		if len(starts) > 0 {
+			state.starts[payload.CallID] = starts
 		}
 		return
 	}
 	if matches := customWriteStdinPattern.FindStringSubmatch(payload.Input); len(matches) == 4 {
 		sessionID := firstNonEmpty(matches[1:]...)
-		if start, ok := state.sessions[sessionID]; ok {
-			state.continuations[payload.CallID] = codexPendingCommand{start: start, sessionID: sessionID}
+		if starts, ok := state.sessions[sessionID]; ok {
+			state.continuations[payload.CallID] = codexPendingCommands{starts: starts, sessionID: sessionID}
 		}
 	}
 }
 
 func (e *CodexExecutor) trackToolOutput(payload rolloutPayload, eventTime time.Time, state *codexTimingState, now func() time.Time) {
 	text := rolloutOutputText(payload.Output)
-	if start, ok := state.starts[payload.CallID]; ok {
+	if starts, ok := state.starts[payload.CallID]; ok {
 		delete(state.starts, payload.CallID)
-		e.resolvePendingOutput(codexPendingCommand{start: start, initial: true}, text, eventTime, state, now)
+		e.resolvePendingOutput(codexPendingCommands{starts: starts, initial: true}, text, eventTime, state, now)
 		return
 	}
 	if pending, ok := state.continuations[payload.CallID]; ok {
@@ -1052,11 +1097,11 @@ func (e *CodexExecutor) trackToolOutput(payload rolloutPayload, eventTime time.T
 	}
 }
 
-func (e *CodexExecutor) resolvePendingOutput(pending codexPendingCommand, output string, eventTime time.Time, state *codexTimingState, now func() time.Time) {
+func (e *CodexExecutor) resolvePendingOutput(pending codexPendingCommands, output string, eventTime time.Time, state *codexTimingState, now func() time.Time) {
 	if sessionID := extractPatternValue(outputSessionIDPattern, output); sessionID != "" {
 		pending.sessionID = sessionID
 		pending.initial = false
-		state.sessions[sessionID] = pending.start
+		state.sessions[sessionID] = pending.starts
 		return
 	}
 	if cellID := extractPatternValue(outputCellIDPattern, output); cellID != "" {
@@ -1071,7 +1116,10 @@ func (e *CodexExecutor) resolvePendingOutput(pending codexPendingCommand, output
 	if pending.sessionID != "" {
 		delete(state.sessions, pending.sessionID)
 	}
-	e.emitCommandTiming(pending.start, eventTime, now())
+	arrival := now()
+	for _, start := range pending.starts {
+		e.emitCommandTiming(start, eventTime, arrival)
+	}
 }
 
 func (e *CodexExecutor) emitCommandTiming(start codexCommandStart, eventTime, arrival time.Time) {
