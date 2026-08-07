@@ -2130,6 +2130,55 @@ func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksMappedArgumentO
 	assert.Empty(t, state.starts)
 }
 
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksMappedObjectArgumentLists(t *testing.T) {
+	tests := []struct {
+		name     string
+		callback string
+	}{
+		{name: "object destructuring", callback: `async ({name,args}) => tools.exec_command(args)`},
+		{name: "member access", callback: `async job => tools.exec_command(job.args)`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured []struct {
+				command  string
+				duration time.Duration
+			}
+			e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+				captured = append(captured, struct {
+					command  string
+					duration time.Duration
+				}{command: command, duration: d})
+			}}
+			state := newCodexTimingState()
+			input := `const jobs = [
+				{name:"tests",args:{cmd:"make test",yield_time_ms:30000}},
+				{name:"lint",args:{cmd:"make lint",yield_time_ms:30000}}
+			]; const rs = await Promise.all(jobs.map(` + tt.callback + `));
+			rs.forEach((r,i) => text(JSON.stringify({index:i+1,...r})));`
+			for index, payload := range []rolloutPayload{
+				{Type: "custom_tool_call", Name: "exec", CallID: "batch", Input: input},
+				{Type: "custom_tool_call_output", CallID: "batch", Output: json.RawMessage(`[
+					{"type":"input_text","text":"{\"index\":1,\"exit_code\":0,\"wall_time_seconds\":2}"},
+					{"type":"input_text","text":"{\"index\":2,\"exit_code\":0,\"wall_time_seconds\":3.5}"}
+				]`)},
+			} {
+				e.trackRolloutCommandTiming(rolloutEvent{Timestamp: fmt.Sprintf("2026-08-07T09:00:0%dZ", index*4)}, payload, state, time.Now)
+			}
+
+			assert.Equal(t, []struct {
+				command  string
+				duration time.Duration
+			}{
+				{command: "make test", duration: 2 * time.Second},
+				{command: "make lint", duration: 3500 * time.Millisecond},
+			}, captured)
+			assert.Empty(t, state.starts)
+		})
+	}
+}
+
 func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksMappedCommandLists(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -2717,6 +2766,56 @@ func TestCodexExecutor_trackRolloutCommandTiming_BatchedYieldedCommandsCompleteI
 		{command: "make test", duration: 8 * time.Second},
 	}, captured)
 	assert.Empty(t, state.sessions)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_MappedWriteStdinBatchCompletesYieldedCommands(t *testing.T) {
+	tests := []struct {
+		name     string
+		callback string
+	}{
+		{name: "shorthand session id", callback: `session_id => tools.write_stdin({session_id,chars:"",yield_time_ms:30000})`},
+		{name: "aliased session id", callback: `sid => tools.write_stdin({session_id:sid,chars:"",yield_time_ms:30000})`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured []struct {
+				command  string
+				duration time.Duration
+			}
+			e := &CodexExecutor{CommandTimingHandler: func(command string, duration time.Duration) {
+				captured = append(captured, struct {
+					command  string
+					duration time.Duration
+				}{command: command, duration: duration})
+			}}
+			state := newCodexTimingState()
+			fixtures := []rolloutPayload{
+				{Type: "custom_tool_call", Name: "exec", CallID: "start", Input: `const r = await Promise.all([tools.exec_command({cmd:"make test"}),tools.exec_command({cmd:"make lint"})]); r.forEach((x,i)=>text(JSON.stringify({index:i+1,...x})));`},
+				{Type: "custom_tool_call_output", CallID: "start", Output: json.RawMessage(`[
+					{"type":"input_text","text":"{\"index\":1,\"session_id\":42,\"output\":\"\"}"},
+					{"type":"input_text","text":"{\"index\":2,\"session_id\":84,\"output\":\"\"}"}
+				]`)},
+				{Type: "custom_tool_call", Name: "exec", CallID: "poll", Input: `const ids=[42,84]; const rs=await Promise.all(ids.map(` + tt.callback + `)); rs.forEach((r,i)=>text(JSON.stringify({index:i+1,...r})));`},
+				{Type: "custom_tool_call_output", CallID: "poll", Output: json.RawMessage(`[
+					{"type":"input_text","text":"{\"index\":1,\"exit_code\":0,\"output\":\"ok\"}"},
+					{"type":"input_text","text":"{\"index\":2,\"exit_code\":0,\"output\":\"ok\"}"
+				]`)},
+			}
+			for index, payload := range fixtures {
+				e.trackRolloutCommandTiming(rolloutEvent{Timestamp: fmt.Sprintf("2026-08-07T09:00:0%dZ", index*2)}, payload, state, time.Now)
+			}
+
+			assert.Equal(t, []struct {
+				command  string
+				duration time.Duration
+			}{
+				{command: "make test", duration: 6 * time.Second},
+				{command: "make lint", duration: 6 * time.Second},
+			}, captured)
+			assert.Empty(t, state.sessions)
+		})
+	}
 }
 
 func TestCodexExecutor_trackRolloutCommandTiming_CustomExecStringLiterals(t *testing.T) {

@@ -1005,6 +1005,7 @@ var (
 	customAnyPromiseAll      = regexp.MustCompile(`await\s+Promise\.all\s*\(`)
 	customMapPattern         = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\.map\s*\(`)
 	customExecCallPattern    = regexp.MustCompile(`\btools\.exec_command\s*\(`)
+	customWriteCallPattern   = regexp.MustCompile(`\btools\.write_stdin\s*\(`)
 	customTextCallPattern    = regexp.MustCompile(`\btext\s*\(`)
 	customRawOutput          = regexp.MustCompile(`\btext\s*\(\s*[A-Za-z_$][A-Za-z0-9_$]*\.output\s*\)`)
 	customDestructuredRest   = regexp.MustCompile(`(?s)(?:const|let|var)\s*\{[^}]*\.\.\.\s*([A-Za-z_$][A-Za-z0-9_$]*)[^}]*\}\s*=\s*await\s+tools\.exec_command`)
@@ -1107,22 +1108,48 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 		state.starts[payload.CallID] = pending
 		return
 	}
+	if calls := customMappedWriteStdinCalls(payload.Input); len(calls) > 0 {
+		e.trackCustomContinuationCalls(payload, eventTime, state, now, calls)
+		return
+	}
 	allMatches := customWriteStdinPattern.FindAllStringSubmatchIndex(payload.Input, -1)
 	if len(allMatches) == 0 {
 		return
 	}
-	pending := make([]codexPendingCommand, len(allMatches))
-	unknownIndexes := make([]int, 0, len(allMatches))
+	calls := make([]customContinuationCall, 0, len(allMatches))
+	for index, matches := range allMatches {
+		calls = append(calls, customContinuationCall{
+			sessionID:  firstIndexedCapture(payload.Input, matches[2:]),
+			yieldAfter: customContinuationYieldAfter(payload.Input, allMatches, index),
+		})
+	}
+	e.trackCustomContinuationCalls(payload, eventTime, state, now, calls)
+}
+
+type customContinuationCall struct {
+	sessionID  string
+	yieldAfter time.Duration
+}
+
+func (e *CodexExecutor) trackCustomContinuationCalls(
+	payload rolloutPayload,
+	eventTime time.Time,
+	state *codexTimingState,
+	now func() time.Time,
+	calls []customContinuationCall,
+) {
+	pending := make([]codexPendingCommand, len(calls))
+	unknownIndexes := make([]int, 0, len(calls))
 	tracked := 0
 	structuredProof := customToolEmitsStructuredResults(payload.Input)
 	proofArrival := now()
-	for index, matches := range allMatches {
-		sessionID := firstIndexedCapture(payload.Input, matches[2:])
+	for index, call := range calls {
+		sessionID := call.sessionID
 		if command, ok := state.sessions[sessionID]; ok {
 			command.structuredProof = structuredProof
 			command.proofEventTime = eventTime
 			command.proofArrival = proofArrival
-			command.yieldAfter = customContinuationYieldAfter(payload.Input, allMatches, index)
+			command.yieldAfter = call.yieldAfter
 			pending[index] = command
 			tracked++
 			continue
@@ -1136,13 +1163,13 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 			command := state.unproven[0]
 			state.unproven = nil
 			unknownIndex := unknownIndexes[0]
-			sessionID := firstIndexedCapture(payload.Input, allMatches[unknownIndex][2:])
+			sessionID := calls[unknownIndex].sessionID
 			command.sessionID = sessionID
 			command.requiresProof = true
 			command.structuredProof = structuredProof
 			command.proofEventTime = eventTime
 			command.proofArrival = proofArrival
-			command.yieldAfter = customContinuationYieldAfter(payload.Input, allMatches, unknownIndex)
+			command.yieldAfter = calls[unknownIndex].yieldAfter
 			state.sessions[sessionID] = command
 			pending[unknownIndex] = command
 			tracked++
@@ -1155,6 +1182,45 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 	if tracked > 0 {
 		state.continuations[payload.CallID] = pending
 	}
+}
+
+func customMappedWriteStdinCalls(input string) []customContinuationCall {
+	calls := make([]customContinuationCall, 0)
+	for _, match := range customMapPattern.FindAllStringSubmatchIndex(input, -1) {
+		if len(match) < 4 || !customPositionInAwaitedPromiseAll(input, match[0]) {
+			continue
+		}
+		mapEnd, ok := customDelimitedEnd(input, match[1]-1)
+		if !ok {
+			continue
+		}
+		expression, call, params, ok := customMapWriteStdinExpression(input[match[1]:mapEnd])
+		if !ok {
+			continue
+		}
+		source := input[match[2]:match[3]]
+		items, ok := customStaticArrayValues(input, source, match[0])
+		if !ok {
+			continue
+		}
+		selector, ok := customMapValueSelector(params, expression)
+		if !ok {
+			continue
+		}
+		yieldAfter, _ := explicitYieldAfter(call)
+		for _, item := range items {
+			value, selected := selector(item)
+			if !selected {
+				continue
+			}
+			sessionID, decoded := customStaticSessionID(value)
+			if !decoded {
+				continue
+			}
+			calls = append(calls, customContinuationCall{sessionID: sessionID, yieldAfter: yieldAfter})
+		}
+	}
+	return calls
 }
 
 func customExecPendingCommands(input string, matches [][]int, eventTime, arrival time.Time) []codexPendingCommand {
@@ -1280,7 +1346,7 @@ func customMapCommandExpression(callback string) (expression, call, params strin
 		return "", "", "", false
 	}
 	expression = strings.TrimSpace(parts[0])
-	if isCustomIdentifier(expression) {
+	if isCustomIdentifier(expression) || isCustomMemberExpression(expression) {
 		return expression, call, params, true
 	}
 	if !strings.HasPrefix(expression, "{") {
@@ -1291,6 +1357,41 @@ func customMapCommandExpression(callback string) (expression, call, params strin
 		return "", "", "", false
 	}
 	return value, call, params, true
+}
+
+func customMapWriteStdinExpression(callback string) (expression, call, params string, ok bool) {
+	params, body, found := strings.Cut(callback, "=>")
+	if !found {
+		return "", "", "", false
+	}
+	params = strings.TrimSpace(params)
+	params = strings.TrimSpace(strings.TrimPrefix(params, "async"))
+	if strings.HasPrefix(params, "(") {
+		end, closed := customDelimitedEnd(params, 0)
+		if !closed || end != len(params)-1 {
+			return "", "", "", false
+		}
+		params = strings.TrimSpace(params[1:end])
+	}
+	matches := customWriteCallPattern.FindAllStringIndex(body, -1)
+	if len(matches) != 1 {
+		return "", "", "", false
+	}
+	end, closed := customDelimitedEnd(body, matches[0][1]-1)
+	if !closed {
+		return "", "", "", false
+	}
+	call = body[matches[0][0] : end+1]
+	arguments := strings.TrimSpace(body[matches[0][1]:end])
+	parts, split := splitCustomTopLevel(arguments, ',')
+	if !split || len(parts) != 1 {
+		return "", "", "", false
+	}
+	expression, found = customObjectProperty(parts[0], "session_id")
+	if !found {
+		return "", "", "", false
+	}
+	return strings.TrimSpace(expression), call, params, true
 }
 
 func customStaticArrayValues(input, name string, before int) ([]string, bool) {
@@ -1312,6 +1413,9 @@ func customStaticArrayValues(input, name string, before int) ([]string, bool) {
 func customMapValueSelector(params, expression string) (func(string) (string, bool), bool) {
 	if _, ok := decodeJSStringLiteral(expression); ok {
 		return func(string) (string, bool) { return expression, true }, true
+	}
+	if selector, ok := customMapObjectValueSelector(params, expression); ok {
+		return selector, true
 	}
 	if !isCustomIdentifier(expression) {
 		return nil, false
@@ -1356,6 +1460,83 @@ func customMapValueSelector(params, expression string) (func(string) (string, bo
 		}
 		return strings.TrimSpace(values[selected]), true
 	}, true
+}
+
+func customMapObjectValueSelector(params, expression string) (func(string) (string, bool), bool) {
+	if root, property, ok := customMemberExpression(expression); ok {
+		if !isCustomIdentifier(params) || params != root {
+			return nil, false
+		}
+		return func(item string) (string, bool) {
+			return customObjectProperty(item, property)
+		}, true
+	}
+	params = strings.TrimSpace(params)
+	if !isCustomIdentifier(expression) || !strings.HasPrefix(params, "{") {
+		return nil, false
+	}
+	property, ok := customObjectBindingProperty(params, expression)
+	if !ok {
+		return nil, false
+	}
+	return func(item string) (string, bool) {
+		return customObjectProperty(item, property)
+	}, true
+}
+
+func customObjectBindingProperty(params, expression string) (string, bool) {
+	end, ok := customDelimitedEnd(params, 0)
+	if !ok || end != len(params)-1 {
+		return "", false
+	}
+	bindings, ok := splitCustomTopLevel(params[1:end], ',')
+	if !ok {
+		return "", false
+	}
+	for _, binding := range bindings {
+		parts, valid := splitCustomTopLevel(binding, ':')
+		if !valid || len(parts) > 2 {
+			continue
+		}
+		property := strings.Trim(strings.TrimSpace(parts[0]), "\"'")
+		bound := property
+		if len(parts) == 2 {
+			bound = strings.TrimSpace(parts[1])
+		}
+		if isCustomIdentifier(property) && bound == expression {
+			return property, true
+		}
+	}
+	return "", false
+}
+
+func isCustomMemberExpression(value string) bool {
+	_, _, ok := customMemberExpression(value)
+	return ok
+}
+
+func customMemberExpression(value string) (root, property string, ok bool) {
+	root, property, found := strings.Cut(strings.TrimSpace(value), ".")
+	if !found || strings.Contains(property, ".") || !isCustomIdentifier(root) || !isCustomIdentifier(property) {
+		return "", "", false
+	}
+	return root, property, true
+}
+
+func customStaticSessionID(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if decoded, ok := decodeJSStringLiteral(value); ok {
+		return decoded, decoded != ""
+	}
+	if value == "" {
+		return "", false
+	}
+	for index := range len(value) {
+		if value[index] < '0' || value[index] > '9' {
+			return "", false
+		}
+	}
+	return value, true
 }
 
 func customCommandFromStaticValue(value string) (string, bool) {
