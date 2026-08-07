@@ -2348,8 +2348,30 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bo
 	if err := cmux.SpawnWorkspace(name, cwd, cmuxHandOffArgv(exe, args)); err != nil {
 		return handOffSpawnFailure(err, stderr)
 	}
+	warnAPIKeyNotCarried(o, stderr)
 	fmt.Fprintf(stdout, "handed off to cmux workspace %s\n", name)
 	return true, nil
+}
+
+// anthropicAPIKeyEnv is the credential --preserve-anthropic-api-key opts into passing through to
+// claude, which is otherwise stripped from the child environment.
+const anthropicAPIKeyEnv = "ANTHROPIC_API_KEY" //nolint:gosec // the name of an environment variable, not a credential
+
+// warnAPIKeyNotCarried reports that --preserve-anthropic-api-key survives the hand-off but the key
+// itself does not. the flag travels in argv, the environment does not: the new workspace starts a
+// shell of cmux's own. a key exported only in this terminal is therefore absent there, and claude
+// falls back to OAuth or the keychain without saying so, so the run bills an account the user did
+// not pick — the wrong-context run the flag exists to make visible. the key is deliberately not
+// forwarded, since the command reaches the new workspace as text typed into its shell, so the gap
+// is reported here instead. nothing is said when the variable is unset, because then the flag has
+// nothing to preserve in this terminal either.
+func warnAPIKeyNotCarried(o opts, stderr io.Writer) {
+	if !o.PreserveAnthropicAPIKey || os.Getenv(anthropicAPIKeyEnv) == "" {
+		return
+	}
+	fmt.Fprintf(stderr, "warning: %s is not carried into the new cmux workspace, "+
+		"--preserve-anthropic-api-key applies there only if the key comes from your shell profile\n",
+		anthropicAPIKeyEnv)
 }
 
 // handOffSpawnFailure turns a workspace creation failure into the caller's verdict. a clean refusal

@@ -3,6 +3,7 @@ package cmux
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,6 +124,77 @@ func writePlan(t *testing.T, content string) string {
 func writeFakeBin(t *testing.T, dir, name string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755)) //nolint:gosec // test fixture must be executable
+}
+
+// writeStderrBin writes an executable that echoes CMUX_TEST_STDERR on stderr and exits with code,
+// which is how a cmux refusal reaches spawnRunner. the text travels through the environment so a
+// case can use arbitrary content without quoting it into the script.
+func writeStderrBin(t *testing.T, dir string, code int) string {
+	t.Helper()
+	path := filepath.Join(dir, binName)
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' \"$CMUX_TEST_STDERR\" >&2\nexit %d\n", code)
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755)) //nolint:gosec // test fixture must be executable
+	return path
+}
+
+func TestSpawnRunner(t *testing.T) {
+	t.Run("failure carries the message cmux printed", func(t *testing.T) {
+		bin := writeStderrBin(t, t.TempDir(), 1)
+		t.Setenv("CMUX_TEST_STDERR", "cmux: workspace name already in use\n")
+
+		err := (&spawnRunner{bin: bin}).run(context.Background(), "new-workspace", "--name", "x")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new-workspace --name x", "the argv stays in the message")
+		assert.Contains(t, err.Error(), "cmux: workspace name already in use")
+	})
+
+	t.Run("silent failure keeps the exit status on its own", func(t *testing.T) {
+		bin := writeStderrBin(t, t.TempDir(), 3)
+		t.Setenv("CMUX_TEST_STDERR", "")
+
+		err := (&spawnRunner{bin: bin}).run(context.Background(), "new-workspace")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exit status 3")
+	})
+
+	t.Run("success ignores stderr chatter", func(t *testing.T) {
+		bin := writeStderrBin(t, t.TempDir(), 0)
+		t.Setenv("CMUX_TEST_STDERR", "deprecation notice")
+
+		assert.NoError(t, (&spawnRunner{bin: bin}).run(context.Background(), "new-workspace"))
+	})
+
+	t.Run("verbose refusal is folded into one bounded line", func(t *testing.T) {
+		bin := writeStderrBin(t, t.TempDir(), 1)
+		t.Setenv("CMUX_TEST_STDERR", strings.Repeat("line of refusal\n", 200))
+
+		err := (&spawnRunner{bin: bin}).run(context.Background(), "new-workspace")
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "\n", "the detail rides along in a single warning line")
+		assert.Contains(t, err.Error(), "…", "an over-long refusal is truncated")
+	})
+
+	t.Run("missing binary still reports the failure", func(t *testing.T) {
+		err := (&spawnRunner{bin: filepath.Join(t.TempDir(), "absent")}).run(context.Background(), "new-workspace")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new-workspace")
+	})
+}
+
+func TestStderrDetail(t *testing.T) {
+	t.Run("no capture file yields no detail", func(t *testing.T) {
+		assert.Empty(t, stderrDetail(nil))
+	})
+
+	t.Run("unreadable capture file yields no detail", func(t *testing.T) {
+		f, err := os.CreateTemp(t.TempDir(), "capture-*.err")
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+
+		// seeking a closed file fails, which must leave the caller's exit status unadorned rather
+		// than replacing it with a bogus reason.
+		assert.Empty(t, stderrDetail(f))
+	})
 }
 
 func TestNew(t *testing.T) {

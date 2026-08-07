@@ -7610,6 +7610,21 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		require.ErrorIs(t, statErr, os.ErrNotExist)
 	})
 
+	t.Run("api key passthrough warns about the fresh environment", func(t *testing.T) {
+		cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Setenv(anthropicAPIKeyEnv, "sk-ant-secret")
+		chdirWithPlan(t, "p.md")
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "p.md", PreserveAnthropicAPIKey: true}
+		require.True(t, handOffStops(t, o, nil, stdout, stderr))
+
+		assert.Contains(t, stdout.String(), "handed off to cmux workspace")
+		assert.Contains(t, stderr.String(), "--preserve-anthropic-api-key applies there only if")
+		assert.NotContains(t, stderr.String(), "sk-ant-secret", "the key itself must never be echoed")
+	})
+
 	t.Run("environment-provided options travel with the command", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
@@ -7944,6 +7959,33 @@ func TestCmuxEnvOptionsCoversOptionTags(t *testing.T) {
 	require.NotEmpty(t, tagged, "the reflection walk must find the env-backed options")
 	assert.ElementsMatch(t, tagged, cmuxEnvOptions,
 		"an option readable from the environment is lost on hand-off unless cmuxEnvOptions lists it")
+}
+
+func TestWarnAPIKeyNotCarried(t *testing.T) {
+	tests := []struct {
+		name     string
+		preserve bool
+		key      string
+		wantWarn bool
+	}{
+		{name: "passthrough with a key set here warns", preserve: true, key: "sk-ant-1", wantWarn: true},
+		{name: "passthrough without a key stays quiet", preserve: true, key: "", wantWarn: false},
+		{name: "key without passthrough stays quiet", preserve: false, key: "sk-ant-1", wantWarn: false},
+		{name: "neither stays quiet", preserve: false, key: "", wantWarn: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(anthropicAPIKeyEnv, tt.key)
+
+			stderr := &bytes.Buffer{}
+			warnAPIKeyNotCarried(opts{PreserveAnthropicAPIKey: tt.preserve}, stderr)
+			if !tt.wantWarn {
+				assert.Empty(t, stderr.String())
+				return
+			}
+			assert.Contains(t, stderr.String(), "ANTHROPIC_API_KEY is not carried into the new cmux workspace")
+		})
+	}
 }
 
 func TestCmuxHandOffArgv(t *testing.T) {

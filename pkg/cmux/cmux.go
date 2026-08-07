@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -62,6 +63,11 @@ const (
 
 	// unknownPhaseIcon is used for a phase missing from phaseStyles.
 	unknownPhaseIcon = "circle"
+
+	// stderrDetailLimit bounds the cmux stderr excerpt carried in a workspace creation error. the
+	// message ends up in a single warning line, so a verbose refusal is truncated rather than
+	// flooding the terminal.
+	stderrDetailLimit = 200
 )
 
 // commandRunner runs a single cmux CLI invocation. defined here because the reporter is the only
@@ -86,6 +92,58 @@ func (r *execRunner) run(ctx context.Context, args ...string) error {
 		return fmt.Errorf("run %s %s: %w", r.bin, strings.Join(args, " "), err)
 	}
 	return nil
+}
+
+// spawnRunner runs cmux new-workspace and carries what cmux printed on stderr into the error. the
+// Reporter's failures are swallowed, so execRunner can discard output, but this is the one cmux
+// call whose error reaches the user, and "exit status 1" on its own says nothing about why the
+// workspace was refused. stderr goes to a temp file rather than a pipe: os/exec hands an *os.File
+// to the child directly and starts no copy goroutine, so a grandchild inheriting the descriptor
+// cannot keep cmd.Wait blocked past the deadline the way the pipe execRunner avoids would.
+type spawnRunner struct {
+	bin string
+}
+
+func (r *spawnRunner) run(ctx context.Context, args ...string) error {
+	cmd := exec.CommandContext(ctx, r.bin, args...)
+	cmd.Stdout = nil // as in execRunner, the child's stdout belongs to /dev/null
+	capture, err := os.CreateTemp("", "loopai-cmux-spawn-*.err")
+	if err == nil {
+		defer func() { _ = capture.Close(); _ = os.Remove(capture.Name()) }()
+		cmd.Stderr = capture
+	}
+	// a capture file that could not be created only makes the diagnostics poorer, the call itself
+	// still has to happen, so cmd.Stderr is left nil and the error carries no detail.
+	runErr := cmd.Run()
+	if runErr == nil {
+		return nil
+	}
+	if detail := stderrDetail(capture); detail != "" {
+		return fmt.Errorf("run %s %s: %w: %s", r.bin, strings.Join(args, " "), runErr, detail)
+	}
+	return fmt.Errorf("run %s %s: %w", r.bin, strings.Join(args, " "), runErr)
+}
+
+// stderrDetail reads back what the child wrote to the capture file and folds it into one bounded
+// line. a nil file is the "capture unavailable" case and yields no detail, as does an unreadable
+// one, since a missing reason must not replace the exit status the caller already has.
+func stderrDetail(f *os.File) string {
+	if f == nil {
+		return ""
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return ""
+	}
+	// four bytes per rune is the widest UTF-8 encoding, so this always covers stderrDetailLimit runes
+	data, err := io.ReadAll(io.LimitReader(f, 4*stderrDetailLimit))
+	if err != nil {
+		return ""
+	}
+	detail := strings.Join(strings.Fields(string(data)), " ")
+	if runes := []rune(detail); len(runes) > stderrDetailLimit {
+		detail = string(runes[:stderrDetailLimit]) + "…"
+	}
+	return detail
 }
 
 // Reporter pushes sidebar state to cmux for the current workspace.
@@ -160,6 +218,8 @@ var ErrSpawnAmbiguous = errors.New("workspace creation timed out with an unknown
 // unlike the Reporter methods this is not best-effort: the error is returned so the caller can
 // choose between exiting after a successful hand-off and continuing the run locally. availability
 // is detected exactly like New does, and a missing workspace env or binary yields ErrNotInCmux.
+// it uses spawnRunner rather than execRunner, so a refusal reaches the caller with cmux's own
+// message instead of a bare exit status.
 func SpawnWorkspace(name, cwd string, argv []string) error {
 	if strings.TrimSpace(os.Getenv(workspaceEnv)) == "" {
 		return fmt.Errorf("%s is not set: %w", workspaceEnv, ErrNotInCmux)
@@ -168,7 +228,7 @@ func SpawnWorkspace(name, cwd string, argv []string) error {
 	if err != nil {
 		return fmt.Errorf("no %s binary in PATH: %w", binName, ErrNotInCmux)
 	}
-	return spawnWorkspace(&execRunner{bin: bin}, spawnTimeout, name, cwd, argv)
+	return spawnWorkspace(&spawnRunner{bin: bin}, spawnTimeout, name, cwd, argv)
 }
 
 // spawnWorkspace is the runner-injectable core of SpawnWorkspace, kept separate so tests can
