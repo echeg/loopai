@@ -95,11 +95,11 @@ Validation time is included in (not additive to) the phase buckets; with paralle
 
 ### Task 4: ValidationTimer aggregation and wiring
 
-- [ ] write failing tests for `ValidationTimer` in `pkg/progress`: matched command completion logs `validation: <command> took <duration>`; aggregate line `validation: <total> (<N> runs)` on finish; zero matched runs → no aggregate line; unmatched commands ignored; fake clock; concurrent handler calls are safe
-- [ ] implement `ValidationTimer` alongside `SectionTimer`: constructed with the plan's validation command list and a logger, exposes the handler func and a `FinishRun`-style summary method
-- [ ] wire it in `cmd/loopai`: build from the selected plan, attach the handler to both executors via the factory, emit the summary from `runWithSectionTiming` right after the section timer summary; modes without a plan (e.g. `--review` without validation section) run with the feature disabled
-- [ ] verify the logger chain order from `CLAUDE.md` is preserved (cmux wrapper outermost interfaces intact, dashboard broadcast unaffected); add a unit test if the dashboard replay parser must tolerate the new lines
-- [ ] run `go test ./cmd/... ./pkg/...` - must pass before task 5
+- [x] write failing tests for `ValidationTimer` in `pkg/progress`: matched command completion logs `validation: <command> took <duration>`; aggregate line `validation: <total> (<N> runs)` on finish; zero matched runs → no aggregate line; unmatched commands ignored; fixed handler durations replace a fake clock because executors supply elapsed durations; concurrent handler calls are safe
+- [x] implement `ValidationTimer` alongside `SectionTimer`: constructed with the plan's validation command list and a logger, exposes the handler func and a `FinishRun`-style summary method
+- [x] wire it in `cmd/loopai`: build from the selected plan, attach the handler to both executors via the factory, emit the summary from `runWithSectionTiming` right after the section timer summary; modes without a plan (e.g. `--review` without validation section) run with the feature disabled
+- [x] verify the logger chain order from `CLAUDE.md` is preserved (cmux wrapper outermost interfaces intact, dashboard broadcast unaffected); add a unit test if the dashboard replay parser must tolerate the new lines
+- [x] run `go test ./cmd/... ./pkg/...` - must pass before task 5
 
 ### Task 5: Verify acceptance criteria
 

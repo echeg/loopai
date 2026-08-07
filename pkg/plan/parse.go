@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/umputun/ralphex/internal/validation"
 )
 
 // TaskStatus represents the execution status of a task.
@@ -155,18 +157,7 @@ func ParsePlan(content string) (*Plan, error) {
 // MatchesValidationCommand reports whether command equals or extends one of the configured
 // validation commands at a whitespace boundary. commands and entries are normalized before matching.
 func MatchesValidationCommand(command string, entries []string) bool {
-	command = normalizeCommand(command)
-	if command == "" {
-		return false
-	}
-
-	for _, entry := range entries {
-		entry = normalizeCommand(entry)
-		if entry != "" && (command == entry || strings.HasPrefix(command, entry+" ")) {
-			return true
-		}
-	}
-	return false
+	return validation.MatchesCommand(command, entries)
 }
 
 func extractValidationCommands(content string) ([]string, error) {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -895,6 +896,35 @@ func TestRunner_ClaudeMdSetupHint_FiredOnceAcrossMultipleRunnerConstructions(t *
 
 	require.Len(t, captured, 1, "hint must emit once per process across multiple runner constructions")
 	assert.Contains(t, captured[0], "ln -s ~/.claude/CLAUDE.md ~/.codex/AGENTS.md")
+}
+
+func TestExecutorFactory_WiresCommandTimingHandlerToClaudeAndCodex(t *testing.T) {
+	var calls atomic.Int32
+	handler := func(string, time.Duration) { calls.Add(1) }
+	appCfg := testAppConfig(t)
+	cfg := Config{
+		AppConfig:            appCfg,
+		TaskModel:            "sonnet:high",
+		ReviewModel:          "opus:xhigh",
+		CommandTimingHandler: handler,
+		ExternalReviewers: []config.ReviewerSpec{
+			{Provider: config.ExternalReviewToolClaude},
+			{Provider: config.ExternalReviewToolCodex},
+		},
+	}
+
+	_, execs := (&executorFactory{}).Build(cfg, newRunnerMockLogger("progress.txt"))
+	execs.Task.(*executor.ClaudeExecutor).CommandTimingHandler("task", time.Second)
+	execs.Review.(*executor.ClaudeExecutor).CommandTimingHandler("review", time.Second)
+	execs.Externals[0].Exec.(*executor.ClaudeExecutor).CommandTimingHandler("external claude", time.Second)
+	execs.Externals[1].Exec.(*executor.CodexExecutor).CommandTimingHandler("external codex", time.Second)
+	assert.Equal(t, int32(4), calls.Load())
+
+	appCfg.Executor = config.ExecutorCodex
+	_, execs = (&executorFactory{}).Build(cfg, newRunnerMockLogger("progress.txt"))
+	execs.Task.(*executor.CodexExecutor).CommandTimingHandler("codex task", time.Second)
+	execs.Review.(*executor.CodexExecutor).CommandTimingHandler("codex review", time.Second)
+	assert.Equal(t, int32(6), calls.Load())
 }
 
 func TestRunner_WaitOnLimit_RetriesLimitFromConfig(t *testing.T) {

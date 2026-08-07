@@ -188,23 +188,24 @@ type startupInfo struct {
 
 // executePlanRequest holds parameters for plan execution.
 type executePlanRequest struct {
-	PlanFile       string
-	MainPlanFile   string // original plan path in main repo (worktree mode); empty in normal mode
-	Mode           processor.Mode
-	GitSvc         *git.Service
-	MainGitSvc     *git.Service // main repo service for cross-boundary ops (worktree mode); nil in normal mode
-	Config         *config.Config
-	Colors         *progress.Colors
-	DefaultBranch  string // base for non-worktree branch creation; worktrees are created from current HEAD
-	BaseRef        string // base reference for review diffs and templates (--base-ref override or DefaultBranch)
-	NotifySvc      *notify.Service
-	BranchOverride string              // branch name override (--branch flag); empty = derive from plan filename
-	WtCleanup      *cleanupHolder      // worktree cleanup for interrupt handler; nil when not in worktree mode
-	CmuxStop       *cleanupHolder      // cmux sidebar reset for interrupt handler; nil when not wired
-	ProgressLog    *progress.Logger    // pre-created logger (worktree mode); nil in normal mode
-	PhaseHolder    *status.PhaseHolder // pre-created holder (worktree mode); nil in normal mode
-	ExternalReview externalReviewSelection
-	LimitRecovery  limits.Recovery
+	PlanFile             string
+	MainPlanFile         string // original plan path in main repo (worktree mode); empty in normal mode
+	Mode                 processor.Mode
+	GitSvc               *git.Service
+	MainGitSvc           *git.Service // main repo service for cross-boundary ops (worktree mode); nil in normal mode
+	Config               *config.Config
+	Colors               *progress.Colors
+	DefaultBranch        string // base for non-worktree branch creation; worktrees are created from current HEAD
+	BaseRef              string // base reference for review diffs and templates (--base-ref override or DefaultBranch)
+	NotifySvc            *notify.Service
+	BranchOverride       string              // branch name override (--branch flag); empty = derive from plan filename
+	WtCleanup            *cleanupHolder      // worktree cleanup for interrupt handler; nil when not in worktree mode
+	CmuxStop             *cleanupHolder      // cmux sidebar reset for interrupt handler; nil when not wired
+	ProgressLog          *progress.Logger    // pre-created logger (worktree mode); nil in normal mode
+	PhaseHolder          *status.PhaseHolder // pre-created holder (worktree mode); nil in normal mode
+	ExternalReview       externalReviewSelection
+	LimitRecovery        limits.Recovery
+	CommandTimingHandler func(string, time.Duration)
 }
 
 // cleanupHolder holds a cleanup function with mutex for safe cross-goroutine access.
@@ -715,9 +716,10 @@ func buildRunnerLogger(rep *cmux.Reporter, inner progress.SectionLogger) (proces
 
 // runWithSectionTiming guarantees the final section and aggregate summary are
 // written before callers handle the runner result.
-func runWithSectionTiming(ctx context.Context, run func(context.Context) error, timer *progress.SectionTimer) error {
+func runWithSectionTiming(ctx context.Context, run func(context.Context) error, timer *progress.SectionTimer, validationTimer *progress.ValidationTimer) error {
 	runErr := run(ctx)
 	timer.FinishRun()
+	validationTimer.FinishRun()
 	return runErr
 }
 
@@ -727,6 +729,14 @@ func runWithSectionTiming(ctx context.Context, run func(context.Context) error, 
 // when req.MainGitSvc is set, uses it for plan file operations (plan is in main repo).
 func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	branch := getCurrentBranch(req.GitSvc)
+	validationCommands := make([]string, 0)
+	if req.PlanFile != "" {
+		parsedPlan, parseErr := plan.ParsePlanFile(req.PlanFile)
+		if parseErr != nil {
+			return fmt.Errorf("parse plan validation commands: %w", parseErr)
+		}
+		validationCommands = parsedPlan.ValidationCommands
+	}
 
 	// set up progress logger and phase holder
 	plr, err := setupProgressLogger(o, req, branch)
@@ -771,6 +781,8 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		}
 	}
 	runnerLog, sectionTimer := buildRunnerLogger(rep, runnerLog)
+	validationTimer := progress.NewValidationTimer(validationCommands, runnerLog)
+	req.CommandTimingHandler = validationTimer.Handler()
 
 	// subscribe the sidebar to phase changes after the dashboard so both observers coexist
 	plr.holder.OnChange(rep.OnPhase)
@@ -816,7 +828,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		r.SetPauseHandler(makePauseHandler(os.Stdin, os.Stdout))
 	}
 
-	runErr := runWithSectionTiming(ctx, r.Run, sectionTimer)
+	runErr := runWithSectionTiming(ctx, r.Run, sectionTimer, validationTimer)
 	if runErr != nil {
 		// mark logger as failed so Close writes "Failed:" footer, preserving history
 		// for restart. Applies to ErrUserAborted too — user aborts are not completions.
@@ -1731,6 +1743,7 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		ReviewModel:           resolveReviewSpec(o, req.Config),
 		AppConfig:             req.Config,
 		LimitRecovery:         req.LimitRecovery,
+		CommandTimingHandler:  req.CommandTimingHandler,
 	}, log, holder)
 	if req.GitSvc != nil {
 		r.SetGitChecker(req.GitSvc)
@@ -2056,6 +2069,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	rep.Start(ctx)
 	holder.OnChange(rep.OnPhase)
 	planLog, sectionTimer := buildRunnerLogger(rep, baseLog)
+	validationTimer := progress.NewValidationTimer(nil, baseLog)
 
 	maxIter := resolveMaxIterations(o.MaxIterations, req.Config)
 
@@ -2115,7 +2129,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	r.SetInputCollector(rep.WrapInput(collector))
 
 	// run the plan creation loop
-	runErr := runWithSectionTiming(ctx, r.Run, sectionTimer)
+	runErr := runWithSectionTiming(ctx, r.Run, sectionTimer, validationTimer)
 	if runErr != nil {
 		wrapped := fmt.Errorf("plan creation: %w", runErr)
 		planCreationErr = wrapped

@@ -129,12 +129,14 @@ func TestRunWithSectionTimingFinishesBeforeReturning(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			inner := &runnerLoggerRecorder{}
 			timer := progress.NewSectionTimer(inner, nil)
+			validationTimer := progress.NewValidationTimer([]string{"make test"}, inner)
 			run := func(context.Context) error {
 				timer.PrintSection(status.NewTaskIterationSection(1))
+				validationTimer.Handler()("make test", 2*time.Second)
 				return tt.runErr
 			}
 
-			gotErr := runWithSectionTiming(t.Context(), run, timer)
+			gotErr := runWithSectionTiming(t.Context(), run, timer, validationTimer)
 			inner.calls = append(inner.calls, "downstream result handling")
 
 			if tt.runErr == nil {
@@ -142,11 +144,13 @@ func TestRunWithSectionTimingFinishesBeforeReturning(t *testing.T) {
 			} else {
 				require.ErrorIs(t, gotErr, tt.runErr)
 			}
-			require.Len(t, inner.calls, 4)
+			require.Len(t, inner.calls, 6)
 			assert.Equal(t, "section: task iteration 1", inner.calls[0])
-			assert.Regexp(t, `^print: task iteration 1 took .+$`, inner.calls[1])
-			assert.Regexp(t, `^print: phase durations: tasks .+ \(1\)$`, inner.calls[2])
-			assert.Equal(t, "downstream result handling", inner.calls[3])
+			assert.Equal(t, "print: validation: make test took 2s", inner.calls[1])
+			assert.Regexp(t, `^print: task iteration 1 took .+$`, inner.calls[2])
+			assert.Regexp(t, `^print: phase durations: tasks .+ \(1\)$`, inner.calls[3])
+			assert.Equal(t, "print: validation: 2s (1 runs)", inner.calls[4])
+			assert.Equal(t, "downstream result handling", inner.calls[5])
 		})
 	}
 }
