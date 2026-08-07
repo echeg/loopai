@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import errno
-import fcntl
 import hashlib
 import os
 import re
@@ -17,12 +16,18 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Iterator, NoReturn
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised on native Windows
+    fcntl = None  # type: ignore[assignment]
+
 
 OUTPUT_RE = re.compile(
     r"^docs/plans/(?P<date>\d{8}|\d{4}-\d{2}-\d{2})-"
     r"(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)\.md$"
 )
 ACTIVE_TOKEN_RE = re.compile(r"^v1:(?P<device>\d+):(?P<inode>\d+):(?P<digest>[0-9a-f]{64})$")
+MAX_PLAN_BYTES = 8 * 1024 * 1024
 
 
 class PathError(ValueError):
@@ -140,11 +145,20 @@ def open_active(
         os.close(root_fd)
 
 
-def read_all(file_fd: int) -> bytes:
-    chunks: list[bytes] = []
-    while chunk := os.read(file_fd, 1024 * 1024):
-        chunks.append(chunk)
-    return b"".join(chunks)
+def read_all(file_fd: int, label: str) -> bytes:
+    source_size = os.fstat(file_fd).st_size
+    if source_size > MAX_PLAN_BYTES:
+        raise PathError(f"{label} exceeds the 8 MiB safety limit")
+
+    payload = bytearray()
+    while True:
+        remaining = MAX_PLAN_BYTES - len(payload)
+        chunk = os.read(file_fd, min(1024 * 1024, remaining + 1))
+        if not chunk:
+            return bytes(payload)
+        payload.extend(chunk)
+        if len(payload) > MAX_PLAN_BYTES:
+            raise PathError(f"{label} exceeds the 8 MiB safety limit")
 
 
 def write_all(file_fd: int, payload: bytes) -> None:
@@ -209,7 +223,7 @@ def parse_active_token(token: str) -> tuple[int, int, str]:
 
 def read_active(root_arg: str, literal: str, destination_arg: str) -> tuple[str, str]:
     with open_active(root_arg, literal) as (root, _, relative, _, _, plan_fd, plan_stat):
-        payload = read_all(plan_fd)
+        payload = read_all(plan_fd, "active plan")
 
     destination = Path(destination_arg)
     try:
@@ -330,7 +344,7 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
     ):
         if (plan_stat.st_dev, plan_stat.st_ino) != (expected_device, expected_inode):
             raise PathError("active plan was replaced after it was read; refusing to update it")
-        if hashlib.sha256(read_all(plan_fd)).hexdigest() != expected_digest:
+        if hashlib.sha256(read_all(plan_fd, "active plan")).hexdigest() != expected_digest:
             raise PathError("active plan changed after it was read; refusing to replace it")
 
         resolved_source = resolve_scratch_source(root, plans, source_arg)
@@ -341,7 +355,7 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
                 raise PathError("edited plan draft is not a regular file")
             if source_stat.st_nlink != 1:
                 raise PathError("edited plan draft must not be hard-linked")
-            payload = read_all(source_fd)
+            payload = read_all(source_fd, "edited plan draft")
         finally:
             os.close(source_fd)
 
@@ -398,7 +412,9 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
             )
             try:
                 displaced_stat = os.fstat(displaced_fd)
-                displaced_digest = hashlib.sha256(read_all(displaced_fd)).hexdigest()
+                displaced_digest = hashlib.sha256(
+                    read_all(displaced_fd, "recovery plan")
+                ).hexdigest()
             finally:
                 os.close(displaced_fd)
             if (displaced_stat.st_dev, displaced_stat.st_ino) != (
@@ -588,7 +604,7 @@ def write_final(root_arg: str, relative: str, source_arg: str) -> str:
             raise PathError("final draft source is not a regular file")
         if source_stat.st_nlink != 1:
             raise PathError("final draft source must not be hard-linked")
-        payload = read_all(source_fd)
+        payload = read_all(source_fd, "final plan draft")
     finally:
         os.close(source_fd)
 
@@ -616,9 +632,16 @@ def write_final(root_arg: str, relative: str, source_arg: str) -> str:
             dst_dir_fd=directory_fd,
             follow_symlinks=False,
         )
-        os.unlink(temporary_name, dir_fd=directory_fd)
-        temporary_created = False
-        os.fsync(directory_fd)
+        try:
+            os.unlink(temporary_name, dir_fd=directory_fd)
+            temporary_created = False
+            os.fsync(directory_fd)
+        except OSError as exc:
+            print(
+                f"warning: output plan was created at {normalized}, but cleanup or "
+                f"durability confirmation failed: {exc}",
+                file=sys.stderr,
+            )
     except FileExistsError as exc:
         raise PathError("output plan appeared before it could be created") from exc
     finally:
@@ -638,6 +661,11 @@ def write_final(root_arg: str, relative: str, source_arg: str) -> str:
 
 
 def main(argv: list[str]) -> int:
+    if os.name != "posix" or fcntl is None:
+        fail(
+            "loopai-grill path safety requires a POSIX environment "
+            "(Linux, macOS, or Windows via WSL)"
+        )
     if len(argv) < 3:
         fail("usage: plan_paths.py <validate-active|read-active|replace-active|validate-scratch|classify|newest-active|check-output|write-final> <repository-root> [arguments]")
     command, root_arg, *args = argv[1:]

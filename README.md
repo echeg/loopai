@@ -114,14 +114,18 @@ mode applies only the verified findings you select; if Codex is unavailable or
 fails, it reports that and continues with Claude critics. Compare mode requires
 Codex, never edits a source plan, and creates one new plan without overwriting
 an existing path. Both modes reject completed plans, symlinked plans or plan
-directories, and anything under `.loopai/`; normal Claude Code tool permissions
-remain in effect. Active-plan edits fail if the reviewed file identity or content
+directories, and anything under `.loopai/`; plan-consuming Claude calls run
+with read-only tools against an equivalent sanitized snapshot to Codex.
+Active-plan edits fail if the reviewed file identity or content
 changes, and no-clobber publication preserves concurrent writers. Successful
 edits report and retain the displaced plan under a Git-private, non-stageable
-recovery path so a late write through a previously opened descriptor remains recoverable. The skill
-requires Python 3 and Git for a descriptor-anchored Codex snapshot that excludes
-ignored files, hard-linked files, every symlink path, and case aliases of private
-directories, and rejects in-worktree alternate Git directories. Standalone
+recovery path so a late write through a previously opened descriptor remains
+recoverable. The skill requires a POSIX environment (Linux, macOS, or Windows
+via WSL), Python 3, and Git for descriptor-anchored Claude and Codex snapshots
+that exclude ignored files, hard-linked files, every symlink path, and case
+aliases of private directories, reject individual files over 64 MiB and
+snapshots over 512 MiB, and reject in-worktree alternate Git directories.
+Active plans and generated drafts are limited to 8 MiB. Standalone
 skill copies use `/loopai-grill` instead of the namespaced plugin command.
 
 The CLI remains the execution engine. The plugin adds Claude Code workflows

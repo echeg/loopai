@@ -85,7 +85,8 @@ versions.
 Standalone installation must copy the complete directories under
 `assets/claude/skills/`, not dereference only the top-level Markdown symlinks;
 `loopai-grill` depends on bundled scripts addressed through
-`${CLAUDE_SKILL_DIR}` and requires Python 3 for its path helper.
+`${CLAUDE_SKILL_DIR}` and requires Python 3 in a POSIX environment (Linux,
+macOS, or Windows via WSL) for its path helper.
 
 `.claude-plugin/marketplace.json` exposes this repository as the `loopai`
 marketplace, and `.claude-plugin/plugin.json` points Claude Code at the skill
@@ -102,13 +103,16 @@ validates outside-repository scratch directories, identity-and-content-guards
 active-plan replacements without overwriting concurrent writers, retains and
 reports each displaced inode in Git-private non-stageable storage so late
 pre-opened-descriptor writes remain recoverable, and performs
-locked atomic no-clobber final creation. Its Codex wrapper snapshots only tracked
-and non-ignored untracked single-link regular files through descriptor-anchored
-no-follow reads while excluding `.git/`, `.loopai/`, recovery paths, and their
-case aliases, confines Codex reads to that isolated temporary directory and
-minimal runtime files, rejects in-worktree alternate Git directories,
-requires strict-config and permission-profile support, disables user/project
-config, rules, MCP and external tools, strips
+locked atomic no-clobber final creation. Plan and draft reads are capped at
+8 MiB. Its Claude and Codex wrappers snapshot
+only tracked and non-ignored untracked single-link regular files through
+descriptor-anchored no-follow reads while excluding `.git/`, `.loopai/`,
+recovery paths, and their case aliases, reject files over 64 MiB and snapshots
+over 512 MiB, confine model reads to isolated temporary directories, and reject
+in-worktree alternate Git directories. The Claude wrapper exposes only
+read-only repository tools and disables user/project customizations; the Codex
+wrapper requires strict-config and permission-profile support, disables
+user/project config, rules, MCP and external tools, strips
 credential-like shell variables, and starts an ephemeral session without
 approval escalation. Candidate and judging scratch files live outside the
 repository and are removed on every exit. Grill mode reports Codex failure

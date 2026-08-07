@@ -13,6 +13,10 @@ from pathlib import Path, PurePosixPath
 from typing import NoReturn
 
 
+MAX_SNAPSHOT_FILE_BYTES = 64 * 1024 * 1024
+MAX_SNAPSHOT_TOTAL_BYTES = 512 * 1024 * 1024
+
+
 class SnapshotError(RuntimeError):
     pass
 
@@ -168,8 +172,16 @@ def open_destination_parent(destination_fd: int, parts: tuple[str, ...]) -> int:
         raise
 
 
-def copy_all(source_fd: int, destination_fd: int) -> None:
-    while chunk := os.read(source_fd, 1024 * 1024):
+def copy_all(source_fd: int, destination_fd: int, byte_limit: int, path: str) -> int:
+    copied = 0
+    while True:
+        remaining = byte_limit - copied
+        chunk = os.read(source_fd, min(1024 * 1024, remaining + 1))
+        if not chunk:
+            return copied
+        copied += len(chunk)
+        if copied > byte_limit:
+            raise SnapshotError(f"snapshot byte limit exceeded while copying {path!r}")
         view = memoryview(chunk)
         while view:
             written = os.write(destination_fd, view)
@@ -178,11 +190,19 @@ def copy_all(source_fd: int, destination_fd: int) -> None:
             view = view[written:]
 
 
-def copy_one(root_fd: int, destination_fd: int, path: str) -> None:
+def copy_one(root_fd: int, destination_fd: int, path: str, remaining_total: int) -> int:
     parts = PurePosixPath(path).parts
     source_fd = open_source(root_fd, parts)
     if source_fd is None:
-        return
+        return 0
+
+    source_size = os.fstat(source_fd).st_size
+    if source_size > MAX_SNAPSHOT_FILE_BYTES:
+        os.close(source_fd)
+        raise SnapshotError(f"snapshot file exceeds the 64 MiB limit: {path!r}")
+    if source_size > remaining_total:
+        os.close(source_fd)
+        raise SnapshotError("snapshot exceeds the 512 MiB total limit")
 
     parent_fd: int | None = None
     output_fd: int | None = None
@@ -193,7 +213,12 @@ def copy_one(root_fd: int, destination_fd: int, path: str) -> None:
         output_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         output_fd = os.open(parts[-1], output_flags, 0o600, dir_fd=parent_fd)
         created = True
-        copy_all(source_fd, output_fd)
+        copied = copy_all(
+            source_fd,
+            output_fd,
+            min(MAX_SNAPSHOT_FILE_BYTES, remaining_total),
+            path,
+        )
         os.fsync(output_fd)
     except Exception:
         if created and parent_fd is not None:
@@ -208,6 +233,7 @@ def copy_one(root_fd: int, destination_fd: int, path: str) -> None:
         if parent_fd is not None:
             os.close(parent_fd)
         os.close(source_fd)
+    return copied
 
 
 def snapshot_repository(root_arg: str, destination_arg: str) -> None:
@@ -222,8 +248,14 @@ def snapshot_repository(root_arg: str, destination_arg: str) -> None:
     try:
         if os.listdir(destination_fd):
             raise SnapshotError("snapshot destination must be empty")
+        copied_total = 0
         for path in git_visible_paths(root):
-            copy_one(root_fd, destination_fd, path)
+            copied_total += copy_one(
+                root_fd,
+                destination_fd,
+                path,
+                MAX_SNAPSHOT_TOTAL_BYTES - copied_total,
+            )
         os.fsync(destination_fd)
     finally:
         os.close(destination_fd)

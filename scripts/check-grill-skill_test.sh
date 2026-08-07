@@ -7,6 +7,7 @@ skill_dir="$repo_root/assets/claude/skills/loopai-grill"
 skill_file="$skill_dir/SKILL.md"
 path_helper="$skill_dir/scripts/plan_paths.py"
 snapshot_helper="$skill_dir/scripts/snapshot_repository.py"
+claude_wrapper="$skill_dir/scripts/run-claude.sh"
 codex_wrapper="$skill_dir/scripts/run-codex.sh"
 symlink_checker="$repo_root/scripts/check-symlinks.sh"
 fixture="$(mktemp -d)"
@@ -39,6 +40,7 @@ run_paths() {
 [[ -f "$skill_file" ]] || fail "missing loopai-grill skill"
 [[ -x "$path_helper" ]] || fail "missing executable deterministic plan-path helper"
 [[ -x "$snapshot_helper" ]] || fail "missing executable descriptor-anchored snapshot helper"
+[[ -x "$claude_wrapper" ]] || fail "missing executable isolated Claude wrapper"
 [[ -x "$codex_wrapper" ]] || fail "missing executable isolated Codex wrapper"
 
 "$symlink_checker" "$repo_root" >/dev/null || fail "shared skill/frontmatter validation failed"
@@ -61,13 +63,15 @@ assert_contains "missing outside-repository scratch validation" 'plan_paths.py v
 assert_contains "missing compare input classification" 'plan_paths.py classify'
 assert_contains "missing empty compare handling" 'If it is empty or whitespace, stop and ask the user'
 # shellcheck disable=SC2016 # Backticks are literal skill text, not shell syntax.
-assert_contains "missing Codex wrapper requirement" 'Never call `codex exec` directly'
-assert_contains "missing ignored-file snapshot exclusion" 'tracked and non-ignored untracked working-tree files'
-assert_contains "missing private-path case-alias exclusion" 'recovery paths, and their case aliases'
-assert_contains "missing unsafe Git-directory rejection" 'rejects a nonstandard Git private or common directory inside the worktree'
+assert_contains "missing Codex wrapper requirement" 'call `claude -p` or `codex exec` directly'
+assert_contains "missing Claude wrapper requirement" 'Never launch a plan-consuming Agent with inherited repository permissions'
+assert_contains "missing bounded plan input" '64 MiB or more than 512 MiB total'
+assert_contains "missing ignored-file snapshot exclusion" 'tracked and non-ignored untracked single-link regular files'
+assert_contains "missing private-path case-alias exclusion" 'recovery paths, ignored files, links, and their case aliases'
+assert_contains "missing unsafe Git-directory rejection" 'reject a nonstandard Git private or common directory inside the worktree'
 assert_contains "missing grill-mode Codex degradation" 'continue with the three Claude critics'
 assert_contains "missing zero-findings handling" 'If no verified findings survive, skip AskUserQuestion'
-assert_contains "missing plan-off Codex requirement" 'Plan-off requires Codex.'
+assert_contains "missing plan-off model requirements" 'Plan-off requires both isolated wrappers.'
 assert_contains "missing shared loopai-plan template" 'Both candidates must receive the same requirements and the same template.'
 assert_contains "missing plugin-root template lookup" 'CLAUDE_PLUGIN_ROOT'
 assert_contains "missing standalone sibling template lookup" "\${CLAUDE_SKILL_DIR}/../loopai-plan/SKILL.md"
@@ -77,7 +81,7 @@ if grep -Fq 'then `assets/claude/skills/loopai-plan/SKILL.md`' "$skill_file"; th
 	fail "plan-off trusts a repository-relative template fallback"
 fi
 assert_contains "missing symmetric cross-judging" 'Have Claude and Codex each score both complete drafts'
-assert_contains "missing blind Claude judge" 'Launch the Claude judgment in a fresh Agent'
+assert_contains "missing blind Claude judge" 'Invoke the Claude wrapper with a fresh prompt'
 assert_contains "missing judge validation" 'Validate each judgment before calculating totals'
 assert_contains "missing collision preflight" 'plan_paths.py check-output'
 assert_contains "missing atomic final write" 'plan_paths.py write-final'
@@ -94,6 +98,31 @@ git -C "$fixture/repo" init -q
 	fail "valid repository-relative active plan was rejected"
 [[ "$(run_paths newest-active "$fixture/repo")" == "docs/plans/current.md" ]] ||
 	fail "newest safe active plan was not selected"
+python3 - "$path_helper" "$fixture/repo" <<'PY'
+import contextlib
+import importlib.util
+import io
+import sys
+
+helper_path, repository = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("plan_paths", helper_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("cannot load plan-path helper")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.fcntl = None
+errors = io.StringIO()
+try:
+    with contextlib.redirect_stderr(errors):
+        module.main([helper_path, "validate-active", repository, "docs/plans/current.md"])
+except SystemExit as exc:
+    if exc.code != 1:
+        raise
+else:
+    raise SystemExit("unsupported platform unexpectedly ran the path helper")
+if "requires a POSIX environment" not in errors.getvalue():
+    raise SystemExit("unsupported platform error was not actionable")
+PY
 python3 - "$path_helper" "$fixture/repo" <<'PY'
 import importlib.util
 import pathlib
@@ -149,6 +178,14 @@ if newest.returncode != 0 or newest.stdout.strip() != "docs/plans/current.md":
     raise SystemExit(f"newest-active did not skip a FIFO: {newest.stderr}")
 PY
 rm "$fixture/repo/docs/plans/trap.md"
+
+truncate -s $((8 * 1024 * 1024 + 1)) "$fixture/repo/docs/plans/oversized.md"
+expect_failure "oversized active plan was buffered" run_paths read-active \
+	"$fixture/repo" docs/plans/oversized.md "$fixture/oversized-snapshot.md"
+grep -Fq 'active plan exceeds the 8 MiB safety limit' "$fixture/failure.stderr" ||
+	fail "oversized active-plan error was not actionable"
+rm "$fixture/repo/docs/plans/oversized.md"
+
 [[ "$(run_paths classify "$fixture/repo" docs/plans/current.md)" == $'plan\tdocs/plans/current.md' ]] ||
 	fail "valid compare-source plan was not classified as a plan"
 [[ "$(run_paths classify "$fixture/repo" 'add a small feature')" == "description" ]] ||
@@ -450,6 +487,13 @@ run_paths check-output "$fixture/repo" docs/plans/20260807-safe-plan.md >/dev/nu
 	fail "safe final plan was not created"
 [[ "$(<"$fixture/repo/docs/plans/20260807-safe-plan.md")" == "# final" ]] ||
 	fail "final plan content was not preserved"
+truncate -s $((8 * 1024 * 1024 + 1)) "$fixture/oversized-final-draft.md"
+expect_failure "oversized final draft was buffered" run_paths write-final \
+	"$fixture/repo" docs/plans/20260807-oversized.md "$fixture/oversized-final-draft.md"
+grep -Fq 'final plan draft exceeds the 8 MiB safety limit' "$fixture/failure.stderr" ||
+	fail "oversized final-draft error was not actionable"
+[[ ! -e "$fixture/repo/docs/plans/20260807-oversized.md" ]] ||
+	fail "oversized final draft created an output plan"
 python3 - "$path_helper" "$fixture/repo" "$fixture/final-draft.md" <<'PY'
 import importlib.util
 import os
@@ -476,6 +520,46 @@ module.write_all = verify_hidden_write
 result = module.write_final(repository, "docs/plans/20260807-atomic-plan.md", source)
 if result != "docs/plans/20260807-atomic-plan.md" or target.read_text() != "# final\n":
     raise SystemExit("atomic final publication failed")
+PY
+python3 - "$path_helper" "$fixture/repo" "$fixture/final-draft.md" <<'PY'
+import contextlib
+import importlib.util
+import io
+import os
+import pathlib
+import stat
+import sys
+
+helper_path, repository, source = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("plan_paths", helper_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("cannot load plan-path helper")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+target = pathlib.Path(repository, "docs/plans/20260807-post-publish-warning.md")
+real_fsync = module.os.fsync
+
+
+def fail_directory_sync(file_fd):
+    if target.exists() and stat.S_ISDIR(os.fstat(file_fd).st_mode):
+        raise OSError(5, "injected directory sync failure")
+    return real_fsync(file_fd)
+
+
+module.os.fsync = fail_directory_sync
+warnings = io.StringIO()
+with contextlib.redirect_stderr(warnings):
+    result = module.write_final(
+        repository,
+        "docs/plans/20260807-post-publish-warning.md",
+        source,
+    )
+if result != "docs/plans/20260807-post-publish-warning.md":
+    raise SystemExit("published plan was reported as a failure")
+if target.read_text() != "# final\n":
+    raise SystemExit("post-publication warning lost the final plan")
+if "output plan was created" not in warnings.getvalue():
+    raise SystemExit("post-publication failure omitted the committed-state warning")
 PY
 python3 - "$path_helper" "$fixture/repo" "$fixture/final-draft.md" <<'PY'
 import importlib.util
@@ -549,6 +633,7 @@ mkdir -p "$fixture/fsmonitor-repo" "$fixture/fsmonitor-snapshot"
 git -C "$fixture/fsmonitor-repo" init -q
 printf '%s\n' 'snapshot input' >"$fixture/fsmonitor-repo/tracked.txt"
 git -C "$fixture/fsmonitor-repo" add tracked.txt
+# shellcheck disable=SC2016 # The generated hook expands this variable when it runs.
 printf '%s\n' '#!/bin/sh' 'printf invoked >"$FSMONITOR_MARKER"' 'printf token' >"$fixture/fsmonitor-hook"
 chmod +x "$fixture/fsmonitor-hook"
 git -C "$fixture/fsmonitor-repo" config core.fsmonitor "$fixture/fsmonitor-hook"
@@ -575,6 +660,41 @@ fi
 python3 "$snapshot_helper" "$fixture/conflict-repo" "$fixture/conflict-snapshot"
 cmp "$fixture/conflict-repo/conflicted.txt" "$fixture/conflict-snapshot/conflicted.txt" ||
 	fail "snapshot did not copy an unresolved conflict exactly once"
+
+mkdir -p "$fixture/oversized-repo" "$fixture/oversized-repo-snapshot"
+git -C "$fixture/oversized-repo" init -q
+truncate -s $((64 * 1024 * 1024 + 1)) "$fixture/oversized-repo/oversized.bin"
+git -C "$fixture/oversized-repo" add oversized.bin
+expect_failure "oversized repository file exhausted snapshot storage" python3 \
+	"$snapshot_helper" "$fixture/oversized-repo" "$fixture/oversized-repo-snapshot"
+grep -Fq 'snapshot file exceeds the 64 MiB limit' "$fixture/failure.stderr" ||
+	fail "oversized snapshot-file error was not actionable"
+
+mkdir -p "$fixture/total-repo" "$fixture/total-repo-snapshot"
+git -C "$fixture/total-repo" init -q
+printf '123456' >"$fixture/total-repo/one.txt"
+printf 'abcdef' >"$fixture/total-repo/two.txt"
+git -C "$fixture/total-repo" add one.txt two.txt
+python3 - "$snapshot_helper" "$fixture/total-repo" "$fixture/total-repo-snapshot" <<'PY'
+import importlib.util
+import sys
+
+helper_path, repository, destination = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("snapshot_repository", helper_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("cannot load snapshot helper")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.MAX_SNAPSHOT_FILE_BYTES = 10
+module.MAX_SNAPSHOT_TOTAL_BYTES = 10
+try:
+    module.snapshot_repository(repository, destination)
+except module.SnapshotError as exc:
+    if "total limit" not in str(exc):
+        raise
+else:
+    raise SystemExit("snapshot total limit was not enforced")
+PY
 
 mkdir -p "$fixture/case-repo/.LOOPAI" \
 	"$fixture/case-repo/.LOOPAI-GRILL-RECOVERY-case" "$fixture/case-snapshot"
@@ -674,6 +794,22 @@ mkdir -p "$fixture/fake-bin" "$fixture/empty-bin"
 # shellcheck disable=SC2016 # The generated fixture expands these variables when it runs.
 printf '%s\n' \
 	'#!/usr/bin/env bash' \
+	'if [[ "${1:-}" == "--help" ]]; then printf "%s\\n" "--safe-mode --setting-sources --strict-mcp-config --permission-mode --no-session-persistence"; exit 0; fi' \
+	'printf "%s\\n" "$@" >"$CLAUDE_ARGS_LOG"' \
+	'pwd -P >"$CLAUDE_CWD_LOG"' \
+	'[[ -f docs/plans/current.md ]] || exit 97' \
+	'[[ ! -e .loopai ]] || exit 98' \
+	'[[ ! -e .git ]] || exit 99' \
+	'[[ ! -e .env ]] || exit 100' \
+	'[[ ! -e ignored-cache ]] || exit 101' \
+	'cat >"$CLAUDE_STDIN_LOG"' \
+	'printf "claude result\\n"' \
+	'if [[ "${CLAUDE_EXIT_CODE:-0}" != 0 ]]; then printf "claude failed\\n" >&2; fi' \
+	'exit "${CLAUDE_EXIT_CODE:-0}"' >"$fixture/fake-bin/claude"
+chmod +x "$fixture/fake-bin/claude"
+# shellcheck disable=SC2016 # The generated fixture expands these variables when it runs.
+printf '%s\n' \
+	'#!/usr/bin/env bash' \
 	'if [[ "${1:-}" == "exec" && "${2:-}" == "--help" ]]; then printf "%s\\n" "--strict-config"; exit 0; fi' \
 	'if [[ "${1:-}" == "sandbox" && "${2:-}" == "--help" ]]; then printf "%s\\n" "--permission-profile"; exit 0; fi' \
 	'printf "%s\\n" "$@" >"$CODEX_ARGS_LOG"' \
@@ -708,12 +844,45 @@ printf '%s\n' \
 chmod +x "$fixture/fake-bin/codex"
 printf 'review this plan\n' >"$fixture/codex-prompt.txt"
 
+CLAUDE_ARGS_LOG="$fixture/claude.args" CLAUDE_CWD_LOG="$fixture/claude.cwd" CLAUDE_STDIN_LOG="$fixture/claude.stdin" TMPDIR="$fixture" PATH="$fixture/fake-bin:/usr/bin:/bin" \
+	bash "$claude_wrapper" "$fixture/repo" "$fixture/codex-prompt.txt" "$fixture/claude.stdout" "$fixture/claude.stderr"
+[[ "$(<"$fixture/claude.stdout")" == "claude result" ]] || fail "Claude stdout was not captured"
+[[ ! -s "$fixture/claude.stderr" ]] || fail "successful Claude stderr was not captured separately"
+claude_snapshot_dir="$(<"$fixture/claude.cwd")"
+canonical_fixture="$(cd "$fixture" && pwd -P)"
+[[ "$claude_snapshot_dir" == "$canonical_fixture"/loopai-grill-claude.*/repository ]] ||
+	fail "Claude did not use an isolated repository snapshot"
+[[ ! -e "${claude_snapshot_dir%/repository}" ]] || fail "isolated Claude working directory was not removed"
+grep -Fq 'Inspect only this sanitized repository snapshot.' "$fixture/claude.stdin" ||
+	fail "Claude prompt omitted the sanitized snapshot boundary"
+grep -Fq 'review this plan' "$fixture/claude.stdin" || fail "Claude prompt file was not forwarded"
+printf '%s\n' \
+	--print \
+	--safe-mode \
+	--setting-sources \
+	'' \
+	--strict-mcp-config \
+	--mcp-config \
+	'{"mcpServers":{}}' \
+	--disable-slash-commands \
+	--tools \
+	'Read,Glob,Grep' \
+	--permission-mode \
+	dontAsk \
+	--no-session-persistence \
+	--output-format \
+	text >"$fixture/expected-claude.args"
+diff -u "$fixture/expected-claude.args" "$fixture/claude.args" || fail "Claude isolation arguments changed"
+
+expect_failure "missing Claude binary was not reported" env PATH="$fixture/empty-bin" /bin/bash "$claude_wrapper" \
+	"$fixture/repo" "$fixture/codex-prompt.txt" "$fixture/missing-claude.stdout" "$fixture/missing-claude.stderr"
+grep -Fq 'claude binary is required' "$fixture/failure.stderr" || fail "missing Claude error was not actionable"
+
 CODEX_CREATE_READONLY=1 CODEX_ARGS_LOG="$fixture/codex.args" CODEX_SNAPSHOT_LOG="$fixture/codex.snapshot" CODEX_STDIN_LOG="$fixture/codex.stdin" TMPDIR="$fixture" PATH="$fixture/fake-bin:/usr/bin:/bin" \
 	bash "$codex_wrapper" "$fixture/repo" "$fixture/codex-prompt.txt" "$fixture/codex.stdout" "$fixture/codex.stderr"
 [[ "$(<"$fixture/codex.stdout")" == "codex result" ]] || fail "Codex stdout was not captured"
 [[ ! -s "$fixture/codex.stderr" ]] || fail "successful Codex stderr was not captured separately"
 codex_isolation_dir="$(awk 'previous == "-C" { print; exit } { previous = $0 }' "$fixture/codex.args")"
-canonical_fixture="$(cd "$fixture" && pwd -P)"
 [[ "$codex_isolation_dir" == "$canonical_fixture"/loopai-grill-codex.* ]] || fail "Codex did not use an isolated working directory"
 [[ ! -e "$codex_isolation_dir" ]] || fail "isolated Codex working directory was not removed"
 grep -Fq 'repository/docs/plans/current.md' "$fixture/codex.snapshot" || fail "sanitized snapshot omitted repository files"
@@ -794,6 +963,7 @@ expect_failure "missing Codex binary was not reported" env PATH="$fixture/empty-
 grep -Fq 'codex binary is required' "$fixture/failure.stderr" || fail "missing Codex error was not actionable"
 
 mkdir -p "$fixture/legacy-bin"
+# shellcheck disable=SC2016 # The generated fixture expands these variables when it runs.
 printf '%s\n' \
 	'#!/usr/bin/env bash' \
 	'if [[ "${1:-}" == "exec" && "${2:-}" == "--help" ]]; then printf "legacy codex\\n"; exit 0; fi' \
