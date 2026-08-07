@@ -1318,3 +1318,121 @@ func TestReporterWrapInputAskDraftReview(t *testing.T) {
 		assert.Equal(t, strings.Repeat("я", notifyBodyLimit), calls[0][len(calls[0])-1])
 	})
 }
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain word", in: "loopai", want: `'loopai'`},
+		{name: "empty string stays an argument", in: "", want: `''`},
+		{name: "spaces", in: "docs/plans/my plan.md", want: `'docs/plans/my plan.md'`},
+		{name: "single quote", in: "it's", want: `'it'\''s'`},
+		{name: "only a single quote", in: "'", want: `''\'''`},
+		{name: "double quotes and backslash", in: `a"b\c`, want: `'a"b\c'`},
+		{name: "shell metacharacters stay literal", in: "$HOME; rm -rf *", want: `'$HOME; rm -rf *'`},
+		{name: "unicode", in: "план ветка", want: `'план ветка'`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, shellQuote(tt.in))
+		})
+	}
+}
+
+func TestSpawnWorkspace(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeBin(t, binDir, binName)
+
+	t.Run("no workspace env", func(t *testing.T) {
+		t.Setenv("PATH", binDir)
+		t.Setenv(workspaceEnv, "")
+
+		err := SpawnWorkspace("feature", "/tmp", []string{"loopai", "plan.md"})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrNotInCmux)
+	})
+
+	t.Run("blank workspace env", func(t *testing.T) {
+		t.Setenv("PATH", binDir)
+		t.Setenv(workspaceEnv, " \t ")
+
+		assert.ErrorIs(t, SpawnWorkspace("feature", "/tmp", []string{"loopai"}), ErrNotInCmux)
+	})
+
+	t.Run("no binary in path", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		t.Setenv(workspaceEnv, "ws-1")
+
+		err := SpawnWorkspace("feature", "/tmp", []string{"loopai"})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrNotInCmux)
+	})
+
+	t.Run("availability detected, request reaches the binary", func(t *testing.T) {
+		t.Setenv("PATH", binDir)
+		t.Setenv(workspaceEnv, "ws-1")
+
+		// only the availability verdict is asserted: the call itself is bounded by execTimeout, and
+		// spawning the stub can exceed it on a loaded machine. the argv is covered with a fake runner
+		// in TestSpawnWorkspaceCommand.
+		err := SpawnWorkspace("feature", "/tmp", []string{"loopai", "plan.md"})
+		assert.NotErrorIs(t, err, ErrNotInCmux, "env and binary are both present")
+	})
+}
+
+func TestSpawnWorkspaceCommand(t *testing.T) {
+	t.Run("exact argv", func(t *testing.T) {
+		runner := &fakeRunner{}
+		require.NoError(t, spawnWorkspace(runner, "my-feature", "/work/repo", []string{"/bin/loopai", "docs/plans/a b.md", "--codex"}))
+
+		calls := runner.recorded()
+		require.Len(t, calls, 1)
+		assert.Equal(t, []string{
+			"new-workspace",
+			"--name", "my-feature",
+			"--cwd", "/work/repo",
+			"--focus", "true",
+			"--command", `'/bin/loopai' 'docs/plans/a b.md' '--codex'`,
+		}, calls[0])
+	})
+
+	t.Run("quotes in arguments are escaped", func(t *testing.T) {
+		runner := &fakeRunner{}
+		require.NoError(t, spawnWorkspace(runner, "it's", "/work", []string{"loopai", "it's.md"}))
+
+		calls := runner.recorded()
+		require.Len(t, calls, 1)
+		assert.Equal(t, `'loopai' 'it'\''s.md'`, calls[0][len(calls[0])-1])
+		assert.Equal(t, "it's", calls[0][2], "the name is passed as a plain argument, not shell-quoted")
+	})
+
+	t.Run("runner failure is propagated", func(t *testing.T) {
+		wantErr := errors.New("cmux refused")
+		runner := &fakeRunner{err: wantErr}
+
+		err := spawnWorkspace(runner, "feature", "/work", []string{"loopai"})
+		require.Error(t, err)
+		require.ErrorIs(t, err, wantErr, "the caller decides on the fallback, so the cause must survive")
+		require.NotErrorIs(t, err, ErrNotInCmux, "a CLI failure is not an availability problem")
+		assert.Contains(t, err.Error(), `create cmux workspace "feature"`)
+	})
+
+	t.Run("empty argv", func(t *testing.T) {
+		runner := &fakeRunner{}
+
+		require.Error(t, spawnWorkspace(runner, "feature", "/work", nil))
+		assert.Empty(t, runner.recorded(), "nothing must be sent to cmux without a command")
+	})
+
+	t.Run("call is bounded by the exec timeout", func(t *testing.T) {
+		runner := &fakeRunner{block: time.Minute}
+
+		start := time.Now()
+		err := spawnWorkspace(runner, "feature", "/work", []string{"loopai"})
+		require.Error(t, err)
+		assert.Less(t, time.Since(start), 30*time.Second, "a hanging cmux call must not stall the hand-off")
+	})
+}

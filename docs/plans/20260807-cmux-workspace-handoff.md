@@ -46,13 +46,13 @@
 ## Implementation Steps
 
 ### Task 1: Add workspace spawn support to pkg/cmux
-- [ ] add `SpawnWorkspace(name, cwd string, argv []string) error` to `pkg/cmux/cmux.go`: package-level function that verifies availability (`CMUX_WORKSPACE_ID` set and `cmux` in PATH; return a distinct sentinel error such as `ErrNotInCmux` when unavailable), shell-quotes `argv` into a single command string, and runs `cmux new-workspace --name <name> --cwd <cwd> --focus true --command <cmd>` with the existing 2s timeout
-- [ ] unlike the best-effort reporter methods, propagate the CLI error to the caller (the caller decides to fall back to a local run); route execution through `commandRunner` so tests can inject a fake
-- [ ] add a small POSIX single-quote shell-quoting helper (unexported) for building the `--command` string
-- [ ] write tests for `SpawnWorkspace` success: fake runner records argv; assert exact `new-workspace` arguments including quoted command
-- [ ] write tests for `SpawnWorkspace` errors: missing env → `ErrNotInCmux`, missing binary → `ErrNotInCmux`, runner failure propagated
-- [ ] write table-driven tests for the shell-quoting helper (spaces, single quotes, empty string, unicode)
-- [ ] run tests - must pass before next task
+- [x] add `SpawnWorkspace(name, cwd string, argv []string) error` to `pkg/cmux/cmux.go`: package-level function that verifies availability (`CMUX_WORKSPACE_ID` set and `cmux` in PATH; return a distinct sentinel error such as `ErrNotInCmux` when unavailable), shell-quotes `argv` into a single command string, and runs `cmux new-workspace --name <name> --cwd <cwd> --focus true --command <cmd>` with the existing 2s timeout
+- [x] unlike the best-effort reporter methods, propagate the CLI error to the caller (the caller decides to fall back to a local run); route execution through `commandRunner` so tests can inject a fake
+- [x] add a small POSIX single-quote shell-quoting helper (unexported) for building the `--command` string
+- [x] write tests for `SpawnWorkspace` success: fake runner records argv; assert exact `new-workspace` arguments including quoted command
+- [x] write tests for `SpawnWorkspace` errors: missing env → `ErrNotInCmux`, missing binary → `ErrNotInCmux`, runner failure propagated
+- [x] write table-driven tests for the shell-quoting helper (spaces, single quotes, empty string, unicode)
+- [x] run tests - must pass before next task
 
 ### Task 2: Wire --cmux-workspace flag and hand-off in cmd/loopai
 - [ ] add `CmuxWorkspace bool` option with `long:"cmux-workspace"` and description "relaunch this run in a new cmux workspace so it gets its own sidebar card (no-op with a warning outside cmux)" to the options struct in `cmd/loopai/main.go`

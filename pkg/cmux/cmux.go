@@ -7,6 +7,7 @@ package cmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -135,6 +136,57 @@ func New(planFile string, models Models) *Reporter {
 		lastDone:  -1,
 		lastTotal: -1,
 	}
+}
+
+// ErrNotInCmux reports that loopai does not run inside cmux, so no workspace can be created.
+// callers match it with errors.Is to tell "cmux is absent" apart from "cmux refused the request".
+var ErrNotInCmux = errors.New("not running inside cmux")
+
+// SpawnWorkspace creates a new cmux workspace running argv in cwd and titled name.
+//
+// unlike the Reporter methods this is not best-effort: the error is returned so the caller can
+// choose between exiting after a successful hand-off and continuing the run locally. availability
+// is detected exactly like New does, and a missing workspace env or binary yields ErrNotInCmux.
+func SpawnWorkspace(name, cwd string, argv []string) error {
+	if strings.TrimSpace(os.Getenv(workspaceEnv)) == "" {
+		return fmt.Errorf("%s is not set: %w", workspaceEnv, ErrNotInCmux)
+	}
+	bin, err := exec.LookPath(binName)
+	if err != nil {
+		return fmt.Errorf("no %s binary in PATH: %w", binName, ErrNotInCmux)
+	}
+	return spawnWorkspace(&execRunner{bin: bin}, name, cwd, argv)
+}
+
+// spawnWorkspace is the runner-injectable core of SpawnWorkspace, kept separate so tests can
+// record argv without a live cmux socket.
+func spawnWorkspace(runner commandRunner, name, cwd string, argv []string) error {
+	if len(argv) == 0 {
+		return errors.New("no command for the new workspace")
+	}
+
+	// --command is delivered to the new workspace's shell as text plus Enter, so argv has to survive
+	// one round of shell word splitting. every element is single-quoted, which is the only escaping
+	// form that needs no knowledge of the target shell's expansions.
+	quoted := make([]string, 0, len(argv))
+	for _, a := range argv {
+		quoted = append(quoted, shellQuote(a))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	args := []string{"new-workspace", "--name", name, "--cwd", cwd, "--focus", "true", "--command", strings.Join(quoted, " ")}
+	if err := runner.run(ctx, args...); err != nil {
+		return fmt.Errorf("create cmux workspace %q: %w", name, err)
+	}
+	return nil
+}
+
+// shellQuote wraps s in POSIX single quotes, ending and reopening the quoted run around every
+// literal quote ('\''). the result is safe in sh, bash and zsh alike, since nothing but the closing
+// quote is special inside a single-quoted string.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // exec runs a cmux command best-effort. errors are swallowed on purpose: the sidebar is an
