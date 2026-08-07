@@ -126,11 +126,25 @@ structured `PrintSection` calls while forwarding the complete logger interface.
 Keep `Reporter.WrapLogger` in the logger chain after dashboard setup. The
 `progress.SectionTimer` sits below that cmux wrapper and above the dashboard
 broadcast logger, preserving cmux's outermost rate-limit interfaces while timing
-the structured sections. Use `runWithSectionTiming` for both the main runner and
-interactive plan-creation paths; it calls `SectionTimer.FinishRun` immediately
-after `Runner.Run` returns and before either caller handles the run error. Do not
-defer it because dashboard shutdown can close the underlying log first. A nil
-reporter must return the timer unchanged.
+the structured sections. `progress.ValidationTimer` receives that wrapped runner
+logger, filters executor command-timing events against the plan's `## Validation
+Commands`, and writes per-run and aggregate `validation:` lines through the same
+chain. Its aggregate sums command durations, so concurrent commands can overlap
+and the total can exceed section or run wall-clock time. Use
+`runWithSectionTiming` for both the main runner and interactive plan-creation
+paths; it calls `SectionTimer.FinishRun` and then `ValidationTimer.FinishRun`
+immediately after `Runner.Run` returns and before either caller handles the run
+error. Do not defer either call because dashboard shutdown can close the
+underlying log first. A nil reporter must return the section timer unchanged.
+
+Claude command timing pairs streamed Bash `tool_use` and `tool_result` events by
+tool-use ID and measures their arrival times. Codex pairs rollout `exec_command`
+function calls and outputs by call ID, preferring native event timestamps and
+falling back to arrival times for older rollout formats. The fallback is
+approximate because the final rollout drain can deliver buffered events late.
+Executors report all completed shell commands; `ValidationTimer` alone performs
+classification. Unpaired commands and providers that omit tool events produce no
+timing lines.
 
 ## Code style
 

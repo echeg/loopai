@@ -112,10 +112,10 @@ Validation time is included in (not additive to) the phase buckets; with paralle
 
 ### Task 6: Update documentation
 
-- [ ] update `CLAUDE.md`: command timing events, `ValidationTimer` placement in the logger chain, overlap semantics
-- [ ] update `llms.txt`: progress log now includes `validation:` per-run lines and the aggregate summary
-- [ ] update `README.md` user documentation for the new progress output
-- [ ] godoc on new exported types documents the overlap caveat and approximate Codex timing (if arrival-time fallback is used)
+- [x] update `CLAUDE.md`: command timing events, `ValidationTimer` placement in the logger chain, overlap semantics
+- [x] update `llms.txt`: progress log now includes `validation:` per-run lines and the aggregate summary
+- [x] update `README.md` user documentation for the new progress output
+- [x] godoc on new exported types documents the overlap caveat and approximate Codex timing (if arrival-time fallback is used)
 
 ## Technical Details
 

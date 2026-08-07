@@ -94,7 +94,10 @@ func (r *execCodexRunner) Run(ctx context.Context, name string, args ...string) 
 	return CodexStreams{Stderr: stderr, Stdout: stdout}, cleanup.Wait, nil
 }
 
-// CodexExecutor runs codex CLI commands and filters output.
+// CodexExecutor runs codex CLI commands and filters output. Completed command
+// durations prefer native rollout timestamps; the arrival-time fallback is
+// approximate because buffered events can arrive during the final drain.
+// Concurrent command durations can overlap.
 type CodexExecutor struct {
 	Command              string                                // command to execute, defaults to "codex"
 	Model                string                                // model override; empty means inherit from ~/.codex/config.toml (no -c model= flag emitted)
@@ -103,7 +106,7 @@ type CodexExecutor struct {
 	Sandbox              string                                // sandbox mode, defaults to "read-only"
 	ProjectDoc           string                                // path to project documentation file
 	OutputHandler        func(text string)                     // called for each filtered output line in real-time
-	CommandTimingHandler func(command string, d time.Duration) // called for each completed exec_command, can be nil
+	CommandTimingHandler func(command string, d time.Duration) // called for each completed exec_command; can be nil
 	Debug                bool                                  // enable debug output
 	ErrorPatterns        []string                              // patterns to detect in output (e.g., rate limit messages)
 	LimitPatterns        []string                              // patterns to detect rate limits (checked before error patterns)
