@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import stat
+import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
@@ -241,7 +242,7 @@ def read_active(root_arg: str, literal: str, destination_arg: str) -> tuple[str,
 
 
 def restore_recovery(
-    root_fd: int,
+    recovery_parent_fd: int,
     plans_fd: int,
     recovery_fd: int,
     recovery_name: str,
@@ -261,9 +262,55 @@ def restore_recovery(
         return False
     os.unlink("original-plan", dir_fd=recovery_fd)
     os.fsync(plans_fd)
-    os.rmdir(recovery_name, dir_fd=root_fd)
-    os.fsync(root_fd)
+    os.rmdir(recovery_name, dir_fd=recovery_parent_fd)
+    os.fsync(recovery_parent_fd)
     return True
+
+
+def open_git_private_directory(root: Path, plan_stat: os.stat_result) -> tuple[Path, int]:
+    top_level = subprocess.run(
+        ["git", "-C", os.fspath(root), "rev-parse", "--show-toplevel"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if top_level.returncode != 0:
+        detail = top_level.stderr.strip()
+        raise PathError(f"cannot resolve Git worktree root: {detail or 'git failed'}")
+    try:
+        resolved_top_level = Path(top_level.stdout.strip()).resolve(strict=True)
+    except OSError as exc:
+        raise PathError(f"cannot resolve Git worktree root: {exc}") from exc
+    if resolved_top_level != root:
+        raise PathError("repository root is not the Git worktree root")
+
+    result = subprocess.run(
+        ["git", "-C", os.fspath(root), "rev-parse", "--absolute-git-dir"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        raise PathError(f"cannot resolve Git private directory: {detail or 'git failed'}")
+    try:
+        git_directory = Path(result.stdout.strip()).resolve(strict=True)
+    except OSError as exc:
+        raise PathError(f"cannot resolve Git private directory: {exc}") from exc
+
+    git_fd = os.open(git_directory, directory_open_flags())
+    git_stat = os.fstat(git_fd)
+    if not stat.S_ISDIR(git_stat.st_mode):
+        os.close(git_fd)
+        raise PathError("Git private path is not a directory")
+    if git_stat.st_dev != plan_stat.st_dev:
+        os.close(git_fd)
+        raise PathError(
+            "Git private directory must share a filesystem with the active plan for recovery"
+        )
+    return git_directory, git_fd
 
 
 def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> tuple[str, str]:
@@ -297,10 +344,10 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
         temporary_name = f".{basename}.loopai-grill-{secrets.token_hex(8)}"
         temporary_fd: int | None = None
         temporary_created = False
-        root_fd: int | None = None
+        recovery_parent_fd: int | None = None
         recovery_fd: int | None = None
-        recovery_name = f".loopai-grill-recovery-{secrets.token_hex(16)}"
-        recovery_display = f"{recovery_name}/original-plan"
+        recovery_name = f"loopai-grill-recovery-{secrets.token_hex(16)}"
+        recovery_display = ""
         recovery_created = False
         displaced = False
         published = False
@@ -321,10 +368,13 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
             os.close(temporary_fd)
             temporary_fd = None
 
-            root_fd = os.open(root, directory_open_flags())
-            os.mkdir(recovery_name, 0o700, dir_fd=root_fd)
+            recovery_parent, recovery_parent_fd = open_git_private_directory(root, plan_stat)
+            recovery_display = os.fspath(recovery_parent / recovery_name / "original-plan")
+            os.mkdir(recovery_name, 0o700, dir_fd=recovery_parent_fd)
             recovery_created = True
-            recovery_fd = os.open(recovery_name, directory_open_flags(), dir_fd=root_fd)
+            recovery_fd = os.open(
+                recovery_name, directory_open_flags(), dir_fd=recovery_parent_fd
+            )
             os.rename(
                 basename,
                 "original-plan",
@@ -335,7 +385,7 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
             prior_preserved = True
             os.fsync(plans_fd)
             os.fsync(recovery_fd)
-            os.fsync(root_fd)
+            os.fsync(recovery_parent_fd)
 
             displaced_fd = os.open(
                 "original-plan",
@@ -372,10 +422,10 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
                         f"preserved at {recovery_display}"
                     ) from exc
                 raise PathError("active plan was published but recovery cleanup failed") from exc
-            if displaced and root_fd is not None and recovery_fd is not None:
+            if displaced and recovery_parent_fd is not None and recovery_fd is not None:
                 try:
                     restored = restore_recovery(
-                        root_fd,
+                        recovery_parent_fd,
                         plans_fd,
                         recovery_fd,
                         recovery_name,
@@ -407,13 +457,13 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
                     pass
             if recovery_fd is not None:
                 os.close(recovery_fd)
-            if recovery_created and not displaced and root_fd is not None:
+            if recovery_created and not displaced and recovery_parent_fd is not None:
                 try:
-                    os.rmdir(recovery_name, dir_fd=root_fd)
+                    os.rmdir(recovery_name, dir_fd=recovery_parent_fd)
                 except OSError:
                     pass
-            if root_fd is not None:
-                os.close(root_fd)
+            if recovery_parent_fd is not None:
+                os.close(recovery_parent_fd)
     return relative, recovery_display
 
 

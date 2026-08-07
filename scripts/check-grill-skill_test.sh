@@ -86,6 +86,7 @@ printf '# older\n' >"$fixture/repo/docs/plans/older.md"
 printf '# current\n' >"$fixture/repo/docs/plans/current.md"
 touch -t 202601010101 "$fixture/repo/docs/plans/older.md"
 touch -t 202601020101 "$fixture/repo/docs/plans/current.md"
+git -C "$fixture/repo" init -q
 
 [[ "$(run_paths validate-active "$fixture/repo" docs/plans/current.md)" == "docs/plans/current.md" ]] ||
 	fail "valid repository-relative active plan was rejected"
@@ -182,12 +183,19 @@ printf '# edited\n' >"$fixture/active-scratch/mutable-edited.md"
 IFS=$'\t' read -r replacement_relative replacement_recovery < <(
 	run_paths replace-active "$fixture/repo" docs/plans/mutable.md "$snapshot_token" "$fixture/active-scratch/mutable-edited.md"
 )
-[[ "$replacement_relative" == "docs/plans/mutable.md" && "$replacement_recovery" =~ ^\.loopai-grill-recovery-[0-9a-f]{32}/original-plan$ ]] ||
+[[ "$replacement_relative" == "docs/plans/mutable.md" && "$replacement_recovery" =~ /loopai-grill-recovery-[0-9a-f]{32}/original-plan$ ]] ||
 	fail "guarded active-plan replacement failed"
 [[ "$(<"$fixture/repo/docs/plans/mutable.md")" == "# edited" ]] ||
 	fail "guarded active-plan replacement did not install the edited draft"
-[[ "$(<"$fixture/repo/$replacement_recovery")" == "# mutable" ]] ||
+[[ "$(<"$replacement_recovery")" == "# mutable" ]] ||
 	fail "guarded active-plan replacement did not preserve and report the prior version"
+if git -C "$fixture/repo" status --porcelain --untracked-files=all | grep -Fq 'loopai-grill-recovery-'; then
+	fail "Git status exposed an active-plan recovery file"
+fi
+git -C "$fixture/repo" add -A -- .
+if git -C "$fixture/repo" ls-files | grep -Fq 'loopai-grill-recovery-'; then
+	fail "git add -A staged an active-plan recovery file"
+fi
 
 printf '# open descriptor original\n' >"$fixture/repo/docs/plans/open-descriptor.md"
 IFS=$'\t' read -r _ open_descriptor_token < <(
@@ -301,6 +309,7 @@ python3 - "$path_helper" "$fixture/repo" "$race_token" "$fixture/active-scratch/
 import importlib.util
 import os
 import pathlib
+import subprocess
 import sys
 
 helper_path, repository, token, edited = sys.argv[1:]
@@ -350,9 +359,14 @@ else:
 current = pathlib.Path(repository, "docs/plans/race.md").read_text()
 if current != "# race concurrent\n":
     raise SystemExit("concurrent writer was overwritten")
+git_directory = pathlib.Path(
+    subprocess.check_output(
+        ["git", "-C", repository, "rev-parse", "--absolute-git-dir"], text=True
+    ).strip()
+)
 recoveries = [
     path
-    for path in pathlib.Path(repository).glob(".loopai-grill-recovery-*/original-plan")
+    for path in git_directory.glob("loopai-grill-recovery-*/original-plan")
     if path.read_text() == "# race original\n"
 ]
 if len(recoveries) != 1:
@@ -521,7 +535,6 @@ printf '%s\n' 'outside parent secret' >"$fixture/outside-parent/file.txt"
 mkdir -p "$fixture/repo/race-parent" "$fixture/outside-race-parent"
 printf '%s\n' 'safe race file' >"$fixture/repo/race-parent/file.txt"
 printf '%s\n' 'outside race secret' >"$fixture/outside-race-parent/file.txt"
-git -C "$fixture/repo" init -q
 printf '%s\n' 'private git metadata' >"$fixture/repo/.git/private"
 git -C "$fixture/repo" add .gitignore docs/plans/current.md docs/plans/older.md \
 	absolute-secret-link relative-secret-link race-parent/file.txt tracked-parent/file.txt tracked-fifo
@@ -592,6 +605,8 @@ mkdir -p "$fixture/fake-bin" "$fixture/empty-bin"
 # shellcheck disable=SC2016 # The generated fixture expands these variables when it runs.
 printf '%s\n' \
 	'#!/usr/bin/env bash' \
+	'if [[ "${1:-}" == "exec" && "${2:-}" == "--help" ]]; then printf "%s\\n" "--strict-config"; exit 0; fi' \
+	'if [[ "${1:-}" == "sandbox" && "${2:-}" == "--help" ]]; then printf "%s\\n" "--permission-profile"; exit 0; fi' \
 	'printf "%s\\n" "$@" >"$CODEX_ARGS_LOG"' \
 	'codex_cwd=' \
 	'previous=' \
@@ -652,6 +667,7 @@ printf '%s\n' \
 	--ask-for-approval \
 	never \
 	exec \
+	--strict-config \
 	--ignore-user-config \
 	--ignore-rules \
 	-c \
@@ -707,6 +723,17 @@ fi
 expect_failure "missing Codex binary was not reported" env PATH="$fixture/empty-bin" /bin/bash "$codex_wrapper" \
 	"$fixture/repo" "$fixture/codex-prompt.txt" "$fixture/missing.stdout" "$fixture/missing.stderr"
 grep -Fq 'codex binary is required' "$fixture/failure.stderr" || fail "missing Codex error was not actionable"
+
+mkdir -p "$fixture/legacy-bin"
+printf '%s\n' \
+	'#!/usr/bin/env bash' \
+	'if [[ "${1:-}" == "exec" && "${2:-}" == "--help" ]]; then printf "legacy codex\\n"; exit 0; fi' \
+	'exit 2' >"$fixture/legacy-bin/codex"
+chmod +x "$fixture/legacy-bin/codex"
+expect_failure "Codex without strict configuration support was accepted" env PATH="$fixture/legacy-bin:/usr/bin:/bin" /bin/bash "$codex_wrapper" \
+	"$fixture/repo" "$fixture/codex-prompt.txt" "$fixture/legacy.stdout" "$fixture/legacy.stderr"
+grep -Fq 'strict configuration support required for isolation' "$fixture/failure.stderr" ||
+	fail "unsupported Codex error was not actionable"
 
 if CODEX_EXIT_CODE=42 CODEX_ARGS_LOG="$fixture/codex-failure.args" CODEX_SNAPSHOT_LOG="$fixture/codex-failure.snapshot" CODEX_STDIN_LOG="$fixture/codex-failure.stdin" TMPDIR="$fixture" PATH="$fixture/fake-bin:/usr/bin:/bin" \
 	bash "$codex_wrapper" "$fixture/repo" "$fixture/codex-prompt.txt" "$fixture/failed.stdout" "$fixture/failed.stderr"; then

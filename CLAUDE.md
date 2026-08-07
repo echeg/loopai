@@ -100,13 +100,14 @@ plan and never edits its source. Both reject completed, symlinked, nested, and
 helper rejects symlinked plan and `.loopai` roots, rejects hard-linked plans,
 validates outside-repository scratch directories, identity-and-content-guards
 active-plan replacements without overwriting concurrent writers, retains and
-reports each displaced inode so late pre-opened-descriptor writes remain
-recoverable, and performs
+reports each displaced inode in Git-private non-stageable storage so late
+pre-opened-descriptor writes remain recoverable, and performs
 locked atomic no-clobber final creation. Its Codex wrapper snapshots only tracked
 and non-ignored untracked single-link regular files through descriptor-anchored
 no-follow reads while excluding `.git/` and `.loopai/`, confines Codex reads to
 that isolated temporary directory and minimal runtime files,
-disables user/project config, rules, MCP and external tools, strips
+requires strict-config and permission-profile support, disables user/project
+config, rules, MCP and external tools, strips
 credential-like shell variables, and starts an ephemeral session without
 approval escalation. Candidate and judging scratch files live outside the
 repository and are removed on every exit. Grill mode reports Codex failure
