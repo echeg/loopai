@@ -102,10 +102,10 @@ Deliberately out of scope: superpowers stays installed and untouched — no othe
 
 ### Task 6: Update documentation
 
-- [ ] update `README.md`: "Claude Code plugin" section — install via `claude plugin marketplace add echeg/loopai`, list of provided skills, migration note (remove the upstream `ralphex` plugin/marketplace; superpowers can stay installed — only its plan-writing flow is superseded, and a per-project CLAUDE.md directive can point plan creation at loopai-plan for teammates who keep superpowers)
-- [ ] update `llms.txt`: plugin installation and the loopai-brainstorm → loopai-plan pipeline
-- [ ] update `CLAUDE.md`: project structure entry for `.claude-plugin/`, the version-bump discipline (bump plugin.json version whenever skills change, otherwise installed copies do not update), and the skill/symlink conventions extended to the new skill
-- [ ] run `make test` and `make lint` - final green
+- [x] update `README.md`: "Claude Code plugin" section — install via `claude plugin marketplace add echeg/loopai`, list of provided skills, migration note (remove the upstream `ralphex` plugin/marketplace; superpowers can stay installed — only its plan-writing flow is superseded, and a per-project CLAUDE.md directive can point plan creation at loopai-plan for teammates who keep superpowers)
+- [x] update `llms.txt`: plugin installation and the loopai-brainstorm → loopai-plan pipeline
+- [x] update `CLAUDE.md`: project structure entry for `.claude-plugin/`, the version-bump discipline (bump plugin.json version whenever skills change, otherwise installed copies do not update), and the skill/symlink conventions extended to the new skill
+- [x] run `make test` and `make lint` - final green
 
 ## Technical Details
 

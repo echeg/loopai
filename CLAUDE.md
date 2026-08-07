@@ -14,7 +14,7 @@ Three upstream-compatible internals intentionally retain the old name:
 
 Do not rename these. Keeping the module path avoids import-line conflicts during upstream merges. Keeping the signals preserves compatibility with embedded/custom prompts and historical progress logs. These are deliberate boundaries, not rebrand omissions.
 
-The fork does not contain upstream packaging/release infrastructure or the upstream documentation website. Distribution is by source build.
+The fork does not contain upstream packaging/release infrastructure or the upstream documentation website. Distribution is by source build and the repository's Claude Code plugin marketplace.
 
 ## Build commands
 
@@ -60,13 +60,22 @@ scripts/             provider wrappers and internal test helpers
 scripts/copilot-as-claude/ # GitHub Copilot CLI wrapper for Claude-compatible output
 scripts/pi-as-claude/ # pi wrapper for Claude-compatible output
 assets/claude/       optional slash-command source assets
+.claude-plugin/      Claude Code plugin and marketplace manifests
 docs/                focused operational documentation and plans
 ```
 
 The top-level `assets/claude/loopai*.md` files are symlinks to the matching
 `assets/claude/skills/loopai*/SKILL.md` sources. Keep the command name,
 directory name, and link target aligned; `make check-symlinks` rejects broken
-links.
+links. The current set is `loopai`, `loopai-plan`, `loopai-brainstorm`,
+`loopai-adopt`, and `loopai-update`; every added skill needs the matching
+top-level symlink.
+
+`.claude-plugin/marketplace.json` exposes this repository as the `loopai`
+marketplace, and `.claude-plugin/plugin.json` points Claude Code at the skill
+directory. Whenever any skill changes, bump the version in both manifests so
+installed copies receive the update. Keep the marketplace entry version equal
+to the plugin version.
 
 ## Configuration
 
