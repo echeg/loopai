@@ -7450,6 +7450,9 @@ func TestCmuxWorkspaceName(t *testing.T) {
 		{name: "plan file without date", o: opts{PlanFile: "docs/plans/feature.md"}, want: "feature"},
 		{name: "branch override wins", o: opts{PlanFile: "docs/plans/p.md", Branch: "custom"}, want: "custom"},
 		{name: "blank branch override ignored", o: opts{PlanFile: "p.md", Branch: "  "}, want: "p"},
+		// a plan path whose base is nothing but the extension derives an empty branch, which would
+		// title the sidebar card with nothing at all.
+		{name: "empty derived name falls back", o: opts{PlanFile: "docs/plans/.md"}, want: "loopai"},
 	}
 
 	for _, tc := range tests {
@@ -7533,6 +7536,32 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		assert.False(t, handOffToCmuxWorkspace(opts{PlanFile: "p.md"}, nil, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Empty(t, stderr.String())
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("unresolvable working directory continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+		// the new workspace needs a --cwd, so a working directory that no longer exists is the same
+		// kind of unusable environment as a missing executable: warn and run here instead.
+		dir := filepath.Join(t.TempDir(), "gone")
+		require.NoError(t, os.Mkdir(dir, 0o750))
+		t.Chdir(dir)
+		// removing the current directory is refused on some platforms and left resolvable on others,
+		// so the branch is only exercised where the environment actually becomes unusable.
+		if err := os.Remove(dir); err != nil {
+			t.Skipf("platform keeps the working directory: %v", err)
+		}
+		if _, err := os.Getwd(); err == nil {
+			t.Skip("platform resolves the working directory of a removed directory")
+		}
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		assert.False(t, handOffToCmuxWorkspace(opts{CmuxWorkspace: true, PlanFile: "p.md"}, nil, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: resolve working directory")
 		_, statErr := os.Stat(argvLog)
 		require.ErrorIs(t, statErr, os.ErrNotExist)
 	})

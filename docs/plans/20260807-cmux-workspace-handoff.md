@@ -68,12 +68,15 @@
 - ➕ a `--branch` override wins over the plan-derived name, matching the branch the worktree run will actually use
 
 ### Task 3: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented (own card per run inside cmux, warning fallback outside cmux, no recursion, no behavior change without the flag)
-- [ ] verify edge cases are handled (plan file missing/empty branch name, args with spaces and quotes, `os.Executable` error → warning fallback)
-- [ ] run full test suite (`make test`)
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] verify test coverage meets project standard (80%+) for the new code paths
-- [ ] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` (quoting helper and exec path are platform-sensitive)
+- [x] verify all requirements from Overview are implemented (own card per run inside cmux, warning fallback outside cmux, no recursion, no behavior change without the flag)
+- [x] verify edge cases are handled (plan file missing/empty branch name, args with spaces and quotes, `os.Executable` error → warning fallback)
+- [x] run full test suite (`make test`)
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] verify test coverage meets project standard (80%+) for the new code paths
+- [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` (quoting helper and exec path are platform-sensitive)
+- ➕ added a `cmuxWorkspaceName` case for a plan path deriving an empty branch (`docs/plans/.md` → `loopai`), which was the one uncovered fallback
+- ➕ added a hand-off case for an unresolvable working directory; it self-skips where the platform still resolves a removed cwd (macOS does), so the branch is exercised only where it can be
+- ⚠️ the `os.Executable` failure branch stays verified by inspection: it cannot be provoked without injecting a seam into production code, and it mirrors the covered `os.Getwd` branch exactly
 
 ### Task 4: [Final] Update documentation
 - [ ] update README.md flag list/usage with `--cmux-workspace`
