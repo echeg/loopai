@@ -6,6 +6,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 skill_dir="$repo_root/assets/claude/skills/loopai-grill"
 skill_file="$skill_dir/SKILL.md"
 path_helper="$skill_dir/scripts/plan_paths.py"
+snapshot_helper="$skill_dir/scripts/snapshot_repository.py"
 codex_wrapper="$skill_dir/scripts/run-codex.sh"
 symlink_checker="$repo_root/scripts/check-symlinks.sh"
 fixture="$(mktemp -d)"
@@ -37,6 +38,7 @@ run_paths() {
 
 [[ -f "$skill_file" ]] || fail "missing loopai-grill skill"
 [[ -x "$path_helper" ]] || fail "missing executable deterministic plan-path helper"
+[[ -x "$snapshot_helper" ]] || fail "missing executable descriptor-anchored snapshot helper"
 [[ -x "$codex_wrapper" ]] || fail "missing executable isolated Codex wrapper"
 
 "$symlink_checker" "$repo_root" >/dev/null || fail "shared skill/frontmatter validation failed"
@@ -53,6 +55,7 @@ assert_contains "missing explicit-path validation" 'plan_paths.py validate-activ
 assert_contains "missing newest-plan validation" 'plan_paths.py newest-active'
 assert_contains "missing guarded active-plan read" 'plan_paths.py read-active'
 assert_contains "missing guarded active-plan replacement" 'plan_paths.py replace-active'
+assert_contains "missing outside-repository scratch validation" 'plan_paths.py validate-scratch'
 assert_contains "missing compare input classification" 'plan_paths.py classify'
 assert_contains "missing empty compare handling" 'If it is empty or whitespace, stop and ask the user'
 # shellcheck disable=SC2016 # Backticks are literal skill text, not shell syntax.
@@ -105,6 +108,11 @@ expect_failure "absolute plan path was accepted" run_paths validate-active "$fix
 expect_failure "invalid path-like compare input became a description" run_paths classify "$fixture/repo" docs/plans/missing.md
 
 mkdir -p "$fixture/active-scratch"
+[[ "$(run_paths validate-scratch "$fixture/repo" "$fixture/active-scratch")" == "$(cd "$fixture/active-scratch" && pwd -P)" ]] ||
+	fail "outside-repository scratch directory was rejected"
+mkdir -p "$fixture/repo/repository-scratch"
+expect_failure "repository-local scratch directory was accepted" run_paths validate-scratch \
+	"$fixture/repo" "$fixture/repo/repository-scratch"
 printf '# mutable\n' >"$fixture/repo/docs/plans/mutable.md"
 IFS=$'\t' read -r snapshot_relative snapshot_token < <(
 	run_paths read-active "$fixture/repo" docs/plans/mutable.md "$fixture/active-scratch/mutable-snapshot.md"
@@ -219,6 +227,10 @@ if find "$fixture/repo/docs/plans" -maxdepth 1 -name '.mutable.md.loopai-grill-*
 fi
 
 printf '# secret\n' >"$fixture/repo/.loopai/secret.md"
+ln "$fixture/repo/.loopai/secret.md" "$fixture/repo/docs/plans/hard-linked.md"
+expect_failure "hard-linked active plan was accepted" run_paths validate-active \
+	"$fixture/repo" docs/plans/hard-linked.md
+rm "$fixture/repo/docs/plans/hard-linked.md"
 ln -s ../../.loopai/secret.md "$fixture/repo/docs/plans/escape.md"
 ln -s ../../.loopai/missing.md "$fixture/repo/docs/plans/dangling.md"
 expect_failure "plan symlink into .loopai was accepted" run_paths validate-active "$fixture/repo" docs/plans/escape.md
@@ -276,6 +288,55 @@ result = module.write_final(repository, "docs/plans/20260807-atomic-plan.md", so
 if result != "docs/plans/20260807-atomic-plan.md" or target.read_text() != "# final\n":
     raise SystemExit("atomic final publication failed")
 PY
+python3 - "$path_helper" "$fixture/repo" "$fixture/final-draft.md" <<'PY'
+import importlib.util
+import pathlib
+import subprocess
+import sys
+
+helper_path, repository, source = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("plan_paths", helper_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("cannot load plan-path helper")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+real_write_all = module.write_all
+competitor = None
+
+
+def start_competitor(file_fd, payload):
+    global competitor
+    competitor = subprocess.Popen(
+        [
+            sys.executable,
+            helper_path,
+            "write-final",
+            repository,
+            "docs/plans/2026-08-07-locked-race.md",
+            source,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    real_write_all(file_fd, payload)
+
+
+module.write_all = start_competitor
+result = module.write_final(repository, "docs/plans/20260807-locked-race.md", source)
+if result != "docs/plans/20260807-locked-race.md" or competitor is None:
+    raise SystemExit("primary locked publication failed")
+stdout, stderr = competitor.communicate(timeout=10)
+if competitor.returncode == 0:
+    raise SystemExit(f"alias publication raced successfully: {stdout}")
+if "collides" not in stderr:
+    raise SystemExit(f"alias publication failed for the wrong reason: {stderr}")
+plans = pathlib.Path(repository, "docs/plans")
+if not (plans / "20260807-locked-race.md").is_file():
+    raise SystemExit("primary locked publication is missing")
+if (plans / "2026-08-07-locked-race.md").exists():
+    raise SystemExit("concurrent dashed alias was published")
+PY
 printf '# replacement\n' >"$fixture/replacement.md"
 expect_failure "existing final plan was overwritten" run_paths write-final "$fixture/repo" docs/plans/20260807-safe-plan.md "$fixture/replacement.md"
 [[ "$(<"$fixture/repo/docs/plans/20260807-safe-plan.md")" == "# final" ]] ||
@@ -306,11 +367,53 @@ ln -s ../outside-secret.txt "$fixture/repo/relative-secret-link"
 mkdir -p "$fixture/repo/tracked-parent" "$fixture/outside-parent"
 printf '%s\n' 'safe indexed file' >"$fixture/repo/tracked-parent/file.txt"
 printf '%s\n' 'outside parent secret' >"$fixture/outside-parent/file.txt"
+mkdir -p "$fixture/repo/race-parent" "$fixture/outside-race-parent"
+printf '%s\n' 'safe race file' >"$fixture/repo/race-parent/file.txt"
+printf '%s\n' 'outside race secret' >"$fixture/outside-race-parent/file.txt"
 git -C "$fixture/repo" init -q
 printf '%s\n' 'private git metadata' >"$fixture/repo/.git/private"
 git -C "$fixture/repo" add .gitignore docs/plans/current.md docs/plans/older.md \
-	absolute-secret-link relative-secret-link tracked-parent/file.txt
+	absolute-secret-link relative-secret-link race-parent/file.txt tracked-parent/file.txt
 git -C "$fixture/repo" add -f .loopai/secret.md
+ln "$fixture/repo/.loopai/secret.md" "$fixture/repo/hard-visible.txt"
+mkdir "$fixture/race-snapshot"
+python3 - "$snapshot_helper" "$fixture/repo" "$fixture/race-snapshot" "$fixture/outside-race-parent" <<'PY'
+import importlib.util
+import os
+import pathlib
+import sys
+
+helper_path, repository, destination, outside = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("snapshot_repository", helper_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("cannot load snapshot helper")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+real_open = module.os.open
+swapped = False
+
+
+def racing_open(path, flags, *args, dir_fd=None, **kwargs):
+    global swapped
+    if not swapped and path == "race-parent" and dir_fd is not None:
+        opened_fd = real_open(path, flags, *args, dir_fd=dir_fd, **kwargs)
+        swapped = True
+        pathlib.Path(repository, "race-parent").rename(
+            pathlib.Path(repository, "race-parent-original")
+        )
+        pathlib.Path(repository, "race-parent").symlink_to(outside)
+        return opened_fd
+    return real_open(path, flags, *args, dir_fd=dir_fd, **kwargs)
+
+
+module.os.open = racing_open
+module.snapshot_repository(repository, destination)
+copied = pathlib.Path(destination, "race-parent/file.txt")
+if copied.read_text() != "safe race file\n":
+    raise SystemExit("snapshot followed a raced parent symlink")
+if pathlib.Path(destination, "hard-visible.txt").exists():
+    raise SystemExit("snapshot copied a hard-linked file")
+PY
 mv "$fixture/repo/tracked-parent" "$fixture/tracked-parent-indexed"
 ln -s ../outside-parent "$fixture/repo/tracked-parent"
 mkdir -p "$fixture/fake-bin" "$fixture/empty-bin"
@@ -335,6 +438,7 @@ printf '%s\n' \
 	'[[ ! -e "$codex_cwd/repository/relative-secret-link" ]] || exit 105' \
 	'[[ ! -e "$codex_cwd/repository/tracked-parent" ]] || exit 106' \
 	'if compgen -G "$codex_cwd/repository/.loopai-grill-recovery-*" >/dev/null; then exit 107; fi' \
+	'[[ ! -e "$codex_cwd/repository/hard-visible.txt" ]] || exit 108' \
 	'find "$codex_cwd/repository" -print >"$CODEX_SNAPSHOT_LOG"' \
 	'if [[ "${CODEX_CREATE_READONLY:-0}" == 1 ]]; then' \
 	'  mkdir "$codex_cwd/repository/readonly-cleanup"' \
@@ -364,8 +468,8 @@ fi
 if grep -Eq '/(\.env|ignored-cache)(/|$)' "$fixture/codex.snapshot"; then
 	fail "sanitized snapshot included ignored private artifacts"
 fi
-if grep -Eq '/(absolute-secret-link|relative-secret-link|tracked-parent)(/|$)' "$fixture/codex.snapshot"; then
-	fail "sanitized snapshot included a symlink or symlink-descended file"
+if grep -Eq '/(absolute-secret-link|relative-secret-link|tracked-parent|race-parent|hard-visible\.txt)(/|$)' "$fixture/codex.snapshot"; then
+	fail "sanitized snapshot included a linked or link-descended file"
 fi
 if grep -Eq '/\.loopai-grill-recovery-' "$fixture/codex.snapshot"; then
 	fail "sanitized snapshot included active-plan recovery data"

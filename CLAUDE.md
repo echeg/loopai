@@ -97,12 +97,13 @@ to the plugin version.
 plan and applies only user-selected verified findings; plan-off creates one new
 plan and never edits its source. Both reject completed, symlinked, nested, and
 `.loopai/` plans. The skill pre-approves no Claude tools. Its bundled path
-helper rejects symlinked plan and `.loopai` roots, identity-and-content-guards
+helper rejects symlinked plan and `.loopai` roots, rejects hard-linked plans,
+validates outside-repository scratch directories, identity-and-content-guards
 active-plan replacements without overwriting concurrent writers, and performs
-atomic no-clobber final creation. Its Codex wrapper snapshots only tracked and
-non-ignored untracked regular files without symlink components while excluding
-`.git/` and `.loopai/`, confines Codex reads to that isolated temporary
-directory and minimal runtime files,
+locked atomic no-clobber final creation. Its Codex wrapper snapshots only tracked
+and non-ignored untracked single-link regular files through descriptor-anchored
+no-follow reads while excluding `.git/` and `.loopai/`, confines Codex reads to
+that isolated temporary directory and minimal runtime files,
 disables user/project config, rules, MCP and external tools, strips
 credential-like shell variables, and starts an ephemeral session without
 approval escalation. Candidate and judging scratch files live outside the

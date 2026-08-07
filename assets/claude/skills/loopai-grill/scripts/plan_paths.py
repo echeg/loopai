@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import os
 import re
@@ -112,6 +113,8 @@ def open_active(
         plan_stat = os.fstat(plan_fd)
         if not stat.S_ISREG(plan_stat.st_mode):
             raise PathError("active plan is not a regular file")
+        if plan_stat.st_nlink != 1:
+            raise PathError("active plan must not be hard-linked")
         if basename not in os.listdir(plans_fd):
             raise PathError("plan path case does not match the filesystem entry")
         yield root, plans, relative, basename, plans_fd, plan_fd, plan_stat
@@ -167,6 +170,23 @@ def resolve_scratch_source(root: Path, plans: Path, source_arg: str) -> Path:
     if plans == resolved_source or plans in resolved_source.parents:
         raise PathError("draft source must be outside docs/plans")
     return resolved_source
+
+
+def validate_scratch(root_arg: str, scratch_arg: str) -> Path:
+    root, _, _ = repository_layout(root_arg)
+    scratch = Path(scratch_arg)
+    if scratch.is_symlink():
+        raise PathError("scratch directory must not be a symbolic link")
+    try:
+        resolved_scratch = scratch.resolve(strict=True)
+        scratch_stat = resolved_scratch.stat()
+    except OSError as exc:
+        raise PathError(f"cannot resolve scratch directory: {exc}") from exc
+    if not stat.S_ISDIR(scratch_stat.st_mode):
+        raise PathError("scratch path is not a directory")
+    if root == resolved_scratch or root in resolved_scratch.parents:
+        raise PathError("scratch directory must be outside the repository")
+    return resolved_scratch
 
 
 def active_token(plan_stat: os.stat_result, payload: bytes) -> str:
@@ -261,8 +281,11 @@ def replace_active(root_arg: str, literal: str, token: str, source_arg: str) -> 
         source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         source_fd = os.open(resolved_source, source_flags)
         try:
-            if not stat.S_ISREG(os.fstat(source_fd).st_mode):
+            source_stat = os.fstat(source_fd)
+            if not stat.S_ISREG(source_stat.st_mode):
                 raise PathError("edited plan draft is not a regular file")
+            if source_stat.st_nlink != 1:
+                raise PathError("edited plan draft must not be hard-linked")
             payload = read_all(source_fd)
         finally:
             os.close(source_fd)
@@ -444,29 +467,57 @@ def collision_names(relative: str) -> set[str]:
     return {PurePosixPath(relative).name, alternate}
 
 
+def ensure_no_collision_fd(plans_fd: int, names: set[str]) -> None:
+    folded = {name.casefold() for name in names}
+    for name in os.listdir(plans_fd):
+        if name.casefold() in folded:
+            raise PathError(f"plan name collides with docs/plans/{name}")
+
+    completed_fd: int | None = None
+    try:
+        completed_fd = os.open("completed", directory_open_flags(), dir_fd=plans_fd)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise PathError("docs/plans/completed must not be a symbolic link") from exc
+        if exc.errno == errno.ENOTDIR:
+            raise PathError("docs/plans/completed is not a directory") from exc
+        raise
+    try:
+        for name in os.listdir(completed_fd):
+            if name.casefold() in folded:
+                raise PathError(f"plan name collides with docs/plans/completed/{name}")
+    finally:
+        os.close(completed_fd)
+
+
 def ensure_no_collision(root_arg: str, relative: str) -> tuple[Path, Path, str]:
     root, plans, _ = repository_layout(root_arg)
     normalized, basename = direct_plan_relative(relative)
     names = collision_names(normalized)
-    folded = {name.casefold() for name in names}
 
-    completed = plans / "completed"
-    if completed.is_symlink():
-        raise PathError("docs/plans/completed must not be a symbolic link")
-    directories = [plans]
-    if completed.exists():
-        if not completed.is_dir():
-            raise PathError("docs/plans/completed is not a directory")
-        directories.append(completed)
-    for directory in directories:
-        for entry in os.scandir(directory):
-            if entry.name.casefold() in folded:
-                raise PathError(f"plan name collides with {entry.path}")
+    root_fd = os.open(root, directory_open_flags())
+    docs_fd: int | None = None
+    plans_fd: int | None = None
+    try:
+        docs_fd = os.open("docs", directory_open_flags(), dir_fd=root_fd)
+        plans_fd = os.open("plans", directory_open_flags(), dir_fd=docs_fd)
+        fcntl.flock(plans_fd, fcntl.LOCK_SH)
+        ensure_no_collision_fd(plans_fd, names)
+    finally:
+        if plans_fd is not None:
+            os.close(plans_fd)
+        if docs_fd is not None:
+            os.close(docs_fd)
+        os.close(root_fd)
     return root, plans, basename
 
 
 def write_final(root_arg: str, relative: str, source_arg: str) -> str:
-    root, plans, basename = ensure_no_collision(root_arg, relative)
+    root, plans, _ = repository_layout(root_arg)
+    normalized, basename = direct_plan_relative(relative)
+    names = collision_names(normalized)
     resolved_source = resolve_scratch_source(root, plans, source_arg)
 
     directory_flags = os.O_RDONLY
@@ -480,8 +531,11 @@ def write_final(root_arg: str, relative: str, source_arg: str) -> str:
 
     source_fd = os.open(resolved_source, source_flags)
     try:
-        if not stat.S_ISREG(os.fstat(source_fd).st_mode):
+        source_stat = os.fstat(source_fd)
+        if not stat.S_ISREG(source_stat.st_mode):
             raise PathError("final draft source is not a regular file")
+        if source_stat.st_nlink != 1:
+            raise PathError("final draft source must not be hard-linked")
         payload = read_all(source_fd)
     finally:
         os.close(source_fd)
@@ -495,6 +549,8 @@ def write_final(root_arg: str, relative: str, source_arg: str) -> str:
     try:
         docs_fd = os.open("docs", directory_flags, dir_fd=root_fd)
         directory_fd = os.open("plans", directory_flags, dir_fd=docs_fd)
+        fcntl.flock(directory_fd, fcntl.LOCK_EX)
+        ensure_no_collision_fd(directory_fd, names)
         temporary_fd = os.open(temporary_name, file_flags, 0o644, dir_fd=directory_fd)
         temporary_created = True
         write_all(temporary_fd, payload)
@@ -531,7 +587,7 @@ def write_final(root_arg: str, relative: str, source_arg: str) -> str:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 3:
-        fail("usage: plan_paths.py <validate-active|read-active|replace-active|classify|newest-active|check-output|write-final> <repository-root> [arguments]")
+        fail("usage: plan_paths.py <validate-active|read-active|replace-active|validate-scratch|classify|newest-active|check-output|write-final> <repository-root> [arguments]")
     command, root_arg, *args = argv[1:]
     try:
         if command == "validate-active" and len(args) == 1:
@@ -540,6 +596,8 @@ def main(argv: list[str]) -> int:
             print("\t".join(read_active(root_arg, args[0], args[1])))
         elif command == "replace-active" and len(args) == 3:
             print(replace_active(root_arg, args[0], args[1], args[2]))
+        elif command == "validate-scratch" and len(args) == 1:
+            print(validate_scratch(root_arg, args[0]))
         elif command == "classify" and len(args) == 1:
             print(classify(root_arg, args[0]))
         elif command == "newest-active" and not args:
