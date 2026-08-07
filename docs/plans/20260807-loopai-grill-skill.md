@@ -64,11 +64,11 @@
 - [x] run `make test` (asset checks + full suite) - must pass before next task
 
 ### Task 3: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented (two modes, mode routing, codex degradation, format-consistent output)
-- [ ] verify edge cases: no plans in docs/plans/, plan path with wrong case, `compare` with no description, codex absent
-- [ ] run full test suite (`make test`)
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] verify the skill file passes the frontmatter validation in check-symlinks (quoted description, no unquoted `: ` or ` #`)
+- [x] verify all requirements from Overview are implemented (two modes, mode routing, codex degradation, format-consistent output)
+- [x] verify edge cases: no plans in docs/plans/, plan path with wrong case, `compare` with no description, codex absent
+- [x] run full test suite (`make test`)
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] verify the skill file passes the frontmatter validation in check-symlinks (quoted description, no unquoted `: ` or ` #`)
 
 ### Task 4: [Final] Update documentation
 - [ ] update README.md plugin section: "five skills" → "six skills" with the `loopai:loopai-grill` bullet describing both modes
