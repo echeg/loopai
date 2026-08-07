@@ -495,6 +495,98 @@ Just some text, no checkboxes.
 	})
 }
 
+func TestParsePlan_ValidationCommands(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{
+			name: "extracts and normalizes list entries",
+			content: `# Plan
+
+## Validation Commands
+
+- ` + "`go   test ./...`" + `
+* make    lint
++ ` + "` npm  test `" + `
+1. cargo   test
+
+## Implementation Steps
+
+### Task 1: Work
+
+- [ ] implement
+`,
+			want: []string{"go test ./...", "make lint", "npm test", "cargo test"},
+		},
+		{
+			name: "section missing",
+			content: `# Plan
+
+### Task 1: Work
+
+- [ ] implement
+`,
+			want: []string{},
+		},
+		{
+			name: "section empty",
+			content: `# Plan
+
+## Validation Commands
+
+## Implementation Steps
+`,
+			want: []string{},
+		},
+		{
+			name: "ignores non-list content",
+			content: `# Plan
+
+## Validation Commands
+
+Run go test ./... before committing.
+` + "```text\n- ignored fenced entry\n```" + `
+
+## Implementation Steps
+`,
+			want: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := plan.ParsePlan(tt.content)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, p.ValidationCommands)
+		})
+	}
+}
+
+func TestMatchesValidationCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		entries []string
+		want    bool
+	}{
+		{name: "exact match", command: "make test", entries: []string{"make test"}, want: true},
+		{name: "prefix match at token boundary", command: "go test ./... -count=1", entries: []string{"go test ./..."}, want: true},
+		{name: "rejects non-boundary prefix", command: "make test-wrappers", entries: []string{"make test"}, want: false},
+		{name: "normalizes backticks and whitespace", command: "  go\t test ./...  -race ", entries: []string{"`go   test ./...`"}, want: true},
+		{name: "empty command", command: "  ", entries: []string{"make test"}, want: false},
+		{name: "empty entry list", command: "make test", entries: nil, want: false},
+		{name: "ignores empty entries", command: "make test", entries: []string{"", "  ` `  "}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, plan.MatchesValidationCommand(tt.command, tt.entries))
+		})
+	}
+}
+
 func TestParsePlanFile(t *testing.T) {
 	t.Run("reads and parses file", func(t *testing.T) {
 		content := `# File Plan

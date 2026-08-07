@@ -37,8 +37,9 @@ type Task struct {
 
 // Plan represents a parsed plan file.
 type Plan struct {
-	Title string `json:"title"`
-	Tasks []Task `json:"tasks"`
+	Title              string   `json:"title"`
+	Tasks              []Task   `json:"tasks"`
+	ValidationCommands []string `json:"validation_commands"`
 }
 
 // patterns for parsing plan markdown.
@@ -56,13 +57,16 @@ var (
 	// string permitted — only optional trailing whitespace (including a trailing CR for CRLF
 	// inputs that reach scanners which do not strip it). used to avoid treating an inner
 	// opener-with-info-string (e.g. ```go) as closing an outer fence.
-	fenceClosePattern = regexp.MustCompile(`^ {0,3}(` + "`" + `{3,}|~{3,})[ \t]*\r?$`)
+	fenceClosePattern       = regexp.MustCompile(`^ {0,3}(` + "`" + `{3,}|~{3,})[ \t]*\r?$`)
+	validationHeaderPattern = regexp.MustCompile(`^##\s+Validation Commands\s*$`)
+	listItemPattern         = regexp.MustCompile(`^\s*(?:[-+*]|\d+[.)])\s+(.+?)\s*$`)
 )
 
 // ParsePlan parses plan markdown content into a structured Plan.
 func ParsePlan(content string) (*Plan, error) {
 	p := &Plan{
-		Tasks: make([]Task, 0),
+		Tasks:              make([]Task, 0),
+		ValidationCommands: make([]string, 0),
 	}
 
 	scanner := bufio.NewScanner(strings.NewReader(content))
@@ -139,7 +143,69 @@ func ParsePlan(content string) (*Plan, error) {
 		return nil, fmt.Errorf("scan plan: %w", err)
 	}
 
+	commands, err := extractValidationCommands(content)
+	if err != nil {
+		return nil, err
+	}
+	p.ValidationCommands = commands
+
 	return p, nil
+}
+
+// MatchesValidationCommand reports whether command equals or extends one of the configured
+// validation commands at a whitespace boundary. commands and entries are normalized before matching.
+func MatchesValidationCommand(command string, entries []string) bool {
+	command = normalizeCommand(command)
+	if command == "" {
+		return false
+	}
+
+	for _, entry := range entries {
+		entry = normalizeCommand(entry)
+		if entry != "" && (command == entry || strings.HasPrefix(command, entry+" ")) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractValidationCommands(content string) ([]string, error) {
+	commands := make([]string, 0)
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	inSection := false
+	var ft fenceTracker
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if ft.skip(line) {
+			continue
+		}
+		if validationHeaderPattern.MatchString(line) {
+			inSection = true
+			continue
+		}
+		if strings.HasPrefix(line, "# ") || (strings.HasPrefix(line, "##") && !strings.HasPrefix(line, "###")) {
+			inSection = false
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		if matches := listItemPattern.FindStringSubmatch(line); matches != nil {
+			if command := normalizeCommand(matches[1]); command != "" {
+				commands = append(commands, command)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan validation commands: %w", err)
+	}
+	return commands, nil
+}
+
+func normalizeCommand(command string) string {
+	command = strings.Trim(strings.TrimSpace(command), "`")
+	return strings.Join(strings.Fields(command), " ")
 }
 
 // ParsePlanFile reads and parses a plan file from disk.

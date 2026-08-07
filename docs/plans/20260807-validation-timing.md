@@ -72,11 +72,11 @@ Validation time is included in (not additive to) the phase buckets; with paralle
 
 ### Task 1: Extract validation commands from plan and add matcher
 
-- [ ] write failing tests in `pkg/plan`: extract entries from `## Validation Commands` (list markers and backticks stripped, whitespace normalized); section missing → empty list; section empty → empty list; non-list content ignored
-- [ ] implement `ValidationCommands` extraction in `pkg/plan`
-- [ ] write failing table-driven tests for the matcher: exact match; prefix match with token boundary (`go test ./...` matches `go test ./... -count=1`); `make test` does NOT match `make test-wrappers`; backtick/whitespace normalization; empty command; empty entry list
-- [ ] implement the matcher as a pure function (in `pkg/plan` or `pkg/progress`, wherever it avoids import cycles)
-- [ ] run `go test ./pkg/plan/...` - must pass before task 2
+- [x] write failing tests in `pkg/plan`: extract entries from `## Validation Commands` (list markers and backticks stripped, whitespace normalized); section missing → empty list; section empty → empty list; non-list content ignored
+- [x] implement `ValidationCommands` extraction in `pkg/plan`
+- [x] write failing table-driven tests for the matcher: exact match; prefix match with token boundary (`go test ./...` matches `go test ./... -count=1`); `make test` does NOT match `make test-wrappers`; backtick/whitespace normalization; empty command; empty entry list
+- [x] implement the matcher as a pure function (in `pkg/plan` or `pkg/progress`, wherever it avoids import cycles)
+- [x] run `go test ./pkg/plan/...` - must pass before task 2
 
 ### Task 2: Command timing events from the Claude executor
 
