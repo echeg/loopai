@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1153,52 +1154,66 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 	if payload.Name != "exec" || payload.CallID == "" {
 		return
 	}
-	if calls := customStaticExecCalls(payload.Input); len(calls) > 0 {
-		pending := customExecPendingCommands(payload.Input, calls, eventTime, now())
-		if len(pending) > 0 {
-			state.starts[payload.CallID] = pending
-			return
-		}
+	pending, includesStart := customPendingCommands(payload.Input, eventTime, state, now)
+	if len(pending) == 0 {
+		return
 	}
-	if pending := customMappedExecPendingCommands(payload.Input, eventTime, now()); len(pending) > 0 {
+	if includesStart {
 		state.starts[payload.CallID] = pending
 		return
 	}
-	if calls := customMappedWriteStdinCalls(payload.Input); len(calls) > 0 {
-		e.trackCustomContinuationCalls(payload, eventTime, state, now, calls)
-		return
-	}
-	calls := customStaticWriteStdinCalls(payload.Input)
-	if len(calls) == 0 {
-		return
-	}
-	e.trackCustomContinuationCalls(payload, eventTime, state, now, calls)
+	state.continuations[payload.CallID] = pending
 }
 
 type customContinuationCall struct {
+	start      int
 	sessionID  string
 	yieldAfter time.Duration
 }
 
-func (e *CodexExecutor) trackCustomContinuationCalls(
-	payload rolloutPayload,
+type customPendingCall struct {
+	start        int
+	pending      codexPendingCommand
+	continuation customContinuationCall
+	isStart      bool
+}
+
+func customPendingCommands(
+	input string,
 	eventTime time.Time,
 	state *codexTimingState,
 	now func() time.Time,
-	calls []customContinuationCall,
-) {
+) ([]codexPendingCommand, bool) {
+	arrival := now()
+	calls := customStaticExecPendingCalls(input, eventTime, arrival)
+	calls = append(calls, customMappedExecPendingCalls(input, eventTime, arrival)...)
+	continuations := append(customMappedWriteStdinCalls(input), customStaticWriteStdinCalls(input)...)
+	for _, continuation := range continuations {
+		calls = append(calls, customPendingCall{start: continuation.start, continuation: continuation})
+	}
+	if len(calls) == 0 {
+		return nil, false
+	}
+	slices.SortStableFunc(calls, func(a, b customPendingCall) int { return a.start - b.start })
+
 	pending := make([]codexPendingCommand, len(calls))
 	unknownIndexes := make([]int, 0, len(calls))
 	tracked := 0
-	structuredProof := customToolEmitsStructuredResults(payload.Input)
-	proofArrival := now()
+	includesStart := false
+	structuredProof := customToolEmitsStructuredResults(input)
 	for index, call := range calls {
-		sessionID := call.sessionID
+		if call.isStart {
+			pending[index] = call.pending
+			tracked++
+			includesStart = true
+			continue
+		}
+		sessionID := call.continuation.sessionID
 		if command, ok := state.sessions[sessionID]; ok {
 			command.structuredProof = structuredProof
 			command.proofEventTime = eventTime
-			command.proofArrival = proofArrival
-			command.yieldAfter = call.yieldAfter
+			command.proofArrival = arrival
+			command.yieldAfter = call.continuation.yieldAfter
 			pending[index] = command
 			tracked++
 			continue
@@ -1212,13 +1227,13 @@ func (e *CodexExecutor) trackCustomContinuationCalls(
 			command := state.unproven[0]
 			state.unproven = nil
 			unknownIndex := unknownIndexes[0]
-			sessionID := calls[unknownIndex].sessionID
+			sessionID := calls[unknownIndex].continuation.sessionID
 			command.sessionID = sessionID
 			command.requiresProof = true
 			command.structuredProof = structuredProof
 			command.proofEventTime = eventTime
-			command.proofArrival = proofArrival
-			command.yieldAfter = calls[unknownIndex].yieldAfter
+			command.proofArrival = arrival
+			command.yieldAfter = calls[unknownIndex].continuation.yieldAfter
 			state.sessions[sessionID] = command
 			pending[unknownIndex] = command
 			tracked++
@@ -1228,9 +1243,10 @@ func (e *CodexExecutor) trackCustomContinuationCalls(
 		// association. Drop them instead of guessing by call order.
 		state.unproven = nil
 	}
-	if tracked > 0 {
-		state.continuations[payload.CallID] = pending
+	if tracked == 0 {
+		return nil, false
 	}
+	return pending, includesStart
 }
 
 func customMappedWriteStdinCalls(input string) []customContinuationCall {
@@ -1266,7 +1282,7 @@ func customMappedWriteStdinCalls(input string) []customContinuationCall {
 			if !decoded {
 				continue
 			}
-			calls = append(calls, customContinuationCall{sessionID: sessionID, yieldAfter: yieldAfter})
+			calls = append(calls, customContinuationCall{start: match[0], sessionID: sessionID, yieldAfter: yieldAfter})
 		}
 	}
 	return calls
@@ -1317,6 +1333,7 @@ func customStaticWriteStdinCalls(input string) []customContinuationCall {
 			continue
 		}
 		calls = append(calls, customContinuationCall{
+			start:      location[0],
 			sessionID:  sessionID,
 			yieldAfter: customWriteStdinYieldAfter(call),
 		})
@@ -1347,7 +1364,8 @@ func customCallObject(input string, location []int) (object, call string, ok boo
 	return object, input[location[0] : end+1], true
 }
 
-func customExecPendingCommands(input string, calls []customExecCall, eventTime, arrival time.Time) []codexPendingCommand {
+func customStaticExecPendingCalls(input string, eventTime, arrival time.Time) []customPendingCall {
+	calls := customStaticExecCalls(input)
 	accepted := make([]customExecCall, 0, len(calls))
 	for _, call := range calls {
 		if customExecCallIsAwaited(input, call.start) {
@@ -1359,16 +1377,20 @@ func customExecPendingCommands(input string, calls []customExecCall, eventTime, 
 	if len(accepted) == 1 {
 		sessionProofBlock = customSessionProofBlock(input, accepted[0].start)
 	}
-	pending := make([]codexPendingCommand, 0, len(accepted))
+	pending := make([]customPendingCall, 0, len(accepted))
 	for _, call := range accepted {
-		pending = append(pending, codexPendingCommand{
-			start:             codexCommandStart{command: call.command, eventTime: eventTime, arrival: arrival},
-			requiresProof:     true,
-			structuredProof:   structuredProof,
-			sessionProofBlock: sessionProofBlock,
-			yieldAfter:        customExecYieldAfter(call.call),
-			proofEventTime:    eventTime,
-			proofArrival:      arrival,
+		pending = append(pending, customPendingCall{
+			start:   call.start,
+			isStart: true,
+			pending: codexPendingCommand{
+				start:             codexCommandStart{command: call.command, eventTime: eventTime, arrival: arrival},
+				requiresProof:     true,
+				structuredProof:   structuredProof,
+				sessionProofBlock: sessionProofBlock,
+				yieldAfter:        customExecYieldAfter(call.call),
+				proofEventTime:    eventTime,
+				proofArrival:      arrival,
+			},
 		})
 	}
 	return pending
@@ -1400,9 +1422,9 @@ func customSessionProofBlock(input string, callStart int) int {
 	return len(arguments)
 }
 
-func customMappedExecPendingCommands(input string, eventTime, arrival time.Time) []codexPendingCommand {
+func customMappedExecPendingCalls(input string, eventTime, arrival time.Time) []customPendingCall {
 	structuredProof := customToolEmitsStructuredResults(input)
-	pending := make([]codexPendingCommand, 0)
+	pending := make([]customPendingCall, 0)
 	for _, match := range customMapPattern.FindAllStringSubmatchIndex(input, -1) {
 		if len(match) < 4 || !customPositionInAwaitedPromiseAll(input, match[0]) {
 			continue
@@ -1433,13 +1455,17 @@ func customMappedExecPendingCommands(input string, eventTime, arrival time.Time)
 			if !ok || command == "" {
 				continue
 			}
-			pending = append(pending, codexPendingCommand{
-				start:           codexCommandStart{command: command, eventTime: eventTime, arrival: arrival},
-				requiresProof:   true,
-				structuredProof: structuredProof,
-				yieldAfter:      customExecYieldAfter(call + "\n" + value),
-				proofEventTime:  eventTime,
-				proofArrival:    arrival,
+			pending = append(pending, customPendingCall{
+				start:   match[0],
+				isStart: true,
+				pending: codexPendingCommand{
+					start:           codexCommandStart{command: command, eventTime: eventTime, arrival: arrival},
+					requiresProof:   true,
+					structuredProof: structuredProof,
+					yieldAfter:      customExecYieldAfter(call + "\n" + value),
+					proofEventTime:  eventTime,
+					proofArrival:    arrival,
+				},
 			})
 		}
 	}

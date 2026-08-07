@@ -2289,6 +2289,45 @@ func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksMappedCommandLi
 	}
 }
 
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksMixedDirectAndMappedCommands(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: d})
+	}}
+	state := newCodexTimingState()
+	input := `const direct = await tools.exec_command({cmd:"make fmt"});
+		const commands = ["make test", "make lint"];
+		const mapped = await Promise.all(commands.map(cmd => tools.exec_command({cmd})));
+		text(JSON.stringify({index:1,...direct}));
+		mapped.forEach((r,i) => text(JSON.stringify({index:i+2,...r})));`
+	for index, payload := range []rolloutPayload{
+		{Type: "custom_tool_call", Name: "exec", CallID: "mixed", Input: input},
+		{Type: "custom_tool_call_output", CallID: "mixed", Output: json.RawMessage(`[
+			{"type":"input_text","text":"{\"index\":1,\"exit_code\":0,\"wall_time_seconds\":1}"},
+			{"type":"input_text","text":"{\"index\":2,\"exit_code\":0,\"wall_time_seconds\":2}"},
+			{"type":"input_text","text":"{\"index\":3,\"exit_code\":0,\"wall_time_seconds\":3}"}
+		]`)},
+	} {
+		e.trackRolloutCommandTiming(rolloutEvent{Timestamp: fmt.Sprintf("2026-08-07T09:00:0%dZ", index*4)}, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{
+		{command: "make fmt", duration: time.Second},
+		{command: "make test", duration: 2 * time.Second},
+		{command: "make lint", duration: 3 * time.Second},
+	}, captured)
+	assert.Empty(t, state.starts)
+}
+
 func TestCodexExecutor_trackRolloutCommandTiming_BatchWithoutPerCommandDurationsIsSilent(t *testing.T) {
 	var captured []string
 	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
