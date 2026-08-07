@@ -539,10 +539,14 @@ loopai --cmux-workspace --worktree docs/plans/feature.md
 Use `--cmux-workspace=auto` to keep the first run in the current workspace and give only parallel
 runs their own cards. Auto mode reads `cmux list-status`: a `loopai` pill whose text starts with
 `done` or `failed` is final, and no `loopai` pill is also free; any other `loopai` pill means a run
-is active, so loopai hands off. A run that stays local immediately replaces the free state with a
-`starting` pill; the normal reporter takes it over after preflight, so another invocation started
-during config, dependency, or worktree setup also sees the workspace as busy. The value is optional
-but must use the attached `=auto` form, not `--cmux-workspace auto`.
+is active, so loopai hands off. A run that stays local replaces the free state with a `starting`
+pill; the normal reporter takes it over after preflight, so another invocation started during
+dependency or worktree setup also sees the workspace as busy. This normally happens before config
+loading. An invocation with `--serve` and no plan or description waits for config to distinguish a
+watch-only dashboard from a normal run, then reserves if execution will follow; combined
+`--reset --serve` reserves before its prompt and releases that reservation if config confirms
+watch-only mode. The value is optional but must use the attached `=auto` form, not
+`--cmux-workspace auto`.
 
 ```bash
 loopai --cmux-workspace=auto --worktree docs/plans/feature.md
@@ -565,10 +569,10 @@ A creation timeout also stops instead of falling back: cmux may already have cre
 and started the run there. loopai exits with an error, and the sidebar shows whether the workspace
 exists — close it and re-run, or let it finish.
 
-An invocation that could not run anyway is also kept in the current terminal, so its error appears
-where it was typed instead of in a new card that closes immediately: a named plan file that does
-not exist, and a working directory that is not the repository root. Both are reported by the local
-run as usual.
+In unconditional mode, an invocation that could not run anyway is also kept in the current
+terminal, so its error appears where it was typed instead of in a new card that closes immediately:
+a named plan file that does not exist, and a working directory that is not the repository root.
+Both are reported by the local run as usual.
 
 Close-out and configuration commands (`--clear`, `--merge`, `--pr`, `--init`, `--dump-defaults`,
 and `--reset` on its own) are never handed off; `--reset` in front of a plan belongs to that run

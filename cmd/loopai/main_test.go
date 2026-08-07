@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -5570,6 +5571,88 @@ printf '%s\n' "$*" >> "$CMUX_ARGV_LOG"
 	})
 }
 
+func TestRunWithWorktreeServeKeepsPlanUntilDashboardStops(t *testing.T) {
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+	planPath := filepath.Join(dir, "docs", "plans", "serve-worktree.md")
+	require.NoError(t, os.WriteFile(planPath, []byte(
+		"# Serve Worktree\n\n### Task 1: Done\n\n- [x] already complete\n"), 0o600))
+	runGit(t, dir, "add", "docs/plans/serve-worktree.md")
+	runGit(t, dir, "commit", "-m", "add serve worktree plan")
+
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	wtPath := filepath.Join(dir, ".loopai", "worktrees", "serve-worktree")
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+	require.NoError(t, listener.Close())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithWorktree(ctx, opts{
+			Serve: true, Host: "127.0.0.1", Port: port, TasksOnly: true, MaxIterations: 1, NoColor: true,
+		}, executePlanRequest{
+			PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
+			Config: &config.Config{WorktreeEnabled: true, ClaudeCommand: fakeClaude}, Colors: testColors(),
+			DefaultBranch: "master", BaseRef: "master", WtCleanup: &cleanupHolder{},
+		})
+	}()
+
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	planURL := fmt.Sprintf("http://127.0.0.1:%d/api/plan", port)
+	require.Eventually(t, func() bool {
+		cwd, cwdErr := os.Getwd()
+		if cwdErr != nil || cwd != resolvedDir {
+			return false
+		}
+		if _, statErr := os.Stat(wtPath); statErr != nil {
+			return false
+		}
+		resp, getErr := client.Get(planURL)
+		if getErr != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 5*time.Second, 20*time.Millisecond,
+		"the completed dashboard must keep serving its plan after cwd restoration")
+
+	resp, err := client.Get(planURL)
+	require.NoError(t, err)
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(t, resp.Body.Close())
+	require.NoError(t, readErr)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, string(body), "Serve Worktree")
+	assert.DirExists(t, wtPath, "dashboard idle must retain the plan-bearing worktree")
+
+	cancel()
+	select {
+	case runErr := <-done:
+		require.NoError(t, runErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("worktree dashboard did not stop after cancellation")
+	}
+	assert.NoDirExists(t, wtPath, "dashboard shutdown must run deferred worktree cleanup")
+}
+
 func TestResolveWorktreePlanFile(t *testing.T) {
 	mainRoot := t.TempDir()
 	worktreeRoot := t.TempDir()
@@ -6365,6 +6448,48 @@ func TestFinishCmuxCompletion_NilReporter(t *testing.T) {
 		finishCmuxCompletion(nil, "plan.md", "branch", "1m", errors.New("boom"))
 		finishCmuxCompletion(nil, "plan.md", "branch", "1m", context.Canceled)
 	})
+}
+
+func TestWorktreeCmuxFinishCleanup(t *testing.T) {
+	tests := []struct {
+		name       string
+		resumed    bool
+		serve      bool
+		success    bool
+		wantRemove bool
+	}{
+		{name: "new success removes", success: true, wantRemove: true},
+		{name: "new failure removes", wantRemove: true},
+		{name: "resumed success removes", resumed: true, success: true, wantRemove: true},
+		{name: "resumed failure preserves", resumed: true},
+		{name: "serve success defers new removal", serve: true, success: true},
+		{name: "serve success defers resumed removal", resumed: true, serve: true, success: true},
+		{name: "serve failure still removes new worktree", serve: true, wantRemove: true},
+		{name: "serve failure still preserves resumed worktree", resumed: true, serve: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls []string
+			cleanup := worktreeCmuxFinishCleanup(tt.resumed, tt.serve,
+				func() { calls = append(calls, "restore") },
+				func() { calls = append(calls, "remove") },
+				func() { calls = append(calls, "close") },
+				func() { calls = append(calls, "enable-deferred") },
+			)
+			cleanup(tt.success)
+
+			want := []string{"restore"}
+			if tt.wantRemove {
+				want = append(want, "remove")
+			}
+			want = append(want, "close")
+			if tt.serve && tt.success {
+				want = append(want, "enable-deferred")
+			}
+			assert.Equal(t, want, calls)
+		})
+	}
 }
 
 func TestFinishCmuxAfterCleanupPublishesFinalStatusLast(t *testing.T) {
@@ -8361,6 +8486,23 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 		})
 	}
 
+	t.Run("auto reservation failure continues without clearing unowned status", func(t *testing.T) {
+		argvLog := cmuxAutoSpawnStub(t, "loopai=done in 1m icon=bolt\n", 0, 1)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
+
+		err := run(t.Context(), opts{CmuxWorkspace: "auto", ConfigDir: badConfigDir, PlanFile: "p.md"})
+		require.ErrorContains(t, err, "load config", "a failed reservation remains best-effort")
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		commands := string(recorded)
+		assert.Contains(t, commands, "list-status")
+		assert.Contains(t, commands, "set-status\nloopai\nstarting")
+		assert.NotContains(t, commands, "new-workspace")
+		assert.NotContains(t, commands, "clear-status",
+			"a process whose reservation failed never owned the existing pill")
+	})
+
 	t.Run("failed hand-off continues the normal run", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 1)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
@@ -8426,6 +8568,25 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 		assert.Contains(t, string(recorded), "clear-status",
 			"the run stayed here, so it takes over the stale pill")
 	})
+}
+
+func TestEnsureAutoWorkspaceReservationReportsWriteFailureInDebugMode(t *testing.T) {
+	argvLog := cmuxAutoSpawnStub(t, "", 0, 1)
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	stderr := &bytes.Buffer{}
+	cmuxStop := &cleanupHolder{}
+
+	reserved := ensureAutoWorkspaceReservation(
+		opts{CmuxWorkspace: "auto", Debug: true}, true, false, cmuxStop, stderr)
+
+	assert.False(t, reserved)
+	assert.Contains(t, stderr.String(), "debug: cmux workspace auto reservation failed")
+	cmuxStop.call()
+	recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+	require.NoError(t, err)
+	assert.Contains(t, string(recorded), "set-status\nloopai\nstarting")
+	assert.NotContains(t, string(recorded), "clear-status",
+		"a failed reservation must not install cleanup ownership")
 }
 
 func TestRunAutoReservesBeforeCombinedResetPrompt(t *testing.T) {
@@ -8515,6 +8676,62 @@ func TestRunAutoReservesBeforeAmbiguousResetServePrompt(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("run did not return after reset input was released")
 	}
+}
+
+func TestRunAutoReservesAfterBareServeConfigConfirmsExecution(t *testing.T) {
+	argvLog := cmuxAutoStub(t, "loopai=done in 1m icon=bolt\n", 0)
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	chdirRepoRoot(t)
+
+	err := run(t.Context(), opts{
+		CmuxWorkspace: "auto",
+		Serve:         true,
+		ConfigDir:     t.TempDir(),
+		NoColor:       true,
+	})
+	require.Error(t, err, "the synthetic .git marker is not a usable repository")
+
+	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
+	require.NoError(t, readErr)
+	commands := string(recorded)
+	queryAt := strings.Index(commands, "list-status")
+	reserveAt := strings.Index(commands, "set-status\nloopai\nstarting")
+	clearAt := strings.Index(commands, "clear-status\nloopai")
+	assert.GreaterOrEqual(t, queryAt, 0)
+	assert.Greater(t, reserveAt, queryAt,
+		"bare --serve must reserve after config confirms that execution will follow")
+	assert.Greater(t, clearAt, reserveAt,
+		"startup failure must clear the deferred reservation")
+	assert.NotContains(t, commands, "new-workspace")
+}
+
+func TestRunAutoDoesNotReserveForConfirmedWatchOnlyMode(t *testing.T) {
+	argvLog := cmuxAutoStub(t, "loopai=done in 1m icon=bolt\n", 0)
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	t.Chdir(t.TempDir())
+
+	configDir := t.TempDir()
+	watchDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"),
+		fmt.Appendf(nil, "watch_dirs = %s\n", watchDir), 0o600))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	defer cancel()
+	require.NoError(t, run(ctx, opts{
+		CmuxWorkspace: "auto",
+		Serve:         true,
+		Port:          0,
+		ConfigDir:     configDir,
+		NoColor:       true,
+	}))
+
+	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
+	require.NoError(t, readErr)
+	commands := string(recorded)
+	assert.Contains(t, commands, "list-status")
+	assert.NotContains(t, commands, "set-status\nloopai\nstarting",
+		"bare --serve must not reserve before config confirms that execution will follow")
+	assert.NotContains(t, commands, "new-workspace")
 }
 
 func TestRunAutoReleasesResetReservationForConfirmedWatchOnlyMode(t *testing.T) {

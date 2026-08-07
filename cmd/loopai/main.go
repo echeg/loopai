@@ -342,9 +342,9 @@ func run(ctx context.Context, o opts) error {
 		return runCloseoutCommand(ctx, o, cfg, colors)
 	}
 	watchOnly := isWatchOnlyMode(o, cfg.WatchDirs)
-	autoWorkspaceReserved = resolveAutoWorkspaceReservationAfterConfig(
+	resolveAutoWorkspaceReservationAfterConfig(
 		o, watchOnly, autoWorkspaceReserved, cmuxStop, os.Stderr)
-	resolveStaleCmuxStatus(preserveLocalCmuxStatus(watchOnly, autoWorkspaceReserved))
+	resolveStaleCmuxStatus(watchOnly)
 
 	// create notification service (nil if no channels configured)
 	notifySvc, err := notify.New(cfg.NotifyParams, stderrLog{})
@@ -456,7 +456,7 @@ func prepareRunBeforeConfig(o opts, cmuxStop *cleanupHolder) (done, reserved, pr
 	reserveBeforeConfig := !mayBeWatchOnlyMode(o) || o.Reset
 	reserved = ensureAutoWorkspaceReservation(o, reserveBeforeConfig, false, cmuxStop, os.Stderr)
 	if earlyDone, earlyErr := handleEarlyFlags(o); earlyErr != nil || earlyDone {
-		return earlyDone, reserved, preserveLocalCmuxStatus(false, reserved), earlyErr
+		return earlyDone, reserved, false, earlyErr
 	}
 	return false, reserved, false, nil
 }
@@ -935,7 +935,8 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 // finishCmuxAfterCleanup publishes the final/free pill only after every operation that must stay
 // isolated from a subsequent local auto run. Normal runs close their owned log here; worktree runs
 // additionally restore cwd, remove or preserve the worktree as appropriate, and close their
-// externally-owned log through BeforeCmuxFinish.
+// externally-owned log through BeforeCmuxFinish. A successful --serve run keeps its worktree
+// until the dashboard exits because /api/plan continues to read the worktree plan.
 func finishCmuxAfterCleanup(
 	req executePlanRequest,
 	plr progressLogResult,
@@ -1056,7 +1057,14 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		restoreCWD()
 		removeWorktree()
 	}
-	beforeCmuxFinish := worktreeCmuxFinishCleanup(wt.resumed, restoreCWD, removeWorktree, closeLog)
+	beforeCmuxFinish := worktreeCmuxFinishCleanup(
+		wt.resumed, o.Serve, restoreCWD, removeWorktree, closeLog,
+		func() {
+			// During execution, resumed worktrees must survive interruption. Once execution has
+			// succeeded and only the dashboard is alive, force-exit cleanup may remove it too.
+			req.WtCleanup.set(cleanup)
+		},
+	)
 
 	setupDone = true // disable safety-net defer, main cleanup takes over
 	if wt.resumed {
@@ -1105,13 +1113,22 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	})
 }
 
-func worktreeCmuxFinishCleanup(resumed bool, restoreCWD, removeWorktree, closeLog func()) func(bool) {
+func worktreeCmuxFinishCleanup(
+	resumed, serve bool,
+	restoreCWD, removeWorktree, closeLog, enableDeferredCleanup func(),
+) func(bool) {
 	return func(success bool) {
 		restoreCWD()
-		if !resumed || success {
+		// Successful --serve runs remain blocked in keepDashboardAlive after this callback. Keep the
+		// plan-bearing worktree available to /api/plan; runWithWorktree's existing defer removes it
+		// when the dashboard exits. Failures never enter that idle period and retain normal cleanup.
+		if (!serve || !success) && (!resumed || success) {
 			removeWorktree()
 		}
 		closeLog()
+		if serve && success {
+			enableDeferredCleanup()
+		}
 	}
 }
 
@@ -2467,20 +2484,15 @@ func resolveAutoWorkspaceReservationAfterConfig(
 	watchOnly, reserved bool,
 	cmuxStop *cleanupHolder,
 	stderr io.Writer,
-) bool {
+) {
 	reserved = ensureAutoWorkspaceReservation(o, !watchOnly, reserved, cmuxStop, stderr)
 	if !watchOnly || !reserved {
-		return reserved
+		return
 	}
 	// A combined reset may have needed a reservation while its prompt was blocking, before
 	// configuration could prove the invocation was dashboard-only. Release that temporary
 	// ownership once no execution run will follow.
 	cmuxStop.call()
-	return false
-}
-
-func preserveLocalCmuxStatus(watchOnly, autoWorkspaceReserved bool) bool {
-	return watchOnly || autoWorkspaceReserved
 }
 
 // anthropicAPIKeyEnv is the credential --preserve-anthropic-api-key opts into passing through to

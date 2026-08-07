@@ -75,12 +75,15 @@
 - [x] ➕ quiesce reporter polling/spinner/progress before repository cleanup and publish the final/free pill last
 - [x] ➕ retain the non-final reservation while interactive plan creation hands off through branch/worktree setup
 - [x] ➕ reserve ambiguous combined `--reset --serve` startup before its prompt, then clear it if config confirms watch-only mode
+- [x] ➕ cover the deferred post-config reservation when bare `--serve` resolves to an execution run
 - [x] ➕ clear an active pill when the final status write fails instead of treating the failed write as persistent
+- [x] ➕ keep a successful worktree available while `--serve` idles so `/api/plan` remains readable, then remove it when the dashboard exits
 
 ### Task 4: [Final] Update documentation
 - [x] update README.md: `--cmux-workspace[=always|auto]` semantics and the busy-detection rule
 - [x] update the cmux section of CLAUDE.md (auto mode, final-pill-based busy detection, accepted limitations: stale pill after force-kill, simultaneous-start race)
 - [x] update llms.txt if it enumerates CLI flags
+- [x] ➕ document in README.md, CLAUDE.md, and llms.txt that potentially watch-only `--serve` invocations reserve only after config resolves their mode
 
 ## Technical Details
 - Busy signature: startup → `loopai=starting`; active phase (verified live) → `loopai=external review (gpt-5.6-sol:high) · iteration 2 icon=person.2 color=#a855f7 priority=90`; finished → `loopai=done in 3h39m icon=bolt color=#34c759 priority=90`; never ran → no `loopai=` line.

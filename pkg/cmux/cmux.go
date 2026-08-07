@@ -344,7 +344,7 @@ func spawnWorkspace(runner commandRunner, timeout time.Duration, name, cwd strin
 }
 
 // shellQuote wraps s in POSIX single quotes, ending and reopening the quoted run around every
-// literal quote ('\”). the result is safe in sh, bash and zsh alike, since nothing but the closing
+// literal quote ('\''). the result is safe in sh, bash and zsh alike, since nothing but the closing
 // quote is special inside a single-quoted string.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
