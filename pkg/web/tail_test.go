@@ -50,6 +50,14 @@ func TestTailer_ParseLine(t *testing.T) {
 		assert.Equal(t, 22, events[0].Timestamp.Day())
 	})
 
+	t.Run("replays validation timing as regular output", func(t *testing.T) {
+		events := tailer.parseLine("[26-01-22 10:30:45] validation: make test took 12s")
+
+		require.Len(t, events, 1)
+		assert.Equal(t, EventTypeOutput, events[0].Type)
+		assert.Equal(t, "validation: make test took 12s", events[0].Text)
+	})
+
 	t.Run("parses section header", func(t *testing.T) {
 		events := tailer.parseLine("--- task iteration 1 ---")
 

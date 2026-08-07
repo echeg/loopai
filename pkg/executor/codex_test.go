@@ -1,7 +1,9 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1843,17 +1846,24 @@ func TestCodexExecutor_extractSessionID(t *testing.T) {
 	}
 }
 
-func TestCodexExecutor_formatRolloutEvent(t *testing.T) {
-	e := &CodexExecutor{}
+func TestCodexExecutor_processRolloutLine_Rendering(t *testing.T) {
 	tests := []struct {
-		name string
-		line string
-		want string
+		name   string
+		line   string
+		render bool
+		want   string
 	}{
 		{
-			name: "assistant message renders text",
-			line: `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello world"}]}}`,
-			want: "hello world",
+			name:   "assistant message renders text",
+			line:   `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello world"}]}}`,
+			render: true,
+			want:   "hello world",
+		},
+		{
+			name:   "child assistant message is suppressed",
+			line:   `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"child reply"}]}}`,
+			render: false,
+			want:   "",
 		},
 		{
 			name: "user message dropped",
@@ -1861,9 +1871,10 @@ func TestCodexExecutor_formatRolloutEvent(t *testing.T) {
 			want: "",
 		},
 		{
-			name: "assistant multi-block joins with newline",
-			line: `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first"},{"type":"output_text","text":"second"}]}}`,
-			want: "first\nsecond",
+			name:   "assistant multi-block joins with newline",
+			line:   `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first"},{"type":"output_text","text":"second"}]}}`,
+			render: true,
+			want:   "first\nsecond",
 		},
 		{
 			name: "exec_command skipped",
@@ -1886,9 +1897,1330 @@ func TestCodexExecutor_formatRolloutEvent(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, e.formatRolloutEvent([]byte(tc.line)))
+			var got string
+			e := &CodexExecutor{OutputHandler: func(output string) { got = output }}
+			e.processRolloutLine([]byte(tc.line), newCodexTimingState(), time.Now, tc.render)
+			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: d})
+	}}
+	state := newCodexTimingState()
+	now := func() time.Time { return time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC) }
+
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"go test ./... -count=1\",\"workdir\":\"/tmp/project\"}","call_id":"call-one"}}`,
+		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"make lint\"}","call_id":"call-two"}}`,
+		`{"timestamp":"2026-08-07T09:00:03.5Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-two","output":"ok"}}`,
+		`{"timestamp":"2026-08-07T09:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"unknown","output":"ignored"}}`,
+		`{"timestamp":"2026-08-07T09:00:08Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-one","output":"ok"}}`,
+		`{"timestamp":"2026-08-07T09:00:09Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","arguments":"{\"message\":\"review\"}","call_id":"call-agent"}}`,
+		`{"timestamp":"2026-08-07T09:00:10Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"go test ./pkg/plan\"}","call_id":"call-unclosed"}}`,
+	}
+	for _, fixture := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(fixture))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, now)
+	}
+
+	require.Len(t, captured, 2)
+	assert.Equal(t, "make lint", captured[0].command)
+	assert.Equal(t, 2500*time.Millisecond, captured[0].duration)
+	assert.Equal(t, "go test ./... -count=1", captured[1].command)
+	assert.Equal(t, 8*time.Second, captured[1].duration)
+	assert.Contains(t, state.starts, "call-unclosed", "unclosed calls remain pending and emit nothing")
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_usesArrivalFallback(t *testing.T) {
+	clock := []time.Time{
+		time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, 8, 7, 12, 0, 4, 0, time.UTC),
+	}
+	var got time.Duration
+	e := &CodexExecutor{CommandTimingHandler: func(_ string, d time.Duration) { got = d }}
+	state := newCodexTimingState()
+	now := func() time.Time {
+		current := clock[0]
+		clock = clock[1:]
+		return current
+	}
+
+	for _, line := range []string{
+		`{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"make test\"}","call_id":"call-one"}}`,
+		`{"type":"response_item","payload":{"type":"function_call_output","call_id":"call-one","output":"ok"}}`,
+	} {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, now)
+	}
+
+	assert.Equal(t, 4*time.Second, got)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecWaitsForSessionExit(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: d})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:1000}); text(JSON.stringify(r));"}}`,
+		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":[{"type":"input_text","text":"Script completed\n"},{"type":"input_text","text":"{\"session_id\":42,\"output\":\"\"}"}]}}`,
+		`{"timestamp":"2026-08-07T09:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({\"session_id\":42,chars:\"\"}); text(JSON.stringify(r));"}}`,
+		`{"timestamp":"2026-08-07T09:00:03Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"Script running with cell ID 7"}}`,
+		`{"timestamp":"2026-08-07T09:00:04Z","type":"response_item","payload":{"type":"function_call","name":"wait","call_id":"wait","arguments":"{\"cell_id\":7}"}}`,
+		`{"timestamp":"2026-08-07T09:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"wait","output":[{"type":"input_text","text":"Script completed\n"},{"type":"input_text","text":"{\"exit_code\":0,\"output\":\"ok\"}"}]}}`,
+	}
+	for index, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+		switch index {
+		case 0:
+			assert.Contains(t, state.starts, "start")
+		case 1:
+			assert.Contains(t, state.sessions, "42")
+		case 2:
+			assert.Contains(t, state.continuations, "poll")
+		case 3:
+			assert.Contains(t, state.cells, "7")
+		case 4:
+			assert.Contains(t, state.waits, "wait")
+		}
+	}
+
+	require.Len(t, captured, 1)
+	assert.Equal(t, "make test", captured[0].command)
+	assert.Equal(t, 5*time.Second, captured[0].duration)
+	assert.Empty(t, state.sessions)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksEveryNestedCommand(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: d})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"batch","input":"const r = await Promise.all([tools.exec_command({cmd:\"make test\"}), tools.exec_command({\"cmd\":\"make lint\"})]); r.forEach((x,i) => text(JSON.stringify({index:i+1,...x})));"}}`,
+		`{"timestamp":"2026-08-07T09:00:04Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"batch","output":[{"type":"input_text","text":"Script completed"},{"type":"input_text","text":"{\"index\":1,\"exit_code\":0,\"wall_time_seconds\":2,\"output\":\"ok\"}"},{"type":"input_text","text":"{\"index\":2,\"exit_code\":0,\"wall_time_seconds\":3.5,\"output\":\"ok\"}"}]}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{
+		{command: "make test", duration: 2 * time.Second},
+		{command: "make lint", duration: 3500 * time.Millisecond},
+	}, captured)
+	assert.Empty(t, state.starts)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksSequentialAwaitedCommands(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: d})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"sequential","input":"const test = await tools.exec_command({cmd:\"make test\"}); text(JSON.stringify({index:1,...test})); const lint = await tools.exec_command({cmd:\"make lint\"}); text(JSON.stringify({index:2,...lint}));"}}`,
+		`{"timestamp":"2026-08-07T09:00:04Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"sequential","output":[{"type":"input_text","text":"{\"index\":1,\"exit_code\":0,\"wall_time_seconds\":2,\"output\":\"ok\"}"},{"type":"input_text","text":"{\"index\":2,\"exit_code\":0,\"wall_time_seconds\":3.5,\"output\":\"ok\"}"}]}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{
+		{command: "make test", duration: 2 * time.Second},
+		{command: "make lint", duration: 3500 * time.Millisecond},
+	}, captured)
+	assert.Empty(t, state.starts)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksSingleArrayBatchOutput(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: d})
+	}}
+	state := newCodexTimingState()
+	for _, line := range []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"batch","input":"const results = await Promise.all([tools.exec_command({cmd:\"make test\"}), tools.exec_command({cmd:\"make lint\"})]); text(JSON.stringify(results));"}}`,
+		`{"timestamp":"2026-08-07T09:00:04Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"batch","output":[{"type":"input_text","text":"Script completed"},{"type":"input_text","text":"[{\"exit_code\":0,\"wall_time_seconds\":2},{\"exit_code\":0,\"wall_time_seconds\":3.5}]"}]}}`,
+	} {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{
+		{command: "make test", duration: 2 * time.Second},
+		{command: "make lint", duration: 3500 * time.Millisecond},
+	}, captured)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_UnrelatedJSONStringifyIsNotCompletionProof(t *testing.T) {
+	var captured []time.Duration
+	e := &CodexExecutor{CommandTimingHandler: func(_ string, d time.Duration) { captured = append(captured, d) }}
+	state := newCodexTimingState()
+	for _, line := range []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(JSON.stringify({exit_code:0,wall_time_seconds:3600}));"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":"{\"exit_code\":0,\"wall_time_seconds\":3600}"}}`,
+	} {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Empty(t, captured)
+	assert.Len(t, state.unproven, 1)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksDestructuredAwait(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: d})
+	}}
+	state := newCodexTimingState()
+	for _, line := range []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"destructured","input":"let{output,...rest}=await tools.exec_command({cmd:\"make test\"});text(rest);text(output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:02Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"destructured","output":[{"type":"input_text","text":"{\"exit_code\":0,\"wall_time_seconds\":1.5}"},{"type":"input_text","text":"ok"}]}}`,
+	} {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{{command: "make test", duration: 1500 * time.Millisecond}}, captured)
+	assert.Empty(t, state.starts)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksMappedArgumentObjects(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: d})
+	}}
+	state := newCodexTimingState()
+	input := `const cmds = [
+		["tests", {"cmd":"make test","yield_time_ms":30000}],
+		["check", {"cmd":"make lint","yield_time_ms":30000}]
+	];
+	const rs = await Promise.all(cmds.map(async ([name,args]) => [name, await tools.exec_command(args)]));
+	for (const [name,r] of rs) { text(` + "`${name}\\n${JSON.stringify(r)}\\n`" + `); }`
+	for index, payload := range []rolloutPayload{
+		{Type: "custom_tool_call", Name: "exec", CallID: "batch", Input: input},
+		{Type: "custom_tool_call_output", CallID: "batch", Output: json.RawMessage(`[
+			{"type":"input_text","text":"tests\n{\"exit_code\":0,\"wall_time_seconds\":2,\"output\":\"ok\"}\n"},
+			{"type":"input_text","text":"check\n{\"exit_code\":0,\"wall_time_seconds\":3.5,\"output\":\"ok\"}\n"}
+		]`)},
+	} {
+		e.trackRolloutCommandTiming(rolloutEvent{Timestamp: fmt.Sprintf("2026-08-07T09:00:0%dZ", index*4)}, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{
+		{command: "make test", duration: 2 * time.Second},
+		{command: "make lint", duration: 3500 * time.Millisecond},
+	}, captured)
+	assert.Empty(t, state.starts)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksMappedObjectArgumentLists(t *testing.T) {
+	tests := []struct {
+		name     string
+		callback string
+	}{
+		{name: "object destructuring", callback: `async ({name,args}) => tools.exec_command(args)`},
+		{name: "member access", callback: `async job => tools.exec_command(job.args)`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured []struct {
+				command  string
+				duration time.Duration
+			}
+			e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+				captured = append(captured, struct {
+					command  string
+					duration time.Duration
+				}{command: command, duration: d})
+			}}
+			state := newCodexTimingState()
+			input := `const jobs = [
+				{name:"tests",args:{cmd:"make test",yield_time_ms:30000}},
+				{name:"lint",args:{cmd:"make lint",yield_time_ms:30000}}
+			]; const rs = await Promise.all(jobs.map(` + tt.callback + `));
+			rs.forEach((r,i) => text(JSON.stringify({index:i+1,...r})));`
+			for index, payload := range []rolloutPayload{
+				{Type: "custom_tool_call", Name: "exec", CallID: "batch", Input: input},
+				{Type: "custom_tool_call_output", CallID: "batch", Output: json.RawMessage(`[
+					{"type":"input_text","text":"{\"index\":1,\"exit_code\":0,\"wall_time_seconds\":2}"},
+					{"type":"input_text","text":"{\"index\":2,\"exit_code\":0,\"wall_time_seconds\":3.5}"}
+				]`)},
+			} {
+				e.trackRolloutCommandTiming(rolloutEvent{Timestamp: fmt.Sprintf("2026-08-07T09:00:0%dZ", index*4)}, payload, state, time.Now)
+			}
+
+			assert.Equal(t, []struct {
+				command  string
+				duration time.Duration
+			}{
+				{command: "make test", duration: 2 * time.Second},
+				{command: "make lint", duration: 3500 * time.Millisecond},
+			}, captured)
+			assert.Empty(t, state.starts)
+		})
+	}
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksMappedCommandLists(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "string list",
+			input: `const commands = ["make test", "make lint"]; const results = await Promise.all(commands.map(cmd => tools.exec_command({cmd}))); results.forEach((x,i) => text(JSON.stringify({index:i+1,...x})));`,
+		},
+		{
+			name:  "tuple list with destructured callback",
+			input: `const commands = [["test", "make test"], ["lint", "make lint"]]; const results = await Promise.all(commands.map(([, cmd]) => tools.exec_command({cmd}))); results.forEach((x,i) => text(JSON.stringify({index:i+1,...x})));`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured []struct {
+				command  string
+				duration time.Duration
+			}
+			e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+				captured = append(captured, struct {
+					command  string
+					duration time.Duration
+				}{command: command, duration: d})
+			}}
+			state := newCodexTimingState()
+			fixtures := []rolloutPayload{
+				{Type: "custom_tool_call", Name: "exec", CallID: "batch", Input: tt.input},
+				{Type: "custom_tool_call_output", CallID: "batch", Output: json.RawMessage(`[
+					{"type":"input_text","text":"{\"index\":1,\"exit_code\":0,\"wall_time_seconds\":2}"},
+					{"type":"input_text","text":"{\"index\":2,\"exit_code\":0,\"wall_time_seconds\":3.5}"}
+				]`)},
+			}
+			for index, payload := range fixtures {
+				e.trackRolloutCommandTiming(rolloutEvent{Timestamp: fmt.Sprintf("2026-08-07T09:00:0%dZ", index*4)}, payload, state, time.Now)
+			}
+
+			assert.Equal(t, []struct {
+				command  string
+				duration time.Duration
+			}{
+				{command: "make test", duration: 2 * time.Second},
+				{command: "make lint", duration: 3500 * time.Millisecond},
+			}, captured)
+			assert.Empty(t, state.starts)
+		})
+	}
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksMixedDirectAndMappedCommands(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: d})
+	}}
+	state := newCodexTimingState()
+	input := `const direct = await tools.exec_command({cmd:"make fmt"});
+		const commands = ["make test", "make lint"];
+		const mapped = await Promise.all(commands.map(cmd => tools.exec_command({cmd})));
+		text(JSON.stringify({index:1,...direct}));
+		mapped.forEach((r,i) => text(JSON.stringify({index:i+2,...r})));`
+	for index, payload := range []rolloutPayload{
+		{Type: "custom_tool_call", Name: "exec", CallID: "mixed", Input: input},
+		{Type: "custom_tool_call_output", CallID: "mixed", Output: json.RawMessage(`[
+			{"type":"input_text","text":"{\"index\":1,\"exit_code\":0,\"wall_time_seconds\":1}"},
+			{"type":"input_text","text":"{\"index\":2,\"exit_code\":0,\"wall_time_seconds\":2}"},
+			{"type":"input_text","text":"{\"index\":3,\"exit_code\":0,\"wall_time_seconds\":3}"}
+		]`)},
+	} {
+		e.trackRolloutCommandTiming(rolloutEvent{Timestamp: fmt.Sprintf("2026-08-07T09:00:0%dZ", index*4)}, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{
+		{command: "make fmt", duration: time.Second},
+		{command: "make test", duration: 2 * time.Second},
+		{command: "make lint", duration: 3 * time.Second},
+	}, captured)
+	assert.Empty(t, state.starts)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_BatchWithoutPerCommandDurationsIsSilent(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	for _, line := range []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"batch","input":"const r = await Promise.all([tools.exec_command({cmd:\"make test\"}),tools.exec_command({cmd:\"make lint\"})]); r.forEach((x,i)=>text(JSON.stringify({index:i+1,...x})));"}}`,
+		`{"timestamp":"2026-08-07T09:00:04Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"batch","output":[{"type":"input_text","text":"{\"index\":1,\"exit_code\":0}"},{"type":"input_text","text":"{\"index\":2,\"exit_code\":0}"}]}}`,
+	} {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Empty(t, captured)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_MappedRawOutputsAreSilent(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	input := `const cmds = [["tests", "make test"], ["lint", "make lint"]];
+		const res = await Promise.all(cmds.map(async ([label, cmd]) => {
+			const r = await tools.exec_command({cmd, yield_time_ms:30000});
+			return ` + "`===== ${label} =====\\n${r.output}`" + `;
+		}));
+		res.forEach(text);`
+	for index, payload := range []rolloutPayload{
+		{Type: "custom_tool_call", Name: "exec", CallID: "batch", Input: input},
+		{Type: "custom_tool_call_output", CallID: "batch", Output: json.RawMessage(`[
+			{"type":"input_text","text":"===== tests =====\nok"},
+			{"type":"input_text","text":"===== lint =====\nok"}
+		]`)},
+	} {
+		e.trackRolloutCommandTiming(rolloutEvent{Timestamp: fmt.Sprintf("2026-08-07T09:00:0%dZ", index*4)}, payload, state, time.Now)
+	}
+
+	assert.Empty(t, captured)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_BatchedOuterCellWaitsForCompletion(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"batch","input":"const r = await Promise.all([tools.exec_command({cmd:\"make test\"}),tools.exec_command({cmd:\"make lint\"})]); r.forEach((x,i)=>text(JSON.stringify({index:i+1,...x})));"}}`,
+		`{"timestamp":"2026-08-07T09:00:10Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"batch","output":"Script running with cell ID 7"}}`,
+		`{"timestamp":"2026-08-07T09:00:11Z","type":"response_item","payload":{"type":"function_call","name":"wait","call_id":"wait","arguments":"{\"cell_id\":\"7\"}"}}`,
+		`{"timestamp":"2026-08-07T09:00:15Z","type":"response_item","payload":{"type":"function_call_output","call_id":"wait","output":[{"type":"input_text","text":"{\"index\":1,\"exit_code\":0,\"wall_time_seconds\":12}"},{"type":"input_text","text":"{\"index\":2,\"exit_code\":0,\"wall_time_seconds\":14}"}]}}`,
+	}
+	for index, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+		if index == 1 {
+			assert.Empty(t, captured)
+			assert.Len(t, state.cells["7"], 2)
+		}
+	}
+
+	assert.Equal(t, []string{"make test", "make lint"}, captured)
+	assert.Empty(t, state.cells)
+	assert.Empty(t, state.waits)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecRequiresCompletionProof(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":[{"type":"input_text","text":"Script completed\nWall time 0.4 seconds\nOutput:\n"},{"type":"input_text","text":""}]}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Empty(t, captured, "an output-only custom tool result does not prove that the nested process completed")
+	assert.Empty(t, state.starts)
+	assert.Len(t, state.unproven, 1)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_ExplicitSessionProofSurvivesDelayedPoll(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, duration time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: duration})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:1000}); text(r.output); if (r.session_id) text(` + "`SESSION_ID=${r.session_id}`" + `);"}}`,
+		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":[{"type":"input_text","text":"Script completed\nWall time 1.0 seconds\nOutput:\n"},{"type":"input_text","text":""},{"type":"input_text","text":"SESSION_ID=19633"}]}}`,
+		`{"timestamp":"2026-08-07T09:01:40Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({session_id:19633,yield_time_ms:30000}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:01:41Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":[{"type":"input_text","text":"Script completed\nWall time 1.0 seconds\nOutput:\n"},{"type":"input_text","text":"ok"}]}}`,
+	}
+	for index, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+		if index == 1 {
+			assert.Empty(t, state.unproven)
+			assert.Contains(t, state.sessions, "19633")
+		}
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{{command: "make test", duration: 101 * time.Second}}, captured)
+	assert.Empty(t, state.sessions)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_SessionProofCannotComeFromStdout(t *testing.T) {
+	e := &CodexExecutor{CommandTimingHandler: func(string, time.Duration) { t.Fatal("unexpected timing") }}
+	tests := []struct {
+		name  string
+		input string
+		out   json.RawMessage
+	}{
+		{
+			name:  "declared marker omitted",
+			input: `const r = await tools.exec_command({cmd:"make test",yield_time_ms:250}); text(r.output); if (r.session_id) text(` + "`SESSION_ID=${r.session_id}`" + `);`,
+			out:   json.RawMessage(`[{"text":"Script completed\nWall time 0.4 seconds\nOutput:\n"},{"text":"SESSION_ID=42"}]`),
+		},
+		{
+			name:  "marker emission not declared",
+			input: `const r = await tools.exec_command({cmd:"make test",yield_time_ms:250}); text(r.output);`,
+			out:   json.RawMessage(`[{"text":"Script completed\nWall time 0.4 seconds\nOutput:\n"},{"text":""},{"text":"SESSION_ID=42"}]`),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := newCodexTimingState()
+			e.trackCustomToolCall(rolloutPayload{Name: "exec", CallID: "start", Input: tt.input}, time.Now(), state, time.Now)
+			e.trackToolOutput(rolloutPayload{CallID: "start", Output: tt.out}, time.Now().Add(time.Second), state, time.Now)
+
+			assert.Empty(t, state.sessions)
+			assert.Len(t, state.unproven, 1)
+		})
+	}
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_RawJSONStdoutIsNotCompletionProof(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	for _, line := range []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":[{"type":"input_text","text":"Script completed\nWall time 0.4 seconds\nOutput:\n"},{"type":"input_text","text":"{\"exit_code\":0}"}]}}`,
+	} {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Empty(t, captured)
+	assert.Len(t, state.unproven, 1)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_IgnoresUnawaitedAndConditionalCalls(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	for _, input := range []string{
+		`tools.exec_command({cmd:"make test"}); text("done");`,
+		`if (false) { const r = await tools.exec_command({cmd:"make test"}); text(r.output); }`,
+		`if (false) { text("skip"); const r = await tools.exec_command({cmd:"make test"}); text(r.output); }`,
+		`const commands = ["make test"]; if (false) { const r = await Promise.all(commands.map(cmd => tools.exec_command({cmd}))); text(JSON.stringify(r)); }`,
+		`const r = await Promise.all([false && tools.exec_command({cmd:"make test"})]); text(JSON.stringify(r));`,
+	} {
+		state := newCodexTimingState()
+		e.trackCustomToolCall(rolloutPayload{Name: "exec", CallID: "start", Input: input}, time.Now(), state, time.Now)
+		e.trackToolOutput(rolloutPayload{CallID: "start", Output: json.RawMessage(`"Script completed"`)}, time.Now().Add(time.Second), state, time.Now)
+		assert.Empty(t, state.starts)
+	}
+	assert.Empty(t, captured)
+}
+
+func TestCustomExecCallIsAwaited_AcceptsStraightLinePromiseDestructuring(t *testing.T) {
+	input := `const [test, lint] = await Promise.all([tools.exec_command({cmd:"make test"}),tools.exec_command({cmd:"make lint"})]);`
+	calls := customStaticExecCalls(input)
+	require.Len(t, calls, 2)
+
+	assert.True(t, customExecCallIsAwaited(input, calls[0].start))
+	assert.True(t, customExecCallIsAwaited(input, calls[1].start))
+}
+
+func TestCustomExecCallIsAwaited_AcceptsSemicolonFreeStatements(t *testing.T) {
+	input := "const cwd = \"/repo\"\nconst r = await tools.exec_command({cmd:\"make test\", workdir:cwd})\ntext(r.output)\ntext(`SESSION_ID=${r.session_id}`)"
+	calls := customStaticExecCalls(input)
+	require.Len(t, calls, 1)
+
+	assert.True(t, customExecCallIsAwaited(input, calls[0].start))
+	assert.Equal(t, 2, customSessionProofBlock(input, calls[0].start))
+}
+
+func TestCodexExecutor_trackCustomToolCall_DoesNotReadPropertiesPastCallBoundary(t *testing.T) {
+	e := &CodexExecutor{CommandTimingHandler: func(string, time.Duration) { t.Fatal("unexpected timing") }}
+	state := newCodexTimingState()
+	state.sessions["42"] = codexPendingCommand{
+		start:     codexCommandStart{command: "make test"},
+		sessionID: "42",
+	}
+
+	e.trackCustomToolCall(rolloutPayload{
+		Name:   "exec",
+		CallID: "exec",
+		Input:  `const r = await tools.exec_command({workdir:"/repo"}); const metadata = {cmd:"make test"}; text(r.output);`,
+	}, time.Now(), state, time.Now)
+	e.trackCustomToolCall(rolloutPayload{
+		Name:   "exec",
+		CallID: "poll",
+		Input:  `const r = await tools.write_stdin({chars:""}); const metadata = {session_id:42}; text(r.output);`,
+	}, time.Now(), state, time.Now)
+
+	assert.NotContains(t, state.starts, "exec")
+	assert.NotContains(t, state.continuations, "poll")
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_SemicolonFreeCustomExec(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	started := time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)
+	state := newCodexTimingState()
+	e.trackCustomToolCall(rolloutPayload{
+		Name:   "exec",
+		CallID: "start",
+		Input:  "const cwd = \"/repo\"\nconst r = await tools.exec_command({cmd:\"make test\", workdir:cwd})\ntext(r.output)",
+	}, started, state, func() time.Time { return started })
+	e.trackToolOutput(rolloutPayload{
+		CallID: "start",
+		Output: json.RawMessage(`[{"text":"{\"exit_code\":0,\"wall_time_seconds\":1}"}]`),
+	}, started.Add(time.Second), state, func() time.Time { return started.Add(time.Second) })
+
+	assert.Equal(t, []string{"make test"}, captured)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecInfersCompletionBeforeYield(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, duration time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: duration})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\"}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":[{"type":"input_text","text":"Script completed\nWall time 0.4 seconds\nOutput:\n"},{"type":"input_text","text":"ok"}]}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{{command: "make test", duration: 400 * time.Millisecond}}, captured)
+	assert.Empty(t, state.unproven)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_ExecYieldMaximumRequiresCompletionProof(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:100000}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:30Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":"Script completed\nWall time 30 seconds\nOutput:\n"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Empty(t, captured)
+	assert.Len(t, state.unproven, 1)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_UnprovenExecAttachesToContinuation(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, duration time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: duration})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":"Script completed\nWall time 0.4 seconds\nOutput:\n"}}`,
+		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({session_id:42}); text(JSON.stringify(r));"}}`,
+		`{"timestamp":"2026-08-07T09:00:03Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"{\"session_id\":42,\"exit_code\":0,\"output\":\"ok\"}"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{{command: "make test", duration: 3 * time.Second}}, captured)
+	assert.Empty(t, state.unproven)
+	assert.Empty(t, state.sessions)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_RawContinuationUsesDefaultEmptyPollYield(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, duration time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: duration})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":"Script completed\nWall time 0.4 seconds\nOutput:\n"}}`,
+		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({session_id:42}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"ok"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{{command: "make test", duration: 5 * time.Second}}, captured)
+	assert.Empty(t, state.unproven)
+	assert.Empty(t, state.sessions)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_RawContinuationUsesExplicitEmptyPollYield(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, duration time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: duration})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":"Script completed\nWall time 0.4 seconds\nOutput:\n"}}`,
+		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({session_id:42,yield_time_ms:30000}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:21Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"ok"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{{command: "make test", duration: 21 * time.Second}}, captured)
+	assert.Empty(t, state.unproven)
+	assert.Empty(t, state.sessions)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_RawContinuationProofSurvivesOuterWait(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, duration time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: duration})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":"Script completed\nWall time 0.4 seconds\nOutput:\n"}}`,
+		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({session_id:42,yield_time_ms:30000}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:03Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"Script running with cell ID 7"}}`,
+		`{"timestamp":"2026-08-07T09:00:04Z","type":"response_item","payload":{"type":"function_call","name":"wait","call_id":"wait","arguments":"{\"cell_id\":7}"}}`,
+		`{"timestamp":"2026-08-07T09:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"wait","output":"ok"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{{command: "make test", duration: 5 * time.Second}}, captured)
+	assert.Empty(t, state.cells)
+	assert.Empty(t, state.waits)
+	assert.Empty(t, state.sessions)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_MixedContinuationPreservesBatchIndexes(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	started := time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)
+	state := newCodexTimingState()
+	state.sessions["42"] = codexPendingCommand{
+		start:         codexCommandStart{command: "make test", eventTime: started, arrival: started},
+		sessionID:     "42",
+		requiresProof: true,
+	}
+
+	e.trackCustomToolCall(rolloutPayload{
+		Name:   "exec",
+		CallID: "poll",
+		Input:  `const r = await Promise.all([tools.write_stdin({session_id:99}),tools.write_stdin({session_id:42})]); r.forEach((x,i)=>text(JSON.stringify({index:i+1,...x})));`,
+	}, started.Add(time.Second), state, func() time.Time { return started.Add(time.Second) })
+	e.trackToolOutput(rolloutPayload{
+		CallID: "poll",
+		Output: json.RawMessage(`[{"text":"{\"index\":1,\"session_id\":99}"},{"text":"{\"index\":2,\"exit_code\":0}"}]`),
+	}, started.Add(5*time.Second), state, func() time.Time { return started.Add(5 * time.Second) })
+
+	assert.Equal(t, []string{"make test"}, captured)
+	assert.NotContains(t, state.sessions, "99")
+	assert.NotContains(t, state.sessions, "42")
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_StaleUnprovenExecDoesNotAttach(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":"Script completed"}}`,
+		`{"timestamp":"2026-08-07T09:10:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({session_id:42}); text(JSON.stringify(r));"}}`,
+		`{"timestamp":"2026-08-07T09:10:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"{\"exit_code\":0}"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Empty(t, captured)
+	assert.Empty(t, state.unproven)
+	assert.Empty(t, state.continuations)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_StaleUnprovenExecPreservesKnownContinuation(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	state.sessions["41"] = codexPendingCommand{
+		start:         codexCommandStart{command: "make test", eventTime: time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)},
+		sessionID:     "41",
+		requiresProof: true,
+	}
+	state.unproven = []codexPendingCommand{{
+		start:             codexCommandStart{command: "make lint"},
+		unprovenEventTime: time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC),
+		unprovenArrival:   time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC),
+	}}
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:01:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const results = await Promise.all([tools.write_stdin({session_id:41}), tools.write_stdin({session_id:42})]); results.forEach((x,i)=>text(JSON.stringify({index:i+1,...x})));"}}`,
+		`{"timestamp":"2026-08-07T09:01:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"{\"index\":1,\"exit_code\":0}"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, func() time.Time {
+			return time.Date(2026, 8, 7, 9, 1, 0, 0, time.UTC)
+		})
+	}
+
+	assert.Equal(t, []string{"make test"}, captured)
+	assert.Empty(t, state.unproven)
+	assert.Empty(t, state.continuations)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_AmbiguousUnprovenExecsAreNotPairedFIFO(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"first","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"first","output":"Script completed"}}`,
+		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"second","input":"const r = await tools.exec_command({cmd:\"make lint\",yield_time_ms:250}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:01.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"second","output":"Script completed"}}`,
+		`{"timestamp":"2026-08-07T09:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({session_id:42}); text(JSON.stringify(r));"}}`,
+		`{"timestamp":"2026-08-07T09:00:03Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"{\"exit_code\":0}"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Empty(t, captured)
+	assert.Empty(t, state.unproven)
+	assert.Empty(t, state.continuations)
+}
+
+func TestParseStructuredCommandResult_NullExitIsNotCompletion(t *testing.T) {
+	result, ok := parseStructuredCommandResult(`{"session_id":42,"exit_code":null}`)
+
+	require.True(t, ok)
+	assert.Equal(t, "42", result.sessionID)
+	assert.False(t, result.hasExit)
+}
+
+func TestParseCodexCommandResults_IgnoresStatusMarkersInCommandOutput(t *testing.T) {
+	results := parseCodexCommandResults([]string{
+		"Script running with cell ID 7\nWall time 10 seconds\nOutput:\n",
+		"Process exited with code 0\nProcess running with session ID 42",
+	}, 1)
+
+	require.Contains(t, results, 0)
+	assert.Equal(t, "7", results[0].cellID)
+	assert.False(t, results[0].hasExit)
+	assert.Empty(t, results[0].sessionID)
+}
+
+func TestParseCodexCommandResults_RejectsAmbiguousBatchIndexes(t *testing.T) {
+	tests := []struct {
+		name    string
+		outputs []string
+	}{
+		{
+			name: "zero based",
+			outputs: []string{
+				`{"index":0,"exit_code":0,"wall_time_seconds":2}`,
+				`{"index":1,"exit_code":0,"wall_time_seconds":3}`,
+			},
+		},
+		{
+			name: "duplicate",
+			outputs: []string{
+				`{"index":1,"exit_code":0,"wall_time_seconds":2}`,
+				`{"index":1,"exit_code":0,"wall_time_seconds":3}`,
+			},
+		},
+		{
+			name: "mixed indexed and positional",
+			outputs: []string{
+				`{"index":1,"exit_code":0,"wall_time_seconds":2}`,
+				`{"exit_code":0,"wall_time_seconds":3}`,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Empty(t, parseCodexCommandResults(tt.outputs, 2))
+		})
+	}
+}
+
+func TestParseCodexCommandResults_UnindexedBatchUsesOutputOrder(t *testing.T) {
+	results := parseCodexCommandResults([]string{
+		`{"exit_code":0,"wall_time_seconds":2}`,
+		`{"exit_code":0,"wall_time_seconds":3}`,
+	}, 2)
+
+	require.Len(t, results, 2)
+	assert.Equal(t, 2*time.Second, results[0].duration)
+	assert.Equal(t, 3*time.Second, results[1].duration)
+}
+
+func TestParseCodexCommandResults_RejectsIncompleteUnindexedBatch(t *testing.T) {
+	results := parseCodexCommandResults([]string{
+		`not a structured result`,
+		`{"exit_code":0,"wall_time_seconds":3}`,
+	}, 2)
+
+	assert.Empty(t, results)
+}
+
+func TestCustomExecYieldAfter_QuotedKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		call string
+		want time.Duration
+	}{
+		{name: "double quoted literal", call: `{"yield_time_ms": 250}`, want: 250 * time.Millisecond},
+		{name: "single quoted literal", call: `{'yield_time_ms': 250}`, want: 250 * time.Millisecond},
+		{name: "bare literal", call: `{yield_time_ms: 250}`, want: 250 * time.Millisecond},
+		{name: "literal clamps minimum", call: `{yield_time_ms: 1}`, want: 250 * time.Millisecond},
+		{name: "literal clamps maximum", call: `{yield_time_ms: 100000}`, want: 30 * time.Second},
+		{name: "double quoted dynamic", call: `{"yield_time_ms": someVar}`, want: 0},
+		{name: "single quoted dynamic", call: `{'yield_time_ms': someVar}`, want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, customExecYieldAfter(tt.call))
+		})
+	}
+}
+
+func TestWriteStdinYieldAfter_DefaultsAndClamps(t *testing.T) {
+	tests := []struct {
+		name string
+		call string
+		want time.Duration
+	}{
+		{name: "omitted chars is empty poll", call: `tools.write_stdin({session_id:42})`, want: 5 * time.Second},
+		{name: "empty chars uses minimum poll", call: `tools.write_stdin({session_id:42,chars:"",yield_time_ms:1000})`, want: 5 * time.Second},
+		{name: "empty chars uses configured poll", call: `tools.write_stdin({session_id:42,chars:"",yield_time_ms:30000})`, want: 30 * time.Second},
+		{name: "empty chars clamps maximum", call: `tools.write_stdin({session_id:42,chars:"",yield_time_ms:400000})`, want: 300 * time.Second},
+		{name: "nonempty chars uses default", call: `tools.write_stdin({session_id:42,chars:"x"})`, want: 250 * time.Millisecond},
+		{name: "nonempty chars clamps maximum", call: `tools.write_stdin({session_id:42,chars:"x",yield_time_ms:100000})`, want: 30 * time.Second},
+		{name: "dynamic chars is unknown", call: `tools.write_stdin({session_id:42,chars:input})`, want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, customWriteStdinYieldAfter(tt.call))
+		})
+	}
+
+	assert.Equal(t, 5*time.Second, functionCallYieldAfter(`{"session_id":42}`))
+	assert.Equal(t, 250*time.Millisecond, functionCallYieldAfter(`{"session_id":42,"chars":"x"}`))
+}
+
+func TestParseTextCommandResult_UsesOnlyUnambiguousStatusEnvelope(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   codexCommandResult
+		ok     bool
+	}{
+		{
+			name:   "terminal status ignores final output",
+			output: "Script completed\nWall time 2 seconds\nProcess exited with code 0\nFinal output:\nProcess running with session ID 42",
+			want:   codexCommandResult{hasExit: true},
+			ok:     true,
+		},
+		{
+			name:   "raw command output is not status",
+			output: "test says Process exited with code 0",
+			ok:     false,
+		},
+		{
+			name:   "conflicting status markers are rejected",
+			output: "Script running with cell ID 7\nProcess exited with code 0\nOutput:\n",
+			ok:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseTextCommandResult(tt.output)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_BatchedYieldedCommandsCompleteIndependently(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, duration time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: duration})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await Promise.all([tools.exec_command({cmd:\"make test\"}),tools.exec_command({cmd:\"make lint\"})]); r.forEach((x,i)=>text(JSON.stringify({index:i+1,...x})));"}}`,
+		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":[{"type":"input_text","text":"{\"index\":1,\"session_id\":42,\"output\":\"\"}"},{"type":"input_text","text":"{\"index\":2,\"session_id\":84,\"output\":\"\"}"}]}}`,
+		`{"timestamp":"2026-08-07T09:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll-both","input":"const r = await Promise.all([tools.write_stdin({session_id:42}),tools.write_stdin({session_id:84})]); r.forEach((x,i)=>text(JSON.stringify({index:i+1,...x})));"}}`,
+		`{"timestamp":"2026-08-07T09:00:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll-both","output":[{"type":"input_text","text":"{\"index\":1,\"session_id\":42,\"output\":\"\"}"},{"type":"input_text","text":"{\"index\":2,\"exit_code\":0,\"output\":\"ok\"}"}]}}`,
+		`{"timestamp":"2026-08-07T09:00:06Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll-one","input":"const r = await tools.write_stdin({session_id:42}); text(JSON.stringify(r));"}}`,
+		`{"timestamp":"2026-08-07T09:00:08Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll-one","output":"{\"exit_code\":0,\"output\":\"ok\"}"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{
+		{command: "make lint", duration: 5 * time.Second},
+		{command: "make test", duration: 8 * time.Second},
+	}, captured)
+	assert.Empty(t, state.sessions)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_MappedWriteStdinBatchCompletesYieldedCommands(t *testing.T) {
+	tests := []struct {
+		name     string
+		callback string
+	}{
+		{name: "shorthand session id", callback: `session_id => tools.write_stdin({session_id,chars:"",yield_time_ms:30000})`},
+		{name: "aliased session id", callback: `sid => tools.write_stdin({session_id:sid,chars:"",yield_time_ms:30000})`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured []struct {
+				command  string
+				duration time.Duration
+			}
+			e := &CodexExecutor{CommandTimingHandler: func(command string, duration time.Duration) {
+				captured = append(captured, struct {
+					command  string
+					duration time.Duration
+				}{command: command, duration: duration})
+			}}
+			state := newCodexTimingState()
+			fixtures := []rolloutPayload{
+				{Type: "custom_tool_call", Name: "exec", CallID: "start", Input: `const r = await Promise.all([tools.exec_command({cmd:"make test"}),tools.exec_command({cmd:"make lint"})]); r.forEach((x,i)=>text(JSON.stringify({index:i+1,...x})));`},
+				{Type: "custom_tool_call_output", CallID: "start", Output: json.RawMessage(`[
+					{"type":"input_text","text":"{\"index\":1,\"session_id\":42,\"output\":\"\"}"},
+					{"type":"input_text","text":"{\"index\":2,\"session_id\":84,\"output\":\"\"}"}
+				]`)},
+				{Type: "custom_tool_call", Name: "exec", CallID: "poll", Input: `const ids=[42,84]; const rs=await Promise.all(ids.map(` + tt.callback + `)); rs.forEach((r,i)=>text(JSON.stringify({index:i+1,...r})));`},
+				{Type: "custom_tool_call_output", CallID: "poll", Output: json.RawMessage(`[
+					{"type":"input_text","text":"{\"index\":1,\"exit_code\":0,\"output\":\"ok\"}"},
+					{"type":"input_text","text":"{\"index\":2,\"exit_code\":0,\"output\":\"ok\"}"
+				]`)},
+			}
+			for index, payload := range fixtures {
+				e.trackRolloutCommandTiming(rolloutEvent{Timestamp: fmt.Sprintf("2026-08-07T09:00:0%dZ", index*2)}, payload, state, time.Now)
+			}
+
+			assert.Equal(t, []struct {
+				command  string
+				duration time.Duration
+			}{
+				{command: "make test", duration: 6 * time.Second},
+				{command: "make lint", duration: 6 * time.Second},
+			}, captured)
+			assert.Empty(t, state.sessions)
+		})
+	}
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecStringLiterals(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	input := "const r = await Promise.all([tools.exec_command({cmd:'make test'}),tools.exec_command({cmd:`make lint\\n--fix`})]); r.forEach((x,i)=>text(JSON.stringify({index:i+1,...x})));"
+	e.trackCustomToolCall(rolloutPayload{Type: "custom_tool_call", Name: "exec", CallID: "batch", Input: input}, time.Time{}, state, time.Now)
+	e.trackToolOutput(rolloutPayload{
+		Type:   "custom_tool_call_output",
+		CallID: "batch",
+		Output: json.RawMessage(`[{"text":"{\"index\":1,\"exit_code\":0,\"wall_time_seconds\":1}"},{"text":"{\"index\":2,\"exit_code\":0,\"wall_time_seconds\":2}"}]`),
+	}, time.Time{}, state, time.Now)
+
+	assert.Equal(t, []string{"make test", "make lint\n--fix"}, captured)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_InvalidNativeTimestampsUseArrival(t *testing.T) {
+	tests := []struct {
+		name        string
+		startStamp  string
+		finishStamp string
+	}{
+		{name: "reversed", startStamp: "2026-08-07T09:00:10Z", finishStamp: "2026-08-07T09:00:05Z"},
+		{name: "missing finish", startStamp: "2026-08-07T09:00:00Z"},
+		{name: "malformed start", startStamp: "not-a-time", finishStamp: "2026-08-07T09:00:05Z"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clock := []time.Time{time.Unix(10, 0), time.Unix(14, 0)}
+			var got time.Duration
+			e := &CodexExecutor{CommandTimingHandler: func(_ string, d time.Duration) { got = d }}
+			state := newCodexTimingState()
+			now := func() time.Time {
+				result := clock[0]
+				clock = clock[1:]
+				return result
+			}
+			fixtures := []string{
+				fmt.Sprintf(`{"timestamp":%q,"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"make test\"}","call_id":"call-one"}}`, tt.startStamp),
+				fmt.Sprintf(`{"timestamp":%q,"type":"response_item","payload":{"type":"function_call_output","call_id":"call-one","output":"ok"}}`, tt.finishStamp),
+			}
+			for _, line := range fixtures {
+				ev, payload, ok := parseRolloutRecord([]byte(line))
+				require.True(t, ok)
+				e.trackRolloutCommandTiming(ev, payload, state, now)
+			}
+			assert.Equal(t, 4*time.Second, got)
+		})
+	}
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_nilHandlerPreservesRendering(t *testing.T) {
+	var got string
+	e := &CodexExecutor{OutputHandler: func(output string) { got = output }}
+	line := []byte(`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"unchanged"}]}}`)
+
+	assert.NotPanics(t, func() {
+		e.processRolloutLine(line, newCodexTimingState(), time.Now, true)
+	})
+	assert.Equal(t, "unchanged", got)
+}
+
+func TestCodexExecutor_CallbacksAreSerialized(t *testing.T) {
+	var active atomic.Int32
+	var maximum atomic.Int32
+	handler := func() {
+		current := active.Add(1)
+		for {
+			previous := maximum.Load()
+			if current <= previous || maximum.CompareAndSwap(previous, current) {
+				break
+			}
+		}
+		time.Sleep(time.Millisecond)
+		active.Add(-1)
+	}
+	e := &CodexExecutor{
+		OutputHandler:        func(string) { handler() },
+		CommandTimingHandler: func(string, time.Duration) { handler() },
+	}
+
+	var wg sync.WaitGroup
+	for index := range 100 {
+		wg.Go(func() {
+			if index%2 == 0 {
+				e.emitOutput("output")
+				return
+			}
+			e.emitCommandTimingHandler("command", time.Second)
+		})
+	}
+	wg.Wait()
+
+	assert.Equal(t, int32(1), maximum.Load())
+}
+
+func TestCodexExecutor_findRolloutFile_UsesCodexHome(t *testing.T) {
+	home := t.TempDir()
+	codexHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", codexHome)
+	sessionID := "019e3bbe-9788-79f1-b668-codexhome0001"
+	dir := filepath.Join(codexHome, "sessions", "2026", "08", "07")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	want := filepath.Join(dir, "rollout-2026-08-07T09-00-00-"+sessionID+".jsonl")
+	require.NoError(t, os.WriteFile(want, nil, 0o600))
+
+	assert.Equal(t, want, (&CodexExecutor{}).findRolloutFile(t.Context(), sessionID))
 }
 
 func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
@@ -1896,6 +3228,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 	// can resolve it via the same glob the real runtime uses.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-deadbeefcafe"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "05", "18")
 	require.NoError(t, os.MkdirAll(dir, 0o750))
@@ -1966,9 +3299,263 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 	assert.Contains(t, final[1], "late reply after first read")
 }
 
+func TestCodexExecutor_tailRolloutFile_tracksCommandsWithoutOutputHandler(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	sessionID := "019e3bbe-9788-79f1-b668-feedfacecafe"
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	path := filepath.Join(dir, "rollout-2026-08-07T09-00-00-"+sessionID+".jsonl")
+	fixtures := `{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"make test\"}","call_id":"call-one"}}` + "\n" +
+		`{"timestamp":"2026-08-07T09:00:06Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-one","output":"ok"}}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(fixtures), 0o600))
+
+	timing := make(chan time.Duration, 1)
+	e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+		assert.Equal(t, "make test", command)
+		timing <- d
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.tailRolloutFile(ctx, sessionID, nil)
+	}()
+
+	select {
+	case got := <-timing:
+		assert.Equal(t, 6*time.Second, got)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timing handler was not called")
+	}
+	cancel()
+	<-done
+}
+
+func TestCodexExecutor_tailRolloutFile_ProcessesUnterminatedFinalRecordOnCancel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	sessionID := "019e3bbe-9788-79f1-b668-acde00000001"
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	path := filepath.Join(dir, "rollout-2026-08-07T09-00-00-"+sessionID+".jsonl")
+	fixtures := `{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"make test\"}","call_id":"call-one"}}` + "\n" +
+		`{"timestamp":"2026-08-07T09:00:06Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-one","output":"ok"}}`
+	require.NoError(t, os.WriteFile(path, []byte(fixtures), 0o600))
+
+	timing := make(chan time.Duration, 1)
+	e := &CodexExecutor{CommandTimingHandler: func(_ string, d time.Duration) { timing <- d }}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.tailRolloutFile(ctx, sessionID, nil)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	select {
+	case got := <-timing:
+		assert.Equal(t, 6*time.Second, got)
+	default:
+		t.Fatal("unterminated final rollout record was not processed")
+	}
+}
+
+func TestCodexExecutor_tailRolloutFile_TracksChildSessionCustomExec(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	sessionID := "019e3bbe-9788-79f1-b668-acde00000002"
+	childID := "019e3bbe-9788-79f1-b668-acde00000003"
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	rootPath := filepath.Join(dir, "rollout-2026-08-07T09-00-00-"+sessionID+".jsonl")
+	require.NoError(t, os.WriteFile(rootPath, []byte(`{"type":"session_meta","payload":{"session_id":"`+sessionID+`","source":"exec"}}`+"\n"), 0o600))
+	childPath := filepath.Join(dir, "rollout-2026-08-07T09-00-01-"+childID+".jsonl")
+	child := `{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"` + sessionID + `"}}}}}` + "\n" +
+		`{"timestamp":"2026-08-07T09:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"custom-one","input":"const r = await tools.exec_command({cmd:\"make test\"}); text(r.output);"}}` + "\n" +
+		`{"timestamp":"2026-08-07T09:00:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"custom-one","output":[{"type":"input_text","text":"Script completed\nWall time 3 seconds\nOutput:\n"},{"type":"input_text","text":"ok"}]}}` + "\n"
+	require.NoError(t, os.WriteFile(childPath, []byte(child), 0o600))
+
+	timing := make(chan time.Duration, 1)
+	e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+		assert.Equal(t, "make test", command)
+		timing <- d
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.tailRolloutFile(ctx, sessionID, nil)
+	}()
+
+	select {
+	case got := <-timing:
+		assert.Equal(t, 3*time.Second, got)
+	case <-time.After(2 * time.Second):
+		t.Fatal("child-session custom exec timing was not emitted")
+	}
+	cancel()
+	<-done
+}
+
+func TestCodexExecutor_discoverRolloutStates_FindsOlderChildAcrossMidnight(t *testing.T) {
+	dir := t.TempDir()
+	rootID := "019e3bbe-9788-79f1-b668-acde00000020"
+	childID := "019e3bbe-9788-79f1-b668-acde00000021"
+	rootDir := filepath.Join(dir, "sessions", "2026", "08", "07")
+	childDir := filepath.Join(dir, "sessions", "2026", "08", "08")
+	require.NoError(t, os.MkdirAll(rootDir, 0o750))
+	require.NoError(t, os.MkdirAll(childDir, 0o750))
+	rootPath := filepath.Join(rootDir, "rollout-2026-08-07T23-59-59-"+rootID+".jsonl")
+	childPath := filepath.Join(childDir, "rollout-2026-08-08T00-00-01-"+childID+".jsonl")
+	require.NoError(t, os.WriteFile(rootPath, []byte(`{"type":"session_meta","payload":{"session_id":"`+rootID+`","source":"exec"}}`+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(childPath, []byte(`{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"`+rootID+`"}}}}}`+"\n"), 0o600))
+	rootTime := time.Date(2026, 8, 8, 0, 1, 0, 0, time.Local)
+	require.NoError(t, os.Chtimes(rootPath, rootTime, rootTime))
+	require.NoError(t, os.Chtimes(childPath, rootTime.Add(-time.Minute), rootTime.Add(-time.Minute)))
+
+	e := &CodexExecutor{CommandTimingHandler: func(string, time.Duration) {}}
+	states := make(map[string]*rolloutTailState)
+	t.Cleanup(func() {
+		for _, state := range states {
+			require.NoError(t, state.file.Close())
+		}
+	})
+	e.discoverRolloutStates(rootPath, states, map[string]bool{rootID: true}, newRolloutDiscovery())
+
+	assert.Contains(t, states, rootPath)
+	assert.Contains(t, states, childPath)
+}
+
+func TestCodexExecutor_discoverRolloutStates_SkipsChildrenWithoutTimingHandler(t *testing.T) {
+	dir := t.TempDir()
+	rootID := "019e3bbe-9788-79f1-b668-acde00000030"
+	childID := "019e3bbe-9788-79f1-b668-acde00000031"
+	rootPath := filepath.Join(dir, "rollout-2026-08-07T09-00-00-"+rootID+".jsonl")
+	childPath := filepath.Join(dir, "rollout-2026-08-07T09-00-01-"+childID+".jsonl")
+	require.NoError(t, os.WriteFile(rootPath, []byte(`{"type":"session_meta","payload":{"session_id":"`+rootID+`","source":"exec"}}`+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(childPath, []byte(`{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"`+rootID+`"}}}}}`+"\n"), 0o600))
+
+	e := &CodexExecutor{OutputHandler: func(string) {}}
+	states := make(map[string]*rolloutTailState)
+	t.Cleanup(func() {
+		for _, state := range states {
+			require.NoError(t, state.file.Close())
+		}
+	})
+	e.discoverRolloutStates(rootPath, states, map[string]bool{rootID: true}, newRolloutDiscovery())
+
+	assert.Contains(t, states, rootPath)
+	assert.NotContains(t, states, childPath)
+}
+
+func TestCodexExecutor_discoverRolloutStates_RefreshesDirectoryCacheForNewChild(t *testing.T) {
+	dir := t.TempDir()
+	rootID := "019e3bbe-9788-79f1-b668-acde00000040"
+	childID := "019e3bbe-9788-79f1-b668-acde00000041"
+	rootPath := filepath.Join(dir, "rollout-2026-08-07T09-00-00-"+rootID+".jsonl")
+	childPath := filepath.Join(dir, "rollout-2026-08-07T09-00-01-"+childID+".jsonl")
+	require.NoError(t, os.WriteFile(rootPath, []byte(`{"type":"session_meta","payload":{"session_id":"`+rootID+`","source":"exec"}}`+"\n"), 0o600))
+
+	e := &CodexExecutor{CommandTimingHandler: func(string, time.Duration) {}}
+	states := make(map[string]*rolloutTailState)
+	t.Cleanup(func() {
+		for _, state := range states {
+			require.NoError(t, state.file.Close())
+		}
+	})
+	knownParents := map[string]bool{rootID: true}
+	discovery := newRolloutDiscovery()
+	e.discoverRolloutStates(rootPath, states, knownParents, discovery)
+	assert.NotContains(t, states, childPath)
+
+	require.NoError(t, os.WriteFile(childPath, []byte(`{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"`+rootID+`"}}}}}`+"\n"), 0o600))
+	e.discoverRolloutStates(rootPath, states, knownParents, discovery)
+
+	assert.Contains(t, states, childPath)
+}
+
+func TestCodexExecutor_discoverRolloutStates_CachesStableUnrelatedFilesAndRetriesIncompleteFiles(t *testing.T) {
+	dir := t.TempDir()
+	rootID := "019e3bbe-9788-79f1-b668-acde00000010"
+	childID := "019e3bbe-9788-79f1-b668-acde00000011"
+	unrelatedID := "019e3bbe-9788-79f1-b668-acde00000012"
+	rootPath := filepath.Join(dir, "rollout-2026-08-07T09-00-00-"+rootID+".jsonl")
+	unrelatedPath := filepath.Join(dir, "rollout-2026-08-07T09-00-01-"+unrelatedID+".jsonl")
+	incompletePath := filepath.Join(dir, "rollout-2026-08-07T09-00-02-"+childID+".jsonl")
+	require.NoError(t, os.WriteFile(rootPath, []byte(`{"type":"session_meta","payload":{"session_id":"`+rootID+`","source":"exec"}}`+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(unrelatedPath, []byte(`{"type":"session_meta","payload":{"session_id":"`+unrelatedID+`","source":"exec"}}`+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(incompletePath, nil, 0o600))
+	e := &CodexExecutor{CommandTimingHandler: func(string, time.Duration) {}}
+	states := make(map[string]*rolloutTailState)
+	t.Cleanup(func() {
+		for _, state := range states {
+			require.NoError(t, state.file.Close())
+		}
+	})
+	knownParents := map[string]bool{rootID: true}
+	discovery := newRolloutDiscovery()
+	e.discoverRolloutStates(rootPath, states, knownParents, discovery)
+	assert.Contains(t, states, rootPath)
+	assert.NotContains(t, states, unrelatedPath)
+	assert.NotContains(t, states, incompletePath)
+	assert.Contains(t, discovery.parents, unrelatedPath)
+	assert.NotContains(t, discovery.parents, incompletePath)
+	assert.Contains(t, discovery.incomplete, incompletePath)
+
+	relatedMeta := []byte(`{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"` + rootID + `"}}}}}` + "\n")
+	require.NoError(t, os.WriteFile(unrelatedPath, relatedMeta, 0o600))
+	require.NoError(t, os.WriteFile(incompletePath, relatedMeta, 0o600))
+	e.discoverRolloutStates(rootPath, states, knownParents, discovery)
+
+	assert.NotContains(t, states, unrelatedPath, "a complete unrelated first record is immutable and should not be reparsed")
+	assert.Contains(t, states, incompletePath, "an incomplete first record must be retried after more data arrives")
+	assert.NotContains(t, discovery.incomplete, incompletePath)
+}
+
+func TestRolloutParentThreadID_RejectsOversizedMetadataRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	require.NoError(t, os.WriteFile(path, bytes.Repeat([]byte("x"), (1<<20)+1), 0o600))
+
+	parentID, ready := rolloutParentThreadID(path)
+
+	assert.Empty(t, parentID)
+	assert.False(t, ready)
+}
+
+func TestCodexExecutor_tailRolloutFile_CancelDropsPendingCommand(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	sessionID := "019e3bbe-9788-79f1-b668-acde00000004"
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	path := filepath.Join(dir, "rollout-2026-08-07T09-00-00-"+sessionID+".jsonl")
+	require.NoError(t, os.WriteFile(path, []byte(`{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"make test\"}","call_id":"pending"}}`), 0o600))
+
+	var calls int
+	e := &CodexExecutor{CommandTimingHandler: func(string, time.Duration) { calls++ }}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.tailRolloutFile(ctx, sessionID, nil)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+	assert.Zero(t, calls)
+}
+
 func TestCodexExecutor_findRolloutFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
 	e := &CodexExecutor{}
 
 	t.Run("returns empty when no file", func(t *testing.T) {

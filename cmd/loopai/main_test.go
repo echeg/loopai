@@ -130,12 +130,15 @@ func TestRunWithSectionTimingFinishesBeforeReturning(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			inner := &runnerLoggerRecorder{}
 			timer := progress.NewSectionTimer(inner, nil)
+			validationTimer := progress.NewValidationTimer([]string{"make test"}, inner)
 			run := func(context.Context) error {
 				timer.PrintSection(status.NewTaskIterationSection(1))
+				validationTimer.Handler()("make test", 2*time.Second)
 				return tt.runErr
 			}
 
 			gotErr := runWithSectionTiming(t.Context(), run, timer)
+			validationTimer.FinishRun()
 			inner.calls = append(inner.calls, "downstream result handling")
 
 			if tt.runErr == nil {
@@ -143,13 +146,142 @@ func TestRunWithSectionTimingFinishesBeforeReturning(t *testing.T) {
 			} else {
 				require.ErrorIs(t, gotErr, tt.runErr)
 			}
-			require.Len(t, inner.calls, 4)
+			require.Len(t, inner.calls, 6)
 			assert.Equal(t, "section: task iteration 1", inner.calls[0])
-			assert.Regexp(t, `^print: task iteration 1 took .+$`, inner.calls[1])
-			assert.Regexp(t, `^print: phase durations: tasks .+ \(1\)$`, inner.calls[2])
-			assert.Equal(t, "downstream result handling", inner.calls[3])
+			assert.Equal(t, "print: validation: make test took 2s", inner.calls[1])
+			assert.Regexp(t, `^print: task iteration 1 took .+$`, inner.calls[2])
+			assert.Regexp(t, `^print: phase durations: tasks .+ \(1\)$`, inner.calls[3])
+			assert.Equal(t, "print: validation: 2s (1 runs)", inner.calls[4])
+			assert.Equal(t, "downstream result handling", inner.calls[5])
 		})
 	}
+}
+
+func TestExecutePlan_ValidationTimingFromClaudeStreamReachesProgressLog(t *testing.T) {
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	planPath := filepath.Join(dir, "docs", "plans", "validation-wiring.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath, []byte(`# Validation wiring
+
+## Validation Commands
+
+- `+"`make test`"+`
+
+## Implementation Steps
+
+### Task 1: Done
+
+- [x] already complete
+`), 0o600))
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"make test --token secret"}}]}}'
+printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}'
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	err = executePlan(t.Context(), opts{TasksOnly: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
+		Config: &config.Config{ClaudeCommand: fakeClaude}, Colors: testColors(), BaseRef: "master",
+	})
+	require.NoError(t, err)
+
+	logs, err := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "progress-*.txt"))
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	content, err := os.ReadFile(logs[0])
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "validation: make test took ")
+	assert.Regexp(t, `validation: \S+ \(1 runs\)`, string(content))
+	assert.NotContains(t, string(content), "--token secret")
+}
+
+func TestExecutePlan_ValidationSummaryIsWrittenOnRunnerFailure(t *testing.T) {
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	planPath := filepath.Join(dir, "docs", "plans", "validation-failure.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath, []byte(`# Validation failure
+
+## Validation Commands
+
+- make test
+
+### Task 1: Incomplete
+
+- [ ] still incomplete
+`), 0o600))
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"make test"}}]}}'
+printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"failed"}]}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	err = executePlan(t.Context(), opts{TasksOnly: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
+		Config: &config.Config{ClaudeCommand: fakeClaude}, Colors: testColors(), BaseRef: "master",
+	})
+	require.Error(t, err)
+
+	logs, globErr := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "progress-*.txt"))
+	require.NoError(t, globErr)
+	require.Len(t, logs, 1)
+	content, readErr := os.ReadFile(logs[0])
+	require.NoError(t, readErr)
+	assert.Regexp(t, `validation: \S+ \(1 runs\)`, string(content))
+	assert.Contains(t, string(content), "Failed:")
+}
+
+func TestExecutePlan_PlanParseFailureUsesReporterAfterWorktreeHandoff(t *testing.T) {
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + argvLog + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "cmux"), []byte(script), 0o755)) //nolint:gosec // executable test fixture
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	missingPlan := filepath.Join(dir, "docs", "plans", "removed.md")
+	err = executePlan(t.Context(), opts{NoColor: true}, executePlanRequest{
+		PlanFile: missingPlan, Mode: processor.ModeFull, GitSvc: gitSvc,
+		Config: &config.Config{}, Colors: testColors(), BaseRef: "master",
+	})
+	require.ErrorContains(t, err, "parse plan validation commands")
+
+	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path is a test-owned file under t.TempDir
+	require.NoError(t, readErr)
+	assert.Equal(t, 1, strings.Count(string(recorded), "notify --title"))
+	logs, globErr := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "progress-*.txt"))
+	require.NoError(t, globErr)
+	require.Len(t, logs, 1)
+	content, logErr := os.ReadFile(logs[0])
+	require.NoError(t, logErr)
+	assert.Contains(t, string(content), "Failed:")
+	assert.Contains(t, string(content), "parse plan validation commands")
 }
 
 // captureStdout runs fn while redirecting os.Stdout (and the fatih/color Output
@@ -780,7 +912,7 @@ func TestCreateRunner(t *testing.T) {
 		defer log.Close()
 
 		req := executePlanRequest{PlanFile: "/path/to/plan.md", Mode: processor.ModeFull, Config: cfg, DefaultBranch: "master"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 	})
 
@@ -802,7 +934,7 @@ func TestCreateRunner(t *testing.T) {
 
 		// tests that codex-only mode code path runs without panic
 		req := executePlanRequest{Mode: processor.ModeCodexOnly, Config: cfg, DefaultBranch: "main"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 	})
 
@@ -825,7 +957,7 @@ func TestCreateRunner(t *testing.T) {
 		// verify the resolution logic: CLI=5 should win over config=10
 		// the resolve logic: maxExtIter = config(10), then CLI > 0 so maxExtIter = 5
 		req := executePlanRequest{Mode: processor.ModeFull, Config: cfg, DefaultBranch: "main"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 		// can't inspect Runner.cfg directly, but the wiring code is exercised
 		// behavioral verification is in runner_test.go (TestRunner_MaxExternalIterations_ExplicitLimit)
@@ -849,7 +981,7 @@ func TestCreateRunner(t *testing.T) {
 
 		// verify the resolution logic: CLI=3 should win over config=5
 		req := executePlanRequest{Mode: processor.ModeFull, Config: cfg, DefaultBranch: "main"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 		// behavioral verification is in runner_test.go
 	})
@@ -1131,7 +1263,7 @@ func TestSkipFinalizeFlag(t *testing.T) {
 
 		// verify createRunner receives the overridden config
 		req := executePlanRequest{Mode: processor.ModeFull, Config: cfg, DefaultBranch: "main"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 		assert.False(t, cfg.FinalizeEnabled, "skip-finalize should override config")
 	})

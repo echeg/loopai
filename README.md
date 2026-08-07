@@ -136,6 +136,11 @@ Describe the intended outcome.
 - [ ] Run validation
 ```
 
+Validation timing recognizes the exact, case-sensitive H2 heading `## Validation Commands`.
+Commands must be plain, non-checkbox Markdown list items before the next heading. Checkbox items,
+prose, and fenced examples are ignored. Optional surrounding backticks are stripped and whitespace
+is normalized before matching.
+
 Run it:
 
 ```bash
@@ -479,6 +484,29 @@ phase, for example `phase durations: tasks 32m26s (8), internal review 2h23m (10
 parentheses is the number of section occurrences, so retried iterations count again. Durations
 include rate-limit waits. Phase totals can be less than the footer's total elapsed time because
 time before the first section is unattributed.
+
+Shell commands that equal an entry in the plan's `## Validation Commands` section, or start with
+that entry followed by whitespace, are timed separately. Each completed match is logged as it
+finishes, followed by an aggregate after the phase summary:
+
+```text
+validation: make test took 1m12s
+validation: make lint took 18s
+phase durations: tasks 8m41s (2), internal review 2m3s (1)
+validation: 1m30s (2 runs)
+```
+
+Validation time is already included in the phase durations; it is not additional elapsed time.
+The aggregate is the sum of matched command durations, so concurrent commands can overlap and
+make it larger than section or run wall-clock time. Plans without validation commands, unmatched
+commands, incomplete commands, and provider streams without shell tool events produce no
+`validation:` lines. Claude measures stream-event arrival time. Codex prefers native rollout
+timestamps and falls back to approximate arrival time when timestamps are absent or invalid.
+For current Codex custom-tool records that expose only command output, native timestamps can
+prove completion when the call returns before its configured yield threshold. Calls at or beyond
+that threshold are paired with a later session continuation only when the association is unique;
+ambiguous or abandoned calls produce no timing line. Batched calls use native per-command wall
+times when available and are omitted when only the enclosing call's duration is known.
 
 Start the dashboard:
 

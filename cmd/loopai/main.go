@@ -757,6 +757,18 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 	rep.Start(ctx)
 
+	validationCommands := make([]string, 0)
+	if req.PlanFile != "" {
+		parsedPlan, parseErr := plan.ParsePlanFile(req.PlanFile)
+		if parseErr != nil {
+			wrapped := fmt.Errorf("parse plan validation commands: %w", parseErr)
+			plr.baseLog.SetFailed(wrapped)
+			notifyCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), wrapped)
+			return wrapped
+		}
+		validationCommands = parsedPlan.ValidationCommands
+	}
+
 	// wrap logger with broadcast logger if --serve is enabled
 	var runnerLog processor.Logger = plr.baseLog
 	if o.Serve {
@@ -784,6 +796,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		}
 	}
 	runnerLog, sectionTimer := buildRunnerLogger(rep, runnerLog)
+	validationTimer := progress.NewValidationTimer(validationCommands, runnerLog)
 
 	// subscribe the sidebar to phase changes after the dashboard so both observers coexist
 	plr.holder.OnChange(rep.OnPhase)
@@ -821,7 +834,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 
 	// create and run the runner
-	r := createRunner(req, o, runnerLog, plr.holder)
+	r := createRunner(req, o, runnerLog, plr.holder, validationTimer.Handler())
 
 	// listen for SIGQUIT (Ctrl+\) for manual break during task and review loops
 	if breakCh := startBreakSignal(); breakCh != nil {
@@ -830,6 +843,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 
 	runErr := runWithSectionTiming(ctx, r.Run, sectionTimer)
+	validationTimer.FinishRun()
 	if runErr != nil {
 		// mark logger as failed so Close writes "Failed:" footer, preserving history
 		// for restart. Applies to ErrUserAborted too — user aborts are not completions.
@@ -1719,7 +1733,7 @@ func validateExternalReviewFlags(o opts) error {
 }
 
 // createRunner creates a processor.Runner with the given configuration.
-func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *status.PhaseHolder) *processor.Runner {
+func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *status.PhaseHolder, commandTimingHandler func(string, time.Duration)) *processor.Runner {
 	externalReview := req.ExternalReview
 	applyEffectiveExternalReview(req.Config, externalReview)
 	reviewer, enabled := externalReview.firstReviewer()
@@ -1764,6 +1778,7 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		ReviewModel:           resolveReviewSpec(o, req.Config),
 		AppConfig:             req.Config,
 		LimitRecovery:         req.LimitRecovery,
+		CommandTimingHandler:  commandTimingHandler,
 	}, log, holder)
 	if req.GitSvc != nil {
 		r.SetGitChecker(req.GitSvc)

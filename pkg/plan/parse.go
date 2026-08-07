@@ -1,13 +1,14 @@
 package plan
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/umputun/ralphex/internal/validation"
 )
 
 // TaskStatus represents the execution status of a task.
@@ -39,6 +40,9 @@ type Task struct {
 type Plan struct {
 	Title string `json:"title"`
 	Tasks []Task `json:"tasks"`
+	// ValidationCommands contains normalized plain-list entries parsed from the
+	// exact `## Validation Commands` section.
+	ValidationCommands []string `json:"validation_commands"`
 }
 
 // patterns for parsing plan markdown.
@@ -56,26 +60,33 @@ var (
 	// string permitted — only optional trailing whitespace (including a trailing CR for CRLF
 	// inputs that reach scanners which do not strip it). used to avoid treating an inner
 	// opener-with-info-string (e.g. ```go) as closing an outer fence.
-	fenceClosePattern = regexp.MustCompile(`^ {0,3}(` + "`" + `{3,}|~{3,})[ \t]*\r?$`)
+	fenceClosePattern         = regexp.MustCompile(`^ {0,3}(` + "`" + `{3,}|~{3,})[ \t]*\r?$`)
+	validationHeaderPattern   = regexp.MustCompile(`^##\s+Validation Commands\s*$`)
+	headingPattern            = regexp.MustCompile(`^#{1,6}(?:\s|$)`)
+	listItemPattern           = regexp.MustCompile(`^\s*(?:[-+*]|\d+[.)])\s+(.+?)\s*$`)
+	validationCheckboxPattern = regexp.MustCompile(`^\[[ xX]\](?:\s|$)`)
 )
 
 // ParsePlan parses plan markdown content into a structured Plan.
 func ParsePlan(content string) (*Plan, error) {
 	p := &Plan{
-		Tasks: make([]Task, 0),
+		Tasks:              make([]Task, 0),
+		ValidationCommands: make([]string, 0),
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(content))
 	var currentTask *Task
 	var ft fenceTracker
+	inValidationSection := false
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	for rawLine := range strings.SplitSeq(content, "\n") {
+		line := strings.TrimSuffix(rawLine, "\r")
 
 		// skip lines inside fenced code blocks so example checkboxes are not parsed as tasks
 		if ft.skip(line) {
 			continue
 		}
+
+		trackValidationCommand(p, line, &inValidationSection)
 
 		// check for plan title (first h1)
 		if p.Title == "" {
@@ -135,11 +146,24 @@ func ParsePlan(content string) (*Plan, error) {
 		p.Tasks = append(p.Tasks, *currentTask)
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan plan: %w", err)
-	}
-
 	return p, nil
+}
+
+func trackValidationCommand(p *Plan, line string, inSection *bool) {
+	switch {
+	case validationHeaderPattern.MatchString(line):
+		*inSection = true
+	case headingPattern.MatchString(line):
+		*inSection = false
+	case *inSection:
+		matches := listItemPattern.FindStringSubmatch(line)
+		if len(matches) == 0 || validationCheckboxPattern.MatchString(matches[1]) {
+			return
+		}
+		if command := validation.NormalizeCommand(matches[1]); command != "" {
+			p.ValidationCommands = append(p.ValidationCommands, command)
+		}
+	}
 }
 
 // ParsePlanFile reads and parses a plan file from disk.
