@@ -15,6 +15,13 @@ This plan adds:
 
 Deliberately out of scope: superpowers stays installed and untouched — no other skills are copied (teammates may have superpowers; local removal would not help them, and the orthogonal skills do not conflict with loopai).
 
+## Status
+
+Implementation and automated validation are complete. The plan remains active
+while code-review iterations run; archive it after the review loop finishes.
+The push-dependent checks under Post-Completion remain pending and do not block
+implementation completion.
+
 ## Context (from discovery)
 
 - Files/components involved:
@@ -113,8 +120,8 @@ Deliberately out of scope: superpowers stays installed and untouched — no othe
 - Marketplace and plugin are both named `loopai`; installed skills surface as `loopai:<skill>` — distinct from `ralphex:*` and `superpowers:*`, so coexistence during migration is safe
 - `loopai-brainstorm` replaces only the plan-pipeline part of superpowers: superpowers stays installed for its orthogonal skills (debugging, TDD, code review); no superpowers files are copied except the adapted brainstorming text
 - Version discipline: plugin.json `version` bumps on every skill change (start 0.1.0); the marketplace entry version mirrors it
-- Review fixes updated the skills and bumped both manifests together to the final version 0.1.2
-- Attribution: "adapted from obra/superpowers v6.2.0 (MIT)" comment in the adapted skill records the sync baseline for future manual diffs against upstream
+- Review fixes updated the skills and bumped both manifests together to version 0.1.3
+- Attribution: the adapted-skill comment records the obra/superpowers v6.2.0 sync baseline and points to `THIRD_PARTY_NOTICES.md`, which preserves Jesse Vincent's MIT notice
 - Fork policy intact: no Go code, module path, or `<<<RALPHEX:...>>>` signal changes; `CHANGELOG.md` untouched
 
 ## Post-Completion
@@ -122,7 +129,7 @@ Deliberately out of scope: superpowers stays installed and untouched — no othe
 **Manual verification** (requires pushed repo):
 
 - `claude plugin marketplace add echeg/loopai` on this machine; install the `loopai` plugin; confirm `loopai:loopai-plan` and `loopai:loopai-brainstorm` appear in the skills list
-- remove the upstream plugin (`claude plugin uninstall ralphex`, `claude plugin marketplace remove ralphex`) and confirm `/loopai-plan`-style commands come from the own plugin
+- remove the upstream plugin (`claude plugin uninstall ralphex`, `claude plugin marketplace remove ralphex`) and confirm `loopai:loopai-plan` and `loopai:loopai-brainstorm` resolve from `loopai@loopai`
 - run one real feature through `loopai-brainstorm` → `loopai-plan` → `loopai --worktree` and confirm the plan contains the `## Decisions` section and no spec file was created
 - with superpowers still enabled, confirm the two brainstorm skills coexist and the CLAUDE.md directive routes plan creation to loopai-plan
 

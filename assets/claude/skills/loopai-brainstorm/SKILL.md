@@ -3,7 +3,7 @@ name: loopai-brainstorm
 description: "Design a feature through collaborative discovery and turn the approved design into a loopai implementation plan. Use when the user wants to explore or design work that should become a loopai plan; unlike superpowers brainstorming, this hands off directly to loopai-plan and creates no spec file."
 ---
 
-<!-- adapted from obra/superpowers v6.2.0 (MIT) -->
+<!-- adapted from obra/superpowers v6.2.0 (MIT); see ../../../../THIRD_PARTY_NOTICES.md -->
 
 # Brainstorming Ideas Into Loopai Plans
 

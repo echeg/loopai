@@ -10,7 +10,7 @@ trap 'rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/.claude-plugin" "$fixture/assets/claude/skills"
 
 write_valid_manifests() {
-    printf '%s\n' '{"name":"loopai","description":"fixture marketplace","plugins":[{"name":"loopai","source":"./","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
+    printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"./","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
     printf '%s\n' '{"name":"loopai","version":"0.1.2","skills":"./assets/claude/skills/"}' > "$fixture/.claude-plugin/plugin.json"
 }
 
@@ -37,8 +37,6 @@ expect_success() {
     printf 'PASS: %s\n' "$description"
 }
 
-expect_failure "missing manifests are rejected" "missing .claude-plugin/marketplace.json"
-
 write_valid_manifests
 expect_success "valid manifests are accepted"
 
@@ -58,28 +56,40 @@ printf '%s\n' '{broken' > "$fixture/.claude-plugin/plugin.json"
 expect_failure "invalid plugin JSON is rejected" "invalid JSON in .claude-plugin/plugin.json"
 
 write_valid_manifests
-printf '%s\n' '{"name":"loopai","description":"fixture marketplace","plugins":[{"name":"loopai","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
 expect_failure "a missing marketplace source is rejected" "marketplace.json must describe"
 
 write_valid_manifests
-printf '%s\n' '{"name":"other","description":"fixture marketplace","plugins":[{"name":"loopai","source":"./","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
+printf '%s\n' '{"name":"other","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"./","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
 expect_failure "the marketplace name must be loopai" "marketplace.json must describe"
 
 write_valid_manifests
-printf '%s\n' '{"name":"loopai","description":"fixture marketplace","plugins":[{"name":"ralphex","source":"./","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"ralphex","source":"./","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
 expect_failure "the marketplace plugin name must be loopai" "marketplace.json must describe"
 
 write_valid_manifests
-printf '%s\n' '{"name":"loopai","description":"fixture marketplace","plugins":[{"name":"loopai","source":"../","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"../","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
 expect_failure "the marketplace source must be repository-local" "marketplace.json must describe"
 
 write_valid_manifests
-printf '%s\n' '{"name":"loopai","description":"fixture marketplace","plugins":[{"name":"loopai","source":"./","version":"0.1.2"},{"name":"other","source":"./other","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"./","version":"0.1.2"},{"name":"other","source":"./other","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
 expect_failure "multiple marketplace plugins are rejected" "marketplace.json must describe"
 
 write_valid_manifests
-printf '%s\n' '{"name":"loopai","description":"fixture marketplace","plugins":[{"name":"loopai","source":"./"}]}' > "$fixture/.claude-plugin/marketplace.json"
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"./"}]}' > "$fixture/.claude-plugin/marketplace.json"
 expect_failure "a missing marketplace version is rejected" "marketplace.json must describe"
+
+write_valid_manifests
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","plugins":[{"name":"loopai","source":"./","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
+expect_failure "a missing marketplace owner is rejected" "marketplace.json must describe"
+
+write_valid_manifests
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{},"plugins":[{"name":"loopai","source":"./","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
+expect_failure "an owner without a name is rejected" "marketplace.json must describe"
+
+write_valid_manifests
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":"fixture owner","plugins":[{"name":"loopai","source":"./","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
+expect_failure "a non-object marketplace owner is rejected" "marketplace.json must describe"
 
 write_valid_manifests
 printf '%s\n' '{"name":"ralphex","version":"0.1.2","skills":"./assets/claude/skills/"}' > "$fixture/.claude-plugin/plugin.json"

@@ -10,7 +10,7 @@ trap 'rm -rf "$fixture"' EXIT
 add_skill() {
 	local name="$1"
 	mkdir -p "$fixture/assets/claude/skills/$name"
-	printf '%s\n' '---' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/$name/SKILL.md"
+	printf '%s\n' '---' "name: $name" 'description: fixture skill' '---' >"$fixture/assets/claude/skills/$name/SKILL.md"
 	ln -s "./skills/$name/SKILL.md" "$fixture/assets/claude/$name.md"
 }
 
@@ -40,7 +40,15 @@ add_skill loopai-plan
 
 printf '%s\n' '# missing frontmatter' >"$fixture/assets/claude/skills/loopai/SKILL.md"
 expect_failure "invalid skill frontmatter"
-printf '%s\n' '---' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai/SKILL.md"
+printf '%s\n' '---' 'name: loopai' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai/SKILL.md"
+
+printf '%s\n' '---' 'name: loopai' 'description: ""' '---' >"$fixture/assets/claude/skills/loopai/SKILL.md"
+expect_failure "invalid skill frontmatter"
+printf '%s\n' '---' 'name: loopai' 'description: # missing value' '---' >"$fixture/assets/claude/skills/loopai/SKILL.md"
+expect_failure "invalid skill frontmatter"
+printf '%s\n' '---' 'name: other' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai/SKILL.md"
+expect_failure "invalid skill frontmatter"
+printf '%s\n' '---' 'name: loopai' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai/SKILL.md"
 
 rm "$fixture/assets/claude/loopai.md"
 expect_failure "missing skill symlink"
@@ -50,8 +58,12 @@ expect_failure "incorrect skill symlink"
 rm "$fixture/assets/claude/loopai.md"
 ln -s "./skills/loopai/SKILL.md" "$fixture/assets/claude/loopai.md"
 ln -s "./skills/loopai/SKILL.md" "$fixture/assets/claude/orphan.md"
-expect_failure "orphan skill symlink"
+expect_failure "orphan skill asset"
 rm "$fixture/assets/claude/orphan.md"
+
+printf '%s\n' 'stale standalone command' >"$fixture/assets/claude/loopai-old.md"
+expect_failure "orphan skill asset"
+rm "$fixture/assets/claude/loopai-old.md"
 
 rm -rf "$fixture/assets/claude/skills/loopai-brainstorm" "$fixture/assets/claude/loopai-brainstorm.md"
 expect_failure "unexpected skill inventory"

@@ -63,7 +63,8 @@ e2e/                 Playwright dashboard tests
 scripts/             provider wrappers and internal test helpers
 scripts/copilot-as-claude/ # GitHub Copilot CLI wrapper for Claude-compatible output
 scripts/pi-as-claude/ # pi wrapper for Claude-compatible output
-assets/claude/       optional slash-command source assets
+assets/claude/skills/ canonical Claude Code plugin skill sources
+assets/claude/loopai*.md standalone-command compatibility symlinks
 .claude-plugin/      Claude Code plugin and marketplace manifests
 docs/                focused operational documentation and plans
 ```
@@ -74,7 +75,9 @@ directory name, and link target aligned; `make check-symlinks` rejects broken,
 missing, incorrect, and orphan links, requires skill descriptions, and verifies
 the exact skill inventory. The current set is `loopai`, `loopai-plan`, `loopai-brainstorm`,
 `loopai-adopt`, and `loopai-update`; every added skill needs the matching
-top-level symlink.
+top-level symlink. When adding or removing a skill, update `expected_skills` in
+`scripts/check-symlinks.sh`, update the valid fixture inventory in
+`scripts/check-symlinks_test.sh`, and bump both manifest versions.
 
 `.claude-plugin/marketplace.json` exposes this repository as the `loopai`
 marketplace, and `.claude-plugin/plugin.json` points Claude Code at the skill
@@ -240,6 +243,7 @@ tail -f .loopai/progress/progress-codex.txt
 - `make test` passes.
 - `make lint` reports no issues.
 - Documentation and embedded config comments match behavior.
+- Any Claude skill change bumps both manifest versions to the same value.
 - No test touched real user configuration.
 - The module path and `<<<RALPHEX:...>>>` signals remain unchanged.
 - `CHANGELOG.md` is untouched unless release work explicitly requires it.

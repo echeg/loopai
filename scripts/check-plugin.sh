@@ -22,11 +22,13 @@ done
 jq -e '
     (.name == "loopai") and
     (.description | type == "string" and length > 0) and
+    (.owner | type == "object") and
+    (.owner.name | type == "string" and length > 0) and
     (.plugins | type == "array" and length == 1) and
     (.plugins[0].name == "loopai") and
     (.plugins[0].source == "./") and
     (.plugins[0].version | type == "string" and length > 0)
-' "$marketplace" >/dev/null || fail "marketplace.json must describe the single loopai plugin with source ./ and a version"
+' "$marketplace" >/dev/null || fail "marketplace.json must describe the owned single loopai plugin with source ./ and a version"
 
 jq -e '
     (.name == "loopai") and

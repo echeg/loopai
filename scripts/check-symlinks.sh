@@ -13,6 +13,49 @@ fail() {
 	status=1
 }
 
+check_frontmatter() {
+	local skill_file="$1"
+	local skill_name="$2"
+
+	awk -v expected_name="$skill_name" '
+		function trim(value) {
+			sub(/^[[:space:]]+/, "", value)
+			sub(/[[:space:]]+$/, "", value)
+			return value
+		}
+		function scalar(value) {
+			value = trim(value)
+			if ((value ~ /^".*"$/) || (value ~ /^\047.*\047$/)) {
+				value = substr(value, 2, length(value) - 2)
+			}
+			return trim(value)
+		}
+		NR == 1 {
+			if ($0 != "---") exit 1
+			next
+		}
+		$0 == "---" {
+			closed = 1
+			exit
+		}
+		/^description:[[:space:]]*/ {
+			value = $0
+			sub(/^description:[[:space:]]*/, "", value)
+			value = scalar(value)
+			if (value != "" && value !~ /^#/ && value != "null" && value != "~") description = 1
+		}
+		/^name:[[:space:]]*/ {
+			value = $0
+			sub(/^name:[[:space:]]*/, "", value)
+			name = scalar(value)
+			name_seen = 1
+		}
+		END {
+			exit !(closed && description && (!name_seen || name == expected_name))
+		}
+	' "$skill_file"
+}
+
 if [[ ! -d "$skills_dir" ]]; then
 	fail "missing skills directory: $skills_dir"
 	exit "$status"
@@ -33,11 +76,8 @@ while IFS= read -r skill_name; do
 		continue
 	fi
 
-	if [[ "$(sed -n '1p' "$skill_file")" != "---" ]] ||
-		! awk 'NR > 1 && /^description:[[:space:]]*[^[:space:]]/ { description = 1 }
-			NR > 1 && /^---$/ { closed = 1; exit }
-			END { exit !(description && closed) }' "$skill_file"; then
-		fail "invalid skill frontmatter: $skill_file (description is required)"
+	if ! check_frontmatter "$skill_file" "$skill_name"; then
+		fail "invalid skill frontmatter: $skill_file (description is required and name must match the directory)"
 	fi
 
 	if [[ ! -L "$link" ]]; then
@@ -56,12 +96,12 @@ while IFS= read -r skill_name; do
 
 done <<<"$expected_skills"
 
-while IFS= read -r link; do
-	skill_name="$(basename "$link" .md)"
-	if [[ ! -f "$skills_dir/$skill_name/SKILL.md" ]]; then
-		fail "orphan skill symlink: $link"
+while IFS= read -r asset; do
+	skill_name="$(basename "$asset" .md)"
+	if ! grep -Fqx "$skill_name" <<<"$expected_skills"; then
+		fail "orphan skill asset: $asset"
 	fi
-done < <(find "$claude_dir" -mindepth 1 -maxdepth 1 -type l -name '*.md' -print | sort)
+done < <(find "$claude_dir" -mindepth 1 -maxdepth 1 -name '*.md' -print | sort)
 
 while IFS= read -r link; do
 	fail "broken symlink: $link"
