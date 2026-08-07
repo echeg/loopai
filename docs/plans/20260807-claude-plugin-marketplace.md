@@ -95,10 +95,10 @@ Deliberately out of scope: superpowers stays installed and untouched — no othe
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview: manifests valid and loopai-named, skill set is exactly the four existing plus loopai-brainstorm, brainstorm terminal state is loopai-plan, no spec-file machinery remains in the new skill
-- [ ] verify edge cases: `make test` from a clean checkout, symlink check on a case-sensitive path, manifest check failure modes (broken JSON, ralphex naming, missing skills dir)
-- [ ] run full test suite via `make test`
-- [ ] run `make lint` - all issues must be fixed
+- [x] verify all requirements from Overview: manifests valid and loopai-named, skill set is exactly the four existing plus loopai-brainstorm, brainstorm terminal state is loopai-plan, no spec-file machinery remains in the new skill
+- [x] verify edge cases: `make test` from a clean checkout, symlink check on a case-sensitive path, manifest check failure modes (broken JSON, ralphex naming, missing skills dir)
+- [x] run full test suite via `make test`
+- [x] run `make lint` - all issues must be fixed
 
 ### Task 6: Update documentation
 
