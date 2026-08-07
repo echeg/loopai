@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -7538,5 +7540,722 @@ func TestRunCloseoutCommandRoutesPositionalFeature(t *testing.T) {
 		err := runCloseoutCommand(t.Context(), opts{prSet: true, PlanFile: "no-such-feature"}, cfg, testColors())
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no-such-feature")
+	})
+}
+
+func TestStripCmuxWorkspaceArg(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{name: "no args", args: nil, want: []string{}},
+		{name: "flag absent", args: []string{"plan.md", "--worktree"}, want: []string{"plan.md", "--worktree"}},
+		{name: "bare flag", args: []string{"--cmux-workspace"}, want: []string{}},
+		{name: "value form", args: []string{"--cmux-workspace=true", "plan.md"}, want: []string{"plan.md"}},
+		{name: "repeated", args: []string{"--cmux-workspace", "--cmux-workspace=false"}, want: []string{}},
+		{
+			name: "mixed among other args",
+			args: []string{"-m", "3", "--cmux-workspace", "docs/plans/p.md", "--worktree"},
+			want: []string{"-m", "3", "docs/plans/p.md", "--worktree"},
+		},
+		{
+			name: "similar flag kept",
+			args: []string{"--cmux-workspace-name", "x", "--cmux-workspace"},
+			want: []string{"--cmux-workspace-name", "x"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, stripCmuxWorkspaceArg(tc.args))
+		})
+	}
+}
+
+func TestCmuxWorkspaceName(t *testing.T) {
+	tests := []struct {
+		name string
+		o    opts
+		want string
+	}{
+		{name: "no plan file", o: opts{}, want: "loopai"},
+		{name: "plan file", o: opts{PlanFile: "docs/plans/20260807-my-feature.md"}, want: "my-feature"},
+		{name: "plan file without date", o: opts{PlanFile: "docs/plans/feature.md"}, want: "feature"},
+		{name: "branch override wins", o: opts{PlanFile: "docs/plans/p.md", Branch: "custom"}, want: "custom"},
+		{name: "blank branch override ignored", o: opts{PlanFile: "p.md", Branch: "  "}, want: "p"},
+		// a plan path whose base is nothing but the extension derives an empty branch, which would
+		// title the sidebar card with nothing at all.
+		{name: "empty derived name falls back", o: opts{PlanFile: "docs/plans/.md"}, want: "loopai"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, cmuxWorkspaceName(tc.o))
+		})
+	}
+}
+
+// clearCmuxEnvOptions removes the environment-provided options for the duration of the test, so
+// hand-off argv assertions do not depend on the environment the suite happens to run in.
+func clearCmuxEnvOptions(t *testing.T) {
+	t.Helper()
+	for _, key := range cmuxEnvOptions {
+		value, ok := os.LookupEnv(key)
+		if !ok {
+			continue
+		}
+		require.NoError(t, os.Unsetenv(key))
+		t.Cleanup(func() { require.NoError(t, os.Setenv(key, value)) })
+	}
+}
+
+// chdirWithPlan moves into a fresh directory holding rel, so hand-off sees a plan file that
+// resolves exactly as the plan selector resolves it in the workspace the run is handed to.
+func chdirWithPlan(t *testing.T, rel string) {
+	t.Helper()
+	chdirRepoRoot(t)
+	require.NoError(t, os.MkdirAll(filepath.Dir(rel), 0o750))
+	require.NoError(t, os.WriteFile(rel, []byte("# plan\n"), 0o600))
+}
+
+// chdirRepoRoot moves into an empty directory carrying the .git marker the hand-off requires,
+// so a test exercises the check it is about rather than the repository-root guard.
+func chdirRepoRoot(t *testing.T) {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	require.NoError(t, os.Mkdir(".git", 0o750))
+}
+
+// cmuxSpawnStub installs a cmux binary in PATH recording every argument on its own line and
+// returns the log path. exitCode lets a test make the spawn fail.
+func cmuxSpawnStub(t *testing.T, exitCode int) string {
+	t.Helper()
+	clearCmuxEnvOptions(t)
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "cmux-argv.log")
+	writeExecutable(t, filepath.Join(binDir, "cmux"),
+		fmt.Sprintf("#!/bin/sh\nfor a in \"$@\"; do printf '%%s\\n' \"$a\" >> \"$CMUX_ARGV_LOG\"; done\nexit %d\n", exitCode))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_ARGV_LOG", argvLog)
+	return argvLog
+}
+
+// handOffStops runs the hand-off and returns its stop verdict, asserting it did not stop with an
+// error. only the ambiguous-spawn case does, and it has its own test.
+func handOffStops(t *testing.T, o opts, args []string, stdout, stderr io.Writer) bool {
+	t.Helper()
+	stop, err := handOffToCmuxWorkspace(o, args, stdout, stderr)
+	require.NoError(t, err)
+	return stop
+}
+
+func TestExecutableHandOffRefusal(t *testing.T) {
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	missing := filepath.Join(t.TempDir(), "gone")
+
+	tests := []struct {
+		name string
+		exe  string
+		err  error
+		want string
+	}{
+		{name: "resolvable executable is handed off", exe: exe},
+		{name: "resolution failure", err: errors.New("boom"), want: "resolve executable: boom"},
+		{name: "missing path", exe: missing, want: "executable not found: " + missing},
+		// os.Executable reads /proc/self/exe on Linux, which keeps naming an unlinked binary with
+		// this suffix. a "go run" binary is still on disk while this runs and is not covered.
+		{name: "deleted binary", exe: exe + " (deleted)", want: "executable not found: " + exe + " (deleted)"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, executableHandOffRefusal(tc.exe, tc.err))
+		})
+	}
+}
+
+func TestHandOffToCmuxWorkspace(t *testing.T) {
+	exe, err := os.Executable()
+	require.NoError(t, err)
+
+	// a key inherited from the developer's own shell would make the pass-through warning depend on
+	// their environment, and answering it from config would read their real configuration directory.
+	// the subtest that exercises the warning sets the variable itself, overriding this baseline.
+	t.Setenv(anthropicAPIKeyEnv, "")
+
+	t.Run("hands off inside cmux", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/20260807-my feature.md")
+		cwd, wdErr := os.Getwd()
+		require.NoError(t, wdErr)
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/20260807-my feature.md"}
+		args := []string{"--cmux-workspace", "docs/plans/20260807-my feature.md", "--worktree"}
+		require.True(t, handOffStops(t, o, args, stdout, stderr))
+
+		assert.Contains(t, stdout.String(), "handed off to cmux workspace my feature")
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Equal(t, []string{
+			"new-workspace", "--name", "my feature", "--cwd", cwd, "--focus", "true", "--command",
+			fmt.Sprintf("'%s' 'docs/plans/20260807-my feature.md' '--worktree'", exe),
+		}, strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n"))
+	})
+
+	t.Run("outside cmux continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "")
+		chdirRepoRoot(t)
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: true}, nil, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off failed, running here")
+		assert.Contains(t, stderr.String(), "not running inside cmux")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("spawn failure continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 1)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: true, PlanFile: "p.md"}, nil, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off failed, running here")
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("flag unset is a no-op", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		assert.False(t, handOffStops(t, opts{PlanFile: "p.md"}, nil, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Empty(t, stderr.String())
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("unresolvable working directory continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+		// the new workspace needs a --cwd, so a working directory that no longer exists is the same
+		// kind of unusable environment as a missing executable: warn and run here instead.
+		dir := filepath.Join(t.TempDir(), "gone")
+		require.NoError(t, os.Mkdir(dir, 0o750))
+		t.Chdir(dir)
+		// removing the current directory is refused on some platforms and left resolvable on others,
+		// so the branch is only exercised where the environment actually becomes unusable.
+		if err := os.Remove(dir); err != nil {
+			t.Skipf("platform keeps the working directory: %v", err)
+		}
+		if _, err := os.Getwd(); err == nil {
+			t.Skip("platform resolves the working directory of a removed directory")
+		}
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: true, PlanFile: "p.md"}, nil, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: resolve working directory")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("api key passthrough warns about the fresh environment", func(t *testing.T) {
+		cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Setenv(anthropicAPIKeyEnv, "sk-ant-secret")
+		chdirWithPlan(t, "p.md")
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "p.md", PreserveAnthropicAPIKey: true}
+		require.True(t, handOffStops(t, o, nil, stdout, stderr))
+
+		assert.Contains(t, stdout.String(), "handed off to cmux workspace")
+		assert.Contains(t, stderr.String(), "the API key pass-through applies there only if")
+		assert.NotContains(t, stderr.String(), "sk-ant-secret", "the key itself must never be echoed")
+	})
+
+	t.Run("environment-provided options travel with the command", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Setenv("LOOPAI_CONFIG_DIR", "/custom/config dir")
+		chdirWithPlan(t, "p.md")
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "p.md"}
+		require.True(t, handOffStops(t, o, []string{"p.md"}, stdout, stderr))
+
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		lines := strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n")
+		assert.Equal(t, fmt.Sprintf("'env' 'LOOPAI_CONFIG_DIR=/custom/config dir' '%s' 'p.md'", exe), lines[len(lines)-1],
+			"the new workspace shell does not inherit this process's environment")
+	})
+
+	t.Run("reset preceding a run is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+		chdirWithPlan(t, "docs/plans/p.md")
+
+		// --reset alone is a standalone command, but combined with a run it is part of that run and
+		// must happen once, in the workspace the run lands in.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, Reset: true, PlanFile: "docs/plans/p.md"}
+		require.True(t, handOffStops(t, o, []string{"--reset", "docs/plans/p.md"}, stdout, stderr))
+
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "--reset")
+	})
+
+	t.Run("missing plan file continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirRepoRoot(t)
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/typo.md"}
+		assert.False(t, handOffStops(t, o, []string{"docs/plans/typo.md"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file not found: docs/plans/typo.md")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the missing plan itself")
+	})
+
+	t.Run("plan file that is a directory continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/p.md")
+
+		// "loopai docs/plans" with the filename forgotten stats fine, so only this check stands
+		// between the user and a workspace whose run dies once it tries to read the plan.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans"}
+		assert.False(t, handOffStops(t, o, []string{"docs/plans"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file is not a regular file: docs/plans")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the unusable plan itself")
+	})
+
+	t.Run("unreadable plan file continues locally", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("os.Chmod doesn't restrict read access on Windows")
+		}
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses file permissions, can't simulate unreadable file")
+		}
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/p.md")
+		require.NoError(t, os.Chmod("docs/plans/p.md", 0o000))
+		t.Cleanup(func() { _ = os.Chmod("docs/plans/p.md", 0o600) }) // restore for cleanup
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/p.md"}
+		assert.False(t, handOffStops(t, o, []string{"docs/plans/p.md"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file not readable: docs/plans/p.md")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the unusable plan itself")
+	})
+
+	t.Run("symlinked plan file is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/p.md")
+		require.NoError(t, os.Symlink("p.md", filepath.Join("docs", "plans", "link.md")))
+
+		// the readability checks resolve the link like the child's own read does, so a plan the
+		// run could execute is not refused.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/link.md"}
+		require.True(t, handOffStops(t, o, []string{"docs/plans/link.md"}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("plan creation without a plan file is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirRepoRoot(t)
+
+		// --plan has no plan file yet, so the existence check must not apply to it.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanDescription: "add a feature"}
+		require.True(t, handOffStops(t, o, []string{"--plan", "add a feature"}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("subdirectory of a repository continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/p.md")
+		t.Chdir("docs")
+
+		// the plan path still resolves from here, so only the repository-root check stands between
+		// the user and a focused workspace whose run dies on "must run from repository root".
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		// a subdirectory has no .git, so the refusal consults read-only config; ConfigDir keeps that
+		// lookup off the developer's real ~/.config/loopai, whose vcs_command would decide this test.
+		o := opts{CmuxWorkspace: true, ConfigDir: t.TempDir(), PlanFile: "plans/p.md"}
+		assert.False(t, handOffStops(t, o, []string{"plans/p.md"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: not a repository root")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the wrong directory itself")
+	})
+
+	t.Run("custom vcs backend without a git marker is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Chdir(t.TempDir())
+		require.NoError(t, os.WriteFile("p.md", []byte("# plan\n"), 0o600))
+
+		// a non-git backend has no .git to find, and the run skips the marker check for it too.
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte("vcs_command = jj\n"), 0o600))
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, ConfigDir: configDir, PlanFile: "p.md"}
+		require.True(t, handOffStops(t, o, []string{"p.md"}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("watch-only serve outside a repository is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		watched := t.TempDir()
+		t.Chdir(t.TempDir())
+
+		// watch-only --serve never reaches the repository-root check, it runs from any directory.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, Serve: true, Watch: []string{watched}, ConfigDir: t.TempDir()}
+		require.True(t, handOffStops(t, o, []string{"--serve", "--watch", watched}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("watch-only serve from configured watch dirs is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		watched := t.TempDir()
+		t.Chdir(t.TempDir())
+
+		// watch dirs reach the dashboard from config just as well as from the CLI.
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"),
+			fmt.Appendf(nil, "watch_dirs = %s\n", watched), 0o600))
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, Serve: true, ConfigDir: configDir}
+		require.True(t, handOffStops(t, o, []string{"--serve"}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("serve without watch dirs outside a repository continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Chdir(t.TempDir())
+
+		// bare --serve with no watch dirs anywhere is a normal run, not a dashboard: it does reach
+		// the repository-root check and would die there, leaving an orphan card behind.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, Serve: true, ConfigDir: t.TempDir()}
+		assert.False(t, handOffStops(t, o, []string{"--serve"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: not a repository root")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("ambiguous spawn stops instead of running here", func(t *testing.T) {
+		// cmux may already have created the workspace and started the plan there, so the local
+		// fallback every other failure takes would give two agents one checkout.
+		stderr := &bytes.Buffer{}
+		stop, err := handOffSpawnFailure(fmt.Errorf("create cmux workspace: %w", cmux.ErrSpawnAmbiguous), stderr)
+		assert.True(t, stop)
+		require.Error(t, err)
+		require.ErrorIs(t, err, cmux.ErrSpawnAmbiguous)
+		assert.Contains(t, err.Error(), "not running here")
+		assert.Empty(t, stderr.String(), "the error carries the message, it is not a warning")
+	})
+
+	t.Run("clean spawn refusal continues here", func(t *testing.T) {
+		stderr := &bytes.Buffer{}
+		stop, err := handOffSpawnFailure(errors.New("cmux refused"), stderr)
+		assert.False(t, stop)
+		require.NoError(t, err)
+		assert.Contains(t, stderr.String(), "hand-off failed, running here: cmux refused")
+	})
+
+	t.Run("standalone commands are not handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		for _, o := range []opts{
+			{CmuxWorkspace: true, mergeSet: true},
+			{CmuxWorkspace: true, prSet: true},
+			{CmuxWorkspace: true, Clear: true},
+			{CmuxWorkspace: true, Init: true},
+			{CmuxWorkspace: true, DumpDefaults: t.TempDir()},
+			{CmuxWorkspace: true, Reset: true},
+		} {
+			assert.False(t, handOffStops(t, o, nil, stdout, stderr))
+		}
+		assert.Empty(t, stdout.String())
+		assert.Empty(t, stderr.String())
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+}
+
+func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
+	badConfigDir := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(badConfigDir, []byte("x"), 0o600))
+
+	t.Run("successful hand-off exits before config load", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
+
+		require.NoError(t, run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"}))
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(recorded), "new-workspace")
+		assert.Contains(t, string(recorded), "\np\n") // workspace named after the plan branch
+		assert.NotContains(t, string(recorded), "clear-status",
+			"the run happens in the new workspace, so this one's completion pill stays")
+	})
+
+	t.Run("interactive plan creation is handed off too", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirRepoRoot(t)
+
+		o := opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanDescription: "add a feature"}
+		require.NoError(t, run(t.Context(), o))
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(recorded), "new-workspace")
+		assert.Contains(t, string(recorded), "\nloopai\n") // no plan file yet, falls back to the app name
+	})
+
+	t.Run("failed hand-off continues the normal run", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 1)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
+
+		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"})
+		require.ErrorContains(t, err, "load config")
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "clear-status",
+			"the run stayed here after all, so it takes over the stale pill even though startup failed")
+	})
+
+	t.Run("outside cmux continues the normal run", func(t *testing.T) {
+		cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "")
+		chdirWithPlan(t, "p.md")
+
+		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"})
+		require.ErrorContains(t, err, "load config")
+	})
+
+	t.Run("unresolvable plan file continues the normal run", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirRepoRoot(t) // the marker keeps the repository-root guard from refusing first
+
+		// handing off would create and focus a workspace whose run dies on the same missing file,
+		// while this terminal reported success and exited 0.
+		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "docs/plans/typo.md"})
+		require.ErrorContains(t, err, "load config")
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.NotContains(t, string(recorded), "new-workspace",
+			"no workspace is created for an invocation that cannot run")
+		assert.Contains(t, string(recorded), "clear-status",
+			"the run stayed here, so it takes over the stale pill")
+	})
+}
+
+func TestCmuxEnvOptionsCoversOptionTags(t *testing.T) {
+	var tagged []string
+	for field := range reflect.TypeFor[opts]().Fields() {
+		if key := field.Tag.Get("env"); key != "" {
+			tagged = append(tagged, key)
+		}
+	}
+
+	require.NotEmpty(t, tagged, "the reflection walk must find the env-backed options")
+	assert.ElementsMatch(t, tagged, cmuxEnvOptions,
+		"an option readable from the environment is lost on hand-off unless cmuxEnvOptions lists it")
+}
+
+func TestWarnAPIKeyNotCarried(t *testing.T) {
+	tests := []struct {
+		name     string
+		preserve bool
+		config   string
+		key      string
+		wantWarn bool
+	}{
+		{name: "flag passthrough with a key set here warns", preserve: true, key: "sk-ant-1", wantWarn: true},
+		{name: "flag passthrough without a key stays quiet", preserve: true, key: "", wantWarn: false},
+		{name: "key without passthrough stays quiet", preserve: false, key: "sk-ant-1", wantWarn: false},
+		{name: "neither stays quiet", preserve: false, key: "", wantWarn: false},
+		{
+			name:   "config passthrough with a key set here warns",
+			config: "preserve_anthropic_api_key = true\n", key: "sk-ant-1", wantWarn: true,
+		},
+		{
+			name:   "config passthrough turned off stays quiet",
+			config: "preserve_anthropic_api_key = false\n", key: "sk-ant-1", wantWarn: false,
+		},
+		{
+			name:     "config passthrough plus the flag still warns",
+			preserve: true, config: "preserve_anthropic_api_key = true\n", key: "sk-ant-1", wantWarn: true,
+		},
+		{
+			name:   "unparsable config falls back to the flag",
+			config: "preserve_anthropic_api_key = notabool\n", key: "sk-ant-1", wantWarn: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(anthropicAPIKeyEnv, tt.key)
+
+			// an empty ConfigDir would resolve to the real user configuration directory
+			configDir := t.TempDir()
+			if tt.config != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(tt.config), 0o600))
+			}
+
+			stderr := &bytes.Buffer{}
+			warnAPIKeyNotCarried(opts{PreserveAnthropicAPIKey: tt.preserve, ConfigDir: configDir}, stderr)
+			if !tt.wantWarn {
+				assert.Empty(t, stderr.String())
+				return
+			}
+			assert.Contains(t, stderr.String(), "ANTHROPIC_API_KEY is not carried into the new cmux workspace")
+		})
+	}
+}
+
+func TestCmuxHandOffArgv(t *testing.T) {
+	t.Run("no environment options", func(t *testing.T) {
+		clearCmuxEnvOptions(t)
+		argv := cmuxHandOffArgv("/bin/loopai", []string{"--cmux-workspace", "p.md"})
+		assert.Equal(t, []string{"/bin/loopai", "p.md"}, argv)
+	})
+
+	t.Run("empty value is still forwarded", func(t *testing.T) {
+		clearCmuxEnvOptions(t)
+		t.Setenv("LOOPAI_CONFIG_DIR", "")
+		argv := cmuxHandOffArgv("/bin/loopai", nil)
+		assert.Equal(t, []string{"env", "LOOPAI_CONFIG_DIR=", "/bin/loopai"}, argv,
+			"an explicitly empty value means something different than an unset one")
+	})
+
+	t.Run("every environment option is forwarded", func(t *testing.T) {
+		clearCmuxEnvOptions(t)
+		t.Setenv("LOOPAI_CONFIG_DIR", "/cfg")
+		t.Setenv("LOOPAI_WEB_HOST", "0.0.0.0")
+		argv := cmuxHandOffArgv("/bin/loopai", []string{"--serve"})
+		assert.Equal(t, []string{"env", "LOOPAI_CONFIG_DIR=/cfg", "LOOPAI_WEB_HOST=0.0.0.0", "/bin/loopai", "--serve"}, argv)
+	})
+}
+
+func TestHandOffSucceeded(t *testing.T) {
+	tests := []struct {
+		name     string
+		o        opts
+		earlyErr error
+		want     bool
+	}{
+		{name: "hand-off with no error", o: opts{CmuxWorkspace: true}, want: true},
+		{name: "hand-off flag with an error", o: opts{CmuxWorkspace: true}, earlyErr: errors.New("reset failed")},
+		{name: "flag unset", o: opts{}},
+		{name: "flag unset with an error", o: opts{}, earlyErr: errors.New("init failed")},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, handOffSucceeded(tc.o, tc.earlyErr))
+		})
+	}
+}
+
+func TestPrepareStaleCmuxStatusDefersForHandOff(t *testing.T) {
+	// cmux stub shared by the subtests, each gets its own log through CMUX_ARGV_LOG.
+	stub := func(t *testing.T) string {
+		t.Helper()
+		binDir := t.TempDir()
+		argvLog := filepath.Join(binDir, "cmux-argv.log")
+		writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Setenv("CMUX_ARGV_LOG", argvLog)
+		return argvLog
+	}
+
+	t.Run("without the flag the clear is immediate", func(t *testing.T) {
+		argvLog := stub(t)
+		prepareStaleCmuxStatus(opts{PlanFile: "plan.md"})
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Equal(t, "clear-status loopai\n", string(recorded))
+	})
+
+	t.Run("preserved hand-off never clears", func(t *testing.T) {
+		argvLog := stub(t)
+		resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: true, PlanFile: "plan.md"})
+		_, err := os.Stat(argvLog)
+		require.ErrorIs(t, err, os.ErrNotExist, "the hand-off verdict is not known yet")
+
+		resolve(true)
+		_, err = os.Stat(argvLog)
+		require.ErrorIs(t, err, os.ErrNotExist, "the run moved to another workspace")
+	})
+
+	t.Run("failed hand-off clears on resolution", func(t *testing.T) {
+		argvLog := stub(t)
+		resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: true, PlanFile: "plan.md"})
+		resolve(false)
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Equal(t, "clear-status loopai\n", string(recorded))
 	})
 }

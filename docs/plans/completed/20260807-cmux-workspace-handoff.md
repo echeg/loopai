@@ -46,36 +46,45 @@
 ## Implementation Steps
 
 ### Task 1: Add workspace spawn support to pkg/cmux
-- [ ] add `SpawnWorkspace(name, cwd string, argv []string) error` to `pkg/cmux/cmux.go`: package-level function that verifies availability (`CMUX_WORKSPACE_ID` set and `cmux` in PATH; return a distinct sentinel error such as `ErrNotInCmux` when unavailable), shell-quotes `argv` into a single command string, and runs `cmux new-workspace --name <name> --cwd <cwd> --focus true --command <cmd>` with the existing 2s timeout
-- [ ] unlike the best-effort reporter methods, propagate the CLI error to the caller (the caller decides to fall back to a local run); route execution through `commandRunner` so tests can inject a fake
-- [ ] add a small POSIX single-quote shell-quoting helper (unexported) for building the `--command` string
-- [ ] write tests for `SpawnWorkspace` success: fake runner records argv; assert exact `new-workspace` arguments including quoted command
-- [ ] write tests for `SpawnWorkspace` errors: missing env → `ErrNotInCmux`, missing binary → `ErrNotInCmux`, runner failure propagated
-- [ ] write table-driven tests for the shell-quoting helper (spaces, single quotes, empty string, unicode)
-- [ ] run tests - must pass before next task
+- [x] add `SpawnWorkspace(name, cwd string, argv []string) error` to `pkg/cmux/cmux.go`: package-level function that verifies availability (`CMUX_WORKSPACE_ID` set and `cmux` in PATH; return a distinct sentinel error such as `ErrNotInCmux` when unavailable), shell-quotes `argv` into a single command string, and runs `cmux new-workspace --name <name> --cwd <cwd> --focus true --command <cmd>` with the existing 2s timeout
+- [x] unlike the best-effort reporter methods, propagate the CLI error to the caller (the caller decides to fall back to a local run); route execution through `commandRunner` so tests can inject a fake
+- [x] add a small POSIX single-quote shell-quoting helper (unexported) for building the `--command` string
+- [x] write tests for `SpawnWorkspace` success: fake runner records argv; assert exact `new-workspace` arguments including quoted command
+- [x] write tests for `SpawnWorkspace` errors: missing env → `ErrNotInCmux`, missing binary → `ErrNotInCmux`, runner failure propagated
+- [x] write table-driven tests for the shell-quoting helper (spaces, single quotes, empty string, unicode)
+- [x] run tests - must pass before next task
+- ➕ `new-workspace` is bounded by a new `spawnTimeout` of 10s rather than the 2s `execTimeout` this task assumed: it starts a terminal instead of updating a label, and a premature kill is ambiguous rather than cosmetic, because cmux may already have created the workspace while the caller reads the error as a failure and runs the plan locally too
 
 ### Task 2: Wire --cmux-workspace flag and hand-off in cmd/loopai
-- [ ] add `CmuxWorkspace bool` option with `long:"cmux-workspace"` and description "relaunch this run in a new cmux workspace so it gets its own sidebar card (no-op with a warning outside cmux)" to the options struct in `cmd/loopai/main.go`
-- [ ] add an arg-rebuild helper that takes `os.Args[1:]` and strips `--cmux-workspace` (bare and `=value` forms) — this is the recursion guard for the relaunched command
-- [ ] resolve the self-executable via `os.Executable()` and build `argv = [exe, filteredArgs...]`
-- [ ] add hand-off routing early in the run path (before executor resolution, config-independent, alongside the standalone close-out routing): when the flag is set, derive the workspace name from `plan.ExtractBranchName(planFile)` (fallback: `loopai`), call `cmux.SpawnWorkspace(name, cwd, argv)`; on success print "handed off to cmux workspace <name>" and exit 0; on `ErrNotInCmux` or any spawn failure print a warning and continue the normal run in the current terminal
-- [ ] ensure hand-off applies to both plan-execution and interactive `--plan` creation paths (interaction then happens in the new workspace terminal)
-- [ ] write table-driven tests for the arg-strip helper (flag absent, bare flag, `--cmux-workspace=true`, flag repeated, flag mixed among other args)
-- [ ] write tests for hand-off routing: outside cmux → warning and normal run continues (env unset); inside cmux with PATH-injected `cmux` stub → stub receives `new-workspace` call with expected name/cwd/command and process path exits before executor resolution; stub failing → warning and normal run continues
-- [ ] run tests - must pass before next task
+- [x] add `CmuxWorkspace bool` option with `long:"cmux-workspace"` and description "relaunch this run in a new cmux workspace so it gets its own sidebar card (no-op with a warning outside cmux)" to the options struct in `cmd/loopai/main.go`
+- [x] add an arg-rebuild helper that takes `os.Args[1:]` and strips `--cmux-workspace` (bare and `=value` forms) — this is the recursion guard for the relaunched command
+- [x] resolve the self-executable via `os.Executable()` and build `argv = [exe, filteredArgs...]`
+- [x] add hand-off routing early in the run path (before executor resolution, config-independent, alongside the standalone close-out routing): when the flag is set, derive the workspace name from `plan.ExtractBranchName(planFile)` (fallback: `loopai`), call `cmux.SpawnWorkspace(name, cwd, argv)`; on success print "handed off to cmux workspace <name>" and exit 0; on `ErrNotInCmux` or any spawn failure print a warning and continue the normal run in the current terminal
+- [x] ensure hand-off applies to both plan-execution and interactive `--plan` creation paths (interaction then happens in the new workspace terminal)
+- [x] write table-driven tests for the arg-strip helper (flag absent, bare flag, `--cmux-workspace=true`, flag repeated, flag mixed among other args)
+- [x] write tests for hand-off routing: outside cmux → warning and normal run continues (env unset); inside cmux with PATH-injected `cmux` stub → stub receives `new-workspace` call with expected name/cwd/command and process path exits before executor resolution; stub failing → warning and normal run continues
+- [x] run tests - must pass before next task
+- ➕ hand-off is routed from `handleEarlyFlags` (still config-independent, before executor resolution) instead of a separate branch in `run`, which keeps `run` under the gocyclo limit
+- ➕ standalone commands (`--clear`, `--merge`, `--pr`, `--init`, `--dump-defaults`, reset-only) are never handed off; the existing predicate in `clearStaleCmuxStatus` was extracted as `isStandaloneCommand` and shared
+- ➕ a `--branch` override wins over the plan-derived name, matching the branch the worktree run will actually use
 
 ### Task 3: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented (own card per run inside cmux, warning fallback outside cmux, no recursion, no behavior change without the flag)
-- [ ] verify edge cases are handled (plan file missing/empty branch name, args with spaces and quotes, `os.Executable` error → warning fallback)
-- [ ] run full test suite (`make test`)
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] verify test coverage meets project standard (80%+) for the new code paths
-- [ ] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` (quoting helper and exec path are platform-sensitive)
+- [x] verify all requirements from Overview are implemented (own card per run inside cmux, warning fallback outside cmux, no recursion, no behavior change without the flag)
+- [x] verify edge cases are handled (plan file missing/empty branch name, args with spaces and quotes, `os.Executable` error → warning fallback)
+- [x] run full test suite (`make test`)
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] verify test coverage meets project standard (80%+) for the new code paths
+- [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` (quoting helper and exec path are platform-sensitive)
+- ➕ added a `cmuxWorkspaceName` case for a plan path deriving an empty branch (`docs/plans/.md` → `loopai`), which was the one uncovered fallback
+- ➕ added a hand-off case for an unresolvable working directory; it self-skips where the platform still resolves a removed cwd (macOS does), so the branch is exercised only where it can be
+- ⚠️ the `os.Executable` failure branch stays verified by inspection: it cannot be provoked without injecting a seam into production code, and it mirrors the covered `os.Getwd` branch exactly
 
 ### Task 4: [Final] Update documentation
-- [ ] update README.md flag list/usage with `--cmux-workspace`
-- [ ] update the cmux section of CLAUDE.md (hand-off is part of the cmux integration contract: best-effort, never affects execution)
-- [ ] update llms.txt if it enumerates CLI flags
+- [x] update README.md flag list/usage with `--cmux-workspace`
+- [x] update the cmux section of CLAUDE.md (hand-off is part of the cmux integration contract: best-effort, never affects execution)
+- [x] update llms.txt if it enumerates CLI flags
+- ➕ README gains a feature bullet, a `Common commands` example, and a hand-off subsection in `Progress and dashboard` next to the existing cmux paragraph
+- ➕ llms.txt gains a hand-off paragraph after the cmux pill paragraph plus a `--cmux-workspace` entry in `Useful options`
 
 ## Technical Details
 - Hand-off command shape: `cmux new-workspace --name <branch> --cwd <pwd> --focus true --command '<exe> <filtered args>'`

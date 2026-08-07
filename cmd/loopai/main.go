@@ -77,6 +77,7 @@ type opts struct {
 	Init                    bool          `long:"init" description:"initialize local .loopai/ config directory in current project"`
 	Reset                   bool          `long:"reset" description:"interactively reset global config to embedded defaults"`
 	Clear                   bool          `long:"clear" description:"remove loopai cmux status pill"`
+	CmuxWorkspace           bool          `long:"cmux-workspace" description:"relaunch this run in a new cmux workspace so it gets its own sidebar card (no-op with a warning outside cmux)"`
 	Merge                   string        `long:"merge" optional:"true" optional-value:"" value-name:"base" description:"merge feature branch into base branch; positional argument names the feature (branch or plan), default current branch"`
 	PR                      string        `long:"pr" optional:"true" optional-value:"" value-name:"base" description:"push feature branch and create a GitHub pull request; positional argument names the feature (branch or plan), default current branch"`
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
@@ -317,7 +318,7 @@ func run(ctx context.Context, o opts) error {
 
 	// handle early-exit flags (before full config load)
 	if done, err := handleEarlyFlags(o); err != nil || done {
-		resolveStaleCmuxStatus(false)
+		resolveStaleCmuxStatus(handOffSucceeded(o, err))
 		return err
 	}
 	// load config first to get custom command paths
@@ -2270,6 +2271,14 @@ func runReset(configDir string, stdin io.Reader, stdout io.Writer) error {
 // handleEarlyFlags processes flags that should run before full config load (--clear, --reset, --dump-defaults).
 // returns (true, nil) if an early exit occurred, (true, err) on error, or (false, nil) to continue.
 func handleEarlyFlags(o opts) (bool, error) {
+	// hand the run over to a fresh cmux workspace before any dependency is built, so the actual
+	// run inherits that workspace and owns its sidebar card alone. it comes before the utilities
+	// below so a --reset preceding a run is performed once, in the new workspace. config is
+	// deliberately not needed here, the child re-reads it there.
+	if done, err := handOffToCmuxWorkspace(o, os.Args[1:], os.Stdout, os.Stderr); done {
+		return true, err
+	}
+
 	if o.Clear {
 		clearCmuxStatus(os.Stdout)
 		return true, nil
@@ -2306,18 +2315,249 @@ func clearCmuxStatus(stdout io.Writer) {
 	rep.Clear()
 }
 
+// handOffToCmuxWorkspace relaunches this invocation in a new cmux workspace and reports whether
+// the caller must stop, plus an error when stopping is not a success. hand-off is best-effort like
+// the rest of the cmux integration: outside cmux, or when workspace creation is cleanly refused, a
+// warning is printed and (false, nil) is returned so the run continues in the current terminal. the
+// one exception is an ambiguous creation timeout, which stops with an error rather than risking a
+// second run of the same plan. standalone commands are excluded, they are short synchronous
+// commands whose output belongs to the terminal the user typed them in.
+func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bool, error) {
+	if !o.CmuxWorkspace || isStandaloneCommand(o) {
+		return false, nil
+	}
+
+	exe, exeErr := os.Executable()
+	if reason := executableHandOffRefusal(exe, exeErr); reason != "" {
+		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: %s\n", reason)
+		return false, nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: resolve working directory: %v\n", err)
+		return false, nil
+	}
+
+	// the repository-root requirement is otherwise only enforced in the child, and for the same
+	// reason as the plan file below: running from a subdirectory would create and focus a workspace
+	// whose run dies immediately while this terminal reported success and exited 0. .git is the
+	// marker the run itself checks for, so the hand-off stays config-independent wherever it exists;
+	// only its absence consults read-only config, for the two invocations that legitimately have no
+	// marker.
+	if !fileExists(".git") && !handOffAllowedOutsideRepo(o) {
+		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: not a repository root: %s\n", cwd)
+		return false, nil
+	}
+
+	// an unusable plan file is otherwise only detected in the child, long after the workspace was
+	// created and focused: the terminal the user typed in prints a success line and exits 0 while
+	// the new card dies immediately, leaving an orphan to close by hand.
+	if o.PlanFile != "" {
+		if reason := planFileHandOffRefusal(o.PlanFile); reason != "" {
+			fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: %s\n", reason)
+			return false, nil
+		}
+	}
+
+	name := cmuxWorkspaceName(o)
+	if err := cmux.SpawnWorkspace(name, cwd, cmuxHandOffArgv(exe, args)); err != nil {
+		return handOffSpawnFailure(err, stderr)
+	}
+	warnAPIKeyNotCarried(o, stderr)
+	fmt.Fprintf(stdout, "handed off to cmux workspace %s\n", name)
+	return true, nil
+}
+
+// anthropicAPIKeyEnv is the credential --preserve-anthropic-api-key opts into passing through to
+// claude, which is otherwise stripped from the child environment.
+const anthropicAPIKeyEnv = "ANTHROPIC_API_KEY" //nolint:gosec // the name of an environment variable, not a credential
+
+// warnAPIKeyNotCarried reports that the ANTHROPIC_API_KEY pass-through survives the hand-off but
+// the key itself does not. the request travels in argv or config, the environment does not: the new
+// workspace starts a shell of cmux's own. a key exported only in this terminal is therefore absent
+// there, and claude falls back to OAuth or the keychain without saying so, so the run bills an
+// account the user did not pick — the wrong-context run the pass-through exists to make visible.
+// the key is deliberately not forwarded, since the command reaches the new workspace as text typed
+// into its shell, so the gap is reported here instead. nothing is said when the variable is unset,
+// because then there is nothing to preserve in this terminal either; that test comes first so the
+// quiet case costs no config read.
+func warnAPIKeyNotCarried(o opts, stderr io.Writer) {
+	if os.Getenv(anthropicAPIKeyEnv) == "" || !preserveAPIKeyRequested(o) {
+		return
+	}
+	fmt.Fprintf(stderr, "warning: %s is not carried into the new cmux workspace, "+
+		"the API key pass-through applies there only if the key comes from your shell profile\n",
+		anthropicAPIKeyEnv)
+}
+
+// preserveAPIKeyRequested reports whether this run passes ANTHROPIC_API_KEY through to claude. the
+// flag is only half of it: preserve_anthropic_api_key is a config key too and applyCLIOverrides ORs
+// the two, so reading argv alone would stay silent for exactly the users who set it once and never
+// type it again. config is read read-only here, the same way handOffAllowedOutsideRepo does, and an
+// unreadable config leaves the flag as the only answer since the child would fail to load it too.
+func preserveAPIKeyRequested(o opts) bool {
+	if o.PreserveAnthropicAPIKey {
+		return true
+	}
+	cfg, err := config.LoadReadOnly(o.ConfigDir)
+	return err == nil && cfg.PreserveAnthropicAPIKey
+}
+
+// handOffSpawnFailure turns a workspace creation failure into the caller's verdict. a clean refusal
+// warns and continues here, which is the best-effort contract. an ambiguous timeout does not: cmux
+// may already have created the workspace and started the same plan there, so running it here too
+// would put two agents on one checkout. stopping is the one outcome that cannot be made worse, and
+// the sidebar tells the user whether the workspace exists.
+func handOffSpawnFailure(err error, stderr io.Writer) (bool, error) {
+	if errors.Is(err, cmux.ErrSpawnAmbiguous) {
+		return true, fmt.Errorf("cmux workspace hand-off: %w; not running here, check the sidebar and re-run", err)
+	}
+	fmt.Fprintf(stderr, "warning: cmux workspace hand-off failed, running here: %v\n", err)
+	return false, nil
+}
+
+// executableHandOffRefusal reports why this binary cannot be relaunched in the new workspace, or ""
+// when it can. resolution failing is the obvious half; the other is that os.Executable can succeed
+// and still name a path the new workspace's shell cannot run. on Linux it reads /proc/self/exe,
+// which keeps naming an unlinked binary with a " (deleted)" suffix; the child would then die on
+// "command not found" while this terminal printed its success line and exited 0, the orphan-card
+// outcome the plan-file and repository-root guards exist to prevent. the path is checked against
+// the same working directory the child is given, so no hand-off that would have worked is refused.
+// presence is all this can test, so it does not reach a binary that disappears afterwards: "go run"
+// unlinks its temporary binary only once the successful hand-off has exited 0, so that invocation
+// still hands off and fails in the new workspace. build the binary to smoke-test the flag.
+func executableHandOffRefusal(exe string, err error) string {
+	if err != nil {
+		return "resolve executable: " + err.Error()
+	}
+	if !fileExists(exe) {
+		return "executable not found: " + exe
+	}
+	return ""
+}
+
+// planFileHandOffRefusal reports why a non-empty plan path cannot produce a run that survives, or ""
+// when it can. existence is the plan selector's whole test, resolved here against the same working
+// directory, but it is not enough on its own: a directory stats fine, so "loopai --cmux-workspace
+// docs/plans" (the filename forgotten) would hand off, and the child would only fail once it read
+// the plan, in full mode after the branch already exists. an unreadable file fails the same read.
+// both are refused here for the same reason a missing plan is, and neither refuses a hand-off that
+// would have worked, since the child cannot read either one. the regular-file test comes before the
+// open because opening a fifo blocks until a writer appears, and this check must not hang.
+func planFileHandOffRefusal(planFile string) string {
+	info, err := os.Stat(planFile)
+	if err != nil {
+		return "plan file not found: " + planFile
+	}
+	if !info.Mode().IsRegular() {
+		return "plan file is not a regular file: " + planFile
+	}
+	f, err := os.Open(planFile) //nolint:gosec // the plan path is the user's own argument, only opened to test readability
+	if err != nil {
+		return "plan file not readable: " + planFile
+	}
+	_ = f.Close()
+	return ""
+}
+
+// handOffAllowedOutsideRepo reports whether a hand-off from a directory without a .git marker still
+// leads to a run that survives. two invocations legitimately have no marker: a non-git VCS backend,
+// which the run skips the marker check for, and a watch-only --serve, which never reaches that
+// check. both are config-dependent, and watch dirs decide the second one: a bare --serve without
+// any is a normal run that would die on "must run from repository root". a config that cannot be
+// read is neither, the child would fail to load it too, so that error belongs in this terminal.
+func handOffAllowedOutsideRepo(o opts) bool {
+	cfg, err := config.LoadReadOnly(o.ConfigDir)
+	if err != nil {
+		return false
+	}
+	return isWatchOnlyMode(o, cfg.WatchDirs) || (cfg.VcsCommand != "" && cfg.VcsCommand != "git")
+}
+
+// cmuxWorkspaceName titles the new workspace after the branch the run will use, so sidebar cards
+// line up with .loopai/worktrees/<branch>. plan creation has no plan file yet and falls back to
+// the app name.
+func cmuxWorkspaceName(o opts) string {
+	if name := strings.TrimSpace(o.Branch); name != "" {
+		return name
+	}
+	// an empty plan file must not reach ExtractBranchName: filepath.Base("") is "."
+	if strings.TrimSpace(o.PlanFile) == "" {
+		return "loopai"
+	}
+	if name := strings.TrimSpace(plan.ExtractBranchName(o.PlanFile)); name != "" {
+		return name
+	}
+	return "loopai"
+}
+
+// cmuxEnvOptions lists the environment variables go-flags reads option values from. cmux starts
+// the new workspace from a shell of its own, which inherits cmux's environment and not this
+// process's, so an option provided through the environment would silently revert to its default
+// after hand-off. TestCmuxEnvOptionsCoversOptionTags keeps the list in sync with the struct tags.
+var cmuxEnvOptions = []string{"LOOPAI_CONFIG_DIR", "LOOPAI_WEB_HOST"}
+
+// cmuxHandOffArgv builds the command the new workspace runs: this executable, the arguments minus
+// the hand-off flag, and an env prefix carrying the environment-provided options across. env is
+// used rather than shell assignment prefixes because the target shell is unknown and not every
+// shell supports them.
+func cmuxHandOffArgv(exe string, args []string) []string {
+	var prefix []string
+	for _, key := range cmuxEnvOptions {
+		if value, ok := os.LookupEnv(key); ok {
+			prefix = append(prefix, key+"="+value)
+		}
+	}
+	if len(prefix) > 0 {
+		prefix = append([]string{"env"}, prefix...)
+	}
+	return append(append(prefix, exe), stripCmuxWorkspaceArg(args)...)
+}
+
+// stripCmuxWorkspaceArg removes --cmux-workspace from the arguments the new workspace is
+// relaunched with, which is the recursion guard: the child performs a normal run. the flag is
+// boolean, so it never consumes a following argument and only its own token has to go.
+func stripCmuxWorkspaceArg(args []string) []string {
+	const flag = "--cmux-workspace"
+	filtered := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == flag || strings.HasPrefix(a, flag+"=") {
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	return filtered
+}
+
 func clearStaleCmuxStatus(o opts) {
-	if o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || (o.Reset && isResetOnly(o)) {
+	if isStandaloneCommand(o) {
 		return
 	}
 	cmux.New("", cmux.Models{}).Clear()
 }
 
+// isStandaloneCommand reports whether the invocation is a config utility or close-out command
+// rather than a run. those own no sidebar state, so they neither replace a previous run's pill
+// nor get handed over to a new cmux workspace.
+func isStandaloneCommand(o opts) bool {
+	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || (o.Reset && isResetOnly(o))
+}
+
+// handOffSucceeded reports whether an early-exit verdict from handleEarlyFlags came from a
+// successful cmux workspace hand-off, which means the run happens in another workspace and this
+// one's pill is not ours to replace. under --cmux-workspace the remaining early flags reach an
+// early exit only after a failed hand-off, and with an error except for the standalone commands,
+// whose stale-pill clear is a no-op either way.
+func handOffSucceeded(o opts, earlyErr error) bool {
+	return o.CmuxWorkspace && earlyErr == nil
+}
+
 // prepareStaleCmuxStatus clears immediately for definite runs. When --serve might become
-// watch-only after config loading, the returned callback performs the clear only if startup
-// resolves to a normal run or exits before that distinction can be made.
+// watch-only after config loading, or --cmux-workspace might hand the run to another workspace,
+// the returned callback performs the clear only if startup resolves to a normal run here or exits
+// before that distinction can be made.
 func prepareStaleCmuxStatus(o opts) func(preserve bool) {
-	if mayBeWatchOnlyMode(o) {
+	if mayBeWatchOnlyMode(o) || o.CmuxWorkspace {
 		return func(preserve bool) {
 			if !preserve {
 				clearStaleCmuxStatus(o)

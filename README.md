@@ -17,6 +17,7 @@ This repository is a personal fork. It is installed by building from source; no 
 - Streams timestamped progress to `.loopai/progress/`
 - Serves a real-time web dashboard with `--serve`
 - Reports live and persistent completion status to the cmux sidebar when available
+- Optionally hands a run off to its own cmux workspace with `--cmux-workspace`
 - Sends optional Telegram, email, Slack, webhook, or custom-script notifications
 
 ## Requirements
@@ -178,6 +179,9 @@ loopai --codex --pass-claude-md docs/plans/feature.md
 
 # execute in an isolated worktree
 loopai --worktree docs/plans/feature.md
+
+# hand the run off to its own cmux workspace, so it gets its own sidebar card
+loopai --cmux-workspace --worktree docs/plans/feature.md
 
 # commit local changes, then execute from a new isolated worktree
 loopai --worktree --commit docs/plans/feature.md
@@ -517,6 +521,47 @@ loopai --serve --watch=/path/to/project-a --watch=/path/to/project-b
 ```
 
 When loopai runs inside cmux, it reports the phase and effective model, review iteration, task count, spinner, and completion notifications through the public cmux CLI. Started implementation and review runs retain the completion pill described above after success or non-abort execution failure; startup/preflight failures, plan-creation failures, and aborts do not. Outside cmux this integration is a no-op.
+
+The cmux status pill and progress bar belong to the workspace, not to an individual run, so
+several runs started from one workspace overwrite each other's status. `--cmux-workspace` avoids
+that by handing the run off: loopai creates a new cmux workspace named after the branch the run
+will use, relaunches itself there without the flag, prints `handed off to cmux workspace <name>`,
+and exits. The run then owns its own sidebar card, pill, spinner, and progress bar, which makes
+parallel runs independent.
+
+```bash
+loopai --cmux-workspace --worktree docs/plans/feature.md
+```
+
+Hand-off is best-effort like the rest of the cmux integration and never blocks a run. Outside
+cmux, or when cmux refuses to create the workspace, loopai prints a warning and executes normally
+in the current terminal, where it keeps the sidebar status it would have had without the flag. A
+successful hand-off leaves the previous run's pill in the workspace it was started from, since the
+new run reports into its own card instead.
+
+The one failure that stops instead of falling back is a creation that times out: cmux may already
+have created the workspace and started the run there, and starting a second one here would put two
+agents on the same checkout. loopai exits with an error, and the sidebar shows whether the
+workspace exists — close it and re-run, or let it finish.
+
+An invocation that could not run anyway is also kept in the current terminal, so its error appears
+where it was typed instead of in a new card that closes immediately: a named plan file that does
+not exist, and a working directory that is not the repository root. Both are reported by the local
+run as usual.
+
+Close-out and configuration commands (`--clear`, `--merge`, `--pr`, `--init`, `--dump-defaults`,
+and `--reset` on its own) are never handed off; `--reset` in front of a plan belongs to that run
+and is performed once, in the new workspace. With `--plan`, the interactive plan dialog happens in
+the new workspace's terminal.
+
+The new workspace starts a fresh shell, so it does not inherit the environment of the terminal the
+run was started from. `LOOPAI_CONFIG_DIR` and `LOOPAI_WEB_HOST` are carried over with the command;
+anything else the run needs, such as provider credentials, has to come from the shell profile.
+The `ANTHROPIC_API_KEY` pass-through travels with the command but the key does not, so loopai warns
+at hand-off when `ANTHROPIC_API_KEY` is set in the current terminal: unless the key also comes from
+the shell profile, the handed-off run falls back to OAuth or the keychain. The warning covers both
+ways of asking for the pass-through, `--preserve-anthropic-api-key` and the
+`preserve_anthropic_api_key` config key.
 
 Provider session and rate limits are retried every 10 minutes by default until the provider
 recovers or the run is canceled with `Ctrl+C`. During the wait, progress output is red and cmux

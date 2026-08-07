@@ -3,6 +3,7 @@ package cmux
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,6 +124,91 @@ func writePlan(t *testing.T, content string) string {
 func writeFakeBin(t *testing.T, dir, name string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755)) //nolint:gosec // test fixture must be executable
+}
+
+// writeStderrBin writes an executable that echoes CMUX_TEST_STDERR on stderr and exits with code,
+// which is how a cmux refusal reaches spawnRunner. the text travels through the environment so a
+// case can use arbitrary content without quoting it into the script.
+func writeStderrBin(t *testing.T, dir string, code int) string {
+	t.Helper()
+	path := filepath.Join(dir, binName)
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' \"$CMUX_TEST_STDERR\" >&2\nexit %d\n", code)
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755)) //nolint:gosec // test fixture must be executable
+	return path
+}
+
+func TestSpawnRunner(t *testing.T) {
+	t.Run("failure carries the message cmux printed", func(t *testing.T) {
+		bin := writeStderrBin(t, t.TempDir(), 1)
+		t.Setenv("CMUX_TEST_STDERR", "cmux: workspace name already in use\n")
+
+		err := (&spawnRunner{bin: bin}).run(context.Background(), "new-workspace", "--name", "x")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new-workspace --name x", "the argv stays in the message")
+		assert.Contains(t, err.Error(), "cmux: workspace name already in use")
+	})
+
+	t.Run("advisory notices are silenced so the refusal survives truncation", func(t *testing.T) {
+		// new-workspace is a legacy verb and the real cmux prints a ~150-character deprecation hint
+		// ahead of its error, which alone is most of stderrDetailLimit. the script reports the
+		// variable that opts out of it, so the excerpt keeps carrying the reason rather than the hint.
+		dir := t.TempDir()
+		bin := filepath.Join(dir, binName)
+		script := "#!/bin/sh\nprintf 'CMUX_QUIET=%s\\n' \"$CMUX_QUIET\" >&2\nexit 1\n"
+		require.NoError(t, os.WriteFile(bin, []byte(script), 0o755)) //nolint:gosec // test fixture must be executable
+
+		err := (&spawnRunner{bin: bin}).run(context.Background(), "new-workspace")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "CMUX_QUIET=1", "the spawn opts out of cmux's advisory output")
+	})
+
+	t.Run("silent failure keeps the exit status on its own", func(t *testing.T) {
+		bin := writeStderrBin(t, t.TempDir(), 3)
+		t.Setenv("CMUX_TEST_STDERR", "")
+
+		err := (&spawnRunner{bin: bin}).run(context.Background(), "new-workspace")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exit status 3")
+	})
+
+	t.Run("success ignores stderr chatter", func(t *testing.T) {
+		bin := writeStderrBin(t, t.TempDir(), 0)
+		t.Setenv("CMUX_TEST_STDERR", "deprecation notice")
+
+		assert.NoError(t, (&spawnRunner{bin: bin}).run(context.Background(), "new-workspace"))
+	})
+
+	t.Run("verbose refusal is folded into one bounded line", func(t *testing.T) {
+		bin := writeStderrBin(t, t.TempDir(), 1)
+		t.Setenv("CMUX_TEST_STDERR", strings.Repeat("line of refusal\n", 200))
+
+		err := (&spawnRunner{bin: bin}).run(context.Background(), "new-workspace")
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "\n", "the detail rides along in a single warning line")
+		assert.Contains(t, err.Error(), "…", "an over-long refusal is truncated")
+	})
+
+	t.Run("missing binary still reports the failure", func(t *testing.T) {
+		err := (&spawnRunner{bin: filepath.Join(t.TempDir(), "absent")}).run(context.Background(), "new-workspace")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new-workspace")
+	})
+}
+
+func TestStderrDetail(t *testing.T) {
+	t.Run("no capture file yields no detail", func(t *testing.T) {
+		assert.Empty(t, stderrDetail(nil))
+	})
+
+	t.Run("unreadable capture file yields no detail", func(t *testing.T) {
+		f, err := os.CreateTemp(t.TempDir(), "capture-*.err")
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+
+		// seeking a closed file fails, which must leave the caller's exit status unadorned rather
+		// than replacing it with a bogus reason.
+		assert.Empty(t, stderrDetail(f))
+	})
 }
 
 func TestNew(t *testing.T) {
@@ -1316,5 +1402,147 @@ func TestReporterWrapInputAskDraftReview(t *testing.T) {
 		calls := runner.recorded()
 		require.Len(t, calls, 1)
 		assert.Equal(t, strings.Repeat("я", notifyBodyLimit), calls[0][len(calls[0])-1])
+	})
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain word", in: "loopai", want: `'loopai'`},
+		{name: "empty string stays an argument", in: "", want: `''`},
+		{name: "spaces", in: "docs/plans/my plan.md", want: `'docs/plans/my plan.md'`},
+		{name: "single quote", in: "it's", want: `'it'\''s'`},
+		{name: "only a single quote", in: "'", want: `''\'''`},
+		{name: "double quotes and backslash", in: `a"b\c`, want: `'a"b\c'`},
+		{name: "shell metacharacters stay literal", in: "$HOME; rm -rf *", want: `'$HOME; rm -rf *'`},
+		{name: "unicode", in: "план ветка", want: `'план ветка'`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, shellQuote(tt.in))
+		})
+	}
+}
+
+func TestSpawnWorkspace(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeBin(t, binDir, binName)
+
+	t.Run("no workspace env", func(t *testing.T) {
+		t.Setenv("PATH", binDir)
+		t.Setenv(workspaceEnv, "")
+
+		err := SpawnWorkspace("feature", "/tmp", []string{"loopai", "plan.md"})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrNotInCmux)
+	})
+
+	t.Run("blank workspace env", func(t *testing.T) {
+		t.Setenv("PATH", binDir)
+		t.Setenv(workspaceEnv, " \t ")
+
+		assert.ErrorIs(t, SpawnWorkspace("feature", "/tmp", []string{"loopai"}), ErrNotInCmux)
+	})
+
+	t.Run("no binary in path", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		t.Setenv(workspaceEnv, "ws-1")
+
+		err := SpawnWorkspace("feature", "/tmp", []string{"loopai"})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrNotInCmux)
+	})
+
+	t.Run("availability detected, request reaches the binary", func(t *testing.T) {
+		t.Setenv("PATH", binDir)
+		t.Setenv(workspaceEnv, "ws-1")
+
+		// only the availability verdict is asserted here, the argv is covered with a fake runner in
+		// TestSpawnWorkspaceCommand.
+		err := SpawnWorkspace("feature", "/tmp", []string{"loopai", "plan.md"})
+		assert.NotErrorIs(t, err, ErrNotInCmux, "env and binary are both present")
+	})
+}
+
+func TestSpawnWorkspaceCommand(t *testing.T) {
+	t.Run("exact argv", func(t *testing.T) {
+		runner := &fakeRunner{}
+		require.NoError(t, spawnWorkspace(runner, spawnTimeout, "my-feature", "/work/repo", []string{"/bin/loopai", "docs/plans/a b.md", "--codex"}))
+
+		calls := runner.recorded()
+		require.Len(t, calls, 1)
+		assert.Equal(t, []string{
+			"new-workspace",
+			"--name", "my-feature",
+			"--cwd", "/work/repo",
+			"--focus", "true",
+			"--command", `'/bin/loopai' 'docs/plans/a b.md' '--codex'`,
+		}, calls[0])
+	})
+
+	t.Run("quotes in arguments are escaped", func(t *testing.T) {
+		runner := &fakeRunner{}
+		require.NoError(t, spawnWorkspace(runner, spawnTimeout, "it's", "/work", []string{"loopai", "it's.md"}))
+
+		calls := runner.recorded()
+		require.Len(t, calls, 1)
+		assert.Equal(t, `'loopai' 'it'\''s.md'`, calls[0][len(calls[0])-1])
+		assert.Equal(t, "it's", calls[0][2], "the name is passed as a plain argument, not shell-quoted")
+	})
+
+	t.Run("runner failure is propagated", func(t *testing.T) {
+		wantErr := errors.New("cmux refused")
+		runner := &fakeRunner{err: wantErr}
+
+		err := spawnWorkspace(runner, spawnTimeout, "feature", "/work", []string{"loopai"})
+		require.Error(t, err)
+		require.ErrorIs(t, err, wantErr, "the caller decides on the fallback, so the cause must survive")
+		require.NotErrorIs(t, err, ErrNotInCmux, "a CLI failure is not an availability problem")
+		assert.Contains(t, err.Error(), `create cmux workspace "feature"`)
+	})
+
+	t.Run("empty argv", func(t *testing.T) {
+		runner := &fakeRunner{}
+
+		require.Error(t, spawnWorkspace(runner, spawnTimeout, "feature", "/work", nil))
+		assert.Empty(t, runner.recorded(), "nothing must be sent to cmux without a command")
+	})
+
+	t.Run("call is bounded by the timeout", func(t *testing.T) {
+		runner := &fakeRunner{block: time.Minute}
+
+		start := time.Now()
+		err := spawnWorkspace(runner, 50*time.Millisecond, "feature", "/work", []string{"loopai"})
+		require.Error(t, err)
+		assert.Less(t, time.Since(start), 30*time.Second, "a hanging cmux call must not stall the hand-off")
+	})
+
+	t.Run("timeout is reported as ambiguous", func(t *testing.T) {
+		runner := &fakeRunner{block: time.Minute}
+
+		// killing the local client says nothing about the request cmux may already have acted on,
+		// so the caller must be able to tell this apart from a refusal it can fall back from.
+		err := spawnWorkspace(runner, 50*time.Millisecond, "feature", "/work", []string{"loopai"})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrSpawnAmbiguous)
+		require.ErrorIs(t, err, context.DeadlineExceeded, "the cause survives alongside the sentinel")
+	})
+
+	t.Run("clean refusal is not ambiguous", func(t *testing.T) {
+		runner := &fakeRunner{err: errors.New("cmux refused")}
+
+		err := spawnWorkspace(runner, spawnTimeout, "feature", "/work", []string{"loopai"})
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, ErrSpawnAmbiguous, "a rejected request created nothing to duplicate")
+	})
+
+	t.Run("spawn timeout outlasts the status timeout", func(t *testing.T) {
+		// creating a workspace starts a terminal, and a premature kill leaves the caller unable to tell
+		// a failed hand-off from a created workspace it would then duplicate with a local run.
+		assert.Greater(t, spawnTimeout, execTimeout)
 	})
 }
