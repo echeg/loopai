@@ -2321,6 +2321,18 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) boo
 		return false
 	}
 
+	// the repository-root requirement is otherwise only enforced in the child, and for the same
+	// reason as the plan file below: running from a subdirectory would create and focus a workspace
+	// whose run dies immediately while this terminal reported success and exited 0. .git is the
+	// marker the run itself checks for, so the hand-off stays config-independent wherever it exists;
+	// only its absence consults read-only config, to tell a custom VCS backend, which legitimately
+	// has none, apart from a subdirectory. a possibly watch-only --serve never reaches that check
+	// and runs from anywhere, so it is exempt.
+	if !mayBeWatchOnlyMode(o) && !fileExists(".git") && !customVcsConfigured(o.ConfigDir) {
+		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: not a repository root: %s\n", cwd)
+		return false
+	}
+
 	// a missing plan file is otherwise only detected in the child, long after the workspace was
 	// created and focused: the terminal the user typed in prints a success line and exits 0 while
 	// the new card dies immediately, leaving an orphan to close by hand. this is the same stat the
@@ -2340,6 +2352,14 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) boo
 	}
 	fmt.Fprintf(stdout, "handed off to cmux workspace %s\n", name)
 	return true
+}
+
+// customVcsConfigured reports whether a non-git VCS backend is configured, which is the one case
+// where a checkout legitimately has no .git marker. a config that cannot be read is not one: the
+// child would fail to load it too, so that error belongs in the terminal the user typed in.
+func customVcsConfigured(configDir string) bool {
+	cfg, err := config.LoadReadOnly(configDir)
+	return err == nil && cfg.VcsCommand != "" && cfg.VcsCommand != "git"
 }
 
 // cmuxWorkspaceName titles the new workspace after the branch the run will use, so sidebar cards

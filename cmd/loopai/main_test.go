@@ -7481,9 +7481,17 @@ func clearCmuxEnvOptions(t *testing.T) {
 // resolves exactly as the plan selector resolves it in the workspace the run is handed to.
 func chdirWithPlan(t *testing.T, rel string) {
 	t.Helper()
-	t.Chdir(t.TempDir())
+	chdirRepoRoot(t)
 	require.NoError(t, os.MkdirAll(filepath.Dir(rel), 0o750))
 	require.NoError(t, os.WriteFile(rel, []byte("# plan\n"), 0o600))
+}
+
+// chdirRepoRoot moves into an empty directory carrying the .git marker the hand-off requires,
+// so a test exercises the check it is about rather than the repository-root guard.
+func chdirRepoRoot(t *testing.T) {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	require.NoError(t, os.Mkdir(".git", 0o750))
 }
 
 // cmuxSpawnStub installs a cmux binary in PATH recording every argument on its own line and
@@ -7529,6 +7537,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 	t.Run("outside cmux continues locally", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "")
+		chdirRepoRoot(t)
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		assert.False(t, handOffToCmuxWorkspace(opts{CmuxWorkspace: true}, nil, stdout, stderr))
@@ -7630,7 +7639,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 	t.Run("missing plan file continues locally", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
-		t.Chdir(t.TempDir())
+		chdirRepoRoot(t)
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/typo.md"}
@@ -7644,12 +7653,63 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 	t.Run("plan creation without a plan file is handed off", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
-		t.Chdir(t.TempDir())
+		chdirRepoRoot(t)
 
 		// --plan has no plan file yet, so the existence check must not apply to it.
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		o := opts{CmuxWorkspace: true, PlanDescription: "add a feature"}
 		require.True(t, handOffToCmuxWorkspace(o, []string{"--plan", "add a feature"}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("subdirectory of a repository continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "docs/plans/p.md")
+		t.Chdir("docs")
+
+		// the plan path still resolves from here, so only the repository-root check stands between
+		// the user and a focused workspace whose run dies on "must run from repository root".
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "plans/p.md"}
+		assert.False(t, handOffToCmuxWorkspace(o, []string{"plans/p.md"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: not a repository root")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the wrong directory itself")
+	})
+
+	t.Run("custom vcs backend without a git marker is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Chdir(t.TempDir())
+		require.NoError(t, os.WriteFile("p.md", []byte("# plan\n"), 0o600))
+
+		// a non-git backend has no .git to find, and the run skips the marker check for it too.
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte("vcs_command = jj\n"), 0o600))
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, ConfigDir: configDir, PlanFile: "p.md"}
+		require.True(t, handOffToCmuxWorkspace(o, []string{"p.md"}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("possibly watch-only serve outside a repository is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Chdir(t.TempDir())
+
+		// watch-only --serve never reaches the repository-root check, it runs from any directory.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, Serve: true}
+		require.True(t, handOffToCmuxWorkspace(o, []string{"--serve"}, stdout, stderr))
 		assert.Empty(t, stderr.String())
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, readErr)
@@ -7699,6 +7759,7 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 	t.Run("interactive plan creation is handed off too", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirRepoRoot(t)
 
 		o := opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanDescription: "add a feature"}
 		require.NoError(t, run(t.Context(), o))

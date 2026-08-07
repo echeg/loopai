@@ -511,6 +511,11 @@ current terminal, where it keeps the sidebar status it would have had without th
 successful hand-off leaves the previous run's pill in the workspace it was started from, since the
 new run reports into its own card instead.
 
+An invocation that could not run anyway is also kept in the current terminal, so its error appears
+where it was typed instead of in a new card that closes immediately: a named plan file that does
+not exist, and a working directory that is not the repository root. Both are reported by the local
+run as usual.
+
 Close-out and configuration commands (`--clear`, `--merge`, `--pr`, `--init`, `--dump-defaults`,
 and `--reset` on its own) are never handed off; `--reset` in front of a plan belongs to that run
 and is performed once, in the new workspace. With `--plan`, the interactive plan dialog happens in
