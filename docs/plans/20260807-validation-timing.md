@@ -103,12 +103,12 @@ Validation time is included in (not additive to) the phase buckets; with paralle
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview: per-run lines and aggregate for Claude and Codex, token-boundary matching, silent degradation without tool events or validation section
-- [ ] verify edge cases: overlapping parallel agent commands (sum may exceed wall-clock — documented), session death mid-command, `--tasks-only`/`--external-only` runs, plan without validation section
-- [ ] run full test suite via `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] verify test coverage of new code paths meets project standard
+- [x] verify all requirements from Overview: per-run lines and aggregate for Claude and Codex, token-boundary matching, silent degradation without tool events or validation section
+- [x] verify edge cases: overlapping parallel agent commands (sum may exceed wall-clock — documented), session death mid-command, `--tasks-only`/`--external-only` runs, plan without validation section
+- [x] run full test suite via `make test`
+- [x] run `make lint` - all issues must be fixed
+- [x] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify test coverage of new code paths meets project standard
 
 ### Task 6: Update documentation
 
