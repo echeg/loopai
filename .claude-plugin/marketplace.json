@@ -1,0 +1,17 @@
+{
+  "name": "loopai",
+  "owner": {
+    "name": "echeg"
+  },
+  "plugins": [
+    {
+      "name": "loopai",
+      "source": "./",
+      "description": "Autonomous plan execution with Claude Code, including task execution, monitoring, and plan creation",
+      "version": "0.1.0",
+      "author": {
+        "name": "echeg"
+      }
+    }
+  ]
+}

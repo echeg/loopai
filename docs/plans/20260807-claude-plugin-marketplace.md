@@ -73,10 +73,10 @@ Deliberately out of scope: superpowers stays installed and untouched — no othe
 
 ### Task 2: Add plugin and marketplace manifests
 
-- [ ] create `.claude-plugin/marketplace.json`: marketplace `loopai`, owner echeg, single plugin `{name: "loopai", source: "./"}` with description and version
-- [ ] create `.claude-plugin/plugin.json`: name `loopai`, version `0.1.0`, description, author, repository `https://github.com/echeg/loopai`, license MIT, `"skills": "./assets/claude/skills/"`
-- [ ] run the task 1 check - now green
-- [ ] run `make test` - must pass before task 3
+- [x] create `.claude-plugin/marketplace.json`: marketplace `loopai`, owner echeg, single plugin `{name: "loopai", source: "./"}` with description and version
+- [x] create `.claude-plugin/plugin.json`: name `loopai`, version `0.1.0`, description, author, repository `https://github.com/echeg/loopai`, license MIT, `"skills": "./assets/claude/skills/"`
+- [x] run the task 1 check - now green
+- [x] run `make test` - must pass before task 3
 
 ### Task 3: Create loopai-brainstorm skill
 
