@@ -80,11 +80,11 @@ Validation time is included in (not additive to) the phase buckets; with paralle
 
 ### Task 2: Command timing events from the Claude executor
 
-- [ ] write failing tests for `parseStream` with synthetic stream-json fixtures: `tool_use` (name Bash, input.command) paired with `tool_result` by `tool_use_id` emits `(command, duration)` via the handler; overlapping concurrent pairs resolve independently; `tool_result` without a matching id is ignored; unclosed `tool_use` at stream end emits nothing; non-Bash tools emit nothing; nil handler keeps current behavior byte-for-byte
-- [ ] add optional `CommandTimingHandler func(command string, d time.Duration)` to `ClaudeExecutor` following the `OutputHandler` pattern
-- [ ] extend stream parsing to decode `tool_use` blocks in assistant events and `tool_result` blocks, with an injectable `now()` for arrival-time stamping
-- [ ] verify existing executor tests pass unmodified
-- [ ] run `go test ./pkg/executor/...` - must pass before task 3
+- [x] write failing tests for `parseStream` with synthetic stream-json fixtures: `tool_use` (name Bash, input.command) paired with `tool_result` by `tool_use_id` emits `(command, duration)` via the handler; overlapping concurrent pairs resolve independently; `tool_result` without a matching id is ignored; unclosed `tool_use` at stream end emits nothing; non-Bash tools emit nothing; nil handler keeps current behavior byte-for-byte
+- [x] add optional `CommandTimingHandler func(command string, d time.Duration)` to `ClaudeExecutor` following the `OutputHandler` pattern
+- [x] extend stream parsing to decode `tool_use` blocks in assistant events and `tool_result` blocks, with an injectable `now()` for arrival-time stamping
+- [x] verify existing executor tests pass unmodified
+- [x] run `go test ./pkg/executor/...` - must pass before task 3
 
 ### Task 3: Command timing events from the Codex executor
 

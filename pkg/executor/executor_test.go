@@ -247,6 +247,95 @@ func TestClaudeExecutor_parseStream_withHandler(t *testing.T) {
 	assert.Equal(t, []string{"chunk1", "chunk2"}, chunks)
 }
 
+func TestClaudeExecutor_parseStream_commandTiming(t *testing.T) {
+	type timing struct {
+		command  string
+		duration time.Duration
+	}
+
+	tests := []struct {
+		name  string
+		input string
+		times []time.Time
+		want  []timing
+	}{
+		{
+			name: "paired bash tool use and result",
+			input: `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"go test ./..."}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}`,
+			times: []time.Time{time.Unix(10, 0), time.Unix(13, 0)},
+			want:  []timing{{command: "go test ./...", duration: 3 * time.Second}},
+		},
+		{
+			name: "overlapping commands resolve independently",
+			input: `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"make test"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-2","name":"Bash","input":{"command":"make lint"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-2"}]}}`,
+			times: []time.Time{time.Unix(10, 0), time.Unix(11, 0), time.Unix(14, 0), time.Unix(16, 0)},
+			want: []timing{
+				{command: "make test", duration: 4 * time.Second},
+				{command: "make lint", duration: 5 * time.Second},
+			},
+		},
+		{
+			name:  "unmatched result ignored",
+			input: `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"missing"}]}}`,
+		},
+		{
+			name:  "unclosed tool use ignored",
+			input: `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"make test"}}]}}`,
+			times: []time.Time{time.Unix(10, 0)},
+		},
+		{
+			name: "non bash tool ignored",
+			input: `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"command":"make test"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1"}]}}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []timing
+			timeIdx := 0
+			e := &ClaudeExecutor{
+				CommandTimingHandler: func(command string, d time.Duration) {
+					got = append(got, timing{command: command, duration: d})
+				},
+				now: func() time.Time {
+					require.Less(t, timeIdx, len(tc.times))
+					result := tc.times[timeIdx]
+					timeIdx++
+					return result
+				},
+			}
+
+			result := e.parseStream(context.Background(), strings.NewReader(tc.input), func() {})
+
+			require.NoError(t, result.Error)
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, len(tc.times), timeIdx)
+		})
+	}
+}
+
+func TestClaudeExecutor_parseStream_nilCommandTimingHandlerPreservesOutput(t *testing.T) {
+	input := `{"type":"assistant","message":{"content":[{"type":"text","text":"before"},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"make test"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1"}]}}
+{"type":"content_block_delta","delta":{"type":"text_delta","text":"after"}}`
+	e := &ClaudeExecutor{
+		now: func() time.Time {
+			t.Fatal("clock must not be called without a command timing handler")
+			return time.Time{}
+		},
+	}
+
+	result := e.parseStream(context.Background(), strings.NewReader(input), func() {})
+
+	require.NoError(t, result.Error)
+	assert.Equal(t, "beforeafter", result.Output)
+}
+
 func TestClaudeExecutor_parseStream_withDebug(t *testing.T) {
 	// non-json lines should be printed as-is (with debug message)
 	input := "not json\n" + `{"type":"content_block_delta","delta":{"type":"text_delta","text":"valid"}}`
@@ -262,19 +351,13 @@ func TestClaudeExecutor_extractText(t *testing.T) {
 
 	t.Run("assistant event with text", func(t *testing.T) {
 		event := streamEvent{Type: "assistant"}
-		event.Message.Content = []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}{{Type: "text", Text: "assistant message"}}
+		event.Message.Content = []streamContentBlock{{Type: "text", Text: "assistant message"}}
 		assert.Equal(t, "assistant message", e.extractText(&event))
 	})
 
 	t.Run("assistant event with multiple text blocks", func(t *testing.T) {
 		event := streamEvent{Type: "assistant"}
-		event.Message.Content = []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}{{Type: "text", Text: "first"}, {Type: "text", Text: "second"}}
+		event.Message.Content = []streamContentBlock{{Type: "text", Text: "first"}, {Type: "text", Text: "second"}}
 		assert.Equal(t, "firstsecond", e.extractText(&event))
 	})
 
@@ -312,10 +395,7 @@ func TestClaudeExecutor_extractText(t *testing.T) {
 
 	t.Run("message_stop with text content", func(t *testing.T) {
 		event := streamEvent{Type: "message_stop"}
-		event.Message.Content = []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}{
+		event.Message.Content = []streamContentBlock{
 			{Type: "text", Text: "final message"},
 		}
 		assert.Equal(t, "final message", e.extractText(&event))
@@ -323,10 +403,7 @@ func TestClaudeExecutor_extractText(t *testing.T) {
 
 	t.Run("message_stop with non-text content", func(t *testing.T) {
 		event := streamEvent{Type: "message_stop"}
-		event.Message.Content = []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}{
+		event.Message.Content = []streamContentBlock{
 			{Type: "tool_use", Text: "ignored"},
 		}
 		assert.Empty(t, e.extractText(&event))
