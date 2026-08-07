@@ -30,7 +30,8 @@ This repository is a personal fork. It is installed by building from source; no 
 - Optional: `fzf` for interactive selection; a numbered fallback is built in
 - Optional for `--pr`: authenticated GitHub CLI (`gh auth login`) and a GitHub
   repository remote named `origin`
-- Development: Bash and `jq` for the included provider-wrapper test suites
+- Development: Bash and `jq` for the full test suite, including plugin manifest
+  validation and provider-wrapper tests
 - Optional for development: `golangci-lint`
 
 loopai must be run from the repository root. A custom `vcs_command` must accept

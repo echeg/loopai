@@ -20,24 +20,23 @@ for manifest in "$marketplace" "$plugin"; do
 done
 
 jq -e '
-    (.name | type == "string" and length > 0) and
-    (.plugins | type == "array" and length > 0) and
-    (all(.plugins[]; (.name | type == "string" and length > 0) and
-                     (.source | type == "string" and length > 0)))
-' "$marketplace" >/dev/null || fail "marketplace.json requires name and a non-empty plugins array with name and source"
+    (.name == "loopai") and
+    (.description | type == "string" and length > 0) and
+    (.plugins | type == "array" and length == 1) and
+    (.plugins[0].name == "loopai") and
+    (.plugins[0].source == "./") and
+    (.plugins[0].version | type == "string" and length > 0)
+' "$marketplace" >/dev/null || fail "marketplace.json must describe the single loopai plugin with source ./ and a version"
 
 jq -e '
-    (.name | type == "string" and length > 0) and
+    (.name == "loopai") and
     (.version | type == "string" and length > 0) and
-    (.skills | type == "string" and length > 0)
-' "$plugin" >/dev/null || fail "plugin.json requires name, version, and skills"
+    (.skills == "./assets/claude/skills/")
+' "$plugin" >/dev/null || fail "plugin.json must name loopai and use ./assets/claude/skills/"
 
-if jq -e '
-    ([.name] + [.plugins[].name]) |
-    any(.[]; test("ralphex"; "i"))
-' "$marketplace" >/dev/null || jq -e '.name | test("ralphex"; "i")' "$plugin" >/dev/null; then
-    fail "marketplace and plugin names must not contain ralphex"
-fi
+marketplace_version=$(jq -r '.plugins[0].version' "$marketplace")
+plugin_version=$(jq -r '.version' "$plugin")
+[ "$marketplace_version" = "$plugin_version" ] || fail "marketplace and plugin versions must match"
 
 skills_path=$(jq -r '.skills' "$plugin")
 [ -d "$repo_root/$skills_path" ] || fail "skills directory does not exist: $skills_path"

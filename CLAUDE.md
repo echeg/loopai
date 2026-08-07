@@ -21,6 +21,10 @@ The fork does not contain upstream packaging/release infrastructure or the upstr
 ```bash
 make build      # build .bin/loopai
 make test       # asset checks, race-enabled unit tests with coverage, provider-wrapper suites
+make check-symlinks # validate the five Claude skill assets and links
+make test-symlinks  # regression tests for Claude skill asset validation
+make check-plugin   # validate Claude plugin and marketplace manifests
+make test-plugin    # regression tests for manifest validation
 make test-wrappers # all retained provider-wrapper and wrapper-doc suites
 make lint       # golangci-lint
 make fmt        # gofmt and goimports
@@ -66,8 +70,9 @@ docs/                focused operational documentation and plans
 
 The top-level `assets/claude/loopai*.md` files are symlinks to the matching
 `assets/claude/skills/loopai*/SKILL.md` sources. Keep the command name,
-directory name, and link target aligned; `make check-symlinks` rejects broken
-links. The current set is `loopai`, `loopai-plan`, `loopai-brainstorm`,
+directory name, and link target aligned; `make check-symlinks` rejects broken,
+missing, incorrect, and orphan links, requires skill descriptions, and verifies
+the exact skill inventory. The current set is `loopai`, `loopai-plan`, `loopai-brainstorm`,
 `loopai-adopt`, and `loopai-update`; every added skill needs the matching
 top-level symlink.
 
@@ -164,9 +169,11 @@ make lint
 ```
 
 The full suite is required because configuration and progress paths cross package boundaries.
-`make test` first validates Claude command symlinks, then runs the race-enabled
-Go suite with coverage, and finally runs every retained provider-wrapper and
-wrapper-documentation shell suite. CI runs the same asset and wrapper checks.
+`make test` first validates Claude skill assets and plugin manifests, runs their
+regression suites and shell-completion checks, then runs the race-enabled Go
+suite with coverage and every retained provider-wrapper and wrapper-documentation
+shell suite. The asset and manifest checks require Bash and `jq`. CI runs the
+same focused asset, manifest, completion, and wrapper checks.
 
 Dashboard e2e:
 

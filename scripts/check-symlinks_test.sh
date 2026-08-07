@@ -14,26 +14,10 @@ add_skill() {
 	ln -s "./skills/$name/SKILL.md" "$fixture/assets/claude/$name.md"
 }
 
-write_valid_loopai_plan() {
-	printf '%s\n' \
-		'---' \
-		'description: fixture plan skill' \
-		'---' \
-		'When the request comes from `loopai-brainstorm`, skip every question already answered.' \
-		'## Overview' \
-		'## Decisions' \
-		'- **Context**: fixture' \
-		'- **Chosen approach**: fixture' \
-		'- **Rejected alternatives**: fixture' \
-		'- **Verified facts**: fixture' \
-		'## Context (from discovery)' \
-		>"$fixture/assets/claude/skills/loopai-plan/SKILL.md"
-}
-
 expect_failure() {
 	local expected="$1"
 	local output
-	if output="$($checker "$fixture" 2>&1)"; then
+	if output="$("$checker" "$fixture" 2>&1)"; then
 		printf 'expected check to fail with: %s\n' "$expected" >&2
 		exit 1
 	fi
@@ -44,19 +28,11 @@ expect_failure() {
 }
 
 add_skill loopai
+add_skill loopai-adopt
+add_skill loopai-brainstorm
 add_skill loopai-plan
-write_valid_loopai_plan
+add_skill loopai-update
 "$checker" "$fixture"
-
-sed -i.bak '/^## Decisions$/d' "$fixture/assets/claude/skills/loopai-plan/SKILL.md"
-expect_failure "invalid loopai-plan template"
-rm "$fixture/assets/claude/skills/loopai-plan/SKILL.md.bak"
-write_valid_loopai_plan
-
-sed -i.bak '/skip every question already answered/d' "$fixture/assets/claude/skills/loopai-plan/SKILL.md"
-expect_failure "missing brainstorm question-skip guidance"
-rm "$fixture/assets/claude/skills/loopai-plan/SKILL.md.bak"
-write_valid_loopai_plan
 
 printf '%s\n' '# missing frontmatter' >"$fixture/assets/claude/skills/loopai/SKILL.md"
 expect_failure "invalid skill frontmatter"
@@ -71,5 +47,18 @@ rm "$fixture/assets/claude/loopai.md"
 ln -s "./skills/loopai/SKILL.md" "$fixture/assets/claude/loopai.md"
 ln -s "./skills/loopai/SKILL.md" "$fixture/assets/claude/orphan.md"
 expect_failure "orphan skill symlink"
+rm "$fixture/assets/claude/orphan.md"
+
+rm -rf "$fixture/assets/claude/skills/loopai-brainstorm" "$fixture/assets/claude/loopai-brainstorm.md"
+expect_failure "unexpected skill inventory"
+add_skill loopai-brainstorm
+
+add_skill loopai-extra
+expect_failure "unexpected skill inventory"
+rm -rf "$fixture/assets/claude/skills/loopai-extra" "$fixture/assets/claude/loopai-extra.md"
+
+mkdir -p "$fixture/assets/claude/nested"
+ln -s ./missing.asset "$fixture/assets/claude/nested/broken.asset"
+expect_failure "broken symlink"
 
 printf 'check-symlinks tests passed\n'

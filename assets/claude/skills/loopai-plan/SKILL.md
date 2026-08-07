@@ -29,8 +29,6 @@ Proceed with plan creation regardless, but remind user to install before executi
 
 Before asking questions, understand what the user is working on:
 
-If invoked by `loopai-brainstorm`, treat its approved design as authoritative context. Do not re-ask questions the user already answered during brainstorming, including the goal, scope, constraints, or chosen approach. Preserve those decisions and gather only information that is still missing, such as the testing preference or plan title.
-
 1. **Parse user's command arguments** to identify intent:
    - "add feature Z" / "implement W" → feature development
    - "fix bug" / "debug issue" → bug fix plan
@@ -74,7 +72,7 @@ Show the discovered context, then ask questions **one at a time** using the AskU
 
 **Ask questions one at a time (do not overwhelm with multiple questions):**
 
-When the request comes from `loopai-brainstorm`, skip every question already answered by the approved design. Ask only the remaining questions from this list; do not repeat discovery or reopen an approved choice unless the user asks to reconsider it.
+When the request comes from `loopai-brainstorm`, treat its approved design as authoritative. Preserve its goal, scope, constraints, chosen approach, and rejected alternatives; ask only for missing information such as testing preference or plan title.
 
 1. **Plan purpose**: use AskUserQuestion - "What is the main goal?"
    - provide multiple choice with suggested answer based on discovered intent
@@ -101,6 +99,8 @@ After all questions answered, synthesize responses into plan context.
 ## Step 1.5: Explore Approaches
 
 Once the problem is understood, propose implementation approaches:
+
+When invoked from `loopai-brainstorm`, skip this step and carry its approved and rejected approaches into `## Decisions`.
 
 1. **Propose 2-3 different approaches** with trade-offs for each
 2. **Lead with recommended option** and explain reasoning

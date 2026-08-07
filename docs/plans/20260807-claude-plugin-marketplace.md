@@ -113,6 +113,7 @@ Deliberately out of scope: superpowers stays installed and untouched — no othe
 - Marketplace and plugin are both named `loopai`; installed skills surface as `loopai:<skill>` — distinct from `ralphex:*` and `superpowers:*`, so coexistence during migration is safe
 - `loopai-brainstorm` replaces only the plan-pipeline part of superpowers: superpowers stays installed for its orthogonal skills (debugging, TDD, code review); no superpowers files are copied except the adapted brainstorming text
 - Version discipline: plugin.json `version` bumps on every skill change (start 0.1.0); the marketplace entry version mirrors it
+- Review fixes updated the skills and bumped both manifests together to the final version 0.1.2
 - Attribution: "adapted from obra/superpowers v6.2.0 (MIT)" comment in the adapted skill records the sync baseline for future manual diffs against upstream
 - Fork policy intact: no Go code, module path, or `<<<RALPHEX:...>>>` signal changes; `CHANGELOG.md` untouched
 

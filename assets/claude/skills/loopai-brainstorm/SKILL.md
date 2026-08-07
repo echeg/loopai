@@ -22,21 +22,6 @@ Complete these activities in order:
 3. Ask clarifying questions one at a time to understand purpose, constraints, and success criteria.
 4. Propose two or three approaches, lead with a recommendation, and explain the trade-offs.
 5. Present the design in sections appropriate to its complexity and get approval after each section.
-6. Invoke `loopai-plan`, passing the approved decisions for its `## Decisions` section.
-
-## Process Flow
-
-```text
-Explore context
-  -> Clarify one question at a time
-  -> Propose 2-3 approaches
-  -> Present design sections
-  -> User approves?
-       no: revise the relevant section
-       yes: invoke loopai-plan with approved decisions
-```
-
-The terminal state is invoking `loopai-plan`. Do not invoke `writing-plans`, an implementation skill, or any other planning workflow.
 
 ## Understand the Idea
 
