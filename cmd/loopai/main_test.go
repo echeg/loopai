@@ -5517,24 +5517,48 @@ printf '%s\n' '{"type":"result","result":""}'
 `)
 		binDir := t.TempDir()
 		argvLog := filepath.Join(binDir, "cmux-argv.log")
-		writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n")
+		writeExecutable(t, filepath.Join(binDir, "cmux"), `#!/bin/sh
+case "$*" in
+  "set-status loopai done"*)
+    if [ "$PWD" = "$CMUX_TEST_REPO" ] && [ ! -d "$CMUX_TEST_WORKTREE" ] && [ -f "$CMUX_TEST_COMPLETED_PLAN" ]; then
+      printf '%s\n' final-after-cleanup >> "$CMUX_ARGV_LOG"
+    else
+      printf 'final-before-cleanup cwd=%s\n' "$PWD" >> "$CMUX_ARGV_LOG"
+    fi
+    ;;
+esac
+printf '%s\n' "$*" >> "$CMUX_ARGV_LOG"
+`)
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
 		t.Setenv("CMUX_ARGV_LOG", argvLog)
+		resolvedRepo, resolveErr := filepath.EvalSymlinks(dir)
+		require.NoError(t, resolveErr)
+		t.Setenv("CMUX_TEST_REPO", resolvedRepo)
+		t.Setenv("CMUX_TEST_WORKTREE", wtPath)
+		completedPlan := filepath.Join(dir, "docs", "plans", "completed", filepath.Base(planPath))
+		t.Setenv("CMUX_TEST_COMPLETED_PLAN", completedPlan)
 
 		err = runWithWorktree(t.Context(), opts{
 			ResumeWorktree: true, TasksOnly: true, MaxIterations: 1, NoColor: true,
 		}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
-			Config: &config.Config{WorktreeEnabled: true, ClaudeCommand: fakeClaude}, Colors: testColors(),
+			Config: &config.Config{
+				WorktreeEnabled: true, ClaudeCommand: fakeClaude, MovePlanOnCompletion: true,
+			}, Colors: testColors(),
 			DefaultBranch: "master", BaseRef: "master", WtCleanup: &cleanupHolder{},
 		})
 		require.NoError(t, err)
 		assert.NoDirExists(t, wtPath)
+		assert.FileExists(t, completedPlan)
+		assert.NoFileExists(t, planPath)
 		assert.True(t, branchExists(t, dir, "resume-complete"), "successful resume preserves the feature branch")
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, readErr)
 		output := string(recorded)
+		assert.Contains(t, output, "final-after-cleanup",
+			"the final/free pill must be published only after cwd restoration and worktree removal")
+		assert.NotContains(t, output, "final-before-cleanup")
 		statusPos := strings.LastIndex(output, "set-status loopai done in")
 		clearPos := strings.LastIndex(output, "clear-status loopai")
 		assert.Greater(t, statusPos, clearPos, "the final success pill must survive Stop: %s", output)
@@ -5699,10 +5723,27 @@ func TestRunWithWorktree_HandsOffFailureNotification(t *testing.T) {
 
 	binDir := t.TempDir()
 	argvLog := filepath.Join(binDir, "argv.log")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + argvLog + "\n"
+	wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-once")
+	script := `#!/bin/sh
+case "$*" in
+  "set-status loopai failed"*)
+    if [ "$PWD" = "$CMUX_TEST_REPO" ] && [ ! -d "$CMUX_TEST_WORKTREE" ]; then
+      printf '%s\n' final-after-cleanup >> "$CMUX_ARGV_LOG"
+    else
+      printf 'final-before-cleanup cwd=%s\n' "$PWD" >> "$CMUX_ARGV_LOG"
+    fi
+    ;;
+esac
+printf '%s\n' "$*" >> "$CMUX_ARGV_LOG"
+`
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "cmux"), []byte(script), 0o755)) //nolint:gosec // test fixture must be executable
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	t.Setenv("CMUX_ARGV_LOG", argvLog)
+	resolvedRepo, resolveErr := filepath.EvalSymlinks(dir)
+	require.NoError(t, resolveErr)
+	t.Setenv("CMUX_TEST_REPO", resolvedRepo)
+	t.Setenv("CMUX_TEST_WORKTREE", wtPath)
 
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
@@ -5715,6 +5756,9 @@ func TestRunWithWorktree_HandsOffFailureNotification(t *testing.T) {
 
 	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 	require.NoError(t, readErr, "the handed-off run must still reach the cmux CLI")
+	assert.Contains(t, string(recorded), "final-after-cleanup",
+		"the final/free failure pill must follow cwd restoration and worktree removal")
+	assert.NotContains(t, string(recorded), "final-before-cleanup")
 	assert.Equal(t, 1, strings.Count(string(recorded), "notify --title"),
 		"exactly one funnel may banner a failure, got:\n%s", recorded)
 	assert.Equal(t, 1, strings.Count(string(recorded), "set-status loopai failed"),
@@ -8283,6 +8327,33 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 			"the run stayed here after all, so it takes over the stale pill even though startup failed")
 	})
 
+	t.Run("auto busy hand-off failure preserves the live run pill", func(t *testing.T) {
+		argvLog := cmuxAutoSpawnStub(t, "loopai=task icon=hammer\n", 0, 1)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
+
+		err := run(t.Context(), opts{CmuxWorkspace: "auto", ConfigDir: badConfigDir, PlanFile: "p.md"})
+		require.ErrorContains(t, err, "hand-off required because the current workspace is busy")
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		commands := string(recorded)
+		assert.Contains(t, commands, "list-status")
+		assert.Contains(t, commands, "new-workspace")
+		assert.NotContains(t, commands, "clear-status",
+			"this process never owned the active pill that made hand-off mandatory")
+	})
+
+	t.Run("auto validation failure preserves unowned status", func(t *testing.T) {
+		argvLog := cmuxAutoStub(t, "loopai=task icon=hammer\n", 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+		err := run(t.Context(), opts{CmuxWorkspace: "auto", Wait: -time.Second})
+		require.ErrorContains(t, err, "--wait must be non-negative")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist,
+			"validation runs before query and must not clear a pill whose ownership is unknown")
+	})
+
 	t.Run("outside cmux continues the normal run", func(t *testing.T) {
 		cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "")
@@ -8308,6 +8379,50 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 		assert.Contains(t, string(recorded), "clear-status",
 			"the run stayed here, so it takes over the stale pill")
 	})
+}
+
+func TestRunAutoReservesBeforeCombinedResetPrompt(t *testing.T) {
+	argvLog := cmuxAutoStub(t, "loopai=done in 1m icon=bolt\n", 0)
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	chdirWithPlan(t, "p.md")
+
+	stdinReader, stdinWriter, err := os.Pipe()
+	require.NoError(t, err)
+	originalStdin := os.Stdin
+	os.Stdin = stdinReader
+	t.Cleanup(func() {
+		os.Stdin = originalStdin
+		_ = stdinReader.Close()
+		_ = stdinWriter.Close()
+	})
+
+	done := make(chan error, 1)
+	configDir := t.TempDir()
+	go func() {
+		done <- run(t.Context(), opts{
+			CmuxWorkspace: "auto",
+			Reset:         true,
+			ConfigDir:     configDir,
+			PlanFile:      "p.md",
+		})
+	}()
+
+	require.Eventually(t, func() bool {
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		return readErr == nil && strings.Contains(string(recorded), "set-status\nloopai\nstarting")
+	}, 2*time.Second, 10*time.Millisecond,
+		"the starting reservation must be visible while reset is still blocked on stdin")
+
+	_, err = stdinWriter.WriteString("n\nn\nn\n")
+	require.NoError(t, err)
+	require.NoError(t, stdinWriter.Close())
+
+	select {
+	case runErr := <-done:
+		require.Error(t, runErr, "the synthetic .git marker is not a usable repository")
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return after reset input was released")
+	}
 }
 
 func TestCmuxEnvOptionsCoversOptionTags(t *testing.T) {
@@ -8450,10 +8565,16 @@ func TestPrepareStaleCmuxStatusDefersForHandOff(t *testing.T) {
 			require.ErrorIs(t, err, os.ErrNotExist, "the run moved or owns a reservation")
 		})
 
-		t.Run(mode+" unpreserved state clears on resolution", func(t *testing.T) {
+		t.Run(mode+" unpreserved state resolves with correct ownership", func(t *testing.T) {
 			argvLog := stub(t)
 			resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: mode, PlanFile: "plan.md"})
 			resolve(false)
+			if mode == "auto" {
+				_, err := os.Stat(argvLog)
+				require.ErrorIs(t, err, os.ErrNotExist,
+					"auto mode cannot clear before it owns a reservation or reporter")
+				return
+			}
 			recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 			require.NoError(t, err)
 			assert.Equal(t, "clear-status loopai\n", string(recorded))

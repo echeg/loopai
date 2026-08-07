@@ -204,23 +204,24 @@ type startupInfo struct {
 
 // executePlanRequest holds parameters for plan execution.
 type executePlanRequest struct {
-	PlanFile       string
-	MainPlanFile   string // original plan path in main repo (worktree mode); empty in normal mode
-	Mode           processor.Mode
-	GitSvc         *git.Service
-	MainGitSvc     *git.Service // main repo service for cross-boundary ops (worktree mode); nil in normal mode
-	Config         *config.Config
-	Colors         *progress.Colors
-	DefaultBranch  string // base for non-worktree branch creation; worktrees are created from current HEAD
-	BaseRef        string // base reference for review diffs and templates (--base-ref override or DefaultBranch)
-	NotifySvc      *notify.Service
-	BranchOverride string              // branch name override (--branch flag); empty = derive from plan filename
-	WtCleanup      *cleanupHolder      // worktree cleanup for interrupt handler; nil when not in worktree mode
-	CmuxStop       *cleanupHolder      // cmux sidebar reset for interrupt handler; nil when not wired
-	ProgressLog    *progress.Logger    // pre-created logger (worktree mode); nil in normal mode
-	PhaseHolder    *status.PhaseHolder // pre-created holder (worktree mode); nil in normal mode
-	ExternalReview externalReviewSelection
-	LimitRecovery  limits.Recovery
+	PlanFile         string
+	MainPlanFile     string // original plan path in main repo (worktree mode); empty in normal mode
+	Mode             processor.Mode
+	GitSvc           *git.Service
+	MainGitSvc       *git.Service // main repo service for cross-boundary ops (worktree mode); nil in normal mode
+	Config           *config.Config
+	Colors           *progress.Colors
+	DefaultBranch    string // base for non-worktree branch creation; worktrees are created from current HEAD
+	BaseRef          string // base reference for review diffs and templates (--base-ref override or DefaultBranch)
+	NotifySvc        *notify.Service
+	BranchOverride   string              // branch name override (--branch flag); empty = derive from plan filename
+	WtCleanup        *cleanupHolder      // worktree cleanup for interrupt handler; nil when not in worktree mode
+	CmuxStop         *cleanupHolder      // cmux sidebar reset for interrupt handler; nil when not wired
+	BeforeCmuxFinish func(bool)          // final repository/log cleanup; bool reports execution success
+	ProgressLog      *progress.Logger    // pre-created logger (worktree mode); nil in normal mode
+	PhaseHolder      *status.PhaseHolder // pre-created holder (worktree mode); nil in normal mode
+	ExternalReview   externalReviewSelection
+	LimitRecovery    limits.Recovery
 }
 
 // cleanupHolder holds a cleanup function with mutex for safe cross-goroutine access.
@@ -305,25 +306,26 @@ func run(ctx context.Context, o opts) error {
 	// returned cleanup ensures goroutine exits when run() returns, avoiding leaks in tests.
 	defer startInterruptWatcher(ctx, forceExitCleanup(restoreTerminal, cmuxStop, wtCleanup))()
 
-	// A normal invocation replaces any prior completion outcome even when flag validation,
-	// startup, or preflight fails. Explicit clear and close-out attempts retain the old pill
-	// until their own success paths clear it. A possible watch-only invocation has to wait for
-	// config loading so configured watch directories can be considered.
+	// A normal invocation replaces any prior completion outcome even when startup or preflight
+	// fails. Auto mode waits until it owns a reservation or reporter, since a pre-validation pill
+	// may belong to another live run. Explicit clear and close-out attempts retain the old pill until
+	// their own success paths clear it. A possible watch-only invocation waits for config loading so
+	// configured watch directories can be considered.
 	resolveStaleCmuxStatus := prepareStaleCmuxStatus(o)
 
-	// validate conflicting flags
+	// Validate before querying or spawning so an invalid invocation cannot create an orphan
+	// workspace. Auto mode still preserves the existing pill here: this process has not queried it
+	// or acquired a reservation, so clearing it could erase another live run's busy marker.
 	if err := validateFlags(o); err != nil {
 		resolveStaleCmuxStatus(false)
 		return err
 	}
 
-	// handle early-exit flags (before full config load)
-	if done, err := handleEarlyFlags(o); err != nil || done {
-		resolveStaleCmuxStatus(handOffSucceeded(o, err))
+	done, autoWorkspaceReserved, preserveEarlyStatus, err := prepareRunBeforeConfig(o, cmuxStop)
+	if err != nil || done {
+		resolveStaleCmuxStatus(preserveEarlyStatus)
 		return err
 	}
-	autoWorkspaceReserved := ensureAutoWorkspaceReservation(
-		o, !mayBeWatchOnlyMode(o), false, cmuxStop, os.Stderr)
 	// load config first to get custom command paths
 	cfg, err := loadRunConfig(o)
 	if err != nil {
@@ -439,6 +441,21 @@ func run(ctx context.Context, o opts) error {
 		ExternalReview: externalReview,
 		LimitRecovery:  limitRecovery,
 	}, selector)
+}
+
+// prepareRunBeforeConfig decides hand-off before taking a local reservation: otherwise auto mode
+// would see its own "starting" pill and always classify the workspace as busy. Local utilities run
+// after reservation because a combined --reset + run may block for input at its first prompt.
+func prepareRunBeforeConfig(o opts, cmuxStop *cleanupHolder) (done, reserved, preserve bool, err error) {
+	if stop, handOffErr := handOffToCmuxWorkspace(o, os.Args[1:], os.Stdout, os.Stderr); handOffErr != nil || stop {
+		return stop, false, handOffSucceeded(o, handOffErr), handOffErr
+	}
+
+	reserved = ensureAutoWorkspaceReservation(o, !mayBeWatchOnlyMode(o), false, cmuxStop, os.Stderr)
+	if earlyDone, earlyErr := handleEarlyFlags(o); earlyErr != nil || earlyDone {
+		return earlyDone, reserved, preserveLocalCmuxStatus(false, reserved), earlyErr
+	}
+	return false, reserved, false, nil
 }
 
 func loadRunConfig(o opts) (*config.Config, error) {
@@ -863,7 +880,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		wrapped := fmt.Errorf("runner: %w", runErr)
 		plr.baseLog.SetFailed(wrapped)
 		sendNotification(req, branch, plr.baseLog.Elapsed(), git.DiffStats{}, runErr)
-		finishCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), runErr)
+		finishCmuxAfterCleanup(req, plr, rep, branch, plr.baseLog.Elapsed(), runErr)
 		return wrapped
 	}
 
@@ -877,7 +894,6 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 
 	sendNotification(req, branch, elapsed, stats, nil)
-	finishCmuxCompletion(rep, req.PlanFile, branch, elapsed, nil)
 
 	// move completed plan to completed/ directory.
 	// use MainGitSvc+MainPlanFile when available (worktree mode) because the plan file is in the main repo.
@@ -900,6 +916,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 
 	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved)
+	finishCmuxAfterCleanup(req, plr, rep, branch, elapsed, nil)
 
 	// clear the sidebar before the dashboard idles: with --serve the run is done but the process
 	// stays alive until Ctrl+C, and a spinner left spinning reports it as still working
@@ -907,6 +924,24 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	keepDashboardAlive(ctx, o, req, plr.closeLog)
 
 	return nil
+}
+
+// finishCmuxAfterCleanup publishes the final/free pill only after every operation that must stay
+// isolated from a subsequent local auto run. Normal runs close their owned log here; worktree runs
+// additionally restore cwd, remove or preserve the worktree as appropriate, and close their
+// externally-owned log through BeforeCmuxFinish.
+func finishCmuxAfterCleanup(
+	req executePlanRequest,
+	plr progressLogResult,
+	rep *cmux.Reporter,
+	branch, elapsed string,
+	runErr error,
+) {
+	plr.closeLog()
+	if req.BeforeCmuxFinish != nil {
+		req.BeforeCmuxFinish(runErr == nil)
+	}
+	finishCmuxCompletion(rep, req.PlanFile, branch, elapsed, runErr)
 }
 
 // runWithWorktree creates or resumes a worktree, creates the progress logger (before chdir so it
@@ -971,16 +1006,20 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	if err != nil {
 		return fmt.Errorf("create progress logger: %w", err)
 	}
-	defer func() {
-		// mark failure on any error return so Close writes "Failed:" instead of "Completed:",
-		// preserving progress history across restart (issue #288)
-		if err != nil {
-			baseLog.SetFailed(err)
-		}
-		if closeErr := baseLog.Close(); closeErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to close progress log: %v\n", closeErr)
-		}
-	}()
+	var closeLogOnce sync.Once
+	closeLog := func() {
+		closeLogOnce.Do(func() {
+			// mark failure on any error return so Close writes "Failed:" instead of "Completed:",
+			// preserving progress history across restart (issue #288)
+			if err != nil {
+				baseLog.SetFailed(err)
+			}
+			if closeErr := baseLog.Close(); closeErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to close progress log: %v\n", closeErr)
+			}
+		})
+	}
+	defer closeLog()
 
 	// chdir into worktree
 	if err = os.Chdir(wt.path); err != nil {
@@ -1010,6 +1049,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		restoreCWD()
 		removeWorktree()
 	}
+	beforeCmuxFinish := worktreeCmuxFinishCleanup(wt.resumed, restoreCWD, removeWorktree, closeLog)
 
 	setupDone = true // disable safety-net defer, main cleanup takes over
 	if wt.resumed {
@@ -1038,22 +1078,33 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	handedOff = true
 
 	return executePlan(ctx, o, executePlanRequest{
-		PlanFile:       wt.planFile,
-		MainPlanFile:   req.PlanFile, // original path in main repo for MovePlanToCompleted
-		Mode:           req.Mode,
-		GitSvc:         wt.gitSvc,
-		MainGitSvc:     req.GitSvc,
-		Config:         req.Config,
-		Colors:         req.Colors,
-		DefaultBranch:  req.DefaultBranch,
-		BaseRef:        req.BaseRef,
-		NotifySvc:      req.NotifySvc,
-		CmuxStop:       req.CmuxStop,
-		ProgressLog:    baseLog,
-		PhaseHolder:    holder,
-		ExternalReview: req.ExternalReview,
-		LimitRecovery:  req.LimitRecovery,
+		PlanFile:         wt.planFile,
+		MainPlanFile:     req.PlanFile, // original path in main repo for MovePlanToCompleted
+		Mode:             req.Mode,
+		GitSvc:           wt.gitSvc,
+		MainGitSvc:       req.GitSvc,
+		Config:           req.Config,
+		Colors:           req.Colors,
+		DefaultBranch:    req.DefaultBranch,
+		BaseRef:          req.BaseRef,
+		NotifySvc:        req.NotifySvc,
+		CmuxStop:         req.CmuxStop,
+		BeforeCmuxFinish: beforeCmuxFinish,
+		ProgressLog:      baseLog,
+		PhaseHolder:      holder,
+		ExternalReview:   req.ExternalReview,
+		LimitRecovery:    req.LimitRecovery,
 	})
+}
+
+func worktreeCmuxFinishCleanup(resumed bool, restoreCWD, removeWorktree, closeLog func()) func(bool) {
+	return func(success bool) {
+		restoreCWD()
+		if !resumed || success {
+			removeWorktree()
+		}
+		closeLog()
+	}
 }
 
 type worktreeRun struct {
@@ -2273,17 +2324,11 @@ func runReset(configDir string, stdin io.Reader, stdout io.Writer) error {
 	return nil
 }
 
-// handleEarlyFlags processes flags that should run before full config load (--clear, --reset, --dump-defaults).
+// handleEarlyFlags processes local flags that should run before full config load
+// (--clear, --reset, --dump-defaults). Workspace hand-off is decided by run before this function,
+// allowing an eligible auto run to reserve the current workspace before --reset can block.
 // returns (true, nil) if an early exit occurred, (true, err) on error, or (false, nil) to continue.
 func handleEarlyFlags(o opts) (bool, error) {
-	// hand the run over to a fresh cmux workspace before any dependency is built, so the actual
-	// run inherits that workspace and owns its sidebar card alone. it comes before the utilities
-	// below so a --reset preceding a run is performed once, in the new workspace. config is
-	// deliberately not needed here, the child re-reads it there.
-	if done, err := handOffToCmuxWorkspace(o, os.Args[1:], os.Stdout, os.Stderr); done {
-		return true, err
-	}
-
 	if o.Clear {
 		clearCmuxStatus(os.Stdout)
 		return true, nil
@@ -2391,7 +2436,7 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bo
 // The cleanup holder owns the reservation until a normal reporter replaces it, clearing "starting"
 // on every startup error and on interrupts without erasing a later final pill.
 func ensureAutoWorkspaceReservation(o opts, eligible, reserved bool, cmuxStop *cleanupHolder, stderr io.Writer) bool {
-	if o.CmuxWorkspace != "auto" || !eligible || reserved {
+	if o.CmuxWorkspace != "auto" || isStandaloneCommand(o) || !eligible || reserved {
 		return reserved
 	}
 	rep := cmux.New("", cmux.Models{})
@@ -2595,20 +2640,20 @@ func isStandaloneCommand(o opts) bool {
 	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || (o.Reset && isResetOnly(o))
 }
 
-// handOffSucceeded reports whether an early-exit verdict from handleEarlyFlags came from a
-// successful cmux workspace hand-off, which means the run happens in another workspace and this
-// one's pill is not ours to replace. under --cmux-workspace the remaining early flags reach an
-// early exit only after a failed hand-off, and with an error except for the standalone commands,
-// whose stale-pill clear is a no-op either way.
+// handOffSucceeded reports whether an early stop came from a successful cmux workspace hand-off,
+// which means the run happens in another workspace and this one's pill is not ours to replace.
 func handOffSucceeded(o opts, earlyErr error) bool {
 	return o.CmuxWorkspace != "" && earlyErr == nil
 }
 
-// prepareStaleCmuxStatus clears immediately for definite runs. When --serve might become
-// watch-only after config loading, or --cmux-workspace might hand the run to another workspace,
-// the returned callback performs the clear only if startup resolves to a normal run here or exits
-// before that distinction can be made.
+// prepareStaleCmuxStatus clears immediately for definite runs. Auto mode never clears through this
+// path because every status observed before reservation is unowned and may belong to another live
+// run. Its reservation or normal reporter replaces the old status once this process owns the card.
+// Always mode and possible watch-only mode defer until their local/preserve verdict is known.
 func prepareStaleCmuxStatus(o opts) func(preserve bool) {
+	if o.CmuxWorkspace == "auto" {
+		return func(bool) {}
+	}
 	if mayBeWatchOnlyMode(o) || o.CmuxWorkspace != "" {
 		return func(preserve bool) {
 			if !preserve {
