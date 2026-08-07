@@ -6273,7 +6273,7 @@ func TestResolveFeatureBranch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, t.TempDir(), plansDir, tt.arg)
+			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, []string{t.TempDir()}, plansDir, tt.arg)
 			if tt.wantErr != "" || len(tt.errFrags) > 0 {
 				require.Error(t, err)
 				assert.Empty(t, got)
@@ -6300,11 +6300,11 @@ func TestResolveFeatureBranchRelativePlansDir(t *testing.T) {
 	t.Chdir(repo)
 
 	checker := fakeBranchChecker{branches: []string{"relative-plan"}}
-	got, err := resolveFeatureBranch(checker, repo, filepath.Join("docs", "plans"), "20260807-relative-plan")
+	got, err := resolveFeatureBranch(checker, []string{repo}, filepath.Join("docs", "plans"), "20260807-relative-plan")
 	require.NoError(t, err)
 	assert.Equal(t, "relative-plan", got)
 
-	got, err = resolveFeatureBranch(checker, repo, filepath.Join("docs", "plans"),
+	got, err = resolveFeatureBranch(checker, []string{repo}, filepath.Join("docs", "plans"),
 		filepath.Join("docs", "plans", "20260807-relative-plan.md"))
 	require.NoError(t, err)
 	assert.Equal(t, "relative-plan", got)
@@ -6312,7 +6312,7 @@ func TestResolveFeatureBranchRelativePlansDir(t *testing.T) {
 
 func TestResolveFeatureBranchMissingPlansDir(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent")
-	_, err := resolveFeatureBranch(fakeBranchChecker{}, t.TempDir(), missing, "whatever")
+	_, err := resolveFeatureBranch(fakeBranchChecker{}, []string{t.TempDir()}, missing, "whatever")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "whatever")
 }
@@ -6330,7 +6330,7 @@ func TestResolveFeatureBranchCaseInsensitiveFilesystem(t *testing.T) {
 	require.NoError(t, err)
 
 	// the branch must come from the on-disk plan name, not from the case the caller typed
-	got, err := resolveFeatureBranch(svc, repo, plansDir, "20260807-mixedcase")
+	got, err := resolveFeatureBranch(svc, []string{repo}, plansDir, "20260807-mixedcase")
 	require.NoError(t, err)
 	assert.Equal(t, "MixedCase", got)
 }
@@ -6346,12 +6346,12 @@ func TestResolveFeatureBranchPrefersRecordedBranch(t *testing.T) {
 	// "login" exists but is unrelated: the run recorded fix/login via --branch, so resolving the
 	// plan must never hand --merge the collision victim
 	checker := fakeBranchChecker{branches: []string{"master", "login", "fix/login"}}
-	got, err := resolveFeatureBranch(checker, repo, plansDir, "20260806-login")
+	got, err := resolveFeatureBranch(checker, []string{repo}, plansDir, "20260806-login")
 	require.NoError(t, err)
 	assert.Equal(t, "fix/login", got)
 
 	t.Run("recorded branch deleted reports the recorded name", func(t *testing.T) {
-		_, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"master", "login"}}, repo, plansDir,
+		_, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"master", "login"}}, []string{repo}, plansDir,
 			"20260806-login")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "fix/login")
@@ -6361,7 +6361,7 @@ func TestResolveFeatureBranchPrefersRecordedBranch(t *testing.T) {
 	t.Run("unrecorded plan still derives from the filename", func(t *testing.T) {
 		other := filepath.Join(plansDir, "20260807-signup.md")
 		require.NoError(t, os.WriteFile(other, []byte("# plan\n"), 0o600))
-		got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"signup"}}, repo, plansDir,
+		got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"signup"}}, []string{repo}, plansDir,
 			"20260807-signup")
 		require.NoError(t, err)
 		assert.Equal(t, "signup", got)
@@ -6369,8 +6369,8 @@ func TestResolveFeatureBranchPrefersRecordedBranch(t *testing.T) {
 
 	t.Run("newest record wins", func(t *testing.T) {
 		writeProgressRecord(t, repo, "progress-login-rerun.txt", planFile, "fix/login-v2", 2)
-		got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"fix/login", "fix/login-v2"}}, repo,
-			plansDir, "20260806-login")
+		got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"fix/login", "fix/login-v2"}},
+			[]string{repo}, plansDir, "20260806-login")
 		require.NoError(t, err)
 		assert.Equal(t, "fix/login-v2", got)
 	})
@@ -6393,7 +6393,7 @@ func TestResolveFeatureBranchIgnoresNonBranchCreatingRecords(t *testing.T) {
 			writeProgressRecord(t, repo, "progress-20260806-login.txt", planFile, "fix/login", 1)
 			writeProgressRecordMode(t, repo, "progress-20260806-login-"+mode+".txt", planFile, "unrelated", mode, 2)
 
-			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, repo, plansDir, "20260806-login")
+			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, []string{repo}, plansDir, "20260806-login")
 			require.NoError(t, err)
 			assert.Equal(t, "fix/login", got)
 		})
@@ -6409,7 +6409,7 @@ func TestResolveFeatureBranchIgnoresNonBranchCreatingRecords(t *testing.T) {
 		// "already the base branch" error for a plan with a perfectly good feature branch
 		writeProgressRecordMode(t, repo, "progress-20260806-login-review.txt", planFile, "master", "review", 1)
 
-		got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"master", "login"}}, repo, plansDir,
+		got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"master", "login"}}, []string{repo}, plansDir,
 			"20260806-login")
 		require.NoError(t, err)
 		assert.Equal(t, "login", got)
@@ -6424,7 +6424,7 @@ func TestResolveFeatureBranchIgnoresNonBranchCreatingRecords(t *testing.T) {
 			require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
 			writeProgressRecordMode(t, repo, "progress-20260806-login.txt", planFile, "fix/login", mode, 1)
 
-			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, repo, plansDir, "20260806-login")
+			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, []string{repo}, plansDir, "20260806-login")
 			require.NoError(t, err, "mode %q", mode)
 			assert.Equal(t, "fix/login", got, "mode %q", mode)
 		}
@@ -6449,7 +6449,7 @@ func TestResolveFeatureBranchMatchesRecordAcrossPathSpellings(t *testing.T) {
 		}
 		writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
 
-		got, err := resolveFeatureBranch(checker, repo, plansDir, "20260806-LOGIN")
+		got, err := resolveFeatureBranch(checker, []string{repo}, plansDir, "20260806-LOGIN")
 		require.NoError(t, err)
 		assert.Equal(t, "fix/login", got)
 	})
@@ -6464,7 +6464,7 @@ func TestResolveFeatureBranchMatchesRecordAcrossPathSpellings(t *testing.T) {
 			[]byte("# plan\n"), 0o600))
 		writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
 
-		got, err := resolveFeatureBranch(checker, repo, plansDir, "20260806-login")
+		got, err := resolveFeatureBranch(checker, []string{repo}, plansDir, "20260806-login")
 		require.NoError(t, err)
 		assert.Equal(t, "fix/login", got)
 	})
@@ -6486,7 +6486,7 @@ func TestResolveFeatureBranchMatchesRecordOutsideRepo(t *testing.T) {
 		require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
 		writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
 
-		got, err := resolveFeatureBranch(checker, repo, plansDir, "20260806-login")
+		got, err := resolveFeatureBranch(checker, []string{repo}, plansDir, "20260806-login")
 		require.NoError(t, err)
 		assert.Equal(t, "fix/login", got)
 	})
@@ -6500,15 +6500,15 @@ func TestResolveFeatureBranchMatchesRecordOutsideRepo(t *testing.T) {
 		stale := filepath.Join(t.TempDir(), "old-checkout", "docs", "plans", "20260806-login.md")
 		writeProgressRecord(t, repo, "progress-login.txt", stale, "fix/login", 1)
 
-		got, err := resolveFeatureBranch(checker, repo, plansDir, "20260806-login")
+		got, err := resolveFeatureBranch(checker, []string{repo}, plansDir, "20260806-login")
 		require.NoError(t, err)
 		assert.Equal(t, "fix/login", got)
 	})
 }
 
 // TestResolveCloseoutBranchReadsProgressFromPrimaryWorktree covers a close-out invoked from a
-// linked worktree, which README advertises. Progress records only ever exist in the primary
-// checkout, so scanning the invoking one found no association and silently derived "login".
+// linked worktree, which README advertises. A run started from the primary checkout records
+// there, so scanning only the invoking worktree found no association and silently derived "login".
 func TestResolveCloseoutBranchReadsProgressFromPrimaryWorktree(t *testing.T) {
 	repo := setupTestRepo(t)
 	plansDir := filepath.Join(repo, "docs", "plans")
@@ -6529,6 +6529,89 @@ func TestResolveCloseoutBranchReadsProgressFromPrimaryWorktree(t *testing.T) {
 	got, err := resolveCloseoutBranch(svc, target, "--merge")
 	require.NoError(t, err)
 	assert.Equal(t, "fix/login", got)
+}
+
+// TestResolveCloseoutBranchReadsProgressFromInvokingWorktree covers the mirror case: the run was
+// started inside a linked worktree, so the progress logger resolved .loopai/progress against that
+// checkout and the record never reached the primary. Anchoring the scan at the primary alone
+// missed it and fell back to deriving "login" from the plan filename - the unrelated branch
+// --merge would then merge into base and delete.
+func TestResolveCloseoutBranchReadsProgressFromInvokingWorktree(t *testing.T) {
+	repo := setupTestRepo(t)
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	planFile := filepath.Join(plansDir, "20260806-login.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "add plan")
+	runGit(t, repo, "branch", "fix/login")
+	runGit(t, repo, "branch", "login")
+	linked := filepath.Join(t.TempDir(), "wt")
+	runGit(t, repo, "worktree", "add", linked, "fix/login")
+	// the record lives only in the linked worktree, mirroring a run launched from inside it
+	writeProgressRecord(t, linked, "progress-login.txt", planFile, "fix/login", 1)
+
+	svc, err := git.NewService(linked, noopLogger())
+	require.NoError(t, err)
+	target := closeoutTarget{identifier: "20260806-login", plansDir: filepath.Join("docs", "plans")}
+	got, err := resolveCloseoutBranch(svc, target, "--merge")
+	require.NoError(t, err)
+	assert.Equal(t, "fix/login", got)
+}
+
+// TestRecordedBranchForPlanAcrossRoots locks the cross-root precedence: both checkouts can hold
+// records for the same plan, and the newest wins regardless of which root it came from.
+func TestRecordedBranchForPlanAcrossRoots(t *testing.T) {
+	primary, linked := t.TempDir(), t.TempDir()
+	planFile := filepath.Join(primary, "docs", "plans", "20260806-login.md")
+
+	t.Run("record found in the second root", func(t *testing.T) {
+		writeProgressRecord(t, linked, "progress-login.txt", planFile, "fix/login", 1)
+		got, err := recordedBranchForPlan([]string{primary, linked}, planFile)
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login", got)
+	})
+
+	t.Run("newest record wins across roots", func(t *testing.T) {
+		writeProgressRecord(t, primary, "progress-login-rerun.txt", planFile, "fix/login-v2", 2)
+		got, err := recordedBranchForPlan([]string{primary, linked}, planFile)
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login-v2", got)
+	})
+
+	t.Run("missing progress directory is not an error", func(t *testing.T) {
+		got, err := recordedBranchForPlan([]string{t.TempDir()}, planFile)
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+}
+
+// TestProgressRecordRoots checks that the primary checkout comes first and the invoking one is
+// added only when it is a different directory, so the primary is never scanned twice.
+func TestProgressRecordRoots(t *testing.T) {
+	repo := setupTestRepo(t)
+	runGit(t, repo, "branch", "feature")
+	linked := filepath.Join(t.TempDir(), "wt")
+	runGit(t, repo, "worktree", "add", linked, "feature")
+
+	t.Run("invoked from the primary yields a single root", func(t *testing.T) {
+		svc, err := git.NewService(repo, noopLogger())
+		require.NoError(t, err)
+		roots, err := progressRecordRoots(svc)
+		require.NoError(t, err)
+		require.Len(t, roots, 1)
+		assert.True(t, sameProgressRoot(repo, roots[0]))
+	})
+
+	t.Run("invoked from a linked worktree yields primary then invoking", func(t *testing.T) {
+		svc, err := git.NewService(linked, noopLogger())
+		require.NoError(t, err)
+		roots, err := progressRecordRoots(svc)
+		require.NoError(t, err)
+		require.Len(t, roots, 2)
+		assert.True(t, sameProgressRoot(repo, roots[0]))
+		assert.True(t, sameProgressRoot(linked, roots[1]))
+	})
 }
 
 func TestRecordedPlanInRepo(t *testing.T) {
@@ -6661,7 +6744,7 @@ func TestResolveFeatureBranchIgnoresBranchLineInLogBody(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(progressDir, "progress-20260806-login.txt"), []byte(record), 0o600))
 
 	got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"master", "login", "fix/login"}},
-		repo, plansDir, "20260806-login")
+		[]string{repo}, plansDir, "20260806-login")
 	require.NoError(t, err)
 	assert.Equal(t, "fix/login", got)
 }
