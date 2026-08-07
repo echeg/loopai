@@ -6249,6 +6249,49 @@ func TestResolveFeatureBranchMissingPlansDir(t *testing.T) {
 	assert.Contains(t, err.Error(), "whatever")
 }
 
+func TestOnDiskPlanPath(t *testing.T) {
+	dir := t.TempDir()
+	onDisk := filepath.Join(dir, "20260807-MixedCase.md")
+	require.NoError(t, os.WriteFile(onDisk, []byte("# plan\n"), 0o600))
+
+	assert.Equal(t, onDisk, onDiskPlanPath(onDisk), "exact match must be returned unchanged")
+	assert.Equal(t, onDisk, onDiskPlanPath(filepath.Join(dir, "20260807-mixedcase.md")),
+		"a differently-cased name must resolve to the on-disk name")
+	unmatched := filepath.Join(dir, "20260807-absent.md")
+	assert.Equal(t, unmatched, onDiskPlanPath(unmatched))
+	unreadable := filepath.Join(dir, "no-such-dir", "20260807-plan.md")
+	assert.Equal(t, unreadable, onDiskPlanPath(unreadable))
+}
+
+func TestResolveFeatureBranchCaseInsensitiveFilesystem(t *testing.T) {
+	plansDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260807-MixedCase.md"), []byte("# plan\n"), 0o600))
+	if _, err := os.Stat(filepath.Join(plansDir, "20260807-mixedcase.md")); err != nil {
+		t.Skip("case-sensitive filesystem")
+	}
+
+	// the branch must come from the on-disk plan name, not from the case the caller typed
+	got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"MixedCase"}}, plansDir, "20260807-mixedcase")
+	require.NoError(t, err)
+	assert.Equal(t, "MixedCase", got)
+}
+
+func TestResolveCloseoutBranchAnchorsPlansDirAtRepoRoot(t *testing.T) {
+	dir := setupTestRepo(t)
+	runGit(t, dir, "branch", "feature")
+	writeFeaturePlan(t, dir)
+	svc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	nested := filepath.Join(dir, "nested")
+	require.NoError(t, os.MkdirAll(nested, 0o750))
+	t.Chdir(nested)
+
+	target := closeoutTarget{identifier: "20260807-feature", plansDir: filepath.Join("docs", "plans")}
+	got, err := resolveCloseoutBranch(svc, target, "--merge")
+	require.NoError(t, err)
+	assert.Equal(t, "feature", got)
+}
+
 func TestValidateCloseoutFlagsFeatureArgument(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -6418,6 +6461,26 @@ func TestRunMergeCommandExplicitFeature(t *testing.T) {
 		assert.False(t, branchExists(t, dir, "feature"))
 		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
 		assert.Equal(t, 1, clearer.calls)
+	})
+
+	t.Run("stale feature worktree registration reports prune guidance", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "checkout", "master")
+		worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
+		runGit(t, dir, "worktree", "add", worktreePath, "feature")
+		// the registration survives a hand-deleted directory until it is pruned
+		require.NoError(t, os.RemoveAll(worktreePath))
+		t.Cleanup(func() { runGit(t, dir, "worktree", "prune") })
+		clearer := &recordingStatusClearer{}
+
+		err := runMergeCommand(t.Context(), mainSvc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "git worktree prune")
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
 	})
 
 	t.Run("dirty feature worktree is refused", func(t *testing.T) {

@@ -2344,6 +2344,7 @@ func findFeaturePlanFile(identifier string, dirs ...string) string {
 }
 
 // existingPlanFile returns path if it names a regular file, retrying with an added .md extension.
+// the result carries the on-disk filename case so the derived branch matches the one Git created.
 func existingPlanFile(path string) string {
 	candidates := []string{path}
 	if filepath.Ext(path) != ".md" {
@@ -2351,10 +2352,35 @@ func existingPlanFile(path string) string {
 	}
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
-			return candidate
+			return onDiskPlanPath(candidate)
 		}
 	}
 	return ""
+}
+
+// onDiskPlanPath returns path with the actual filename case recorded in its parent directory.
+// os.Stat matches case-insensitively on macOS and Windows, so a caller-supplied case can differ
+// from the name plan.ExtractBranchName must derive the branch from; this mirrors the case
+// resolution git.Service applies to plan files.
+func onDiskPlanPath(path string) string {
+	dir, base := filepath.Dir(path), filepath.Base(path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return path
+	}
+	var foldMatch string
+	for _, entry := range entries {
+		if entry.Name() == base {
+			return path
+		}
+		if foldMatch == "" && strings.EqualFold(entry.Name(), base) {
+			foldMatch = filepath.Join(dir, entry.Name())
+		}
+	}
+	if foldMatch != "" {
+		return foldMatch
+	}
+	return path
 }
 
 // closeoutTarget carries the optional feature identifier supplied as the positional argument of
@@ -2369,7 +2395,9 @@ type closeoutTarget struct {
 // explicitly named feature when given, otherwise the currently checked-out branch.
 func resolveCloseoutBranch(gitSvc *git.Service, target closeoutTarget, flagName string) (string, error) {
 	if strings.TrimSpace(target.identifier) != "" {
-		return resolveFeatureBranch(gitSvc, target.plansDir, target.identifier)
+		// anchor the plans directory at the invoking checkout's root, matching the PR metadata
+		// lookup, so resolution does not depend on the process working directory
+		return resolveFeatureBranch(gitSvc, plansDirPath(gitSvc.Root(), target.plansDir), target.identifier)
 	}
 	branch, err := gitSvc.CurrentBranch()
 	if err != nil {
@@ -2515,7 +2543,8 @@ func prepareMergeWorktrees(gitSvc *git.Service, feature, base string, explicit b
 // worktree: the merge runs there, and no worktree is removed afterwards.
 func primaryMergeTargets(gitSvc *git.Service, feature, base, basePath, primaryPath string) (mergeTargets, error) {
 	if basePath != "" && filepath.Clean(basePath) != filepath.Clean(primaryPath) {
-		return mergeTargets{}, fmt.Errorf("cannot close branch %q from the primary worktree while base branch %q is checked out at %q", feature, base, basePath)
+		return mergeTargets{}, fmt.Errorf("cannot close branch %q: it is checked out in the primary worktree %q while base branch %q is checked out at %q",
+			feature, primaryPath, base, basePath)
 	}
 	primarySvc, err := openMergeWorktree(gitSvc, primaryPath)
 	if err != nil {
@@ -2547,6 +2576,11 @@ func requireCleanFeatureWorktree(featureSvc *git.Service) error {
 func openMergeWorktree(gitSvc *git.Service, path string) (*git.Service, error) {
 	if filepath.Clean(path) == filepath.Clean(gitSvc.Root()) {
 		return gitSvc, nil
+	}
+	// a worktree whose directory was deleted by hand stays registered until it is pruned, and the
+	// close-out must not delete a branch Git still considers checked out there
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("registered worktree %q is missing; run \"git worktree prune\" and retry: %w", path, err)
 	}
 	svc, err := gitSvc.OpenWorktree(path)
 	if err != nil {
