@@ -968,6 +968,7 @@ type codexPendingCommand struct {
 	sessionID         string
 	requiresProof     bool
 	structuredProof   bool
+	sessionProofBlock int
 	yieldAfter        time.Duration
 	proofEventTime    time.Time
 	proofArrival      time.Time
@@ -1009,7 +1010,9 @@ var (
 	customTextCallPattern    = regexp.MustCompile(`\btext\s*\(`)
 	customRawOutput          = regexp.MustCompile(`\btext\s*\(\s*[A-Za-z_$][A-Za-z0-9_$]*\.output\s*\)`)
 	customDestructuredRest   = regexp.MustCompile(`(?s)(?:const|let|var)\s*\{[^}]*\.\.\.\s*([A-Za-z_$][A-Za-z0-9_$]*)[^}]*\}\s*=\s*await\s+tools\.exec_command`)
+	customResultVariable     = regexp.MustCompile(`(?s)^\s*(?:(?://[^\n]*\n)\s*)*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*await\s*$`)
 	outputSessionIDPattern   = regexp.MustCompile(`(?im)^(?:SESSION_ID\s*=|session(?:_|\s+)id["']?\s*[:=]\s*|Process running with session ID\s+)(\d+)\s*$`)
+	outputSessionProofBlock  = regexp.MustCompile(`^SESSION_ID=(\d+)$`)
 	outputCellIDPattern      = regexp.MustCompile(`(?im)^(?:Script running with cell ID\s*|cell_id["']?\s*[:=]\s*)(\d+)\s*$`)
 	exitCodePattern          = regexp.MustCompile(`(?im)^(?:EXIT_CODE\s*=|exit_code["']?\s*:\s*|Process exited with code\s+)(-?\d+)\s*$`)
 )
@@ -1231,6 +1234,10 @@ func customExecPendingCommands(input string, matches [][]int, eventTime, arrival
 		}
 	}
 	structuredProof := customToolEmitsStructuredResults(input)
+	sessionProofBlock := 0
+	if len(accepted) == 1 {
+		sessionProofBlock = customSessionProofBlock(input, accepted[0][0])
+	}
 	pending := make([]codexPendingCommand, 0, len(accepted))
 	for index, match := range accepted {
 		literal := input[match[2]:match[3]]
@@ -1243,15 +1250,42 @@ func customExecPendingCommands(input string, matches [][]int, eventTime, arrival
 			end = accepted[index+1][0]
 		}
 		pending = append(pending, codexPendingCommand{
-			start:           codexCommandStart{command: command, eventTime: eventTime, arrival: arrival},
-			requiresProof:   true,
-			structuredProof: structuredProof,
-			yieldAfter:      customExecYieldAfter(input[match[0]:end]),
-			proofEventTime:  eventTime,
-			proofArrival:    arrival,
+			start:             codexCommandStart{command: command, eventTime: eventTime, arrival: arrival},
+			requiresProof:     true,
+			structuredProof:   structuredProof,
+			sessionProofBlock: sessionProofBlock,
+			yieldAfter:        customExecYieldAfter(input[match[0]:end]),
+			proofEventTime:    eventTime,
+			proofArrival:      arrival,
 		})
 	}
 	return pending
+}
+
+// customSessionProofBlock returns the output block occupied by the standard
+// session-ID text emission for a single directly assigned exec result. Custom
+// tool output block zero is the tool status envelope; subsequent blocks map to
+// text(...) calls in source order. Requiring the marker to be the final text
+// call lets the result parser distinguish it from command stdout.
+func customSessionProofBlock(input string, callStart int) int {
+	statementStart, ok := customTopLevelStatementStart(input, callStart)
+	if !ok {
+		return 0
+	}
+	match := customResultVariable.FindStringSubmatch(input[statementStart:callStart])
+	if len(match) != 2 {
+		return 0
+	}
+	arguments := customTextCallArguments(input)
+	if len(arguments) == 0 {
+		return 0
+	}
+	variable := match[1]
+	expected := "`SESSION_ID=${" + variable + ".session_id}`"
+	if strings.TrimSpace(arguments[len(arguments)-1]) != expected {
+		return 0
+	}
+	return len(arguments)
 }
 
 func customMappedExecPendingCommands(input string, eventTime, arrival time.Time) []codexPendingCommand {
@@ -1896,16 +1930,36 @@ func trustedPendingResults(pending []codexPendingCommand, outputs []string) map[
 		tracked++
 		structuredProof = structuredProof && command.structuredProof
 	}
-	if structuredProof && tracked > 0 {
-		return parseCodexCommandResults(outputs, len(pending))
-	}
 	results := make(map[int]codexCommandResult)
-	if len(pending) == 1 {
+	if structuredProof && tracked > 0 {
+		results = parseCodexCommandResults(outputs, len(pending))
+	} else if len(pending) == 1 {
 		if result, found := parseTextCommandResult(strings.Join(outputs, "\n")); found {
 			results[0] = result
 		}
 	}
+	if len(pending) == 1 {
+		if _, found := results[0]; !found {
+			if result, ok := parseSessionProofBlock(outputs, pending[0].sessionProofBlock); ok {
+				results[0] = result
+			}
+		}
+	}
 	return results
+}
+
+func parseSessionProofBlock(outputs []string, block int) (codexCommandResult, bool) {
+	if block <= 0 || len(outputs) != block+1 {
+		return codexCommandResult{}, false
+	}
+	if _, ok := commandStatusEnvelope(outputs[0]); !ok {
+		return codexCommandResult{}, false
+	}
+	matches := outputSessionProofBlock.FindStringSubmatch(strings.TrimSpace(outputs[block]))
+	if len(matches) != 2 {
+		return codexCommandResult{}, false
+	}
+	return codexCommandResult{sessionID: matches[1]}, true
 }
 
 func (e *CodexExecutor) emitResolvedCommandTiming(command codexPendingCommand, pendingCount int, result codexCommandResult, eventTime, arrival time.Time) {

@@ -2321,6 +2321,71 @@ func TestCodexExecutor_trackRolloutCommandTiming_CustomExecRequiresCompletionPro
 	assert.Len(t, state.unproven, 1)
 }
 
+func TestCodexExecutor_trackRolloutCommandTiming_ExplicitSessionProofSurvivesDelayedPoll(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, duration time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: duration})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:1000}); text(r.output); if (r.session_id) text(` + "`SESSION_ID=${r.session_id}`" + `);"}}`,
+		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":[{"type":"input_text","text":"Script completed\nWall time 1.0 seconds\nOutput:\n"},{"type":"input_text","text":""},{"type":"input_text","text":"SESSION_ID=19633"}]}}`,
+		`{"timestamp":"2026-08-07T09:01:40Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({session_id:19633,yield_time_ms:30000}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:01:41Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":[{"type":"input_text","text":"Script completed\nWall time 1.0 seconds\nOutput:\n"},{"type":"input_text","text":"ok"}]}}`,
+	}
+	for index, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+		if index == 1 {
+			assert.Empty(t, state.unproven)
+			assert.Contains(t, state.sessions, "19633")
+		}
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{{command: "make test", duration: 101 * time.Second}}, captured)
+	assert.Empty(t, state.sessions)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_SessionProofCannotComeFromStdout(t *testing.T) {
+	e := &CodexExecutor{CommandTimingHandler: func(string, time.Duration) { t.Fatal("unexpected timing") }}
+	tests := []struct {
+		name  string
+		input string
+		out   json.RawMessage
+	}{
+		{
+			name:  "declared marker omitted",
+			input: `const r = await tools.exec_command({cmd:"make test",yield_time_ms:250}); text(r.output); if (r.session_id) text(` + "`SESSION_ID=${r.session_id}`" + `);`,
+			out:   json.RawMessage(`[{"text":"Script completed\nWall time 0.4 seconds\nOutput:\n"},{"text":"SESSION_ID=42"}]`),
+		},
+		{
+			name:  "marker emission not declared",
+			input: `const r = await tools.exec_command({cmd:"make test",yield_time_ms:250}); text(r.output);`,
+			out:   json.RawMessage(`[{"text":"Script completed\nWall time 0.4 seconds\nOutput:\n"},{"text":""},{"text":"SESSION_ID=42"}]`),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := newCodexTimingState()
+			e.trackCustomToolCall(rolloutPayload{Name: "exec", CallID: "start", Input: tt.input}, time.Now(), state, time.Now)
+			e.trackToolOutput(rolloutPayload{CallID: "start", Output: tt.out}, time.Now().Add(time.Second), state, time.Now)
+
+			assert.Empty(t, state.sessions)
+			assert.Len(t, state.unproven, 1)
+		})
+	}
+}
+
 func TestCodexExecutor_trackRolloutCommandTiming_RawJSONStdoutIsNotCompletionProof(t *testing.T) {
 	var captured []string
 	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
