@@ -6310,6 +6310,170 @@ func TestRunMergeCommandExplicitFeature(t *testing.T) {
 		assert.Zero(t, clearer.calls)
 		assert.True(t, branchExists(t, dir, "feature"))
 	})
+
+	t.Run("merges from primary checkout without a feature worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		runGit(t, dir, "checkout", "master")
+		clearer := &recordingStatusClearer{}
+		var output bytes.Buffer
+
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, &output))
+		assert.Equal(t, "master", currentGitBranch(t, dir))
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
+		assert.Equal(t, 1, clearer.calls)
+		assert.Contains(t, output.String(), "feature into master (fast-forward)")
+	})
+
+	t.Run("merges from primary checkout with a base merge commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		runGit(t, dir, "checkout", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o600))
+		runGit(t, dir, "add", "base.txt")
+		runGit(t, dir, "commit", "-m", "advance base")
+		var output bytes.Buffer
+
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "feature"}, &recordingStatusClearer{}, &output))
+		assert.Equal(t, "master", currentGitBranch(t, dir))
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Contains(t, output.String(), "feature into master (merge commit)")
+		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "master:feature.txt"))
+	})
+
+	t.Run("merges from an unrelated worktree without a feature worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "checkout", "master")
+		runGit(t, dir, "branch", "sidebar", "master")
+		sidePath := filepath.Join(t.TempDir(), "sidebar")
+		runGit(t, dir, "worktree", "add", sidePath, "sidebar")
+		t.Cleanup(func() { _ = mainSvc.RemoveWorktree(sidePath) })
+		sideSvc, err := git.NewService(sidePath, noopLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, runMergeCommand(t.Context(), sideSvc, "master",
+			closeoutTarget{identifier: "feature"}, &recordingStatusClearer{}, io.Discard))
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "master:feature.txt"))
+		assert.Equal(t, "master", currentGitBranch(t, dir))
+		assert.Equal(t, "sidebar", currentGitBranch(t, sidePath))
+	})
+
+	t.Run("removes a registered feature worktree", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "checkout", "master")
+		worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
+		runGit(t, dir, "worktree", "add", worktreePath, "feature")
+		clearer := &recordingStatusClearer{}
+
+		require.NoError(t, runMergeCommand(t.Context(), mainSvc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, io.Discard))
+		assert.NoDirExists(t, worktreePath)
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
+		assert.Equal(t, 1, clearer.calls)
+	})
+
+	t.Run("dirty feature worktree is refused", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "checkout", "master")
+		worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
+		runGit(t, dir, "worktree", "add", worktreePath, "feature")
+		t.Cleanup(func() { _ = mainSvc.RemoveWorktree(worktreePath) })
+		require.NoError(t, os.WriteFile(filepath.Join(worktreePath, "feature.txt"), []byte("dirty\n"), 0o600))
+		clearer := &recordingStatusClearer{}
+
+		err := runMergeCommand(t.Context(), mainSvc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "clean feature worktree")
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.DirExists(t, worktreePath)
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("dirty primary checkout holding the feature is refused", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "branch", "sidebar", "master")
+		sidePath := filepath.Join(t.TempDir(), "sidebar")
+		runGit(t, dir, "worktree", "add", sidePath, "sidebar")
+		t.Cleanup(func() { _ = mainSvc.RemoveWorktree(sidePath) })
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("dirty\n"), 0o600))
+		sideSvc, err := git.NewService(sidePath, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		err = runMergeCommand(t.Context(), sideSvc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "clean feature worktree")
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature", currentGitBranch(t, dir))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("feature resolving to the base branch is refused", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		runGit(t, dir, "checkout", "master")
+		clearer := &recordingStatusClearer{}
+
+		err := runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "master"}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "already the base branch")
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("conflict aborts and keeps the feature branch", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "commit", "-am", "feature change")
+		runGit(t, dir, "checkout", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("base\n"), 0o600))
+		runGit(t, dir, "commit", "-am", "base change")
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		err = runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, io.Discard)
+		require.ErrorIs(t, err, git.ErrMergeConflict)
+		assert.Contains(t, err.Error(), "conflicted and was aborted")
+		assert.Equal(t, "master", currentGitBranch(t, dir))
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
+	})
+
+	t.Run("detached primary checkout merges an explicit feature", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		makeFeature(t, dir)
+		runGit(t, dir, "checkout", "--detach", "master")
+		originalHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "feature"}, &recordingStatusClearer{}, io.Discard))
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "master:feature.txt"))
+		assert.Empty(t, currentGitBranch(t, dir))
+		assert.Equal(t, originalHead, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+	})
 }
 
 func TestRunPRCommandExplicitFeatureResolverError(t *testing.T) {

@@ -32,6 +32,7 @@ type backend interface {
 	getDefaultBranch() string
 	validateBranchName(name string) error
 	branchExists(name string) bool
+	branchHash(name string) (string, error)
 	createBranch(name string) error
 	checkoutBranch(name string) error
 	mergeBranch(ctx context.Context, name, expectedHead string) error
@@ -295,6 +296,19 @@ func (s *Service) BranchExists(name string) bool {
 		return false
 	}
 	return s.repo.branchExists(name)
+}
+
+// BranchHash returns the commit hash a local branch points at, without requiring it to be
+// checked out anywhere.
+func (s *Service) BranchHash(name string) (string, error) {
+	if name == "" {
+		return "", errors.New("branch head: empty branch name")
+	}
+	hash, err := s.repo.branchHash(name)
+	if err != nil {
+		return "", fmt.Errorf("branch head: %w", err)
+	}
+	return hash, nil
 }
 
 // ResolveBaseBranch validates an explicit local base branch or auto-detects main/master.

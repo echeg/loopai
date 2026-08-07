@@ -358,6 +358,15 @@ func (e *externalBackend) branchExists(name string) bool {
 	return e.refExists("refs/heads/" + name)
 }
 
+// branchHash returns the commit hash a local branch points at.
+func (e *externalBackend) branchHash(name string) (string, error) {
+	out, err := e.run("rev-parse", "--verify", "refs/heads/"+name)
+	if err != nil {
+		return "", fmt.Errorf("get branch %q head: %w", name, err)
+	}
+	return out, nil
+}
+
 // createBranch creates a new branch and switches to it.
 func (e *externalBackend) createBranch(name string) error {
 	_, err := e.run("checkout", "-b", name)

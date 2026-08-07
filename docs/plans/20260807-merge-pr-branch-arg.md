@@ -87,12 +87,14 @@ This directly fixes the workflow gap where a finished worktree run cannot be clo
 
 ### Task 3: Explicit feature support in runMergeCommand
 
-- [ ] write failing tests for `--merge <feature>` run from the primary checkout on the base branch: feature worktree registered and clean → merged, worktree removed, branch deleted; feature worktree missing → merged directly in base worktree, branch deleted, no worktree cleanup attempted; dirty feature worktree → clean-tree error; feature resolving to base → "already the base branch" error; unknown feature → resolver error propagated
-- [ ] refactor `runMergeCommand`: when an explicit feature is given, resolve it via `resolveFeatureBranch` instead of `CurrentBranch()`, and locate the feature worktree from `Worktrees()` instead of requiring the current checkout to be it
-- [ ] adjust `prepareMergeWorktrees` (or add a sibling path) to support: feature checked out in a registered worktree elsewhere, and feature not checked out anywhere (merge executes in the base worktree; skip worktree cleanup)
-- [ ] keep ancestry verification, conflict abort as `git.ErrMergeConflict`, branch deletion only after verified cleanup, and pill clearing unchanged
-- [ ] verify no-argument behavior is untouched (existing tests must pass unmodified)
-- [ ] run `go test ./cmd/... ./pkg/git/...` - must pass before task 4
+- [x] write failing tests for `--merge <feature>` run from the primary checkout on the base branch: feature worktree registered and clean → merged, worktree removed, branch deleted; feature worktree missing → merged directly in base worktree, branch deleted, no worktree cleanup attempted; dirty feature worktree → clean-tree error; feature resolving to base → "already the base branch" error; unknown feature → resolver error propagated
+- [x] refactor `runMergeCommand`: when an explicit feature is given, resolve it via `resolveFeatureBranch` instead of `CurrentBranch()`, and locate the feature worktree from `Worktrees()` instead of requiring the current checkout to be it
+- [x] adjust `prepareMergeWorktrees` (or add a sibling path) to support: feature checked out in a registered worktree elsewhere, and feature not checked out anywhere (merge executes in the base worktree; skip worktree cleanup)
+- [x] keep ancestry verification, conflict abort as `git.ErrMergeConflict`, branch deletion only after verified cleanup, and pill clearing unchanged
+- [x] verify no-argument behavior is untouched (existing tests must pass unmodified)
+- [x] run `go test ./cmd/... ./pkg/git/...` - must pass before task 4
+- ➕ added `git.Service.BranchHash` (plus backend `branchHash`) so the merge can read the feature head without the branch being checked out; covered by new `pkg/git` tests
+- ➕ `prepareMergeWorktrees` now returns a `mergeTargets` struct (merge worktree, optional feature worktree/path, primary path) instead of four values; feature-worktree cleanliness is validated before the merge, not only before cleanup
 
 ### Task 4: Explicit feature support in runPRCommand
 

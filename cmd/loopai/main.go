@@ -2393,6 +2393,7 @@ func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase stri
 		return errors.New("--merge requires a clean working tree; commit, stash, or remove changes first")
 	}
 
+	explicit := strings.TrimSpace(target.identifier) != ""
 	feature, err := resolveCloseoutBranch(gitSvc, target, "--merge")
 	if err != nil {
 		return err
@@ -2402,30 +2403,33 @@ func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase stri
 		return fmt.Errorf("resolve merge base branch: %w", err)
 	}
 	if feature == base {
+		if explicit {
+			return fmt.Errorf("feature %q is already the base branch; name a different feature", base)
+		}
 		return fmt.Errorf("current branch %q is already the base branch; check out the feature branch first", base)
 	}
 
-	mergeSvc, featurePath, primaryPath, err := prepareMergeWorktrees(gitSvc, feature, base)
+	targets, err := prepareMergeWorktrees(gitSvc, feature, base, explicit)
 	if err != nil {
 		return err
 	}
 
-	featureHead, err := gitSvc.HeadHash()
+	featureHead, err := gitSvc.BranchHash(feature)
 	if err != nil {
 		return fmt.Errorf("read feature branch head: %w", err)
 	}
-	mergeResult, err := mergeForCloseout(ctx, mergeSvc, feature, base, featureHead)
+	mergeResult, err := mergeForCloseout(ctx, targets.mergeSvc, feature, base, featureHead)
 	if err != nil {
 		return err
 	}
 
-	if cleanupErr := cleanupMergedWorktree(gitSvc, mergeSvc, feature, featurePath, primaryPath); cleanupErr != nil {
-		return restoreMergeWorktree(mergeSvc, mergeResult, cleanupErr)
+	if cleanupErr := cleanupMergedWorktree(targets, feature); cleanupErr != nil {
+		return restoreMergeWorktree(targets.mergeSvc, mergeResult, cleanupErr)
 	}
-	if deleteErr := mergeSvc.DeleteBranch(feature); deleteErr != nil {
-		return restoreMergeWorktree(mergeSvc, mergeResult, fmt.Errorf("delete merged feature branch: %w", deleteErr))
+	if deleteErr := targets.mergeSvc.DeleteBranch(feature); deleteErr != nil {
+		return restoreMergeWorktree(targets.mergeSvc, mergeResult, fmt.Errorf("delete merged feature branch: %w", deleteErr))
 	}
-	if restoreErr := restoreMergeWorktree(mergeSvc, mergeResult, nil); restoreErr != nil {
+	if restoreErr := restoreMergeWorktree(targets.mergeSvc, mergeResult, nil); restoreErr != nil {
 		return restoreErr
 	}
 	if rep != nil {
@@ -2435,43 +2439,112 @@ func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase stri
 	return nil
 }
 
-func prepareMergeWorktrees(gitSvc *git.Service, feature, base string) (mergeSvc *git.Service, featurePath, primaryPath string, err error) {
+// mergeTargets describes where a close-out merge executes and which feature worktree, if any,
+// must be cleaned up afterwards. featureSvc and featurePath are empty when the feature branch is
+// not checked out in any registered worktree, in which case the merge only deletes the branch.
+type mergeTargets struct {
+	mergeSvc    *git.Service
+	featureSvc  *git.Service
+	featurePath string
+	primaryPath string
+}
+
+// prepareMergeWorktrees locates the worktree the merge runs in and the feature worktree to clean
+// up. without an explicit feature the feature branch must be checked out at gitSvc's root, which
+// keeps the no-argument close-out behavior unchanged. with an explicit feature the command may run
+// from anywhere in the repository and the feature may have no worktree at all.
+func prepareMergeWorktrees(gitSvc *git.Service, feature, base string, explicit bool) (mergeTargets, error) {
 	worktrees, err := gitSvc.Worktrees()
 	if err != nil {
-		return nil, "", "", fmt.Errorf("inspect repository worktrees: %w", err)
+		return mergeTargets{}, fmt.Errorf("inspect repository worktrees: %w", err)
 	}
 	if len(worktrees) == 0 {
-		return nil, "", "", errors.New("inspect repository worktrees: Git returned no registered worktrees")
+		return mergeTargets{}, errors.New("inspect repository worktrees: Git returned no registered worktrees")
 	}
-	primaryPath = worktrees[0].Path
-	featurePath = worktreePathForBranch(worktrees, feature)
+	primaryPath := worktrees[0].Path
+	featurePath := worktreePathForBranch(worktrees, feature)
 	basePath := worktreePathForBranch(worktrees, base)
-	if featurePath == "" || filepath.Clean(featurePath) != filepath.Clean(gitSvc.Root()) {
-		return nil, "", "", fmt.Errorf("current branch %q is not registered at repository root %q", feature, gitSvc.Root())
+	if !explicit && (featurePath == "" || filepath.Clean(featurePath) != filepath.Clean(gitSvc.Root())) {
+		return mergeTargets{}, fmt.Errorf("current branch %q is not registered at repository root %q", feature, gitSvc.Root())
 	}
-	if filepath.Clean(featurePath) == filepath.Clean(primaryPath) {
-		if basePath != "" && filepath.Clean(basePath) != filepath.Clean(primaryPath) {
-			return nil, "", "", fmt.Errorf("cannot close branch %q from the primary worktree while base branch %q is checked out at %q", feature, base, basePath)
-		}
-		return gitSvc, featurePath, primaryPath, nil
+
+	if featurePath != "" && filepath.Clean(featurePath) == filepath.Clean(primaryPath) {
+		return primaryMergeTargets(gitSvc, feature, base, basePath, primaryPath)
 	}
 
 	mergePath := primaryPath
 	if basePath != "" {
 		mergePath = basePath
 	}
-	mergeSvc, err = gitSvc.OpenWorktree(mergePath)
+	mergeSvc, err := openMergeWorktree(gitSvc, mergePath)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("open base worktree %q: %w", mergePath, err)
+		return mergeTargets{}, err
 	}
 	baseDirty, err := mergeSvc.IsDirtyAll()
 	if err != nil {
-		return nil, "", "", fmt.Errorf("check base worktree: %w", err)
+		return mergeTargets{}, fmt.Errorf("check base worktree: %w", err)
 	}
 	if baseDirty {
-		return nil, "", "", fmt.Errorf("--merge requires a clean base worktree at %s", mergeSvc.Root())
+		return mergeTargets{}, fmt.Errorf("--merge requires a clean base worktree at %s", mergeSvc.Root())
 	}
-	return mergeSvc, featurePath, primaryPath, nil
+	if featurePath == "" {
+		return mergeTargets{mergeSvc: mergeSvc, primaryPath: primaryPath}, nil
+	}
+
+	featureSvc, err := openMergeWorktree(gitSvc, featurePath)
+	if err != nil {
+		return mergeTargets{}, err
+	}
+	if cleanErr := requireCleanFeatureWorktree(featureSvc); cleanErr != nil {
+		return mergeTargets{}, cleanErr
+	}
+	return mergeTargets{mergeSvc: mergeSvc, featureSvc: featureSvc, featurePath: featurePath, primaryPath: primaryPath}, nil
+}
+
+// primaryMergeTargets handles the case where the feature branch is checked out in the primary
+// worktree: the merge runs there, and no worktree is removed afterwards.
+func primaryMergeTargets(gitSvc *git.Service, feature, base, basePath, primaryPath string) (mergeTargets, error) {
+	if basePath != "" && filepath.Clean(basePath) != filepath.Clean(primaryPath) {
+		return mergeTargets{}, fmt.Errorf("cannot close branch %q from the primary worktree while base branch %q is checked out at %q", feature, base, basePath)
+	}
+	primarySvc, err := openMergeWorktree(gitSvc, primaryPath)
+	if err != nil {
+		return mergeTargets{}, err
+	}
+	// the merge runs in the feature's own worktree here; when the command was invoked from
+	// somewhere else that tree is not covered by the caller's working-tree check yet
+	if primarySvc != gitSvc {
+		if cleanErr := requireCleanFeatureWorktree(primarySvc); cleanErr != nil {
+			return mergeTargets{}, cleanErr
+		}
+	}
+	return mergeTargets{mergeSvc: primarySvc, featureSvc: primarySvc, featurePath: primaryPath, primaryPath: primaryPath}, nil
+}
+
+// requireCleanFeatureWorktree rejects a feature worktree with uncommitted changes before the merge
+// touches it, so no work is lost by the later cleanup.
+func requireCleanFeatureWorktree(featureSvc *git.Service) error {
+	dirty, err := featureSvc.IsDirtyAll()
+	if err != nil {
+		return fmt.Errorf("check feature worktree: %w", err)
+	}
+	if dirty {
+		return fmt.Errorf("--merge requires a clean feature worktree at %s", featureSvc.Root())
+	}
+	return nil
+}
+
+// openMergeWorktree returns gitSvc itself when path already names its root, avoiding a redundant
+// repository open for the common single-worktree case.
+func openMergeWorktree(gitSvc *git.Service, path string) (*git.Service, error) {
+	if filepath.Clean(path) == filepath.Clean(gitSvc.Root()) {
+		return gitSvc, nil
+	}
+	svc, err := gitSvc.OpenWorktree(path)
+	if err != nil {
+		return nil, fmt.Errorf("open worktree %q: %w", path, err)
+	}
+	return svc, nil
 }
 
 func worktreePathForBranch(worktrees []git.Worktree, branch string) string {
@@ -2564,30 +2637,33 @@ func restoreCheckout(gitSvc *git.Service, branch, head string) error {
 	return nil
 }
 
-func cleanupMergedWorktree(featureSvc, mergeSvc *git.Service, feature, featurePath, primaryPath string) error {
-	if filepath.Clean(featurePath) == filepath.Clean(primaryPath) {
+// cleanupMergedWorktree removes the feature worktree after a successful merge. it is a no-op when
+// the feature has no worktree of its own, either because it was never checked out or because it
+// shares the primary worktree.
+func cleanupMergedWorktree(targets mergeTargets, feature string) error {
+	if targets.featurePath == "" || filepath.Clean(targets.featurePath) == filepath.Clean(targets.primaryPath) {
 		return nil
 	}
 	// Revalidate both identity and cleanliness immediately before removal. The standalone
 	// close-out command must never force-delete an unrelated or newly modified worktree.
-	latest, err := mergeSvc.Worktrees()
+	latest, err := targets.mergeSvc.Worktrees()
 	if err != nil {
 		return fmt.Errorf("revalidate feature worktree: %w", err)
 	}
-	if registeredPath := worktreePathForBranch(latest, feature); filepath.Clean(registeredPath) != filepath.Clean(featurePath) {
-		return fmt.Errorf("refuse to remove worktree %q: it is no longer registered for branch %q", featurePath, feature)
+	if registeredPath := worktreePathForBranch(latest, feature); filepath.Clean(registeredPath) != filepath.Clean(targets.featurePath) {
+		return fmt.Errorf("refuse to remove worktree %q: it is no longer registered for branch %q", targets.featurePath, feature)
 	}
-	dirty, err := featureSvc.IsDirtyAll()
+	dirty, err := targets.featureSvc.IsDirtyAll()
 	if err != nil {
 		return fmt.Errorf("recheck feature worktree: %w", err)
 	}
 	if dirty {
-		return fmt.Errorf("refuse to remove modified feature worktree at %s", featurePath)
+		return fmt.Errorf("refuse to remove modified feature worktree at %s", targets.featurePath)
 	}
-	if err := leaveWorktreeBeforeRemoval(featurePath, mergeSvc.Root()); err != nil {
+	if err := leaveWorktreeBeforeRemoval(targets.featurePath, targets.mergeSvc.Root()); err != nil {
 		return err
 	}
-	if err := mergeSvc.RemoveWorktreeSafe(featurePath); err != nil {
+	if err := targets.mergeSvc.RemoveWorktreeSafe(targets.featurePath); err != nil {
 		return fmt.Errorf("clean up worktree for %q: %w", feature, err)
 	}
 	return nil
