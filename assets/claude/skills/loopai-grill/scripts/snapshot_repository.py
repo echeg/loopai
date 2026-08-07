@@ -44,6 +44,8 @@ def git_visible_paths(root: Path) -> list[str]:
     result = subprocess.run(
         [
             "git",
+            "-c",
+            "core.fsmonitor=false",
             "-C",
             os.fspath(root),
             "ls-files",
@@ -61,6 +63,7 @@ def git_visible_paths(root: Path) -> list[str]:
         raise SnapshotError(f"cannot enumerate Git-visible files: {detail or 'git failed'}")
 
     paths: list[str] = []
+    seen_paths: set[str] = set()
     for raw_path in result.stdout.split(b"\0"):
         if not raw_path:
             continue
@@ -73,6 +76,9 @@ def git_visible_paths(root: Path) -> list[str]:
             ".loopai-grill-recovery-"
         ):
             continue
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
         paths.append(path)
     return paths
 

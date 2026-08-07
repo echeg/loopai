@@ -520,6 +520,37 @@ standalone_template="$standalone_skill_dir/../loopai-plan/SKILL.md"
 [[ -f "$standalone_template" && -r "$standalone_template" && ! -L "$standalone_template" ]] ||
 	fail "documented standalone layout did not expose the sibling loopai-plan template"
 
+mkdir -p "$fixture/fsmonitor-repo" "$fixture/fsmonitor-snapshot"
+git -C "$fixture/fsmonitor-repo" init -q
+printf '%s\n' 'snapshot input' >"$fixture/fsmonitor-repo/tracked.txt"
+git -C "$fixture/fsmonitor-repo" add tracked.txt
+printf '%s\n' '#!/bin/sh' 'printf invoked >"$FSMONITOR_MARKER"' 'printf token' >"$fixture/fsmonitor-hook"
+chmod +x "$fixture/fsmonitor-hook"
+git -C "$fixture/fsmonitor-repo" config core.fsmonitor "$fixture/fsmonitor-hook"
+FSMONITOR_MARKER="$fixture/fsmonitor-marker" \
+	python3 "$snapshot_helper" "$fixture/fsmonitor-repo" "$fixture/fsmonitor-snapshot"
+[[ ! -e "$fixture/fsmonitor-marker" ]] || fail "snapshot enumeration executed a configured fsmonitor hook"
+
+mkdir -p "$fixture/conflict-repo" "$fixture/conflict-snapshot"
+git -C "$fixture/conflict-repo" init -q -b main
+git -C "$fixture/conflict-repo" config user.name 'Snapshot Test'
+git -C "$fixture/conflict-repo" config user.email 'snapshot@example.invalid'
+printf '%s\n' 'base' >"$fixture/conflict-repo/conflicted.txt"
+git -C "$fixture/conflict-repo" add conflicted.txt
+git -C "$fixture/conflict-repo" commit -qm base
+git -C "$fixture/conflict-repo" checkout -qb side
+printf '%s\n' 'side' >"$fixture/conflict-repo/conflicted.txt"
+git -C "$fixture/conflict-repo" commit -qam side
+git -C "$fixture/conflict-repo" checkout -q main
+printf '%s\n' 'main' >"$fixture/conflict-repo/conflicted.txt"
+git -C "$fixture/conflict-repo" commit -qam main
+if git -C "$fixture/conflict-repo" merge side >/dev/null 2>&1; then
+	fail "snapshot conflict fixture merged cleanly"
+fi
+python3 "$snapshot_helper" "$fixture/conflict-repo" "$fixture/conflict-snapshot"
+cmp "$fixture/conflict-repo/conflicted.txt" "$fixture/conflict-snapshot/conflicted.txt" ||
+	fail "snapshot did not copy an unresolved conflict exactly once"
+
 printf '%s\n' '.env' 'ignored-cache/' >"$fixture/repo/.gitignore"
 printf '%s\n' 'ignored secret' >"$fixture/repo/.env"
 mkdir -p "$fixture/repo/ignored-cache"
