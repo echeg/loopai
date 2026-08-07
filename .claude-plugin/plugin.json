@@ -1,6 +1,6 @@
 {
   "name": "loopai",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Autonomous plan execution with Claude Code, including task execution, monitoring, and plan creation",
   "author": {
     "name": "echeg"

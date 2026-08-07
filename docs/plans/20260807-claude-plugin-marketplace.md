@@ -89,9 +89,9 @@ Deliberately out of scope: superpowers stays installed and untouched — no othe
 
 ### Task 4: Decisions section in loopai-plan
 
-- [ ] update `assets/claude/skills/loopai-plan/SKILL.md` plan template with an optional `## Decisions` section (context, chosen approach, rejected alternatives, verified facts) placed after Overview, and a note that `loopai-brainstorm` hands its approved design into this section
-- [ ] mention in the loopai-plan flow that when invoked from `loopai-brainstorm`, the questions already answered during brainstorming (goal, scope, approach) are not re-asked — only missing ones (e.g. TDD preference, title)
-- [ ] run `make check-symlinks` and `make test` - must pass before task 5
+- [x] update `assets/claude/skills/loopai-plan/SKILL.md` plan template with an optional `## Decisions` section (context, chosen approach, rejected alternatives, verified facts) placed after Overview, and a note that `loopai-brainstorm` hands its approved design into this section
+- [x] mention in the loopai-plan flow that when invoked from `loopai-brainstorm`, the questions already answered during brainstorming (goal, scope, approach) are not re-asked — only missing ones (e.g. TDD preference, title)
+- [x] run `make check-symlinks` and `make test` - must pass before task 5
 
 ### Task 5: Verify acceptance criteria
 

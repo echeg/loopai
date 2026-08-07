@@ -29,6 +29,8 @@ Proceed with plan creation regardless, but remind user to install before executi
 
 Before asking questions, understand what the user is working on:
 
+If invoked by `loopai-brainstorm`, treat its approved design as authoritative context. Do not re-ask questions the user already answered during brainstorming, including the goal, scope, constraints, or chosen approach. Preserve those decisions and gather only information that is still missing, such as the testing preference or plan title.
+
 1. **Parse user's command arguments** to identify intent:
    - "add feature Z" / "implement W" → feature development
    - "fix bug" / "debug issue" → bug fix plan
@@ -71,6 +73,8 @@ Show the discovered context, then ask questions **one at a time** using the AskU
 "Based on your request, I found: [context summary]"
 
 **Ask questions one at a time (do not overwhelm with multiple questions):**
+
+When the request comes from `loopai-brainstorm`, skip every question already answered by the approved design. Ask only the remaining questions from this list; do not repeat discovery or reopen an approved choice unless the user asks to reconsider it.
 
 1. **Plan purpose**: use AskUserQuestion - "What is the main goal?"
    - provide multiple choice with suggested answer based on discovered intent
@@ -139,6 +143,13 @@ Check `docs/plans/` for existing files, then create `docs/plans/YYYYMMDD-<task-n
 - Clear description of the feature/change being implemented
 - Problem it solves and key benefits
 - How it integrates with existing system
+
+## Decisions
+<!-- Optional. When invoked from loopai-brainstorm, record its approved design here. -->
+- **Context**: [why a decision was needed]
+- **Chosen approach**: [approved direction and rationale]
+- **Rejected alternatives**: [other approaches considered and why they were not selected]
+- **Verified facts**: [facts established during discovery that constrain the implementation]
 
 ## Context (from discovery)
 - Files/components involved: [list from step 0]

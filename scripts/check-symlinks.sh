@@ -12,6 +12,34 @@ fail() {
 	status=1
 }
 
+check_loopai_plan_contract() {
+	local skill_file="$1"
+	local overview_line decisions_line context_line
+
+	overview_line="$(grep -n -m1 '^## Overview$' "$skill_file" | cut -d: -f1 || true)"
+	decisions_line="$(grep -n -m1 '^## Decisions$' "$skill_file" | cut -d: -f1 || true)"
+	context_line="$(grep -n -m1 '^## Context (from discovery)$' "$skill_file" | cut -d: -f1 || true)"
+
+	if [[ -z "$overview_line" || -z "$decisions_line" || -z "$context_line" ]] ||
+		(( decisions_line <= overview_line || decisions_line >= context_line )); then
+		fail "invalid loopai-plan template: Decisions must appear between Overview and Context"
+	fi
+
+	for required_text in \
+		'**Context**:' \
+		'**Chosen approach**:' \
+		'**Rejected alternatives**:' \
+		'**Verified facts**:'; do
+		if ! grep -Fq -- "$required_text" "$skill_file"; then
+			fail "invalid loopai-plan template: missing Decisions field $required_text"
+		fi
+	done
+
+	if ! grep -Fq 'When the request comes from `loopai-brainstorm`, skip every question already answered' "$skill_file"; then
+		fail "invalid loopai-plan flow: missing brainstorm question-skip guidance"
+	fi
+}
+
 if [[ ! -d "$skills_dir" ]]; then
 	fail "missing skills directory: $skills_dir"
 	exit "$status"
@@ -41,6 +69,10 @@ while IFS= read -r skill_file; do
 
 	if [[ ! -e "$link" ]]; then
 		fail "broken skill symlink: $link -> $actual_target"
+	fi
+
+	if [[ "$skill_name" == "loopai-plan" ]]; then
+		check_loopai_plan_contract "$skill_file"
 	fi
 done < <(find "$skills_dir" -mindepth 2 -maxdepth 2 -type f -name SKILL.md -print | sort)
 
