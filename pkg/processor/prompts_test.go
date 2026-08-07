@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/umputun/ralphex/pkg/config"
+	"github.com/umputun/ralphex/pkg/processor/mocks"
 	"github.com/umputun/ralphex/pkg/status"
 )
 
@@ -1661,4 +1663,397 @@ func TestRunner_formatAgentExpansionCodex_MultiLineAgentBodyStaysSingleLine(t *t
 	assert.NotContains(t, spawnLine, "first line\nsecond line", "raw newline leaked into single-quoted literal")
 	// they must appear as the literal escape sequence \n inside the spawn_agent call
 	assert.Contains(t, spawnLine, `first line\nsecond line\nthird line`)
+}
+
+func TestRunner_expandDynamicAgentCatalog(t *testing.T) {
+	tests := []struct {
+		name        string
+		executor    string
+		agents      []config.CustomAgent
+		contains    []string
+		notContains []string
+	}{
+		{
+			name:     "no agents at all",
+			agents:   nil,
+			contains: []string{"(no project-specific agents configured)"},
+			notContains: []string{"### Available project-specific agents",
+				"{{agents:dynamic}}"},
+		},
+		{
+			name: "agents without description are not dynamic",
+			agents: []config.CustomAgent{
+				{Name: "quality", Prompt: "review quality"},
+				{Name: "testing", Prompt: "review tests", Options: config.Options{Description: "  "}},
+			},
+			contains:    []string{"(no project-specific agents configured)"},
+			notContains: []string{"review quality", "review tests"},
+		},
+		{
+			name: "single dynamic agent, claude executor",
+			agents: []config.CustomAgent{
+				{Name: "sql-guard", Prompt: "check sql queries", Options: config.Options{Description: "reviews raw SQL for injection"}},
+			},
+			contains: []string{
+				"### Available project-specific agents",
+				"- sql-guard — reviews raw SQL for injection",
+				"Use the Task tool to launch a general-purpose agent with this prompt:",
+				"check sql queries",
+			},
+			notContains: []string{"(no project-specific agents configured)"},
+		},
+		{
+			name: "several dynamic agents sorted by name, non-dynamic excluded",
+			agents: []config.CustomAgent{
+				{Name: "zebra", Prompt: "zebra body", Options: config.Options{Description: "last one"}},
+				{Name: "plain", Prompt: "plain body"},
+				{Name: "alpha", Prompt: "alpha body", Options: config.Options{Description: "first one"}},
+			},
+			contains: []string{
+				"- alpha — first one",
+				"- zebra — last one",
+				"alpha body",
+				"zebra body",
+			},
+			notContains: []string{"plain", "plain body", "(no project-specific agents configured)"},
+		},
+		{
+			name:     "codex executor uses spawn_agent snippet",
+			executor: config.ExecutorCodex,
+			agents: []config.CustomAgent{
+				{Name: "sql-guard", Prompt: "check sql queries", Options: config.Options{Description: "reviews raw SQL"}},
+			},
+			contains: []string{
+				"- sql-guard — reviews raw SQL",
+				"spawn_agent(agent='reviewer', task='",
+				`check sql queries`,
+			},
+			notContains: []string{"Use the Task tool"},
+		},
+		{
+			name: "frontmatter model override reflected in claude snippet",
+			agents: []config.CustomAgent{
+				{Name: "perf", Prompt: "check hot paths", Options: config.Options{Description: "perf review", Model: "opus", AgentType: "code-reviewer"}},
+			},
+			contains: []string{"Use the Task tool with model=opus to launch a code-reviewer agent with this prompt:"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			appCfg := &config.Config{Executor: tc.executor, CustomAgents: tc.agents}
+			r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+			result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("Catalog:\n{{agents:dynamic}}\nEnd.", nil)
+
+			assert.NotContains(t, result, "{{agents:dynamic}}")
+			assert.Contains(t, result, "Catalog:")
+			assert.Contains(t, result, "End.")
+			for _, want := range tc.contains {
+				assert.Contains(t, result, want)
+			}
+			for _, notWant := range tc.notContains {
+				assert.NotContains(t, result, notWant)
+			}
+		})
+	}
+}
+
+func TestRunner_expandDynamicAgentCatalog_SortedOrder(t *testing.T) {
+	appCfg := &config.Config{CustomAgents: []config.CustomAgent{
+		{Name: "zebra", Prompt: "z", Options: config.Options{Description: "z desc"}},
+		{Name: "alpha", Prompt: "a", Options: config.Options{Description: "a desc"}},
+		{Name: "middle", Prompt: "m", Options: config.Options{Description: "m desc"}},
+	}}
+	r := &Runner{cfg: Config{AppConfig: appCfg}, log: newMockLogger()}
+	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}", nil)
+
+	assert.Less(t, strings.Index(result, "- alpha —"), strings.Index(result, "- middle —"))
+	assert.Less(t, strings.Index(result, "- middle —"), strings.Index(result, "- zebra —"))
+}
+
+func TestRunner_expandDynamicAgentCatalog_NilAppConfig(t *testing.T) {
+	r := &Runner{cfg: Config{AppConfig: nil}, log: newMockLogger()}
+	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}", nil)
+	assert.Equal(t, "(no project-specific agents configured)", result)
+}
+
+func TestRunner_expandDynamicAgentCatalog_NoPlaceholder(t *testing.T) {
+	appCfg := &config.Config{CustomAgents: []config.CustomAgent{
+		{Name: "dyn", Prompt: "body", Options: config.Options{Description: "desc"}},
+	}}
+	r := &Runner{cfg: Config{AppConfig: appCfg}, log: newMockLogger()}
+	prompt := "no placeholders here"
+	assert.Equal(t, prompt, newPromptBuilderForTest(r).expandDynamicAgentCatalog(prompt, nil))
+}
+
+// a review_first.txt copy installed before the catalog existed drops every dynamic
+// agent, so the drop must at least be visible in the progress log
+func TestPromptBuilder_FirstReviewPrompt_WarnsWhenCatalogPlaceholderMissing(t *testing.T) {
+	assertWarned := func(t *testing.T, log *mocks.LoggerMock, want bool) {
+		t.Helper()
+		var warned int
+		for _, call := range log.PrintCalls() {
+			if strings.Contains(fmt.Sprintf(call.Format, call.Args...), "has no {{agents:dynamic}} placeholder") {
+				warned++
+			}
+		}
+		if !want {
+			assert.Zero(t, warned, "unexpected warning: %#v", log.PrintCalls())
+			return
+		}
+		assert.Equal(t, 1, warned, "warn exactly once per run: %#v", log.PrintCalls())
+	}
+
+	t.Run("warns once for dropped dynamic agents", func(t *testing.T) {
+		appCfg := &config.Config{
+			ReviewFirstPrompt: "customized review prompt without the catalog",
+			CustomAgents: []config.CustomAgent{
+				{Name: "dyn", Prompt: "body", Options: config.Options{Description: "desc"}},
+				{Name: "quality", Prompt: "body"},
+			},
+		}
+		log := newMockLogger()
+		b := newPromptBuilderForTest(&Runner{cfg: Config{AppConfig: appCfg}, log: log})
+
+		b.FirstReviewPrompt()
+		b.FirstReviewPrompt()
+
+		assertWarned(t, log, true)
+		for _, call := range log.PrintCalls() {
+			if strings.Contains(call.Format, "placeholder") {
+				assert.Contains(t, fmt.Sprintf(call.Format, call.Args...), "dyn")
+			}
+		}
+	})
+
+	t.Run("silent without dynamic agents", func(t *testing.T) {
+		appCfg := &config.Config{
+			ReviewFirstPrompt: "customized review prompt without the catalog",
+			CustomAgents:      []config.CustomAgent{{Name: "quality", Prompt: "body"}},
+		}
+		log := newMockLogger()
+		newPromptBuilderForTest(&Runner{cfg: Config{AppConfig: appCfg}, log: log}).FirstReviewPrompt()
+
+		assertWarned(t, log, false)
+	})
+
+	t.Run("silent when the prompt inlines the agent directly", func(t *testing.T) {
+		appCfg := &config.Config{
+			ReviewFirstPrompt: "run {{agent:dyn}} now",
+			CustomAgents: []config.CustomAgent{
+				{Name: "dyn", Prompt: "body", Options: config.Options{Description: "desc"}},
+			},
+		}
+		log := newMockLogger()
+		newPromptBuilderForTest(&Runner{cfg: Config{AppConfig: appCfg}, log: log}).FirstReviewPrompt()
+
+		assertWarned(t, log, false)
+	})
+
+	t.Run("silent when the placeholder is present", func(t *testing.T) {
+		appCfg := &config.Config{
+			ReviewFirstPrompt: "catalog:\n{{agents:dynamic}}",
+			CustomAgents: []config.CustomAgent{
+				{Name: "dyn", Prompt: "body", Options: config.Options{Description: "desc"}},
+			},
+		}
+		log := newMockLogger()
+		newPromptBuilderForTest(&Runner{cfg: Config{AppConfig: appCfg}, log: log}).FirstReviewPrompt()
+
+		assertWarned(t, log, false)
+	})
+}
+
+func TestRunner_expandDynamicAgentCatalog_AgentBodyVariablesExpanded(t *testing.T) {
+	appCfg := &config.Config{CustomAgents: []config.CustomAgent{
+		{Name: "dyn", Prompt: "review {{PLAN_FILE}} on {{DEFAULT_BRANCH}}", Options: config.Options{Description: "desc"}},
+	}}
+	r := &Runner{cfg: Config{PlanFile: "docs/plans/test.md", DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}", nil)
+
+	assert.Contains(t, result, "review docs/plans/test.md on main")
+	assert.NotContains(t, result, "{{PLAN_FILE}}")
+}
+
+func TestRunner_expandDynamicAgentCatalog_SnippetIndentedUnderEntry(t *testing.T) {
+	appCfg := &config.Config{CustomAgents: []config.CustomAgent{
+		{Name: "dyn", Prompt: "line one\n\nline two", Options: config.Options{Description: "desc"}},
+	}}
+	r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}", nil)
+
+	_, entry, found := strings.Cut(result, "- dyn — desc\n")
+	require.True(t, found, "catalog entry header present in %q", result)
+
+	var indented int
+	for line := range strings.SplitSeq(entry, "\n") {
+		if line == "" {
+			continue
+		}
+		assert.True(t, strings.HasPrefix(line, "  "), "snippet line must be indented under its entry: %q", line)
+		indented++
+	}
+	assert.Positive(t, indented, "entry must carry an invocation snippet")
+	assert.Contains(t, result, "  line one")
+	assert.Contains(t, result, "  line two")
+}
+
+// a described agent that the same prompt already inlines through {{agent:name}} must not
+// also appear in the catalog: the review prompt would carry its body twice and launch it twice.
+func TestRunner_replacePromptVariables_CatalogSkipsInlinedAgent(t *testing.T) {
+	appCfg := &config.Config{CustomAgents: []config.CustomAgent{
+		{Name: "quality", Prompt: "quality body", Options: config.Options{Description: "described base copy"}},
+		{Name: "sql", Prompt: "sql body", Options: config.Options{Description: "reviews raw SQL"}},
+	}}
+	r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+
+	result := newPromptBuilderForTest(r).replacePromptVariables("Step 2: {{agent:quality}}\nStep 2b:\n{{agents:dynamic}}")
+
+	assert.Equal(t, 1, strings.Count(result, "quality body"), "inlined agent body must appear once")
+	assert.NotContains(t, result, "- quality —", "inlined agent must not be listed in the catalog")
+	assert.Contains(t, result, "- sql — reviews raw SQL", "other dynamic agents still listed")
+}
+
+// with every dynamic agent inlined, the catalog renders as empty rather than as a partial list.
+func TestRunner_replacePromptVariables_CatalogEmptyWhenAllInlined(t *testing.T) {
+	appCfg := &config.Config{CustomAgents: []config.CustomAgent{
+		{Name: "quality", Prompt: "quality body", Options: config.Options{Description: "described base copy"}},
+	}}
+	r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+
+	result := newPromptBuilderForTest(r).replacePromptVariables("{{agent:quality}}\n{{agents:dynamic}}")
+
+	assert.Contains(t, result, emptyDynamicCatalog)
+	assert.Equal(t, 1, strings.Count(result, "quality body"))
+}
+
+func TestRunner_agentRefNames(t *testing.T) {
+	assert.Empty(t, agentRefNames("no refs here"))
+	assert.Equal(t, map[string]bool{"one": true, "two": true},
+		agentRefNames("{{agent:one}} {{agent:two}} {{agent:one}} {{agents:dynamic}}"))
+}
+
+func TestRunner_expandDynamicAgentCatalog_CodexWarnsFrontmatterDiscarded(t *testing.T) {
+	appCfg := &config.Config{Executor: config.ExecutorCodex, CustomAgents: []config.CustomAgent{
+		{Name: "dyn", Prompt: "body", Options: config.Options{Description: "desc", Model: "opus", AgentType: "code-reviewer"}},
+	}}
+	mockLog := newMockLogger()
+	r := &Runner{cfg: Config{AppConfig: appCfg}, log: mockLog}
+
+	result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("{{agents:dynamic}}", nil)
+
+	assert.NotContains(t, result, "with model=opus", "codex snippet drops frontmatter overrides")
+	assertLogContains(t, mockLog, "codex mode ignores frontmatter")
+}
+
+// a {{agents:dynamic}} token inside an agent body must not survive into the catalog pass:
+// it would be substituted after the body was already escaped into the codex task='...'
+// literal, whose quoting the raw catalog text breaks.
+func TestRunner_replacePromptVariables_CatalogPlaceholderInsideAgentBody(t *testing.T) {
+	appCfg := &config.Config{Executor: config.ExecutorCodex, CustomAgents: []config.CustomAgent{
+		{Name: "base", Prompt: "base body\n{{agents:dynamic}}\ntail"},
+		{Name: "dyn", Prompt: "dynamic body", Options: config.Options{Description: "won't be nested"}},
+	}}
+	r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+
+	result := newPromptBuilderForTest(r).replacePromptVariables("{{agent:base}}")
+
+	assert.NotContains(t, result, "{{agents:dynamic}}", "placeholder is stripped from agent bodies")
+	assert.NotContains(t, result, "- dyn — won't be nested", "catalog must not be nested inside an agent block")
+	assert.Contains(t, result, "base body")
+	assert.Contains(t, result, "tail")
+	assert.Equal(t, 1, strings.Count(result, "spawn_agent(agent='reviewer', task='"), "exactly one spawn_agent block")
+	// the only unescaped apostrophes are the four spawn_agent delimiters:
+	// agent='reviewer' and task='...'
+	unescaped := strings.Count(result, "'") - strings.Count(result, `\'`)
+	assert.Equal(t, 4, unescaped, "catalog text must not inject unescaped quotes into the codex literal")
+}
+
+func TestRunner_replacePromptVariables_ExpandsDynamicCatalog(t *testing.T) {
+	appCfg := &config.Config{CustomAgents: []config.CustomAgent{
+		{Name: "base", Prompt: "base body"},
+		{Name: "dyn", Prompt: "dynamic body", Options: config.Options{Description: "project specific"}},
+	}}
+	r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+	result := newPromptBuilderForTest(r).replacePromptVariables("{{agent:base}}\n\n{{agents:dynamic}}")
+
+	assert.NotContains(t, result, "{{agents:dynamic}}")
+	assert.NotContains(t, result, "{{agent:base}}")
+	assert.Contains(t, result, "base body")
+	assert.Contains(t, result, "- dyn — project specific")
+	assert.Contains(t, result, "dynamic body")
+}
+
+func TestRunner_replacePromptVariables_EmbeddedReviewFirstDynamicCatalog(t *testing.T) {
+	tests := []struct {
+		name        string
+		executor    string
+		withDynamic bool
+		contains    []string
+		notContains []string
+	}{
+		{
+			name:        "claude executor without dynamic agents",
+			contains:    []string{"(no project-specific agents configured)", "Step 2b"},
+			notContains: []string{"### Available project-specific agents"},
+		},
+		{
+			name:        "claude executor with dynamic agent",
+			withDynamic: true,
+			contains:    []string{"### Available project-specific agents", "- sql-guard — reviews raw SQL", "check sql queries"},
+			notContains: []string{"(no project-specific agents configured)"},
+		},
+		{
+			name:        "codex executor without dynamic agents",
+			executor:    config.ExecutorCodex,
+			contains:    []string{"(no project-specific agents configured)"},
+			notContains: []string{"### Available project-specific agents"},
+		},
+		{
+			name:        "codex executor with dynamic agent",
+			executor:    config.ExecutorCodex,
+			withDynamic: true,
+			contains:    []string{"- sql-guard — reviews raw SQL", "spawn_agent(agent='reviewer', task='"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			appCfg := testAppConfig(t)
+			appCfg.Executor = tc.executor
+			if tc.withDynamic {
+				appCfg.CustomAgents = append(appCfg.CustomAgents, config.CustomAgent{Name: "sql-guard",
+					Prompt: "check sql queries", Options: config.Options{Description: "reviews raw SQL"}})
+			}
+			r := &Runner{cfg: Config{PlanFile: "docs/plans/test.md", ProgressPath: "progress.txt",
+				DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+			prompt := newPromptBuilderForTest(r).replacePromptVariables(appCfg.ReviewFirstPrompt)
+
+			assert.NotContains(t, prompt, "{{agents:dynamic}}", "catalog placeholder must be expanded")
+			// the placeholder appears once in the template, so the catalog must not be duplicated
+			// (e.g. by a header comment line reintroducing the literal placeholder)
+			rendered := strings.Count(prompt, "### Available project-specific agents") +
+				strings.Count(prompt, "(no project-specific agents configured)")
+			assert.Equal(t, 1, rendered, "catalog must be rendered exactly once")
+			// the 5 base agents still expand unchanged
+			assert.Contains(t, prompt, "security issues")
+			for _, want := range tc.contains {
+				assert.Contains(t, prompt, want)
+			}
+			for _, notWant := range tc.notContains {
+				assert.NotContains(t, prompt, notWant)
+			}
+		})
+	}
+}
+
+func TestRunner_replaceExternalVariablesWithIteration_ExpandsDynamicCatalog(t *testing.T) {
+	appCfg := &config.Config{CustomAgents: []config.CustomAgent{
+		{Name: "dyn", Prompt: "dynamic body", Options: config.Options{Description: "project specific"}},
+	}}
+	r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
+	result := newPromptBuilderForTest(r).replaceExternalVariablesWithIteration("{{agents:dynamic}}", true, "codex", "claude", "")
+
+	assert.NotContains(t, result, "{{agents:dynamic}}")
+	assert.Contains(t, result, "- dyn — project specific")
 }

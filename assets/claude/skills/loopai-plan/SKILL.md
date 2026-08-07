@@ -72,6 +72,8 @@ Show the discovered context, then ask questions **one at a time** using the AskU
 
 **Ask questions one at a time (do not overwhelm with multiple questions):**
 
+When the request comes from `loopai-brainstorm`, treat its approved design as authoritative. Preserve its goal, scope, constraints, chosen approach, and rejected alternatives; ask only for missing information such as testing preference or plan title.
+
 1. **Plan purpose**: use AskUserQuestion - "What is the main goal?"
    - provide multiple choice with suggested answer based on discovered intent
    - wait for response before next question
@@ -97,6 +99,8 @@ After all questions answered, synthesize responses into plan context.
 ## Step 1.5: Explore Approaches
 
 Once the problem is understood, propose implementation approaches:
+
+When invoked from `loopai-brainstorm`, skip this step and carry its approved and rejected approaches into `## Decisions`.
 
 1. **Propose 2-3 different approaches** with trade-offs for each
 2. **Lead with recommended option** and explain reasoning
@@ -139,6 +143,13 @@ Check `docs/plans/` for existing files, then create `docs/plans/YYYYMMDD-<task-n
 - Clear description of the feature/change being implemented
 - Problem it solves and key benefits
 - How it integrates with existing system
+
+## Decisions
+<!-- Optional. When invoked from loopai-brainstorm, record its approved design here. -->
+- **Context**: [why a decision was needed]
+- **Chosen approach**: [approved direction and rationale]
+- **Rejected alternatives**: [other approaches considered and why they were not selected]
+- **Verified facts**: [facts established during discovery that constrain the implementation]
 
 ## Context (from discovery)
 - Files/components involved: [list from step 0]

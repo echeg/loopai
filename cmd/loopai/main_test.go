@@ -1581,6 +1581,13 @@ func TestResolveExternalReviewerChain(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, tasksOnly.Reviewers)
 
+	// --gen-agents never reviews, so a configured reviewer must not become a required dependency
+	genAgents, err := resolveExternalReviewSelection(opts{}, cfg, processor.ModeGenAgents)
+	require.NoError(t, err)
+	assert.True(t, genAgents.Resolved)
+	assert.False(t, genAgents.Explicit)
+	assert.Empty(t, genAgents.Reviewers)
+
 	bad := &config.Config{ExternalReviewers: "codex,", ExternalReviewersSet: true}
 	_, err = resolveExternalReviewSelection(opts{}, bad, processor.ModeFull)
 	require.ErrorContains(t, err, "parse external_reviewers")
@@ -4459,6 +4466,7 @@ func TestClearStaleCmuxStatusSkipsConfigUtilities(t *testing.T) {
 		{Init: true},
 		{Reset: true},
 		{DumpDefaults: filepath.Join(t.TempDir(), "defaults")},
+		{GenAgents: true},
 	} {
 		clearStaleCmuxStatus(o)
 	}
@@ -6639,6 +6647,580 @@ func branchExists(t *testing.T, dir, branch string) bool {
 	out, err := cmd.Output()
 	require.NoError(t, err)
 	return strings.TrimSpace(string(out)) != ""
+}
+
+func TestGenAgentsFlagParsing(t *testing.T) {
+	t.Run("selects gen-agents mode", func(t *testing.T) {
+		o := parseTestOpts(t, "--gen-agents")
+		assert.True(t, o.GenAgents)
+		assert.Equal(t, processor.ModeGenAgents, determineMode(o))
+		assert.True(t, hasExecutionMode(o), "close-out commands must reject --gen-agents")
+		require.NoError(t, validateFlags(o))
+	})
+
+	t.Run("conflicts", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			args    []string
+			wantErr string
+		}{
+			{"plan file", []string{"--gen-agents", "docs/plans/foo.md"}, "plan file argument"},
+			{"plan mode", []string{"--gen-agents", "--plan", "add caching"}, "--plan"},
+			{"review", []string{"--gen-agents", "--review"}, "--review"},
+			{"external only", []string{"--gen-agents", "--external-only"}, "--external-only"},
+			{"tasks only", []string{"--gen-agents", "--tasks-only"}, "--tasks-only"},
+			{"worktree", []string{"--gen-agents", "--worktree"}, "--worktree"},
+			{"init", []string{"--gen-agents", "--init"}, "--init"},
+			{"merge", []string{"--gen-agents", "--merge"}, "--merge cannot be combined"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				err := validateFlags(parseTestOpts(t, tt.args...))
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			})
+		}
+	})
+}
+
+func TestReservedAgentNamesMatchEmbedded(t *testing.T) {
+	// the list is hardcoded here and repeated in gen_agents.txt; nothing else ties either
+	// to the embedded agents dir, so a sixth built-in agent would silently lose both the
+	// reserved-name warning and the "built-in agent used instead" report line
+	dir := filepath.Join(t.TempDir(), "defaults")
+	require.NoError(t, dumpDefaults(dir))
+
+	entries, err := os.ReadDir(filepath.Join(dir, "agents"))
+	require.NoError(t, err)
+	embedded := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+			continue
+		}
+		embedded = append(embedded, strings.TrimSuffix(entry.Name(), ".txt"))
+	}
+
+	assert.ElementsMatch(t, embedded, reservedAgentNames)
+
+	genAgents, err := os.ReadFile(filepath.Join(dir, "prompts", "gen_agents.txt")) //nolint:gosec // test
+	require.NoError(t, err)
+	for _, name := range embedded {
+		assert.Contains(t, string(genAgents), name, "gen_agents.txt must warn against the reserved name %q", name)
+	}
+}
+
+func TestReportGeneratedAgents(t *testing.T) {
+	t.Run("lists agents with descriptions", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "sql-safety.txt"),
+			[]byte("---\ndescription: review sql migrations\n---\nbody\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "concurrency.txt"),
+			[]byte("---\ndescription: review goroutine lifetimes\n---\nbody\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "notes.md"), []byte("ignored\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "concurrency — review goroutine lifetimes")
+		assert.Contains(t, body, "sql-safety — review sql migrations")
+		assert.Less(t, strings.Index(body, "concurrency"), strings.Index(body, "sql-safety"), "sorted by name")
+		assert.NotContains(t, body, "  - notes", "non-.txt file is not listed as an agent")
+		assert.Contains(t, body, "warning: ignoring non-.txt file(s) in the agents dir, agent files must use .txt: notes.md")
+		assert.Contains(t, body, "review the generated files")
+	})
+
+	t.Run("only non-txt files reported as ignored", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "sql-safety.md"),
+			[]byte("---\ndescription: review sql migrations\n---\nbody\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "concurrency.md"), []byte("body\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "no agent files found in")
+		assert.Contains(t, body, "warning: ignoring non-.txt file(s) in the agents dir, agent files must use .txt: concurrency.md, sql-safety.md")
+	})
+
+	t.Run("multi-line description collapsed to one line", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "sql-safety.txt"),
+			[]byte("---\ndescription: |\n  review sql migrations\n  and schema changes\n---\nbody\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		assert.Contains(t, out.String(), "  - sql-safety — review sql migrations and schema changes\n")
+	})
+
+	t.Run("agent without description flagged", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "vague.txt"), []byte("just a body\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		assert.Contains(t, out.String(), "vague — (no description")
+	})
+
+	t.Run("reserved name warns", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "testing.txt"),
+			[]byte("---\ndescription: extra testing checks\n---\nbody\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "protocol.txt"),
+			[]byte("---\ndescription: protocol signals\n---\nbody\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, `warning: testing.txt uses the reserved built-in agent name "testing"`)
+		assert.NotContains(t, body, "warning: protocol.txt")
+	})
+
+	// the report must apply the same normalization the agent loader does, otherwise it
+	// calls a working dynamic agent inert
+	t.Run("normalized frontmatter variants report their description", func(t *testing.T) {
+		variants := map[string]string{
+			"lead-blank.txt":   "\n---\ndescription: review concurrency\n---\nbody\n",
+			"lead-comment.txt": "# generated by loopai\n---\ndescription: review sql\n---\nbody\n",
+			"crlf.txt":         "---\r\ndescription: review signals\r\n---\r\nbody\r\n",
+		}
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		for name, content := range variants {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600))
+		}
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "lead-blank — review concurrency")
+		assert.Contains(t, body, "lead-comment — review sql")
+		assert.Contains(t, body, "crlf — review signals")
+		assert.NotContains(t, body, "(no description")
+	})
+
+	// the loader drops a body-less file and falls back to the embedded default, so
+	// reporting its description would announce an agent that never runs
+	t.Run("agent without body reported as ignored", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "hollow.txt"),
+			[]byte("---\ndescription: review sql migrations\n---\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "hollow — (no prompt body")
+		assert.NotContains(t, body, "review sql migrations")
+	})
+
+	// an unquoted description containing ": " makes the yaml block unparsable and the
+	// file then looks exactly like one without frontmatter
+	t.Run("unparsable frontmatter reported", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.txt"),
+			[]byte("---\ndescription: concurrency: goroutine lifetimes\n---\nbody\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		assert.Contains(t, out.String(), "broken — (unparsable frontmatter")
+	})
+
+	// loopai --init fills .loopai/agents/ with all-commented copies of the built-in
+	// agents; those override nothing, so claiming they replace the built-ins is wrong
+	t.Run("all-commented reserved files override nothing", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "testing.txt"),
+			[]byte("# testing agent\n# review test coverage\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "testing — (no prompt body - file is ignored, built-in agent used instead)")
+		assert.NotContains(t, body, "warning:")
+	})
+
+	// the loader strips comments before its emptiness check, so a body of only comment
+	// lines is inert there and must not be listed as a working dynamic agent here
+	t.Run("comment-only body reported as ignored", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "commented.txt"),
+			[]byte("---\ndescription: review sql migrations\n---\n# nothing yet\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "commented — (no prompt body - file is ignored)")
+		assert.NotContains(t, body, "review sql migrations")
+	})
+
+	// a body-less file with a name no embedded default owns is dropped outright, so the
+	// report must not promise an embedded fallback that does not exist
+	t.Run("body-less custom name is dropped not defaulted", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "sql-safety.txt"),
+			[]byte("---\ndescription: review sql migrations\n---\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "sql-safety — (no prompt body - file is ignored)")
+		assert.NotContains(t, body, "built-in agent used instead")
+	})
+
+	// a file with no frontmatter whose body opens with a markdown rule: the gap is a
+	// missing description, and reporting broken YAML sends the user after a quoting bug
+	// that does not exist
+	t.Run("markdown rule without frontmatter reports missing description", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ruled-only.txt"),
+			[]byte("---\n\nReview checklist\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "ruled-only — (no description - not offered to the review phase)")
+		assert.NotContains(t, body, "unparsable")
+	})
+
+	// the "---" prefix only signals unparsable frontmatter when nothing parsed; a body
+	// opening with a markdown rule is a working agent
+	t.Run("body starting with markdown rule keeps its description", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ruled.txt"),
+			[]byte("---\ndescription: review protocol signals\n---\n\n---\n\nchecklist\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "ruled — review protocol signals")
+		assert.NotContains(t, body, "unparsable")
+	})
+
+	// same markdown rule without a description: the frontmatter above it parsed, so the
+	// missing description is the real problem and telling the user to quote a colon is
+	// a dead end
+	t.Run("undescribed body starting with markdown rule reports missing description", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ruled.txt"),
+			[]byte("---\nmodel: opus\n---\n\n---\n\nchecklist\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "ruled — (no description")
+		assert.NotContains(t, body, "unparsable")
+	})
+
+	// a broken block behind a "# ..." header never reaches the parsed form, so the
+	// report must not send the user looking for a description that is already there
+	t.Run("unparsable frontmatter behind leading comment reported", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.txt"),
+			[]byte("# generated by loopai\n---\ndescription: concurrency: goroutine lifetimes\n---\nbody\n"), 0o600))
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		assert.Contains(t, out.String(), "broken — (unparsable frontmatter")
+	})
+
+	t.Run("unreadable file does not abort the report", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("root bypasses file permissions")
+		}
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "good.txt"),
+			[]byte("---\ndescription: review sql\n---\nbody\n"), 0o600))
+		locked := filepath.Join(dir, "locked.txt")
+		require.NoError(t, os.WriteFile(locked, []byte("---\ndescription: hidden\n---\nbody\n"), 0o000))
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o600) })
+		var out bytes.Buffer
+
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+
+		body := out.String()
+		assert.Contains(t, body, "good — review sql", "readable agents still listed")
+		assert.Contains(t, body, "locked — (unreadable")
+		assert.Contains(t, body, "review the generated files")
+	})
+
+	t.Run("missing dir reports nothing generated", func(t *testing.T) {
+		var out bytes.Buffer
+		require.NoError(t, reportGeneratedAgents(filepath.Join(t.TempDir(), "absent"), &out))
+		assert.Contains(t, out.String(), "no agent files found")
+	})
+
+	t.Run("empty dir reports nothing generated", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "agents")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		var out bytes.Buffer
+		require.NoError(t, reportGeneratedAgents(dir, &out))
+		assert.Contains(t, out.String(), "no agent files found")
+	})
+}
+
+func TestValidateGenAgentsFlags(t *testing.T) {
+	t.Run("no-op without --gen-agents", func(t *testing.T) {
+		require.NoError(t, validateGenAgentsFlags(opts{Review: true, Commit: true, Serve: true}))
+	})
+
+	t.Run("bare --gen-agents accepted", func(t *testing.T) {
+		require.NoError(t, validateGenAgentsFlags(opts{GenAgents: true}))
+	})
+
+	t.Run("plan file argument rejected", func(t *testing.T) {
+		err := validateGenAgentsFlags(opts{GenAgents: true, PlanFile: "docs/plans/x.md"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot be combined with a plan file argument")
+	})
+
+	// every conflicting flag must be rejected: several of them (--reset, --dump-defaults)
+	// are handled after validateFlags, and --serve/--watch route to the dashboard before
+	// the gen-agents branch, so a missing entry means silent wrong-mode execution
+	conflicts := []struct {
+		flag string
+		o    opts
+	}{
+		{"--plan", opts{PlanDescription: "add feature"}},
+		{"--review", opts{Review: true}},
+		{"--external-only", opts{ExternalOnly: true}},
+		{"--codex-only", opts{CodexOnly: true}},
+		{"--tasks-only", opts{TasksOnly: true}},
+		{"--worktree", opts{Worktree: true}},
+		{"--resume-worktree", opts{ResumeWorktree: true}},
+		{"--commit", opts{Commit: true}},
+		{"--init", opts{Init: true}},
+		{"--reset", opts{Reset: true}},
+		{"--dump-defaults", opts{DumpDefaults: "/tmp/out"}},
+		{"--serve", opts{Serve: true}},
+		{"--watch", opts{Watch: []string{"/tmp/watched"}}},
+	}
+	for _, tc := range conflicts {
+		t.Run("rejects "+tc.flag, func(t *testing.T) {
+			o := tc.o
+			o.GenAgents = true
+			err := validateGenAgentsFlags(o)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--gen-agents cannot be combined with "+tc.flag)
+		})
+	}
+}
+
+func TestGenAgentsDir(t *testing.T) {
+	t.Run("uses detected local dir", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai"), 0o750))
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		cfg, err := config.LoadReadOnly(filepath.Join(t.TempDir(), "global"))
+		require.NoError(t, err)
+		require.NotEmpty(t, cfg.LocalDir())
+		assert.Equal(t, filepath.Join(cfg.LocalDir(), "agents"), genAgentsDir(cfg))
+		assert.True(t, strings.HasSuffix(genAgentsDir(cfg), filepath.Join(".loopai", "agents")))
+	})
+
+	t.Run("falls back to project path", func(t *testing.T) {
+		assert.Equal(t, filepath.Join(".loopai", "agents"), genAgentsDir(&config.Config{}))
+	})
+}
+
+func TestRunGenAgentsMode(t *testing.T) {
+	// stub claude records the prompt it receives on stdin and writes one agent file,
+	// standing in for the real generation session.
+	setup := func(t *testing.T, script string) (dir, promptLog string, cfg *config.Config) {
+		t.Helper()
+		dir = setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		binDir := t.TempDir()
+		promptLog = filepath.Join(binDir, "prompt.log")
+		writeExecutable(t, filepath.Join(binDir, "claude"), script)
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("GEN_AGENTS_PROMPT_LOG", promptLog)
+
+		cfg, err = config.LoadReadOnly(filepath.Join(t.TempDir(), "global"))
+		require.NoError(t, err)
+		return dir, promptLog, cfg
+	}
+
+	t.Run("runs session and reports generated agents", func(t *testing.T) {
+		script := "#!/bin/sh\ncat > \"$GEN_AGENTS_PROMPT_LOG\"\n" +
+			"mkdir -p .loopai/agents\n" +
+			"printf '%s\\n' '---' 'description: review protocol signals' '---' 'body' > .loopai/agents/protocol.txt\n"
+		dir, promptLog, cfg := setup(t, script)
+
+		err := runGenAgentsMode(t.Context(), opts{NoColor: true}, cfg, testColors(), nil)
+		require.NoError(t, err)
+
+		prompt, readErr := os.ReadFile(promptLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(prompt), "Generate project-specific review agents")
+		assert.Contains(t, string(prompt), filepath.Join(".loopai", "progress", "progress-gen-agents.txt"))
+
+		assert.FileExists(t, filepath.Join(dir, ".loopai", "agents", "protocol.txt"))
+		// the mode tells the user to inspect git status, so its own artifacts must be ignored
+		ignore, ignoreErr := os.ReadFile(filepath.Join(dir, ".loopai", ".gitignore")) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, ignoreErr, "gen-agents must create the local gitignore")
+		assert.Contains(t, string(ignore), "progress")
+
+		progressPath := filepath.Join(dir, ".loopai", "progress", "progress-gen-agents.txt")
+		require.FileExists(t, progressPath)
+		logged, readLogErr := os.ReadFile(progressPath) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readLogErr)
+		assert.Contains(t, string(logged), "agent generation")
+
+		var out bytes.Buffer
+		require.NoError(t, reportGeneratedAgents(genAgentsDir(cfg), &out))
+		assert.Contains(t, out.String(), "protocol — review protocol signals")
+	})
+
+	t.Run("session failure propagates", func(t *testing.T) {
+		_, _, cfg := setup(t, "#!/bin/sh\ncat > \"$GEN_AGENTS_PROMPT_LOG\"\necho boom >&2\nexit 3\n")
+
+		err := runGenAgentsMode(t.Context(), opts{NoColor: true}, cfg, testColors(), nil)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "agent generation")
+	})
+
+	// a session that writes files and then dies still leaves them in the review catalog,
+	// and the reserved-name warning is the only signal that one replaces a built-in agent
+	t.Run("failed session still reports the files it wrote", func(t *testing.T) {
+		script := "#!/bin/sh\ncat > \"$GEN_AGENTS_PROMPT_LOG\"\n" +
+			"mkdir -p .loopai/agents\n" +
+			"printf '%s\\n' '---' 'description: review protocol signals' '---' 'body' > .loopai/agents/protocol.txt\n" +
+			"printf '%s\\n' '---' 'description: extra testing checks' '---' 'body' > .loopai/agents/testing.txt\n" +
+			"echo boom >&2\nexit 3\n"
+		_, _, cfg := setup(t, script)
+
+		var err error
+		out := captureStdout(t, func() {
+			err = runGenAgentsMode(t.Context(), opts{NoColor: true}, cfg, testColors(), nil)
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, out, "protocol — review protocol signals")
+		assert.Contains(t, out, `warning: testing.txt uses the reserved built-in agent name "testing"`)
+	})
+}
+
+func TestRunGenAgentsMissingExecutorFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgDir := filepath.Join(tmpDir, "config")
+	require.NoError(t, os.MkdirAll(cfgDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "config"),
+		[]byte("claude_command = missing-loopai-claude-command\n"), 0o600))
+
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	t.Setenv("PATH", t.TempDir())
+
+	err = run(t.Context(), parseTestOpts(t, "--config-dir", cfgDir, "--gen-agents"))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "install Claude Code")
+}
+
+// --gen-agents sends no notifications, so a project whose notification block is
+// half-filled must still be able to generate agents. notify.New validates channels
+// eagerly and would otherwise fail the mode before it reaches the executor.
+func TestRunGenAgentsIgnoresMisconfiguredNotifications(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgDir := filepath.Join(tmpDir, "config")
+	require.NoError(t, os.MkdirAll(cfgDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "config"),
+		[]byte("notify_channels = telegram\n"), 0o600)) // no token, no chat: notify.New fails
+
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "claude"), "#!/bin/sh\ncat > /dev/null\n"+
+		"mkdir -p .loopai/agents\n"+
+		"printf '%s\\n' '---' 'description: review protocol signals' '---' 'body' > .loopai/agents/protocol.txt\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out := captureStdout(t, func() {
+		err = run(t.Context(), parseTestOpts(t, "--config-dir", cfgDir, "--gen-agents"))
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, out, "protocol — review protocol signals")
+	assert.FileExists(t, filepath.Join(dir, ".loopai", "agents", "protocol.txt"))
+}
+
+func TestRequireRepoRoot(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *config.Config
+		gitDir  bool
+		wantErr bool
+	}{
+		{name: "git repo root", cfg: &config.Config{}, gitDir: true},
+		{name: "not a repo root", cfg: &config.Config{}, wantErr: true},
+		{name: "explicit git command needs .git", cfg: &config.Config{VcsCommand: "git"}, wantErr: true},
+		{name: "non-git vcs skips check", cfg: &config.Config{VcsCommand: "hg"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tt.gitDir {
+				require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o750))
+			}
+			origDir, err := os.Getwd()
+			require.NoError(t, err)
+			require.NoError(t, os.Chdir(dir))
+			t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+			err = requireRepoRoot(tt.cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "must run from repository root")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }
 
 // fakeBranchChecker reports branch existence from a fixed set and derives branch names the way

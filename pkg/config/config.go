@@ -23,6 +23,7 @@ const (
 	reviewSecondPromptFile         = "review_second.txt"
 	codexPromptFile                = "codex.txt"
 	makePlanPromptFile             = "make_plan.txt"
+	genAgentsPromptFile            = "gen_agents.txt"
 	finalizePromptFile             = "finalize.txt"
 	customReviewPromptFile         = "custom_review.txt"
 	customEvalPromptFile           = "custom_eval.txt"
@@ -192,6 +193,7 @@ type Config struct {
 	ReviewSecondPrompt         string `json:"-"`
 	CodexPrompt                string `json:"-"`
 	MakePlanPrompt             string `json:"-"`
+	GenAgentsPrompt            string `json:"-"`
 	FinalizePrompt             string `json:"-"`
 	CustomReviewPrompt         string `json:"-"`
 	CustomEvalPrompt           string `json:"-"`
@@ -438,6 +440,7 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		ReviewSecondPrompt:         prompts.ReviewSecond,
 		CodexPrompt:                prompts.Codex,
 		MakePlanPrompt:             prompts.MakePlan,
+		GenAgentsPrompt:            prompts.GenAgents,
 		FinalizePrompt:             prompts.Finalize,
 		CustomReviewPrompt:         prompts.CustomReview,
 		CustomEvalPrompt:           prompts.CustomEval,

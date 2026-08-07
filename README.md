@@ -4,7 +4,9 @@ Autonomous implementation-plan execution with Claude Code or OpenAI Codex.
 
 loopai is a local CLI for running structured engineering plans from the root of a Git repository. Each task runs in a fresh agent session, validation is performed between tasks, and completed work can pass through internal and cross-provider review phases. The result is committed work with a persistent progress log, without requiring an IDE plugin or hosted service.
 
-This repository is a personal fork. It is installed by building from source; no packaged releases are published here.
+This repository is a personal fork. The loopai CLI is installed by building
+from source; no packaged CLI releases are published here. Optional Claude Code
+workflows are distributed through this repository's plugin marketplace.
 
 ## Features
 
@@ -12,6 +14,7 @@ This repository is a personal fork. It is installed by building from source; no 
 - Creates plans interactively with `--plan`
 - Supports Claude Code and Codex as primary executors
 - Runs configurable internal and external review phases
+- Adds project-specific review agents, drafted for the repository by `--gen-agents`
 - Creates a branch automatically and optionally uses isolated Git worktrees
 - Commits after completed tasks and review fixes
 - Streams timestamped progress to `.loopai/progress/`
@@ -31,7 +34,8 @@ This repository is a personal fork. It is installed by building from source; no 
 - Optional: `fzf` for interactive selection; a numbered fallback is built in
 - Optional for `--pr`: authenticated GitHub CLI (`gh auth login`) and a GitHub
   repository remote named `origin`
-- Development: Bash and `jq` for the included provider-wrapper test suites
+- Development: Bash and `jq` for the full test suite, including plugin manifest
+  validation and provider-wrapper tests
 - Optional for development: `golangci-lint`
 
 loopai must be run from the repository root. A custom `vcs_command` must accept
@@ -74,19 +78,103 @@ install -d ~/.config/fish/completions
 install -m 0644 completions/loopai.fish ~/.config/fish/completions/loopai.fish
 ```
 
-### Optional Claude Code commands
+### Claude Code plugin
 
-The retained command assets provide `/loopai`, `/loopai-plan`, `/loopai-adopt`,
-and `/loopai-update`. Install standalone copies with:
+Add this repository as a Claude Code marketplace and install its plugin:
 
 ```bash
-install -d ~/.claude/commands
-cp -L assets/claude/loopai*.md ~/.claude/commands/
+claude plugin marketplace add echeg/loopai
+claude plugin install loopai@loopai
 ```
 
-The commands respectively launch/monitor loopai, create a plan, convert an
-existing specification into a plan, and merge updated embedded defaults into
-customized configuration.
+The plugin provides six skills:
+
+- `loopai:loopai` launches loopai, monitors progress, and resumes active runs
+- `loopai:loopai-plan` creates an executable implementation plan
+- `loopai:loopai-brainstorm` designs a feature interactively, then hands the
+  approved design to `loopai:loopai-plan`
+- `loopai:loopai-adopt` converts an existing specification or issue into a plan
+- `loopai:loopai-update` merges updated embedded defaults into local
+  customizations
+- `loopai:loopai-grill` critiques an existing plan with Claude and Codex, or
+  runs a plan-off that compares and synthesizes competing plans
+
+Use the namespaced plugin command to review the newest active plan, review a
+specific plan, or generate a competing-plan comparison:
+
+```text
+/loopai:loopai-grill
+/loopai:loopai-grill docs/plans/example.md
+/loopai:loopai-grill compare "add a small feature"
+/loopai:loopai-grill compare docs/plans/example.md
+```
+
+With no path, the skill proposes the newest active plan for confirmation. Grill
+mode applies only the verified findings you select; if Codex is unavailable or
+fails, it reports that and continues with Claude critics. Compare mode requires
+Codex, never edits a source plan, and creates one new plan without overwriting
+an existing path. Both modes reject completed plans, symlinked plans or plan
+directories, and anything under `.loopai/`; plan-consuming Claude calls run
+with read-only tools against an equivalent sanitized snapshot to Codex.
+Active-plan edits fail if the reviewed file identity or content
+changes, and no-clobber publication preserves concurrent writers. Successful
+edits report and retain the displaced plan under a Git-private, non-stageable
+recovery path so a late write through a previously opened descriptor remains
+recoverable. The skill requires a POSIX environment (Linux, macOS, or Windows
+via WSL), Python 3, and Git for descriptor-anchored Claude and Codex snapshots
+that exclude ignored files, hard-linked files, every symlink path, and case
+aliases of private directories, reject individual files over 64 MiB and
+snapshots over 512 MiB, and reject in-worktree alternate Git directories.
+Active plans and generated drafts are limited to 8 MiB. Standalone
+skill copies use `/loopai-grill` instead of the namespaced plugin command.
+
+The CLI remains the execution engine. The plugin adds Claude Code workflows
+for planning and operating it. Refresh the marketplace and plugin when a new
+version is published, then restart Claude Code to apply the update:
+
+```bash
+claude plugin marketplace update loopai
+claude plugin update loopai@loopai
+```
+
+To remove the workflows:
+
+```bash
+claude plugin uninstall loopai@loopai
+claude plugin marketplace remove loopai
+```
+
+To install standalone skill copies instead:
+
+```bash
+install -d ~/.claude/skills
+cp -R assets/claude/skills/loopai* ~/.claude/skills/
+```
+
+This keeps each skill's bundled resources, including the safety helpers used by
+`loopai-grill`. Standalone copies are not managed by Claude Code's plugin
+updater. After pulling a newer repository version, rerun the copy command to
+refresh them. If replacing older command-file copies, remove only the
+`~/.claude/commands/loopai*.md` files that you previously installed.
+
+When migrating from umputun's upstream plugin, remove its plugin and marketplace
+after installing this one:
+
+```bash
+claude plugin uninstall ralphex
+claude plugin marketplace remove ralphex
+```
+
+Superpowers can remain installed for debugging, TDD, code review, and its other
+orthogonal workflows. `loopai-brainstorm` replaces only its brainstorming-to-
+plan-writing path: it sends approved decisions directly to `loopai-plan` and
+does not create a separate spec. For projects shared with teammates who keep
+Superpowers, add a directive like this to the project's `CLAUDE.md`:
+
+```text
+Create implementation plans with loopai:loopai-brainstorm and
+loopai:loopai-plan. Do not use superpowers:writing-plans to create plan files.
+```
 
 ### Migrating from upstream ralphex
 
@@ -109,10 +197,9 @@ The executable is now `loopai`. Replace `RALPHEX_CONFIG_DIR` with
 project-root dashboard scan.
 
 This fork also removes the upstream Docker/Bedrock path, built-in Mercurial
-adapter, packaged releases (Homebrew, deb, rpm, and release binaries), hosted
-documentation site, and Claude plugin marketplace metadata. Source builds and
-the optional standalone Claude command assets above are the supported
-distribution paths.
+adapter, packaged releases (Homebrew, deb, rpm, and release binaries), and
+hosted documentation site. Source builds and this repository's Claude Code
+plugin marketplace are the supported distribution paths.
 
 ## Quick start
 
@@ -192,6 +279,9 @@ loopai --worktree --commit docs/plans/feature.md
 # continue an interrupted isolated worktree
 loopai --resume-worktree docs/plans/feature.md
 
+# generate project-specific review agents into .loopai/agents/
+loopai --gen-agents
+
 # initialize project-local configuration
 loopai --init
 
@@ -212,13 +302,79 @@ Use `loopai --help` for the complete flag list.
 The full pipeline has four phases:
 
 1. Task execution finds the first incomplete `### Task N:` or `### Iteration N:` section, runs the selected executor, validates the result, marks the task complete, and commits it.
-2. First review launches the configured review agents in parallel through the primary executor.
+2. First review launches the review agents in parallel through the primary executor: five built-in agents plus any project-specific agents the executor selects (see [Review agents](#review-agents)).
 3. External review runs the configured reviewer or reviewer chain for findings. The primary executor evaluates findings and owns all fixes.
 4. Second review checks the final changes for critical or major regressions.
 
 An optional finalize step can run after review. It is disabled by default and controlled with `finalize_enabled`; `--skip-finalize` disables it for one invocation.
 
 Press Ctrl+\ during a task iteration to pause it, edit the plan, and retry the same task in a fresh session. During external review, Ctrl+\ terminates the entire reviewer chain and skips all remaining reviewers. This shortcut is not available on Windows.
+
+## Review agents
+
+A review agent is a plain-text file of review instructions. The first internal review always
+launches the five built-in agents in parallel: quality, implementation, testing,
+simplification, and documentation. These cover problems that apply to any codebase.
+
+Projects can add their own agents for problem classes the built-in five miss — a migration
+checker, a schema-compatibility reviewer, an accessibility pass. Drop a `.txt` file into
+`.loopai/agents/` (project) or `~/.config/loopai/agents/` (all projects) and give it YAML
+frontmatter with a one-line `description`:
+
+```text
+---
+description: "check SQL migrations for irreversible or lock-heavy operations"
+---
+
+Review the changed migration files for:
+
+1. Missing or incorrect down-migrations
+2. Operations that take long-lived locks on large tables
+...
+```
+
+The `description` is what makes the agent active. `review_first.txt` expands the
+`{{agents:dynamic}}` variable into a catalog of every described agent, and the primary
+executor reads that catalog and launches the ones relevant to the current diff — typically
+none to three — in the same parallel message as the built-in five. Selection is the model's
+call based on your description, so write it as a precise statement of when the agent applies.
+An agent with no description is never offered in the catalog; it runs only where a prompt
+references it explicitly as `{{agent:name}}`.
+
+The frontmatter is YAML, so quote the description. An unquoted value containing `: ` makes
+the whole block unparsable, which looks exactly like having no frontmatter at all and leaves
+the agent inactive; an unquoted ` #` is read as a YAML comment and silently truncates the
+description at that point.
+
+The catalog exists only where `review_first.txt` says `{{agents:dynamic}}`. If you have
+customized that prompt, add the placeholder to your copy — a customized `review_first.txt`
+without it disables every dynamic agent. The first review iteration logs a warning naming the
+agents it dropped, but nothing else signals it. `loopai --dump-defaults <dir>` shows the
+current default to compare against.
+
+To get started, let loopai draft agents for the repository:
+
+```bash
+loopai --gen-agents
+```
+
+One executor session inspects the stack, layout, project instructions, and commit history and
+writes 2-5 candidate agents into `.loopai/agents/`. It then lists every agent file in that
+directory with its description, including ones that already existed. Nothing else changes:
+review the files with `git diff`, edit or delete what does not fit, and commit the ones worth
+keeping. Files that reuse a built-in agent name are reported with a warning, since they
+replace that built-in agent. The listing reports each file as loopai will actually treat it:
+a file with no description, unparsable frontmatter, or no prompt body is flagged instead of
+being listed as an active agent. The session runs with `task_model` (`--task-model`); `plan_model`
+does not apply. The flag is standalone and is rejected together with a plan file, another
+standalone mode, or `--serve`/`--watch`.
+
+Agent frontmatter also accepts `model` (`haiku`, `sonnet`, `opus`, or `fable` for that agent
+alone) and `agent` (a named subagent type instead of the default `general-purpose`). Both are
+optional. An unknown model value is reported as a warning and drops both execution overrides
+for that agent; the `description` is kept, so the agent still runs from the catalog with
+default settings. Under `--codex` a single shared reviewer agent is used, so `model` and
+`agent` are ignored there and logged as a warning — `description` still works.
 
 ## Plan format
 
@@ -456,7 +612,7 @@ The embedded configuration documents every option. Extract it with:
 loopai --dump-defaults /tmp/loopai-defaults
 ```
 
-Custom prompts and agents use the same filenames as the embedded defaults. The `{{agent:name}}` template syntax expands configured review agents at runtime.
+Custom prompts and agents use the same filenames as the embedded defaults. At runtime the `{{agent:name}}` template syntax expands one named review agent, and `{{agents:dynamic}}` expands the catalog of project-specific agents described in [Review agents](#review-agents).
 
 ## Alternative providers
 

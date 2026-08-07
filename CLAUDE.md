@@ -14,13 +14,18 @@ Three upstream-compatible internals intentionally retain the old name:
 
 Do not rename these. Keeping the module path avoids import-line conflicts during upstream merges. Keeping the signals preserves compatibility with embedded/custom prompts and historical progress logs. These are deliberate boundaries, not rebrand omissions.
 
-The fork does not contain upstream packaging/release infrastructure or the upstream documentation website. Distribution is by source build.
+The fork does not contain upstream packaging/release infrastructure or the upstream documentation website. Distribution is by source build and the repository's Claude Code plugin marketplace.
 
 ## Build commands
 
 ```bash
 make build      # build .bin/loopai
 make test       # asset checks, race-enabled unit tests with coverage, provider-wrapper suites
+make check-symlinks # validate the six Claude skill assets and links
+make test-symlinks  # regression tests for Claude skill asset validation
+make check-plugin   # validate Claude plugin and marketplace manifests
+make test-plugin    # regression tests for manifest validation
+make test-grill-skill # validate loopai-grill metadata and workflow contracts
 make test-wrappers # all retained provider-wrapper and wrapper-doc suites
 make lint       # golangci-lint
 make fmt        # gofmt and goimports
@@ -60,14 +65,59 @@ e2e/                 Playwright dashboard tests
 scripts/             provider wrappers and internal test helpers
 scripts/copilot-as-claude/ # GitHub Copilot CLI wrapper for Claude-compatible output
 scripts/pi-as-claude/ # pi wrapper for Claude-compatible output
-assets/claude/       optional slash-command source assets
+assets/claude/skills/ canonical Claude Code plugin skill sources
+assets/claude/loopai*.md legacy standalone-command compatibility symlinks
+.claude-plugin/      Claude Code plugin and marketplace manifests
 docs/                focused operational documentation and plans
 ```
 
 The top-level `assets/claude/loopai*.md` files are symlinks to the matching
 `assets/claude/skills/loopai*/SKILL.md` sources. Keep the command name,
-directory name, and link target aligned; `make check-symlinks` rejects broken
-links.
+directory name, and link target aligned; `make check-symlinks` rejects broken,
+missing, incorrect, and orphan links, requires skill descriptions, and verifies
+the exact skill inventory. The current set is `loopai`, `loopai-plan`,
+`loopai-brainstorm`, `loopai-adopt`, `loopai-update`, and `loopai-grill`; every
+added skill needs the matching top-level symlink. When adding or removing a
+skill, update `expected_skills` in `scripts/check-symlinks.sh` and the valid
+fixture inventory in `scripts/check-symlinks_test.sh`, then bump both manifest
+versions.
+
+Standalone installation must copy the complete directories under
+`assets/claude/skills/`, not dereference only the top-level Markdown symlinks;
+`loopai-grill` depends on bundled scripts addressed through
+`${CLAUDE_SKILL_DIR}` and requires Python 3 in a POSIX environment (Linux,
+macOS, or Windows via WSL) for its path helper.
+
+`.claude-plugin/marketplace.json` exposes this repository as the `loopai`
+marketplace, and `.claude-plugin/plugin.json` points Claude Code at the skill
+directory. Whenever any skill changes, bump the version in both manifests so
+installed copies receive the update. Keep the marketplace entry version equal
+to the plugin version.
+
+`loopai-grill` has two safety-sensitive routes. Grill mode critiques an active
+plan and applies only user-selected verified findings; plan-off creates one new
+plan and never edits its source. Both reject completed, symlinked, nested, and
+`.loopai/` plans. The skill pre-approves no Claude tools. Its bundled path
+helper rejects symlinked plan and `.loopai` roots, rejects hard-linked plans,
+validates outside-repository scratch directories, identity-and-content-guards
+active-plan replacements without overwriting concurrent writers, retains and
+reports each displaced inode in Git-private non-stageable storage so late
+pre-opened-descriptor writes remain recoverable, and performs
+locked atomic no-clobber final creation. Plan and draft reads are capped at
+8 MiB. Its Claude and Codex wrappers snapshot
+only tracked and non-ignored untracked single-link regular files through
+descriptor-anchored no-follow reads while excluding `.git/`, `.loopai/`,
+recovery paths, and their case aliases, reject files over 64 MiB and snapshots
+over 512 MiB, confine model reads to isolated temporary directories, and reject
+in-worktree alternate Git directories. The Claude wrapper exposes only
+read-only repository tools and disables user/project customizations; the Codex
+wrapper requires strict-config and permission-profile support, disables
+user/project config, rules, MCP and external tools, strips
+credential-like shell variables, and starts an ephemeral session without
+approval escalation. Candidate and judging scratch files live outside the
+repository and are removed on every exit. Grill mode reports Codex failure
+and degrades to Claude-only; plan-off requires Codex and fails closed. When
+these contracts change, update and run `scripts/check-grill-skill_test.sh`.
 
 ## Configuration
 
@@ -82,6 +132,23 @@ links.
 - Override: `--config-dir` or `LOOPAI_CONFIG_DIR`
 
 Local files override global files, which override embedded defaults. Embedded defaults remain the per-file fallback, so deleting an installed prompt or agent does not disable it. Remove its template reference to disable an agent.
+
+Agent files may carry YAML frontmatter parsed into `config.Options` (`model`,
+`agent`, `description`). A non-empty `description` marks the file as a *dynamic
+agent*: it is offered to the internal review phase through the
+`{{agents:dynamic}}` catalog instead of requiring a hard-wired
+`{{agent:<name>}}` reference. The five embedded agents (quality,
+implementation, testing, simplification, documentation) carry no description and
+always run as the base set. `loopai --gen-agents` writes starter dynamic agents
+into `.loopai/agents/`. When `Options.Validate` warns, `buildAgent` drops the
+execution overrides but preserves `Description`: catalog membership must not
+depend on an unrelated `model` typo. `config.ParseAgentOptions` applies the same
+CRLF/whitespace/leading-comment normalization the loader does, so any second
+reader of an agent file agrees with the review phase about its description.
+`parseOptions` collapses the description to a single space-separated line: a YAML
+block or folded scalar parses fine but yields embedded newlines, and the catalog
+renders the description as one Markdown list item followed by an indented
+invocation snippet, so continuation lines would land unindented between the two.
 
 `external_reviewers` configures an ordered comma-separated reviewer chain using
 `provider[:model[:effort]]` entries. It takes precedence over the legacy
@@ -105,6 +172,83 @@ Tests must redirect HOME or config paths to `t.TempDir()` and must never touch e
 - `pkg/config/defaults` contains embedded config, prompts, and agents.
 
 Task plans use `### Task N:` or `### Iteration N:` headings and Markdown checkboxes. The task phase handles only the first incomplete section per executor iteration.
+
+`pkg/processor/prompts.go` expands two agent placeholders with the same
+per-executor invocation snippet builder (Task tool for Claude, `spawn_agent` for
+Codex): `{{agent:<name>}}` inlines one named agent, and `{{agents:dynamic}}`
+renders the dynamic-agent catalog sorted by name, or
+`(no project-specific agents configured)` when the project defines none. Only
+the embedded `review_first.txt` uses the catalog; `review_second.txt` and the
+embedded external-reviewer prompts do not, though both placeholders are expanded
+on the external path too so customized prompts behave alike. The catalog pass runs
+after agent-reference expansion, so `agentBodyText` strips `{{agents:dynamic}}`
+from inlined agent bodies — otherwise raw catalog text lands inside an
+already-escaped codex `task='...'` literal. The catalog also skips agents the same
+prompt already inlines through `{{agent:<name>}}` — `agentRefNames` collects those
+names before expansion — so a user copy of a base agent that carries a description
+is listed and launched once, not twice. Which catalog entries actually run is decided by the model from
+the descriptions — deliberately not by path or glob triggers in code — and the
+prompt bounds the selection to roughly 0-3 agents launched in the same parallel
+message as the base five. `FirstReviewPrompt` calls `warnMissingDynamicCatalog`,
+which warns once per run when the project has dynamic agents but the effective
+`review_first.txt` carries no placeholder: a prompt copy installed by an earlier
+`--init` predates the catalog and would otherwise drop every dynamic agent
+without a trace. The check belongs there and not in `expandDynamicAgentCatalog`,
+which also runs for `review_second.txt` and the external prompts that
+deliberately omit the placeholder.
+
+`--gen-agents` is a standalone mode backed by `processor.ModeGenAgents` and
+`phase.GenAgentsPhase` rather than ad-hoc executor wiring, so retry/limit policy
+and section timing match the other phases. It runs one session with
+`gen_agents.txt`, logs to `.loopai/progress/progress-gen-agents.txt`, then
+reports the agent files present with their descriptions using
+`config.ParseAgentOptions`; an unreadable file is reported inline rather than
+aborting the listing. `describeAgentFile` reports what the loader will do with
+each file rather than its description alone, so it gates emptiness on
+`config.AgentFileHasBody` — the same comment-stripping check the loader uses.
+A file with no body is ignored (replaced by the embedded default only for a
+reserved name, dropped entirely otherwise), and frontmatter that fails to parse —
+an unquoted `description` containing `: ` is the likely cause — is
+indistinguishable from having none, so both are flagged instead of being listed
+as working agents. An unquoted ` #` does not break parsing; YAML reads it as a
+comment and truncates the description, so `gen_agents.txt` requires a
+double-quoted description for both reasons. That distinction comes from
+`config.AgentFrontmatterUnparsable` and not from a `---` prefix on the parsed body:
+a working agent may open its body with a markdown rule, and a broken block written
+below a `# ...` header never reaches the parsed form at all, so the prefix check
+misdiagnoses both. It requires a *complete* `---` block — opening delimiter plus a
+closing one on its own line — before calling anything unparsable, because a file with
+no frontmatter whose body simply starts with a markdown rule matches the opening
+delimiter alone and its real gap is a missing `description`, not YAML quoting.
+`parseOptionsWithCommentRetry` accepts its comment-stripped retry
+whenever that parse consumed a frontmatter block, not only when the block carried a
+recognized key: a well-formed block holding only foreign keys must read the same
+behind a comment header as it does without one, otherwise its raw `---` lines stay in
+the agent body and valid YAML gets reported as broken. The report also runs on the failure path — a session that writes
+files and then fails, times out, or is interrupted leaves them in the next run's
+catalog, and the reserved-name warning would otherwise be lost with the error.
+Overwriting a reserved base name warns instead of failing, because the user
+reviews the generated files with `git diff` before committing them, and the
+warning fires only for a file that actually has a body: a plain `--init` fills
+`.loopai/agents/` with all-commented copies of the five base agents that override
+nothing. Non-`.txt` files in the directory are reported as ignored rather than
+skipped silently: the agent loader reads `.txt` only, so a session that disregards
+the prompt and writes `.md` would otherwise leave files `git status` shows and
+nothing ever loads. `clearStaleCmuxStatus` excludes the mode alongside the other
+config utilities — it executes no plan and constructs no reporter, so clearing
+would drop the previous run's completion pill with nothing to replace it. The
+session resolves `task_model` only — `plan_model` does not
+apply and no review model is printed. It is routed before branch and worktree
+setup but still opens the repository to run `EnsureLocalGitignore`, since it tells
+the user to inspect `git status` afterwards. `validateGenAgentsFlags` must reject
+`--serve`/`--watch` alongside the other standalone modes: watch-only routing is
+decided before the `ModeGenAgents` branch. Like `ModeTasksOnly`, the mode
+short-circuits `resolveExternalReviewSelection`: it runs no review phase, so a
+configured `external_reviewers` binary missing from `PATH` must not fail it. It is
+also routed before `notify.New`, which validates channels eagerly: the mode sends
+no notification, so a half-filled `notify_slack_*`/`notify_email_*` block must not
+be what stops it. Notification setup covers only the plan-executing paths — the
+close-out commands and watch-only mode return before it for the same reason.
 
 The primary executor owns all repository writes. External reviewers produce findings only; the primary evaluates and fixes them using `review_model`, falling back to `task_model`. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
 
@@ -188,9 +332,13 @@ make lint
 ```
 
 The full suite is required because configuration and progress paths cross package boundaries.
-`make test` first validates Claude command symlinks, then runs the race-enabled
-Go suite with coverage, and finally runs every retained provider-wrapper and
-wrapper-documentation shell suite. CI runs the same asset and wrapper checks.
+`make test` first validates Claude skill assets and plugin manifests, runs their
+regression suites and shell-completion checks, then runs the race-enabled Go
+suite with coverage and every retained provider-wrapper and wrapper-documentation
+shell suite. The asset and manifest checks require Bash and `jq`; the focused
+`test-grill-skill` suite checks the grill skill's metadata and operational
+contracts. CI runs the same focused asset, manifest, grill-skill, completion,
+and wrapper checks.
 
 Dashboard e2e:
 
@@ -257,6 +405,7 @@ tail -f .loopai/progress/progress-codex.txt
 - `make test` passes.
 - `make lint` reports no issues.
 - Documentation and embedded config comments match behavior.
+- Any Claude skill change bumps both manifest versions to the same value.
 - No test touched real user configuration.
 - The module path and `<<<RALPHEX:...>>>` signals remain unchanged.
 - `CHANGELOG.md` is untouched unless release work explicitly requires it.

@@ -8,9 +8,12 @@ import (
 )
 
 // Options holds agent options parsed from YAML frontmatter in agent files.
+// a non-empty Description marks the agent as dynamic (project-specific): it is
+// listed in the {{agents:dynamic}} catalog for model-side selection during review.
 type Options struct {
-	Model     string `yaml:"model"`
-	AgentType string `yaml:"agent"`
+	Model       string `yaml:"model"`
+	AgentType   string `yaml:"agent"`
+	Description string `yaml:"description"`
 }
 
 var validModels = map[string]bool{"haiku": true, "sonnet": true, "opus": true, "fable": true}
@@ -36,6 +39,93 @@ func (o Options) Validate() []string {
 		warnings = append(warnings, fmt.Sprintf("unknown model %q, must be one of: haiku, sonnet, opus, fable", o.Model))
 	}
 	return warnings
+}
+
+// ParseAgentOptions extracts agent frontmatter options and the agent body from raw
+// agent file content. Exported for callers outside the loader: the --gen-agents mode
+// reports the descriptions of freshly written agent files without reloading config.
+// It applies the same normalization the loader does (CRLF endings, surrounding
+// whitespace, leading comment lines) so the reported description always matches the
+// one the review phase will use.
+func ParseAgentOptions(content string) (opts Options, body string) {
+	return parseOptionsWithCommentRetry(strings.TrimSpace(normalizeCRLF(content)))
+}
+
+// AgentFileHasBody reports whether an agent file contributes a prompt body. A file
+// that is only comments, whitespace, or frontmatter is ignored by the loader in favor
+// of the embedded default with the same name, and dropped entirely when no embedded
+// default exists. Exported so the --gen-agents report agrees with the loader instead
+// of listing an inert file as a working agent.
+func AgentFileHasBody(content string) bool {
+	_, body := agentPromptBody(content)
+	return body != ""
+}
+
+// AgentFrontmatterUnparsable reports whether content opens a frontmatter block that
+// neither parse attempt could read. Exported for the --gen-agents report: parsing
+// returns the whole content as the body both for a broken block and for a file with
+// no frontmatter at all, so the reported reason would otherwise be a guess. Checking
+// the parsed body for a "---" prefix is not enough — a working agent may open its
+// body with a markdown rule, and a broken block behind a leading comment line never
+// reaches the parsed form at all.
+func AgentFrontmatterUnparsable(content string) bool {
+	normalized := strings.TrimSpace(normalizeCRLF(content))
+	if !hasFrontmatterBlock(strings.TrimSpace(stripLeadingCommentLines(normalized))) {
+		return false
+	}
+	// parseOptionsWithCommentRetry returns its input unchanged only when no attempt
+	// found parsable frontmatter; a parsed block always yields a shorter body
+	opts, body := parseOptionsWithCommentRetry(normalized)
+	return opts == (Options{}) && body == normalized
+}
+
+// hasFrontmatterBlock reports whether content opens a complete "---" delimited block.
+// the opening delimiter alone is not enough: an agent body may start with a markdown
+// horizontal rule, and calling that broken frontmatter sends the user chasing a YAML
+// quoting bug when the file simply carries no description. only a block that closes
+// properly and still fails to parse is genuinely unparsable.
+func hasFrontmatterBlock(content string) bool {
+	after, found := strings.CutPrefix(content, "---\n")
+	if !found {
+		return false
+	}
+	_, body, found := strings.Cut(after, "\n---")
+	// closing delimiter must be on its own line, same rule parseOptions applies
+	return found && (body == "" || body[0] == '\n')
+}
+
+// agentPromptBody normalizes agent file content and returns the frontmatter options
+// and prompt body the loader sees. Comments are stripped before parsing so an
+// all-commented file reads as empty and a "# ..." header above "---" does not hide
+// the frontmatter.
+func agentPromptBody(content string) (Options, string) {
+	normalized := strings.TrimSpace(normalizeCRLF(content))
+	stripped := strings.TrimSpace(stripComments(normalized))
+	return parseOptions(stripped)
+}
+
+// parseOptionsWithCommentRetry parses frontmatter, retrying after leading comment
+// lines are stripped so a "# ..." header written above "---" does not hide the
+// options. Returns the zero Options and the original content when neither attempt
+// finds frontmatter. The retry is accepted whenever it consumed a frontmatter block,
+// not only when that block carried a recognized key: a well-formed block holding
+// only foreign keys (Claude-Code style "name"/"tools", say) must read the same behind
+// a comment header as it does without one — otherwise its raw "---" lines stay in the
+// agent body and AgentFrontmatterUnparsable reports valid YAML as broken.
+func parseOptionsWithCommentRetry(content string) (Options, string) {
+	opts, body := parseOptions(content)
+	if opts != (Options{}) || body != content {
+		return opts, body
+	}
+	stripped := stripLeadingCommentLines(content)
+	if stripped == content {
+		return opts, body
+	}
+	// parseOptions returns its input unchanged when it finds no parsable frontmatter
+	if strippedOpts, strippedBody := parseOptions(stripped); strippedBody != stripped {
+		return strippedOpts, strippedBody
+	}
+	return Options{}, content
 }
 
 // normalizeModel extracts the keyword (haiku, sonnet, opus, fable) from a model string.
@@ -76,6 +166,17 @@ func parseOptions(content string) (Options, string) {
 	}
 
 	opts.Model = normalizeModel(opts.Model)
+	opts.Description = normalizeDescription(opts.Description)
 
 	return opts, strings.TrimSpace(body)
+}
+
+// normalizeDescription collapses a description to a single space-separated line.
+// the {{agents:dynamic}} catalog renders it as one markdown list item followed by an
+// indented invocation snippet, so a YAML block scalar ("description: |") parsing into
+// several lines would push unindented continuation text between the entry header and
+// its snippet. a whitespace-only description collapses to empty, which keeps it from
+// marking the agent dynamic.
+func normalizeDescription(desc string) string {
+	return strings.Join(strings.Fields(desc), " ")
 }

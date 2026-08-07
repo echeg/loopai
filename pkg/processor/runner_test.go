@@ -1150,6 +1150,34 @@ func TestRunner_PlanModePreservesRejectedPlanSentinel(t *testing.T) {
 	assert.Equal(t, ErrUserRejectedPlan, err)
 }
 
+func TestRunner_GenAgentsModeRunsOneSession(t *testing.T) {
+	appCfg := testAppConfig(t)
+	exec := newMockExecutor([]executor.Result{{Output: "wrote agents"}})
+	cfg := Config{Mode: ModeGenAgents, ProgressPath: "progress.txt", AppConfig: appCfg}
+	r := NewWithExecutors(cfg, newRunnerMockLogger("progress.txt"), Executors{Task: exec}, &status.PhaseHolder{})
+
+	err := r.Run(t.Context())
+
+	require.NoError(t, err)
+	require.Len(t, exec.RunCalls(), 1)
+	prompt := exec.RunCalls()[0].Prompt
+	assert.Contains(t, prompt, ".loopai/agents/")
+	assert.Contains(t, prompt, "Progress log: progress.txt")
+	assert.NotContains(t, prompt, "{{", "all variables in the embedded gen_agents prompt are expanded")
+	assert.NotEmpty(t, appCfg.GenAgentsPrompt)
+}
+
+func TestRunner_GenAgentsModeFailurePropagates(t *testing.T) {
+	exec := newMockExecutor([]executor.Result{{Output: "nope", Signal: status.Failed}})
+	cfg := Config{Mode: ModeGenAgents, AppConfig: testAppConfig(t)}
+	r := NewWithExecutors(cfg, newRunnerMockLogger("progress.txt"), Executors{Task: exec}, &status.PhaseHolder{})
+
+	err := r.Run(t.Context())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent generation phase")
+}
+
 func TestRunner_SetInputCollector_ReachesConcretePlanPhase(t *testing.T) {
 	log := newRunnerMockLogger("progress.txt")
 	exec := newMockExecutor([]executor.Result{

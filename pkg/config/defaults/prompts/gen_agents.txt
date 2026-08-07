@@ -1,0 +1,107 @@
+# agent generation prompt
+# this prompt is used by the --gen-agents standalone mode
+# one session analyzes the repository and writes project-specific review agents
+# into .loopai/agents/ for later use by the internal review phase
+#
+# available variables:
+#   {{PROGRESS_FILE}} - path to the progress log for this session
+
+Generate project-specific review agents for this repository.
+
+Progress log: {{PROGRESS_FILE}}
+
+## What a review agent is
+
+loopai's internal review phase always launches 5 built-in agents in parallel:
+
+- quality - code quality problems
+- implementation - correctness and completeness against the plan
+- testing - test coverage and test quality
+- simplification - over-engineering and unnecessary complexity
+- documentation - documentation accuracy and gaps
+
+Each agent is a plain-text file of review instructions. A project agent file whose
+YAML frontmatter carries a non-empty `description` becomes a dynamic agent: the
+primary executor sees it in the review catalog and selects it when the diff is
+relevant to it. The description is the only thing the selector reads, so it must
+say precisely when the agent is worth running.
+
+## Step 1: Analyze the repository
+
+Understand what problem classes are specific to THIS project:
+
+- language, frameworks, and build tooling
+- directory structure and the responsibilities of each package or module
+- CLAUDE.md, AGENTS.md, CONTRIBUTING.md, and any style or architecture docs
+- recent commit history and, if available, past bug-fix commits - recurring
+  mistakes are the best evidence for a useful agent
+- domain-specific invariants: protocol formats, concurrency rules, security
+  boundaries, data migrations, platform-portability constraints, generated code
+
+## Step 2: Choose agents
+
+Propose 2-5 narrow agents. Each one must cover a problem class the 5 built-in
+agents do NOT already cover. Rules:
+
+- narrow beats broad: "sql migration safety" is a good agent, "backend review" is not
+- evidence-based: only propose an agent for problems this repository can actually have
+- no overlap with quality, implementation, testing, simplification, documentation
+- no overlap between the agents you propose
+- fewer good agents beat more mediocre ones; 2 is a perfectly acceptable answer
+
+## Step 3: Write the agent files
+
+Write each agent to `.loopai/agents/<name>.txt` where `<name>` is a short
+lowercase kebab-case slug matching the agent's focus.
+
+First list `.loopai/agents/` and read any file already there. Never overwrite an
+existing agent file: it may be hand-tuned and uncommitted. Pick a different slug,
+or skip the agent entirely if the existing file already covers that problem class,
+and say so in the report.
+
+RESERVED NAMES - never use these, they belong to the built-in agents and a file
+with one of these names would replace the built-in agent:
+quality, implementation, testing, simplification, documentation
+
+File format:
+
+---
+description: "one line saying when this agent should be selected"
+---
+<review instructions>
+
+Rules for the file:
+
+- the `description` field is MANDATORY and must be a single line; without it the
+  agent is never offered to the review phase
+- ALWAYS wrap the description in double quotes exactly as shown. The frontmatter
+  is YAML: an unquoted value containing ": " makes the whole block unparsable and
+  the agent is then silently ignored, and an unquoted " #" is read as a YAML
+  comment that silently truncates the description at that point
+- the description names the trigger, e.g. "review changes to database migrations
+  and schema definitions for backwards-compatibility and data-loss risks"
+- the body is a focused review checklist in the style of the built-in agents:
+  short thematic sections of concrete, checkable problem patterns
+- end the body with a "What to Report" section asking for location, problem, and
+  suggested fix
+- instruct the agent to report problems only, no positive observations
+- do not embed diffs, file listings, or plan contents into the agent body - the
+  agent receives its context at review time
+- keep each file focused; a few hundred words is plenty
+
+## Step 4: Report
+
+After writing the files, list what you created:
+
+- the path of every agent file written
+- its description
+- one sentence on the evidence in the repository that justified it
+
+Do not commit anything. The user reviews the generated files with `git diff` and
+commits the useful ones.
+
+If you cannot write any agent file - the repository cannot be analyzed or the
+agents directory cannot be written - output exactly: <<<RALPHEX:TASK_FAILED>>>
+
+OUTPUT FORMAT: No markdown formatting in your response text (no **bold**, `code`,
+# headers). Plain text and - lists are fine. The agent FILES use the format above.

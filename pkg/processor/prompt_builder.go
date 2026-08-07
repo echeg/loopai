@@ -11,6 +11,7 @@ type promptBuilder struct {
 	log                    Logger
 	locator                *planLocator
 	codexFrontmatterWarned map[string]bool
+	catalogMissingWarned   bool
 }
 
 type promptBuilderOpts struct {
@@ -36,6 +37,7 @@ func (b *promptBuilder) TaskPrompt() string {
 }
 
 func (b *promptBuilder) FirstReviewPrompt() string {
+	b.warnMissingDynamicCatalog(b.cfg.AppConfig.ReviewFirstPrompt)
 	return b.prependCodexReviewGuidance(b.replacePromptVariables(b.cfg.AppConfig.ReviewFirstPrompt))
 }
 
@@ -85,6 +87,13 @@ func (b *promptBuilder) PlanPrompt() string {
 	prompt = strings.ReplaceAll(prompt, "{{PLAN_DESCRIPTION}}", b.cfg.PlanDescription)
 	result := b.replaceBaseVariables(prompt)
 	return b.appendCommitTrailerInstruction(result)
+}
+
+// GenAgentsPrompt renders the prompt for the --gen-agents standalone mode. only base
+// variables are expanded: the session writes agent files rather than launching review
+// agents, so {{agent:name}} and {{agents:dynamic}} have no meaning here.
+func (b *promptBuilder) GenAgentsPrompt() string {
+	return b.replaceBaseVariables(b.cfg.AppConfig.GenAgentsPrompt)
 }
 
 func (b *promptBuilder) FinalizePrompt() string {

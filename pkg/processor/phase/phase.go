@@ -94,6 +94,12 @@ type FinalizeLogger interface {
 	PrintSection(section status.Section)
 }
 
+// GenAgentsLogger records agent generation progress.
+type GenAgentsLogger interface {
+	Logger
+	PrintSection(section status.Section)
+}
+
 // PlanCreationLogger records interactive plan creation progress and Q&A history.
 type PlanCreationLogger interface {
 	Logger
@@ -157,6 +163,11 @@ type ExternalReviewPrompts interface {
 // PlanCreationPrompts renders interactive plan creation prompts.
 type PlanCreationPrompts interface {
 	PlanPrompt() string
+}
+
+// GenAgentsPrompts renders the agent generation prompt.
+type GenAgentsPrompts interface {
+	GenAgentsPrompt() string
 }
 
 // FinalizePrompts renders finalize prompts.

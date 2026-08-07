@@ -31,7 +31,7 @@ jobs:
           grep -v -E "_mock.go|/mocks/" $GITHUB_WORKSPACE/profile.cov_tmp > $GITHUB_WORKSPACE/profile.cov
 
       - name: validate retained assets and provider wrappers
-        run: make check-symlinks test-completions test-wrappers
+        run: make check-symlinks test-symlinks check-plugin test-plugin test-grill-skill test-completions test-wrappers
 
       - name: smoke test renamed binary
         run: |

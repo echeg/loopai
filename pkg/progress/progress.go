@@ -757,9 +757,7 @@ func progressFilename(planFile, planDescription, mode, branchOverride string) st
 	}
 
 	switch mode {
-	case "codex-only":
-		return filepath.Join(progressDir, "progress"+modeSuffix(mode)+".txt")
-	case "review":
+	case "codex-only", "gen-agents", "review":
 		return filepath.Join(progressDir, "progress"+modeSuffix(mode)+".txt")
 	case "plan":
 		return filepath.Join(progressDir, "progress-plan.txt")
@@ -774,6 +772,8 @@ func modeSuffix(mode string) string {
 		return "-codex"
 	case "review":
 		return "-review"
+	case "gen-agents":
+		return "-gen-agents"
 	default:
 		return ""
 	}

@@ -1,0 +1,18 @@
+{
+  "name": "loopai",
+  "description": "Claude Code workflows for autonomous execution, planning, adversarial plan critique, and cross-model plan comparison",
+  "owner": {
+    "name": "echeg"
+  },
+  "plugins": [
+    {
+      "name": "loopai",
+      "source": "./",
+      "description": "Claude Code workflows for autonomous execution, planning, adversarial plan critique, and cross-model plan comparison",
+      "version": "0.2.9",
+      "author": {
+        "name": "echeg"
+      }
+    }
+  ]
+}

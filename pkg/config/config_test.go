@@ -104,7 +104,7 @@ func Test_defaultsFS_PromptFiles(t *testing.T) {
 		contains []string
 	}{
 		{file: "defaults/prompts/task.txt", contains: []string{"{{PLAN_FILE}}", "{{PROGRESS_FILE}}", "RALPHEX:ALL_TASKS_DONE", "RALPHEX:TASK_FAILED", "Success criteria", "Task sections", "### Task N:", "mark them [x]", "do not loop indefinitely"}},
-		{file: "defaults/prompts/review_first.txt", contains: []string{"{{GOAL}}", "{{PROGRESS_FILE}}", "RALPHEX:REVIEW_DONE", "{{agent:quality}}", "{{agent:testing}}"}},
+		{file: "defaults/prompts/review_first.txt", contains: []string{"{{GOAL}}", "{{PROGRESS_FILE}}", "RALPHEX:REVIEW_DONE", "{{agent:quality}}", "{{agent:testing}}", "{{agents:dynamic}}", "Step 2b"}},
 		{file: "defaults/prompts/review_second.txt", contains: []string{"{{GOAL}}", "{{PROGRESS_FILE}}", "RALPHEX:REVIEW_DONE", "{{agent:quality}}", "{{agent:implementation}}"}},
 		{file: "defaults/prompts/codex.txt", contains: []string{"{{CODEX_OUTPUT}}", "RALPHEX:EXTERNAL_REVIEW_DONE", "Codex reviewed"}},
 		{file: "defaults/prompts/codex_review.txt", contains: []string{"{{DIFF_INSTRUCTION}}", "{{PROGRESS_FILE}}", "{{PREVIOUS_REVIEW_CONTEXT}}", "{{PLAN_FILE}}"}},
@@ -120,6 +120,19 @@ func Test_defaultsFS_PromptFiles(t *testing.T) {
 			for _, expected := range tc.contains {
 				assert.Contains(t, content, expected, "file %s should contain %q", tc.file, expected)
 			}
+		})
+	}
+}
+
+func Test_defaultsFS_DynamicCatalogOnlyInFirstReview(t *testing.T) {
+	// dynamic agents are scoped to the first internal review pass; the second pass
+	// and external reviewer prompts must not reference the catalog
+	for _, file := range []string{"defaults/prompts/review_second.txt", "defaults/prompts/codex_review.txt",
+		"defaults/prompts/external_claude_review.txt"} {
+		t.Run(file, func(t *testing.T) {
+			data, err := defaultsFS.ReadFile(file)
+			require.NoError(t, err)
+			assert.NotContains(t, string(data), "{{agents:dynamic}}")
 		})
 	}
 }
@@ -210,6 +223,7 @@ func TestLoad_PopulatesAllFields(t *testing.T) {
 	assert.NotEmpty(t, cfg.CodexReviewPrompt)
 	assert.NotEmpty(t, cfg.ExternalClaudeReviewPrompt)
 	assert.NotEmpty(t, cfg.ExternalClaudeEvalPrompt)
+	assert.NotEmpty(t, cfg.GenAgentsPrompt)
 }
 
 func TestLoad_WithUserConfig(t *testing.T) {

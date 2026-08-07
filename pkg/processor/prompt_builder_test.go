@@ -43,6 +43,28 @@ func TestPromptBuilder_FinalPrompts(t *testing.T) {
 	assert.Equal(t, "finalize implementation of plan at docs/plans/test.md", builder.FinalizePrompt())
 }
 
+func TestPromptBuilder_GenAgentsPrompt(t *testing.T) {
+	appCfg := &config.Config{
+		GenAgentsPrompt: "generate agents, log to {{PROGRESS_FILE}} for {{DEFAULT_BRANCH}} {{agent:quality}}",
+		CustomAgents:    []config.CustomAgent{{Name: "quality", Prompt: "check quality"}},
+		CommitTrailer:   "Co-Authored-By: bot",
+	}
+	cfg := Config{ProgressPath: "progress.txt", DefaultBranch: "main", AppConfig: appCfg}
+	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
+
+	prompt := builder.GenAgentsPrompt()
+
+	assert.Equal(t, "generate agents, log to progress.txt for main {{agent:quality}}", prompt,
+		"generation is not a review: agent references and the commit trailer stay out")
+}
+
+func TestPromptBuilder_GenAgentsPrompt_NoProgressFile(t *testing.T) {
+	cfg := Config{AppConfig: &config.Config{GenAgentsPrompt: "log: {{PROGRESS_FILE}}"}}
+	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
+
+	assert.Equal(t, "log: (no progress file available)", builder.GenAgentsPrompt())
+}
+
 func TestPromptBuilder_NilConfigDependencies(t *testing.T) {
 	builder := newPromptBuilder(promptBuilderOpts{cfg: Config{}, log: newMockLogger()})
 
@@ -51,6 +73,7 @@ func TestPromptBuilder_NilConfigDependencies(t *testing.T) {
 		assert.Empty(t, builder.FirstReviewPrompt())
 		assert.Empty(t, builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"))
 		assert.Empty(t, builder.FinalizePrompt())
+		assert.Empty(t, builder.GenAgentsPrompt())
 	})
 }
 

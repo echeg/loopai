@@ -682,8 +682,9 @@ func (testPrompts) ExternalReviewPrompt(reviewer string, _ bool, evaluatorRespon
 func (testPrompts) ExternalEvaluationPrompt(reviewer, output string) string {
 	return reviewer + " eval: " + output
 }
-func (testPrompts) PlanPrompt() string     { return "plan prompt" }
-func (testPrompts) FinalizePrompt() string { return "finalize prompt" }
+func (testPrompts) PlanPrompt() string      { return "plan prompt" }
+func (testPrompts) GenAgentsPrompt() string { return "gen agents prompt" }
+func (testPrompts) FinalizePrompt() string  { return "finalize prompt" }
 
 type testLocator struct {
 	path string

@@ -1,0 +1,1 @@
+./skills/loopai-brainstorm/SKILL.md

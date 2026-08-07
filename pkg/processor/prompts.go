@@ -3,6 +3,7 @@ package processor
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/umputun/ralphex/pkg/config"
@@ -11,6 +12,15 @@ import (
 
 // agentRefPattern matches {{agent:name}} template syntax
 var agentRefPattern = regexp.MustCompile(`\{\{agent:([a-zA-Z0-9_-]+)\}\}`)
+
+// agentsCatalogPlaceholder is the fixed template token expanded into the catalog
+// of project-specific (dynamic) agents. Unlike {{agent:name}} it carries no
+// variable part, so plain string replacement is enough.
+const agentsCatalogPlaceholder = "{{agents:dynamic}}"
+
+// emptyDynamicCatalog is rendered in place of {{agents:dynamic}} when the
+// project defines no dynamic agents.
+const emptyDynamicCatalog = "(no project-specific agents configured)"
 
 // getGoal returns the goal string based on whether a plan file is configured.
 func (b *promptBuilder) getGoal() string {
@@ -91,12 +101,16 @@ If the dismissals are invalid, explain why the issues still exist.`, providerDis
 
 // replaceVariablesWithIteration replaces all template variables including iteration-aware ones.
 // supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}},
-// {{DIFF_INSTRUCTION}}, {{PREVIOUS_REVIEW_CONTEXT}}, {{agent:name}}
+// {{DIFF_INSTRUCTION}}, {{PREVIOUS_REVIEW_CONTEXT}}, {{agent:name}}, {{agents:dynamic}}
+// the embedded external-review prompts use neither agent token; both are expanded here so
+// a customized external prompt behaves like the internal ones.
 // this variant is used when iteration context is needed (e.g., external review prompts).
 func (b *promptBuilder) replaceExternalVariablesWithIteration(prompt string, isFirstIteration bool, reviewer, evaluator, evaluatorResponse string) string {
 	result := b.replaceBaseVariables(prompt)
 	result = strings.ReplaceAll(result, "{{DIFF_INSTRUCTION}}", b.getDiffInstruction(isFirstIteration))
+	inlined := agentRefNames(result)
 	result = b.expandAgentReferences(result) // expand agents before inserting external content
+	result = b.expandDynamicAgentCatalog(result, inlined)
 	result = strings.ReplaceAll(result, "{{PREVIOUS_REVIEW_CONTEXT}}", b.buildExternalPreviousContext(reviewer, evaluator, evaluatorResponse))
 	if reviewer == config.ExternalReviewToolClaude {
 		return result
@@ -299,11 +313,116 @@ func (b *promptBuilder) expandAgentReferences(prompt string) string {
 			b.warnCodexFrontmatterDiscarded(name, agent.Options)
 		}
 
-		// expand variables in agent content (no agent expansion to avoid recursion)
-		agentPrompt := b.replaceBaseVariables(agent.Prompt)
-
-		return b.formatAgentExpansion(agentPrompt, agent.Options)
+		return b.formatAgentExpansion(b.agentBodyText(agent.Prompt), agent.Options)
 	})
+}
+
+// agentRefNames returns the names referenced by {{agent:name}} in prompt. Collected
+// before expansion so the catalog pass can skip agents the same prompt already inlines.
+func agentRefNames(prompt string) map[string]bool {
+	matches := agentRefPattern.FindAllStringSubmatch(prompt, -1)
+	names := make(map[string]bool, len(matches))
+	for _, match := range matches {
+		names[match[1]] = true
+	}
+	return names
+}
+
+// expandDynamicAgentCatalog replaces {{agents:dynamic}} with a catalog of the
+// project-specific agents — those whose frontmatter carries a non-empty
+// description. each entry lists the agent name, its description, and the same
+// ready-to-use invocation snippet {{agent:name}} would produce, so the primary
+// executor can pick relevant ones per diff without further lookups. renders
+// emptyDynamicCatalog when no dynamic agents are configured. inlined holds the
+// names the same prompt references directly and may be nil.
+func (b *promptBuilder) expandDynamicAgentCatalog(prompt string, inlined map[string]bool) string {
+	if !strings.Contains(prompt, agentsCatalogPlaceholder) {
+		return prompt
+	}
+	return strings.ReplaceAll(prompt, agentsCatalogPlaceholder, b.buildDynamicAgentCatalog(inlined))
+}
+
+// buildDynamicAgentCatalog renders the dynamic agent catalog body, sorted by agent name.
+// agents already inlined through {{agent:name}} in the same prompt are skipped: a user
+// copy of a base agent that carries a description would otherwise be listed twice and
+// launched twice in the same review iteration.
+func (b *promptBuilder) buildDynamicAgentCatalog(inlined map[string]bool) string {
+	dynamic := b.dynamicAgents(inlined)
+	if len(dynamic) == 0 {
+		return emptyDynamicCatalog
+	}
+
+	var sb strings.Builder
+	sb.WriteString("### Available project-specific agents\n")
+	for _, agent := range dynamic {
+		b.log.Print("dynamic agent %q: %s", agent.Name, agent.Options)
+		if b.cfg.isCodexExecutor() && (agent.Model != "" || agent.AgentType != "") {
+			b.warnCodexFrontmatterDiscarded(agent.Name, agent.Options)
+		}
+		snippet := b.formatAgentExpansion(b.agentBodyText(agent.Prompt), agent.Options)
+		fmt.Fprintf(&sb, "\n- %s — %s\n%s\n", agent.Name, strings.TrimSpace(agent.Description), indentBlock(snippet, "  "))
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// dynamicAgents returns the project-specific agents — those whose frontmatter carries
+// a non-empty description — sorted by name. agents the same prompt already inlines
+// through {{agent:name}} are skipped; inlined may be nil.
+func (b *promptBuilder) dynamicAgents(inlined map[string]bool) []config.CustomAgent {
+	if b.cfg.AppConfig == nil {
+		return nil
+	}
+	var dynamic []config.CustomAgent
+	for _, agent := range b.cfg.AppConfig.CustomAgents {
+		if strings.TrimSpace(agent.Description) != "" && !inlined[agent.Name] {
+			dynamic = append(dynamic, agent)
+		}
+	}
+	sort.Slice(dynamic, func(i, j int) bool { return dynamic[i].Name < dynamic[j].Name })
+	return dynamic
+}
+
+// warnMissingDynamicCatalog warns once when the project configures dynamic agents but
+// the active review prompt carries no {{agents:dynamic}} placeholder to expand. a
+// review_first.txt copy installed by an earlier --init predates the catalog, so it
+// silently disables every dynamic agent; without this the drop leaves no trace at all.
+func (b *promptBuilder) warnMissingDynamicCatalog(prompt string) {
+	if b.catalogMissingWarned || strings.Contains(prompt, agentsCatalogPlaceholder) {
+		return
+	}
+	dynamic := b.dynamicAgents(agentRefNames(prompt))
+	if len(dynamic) == 0 {
+		return
+	}
+	names := make([]string, 0, len(dynamic))
+	for _, agent := range dynamic {
+		names = append(names, agent.Name)
+	}
+	b.catalogMissingWarned = true
+	b.log.Print("[WARN] review prompt has no %s placeholder: project agents (%s) will not be offered to the review phase, add the placeholder to your customized review_first.txt",
+		agentsCatalogPlaceholder, strings.Join(names, ", "))
+}
+
+// agentBodyText prepares an agent file body for inlining into an invocation block.
+// base variables are expanded, but nested agent tokens are not: {{agent:name}} is
+// left literal because the replacer does not rescan its own output, and
+// {{agents:dynamic}} is removed outright because the catalog pass runs after this
+// one and would otherwise inject raw multi-line catalog text into an already
+// formatted block — under codex that text sits inside a single-quoted task='...'
+// literal and its newlines and apostrophes break the spawn_agent call.
+func (b *promptBuilder) agentBodyText(prompt string) string {
+	return strings.ReplaceAll(b.replaceBaseVariables(prompt), agentsCatalogPlaceholder, "")
+}
+
+// indentBlock prefixes every non-empty line of s with prefix.
+func indentBlock(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if line != "" {
+			lines[i] = prefix + line
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // warnCodexFrontmatterDiscarded logs a one-time-per-agent warning when codex
@@ -320,11 +439,14 @@ func (b *promptBuilder) warnCodexFrontmatterDiscarded(name string, opts config.O
 }
 
 // replacePromptVariables replaces all template variables including agent references.
-// supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}}, {{agent:name}}
+// supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}},
+// {{agent:name}}, {{agents:dynamic}}
 // note: {{CODEX_OUTPUT}} and {{PLAN_DESCRIPTION}} are handled by specific build functions.
 func (b *promptBuilder) replacePromptVariables(prompt string) string {
 	result := b.replaceBaseVariables(prompt)
+	inlined := agentRefNames(result)
 	result = b.expandAgentReferences(result)
+	result = b.expandDynamicAgentCatalog(result, inlined)
 	return b.appendCommitTrailerInstruction(result)
 }
 

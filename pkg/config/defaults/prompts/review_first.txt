@@ -1,6 +1,6 @@
 # first review prompt
 # this prompt is used for the first (comprehensive) review pass in phase 2
-# launches 5 parallel reviewer agents for thorough code review
+# launches 5 parallel reviewer agents plus optional project-specific ones
 #
 # available variables:
 #   {{PLAN_FILE}} - path to the plan file being executed
@@ -9,8 +9,19 @@
 #   {{DEFAULT_BRANCH}} - default branch name (main, master, trunk, etc.)
 #   {{agent:<name>}} - expands to the executor-appropriate agent invocation
 #                      (Task tool for claude, spawn_agent for codex)
+#   {{agents:<dynamic>}} - the literal placeholder, written without the angle
+#                      brackets (see Step 2b below). this leading comment block is
+#                      stripped before expansion, but a header trimmed down to a
+#                      single "# ..." line is kept, and a literal placeholder left
+#                      there would render the catalog twice. expands to a catalog of
+#                      the project-specific agents: every agent file whose frontmatter
+#                      carries a non-empty description. each catalog entry lists the
+#                      agent name, its description, and a ready-to-use invocation
+#                      snippet. renders "(no project-specific agents configured)"
+#                      when the project defines none
 #
-# agents are defined in ~/.config/loopai/agents/ (user) or pkg/config/defaults/agents/ (builtin)
+# agents are defined in ~/.config/loopai/agents/ (user), .loopai/agents/ (project)
+# or pkg/config/defaults/agents/ (builtin)
 
 Code review of: {{GOAL}}
 
@@ -24,12 +35,14 @@ Run both commands to understand what was done:
 
 ## Step 2: Launch ALL 5 Review Agents IN PARALLEL
 
-CRITICAL: All 5 agent invocations MUST be issued in a single message for true parallel execution.
+CRITICAL: All 5 agent invocations — plus any project-specific agents you select in Step 2b — MUST be issued in a single message for true parallel execution.
 These agents are fully independent — no shared state, no dependencies between them, no ordering requirements.
 Under claude executor: do NOT use run_in_background. Foreground Task tool calls in the same message run in parallel and block until all complete — no TaskOutput polling needed.
 Under codex executor: do NOT serialize spawn_agent calls; emit them all in one response and then call wait_agent on the full set.
 
-CRITICAL: Do NOT proceed to Step 3 until ALL 5 agents have returned results.
+CRITICAL: Do NOT proceed to Step 3 until ALL launched agents — the 5 base agents and any Step 2b agents — have returned results.
+
+IMPORTANT: Read Step 2b before issuing the message, so the base agents and the project-specific ones go out together.
 
 CRITICAL: Do NOT embed code or diffs in agent prompts. Keep prompts short — the agent expansions below tell each agent to run git commands themselves. Embedding large diffs into agent prompts causes slow parallel launch and burns tokens.
 
@@ -38,6 +51,20 @@ CRITICAL: Do NOT embed code or diffs in agent prompts. Keep prompts short — th
 {{agent:testing}}
 {{agent:simplification}}
 {{agent:documentation}}
+
+## Step 2b: Select Project-Specific Agents (typically 0-3)
+
+This project may define extra narrow review agents covering problem classes the 5 base agents do not. Catalog:
+
+{{agents:dynamic}}
+
+Selection rules:
+- pick only agents whose focus actually matches the changed files and the nature of the diff (from Step 1)
+- typically 0-3 agents; selecting NONE is valid and common — do not stretch to find a match
+- launch every selected agent in the SAME single message as the 5 base agents above, never as a follow-up message
+- use the invocation snippet from the catalog as-is
+- same rule as Step 2: do NOT embed code or diffs in agent prompts — the snippets tell each agent to fetch the diff itself
+- their findings are handled exactly like base agent findings in Step 3: verified first, then fixed if confirmed
 
 ## Step 3: Collect, Verify, and Fix Findings
 
