@@ -17,7 +17,7 @@ This repository is a personal fork. It is installed by building from source; no 
 - Streams timestamped progress to `.loopai/progress/`
 - Serves a real-time web dashboard with `--serve`
 - Reports live and persistent completion status to the cmux sidebar when available
-- Optionally hands a run off to its own cmux workspace with `--cmux-workspace`
+- Optionally hands a run off to its own cmux workspace with `--cmux-workspace[=always|auto]`
 - Sends optional Telegram, email, Slack, webhook, or custom-script notifications
 
 ## Requirements
@@ -182,6 +182,9 @@ loopai --worktree docs/plans/feature.md
 
 # hand the run off to its own cmux workspace, so it gets its own sidebar card
 loopai --cmux-workspace --worktree docs/plans/feature.md
+
+# stay in a free cmux workspace; hand off only when another loopai run is active there
+loopai --cmux-workspace=auto --worktree docs/plans/feature.md
 
 # commit local changes, then execute from a new isolated worktree
 loopai --worktree --commit docs/plans/feature.md
@@ -523,21 +526,37 @@ loopai --serve --watch=/path/to/project-a --watch=/path/to/project-b
 When loopai runs inside cmux, it reports the phase and effective model, review iteration, task count, spinner, and completion notifications through the public cmux CLI. Started implementation and review runs retain the completion pill described above after success or non-abort execution failure; startup/preflight failures, plan-creation failures, and aborts do not. Outside cmux this integration is a no-op.
 
 The cmux status pill and progress bar belong to the workspace, not to an individual run, so
-several runs started from one workspace overwrite each other's status. `--cmux-workspace` avoids
-that by handing the run off: loopai creates a new cmux workspace named after the branch the run
-will use, relaunches itself there without the flag, prints `handed off to cmux workspace <name>`,
-and exits. The run then owns its own sidebar card, pill, spinner, and progress bar, which makes
-parallel runs independent.
+several runs started from one workspace overwrite each other's status. Bare `--cmux-workspace`
+and `--cmux-workspace=always` avoid that by unconditionally handing the run off: loopai creates a
+new cmux workspace named after the branch the run will use, relaunches itself there without the
+flag, prints `handed off to cmux workspace <name>`, and exits. The run then owns its own sidebar
+card, pill, spinner, and progress bar, which makes parallel runs independent.
 
 ```bash
 loopai --cmux-workspace --worktree docs/plans/feature.md
 ```
 
+Use `--cmux-workspace=auto` to keep the first run in the current workspace and give only parallel
+runs their own cards. Auto mode reads `cmux list-status`: a `loopai` pill whose text starts with
+`done` or `failed` is final, and no `loopai` pill is also free; any other `loopai` pill means a run
+is active, so loopai hands off. The value is optional but must use the attached `=auto` form, not
+`--cmux-workspace auto`.
+
+```bash
+loopai --cmux-workspace=auto --worktree docs/plans/feature.md
+```
+
+This detection is deliberately best-effort. A run killed before it can write a final pill can
+leave a stale phase pill, causing one unnecessary hand-off. Two auto-mode runs started at the same
+time can also both observe a free workspace and stay there.
+
 Hand-off is best-effort like the rest of the cmux integration and never blocks a run. Outside
-cmux, or when cmux refuses to create the workspace, loopai prints a warning and executes normally
-in the current terminal, where it keeps the sidebar status it would have had without the flag. A
-successful hand-off leaves the previous run's pill in the workspace it was started from, since the
-new run reports into its own card instead.
+cmux, auto mode executes normally in the current terminal without warning; any other auto-mode
+status-query failure has the same quiet fallback (and is visible with `--debug`). Unconditional
+mode, or auto mode after detecting a busy workspace, prints a warning and runs locally when cmux
+refuses to create the workspace. The local run keeps the sidebar status it would have had without
+the flag. A successful hand-off leaves the previous run's pill in the workspace it was started
+from, since the new run reports into its own card instead.
 
 The one failure that stops instead of falling back is a creation that times out: cmux may already
 have created the workspace and started the run there, and starting a second one here would put two

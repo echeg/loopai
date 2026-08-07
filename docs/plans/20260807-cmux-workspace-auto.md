@@ -72,9 +72,9 @@
 - [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 4: [Final] Update documentation
-- [ ] update README.md: `--cmux-workspace[=always|auto]` semantics and the busy-detection rule
-- [ ] update the cmux section of CLAUDE.md (auto mode, final-pill-based busy detection, accepted limitations: stale pill after force-kill, simultaneous-start race)
-- [ ] update llms.txt if it enumerates CLI flags
+- [x] update README.md: `--cmux-workspace[=always|auto]` semantics and the busy-detection rule
+- [x] update the cmux section of CLAUDE.md (auto mode, final-pill-based busy detection, accepted limitations: stale pill after force-kill, simultaneous-start race)
+- [x] update llms.txt if it enumerates CLI flags
 
 ## Technical Details
 - Busy signature (verified live): active → `loopai=external review (gpt-5.6-sol:high) · iteration 2 icon=person.2 color=#a855f7 priority=90`; finished → `loopai=done in 3h39m icon=bolt color=#34c759 priority=90`; never ran → no `loopai=` line.
