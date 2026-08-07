@@ -107,12 +107,14 @@ This directly fixes the workflow gap where a finished worktree run cannot be clo
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview: all four argument forms work for both commands, explicit base combines with explicit feature, worktree-less merge works
-- [ ] verify edge cases: plan in `completed/` only, branch-over-plan priority, resolver errors are actionable, detached HEAD in primary checkout with explicit feature still works
-- [ ] run full test suite via `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...` (path handling in resolver)
-- [ ] verify test coverage of new code paths meets project standard
+- [x] verify all requirements from Overview: all four argument forms work for both commands, explicit base combines with explicit feature, worktree-less merge works
+- [x] verify edge cases: plan in `completed/` only, branch-over-plan priority, resolver errors are actionable, detached HEAD in primary checkout with explicit feature still works
+- [x] run full test suite via `make test`
+- [x] run `make lint` - all issues must be fixed
+- [x] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...` (path handling in resolver)
+- [x] verify test coverage of new code paths meets project standard
+- ➕ added two gap-filling tests: `--merge=release/13 feature` (explicit base combined with an explicit feature, asserting the default base stays untouched) and `--pr <plan path>` (plan-path argument form at the command level)
+- 📊 coverage of the new paths: `resolveFeatureBranch`/`findFeaturePlanFile`/`existingPlanFile` and `git.BranchHash`/`git.BranchDiffStats` at 100%, `runMergeCommand` 82.9%, `runPRCommand` 85.7%, `prepareMergeWorktrees` 80.6%; the remainder are git-command failure branches
 
 ### Task 6: Update documentation
 

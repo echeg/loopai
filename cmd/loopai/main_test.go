@@ -6459,6 +6459,26 @@ func TestRunMergeCommandExplicitFeature(t *testing.T) {
 		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
 	})
 
+	t.Run("explicit base combines with an explicit feature", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "release/13")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "release.txt"), []byte("release\n"), 0o600))
+		runGit(t, dir, "add", "release.txt")
+		runGit(t, dir, "commit", "-m", "release")
+		makeFeature(t, dir)
+		runGit(t, dir, "checkout", "master")
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, runMergeCommand(t.Context(), svc, "release/13",
+			closeoutTarget{identifier: "feature"}, &recordingStatusClearer{}, io.Discard))
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "release/13:feature.txt"))
+		assert.Equal(t, "master", currentGitBranch(t, dir), "the invoking checkout must be restored")
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "ls-tree", "--name-only", "master", "feature.txt")),
+			"master must not receive the merge when an explicit base is given")
+	})
+
 	t.Run("detached primary checkout merges an explicit feature", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		makeFeature(t, dir)
@@ -6568,6 +6588,19 @@ func TestRunPRCommandExplicitFeature(t *testing.T) {
 
 		require.NoError(t, runPRCommand(t.Context(), svc, "master",
 			closeoutTarget{identifier: "20260802-feature", plansDir: filepath.Join(dir, "docs", "plans")},
+			&recordingStatusClearer{}, io.Discard))
+		args, err := os.ReadFile(argsLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(args), "--head\nfeature\n")
+	})
+
+	t.Run("plan path resolves to the feature branch", func(t *testing.T) {
+		dir, _, svc := setupBaseCheckout(t)
+		argsLog, _ := stubGh(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+
+		require.NoError(t, runPRCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: filepath.Join(plansDir, "20260802-feature.md"), plansDir: plansDir},
 			&recordingStatusClearer{}, io.Discard))
 		args, err := os.ReadFile(argsLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, err)
