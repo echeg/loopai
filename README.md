@@ -280,8 +280,10 @@ the `plans_dir` of the checkout you run from, so a plan that exists only inside 
 unmerged feature worktree is not visible from the primary checkout; name the branch in that
 case. When the named feature has no registered worktree, `--merge` merges and deletes the
 branch without any worktree cleanup; with a worktree the usual cleanliness checks and safe
-removal apply. Only the feature and base worktrees have to be clean, so unrelated
-uncommitted work in the checkout you invoke from does not block the merge. `--pr <feature>`
+removal apply. Only the feature worktree and the worktree the merge runs in have to be
+clean, so unrelated uncommitted work in an invoking checkout that is neither one does not
+block the merge. The merge runs in the base worktree, or in the primary checkout when the
+base branch is not checked out anywhere. `--pr <feature>`
 pushes and opens the pull request for a branch that is not checked out anywhere; its title
 and body still come from the plan as seen from the invoking checkout, falling back to a
 stats-only body when that plan is not present there. Naming the base branch as the feature

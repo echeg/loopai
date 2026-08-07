@@ -3653,6 +3653,23 @@ func TestBuildPRTitleBody(t *testing.T) {
 		assert.Equal(t, "## Changes\n\n- Files changed: 0\n- Additions: 0\n- Deletions: 0", body)
 	})
 
+	t.Run("plans dir outside the repository degrades to stats only", func(t *testing.T) {
+		parent := t.TempDir()
+		root := filepath.Join(parent, "repo")
+		require.NoError(t, os.MkdirAll(root, 0o750))
+		outside := filepath.Join(parent, "shared-plans", "completed")
+		require.NoError(t, os.MkdirAll(outside, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(outside, "20260802-feature.md"),
+			[]byte("# Out of tree feature\n\n## Overview\n\nUnreadable from the repository.\n"), 0o600))
+
+		for _, plansDir := range []string{filepath.Join("..", "shared-plans"), filepath.Join(parent, "shared-plans")} {
+			title, body, err := buildPRTitleBody(root, plansDir, "feature", git.DiffStats{Files: 2})
+			require.NoError(t, err, plansDir)
+			assert.Equal(t, "feature", title, plansDir)
+			assert.Equal(t, "## Changes\n\n- Files changed: 2\n- Additions: 0\n- Deletions: 0", body, plansDir)
+		}
+	})
+
 	t.Run("no Overview section", func(t *testing.T) {
 		root := t.TempDir()
 		writePlan(t, root, "feature.md", "# Feature without overview\n\n## Context\n\nOnly context.\n")

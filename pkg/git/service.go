@@ -1008,12 +1008,14 @@ func (s *Service) DiffStats(baseBranch string) (DiffStats, error) {
 }
 
 // BranchDiffStats returns change statistics between baseBranch and a named branch, without
-// requiring that branch to be checked out. returns zero stats for an unknown branch.
+// requiring that branch to be checked out. returns zero stats for an unknown branch. the branch is
+// fully qualified because Git resolves a bare name to a same-named tag first, which would silently
+// report the tag's diff instead of the branch's.
 func (s *Service) BranchDiffStats(baseBranch, branch string) (DiffStats, error) {
 	if branch == "" {
 		return DiffStats{}, errors.New("branch diff stats: empty branch name")
 	}
-	return s.repo.diffStats(baseBranch, branch)
+	return s.repo.diffStats(baseBranch, "refs/heads/"+branch)
 }
 
 // EnsureLocalGitignore ensures progress and worktree artifacts are ignored without overwriting

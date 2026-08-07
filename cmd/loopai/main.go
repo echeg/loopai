@@ -2490,6 +2490,11 @@ func prepareMergeWorktrees(gitSvc *git.Service, feature, base string, explicit b
 		return mergeTargets{}, fmt.Errorf("check base worktree: %w", err)
 	}
 	if baseDirty {
+		if basePath == "" {
+			// the merge checks base out here, so name why this worktree has to be clean
+			return mergeTargets{}, fmt.Errorf("--merge requires a clean base worktree at %s: base branch %q is not checked out anywhere, so the merge runs in the primary worktree",
+				mergeSvc.Root(), base)
+		}
 		return mergeTargets{}, fmt.Errorf("--merge requires a clean base worktree at %s", mergeSvc.Root())
 	}
 	if featurePath == "" {
@@ -2978,6 +2983,11 @@ func findPRPlan(repoRoot, plansDir, branch string) (string, error) {
 	}
 
 	root := plansDirPath(repoRoot, plansDir)
+	if !pathWithin(root, repoRoot) {
+		// readPRPlan confines plan reads to the repository, so a plans_dir pointing outside it
+		// yields no metadata and a stats-only PR body rather than a fatal read error
+		return "", nil
+	}
 	dirs := []string{filepath.Join(root, "completed"), root}
 	var fallbackPath string
 	for _, dir := range dirs {
@@ -3113,11 +3123,11 @@ func resolveRecordedPlan(repoRoot, recorded string) string {
 	}
 	if filepath.Base(filepath.Dir(candidate)) != "completed" {
 		completed := filepath.Join(filepath.Dir(candidate), "completed", filepath.Base(candidate))
-		if info, err := os.Lstat(completed); err == nil && info.Mode().IsRegular() {
+		if info, err := os.Lstat(completed); err == nil && info.Mode().IsRegular() && pathWithin(completed, repoRoot) {
 			return completed
 		}
 	}
-	if info, err := os.Lstat(candidate); err == nil && info.Mode().IsRegular() {
+	if info, err := os.Lstat(candidate); err == nil && info.Mode().IsRegular() && pathWithin(candidate, repoRoot) {
 		return candidate
 	}
 	return ""

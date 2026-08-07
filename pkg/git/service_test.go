@@ -2259,6 +2259,16 @@ func TestService_BranchDiffStats(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, DiffStats{}, stats)
 	})
+
+	t.Run("a same-named tag does not shadow the branch", func(t *testing.T) {
+		svc := setupFeature(t)
+		// git resolves a bare "feature" to refs/tags/feature before refs/heads/feature
+		runGit(t, svc.repo.root(), "tag", "feature", "master")
+
+		stats, err := svc.BranchDiffStats("master", "feature")
+		require.NoError(t, err)
+		assert.Equal(t, DiffStats{Files: 1, Additions: 2}, stats)
+	})
 }
 
 func TestService_formatDirtyFiles(t *testing.T) {
