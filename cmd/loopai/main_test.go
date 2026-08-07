@@ -6144,11 +6144,19 @@ func branchExists(t *testing.T, dir, branch string) bool {
 	return strings.TrimSpace(string(out)) != ""
 }
 
-// fakeBranchChecker reports branch existence from a fixed set.
+// fakeBranchChecker reports branch existence from a fixed set and derives branch names the way
+// git.Service does for an exact-case plan path.
 type fakeBranchChecker struct{ branches []string }
 
 func (f fakeBranchChecker) BranchExists(name string) bool {
 	return slices.Contains(f.branches, name)
+}
+
+func (f fakeBranchChecker) EffectiveBranchName(planFile, branchOverride string) string {
+	if branchOverride != "" {
+		return branchOverride
+	}
+	return plan.ExtractBranchName(planFile)
 }
 
 func TestResolveFeatureBranch(t *testing.T) {
@@ -6218,7 +6226,7 @@ func TestResolveFeatureBranch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, plansDir, tt.arg)
+			got, err := resolveFeatureBranch(fakeBranchChecker{branches: branches}, t.TempDir(), plansDir, tt.arg)
 			if tt.wantErr != "" || len(tt.errFrags) > 0 {
 				require.Error(t, err)
 				assert.Empty(t, got)
@@ -6245,47 +6253,93 @@ func TestResolveFeatureBranchRelativePlansDir(t *testing.T) {
 	t.Chdir(repo)
 
 	checker := fakeBranchChecker{branches: []string{"relative-plan"}}
-	got, err := resolveFeatureBranch(checker, filepath.Join("docs", "plans"), "20260807-relative-plan")
+	got, err := resolveFeatureBranch(checker, repo, filepath.Join("docs", "plans"), "20260807-relative-plan")
 	require.NoError(t, err)
 	assert.Equal(t, "relative-plan", got)
 
-	got, err = resolveFeatureBranch(checker, filepath.Join("docs", "plans"), filepath.Join("docs", "plans", "20260807-relative-plan.md"))
+	got, err = resolveFeatureBranch(checker, repo, filepath.Join("docs", "plans"),
+		filepath.Join("docs", "plans", "20260807-relative-plan.md"))
 	require.NoError(t, err)
 	assert.Equal(t, "relative-plan", got)
 }
 
 func TestResolveFeatureBranchMissingPlansDir(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent")
-	_, err := resolveFeatureBranch(fakeBranchChecker{}, missing, "whatever")
+	_, err := resolveFeatureBranch(fakeBranchChecker{}, t.TempDir(), missing, "whatever")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "whatever")
 }
 
-func TestOnDiskPlanPath(t *testing.T) {
-	dir := t.TempDir()
-	onDisk := filepath.Join(dir, "20260807-MixedCase.md")
-	require.NoError(t, os.WriteFile(onDisk, []byte("# plan\n"), 0o600))
-
-	assert.Equal(t, onDisk, onDiskPlanPath(onDisk), "exact match must be returned unchanged")
-	assert.Equal(t, onDisk, onDiskPlanPath(filepath.Join(dir, "20260807-mixedcase.md")),
-		"a differently-cased name must resolve to the on-disk name")
-	unmatched := filepath.Join(dir, "20260807-absent.md")
-	assert.Equal(t, unmatched, onDiskPlanPath(unmatched))
-	unreadable := filepath.Join(dir, "no-such-dir", "20260807-plan.md")
-	assert.Equal(t, unreadable, onDiskPlanPath(unreadable))
-}
-
 func TestResolveFeatureBranchCaseInsensitiveFilesystem(t *testing.T) {
-	plansDir := t.TempDir()
+	repo := setupTestRepo(t)
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260807-MixedCase.md"), []byte("# plan\n"), 0o600))
 	if _, err := os.Stat(filepath.Join(plansDir, "20260807-mixedcase.md")); err != nil {
 		t.Skip("case-sensitive filesystem")
 	}
+	runGit(t, repo, "branch", "MixedCase")
+	svc, err := git.NewService(repo, noopLogger())
+	require.NoError(t, err)
 
 	// the branch must come from the on-disk plan name, not from the case the caller typed
-	got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"MixedCase"}}, plansDir, "20260807-mixedcase")
+	got, err := resolveFeatureBranch(svc, repo, plansDir, "20260807-mixedcase")
 	require.NoError(t, err)
 	assert.Equal(t, "MixedCase", got)
+}
+
+func TestResolveFeatureBranchPrefersRecordedBranch(t *testing.T) {
+	repo := setupTestRepo(t)
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	planFile := filepath.Join(plansDir, "20260806-login.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+	writeProgressRecord(t, repo, "progress-login.txt", planFile, "fix/login", 1)
+
+	// "login" exists but is unrelated: the run recorded fix/login via --branch, so resolving the
+	// plan must never hand --merge the collision victim
+	checker := fakeBranchChecker{branches: []string{"master", "login", "fix/login"}}
+	got, err := resolveFeatureBranch(checker, repo, plansDir, "20260806-login")
+	require.NoError(t, err)
+	assert.Equal(t, "fix/login", got)
+
+	t.Run("recorded branch deleted reports the recorded name", func(t *testing.T) {
+		_, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"master", "login"}}, repo, plansDir,
+			"20260806-login")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "fix/login")
+		assert.Contains(t, err.Error(), "already merged")
+	})
+
+	t.Run("unrecorded plan still derives from the filename", func(t *testing.T) {
+		other := filepath.Join(plansDir, "20260807-signup.md")
+		require.NoError(t, os.WriteFile(other, []byte("# plan\n"), 0o600))
+		got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"signup"}}, repo, plansDir,
+			"20260807-signup")
+		require.NoError(t, err)
+		assert.Equal(t, "signup", got)
+	})
+
+	t.Run("newest record wins", func(t *testing.T) {
+		writeProgressRecord(t, repo, "progress-login-rerun.txt", planFile, "fix/login-v2", 2)
+		got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"fix/login", "fix/login-v2"}}, repo,
+			plansDir, "20260806-login")
+		require.NoError(t, err)
+		assert.Equal(t, "fix/login-v2", got)
+	})
+}
+
+// writeProgressRecord creates a progress file carrying the plan-to-branch association header.
+// age orders the fixture's mtime explicitly so newest-record-wins tie-breaks are deterministic.
+func writeProgressRecord(t *testing.T, repo, name, planFile, branch string, age int) {
+	t.Helper()
+	dir := filepath.Join(repo, ".loopai", "progress")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	path := filepath.Join(dir, name)
+	body := fmt.Sprintf("Plan: %s\nBranch: %s\nMode: full\n", planFile, branch)
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	stamp := time.Date(2026, 8, 7, 12, 0, age, 0, time.UTC)
+	require.NoError(t, os.Chtimes(path, stamp, stamp))
 }
 
 func TestResolveCloseoutBranchAnchorsPlansDirAtRepoRoot(t *testing.T) {

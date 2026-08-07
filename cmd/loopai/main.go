@@ -2292,16 +2292,20 @@ type cmuxStatusClearer interface {
 	Clear()
 }
 
-// branchExistenceChecker reports whether a local branch exists; satisfied by *git.Service.
-type branchExistenceChecker interface {
+// featureBranchResolver reports whether a local branch exists and derives the branch a plan file
+// implies; satisfied by *git.Service. Deriving through the service keeps --merge/--pr resolution
+// byte-identical to the name worktree creation produced, including on-disk filename case.
+type featureBranchResolver interface {
 	BranchExists(name string) bool
+	EffectiveBranchName(planFile, branchOverride string) string
 }
 
 // resolveFeatureBranch resolves a feature identifier supplied to --merge/--pr into a local
 // branch name. resolution is deterministic: an exact local branch match wins, then a plan file
-// located by path or by basename in plansDir and plansDir/completed, whose derived branch must
-// still exist locally.
-func resolveFeatureBranch(gitSvc branchExistenceChecker, plansDir, arg string) (string, error) {
+// located by path or by basename in plansDir and plansDir/completed. the branch a run recorded
+// for that plan wins over the name derived from the filename, because a --branch override makes
+// the filename imply a branch the run never created; either way the branch must still exist.
+func resolveFeatureBranch(gitSvc featureBranchResolver, repoRoot, plansDir, arg string) (string, error) {
 	identifier := strings.TrimSpace(arg)
 	if identifier == "" {
 		return "", errors.New("empty feature identifier")
@@ -2317,7 +2321,13 @@ func resolveFeatureBranch(gitSvc branchExistenceChecker, plansDir, arg string) (
 			identifier, plansDir, completedDir)
 	}
 
-	branch := plan.ExtractBranchName(planFile)
+	branch, err := recordedBranchForPlan(repoRoot, planFile)
+	if err != nil {
+		return "", err
+	}
+	if branch == "" {
+		branch = gitSvc.EffectiveBranchName(planFile, "")
+	}
 	if !gitSvc.BranchExists(branch) {
 		return "", fmt.Errorf("plan %q resolves to branch %q, which does not exist locally (already merged?)",
 			filepath.Base(planFile), branch)
@@ -2350,7 +2360,9 @@ func findFeaturePlanFile(identifier string, dirs ...string) string {
 }
 
 // existingPlanFile returns path if it names a regular file, retrying with an added .md extension.
-// the result carries the on-disk filename case so the derived branch matches the one Git created.
+// os.Stat matches case-insensitively on macOS and Windows, so the returned path may carry the
+// caller's case; git.Service.EffectiveBranchName resolves it to the on-disk name before deriving
+// the branch.
 func existingPlanFile(path string) string {
 	candidates := []string{path}
 	if filepath.Ext(path) != ".md" {
@@ -2358,35 +2370,10 @@ func existingPlanFile(path string) string {
 	}
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
-			return onDiskPlanPath(candidate)
+			return candidate
 		}
 	}
 	return ""
-}
-
-// onDiskPlanPath returns path with the actual filename case recorded in its parent directory.
-// os.Stat matches case-insensitively on macOS and Windows, so a caller-supplied case can differ
-// from the name plan.ExtractBranchName must derive the branch from; this mirrors the case
-// resolution git.Service applies to plan files.
-func onDiskPlanPath(path string) string {
-	dir, base := filepath.Dir(path), filepath.Base(path)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return path
-	}
-	var foldMatch string
-	for _, entry := range entries {
-		if entry.Name() == base {
-			return path
-		}
-		if foldMatch == "" && strings.EqualFold(entry.Name(), base) {
-			foldMatch = filepath.Join(dir, entry.Name())
-		}
-	}
-	if foldMatch != "" {
-		return foldMatch
-	}
-	return path
 }
 
 // closeoutTarget carries the optional feature identifier supplied as the positional argument of
@@ -2402,8 +2389,9 @@ type closeoutTarget struct {
 func resolveCloseoutBranch(gitSvc *git.Service, target closeoutTarget, flagName string) (string, error) {
 	if strings.TrimSpace(target.identifier) != "" {
 		// anchor the plans directory at the invoking checkout's root, matching the PR metadata
-		// lookup, so resolution does not depend on the process working directory
-		return resolveFeatureBranch(gitSvc, plansDirPath(gitSvc.Root(), target.plansDir), target.identifier)
+		// lookup, so a basename identifier resolves the same from any directory in the checkout
+		root := gitSvc.Root()
+		return resolveFeatureBranch(gitSvc, root, plansDirPath(root, target.plansDir), target.identifier)
 	}
 	branch, err := gitSvc.CurrentBranch()
 	if err != nil {
@@ -3093,17 +3081,70 @@ func findPRPlanInDir(repoRoot, dir, branch string) (exactPath, fallbackPath stri
 // findRecordedPRPlan uses the progress header's exact branch-to-plan association. This covers
 // arbitrary --branch overrides without guessing from a slash-delimited branch basename.
 func findRecordedPRPlan(repoRoot, branch string) (string, error) {
+	assocs, err := readProgressAssociations(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	var matched string
+	var matchedTime time.Time
+	for _, assoc := range assocs {
+		if assoc.branch != branch {
+			continue
+		}
+		if matched == "" || assoc.modTime.After(matchedTime) {
+			matched, matchedTime = assoc.planPath, assoc.modTime
+		}
+	}
+	return matched, nil
+}
+
+// recordedBranchForPlan returns the branch the most recent run associated with planFile, or an
+// empty string when no run recorded it. A plan filename only implies a branch when the run used
+// no --branch override, so close-out resolution consults the recorded association first rather
+// than merging and deleting an unrelated branch that happens to carry the derived name.
+func recordedBranchForPlan(repoRoot, planFile string) (string, error) {
+	target, err := filepath.Abs(planFile)
+	if err != nil {
+		return "", fmt.Errorf("resolve plan path %q: %w", planFile, err)
+	}
+	assocs, err := readProgressAssociations(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	var matched string
+	var matchedTime time.Time
+	for _, assoc := range assocs {
+		recorded, absErr := filepath.Abs(assoc.planPath)
+		if absErr != nil || recorded != target {
+			continue
+		}
+		if matched == "" || assoc.modTime.After(matchedTime) {
+			matched, matchedTime = assoc.branch, assoc.modTime
+		}
+	}
+	return matched, nil
+}
+
+// progressAssociation pairs a branch with the plan file a past run recorded for it.
+type progressAssociation struct {
+	planPath string // existing plan path inside repoRoot, resolved from the recorded value
+	branch   string
+	modTime  time.Time
+}
+
+// readProgressAssociations collects the branch-to-plan pairings recorded in progress headers.
+// records naming no usable plan are skipped, so every returned pair carries both halves.
+func readProgressAssociations(repoRoot string) ([]progressAssociation, error) {
 	dir := filepath.Join(repoRoot, ".loopai", "progress")
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+		return nil, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("list progress records: %w", err)
+		return nil, fmt.Errorf("list progress records: %w", err)
 	}
 
-	var matched string
-	var matchedTime time.Time
+	var assocs []progressAssociation
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".txt" || entry.Type()&os.ModeSymlink != 0 {
 			continue
@@ -3111,33 +3152,34 @@ func findRecordedPRPlan(repoRoot, branch string) (string, error) {
 		path := filepath.Join(dir, entry.Name())
 		info, infoErr := entry.Info()
 		if infoErr != nil {
-			return "", fmt.Errorf("inspect progress record %q: %w", entry.Name(), infoErr)
+			return nil, fmt.Errorf("inspect progress record %q: %w", entry.Name(), infoErr)
 		}
 		if !info.Mode().IsRegular() {
 			continue
 		}
 		f, openErr := os.Open(path) //nolint:gosec // direct regular-file child of the fixed progress directory
 		if openErr != nil {
-			return "", fmt.Errorf("open progress record %q: %w", entry.Name(), openErr)
+			return nil, fmt.Errorf("open progress record %q: %w", entry.Name(), openErr)
 		}
 		content, readErr := io.ReadAll(io.LimitReader(f, maxPRProgressHeaderSize))
 		closeErr := f.Close()
 		if readErr != nil {
-			return "", fmt.Errorf("read progress record %q: %w", entry.Name(), readErr)
+			return nil, fmt.Errorf("read progress record %q: %w", entry.Name(), readErr)
 		}
 		if closeErr != nil {
-			return "", fmt.Errorf("close progress record %q: %w", entry.Name(), closeErr)
+			return nil, fmt.Errorf("close progress record %q: %w", entry.Name(), closeErr)
 		}
-		planPath, recordedBranch := parseProgressAssociation(string(content))
-		if recordedBranch != branch || planPath == "" || planPath == "(no plan - review only)" {
+		planPath, branch := parseProgressAssociation(string(content))
+		if branch == "" || planPath == "" || planPath == "(no plan - review only)" {
 			continue
 		}
-		candidate := resolveRecordedPlan(repoRoot, planPath)
-		if candidate != "" && (matched == "" || info.ModTime().After(matchedTime)) {
-			matched, matchedTime = candidate, info.ModTime()
+		resolved := resolveRecordedPlan(repoRoot, planPath)
+		if resolved == "" {
+			continue
 		}
+		assocs = append(assocs, progressAssociation{planPath: resolved, branch: branch, modTime: info.ModTime()})
 	}
-	return matched, nil
+	return assocs, nil
 }
 
 func parseProgressAssociation(content string) (planPath, branch string) {

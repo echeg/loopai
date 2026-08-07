@@ -274,8 +274,11 @@ Like every close-out invocation it still has to start at the root of a checkout,
 subdirectory. It accepts a local branch name, a plan basename with or without `.md`, or a
 plan path, and combines with an explicit base such as
 `--merge=release/13 dynamic-review-agents`. loopai first looks for a branch of that exact
-name, then for a plan file in the plans directory and its `completed/` subdirectory,
-deriving the branch from the plan filename and requiring it to exist. The plan lookup uses
+name, then for a plan file in the plans directory and its `completed/` subdirectory. For a
+plan it uses the branch recorded for that plan under `.loopai/progress/`, so a run started
+with `--branch` closes out the branch it actually created rather than the one the plan
+filename implies; without such a record the branch is derived from the filename. Either
+way that branch has to exist locally. The plan lookup uses
 the `plans_dir` of the checkout you run from, so a plan that exists only inside the
 unmerged feature worktree is not visible from the primary checkout; name the branch in that
 case. When the named feature has no registered worktree, `--merge` merges and deletes the
