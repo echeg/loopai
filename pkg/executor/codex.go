@@ -770,10 +770,13 @@ func (e *CodexExecutor) discoverRolloutStates(
 ) {
 	for {
 		added := false
-		var candidates []string
-		for _, dir := range rolloutDiscoveryDirs(rootPath) {
-			matches, _ := filepath.Glob(filepath.Join(dir, "rollout-*.jsonl"))
-			candidates = append(candidates, matches...)
+		candidates := []string{rootPath}
+		if e.CommandTimingHandler != nil {
+			candidates = nil
+			for _, dir := range rolloutDiscoveryDirs(rootPath) {
+				matches, _ := filepath.Glob(filepath.Join(dir, "rollout-*.jsonl"))
+				candidates = append(candidates, matches...)
+			}
 		}
 		for _, candidate := range candidates {
 			if _, exists := states[candidate]; exists {
@@ -823,16 +826,12 @@ func (e *CodexExecutor) shouldDiscoverChildRollout(
 	if parentID, inspected := discovery.parents[path]; inspected {
 		return knownParents[parentID]
 	}
-	parentID, ready := inspectRolloutParent(path)
+	parentID, ready := rolloutParentThreadID(path)
 	if !ready {
 		return false
 	}
 	discovery.parents[path] = parentID
 	return knownParents[parentID]
-}
-
-func inspectRolloutParent(path string) (string, bool) {
-	return rolloutParentThreadID(path)
 }
 
 type rolloutTailState struct {
@@ -940,7 +939,7 @@ type rolloutEvent struct {
 
 // rolloutPayload covers the response_item payload shape we render: assistant
 // messages (payload.type=message, role=assistant). function_call records and
-// reasoning records are dropped by formatRolloutEvent before any of those
+// reasoning records are dropped by formatParsedRolloutEvent before any of those
 // fields would be read, so the struct only carries the subset we actually
 // consume.
 type rolloutPayload struct {
@@ -1016,6 +1015,11 @@ var (
 	outputCellIDPattern      = regexp.MustCompile(`(?im)^(?:Script running with cell ID\s*|cell_id["']?\s*[:=]\s*)(\d+)\s*$`)
 	exitCodePattern          = regexp.MustCompile(`(?im)^(?:EXIT_CODE\s*=|exit_code["']?\s*:\s*|Process exited with code\s+)(-?\d+)\s*$`)
 )
+
+// custom exec records contain JavaScript orchestration rather than structured
+// nested command events. The parser below deliberately recognizes only known,
+// statically attributable shapes. It is best-effort and omits unfamiliar or
+// ambiguous programs instead of claiming timings that the rollout cannot prove.
 
 func parseRolloutRecord(line []byte) (rolloutEvent, rolloutPayload, bool) {
 	var ev rolloutEvent
@@ -1752,10 +1756,9 @@ func customTopLevelStatementStart(input string, end int) (int, bool) {
 			brackets--
 		case ')':
 			parentheses--
-		case ';':
-			if braces == 0 && brackets == 0 && parentheses == 0 {
-				start = index + 1
-			}
+		}
+		if customTopLevelStatementBoundary(input, end, index, token, braces, brackets, parentheses) {
+			start = index + 1
 		}
 		if braces < 0 || brackets < 0 || parentheses < 0 {
 			return 0, false
@@ -1763,6 +1766,20 @@ func customTopLevelStatementStart(input string, end int) (int, bool) {
 		index = next
 	}
 	return start, braces == 0 && brackets == 0 && parentheses == 0
+}
+
+func customTopLevelStatementBoundary(input string, end, index int, token byte, braces, brackets, parentheses int) bool {
+	if braces != 0 || brackets != 0 || parentheses != 0 {
+		return false
+	}
+	if token == ';' {
+		return true
+	}
+	if token != '\r' && token != '\n' {
+		return false
+	}
+	prefix := input[index+1 : end]
+	return customDirectAwaitPattern.MatchString(prefix) || customAssignmentPattern.MatchString(prefix)
 }
 
 func nextCustomExecSyntax(input string, index, end int) (int, byte, bool) {
@@ -2380,25 +2397,6 @@ func firstIndexedCapture(input string, indexes []int) string {
 		}
 	}
 	return ""
-}
-
-// formatRolloutEvent turns one JSONL rollout line into a display string for
-// OutputHandler, or "" when the event has no user-visible substance. only
-// assistant message text (the model's actual reply, the codex equivalent of
-// claude's stream-json text blocks) is forwarded.
-//
-// reasoning records are skipped because their summaries are already streamed
-// live from stderr. all function_call records (exec_command for git/grep/file
-// reads, spawn_agent for parallel reviewer dispatch) and their outputs are
-// skipped because they are tool-machinery noise — the assistant message text
-// already announces what the model is doing narratively (e.g. "I'll launch
-// the five review agents together"). showing both yields redundant chatter.
-func (e *CodexExecutor) formatRolloutEvent(line []byte) string {
-	_, payload, ok := parseRolloutRecord(line)
-	if !ok {
-		return ""
-	}
-	return formatParsedRolloutEvent(payload)
 }
 
 func formatParsedRolloutEvent(payload rolloutPayload) string {

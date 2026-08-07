@@ -1845,17 +1845,24 @@ func TestCodexExecutor_extractSessionID(t *testing.T) {
 	}
 }
 
-func TestCodexExecutor_formatRolloutEvent(t *testing.T) {
-	e := &CodexExecutor{}
+func TestCodexExecutor_processRolloutLine_Rendering(t *testing.T) {
 	tests := []struct {
-		name string
-		line string
-		want string
+		name   string
+		line   string
+		render bool
+		want   string
 	}{
 		{
-			name: "assistant message renders text",
-			line: `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello world"}]}}`,
-			want: "hello world",
+			name:   "assistant message renders text",
+			line:   `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello world"}]}}`,
+			render: true,
+			want:   "hello world",
+		},
+		{
+			name:   "child assistant message is suppressed",
+			line:   `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"child reply"}]}}`,
+			render: false,
+			want:   "",
 		},
 		{
 			name: "user message dropped",
@@ -1863,9 +1870,10 @@ func TestCodexExecutor_formatRolloutEvent(t *testing.T) {
 			want: "",
 		},
 		{
-			name: "assistant multi-block joins with newline",
-			line: `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first"},{"type":"output_text","text":"second"}]}}`,
-			want: "first\nsecond",
+			name:   "assistant multi-block joins with newline",
+			line:   `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first"},{"type":"output_text","text":"second"}]}}`,
+			render: true,
+			want:   "first\nsecond",
 		},
 		{
 			name: "exec_command skipped",
@@ -1888,7 +1896,10 @@ func TestCodexExecutor_formatRolloutEvent(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, e.formatRolloutEvent([]byte(tc.line)))
+			var got string
+			e := &CodexExecutor{OutputHandler: func(output string) { got = output }}
+			e.processRolloutLine([]byte(tc.line), newCodexTimingState(), time.Now, tc.render)
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -2433,6 +2444,35 @@ func TestCustomExecCallIsAwaited_AcceptsStraightLinePromiseDestructuring(t *test
 	assert.True(t, customExecCallIsAwaited(input, matches[1][0]))
 }
 
+func TestCustomExecCallIsAwaited_AcceptsSemicolonFreeStatements(t *testing.T) {
+	input := "const cwd = \"/repo\"\nconst r = await tools.exec_command({cmd:\"make test\", workdir:cwd})\ntext(r.output)\ntext(`SESSION_ID=${r.session_id}`)"
+	matches := customExecCommandPattern.FindAllStringSubmatchIndex(input, -1)
+	require.Len(t, matches, 1)
+
+	assert.True(t, customExecCallIsAwaited(input, matches[0][0]))
+	assert.Equal(t, 2, customSessionProofBlock(input, matches[0][0]))
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_SemicolonFreeCustomExec(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	started := time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)
+	state := newCodexTimingState()
+	e.trackCustomToolCall(rolloutPayload{
+		Name:   "exec",
+		CallID: "start",
+		Input:  "const cwd = \"/repo\"\nconst r = await tools.exec_command({cmd:\"make test\", workdir:cwd})\ntext(r.output)",
+	}, started, state, func() time.Time { return started })
+	e.trackToolOutput(rolloutPayload{
+		CallID: "start",
+		Output: json.RawMessage(`[{"text":"{\"exit_code\":0,\"wall_time_seconds\":1}"}]`),
+	}, started.Add(time.Second), state, func() time.Time { return started.Add(time.Second) })
+
+	assert.Equal(t, []string{"make test"}, captured)
+}
+
 func TestCodexExecutor_trackRolloutCommandTiming_CustomExecInfersCompletionBeforeYield(t *testing.T) {
 	var captured []struct {
 		command  string
@@ -2936,13 +2976,14 @@ func TestCodexExecutor_trackRolloutCommandTiming_InvalidNativeTimestampsUseArriv
 }
 
 func TestCodexExecutor_trackRolloutCommandTiming_nilHandlerPreservesRendering(t *testing.T) {
-	e := &CodexExecutor{}
+	var got string
+	e := &CodexExecutor{OutputHandler: func(output string) { got = output }}
 	line := []byte(`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"unchanged"}]}}`)
 
 	assert.NotPanics(t, func() {
 		e.processRolloutLine(line, newCodexTimingState(), time.Now, true)
 	})
-	assert.Equal(t, "unchanged", e.formatRolloutEvent(line))
+	assert.Equal(t, "unchanged", got)
 }
 
 func TestCodexExecutor_CallbacksAreSerialized(t *testing.T) {
@@ -3200,6 +3241,28 @@ func TestCodexExecutor_discoverRolloutStates_FindsOlderChildAcrossMidnight(t *te
 
 	assert.Contains(t, states, rootPath)
 	assert.Contains(t, states, childPath)
+}
+
+func TestCodexExecutor_discoverRolloutStates_SkipsChildrenWithoutTimingHandler(t *testing.T) {
+	dir := t.TempDir()
+	rootID := "019e3bbe-9788-79f1-b668-acde00000030"
+	childID := "019e3bbe-9788-79f1-b668-acde00000031"
+	rootPath := filepath.Join(dir, "rollout-2026-08-07T09-00-00-"+rootID+".jsonl")
+	childPath := filepath.Join(dir, "rollout-2026-08-07T09-00-01-"+childID+".jsonl")
+	require.NoError(t, os.WriteFile(rootPath, []byte(`{"type":"session_meta","payload":{"session_id":"`+rootID+`","source":"exec"}}`+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(childPath, []byte(`{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"`+rootID+`"}}}}}`+"\n"), 0o600))
+
+	e := &CodexExecutor{OutputHandler: func(string) {}}
+	states := make(map[string]*rolloutTailState)
+	t.Cleanup(func() {
+		for _, state := range states {
+			require.NoError(t, state.file.Close())
+		}
+	})
+	e.discoverRolloutStates(rootPath, states, map[string]bool{rootID: true}, newRolloutDiscovery())
+
+	assert.Contains(t, states, rootPath)
+	assert.NotContains(t, states, childPath)
 }
 
 func TestCodexExecutor_discoverRolloutStates_CachesStableUnrelatedFilesAndRetriesIncompleteFiles(t *testing.T) {

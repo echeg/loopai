@@ -154,6 +154,10 @@ is approximate because the final drain can deliver buffered events late. Executo
 report completed shell commands; `ValidationTimer` alone performs classification
 and logs the canonical configured label rather than raw provider arguments.
 Unpaired commands and providers that omit tool events produce no timing lines.
+Current custom `exec` records expose nested commands only as model-generated
+JavaScript, so their parser is deliberately heuristic and best-effort rather
+than a complete JavaScript grammar. Unknown or ambiguous source shapes are
+omitted.
 
 ## Code style
 
