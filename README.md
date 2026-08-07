@@ -17,6 +17,7 @@ This repository is a personal fork. It is installed by building from source; no 
 - Streams timestamped progress to `.loopai/progress/`
 - Serves a real-time web dashboard with `--serve`
 - Reports live and persistent completion status to the cmux sidebar when available
+- Optionally hands a run off to its own cmux workspace with `--cmux-workspace`
 - Sends optional Telegram, email, Slack, webhook, or custom-script notifications
 
 ## Requirements
@@ -173,6 +174,9 @@ loopai --codex --pass-claude-md docs/plans/feature.md
 
 # execute in an isolated worktree
 loopai --worktree docs/plans/feature.md
+
+# hand the run off to its own cmux workspace, so it gets its own sidebar card
+loopai --cmux-workspace --worktree docs/plans/feature.md
 
 # commit local changes, then execute from a new isolated worktree
 loopai --worktree --commit docs/plans/feature.md
@@ -489,6 +493,23 @@ loopai --serve --watch=/path/to/project-a --watch=/path/to/project-b
 ```
 
 When loopai runs inside cmux, it reports the phase and effective model, review iteration, task count, spinner, and completion notifications through the public cmux CLI. Started implementation and review runs retain the completion pill described above after success or non-abort execution failure; startup/preflight failures, plan-creation failures, and aborts do not. Outside cmux this integration is a no-op.
+
+The cmux status pill and progress bar belong to the workspace, not to an individual run, so
+several runs started from one workspace overwrite each other's status. `--cmux-workspace` avoids
+that by handing the run off: loopai creates a new cmux workspace named after the branch the run
+will use, relaunches itself there without the flag, prints `handed off to cmux workspace <name>`,
+and exits. The run then owns its own sidebar card, pill, spinner, and progress bar, which makes
+parallel runs independent.
+
+```bash
+loopai --cmux-workspace --worktree docs/plans/feature.md
+```
+
+Hand-off is best-effort like the rest of the cmux integration and never blocks a run. Outside
+cmux, or when workspace creation fails, loopai prints a warning and executes normally in the
+current terminal. Close-out and configuration commands (`--clear`, `--merge`, `--pr`, `--init`,
+`--reset`, `--dump-defaults`) are never handed off. With `--plan`, the interactive plan dialog
+happens in the new workspace's terminal.
 
 Provider session and rate limits are retried every 10 minutes by default until the provider
 recovers or the run is canceled with `Ctrl+C`. During the wait, progress output is red and cmux

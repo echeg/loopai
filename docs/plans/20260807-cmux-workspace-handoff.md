@@ -79,9 +79,11 @@
 - ⚠️ the `os.Executable` failure branch stays verified by inspection: it cannot be provoked without injecting a seam into production code, and it mirrors the covered `os.Getwd` branch exactly
 
 ### Task 4: [Final] Update documentation
-- [ ] update README.md flag list/usage with `--cmux-workspace`
-- [ ] update the cmux section of CLAUDE.md (hand-off is part of the cmux integration contract: best-effort, never affects execution)
-- [ ] update llms.txt if it enumerates CLI flags
+- [x] update README.md flag list/usage with `--cmux-workspace`
+- [x] update the cmux section of CLAUDE.md (hand-off is part of the cmux integration contract: best-effort, never affects execution)
+- [x] update llms.txt if it enumerates CLI flags
+- ➕ README gains a feature bullet, a `Common commands` example, and a hand-off subsection in `Progress and dashboard` next to the existing cmux paragraph
+- ➕ llms.txt gains a hand-off paragraph after the cmux pill paragraph plus a `--cmux-workspace` entry in `Useful options`
 
 ## Technical Details
 - Hand-off command shape: `cmux new-workspace --name <branch> --cwd <pwd> --focus true --command '<exe> <filtered args>'`
