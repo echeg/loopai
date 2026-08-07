@@ -26,6 +26,33 @@ Requirements:
 
 Run loopai from a Git repository root.
 
+## Claude Code plugin
+
+Install the optional Claude Code workflows from this repository's marketplace:
+
+```bash
+claude plugin marketplace add echeg/loopai
+claude plugin install loopai@loopai
+```
+
+The plugin provides `loopai:loopai`, `loopai:loopai-plan`,
+`loopai:loopai-brainstorm`, `loopai:loopai-adopt`, and
+`loopai:loopai-update`. The CLI remains the execution engine.
+
+Use `loopai:loopai-brainstorm` when a feature needs design exploration. It asks
+one question at a time, compares approaches, and seeks section-by-section
+approval. It then invokes `loopai:loopai-plan`, which records the approved
+context, chosen approach, rejected alternatives, and verified facts in the
+plan's `## Decisions` section. This pipeline does not create an intermediate
+spec file or invoke `superpowers:writing-plans`.
+
+Superpowers may remain installed for its other skills. When migrating from the
+upstream ralphex plugin, run `claude plugin uninstall ralphex` and
+`claude plugin marketplace remove ralphex` after installing loopai. In shared
+projects, a `CLAUDE.md` directive can require plan creation through
+`loopai:loopai-brainstorm` and `loopai:loopai-plan` instead of
+`superpowers:writing-plans`.
+
 ## Core commands
 
 ```bash

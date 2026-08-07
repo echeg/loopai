@@ -4,7 +4,9 @@ Autonomous implementation-plan execution with Claude Code or OpenAI Codex.
 
 loopai is a local CLI for running structured engineering plans from the root of a Git repository. Each task runs in a fresh agent session, validation is performed between tasks, and completed work can pass through internal and cross-provider review phases. The result is committed work with a persistent progress log, without requiring an IDE plugin or hosted service.
 
-This repository is a personal fork. It is installed by building from source; no packaged releases are published here.
+This repository is a personal fork. The loopai CLI is installed by building
+from source; no packaged CLI releases are published here. Optional Claude Code
+workflows are distributed through this repository's plugin marketplace.
 
 ## Features
 
@@ -31,7 +33,8 @@ This repository is a personal fork. It is installed by building from source; no 
 - Optional: `fzf` for interactive selection; a numbered fallback is built in
 - Optional for `--pr`: authenticated GitHub CLI (`gh auth login`) and a GitHub
   repository remote named `origin`
-- Development: Bash and `jq` for the included provider-wrapper test suites
+- Development: Bash and `jq` for the full test suite, including plugin manifest
+  validation and provider-wrapper tests
 - Optional for development: `golangci-lint`
 
 loopai must be run from the repository root. A custom `vcs_command` must accept
@@ -74,19 +77,69 @@ install -d ~/.config/fish/completions
 install -m 0644 completions/loopai.fish ~/.config/fish/completions/loopai.fish
 ```
 
-### Optional Claude Code commands
+### Claude Code plugin
 
-The retained command assets provide `/loopai`, `/loopai-plan`, `/loopai-adopt`,
-and `/loopai-update`. Install standalone copies with:
+Add this repository as a Claude Code marketplace and install its plugin:
+
+```bash
+claude plugin marketplace add echeg/loopai
+claude plugin install loopai@loopai
+```
+
+The plugin provides five skills:
+
+- `loopai:loopai` launches loopai, monitors progress, and resumes active runs
+- `loopai:loopai-plan` creates an executable implementation plan
+- `loopai:loopai-brainstorm` designs a feature interactively, then hands the
+  approved design to `loopai:loopai-plan`
+- `loopai:loopai-adopt` converts an existing specification or issue into a plan
+- `loopai:loopai-update` merges updated embedded defaults into local
+  customizations
+
+The CLI remains the execution engine. The plugin adds Claude Code workflows
+for planning and operating it. Refresh the marketplace and plugin when a new
+version is published, then restart Claude Code to apply the update:
+
+```bash
+claude plugin marketplace update loopai
+claude plugin update loopai@loopai
+```
+
+To remove the workflows:
+
+```bash
+claude plugin uninstall loopai@loopai
+claude plugin marketplace remove loopai
+```
+
+To install standalone command copies instead:
 
 ```bash
 install -d ~/.claude/commands
 cp -L assets/claude/loopai*.md ~/.claude/commands/
 ```
 
-The commands respectively launch/monitor loopai, create a plan, convert an
-existing specification into a plan, and merge updated embedded defaults into
-customized configuration.
+Standalone copies are not managed by Claude Code's plugin updater. After
+pulling a newer repository version, rerun the copy command to refresh them.
+
+When migrating from umputun's upstream plugin, remove its plugin and marketplace
+after installing this one:
+
+```bash
+claude plugin uninstall ralphex
+claude plugin marketplace remove ralphex
+```
+
+Superpowers can remain installed for debugging, TDD, code review, and its other
+orthogonal workflows. `loopai-brainstorm` replaces only its brainstorming-to-
+plan-writing path: it sends approved decisions directly to `loopai-plan` and
+does not create a separate spec. For projects shared with teammates who keep
+Superpowers, add a directive like this to the project's `CLAUDE.md`:
+
+```text
+Create implementation plans with loopai:loopai-brainstorm and
+loopai:loopai-plan. Do not use superpowers:writing-plans to create plan files.
+```
 
 ### Migrating from upstream ralphex
 
@@ -109,10 +162,9 @@ The executable is now `loopai`. Replace `RALPHEX_CONFIG_DIR` with
 project-root dashboard scan.
 
 This fork also removes the upstream Docker/Bedrock path, built-in Mercurial
-adapter, packaged releases (Homebrew, deb, rpm, and release binaries), hosted
-documentation site, and Claude plugin marketplace metadata. Source builds and
-the optional standalone Claude command assets above are the supported
-distribution paths.
+adapter, packaged releases (Homebrew, deb, rpm, and release binaries), and
+hosted documentation site. Source builds and this repository's Claude Code
+plugin marketplace are the supported distribution paths.
 
 ## Quick start
 

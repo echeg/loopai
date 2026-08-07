@@ -15,6 +15,13 @@ This plan adds:
 
 Deliberately out of scope: superpowers stays installed and untouched — no other skills are copied (teammates may have superpowers; local removal would not help them, and the orthogonal skills do not conflict with loopai).
 
+## Status
+
+Implementation and automated validation are complete. The plan remains active
+while code-review iterations run; archive it after the review loop finishes.
+The push-dependent checks under Post-Completion remain pending and do not block
+implementation completion.
+
 ## Context (from discovery)
 
 - Files/components involved:
@@ -66,46 +73,46 @@ Deliberately out of scope: superpowers stays installed and untouched — no othe
 
 ### Task 1: Add manifest validation check
 
-- [ ] add a `check-plugin` step (script under `scripts/` + make target, matching existing asset-check style) that fails when `.claude-plugin/marketplace.json` or `.claude-plugin/plugin.json` is missing, is invalid JSON, lacks required fields (marketplace: name, plugins with name+source; plugin: name, version, skills path), names anything `ralphex`, or points `skills` at a nonexistent directory
-- [ ] wire the check into `make test` alongside `check-symlinks`
-- [ ] verify the check fails before the manifests exist (red), including on a hand-broken fixture invocation if the script supports a path argument
-- [ ] run `make test` - expected red on missing manifests; proceed to task 2 to turn it green
+- [x] add a `check-plugin` step (script under `scripts/` + make target, matching existing asset-check style) that fails when `.claude-plugin/marketplace.json` or `.claude-plugin/plugin.json` is missing, is invalid JSON, lacks required fields (marketplace: name, plugins with name+source; plugin: name, version, skills path), names anything `ralphex`, or points `skills` at a nonexistent directory
+- [x] wire the check into `make test` alongside `check-symlinks`
+- [x] verify the check fails before the manifests exist (red), including on a hand-broken fixture invocation if the script supports a path argument
+- [x] run `make test` - expected red on missing manifests; proceed to task 2 to turn it green
 
 ### Task 2: Add plugin and marketplace manifests
 
-- [ ] create `.claude-plugin/marketplace.json`: marketplace `loopai`, owner echeg, single plugin `{name: "loopai", source: "./"}` with description and version
-- [ ] create `.claude-plugin/plugin.json`: name `loopai`, version `0.1.0`, description, author, repository `https://github.com/echeg/loopai`, license MIT, `"skills": "./assets/claude/skills/"`
-- [ ] run the task 1 check - now green
-- [ ] run `make test` - must pass before task 3
+- [x] create `.claude-plugin/marketplace.json`: marketplace `loopai`, owner echeg, single plugin `{name: "loopai", source: "./"}` with description and version
+- [x] create `.claude-plugin/plugin.json`: name `loopai`, version `0.1.0`, description, author, repository `https://github.com/echeg/loopai`, license MIT, `"skills": "./assets/claude/skills/"`
+- [x] run the task 1 check - now green
+- [x] run `make test` - must pass before task 3
 
 ### Task 3: Create loopai-brainstorm skill
 
-- [ ] read the superpowers `brainstorming` v6.2.0 skill from the plugin cache and adapt it into `assets/claude/skills/loopai-brainstorm/SKILL.md` with an "adapted from obra/superpowers v6.2.0 (MIT)" attribution note
-- [ ] keep: project-context exploration, one-question-at-a-time dialogue, 2-3 approaches with recommendation, YAGNI, section-by-section design presentation with approval
-- [ ] replace the ending: instead of writing a spec to `docs/superpowers/specs/` and invoking `writing-plans`, the terminal state is invoking the `loopai-plan` skill, passing approved design decisions to be recorded in the plan's `## Decisions` section; spec files are explicitly not created (a slim ADR is allowed only as a rare exception for long-lived architectural decisions, on user request)
-- [ ] add frontmatter description that distinguishes it from superpowers `brainstorming` (trigger phrasing oriented at "design a feature that will become a loopai plan") since both skills may be installed side by side
-- [ ] add the top-level symlink `assets/claude/loopai-brainstorm.md` → `skills/loopai-brainstorm/SKILL.md`
-- [ ] run `make check-symlinks` and `make test` - must pass before task 4
+- [x] read the superpowers `brainstorming` v6.2.0 skill from the plugin cache and adapt it into `assets/claude/skills/loopai-brainstorm/SKILL.md` with an "adapted from obra/superpowers v6.2.0 (MIT)" attribution note
+- [x] keep: project-context exploration, one-question-at-a-time dialogue, 2-3 approaches with recommendation, YAGNI, section-by-section design presentation with approval
+- [x] replace the ending: instead of writing a spec to `docs/superpowers/specs/` and invoking `writing-plans`, the terminal state is invoking the `loopai-plan` skill, passing approved design decisions to be recorded in the plan's `## Decisions` section; spec files are explicitly not created (a slim ADR is allowed only as a rare exception for long-lived architectural decisions, on user request)
+- [x] add frontmatter description that distinguishes it from superpowers `brainstorming` (trigger phrasing oriented at "design a feature that will become a loopai plan") since both skills may be installed side by side
+- [x] add the top-level symlink `assets/claude/loopai-brainstorm.md` → `skills/loopai-brainstorm/SKILL.md`
+- [x] run `make check-symlinks` and `make test` - must pass before task 4
 
 ### Task 4: Decisions section in loopai-plan
 
-- [ ] update `assets/claude/skills/loopai-plan/SKILL.md` plan template with an optional `## Decisions` section (context, chosen approach, rejected alternatives, verified facts) placed after Overview, and a note that `loopai-brainstorm` hands its approved design into this section
-- [ ] mention in the loopai-plan flow that when invoked from `loopai-brainstorm`, the questions already answered during brainstorming (goal, scope, approach) are not re-asked — only missing ones (e.g. TDD preference, title)
-- [ ] run `make check-symlinks` and `make test` - must pass before task 5
+- [x] update `assets/claude/skills/loopai-plan/SKILL.md` plan template with an optional `## Decisions` section (context, chosen approach, rejected alternatives, verified facts) placed after Overview, and a note that `loopai-brainstorm` hands its approved design into this section
+- [x] mention in the loopai-plan flow that when invoked from `loopai-brainstorm`, the questions already answered during brainstorming (goal, scope, approach) are not re-asked — only missing ones (e.g. TDD preference, title)
+- [x] run `make check-symlinks` and `make test` - must pass before task 5
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview: manifests valid and loopai-named, skill set is exactly the four existing plus loopai-brainstorm, brainstorm terminal state is loopai-plan, no spec-file machinery remains in the new skill
-- [ ] verify edge cases: `make test` from a clean checkout, symlink check on a case-sensitive path, manifest check failure modes (broken JSON, ralphex naming, missing skills dir)
-- [ ] run full test suite via `make test`
-- [ ] run `make lint` - all issues must be fixed
+- [x] verify all requirements from Overview: manifests valid and loopai-named, skill set is exactly the four existing plus loopai-brainstorm, brainstorm terminal state is loopai-plan, no spec-file machinery remains in the new skill
+- [x] verify edge cases: `make test` from a clean checkout, symlink check on a case-sensitive path, manifest check failure modes (broken JSON, ralphex naming, missing skills dir)
+- [x] run full test suite via `make test`
+- [x] run `make lint` - all issues must be fixed
 
 ### Task 6: Update documentation
 
-- [ ] update `README.md`: "Claude Code plugin" section — install via `claude plugin marketplace add echeg/loopai`, list of provided skills, migration note (remove the upstream `ralphex` plugin/marketplace; superpowers can stay installed — only its plan-writing flow is superseded, and a per-project CLAUDE.md directive can point plan creation at loopai-plan for teammates who keep superpowers)
-- [ ] update `llms.txt`: plugin installation and the loopai-brainstorm → loopai-plan pipeline
-- [ ] update `CLAUDE.md`: project structure entry for `.claude-plugin/`, the version-bump discipline (bump plugin.json version whenever skills change, otherwise installed copies do not update), and the skill/symlink conventions extended to the new skill
-- [ ] run `make test` and `make lint` - final green
+- [x] update `README.md`: "Claude Code plugin" section — install via `claude plugin marketplace add echeg/loopai`, list of provided skills, migration note (remove the upstream `ralphex` plugin/marketplace; superpowers can stay installed — only its plan-writing flow is superseded, and a per-project CLAUDE.md directive can point plan creation at loopai-plan for teammates who keep superpowers)
+- [x] update `llms.txt`: plugin installation and the loopai-brainstorm → loopai-plan pipeline
+- [x] update `CLAUDE.md`: project structure entry for `.claude-plugin/`, the version-bump discipline (bump plugin.json version whenever skills change, otherwise installed copies do not update), and the skill/symlink conventions extended to the new skill
+- [x] run `make test` and `make lint` - final green
 
 ## Technical Details
 
@@ -113,7 +120,8 @@ Deliberately out of scope: superpowers stays installed and untouched — no othe
 - Marketplace and plugin are both named `loopai`; installed skills surface as `loopai:<skill>` — distinct from `ralphex:*` and `superpowers:*`, so coexistence during migration is safe
 - `loopai-brainstorm` replaces only the plan-pipeline part of superpowers: superpowers stays installed for its orthogonal skills (debugging, TDD, code review); no superpowers files are copied except the adapted brainstorming text
 - Version discipline: plugin.json `version` bumps on every skill change (start 0.1.0); the marketplace entry version mirrors it
-- Attribution: "adapted from obra/superpowers v6.2.0 (MIT)" comment in the adapted skill records the sync baseline for future manual diffs against upstream
+- Review fixes updated the skills and bumped both manifests together to version 0.1.3
+- Attribution: the adapted-skill comment records the obra/superpowers v6.2.0 sync baseline and points to `THIRD_PARTY_NOTICES.md`, which preserves Jesse Vincent's MIT notice
 - Fork policy intact: no Go code, module path, or `<<<RALPHEX:...>>>` signal changes; `CHANGELOG.md` untouched
 
 ## Post-Completion
@@ -121,7 +129,7 @@ Deliberately out of scope: superpowers stays installed and untouched — no othe
 **Manual verification** (requires pushed repo):
 
 - `claude plugin marketplace add echeg/loopai` on this machine; install the `loopai` plugin; confirm `loopai:loopai-plan` and `loopai:loopai-brainstorm` appear in the skills list
-- remove the upstream plugin (`claude plugin uninstall ralphex`, `claude plugin marketplace remove ralphex`) and confirm `/loopai-plan`-style commands come from the own plugin
+- remove the upstream plugin (`claude plugin uninstall ralphex`, `claude plugin marketplace remove ralphex`) and confirm `loopai:loopai-plan` and `loopai:loopai-brainstorm` resolve from `loopai@loopai`
 - run one real feature through `loopai-brainstorm` → `loopai-plan` → `loopai --worktree` and confirm the plan contains the `## Decisions` section and no spec file was created
 - with superpowers still enabled, confirm the two brainstorm skills coexist and the CLAUDE.md directive routes plan creation to loopai-plan
 
