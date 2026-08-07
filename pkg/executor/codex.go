@@ -1166,11 +1166,13 @@ func customExecCallIsAwaited(input string, callStart int) bool {
 	if callStart < 0 || callStart > len(input) {
 		return false
 	}
-	if customDirectAwaitPattern.MatchString(input[:callStart]) {
+	if statementStart, ok := customTopLevelStatementStart(input, callStart); ok &&
+		customDirectAwaitPattern.MatchString(input[statementStart:callStart]) {
 		return true
 	}
 	for _, location := range customPromiseAllPattern.FindAllStringIndex(input, -1) {
-		if location[1] > callStart || !customAssignmentPattern.MatchString(input[:location[0]]) {
+		statementStart, ok := customTopLevelStatementStart(input, location[0])
+		if location[1] > callStart || !ok || !customAssignmentPattern.MatchString(input[statementStart:location[0]]) {
 			continue
 		}
 		if closeIndex := strings.Index(input[location[1]:], "]"); closeIndex >= 0 && callStart < location[1]+closeIndex {
@@ -1178,6 +1180,83 @@ func customExecCallIsAwaited(input string, callStart int) bool {
 		}
 	}
 	return false
+}
+
+func customTopLevelStatementStart(input string, end int) (int, bool) {
+	if end < 0 || end > len(input) {
+		return 0, false
+	}
+	start := 0
+	braces, brackets, parentheses := 0, 0, 0
+	for index := 0; index < end; {
+		next, token, ok := nextCustomExecSyntax(input, index, end)
+		if !ok {
+			return 0, false
+		}
+		switch token {
+		case '{':
+			braces++
+		case '[':
+			brackets++
+		case '(':
+			parentheses++
+		case '}':
+			braces--
+		case ']':
+			brackets--
+		case ')':
+			parentheses--
+		case ';':
+			if braces == 0 && brackets == 0 && parentheses == 0 {
+				start = index + 1
+			}
+		}
+		if braces < 0 || brackets < 0 || parentheses < 0 {
+			return 0, false
+		}
+		index = next
+	}
+	return start, braces == 0 && brackets == 0 && parentheses == 0
+}
+
+func nextCustomExecSyntax(input string, index, end int) (int, byte, bool) {
+	token := input[index]
+	if token == '\'' || token == '"' || token == '`' {
+		next, ok := skipCustomExecQuoted(input, index, end)
+		return next, 0, ok
+	}
+	if token != '/' || index+1 >= end {
+		return index + 1, token, true
+	}
+	if input[index+1] == '/' {
+		index += 2
+		for index < end && input[index] != '\n' {
+			index++
+		}
+		return index, 0, true
+	}
+	if input[index+1] == '*' {
+		closeIndex := strings.Index(input[index+2:end], "*/")
+		if closeIndex < 0 {
+			return 0, 0, false
+		}
+		return index + closeIndex + 4, 0, true
+	}
+	return index + 1, token, true
+}
+
+func skipCustomExecQuoted(input string, start, end int) (int, bool) {
+	delimiter := input[start]
+	for index := start + 1; index < end; index++ {
+		if input[index] == '\\' {
+			index++
+			continue
+		}
+		if input[index] == delimiter {
+			return index + 1, true
+		}
+	}
+	return 0, false
 }
 
 func customToolEmitsStructuredResults(input string) bool {

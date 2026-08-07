@@ -2032,6 +2032,38 @@ func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksEveryNestedComm
 	assert.Empty(t, state.starts)
 }
 
+func TestCodexExecutor_trackRolloutCommandTiming_CustomExecTracksSequentialAwaitedCommands(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, d time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: d})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"sequential","input":"const test = await tools.exec_command({cmd:\"make test\"}); text(JSON.stringify({index:1,...test})); const lint = await tools.exec_command({cmd:\"make lint\"}); text(JSON.stringify({index:2,...lint}));"}}`,
+		`{"timestamp":"2026-08-07T09:00:04Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"sequential","output":[{"type":"input_text","text":"{\"index\":1,\"exit_code\":0,\"wall_time_seconds\":2,\"output\":\"ok\"}"},{"type":"input_text","text":"{\"index\":2,\"exit_code\":0,\"wall_time_seconds\":3.5,\"output\":\"ok\"}"}]}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{
+		{command: "make test", duration: 2 * time.Second},
+		{command: "make lint", duration: 3500 * time.Millisecond},
+	}, captured)
+	assert.Empty(t, state.starts)
+}
+
 func TestCodexExecutor_trackRolloutCommandTiming_BatchWithoutPerCommandDurationsIsSilent(t *testing.T) {
 	var captured []string
 	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
@@ -2125,6 +2157,7 @@ func TestCodexExecutor_trackRolloutCommandTiming_IgnoresUnawaitedAndConditionalC
 	for _, input := range []string{
 		`tools.exec_command({cmd:"make test"}); text("done");`,
 		`if (false) { const r = await tools.exec_command({cmd:"make test"}); text(r.output); }`,
+		`if (false) { text("skip"); const r = await tools.exec_command({cmd:"make test"}); text(r.output); }`,
 	} {
 		state := newCodexTimingState()
 		e.trackCustomToolCall(rolloutPayload{Name: "exec", CallID: "start", Input: input}, time.Now(), state, time.Now)
