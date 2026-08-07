@@ -124,7 +124,7 @@ Validation time is included in (not additive to) the phase buckets; with paralle
 - [x] omit background Claude commands and log canonical validation labels without raw arguments or control characters
 - [x] remove duplicate plan scanning and validation-only runtime plumbing from unrelated modes
 - [x] add focused cancellation, integration, long-line, multiline, and provider-format regression tests
-- [x] infer safe output-only Codex completions before the yield threshold and attach ambiguous calls to later continuations
+- [x] infer safe output-only Codex completions before the yield threshold, attach uniquely attributable calls to later continuations, and omit ambiguous associations
 - [x] complete user, custom-provider, architecture, plan, and changelog documentation
 
 ## Technical Details

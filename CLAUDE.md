@@ -145,7 +145,8 @@ legacy `exec_command` function calls and current custom `exec` rollout records,
 follows yielded sessions through continuation/wait events, and tails child-agent
 rollouts. For output-only custom records, it uses valid native timestamps to prove
 that a command returned before its configured yield threshold; calls at or beyond
-the threshold remain pending and attach to later session continuations. It otherwise
+the threshold attach to a later session continuation only when the association is
+unique. Ambiguous batches are omitted rather than paired by order. It otherwise
 prefers valid native event timestamps and falls back to arrival times; the fallback
 is approximate because the final drain can deliver buffered events late. Executors
 report completed shell commands; `ValidationTimer` alone performs classification

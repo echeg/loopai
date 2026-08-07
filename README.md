@@ -465,8 +465,9 @@ commands, incomplete commands, and provider streams without shell tool events pr
 timestamps and falls back to approximate arrival time when timestamps are absent or invalid.
 For current Codex custom-tool records that expose only command output, native timestamps can
 prove completion when the call returns before its configured yield threshold. Calls at or beyond
-that threshold remain pending and are paired with a later session continuation; ambiguous or
-abandoned calls produce no timing line.
+that threshold are paired with a later session continuation only when the association is unique;
+ambiguous or abandoned calls produce no timing line. Batched calls use native per-command wall
+times when available and are omitted when only the enclosing call's duration is known.
 
 Start the dashboard:
 
