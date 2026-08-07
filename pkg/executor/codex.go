@@ -954,10 +954,12 @@ type codexCommandStart struct {
 }
 
 type codexPendingCommand struct {
-	start         codexCommandStart
-	sessionID     string
-	requiresProof bool
-	yieldAfter    time.Duration
+	start             codexCommandStart
+	sessionID         string
+	requiresProof     bool
+	yieldAfter        time.Duration
+	unprovenEventTime time.Time
+	unprovenArrival   time.Time
 }
 
 type codexTimingState struct {
@@ -980,9 +982,9 @@ func newCodexTimingState() *codexTimingState {
 }
 
 var (
-	customExecYieldKey       = regexp.MustCompile("(?:\\\"yield-time_ms\\\"|'yield-time_ms'|\\byield_time_ms)\\s*:")
+	customExecYieldKey       = regexp.MustCompile(`(?:"yield_time_ms"|'yield_time_ms'|\byield_time_ms)\s*:`)
 	customExecCommandPattern = regexp.MustCompile("(?s)tools\\.exec_command\\s*\\(\\s*\\{.*?(?:\"cmd\"|'cmd'|\\bcmd)\\s*:\\s*(\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|`(?:\\\\.|[^`\\\\])*`)")
-	customExecYieldPattern   = regexp.MustCompile(`(?s)(?:"yield_time_ms"|'yield-time_ms'|\byield_time_ms)\s*:\s*(\d+)`)
+	customExecYieldPattern   = regexp.MustCompile(`(?s)(?:"yield_time_ms"|'yield_time_ms'|\byield_time_ms)\s*:\s*(\d+)`)
 	customWriteStdinPattern  = regexp.MustCompile(`(?s)tools\.write_stdin\s*\(\s*\{.*?(?:"session_id"|'session_id'|\bsession_id)\s*:\s*(?:"([^"]+)"|'([^']+)'|(\d+))`)
 	outputSessionIDPattern   = regexp.MustCompile(`(?im)^(?:SESSION_ID\s*=|session(?:_|\s+)id["']?\s*[:=]\s*|Process running with session ID\s+)(\d+)\s*$`)
 	outputCellIDPattern      = regexp.MustCompile(`(?im)^(?:Script running with cell ID\s*|cell_id["']?\s*[:=]\s*)(\d+)\s*$`)
@@ -1053,12 +1055,9 @@ func (e *CodexExecutor) trackFunctionCall(payload rolloutPayload, eventTime time
 			}
 		}
 	case "wait":
-		var args struct {
-			CellID string `json:"cell_id"`
-		}
-		if json.Unmarshal([]byte(payload.Arguments), &args) == nil {
-			if pending, ok := state.cells[args.CellID]; ok {
-				delete(state.cells, args.CellID)
+		if cellID := cellIDFromArguments(payload.Arguments); cellID != "" {
+			if pending, ok := state.cells[cellID]; ok {
+				delete(state.cells, cellID)
 				state.waits[payload.CallID] = pending
 			}
 		}
@@ -1103,12 +1102,16 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 		unknownSessions = append(unknownSessions, sessionID)
 	}
 	if len(unknownSessions) == 1 && len(state.unproven) == 1 {
-		command := state.unproven[0]
-		state.unproven = nil
-		command.sessionID = unknownSessions[0]
-		command.requiresProof = true
-		state.sessions[unknownSessions[0]] = command
-		pending = append(pending, command)
+		if !unprovenAssociationIsFresh(state.unproven[0], eventTime, now()) {
+			state.unproven = nil
+		} else {
+			command := state.unproven[0]
+			state.unproven = nil
+			command.sessionID = unknownSessions[0]
+			command.requiresProof = true
+			state.sessions[unknownSessions[0]] = command
+			pending = append(pending, command)
+		}
 	} else if len(unknownSessions) > 0 && len(state.unproven) > 0 {
 		// Multiple unresolved commands or unknown sessions have no stable
 		// association. Drop them instead of guessing by call order.
@@ -1139,6 +1142,7 @@ func (e *CodexExecutor) trackToolOutput(payload rolloutPayload, eventTime time.T
 
 type codexCommandResult struct {
 	index       int
+	hasIndex    bool
 	sessionID   string
 	cellID      string
 	hasExit     bool
@@ -1165,6 +1169,8 @@ func (e *CodexExecutor) resolvePendingOutputs(pending []codexPendingCommand, out
 			if commandCompletedBeforeYield(command, eventTime) {
 				e.emitResolvedCommandTiming(command, len(pending), codexCommandResult{}, eventTime, arrival)
 			} else if command.sessionID == "" {
+				command.unprovenEventTime = eventTime
+				command.unprovenArrival = arrival
 				state.unproven = append(state.unproven, command)
 			}
 			continue
@@ -1277,27 +1283,32 @@ func rolloutOutputTexts(raw json.RawMessage) []string {
 }
 
 func parseCodexCommandResults(outputs []string, pendingCount int) map[int]codexCommandResult {
-	results := make(map[int]codexCommandResult)
-	next := 0
+	parsed := make([]codexCommandResult, 0, len(outputs))
 	for _, output := range outputs {
 		result, ok := parseStructuredCommandResult(output)
-		if !ok {
-			continue
+		if ok {
+			parsed = append(parsed, result)
 		}
-		index := result.index - 1
-		if result.index == 0 {
-			for next < pendingCount {
-				if _, exists := results[next]; !exists {
-					break
-				}
-				next++
-			}
-			index = next
+	}
+
+	results := make(map[int]codexCommandResult)
+	if pendingCount > 1 {
+		indexed, valid := indexedBatchResults(parsed, pendingCount)
+		if !valid {
+			return results
 		}
-		if index >= 0 && index < pendingCount {
-			results[index] = result
-			next = index + 1
+		if indexed != nil {
+			return indexed
 		}
+		if len(parsed) != pendingCount {
+			return results
+		}
+	}
+	for index, result := range parsed {
+		if index >= pendingCount {
+			break
+		}
+		results[index] = result
 	}
 	if pendingCount == 1 {
 		if _, ok := results[0]; !ok {
@@ -1309,9 +1320,34 @@ func parseCodexCommandResults(outputs []string, pendingCount int) map[int]codexC
 	return results
 }
 
+func indexedBatchResults(parsed []codexCommandResult, pendingCount int) (map[int]codexCommandResult, bool) {
+	if len(parsed) == 0 {
+		return nil, true
+	}
+	results := make(map[int]codexCommandResult)
+	indexed := parsed[0].hasIndex
+	for _, result := range parsed {
+		if result.hasIndex != indexed || (indexed && (result.index < 1 || result.index > pendingCount)) {
+			return nil, false
+		}
+		if !indexed {
+			continue
+		}
+		index := result.index - 1
+		if _, duplicate := results[index]; duplicate {
+			return nil, false
+		}
+		results[index] = result
+	}
+	if !indexed {
+		return nil, true
+	}
+	return results, true
+}
+
 func parseStructuredCommandResult(output string) (codexCommandResult, bool) {
 	var raw struct {
-		Index           int             `json:"index"`
+		Index           *int            `json:"index"`
 		SessionID       json.RawMessage `json:"session_id"`
 		CellID          json.RawMessage `json:"cell_id"`
 		ExitCode        json.RawMessage `json:"exit_code"`
@@ -1320,7 +1356,11 @@ func parseStructuredCommandResult(output string) (codexCommandResult, bool) {
 	if json.Unmarshal([]byte(strings.TrimSpace(output)), &raw) != nil {
 		return codexCommandResult{}, false
 	}
-	result := codexCommandResult{index: raw.Index}
+	result := codexCommandResult{}
+	if raw.Index != nil {
+		result.index = *raw.Index
+		result.hasIndex = true
+	}
 	result.sessionID = rawIDString(raw.SessionID)
 	result.cellID = rawIDString(raw.CellID)
 	var exitCode *int
@@ -1475,6 +1515,25 @@ func sessionIDFromArguments(arguments string) string {
 		return ""
 	}
 	return rawIDString(args.SessionID)
+}
+
+func cellIDFromArguments(arguments string) string {
+	var args struct {
+		CellID json.RawMessage `json:"cell_id"`
+	}
+	if json.Unmarshal([]byte(arguments), &args) != nil || len(args.CellID) == 0 {
+		return ""
+	}
+	return rawIDString(args.CellID)
+}
+
+func unprovenAssociationIsFresh(command codexPendingCommand, eventTime, arrival time.Time) bool {
+	const associationWindow = 10 * time.Second
+	duration := arrival.Sub(command.unprovenArrival)
+	if !command.unprovenEventTime.IsZero() && !eventTime.IsZero() && !eventTime.Before(command.unprovenEventTime) {
+		duration = eventTime.Sub(command.unprovenEventTime)
+	}
+	return duration >= 0 && duration <= associationWindow
 }
 
 func extractPatternValue(pattern *regexp.Regexp, value string) string {

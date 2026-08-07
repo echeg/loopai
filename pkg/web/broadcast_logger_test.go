@@ -223,11 +223,7 @@ func TestBroadcastLogger_PrintSection_RetryDoesNotEmitTaskEnd(t *testing.T) {
 	bl.PrintSection(status.NewTaskIterationSection(2))
 	bl.PrintSection(status.NewTaskIterationSection(2))
 
-	var boundaries []string
-	require.Eventually(t, func() bool {
-		boundaries = append(boundaries, collectTaskBoundaries(t, drainChannel(events, 20*time.Millisecond))...)
-		return len(boundaries) >= 2
-	}, time.Second, 10*time.Millisecond)
+	boundaries := collectTaskBoundaries(t, drainChannel(events, 50*time.Millisecond))
 	assert.Equal(t, []string{"task_start:2", "task_start:2"}, boundaries)
 	assert.Equal(t, 2, bl.currentTask)
 }

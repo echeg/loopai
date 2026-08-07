@@ -542,6 +542,21 @@ func TestParsePlan_ValidationCommands(t *testing.T) {
 			want: []string{},
 		},
 		{
+			name: "subheading closes section and checkboxes are ignored",
+			content: `# Plan
+
+## Validation Commands
+
+- make test
+- [x] make lint
+
+### Notes
+
+- go
+`,
+			want: []string{"make test"},
+		},
+		{
 			name: "ignores non-list content",
 			content: `# Plan
 

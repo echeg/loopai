@@ -43,6 +43,7 @@ go mod vendor
 
 ```text
 cmd/loopai/          main package, CLI parsing, startup wiring
+internal/validation/ shared validation-command matching without package cycles
 pkg/cmux/            best-effort cmux status integration
 pkg/config/          configuration loading and embedded defaults
 pkg/executor/        Claude-compatible and Codex process execution

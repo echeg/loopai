@@ -288,15 +288,12 @@ func filterEnv(env []string, keysToRemove ...string) []string {
 
 // streamEvent represents a JSON event from claude CLI stream output.
 type streamContentBlock struct {
-	Type      string `json:"type"`
-	Text      string `json:"text"`
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	ToolUseID string `json:"tool_use_id"`
-	Input     struct {
-		Command         string `json:"command"`
-		RunInBackground bool   `json:"run_in_background"`
-	} `json:"input"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	ToolUseID string          `json:"tool_use_id"`
+	Input     json.RawMessage `json:"input"`
 }
 
 type streamEvent struct {
@@ -551,11 +548,18 @@ func (e *ClaudeExecutor) trackCommandTiming(event *streamEvent, starts map[strin
 }, now func() time.Time) {
 	for _, block := range event.Message.Content {
 		switch {
-		case block.Type == "tool_use" && block.Name == "Bash" && block.ID != "" && block.Input.Command != "" && !block.Input.RunInBackground:
+		case block.Type == "tool_use" && block.Name == "Bash" && block.ID != "":
+			var input struct {
+				Command         string `json:"command"`
+				RunInBackground bool   `json:"run_in_background"`
+			}
+			if json.Unmarshal(block.Input, &input) != nil || input.Command == "" || input.RunInBackground {
+				continue
+			}
 			starts[block.ID] = struct {
 				command string
 				started time.Time
-			}{command: block.Input.Command, started: now()}
+			}{command: input.Command, started: now()}
 		case block.Type == "tool_result" && block.ToolUseID != "":
 			start, found := starts[block.ToolUseID]
 			if !found {

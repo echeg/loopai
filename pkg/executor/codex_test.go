@@ -1973,7 +1973,7 @@ func TestCodexExecutor_trackRolloutCommandTiming_CustomExecWaitsForSessionExit(t
 		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":[{"type":"input_text","text":"Script completed\n"},{"type":"input_text","text":"{\"session_id\":42,\"output\":\"\"}"}]}}`,
 		`{"timestamp":"2026-08-07T09:00:02Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({\"session_id\":42,chars:\"\"}); text(JSON.stringify(r));"}}`,
 		`{"timestamp":"2026-08-07T09:00:03Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"Script running with cell ID 7"}}`,
-		`{"timestamp":"2026-08-07T09:00:04Z","type":"response_item","payload":{"type":"function_call","name":"wait","call_id":"wait","arguments":"{\"cell_id\":\"7\"}"}}`,
+		`{"timestamp":"2026-08-07T09:00:04Z","type":"response_item","payload":{"type":"function_call","name":"wait","call_id":"wait","arguments":"{\"cell_id\":7}"}}`,
 		`{"timestamp":"2026-08-07T09:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"wait","output":[{"type":"input_text","text":"Script completed\n"},{"type":"input_text","text":"{\"exit_code\":0,\"output\":\"ok\"}"}]}}`,
 	}
 	for index, line := range fixtures {
@@ -2159,6 +2159,62 @@ func TestCodexExecutor_trackRolloutCommandTiming_UnprovenExecAttachesToContinuat
 	assert.Empty(t, state.sessions)
 }
 
+func TestCodexExecutor_trackRolloutCommandTiming_StaleUnprovenExecDoesNotAttach(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":"Script completed"}}`,
+		`{"timestamp":"2026-08-07T09:10:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({session_id:42}); text(JSON.stringify(r));"}}`,
+		`{"timestamp":"2026-08-07T09:10:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"{\"exit_code\":0}"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Empty(t, captured)
+	assert.Empty(t, state.unproven)
+	assert.Empty(t, state.continuations)
+}
+
+func TestCodexExecutor_trackRolloutCommandTiming_StaleUnprovenExecPreservesKnownContinuation(t *testing.T) {
+	var captured []string
+	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
+		captured = append(captured, command)
+	}}
+	state := newCodexTimingState()
+	state.sessions["41"] = codexPendingCommand{
+		start:         codexCommandStart{command: "make test", eventTime: time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)},
+		sessionID:     "41",
+		requiresProof: true,
+	}
+	state.unproven = []codexPendingCommand{{
+		start:             codexCommandStart{command: "make lint"},
+		unprovenEventTime: time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC),
+		unprovenArrival:   time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC),
+	}}
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:01:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const results = await Promise.all([tools.write_stdin({session_id:41}), tools.write_stdin({session_id:42})]);"}}`,
+		`{"timestamp":"2026-08-07T09:01:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"{\"exit_code\":0}"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, func() time.Time {
+			return time.Date(2026, 8, 7, 9, 1, 0, 0, time.UTC)
+		})
+	}
+
+	assert.Equal(t, []string{"make test"}, captured)
+	assert.Empty(t, state.unproven)
+	assert.Empty(t, state.continuations)
+}
+
 func TestCodexExecutor_trackRolloutCommandTiming_AmbiguousUnprovenExecsAreNotPairedFIFO(t *testing.T) {
 	var captured []string
 	e := &CodexExecutor{CommandTimingHandler: func(command string, _ time.Duration) {
@@ -2202,6 +2258,79 @@ func TestParseCodexCommandResults_IgnoresStatusMarkersInCommandOutput(t *testing
 	assert.Equal(t, "7", results[0].cellID)
 	assert.False(t, results[0].hasExit)
 	assert.Empty(t, results[0].sessionID)
+}
+
+func TestParseCodexCommandResults_RejectsAmbiguousBatchIndexes(t *testing.T) {
+	tests := []struct {
+		name    string
+		outputs []string
+	}{
+		{
+			name: "zero based",
+			outputs: []string{
+				`{"index":0,"exit_code":0,"wall_time_seconds":2}`,
+				`{"index":1,"exit_code":0,"wall_time_seconds":3}`,
+			},
+		},
+		{
+			name: "duplicate",
+			outputs: []string{
+				`{"index":1,"exit_code":0,"wall_time_seconds":2}`,
+				`{"index":1,"exit_code":0,"wall_time_seconds":3}`,
+			},
+		},
+		{
+			name: "mixed indexed and positional",
+			outputs: []string{
+				`{"index":1,"exit_code":0,"wall_time_seconds":2}`,
+				`{"exit_code":0,"wall_time_seconds":3}`,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Empty(t, parseCodexCommandResults(tt.outputs, 2))
+		})
+	}
+}
+
+func TestParseCodexCommandResults_UnindexedBatchUsesOutputOrder(t *testing.T) {
+	results := parseCodexCommandResults([]string{
+		`{"exit_code":0,"wall_time_seconds":2}`,
+		`{"exit_code":0,"wall_time_seconds":3}`,
+	}, 2)
+
+	require.Len(t, results, 2)
+	assert.Equal(t, 2*time.Second, results[0].duration)
+	assert.Equal(t, 3*time.Second, results[1].duration)
+}
+
+func TestParseCodexCommandResults_RejectsIncompleteUnindexedBatch(t *testing.T) {
+	results := parseCodexCommandResults([]string{
+		`not a structured result`,
+		`{"exit_code":0,"wall_time_seconds":3}`,
+	}, 2)
+
+	assert.Empty(t, results)
+}
+
+func TestCustomExecYieldAfter_QuotedKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		call string
+		want time.Duration
+	}{
+		{name: "double quoted literal", call: `{"yield_time_ms": 250}`, want: 250 * time.Millisecond},
+		{name: "single quoted literal", call: `{'yield_time_ms': 250}`, want: 250 * time.Millisecond},
+		{name: "bare literal", call: `{yield_time_ms: 250}`, want: 250 * time.Millisecond},
+		{name: "double quoted dynamic", call: `{"yield_time_ms": someVar}`, want: 0},
+		{name: "single quoted dynamic", call: `{'yield_time_ms': someVar}`, want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, customExecYieldAfter(tt.call))
+		})
+	}
 }
 
 func TestParseTextCommandResult_UsesOnlyUnambiguousStatusEnvelope(t *testing.T) {

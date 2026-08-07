@@ -341,6 +341,34 @@ func TestClaudeExecutor_parseStream_nilCommandTimingHandlerPreservesOutput(t *te
 	assert.Equal(t, "beforeafter", result.Output)
 }
 
+func TestClaudeExecutor_parseStream_nonBashInputShapePreservesTextAndSignal(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "array command",
+			input: `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"mcp__x__run","input":{"command":["sh","-c","make test"]}},{"type":"text","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}]}}`,
+		},
+		{
+			name:  "scalar input",
+			input: `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Other","input":"opaque"},{"type":"text","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}]}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &ClaudeExecutor{}
+
+			result := e.parseStream(context.Background(), strings.NewReader(tt.input), func() {})
+
+			require.NoError(t, result.Error)
+			assert.Equal(t, status.Completed, result.Signal)
+			assert.Equal(t, status.Completed, result.Output)
+		})
+	}
+}
+
 func TestClaudeExecutor_parseStream_withDebug(t *testing.T) {
 	// non-json lines should be printed as-is (with debug message)
 	input := "not json\n" + `{"type":"content_block_delta","delta":{"type":"text_delta","text":"valid"}}`

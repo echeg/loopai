@@ -56,9 +56,11 @@ var (
 	// string permitted — only optional trailing whitespace (including a trailing CR for CRLF
 	// inputs that reach scanners which do not strip it). used to avoid treating an inner
 	// opener-with-info-string (e.g. ```go) as closing an outer fence.
-	fenceClosePattern       = regexp.MustCompile(`^ {0,3}(` + "`" + `{3,}|~{3,})[ \t]*\r?$`)
-	validationHeaderPattern = regexp.MustCompile(`^##\s+Validation Commands\s*$`)
-	listItemPattern         = regexp.MustCompile(`^\s*(?:[-+*]|\d+[.)])\s+(.+?)\s*$`)
+	fenceClosePattern         = regexp.MustCompile(`^ {0,3}(` + "`" + `{3,}|~{3,})[ \t]*\r?$`)
+	validationHeaderPattern   = regexp.MustCompile(`^##\s+Validation Commands\s*$`)
+	headingPattern            = regexp.MustCompile(`^#{1,6}(?:\s|$)`)
+	listItemPattern           = regexp.MustCompile(`^\s*(?:[-+*]|\d+[.)])\s+(.+?)\s*$`)
+	validationCheckboxPattern = regexp.MustCompile(`^\[[ xX]\](?:\s|$)`)
 )
 
 // ParsePlan parses plan markdown content into a structured Plan.
@@ -147,11 +149,11 @@ func trackValidationCommand(p *Plan, line string, inSection *bool) {
 	switch {
 	case validationHeaderPattern.MatchString(line):
 		*inSection = true
-	case strings.HasPrefix(line, "# ") || (strings.HasPrefix(line, "##") && !strings.HasPrefix(line, "###")):
+	case headingPattern.MatchString(line):
 		*inSection = false
 	case *inSection:
 		matches := listItemPattern.FindStringSubmatch(line)
-		if len(matches) == 0 {
+		if len(matches) == 0 || validationCheckboxPattern.MatchString(matches[1]) {
 			return
 		}
 		if command := normalizeCommand(matches[1]); command != "" {

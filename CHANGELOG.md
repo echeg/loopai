@@ -1,11 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### New Features
-
-- Report per-command and aggregate validation timing from Claude and Codex progress streams; providers without shell tool events omit the new `validation:` records.
-
 ## v1.6.0 - 2026-06-26
 
 ### New Features
