@@ -149,6 +149,12 @@ func New(planFile string, models Models) *Reporter {
 // callers match it with errors.Is to tell "cmux is absent" apart from "cmux refused the request".
 var ErrNotInCmux = errors.New("not running inside cmux")
 
+// ErrSpawnAmbiguous reports that workspace creation neither succeeded nor cleanly failed: the
+// deadline expired, which kills the local cmux client but says nothing about the request it may
+// already have delivered. callers match it with errors.Is to refuse the local fallback they take
+// on a clean refusal, since falling back to a run cmux may already have started duplicates it.
+var ErrSpawnAmbiguous = errors.New("workspace creation timed out with an unknown outcome")
+
 // SpawnWorkspace creates a new cmux workspace running argv in cwd and titled name.
 //
 // unlike the Reporter methods this is not best-effort: the error is returned so the caller can
@@ -184,6 +190,11 @@ func spawnWorkspace(runner commandRunner, timeout time.Duration, name, cwd strin
 	defer cancel()
 	args := []string{"new-workspace", "--name", name, "--cwd", cwd, "--focus", "true", "--command", strings.Join(quoted, " ")}
 	if err := runner.run(ctx, args...); err != nil {
+		// the deadline kills the local cmux client, not the request it already delivered, so the
+		// outcome is unknown and the caller must not fall back to a local run.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("create cmux workspace %q: %w: %w", name, ErrSpawnAmbiguous, err)
+		}
 		return fmt.Errorf("create cmux workspace %q: %w", name, err)
 	}
 	return nil

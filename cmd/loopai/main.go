@@ -2260,8 +2260,8 @@ func handleEarlyFlags(o opts) (bool, error) {
 	// run inherits that workspace and owns its sidebar card alone. it comes before the utilities
 	// below so a --reset preceding a run is performed once, in the new workspace. config is
 	// deliberately not needed here, the child re-reads it there.
-	if handOffToCmuxWorkspace(o, os.Args[1:], os.Stdout, os.Stderr) {
-		return true, nil
+	if done, err := handOffToCmuxWorkspace(o, os.Args[1:], os.Stdout, os.Stderr); done {
+		return true, err
 	}
 
 	if o.Clear {
@@ -2301,36 +2301,37 @@ func clearCmuxStatus(stdout io.Writer) {
 }
 
 // handOffToCmuxWorkspace relaunches this invocation in a new cmux workspace and reports whether
-// the caller must stop. hand-off is best-effort like the rest of the cmux integration: outside
-// cmux, or when workspace creation fails, a warning is printed and false is returned so the run
-// continues in the current terminal. standalone commands are excluded, they are short synchronous
+// the caller must stop, plus an error when stopping is not a success. hand-off is best-effort like
+// the rest of the cmux integration: outside cmux, or when workspace creation is cleanly refused, a
+// warning is printed and (false, nil) is returned so the run continues in the current terminal. the
+// one exception is an ambiguous creation timeout, which stops with an error rather than risking a
+// second run of the same plan. standalone commands are excluded, they are short synchronous
 // commands whose output belongs to the terminal the user typed them in.
-func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) bool {
+func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bool, error) {
 	if !o.CmuxWorkspace || isStandaloneCommand(o) {
-		return false
+		return false, nil
 	}
 
 	exe, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: resolve executable: %v\n", err)
-		return false
+		return false, nil
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: resolve working directory: %v\n", err)
-		return false
+		return false, nil
 	}
 
 	// the repository-root requirement is otherwise only enforced in the child, and for the same
 	// reason as the plan file below: running from a subdirectory would create and focus a workspace
 	// whose run dies immediately while this terminal reported success and exited 0. .git is the
 	// marker the run itself checks for, so the hand-off stays config-independent wherever it exists;
-	// only its absence consults read-only config, to tell a custom VCS backend, which legitimately
-	// has none, apart from a subdirectory. a possibly watch-only --serve never reaches that check
-	// and runs from anywhere, so it is exempt.
-	if !mayBeWatchOnlyMode(o) && !fileExists(".git") && !customVcsConfigured(o.ConfigDir) {
+	// only its absence consults read-only config, for the two invocations that legitimately have no
+	// marker.
+	if !fileExists(".git") && !handOffAllowedOutsideRepo(o) {
 		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: not a repository root: %s\n", cwd)
-		return false
+		return false, nil
 	}
 
 	// a missing plan file is otherwise only detected in the child, long after the workspace was
@@ -2341,25 +2342,43 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) boo
 	if o.PlanFile != "" {
 		if _, statErr := os.Stat(o.PlanFile); statErr != nil {
 			fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: plan file not found: %s\n", o.PlanFile)
-			return false
+			return false, nil //nolint:nilerr // the local run reports the missing plan itself, this is only a skip
 		}
 	}
 
 	name := cmuxWorkspaceName(o)
 	if err := cmux.SpawnWorkspace(name, cwd, cmuxHandOffArgv(exe, args)); err != nil {
-		fmt.Fprintf(stderr, "warning: cmux workspace hand-off failed, running here: %v\n", err)
-		return false
+		return handOffSpawnFailure(err, stderr)
 	}
 	fmt.Fprintf(stdout, "handed off to cmux workspace %s\n", name)
-	return true
+	return true, nil
 }
 
-// customVcsConfigured reports whether a non-git VCS backend is configured, which is the one case
-// where a checkout legitimately has no .git marker. a config that cannot be read is not one: the
-// child would fail to load it too, so that error belongs in the terminal the user typed in.
-func customVcsConfigured(configDir string) bool {
-	cfg, err := config.LoadReadOnly(configDir)
-	return err == nil && cfg.VcsCommand != "" && cfg.VcsCommand != "git"
+// handOffSpawnFailure turns a workspace creation failure into the caller's verdict. a clean refusal
+// warns and continues here, which is the best-effort contract. an ambiguous timeout does not: cmux
+// may already have created the workspace and started the same plan there, so running it here too
+// would put two agents on one checkout. stopping is the one outcome that cannot be made worse, and
+// the sidebar tells the user whether the workspace exists.
+func handOffSpawnFailure(err error, stderr io.Writer) (bool, error) {
+	if errors.Is(err, cmux.ErrSpawnAmbiguous) {
+		return true, fmt.Errorf("cmux workspace hand-off: %w; not running here, check the sidebar and re-run", err)
+	}
+	fmt.Fprintf(stderr, "warning: cmux workspace hand-off failed, running here: %v\n", err)
+	return false, nil
+}
+
+// handOffAllowedOutsideRepo reports whether a hand-off from a directory without a .git marker still
+// leads to a run that survives. two invocations legitimately have no marker: a non-git VCS backend,
+// which the run skips the marker check for, and a watch-only --serve, which never reaches that
+// check. both are config-dependent, and watch dirs decide the second one: a bare --serve without
+// any is a normal run that would die on "must run from repository root". a config that cannot be
+// read is neither, the child would fail to load it too, so that error belongs in this terminal.
+func handOffAllowedOutsideRepo(o opts) bool {
+	cfg, err := config.LoadReadOnly(o.ConfigDir)
+	if err != nil {
+		return false
+	}
+	return isWatchOnlyMode(o, cfg.WatchDirs) || (cfg.VcsCommand != "" && cfg.VcsCommand != "git")
 }
 
 // cmuxWorkspaceName titles the new workspace after the branch the run will use, so sidebar cards

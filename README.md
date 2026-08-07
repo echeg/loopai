@@ -506,10 +506,15 @@ loopai --cmux-workspace --worktree docs/plans/feature.md
 ```
 
 Hand-off is best-effort like the rest of the cmux integration and never blocks a run. Outside
-cmux, or when workspace creation fails, loopai prints a warning and executes normally in the
-current terminal, where it keeps the sidebar status it would have had without the flag. A
+cmux, or when cmux refuses to create the workspace, loopai prints a warning and executes normally
+in the current terminal, where it keeps the sidebar status it would have had without the flag. A
 successful hand-off leaves the previous run's pill in the workspace it was started from, since the
 new run reports into its own card instead.
+
+The one failure that stops instead of falling back is a creation that times out: cmux may already
+have created the workspace and started the run there, and starting a second one here would put two
+agents on the same checkout. loopai exits with an error, and the sidebar shows whether the
+workspace exists — close it and re-run, or let it finish.
 
 An invocation that could not run anyway is also kept in the current terminal, so its error appears
 where it was typed instead of in a new card that closes immediately: a named plan file that does

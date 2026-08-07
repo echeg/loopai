@@ -1435,6 +1435,25 @@ func TestSpawnWorkspaceCommand(t *testing.T) {
 		assert.Less(t, time.Since(start), 30*time.Second, "a hanging cmux call must not stall the hand-off")
 	})
 
+	t.Run("timeout is reported as ambiguous", func(t *testing.T) {
+		runner := &fakeRunner{block: time.Minute}
+
+		// killing the local client says nothing about the request cmux may already have acted on,
+		// so the caller must be able to tell this apart from a refusal it can fall back from.
+		err := spawnWorkspace(runner, 50*time.Millisecond, "feature", "/work", []string{"loopai"})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrSpawnAmbiguous)
+		require.ErrorIs(t, err, context.DeadlineExceeded, "the cause survives alongside the sentinel")
+	})
+
+	t.Run("clean refusal is not ambiguous", func(t *testing.T) {
+		runner := &fakeRunner{err: errors.New("cmux refused")}
+
+		err := spawnWorkspace(runner, spawnTimeout, "feature", "/work", []string{"loopai"})
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, ErrSpawnAmbiguous, "a rejected request created nothing to duplicate")
+	})
+
 	t.Run("spawn timeout outlasts the status timeout", func(t *testing.T) {
 		// creating a workspace starts a terminal, and a premature kill leaves the caller unable to tell
 		// a failed hand-off from a created workspace it would then duplicate with a local run.

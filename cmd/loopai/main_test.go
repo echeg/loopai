@@ -7508,6 +7508,15 @@ func cmuxSpawnStub(t *testing.T, exitCode int) string {
 	return argvLog
 }
 
+// handOffStops runs the hand-off and returns its stop verdict, asserting it did not stop with an
+// error. only the ambiguous-spawn case does, and it has its own test.
+func handOffStops(t *testing.T, o opts, args []string, stdout, stderr io.Writer) bool {
+	t.Helper()
+	stop, err := handOffToCmuxWorkspace(o, args, stdout, stderr)
+	require.NoError(t, err)
+	return stop
+}
+
 func TestHandOffToCmuxWorkspace(t *testing.T) {
 	exe, err := os.Executable()
 	require.NoError(t, err)
@@ -7522,7 +7531,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/20260807-my feature.md"}
 		args := []string{"--cmux-workspace", "docs/plans/20260807-my feature.md", "--worktree"}
-		require.True(t, handOffToCmuxWorkspace(o, args, stdout, stderr))
+		require.True(t, handOffStops(t, o, args, stdout, stderr))
 
 		assert.Contains(t, stdout.String(), "handed off to cmux workspace my feature")
 		assert.Empty(t, stderr.String())
@@ -7540,7 +7549,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		chdirRepoRoot(t)
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		assert.False(t, handOffToCmuxWorkspace(opts{CmuxWorkspace: true}, nil, stdout, stderr))
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: true}, nil, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off failed, running here")
 		assert.Contains(t, stderr.String(), "not running inside cmux")
@@ -7554,7 +7563,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		chdirWithPlan(t, "p.md")
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		assert.False(t, handOffToCmuxWorkspace(opts{CmuxWorkspace: true, PlanFile: "p.md"}, nil, stdout, stderr))
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: true, PlanFile: "p.md"}, nil, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off failed, running here")
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
@@ -7567,7 +7576,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		assert.False(t, handOffToCmuxWorkspace(opts{PlanFile: "p.md"}, nil, stdout, stderr))
+		assert.False(t, handOffStops(t, opts{PlanFile: "p.md"}, nil, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Empty(t, stderr.String())
 		_, statErr := os.Stat(argvLog)
@@ -7593,7 +7602,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		}
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		assert.False(t, handOffToCmuxWorkspace(opts{CmuxWorkspace: true, PlanFile: "p.md"}, nil, stdout, stderr))
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: true, PlanFile: "p.md"}, nil, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off skipped, running here: resolve working directory")
 		_, statErr := os.Stat(argvLog)
@@ -7608,7 +7617,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		o := opts{CmuxWorkspace: true, PlanFile: "p.md"}
-		require.True(t, handOffToCmuxWorkspace(o, []string{"p.md"}, stdout, stderr))
+		require.True(t, handOffStops(t, o, []string{"p.md"}, stdout, stderr))
 
 		assert.Empty(t, stderr.String())
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
@@ -7628,7 +7637,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		// must happen once, in the workspace the run lands in.
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		o := opts{CmuxWorkspace: true, Reset: true, PlanFile: "docs/plans/p.md"}
-		require.True(t, handOffToCmuxWorkspace(o, []string{"--reset", "docs/plans/p.md"}, stdout, stderr))
+		require.True(t, handOffStops(t, o, []string{"--reset", "docs/plans/p.md"}, stdout, stderr))
 
 		assert.Empty(t, stderr.String())
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
@@ -7643,7 +7652,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/typo.md"}
-		assert.False(t, handOffToCmuxWorkspace(o, []string{"docs/plans/typo.md"}, stdout, stderr))
+		assert.False(t, handOffStops(t, o, []string{"docs/plans/typo.md"}, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file not found: docs/plans/typo.md")
 		_, statErr := os.Stat(argvLog)
@@ -7658,7 +7667,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		// --plan has no plan file yet, so the existence check must not apply to it.
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		o := opts{CmuxWorkspace: true, PlanDescription: "add a feature"}
-		require.True(t, handOffToCmuxWorkspace(o, []string{"--plan", "add a feature"}, stdout, stderr))
+		require.True(t, handOffStops(t, o, []string{"--plan", "add a feature"}, stdout, stderr))
 		assert.Empty(t, stderr.String())
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, readErr)
@@ -7675,7 +7684,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		// the user and a focused workspace whose run dies on "must run from repository root".
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		o := opts{CmuxWorkspace: true, PlanFile: "plans/p.md"}
-		assert.False(t, handOffToCmuxWorkspace(o, []string{"plans/p.md"}, stdout, stderr))
+		assert.False(t, handOffStops(t, o, []string{"plans/p.md"}, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off skipped, running here: not a repository root")
 		_, statErr := os.Stat(argvLog)
@@ -7694,26 +7703,83 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		o := opts{CmuxWorkspace: true, ConfigDir: configDir, PlanFile: "p.md"}
-		require.True(t, handOffToCmuxWorkspace(o, []string{"p.md"}, stdout, stderr))
+		require.True(t, handOffStops(t, o, []string{"p.md"}, stdout, stderr))
 		assert.Empty(t, stderr.String())
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, readErr)
 		assert.Contains(t, string(recorded), "new-workspace")
 	})
 
-	t.Run("possibly watch-only serve outside a repository is handed off", func(t *testing.T) {
+	t.Run("watch-only serve outside a repository is handed off", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		watched := t.TempDir()
 		t.Chdir(t.TempDir())
 
 		// watch-only --serve never reaches the repository-root check, it runs from any directory.
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, Serve: true}
-		require.True(t, handOffToCmuxWorkspace(o, []string{"--serve"}, stdout, stderr))
+		o := opts{CmuxWorkspace: true, Serve: true, Watch: []string{watched}, ConfigDir: t.TempDir()}
+		require.True(t, handOffStops(t, o, []string{"--serve", "--watch", watched}, stdout, stderr))
 		assert.Empty(t, stderr.String())
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, readErr)
 		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("watch-only serve from configured watch dirs is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		watched := t.TempDir()
+		t.Chdir(t.TempDir())
+
+		// watch dirs reach the dashboard from config just as well as from the CLI.
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"),
+			fmt.Appendf(nil, "watch_dirs = %s\n", watched), 0o600))
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, Serve: true, ConfigDir: configDir}
+		require.True(t, handOffStops(t, o, []string{"--serve"}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("serve without watch dirs outside a repository continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Chdir(t.TempDir())
+
+		// bare --serve with no watch dirs anywhere is a normal run, not a dashboard: it does reach
+		// the repository-root check and would die there, leaving an orphan card behind.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, Serve: true, ConfigDir: t.TempDir()}
+		assert.False(t, handOffStops(t, o, []string{"--serve"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: not a repository root")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("ambiguous spawn stops instead of running here", func(t *testing.T) {
+		// cmux may already have created the workspace and started the plan there, so the local
+		// fallback every other failure takes would give two agents one checkout.
+		stderr := &bytes.Buffer{}
+		stop, err := handOffSpawnFailure(fmt.Errorf("create cmux workspace: %w", cmux.ErrSpawnAmbiguous), stderr)
+		assert.True(t, stop)
+		require.Error(t, err)
+		require.ErrorIs(t, err, cmux.ErrSpawnAmbiguous)
+		assert.Contains(t, err.Error(), "not running here")
+		assert.Empty(t, stderr.String(), "the error carries the message, it is not a warning")
+	})
+
+	t.Run("clean spawn refusal continues here", func(t *testing.T) {
+		stderr := &bytes.Buffer{}
+		stop, err := handOffSpawnFailure(errors.New("cmux refused"), stderr)
+		assert.False(t, stop)
+		require.NoError(t, err)
+		assert.Contains(t, stderr.String(), "hand-off failed, running here: cmux refused")
 	})
 
 	t.Run("standalone commands are not handed off", func(t *testing.T) {
@@ -7729,7 +7795,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 			{CmuxWorkspace: true, DumpDefaults: t.TempDir()},
 			{CmuxWorkspace: true, Reset: true},
 		} {
-			assert.False(t, handOffToCmuxWorkspace(o, nil, stdout, stderr))
+			assert.False(t, handOffStops(t, o, nil, stdout, stderr))
 		}
 		assert.Empty(t, stdout.String())
 		assert.Empty(t, stderr.String())
