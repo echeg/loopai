@@ -7477,6 +7477,15 @@ func clearCmuxEnvOptions(t *testing.T) {
 	}
 }
 
+// chdirWithPlan moves into a fresh directory holding rel, so hand-off sees a plan file that
+// resolves exactly as the plan selector resolves it in the workspace the run is handed to.
+func chdirWithPlan(t *testing.T, rel string) {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	require.NoError(t, os.MkdirAll(filepath.Dir(rel), 0o750))
+	require.NoError(t, os.WriteFile(rel, []byte("# plan\n"), 0o600))
+}
+
 // cmuxSpawnStub installs a cmux binary in PATH recording every argument on its own line and
 // returns the log path. exitCode lets a test make the spawn fail.
 func cmuxSpawnStub(t *testing.T, exitCode int) string {
@@ -7498,8 +7507,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 	t.Run("hands off inside cmux", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
-		dir := t.TempDir()
-		t.Chdir(dir)
+		chdirWithPlan(t, "docs/plans/20260807-my feature.md")
 		cwd, wdErr := os.Getwd()
 		require.NoError(t, wdErr)
 
@@ -7534,6 +7542,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 	t.Run("spawn failure continues locally", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 1)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		assert.False(t, handOffToCmuxWorkspace(opts{CmuxWorkspace: true, PlanFile: "p.md"}, nil, stdout, stderr))
@@ -7586,6 +7595,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
 		t.Setenv("LOOPAI_CONFIG_DIR", "/custom/config dir")
+		chdirWithPlan(t, "p.md")
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		o := opts{CmuxWorkspace: true, PlanFile: "p.md"}
@@ -7603,6 +7613,8 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
 
+		chdirWithPlan(t, "docs/plans/p.md")
+
 		// --reset alone is a standalone command, but combined with a run it is part of that run and
 		// must happen once, in the workspace the run lands in.
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
@@ -7613,6 +7625,35 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, readErr)
 		assert.Contains(t, string(recorded), "--reset")
+	})
+
+	t.Run("missing plan file continues locally", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Chdir(t.TempDir())
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/typo.md"}
+		assert.False(t, handOffToCmuxWorkspace(o, []string{"docs/plans/typo.md"}, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file not found: docs/plans/typo.md")
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the missing plan itself")
+	})
+
+	t.Run("plan creation without a plan file is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Chdir(t.TempDir())
+
+		// --plan has no plan file yet, so the existence check must not apply to it.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanDescription: "add a feature"}
+		require.True(t, handOffToCmuxWorkspace(o, []string{"--plan", "add a feature"}, stdout, stderr))
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "new-workspace")
 	})
 
 	t.Run("standalone commands are not handed off", func(t *testing.T) {
@@ -7644,6 +7685,7 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 	t.Run("successful hand-off exits before config load", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
 
 		require.NoError(t, run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"}))
 		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
@@ -7669,6 +7711,7 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 	t.Run("failed hand-off continues the normal run", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 1)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
 
 		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"})
 		require.ErrorContains(t, err, "load config")
@@ -7681,9 +7724,27 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 	t.Run("outside cmux continues the normal run", func(t *testing.T) {
 		cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "")
+		chdirWithPlan(t, "p.md")
 
 		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"})
 		require.ErrorContains(t, err, "load config")
+	})
+
+	t.Run("unresolvable plan file continues the normal run", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Chdir(t.TempDir())
+
+		// handing off would create and focus a workspace whose run dies on the same missing file,
+		// while this terminal reported success and exited 0.
+		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "docs/plans/typo.md"})
+		require.ErrorContains(t, err, "load config")
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.NotContains(t, string(recorded), "new-workspace",
+			"no workspace is created for an invocation that cannot run")
+		assert.Contains(t, string(recorded), "clear-status",
+			"the run stayed here, so it takes over the stale pill")
 	})
 }
 

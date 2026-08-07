@@ -53,6 +53,7 @@
 - [x] write tests for `SpawnWorkspace` errors: missing env → `ErrNotInCmux`, missing binary → `ErrNotInCmux`, runner failure propagated
 - [x] write table-driven tests for the shell-quoting helper (spaces, single quotes, empty string, unicode)
 - [x] run tests - must pass before next task
+- ➕ `new-workspace` is bounded by a new `spawnTimeout` of 10s rather than the 2s `execTimeout` this task assumed: it starts a terminal instead of updating a label, and a premature kill is ambiguous rather than cosmetic, because cmux may already have created the workspace while the caller reads the error as a failure and runs the plan locally too
 
 ### Task 2: Wire --cmux-workspace flag and hand-off in cmd/loopai
 - [x] add `CmuxWorkspace bool` option with `long:"cmux-workspace"` and description "relaunch this run in a new cmux workspace so it gets its own sidebar card (no-op with a warning outside cmux)" to the options struct in `cmd/loopai/main.go`

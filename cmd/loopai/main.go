@@ -2321,6 +2321,18 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) boo
 		return false
 	}
 
+	// a missing plan file is otherwise only detected in the child, long after the workspace was
+	// created and focused: the terminal the user typed in prints a success line and exits 0 while
+	// the new card dies immediately, leaving an orphan to close by hand. this is the same stat the
+	// plan selector performs on a non-empty plan file, resolved against the same working directory,
+	// so it never skips a hand-off that would have worked.
+	if o.PlanFile != "" {
+		if _, statErr := os.Stat(o.PlanFile); statErr != nil {
+			fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: plan file not found: %s\n", o.PlanFile)
+			return false
+		}
+	}
+
 	name := cmuxWorkspaceName(o)
 	if err := cmux.SpawnWorkspace(name, cwd, cmuxHandOffArgv(exe, args)); err != nil {
 		fmt.Fprintf(stderr, "warning: cmux workspace hand-off failed, running here: %v\n", err)
