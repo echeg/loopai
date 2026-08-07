@@ -66,7 +66,7 @@ scripts/             provider wrappers and internal test helpers
 scripts/copilot-as-claude/ # GitHub Copilot CLI wrapper for Claude-compatible output
 scripts/pi-as-claude/ # pi wrapper for Claude-compatible output
 assets/claude/skills/ canonical Claude Code plugin skill sources
-assets/claude/loopai*.md standalone-command compatibility symlinks
+assets/claude/loopai*.md legacy standalone-command compatibility symlinks
 .claude-plugin/      Claude Code plugin and marketplace manifests
 docs/                focused operational documentation and plans
 ```
@@ -82,6 +82,11 @@ skill, update `expected_skills` in `scripts/check-symlinks.sh` and the valid
 fixture inventory in `scripts/check-symlinks_test.sh`, then bump both manifest
 versions.
 
+Standalone installation must copy the complete directories under
+`assets/claude/skills/`, not dereference only the top-level Markdown symlinks;
+`loopai-grill` depends on bundled scripts addressed through
+`${CLAUDE_SKILL_DIR}` and requires Python 3 for its path helper.
+
 `.claude-plugin/marketplace.json` exposes this repository as the `loopai`
 marketplace, and `.claude-plugin/plugin.json` points Claude Code at the skill
 directory. Whenever any skill changes, bump the version in both manifests so
@@ -91,11 +96,15 @@ to the plugin version.
 `loopai-grill` has two safety-sensitive routes. Grill mode critiques an active
 plan and applies only user-selected verified findings; plan-off creates one new
 plan and never edits its source. Both reject completed, symlinked, nested, and
-`.loopai/` plans. Every direct Codex call is non-interactive, read-only, and
-ephemeral, and all scratch files live outside `docs/plans/` and are removed on
-every exit. Grill mode reports Codex failure and degrades to Claude-only;
-plan-off requires Codex and fails closed. When these contracts change, update
-and run `scripts/check-grill-skill_test.sh`.
+`.loopai/` plans. The skill pre-approves no Claude tools. Its bundled path
+helper rejects symlinked plan roots and performs no-clobber final creation; its
+Codex wrapper starts from an isolated temporary working directory, exposes the
+repository only as a read-only added directory, disables user/project config,
+rules, MCP and external tools, strips credential-like shell variables, and
+starts an ephemeral session without approval escalation. All scratch files live outside
+`docs/plans/` and are removed on every exit. Grill mode reports Codex failure
+and degrades to Claude-only; plan-off requires Codex and fails closed. When
+these contracts change, update and run `scripts/check-grill-skill_test.sh`.
 
 ## Configuration
 

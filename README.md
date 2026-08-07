@@ -112,9 +112,12 @@ specific plan, or generate a competing-plan comparison:
 With no path, the skill proposes the newest active plan for confirmation. Grill
 mode applies only the verified findings you select; if Codex is unavailable or
 fails, it reports that and continues with Claude critics. Compare mode requires
-Codex, never edits a source plan, and writes one new plan. Both modes reject
-completed plans, symlinked plans, and anything under `.loopai/`. Standalone
-command copies use `/loopai-grill` instead of the namespaced plugin command.
+Codex, never edits a source plan, and creates one new plan without overwriting
+an existing path. Both modes reject completed plans, symlinked plans or plan
+directories, and anything under `.loopai/`; normal Claude Code tool permissions
+remain in effect. The skill requires Python 3 for its deterministic path helper.
+Standalone skill copies use `/loopai-grill` instead of the namespaced plugin
+command.
 
 The CLI remains the execution engine. The plugin adds Claude Code workflows
 for planning and operating it. Refresh the marketplace and plugin when a new
@@ -132,15 +135,18 @@ claude plugin uninstall loopai@loopai
 claude plugin marketplace remove loopai
 ```
 
-To install standalone command copies instead:
+To install standalone skill copies instead:
 
 ```bash
-install -d ~/.claude/commands
-cp -L assets/claude/loopai*.md ~/.claude/commands/
+install -d ~/.claude/skills
+cp -R assets/claude/skills/loopai* ~/.claude/skills/
 ```
 
-Standalone copies are not managed by Claude Code's plugin updater. After
-pulling a newer repository version, rerun the copy command to refresh them.
+This keeps each skill's bundled resources, including the safety helpers used by
+`loopai-grill`. Standalone copies are not managed by Claude Code's plugin
+updater. After pulling a newer repository version, rerun the copy command to
+refresh them. If replacing older command-file copies, remove only the
+`~/.claude/commands/loopai*.md` files that you previously installed.
 
 When migrating from umputun's upstream plugin, remove its plugin and marketplace
 after installing this one:

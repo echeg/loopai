@@ -15,17 +15,19 @@
 ## Context (from discovery)
 - Files/components involved:
   - `assets/claude/skills/loopai-grill/SKILL.md` — new skill source (new file)
+  - `assets/claude/skills/loopai-grill/scripts/plan_paths.py` — deterministic active-plan validation, collision checks, and atomic no-clobber final writes
+  - `assets/claude/skills/loopai-grill/scripts/run-codex.sh` — isolated Codex invocation with separately captured stdout and stderr
   - `assets/claude/loopai-grill.md` — new top-level symlink to `./skills/loopai-grill/SKILL.md` (relative link, like the existing five)
   - `scripts/check-symlinks.sh:9` — `expected_skills` list must gain `loopai-grill`
   - `scripts/check-plugin.sh` — validates manifests; check whether it pins a skill count or list
   - `scripts/check-grill-skill_test.sh` and `Makefile` — focused metadata/workflow-contract checks wired into `make test`
-  - `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` — version bump (0.1.3 → 0.2.0, new skill = minor)
-  - `README.md` ("The plugin provides five skills" list), `llms.txt`, `CLAUDE.md` (skill inventory notes)
+  - `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` — initial version bump 0.1.3 → 0.2.0 for the new skill, then 0.2.1 for review hardening
+  - `README.md` ("The plugin provides five skills" list and standalone full-directory installation), `llms.txt`, `CLAUDE.md` (skill inventory notes)
 - Related patterns found:
-  - Existing SKILL.md frontmatter styles: `description` (+ optional `name`, `allowed-tools`, `argument-hint`); check-symlinks validates frontmatter shape
+  - Existing SKILL.md frontmatter styles include optional `allowed-tools`, but this safety-sensitive skill deliberately pre-approves no tools; check-symlinks validates frontmatter shape
   - `loopai-plan` SKILL.md carries the canonical plan template the grill modes must reference for format-consistent output
   - `loopai-brainstorm` shows the hand-off pattern between skills of this plugin
-- Dependencies identified: `codex` CLI for the cross-model half; the skill must degrade gracefully when codex is absent (Claude-only grill with a warning; plan-off refuses with a clear message)
+- Dependencies identified: Python 3 for deterministic plan-path handling and the `codex` CLI for the cross-model half; the skill must degrade gracefully when codex is absent (Claude-only grill with a warning; plan-off refuses with a clear message)
 
 ## Development Approach
 - **Testing approach**: Regular (code first, then tests in the same task)
@@ -40,7 +42,7 @@
 - Maintain backward compatibility: existing five skills unchanged
 
 ## Testing Strategy
-- **Unit tests**: shell suites for symlink and plugin manifest validation plus focused loopai-grill metadata, routing, path-safety, degradation, judging, and output-contract checks (they run inside `make test`)
+- **Unit tests**: shell suites for symlink and plugin manifest validation plus fixture-driven loopai-grill routing, path-safety, Codex isolation/degradation, judging, and no-clobber output-contract checks (they run inside `make test`)
 - **E2E tests**: none (no dashboard changes); manual skill invocation checks go to Post-Completion
 
 ## Progress Tracking
@@ -53,7 +55,7 @@
 ## Implementation Steps
 
 ### Task 1: Author the loopai-grill skill
-- [x] create `assets/claude/skills/loopai-grill/SKILL.md` with frontmatter (`name: loopai-grill`, quoted `description` covering triggers: "grill plan", "прогрилить план", "compare plans", "plan-off"; `argument-hint: 'plan file or: compare <description>'`; `allowed-tools` including Bash, Read, Write, Edit, Glob, Grep, Agent, AskUserQuestion)
+- [x] create `assets/claude/skills/loopai-grill/SKILL.md` with frontmatter (`name: loopai-grill`, quoted `description` covering triggers: "grill plan", "прогрилить план", "compare plans", "plan-off"; `argument-hint: 'plan file or: compare <description>'`; no `allowed-tools`, so normal permission checks remain in force)
 - [x] write **mode routing**: no args → pick newest `docs/plans/*.md` (excluding `completed/`) and confirm; a plan path → grill mode; leading `compare` → plan-off mode
 - [x] write **grill mode** instructions: launch parallel critics — three Claude subagent lenses (feasibility against the actual codebase, YAGNI/scope, testability/task-granularity) via the Agent tool, plus one Codex critique via `codex exec` fed the plan content and a "find missing tasks, hidden dependencies, underestimated work, refute weak tasks" prompt; dedupe findings, drop unverified ones after a quick code check, present survivors via AskUserQuestion (multiSelect) and apply accepted ones to the plan file with Edit
 - [x] write **plan-off mode** instructions: extract requirements (from the description or an existing plan's Overview); generate plan A with Claude following the `loopai-plan` template; generate plan B via `codex exec` given the same requirements AND the same template (read from the installed skill or embedded in the prompt); cross-judge — Claude scores both, `codex exec` scores both, against fixed criteria (completeness, risk coverage, minimalism, testability), scores summarized in a table; synthesize the final plan from the winner plus the loser's best ideas; write a single final `docs/plans/YYYYMMDD-<name>.md`, discard scratch drafts (scratch files live outside `docs/plans/`, e.g. a temp dir, so loopai never discovers them)
@@ -70,7 +72,7 @@
 - [x] run `make test` (asset checks + full suite) - must pass before next task
 
 ### Task 3: Verify acceptance criteria
-- [x] add `scripts/check-grill-skill_test.sh`, wire `make test-grill-skill` into `make test`, and cover routing, edge cases, Codex degradation, shared-template judging, and output-format contracts
+- [x] add `scripts/check-grill-skill_test.sh`, wire `make test-grill-skill` into `make test`, and cover routing, real path/symlink fixtures, Codex isolation and degradation, shared-template judging, and no-clobber output contracts
 - [x] verify all requirements from Overview are implemented (two modes, mode routing, codex degradation, format-consistent output)
 - [x] verify edge cases: no plans in docs/plans/, plan path with wrong case, `compare` with no description, codex absent
 - [x] run full test suite (`make test`)
@@ -79,14 +81,16 @@
 
 ### Task 4: [Final] Update documentation
 - [x] update README.md plugin section: "five skills" → "six skills" with the `loopai:loopai-grill` bullet describing both modes
+- [x] update standalone installation to copy complete skill directories so `loopai-grill` retains its bundled helpers
 - [x] update CLAUDE.md skill/symlink inventory notes if they enumerate skills
 - [x] update llms.txt plugin/skill enumeration if present
 
 ## Technical Details
-- Codex invocation is direct `codex exec` (non-interactive), NOT `loopai --codex --plan`: loopai's plan creation is interactive and writes files; the grill needs a captive draft/critique as text the skill controls.
+- Codex invocation goes through the bundled `run-codex.sh`, which calls `codex exec` non-interactively from a fresh temporary working directory and exposes the repository only as an added read-only directory. This prevents repository Codex configuration from loading; user configuration, rules, MCP servers, apps, hooks, plugins, and external tools are also disabled; credential-like shell variables are removed; approval escalation is denied; and the session is ephemeral. It never uses `loopai --codex --plan`: loopai's plan creation is interactive and writes files, while the grill needs captive text output.
 - Plan-off prompts must pin the output format by embedding the loopai plan template (Task N headings, checkbox rules, tests-per-task requirements) so both candidate plans are structurally comparable and the final file is executable by loopai.
 - Cross-judging is deliberately symmetric (each model scores both plans) to cancel self-preference bias; criteria are fixed in the skill text so runs are comparable.
 - The skill never edits plans under `docs/plans/completed/` and never touches `.loopai/`.
+- All plan reads and final writes go through the bundled path helper, which rejects symlinked roots and creates final output atomically without clobbering an existing file.
 - Symlink must be relative (`./skills/...`) like the existing five; `make check-symlinks` rejects broken or absolute links.
 
 ## Post-Completion
