@@ -132,19 +132,23 @@ Commands`, and writes per-run and aggregate `validation:` lines through the same
 chain. Its aggregate sums command durations, so concurrent commands can overlap
 and the total can exceed section or run wall-clock time. Use
 `runWithSectionTiming` for both the main runner and interactive plan-creation
-paths; it calls `SectionTimer.FinishRun` and then `ValidationTimer.FinishRun`
-immediately after `Runner.Run` returns and before either caller handles the run
-error. Do not defer either call because dashboard shutdown can close the
-underlying log first. A nil reporter must return the section timer unchanged.
+paths; it calls `SectionTimer.FinishRun` immediately after `Runner.Run` returns.
+The main execution path then calls `ValidationTimer.FinishRun` before handling
+the run error. Do not defer either finish because dashboard shutdown can close
+the underlying log first. Plan-creation mode has no validation timer. A nil
+reporter must return the section timer unchanged.
 
-Claude command timing pairs streamed Bash `tool_use` and `tool_result` events by
-tool-use ID and measures their arrival times. Codex pairs rollout `exec_command`
-function calls and outputs by call ID, preferring native event timestamps and
-falling back to arrival times for older rollout formats. The fallback is
-approximate because the final rollout drain can deliver buffered events late.
-Executors report all completed shell commands; `ValidationTimer` alone performs
-classification. Unpaired commands and providers that omit tool events produce no
-timing lines.
+Claude command timing pairs foreground Bash `tool_use` and `tool_result` events
+by tool-use ID and measures their arrival times; background Bash calls are
+omitted because their first result is not process completion. Codex accepts both
+legacy `exec_command` function calls and current custom `exec` rollout records,
+follows yielded sessions through continuation/wait events, and tails child-agent
+rollouts. It prefers valid native event timestamps and falls back to arrival
+times; the fallback is approximate because the final drain can deliver buffered
+events late. Executors report completed shell commands; `ValidationTimer` alone
+performs classification and logs the canonical configured label rather than raw
+provider arguments. Unpaired commands and providers that omit tool events
+produce no timing lines.
 
 ## Code style
 

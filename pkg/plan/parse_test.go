@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -553,6 +554,11 @@ Run go test ./... before committing.
 `,
 			want: []string{},
 		},
+		{
+			name:    "supports long lines and CRLF",
+			content: "# Plan\r\n\r\n" + strings.Repeat("x", 128*1024) + "\r\n\r\n## Validation Commands\r\n\r\n- `make test`\r\n",
+			want:    []string{"make test"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -560,29 +566,6 @@ Run go test ./... before committing.
 			p, err := plan.ParsePlan(tt.content)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, p.ValidationCommands)
-		})
-	}
-}
-
-func TestMatchesValidationCommand(t *testing.T) {
-	tests := []struct {
-		name    string
-		command string
-		entries []string
-		want    bool
-	}{
-		{name: "exact match", command: "make test", entries: []string{"make test"}, want: true},
-		{name: "prefix match at token boundary", command: "go test ./... -count=1", entries: []string{"go test ./..."}, want: true},
-		{name: "rejects non-boundary prefix", command: "make test-wrappers", entries: []string{"make test"}, want: false},
-		{name: "normalizes backticks and whitespace", command: "  go\t test ./...  -race ", entries: []string{"`go   test ./...`"}, want: true},
-		{name: "empty command", command: "  ", entries: []string{"make test"}, want: false},
-		{name: "empty entry list", command: "make test", entries: nil, want: false},
-		{name: "ignores empty entries", command: "make test", entries: []string{"", "  ` `  "}, want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, plan.MatchesValidationCommand(tt.command, tt.entries))
 		})
 	}
 }

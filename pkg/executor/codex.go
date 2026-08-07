@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -711,67 +713,167 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 		}
 		return
 	}
-	f, err := os.Open(path) //nolint:gosec // path comes from codex's own session id
-	if err != nil {
-		log.Printf("codex rollout file open failed (%s): %v; assistant output streaming disabled for this session", path, err)
-		return
-	}
-	defer func() { _ = f.Close() }()
-
-	// accumulator holds bytes that may not yet form a complete line, so partial
-	// reads at EOF do not lose content — the next Read after codex appends more
-	// will complete the line.
-	var acc []byte
-	chunk := make([]byte, 4096)
-	commandStarts := make(map[string]codexCommandStart)
 	now := e.now
 	if now == nil {
 		now = time.Now
 	}
-	drainOnce := func() {
-		for {
-			n, readErr := f.Read(chunk)
-			if n > 0 {
-				// any rollout bytes count as liveness — reset the idle timer
-				// before display filtering so a session actively dispatching
-				// tool calls (function_call records that formatRolloutEvent
-				// drops) is not killed as idle while still making progress.
-				if idleTouch != nil {
-					idleTouch()
-				}
-				acc = append(acc, chunk[:n]...)
-				for {
-					i := bytes.IndexByte(acc, '\n')
-					if i < 0 {
-						break
-					}
-					line := acc[:i]
-					e.trackRolloutCommandTiming(line, commandStarts, now)
-					if msg := e.formatRolloutEvent(line); msg != "" && e.OutputHandler != nil {
-						e.OutputHandler(msg)
-					}
-					acc = acc[i+1:]
-				}
-			}
-			if readErr == io.EOF || n == 0 {
-				return
-			}
-			if readErr != nil {
-				return
-			}
-		}
+	states := make(map[string]*rolloutTailState)
+	knownParents := map[string]bool{sessionID: true}
+	rootInfo, _ := os.Stat(path)
+	e.discoverRolloutStates(path, rootInfo, states, knownParents)
+	if _, ok := states[path]; !ok {
+		log.Printf("codex rollout file open failed (%s); assistant output streaming disabled for this session", path)
+		return
 	}
+	defer func() {
+		for _, state := range states {
+			_ = state.file.Close()
+		}
+	}()
 
 	for {
-		drainOnce()
+		e.discoverRolloutStates(path, rootInfo, states, knownParents)
+		for _, state := range states {
+			e.drainRolloutState(state, now, idleTouch, false)
+		}
 		select {
 		case <-ctx.Done():
 			// final drain after codex exits — pick up any late-flushed events
-			drainOnce()
+			e.discoverRolloutStates(path, rootInfo, states, knownParents)
+			for _, state := range states {
+				e.drainRolloutState(state, now, idleTouch, true)
+			}
 			return
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+}
+
+func (e *CodexExecutor) discoverRolloutStates(rootPath string, rootInfo os.FileInfo, states map[string]*rolloutTailState, knownParents map[string]bool) {
+	for {
+		added := false
+		matches, _ := filepath.Glob(filepath.Join(filepath.Dir(rootPath), "rollout-*.jsonl"))
+		for _, candidate := range matches {
+			if _, exists := states[candidate]; exists {
+				continue
+			}
+			render := candidate == rootPath
+			if !render && !e.isRelatedChildRollout(candidate, rootInfo, knownParents) {
+				continue
+			}
+			state, err := newRolloutTailState(candidate, render)
+			if err != nil {
+				continue
+			}
+			states[candidate] = state
+			if id := rolloutIDFromPath(candidate); id != "" {
+				knownParents[id] = true
+			}
+			added = true
+		}
+		if !added {
+			return
+		}
+	}
+}
+
+func (e *CodexExecutor) isRelatedChildRollout(path string, rootInfo os.FileInfo, knownParents map[string]bool) bool {
+	if e.CommandTimingHandler == nil {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil || (rootInfo != nil && info.ModTime().Before(rootInfo.ModTime())) {
+		return false
+	}
+	parentID, ready := rolloutParentThreadID(path)
+	return ready && knownParents[parentID]
+}
+
+type rolloutTailState struct {
+	file   *os.File
+	acc    []byte
+	timing *codexTimingState
+	render bool
+}
+
+func newRolloutTailState(path string, render bool) (*rolloutTailState, error) {
+	f, err := os.Open(path) //nolint:gosec // paths come from codex's own session directory
+	if err != nil {
+		return nil, fmt.Errorf("open rollout file: %w", err)
+	}
+	return &rolloutTailState{file: f, timing: newCodexTimingState(), render: render}, nil
+}
+
+func (e *CodexExecutor) drainRolloutState(state *rolloutTailState, now func() time.Time, idleTouch func(), final bool) {
+	chunk := make([]byte, 4096)
+	for {
+		n, readErr := state.file.Read(chunk)
+		if n > 0 {
+			if idleTouch != nil {
+				idleTouch()
+			}
+			state.acc = append(state.acc, chunk[:n]...)
+			for {
+				i := bytes.IndexByte(state.acc, '\n')
+				if i < 0 {
+					break
+				}
+				e.processRolloutLine(state.acc[:i], state.timing, now, state.render)
+				state.acc = state.acc[i+1:]
+			}
+		}
+		if readErr == io.EOF || n == 0 {
+			break
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	if final {
+		if line := bytes.TrimSpace(state.acc); len(line) > 0 {
+			e.processRolloutLine(line, state.timing, now, state.render)
+		}
+		state.acc = nil
+	}
+}
+
+func rolloutParentThreadID(path string) (string, bool) {
+	f, err := os.Open(path) //nolint:gosec // path is a candidate in codex's session directory
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = f.Close() }()
+	line, err := bufio.NewReader(f).ReadBytes('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", false
+	}
+	if len(bytes.TrimSpace(line)) == 0 {
+		return "", false
+	}
+	var meta struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Source struct {
+				Subagent struct {
+					ThreadSpawn struct {
+						ParentThreadID string `json:"parent_thread_id"`
+					} `json:"thread_spawn"`
+				} `json:"subagent"`
+			} `json:"source"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(line), &meta) != nil || meta.Type != "session_meta" {
+		return "", false
+	}
+	return meta.Payload.Source.Subagent.ThreadSpawn.ParentThreadID, true
+}
+
+func rolloutIDFromPath(path string) string {
+	base := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+	if len(base) < 36 {
+		return ""
+	}
+	return base[len(base)-36:]
 }
 
 // rolloutEvent is the outer wrapper for each line in codex's session rollout
@@ -789,11 +891,13 @@ type rolloutEvent struct {
 // fields would be read, so the struct only carries the subset we actually
 // consume.
 type rolloutPayload struct {
-	Type      string `json:"type"`
-	Role      string `json:"role"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-	CallID    string `json:"call_id"`
+	Type      string          `json:"type"`
+	Role      string          `json:"role"`
+	Name      string          `json:"name"`
+	Arguments string          `json:"arguments"`
+	Input     string          `json:"input"`
+	CallID    string          `json:"call_id"`
+	Output    json.RawMessage `json:"output"`
 	Content   []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -806,47 +910,245 @@ type codexCommandStart struct {
 	arrival   time.Time
 }
 
-// trackRolloutCommandTiming pairs exec_command calls with outputs by call id.
-// native rollout timestamps are preferred so a final file drain cannot inflate
-// durations; arrival time is retained as a fallback for older event formats.
-func (e *CodexExecutor) trackRolloutCommandTiming(line []byte, starts map[string]codexCommandStart, now func() time.Time) {
-	if e.CommandTimingHandler == nil || len(bytes.TrimSpace(line)) == 0 {
-		return
+type codexPendingCommand struct {
+	start     codexCommandStart
+	sessionID string
+	initial   bool
+}
+
+type codexTimingState struct {
+	starts        map[string]codexCommandStart
+	sessions      map[string]codexCommandStart
+	continuations map[string]codexPendingCommand
+	cells         map[string]codexPendingCommand
+	waits         map[string]codexPendingCommand
+}
+
+func newCodexTimingState() *codexTimingState {
+	return &codexTimingState{
+		starts:        make(map[string]codexCommandStart),
+		sessions:      make(map[string]codexCommandStart),
+		continuations: make(map[string]codexPendingCommand),
+		cells:         make(map[string]codexPendingCommand),
+		waits:         make(map[string]codexPendingCommand),
 	}
+}
+
+var (
+	customExecCommandPattern = regexp.MustCompile(`(?s)tools\.exec_command\s*\(\s*\{.*?\bcmd\s*:\s*("(?:\\.|[^"\\])*")`)
+	customWriteStdinPattern  = regexp.MustCompile(`(?s)tools\.write_stdin\s*\(\s*\{.*?\bsession_id\s*:\s*(?:"([^"]+)"|'([^']+)'|(\d+))`)
+	outputSessionIDPattern   = regexp.MustCompile(`(?i)(?:SESSION_ID\s*=|session(?:_|\s+)id["']?\s*[:=]\s*|Process running with session ID\s+)(\d+)`)
+	outputCellIDPattern      = regexp.MustCompile(`(?i)(?:Script running with cell ID\s*|cell_id["']?\s*[:=]\s*)(\d+)`)
+	exitCodePattern          = regexp.MustCompile(`(?i)(?:EXIT_CODE\s*=|Process exited with code\s+)(-?\d+)`)
+)
+
+func parseRolloutRecord(line []byte) (rolloutEvent, rolloutPayload, bool) {
 	var ev rolloutEvent
 	if err := json.Unmarshal(line, &ev); err != nil || ev.Type != "response_item" {
-		return
+		return rolloutEvent{}, rolloutPayload{}, false
 	}
 	var payload rolloutPayload
 	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		return rolloutEvent{}, rolloutPayload{}, false
+	}
+	return ev, payload, true
+}
+
+func (e *CodexExecutor) processRolloutLine(line []byte, state *codexTimingState, now func() time.Time, render bool) {
+	ev, payload, ok := parseRolloutRecord(line)
+	if !ok {
 		return
 	}
+	if e.CommandTimingHandler != nil {
+		e.trackRolloutCommandTiming(ev, payload, state, now)
+	}
+	if render && e.OutputHandler != nil {
+		if msg := formatParsedRolloutEvent(payload); msg != "" {
+			e.OutputHandler(msg)
+		}
+	}
+}
+
+// trackRolloutCommandTiming pairs both legacy exec_command records and current
+// custom exec-tool records with their eventual process completion. Yielded
+// sessions remain pending across write_stdin/wait continuations.
+func (e *CodexExecutor) trackRolloutCommandTiming(ev rolloutEvent, payload rolloutPayload, state *codexTimingState, now func() time.Time) {
 	eventTime, _ := time.Parse(time.RFC3339Nano, ev.Timestamp)
 	switch payload.Type {
 	case "function_call":
-		if payload.Name != "exec_command" || payload.CallID == "" {
-			return
-		}
+		e.trackFunctionCall(payload, eventTime, state, now)
+	case "custom_tool_call":
+		e.trackCustomToolCall(payload, eventTime, state, now)
+	case "function_call_output", "custom_tool_call_output":
+		e.trackToolOutput(payload, eventTime, state, now)
+	}
+}
+
+func (e *CodexExecutor) trackFunctionCall(payload rolloutPayload, eventTime time.Time, state *codexTimingState, now func() time.Time) {
+	if payload.CallID == "" {
+		return
+	}
+	switch payload.Name {
+	case "exec_command":
 		var args struct {
 			Cmd string `json:"cmd"`
 		}
-		if err := json.Unmarshal([]byte(payload.Arguments), &args); err != nil || args.Cmd == "" {
-			return
+		if json.Unmarshal([]byte(payload.Arguments), &args) == nil && args.Cmd != "" {
+			state.starts[payload.CallID] = codexCommandStart{command: args.Cmd, eventTime: eventTime, arrival: now()}
 		}
-		starts[payload.CallID] = codexCommandStart{command: args.Cmd, eventTime: eventTime, arrival: now()}
-	case "function_call_output":
-		start, found := starts[payload.CallID]
-		if !found {
-			return
+	case "write_stdin":
+		if sessionID := sessionIDFromArguments(payload.Arguments); sessionID != "" {
+			if start, ok := state.sessions[sessionID]; ok {
+				state.continuations[payload.CallID] = codexPendingCommand{start: start, sessionID: sessionID}
+			}
 		}
-		delete(starts, payload.CallID)
-		arrival := now()
-		duration := arrival.Sub(start.arrival)
-		if !start.eventTime.IsZero() && !eventTime.IsZero() {
-			duration = eventTime.Sub(start.eventTime)
+	case "wait":
+		var args struct {
+			CellID string `json:"cell_id"`
 		}
-		e.CommandTimingHandler(start.command, duration)
+		if json.Unmarshal([]byte(payload.Arguments), &args) == nil {
+			if pending, ok := state.cells[args.CellID]; ok {
+				delete(state.cells, args.CellID)
+				state.waits[payload.CallID] = pending
+			}
+		}
 	}
+}
+
+func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime time.Time, state *codexTimingState, now func() time.Time) {
+	if payload.Name != "exec" || payload.CallID == "" {
+		return
+	}
+	if matches := customExecCommandPattern.FindStringSubmatch(payload.Input); len(matches) == 2 {
+		var command string
+		if json.Unmarshal([]byte(matches[1]), &command) == nil && command != "" {
+			state.starts[payload.CallID] = codexCommandStart{command: command, eventTime: eventTime, arrival: now()}
+		}
+		return
+	}
+	if matches := customWriteStdinPattern.FindStringSubmatch(payload.Input); len(matches) == 4 {
+		sessionID := firstNonEmpty(matches[1:]...)
+		if start, ok := state.sessions[sessionID]; ok {
+			state.continuations[payload.CallID] = codexPendingCommand{start: start, sessionID: sessionID}
+		}
+	}
+}
+
+func (e *CodexExecutor) trackToolOutput(payload rolloutPayload, eventTime time.Time, state *codexTimingState, now func() time.Time) {
+	text := rolloutOutputText(payload.Output)
+	if start, ok := state.starts[payload.CallID]; ok {
+		delete(state.starts, payload.CallID)
+		e.resolvePendingOutput(codexPendingCommand{start: start, initial: true}, text, eventTime, state, now)
+		return
+	}
+	if pending, ok := state.continuations[payload.CallID]; ok {
+		delete(state.continuations, payload.CallID)
+		e.resolvePendingOutput(pending, text, eventTime, state, now)
+		return
+	}
+	if pending, ok := state.waits[payload.CallID]; ok {
+		delete(state.waits, payload.CallID)
+		e.resolvePendingOutput(pending, text, eventTime, state, now)
+	}
+}
+
+func (e *CodexExecutor) resolvePendingOutput(pending codexPendingCommand, output string, eventTime time.Time, state *codexTimingState, now func() time.Time) {
+	if sessionID := extractPatternValue(outputSessionIDPattern, output); sessionID != "" {
+		pending.sessionID = sessionID
+		pending.initial = false
+		state.sessions[sessionID] = pending.start
+		return
+	}
+	if cellID := extractPatternValue(outputCellIDPattern, output); cellID != "" {
+		state.cells[cellID] = pending
+		return
+	}
+
+	_, hasExit := parseExitCode(output)
+	if !pending.initial && !hasExit {
+		return
+	}
+	if pending.sessionID != "" {
+		delete(state.sessions, pending.sessionID)
+	}
+	e.emitCommandTiming(pending.start, eventTime, now())
+}
+
+func (e *CodexExecutor) emitCommandTiming(start codexCommandStart, eventTime, arrival time.Time) {
+	duration := arrival.Sub(start.arrival)
+	if !start.eventTime.IsZero() && !eventTime.IsZero() && !eventTime.Before(start.eventTime) {
+		duration = eventTime.Sub(start.eventTime)
+	}
+	if duration < 0 {
+		duration = 0
+	}
+	e.CommandTimingHandler(start.command, duration)
+}
+
+func rolloutOutputText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	var blocks []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var result strings.Builder
+	for _, block := range blocks {
+		result.WriteString(block.Text)
+		result.WriteByte('\n')
+	}
+	return result.String()
+}
+
+func sessionIDFromArguments(arguments string) string {
+	var args struct {
+		SessionID json.RawMessage `json:"session_id"`
+	}
+	if json.Unmarshal([]byte(arguments), &args) != nil || len(args.SessionID) == 0 {
+		return ""
+	}
+	var value string
+	if json.Unmarshal(args.SessionID, &value) == nil {
+		return value
+	}
+	var number int64
+	if json.Unmarshal(args.SessionID, &number) == nil {
+		return strconv.FormatInt(number, 10)
+	}
+	return ""
+}
+
+func extractPatternValue(pattern *regexp.Regexp, value string) string {
+	matches := pattern.FindStringSubmatch(value)
+	if len(matches) < 2 {
+		return ""
+	}
+	return matches[1]
+}
+
+func parseExitCode(output string) (int, bool) {
+	value := extractPatternValue(exitCodePattern, output)
+	if value == "" {
+		return 0, false
+	}
+	code, err := strconv.Atoi(value)
+	return code, err == nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // formatRolloutEvent turns one JSONL rollout line into a display string for
@@ -861,25 +1163,19 @@ func (e *CodexExecutor) trackRolloutCommandTiming(line []byte, starts map[string
 // already announces what the model is doing narratively (e.g. "I'll launch
 // the five review agents together"). showing both yields redundant chatter.
 func (e *CodexExecutor) formatRolloutEvent(line []byte) string {
-	if len(bytes.TrimSpace(line)) == 0 {
+	_, payload, ok := parseRolloutRecord(line)
+	if !ok {
 		return ""
 	}
-	var ev rolloutEvent
-	if err := json.Unmarshal(line, &ev); err != nil {
-		return ""
-	}
-	if ev.Type != "response_item" {
-		return ""
-	}
-	var p rolloutPayload
-	if err := json.Unmarshal(ev.Payload, &p); err != nil {
-		return ""
-	}
-	if p.Type != "message" || p.Role != "assistant" {
+	return formatParsedRolloutEvent(payload)
+}
+
+func formatParsedRolloutEvent(payload rolloutPayload) string {
+	if payload.Type != "message" || payload.Role != "assistant" {
 		return ""
 	}
 	var sb strings.Builder
-	for _, c := range p.Content {
+	for _, c := range payload.Content {
 		if c.Type != "output_text" || c.Text == "" {
 			continue
 		}

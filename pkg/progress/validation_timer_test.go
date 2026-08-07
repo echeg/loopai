@@ -19,9 +19,22 @@ func TestValidationTimer_MatchedCommandAndSummary(t *testing.T) {
 	timer.FinishRun()
 
 	assert.Equal(t, []string{
-		"print: validation: go   test ./... -count=1 took 1m12s",
+		"print: validation: go test ./... took 1m12s",
 		"print: validation: make lint took 3s",
 		"print: validation: 1m15s (2 runs)",
+	}, inner.calls)
+}
+
+func TestValidationTimer_LogsCanonicalSingleLineLabel(t *testing.T) {
+	inner := &recordingSectionLogger{}
+	timer := NewValidationTimer([]string{"`make   test`"}, inner)
+
+	timer.Handler()("make test\n--token secret\x1b[31m", -time.Second)
+	timer.FinishRun()
+
+	assert.Equal(t, []string{
+		"print: validation: make test took 0s",
+		"print: validation: 0s (1 runs)",
 	}, inner.calls)
 }
 

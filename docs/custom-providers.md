@@ -60,9 +60,14 @@ loopai's `ClaudeExecutor` runs the configured command and passes the prompt via 
 | `content_block_delta` | `delta.type` ("text_delta"), `delta.text` | Streaming text output |
 | `result` | `result` (string or `{"output": "..."}`) | End of execution |
 | `assistant` | `message.content[].text` | Full message (alternative to streaming) |
+| `assistant` | Bash `message.content[]` tool-use blocks (`id`, `name`, `input.command`) | Start optional validation-command timing |
+| `user` | `message.content[]` tool-result blocks (`tool_use_id`) | Complete optional validation-command timing |
 | `message_stop` | `message.content[].text` | Final message (same structure as `assistant`) |
 
 The executor also recognizes `message_stop` events, but wrapper scripts don't need to emit these — they are internal to Claude Code. The minimum viable wrapper produces `content_block_delta` events for text and a `result` event at the end.
+
+Tool events are optional. Wrappers that emit only text and result events, including the bundled
+compatibility wrappers, continue to work but cannot produce `validation:` timing lines.
 
 ### Signal detection
 

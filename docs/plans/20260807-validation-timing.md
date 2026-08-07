@@ -97,7 +97,7 @@ Validation time is included in (not additive to) the phase buckets; with paralle
 
 - [x] write failing tests for `ValidationTimer` in `pkg/progress`: matched command completion logs `validation: <command> took <duration>`; aggregate line `validation: <total> (<N> runs)` on finish; zero matched runs → no aggregate line; unmatched commands ignored; fixed handler durations replace a fake clock because executors supply elapsed durations; concurrent handler calls are safe
 - [x] implement `ValidationTimer` alongside `SectionTimer`: constructed with the plan's validation command list and a logger, exposes the handler func and a `FinishRun`-style summary method
-- [x] wire it in `cmd/loopai`: build from the selected plan, attach the handler to both executors via the factory, emit the summary from `runWithSectionTiming` right after the section timer summary; modes without a plan (e.g. `--review` without validation section) run with the feature disabled
+- [x] wire it in `cmd/loopai`: build from the selected plan, attach the handler to both executors via the factory, emit the summary immediately after `runWithSectionTiming` closes the section timer; modes without a plan (e.g. `--review` without validation section) run with the feature disabled
 - [x] verify the logger chain order from `CLAUDE.md` is preserved (cmux wrapper outermost interfaces intact, dashboard broadcast unaffected); add a unit test if the dashboard replay parser must tolerate the new lines
 - [x] run `go test ./cmd/... ./pkg/...` - must pass before task 5
 
@@ -115,13 +115,22 @@ Validation time is included in (not additive to) the phase buckets; with paralle
 - [x] update `CLAUDE.md`: command timing events, `ValidationTimer` placement in the logger chain, overlap semantics
 - [x] update `llms.txt`: progress log now includes `validation:` per-run lines and the aggregate summary
 - [x] update `README.md` user documentation for the new progress output
+- [x] update `docs/custom-providers.md` with optional timing event shapes and wrapper degradation
 - [x] godoc on new exported types documents the overlap caveat and approximate Codex timing (if arrival-time fallback is used)
+
+### Task 7: Address code review findings
+
+- [x] support legacy and current Codex rollout command formats, yielded sessions, child-agent rollouts, final unterminated records, and invalid timestamps
+- [x] omit background Claude commands and log canonical validation labels without raw arguments or control characters
+- [x] remove duplicate plan scanning and validation-only runtime plumbing from unrelated modes
+- [x] add focused cancellation, integration, long-line, multiline, and provider-format regression tests
+- [x] complete user, custom-provider, architecture, plan, and changelog documentation
 
 ## Technical Details
 
 - Event shape: `(command string, duration time.Duration)`; executors do not classify — all completed shell commands are reported, the `ValidationTimer` filters by the plan's list
 - Claude pairing: `tool_use` block (name `Bash`, `input.command`) → `tool_result` with same `tool_use_id`; arrival-time stamping with injectable `now()`
-- Codex pairing: rollout `function_call` (exec_command) → `function_call_output` with same `call_id`; prefer native rollout timestamps if the format carries them
+- Codex pairing: legacy rollout `function_call` (`exec_command`) or current custom `exec` tool call → matching output; yielded sessions remain pending through continuation/wait records, and child-agent rollouts are followed; prefer valid native rollout timestamps
 - Matching rule: normalized command equals a validation entry, or starts with entry + whitespace separator (token boundary); entries come from `## Validation Commands` list items with backticks stripped
 - Per-run log line: `validation: go test ./... took 1m12s`; aggregate: `validation: 14m32s (23 runs)` printed after `phase durations:`
 - Validation time overlaps phase buckets by design; it is reported as a separate line, never added to the phase sum
@@ -130,10 +139,10 @@ Validation time is included in (not additive to) the phase buckets; with paralle
 
 ## Post-Completion
 
-**Manual verification**:
+**Manual verification** (deferred; automated fixtures cover both provider formats without spending live-provider quota):
 
-- run a real plan on a toy repo (`make e2e-prep`) with `go test ./...` in Validation Commands and confirm per-run lines and the aggregate appear in `.loopai/progress/`
-- repeat with `--codex` and compare aggregate plausibility against phase durations
-- run once through `pi-as-claude` or `copilot-as-claude` to confirm silent degradation (no validation lines, no errors)
+- [ ] run a real plan on a toy repo (`make e2e-prep`) with `go test ./...` in Validation Commands and confirm per-run lines and the aggregate appear in `.loopai/progress/`
+- [ ] repeat with `--codex` and compare aggregate plausibility against phase durations
+- [ ] run once through `pi-as-claude` or `copilot-as-claude` to confirm silent degradation (no validation lines, no errors)
 
 **External system updates**: none — feature is fully local to loopai

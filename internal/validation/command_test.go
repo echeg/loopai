@@ -27,3 +27,10 @@ func TestMatchesCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchCommand_ReturnsCanonicalConfiguredEntry(t *testing.T) {
+	matched, ok := MatchCommand("make\ttest\n--token secret", []string{"`make   test`"})
+
+	assert.True(t, ok)
+	assert.Equal(t, "make test", matched)
+}

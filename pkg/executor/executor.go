@@ -294,7 +294,8 @@ type streamContentBlock struct {
 	Name      string `json:"name"`
 	ToolUseID string `json:"tool_use_id"`
 	Input     struct {
-		Command string `json:"command"`
+		Command         string `json:"command"`
+		RunInBackground bool   `json:"run_in_background"`
 	} `json:"input"`
 }
 
@@ -550,7 +551,7 @@ func (e *ClaudeExecutor) trackCommandTiming(event *streamEvent, starts map[strin
 }, now func() time.Time) {
 	for _, block := range event.Message.Content {
 		switch {
-		case block.Type == "tool_use" && block.Name == "Bash" && block.ID != "" && block.Input.Command != "":
+		case block.Type == "tool_use" && block.Name == "Bash" && block.ID != "" && block.Input.Command != "" && !block.Input.RunInBackground:
 			starts[block.ID] = struct {
 				command string
 				started time.Time

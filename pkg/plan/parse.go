@@ -1,15 +1,12 @@
 package plan
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
-
-	"github.com/umputun/ralphex/internal/validation"
 )
 
 // TaskStatus represents the execution status of a task.
@@ -71,17 +68,19 @@ func ParsePlan(content string) (*Plan, error) {
 		ValidationCommands: make([]string, 0),
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(content))
 	var currentTask *Task
 	var ft fenceTracker
+	inValidationSection := false
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	for rawLine := range strings.SplitSeq(content, "\n") {
+		line := strings.TrimSuffix(rawLine, "\r")
 
 		// skip lines inside fenced code blocks so example checkboxes are not parsed as tasks
 		if ft.skip(line) {
 			continue
 		}
+
+		trackValidationCommand(p, line, &inValidationSection)
 
 		// check for plan title (first h1)
 		if p.Title == "" {
@@ -141,57 +140,24 @@ func ParsePlan(content string) (*Plan, error) {
 		p.Tasks = append(p.Tasks, *currentTask)
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan plan: %w", err)
-	}
-
-	commands, err := extractValidationCommands(content)
-	if err != nil {
-		return nil, err
-	}
-	p.ValidationCommands = commands
-
 	return p, nil
 }
 
-// MatchesValidationCommand reports whether command equals or extends one of the configured
-// validation commands at a whitespace boundary. commands and entries are normalized before matching.
-func MatchesValidationCommand(command string, entries []string) bool {
-	return validation.MatchesCommand(command, entries)
-}
-
-func extractValidationCommands(content string) ([]string, error) {
-	commands := make([]string, 0)
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	inSection := false
-	var ft fenceTracker
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if ft.skip(line) {
-			continue
+func trackValidationCommand(p *Plan, line string, inSection *bool) {
+	switch {
+	case validationHeaderPattern.MatchString(line):
+		*inSection = true
+	case strings.HasPrefix(line, "# ") || (strings.HasPrefix(line, "##") && !strings.HasPrefix(line, "###")):
+		*inSection = false
+	case *inSection:
+		matches := listItemPattern.FindStringSubmatch(line)
+		if len(matches) == 0 {
+			return
 		}
-		if validationHeaderPattern.MatchString(line) {
-			inSection = true
-			continue
-		}
-		if strings.HasPrefix(line, "# ") || (strings.HasPrefix(line, "##") && !strings.HasPrefix(line, "###")) {
-			inSection = false
-			continue
-		}
-		if !inSection {
-			continue
-		}
-		if matches := listItemPattern.FindStringSubmatch(line); matches != nil {
-			if command := normalizeCommand(matches[1]); command != "" {
-				commands = append(commands, command)
-			}
+		if command := normalizeCommand(matches[1]); command != "" {
+			p.ValidationCommands = append(p.ValidationCommands, command)
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan validation commands: %w", err)
-	}
-	return commands, nil
 }
 
 func normalizeCommand(command string) string {

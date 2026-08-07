@@ -136,7 +136,8 @@ func TestRunWithSectionTimingFinishesBeforeReturning(t *testing.T) {
 				return tt.runErr
 			}
 
-			gotErr := runWithSectionTiming(t.Context(), run, timer, validationTimer)
+			gotErr := runWithSectionTiming(t.Context(), run, timer)
+			validationTimer.FinishRun()
 			inner.calls = append(inner.calls, "downstream result handling")
 
 			if tt.runErr == nil {
@@ -153,6 +154,54 @@ func TestRunWithSectionTimingFinishesBeforeReturning(t *testing.T) {
 			assert.Equal(t, "downstream result handling", inner.calls[5])
 		})
 	}
+}
+
+func TestExecutePlan_ValidationTimingFromClaudeStreamReachesProgressLog(t *testing.T) {
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	planPath := filepath.Join(dir, "docs", "plans", "validation-wiring.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath, []byte(`# Validation wiring
+
+## Validation Commands
+
+- `+"`make test`"+`
+
+## Implementation Steps
+
+### Task 1: Done
+
+- [x] already complete
+`), 0o600))
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"make test --token secret"}}]}}'
+printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}'
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	err = executePlan(t.Context(), opts{TasksOnly: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
+		Config: &config.Config{ClaudeCommand: fakeClaude}, Colors: testColors(), BaseRef: "master",
+	})
+	require.NoError(t, err)
+
+	logs, err := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "progress-*.txt"))
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	content, err := os.ReadFile(logs[0])
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "validation: make test took ")
+	assert.Contains(t, string(content), "validation: 0s (1 runs)")
+	assert.NotContains(t, string(content), "--token secret")
 }
 
 // captureStdout runs fn while redirecting os.Stdout (and the fatih/color Output
@@ -757,7 +806,7 @@ func TestCreateRunner(t *testing.T) {
 		defer log.Close()
 
 		req := executePlanRequest{PlanFile: "/path/to/plan.md", Mode: processor.ModeFull, Config: cfg, DefaultBranch: "master"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 	})
 
@@ -779,7 +828,7 @@ func TestCreateRunner(t *testing.T) {
 
 		// tests that codex-only mode code path runs without panic
 		req := executePlanRequest{Mode: processor.ModeCodexOnly, Config: cfg, DefaultBranch: "main"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 	})
 
@@ -802,7 +851,7 @@ func TestCreateRunner(t *testing.T) {
 		// verify the resolution logic: CLI=5 should win over config=10
 		// the resolve logic: maxExtIter = config(10), then CLI > 0 so maxExtIter = 5
 		req := executePlanRequest{Mode: processor.ModeFull, Config: cfg, DefaultBranch: "main"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 		// can't inspect Runner.cfg directly, but the wiring code is exercised
 		// behavioral verification is in runner_test.go (TestRunner_MaxExternalIterations_ExplicitLimit)
@@ -826,7 +875,7 @@ func TestCreateRunner(t *testing.T) {
 
 		// verify the resolution logic: CLI=3 should win over config=5
 		req := executePlanRequest{Mode: processor.ModeFull, Config: cfg, DefaultBranch: "main"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 		// behavioral verification is in runner_test.go
 	})
@@ -1108,7 +1157,7 @@ func TestSkipFinalizeFlag(t *testing.T) {
 
 		// verify createRunner receives the overridden config
 		req := executePlanRequest{Mode: processor.ModeFull, Config: cfg, DefaultBranch: "main"}
-		runner := createRunner(req, o, log, holder)
+		runner := createRunner(req, o, log, holder, nil)
 		assert.NotNil(t, runner)
 		assert.False(t, cfg.FinalizeEnabled, "skip-finalize should override config")
 	})

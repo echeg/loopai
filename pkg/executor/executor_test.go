@@ -292,6 +292,11 @@ func TestClaudeExecutor_parseStream_commandTiming(t *testing.T) {
 			input: `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"command":"make test"}}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1"}]}}`,
 		},
+		{
+			name: "background bash result is not treated as completion",
+			input: `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"make test","run_in_background":true}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"background task id: task-1"}]}}`,
+		},
 	}
 
 	for _, tc := range tests {

@@ -50,8 +50,12 @@ func (t *ValidationTimer) FinishRun() {
 }
 
 func (t *ValidationTimer) record(command string, duration time.Duration) {
-	if !validation.MatchesCommand(command, t.commands) {
+	label, matched := validation.MatchCommand(command, t.commands)
+	if !matched {
 		return
+	}
+	if duration < 0 {
+		duration = 0
 	}
 
 	t.mu.Lock()
@@ -61,5 +65,5 @@ func (t *ValidationTimer) record(command string, duration time.Duration) {
 	}
 	t.total += duration
 	t.runs++
-	t.logger.Print("validation: %s took %s", command, formatSectionDuration(duration))
+	t.logger.Print("validation: %s took %s", label, formatSectionDuration(duration))
 }

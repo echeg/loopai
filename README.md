@@ -136,6 +136,10 @@ Describe the intended outcome.
 - [ ] Run validation
 ```
 
+Validation timing recognizes the exact, case-sensitive H2 heading `## Validation Commands`.
+Commands must be Markdown list items; prose and fenced examples are ignored. Optional surrounding
+backticks are stripped and whitespace is normalized before matching.
+
 Run it:
 
 ```bash
@@ -457,7 +461,8 @@ Validation time is already included in the phase durations; it is not additional
 The aggregate is the sum of matched command durations, so concurrent commands can overlap and
 make it larger than section or run wall-clock time. Plans without validation commands, unmatched
 commands, incomplete commands, and provider streams without shell tool events produce no
-`validation:` lines.
+`validation:` lines. Claude measures stream-event arrival time. Codex prefers native rollout
+timestamps and falls back to approximate arrival time when timestamps are absent or invalid.
 
 Start the dashboard:
 
