@@ -24,11 +24,10 @@ build:
 	cp .bin/loopai.$(BRANCH) .bin/loopai
 
 check-symlinks:
-	@broken="$$(find -L assets/claude -type l -print)"; \
-		if [ -n "$$broken" ]; then \
-			printf 'broken symlinks:\n%s\n' "$$broken"; \
-			exit 1; \
-		fi
+	@./scripts/check-symlinks.sh
+
+test-symlinks:
+	@./scripts/check-symlinks_test.sh
 
 check-plugin:
 	@./scripts/check-plugin.sh
@@ -53,7 +52,7 @@ test-completions:
 	@if command -v zsh >/dev/null 2>&1; then zsh -n completions/loopai.zsh; fi
 	@if command -v fish >/dev/null 2>&1; then fish -n completions/loopai.fish; fi
 
-test: check-symlinks check-plugin test-plugin test-completions
+test: check-symlinks test-symlinks check-plugin test-plugin test-completions
 	go clean -testcache
 	go test -race -coverprofile=coverage.out ./...
 	grep -v "_mock.go" coverage.out | grep -v mocks > coverage_no_mocks.out
@@ -114,4 +113,4 @@ e2e-codex: build
 	@echo ""
 	@echo "Monitor: tail -f /tmp/loopai-review-test/.loopai/progress/progress-codex.txt"
 
-.PHONY: all build check-symlinks check-plugin test-plugin test-wrappers test lint fmt race version e2e-setup e2e e2e-ui e2e-prep e2e-review e2e-codex
+.PHONY: all build check-symlinks test-symlinks check-plugin test-plugin test-wrappers test lint fmt race version e2e-setup e2e e2e-ui e2e-prep e2e-review e2e-codex

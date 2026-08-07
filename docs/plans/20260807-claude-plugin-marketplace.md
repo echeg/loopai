@@ -80,12 +80,12 @@ Deliberately out of scope: superpowers stays installed and untouched — no othe
 
 ### Task 3: Create loopai-brainstorm skill
 
-- [ ] read the superpowers `brainstorming` v6.2.0 skill from the plugin cache and adapt it into `assets/claude/skills/loopai-brainstorm/SKILL.md` with an "adapted from obra/superpowers v6.2.0 (MIT)" attribution note
-- [ ] keep: project-context exploration, one-question-at-a-time dialogue, 2-3 approaches with recommendation, YAGNI, section-by-section design presentation with approval
-- [ ] replace the ending: instead of writing a spec to `docs/superpowers/specs/` and invoking `writing-plans`, the terminal state is invoking the `loopai-plan` skill, passing approved design decisions to be recorded in the plan's `## Decisions` section; spec files are explicitly not created (a slim ADR is allowed only as a rare exception for long-lived architectural decisions, on user request)
-- [ ] add frontmatter description that distinguishes it from superpowers `brainstorming` (trigger phrasing oriented at "design a feature that will become a loopai plan") since both skills may be installed side by side
-- [ ] add the top-level symlink `assets/claude/loopai-brainstorm.md` → `skills/loopai-brainstorm/SKILL.md`
-- [ ] run `make check-symlinks` and `make test` - must pass before task 4
+- [x] read the superpowers `brainstorming` v6.2.0 skill from the plugin cache and adapt it into `assets/claude/skills/loopai-brainstorm/SKILL.md` with an "adapted from obra/superpowers v6.2.0 (MIT)" attribution note
+- [x] keep: project-context exploration, one-question-at-a-time dialogue, 2-3 approaches with recommendation, YAGNI, section-by-section design presentation with approval
+- [x] replace the ending: instead of writing a spec to `docs/superpowers/specs/` and invoking `writing-plans`, the terminal state is invoking the `loopai-plan` skill, passing approved design decisions to be recorded in the plan's `## Decisions` section; spec files are explicitly not created (a slim ADR is allowed only as a rare exception for long-lived architectural decisions, on user request)
+- [x] add frontmatter description that distinguishes it from superpowers `brainstorming` (trigger phrasing oriented at "design a feature that will become a loopai plan") since both skills may be installed side by side
+- [x] add the top-level symlink `assets/claude/loopai-brainstorm.md` → `skills/loopai-brainstorm/SKILL.md`
+- [x] run `make check-symlinks` and `make test` - must pass before task 4
 
 ### Task 4: Decisions section in loopai-plan
 
