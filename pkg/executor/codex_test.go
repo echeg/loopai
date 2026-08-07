@@ -2610,6 +2610,38 @@ func TestCodexExecutor_trackRolloutCommandTiming_RawContinuationUsesDefaultEmpty
 	assert.Empty(t, state.sessions)
 }
 
+func TestCodexExecutor_trackRolloutCommandTiming_RawContinuationUsesExplicitEmptyPollYield(t *testing.T) {
+	var captured []struct {
+		command  string
+		duration time.Duration
+	}
+	e := &CodexExecutor{CommandTimingHandler: func(command string, duration time.Duration) {
+		captured = append(captured, struct {
+			command  string
+			duration time.Duration
+		}{command: command, duration: duration})
+	}}
+	state := newCodexTimingState()
+	fixtures := []string{
+		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":"Script completed\nWall time 0.4 seconds\nOutput:\n"}}`,
+		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({session_id:42,yield_time_ms:30000}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:21Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"ok"}}`,
+	}
+	for _, line := range fixtures {
+		ev, payload, ok := parseRolloutRecord([]byte(line))
+		require.True(t, ok)
+		e.trackRolloutCommandTiming(ev, payload, state, time.Now)
+	}
+
+	assert.Equal(t, []struct {
+		command  string
+		duration time.Duration
+	}{{command: "make test", duration: 21 * time.Second}}, captured)
+	assert.Empty(t, state.unproven)
+	assert.Empty(t, state.sessions)
+}
+
 func TestCodexExecutor_trackRolloutCommandTiming_RawContinuationProofSurvivesOuterWait(t *testing.T) {
 	var captured []struct {
 		command  string
@@ -2857,6 +2889,8 @@ func TestWriteStdinYieldAfter_DefaultsAndClamps(t *testing.T) {
 	}{
 		{name: "omitted chars is empty poll", call: `tools.write_stdin({session_id:42})`, want: 5 * time.Second},
 		{name: "empty chars uses minimum poll", call: `tools.write_stdin({session_id:42,chars:"",yield_time_ms:1000})`, want: 5 * time.Second},
+		{name: "empty chars uses configured poll", call: `tools.write_stdin({session_id:42,chars:"",yield_time_ms:30000})`, want: 30 * time.Second},
+		{name: "empty chars clamps maximum", call: `tools.write_stdin({session_id:42,chars:"",yield_time_ms:400000})`, want: 300 * time.Second},
 		{name: "nonempty chars uses default", call: `tools.write_stdin({session_id:42,chars:"x"})`, want: 250 * time.Millisecond},
 		{name: "nonempty chars clamps maximum", call: `tools.write_stdin({session_id:42,chars:"x",yield_time_ms:100000})`, want: 30 * time.Second},
 		{name: "dynamic chars is unknown", call: `tools.write_stdin({session_id:42,chars:input})`, want: 0},

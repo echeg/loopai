@@ -1250,7 +1250,7 @@ func customStaticExecCalls(input string) []customExecCall {
 func customStaticWriteStdinCalls(input string) []customContinuationCall {
 	calls := make([]customContinuationCall, 0)
 	for _, location := range customWriteCallPattern.FindAllStringIndex(input, -1) {
-		if !customExecCallIsAwaited(input, location[0]) {
+		if !customCallIsAwaited(input, location[0], customWriteCallPattern) {
 			continue
 		}
 		object, call, ok := customCallObject(input, location)
@@ -1770,6 +1770,10 @@ func isCustomIdentifierPart(char byte) bool {
 }
 
 func customExecCallIsAwaited(input string, callStart int) bool {
+	return customCallIsAwaited(input, callStart, customExecCallPattern)
+}
+
+func customCallIsAwaited(input string, callStart int, callPattern *regexp.Regexp) bool {
 	if callStart < 0 || callStart > len(input) {
 		return false
 	}
@@ -1784,7 +1788,7 @@ func customExecCallIsAwaited(input string, callStart int) bool {
 		}
 		arrayOpen := location[1] - 1
 		arrayClose, closed := customDelimitedEnd(input, arrayOpen)
-		if closed && callStart < arrayClose && customDirectArrayElement(input, arrayOpen, arrayClose, callStart) {
+		if closed && callStart < arrayClose && customDirectArrayElement(input, arrayOpen, arrayClose, callStart, callPattern) {
 			return true
 		}
 	}
@@ -1794,12 +1798,12 @@ func customExecCallIsAwaited(input string, callStart int) bool {
 // customDirectArrayElement reports whether callStart begins the complete array
 // element that contains it. Compound expressions can skip a textual call at
 // runtime, so they are not safe inputs for output-only completion inference.
-func customDirectArrayElement(input string, arrayOpen, arrayClose, callStart int) bool {
+func customDirectArrayElement(input string, arrayOpen, arrayClose, callStart int, callPattern *regexp.Regexp) bool {
 	if arrayOpen < 0 || arrayClose > len(input) || arrayOpen >= arrayClose ||
 		callStart <= arrayOpen || callStart >= arrayClose {
 		return false
 	}
-	location := customExecCallPattern.FindStringIndex(input[callStart:arrayClose])
+	location := callPattern.FindStringIndex(input[callStart:arrayClose])
 	if len(location) != 2 || location[0] != 0 {
 		return false
 	}
@@ -2156,11 +2160,16 @@ func effectiveWriteStdinYield(yieldAfter time.Duration, configured bool, chars s
 		defaultWriteYield = 250 * time.Millisecond
 		minEmptyPollYield = 5 * time.Second
 		maxWriteYield     = 30 * time.Second
+		maxEmptyPollYield = 300 * time.Second
 	)
 	if chars == "" {
-		// Empty polls are clamped to at least five seconds. The upper bound is
-		// user-configurable, so use the guaranteed minimum as conservative proof.
-		return minEmptyPollYield
+		if !configured {
+			return minEmptyPollYield
+		}
+		if yieldAfter <= 0 {
+			return 0
+		}
+		return max(minEmptyPollYield, min(yieldAfter, maxEmptyPollYield))
 	}
 	if !configured {
 		return defaultWriteYield
