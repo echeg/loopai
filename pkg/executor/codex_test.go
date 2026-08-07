@@ -2437,20 +2437,43 @@ func TestCodexExecutor_trackRolloutCommandTiming_IgnoresUnawaitedAndConditionalC
 
 func TestCustomExecCallIsAwaited_AcceptsStraightLinePromiseDestructuring(t *testing.T) {
 	input := `const [test, lint] = await Promise.all([tools.exec_command({cmd:"make test"}),tools.exec_command({cmd:"make lint"})]);`
-	matches := customExecCommandPattern.FindAllStringSubmatchIndex(input, -1)
-	require.Len(t, matches, 2)
+	calls := customStaticExecCalls(input)
+	require.Len(t, calls, 2)
 
-	assert.True(t, customExecCallIsAwaited(input, matches[0][0]))
-	assert.True(t, customExecCallIsAwaited(input, matches[1][0]))
+	assert.True(t, customExecCallIsAwaited(input, calls[0].start))
+	assert.True(t, customExecCallIsAwaited(input, calls[1].start))
 }
 
 func TestCustomExecCallIsAwaited_AcceptsSemicolonFreeStatements(t *testing.T) {
 	input := "const cwd = \"/repo\"\nconst r = await tools.exec_command({cmd:\"make test\", workdir:cwd})\ntext(r.output)\ntext(`SESSION_ID=${r.session_id}`)"
-	matches := customExecCommandPattern.FindAllStringSubmatchIndex(input, -1)
-	require.Len(t, matches, 1)
+	calls := customStaticExecCalls(input)
+	require.Len(t, calls, 1)
 
-	assert.True(t, customExecCallIsAwaited(input, matches[0][0]))
-	assert.Equal(t, 2, customSessionProofBlock(input, matches[0][0]))
+	assert.True(t, customExecCallIsAwaited(input, calls[0].start))
+	assert.Equal(t, 2, customSessionProofBlock(input, calls[0].start))
+}
+
+func TestCodexExecutor_trackCustomToolCall_DoesNotReadPropertiesPastCallBoundary(t *testing.T) {
+	e := &CodexExecutor{CommandTimingHandler: func(string, time.Duration) { t.Fatal("unexpected timing") }}
+	state := newCodexTimingState()
+	state.sessions["42"] = codexPendingCommand{
+		start:     codexCommandStart{command: "make test"},
+		sessionID: "42",
+	}
+
+	e.trackCustomToolCall(rolloutPayload{
+		Name:   "exec",
+		CallID: "exec",
+		Input:  `const r = await tools.exec_command({workdir:"/repo"}); const metadata = {cmd:"make test"}; text(r.output);`,
+	}, time.Now(), state, time.Now)
+	e.trackCustomToolCall(rolloutPayload{
+		Name:   "exec",
+		CallID: "poll",
+		Input:  `const r = await tools.write_stdin({chars:""}); const metadata = {session_id:42}; text(r.output);`,
+	}, time.Now(), state, time.Now)
+
+	assert.NotContains(t, state.starts, "exec")
+	assert.NotContains(t, state.continuations, "poll")
 }
 
 func TestCodexExecutor_trackRolloutCommandTiming_SemicolonFreeCustomExec(t *testing.T) {
@@ -2534,7 +2557,7 @@ func TestCodexExecutor_trackRolloutCommandTiming_UnprovenExecAttachesToContinuat
 	assert.Empty(t, state.sessions)
 }
 
-func TestCodexExecutor_trackRolloutCommandTiming_RawContinuationInfersCompletionBeforeItsYield(t *testing.T) {
+func TestCodexExecutor_trackRolloutCommandTiming_RawContinuationUsesDefaultEmptyPollYield(t *testing.T) {
 	var captured []struct {
 		command  string
 		duration time.Duration
@@ -2549,7 +2572,7 @@ func TestCodexExecutor_trackRolloutCommandTiming_RawContinuationInfersCompletion
 	fixtures := []string{
 		`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"start","input":"const r = await tools.exec_command({cmd:\"make test\",yield_time_ms:250}); text(r.output);"}}`,
 		`{"timestamp":"2026-08-07T09:00:00.4Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"start","output":"Script completed\nWall time 0.4 seconds\nOutput:\n"}}`,
-		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({session_id:42,yield_time_ms:30000}); text(r.output);"}}`,
+		`{"timestamp":"2026-08-07T09:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll","input":"const r = await tools.write_stdin({session_id:42}); text(r.output);"}}`,
 		`{"timestamp":"2026-08-07T09:00:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll","output":"ok"}}`,
 	}
 	for _, line := range fixtures {
@@ -2801,6 +2824,28 @@ func TestCustomExecYieldAfter_QuotedKeys(t *testing.T) {
 			assert.Equal(t, tt.want, customExecYieldAfter(tt.call))
 		})
 	}
+}
+
+func TestWriteStdinYieldAfter_DefaultsAndClamps(t *testing.T) {
+	tests := []struct {
+		name string
+		call string
+		want time.Duration
+	}{
+		{name: "omitted chars is empty poll", call: `tools.write_stdin({session_id:42})`, want: 5 * time.Second},
+		{name: "empty chars uses minimum poll", call: `tools.write_stdin({session_id:42,chars:"",yield_time_ms:1000})`, want: 5 * time.Second},
+		{name: "nonempty chars uses default", call: `tools.write_stdin({session_id:42,chars:"x"})`, want: 250 * time.Millisecond},
+		{name: "nonempty chars clamps maximum", call: `tools.write_stdin({session_id:42,chars:"x",yield_time_ms:100000})`, want: 30 * time.Second},
+		{name: "dynamic chars is unknown", call: `tools.write_stdin({session_id:42,chars:input})`, want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, customWriteStdinYieldAfter(tt.call))
+		})
+	}
+
+	assert.Equal(t, 5*time.Second, functionCallYieldAfter(`{"session_id":42}`))
+	assert.Equal(t, 250*time.Millisecond, functionCallYieldAfter(`{"session_id":42,"chars":"x"}`))
 }
 
 func TestParseTextCommandResult_UsesOnlyUnambiguousStatusEnvelope(t *testing.T) {

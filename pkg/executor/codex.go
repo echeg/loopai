@@ -996,9 +996,7 @@ func newCodexTimingState() *codexTimingState {
 
 var (
 	customExecYieldKey       = regexp.MustCompile(`(?:"yield_time_ms"|'yield_time_ms'|\byield_time_ms)\s*:`)
-	customExecCommandPattern = regexp.MustCompile("(?s)tools\\.exec_command\\s*\\(\\s*\\{.*?(?:\"cmd\"|'cmd'|\\bcmd)\\s*:\\s*(\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|`(?:\\\\.|[^`\\\\])*`)")
 	customExecYieldPattern   = regexp.MustCompile(`(?s)(?:"yield_time_ms"|'yield_time_ms'|\byield_time_ms)\s*:\s*(\d+)`)
-	customWriteStdinPattern  = regexp.MustCompile(`(?s)tools\.write_stdin\s*\(\s*\{.*?(?:"session_id"|'session_id'|\bsession_id)\s*:\s*(?:"([^"]+)"|'([^']+)'|(\d+))`)
 	customDirectAwaitPattern = regexp.MustCompile(`(?s)^\s*(?:(?://[^\n]*\n)\s*)*(?:const|let|var)(?:\s+[A-Za-z_$][A-Za-z0-9_$]*|\s*\[[^\]\n]+\]|\s*\{[^}\n]+\})\s*=\s*await\s*$`)
 	customAssignmentPattern  = regexp.MustCompile(`(?s)^\s*(?:(?://[^\n]*\n)\s*)*(?:const|let|var)\s+(?:[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]\n]+\]|\{[^}\n]+\})\s*=\s*$`)
 	customPromiseAllPattern  = regexp.MustCompile(`await\s+Promise\.all\s*\(\s*\[`)
@@ -1104,8 +1102,8 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 	if payload.Name != "exec" || payload.CallID == "" {
 		return
 	}
-	if allMatches := customExecCommandPattern.FindAllStringSubmatchIndex(payload.Input, -1); len(allMatches) > 0 {
-		pending := customExecPendingCommands(payload.Input, allMatches, eventTime, now())
+	if calls := customStaticExecCalls(payload.Input); len(calls) > 0 {
+		pending := customExecPendingCommands(payload.Input, calls, eventTime, now())
 		if len(pending) > 0 {
 			state.starts[payload.CallID] = pending
 			return
@@ -1119,16 +1117,9 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 		e.trackCustomContinuationCalls(payload, eventTime, state, now, calls)
 		return
 	}
-	allMatches := customWriteStdinPattern.FindAllStringSubmatchIndex(payload.Input, -1)
-	if len(allMatches) == 0 {
+	calls := customStaticWriteStdinCalls(payload.Input)
+	if len(calls) == 0 {
 		return
-	}
-	calls := make([]customContinuationCall, 0, len(allMatches))
-	for index, matches := range allMatches {
-		calls = append(calls, customContinuationCall{
-			sessionID:  firstIndexedCapture(payload.Input, matches[2:]),
-			yieldAfter: customContinuationYieldAfter(payload.Input, allMatches, index),
-		})
 	}
 	e.trackCustomContinuationCalls(payload, eventTime, state, now, calls)
 }
@@ -1214,7 +1205,7 @@ func customMappedWriteStdinCalls(input string) []customContinuationCall {
 		if !ok {
 			continue
 		}
-		yieldAfter, _ := explicitYieldAfter(call)
+		yieldAfter := customWriteStdinYieldAfter(call)
 		for _, item := range items {
 			value, selected := selector(item)
 			if !selected {
@@ -1230,35 +1221,101 @@ func customMappedWriteStdinCalls(input string) []customContinuationCall {
 	return calls
 }
 
-func customExecPendingCommands(input string, matches [][]int, eventTime, arrival time.Time) []codexPendingCommand {
-	accepted := make([][]int, 0, len(matches))
-	for _, match := range matches {
-		if customExecCallIsAwaited(input, match[0]) {
-			accepted = append(accepted, match)
+type customExecCall struct {
+	start   int
+	command string
+	call    string
+}
+
+func customStaticExecCalls(input string) []customExecCall {
+	calls := make([]customExecCall, 0)
+	for _, location := range customExecCallPattern.FindAllStringIndex(input, -1) {
+		object, call, ok := customCallObject(input, location)
+		if !ok {
+			continue
+		}
+		value, ok := customObjectProperty(object, "cmd")
+		if !ok {
+			continue
+		}
+		command, ok := decodeJSStringLiteral(strings.TrimSpace(value))
+		if !ok || command == "" {
+			continue
+		}
+		calls = append(calls, customExecCall{start: location[0], command: command, call: call})
+	}
+	return calls
+}
+
+func customStaticWriteStdinCalls(input string) []customContinuationCall {
+	calls := make([]customContinuationCall, 0)
+	for _, location := range customWriteCallPattern.FindAllStringIndex(input, -1) {
+		if !customExecCallIsAwaited(input, location[0]) {
+			continue
+		}
+		object, call, ok := customCallObject(input, location)
+		if !ok {
+			continue
+		}
+		value, ok := customObjectProperty(object, "session_id")
+		if !ok {
+			continue
+		}
+		sessionID, ok := customStaticSessionID(value)
+		if !ok {
+			continue
+		}
+		calls = append(calls, customContinuationCall{
+			sessionID:  sessionID,
+			yieldAfter: customWriteStdinYieldAfter(call),
+		})
+	}
+	return calls
+}
+
+func customCallObject(input string, location []int) (object, call string, ok bool) {
+	if len(location) != 2 || location[1] <= 0 {
+		return "", "", false
+	}
+	end, ok := customDelimitedEnd(input, location[1]-1)
+	if !ok {
+		return "", "", false
+	}
+	arguments, ok := splitCustomTopLevel(input[location[1]:end], ',')
+	if !ok || len(arguments) != 1 {
+		return "", "", false
+	}
+	object = strings.TrimSpace(arguments[0])
+	if object == "" || object[0] != '{' {
+		return "", "", false
+	}
+	objectEnd, closed := customDelimitedEnd(object, 0)
+	if !closed || objectEnd != len(object)-1 {
+		return "", "", false
+	}
+	return object, input[location[0] : end+1], true
+}
+
+func customExecPendingCommands(input string, calls []customExecCall, eventTime, arrival time.Time) []codexPendingCommand {
+	accepted := make([]customExecCall, 0, len(calls))
+	for _, call := range calls {
+		if customExecCallIsAwaited(input, call.start) {
+			accepted = append(accepted, call)
 		}
 	}
 	structuredProof := customToolEmitsStructuredResults(input)
 	sessionProofBlock := 0
 	if len(accepted) == 1 {
-		sessionProofBlock = customSessionProofBlock(input, accepted[0][0])
+		sessionProofBlock = customSessionProofBlock(input, accepted[0].start)
 	}
 	pending := make([]codexPendingCommand, 0, len(accepted))
-	for index, match := range accepted {
-		literal := input[match[2]:match[3]]
-		command, ok := decodeJSStringLiteral(literal)
-		if !ok || command == "" {
-			continue
-		}
-		end := len(input)
-		if index+1 < len(accepted) {
-			end = accepted[index+1][0]
-		}
+	for _, call := range accepted {
 		pending = append(pending, codexPendingCommand{
-			start:             codexCommandStart{command: command, eventTime: eventTime, arrival: arrival},
+			start:             codexCommandStart{command: call.command, eventTime: eventTime, arrival: arrival},
 			requiresProof:     true,
 			structuredProof:   structuredProof,
 			sessionProofBlock: sessionProofBlock,
-			yieldAfter:        customExecYieldAfter(input[match[0]:end]),
+			yieldAfter:        customExecYieldAfter(call.call),
 			proofEventTime:    eventTime,
 			proofArrival:      arrival,
 		})
@@ -1998,21 +2055,22 @@ func customExecYieldAfter(call string) time.Duration {
 	return defaultYield
 }
 
-func customContinuationYieldAfter(input string, matches [][]int, index int) time.Duration {
-	if index < 0 || index >= len(matches) || len(matches[index]) < 2 {
-		return 0
-	}
-	start := matches[index][0]
-	openOffset := strings.IndexByte(input[start:], '(')
-	if openOffset < 0 {
-		return 0
-	}
-	end, ok := customDelimitedEnd(input, start+openOffset)
+func customWriteStdinYieldAfter(call string) time.Duration {
+	location := customWriteCallPattern.FindStringIndex(call)
+	object, _, ok := customCallObject(call, location)
 	if !ok {
 		return 0
 	}
-	yieldAfter, _ := explicitYieldAfter(input[start : end+1])
-	return yieldAfter
+	chars := ""
+	if value, found := customObjectProperty(object, "chars"); found {
+		decoded, known := decodeJSStringLiteral(strings.TrimSpace(value))
+		if !known {
+			return 0
+		}
+		chars = decoded
+	}
+	yieldAfter, configured := explicitYieldAfter(call)
+	return effectiveWriteStdinYield(yieldAfter, configured, chars)
 }
 
 func explicitYieldAfter(call string) (time.Duration, bool) {
@@ -2032,12 +2090,36 @@ func explicitYieldAfter(call string) (time.Duration, bool) {
 
 func functionCallYieldAfter(arguments string) time.Duration {
 	var args struct {
-		YieldTimeMS int64 `json:"yield_time_ms"`
+		Chars       string `json:"chars"`
+		YieldTimeMS *int64 `json:"yield_time_ms"`
 	}
-	if json.Unmarshal([]byte(arguments), &args) != nil || args.YieldTimeMS <= 0 {
+	if json.Unmarshal([]byte(arguments), &args) != nil {
 		return 0
 	}
-	return time.Duration(args.YieldTimeMS) * time.Millisecond
+	if args.YieldTimeMS == nil {
+		return effectiveWriteStdinYield(0, false, args.Chars)
+	}
+	if *args.YieldTimeMS <= 0 {
+		return 0
+	}
+	return effectiveWriteStdinYield(time.Duration(*args.YieldTimeMS)*time.Millisecond, true, args.Chars)
+}
+
+func effectiveWriteStdinYield(yieldAfter time.Duration, configured bool, chars string) time.Duration {
+	const (
+		defaultWriteYield = 250 * time.Millisecond
+		minEmptyPollYield = 5 * time.Second
+		maxWriteYield     = 30 * time.Second
+	)
+	if chars == "" {
+		// Empty polls are clamped to at least five seconds. The upper bound is
+		// user-configurable, so use the guaranteed minimum as conservative proof.
+		return minEmptyPollYield
+	}
+	if !configured {
+		return defaultWriteYield
+	}
+	return max(defaultWriteYield, min(yieldAfter, maxWriteYield))
 }
 
 func commandCompletedBeforeYield(command codexPendingCommand, eventTime, arrival time.Time) bool {
@@ -2387,16 +2469,6 @@ func parseExitCode(output string) (int, bool) {
 	}
 	code, err := strconv.Atoi(value)
 	return code, err == nil
-}
-
-func firstIndexedCapture(input string, indexes []int) string {
-	for index := 0; index+1 < len(indexes); index += 2 {
-		start, end := indexes[index], indexes[index+1]
-		if start >= 0 && end >= start && end <= len(input) {
-			return input[start:end]
-		}
-	}
-	return ""
 }
 
 func formatParsedRolloutEvent(payload rolloutPayload) string {
