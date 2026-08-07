@@ -7533,7 +7533,7 @@ func TestExecutableHandOffRefusal(t *testing.T) {
 		{name: "resolution failure", err: errors.New("boom"), want: "resolve executable: boom"},
 		{name: "missing path", exe: missing, want: "executable not found: " + missing},
 		// os.Executable reads /proc/self/exe on Linux, which keeps naming an unlinked binary with
-		// this suffix. "go run" unlinks its temporary binary as soon as a hand-off exits 0.
+		// this suffix. a "go run" binary is still on disk while this runs and is not covered.
 		{name: "deleted binary", exe: exe + " (deleted)", want: "executable not found: " + exe + " (deleted)"},
 	}
 

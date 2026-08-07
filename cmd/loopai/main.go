@@ -2404,11 +2404,13 @@ func handOffSpawnFailure(err error, stderr io.Writer) (bool, error) {
 // executableHandOffRefusal reports why this binary cannot be relaunched in the new workspace, or ""
 // when it can. resolution failing is the obvious half; the other is that os.Executable can succeed
 // and still name a path the new workspace's shell cannot run. on Linux it reads /proc/self/exe,
-// which keeps naming an unlinked binary with a " (deleted)" suffix, and under "go run" the
-// temporary binary is removed the moment a successful hand-off exits 0. the child would then die on
+// which keeps naming an unlinked binary with a " (deleted)" suffix; the child would then die on
 // "command not found" while this terminal printed its success line and exited 0, the orphan-card
 // outcome the plan-file and repository-root guards exist to prevent. the path is checked against
 // the same working directory the child is given, so no hand-off that would have worked is refused.
+// presence is all this can test, so it does not reach a binary that disappears afterwards: "go run"
+// unlinks its temporary binary only once the successful hand-off has exited 0, so that invocation
+// still hands off and fails in the new workspace. build the binary to smoke-test the flag.
 func executableHandOffRefusal(exe string, err error) string {
 	if err != nil {
 		return "resolve executable: " + err.Error()

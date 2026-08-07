@@ -39,6 +39,10 @@ const (
 	// workspaceEnv is injected by cmux into every terminal it owns and inherited by child processes.
 	workspaceEnv = "CMUX_WORKSPACE_ID"
 
+	// quietEnv silences cmux's own advisory notices, leaving its errors alone. spawnRunner sets it
+	// so a legacy-verb deprecation hint cannot crowd the refusal reason out of the stderr excerpt.
+	quietEnv = "CMUX_QUIET"
+
 	// binName is the cmux CLI binary looked up in PATH.
 	binName = "cmux"
 
@@ -107,6 +111,12 @@ type spawnRunner struct {
 func (r *spawnRunner) run(ctx context.Context, args ...string) error {
 	cmd := exec.CommandContext(ctx, r.bin, args...)
 	cmd.Stdout = nil // as in execRunner, the child's stdout belongs to /dev/null
+	// new-workspace is a legacy alias for "workspace create", and cmux prints a ~150-character
+	// deprecation hint on stderr ahead of anything else on every call. that alone fills most of
+	// stderrDetailLimit, so the refusal reason this capture exists to surface would be truncated
+	// away. quietEnv silences the hint only, cmux's own "Error: ..." line still arrives. the
+	// inherited environment is kept, the client needs it to find the socket and its own workspace.
+	cmd.Env = append(os.Environ(), quietEnv+"=1")
 	capture, err := os.CreateTemp("", "loopai-cmux-spawn-*.err")
 	if err == nil {
 		defer func() { _ = capture.Close(); _ = os.Remove(capture.Name()) }()

@@ -148,6 +148,20 @@ func TestSpawnRunner(t *testing.T) {
 		assert.Contains(t, err.Error(), "cmux: workspace name already in use")
 	})
 
+	t.Run("advisory notices are silenced so the refusal survives truncation", func(t *testing.T) {
+		// new-workspace is a legacy verb and the real cmux prints a ~150-character deprecation hint
+		// ahead of its error, which alone is most of stderrDetailLimit. the script reports the
+		// variable that opts out of it, so the excerpt keeps carrying the reason rather than the hint.
+		dir := t.TempDir()
+		bin := filepath.Join(dir, binName)
+		script := "#!/bin/sh\nprintf 'CMUX_QUIET=%s\\n' \"$CMUX_QUIET\" >&2\nexit 1\n"
+		require.NoError(t, os.WriteFile(bin, []byte(script), 0o755)) //nolint:gosec // test fixture must be executable
+
+		err := (&spawnRunner{bin: bin}).run(context.Background(), "new-workspace")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "CMUX_QUIET=1", "the spawn opts out of cmux's advisory output")
+	})
+
 	t.Run("silent failure keeps the exit status on its own", func(t *testing.T) {
 		bin := writeStderrBin(t, t.TempDir(), 3)
 		t.Setenv("CMUX_TEST_STDERR", "")
