@@ -1762,14 +1762,14 @@ func TestValidateFlags(t *testing.T) {
 		{name: "clear_with_init_mode_conflicts", opts: opts{Clear: true, Init: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "merge_only_is_valid", opts: opts{mergeSet: true}, wantErr: false},
 		{name: "merge_with_explicit_base_is_valid", opts: opts{Merge: "develop"}, wantErr: false},
-		{name: "merge_with_plan_file_conflicts", opts: opts{mergeSet: true, PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "--merge cannot be combined"},
+		{name: "merge_with_feature_argument_is_valid", opts: opts{mergeSet: true, PlanFile: "docs/plans/test.md"}, wantErr: false},
 		{name: "merge_with_review_conflicts", opts: opts{mergeSet: true, Review: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "merge_with_branch_conflicts", opts: opts{mergeSet: true, Branch: "feature"}, wantErr: true, errMsg: "other mode flags"},
 		{name: "merge_with_executor_option_conflicts", opts: opts{mergeSet: true, Codex: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "merge_with_clear_conflicts", opts: opts{mergeSet: true, Clear: true}, wantErr: true, errMsg: "--clear cannot be combined"},
 		{name: "pr_only_is_valid", opts: opts{prSet: true}, wantErr: false},
 		{name: "pr_with_explicit_base_is_valid", opts: opts{PR: "develop"}, wantErr: false},
-		{name: "pr_with_plan_file_conflicts", opts: opts{prSet: true, PlanFile: "docs/plans/test.md"}, wantErr: true, errMsg: "--pr cannot be combined"},
+		{name: "pr_with_feature_argument_is_valid", opts: opts{prSet: true, PlanFile: "docs/plans/test.md"}, wantErr: false},
 		{name: "pr_with_review_conflicts", opts: opts{prSet: true, Review: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "pr_with_base_ref_conflicts", opts: opts{prSet: true, BaseRef: "develop"}, wantErr: true, errMsg: "other mode flags"},
 		{name: "pr_with_model_conflicts", opts: opts{prSet: true, TaskModel: "opus"}, wantErr: true, errMsg: "other mode flags"},
@@ -3326,7 +3326,7 @@ func TestRunMergeCommand(t *testing.T) {
 		clearer := &recordingStatusClearer{}
 		var output bytes.Buffer
 
-		require.NoError(t, runMergeCommand(t.Context(), svc, "", clearer, &output))
+		require.NoError(t, runMergeCommand(t.Context(), svc, "", closeoutTarget{}, clearer, &output))
 		assert.Equal(t, "master", currentGitBranch(t, dir))
 		assert.False(t, branchExists(t, dir, "feature"))
 		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
@@ -3344,7 +3344,7 @@ func TestRunMergeCommand(t *testing.T) {
 		runGit(t, dir, "config", "branch.master.mergeOptions", "--squash --no-commit")
 		runGit(t, dir, "checkout", "feature")
 
-		require.NoError(t, runMergeCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard))
 		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "master:feature.txt"))
 		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
 		assert.False(t, branchExists(t, dir, "feature"))
@@ -3361,7 +3361,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		require.NoError(t, runMergeCommand(t.Context(), svc, "master", clearer, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard))
 		assert.NoDirExists(t, worktreePath)
 		assert.False(t, branchExists(t, dir, "feature"))
 		assert.FileExists(t, filepath.Join(dir, "feature.txt"))
@@ -3380,7 +3380,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", clearer, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", closeoutTarget{}, clearer, io.Discard))
 		assert.NoDirExists(t, worktreePath)
 		assert.False(t, branchExists(t, dir, "feature"))
 		assert.Equal(t, 1, clearer.calls)
@@ -3396,7 +3396,7 @@ func TestRunMergeCommand(t *testing.T) {
 		featureSvc, err := git.NewService(worktreePath, noopLogger())
 		require.NoError(t, err)
 
-		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", &recordingStatusClearer{}, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard))
 		assert.Equal(t, "develop", currentGitBranch(t, dir))
 		assert.NoDirExists(t, worktreePath)
 		assert.False(t, branchExists(t, dir, "feature"))
@@ -3413,7 +3413,7 @@ func TestRunMergeCommand(t *testing.T) {
 		featureSvc, err := git.NewService(worktreePath, noopLogger())
 		require.NoError(t, err)
 
-		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", &recordingStatusClearer{}, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), featureSvc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard))
 		assert.Empty(t, currentGitBranch(t, dir))
 		assert.Equal(t, originalHead, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
 		assert.NoDirExists(t, worktreePath)
@@ -3432,7 +3432,7 @@ func TestRunMergeCommand(t *testing.T) {
 		runGit(t, dir, "checkout", "feature")
 		var output bytes.Buffer
 
-		require.NoError(t, runMergeCommand(t.Context(), svc, "master", &recordingStatusClearer{}, &output))
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, &recordingStatusClearer{}, &output))
 		assert.Contains(t, output.String(), "feature into master (already up to date)")
 		assert.False(t, branchExists(t, dir, "feature"))
 	})
@@ -3446,7 +3446,7 @@ func TestRunMergeCommand(t *testing.T) {
 		runGit(t, dir, "worktree", "add", worktreePath, "unrelated")
 		t.Cleanup(func() { _ = svc.RemoveWorktree(worktreePath) })
 
-		require.NoError(t, runMergeCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard))
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard))
 		assert.DirExists(t, worktreePath)
 		assert.Equal(t, "unrelated", currentGitBranch(t, worktreePath))
 	})
@@ -3464,7 +3464,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		err = runMergeCommand(t.Context(), featureSvc, "master", clearer, io.Discard)
+		err = runMergeCommand(t.Context(), featureSvc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "clean base worktree")
 		assert.Equal(t, "master", currentGitBranch(t, dir))
@@ -3494,7 +3494,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		err = runMergeCommand(t.Context(), featureSvc, "master", clearer, io.Discard)
+		err = runMergeCommand(t.Context(), featureSvc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.ErrorContains(t, err, "merge \"feature\" into \"master\" failed")
 		content, readErr := os.ReadFile(filepath.Join(dir, "secret.env")) //nolint:gosec // test fixture
 		require.NoError(t, readErr)
@@ -3511,7 +3511,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("dirty\n"), 0o600))
 		clearer := &recordingStatusClearer{}
 
-		err := runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err := runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "clean working tree")
 		assert.Equal(t, "feature", currentGitBranch(t, dir))
@@ -3525,7 +3525,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("keep\n"), 0o600))
 		clearer := &recordingStatusClearer{}
 
-		err := runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err := runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "clean working tree")
 		assert.Equal(t, "feature", currentGitBranch(t, dir))
@@ -3548,7 +3548,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		err = runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err = runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.ErrorContains(t, err, "check out base branch")
 		assert.Equal(t, "feature", currentGitBranch(t, dir))
 		content, readErr := os.ReadFile(filepath.Join(dir, "secret.env")) //nolint:gosec // test fixture
@@ -3564,7 +3564,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		err = runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err = runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "already the base branch")
 		assert.Equal(t, "master", currentGitBranch(t, dir))
@@ -3584,7 +3584,7 @@ func TestRunMergeCommand(t *testing.T) {
 		require.NoError(t, err)
 		clearer := &recordingStatusClearer{}
 
-		err = runMergeCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err = runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		require.ErrorIs(t, err, git.ErrMergeConflict)
 		assert.Contains(t, err.Error(), "conflicted and was aborted")
@@ -3878,7 +3878,7 @@ func TestRunPRCommand(t *testing.T) {
 		clearer := &recordingStatusClearer{}
 		var output bytes.Buffer
 
-		require.NoError(t, runPRCommand(t.Context(), svc, "master", clearer, &output))
+		require.NoError(t, runPRCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, &output))
 		assert.Equal(t, "https://github.com/acme/repo/pull/42\n", output.String())
 		assert.Equal(t, 1, clearer.calls)
 		assert.Equal(t, "feature", currentGitBranch(t, dir))
@@ -3902,7 +3902,7 @@ func TestRunPRCommand(t *testing.T) {
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		clearer := &recordingStatusClearer{}
 
-		err := runPRCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err := runPRCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "authentication required")
 		assert.Zero(t, clearer.calls)
@@ -3920,7 +3920,7 @@ func TestRunPRCommand(t *testing.T) {
 		t.Setenv("GH_INVOKED", invoked)
 		clearer := &recordingStatusClearer{}
 
-		err := runPRCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err := runPRCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.ErrorContains(t, err, "PR body exceeds")
 		assert.NoFileExists(t, invoked)
 		cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/feature")
@@ -3948,7 +3948,7 @@ func TestRunPRCommand(t *testing.T) {
 		t.Setenv("GH_INVOKED", invoked)
 		clearer := &recordingStatusClearer{}
 
-		err = runPRCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err = runPRCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "push PR branch")
 		assert.NoFileExists(t, invoked)
@@ -3979,7 +3979,7 @@ func TestRunPRCommand(t *testing.T) {
 			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			t.Setenv("GH_INVOKED", invoked)
 
-			err = runPRCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard)
+			err = runPRCommand(t.Context(), svc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard)
 			require.ErrorContains(t, err, "does not match PR repository")
 			assert.NoFileExists(t, invoked)
 		})
@@ -4000,7 +4000,7 @@ func TestRunPRCommand(t *testing.T) {
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("GH_INVOKED", invoked)
 
-		err = runPRCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard)
+		err = runPRCommand(t.Context(), svc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard)
 		require.Error(t, err)
 		assert.NotContains(t, err.Error(), credential)
 		assert.NoFileExists(t, invoked)
@@ -4020,7 +4020,7 @@ func TestRunPRCommand(t *testing.T) {
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("GH_INVOKED", invoked)
 
-		err = runPRCommand(t.Context(), svc, "master", &recordingStatusClearer{}, io.Discard)
+		err = runPRCommand(t.Context(), svc, "master", closeoutTarget{}, &recordingStatusClearer{}, io.Discard)
 		require.ErrorContains(t, err, "not a GitHub repository URL")
 		assert.NoFileExists(t, invoked)
 		cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/feature")
@@ -4033,7 +4033,7 @@ func TestRunPRCommand(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
 		clearer := &recordingStatusClearer{}
 
-		err := runPRCommand(t.Context(), svc, "master", clearer, io.Discard)
+		err := runPRCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "install")
 		assert.Zero(t, clearer.calls)
@@ -6208,4 +6208,147 @@ func TestResolveFeatureBranchMissingPlansDir(t *testing.T) {
 	_, err := resolveFeatureBranch(fakeBranchChecker{}, missing, "whatever")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "whatever")
+}
+
+func TestValidateCloseoutFlagsFeatureArgument(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    opts
+		wantErr string
+	}{
+		{name: "merge with feature argument", opts: opts{mergeSet: true, PlanFile: "dynamic-review-agents"}},
+		{name: "merge with base and feature argument", opts: opts{Merge: "release/13", PlanFile: "docs/plans/20260807-x.md"}},
+		{name: "pr with feature argument", opts: opts{prSet: true, PlanFile: "dynamic-review-agents"}},
+		{name: "plan file alone stays a run", opts: opts{PlanFile: "docs/plans/20260807-x.md"}},
+		{
+			name:    "merge with feature argument and mode flag",
+			opts:    opts{mergeSet: true, PlanFile: "feature", Review: true},
+			wantErr: "--merge cannot be combined",
+		},
+		{
+			name:    "pr with feature argument and mode flag",
+			opts:    opts{prSet: true, PlanFile: "feature", Worktree: true},
+			wantErr: "--pr cannot be combined",
+		},
+		{
+			name:    "merge and pr together",
+			opts:    opts{mergeSet: true, prSet: true, PlanFile: "feature"},
+			wantErr: "--pr cannot be combined",
+		},
+		{
+			name:    "clear with feature argument",
+			opts:    opts{Clear: true, PlanFile: "feature"},
+			wantErr: "--clear cannot be combined",
+		},
+		{
+			name:    "clear with merge and feature argument",
+			opts:    opts{Clear: true, mergeSet: true, PlanFile: "feature"},
+			wantErr: "--clear cannot be combined",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateFlags(tt.opts)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// writeFeaturePlan creates a plan file for the "feature" branch in repo's plans directory
+// and returns the plans directory.
+func writeFeaturePlan(t *testing.T, repo string) string {
+	t.Helper()
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	planFile := filepath.Join(plansDir, "20260807-feature.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# plan\n\n## Overview\n\nplan body\n"), 0o600))
+	return plansDir
+}
+
+func TestRunMergeCommandExplicitFeature(t *testing.T) {
+	makeFeature := func(t *testing.T, dir string) *git.Service {
+		t.Helper()
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		return svc
+	}
+
+	t.Run("plan basename resolves to feature branch", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		plansDir := writeFeaturePlan(t, dir)
+		runGit(t, dir, "add", "docs")
+		runGit(t, dir, "commit", "-m", "add plan")
+		target := closeoutTarget{identifier: "20260807-feature", plansDir: plansDir}
+
+		require.NoError(t, runMergeCommand(t.Context(), svc, "master", target, &recordingStatusClearer{}, io.Discard))
+		assert.False(t, branchExists(t, dir, "feature"))
+	})
+
+	t.Run("unknown feature reports resolver error", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		plansDir := writeFeaturePlan(t, dir)
+		runGit(t, dir, "add", "docs")
+		runGit(t, dir, "commit", "-m", "add plan")
+		clearer := &recordingStatusClearer{}
+
+		err := runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "no-such-feature", plansDir: plansDir}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no-such-feature")
+		assert.Zero(t, clearer.calls)
+		assert.True(t, branchExists(t, dir, "feature"))
+	})
+}
+
+func TestRunPRCommandExplicitFeatureResolverError(t *testing.T) {
+	dir := setupTestRepo(t)
+	plansDir := writeFeaturePlan(t, dir)
+	svc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	clearer := &recordingStatusClearer{}
+
+	err = runPRCommand(t.Context(), svc, "master",
+		closeoutTarget{identifier: "no-such-feature", plansDir: plansDir}, clearer, io.Discard)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no-such-feature")
+	assert.Zero(t, clearer.calls)
+}
+
+func TestRunCloseoutCommandRoutesPositionalFeature(t *testing.T) {
+	dir := setupTestRepo(t)
+	plansDir := writeFeaturePlan(t, dir)
+	runGit(t, dir, "add", "docs")
+	runGit(t, dir, "commit", "-m", "add plan")
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Chdir(dir)
+	cfg := &config.Config{PlansDir: plansDir}
+
+	t.Run("merge", func(t *testing.T) {
+		err := runCloseoutCommand(t.Context(), opts{mergeSet: true, PlanFile: "no-such-feature"}, cfg, testColors())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no-such-feature")
+	})
+
+	t.Run("pr", func(t *testing.T) {
+		err := runCloseoutCommand(t.Context(), opts{prSet: true, PlanFile: "no-such-feature"}, cfg, testColors())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no-such-feature")
+	})
 }

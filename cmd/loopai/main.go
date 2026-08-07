@@ -77,12 +77,12 @@ type opts struct {
 	Init                    bool          `long:"init" description:"initialize local .loopai/ config directory in current project"`
 	Reset                   bool          `long:"reset" description:"interactively reset global config to embedded defaults"`
 	Clear                   bool          `long:"clear" description:"remove loopai cmux status pill"`
-	Merge                   string        `long:"merge" optional:"true" optional-value:"" value-name:"base" description:"merge current feature branch into base branch"`
-	PR                      string        `long:"pr" optional:"true" optional-value:"" value-name:"base" description:"push current feature branch and create a GitHub pull request"`
+	Merge                   string        `long:"merge" optional:"true" optional-value:"" value-name:"base" description:"merge feature branch into base branch; positional argument names the feature (branch or plan), default current branch"`
+	PR                      string        `long:"pr" optional:"true" optional-value:"" value-name:"base" description:"push feature branch and create a GitHub pull request; positional argument names the feature (branch or plan), default current branch"`
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
 	ConfigDir               string        `long:"config-dir" env:"LOOPAI_CONFIG_DIR" description:"custom config directory"`
 
-	PlanFile string `positional-arg-name:"plan-file" description:"path to plan file (optional, uses fzf if omitted)"`
+	PlanFile string `positional-arg-name:"plan-file" description:"path to plan file (optional, uses fzf if omitted); with --merge/--pr it names the feature to close out"`
 
 	// set by markFlagsSet after parsing; true when the flag was explicitly provided on the CLI
 	waitSet           bool
@@ -1669,11 +1669,19 @@ func validateCloseoutFlags(o opts) error {
 	if o.Clear && (merge || pr || execution) {
 		return errors.New("--clear cannot be combined with a plan file or other mode flags")
 	}
-	if merge && execution {
-		return errors.New("--merge cannot be combined with a plan file or other mode flags")
+	// with --merge/--pr the positional argument names the feature to close out instead of
+	// selecting a plan to run, so it does not count as an execution mode for these checks.
+	closeoutExecution := execution
+	if merge || pr {
+		bare := o
+		bare.PlanFile = ""
+		closeoutExecution = hasExecutionMode(bare)
 	}
-	if pr && (merge || execution) {
-		return errors.New("--pr cannot be combined with a plan file or other mode flags")
+	if merge && closeoutExecution {
+		return errors.New("--merge cannot be combined with other mode flags")
+	}
+	if pr && (merge || closeoutExecution) {
+		return errors.New("--pr cannot be combined with other mode flags")
 	}
 	return nil
 }
@@ -2349,9 +2357,34 @@ func existingPlanFile(path string) string {
 	return ""
 }
 
-// runMergeCommand merges the current feature branch into an explicit or detected base.
+// closeoutTarget carries the optional feature identifier supplied as the positional argument of
+// --merge/--pr together with the plans directory used to resolve it. a zero value means the
+// close-out applies to the currently checked-out branch.
+type closeoutTarget struct {
+	identifier string
+	plansDir   string
+}
+
+// resolveCloseoutBranch determines the feature branch a close-out command operates on: the
+// explicitly named feature when given, otherwise the currently checked-out branch.
+func resolveCloseoutBranch(gitSvc *git.Service, target closeoutTarget, flagName string) (string, error) {
+	if strings.TrimSpace(target.identifier) != "" {
+		return resolveFeatureBranch(gitSvc, target.plansDir, target.identifier)
+	}
+	branch, err := gitSvc.CurrentBranch()
+	if err != nil {
+		return "", fmt.Errorf("read current branch: %w", err)
+	}
+	if branch == "" {
+		return "", fmt.Errorf("%s requires a checked-out feature branch; detached HEAD is not supported", flagName)
+	}
+	return branch, nil
+}
+
+// runMergeCommand merges the feature branch into an explicit or detected base.
 // The completion pill is deliberately retained on every failure so the pending action stays visible.
-func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase string, rep cmuxStatusClearer, stdout io.Writer) error {
+func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase string, target closeoutTarget,
+	rep cmuxStatusClearer, stdout io.Writer) error {
 	dirty, err := gitSvc.IsDirtyAll()
 	if err != nil {
 		return fmt.Errorf("check working tree: %w", err)
@@ -2360,12 +2393,9 @@ func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase stri
 		return errors.New("--merge requires a clean working tree; commit, stash, or remove changes first")
 	}
 
-	feature, err := gitSvc.CurrentBranch()
+	feature, err := resolveCloseoutBranch(gitSvc, target, "--merge")
 	if err != nil {
-		return fmt.Errorf("read current branch: %w", err)
-	}
-	if feature == "" {
-		return errors.New("--merge requires a checked-out feature branch; detached HEAD is not supported")
+		return err
 	}
 	base, err := gitSvc.ResolveBaseBranch(explicitBase)
 	if err != nil {
@@ -2582,20 +2612,18 @@ func pathWithin(path, root string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// runPRCommand pushes the current feature branch and creates a GitHub pull request.
+// runPRCommand pushes the feature branch and creates a GitHub pull request.
 // The completion pill is retained until gh confirms that the PR was created.
-func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string, rep cmuxStatusClearer, stdout io.Writer) error {
+func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string, target closeoutTarget,
+	rep cmuxStatusClearer, stdout io.Writer) error {
 	ghPath, err := exec.LookPath("gh")
 	if err != nil {
 		return errors.New("--pr requires GitHub CLI (gh) in PATH; install it from https://cli.github.com/")
 	}
 
-	branch, err := gitSvc.CurrentBranch()
+	branch, err := resolveCloseoutBranch(gitSvc, target, "--pr")
 	if err != nil {
-		return fmt.Errorf("read current branch: %w", err)
-	}
-	if branch == "" {
-		return errors.New("--pr requires a checked-out feature branch; detached HEAD is not supported")
+		return err
 	}
 	base, err := gitSvc.ResolveBaseBranch(explicitBase)
 	if err != nil {
@@ -2726,10 +2754,11 @@ func runCloseoutCommand(ctx context.Context, o opts, cfg *config.Config, colors 
 		return fmt.Errorf("open git repo: %w", err)
 	}
 	rep := cmux.New("", cmux.Models{})
+	target := closeoutTarget{identifier: o.PlanFile, plansDir: cfg.PlansDir}
 	if mergeRequested(o) {
-		return runMergeCommand(ctx, gitSvc, o.Merge, rep, os.Stdout)
+		return runMergeCommand(ctx, gitSvc, o.Merge, target, rep, os.Stdout)
 	}
-	return runPRCommand(ctx, gitSvc, o.PR, rep, os.Stdout)
+	return runPRCommand(ctx, gitSvc, o.PR, target, rep, os.Stdout)
 }
 
 // buildPRTitleBody derives PR metadata from the plan associated with branch. Completed plans

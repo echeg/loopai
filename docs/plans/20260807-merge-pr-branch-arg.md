@@ -80,10 +80,10 @@ This directly fixes the workflow gap where a finished worktree run cannot be clo
 
 ### Task 2: Wire positional argument into standalone mode routing
 
-- [ ] write failing tests: `loopai --merge <arg>` and `loopai --pr <arg>` route the positional value into close-out handling instead of rejecting it; `--merge`/`--pr` without positional arg keep current behavior; positional arg without `--merge`/`--pr` still means plan file for a run
-- [ ] pass the positional `PlanFile` value into `runMergeCommand`/`runPRCommand` as the optional feature identifier when the standalone modes are active
-- [ ] update flag descriptions/usage text for `--merge` and `--pr` to document the optional feature argument
-- [ ] run `go test ./cmd/...` - must pass before task 3
+- [x] write failing tests: `loopai --merge <arg>` and `loopai --pr <arg>` route the positional value into close-out handling instead of rejecting it; `--merge`/`--pr` without positional arg keep current behavior; positional arg without `--merge`/`--pr` still means plan file for a run
+- [x] pass the positional `PlanFile` value into `runMergeCommand`/`runPRCommand` as the optional feature identifier when the standalone modes are active
+- [x] update flag descriptions/usage text for `--merge` and `--pr` to document the optional feature argument
+- [x] run `go test ./cmd/...` - must pass before task 3
 
 ### Task 3: Explicit feature support in runMergeCommand
 
