@@ -64,12 +64,12 @@
 - [x] run tests - must pass before next task
 
 ### Task 3: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented (auto hands off only on busy; bare flag unchanged; free workspace runs locally; no recursion)
-- [ ] verify edge cases are handled (stale phase pill treated as busy by design; list-status output with unrelated pills; query failure falls back to local run)
-- [ ] run full test suite (`make test`)
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] verify test coverage meets project standard (80%+) for the new code paths
-- [ ] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify all requirements from Overview are implemented (auto hands off only on busy; bare flag unchanged; free workspace runs locally; no recursion)
+- [x] verify edge cases are handled (stale phase pill treated as busy by design; list-status output with unrelated pills; query failure falls back to local run)
+- [x] run full test suite (`make test`)
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] verify test coverage meets project standard (80%+) for the new code paths
+- [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 4: [Final] Update documentation
 - [ ] update README.md: `--cmux-workspace[=always|auto]` semantics and the busy-detection rule
