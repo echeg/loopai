@@ -2,7 +2,7 @@
 
 ## Overview
 
-Allow `--merge` and `--pr` to accept an optional positional argument naming the feature to close out, so both commands can run from the primary checkout (or anywhere in the repository) instead of requiring the feature worktree to be the current directory.
+Allow `--merge` and `--pr` to accept an optional positional argument naming the feature to close out, so both commands can run from the root of the primary checkout or any other registered worktree instead of requiring the feature worktree to be the current directory. A checkout root is still required; an arbitrary subdirectory is not accepted.
 
 Accepted argument forms:
 

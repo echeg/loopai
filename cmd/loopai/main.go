@@ -2326,12 +2326,18 @@ func resolveFeatureBranch(gitSvc branchExistenceChecker, plansDir, arg string) (
 }
 
 // findFeaturePlanFile locates a plan file for identifier, accepting an explicit path or a
-// basename with an optional .md extension. an unresolvable path falls back to a basename lookup
-// in dirs, covering plans already moved to the completed directory.
+// basename with an optional .md extension. an unresolvable plan path falls back to a basename
+// lookup in dirs, covering plans already moved to the completed directory.
 func findFeaturePlanFile(identifier string, dirs ...string) string {
 	if filepath.Base(identifier) != identifier {
 		if path := existingPlanFile(identifier); path != "" {
 			return path
+		}
+		if filepath.Ext(identifier) != ".md" {
+			// a path-shaped identifier that names no plan file is a namespaced branch name such
+			// as feature/login. reducing it to its last segment would resolve an unrelated plan,
+			// and --merge then merges and deletes a branch the caller never named
+			return ""
 		}
 	}
 	base := filepath.Base(identifier)

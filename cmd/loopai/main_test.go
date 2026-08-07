@@ -6190,6 +6190,18 @@ func TestResolveFeatureBranch(t *testing.T) {
 			want: "section-duration-logging",
 		},
 		{name: "branch match wins over plan match", arg: "20260807-feature", want: "20260807-feature"},
+		{
+			// a namespaced branch name must never be reduced to its last segment: doing so would
+			// resolve 20260806-dynamic-review-agents.md and close out an unnamed branch
+			name:     "missing namespaced branch does not fall back to plan basename",
+			arg:      "feature/20260806-dynamic-review-agents",
+			errFrags: []string{"feature/20260806-dynamic-review-agents", "no local branch with this name"},
+		},
+		{
+			name:     "missing worktree path does not fall back to plan basename",
+			arg:      filepath.Join(".loopai", "worktrees", "20260806-dynamic-review-agents"),
+			errFrags: []string{"20260806-dynamic-review-agents", "no local branch with this name"},
+		},
 		{name: "whitespace is trimmed", arg: "  dynamic-review-agents  ", want: "dynamic-review-agents"},
 		{name: "empty identifier", arg: "   ", wantErr: "empty feature identifier"},
 		{
