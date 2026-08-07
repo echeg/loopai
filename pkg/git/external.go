@@ -187,6 +187,15 @@ func (e *externalBackend) headHash() (string, error) {
 	return out, nil
 }
 
+// revParse resolves any revision to its commit hash.
+func (e *externalBackend) revParse(ref string) (string, error) {
+	out, err := e.run("rev-parse", ref)
+	if err != nil {
+		return "", fmt.Errorf("resolve %q: %w", ref, err)
+	}
+	return out, nil
+}
+
 // diffFingerprint returns a sha256 hash of the working tree state (tracked diffs + untracked file content).
 // includes untracked file content hashes so that edits to existing untracked files are detected,
 // not just new file creation.
@@ -862,33 +871,34 @@ func (e *externalBackend) createInitialCommit(msg string) error {
 	return nil
 }
 
-// diffStats returns change statistics between baseBranch and HEAD.
-// returns zero stats if baseBranch doesn't exist or HEAD equals baseBranch.
-func (e *externalBackend) diffStats(baseBranch string) (DiffStats, error) {
+// diffStats returns change statistics between baseBranch and headRef, which may be any
+// resolvable revision such as HEAD or a branch name.
+// returns zero stats if either side doesn't resolve or both point at the same commit.
+func (e *externalBackend) diffStats(baseBranch, headRef string) (DiffStats, error) {
 	// check if base branch exists (try local, remote, origin/ prefix)
 	baseRef := e.resolveRef(baseBranch)
 	if baseRef == "" {
 		return DiffStats{}, nil
 	}
-
-	// check if HEAD equals base
-	headHash, err := e.headHash()
-	if err != nil {
-		return DiffStats{}, nil //nolint:nilerr // no HEAD means no stats
+	if headRef == "" {
+		headRef = "HEAD"
 	}
 
-	baseCmd := exec.CommandContext(context.Background(), e.command, "rev-parse", baseRef)
-	baseCmd.Dir = e.path
-	baseOut, err := baseCmd.Output()
+	// check if the head side equals base
+	headHash, err := e.revParse(headRef)
+	if err != nil {
+		return DiffStats{}, nil //nolint:nilerr // unresolvable head means no stats
+	}
+	baseHash, err := e.revParse(baseRef)
 	if err != nil {
 		return DiffStats{}, nil //nolint:nilerr // can't resolve base, return zero
 	}
-	if strings.TrimSpace(string(baseOut)) == headHash {
+	if baseHash == headHash {
 		return DiffStats{}, nil
 	}
 
 	// get numstat
-	out, err := e.run("diff", "--numstat", baseRef+"...HEAD")
+	out, err := e.run("diff", "--numstat", baseRef+"..."+headRef)
 	if err != nil {
 		return DiffStats{}, fmt.Errorf("diff numstat: %w", err)
 	}

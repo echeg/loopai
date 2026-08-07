@@ -54,7 +54,7 @@ type backend interface {
 	commitFiles(msg string, paths ...string) error
 	autoCommitAll(msg string) (bool, error)
 	createInitialCommit(msg string) error
-	diffStats(baseBranch string) (DiffStats, error)
+	diffStats(baseBranch, headRef string) (DiffStats, error)
 	addWorktree(path, branch string, createBranch bool) error
 	removeWorktree(path string) error
 	removeWorktreeSafe(path string) error
@@ -1004,7 +1004,16 @@ func (s *Service) EnsureHasCommits(promptFn func() bool) error {
 // DiffStats returns change statistics between baseBranch and HEAD.
 // returns zero stats if baseBranch doesn't exist or HEAD equals baseBranch.
 func (s *Service) DiffStats(baseBranch string) (DiffStats, error) {
-	return s.repo.diffStats(baseBranch)
+	return s.repo.diffStats(baseBranch, "HEAD")
+}
+
+// BranchDiffStats returns change statistics between baseBranch and a named branch, without
+// requiring that branch to be checked out. returns zero stats for an unknown branch.
+func (s *Service) BranchDiffStats(baseBranch, branch string) (DiffStats, error) {
+	if branch == "" {
+		return DiffStats{}, errors.New("branch diff stats: empty branch name")
+	}
+	return s.repo.diffStats(baseBranch, branch)
 }
 
 // EnsureLocalGitignore ensures progress and worktree artifacts are ignored without overwriting

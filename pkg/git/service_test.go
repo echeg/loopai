@@ -2206,6 +2206,61 @@ func TestService_BranchHash(t *testing.T) {
 	})
 }
 
+func TestService_BranchDiffStats(t *testing.T) {
+	setupFeature := func(t *testing.T) *Service {
+		t.Helper()
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		require.NoError(t, svc.CreateBranch("feature"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("one\ntwo\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+		runGit(t, dir, "checkout", "master")
+		return svc
+	}
+
+	t.Run("reports stats for a branch that is not checked out", func(t *testing.T) {
+		svc := setupFeature(t)
+
+		stats, err := svc.BranchDiffStats("master", "feature")
+		require.NoError(t, err)
+		assert.Equal(t, DiffStats{Files: 1, Additions: 2}, stats)
+	})
+
+	t.Run("HEAD-based stats stay empty on the base branch", func(t *testing.T) {
+		svc := setupFeature(t)
+
+		stats, err := svc.DiffStats("master")
+		require.NoError(t, err)
+		assert.Equal(t, DiffStats{}, stats)
+	})
+
+	t.Run("returns zero stats when branch equals base", func(t *testing.T) {
+		svc := setupFeature(t)
+
+		stats, err := svc.BranchDiffStats("master", "master")
+		require.NoError(t, err)
+		assert.Equal(t, DiffStats{}, stats)
+	})
+
+	t.Run("fails for empty branch name", func(t *testing.T) {
+		svc := setupFeature(t)
+
+		_, err := svc.BranchDiffStats("master", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "empty branch name")
+	})
+
+	t.Run("returns zero stats for unknown branch", func(t *testing.T) {
+		svc := setupFeature(t)
+
+		stats, err := svc.BranchDiffStats("master", "no-such-branch")
+		require.NoError(t, err)
+		assert.Equal(t, DiffStats{}, stats)
+	})
+}
+
 func TestService_formatDirtyFiles(t *testing.T) {
 	svc := &Service{}
 

@@ -98,10 +98,12 @@ This directly fixes the workflow gap where a finished worktree run cannot be clo
 
 ### Task 4: Explicit feature support in runPRCommand
 
-- [ ] write failing tests for `--pr <feature>` run from the primary checkout: named branch is pushed and PR created via `gh` stub with correct `--head`; plan metadata derived through existing `buildPRTitleBody` for the named branch; feature resolving to base → error; unknown feature → resolver error; no-argument behavior unchanged
-- [ ] refactor `runPRCommand`: with an explicit feature, skip the `CurrentBranch()` requirement, resolve the identifier, and use the resolved branch for diff stats, metadata, push, and `gh pr create --head`
-- [ ] keep origin validation, pill retention on failure, and branch/worktree preservation unchanged
-- [ ] run `go test ./cmd/...` - must pass before task 5
+- [x] write failing tests for `--pr <feature>` run from the primary checkout: named branch is pushed and PR created via `gh` stub with correct `--head`; plan metadata derived through existing `buildPRTitleBody` for the named branch; feature resolving to base → error; unknown feature → resolver error; no-argument behavior unchanged
+- [x] refactor `runPRCommand`: with an explicit feature, skip the `CurrentBranch()` requirement, resolve the identifier, and use the resolved branch for diff stats, metadata, push, and `gh pr create --head`
+- [x] keep origin validation, pill retention on failure, and branch/worktree preservation unchanged
+- [x] run `go test ./cmd/...` - must pass before task 5
+- ➕ `git.Service.DiffStats` was HEAD-only, so an explicit feature reported zero changes from the base checkout; the backend `diffStats` now takes an explicit head ref and `git.Service.BranchDiffStats(base, branch)` measures a branch tip without checking it out (covered by new `pkg/git` tests)
+- ➕ the "already the base branch" message now matches `--merge`: explicit features get "name a different feature" instead of "check out the feature branch first"
 
 ### Task 5: Verify acceptance criteria
 

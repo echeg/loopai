@@ -954,7 +954,7 @@ func TestExternalBackend_diffStats(t *testing.T) {
 		eb, err := newExternalBackend(dir, "git")
 		require.NoError(t, err)
 
-		stats, err := eb.diffStats("master")
+		stats, err := eb.diffStats("master", "HEAD")
 		require.NoError(t, err)
 		assert.Equal(t, DiffStats{}, stats)
 	})
@@ -964,9 +964,41 @@ func TestExternalBackend_diffStats(t *testing.T) {
 		eb, err := newExternalBackend(dir, "git")
 		require.NoError(t, err)
 
-		stats, err := eb.diffStats("nonexistent")
+		stats, err := eb.diffStats("nonexistent", "HEAD")
 		require.NoError(t, err)
 		assert.Equal(t, DiffStats{}, stats)
+	})
+
+	t.Run("empty head ref falls back to HEAD", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		require.NoError(t, eb.createBranch("feature"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "new.txt"), []byte("line1\n"), 0o600))
+		require.NoError(t, eb.add("new.txt"))
+		require.NoError(t, eb.commit("add new file"))
+
+		stats, err := eb.diffStats("master", "")
+		require.NoError(t, err)
+		assert.Equal(t, DiffStats{Files: 1, Additions: 1}, stats)
+	})
+
+	t.Run("returns stats for a branch that is not checked out", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		require.NoError(t, eb.createBranch("feature"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "new.txt"), []byte("line1\nline2\n"), 0o600))
+		require.NoError(t, eb.add("new.txt"))
+		require.NoError(t, eb.commit("add new file"))
+		_, err = eb.run("checkout", "master")
+		require.NoError(t, err)
+
+		stats, err := eb.diffStats("master", "feature")
+		require.NoError(t, err)
+		assert.Equal(t, DiffStats{Files: 1, Additions: 2}, stats)
 	})
 
 	t.Run("returns stats for added file", func(t *testing.T) {
@@ -979,7 +1011,7 @@ func TestExternalBackend_diffStats(t *testing.T) {
 		require.NoError(t, eb.add("new.txt"))
 		require.NoError(t, eb.commit("add new file"))
 
-		stats, err := eb.diffStats("master")
+		stats, err := eb.diffStats("master", "HEAD")
 		require.NoError(t, err)
 		assert.Equal(t, 1, stats.Files)
 		assert.Equal(t, 3, stats.Additions)
@@ -996,7 +1028,7 @@ func TestExternalBackend_diffStats(t *testing.T) {
 		require.NoError(t, eb.add("README.md"))
 		require.NoError(t, eb.commit("modify readme"))
 
-		stats, err := eb.diffStats("master")
+		stats, err := eb.diffStats("master", "HEAD")
 		require.NoError(t, err)
 		assert.Equal(t, 1, stats.Files)
 		assert.Equal(t, 2, stats.Additions)
@@ -1017,7 +1049,7 @@ func TestExternalBackend_diffStats(t *testing.T) {
 		require.NoError(t, eb.add("README.md"))
 		require.NoError(t, eb.commit("add and modify"))
 
-		stats, err := eb.diffStats("master")
+		stats, err := eb.diffStats("master", "HEAD")
 		require.NoError(t, err)
 		assert.Equal(t, 2, stats.Files)
 		assert.Equal(t, 8, stats.Additions) // 5 from new.txt + 3 from README.md

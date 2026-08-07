@@ -2697,6 +2697,7 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 		return errors.New("--pr requires GitHub CLI (gh) in PATH; install it from https://cli.github.com/")
 	}
 
+	explicit := strings.TrimSpace(target.identifier) != ""
 	branch, err := resolveCloseoutBranch(gitSvc, target, "--pr")
 	if err != nil {
 		return err
@@ -2706,12 +2707,17 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 		return fmt.Errorf("resolve PR base branch: %w", err)
 	}
 	if branch == base {
+		if explicit {
+			return fmt.Errorf("feature %q is already the base branch; name a different feature", base)
+		}
 		return fmt.Errorf("current branch %q is already the base branch; check out the feature branch first", base)
 	}
-	stats, err := gitSvc.DiffStats(base)
+	// an explicitly named feature need not be checked out, so its stats come from the branch tip
+	stats, err := prDiffStats(gitSvc, base, branch, explicit)
 	if err != nil {
-		return fmt.Errorf("calculate PR diff stats: %w", err)
+		return err
 	}
+
 	title, body, err := buildPRTitleBody(gitSvc.Root(), branch, stats)
 	if err != nil {
 		return err
@@ -2747,6 +2753,20 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 		rep.Clear()
 	}
 	return nil
+}
+
+// prDiffStats measures the PR diff against base. without an explicit feature the working
+// checkout is the feature, so HEAD-based stats are kept byte-for-byte as before.
+func prDiffStats(gitSvc *git.Service, base, branch string, explicit bool) (git.DiffStats, error) {
+	statsFor := gitSvc.DiffStats
+	if explicit {
+		statsFor = func(baseBranch string) (git.DiffStats, error) { return gitSvc.BranchDiffStats(baseBranch, branch) }
+	}
+	stats, err := statsFor(base)
+	if err != nil {
+		return git.DiffStats{}, fmt.Errorf("calculate PR diff stats for %q against %q: %w", branch, base, err)
+	}
+	return stats, nil
 }
 
 func validateGitHubOrigin(ctx context.Context, ghPath string, gitSvc *git.Service) (string, error) {

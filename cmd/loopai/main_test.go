@@ -6493,6 +6493,101 @@ func TestRunPRCommandExplicitFeatureResolverError(t *testing.T) {
 	assert.Zero(t, clearer.calls)
 }
 
+func TestRunPRCommandExplicitFeature(t *testing.T) {
+	// setupBaseCheckout builds a repo whose primary checkout stays on master while the feature
+	// branch carries the commits, mirroring a close-out started from the main checkout.
+	setupBaseCheckout := func(t *testing.T) (dir, remote string, svc *git.Service) {
+		t.Helper()
+		dir = setupTestRepo(t)
+		remote = filepath.Join(t.TempDir(), "origin.git")
+		runGit(t, filepath.Dir(remote), "init", "--bare", remote)
+		runGit(t, dir, "remote", "add", "origin", "https://github.com/acme/repo.git")
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("one\ntwo\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+		runGit(t, dir, "checkout", "master")
+
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260802-feature.md"),
+			[]byte("# Feature PR\n\n## Overview\n\nImplements feature.\n"), 0o600))
+
+		realGit, err := exec.LookPath("git")
+		require.NoError(t, err)
+		t.Setenv("PR_TEST_REAL_GIT", realGit)
+		t.Setenv("PR_TEST_REMOTE", remote)
+		gitWrapper := filepath.Join(t.TempDir(), "git-wrapper")
+		writeExecutable(t, gitWrapper, "#!/bin/sh\nif [ \"$1\" = push ]; then\n  refspec=$4\n  \"$PR_TEST_REAL_GIT\" push \"$PR_TEST_REMOTE\" \"$refspec\" || exit $?\n  exit 0\nfi\nexec \"$PR_TEST_REAL_GIT\" \"$@\"\n")
+		svc, err = git.NewService(dir, noopLogger(), gitWrapper)
+		require.NoError(t, err)
+		return dir, remote, svc
+	}
+
+	stubGh := func(t *testing.T) (argsLog, bodyLog string) {
+		t.Helper()
+		binDir := t.TempDir()
+		argsLog = filepath.Join(binDir, "gh-args.log")
+		bodyLog = filepath.Join(binDir, "gh-body.log")
+		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nif [ \"$1\" = repo ]; then\n  printf '%s\\n' 'acme/repo'\n  exit 0\nfi\nprintf '%s\\n' \"$@\" > \"$GH_ARGS_LOG\"\ncat > \"$GH_BODY_LOG\"\nprintf '%s\\n' 'https://github.com/acme/repo/pull/7'\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("GH_ARGS_LOG", argsLog)
+		t.Setenv("GH_BODY_LOG", bodyLog)
+		return argsLog, bodyLog
+	}
+
+	t.Run("branch name pushes and creates the PR without checking it out", func(t *testing.T) {
+		dir, remote, svc := setupBaseCheckout(t)
+		argsLog, bodyLog := stubGh(t)
+		clearer := &recordingStatusClearer{}
+		var output bytes.Buffer
+
+		require.NoError(t, runPRCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "feature", plansDir: filepath.Join(dir, "docs", "plans")}, clearer, &output))
+		assert.Equal(t, "https://github.com/acme/repo/pull/7\n", output.String())
+		assert.Equal(t, 1, clearer.calls)
+		assert.Equal(t, "master", currentGitBranch(t, dir), "the primary checkout must stay on the base branch")
+		assert.True(t, branchExists(t, dir, "feature"))
+
+		args, err := os.ReadFile(argsLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(args), "--base\nmaster\n--head\nfeature\n--title\nFeature PR\n")
+		body, err := os.ReadFile(bodyLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(body), "Implements feature.")
+		assert.Contains(t, string(body), "- Files changed: 1", "diff stats must describe the named branch, not HEAD")
+		assert.Contains(t, string(body), "- Additions: 2")
+
+		localHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "feature"))
+		assert.Equal(t, localHead, strings.TrimSpace(gitOutput(t, remote, "rev-parse", "refs/heads/feature")))
+	})
+
+	t.Run("plan basename resolves to the feature branch", func(t *testing.T) {
+		dir, _, svc := setupBaseCheckout(t)
+		argsLog, _ := stubGh(t)
+
+		require.NoError(t, runPRCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "20260802-feature", plansDir: filepath.Join(dir, "docs", "plans")},
+			&recordingStatusClearer{}, io.Discard))
+		args, err := os.ReadFile(argsLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(args), "--head\nfeature\n")
+	})
+
+	t.Run("feature resolving to the base branch is refused", func(t *testing.T) {
+		dir, _, svc := setupBaseCheckout(t)
+		stubGh(t)
+		clearer := &recordingStatusClearer{}
+
+		err := runPRCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "master", plansDir: filepath.Join(dir, "docs", "plans")}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "already the base branch")
+		assert.Contains(t, err.Error(), "name a different feature")
+		assert.Zero(t, clearer.calls)
+	})
+}
+
 func TestRunCloseoutCommandRoutesPositionalFeature(t *testing.T) {
 	dir := setupTestRepo(t)
 	plansDir := writeFeaturePlan(t, dir)
