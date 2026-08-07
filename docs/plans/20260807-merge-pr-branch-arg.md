@@ -118,10 +118,12 @@ This directly fixes the workflow gap where a finished worktree run cannot be clo
 
 ### Task 6: Update documentation
 
-- [ ] update `llms.txt`: new argument forms for `--merge`/`--pr` with examples
-- [ ] update `CLAUDE.md` close-out section: explicit feature resolution, worktree-less merge behavior
-- [ ] update `README.md` user documentation for close-out commands
-- [ ] update `--help` texts if not already done in task 2
+- [x] update `llms.txt`: new argument forms for `--merge`/`--pr` with examples
+- [x] update `CLAUDE.md` close-out section: explicit feature resolution, worktree-less merge behavior
+- [x] update `README.md` user documentation for close-out commands
+- [x] update `--help` texts if not already done in task 2 (already covered: `--merge`/`--pr` descriptions and the `plan-file` positional description document the feature argument)
+- ➕ `CLAUDE.md` also records the `mergeTargets` refactor and the new `git.BranchHash`/`git.BranchDiffStats` helpers, since they are architectural notes future work needs
+- ➕ README's "cannot be combined with a plan file" sentence was corrected to except the feature argument
 
 ## Technical Details
 

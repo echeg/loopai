@@ -246,6 +246,13 @@ loopai --merge=release/13
 # Push the current feature branch and open a GitHub pull request via gh.
 loopai --pr
 loopai --pr=release/13
+
+# Name the feature explicitly to close it out from the primary checkout.
+loopai --merge dynamic-review-agents
+loopai --merge 20260806-dynamic-review-agents
+loopai --merge docs/plans/20260806-dynamic-review-agents.md
+loopai --merge=release/13 dynamic-review-agents
+loopai --pr dynamic-review-agents
 ```
 
 `--merge` requires clean feature and base worktrees, including no untracked files. It
@@ -258,8 +265,21 @@ origin push URL must identify that same GitHub repository. It pushes committed b
 state, builds the title and body from the associated plan and diff
 statistics, and keeps the feature branch and worktree. Commit intended changes before
 running `--pr`. Each command clears the completion pill only after it succeeds, so a
-failed close-out remains visible. These commands cannot be combined with a plan file or
-execution options.
+failed close-out remains visible.
+
+Without an argument both commands close out the current branch and must run from the
+feature worktree or checkout. The optional positional argument names the feature instead,
+so either command can run from the primary checkout or anywhere else in the repository.
+It accepts a local branch name, a plan basename with or without `.md`, or a plan path, and
+combines with an explicit base such as `--merge=release/13 dynamic-review-agents`. loopai
+first looks for a branch of that exact name, then for a plan file in the plans directory
+and its `completed/` subdirectory, deriving the branch from the plan filename and
+requiring it to exist. When the named feature has no registered worktree, `--merge` merges
+and deletes the branch without any worktree cleanup; with a worktree the usual cleanliness
+checks and safe removal apply. `--pr <feature>` pushes and opens the pull request for a
+branch that is not checked out anywhere. Naming the base branch as the feature is an
+error. Apart from this argument, the close-out commands cannot be combined with a plan
+file or execution options.
 
 ## Executors and reviews
 
