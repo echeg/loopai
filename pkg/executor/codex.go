@@ -755,11 +755,27 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 }
 
 type rolloutDiscovery struct {
-	parents map[string]string
+	parents     map[string]string
+	incomplete  map[string]rolloutFileStamp
+	directories map[string]rolloutDirectoryCache
 }
 
 func newRolloutDiscovery() *rolloutDiscovery {
-	return &rolloutDiscovery{parents: make(map[string]string)}
+	return &rolloutDiscovery{
+		parents:     make(map[string]string),
+		incomplete:  make(map[string]rolloutFileStamp),
+		directories: make(map[string]rolloutDirectoryCache),
+	}
+}
+
+type rolloutFileStamp struct {
+	size    int64
+	modTime time.Time
+}
+
+type rolloutDirectoryCache struct {
+	stamp rolloutFileStamp
+	paths []string
 }
 
 func (e *CodexExecutor) discoverRolloutStates(
@@ -772,10 +788,10 @@ func (e *CodexExecutor) discoverRolloutStates(
 		added := false
 		candidates := []string{rootPath}
 		if e.CommandTimingHandler != nil {
-			candidates = nil
-			for _, dir := range rolloutDiscoveryDirs(rootPath) {
-				matches, _ := filepath.Glob(filepath.Join(dir, "rollout-*.jsonl"))
-				candidates = append(candidates, matches...)
+			dirs := rolloutDiscoveryDirs(rootPath)
+			candidates = make([]string, 0, len(dirs))
+			for _, dir := range dirs {
+				candidates = append(candidates, discovery.paths(dir)...)
 			}
 		}
 		for _, candidate := range candidates {
@@ -802,6 +818,21 @@ func (e *CodexExecutor) discoverRolloutStates(
 	}
 }
 
+func (d *rolloutDiscovery) paths(dir string) []string {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		delete(d.directories, dir)
+		return nil
+	}
+	stamp := rolloutFileStamp{size: info.Size(), modTime: info.ModTime()}
+	if cached, ok := d.directories[dir]; ok && cached.stamp == stamp {
+		return cached.paths
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, "rollout-*.jsonl"))
+	d.directories[dir] = rolloutDirectoryCache{stamp: stamp, paths: matches}
+	return matches
+}
+
 // rolloutDiscoveryDirs covers the root session's day and the following day.
 // Codex stores rollouts under local YYYY/MM/DD directories, so a session that
 // crosses midnight can place newly spawned child agents beside neither root.
@@ -826,10 +857,20 @@ func (e *CodexExecutor) shouldDiscoverChildRollout(
 	if parentID, inspected := discovery.parents[path]; inspected {
 		return knownParents[parentID]
 	}
-	parentID, ready := rolloutParentThreadID(path)
-	if !ready {
+	info, err := os.Stat(path)
+	if err != nil {
 		return false
 	}
+	stamp := rolloutFileStamp{size: info.Size(), modTime: info.ModTime()}
+	if previous, inspected := discovery.incomplete[path]; inspected && previous == stamp {
+		return false
+	}
+	parentID, ready := rolloutParentThreadID(path)
+	if !ready {
+		discovery.incomplete[path] = stamp
+		return false
+	}
+	delete(discovery.incomplete, path)
 	discovery.parents[path] = parentID
 	return knownParents[parentID]
 }
@@ -883,12 +924,17 @@ func (e *CodexExecutor) drainRolloutState(state *rolloutTailState, now func() ti
 }
 
 func rolloutParentThreadID(path string) (string, bool) {
+	const maxMetadataLineSize = 1 << 20
+
 	f, err := os.Open(path) //nolint:gosec // path is a candidate in codex's session directory
 	if err != nil {
 		return "", false
 	}
 	defer func() { _ = f.Close() }()
-	line, err := bufio.NewReader(f).ReadBytes('\n')
+	line, err := bufio.NewReader(io.LimitReader(f, maxMetadataLineSize+1)).ReadBytes('\n')
+	if len(line) > maxMetadataLineSize {
+		return "", false
+	}
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", false
 	}
@@ -1008,6 +1054,11 @@ var (
 	customRawOutput          = regexp.MustCompile(`\btext\s*\(\s*[A-Za-z_$][A-Za-z0-9_$]*\.output\s*\)`)
 	customDestructuredRest   = regexp.MustCompile(`(?s)(?:const|let|var)\s*\{[^}]*\.\.\.\s*([A-Za-z_$][A-Za-z0-9_$]*)[^}]*\}\s*=\s*await\s+tools\.exec_command`)
 	customResultVariable     = regexp.MustCompile(`(?s)^\s*(?:(?://[^\n]*\n)\s*)*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*await\s*$`)
+	customDirectResult       = regexp.MustCompile(`(?s)(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*await\s+tools\.(?:exec_command|write_stdin)\s*\(`)
+	customPromiseResult      = regexp.MustCompile(`(?s)(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*await\s+Promise\.all\s*\(`)
+	customJSONStringify      = regexp.MustCompile(`\bJSON\.stringify\s*\(`)
+	customForOf              = regexp.MustCompile(`(?s)for\s*\(\s*(?:const|let|var)\s+(.+?)\s+of\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\)`)
+	customIdentifier         = regexp.MustCompile(`[A-Za-z_$][A-Za-z0-9_$]*`)
 	outputSessionIDPattern   = regexp.MustCompile(`(?im)^(?:SESSION_ID\s*=|session(?:_|\s+)id["']?\s*[:=]\s*|Process running with session ID\s+)(\d+)\s*$`)
 	outputSessionProofBlock  = regexp.MustCompile(`^SESSION_ID=(\d+)$`)
 	outputCellIDPattern      = regexp.MustCompile(`(?im)^(?:Script running with cell ID\s*|cell_id["']?\s*[:=]\s*)(\d+)\s*$`)
@@ -1924,12 +1975,8 @@ func skipCustomExecQuoted(input string, start, end int) (int, bool) {
 
 func customToolEmitsStructuredResults(input string) bool {
 	arguments := customTextCallArguments(input)
-	if !customRawOutput.MatchString(input) {
-		for _, argument := range arguments {
-			if strings.Contains(argument, "JSON.stringify(") {
-				return true
-			}
-		}
+	if !customRawOutput.MatchString(input) && customJSONStringifyArgumentsUseResults(input, arguments) {
+		return true
 	}
 	for _, match := range customDestructuredRest.FindAllStringSubmatch(input, -1) {
 		if len(match) < 2 {
@@ -1942,6 +1989,85 @@ func customToolEmitsStructuredResults(input string) bool {
 		}
 	}
 	return false
+}
+
+func customJSONStringifyArgumentsUseResults(input string, arguments []string) bool {
+	resultVariables := customResultVariables(input)
+	found := false
+	for _, argument := range arguments {
+		for _, location := range customJSONStringify.FindAllStringIndex(argument, -1) {
+			end, ok := customDelimitedEnd(argument, location[1]-1)
+			if !ok || !customJSONStringifyUsesResult(argument[location[1]:end], resultVariables) {
+				return false
+			}
+			found = true
+		}
+	}
+	return found
+}
+
+func customResultVariables(input string) map[string]bool {
+	result := make(map[string]bool)
+	for _, match := range customDirectResult.FindAllStringSubmatch(input, -1) {
+		result[match[1]] = true
+	}
+	for _, location := range customPromiseResult.FindAllStringSubmatchIndex(input, -1) {
+		if len(location) < 4 {
+			continue
+		}
+		end, ok := customDelimitedEnd(input, location[1]-1)
+		if !ok {
+			continue
+		}
+		body := input[location[1]:end]
+		if customExecCallPattern.MatchString(body) || customWriteCallPattern.MatchString(body) {
+			result[input[location[2]:location[3]]] = true
+		}
+	}
+
+	for changed := true; changed; {
+		changed = false
+		for variable := range result {
+			pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(variable) + `\.forEach\s*\(\s*(?:async\s+)?(?:\(\s*)?([A-Za-z_$][A-Za-z0-9_$]*)`)
+			for _, match := range pattern.FindAllStringSubmatch(input, -1) {
+				if !result[match[1]] {
+					result[match[1]] = true
+					changed = true
+				}
+			}
+		}
+		for _, match := range customForOf.FindAllStringSubmatch(input, -1) {
+			if !result[match[2]] {
+				continue
+			}
+			for _, variable := range customIdentifier.FindAllString(match[1], -1) {
+				if !result[variable] {
+					result[variable] = true
+					changed = true
+				}
+			}
+		}
+	}
+	return result
+}
+
+func customJSONStringifyUsesResult(argument string, resultVariables map[string]bool) bool {
+	argument = strings.TrimSpace(argument)
+	if resultVariables[argument] {
+		return true
+	}
+	if len(argument) < 2 || argument[0] != '{' || argument[len(argument)-1] != '}' {
+		return false
+	}
+	fields, ok := splitCustomTopLevel(argument[1:len(argument)-1], ',')
+	if !ok || len(fields) == 0 {
+		return false
+	}
+	last := strings.TrimSpace(fields[len(fields)-1])
+	if !strings.HasPrefix(last, "...") {
+		return false
+	}
+	return resultVariables[strings.TrimSpace(strings.TrimPrefix(last, "..."))]
 }
 
 func customTextCallArguments(input string) []string {
@@ -2239,9 +2365,9 @@ func rolloutOutputTexts(raw json.RawMessage) []string {
 func parseCodexCommandResults(outputs []string, pendingCount int) map[int]codexCommandResult {
 	parsed := make([]codexCommandResult, 0, len(outputs))
 	for _, output := range outputs {
-		result, ok := parseStructuredCommandResult(output)
+		results, ok := parseStructuredCommandResults(output)
 		if ok {
-			parsed = append(parsed, result)
+			parsed = append(parsed, results...)
 		}
 	}
 
@@ -2272,6 +2398,30 @@ func parseCodexCommandResults(outputs []string, pendingCount int) map[int]codexC
 		}
 	}
 	return results
+}
+
+func parseStructuredCommandResults(output string) ([]codexCommandResult, bool) {
+	trimmed := strings.TrimSpace(output)
+	if result, ok := parseStructuredCommandResultJSON(trimmed); ok {
+		return []codexCommandResult{result}, true
+	}
+	var rawResults []json.RawMessage
+	if json.Unmarshal([]byte(trimmed), &rawResults) == nil && len(rawResults) > 0 {
+		results := make([]codexCommandResult, 0, len(rawResults))
+		for _, raw := range rawResults {
+			result, ok := parseStructuredCommandResultJSON(strings.TrimSpace(string(raw)))
+			if !ok {
+				return nil, false
+			}
+			results = append(results, result)
+		}
+		return results, true
+	}
+	result, ok := parseStructuredCommandResult(output)
+	if !ok {
+		return nil, false
+	}
+	return []codexCommandResult{result}, true
 }
 
 func indexedBatchResults(parsed []codexCommandResult, pendingCount int) (map[int]codexCommandResult, bool) {
