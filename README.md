@@ -507,9 +507,18 @@ loopai --cmux-workspace --worktree docs/plans/feature.md
 
 Hand-off is best-effort like the rest of the cmux integration and never blocks a run. Outside
 cmux, or when workspace creation fails, loopai prints a warning and executes normally in the
-current terminal. Close-out and configuration commands (`--clear`, `--merge`, `--pr`, `--init`,
-`--reset`, `--dump-defaults`) are never handed off. With `--plan`, the interactive plan dialog
-happens in the new workspace's terminal.
+current terminal, where it keeps the sidebar status it would have had without the flag. A
+successful hand-off leaves the previous run's pill in the workspace it was started from, since the
+new run reports into its own card instead.
+
+Close-out and configuration commands (`--clear`, `--merge`, `--pr`, `--init`, `--dump-defaults`,
+and `--reset` on its own) are never handed off; `--reset` in front of a plan belongs to that run
+and is performed once, in the new workspace. With `--plan`, the interactive plan dialog happens in
+the new workspace's terminal.
+
+The new workspace starts a fresh shell, so it does not inherit the environment of the terminal the
+run was started from. `LOOPAI_CONFIG_DIR` and `LOOPAI_WEB_HOST` are carried over with the command;
+anything else the run needs, such as provider credentials, has to come from the shell profile.
 
 Provider session and rate limits are retried every 10 minutes by default until the provider
 recovers or the run is canceled with `Ctrl+C`. During the wait, progress output is red and cmux

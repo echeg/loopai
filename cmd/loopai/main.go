@@ -318,7 +318,7 @@ func run(ctx context.Context, o opts) error {
 
 	// handle early-exit flags (before full config load)
 	if done, err := handleEarlyFlags(o); err != nil || done {
-		resolveStaleCmuxStatus(false)
+		resolveStaleCmuxStatus(handOffSucceeded(o, err))
 		return err
 	}
 	// load config first to get custom command paths
@@ -2322,8 +2322,7 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) boo
 	}
 
 	name := cmuxWorkspaceName(o)
-	argv := append([]string{exe}, stripCmuxWorkspaceArg(args)...)
-	if err := cmux.SpawnWorkspace(name, cwd, argv); err != nil {
+	if err := cmux.SpawnWorkspace(name, cwd, cmuxHandOffArgv(exe, args)); err != nil {
 		fmt.Fprintf(stderr, "warning: cmux workspace hand-off failed, running here: %v\n", err)
 		return false
 	}
@@ -2346,6 +2345,29 @@ func cmuxWorkspaceName(o opts) string {
 		return name
 	}
 	return "loopai"
+}
+
+// cmuxEnvOptions lists the environment variables go-flags reads option values from. cmux starts
+// the new workspace from a shell of its own, which inherits cmux's environment and not this
+// process's, so an option provided through the environment would silently revert to its default
+// after hand-off. TestCmuxEnvOptionsCoversOptionTags keeps the list in sync with the struct tags.
+var cmuxEnvOptions = []string{"LOOPAI_CONFIG_DIR", "LOOPAI_WEB_HOST"}
+
+// cmuxHandOffArgv builds the command the new workspace runs: this executable, the arguments minus
+// the hand-off flag, and an env prefix carrying the environment-provided options across. env is
+// used rather than shell assignment prefixes because the target shell is unknown and not every
+// shell supports them.
+func cmuxHandOffArgv(exe string, args []string) []string {
+	var prefix []string
+	for _, key := range cmuxEnvOptions {
+		if value, ok := os.LookupEnv(key); ok {
+			prefix = append(prefix, key+"="+value)
+		}
+	}
+	if len(prefix) > 0 {
+		prefix = append([]string{"env"}, prefix...)
+	}
+	return append(append(prefix, exe), stripCmuxWorkspaceArg(args)...)
 }
 
 // stripCmuxWorkspaceArg removes --cmux-workspace from the arguments the new workspace is
@@ -2377,11 +2399,21 @@ func isStandaloneCommand(o opts) bool {
 	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || (o.Reset && isResetOnly(o))
 }
 
+// handOffSucceeded reports whether an early-exit verdict from handleEarlyFlags came from a
+// successful cmux workspace hand-off, which means the run happens in another workspace and this
+// one's pill is not ours to replace. under --cmux-workspace the remaining early flags reach an
+// early exit only after a failed hand-off, and with an error except for the standalone commands,
+// whose stale-pill clear is a no-op either way.
+func handOffSucceeded(o opts, earlyErr error) bool {
+	return o.CmuxWorkspace && earlyErr == nil
+}
+
 // prepareStaleCmuxStatus clears immediately for definite runs. When --serve might become
-// watch-only after config loading, the returned callback performs the clear only if startup
-// resolves to a normal run or exits before that distinction can be made.
+// watch-only after config loading, or --cmux-workspace might hand the run to another workspace,
+// the returned callback performs the clear only if startup resolves to a normal run here or exits
+// before that distinction can be made.
 func prepareStaleCmuxStatus(o opts) func(preserve bool) {
-	if mayBeWatchOnlyMode(o) {
+	if mayBeWatchOnlyMode(o) || o.CmuxWorkspace {
 		return func(preserve bool) {
 			if !preserve {
 				clearStaleCmuxStatus(o)

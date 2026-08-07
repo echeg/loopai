@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -7462,10 +7463,25 @@ func TestCmuxWorkspaceName(t *testing.T) {
 	}
 }
 
+// clearCmuxEnvOptions removes the environment-provided options for the duration of the test, so
+// hand-off argv assertions do not depend on the environment the suite happens to run in.
+func clearCmuxEnvOptions(t *testing.T) {
+	t.Helper()
+	for _, key := range cmuxEnvOptions {
+		value, ok := os.LookupEnv(key)
+		if !ok {
+			continue
+		}
+		require.NoError(t, os.Unsetenv(key))
+		t.Cleanup(func() { require.NoError(t, os.Setenv(key, value)) })
+	}
+}
+
 // cmuxSpawnStub installs a cmux binary in PATH recording every argument on its own line and
 // returns the log path. exitCode lets a test make the spawn fail.
 func cmuxSpawnStub(t *testing.T, exitCode int) string {
 	t.Helper()
+	clearCmuxEnvOptions(t)
 	binDir := t.TempDir()
 	argvLog := filepath.Join(binDir, "cmux-argv.log")
 	writeExecutable(t, filepath.Join(binDir, "cmux"),
@@ -7566,6 +7582,39 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		require.ErrorIs(t, statErr, os.ErrNotExist)
 	})
 
+	t.Run("environment-provided options travel with the command", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Setenv("LOOPAI_CONFIG_DIR", "/custom/config dir")
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, PlanFile: "p.md"}
+		require.True(t, handOffToCmuxWorkspace(o, []string{"p.md"}, stdout, stderr))
+
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		lines := strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n")
+		assert.Equal(t, fmt.Sprintf("'env' 'LOOPAI_CONFIG_DIR=/custom/config dir' '%s' 'p.md'", exe), lines[len(lines)-1],
+			"the new workspace shell does not inherit this process's environment")
+	})
+
+	t.Run("reset preceding a run is handed off", func(t *testing.T) {
+		argvLog := cmuxSpawnStub(t, 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+
+		// --reset alone is a standalone command, but combined with a run it is part of that run and
+		// must happen once, in the workspace the run lands in.
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: true, Reset: true, PlanFile: "docs/plans/p.md"}
+		require.True(t, handOffToCmuxWorkspace(o, []string{"--reset", "docs/plans/p.md"}, stdout, stderr))
+
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "--reset")
+	})
+
 	t.Run("standalone commands are not handed off", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
@@ -7601,6 +7650,8 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, string(recorded), "new-workspace")
 		assert.Contains(t, string(recorded), "\np\n") // workspace named after the plan branch
+		assert.NotContains(t, string(recorded), "clear-status",
+			"the run happens in the new workspace, so this one's completion pill stays")
 	})
 
 	t.Run("interactive plan creation is handed off too", func(t *testing.T) {
@@ -7616,11 +7667,15 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 	})
 
 	t.Run("failed hand-off continues the normal run", func(t *testing.T) {
-		cmuxSpawnStub(t, 1)
+		argvLog := cmuxSpawnStub(t, 1)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
 
 		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"})
 		require.ErrorContains(t, err, "load config")
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "clear-status",
+			"the run stayed here after all, so it takes over the stale pill even though startup failed")
 	})
 
 	t.Run("outside cmux continues the normal run", func(t *testing.T) {
@@ -7629,5 +7684,104 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 
 		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"})
 		require.ErrorContains(t, err, "load config")
+	})
+}
+
+func TestCmuxEnvOptionsCoversOptionTags(t *testing.T) {
+	var tagged []string
+	for field := range reflect.TypeFor[opts]().Fields() {
+		if key := field.Tag.Get("env"); key != "" {
+			tagged = append(tagged, key)
+		}
+	}
+
+	require.NotEmpty(t, tagged, "the reflection walk must find the env-backed options")
+	assert.ElementsMatch(t, tagged, cmuxEnvOptions,
+		"an option readable from the environment is lost on hand-off unless cmuxEnvOptions lists it")
+}
+
+func TestCmuxHandOffArgv(t *testing.T) {
+	t.Run("no environment options", func(t *testing.T) {
+		clearCmuxEnvOptions(t)
+		argv := cmuxHandOffArgv("/bin/loopai", []string{"--cmux-workspace", "p.md"})
+		assert.Equal(t, []string{"/bin/loopai", "p.md"}, argv)
+	})
+
+	t.Run("empty value is still forwarded", func(t *testing.T) {
+		clearCmuxEnvOptions(t)
+		t.Setenv("LOOPAI_CONFIG_DIR", "")
+		argv := cmuxHandOffArgv("/bin/loopai", nil)
+		assert.Equal(t, []string{"env", "LOOPAI_CONFIG_DIR=", "/bin/loopai"}, argv,
+			"an explicitly empty value means something different than an unset one")
+	})
+
+	t.Run("every environment option is forwarded", func(t *testing.T) {
+		clearCmuxEnvOptions(t)
+		t.Setenv("LOOPAI_CONFIG_DIR", "/cfg")
+		t.Setenv("LOOPAI_WEB_HOST", "0.0.0.0")
+		argv := cmuxHandOffArgv("/bin/loopai", []string{"--serve"})
+		assert.Equal(t, []string{"env", "LOOPAI_CONFIG_DIR=/cfg", "LOOPAI_WEB_HOST=0.0.0.0", "/bin/loopai", "--serve"}, argv)
+	})
+}
+
+func TestHandOffSucceeded(t *testing.T) {
+	tests := []struct {
+		name     string
+		o        opts
+		earlyErr error
+		want     bool
+	}{
+		{name: "hand-off with no error", o: opts{CmuxWorkspace: true}, want: true},
+		{name: "hand-off flag with an error", o: opts{CmuxWorkspace: true}, earlyErr: errors.New("reset failed")},
+		{name: "flag unset", o: opts{}},
+		{name: "flag unset with an error", o: opts{}, earlyErr: errors.New("init failed")},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, handOffSucceeded(tc.o, tc.earlyErr))
+		})
+	}
+}
+
+func TestPrepareStaleCmuxStatusDefersForHandOff(t *testing.T) {
+	// cmux stub shared by the subtests, each gets its own log through CMUX_ARGV_LOG.
+	stub := func(t *testing.T) string {
+		t.Helper()
+		binDir := t.TempDir()
+		argvLog := filepath.Join(binDir, "cmux-argv.log")
+		writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		t.Setenv("CMUX_ARGV_LOG", argvLog)
+		return argvLog
+	}
+
+	t.Run("without the flag the clear is immediate", func(t *testing.T) {
+		argvLog := stub(t)
+		prepareStaleCmuxStatus(opts{PlanFile: "plan.md"})
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Equal(t, "clear-status loopai\n", string(recorded))
+	})
+
+	t.Run("preserved hand-off never clears", func(t *testing.T) {
+		argvLog := stub(t)
+		resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: true, PlanFile: "plan.md"})
+		_, err := os.Stat(argvLog)
+		require.ErrorIs(t, err, os.ErrNotExist, "the hand-off verdict is not known yet")
+
+		resolve(true)
+		_, err = os.Stat(argvLog)
+		require.ErrorIs(t, err, os.ErrNotExist, "the run moved to another workspace")
+	})
+
+	t.Run("failed hand-off clears on resolution", func(t *testing.T) {
+		argvLog := stub(t)
+		resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: true, PlanFile: "plan.md"})
+		resolve(false)
+		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Equal(t, "clear-status loopai\n", string(recorded))
 	})
 }

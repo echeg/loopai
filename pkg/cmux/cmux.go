@@ -24,6 +24,13 @@ const (
 	// execTimeout bounds a single cmux CLI call, the socket is local so a hanging call must not stall the run.
 	execTimeout = 2 * time.Second
 
+	// spawnTimeout bounds cmux new-workspace. it is far more generous than execTimeout because
+	// creating a workspace starts a terminal instead of updating a label, and because a timeout here
+	// is ambiguous rather than merely cosmetic: cmux may have created the workspace already while the
+	// caller reads the error as a failure and runs the plan locally as well, giving two concurrent
+	// runs over one repository.
+	spawnTimeout = 10 * time.Second
+
 	// pollInterval is how often the plan file is re-read for the progress bar. a task iteration
 	// takes minutes, so a tighter interval would only re-read the file for nothing.
 	pollInterval = 10 * time.Second
@@ -155,12 +162,12 @@ func SpawnWorkspace(name, cwd string, argv []string) error {
 	if err != nil {
 		return fmt.Errorf("no %s binary in PATH: %w", binName, ErrNotInCmux)
 	}
-	return spawnWorkspace(&execRunner{bin: bin}, name, cwd, argv)
+	return spawnWorkspace(&execRunner{bin: bin}, spawnTimeout, name, cwd, argv)
 }
 
 // spawnWorkspace is the runner-injectable core of SpawnWorkspace, kept separate so tests can
-// record argv without a live cmux socket.
-func spawnWorkspace(runner commandRunner, name, cwd string, argv []string) error {
+// record argv without a live cmux socket and bound a blocking call without waiting spawnTimeout.
+func spawnWorkspace(runner commandRunner, timeout time.Duration, name, cwd string, argv []string) error {
 	if len(argv) == 0 {
 		return errors.New("no command for the new workspace")
 	}
@@ -173,7 +180,7 @@ func spawnWorkspace(runner commandRunner, name, cwd string, argv []string) error
 		quoted = append(quoted, shellQuote(a))
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	args := []string{"new-workspace", "--name", name, "--cwd", cwd, "--focus", "true", "--command", strings.Join(quoted, " ")}
 	if err := runner.run(ctx, args...); err != nil {
