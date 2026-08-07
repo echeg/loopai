@@ -77,7 +77,7 @@ type opts struct {
 	Init                    bool          `long:"init" description:"initialize local .loopai/ config directory in current project"`
 	Reset                   bool          `long:"reset" description:"interactively reset global config to embedded defaults"`
 	Clear                   bool          `long:"clear" description:"remove loopai cmux status pill"`
-	CmuxWorkspace           bool          `long:"cmux-workspace" description:"relaunch this run in a new cmux workspace so it gets its own sidebar card (no-op with a warning outside cmux)"`
+	CmuxWorkspace           string        `long:"cmux-workspace" optional:"true" optional-value:"always" choice:"always" choice:"auto" description:"relaunch in a new cmux workspace: bare/always = unconditionally, auto = only when the current workspace already runs loopai"`
 	Merge                   string        `long:"merge" optional:"true" optional-value:"" value-name:"base" description:"merge feature branch into base branch; positional argument names the feature (branch or plan), default current branch"`
 	PR                      string        `long:"pr" optional:"true" optional-value:"" value-name:"base" description:"push feature branch and create a GitHub pull request; positional argument names the feature (branch or plan), default current branch"`
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
@@ -2318,13 +2318,27 @@ func clearCmuxStatus(stdout io.Writer) {
 // handOffToCmuxWorkspace relaunches this invocation in a new cmux workspace and reports whether
 // the caller must stop, plus an error when stopping is not a success. hand-off is best-effort like
 // the rest of the cmux integration: outside cmux, or when workspace creation is cleanly refused, a
-// warning is printed and (false, nil) is returned so the run continues in the current terminal. the
-// one exception is an ambiguous creation timeout, which stops with an error rather than risking a
-// second run of the same plan. standalone commands are excluded, they are short synchronous
-// commands whose output belongs to the terminal the user typed them in.
+// warning is printed and (false, nil) is returned so the run continues in the current terminal.
+// auto mode also continues locally when the workspace is free or its status cannot be queried, but
+// stays quiet unless debug logging is enabled. the one exception is an ambiguous creation timeout,
+// which stops with an error rather than risking a second run of the same plan. standalone commands
+// are excluded, they are short synchronous commands whose output belongs to the terminal the user
+// typed them in.
 func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bool, error) {
-	if !o.CmuxWorkspace || isStandaloneCommand(o) {
+	if o.CmuxWorkspace == "" || isStandaloneCommand(o) {
 		return false, nil
+	}
+	if o.CmuxWorkspace == "auto" {
+		busy, err := cmux.WorkspaceBusy()
+		if err != nil {
+			if o.Debug {
+				fmt.Fprintf(stderr, "debug: cmux workspace auto query failed, running here: %v\n", err)
+			}
+			return false, nil
+		}
+		if !busy {
+			return false, nil
+		}
 	}
 
 	exe, exeErr := os.Executable()
@@ -2514,9 +2528,9 @@ func cmuxHandOffArgv(exe string, args []string) []string {
 	return append(append(prefix, exe), stripCmuxWorkspaceArg(args)...)
 }
 
-// stripCmuxWorkspaceArg removes --cmux-workspace from the arguments the new workspace is
-// relaunched with, which is the recursion guard: the child performs a normal run. the flag is
-// boolean, so it never consumes a following argument and only its own token has to go.
+// stripCmuxWorkspaceArg removes --cmux-workspace and its attached value forms from the arguments
+// the new workspace is relaunched with, which is the recursion guard: the child performs a normal
+// run. optional go-flags values must be attached, so a following argument is always preserved.
 func stripCmuxWorkspaceArg(args []string) []string {
 	const flag = "--cmux-workspace"
 	filtered := make([]string, 0, len(args))
@@ -2549,7 +2563,7 @@ func isStandaloneCommand(o opts) bool {
 // early exit only after a failed hand-off, and with an error except for the standalone commands,
 // whose stale-pill clear is a no-op either way.
 func handOffSucceeded(o opts, earlyErr error) bool {
-	return o.CmuxWorkspace && earlyErr == nil
+	return o.CmuxWorkspace != "" && earlyErr == nil
 }
 
 // prepareStaleCmuxStatus clears immediately for definite runs. When --serve might become
@@ -2557,7 +2571,7 @@ func handOffSucceeded(o opts, earlyErr error) bool {
 // the returned callback performs the clear only if startup resolves to a normal run here or exits
 // before that distinction can be made.
 func prepareStaleCmuxStatus(o opts) func(preserve bool) {
-	if mayBeWatchOnlyMode(o) || o.CmuxWorkspace {
+	if mayBeWatchOnlyMode(o) || o.CmuxWorkspace != "" {
 		return func(preserve bool) {
 			if !preserve {
 				clearStaleCmuxStatus(o)

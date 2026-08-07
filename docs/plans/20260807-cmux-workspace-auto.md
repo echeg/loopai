@@ -55,13 +55,13 @@
 - [x] run tests - must pass before next task
 
 ### Task 2: Evolve --cmux-workspace flag to optional always/auto
-- [ ] change `CmuxWorkspace` in the options struct from `bool` to `string` with `long:"cmux-workspace" optional:"true" optional-value:"always" choice:"always" choice:"auto"` and an updated description ("relaunch in a new cmux workspace: bare/always = unconditionally, auto = only when the current workspace already runs loopai")
-- [ ] update every `o.CmuxWorkspace` reference: hand-off gate becomes mode-aware (`always` → current behavior; `auto` → call `cmux.WorkspaceBusy()` first: busy → hand off, free → continue locally without warning; `ErrNotInCmux` or query failure in auto mode → continue locally, debug-log only)
-- [ ] update `stripCmuxWorkspaceArg` to strip `--cmux-workspace=auto`/`=always` value forms as well (bare form already handled) — the relaunched child must never re-evaluate hand-off
-- [ ] update existing flag/hand-off tests for the bool→string change; keep a test proving bare `--cmux-workspace` still means unconditional hand-off (backward compatibility)
-- [ ] write tests for auto mode: busy workspace (stubbed list-status with phase pill) → spawn invoked and hand-off reported; free workspace (final pill or no pill) → no spawn, normal run proceeds; outside cmux → normal run proceeds without warning
-- [ ] write tests for arg stripping of the value forms (table-driven: `=auto`, `=always`, mixed with other flags, repeated)
-- [ ] run tests - must pass before next task
+- [x] change `CmuxWorkspace` in the options struct from `bool` to `string` with `long:"cmux-workspace" optional:"true" optional-value:"always" choice:"always" choice:"auto"` and an updated description ("relaunch in a new cmux workspace: bare/always = unconditionally, auto = only when the current workspace already runs loopai")
+- [x] update every `o.CmuxWorkspace` reference: hand-off gate becomes mode-aware (`always` → current behavior; `auto` → call `cmux.WorkspaceBusy()` first: busy → hand off, free → continue locally without warning; `ErrNotInCmux` or query failure in auto mode → continue locally, debug-log only)
+- [x] update `stripCmuxWorkspaceArg` to strip `--cmux-workspace=auto`/`=always` value forms as well (bare form already handled) — the relaunched child must never re-evaluate hand-off
+- [x] update existing flag/hand-off tests for the bool→string change; keep a test proving bare `--cmux-workspace` still means unconditional hand-off (backward compatibility)
+- [x] write tests for auto mode: busy workspace (stubbed list-status with phase pill) → spawn invoked and hand-off reported; free workspace (final pill or no pill) → no spawn, normal run proceeds; outside cmux → normal run proceeds without warning
+- [x] write tests for arg stripping of the value forms (table-driven: `=auto`, `=always`, mixed with other flags, repeated)
+- [x] run tests - must pass before next task
 
 ### Task 3: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented (auto hands off only on busy; bare flag unchanged; free workspace runs locally; no recursion)

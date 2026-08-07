@@ -390,6 +390,26 @@ func TestClearFlagParsing(t *testing.T) {
 	assert.True(t, o.Clear)
 }
 
+func TestCmuxWorkspaceFlagParsing(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "unset"},
+		{name: "bare means always", args: []string{"--cmux-workspace"}, want: "always"},
+		{name: "explicit always", args: []string{"--cmux-workspace=always"}, want: "always"},
+		{name: "auto", args: []string{"--cmux-workspace=auto"}, want: "auto"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := parseTestOpts(t, tc.args...)
+			assert.Equal(t, tc.want, o.CmuxWorkspace)
+		})
+	}
+}
+
 func TestCommitFlagParsing(t *testing.T) {
 	t.Run("short flag sets commit", func(t *testing.T) {
 		o := parseTestOpts(t, "-c")
@@ -7552,8 +7572,9 @@ func TestStripCmuxWorkspaceArg(t *testing.T) {
 		{name: "no args", args: nil, want: []string{}},
 		{name: "flag absent", args: []string{"plan.md", "--worktree"}, want: []string{"plan.md", "--worktree"}},
 		{name: "bare flag", args: []string{"--cmux-workspace"}, want: []string{}},
-		{name: "value form", args: []string{"--cmux-workspace=true", "plan.md"}, want: []string{"plan.md"}},
-		{name: "repeated", args: []string{"--cmux-workspace", "--cmux-workspace=false"}, want: []string{}},
+		{name: "auto value form", args: []string{"--cmux-workspace=auto", "plan.md"}, want: []string{"plan.md"}},
+		{name: "always value form", args: []string{"--cmux-workspace=always", "plan.md"}, want: []string{"plan.md"}},
+		{name: "repeated", args: []string{"--cmux-workspace=auto", "--cmux-workspace", "--cmux-workspace=always"}, want: []string{}},
 		{
 			name: "mixed among other args",
 			args: []string{"-m", "3", "--cmux-workspace", "docs/plans/p.md", "--worktree"},
@@ -7641,6 +7662,27 @@ func cmuxSpawnStub(t *testing.T, exitCode int) string {
 	return argvLog
 }
 
+// cmuxAutoStub installs a cmux binary that serves list-status output and records all commands.
+// It lets auto-mode tests exercise the public WorkspaceBusy query without a live cmux socket.
+func cmuxAutoStub(t *testing.T, statusOutput string, queryExitCode int) string {
+	t.Helper()
+	clearCmuxEnvOptions(t)
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "cmux-argv.log")
+	writeExecutable(t, filepath.Join(binDir, "cmux"), fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do printf '%%s\n' "$a" >> "$CMUX_ARGV_LOG"; done
+if [ "$1" = "list-status" ]; then
+  printf '%%s' "$CMUX_STATUS_OUTPUT"
+  exit %d
+fi
+exit 0
+`, queryExitCode))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_ARGV_LOG", argvLog)
+	t.Setenv("CMUX_STATUS_OUTPUT", statusOutput)
+	return argvLog
+}
+
 // handOffStops runs the hand-off and returns its stop verdict, asserting it did not stop with an
 // error. only the ambiguous-spawn case does, and it has its own test.
 func handOffStops(t *testing.T, o opts, args []string, stdout, stderr io.Writer) bool {
@@ -7693,7 +7735,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		require.NoError(t, wdErr)
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/20260807-my feature.md"}
+		o := opts{CmuxWorkspace: "always", PlanFile: "docs/plans/20260807-my feature.md"}
 		args := []string{"--cmux-workspace", "docs/plans/20260807-my feature.md", "--worktree"}
 		require.True(t, handOffStops(t, o, args, stdout, stderr))
 
@@ -7707,13 +7749,99 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		}, strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n"))
 	})
 
+	t.Run("bare flag remains unconditional", func(t *testing.T) {
+		o := parseTestOpts(t, "--cmux-workspace")
+		argvLog := cmuxAutoStub(t, "loopai=done in 3h39m icon=bolt\n", 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirRepoRoot(t)
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		require.True(t, handOffStops(t, o, []string{"--cmux-workspace"}, stdout, stderr))
+		assert.Contains(t, stdout.String(), "handed off to cmux workspace")
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.NotContains(t, string(recorded), "list-status", "always mode must not query workspace state")
+		assert.Contains(t, string(recorded), "new-workspace")
+	})
+
+	t.Run("auto hands off when workspace is busy", func(t *testing.T) {
+		argvLog := cmuxAutoStub(t, "loopai=external review (gpt-5.6-sol:high) · iteration 2 icon=person.2\n", 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirRepoRoot(t)
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		o := opts{CmuxWorkspace: "auto"}
+		require.True(t, handOffStops(t, o, []string{"--cmux-workspace=auto"}, stdout, stderr))
+		assert.Contains(t, stdout.String(), "handed off to cmux workspace")
+		assert.Empty(t, stderr.String())
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.Contains(t, string(recorded), "list-status")
+		assert.Contains(t, string(recorded), "new-workspace")
+		assert.NotContains(t, string(recorded), "cmux-workspace", "the child must not re-evaluate hand-off")
+	})
+
+	for _, tc := range []struct {
+		name   string
+		status string
+	}{
+		{name: "final pill", status: "loopai=done in 3h39m icon=bolt\n"},
+		{name: "no pill", status: "other-agent=working icon=hammer\n"},
+	} {
+		t.Run("auto stays local with "+tc.name, func(t *testing.T) {
+			argvLog := cmuxAutoStub(t, tc.status, 0)
+			t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+			chdirRepoRoot(t)
+
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			assert.False(t, handOffStops(t, opts{CmuxWorkspace: "auto"}, []string{"--cmux-workspace=auto"}, stdout, stderr))
+			assert.Empty(t, stdout.String())
+			assert.Empty(t, stderr.String())
+			recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+			require.NoError(t, readErr)
+			assert.Contains(t, string(recorded), "list-status")
+			assert.NotContains(t, string(recorded), "new-workspace")
+		})
+	}
+
+	t.Run("auto outside cmux stays local without warning", func(t *testing.T) {
+		argvLog := cmuxAutoStub(t, "loopai=task\n", 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "")
+		chdirRepoRoot(t)
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: "auto"}, nil, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Empty(t, stderr.String())
+		_, statErr := os.Stat(argvLog)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("auto query failure is debug-only", func(t *testing.T) {
+		argvLog := cmuxAutoStub(t, "", 1)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirRepoRoot(t)
+
+		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: "auto"}, nil, stdout, stderr))
+		assert.Empty(t, stdout.String())
+		assert.Empty(t, stderr.String())
+
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: "auto", Debug: true}, nil, stdout, stderr))
+		assert.Contains(t, stderr.String(), "debug: cmux workspace auto query failed, running here")
+		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, readErr)
+		assert.NotContains(t, string(recorded), "new-workspace")
+	})
+
 	t.Run("outside cmux continues locally", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "")
 		chdirRepoRoot(t)
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		assert.False(t, handOffStops(t, opts{CmuxWorkspace: true}, nil, stdout, stderr))
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: "always"}, nil, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off failed, running here")
 		assert.Contains(t, stderr.String(), "not running inside cmux")
@@ -7727,7 +7855,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		chdirWithPlan(t, "p.md")
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		assert.False(t, handOffStops(t, opts{CmuxWorkspace: true, PlanFile: "p.md"}, nil, stdout, stderr))
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: "always", PlanFile: "p.md"}, nil, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off failed, running here")
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
@@ -7766,7 +7894,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		}
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		assert.False(t, handOffStops(t, opts{CmuxWorkspace: true, PlanFile: "p.md"}, nil, stdout, stderr))
+		assert.False(t, handOffStops(t, opts{CmuxWorkspace: "always", PlanFile: "p.md"}, nil, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off skipped, running here: resolve working directory")
 		_, statErr := os.Stat(argvLog)
@@ -7780,7 +7908,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		chdirWithPlan(t, "p.md")
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, PlanFile: "p.md", PreserveAnthropicAPIKey: true}
+		o := opts{CmuxWorkspace: "always", PlanFile: "p.md", PreserveAnthropicAPIKey: true}
 		require.True(t, handOffStops(t, o, nil, stdout, stderr))
 
 		assert.Contains(t, stdout.String(), "handed off to cmux workspace")
@@ -7795,7 +7923,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		chdirWithPlan(t, "p.md")
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, PlanFile: "p.md"}
+		o := opts{CmuxWorkspace: "always", PlanFile: "p.md"}
 		require.True(t, handOffStops(t, o, []string{"p.md"}, stdout, stderr))
 
 		assert.Empty(t, stderr.String())
@@ -7815,7 +7943,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		// --reset alone is a standalone command, but combined with a run it is part of that run and
 		// must happen once, in the workspace the run lands in.
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, Reset: true, PlanFile: "docs/plans/p.md"}
+		o := opts{CmuxWorkspace: "always", Reset: true, PlanFile: "docs/plans/p.md"}
 		require.True(t, handOffStops(t, o, []string{"--reset", "docs/plans/p.md"}, stdout, stderr))
 
 		assert.Empty(t, stderr.String())
@@ -7830,7 +7958,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		chdirRepoRoot(t)
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/typo.md"}
+		o := opts{CmuxWorkspace: "always", PlanFile: "docs/plans/typo.md"}
 		assert.False(t, handOffStops(t, o, []string{"docs/plans/typo.md"}, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file not found: docs/plans/typo.md")
@@ -7846,7 +7974,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		// "loopai docs/plans" with the filename forgotten stats fine, so only this check stands
 		// between the user and a workspace whose run dies once it tries to read the plan.
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans"}
+		o := opts{CmuxWorkspace: "always", PlanFile: "docs/plans"}
 		assert.False(t, handOffStops(t, o, []string{"docs/plans"}, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file is not a regular file: docs/plans")
@@ -7868,7 +7996,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		t.Cleanup(func() { _ = os.Chmod("docs/plans/p.md", 0o600) }) // restore for cleanup
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/p.md"}
+		o := opts{CmuxWorkspace: "always", PlanFile: "docs/plans/p.md"}
 		assert.False(t, handOffStops(t, o, []string{"docs/plans/p.md"}, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file not readable: docs/plans/p.md")
@@ -7885,7 +8013,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		// the readability checks resolve the link like the child's own read does, so a plan the
 		// run could execute is not refused.
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, PlanFile: "docs/plans/link.md"}
+		o := opts{CmuxWorkspace: "always", PlanFile: "docs/plans/link.md"}
 		require.True(t, handOffStops(t, o, []string{"docs/plans/link.md"}, stdout, stderr))
 		assert.Empty(t, stderr.String())
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
@@ -7900,7 +8028,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 
 		// --plan has no plan file yet, so the existence check must not apply to it.
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, PlanDescription: "add a feature"}
+		o := opts{CmuxWorkspace: "always", PlanDescription: "add a feature"}
 		require.True(t, handOffStops(t, o, []string{"--plan", "add a feature"}, stdout, stderr))
 		assert.Empty(t, stderr.String())
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
@@ -7919,7 +8047,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		// a subdirectory has no .git, so the refusal consults read-only config; ConfigDir keeps that
 		// lookup off the developer's real ~/.config/loopai, whose vcs_command would decide this test.
-		o := opts{CmuxWorkspace: true, ConfigDir: t.TempDir(), PlanFile: "plans/p.md"}
+		o := opts{CmuxWorkspace: "always", ConfigDir: t.TempDir(), PlanFile: "plans/p.md"}
 		assert.False(t, handOffStops(t, o, []string{"plans/p.md"}, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off skipped, running here: not a repository root")
@@ -7938,7 +8066,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte("vcs_command = jj\n"), 0o600))
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, ConfigDir: configDir, PlanFile: "p.md"}
+		o := opts{CmuxWorkspace: "always", ConfigDir: configDir, PlanFile: "p.md"}
 		require.True(t, handOffStops(t, o, []string{"p.md"}, stdout, stderr))
 		assert.Empty(t, stderr.String())
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
@@ -7954,7 +8082,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 
 		// watch-only --serve never reaches the repository-root check, it runs from any directory.
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, Serve: true, Watch: []string{watched}, ConfigDir: t.TempDir()}
+		o := opts{CmuxWorkspace: "always", Serve: true, Watch: []string{watched}, ConfigDir: t.TempDir()}
 		require.True(t, handOffStops(t, o, []string{"--serve", "--watch", watched}, stdout, stderr))
 		assert.Empty(t, stderr.String())
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
@@ -7974,7 +8102,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 			fmt.Appendf(nil, "watch_dirs = %s\n", watched), 0o600))
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, Serve: true, ConfigDir: configDir}
+		o := opts{CmuxWorkspace: "always", Serve: true, ConfigDir: configDir}
 		require.True(t, handOffStops(t, o, []string{"--serve"}, stdout, stderr))
 		assert.Empty(t, stderr.String())
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
@@ -7990,7 +8118,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		// bare --serve with no watch dirs anywhere is a normal run, not a dashboard: it does reach
 		// the repository-root check and would die there, leaving an orphan card behind.
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-		o := opts{CmuxWorkspace: true, Serve: true, ConfigDir: t.TempDir()}
+		o := opts{CmuxWorkspace: "always", Serve: true, ConfigDir: t.TempDir()}
 		assert.False(t, handOffStops(t, o, []string{"--serve"}, stdout, stderr))
 		assert.Empty(t, stdout.String())
 		assert.Contains(t, stderr.String(), "hand-off skipped, running here: not a repository root")
@@ -8024,12 +8152,12 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 
 		stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 		for _, o := range []opts{
-			{CmuxWorkspace: true, mergeSet: true},
-			{CmuxWorkspace: true, prSet: true},
-			{CmuxWorkspace: true, Clear: true},
-			{CmuxWorkspace: true, Init: true},
-			{CmuxWorkspace: true, DumpDefaults: t.TempDir()},
-			{CmuxWorkspace: true, Reset: true},
+			{CmuxWorkspace: "always", mergeSet: true},
+			{CmuxWorkspace: "always", prSet: true},
+			{CmuxWorkspace: "always", Clear: true},
+			{CmuxWorkspace: "always", Init: true},
+			{CmuxWorkspace: "always", DumpDefaults: t.TempDir()},
+			{CmuxWorkspace: "always", Reset: true},
 		} {
 			assert.False(t, handOffStops(t, o, nil, stdout, stderr))
 		}
@@ -8049,7 +8177,7 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
 		chdirWithPlan(t, "p.md")
 
-		require.NoError(t, run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"}))
+		require.NoError(t, run(t.Context(), opts{CmuxWorkspace: "always", ConfigDir: badConfigDir, PlanFile: "p.md"}))
 		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, err)
 		assert.Contains(t, string(recorded), "new-workspace")
@@ -8063,7 +8191,7 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
 		chdirRepoRoot(t)
 
-		o := opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanDescription: "add a feature"}
+		o := opts{CmuxWorkspace: "always", ConfigDir: badConfigDir, PlanDescription: "add a feature"}
 		require.NoError(t, run(t.Context(), o))
 		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, err)
@@ -8076,7 +8204,7 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
 		chdirWithPlan(t, "p.md")
 
-		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"})
+		err := run(t.Context(), opts{CmuxWorkspace: "always", ConfigDir: badConfigDir, PlanFile: "p.md"})
 		require.ErrorContains(t, err, "load config")
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, readErr)
@@ -8089,7 +8217,7 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 		t.Setenv("CMUX_WORKSPACE_ID", "")
 		chdirWithPlan(t, "p.md")
 
-		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "p.md"})
+		err := run(t.Context(), opts{CmuxWorkspace: "always", ConfigDir: badConfigDir, PlanFile: "p.md"})
 		require.ErrorContains(t, err, "load config")
 	})
 
@@ -8100,7 +8228,7 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 
 		// handing off would create and focus a workspace whose run dies on the same missing file,
 		// while this terminal reported success and exited 0.
-		err := run(t.Context(), opts{CmuxWorkspace: true, ConfigDir: badConfigDir, PlanFile: "docs/plans/typo.md"})
+		err := run(t.Context(), opts{CmuxWorkspace: "always", ConfigDir: badConfigDir, PlanFile: "docs/plans/typo.md"})
 		require.ErrorContains(t, err, "load config")
 		recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, readErr)
@@ -8205,8 +8333,8 @@ func TestHandOffSucceeded(t *testing.T) {
 		earlyErr error
 		want     bool
 	}{
-		{name: "hand-off with no error", o: opts{CmuxWorkspace: true}, want: true},
-		{name: "hand-off flag with an error", o: opts{CmuxWorkspace: true}, earlyErr: errors.New("reset failed")},
+		{name: "hand-off with no error", o: opts{CmuxWorkspace: "always"}, want: true},
+		{name: "hand-off flag with an error", o: opts{CmuxWorkspace: "always"}, earlyErr: errors.New("reset failed")},
 		{name: "flag unset", o: opts{}},
 		{name: "flag unset with an error", o: opts{}, earlyErr: errors.New("init failed")},
 	}
@@ -8241,7 +8369,7 @@ func TestPrepareStaleCmuxStatusDefersForHandOff(t *testing.T) {
 
 	t.Run("preserved hand-off never clears", func(t *testing.T) {
 		argvLog := stub(t)
-		resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: true, PlanFile: "plan.md"})
+		resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: "always", PlanFile: "plan.md"})
 		_, err := os.Stat(argvLog)
 		require.ErrorIs(t, err, os.ErrNotExist, "the hand-off verdict is not known yet")
 
@@ -8252,7 +8380,7 @@ func TestPrepareStaleCmuxStatusDefersForHandOff(t *testing.T) {
 
 	t.Run("failed hand-off clears on resolution", func(t *testing.T) {
 		argvLog := stub(t)
-		resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: true, PlanFile: "plan.md"})
+		resolve := prepareStaleCmuxStatus(opts{CmuxWorkspace: "always", PlanFile: "plan.md"})
 		resolve(false)
 		recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, err)
