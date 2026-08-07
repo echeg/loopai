@@ -162,7 +162,7 @@ func (mock *LoggerMock) LogAnswerCalls() []struct {
 }
 
 // LogDraftReview calls LogDraftReviewFunc.
-func (mock *LoggerMock) LogDraftReview(action string, feedback string) {
+func (mock *LoggerMock) LogDraftReview(action, feedback string) {
 	if mock.LogDraftReviewFunc == nil {
 		panic("LoggerMock.LogDraftReviewFunc: method is nil but Logger.LogDraftReview was just called")
 	}

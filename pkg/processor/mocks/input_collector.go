@@ -59,7 +59,7 @@ type InputCollectorMock struct {
 }
 
 // AskDraftReview calls AskDraftReviewFunc.
-func (mock *InputCollectorMock) AskDraftReview(ctx context.Context, question string, planContent string) (string, string, error) {
+func (mock *InputCollectorMock) AskDraftReview(ctx context.Context, question, planContent string) (string, string, error) {
 	if mock.AskDraftReviewFunc == nil {
 		panic("InputCollectorMock.AskDraftReviewFunc: method is nil but InputCollector.AskDraftReview was just called")
 	}

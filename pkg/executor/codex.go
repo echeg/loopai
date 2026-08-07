@@ -969,6 +969,8 @@ type codexPendingCommand struct {
 	requiresProof     bool
 	structuredProof   bool
 	yieldAfter        time.Duration
+	proofEventTime    time.Time
+	proofArrival      time.Time
 	unprovenEventTime time.Time
 	unprovenArrival   time.Time
 }
@@ -1071,6 +1073,9 @@ func (e *CodexExecutor) trackFunctionCall(payload rolloutPayload, eventTime time
 		if sessionID := sessionIDFromArguments(payload.Arguments); sessionID != "" {
 			if pending, ok := state.sessions[sessionID]; ok {
 				pending.requiresProof = true
+				pending.proofEventTime = eventTime
+				pending.proofArrival = now()
+				pending.yieldAfter = functionCallYieldAfter(payload.Arguments)
 				state.continuations[payload.CallID] = []codexPendingCommand{pending}
 			}
 		}
@@ -1102,15 +1107,22 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 		state.starts[payload.CallID] = pending
 		return
 	}
-	allMatches := customWriteStdinPattern.FindAllStringSubmatch(payload.Input, -1)
+	allMatches := customWriteStdinPattern.FindAllStringSubmatchIndex(payload.Input, -1)
+	if len(allMatches) == 0 {
+		return
+	}
 	pending := make([]codexPendingCommand, len(allMatches))
 	unknownIndexes := make([]int, 0, len(allMatches))
 	tracked := 0
 	structuredProof := customToolEmitsStructuredResults(payload.Input)
+	proofArrival := now()
 	for index, matches := range allMatches {
-		sessionID := firstNonEmpty(matches[1:]...)
+		sessionID := firstIndexedCapture(payload.Input, matches[2:])
 		if command, ok := state.sessions[sessionID]; ok {
 			command.structuredProof = structuredProof
+			command.proofEventTime = eventTime
+			command.proofArrival = proofArrival
+			command.yieldAfter = customContinuationYieldAfter(payload.Input, allMatches, index)
 			pending[index] = command
 			tracked++
 			continue
@@ -1123,12 +1135,16 @@ func (e *CodexExecutor) trackCustomToolCall(payload rolloutPayload, eventTime ti
 		} else {
 			command := state.unproven[0]
 			state.unproven = nil
-			sessionID := firstNonEmpty(allMatches[unknownIndexes[0]][1:]...)
+			unknownIndex := unknownIndexes[0]
+			sessionID := firstIndexedCapture(payload.Input, allMatches[unknownIndex][2:])
 			command.sessionID = sessionID
 			command.requiresProof = true
 			command.structuredProof = structuredProof
+			command.proofEventTime = eventTime
+			command.proofArrival = proofArrival
+			command.yieldAfter = customContinuationYieldAfter(payload.Input, allMatches, unknownIndex)
 			state.sessions[sessionID] = command
-			pending[unknownIndexes[0]] = command
+			pending[unknownIndex] = command
 			tracked++
 		}
 	} else if len(unknownIndexes) > 0 && len(state.unproven) > 0 {
@@ -1165,6 +1181,8 @@ func customExecPendingCommands(input string, matches [][]int, eventTime, arrival
 			requiresProof:   true,
 			structuredProof: structuredProof,
 			yieldAfter:      customExecYieldAfter(input[match[0]:end]),
+			proofEventTime:  eventTime,
+			proofArrival:    arrival,
 		})
 	}
 	return pending
@@ -1208,6 +1226,8 @@ func customMappedExecPendingCommands(input string, eventTime, arrival time.Time)
 				requiresProof:   true,
 				structuredProof: structuredProof,
 				yieldAfter:      customExecYieldAfter(call + "\n" + value),
+				proofEventTime:  eventTime,
+				proofArrival:    arrival,
 			})
 		}
 	}
@@ -1650,7 +1670,10 @@ func (e *CodexExecutor) resolvePendingOutputs(pending []codexPendingCommand, out
 			continue
 		}
 		if !hasResult {
-			if commandCompletedBeforeYield(command, eventTime) {
+			if commandCompletedBeforeYield(command, eventTime, arrival) {
+				if command.sessionID != "" {
+					delete(state.sessions, command.sessionID)
+				}
 				e.emitResolvedCommandTiming(command, len(pending), codexCommandResult{}, eventTime, arrival)
 			} else if command.sessionID == "" {
 				command.unprovenEventTime = eventTime
@@ -1716,26 +1739,62 @@ func (e *CodexExecutor) emitResolvedCommandTiming(command codexPendingCommand, p
 
 func customExecYieldAfter(call string) time.Duration {
 	const defaultYield = 10 * time.Second
+	yieldAfter, configured := explicitYieldAfter(call)
+	if configured {
+		return yieldAfter
+	}
+	return defaultYield
+}
+
+func customContinuationYieldAfter(input string, matches [][]int, index int) time.Duration {
+	if index < 0 || index >= len(matches) || len(matches[index]) < 2 {
+		return 0
+	}
+	start := matches[index][0]
+	openOffset := strings.IndexByte(input[start:], '(')
+	if openOffset < 0 {
+		return 0
+	}
+	end, ok := customDelimitedEnd(input, start+openOffset)
+	if !ok {
+		return 0
+	}
+	yieldAfter, _ := explicitYieldAfter(input[start : end+1])
+	return yieldAfter
+}
+
+func explicitYieldAfter(call string) (time.Duration, bool) {
 	matches := customExecYieldPattern.FindStringSubmatch(call)
 	if len(matches) < 2 {
 		if customExecYieldKey.MatchString(call) {
-			return 0
+			return 0, true
 		}
-		return defaultYield
+		return 0, false
 	}
 	milliseconds, err := strconv.ParseInt(matches[1], 10, 64)
 	if err != nil || milliseconds <= 0 {
-		return 0
+		return 0, true
 	}
-	return time.Duration(milliseconds) * time.Millisecond
+	return time.Duration(milliseconds) * time.Millisecond, true
 }
 
-func commandCompletedBeforeYield(command codexPendingCommand, eventTime time.Time) bool {
+func functionCallYieldAfter(arguments string) time.Duration {
+	var args struct {
+		YieldTimeMS int64 `json:"yield_time_ms"`
+	}
+	if json.Unmarshal([]byte(arguments), &args) != nil || args.YieldTimeMS <= 0 {
+		return 0
+	}
+	return time.Duration(args.YieldTimeMS) * time.Millisecond
+}
+
+func commandCompletedBeforeYield(command codexPendingCommand, eventTime, arrival time.Time) bool {
 	const timestampMargin = 100 * time.Millisecond
-	if command.yieldAfter <= timestampMargin || command.start.eventTime.IsZero() || eventTime.IsZero() || eventTime.Before(command.start.eventTime) {
+	if command.yieldAfter <= timestampMargin || command.proofEventTime.IsZero() || eventTime.IsZero() ||
+		eventTime.Before(command.proofEventTime) || command.proofArrival.IsZero() || arrival.Before(command.proofArrival) {
 		return false
 	}
-	return eventTime.Sub(command.start.eventTime)+timestampMargin < command.yieldAfter
+	return eventTime.Sub(command.proofEventTime)+timestampMargin < command.yieldAfter
 }
 
 func (e *CodexExecutor) emitCommandTiming(start codexCommandStart, eventTime, arrival time.Time) {
@@ -2078,10 +2137,11 @@ func parseExitCode(output string) (int, bool) {
 	return code, err == nil
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
+func firstIndexedCapture(input string, indexes []int) string {
+	for index := 0; index+1 < len(indexes); index += 2 {
+		start, end := indexes[index], indexes[index+1]
+		if start >= 0 && end >= start && end <= len(input) {
+			return input[start:end]
 		}
 	}
 	return ""
