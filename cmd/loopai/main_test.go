@@ -6594,6 +6594,83 @@ func writeProgressRecordMode(t *testing.T, repo, name, planFile, branch, mode st
 	require.NoError(t, os.Chtimes(path, stamp, stamp))
 }
 
+// TestParseProgressAssociationStopsAtHeader locks the header-block boundary. Records written
+// before the header carried Mode never satisfy a three-field stop condition, so a scan that keyed
+// on collected fields ran into the log body, where executor output beginning with "Branch: " would
+// replace the recorded branch - the branch --merge <plan> then merges into base and deletes.
+func TestParseProgressAssociationStopsAtHeader(t *testing.T) {
+	// an un-prefixed body line is what the boundary has to defend against: the current logger
+	// timestamps everything it streams, but the parser must not depend on that to stay correct
+	const body = "----\nBranch: other-branch\nPlan: /tmp/other.md\n"
+	tests := []struct {
+		name                 string
+		content              string
+		wantPlan, wantBranch string
+		wantMode             string
+	}{
+		{
+			name:       "complete header",
+			content:    "# Loopai Progress Log\nPlan: docs/plans/login.md\nBranch: fix/login\nMode: full\n" + separatorLine() + "\n\n" + body,
+			wantPlan:   "docs/plans/login.md",
+			wantBranch: "fix/login",
+			wantMode:   "full",
+		},
+		{
+			name:       "legacy header without mode",
+			content:    "# Loopai Progress Log\nPlan: docs/plans/login.md\nBranch: fix/login\n" + separatorLine() + "\n\n" + body,
+			wantPlan:   "docs/plans/login.md",
+			wantBranch: "fix/login",
+		},
+		{
+			name:       "legacy header with crlf line endings",
+			content:    "# Loopai Progress Log\r\nPlan: docs/plans/login.md\r\nBranch: fix/login\r\n" + separatorLine() + "\r\n\r\n" + body,
+			wantPlan:   "docs/plans/login.md",
+			wantBranch: "fix/login",
+		},
+		{
+			name:       "truncated record with no separator",
+			content:    "# Loopai Progress Log\nPlan: docs/plans/login.md\nBranch: fix/login\n",
+			wantPlan:   "docs/plans/login.md",
+			wantBranch: "fix/login",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			planPath, branch, mode := parseProgressAssociation(tc.content)
+			assert.Equal(t, tc.wantPlan, planPath)
+			assert.Equal(t, tc.wantBranch, branch)
+			assert.Equal(t, tc.wantMode, mode)
+		})
+	}
+}
+
+// TestResolveFeatureBranchIgnoresBranchLineInLogBody is the end-to-end form of the same guarantee:
+// a legacy record whose body mentions another branch must still resolve the close-out to the
+// branch its header names.
+func TestResolveFeatureBranchIgnoresBranchLineInLogBody(t *testing.T) {
+	repo := setupTestRepo(t)
+	plansDir := filepath.Join(repo, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	planFile := filepath.Join(plansDir, "20260806-login.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# plan\n"), 0o600))
+
+	progressDir := filepath.Join(repo, ".loopai", "progress")
+	require.NoError(t, os.MkdirAll(progressDir, 0o750))
+	record := fmt.Sprintf("# Loopai Progress Log\nPlan: %s\nBranch: fix/login\n%s\n\nBranch: master\n",
+		planFile, separatorLine())
+	require.NoError(t, os.WriteFile(filepath.Join(progressDir, "progress-20260806-login.txt"), []byte(record), 0o600))
+
+	got, err := resolveFeatureBranch(fakeBranchChecker{branches: []string{"master", "login", "fix/login"}},
+		repo, plansDir, "20260806-login")
+	require.NoError(t, err)
+	assert.Equal(t, "fix/login", got)
+}
+
+// separatorLine mirrors the 60-dash header terminator pkg/progress writes.
+func separatorLine() string {
+	return strings.Repeat("-", 60)
+}
+
 func TestResolveCloseoutBranchAnchorsPlansDirAtRepoRoot(t *testing.T) {
 	dir := setupTestRepo(t)
 	runGit(t, dir, "branch", "feature")

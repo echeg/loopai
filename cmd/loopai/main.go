@@ -3246,9 +3246,17 @@ func readProgressAssociations(repoRoot string) ([]progressAssociation, error) {
 	return assocs, nil
 }
 
+// parseProgressAssociation reads the association fields from a progress record's header block.
+// Parsing stops at the dashed separator or blank line that closes the header, never at a set of
+// collected fields: Mode is absent from records written before the header carried it, so requiring
+// it would run the scan into the log body, where executor output beginning with "Plan: " or
+// "Branch: " would overwrite the header values and misdirect the close-out to another branch.
 func parseProgressAssociation(content string) (planPath, branch, mode string) {
 	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSuffix(line, "\r")
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "---") {
+			break
+		}
 		switch {
 		case strings.HasPrefix(line, "Plan: "):
 			planPath = strings.TrimSpace(strings.TrimPrefix(line, "Plan: "))
@@ -3256,9 +3264,6 @@ func parseProgressAssociation(content string) (planPath, branch, mode string) {
 			branch = strings.TrimSpace(strings.TrimPrefix(line, "Branch: "))
 		case strings.HasPrefix(line, "Mode: "):
 			mode = strings.TrimSpace(strings.TrimPrefix(line, "Mode: "))
-		}
-		if planPath != "" && branch != "" && mode != "" {
-			return planPath, branch, mode
 		}
 	}
 	return planPath, branch, mode

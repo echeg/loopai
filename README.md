@@ -286,7 +286,10 @@ branch without any worktree cleanup; with a worktree the usual cleanliness check
 removal apply. Only the feature worktree and the worktree the merge runs in have to be
 clean, so unrelated uncommitted work in an invoking checkout that is neither one does not
 block the merge. The merge runs in the base worktree, or in the primary checkout when the
-base branch is not checked out anywhere. `--pr <feature>`
+base branch is not checked out anywhere. One arrangement is still refused: when the feature
+is checked out in the primary checkout while the base is checked out in a linked worktree,
+the merge would have to run in the primary and cannot, so switch the primary off the feature
+branch first. `--pr <feature>`
 pushes and opens the pull request for a branch that is not checked out anywhere; its title
 and body still come from the plan as seen from the invoking checkout, falling back to a
 stats-only body when that plan is not present there. Naming the base branch as the feature
