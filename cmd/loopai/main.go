@@ -2312,9 +2312,9 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bo
 		return false, nil
 	}
 
-	exe, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: resolve executable: %v\n", err)
+	exe, exeErr := os.Executable()
+	if reason := executableHandOffRefusal(exe, exeErr); reason != "" {
+		fmt.Fprintf(stderr, "warning: cmux workspace hand-off skipped, running here: %s\n", reason)
 		return false, nil
 	}
 	cwd, err := os.Getwd()
@@ -2399,6 +2399,24 @@ func handOffSpawnFailure(err error, stderr io.Writer) (bool, error) {
 	}
 	fmt.Fprintf(stderr, "warning: cmux workspace hand-off failed, running here: %v\n", err)
 	return false, nil
+}
+
+// executableHandOffRefusal reports why this binary cannot be relaunched in the new workspace, or ""
+// when it can. resolution failing is the obvious half; the other is that os.Executable can succeed
+// and still name a path the new workspace's shell cannot run. on Linux it reads /proc/self/exe,
+// which keeps naming an unlinked binary with a " (deleted)" suffix, and under "go run" the
+// temporary binary is removed the moment a successful hand-off exits 0. the child would then die on
+// "command not found" while this terminal printed its success line and exited 0, the orphan-card
+// outcome the plan-file and repository-root guards exist to prevent. the path is checked against
+// the same working directory the child is given, so no hand-off that would have worked is refused.
+func executableHandOffRefusal(exe string, err error) string {
+	if err != nil {
+		return "resolve executable: " + err.Error()
+	}
+	if !fileExists(exe) {
+		return "executable not found: " + exe
+	}
+	return ""
 }
 
 // planFileHandOffRefusal reports why a non-empty plan path cannot produce a run that survives, or ""

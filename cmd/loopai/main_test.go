@@ -7518,6 +7518,32 @@ func handOffStops(t *testing.T, o opts, args []string, stdout, stderr io.Writer)
 	return stop
 }
 
+func TestExecutableHandOffRefusal(t *testing.T) {
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	missing := filepath.Join(t.TempDir(), "gone")
+
+	tests := []struct {
+		name string
+		exe  string
+		err  error
+		want string
+	}{
+		{name: "resolvable executable is handed off", exe: exe},
+		{name: "resolution failure", err: errors.New("boom"), want: "resolve executable: boom"},
+		{name: "missing path", exe: missing, want: "executable not found: " + missing},
+		// os.Executable reads /proc/self/exe on Linux, which keeps naming an unlinked binary with
+		// this suffix. "go run" unlinks its temporary binary as soon as a hand-off exits 0.
+		{name: "deleted binary", exe: exe + " (deleted)", want: "executable not found: " + exe + " (deleted)"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, executableHandOffRefusal(tc.exe, tc.err))
+		})
+	}
+}
+
 func TestHandOffToCmuxWorkspace(t *testing.T) {
 	exe, err := os.Executable()
 	require.NoError(t, err)
