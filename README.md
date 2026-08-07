@@ -529,9 +529,11 @@ the new workspace's terminal.
 The new workspace starts a fresh shell, so it does not inherit the environment of the terminal the
 run was started from. `LOOPAI_CONFIG_DIR` and `LOOPAI_WEB_HOST` are carried over with the command;
 anything else the run needs, such as provider credentials, has to come from the shell profile.
-`--preserve-anthropic-api-key` travels with the command but the key does not, so loopai warns at
-hand-off when `ANTHROPIC_API_KEY` is set in the current terminal: unless the key also comes from
-the shell profile, the handed-off run falls back to OAuth or the keychain.
+The `ANTHROPIC_API_KEY` pass-through travels with the command but the key does not, so loopai warns
+at hand-off when `ANTHROPIC_API_KEY` is set in the current terminal: unless the key also comes from
+the shell profile, the handed-off run falls back to OAuth or the keychain. The warning covers both
+ways of asking for the pass-through, `--preserve-anthropic-api-key` and the
+`preserve_anthropic_api_key` config key.
 
 Provider session and rate limits are retried every 10 minutes by default until the provider
 recovers or the run is canceled with `Ctrl+C`. During the wait, progress output is red and cmux

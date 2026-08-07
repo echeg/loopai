@@ -7522,6 +7522,11 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 	exe, err := os.Executable()
 	require.NoError(t, err)
 
+	// a key inherited from the developer's own shell would make the pass-through warning depend on
+	// their environment, and answering it from config would read their real configuration directory.
+	// the subtest that exercises the warning sets the variable itself, overriding this baseline.
+	t.Setenv(anthropicAPIKeyEnv, "")
+
 	t.Run("hands off inside cmux", func(t *testing.T) {
 		argvLog := cmuxSpawnStub(t, 0)
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
@@ -7621,7 +7626,7 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		require.True(t, handOffStops(t, o, nil, stdout, stderr))
 
 		assert.Contains(t, stdout.String(), "handed off to cmux workspace")
-		assert.Contains(t, stderr.String(), "--preserve-anthropic-api-key applies there only if")
+		assert.Contains(t, stderr.String(), "the API key pass-through applies there only if")
 		assert.NotContains(t, stderr.String(), "sk-ant-secret", "the key itself must never be echoed")
 	})
 
@@ -7965,20 +7970,43 @@ func TestWarnAPIKeyNotCarried(t *testing.T) {
 	tests := []struct {
 		name     string
 		preserve bool
+		config   string
 		key      string
 		wantWarn bool
 	}{
-		{name: "passthrough with a key set here warns", preserve: true, key: "sk-ant-1", wantWarn: true},
-		{name: "passthrough without a key stays quiet", preserve: true, key: "", wantWarn: false},
+		{name: "flag passthrough with a key set here warns", preserve: true, key: "sk-ant-1", wantWarn: true},
+		{name: "flag passthrough without a key stays quiet", preserve: true, key: "", wantWarn: false},
 		{name: "key without passthrough stays quiet", preserve: false, key: "sk-ant-1", wantWarn: false},
 		{name: "neither stays quiet", preserve: false, key: "", wantWarn: false},
+		{
+			name:   "config passthrough with a key set here warns",
+			config: "preserve_anthropic_api_key = true\n", key: "sk-ant-1", wantWarn: true,
+		},
+		{
+			name:   "config passthrough turned off stays quiet",
+			config: "preserve_anthropic_api_key = false\n", key: "sk-ant-1", wantWarn: false,
+		},
+		{
+			name:     "config passthrough plus the flag still warns",
+			preserve: true, config: "preserve_anthropic_api_key = true\n", key: "sk-ant-1", wantWarn: true,
+		},
+		{
+			name:   "unparsable config falls back to the flag",
+			config: "preserve_anthropic_api_key = notabool\n", key: "sk-ant-1", wantWarn: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(anthropicAPIKeyEnv, tt.key)
 
+			// an empty ConfigDir would resolve to the real user configuration directory
+			configDir := t.TempDir()
+			if tt.config != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(tt.config), 0o600))
+			}
+
 			stderr := &bytes.Buffer{}
-			warnAPIKeyNotCarried(opts{PreserveAnthropicAPIKey: tt.preserve}, stderr)
+			warnAPIKeyNotCarried(opts{PreserveAnthropicAPIKey: tt.preserve, ConfigDir: configDir}, stderr)
 			if !tt.wantWarn {
 				assert.Empty(t, stderr.String())
 				return
