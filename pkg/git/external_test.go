@@ -969,21 +969,6 @@ func TestExternalBackend_diffStats(t *testing.T) {
 		assert.Equal(t, DiffStats{}, stats)
 	})
 
-	t.Run("empty head ref falls back to HEAD", func(t *testing.T) {
-		dir := setupExternalTestRepo(t)
-		eb, err := newExternalBackend(dir, "git")
-		require.NoError(t, err)
-
-		require.NoError(t, eb.createBranch("feature"))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "new.txt"), []byte("line1\n"), 0o600))
-		require.NoError(t, eb.add("new.txt"))
-		require.NoError(t, eb.commit("add new file"))
-
-		stats, err := eb.diffStats("master", "")
-		require.NoError(t, err)
-		assert.Equal(t, DiffStats{Files: 1, Additions: 1}, stats)
-	})
-
 	t.Run("returns stats for a branch that is not checked out", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		eb, err := newExternalBackend(dir, "git")

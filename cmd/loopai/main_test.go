@@ -3613,7 +3613,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		root := t.TempDir()
 		writePlan(t, root, "20260802-feature.md", "# A useful feature\n\n## Overview\n\nAdds the useful behavior.\n\n## Context\n\nDetails.\n")
 
-		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{Files: 3, Additions: 12, Deletions: 4})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "feature", git.DiffStats{Files: 3, Additions: 12, Deletions: 4})
 		require.NoError(t, err)
 		assert.Equal(t, "A useful feature", title)
 		assert.Contains(t, body, "Adds the useful behavior.")
@@ -3623,8 +3623,31 @@ func TestBuildPRTitleBody(t *testing.T) {
 		assert.NotContains(t, body, "Details.")
 	})
 
+	t.Run("configured plans dir is used", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, "plans", "completed")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "20260802-feature.md"),
+			[]byte("# Custom dir feature\n\n## Overview\n\nLives outside docs/plans.\n"), 0o600))
+
+		title, body, err := buildPRTitleBody(root, "plans", "feature", git.DiffStats{Files: 2})
+		require.NoError(t, err)
+		assert.Equal(t, "Custom dir feature", title)
+		assert.Contains(t, body, "Lives outside docs/plans.")
+	})
+
+	t.Run("empty plans dir falls back to the default", func(t *testing.T) {
+		root := t.TempDir()
+		writePlan(t, root, "20260802-feature.md", "# Default dir feature\n\n## Overview\n\nStill found.\n")
+
+		title, body, err := buildPRTitleBody(root, "", "feature", git.DiffStats{})
+		require.NoError(t, err)
+		assert.Equal(t, "Default dir feature", title)
+		assert.Contains(t, body, "Still found.")
+	})
+
 	t.Run("plan missing", func(t *testing.T) {
-		title, body, err := buildPRTitleBody(t.TempDir(), "feature/missing", git.DiffStats{})
+		title, body, err := buildPRTitleBody(t.TempDir(), "docs/plans", "feature/missing", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "feature/missing", title)
 		assert.Equal(t, "## Changes\n\n- Files changed: 0\n- Additions: 0\n- Deletions: 0", body)
@@ -3634,7 +3657,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		root := t.TempDir()
 		writePlan(t, root, "feature.md", "# Feature without overview\n\n## Context\n\nOnly context.\n")
 
-		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{Files: 1})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "feature", git.DiffStats{Files: 1})
 		require.NoError(t, err)
 		assert.Equal(t, "Feature without overview", title)
 		assert.NotContains(t, body, "Only context.")
@@ -3650,7 +3673,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		newTime := time.Now()
 		require.NoError(t, os.Chtimes(newPath, newTime, newTime))
 
-		title, _, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
+		title, _, err := buildPRTitleBody(root, "docs/plans", "special-branch", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "New plan", title)
 	})
@@ -3659,7 +3682,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		root := t.TempDir()
 		writePlan(t, root, "unrelated.md", "# Unrelated plan\n\nReferences prefix behavior, fix.release, fixfix, and authentication.\n")
 
-		title, _, err := buildPRTitleBody(root, "fix", git.DiffStats{})
+		title, _, err := buildPRTitleBody(root, "docs/plans", "fix", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "fix", title)
 	})
@@ -3672,7 +3695,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, os.MkdirAll(plansDir, 0o750))
 		require.NoError(t, os.Symlink(outside, filepath.Join(plansDir, "20260802-feature.md")))
 
-		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "feature", git.DiffStats{})
 		require.ErrorContains(t, err, "symlink")
 		assert.Empty(t, title)
 		assert.Empty(t, body)
@@ -3682,7 +3705,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		root := t.TempDir()
 		writePlan(t, root, "20260802-feature.md", strings.Repeat("x", int(maxPRPlanSize)+1))
 
-		_, _, err := buildPRTitleBody(root, "feature", git.DiffStats{})
+		_, _, err := buildPRTitleBody(root, "docs/plans", "feature", git.DiffStats{})
 		require.ErrorContains(t, err, "size limit")
 	})
 
@@ -3698,7 +3721,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		newTime := time.Now()
 		require.NoError(t, os.Chtimes(fallbackPath, newTime, newTime))
 
-		title, body, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "special-branch", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "Exact active plan", title)
 		assert.Contains(t, body, "Exact.")
@@ -3712,7 +3735,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(activeDir, "20260802-feature.md"),
 			[]byte("# Active feature plan\n\n## Overview\n\nSelected.\n"), 0o600))
 
-		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "feature", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "Active feature plan", title)
 		assert.Contains(t, body, "Selected.")
@@ -3726,7 +3749,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, os.Symlink(outside,
 			filepath.Join(root, "docs", "plans", "completed", "unrelated.md")))
 
-		title, body, err := buildPRTitleBody(root, "feature", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "feature", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "Feature plan", title)
 		assert.Contains(t, body, "Selected.")
@@ -3740,7 +3763,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, os.Symlink(outside,
 			filepath.Join(root, "docs", "plans", "completed", "unrelated.md")))
 
-		title, _, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
+		title, _, err := buildPRTitleBody(root, "docs/plans", "special-branch", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "Valid fallback", title)
 	})
@@ -3754,7 +3777,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		newTime := time.Now()
 		require.NoError(t, os.Chtimes(newPath, newTime, newTime))
 
-		title, _, err := buildPRTitleBody(root, "special-branch", git.DiffStats{})
+		title, _, err := buildPRTitleBody(root, "docs/plans", "special-branch", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "New exact", title)
 	})
@@ -3767,7 +3790,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(progressDir, "progress-team-custom.txt"), []byte(
 			"# Loopai Progress Log\nPlan: docs/plans/completed/20260802-original-plan.md\nBranch: team/custom\nMode: full\n"), 0o600))
 
-		title, body, err := buildPRTitleBody(root, "team/custom", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "team/custom", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "Override plan", title)
 		assert.Contains(t, body, "Exact association.")
@@ -3785,7 +3808,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(progressDir, "progress-team-custom.txt"), []byte(
 			"# Loopai Progress Log\nPlan: docs/plans/original-plan.md\nBranch: team/custom\nMode: full\n"), 0o600))
 
-		title, body, err := buildPRTitleBody(root, "team/custom", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "team/custom", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "Completed copy", title)
 		assert.Contains(t, body, "Finished.")
@@ -3795,7 +3818,7 @@ func TestBuildPRTitleBody(t *testing.T) {
 		root := t.TempDir()
 		writePlan(t, root, "20260802-foo.md", "# Unrelated foo plan\n\n## Overview\n\nWrong plan.\n")
 
-		title, body, err := buildPRTitleBody(root, "feature/foo", git.DiffStats{})
+		title, body, err := buildPRTitleBody(root, "docs/plans", "feature/foo", git.DiffStats{})
 		require.NoError(t, err)
 		assert.Equal(t, "feature/foo", title)
 		assert.NotContains(t, body, "Wrong plan.")
@@ -6124,12 +6147,11 @@ func TestResolveFeatureBranch(t *testing.T) {
 	branches := []string{"master", "dynamic-review-agents", "section-duration-logging", "feature", "20260807-feature"}
 
 	tests := []struct {
-		name       string
-		arg        string
-		want       string
-		wantErr    string
-		errFrags   []string
-		checkerNil bool
+		name     string
+		arg      string
+		want     string
+		wantErr  string
+		errFrags []string
 	}{
 		{name: "existing branch name", arg: "dynamic-review-agents", want: "dynamic-review-agents"},
 		{name: "plan basename with extension", arg: "20260806-dynamic-review-agents.md", want: "dynamic-review-agents"},
@@ -6479,6 +6501,75 @@ func TestRunMergeCommandExplicitFeature(t *testing.T) {
 			"master must not receive the merge when an explicit base is given")
 	})
 
+	t.Run("dirty unrelated worktree does not block the merge", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		runGit(t, dir, "checkout", "master")
+		runGit(t, dir, "branch", "sidebar", "master")
+		sidePath := filepath.Join(t.TempDir(), "sidebar")
+		runGit(t, dir, "worktree", "add", sidePath, "sidebar")
+		t.Cleanup(func() { _ = mainSvc.RemoveWorktree(sidePath) })
+		require.NoError(t, os.WriteFile(filepath.Join(sidePath, "scratch.txt"), []byte("wip\n"), 0o600))
+		sideSvc, err := git.NewService(sidePath, noopLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, runMergeCommand(t.Context(), sideSvc, "master",
+			closeoutTarget{identifier: "feature"}, &recordingStatusClearer{}, io.Discard))
+		assert.False(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature\n", gitOutput(t, dir, "show", "master:feature.txt"))
+		assert.FileExists(t, filepath.Join(sidePath, "scratch.txt"))
+	})
+
+	t.Run("dirty invoking checkout holding the feature is refused", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		svc := makeFeature(t, dir)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("dirty\n"), 0o600))
+		clearer := &recordingStatusClearer{}
+
+		err := runMergeCommand(t.Context(), svc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "clean feature worktree")
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("base checked out in another worktree is refused", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		mainSvc := makeFeature(t, dir)
+		require.NoError(t, mainSvc.EnsureLocalGitignore())
+		basePath := filepath.Join(t.TempDir(), "base")
+		runGit(t, dir, "worktree", "add", basePath, "master")
+		t.Cleanup(func() { _ = mainSvc.RemoveWorktree(basePath) })
+		baseSvc, err := git.NewService(basePath, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		err = runMergeCommand(t.Context(), baseSvc, "master",
+			closeoutTarget{identifier: "feature"}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `is checked out at`)
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Equal(t, "feature", currentGitBranch(t, dir))
+		assert.Zero(t, clearer.calls)
+	})
+
+	t.Run("detached HEAD without an identifier names the flag", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		makeFeature(t, dir)
+		runGit(t, dir, "checkout", "--detach", "master")
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		clearer := &recordingStatusClearer{}
+
+		err = runMergeCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--merge requires a checked-out feature branch")
+		assert.True(t, branchExists(t, dir, "feature"))
+		assert.Zero(t, clearer.calls)
+	})
+
 	t.Run("detached primary checkout merges an explicit feature", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		makeFeature(t, dir)
@@ -6510,6 +6601,22 @@ func TestRunPRCommandExplicitFeatureResolverError(t *testing.T) {
 		closeoutTarget{identifier: "no-such-feature", plansDir: plansDir}, clearer, io.Discard)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no-such-feature")
+	assert.Zero(t, clearer.calls)
+}
+
+func TestRunPRCommandDetachedHeadWithoutIdentifier(t *testing.T) {
+	dir := setupTestRepo(t)
+	runGit(t, dir, "checkout", "--detach", "master")
+	svc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	clearer := &recordingStatusClearer{}
+
+	err = runPRCommand(t.Context(), svc, "master", closeoutTarget{}, clearer, io.Discard)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--pr requires a checked-out feature branch")
 	assert.Zero(t, clearer.calls)
 }
 

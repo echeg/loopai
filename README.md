@@ -269,17 +269,24 @@ failed close-out remains visible.
 
 Without an argument both commands close out the current branch and must run from the
 feature worktree or checkout. The optional positional argument names the feature instead,
-so either command can run from the primary checkout or anywhere else in the repository.
-It accepts a local branch name, a plan basename with or without `.md`, or a plan path, and
-combines with an explicit base such as `--merge=release/13 dynamic-review-agents`. loopai
-first looks for a branch of that exact name, then for a plan file in the plans directory
-and its `completed/` subdirectory, deriving the branch from the plan filename and
-requiring it to exist. When the named feature has no registered worktree, `--merge` merges
-and deletes the branch without any worktree cleanup; with a worktree the usual cleanliness
-checks and safe removal apply. `--pr <feature>` pushes and opens the pull request for a
-branch that is not checked out anywhere. Naming the base branch as the feature is an
-error. Apart from this argument, the close-out commands cannot be combined with a plan
-file or execution options.
+so either command can run from the primary checkout or from any other registered worktree.
+Like every close-out invocation it still has to start at the root of a checkout, not in a
+subdirectory. It accepts a local branch name, a plan basename with or without `.md`, or a
+plan path, and combines with an explicit base such as
+`--merge=release/13 dynamic-review-agents`. loopai first looks for a branch of that exact
+name, then for a plan file in the plans directory and its `completed/` subdirectory,
+deriving the branch from the plan filename and requiring it to exist. The plan lookup uses
+the `plans_dir` of the checkout you run from, so a plan that exists only inside the
+unmerged feature worktree is not visible from the primary checkout; name the branch in that
+case. When the named feature has no registered worktree, `--merge` merges and deletes the
+branch without any worktree cleanup; with a worktree the usual cleanliness checks and safe
+removal apply. Only the feature and base worktrees have to be clean, so unrelated
+uncommitted work in the checkout you invoke from does not block the merge. `--pr <feature>`
+pushes and opens the pull request for a branch that is not checked out anywhere; its title
+and body still come from the plan as seen from the invoking checkout, falling back to a
+stats-only body when that plan is not present there. Naming the base branch as the feature
+is an error. Apart from this argument, the close-out commands cannot be combined with a
+plan file or execution options.
 
 ## Executors and reviews
 

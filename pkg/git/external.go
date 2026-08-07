@@ -871,7 +871,7 @@ func (e *externalBackend) createInitialCommit(msg string) error {
 	return nil
 }
 
-// diffStats returns change statistics between baseBranch and headRef, which may be any
+// diffStats returns change statistics between baseBranch and headRef, which must be a
 // resolvable revision such as HEAD or a branch name.
 // returns zero stats if either side doesn't resolve or both point at the same commit.
 func (e *externalBackend) diffStats(baseBranch, headRef string) (DiffStats, error) {
@@ -879,9 +879,6 @@ func (e *externalBackend) diffStats(baseBranch, headRef string) (DiffStats, erro
 	baseRef := e.resolveRef(baseBranch)
 	if baseRef == "" {
 		return DiffStats{}, nil
-	}
-	if headRef == "" {
-		headRef = "HEAD"
 	}
 
 	// check if the head side equals base

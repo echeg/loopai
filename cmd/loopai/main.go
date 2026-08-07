@@ -2385,15 +2385,20 @@ func resolveCloseoutBranch(gitSvc *git.Service, target closeoutTarget, flagName 
 // The completion pill is deliberately retained on every failure so the pending action stays visible.
 func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase string, target closeoutTarget,
 	rep cmuxStatusClearer, stdout io.Writer) error {
-	dirty, err := gitSvc.IsDirtyAll()
-	if err != nil {
-		return fmt.Errorf("check working tree: %w", err)
-	}
-	if dirty {
-		return errors.New("--merge requires a clean working tree; commit, stash, or remove changes first")
+	explicit := strings.TrimSpace(target.identifier) != ""
+	// without an explicit feature the invoking checkout is the feature worktree and must be clean.
+	// with one the merge touches only the feature and base worktrees, both validated separately by
+	// prepareMergeWorktrees, so unrelated work in the invoking checkout must not block the close-out.
+	if !explicit {
+		dirty, dirtyErr := gitSvc.IsDirtyAll()
+		if dirtyErr != nil {
+			return fmt.Errorf("check working tree: %w", dirtyErr)
+		}
+		if dirty {
+			return errors.New("--merge requires a clean working tree; commit, stash, or remove changes first")
+		}
 	}
 
-	explicit := strings.TrimSpace(target.identifier) != ""
 	feature, err := resolveCloseoutBranch(gitSvc, target, "--merge")
 	if err != nil {
 		return err
@@ -2511,12 +2516,10 @@ func primaryMergeTargets(gitSvc *git.Service, feature, base, basePath, primaryPa
 	if err != nil {
 		return mergeTargets{}, err
 	}
-	// the merge runs in the feature's own worktree here; when the command was invoked from
-	// somewhere else that tree is not covered by the caller's working-tree check yet
-	if primarySvc != gitSvc {
-		if cleanErr := requireCleanFeatureWorktree(primarySvc); cleanErr != nil {
-			return mergeTargets{}, cleanErr
-		}
+	// the merge runs in the feature's own worktree here, so it must be clean no matter where the
+	// command was invoked from
+	if cleanErr := requireCleanFeatureWorktree(primarySvc); cleanErr != nil {
+		return mergeTargets{}, cleanErr
 	}
 	return mergeTargets{mergeSvc: primarySvc, featureSvc: primarySvc, featurePath: primaryPath, primaryPath: primaryPath}, nil
 }
@@ -2712,13 +2715,13 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 		}
 		return fmt.Errorf("current branch %q is already the base branch; check out the feature branch first", base)
 	}
-	// an explicitly named feature need not be checked out, so its stats come from the branch tip
-	stats, err := prDiffStats(gitSvc, base, branch, explicit)
+	// measured against the branch tip, so an explicitly named feature need not be checked out
+	stats, err := gitSvc.BranchDiffStats(base, branch)
 	if err != nil {
-		return err
+		return fmt.Errorf("calculate PR diff stats for %q against %q: %w", branch, base, err)
 	}
 
-	title, body, err := buildPRTitleBody(gitSvc.Root(), branch, stats)
+	title, body, err := buildPRTitleBody(gitSvc.Root(), target.plansDir, branch, stats)
 	if err != nil {
 		return err
 	}
@@ -2753,20 +2756,6 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 		rep.Clear()
 	}
 	return nil
-}
-
-// prDiffStats measures the PR diff against base. without an explicit feature the working
-// checkout is the feature, so HEAD-based stats are kept byte-for-byte as before.
-func prDiffStats(gitSvc *git.Service, base, branch string, explicit bool) (git.DiffStats, error) {
-	statsFor := gitSvc.DiffStats
-	if explicit {
-		statsFor = func(baseBranch string) (git.DiffStats, error) { return gitSvc.BranchDiffStats(baseBranch, branch) }
-	}
-	stats, err := statsFor(base)
-	if err != nil {
-		return git.DiffStats{}, fmt.Errorf("calculate PR diff stats for %q against %q: %w", branch, base, err)
-	}
-	return stats, nil
 }
 
 func validateGitHubOrigin(ctx context.Context, ghPath string, gitSvc *git.Service) (string, error) {
@@ -2860,9 +2849,9 @@ func runCloseoutCommand(ctx context.Context, o opts, cfg *config.Config, colors 
 // buildPRTitleBody derives PR metadata from the plan associated with branch. Completed plans
 // are preferred, while the active plans directory covers worktree runs whose archival commit
 // exists only on the base branch.
-func buildPRTitleBody(repoRoot, branch string, stats git.DiffStats) (title, body string, err error) {
+func buildPRTitleBody(repoRoot, plansDir, branch string, stats git.DiffStats) (title, body string, err error) {
 	title = branch
-	planPath, err := findPRPlan(repoRoot, branch)
+	planPath, err := findPRPlan(repoRoot, plansDir, branch)
 	if err != nil {
 		return "", "", err
 	}
@@ -2956,7 +2945,30 @@ func readPRPlan(repoRoot, path string) ([]byte, error) {
 	return content, nil
 }
 
-func findPRPlan(repoRoot, branch string) (string, error) {
+// plansDirPath resolves the configured plans directory against repoRoot. an empty setting falls
+// back to the embedded default so PR metadata keeps working without loaded configuration, and an
+// absolute setting inside the repository is re-anchored at repoRoot so the resulting plan paths
+// stay comparable to the root Git reports even when the checkout sits behind a symlink.
+func plansDirPath(repoRoot, plansDir string) string {
+	if plansDir == "" {
+		plansDir = filepath.Join("docs", "plans")
+	}
+	if !filepath.IsAbs(plansDir) {
+		return filepath.Join(repoRoot, plansDir)
+	}
+	root, rootErr := filepath.EvalSymlinks(repoRoot)
+	dir, dirErr := filepath.EvalSymlinks(plansDir)
+	if rootErr != nil || dirErr != nil {
+		return plansDir
+	}
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return plansDir
+	}
+	return filepath.Join(repoRoot, rel)
+}
+
+func findPRPlan(repoRoot, plansDir, branch string) (string, error) {
 	recordedPath, err := findRecordedPRPlan(repoRoot, branch)
 	if err != nil {
 		return "", err
@@ -2965,10 +2977,8 @@ func findPRPlan(repoRoot, branch string) (string, error) {
 		return recordedPath, nil
 	}
 
-	dirs := []string{
-		filepath.Join(repoRoot, "docs", "plans", "completed"),
-		filepath.Join(repoRoot, "docs", "plans"),
-	}
+	root := plansDirPath(repoRoot, plansDir)
+	dirs := []string{filepath.Join(root, "completed"), root}
 	var fallbackPath string
 	for _, dir := range dirs {
 		exactPath, candidateFallback, findErr := findPRPlanInDir(repoRoot, dir, branch)
