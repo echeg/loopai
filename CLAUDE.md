@@ -104,8 +104,9 @@ reports each displaced inode in Git-private non-stageable storage so late
 pre-opened-descriptor writes remain recoverable, and performs
 locked atomic no-clobber final creation. Its Codex wrapper snapshots only tracked
 and non-ignored untracked single-link regular files through descriptor-anchored
-no-follow reads while excluding `.git/` and `.loopai/`, confines Codex reads to
-that isolated temporary directory and minimal runtime files,
+no-follow reads while excluding `.git/`, `.loopai/`, recovery paths, and their
+case aliases, confines Codex reads to that isolated temporary directory and
+minimal runtime files, rejects in-worktree alternate Git directories,
 requires strict-config and permission-profile support, disables user/project
 config, rules, MCP and external tools, strips
 credential-like shell variables, and starts an ephemeral session without

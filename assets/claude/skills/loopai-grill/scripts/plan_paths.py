@@ -299,6 +299,10 @@ def open_git_private_directory(root: Path, plan_stat: os.stat_result) -> tuple[P
         git_directory = Path(result.stdout.strip()).resolve(strict=True)
     except OSError as exc:
         raise PathError(f"cannot resolve Git private directory: {exc}") from exc
+    if (git_directory == root or root in git_directory.parents) and git_directory != (
+        root / ".git"
+    ):
+        raise PathError("Git private directory must not be inside the repository outside .git")
 
     git_fd = os.open(git_directory, directory_open_flags())
     git_stat = os.fstat(git_fd)

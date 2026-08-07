@@ -40,6 +40,51 @@ def file_read_flags() -> int:
     )
 
 
+def git_path(root: Path, argument: str, label: str) -> Path:
+    result = subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.fsmonitor=false",
+            "-C",
+            os.fspath(root),
+            "rev-parse",
+            "--path-format=absolute",
+            argument,
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        raise SnapshotError(f"cannot resolve {label}: {detail or 'git failed'}")
+    try:
+        return Path(result.stdout.strip()).resolve(strict=True)
+    except OSError as exc:
+        raise SnapshotError(f"cannot resolve {label}: {exc}") from exc
+
+
+def validate_git_layout(root: Path) -> None:
+    top_level = git_path(root, "--show-toplevel", "Git worktree root")
+    if top_level != root:
+        raise SnapshotError("repository root is not the Git worktree root")
+
+    canonical_private_directory = root / ".git"
+    for argument, label in (
+        ("--absolute-git-dir", "Git private directory"),
+        ("--git-common-dir", "Git common directory"),
+    ):
+        private_directory = git_path(root, argument, label)
+        if (
+            private_directory == root or root in private_directory.parents
+        ) and private_directory != canonical_private_directory:
+            raise SnapshotError(
+                f"{label} must not be inside the repository outside .git"
+            )
+
+
 def git_visible_paths(root: Path) -> list[str]:
     result = subprocess.run(
         [
@@ -72,7 +117,8 @@ def git_visible_paths(root: Path) -> list[str]:
         parts = pure.parts
         if pure.is_absolute() or not parts or any(part in {"", ".", ".."} for part in parts):
             raise SnapshotError(f"Git returned an unsafe repository path: {path!r}")
-        if parts[0] in {".git", ".loopai"} or parts[0].startswith(
+        first_component = parts[0].casefold()
+        if first_component in {".git", ".loopai"} or first_component.startswith(
             ".loopai-grill-recovery-"
         ):
             continue
@@ -169,6 +215,7 @@ def snapshot_repository(root_arg: str, destination_arg: str) -> None:
     destination = Path(destination_arg).resolve(strict=True)
     if not root.is_dir() or not destination.is_dir():
         raise SnapshotError("repository root and snapshot destination must be directories")
+    validate_git_layout(root)
 
     root_fd = os.open(root, directory_flags())
     destination_fd = os.open(destination, directory_flags())

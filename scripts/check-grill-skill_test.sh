@@ -63,6 +63,8 @@ assert_contains "missing empty compare handling" 'If it is empty or whitespace, 
 # shellcheck disable=SC2016 # Backticks are literal skill text, not shell syntax.
 assert_contains "missing Codex wrapper requirement" 'Never call `codex exec` directly'
 assert_contains "missing ignored-file snapshot exclusion" 'tracked and non-ignored untracked working-tree files'
+assert_contains "missing private-path case-alias exclusion" 'recovery paths, and their case aliases'
+assert_contains "missing unsafe Git-directory rejection" 'rejects a nonstandard Git private or common directory inside the worktree'
 assert_contains "missing grill-mode Codex degradation" 'continue with the three Claude critics'
 assert_contains "missing zero-findings handling" 'If no verified findings survive, skip AskUserQuestion'
 assert_contains "missing plan-off Codex requirement" 'Plan-off requires Codex.'
@@ -196,6 +198,29 @@ git -C "$fixture/repo" add -A -- .
 if git -C "$fixture/repo" ls-files | grep -Fq 'loopai-grill-recovery-'; then
 	fail "git add -A staged an active-plan recovery file"
 fi
+
+mkdir -p "$fixture/in-worktree-git/repo" "$fixture/in-worktree-git/scratch" \
+	"$fixture/in-worktree-git/snapshot"
+git init -q --separate-git-dir="$fixture/in-worktree-git/repo/metadata" \
+	"$fixture/in-worktree-git/repo"
+mkdir -p "$fixture/in-worktree-git/repo/docs/plans"
+printf '# alternate Git directory plan\n' >"$fixture/in-worktree-git/repo/docs/plans/current.md"
+printf '# alternate Git directory edit\n' >"$fixture/in-worktree-git/scratch/edited.md"
+IFS=$'\t' read -r _ alternate_git_token < <(
+	run_paths read-active "$fixture/in-worktree-git/repo" docs/plans/current.md \
+		"$fixture/in-worktree-git/scratch/current.md"
+)
+expect_failure "in-worktree alternate Git directory accepted recovery data" run_paths \
+	replace-active "$fixture/in-worktree-git/repo" docs/plans/current.md \
+	"$alternate_git_token" "$fixture/in-worktree-git/scratch/edited.md"
+grep -Fq 'Git private directory must not be inside the repository outside .git' \
+	"$fixture/failure.stderr" || fail "in-worktree Git directory error was not actionable"
+[[ "$(<"$fixture/in-worktree-git/repo/docs/plans/current.md")" == "# alternate Git directory plan" ]] ||
+	fail "rejected in-worktree Git directory changed the active plan"
+expect_failure "in-worktree alternate Git directory entered a Codex snapshot" python3 \
+	"$snapshot_helper" "$fixture/in-worktree-git/repo" "$fixture/in-worktree-git/snapshot"
+grep -Fq 'Git private directory must not be inside the repository outside .git' \
+	"$fixture/failure.stderr" || fail "unsafe snapshot Git directory error was not actionable"
 
 printf '# open descriptor original\n' >"$fixture/repo/docs/plans/open-descriptor.md"
 IFS=$'\t' read -r _ open_descriptor_token < <(
@@ -550,6 +575,19 @@ fi
 python3 "$snapshot_helper" "$fixture/conflict-repo" "$fixture/conflict-snapshot"
 cmp "$fixture/conflict-repo/conflicted.txt" "$fixture/conflict-snapshot/conflicted.txt" ||
 	fail "snapshot did not copy an unresolved conflict exactly once"
+
+mkdir -p "$fixture/case-repo/.LOOPAI" \
+	"$fixture/case-repo/.LOOPAI-GRILL-RECOVERY-case" "$fixture/case-snapshot"
+git -C "$fixture/case-repo" init -q
+printf '%s\n' 'case alias secret' >"$fixture/case-repo/.LOOPAI/secret"
+printf '%s\n' 'case alias recovery' >"$fixture/case-repo/.LOOPAI-GRILL-RECOVERY-case/original-plan"
+git -C "$fixture/case-repo" add -f .LOOPAI/secret \
+	.LOOPAI-GRILL-RECOVERY-case/original-plan
+python3 "$snapshot_helper" "$fixture/case-repo" "$fixture/case-snapshot"
+[[ ! -e "$fixture/case-snapshot/.LOOPAI" ]] ||
+	fail "sanitized snapshot included a case-alias .loopai directory"
+[[ ! -e "$fixture/case-snapshot/.LOOPAI-GRILL-RECOVERY-case" ]] ||
+	fail "sanitized snapshot included a case-alias recovery directory"
 
 printf '%s\n' '.env' 'ignored-cache/' >"$fixture/repo/.gitignore"
 printf '%s\n' 'ignored secret' >"$fixture/repo/.env"

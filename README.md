@@ -120,7 +120,8 @@ changes, and no-clobber publication preserves concurrent writers. Successful
 edits report and retain the displaced plan under a Git-private, non-stageable
 recovery path so a late write through a previously opened descriptor remains recoverable. The skill
 requires Python 3 and Git for a descriptor-anchored Codex snapshot that excludes
-ignored files, hard-linked files, and every symlink path. Standalone
+ignored files, hard-linked files, every symlink path, and case aliases of private
+directories, and rejects in-worktree alternate Git directories. Standalone
 skill copies use `/loopai-grill` instead of the namespaced plugin command.
 
 The CLI remains the execution engine. The plugin adds Claude Code workflows
