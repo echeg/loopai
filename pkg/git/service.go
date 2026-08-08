@@ -61,6 +61,7 @@ type backend interface {
 	pruneWorktrees() error
 	isAncestor(ctx context.Context, ancestor, descendant string) (bool, error)
 	mergeWouldConflict(ctx context.Context, base, branch string) (bool, error)
+	mergeWorkingTreeWouldConflict(ctx context.Context, base string) (bool, error)
 }
 
 // ErrMergeConflict identifies a merge that could not be completed because of conflicts.
@@ -547,7 +548,14 @@ func (s *Service) CreateBranchForPlan(planFile, defaultBranch, branchOverride st
 // git service) so the commit lands on the feature branch rather than the default branch.
 // branchOverride, when non-empty, is used directly instead of deriving the name from planFile.
 func (s *Service) CreateWorktreeForPlan(planFile, branchOverride string) (string, bool, error) {
-	return s.createWorktreeForPlan(context.Background(), planFile, branchOverride, "")
+	return s.CreateWorktreeForPlanContext(context.Background(), planFile, branchOverride)
+}
+
+// CreateWorktreeForPlanContext is CreateWorktreeForPlan with caller cancellation.
+func (s *Service) CreateWorktreeForPlanContext(
+	ctx context.Context, planFile, branchOverride string,
+) (string, bool, error) {
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "")
 }
 
 // CreateWorktreeForPlanAfterAutoCommit creates a plan worktree after sourceHeadBefore was
@@ -682,6 +690,31 @@ func (s *Service) PreflightWorktreeForPlanContext(ctx context.Context, planFile,
 	return s.preflightWorktreeForPlan(ctx, planFile, branchOverride, "")
 }
 
+// PreflightWorktreeForPlanAutoCommitContext validates the tree that AutoCommitAll would
+// create, so conflicts introduced by dirty source files are rejected before source mutation.
+func (s *Service) PreflightWorktreeForPlanAutoCommitContext(
+	ctx context.Context, planFile, branchOverride string,
+) error {
+	if err := s.preflightWorktreeForPlan(ctx, planFile, branchOverride, ""); err != nil {
+		return err
+	}
+	branchName := s.EffectiveBranchName(s.resolveFilesystemCase(planFile), branchOverride)
+	if !s.repo.branchExists(branchName) {
+		return nil
+	}
+	wouldConflict, err := s.repo.mergeWorkingTreeWouldConflict(ctx, "refs/heads/"+branchName)
+	if errors.Is(err, errMergeTreeUnsupported) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("predict auto-committed source merge into existing plan branch %q: %w", branchName, err)
+	}
+	if wouldConflict {
+		return existingPlanBranchConflictError(branchName)
+	}
+	return nil
+}
+
 func (s *Service) preflightWorktreeForPlan(
 	ctx context.Context, planFile, branchOverride, existingBranchAncestor string,
 ) error {
@@ -758,9 +791,13 @@ func (s *Service) validateExistingPlanBranchAt(ctx context.Context, branchName, 
 		return fmt.Errorf("predict source merge into existing plan branch %q: %w", branchName, err)
 	}
 	if wouldConflict {
-		return fmt.Errorf("existing plan branch %q does not include current HEAD and merging the source changes would conflict; merge or rebase the source changes into it, or choose another --branch", branchName)
+		return existingPlanBranchConflictError(branchName)
 	}
 	return nil
+}
+
+func existingPlanBranchConflictError(branchName string) error {
+	return fmt.Errorf("existing plan branch %q does not include current HEAD and merging the source changes would conflict; merge or rebase the source changes into it, or choose another --branch", branchName)
 }
 
 // CommitPlanFile stages and commits a plan file on the current branch.

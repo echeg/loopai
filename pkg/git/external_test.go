@@ -87,16 +87,24 @@ func TestExternalBackendMergeWouldConflict(t *testing.T) {
 }
 
 func TestExternalBackendMergeWouldConflictUnsupported(t *testing.T) {
-	dir := t.TempDir()
-	command := filepath.Join(t.TempDir(), "old-git")
-	script := "#!/bin/sh\nif [ \"$LC_ALL\" = C ]; then echo \"error: unknown option 'write-tree'\" >&2; else echo \"erreur: option inconnue write-tree\" >&2; fi\nexit 129\n"
-	require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
-	backend := &externalBackend{path: dir, command: command}
+	for _, diagnostic := range []string{
+		"error: unknown option 'write-tree'",
+		"fatal: unknown rev --write-tree",
+		"fatal: --write-tree is not a valid object name",
+	} {
+		t.Run(diagnostic, func(t *testing.T) {
+			dir := t.TempDir()
+			command := filepath.Join(t.TempDir(), "old-git")
+			script := "#!/bin/sh\nif [ \"$LC_ALL\" = C ]; then echo \"" + diagnostic + "\" >&2; else echo \"erreur: option inconnue write-tree\" >&2; fi\nexit 129\n"
+			require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+			backend := &externalBackend{path: dir, command: command}
 
-	conflict, err := backend.mergeWouldConflict(t.Context(), "master", "plan")
+			conflict, err := backend.mergeWouldConflict(t.Context(), "master", "plan")
 
-	assert.False(t, conflict)
-	assert.ErrorIs(t, err, errMergeTreeUnsupported)
+			assert.False(t, conflict)
+			assert.ErrorIs(t, err, errMergeTreeUnsupported)
+		})
+	}
 }
 
 func TestExternalBackendMergeWouldConflictHonorsCancellation(t *testing.T) {

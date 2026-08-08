@@ -457,13 +457,23 @@ func (e *externalBackend) mergeRevision(ctx context.Context, revision, expectedH
 		return e.rollbackSuccessfulMerge(cleanupCtx, preMergeHead,
 			fmt.Errorf("merge completed without incorporating expected commit %q", expectedHead))
 	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		err = ctxErr
+	}
 
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), mergeCleanupTimeout)
 	defer cancel()
+	postMergeHead, inspectHeadErr := e.runContext(cleanupCtx, "rev-parse", "HEAD")
+	if inspectHeadErr == nil && postMergeHead != preMergeHead {
+		return e.rollbackSuccessfulMerge(cleanupCtx, preMergeHead, fmt.Errorf("merge: %w", err))
+	}
 	mergeHead := exec.CommandContext(cleanupCtx, e.command, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
 	mergeHead.Dir = e.path
 	if mergeHead.Run() == nil {
 		return e.abortFailedMerge(cleanupCtx, err)
+	}
+	if inspectHeadErr != nil {
+		return errors.Join(fmt.Errorf("merge: %w", err), fmt.Errorf("inspect HEAD after failed merge: %w", inspectHeadErr))
 	}
 	return fmt.Errorf("merge: %w", err)
 }
@@ -525,6 +535,50 @@ func (e *externalBackend) mergeWouldConflict(ctx context.Context, base, branch s
 	return false, fmt.Errorf("git merge-tree: %w", err)
 }
 
+// mergeWorkingTreeWouldConflict predicts the merge using the tree AutoCommitAll would
+// commit. A temporary index lets git add -A model that commit without changing the real
+// index, worktree, or source ref.
+func (e *externalBackend) mergeWorkingTreeWouldConflict(ctx context.Context, base string) (bool, error) {
+	indexFile, err := os.CreateTemp("", "ralphex-merge-index-*")
+	if err != nil {
+		return false, fmt.Errorf("create temporary Git index: %w", err)
+	}
+	indexPath := indexFile.Name()
+	if closeErr := indexFile.Close(); closeErr != nil {
+		_ = os.Remove(indexPath)
+		return false, fmt.Errorf("close temporary Git index: %w", closeErr)
+	}
+	if removeErr := os.Remove(indexPath); removeErr != nil {
+		return false, fmt.Errorf("prepare temporary Git index: %w", removeErr)
+	}
+	defer os.Remove(indexPath)           //nolint:errcheck // best-effort cleanup of an isolated temporary file
+	defer os.Remove(indexPath + ".lock") //nolint:errcheck // cancellation can leave the temporary index lock behind
+
+	env := []string{"GIT_INDEX_FILE=" + indexPath}
+	run := func(args ...string) (string, error) {
+		out, runErr := e.runContextWithEnv(ctx, env, args...)
+		if runErr != nil && ctx.Err() != nil {
+			return "", fmt.Errorf("git %s: %w", args[0], ctx.Err())
+		}
+		return out, runErr
+	}
+	if _, err = run("read-tree", "HEAD"); err != nil {
+		return false, fmt.Errorf("initialize temporary Git index: %w", err)
+	}
+	if _, err = run("add", "-A"); err != nil {
+		return false, fmt.Errorf("stage source snapshot in temporary Git index: %w", err)
+	}
+	tree, err := run("write-tree")
+	if err != nil {
+		return false, fmt.Errorf("write source snapshot tree: %w", err)
+	}
+	snapshot, err := run("commit-tree", tree, "-p", "HEAD", "-m", "loopai preflight source snapshot")
+	if err != nil {
+		return false, fmt.Errorf("create source snapshot commit: %w", err)
+	}
+	return e.mergeWouldConflict(ctx, base, snapshot)
+}
+
 func quoteGitConfigParameter(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
@@ -532,7 +586,8 @@ func quoteGitConfigParameter(value string) string {
 func mergeTreeWriteTreeUnsupported(output string) bool {
 	lower := strings.ToLower(output)
 	return strings.Contains(lower, "write-tree") &&
-		(strings.Contains(lower, "unknown option") || strings.Contains(lower, "unknown switch"))
+		(strings.Contains(lower, "unknown option") || strings.Contains(lower, "unknown switch") ||
+			strings.Contains(lower, "unknown rev") || strings.Contains(lower, "not a valid object name"))
 }
 
 func (e *externalBackend) rollbackSuccessfulMerge(ctx context.Context, preMergeHead string, cause error) error {
