@@ -54,11 +54,11 @@
 - [x] run tests - must pass before next task
 
 ### Task 2: Hold the run lock for the lifetime of every worktree run
-- [ ] in `cmd/loopai/main.go` worktree setup: after a worktree is created or resumed, acquire the run lock and register release in the existing cleanup chain (same discipline as `WtCleanup`); a failed acquire on a *freshly created* worktree is an internal error (nothing else can know about it yet)
-- [ ] the resume code path acquires the lock the same way; contention → `ErrWorktreeBusy` message
-- [ ] confirm the release also runs on the interrupt path (Ctrl+C cleanup), and that a kill -9 leaves only the OS to release the flock (no stale-state cleanup needed by design)
-- [ ] write tests: run-lock acquired during a worktree run (probe from test → busy) and released after cleanup (probe → free); resume path contention error includes pid info
-- [ ] run tests - must pass before next task
+- [x] in `cmd/loopai/main.go` worktree setup: after a worktree is created or resumed, acquire the run lock and register release in the existing cleanup chain (same discipline as `WtCleanup`); a failed acquire on a *freshly created* worktree is an internal error (nothing else can know about it yet)
+- [x] the resume code path acquires the lock the same way; contention → `ErrWorktreeBusy` message
+- [x] confirm the release also runs on the interrupt path (Ctrl+C cleanup), and that a kill -9 leaves only the OS to release the flock (no stale-state cleanup needed by design)
+- [x] write tests: run-lock acquired during a worktree run (probe from test → busy) and released after cleanup (probe → free); resume path contention error includes pid info
+- [x] run tests - must pass before next task
 
 ### Task 3: Auto-resume routing for --worktree with an existing worktree
 - [ ] replace the unconditional rejection (`worktree already exists at %s, another instance may be running`, `pkg/git/service.go:~754` and its callers) with lock-aware routing: probe the run lock; busy → error `plan worktree %s is busy: loopai is already running in it (%s)` with the recorded pid/started info; free → route into the existing resume path (`validateResumeWorktree` consistency checks included) and log `resuming interrupted worktree %s`

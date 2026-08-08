@@ -1033,6 +1033,35 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		}
 	}()
 
+	release, lockErr := git.AcquireWorktreeRunLock(wt.path)
+	if lockErr != nil {
+		if wt.resumed {
+			return fmt.Errorf("resume worktree: acquire run lock: %w", lockErr)
+		}
+		return fmt.Errorf("acquire run lock for newly created worktree: %w", lockErr)
+	}
+	var releaseLockOnce sync.Once
+	releaseRunLock := func() {
+		releaseLockOnce.Do(func() {
+			if releaseErr := release(); releaseErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to release worktree run lock: %v\n", releaseErr)
+			}
+		})
+	}
+	defer releaseRunLock()
+	// Cover setup errors and the force-exit window before cwd-aware cleanup is registered below.
+	// Releasing before removal matters on Windows, where an open lock file cannot be deleted.
+	if wt.resumed {
+		req.WtCleanup.set(releaseRunLock)
+	} else {
+		req.WtCleanup.set(func() {
+			releaseRunLock()
+			if rmErr := req.GitSvc.RemoveWorktree(wt.path); rmErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to remove worktree: %v\n", rmErr)
+			}
+		})
+	}
+
 	if igErr := req.GitSvc.EnsureLocalGitignore(); igErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: gitignore setup: %v\n", igErr)
 	}
@@ -1098,10 +1127,15 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	}
 	cleanup := func() {
 		restoreCWD()
+		releaseRunLock()
 		removeWorktree()
 	}
+	preserveCleanup := func() {
+		restoreCWD()
+		releaseRunLock()
+	}
 	finishState := worktreeFinishState{cleanup: worktreeCmuxFinishCleanup(
-		wt.resumed, o.Serve, restoreCWD, removeWorktree, closeLog,
+		wt.resumed, o.Serve, restoreCWD, releaseRunLock, removeWorktree, closeLog,
 		func() {
 			// During execution, resumed worktrees must survive interruption. Once execution has
 			// succeeded and only the dashboard is alive, force-exit cleanup may remove it too.
@@ -1111,9 +1145,9 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 
 	setupDone = true // disable safety-net defer, main cleanup takes over
 	if wt.resumed {
-		req.WtCleanup.set(restoreCWD)
+		req.WtCleanup.set(preserveCleanup)
 		defer func() {
-			restoreCWD()
+			preserveCleanup()
 			// executePlan deliberately returns nil for a user abort. Use its internal completion
 			// outcome instead of the public return value so aborted work remains resumable.
 			if finishState.succeeded {
@@ -1173,15 +1207,18 @@ func (s *worktreeFinishState) beforeCmuxFinish(success bool) {
 
 func worktreeCmuxFinishCleanup(
 	resumed, serve bool,
-	restoreCWD, removeWorktree, closeLog, enableDeferredCleanup func(),
+	restoreCWD, releaseRunLock, removeWorktree, closeLog, enableDeferredCleanup func(),
 ) func(bool) {
 	return func(success bool) {
 		restoreCWD()
 		// Successful --serve runs remain blocked in keepDashboardAlive after this callback. Keep the
 		// plan-bearing worktree available to /api/plan; runWithWorktree's existing defer removes it
 		// when the dashboard exits. Failures never enter that idle period and retain normal cleanup.
-		if (!serve || !success) && (!resumed || success) {
-			removeWorktree()
+		if !serve || !success {
+			releaseRunLock()
+			if !resumed || success {
+				removeWorktree()
+			}
 		}
 		closeLog()
 		if serve && success {

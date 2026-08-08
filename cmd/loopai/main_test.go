@@ -5619,6 +5619,41 @@ func TestRunWithWorktreeResume(t *testing.T) {
 		assert.DirExists(t, wtPath, "branch mismatch must not remove the existing worktree")
 	})
 
+	t.Run("rejects_lock_contention_with_holder_pid", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "resume-busy.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Resume Busy\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/resume-busy.md")
+		runGit(t, dir, "commit", "-m", "add resume busy plan")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
+		release, err := git.AcquireWorktreeRunLock(wtPath)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, release()) })
+
+		err = runWithWorktree(t.Context(), opts{ResumeWorktree: true, NoColor: true}, executePlanRequest{
+			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc,
+			Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
+			DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		})
+
+		var busyErr *git.ErrWorktreeBusy
+		require.ErrorAs(t, err, &busyErr)
+		assert.Equal(t, os.Getpid(), busyErr.PID)
+		assert.Contains(t, err.Error(), fmt.Sprintf("pid=%d", os.Getpid()))
+		assert.DirExists(t, wtPath, "a busy resume target must not be removed")
+	})
+
 	t.Run("preserves_dirty_worktree_on_failure", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		origDir, err := os.Getwd()
@@ -5651,6 +5686,9 @@ func TestRunWithWorktreeResume(t *testing.T) {
 		require.Error(t, err)
 		assert.DirExists(t, wtPath)
 		assert.FileExists(t, dirtyPath, "failed resume must preserve unfinished changes")
+		busy, _, probeErr := git.ProbeWorktreeRunLock(wtPath)
+		require.NoError(t, probeErr)
+		assert.False(t, busy, "failed-run cleanup must release the lock while preserving the worktree")
 	})
 
 	t.Run("removes_worktree_after_success", func(t *testing.T) {
@@ -5801,6 +5839,10 @@ printf '%s\n' '{"type":"result","result":""}'
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Contains(t, string(body), "Serve Worktree")
 	assert.DirExists(t, wtPath, "dashboard idle must retain the plan-bearing worktree")
+	busy, info, probeErr := git.ProbeWorktreeRunLock(wtPath)
+	require.NoError(t, probeErr)
+	assert.True(t, busy, "the run lock must remain held for the dashboard's lifetime")
+	assert.Contains(t, info, fmt.Sprintf("pid=%d", os.Getpid()))
 
 	cancel()
 	select {
@@ -6612,20 +6654,21 @@ func TestFinishCmuxCompletion_NilReporter(t *testing.T) {
 
 func TestWorktreeCmuxFinishCleanup(t *testing.T) {
 	tests := []struct {
-		name       string
-		resumed    bool
-		serve      bool
-		success    bool
-		wantRemove bool
+		name        string
+		resumed     bool
+		serve       bool
+		success     bool
+		wantRelease bool
+		wantRemove  bool
 	}{
-		{name: "new success removes", success: true, wantRemove: true},
-		{name: "new failure removes", wantRemove: true},
-		{name: "resumed success removes", resumed: true, success: true, wantRemove: true},
-		{name: "resumed failure preserves", resumed: true},
+		{name: "new success removes", success: true, wantRelease: true, wantRemove: true},
+		{name: "new failure removes", wantRelease: true, wantRemove: true},
+		{name: "resumed success removes", resumed: true, success: true, wantRelease: true, wantRemove: true},
+		{name: "resumed failure preserves", resumed: true, wantRelease: true},
 		{name: "serve success defers new removal", serve: true, success: true},
 		{name: "serve success defers resumed removal", resumed: true, serve: true, success: true},
-		{name: "serve failure still removes new worktree", serve: true, wantRemove: true},
-		{name: "serve failure still preserves resumed worktree", resumed: true, serve: true},
+		{name: "serve failure still removes new worktree", serve: true, wantRelease: true, wantRemove: true},
+		{name: "serve failure still preserves resumed worktree", resumed: true, serve: true, wantRelease: true},
 	}
 
 	for _, tt := range tests {
@@ -6633,6 +6676,7 @@ func TestWorktreeCmuxFinishCleanup(t *testing.T) {
 			var calls []string
 			cleanup := worktreeCmuxFinishCleanup(tt.resumed, tt.serve,
 				func() { calls = append(calls, "restore") },
+				func() { calls = append(calls, "release") },
 				func() { calls = append(calls, "remove") },
 				func() { calls = append(calls, "close") },
 				func() { calls = append(calls, "enable-deferred") },
@@ -6640,6 +6684,9 @@ func TestWorktreeCmuxFinishCleanup(t *testing.T) {
 			cleanup(tt.success)
 
 			want := []string{"restore"}
+			if tt.wantRelease {
+				want = append(want, "release")
+			}
 			if tt.wantRemove {
 				want = append(want, "remove")
 			}
