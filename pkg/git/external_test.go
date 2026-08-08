@@ -45,6 +45,59 @@ func TestDirectCancellationPreservesCallerSession(t *testing.T) {
 	assert.Equal(t, commandWaitDelay, cmd.WaitDelay)
 }
 
+func TestExternalBackendMergeWouldConflict(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		branchData string
+		baseData   string
+		conflict   bool
+	}{
+		{name: "clean merge", branchData: "plan work\n", baseData: "source work\n", conflict: false},
+		{name: "conflicting merge", branchData: "plan version\n", baseData: "source version\n", conflict: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := setupExternalTestRepo(t)
+			runGit(t, dir, "checkout", "-b", "plan")
+			branchFile := "README.md"
+			if !tc.conflict {
+				branchFile = "plan.txt"
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, branchFile), []byte(tc.branchData), 0o600))
+			runGit(t, dir, "add", branchFile)
+			runGit(t, dir, "commit", "-m", "plan work")
+
+			runGit(t, dir, "checkout", "master")
+			baseFile := "README.md"
+			if !tc.conflict {
+				baseFile = "source.txt"
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, baseFile), []byte(tc.baseData), 0o600))
+			runGit(t, dir, "add", baseFile)
+			runGit(t, dir, "commit", "-m", "source work")
+
+			backend, err := newExternalBackend(dir, "git")
+			require.NoError(t, err)
+			before := runGit(t, dir, "status", "--porcelain=v1")
+			conflict, err := backend.mergeWouldConflict(t.Context(), "master", "plan")
+			require.NoError(t, err)
+			assert.Equal(t, tc.conflict, conflict)
+			assert.Equal(t, before, runGit(t, dir, "status", "--porcelain=v1"))
+		})
+	}
+}
+
+func TestExternalBackendMergeWouldConflictUnsupported(t *testing.T) {
+	dir := t.TempDir()
+	command := filepath.Join(t.TempDir(), "old-git")
+	require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\necho \"error: unknown option 'write-tree'\" >&2\nexit 129\n"), 0o755)) //nolint:gosec // executable test fixture
+	backend := &externalBackend{path: dir, command: command}
+
+	conflict, err := backend.mergeWouldConflict(t.Context(), "master", "plan")
+
+	assert.False(t, conflict)
+	assert.ErrorIs(t, err, errMergeTreeUnsupported)
+}
+
 // setupExternalTestRepo creates a temp git repo using the git CLI for external backend tests.
 func setupExternalTestRepo(t *testing.T) string {
 	t.Helper()

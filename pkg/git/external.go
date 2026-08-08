@@ -468,6 +468,40 @@ func (e *externalBackend) isAncestor(ctx context.Context, ancestor, descendant s
 	return false, fmt.Errorf("git merge-base: %w", err)
 }
 
+// mergeWouldConflict predicts whether merging branch into base would conflict without
+// changing the index or a worktree. Git 2.38 added the --write-tree form; callers may
+// fall back to attempting the real merge when an older Git reports it as unsupported.
+func (e *externalBackend) mergeWouldConflict(ctx context.Context, base, branch string) (bool, error) {
+	cmd := exec.CommandContext(ctx, e.command, "merge-tree", "--write-tree", base, branch)
+	cmd.Dir = e.path
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	err := cmd.Run()
+	if err == nil {
+		return false, nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return true, nil
+	}
+
+	details := strings.TrimSpace(output.String())
+	if mergeTreeWriteTreeUnsupported(details) {
+		return false, errMergeTreeUnsupported
+	}
+	if details != "" {
+		return false, fmt.Errorf("git merge-tree: %s", details)
+	}
+	return false, fmt.Errorf("git merge-tree: %w", err)
+}
+
+func mergeTreeWriteTreeUnsupported(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "write-tree") &&
+		(strings.Contains(lower, "unknown option") || strings.Contains(lower, "unknown switch"))
+}
+
 func (e *externalBackend) rollbackSuccessfulMerge(ctx context.Context, preMergeHead string, cause error) error {
 	if _, err := e.runContext(ctx, "reset", "--hard", preMergeHead); err != nil {
 		return fmt.Errorf("%w; additionally failed to restore pre-merge HEAD %q: %w", cause, preMergeHead, err)

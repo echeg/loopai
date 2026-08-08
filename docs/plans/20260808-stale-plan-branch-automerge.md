@@ -48,10 +48,10 @@
 ## Implementation Steps
 
 ### Task 1: Add merge-tree dry-run primitive to the git backend
-- [ ] add `mergeWouldConflict(ctx, base, branch string) (bool, error)` to `pkg/git/external.go` using `git merge-tree --write-tree <branch> <revision>`; conflict → true, clean → false; unsupported git (exit on unknown flag) → `(false, errUnsupported sentinel)` so callers can skip prediction
-- [ ] expose it through the repo interface consumed by `Service` (follow the existing `isAncestor` pattern)
-- [ ] write tests: clean merge predicted clean, conflicting file predicted conflicting, both against real temp repos; unsupported-git path covered with a stubbed runner if the suite's git is always modern
-- [ ] run tests - must pass before next task
+- [x] add `mergeWouldConflict(ctx, base, branch string) (bool, error)` to `pkg/git/external.go` using `git merge-tree --write-tree <branch> <revision>`; conflict → true, clean → false; unsupported git (exit on unknown flag) → `(false, errUnsupported sentinel)` so callers can skip prediction
+- [x] expose it through the repo interface consumed by `Service` (follow the existing `isAncestor` pattern)
+- [x] write tests: clean merge predicted clean, conflicting file predicted conflicting, both against real temp repos; unsupported-git path covered with a stubbed runner if the suite's git is always modern
+- [x] run tests - must pass before next task
 
 ### Task 2: Replace the hard ancestor rejection with auto-merge semantics
 - [ ] in `preflightWorktreeForPlan` / `validateExistingPlanBranchAt`: when the existing branch does not contain the required ancestor, run the merge-tree dry-run instead of returning the error; predicted-clean → preflight passes; predicted-conflict → return the current error text extended with the conflicting outcome ("would conflict; merge or rebase the source changes into it, or choose another --branch"); dry-run unsupported → preflight passes (post-creation merge is the backstop)

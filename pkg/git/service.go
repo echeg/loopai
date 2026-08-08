@@ -60,11 +60,16 @@ type backend interface {
 	removeWorktreeSafe(path string) error
 	pruneWorktrees() error
 	isAncestor(ctx context.Context, ancestor, descendant string) (bool, error)
+	mergeWouldConflict(ctx context.Context, base, branch string) (bool, error)
 }
 
 // ErrMergeConflict identifies a merge that could not be completed because of conflicts.
 // The repository is returned to its pre-merge state before this error is returned.
 var ErrMergeConflict = errors.New("merge conflict")
+
+// errMergeTreeUnsupported indicates that the installed Git does not support the
+// merge-tree --write-tree form used for non-mutating conflict prediction.
+var errMergeTreeUnsupported = errors.New("git merge-tree --write-tree unsupported")
 
 // DiffStats holds statistics about changes between two commits.
 type DiffStats struct {
