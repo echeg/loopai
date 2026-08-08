@@ -1287,7 +1287,7 @@ func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, b
 		}
 	}()
 
-	if preflightErr := req.GitSvc.PreflightWorktreeForPlan(req.PlanFile, req.BranchOverride); preflightErr != nil {
+	if preflightErr := req.GitSvc.PreflightWorktreeForPlanContext(ctx, req.PlanFile, req.BranchOverride); preflightErr != nil {
 		return "", false, fmt.Errorf("preflight worktree creation: %w", preflightErr)
 	}
 
@@ -1300,8 +1300,13 @@ func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, b
 	// Ignore installation can change whether an untracked plan is visible to Git,
 	// particularly for plans placed under loopai's reserved runtime directories.
 	// Revalidate before an auto-commit is allowed to advance the source checkout.
-	if preflightErr := req.GitSvc.PreflightWorktreeForPlan(req.PlanFile, req.BranchOverride); preflightErr != nil {
+	if preflightErr := req.GitSvc.PreflightWorktreeForPlanContext(ctx, req.PlanFile, req.BranchOverride); preflightErr != nil {
 		return "", false, fmt.Errorf("preflight worktree creation after ignore setup: %w", preflightErr)
+	}
+	if o.Commit {
+		if preflightErr := req.GitSvc.PreflightWorktreeForPlanAutoCommitContext(ctx, req.PlanFile, req.BranchOverride); preflightErr != nil {
+			return "", false, fmt.Errorf("preflight source auto-commit: %w", preflightErr)
+		}
 	}
 	sourceHeadBefore := ""
 	if o.Commit {
@@ -1318,7 +1323,7 @@ func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, b
 		path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlanAfterAutoCommit(
 			ctx, req.PlanFile, req.BranchOverride, sourceHeadBefore)
 	} else {
-		path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlan(req.PlanFile, req.BranchOverride)
+		path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlanContext(ctx, req.PlanFile, req.BranchOverride)
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("create worktree: %w", err)

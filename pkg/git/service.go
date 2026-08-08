@@ -55,16 +55,22 @@ type backend interface {
 	autoCommitAll(msg string) (bool, error)
 	createInitialCommit(msg string) error
 	diffStats(baseBranch, headRef string) (DiffStats, error)
-	addWorktree(path, branch string, createBranch bool) error
+	addWorktree(ctx context.Context, path, branch string, createBranch bool) error
 	removeWorktree(path string) error
 	removeWorktreeSafe(path string) error
 	pruneWorktrees() error
 	isAncestor(ctx context.Context, ancestor, descendant string) (bool, error)
+	mergeWouldConflict(ctx context.Context, base, branch string) (bool, error)
+	mergeWorkingTreeWouldConflict(ctx context.Context, base string) (bool, error)
 }
 
 // ErrMergeConflict identifies a merge that could not be completed because of conflicts.
 // The repository is returned to its pre-merge state before this error is returned.
 var ErrMergeConflict = errors.New("merge conflict")
+
+// errMergeTreeUnsupported indicates that the installed Git does not support the
+// merge-tree --write-tree form used for non-mutating conflict prediction.
+var errMergeTreeUnsupported = errors.New("git merge-tree --write-tree unsupported")
 
 // DiffStats holds statistics about changes between two commits.
 type DiffStats struct {
@@ -542,7 +548,14 @@ func (s *Service) CreateBranchForPlan(planFile, defaultBranch, branchOverride st
 // git service) so the commit lands on the feature branch rather than the default branch.
 // branchOverride, when non-empty, is used directly instead of deriving the name from planFile.
 func (s *Service) CreateWorktreeForPlan(planFile, branchOverride string) (string, bool, error) {
-	return s.createWorktreeForPlan(context.Background(), planFile, branchOverride, "")
+	return s.CreateWorktreeForPlanContext(context.Background(), planFile, branchOverride)
+}
+
+// CreateWorktreeForPlanContext is CreateWorktreeForPlan with caller cancellation.
+func (s *Service) CreateWorktreeForPlanContext(
+	ctx context.Context, planFile, branchOverride string,
+) (string, bool, error) {
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "")
 }
 
 // CreateWorktreeForPlanAfterAutoCommit creates a plan worktree after sourceHeadBefore was
@@ -567,7 +580,7 @@ func (s *Service) createWorktreeForPlan(
 		s.log.Printf("warning: prune worktrees: %v\n", pruneErr)
 	}
 
-	if err := s.preflightWorktreeForPlan(planFile, branchOverride, existingBranchAncestor); err != nil {
+	if err := s.preflightWorktreeForPlan(ctx, planFile, branchOverride, existingBranchAncestor); err != nil {
 		return "", false, err
 	}
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
@@ -600,8 +613,9 @@ func (s *Service) createWorktreeForPlan(
 		}
 	} else {
 		s.log.Printf("creating worktree with new branch: %s (from %s)\n", branchName, source)
-		if err := s.repo.addWorktree(wtPath, branchName, true); err != nil {
-			return "", false, fmt.Errorf("add worktree with new branch: %w", err)
+		if err := s.repo.addWorktree(ctx, wtPath, branchName, true); err != nil {
+			addErr := fmt.Errorf("add worktree with new branch: %w", err)
+			return "", false, s.cleanupFailedWorktreeAdd(wtPath, addErr)
 		}
 	}
 
@@ -620,17 +634,15 @@ func (s *Service) createWorktreeForPlan(
 func (s *Service) createExistingPlanWorktree(
 	ctx context.Context, wtPath, branchName, existingBranchAncestor string,
 ) error {
-	if err := s.validateExistingPlanBranchAt(branchName, existingBranchAncestor); err != nil {
+	if err := s.validateExistingPlanBranchAt(ctx, branchName, existingBranchAncestor); err != nil {
 		return err
 	}
 	s.log.Printf("creating worktree with existing branch: %s\n", branchName)
-	if err := s.repo.addWorktree(wtPath, branchName, false); err != nil {
-		return fmt.Errorf("add worktree with existing branch: %w", err)
+	if err := s.repo.addWorktree(ctx, wtPath, branchName, false); err != nil {
+		addErr := fmt.Errorf("add worktree with existing branch: %w", err)
+		return s.cleanupFailedWorktreeAdd(wtPath, addErr)
 	}
-	if existingBranchAncestor == "" {
-		return nil
-	}
-	mergeErr := s.mergeAutoCommittedSource(ctx, wtPath)
+	mergeErr := s.mergeSourceHead(ctx, wtPath, branchName)
 	if mergeErr == nil {
 		return nil
 	}
@@ -640,10 +652,20 @@ func (s *Service) createExistingPlanWorktree(
 	return mergeErr
 }
 
-func (s *Service) mergeAutoCommittedSource(ctx context.Context, wtPath string) error {
+func (s *Service) cleanupFailedWorktreeAdd(wtPath string, cause error) error {
+	if _, err := os.Stat(wtPath); err != nil {
+		return cause
+	}
+	if removeErr := s.repo.removeWorktree(wtPath); removeErr != nil {
+		return errors.Join(cause, fmt.Errorf("remove partial worktree after creation failure: %w", removeErr))
+	}
+	return cause
+}
+
+func (s *Service) mergeSourceHead(ctx context.Context, wtPath, branchName string) error {
 	sourceHead, err := s.repo.headHash()
 	if err != nil {
-		return fmt.Errorf("identify auto-committed source HEAD: %w", err)
+		return fmt.Errorf("identify source HEAD: %w", err)
 	}
 	wtSvc, err := s.OpenWorktree(wtPath)
 	if err != nil {
@@ -651,13 +673,19 @@ func (s *Service) mergeAutoCommittedSource(ctx context.Context, wtPath string) e
 	}
 	containsSource, err := wtSvc.repo.isAncestor(ctx, sourceHead, "HEAD")
 	if err != nil {
-		return fmt.Errorf("check existing plan branch against auto-committed source: %w", err)
+		return fmt.Errorf("check existing plan branch against source HEAD: %w", err)
 	}
 	if containsSource {
 		return nil
 	}
+	shortHead := sourceHead
+	const shortHashLength = 7
+	if len(shortHead) > shortHashLength {
+		shortHead = shortHead[:shortHashLength]
+	}
+	s.log.Printf("merging source HEAD %s into existing plan branch %s\n", shortHead, branchName)
 	if err := wtSvc.repo.mergeRevision(ctx, sourceHead, sourceHead); err != nil {
-		return fmt.Errorf("merge auto-committed source into existing plan branch: %w", err)
+		return fmt.Errorf("merge source HEAD into existing plan branch: %w", err)
 	}
 	return nil
 }
@@ -666,10 +694,42 @@ func (s *Service) mergeAutoCommittedSource(ctx context.Context, wtPath string) e
 // state. Callers that may mutate the source checkout must run this while holding the repository
 // lock before installing runtime ignores, and again afterward before creating an auto-commit.
 func (s *Service) PreflightWorktreeForPlan(planFile, branchOverride string) error {
-	return s.preflightWorktreeForPlan(planFile, branchOverride, "")
+	return s.PreflightWorktreeForPlanContext(context.Background(), planFile, branchOverride)
 }
 
-func (s *Service) preflightWorktreeForPlan(planFile, branchOverride, existingBranchAncestor string) error {
+// PreflightWorktreeForPlanContext is PreflightWorktreeForPlan with caller cancellation.
+func (s *Service) PreflightWorktreeForPlanContext(ctx context.Context, planFile, branchOverride string) error {
+	return s.preflightWorktreeForPlan(ctx, planFile, branchOverride, "")
+}
+
+// PreflightWorktreeForPlanAutoCommitContext validates the tree that AutoCommitAll would
+// create, so conflicts introduced by dirty source files are rejected before source mutation.
+func (s *Service) PreflightWorktreeForPlanAutoCommitContext(
+	ctx context.Context, planFile, branchOverride string,
+) error {
+	if err := s.preflightWorktreeForPlan(ctx, planFile, branchOverride, ""); err != nil {
+		return err
+	}
+	branchName := s.EffectiveBranchName(s.resolveFilesystemCase(planFile), branchOverride)
+	if !s.repo.branchExists(branchName) {
+		return nil
+	}
+	wouldConflict, err := s.repo.mergeWorkingTreeWouldConflict(ctx, "refs/heads/"+branchName)
+	if errors.Is(err, errMergeTreeUnsupported) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("predict auto-committed source merge into existing plan branch %q: %w", branchName, err)
+	}
+	if wouldConflict {
+		return autoCommittedSourceConflictError(branchName)
+	}
+	return nil
+}
+
+func (s *Service) preflightWorktreeForPlan(
+	ctx context.Context, planFile, branchOverride, existingBranchAncestor string,
+) error {
 	planFile = s.resolveFilesystemCase(planFile)
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
 	if branchName == "" {
@@ -712,33 +772,48 @@ func (s *Service) preflightWorktreeForPlan(planFile, branchOverride, existingBra
 	}
 
 	if s.repo.branchExists(branchName) {
-		if err := s.validateExistingPlanBranchAt(branchName, existingBranchAncestor); err != nil {
+		if err := s.validateExistingPlanBranchAt(ctx, branchName, existingBranchAncestor); err != nil {
 			return err
 		}
 	}
 	return s.validateWorktreePlanFile(planFile)
 }
 
-func (s *Service) validateExistingPlanBranch(branchName string) error {
-	head, err := s.repo.headHash()
-	if err != nil {
-		return fmt.Errorf("identify current HEAD before reusing plan branch: %w", err)
-	}
-	return s.validateExistingPlanBranchAt(branchName, head)
-}
-
-func (s *Service) validateExistingPlanBranchAt(branchName, requiredAncestor string) error {
+func (s *Service) validateExistingPlanBranchAt(ctx context.Context, branchName, requiredAncestor string) error {
 	if requiredAncestor == "" {
-		return s.validateExistingPlanBranch(branchName)
+		var err error
+		requiredAncestor, err = s.repo.headHash()
+		if err != nil {
+			return fmt.Errorf("identify current HEAD before reusing plan branch: %w", err)
+		}
 	}
-	containsHead, err := s.repo.isAncestor(context.Background(), requiredAncestor, "refs/heads/"+branchName)
+	branchRef := "refs/heads/" + branchName
+	containsHead, err := s.repo.isAncestor(ctx, requiredAncestor, branchRef)
 	if err != nil {
 		return fmt.Errorf("verify existing plan branch %q: %w", branchName, err)
 	}
-	if !containsHead {
-		return fmt.Errorf("existing plan branch %q does not include current HEAD; merge or rebase the source changes into it, or choose another --branch", branchName)
+	if containsHead {
+		return nil
+	}
+	wouldConflict, err := s.repo.mergeWouldConflict(ctx, branchRef, requiredAncestor)
+	if errors.Is(err, errMergeTreeUnsupported) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("predict source merge into existing plan branch %q: %w", branchName, err)
+	}
+	if wouldConflict {
+		return existingPlanBranchConflictError(branchName)
 	}
 	return nil
+}
+
+func existingPlanBranchConflictError(branchName string) error {
+	return fmt.Errorf("existing plan branch %q does not include current HEAD and merging the source changes would conflict; merge or rebase the source changes into it, or choose another --branch", branchName)
+}
+
+func autoCommittedSourceConflictError(branchName string) error {
+	return fmt.Errorf("auto-committing the source changes and merging the resulting commit into existing plan branch %q would conflict; commit and merge or rebase the source changes into it manually, or choose another --branch", branchName)
 }
 
 // CommitPlanFile stages and commits a plan file on the current branch.
@@ -1029,24 +1104,36 @@ func (s *Service) EnsureLocalGitignore() error {
 	if err := os.MkdirAll(loopaiDir, 0o750); err != nil {
 		return fmt.Errorf("create .loopai dir: %w", err)
 	}
-	for _, runtimeDir := range []string{"progress", "worktrees"} {
-		if err := s.validateRuntimeDirectoryPath(filepath.Join(loopaiDir, runtimeDir)); err != nil {
+	runtimePaths := loopaiRuntimePaths()
+	runtimeDirs := make([]string, 0, len(runtimePaths))
+	runtimeExcludes := make([]string, 0, len(runtimePaths))
+	var content strings.Builder
+	content.WriteString(".gitignore\n")
+	for _, runtimePath := range runtimePaths {
+		runtimeDir, ok := strings.CutPrefix(runtimePath, ".loopai/")
+		if !ok || runtimeDir == "" {
+			return fmt.Errorf("invalid loopai runtime path %q", runtimePath)
+		}
+		runtimeDirs = append(runtimeDirs, runtimeDir)
+		runtimeExcludes = append(runtimeExcludes, "/"+runtimePath+"/")
+		content.WriteString(runtimeDir + "/\n")
+		if err := s.validateRuntimeDirectoryPath(filepath.Join(loopaiDir, filepath.FromSlash(runtimeDir))); err != nil {
 			return fmt.Errorf("validate .loopai runtime directories: %w", err)
 		}
 	}
 
 	gitignorePath := filepath.Join(loopaiDir, ".gitignore")
-	const content = ".gitignore\nprogress/\nworktrees/\n"
+	gitignoreContent := content.String()
 
 	if existing, err := os.ReadFile(gitignorePath); err == nil { //nolint:gosec // .gitignore is world-readable
-		if string(existing) == content {
+		if string(existing) == gitignoreContent {
 			return nil
 		}
-		if excludeErr := s.repo.ensureRuntimeExcludes("/.loopai/progress/", "/.loopai/worktrees/"); excludeErr != nil {
+		if excludeErr := s.repo.ensureRuntimeExcludes(runtimeExcludes...); excludeErr != nil {
 			return fmt.Errorf("preserve custom .loopai/.gitignore: %w", excludeErr)
 		}
-		for _, runtimeDir := range []string{"progress", "worktrees"} {
-			if ignoreErr := ensureRuntimeDirectoryIgnored(filepath.Join(loopaiDir, runtimeDir)); ignoreErr != nil {
+		for _, runtimeDir := range runtimeDirs {
+			if ignoreErr := ensureRuntimeDirectoryIgnored(filepath.Join(loopaiDir, filepath.FromSlash(runtimeDir))); ignoreErr != nil {
 				return fmt.Errorf("preserve custom .loopai/.gitignore: %w", ignoreErr)
 			}
 		}
@@ -1056,7 +1143,7 @@ func (s *Service) EnsureLocalGitignore() error {
 		return fmt.Errorf("read .loopai/.gitignore: %w", err)
 	}
 
-	if err := os.WriteFile(gitignorePath, []byte(content), 0o644); err != nil { //nolint:gosec // .gitignore needs world-readable
+	if err := os.WriteFile(gitignorePath, []byte(gitignoreContent), 0o644); err != nil { //nolint:gosec // .gitignore needs world-readable
 		return fmt.Errorf("write .loopai/.gitignore: %w", err)
 	}
 

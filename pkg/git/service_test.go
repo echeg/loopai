@@ -266,6 +266,30 @@ func TestService_MergeBranch(t *testing.T) {
 			"configured branch merge options must not discard feature content")
 	})
 
+	t.Run("uses Git 2.30 compatible config override", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+		runGit(t, dir, "checkout", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o600))
+		runGit(t, dir, "add", "base.txt")
+		runGit(t, dir, "commit", "-m", "advance base")
+		runGit(t, dir, "config", "branch.master.mergeOptions", "-s ours")
+		t.Setenv("GIT_CONFIG_PARAMETERS", "")
+
+		command := filepath.Join(t.TempDir(), "old-git")
+		script := "#!/bin/sh\nif [ -n \"$GIT_CONFIG_PARAMETERS\" ]; then echo 'error: bogus format in GIT_CONFIG_PARAMETERS' >&2; exit 1; fi\nexec git \"$@\"\n"
+		require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+		svc, err := NewService(dir, noopServiceLogger(), command)
+		require.NoError(t, err)
+
+		require.NoError(t, svc.MergeBranch("feature"))
+		assert.FileExists(t, filepath.Join(dir, "feature.txt"),
+			"the compatibility-safe override must still neutralize configured merge options")
+	})
+
 	t.Run("branch wins over a same-named tag", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		runGit(t, dir, "tag", "feature")
@@ -1528,6 +1552,8 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 
 		// create the existing branch at the source HEAD, then return to master
 		require.NoError(t, svc.CreateBranch("existing-feature"))
+		branchHeadBefore, err := svc.repo.headHash()
+		require.NoError(t, err)
 		require.NoError(t, svc.repo.checkoutBranch("master"))
 
 		log := &mockLogger{}
@@ -1543,6 +1569,9 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		branch, err := wtSvc.CurrentBranch()
 		require.NoError(t, err)
 		assert.Equal(t, "existing-feature", branch)
+		branchHeadAfter, err := wtSvc.repo.headHash()
+		require.NoError(t, err)
+		assert.Equal(t, branchHeadBefore, branchHeadAfter, "up-to-date reuse must not create a commit")
 
 		assert.Contains(t, log.logs[0], "existing branch")
 
@@ -1550,25 +1579,164 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, svc.RemoveWorktree(wtPath))
 	})
 
-	t.Run("rejects existing branch that omits current HEAD", func(t *testing.T) {
+	t.Run("existing branch worktree creation honors cancellation", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())
 		require.NoError(t, err)
 
-		require.NoError(t, svc.CreateBranch("stale-feature"))
+		planFile := filepath.Join(dir, "docs", "plans", "cancel-add.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add cancellation plan"))
+		require.NoError(t, svc.CreateBranch("cancel-add"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+
+		command := filepath.Join(t.TempDir(), "slow-git")
+		script := "#!/bin/sh\nif [ \"$1\" = worktree ] && [ \"$2\" = add ]; then git \"$@\" || exit $?; sleep 30; exit 0; fi\nexec git \"$@\"\n"
+		require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+		svc, err = NewService(dir, noopServiceLogger(), command)
+		require.NoError(t, err)
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancel()
+
+		started := time.Now()
+		_, _, err = svc.CreateWorktreeForPlanContext(ctx, planFile, "")
+
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Less(t, time.Since(started), 8*time.Second,
+			"cancellation must stop well before the command's 30-second fixture delay")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "cancel-add"))
+	})
+
+	t.Run("auto-commit preflight excludes tracked runtime changes", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "runtime-conflict.md")
+		runtimeFile := filepath.Join(dir, ".loopai", "progress", "run.log")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.MkdirAll(filepath.Dir(runtimeFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, os.WriteFile(runtimeFile, []byte("base\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.add(runtimeFile))
+		require.NoError(t, svc.repo.commit("add plan and tracked runtime file"))
+		require.NoError(t, svc.CreateBranch("runtime-conflict"))
+		require.NoError(t, os.WriteFile(runtimeFile, []byte("branch version\n"), 0o600))
+		require.NoError(t, svc.repo.commitFiles("change runtime file on plan branch", runtimeFile))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "source.txt"), []byte("source\n"), 0o600))
+		require.NoError(t, svc.repo.add("source.txt"))
+		require.NoError(t, svc.repo.commit("advance source"))
+		require.NoError(t, os.WriteFile(runtimeFile, []byte("dirty source version\n"), 0o600))
+
+		require.NoError(t, svc.PreflightWorktreeForPlanAutoCommitContext(t.Context(), planFile, ""))
+		committed, err := svc.AutoCommitAll("must ignore runtime-only changes")
+		require.NoError(t, err)
+		assert.False(t, committed)
+		assert.Contains(t, runGit(t, dir, "status", "--porcelain"), ".loopai/progress/run.log")
+	})
+
+	t.Run("auto-commit conflict describes dirty source changes when branch contains HEAD", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "ahead-conflict.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		sourceHead, err := svc.repo.headHash()
+		require.NoError(t, err)
+		require.NoError(t, svc.CreateBranch("ahead-conflict"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("plan version\n"), 0o600))
+		require.NoError(t, svc.repo.commitFiles("change README on plan branch", "README.md"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("dirty source version\n"), 0o600))
+
+		err = svc.PreflightWorktreeForPlanAutoCommitContext(t.Context(), planFile, "")
+
+		require.ErrorContains(t, err, "auto-committing the source changes")
+		require.ErrorContains(t, err, "would conflict")
+		assert.NotContains(t, err.Error(), "does not include current HEAD")
+		runGit(t, dir, "merge-base", "--is-ancestor", sourceHead, "refs/heads/ahead-conflict")
+		assert.Contains(t, runGit(t, dir, "status", "--porcelain"), "README.md",
+			"preflight must leave dirty source changes untouched")
+	})
+
+	t.Run("clean auto-commit preflight does not require author identity", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "identity-free.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add identity-free plan"))
+		require.NoError(t, svc.CreateBranch("identity-free"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "branch.txt"), []byte("branch\n"), 0o600))
+		require.NoError(t, svc.repo.add("branch.txt"))
+		require.NoError(t, svc.repo.commit("advance plan branch"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "source.txt"), []byte("source\n"), 0o600))
+		require.NoError(t, svc.repo.add("source.txt"))
+		require.NoError(t, svc.repo.commit("advance source branch"))
+		runGit(t, dir, "config", "--unset", "user.name")
+		runGit(t, dir, "config", "--unset", "user.email")
+
+		command := filepath.Join(t.TempDir(), "identity-free-git")
+		script := "#!/bin/sh\nunset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL\nexport GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1\nexec git \"$@\"\n"
+		require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+		svc, err = NewService(dir, noopServiceLogger(), command)
+		require.NoError(t, err)
+
+		require.NoError(t, svc.PreflightWorktreeForPlanAutoCommitContext(t.Context(), planFile, ""))
+	})
+
+	t.Run("merges clean divergence into existing branch", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		log := &mockLogger{}
+		svc, err := NewService(dir, log)
+		require.NoError(t, err)
+
+		const branchName = "stale=a'b"
+		require.NoError(t, svc.CreateBranch(branchName))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "branch-only.txt"), []byte("branch work\n"), 0o600))
+		require.NoError(t, svc.repo.add("branch-only.txt"))
+		require.NoError(t, svc.repo.commit("add branch work"))
+		branchHead, err := svc.repo.headHash()
+		require.NoError(t, err)
+		runGit(t, dir, "config", "branch."+branchName+".mergeOptions", "-s ours")
 		require.NoError(t, svc.repo.checkoutBranch("master"))
 		planFile := filepath.Join(dir, "docs", "plans", "stale-feature.md")
 		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
 		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
 		require.NoError(t, svc.repo.add(planFile))
 		require.NoError(t, svc.repo.commit("advance source with plan"))
+		sourceHead, err := svc.repo.headHash()
+		require.NoError(t, err)
 
-		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
-		require.ErrorContains(t, err, "does not include current HEAD")
-		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "stale-feature"))
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, branchName)
+		require.NoError(t, err)
+		assert.False(t, planNeedsCommit)
+		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
+
+		runGit(t, wtPath, "merge-base", "--is-ancestor", branchHead, "HEAD")
+		runGit(t, wtPath, "merge-base", "--is-ancestor", sourceHead, "HEAD")
+		assert.Equal(t, "branch work", strings.TrimSpace(runGit(t, wtPath, "show", "HEAD:branch-only.txt")))
+		assert.Equal(t, "# Plan", strings.TrimSpace(runGit(t, wtPath, "show", "HEAD:docs/plans/stale-feature.md")),
+			"configured branch merge options must not discard source changes")
+		assert.Equal(t, branchHead, strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD^1")))
+		assert.Equal(t, sourceHead, strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD^2")))
+		assert.Contains(t, strings.Join(log.logs, ""),
+			"merging source HEAD "+sourceHead[:7]+" into existing plan branch "+branchName)
 	})
 
-	t.Run("rejects stale branch when same-named tag contains current HEAD", func(t *testing.T) {
+	t.Run("reuses stale branch when same-named tag contains current HEAD", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())
 		require.NoError(t, err)
@@ -1581,10 +1749,108 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, svc.repo.add(planFile))
 		require.NoError(t, svc.repo.commit("advance source with plan"))
 		runGit(t, dir, "tag", "ambiguous-feature")
+		sourceHead, err := svc.repo.headHash()
+		require.NoError(t, err)
+
+		wtPath, _, err := svc.CreateWorktreeForPlan(planFile, "")
+		require.NoError(t, err)
+		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
+		assert.Equal(t, sourceHead, strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD")))
+		assert.Equal(t, sourceHead, strings.TrimSpace(runGit(t, dir, "rev-parse", "refs/heads/ambiguous-feature")))
+	})
+
+	t.Run("rejects conflicting divergence during preflight", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "conflicting-feature.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		require.NoError(t, svc.CreateBranch("conflicting-feature"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("branch version\n"), 0o600))
+		require.NoError(t, svc.repo.commitFiles("change README on plan branch", "README.md"))
+		branchHead := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("source version\n"), 0o600))
+		require.NoError(t, svc.repo.commitFiles("change README on source", "README.md"))
+		sourceHead := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+
+		err = svc.PreflightWorktreeForPlan(planFile, "")
+		require.ErrorContains(t, err, "would conflict; merge or rebase the source changes into it")
+		_, _, createErr := svc.CreateWorktreeForPlan(planFile, "")
+		require.ErrorContains(t, createErr, "would conflict")
+		assert.Equal(t, sourceHead, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, branchHead, strings.TrimSpace(runGit(t, dir, "rev-parse", "conflicting-feature")))
+		assert.Empty(t, strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "conflicting-feature"))
+	})
+
+	t.Run("removes worktree when fallback merge finds a conflict", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		command := filepath.Join(t.TempDir(), "old-git")
+		script := "#!/bin/sh\nif [ \"$1\" = \"merge-tree\" ]; then echo \"error: unknown option 'write-tree'\" >&2; exit 129; fi\nexec git \"$@\"\n"
+		require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+		svc, err := NewService(dir, noopServiceLogger(), command)
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "fallback-conflict.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		require.NoError(t, svc.CreateBranch("fallback-conflict"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("branch version\n"), 0o600))
+		require.NoError(t, svc.repo.commitFiles("change README on plan branch", "README.md"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("source version\n"), 0o600))
+		require.NoError(t, svc.repo.commitFiles("change README on source", "README.md"))
 
 		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
-		require.ErrorContains(t, err, "does not include current HEAD")
-		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "ambiguous-feature"))
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrMergeConflict)
+		require.ErrorContains(t, err, "merge source HEAD into existing plan branch")
+		wtPath := filepath.Join(dir, ".loopai", "worktrees", "fallback-conflict")
+		assert.NoDirExists(t, wtPath)
+		assert.NotContains(t, runGit(t, dir, "worktree", "list", "--porcelain"), wtPath)
+	})
+
+	t.Run("propagates ordinary merge-tree failures without creating a worktree", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		command := filepath.Join(t.TempDir(), "broken-git")
+		script := "#!/bin/sh\nif [ \"$1\" = \"merge-tree\" ]; then echo \"fatal: bad revision\" >&2; exit 128; fi\nexec git \"$@\"\n"
+		require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+		svc, err := NewService(dir, noopServiceLogger(), command)
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "prediction-error.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		require.NoError(t, svc.CreateBranch("prediction-error"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "branch.txt"), []byte("branch\n"), 0o600))
+		require.NoError(t, svc.repo.add("branch.txt"))
+		require.NoError(t, svc.repo.commit("advance branch"))
+		branchHead := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "source.txt"), []byte("source\n"), 0o600))
+		require.NoError(t, svc.repo.add("source.txt"))
+		require.NoError(t, svc.repo.commit("advance source"))
+		sourceHead := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+		statusBefore := runGit(t, dir, "status", "--porcelain")
+
+		err = svc.PreflightWorktreeForPlan(planFile, "")
+		require.ErrorContains(t, err, "predict source merge into existing plan branch")
+		require.ErrorContains(t, err, "fatal: bad revision")
+		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
+		require.ErrorContains(t, err, "predict source merge into existing plan branch")
+		assert.Equal(t, sourceHead, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, branchHead, strings.TrimSpace(runGit(t, dir, "rev-parse", "prediction-error")))
+		assert.Equal(t, statusBefore, runGit(t, dir, "status", "--porcelain"))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "prediction-error"))
 	})
 
 	t.Run("creates worktree from non-default branch HEAD", func(t *testing.T) {
@@ -1838,7 +2104,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		// try to create second worktree at different path but same branch.
 		// use AddWorktree directly to bypass dir-exists check.
 		secondPath := filepath.Join(dir, ".loopai", "worktrees", "branch-conflict-2")
-		err = svc.repo.addWorktree(secondPath, "branch-conflict", false)
+		err = svc.repo.addWorktree(t.Context(), secondPath, "branch-conflict", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "already used by worktree")
 	})

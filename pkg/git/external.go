@@ -76,6 +76,10 @@ func (e *externalBackend) runContext(ctx context.Context, args ...string) (strin
 	return e.runCommand(ctx, commandCancellationGroup, args...)
 }
 
+func (e *externalBackend) runContextWithEnv(ctx context.Context, env []string, args ...string) (string, error) {
+	return e.runCommandWithEnv(ctx, commandCancellationGroup, env, args...)
+}
+
 func (e *externalBackend) runContextWithTerminal(ctx context.Context, args ...string) (string, error) {
 	return e.runCommand(ctx, commandCancellationDirect, args...)
 }
@@ -87,8 +91,17 @@ func configureDirectCommandCancellation(cmd *exec.Cmd) {
 }
 
 func (e *externalBackend) runCommand(ctx context.Context, cancellation commandCancellation, args ...string) (string, error) {
+	return e.runCommandWithEnv(ctx, cancellation, nil, args...)
+}
+
+func (e *externalBackend) runCommandWithEnv(
+	ctx context.Context, cancellation commandCancellation, env []string, args ...string,
+) (string, error) {
 	cmd := exec.CommandContext(ctx, e.command, args...)
 	cmd.Dir = e.path
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	switch cancellation {
 	case commandCancellationNone:
 	case commandCancellationDirect:
@@ -419,8 +432,15 @@ func (e *externalBackend) mergeRevision(ctx context.Context, revision, expectedH
 	if currentBranch != "" {
 		// Branch mergeOptions can select a strategy such as "ours", which creates a merge
 		// commit and passes the ancestry check while discarding the feature tree. Clear the
-		// option at command scope so close-out always uses Git's ordinary merge semantics.
-		mergeArgs = append([]string{"-c", "branch." + currentBranch + ".mergeOptions="}, mergeArgs...)
+		// option at command scope so close-out always uses Git's ordinary merge semantics. A
+		// temporary included config handles '=' in valid branch names without relying on the
+		// split-quoted GIT_CONFIG_PARAMETERS form, which requires Git 2.31 or newer.
+		configPath, configErr := writeMergeOptionsOverride(currentBranch)
+		if configErr != nil {
+			return configErr
+		}
+		defer os.Remove(configPath) //nolint:errcheck // best-effort cleanup of an isolated temporary file
+		mergeArgs = append([]string{"-c", "include.path=" + configPath}, mergeArgs...)
 	}
 	_, err = e.runContext(ctx, mergeArgs...)
 	if err == nil {
@@ -437,13 +457,23 @@ func (e *externalBackend) mergeRevision(ctx context.Context, revision, expectedH
 		return e.rollbackSuccessfulMerge(cleanupCtx, preMergeHead,
 			fmt.Errorf("merge completed without incorporating expected commit %q", expectedHead))
 	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		err = ctxErr
+	}
 
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), mergeCleanupTimeout)
 	defer cancel()
+	postMergeHead, inspectHeadErr := e.runContext(cleanupCtx, "rev-parse", "HEAD")
+	if inspectHeadErr == nil && postMergeHead != preMergeHead {
+		return e.rollbackSuccessfulMerge(cleanupCtx, preMergeHead, fmt.Errorf("merge: %w", err))
+	}
 	mergeHead := exec.CommandContext(cleanupCtx, e.command, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
 	mergeHead.Dir = e.path
 	if mergeHead.Run() == nil {
 		return e.abortFailedMerge(cleanupCtx, err)
+	}
+	if inspectHeadErr != nil {
+		return errors.Join(fmt.Errorf("merge: %w", err), fmt.Errorf("inspect HEAD after failed merge: %w", inspectHeadErr))
 	}
 	return fmt.Errorf("merge: %w", err)
 }
@@ -451,11 +481,15 @@ func (e *externalBackend) mergeRevision(ctx context.Context, revision, expectedH
 func (e *externalBackend) isAncestor(ctx context.Context, ancestor, descendant string) (bool, error) {
 	cmd := exec.CommandContext(ctx, e.command, "merge-base", "--is-ancestor", ancestor, descendant)
 	cmd.Dir = e.path
+	configureCommandCancellation(cmd)
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	err := cmd.Run()
 	if err == nil {
 		return true, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, fmt.Errorf("git merge-base: %w", ctxErr)
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -466,6 +500,137 @@ func (e *externalBackend) isAncestor(ctx context.Context, ancestor, descendant s
 		return false, fmt.Errorf("git merge-base: %s", details)
 	}
 	return false, fmt.Errorf("git merge-base: %w", err)
+}
+
+// mergeWouldConflict predicts whether merging branch into base would conflict without
+// changing the index or a worktree. Git 2.38 added the --write-tree form; callers may
+// fall back to attempting the real merge when an older Git reports it as unsupported.
+func (e *externalBackend) mergeWouldConflict(ctx context.Context, base, branch string) (bool, error) {
+	cmd := exec.CommandContext(ctx, e.command, "merge-tree", "--write-tree", base, branch)
+	cmd.Dir = e.path
+	cmd.Env = append(os.Environ(), "LC_ALL=C") // force English stderr for reliable parsing
+	configureCommandCancellation(cmd)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	err := cmd.Run()
+	if err == nil {
+		return false, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, fmt.Errorf("git merge-tree: %w", ctxErr)
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return true, nil
+	}
+
+	details := strings.TrimSpace(output.String())
+	if mergeTreeWriteTreeUnsupported(details) {
+		return false, errMergeTreeUnsupported
+	}
+	if details != "" {
+		return false, fmt.Errorf("git merge-tree: %s", details)
+	}
+	return false, fmt.Errorf("git merge-tree: %w", err)
+}
+
+// mergeWorkingTreeWouldConflict predicts the merge using the tree AutoCommitAll would
+// commit. A temporary index lets git add -A model that commit without changing the real
+// index, worktree, or source ref.
+func (e *externalBackend) mergeWorkingTreeWouldConflict(ctx context.Context, base string) (bool, error) {
+	index, err := e.snapshotIndex()
+	if err != nil {
+		return false, fmt.Errorf("snapshot Git index for merge prediction: %w", err)
+	}
+	indexFile, err := os.CreateTemp(filepath.Dir(index.path), "ralphex-merge-index-*")
+	if err != nil {
+		return false, fmt.Errorf("create temporary Git index: %w", err)
+	}
+	indexPath := indexFile.Name()
+	if index.existed {
+		if _, err = indexFile.Write(index.data); err != nil {
+			_ = indexFile.Close()
+			_ = os.Remove(indexPath)
+			return false, fmt.Errorf("copy Git index for merge prediction: %w", err)
+		}
+	}
+	if closeErr := indexFile.Close(); closeErr != nil {
+		_ = os.Remove(indexPath)
+		return false, fmt.Errorf("close temporary Git index: %w", closeErr)
+	}
+	if !index.existed {
+		if removeErr := os.Remove(indexPath); removeErr != nil {
+			return false, fmt.Errorf("prepare temporary Git index: %w", removeErr)
+		}
+	}
+	defer os.Remove(indexPath)           //nolint:errcheck // best-effort cleanup of an isolated temporary file
+	defer os.Remove(indexPath + ".lock") //nolint:errcheck // cancellation can leave the temporary index lock behind
+
+	env := []string{"GIT_INDEX_FILE=" + indexPath}
+	run := func(args ...string) (string, error) {
+		out, runErr := e.runContextWithEnv(ctx, env, args...)
+		if runErr != nil && ctx.Err() != nil {
+			return "", fmt.Errorf("git %s: %w", args[0], ctx.Err())
+		}
+		return out, runErr
+	}
+	if !index.existed {
+		if _, err = run("read-tree", "HEAD"); err != nil {
+			return false, fmt.Errorf("initialize temporary Git index: %w", err)
+		}
+	}
+	if _, err = run("add", "-A"); err != nil {
+		return false, fmt.Errorf("stage source snapshot in temporary Git index: %w", err)
+	}
+	runtimePaths := loopaiRuntimePaths()
+	resetArgs := append([]string{"reset", "--quiet", "HEAD", "--"}, runtimePaths...)
+	if _, err = run(resetArgs...); err != nil {
+		return false, fmt.Errorf("exclude runtime artifacts from source snapshot: %w", err)
+	}
+	tree, err := run("write-tree")
+	if err != nil {
+		return false, fmt.Errorf("write source snapshot tree: %w", err)
+	}
+	headTree, err := run("rev-parse", "HEAD^{tree}")
+	if err != nil {
+		return false, fmt.Errorf("identify committed source tree: %w", err)
+	}
+	if tree == headTree {
+		return e.mergeWouldConflict(ctx, base, "HEAD")
+	}
+	snapshot, err := run("commit-tree", tree, "-p", "HEAD", "-m", "loopai preflight source snapshot")
+	if err != nil {
+		return false, fmt.Errorf("create source snapshot commit: %w", err)
+	}
+	return e.mergeWouldConflict(ctx, base, snapshot)
+}
+
+func writeMergeOptionsOverride(branch string) (string, error) {
+	file, err := os.CreateTemp("", "ralphex-merge-config-*")
+	if err != nil {
+		return "", fmt.Errorf("create temporary merge config: %w", err)
+	}
+	path := file.Name()
+	escapedBranch := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(branch)
+	_, writeErr := fmt.Fprintf(file, "[branch \"%s\"]\n\tmergeOptions =\n", escapedBranch)
+	closeErr := file.Close()
+	if writeErr != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("write temporary merge config: %w", writeErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("close temporary merge config: %w", closeErr)
+	}
+	return path, nil
+}
+
+func mergeTreeWriteTreeUnsupported(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "write-tree") &&
+		(strings.Contains(lower, "unknown option") || strings.Contains(lower, "unknown switch") ||
+			strings.Contains(lower, "unknown rev") || strings.Contains(lower, "not a valid object name"))
 }
 
 func (e *externalBackend) rollbackSuccessfulMerge(ctx context.Context, preMergeHead string, cause error) error {
@@ -640,8 +805,25 @@ func (e *externalBackend) hasChangesOtherThan(path string) ([]string, error) {
 
 func isLoopaiRuntimePath(path string) bool {
 	path = filepath.ToSlash(path)
-	return path == ".loopai/progress" || strings.HasPrefix(path, ".loopai/progress/") ||
-		path == ".loopai/worktrees" || strings.HasPrefix(path, ".loopai/worktrees/")
+	for _, runtimePath := range loopaiRuntimePaths() {
+		if path == runtimePath || strings.HasPrefix(path, runtimePath+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func loopaiRuntimePaths() []string {
+	return []string{".loopai/progress", ".loopai/worktrees"}
+}
+
+func loopaiRuntimeExclusionPathspecs() []string {
+	paths := loopaiRuntimePaths()
+	pathspecs := make([]string, 0, len(paths)*2)
+	for _, path := range paths {
+		pathspecs = append(pathspecs, ":(exclude)"+path, ":(exclude)"+path+"/**")
+	}
+	return pathspecs
 }
 
 // add stages a file for commit.
@@ -731,7 +913,9 @@ func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
 	// Pathspec exclusions do not remove entries that were already staged before
 	// this operation. Restore runtime paths to HEAD so the commit cannot capture
 	// those entries either.
-	if _, err = e.run("reset", "--quiet", "HEAD", "--", ".loopai/progress", ".loopai/worktrees"); err != nil {
+	runtimePaths := loopaiRuntimePaths()
+	resetArgs := append([]string{"reset", "--quiet", "HEAD", "--"}, runtimePaths...)
+	if _, err = e.run(resetArgs...); err != nil {
 		return false, restoreOnError(fmt.Errorf("unstage runtime artifacts: %w", err))
 	}
 
@@ -739,9 +923,10 @@ func (e *externalBackend) autoCommitAll(msg string) (bool, error) {
 	// this low-level method is used before EnsureLocalGitignore. Any remaining
 	// unstaged entry means git add -A could not capture the full working-tree state
 	// (most commonly dirty content inside a submodule), so refuse a partial commit.
-	out, err := e.run("status", "--porcelain", "--", ".",
-		":(exclude).loopai/progress", ":(exclude).loopai/progress/**",
-		":(exclude).loopai/worktrees", ":(exclude).loopai/worktrees/**")
+	statusArgs := make([]string, 0, 4+len(loopaiRuntimePaths())*2)
+	statusArgs = append(statusArgs, "status", "--porcelain", "--", ".")
+	statusArgs = append(statusArgs, loopaiRuntimeExclusionPathspecs()...)
+	out, err := e.run(statusArgs...)
 	if err != nil {
 		return false, restoreOnError(fmt.Errorf("check status: %w", err))
 	}
@@ -1000,15 +1185,18 @@ func (e *externalBackend) toRelative(path string) (string, error) {
 // addWorktree creates a git worktree at the given path.
 // when createBranch is true, creates a new branch with `git worktree add <path> -b <branch>`.
 // when createBranch is false, uses existing branch with `git worktree add <path> <branch>`.
-func (e *externalBackend) addWorktree(path, branch string, createBranch bool) error {
+func (e *externalBackend) addWorktree(ctx context.Context, path, branch string, createBranch bool) error {
 	var args []string
 	if createBranch {
 		args = []string{"worktree", "add", path, "-b", branch}
 	} else {
 		args = []string{"worktree", "add", path, branch}
 	}
-	_, err := e.run(args...)
+	_, err := e.runContext(ctx, args...)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("add worktree: %w", ctxErr)
+		}
 		return fmt.Errorf("add worktree: %w", err)
 	}
 	return nil

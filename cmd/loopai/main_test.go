@@ -3371,6 +3371,28 @@ func writeExecutable(t *testing.T, path, content string) {
 	require.NoError(t, err)
 }
 
+func cancelWhenPathExists(cancel context.CancelFunc, path string) {
+	go func() {
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		for {
+			if _, err := os.Stat(path); err == nil {
+				time.Sleep(20 * time.Millisecond)
+				cancel()
+				return
+			}
+			select {
+			case <-ticker.C:
+			case <-timer.C:
+				cancel()
+				return
+			}
+		}
+	}()
+}
+
 // runGit executes a git command in the given directory and fails the test on error.
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
@@ -4861,7 +4883,7 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
 	})
 
-	t.Run("existing_plan_branch_merge_conflict_is_aborted_and_worktree_removed", func(t *testing.T) {
+	t.Run("existing_plan_branch_conflict_is_rejected_before_source_auto_commit", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
 		planPath := filepath.Join(dir, "docs", "plans", "existing-conflict.md")
@@ -4874,20 +4896,146 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		branchBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
 		runGit(t, dir, "switch", "master")
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("source version\n"), 0o600))
+		runGit(t, dir, "commit", "-am", "change README on source branch")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("must remain uncommitted\n"), 0o600))
 
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
 		sourceBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		statusBefore := gitOutput(t, dir, "status", "--porcelain")
 		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
 			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
 			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
 		}, "existing-conflict")
 
-		require.ErrorContains(t, err, "merge auto-committed source into existing plan branch")
-		assert.NotEqual(t, sourceBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		require.ErrorContains(t, err, "would conflict; merge or rebase the source changes into it")
+		assert.Equal(t, sourceBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
 		assert.Equal(t, branchBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "existing-conflict")))
-		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
+		assert.Equal(t, statusBefore, gitOutput(t, dir, "status", "--porcelain"))
 		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "existing-conflict"))
+	})
+
+	t.Run("dirty_source_conflict_is_rejected_before_source_auto_commit", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "dirty-conflict.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Dirty Conflict\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/dirty-conflict.md")
+		runGit(t, dir, "commit", "-m", "add dirty conflict plan")
+		runGit(t, dir, "switch", "-c", "dirty-conflict")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("branch version\n"), 0o600))
+		runGit(t, dir, "commit", "-am", "change README on plan branch")
+		branchBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		runGit(t, dir, "switch", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("dirty source version\n"), 0o600))
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		sourceBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		statusBefore := gitOutput(t, dir, "status", "--porcelain")
+		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "dirty-conflict")
+
+		require.ErrorContains(t, err, "auto-committing the source changes")
+		require.ErrorContains(t, err, "would conflict")
+		assert.NotContains(t, err.Error(), "does not include current HEAD")
+		assert.Equal(t, sourceBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, branchBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "dirty-conflict")))
+		assert.Equal(t, statusBefore, gitOutput(t, dir, "status", "--porcelain"))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "dirty-conflict"))
+	})
+
+	t.Run("existing_plan_branch_prediction_honors_cancellation", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "cancel-prediction.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Cancel Prediction\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/cancel-prediction.md")
+		runGit(t, dir, "commit", "-m", "add cancellation plan")
+		runGit(t, dir, "switch", "-c", "cancel-prediction")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "branch.txt"), []byte("branch\n"), 0o600))
+		runGit(t, dir, "add", "branch.txt")
+		runGit(t, dir, "commit", "-m", "advance plan branch")
+		runGit(t, dir, "switch", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "source.txt"), []byte("source\n"), 0o600))
+		runGit(t, dir, "add", "source.txt")
+		runGit(t, dir, "commit", "-m", "advance source branch")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("must remain uncommitted\n"), 0o600))
+
+		command := filepath.Join(t.TempDir(), "slow-git")
+		writeExecutable(t, command, "#!/bin/sh\nif [ \"$1\" = merge-tree ]; then sleep 30; fi\nexec git \"$@\"\n")
+		gitSvc, err := git.NewService(dir, noopLogger(), command)
+		require.NoError(t, err)
+		sourceBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		statusBefore := gitOutput(t, dir, "status", "--porcelain")
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancel()
+
+		started := time.Now()
+		_, err = prepareWorktreeRunContext(ctx, opts{Commit: true, Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{VcsCommand: command},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "cancel-prediction")
+
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Less(t, time.Since(started), 8*time.Second,
+			"cancellation must stop well before the command's 30-second fixture delay")
+		assert.Equal(t, sourceBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, statusBefore, gitOutput(t, dir, "status", "--porcelain"))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "cancel-prediction"))
+	})
+
+	t.Run("existing_plan_branch_merge_honors_cancellation", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "cancel-merge.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Cancel Merge\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/cancel-merge.md")
+		runGit(t, dir, "commit", "-m", "add cancellation plan")
+		runGit(t, dir, "switch", "-c", "cancel-merge")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "branch.txt"), []byte("branch\n"), 0o600))
+		runGit(t, dir, "add", "branch.txt")
+		runGit(t, dir, "commit", "-m", "advance plan branch")
+		branchBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		runGit(t, dir, "switch", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "source.txt"), []byte("source\n"), 0o600))
+		runGit(t, dir, "add", "source.txt")
+		runGit(t, dir, "commit", "-m", "advance source branch")
+
+		marker := filepath.Join(t.TempDir(), "merge-started")
+		command := filepath.Join(t.TempDir(), "slow-git")
+		writeExecutable(t, command, fmt.Sprintf("#!/bin/sh\ncommand_name=$1\nif [ \"$1\" = -c ]; then command_name=$3; fi\nif [ \"$command_name\" = merge ]; then : > %q; sleep 30; fi\nexec git \"$@\"\n", marker))
+		gitSvc, err := git.NewService(dir, noopLogger(), command)
+		require.NoError(t, err)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		errCh := make(chan error, 1)
+		started := time.Now()
+		go func() {
+			_, runErr := prepareWorktreeRunContext(ctx, opts{Worktree: true}, executePlanRequest{
+				PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{VcsCommand: command},
+				Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+			}, "cancel-merge")
+			errCh <- runErr
+		}()
+
+		require.Eventually(t, func() bool {
+			_, statErr := os.Stat(marker)
+			return statErr == nil
+		}, 5*time.Second, 10*time.Millisecond)
+		cancel()
+		select {
+		case err = <-errCh:
+			require.ErrorIs(t, err, context.Canceled)
+		case <-time.After(8 * time.Second):
+			t.Fatal("cancellation did not stop the source merge")
+		}
+		assert.Less(t, time.Since(started), 8*time.Second,
+			"cancellation must stop well before the command's 30-second fixture delay")
+		assert.Equal(t, branchBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "cancel-merge")))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "cancel-merge"))
 	})
 
 	t.Run("case_mismatched_plan_path_reuses_existing_branch_after_auto_commit", func(t *testing.T) {
@@ -5273,9 +5421,12 @@ func TestRunWithWorktree(t *testing.T) {
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
 		t.Setenv("CMUX_ARGV_LOG", argvLog)
 
-		// cancel context immediately to stop executePlan fast
+		// Cancel after setup so this exercises runner-abort cleanup rather than
+		// cancellation-aware worktree creation.
+		wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-test")
 		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
+		cancelWhenPathExists(cancel, filepath.Join(wtPath, "docs", "plans", "wt-test.md"))
+		defer cancel()
 
 		err = runWithWorktree(ctx, opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: cfg,
@@ -5290,7 +5441,6 @@ func TestRunWithWorktree(t *testing.T) {
 		assert.Equal(t, resolvedDir, cwd, "cwd should be restored after runWithWorktree")
 
 		// verify worktree directory cleaned up
-		wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-test")
 		assert.NoDirExists(t, wtPath, "worktree should be removed after runWithWorktree")
 
 		// verify branch was preserved (worktree creates the branch)
@@ -5364,7 +5514,8 @@ func TestRunWithWorktree(t *testing.T) {
 		wtCleanup := &cleanupHolder{}
 
 		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
+		cancelWhenPathExists(cancel, filepath.Join(dir, ".loopai", "worktrees", "wt-branch", "docs", "plans", "wt-branch.md"))
+		defer cancel()
 
 		_ = runWithWorktree(ctx, opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: cfg,
@@ -5740,7 +5891,8 @@ func TestRunWithWorktree_UntrackedPlan(t *testing.T) {
 	wtCleanup := &cleanupHolder{}
 
 	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
+	cancelWhenPathExists(cancel, filepath.Join(dir, ".loopai", "worktrees", "wt-untracked", "docs", "plans", "wt-untracked.md"))
+	defer cancel()
 
 	err = runWithWorktree(ctx, opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
 		PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: cfg,

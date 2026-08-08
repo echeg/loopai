@@ -45,6 +45,109 @@ func TestDirectCancellationPreservesCallerSession(t *testing.T) {
 	assert.Equal(t, commandWaitDelay, cmd.WaitDelay)
 }
 
+func TestExternalBackendMergeWouldConflict(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		branchData string
+		baseData   string
+		conflict   bool
+	}{
+		{name: "clean merge", branchData: "plan work\n", baseData: "source work\n", conflict: false},
+		{name: "conflicting merge", branchData: "plan version\n", baseData: "source version\n", conflict: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := setupExternalTestRepo(t)
+			runGit(t, dir, "checkout", "-b", "plan")
+			branchFile := "README.md"
+			if !tc.conflict {
+				branchFile = "plan.txt"
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, branchFile), []byte(tc.branchData), 0o600))
+			runGit(t, dir, "add", branchFile)
+			runGit(t, dir, "commit", "-m", "plan work")
+
+			runGit(t, dir, "checkout", "master")
+			baseFile := "README.md"
+			if !tc.conflict {
+				baseFile = "source.txt"
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, baseFile), []byte(tc.baseData), 0o600))
+			runGit(t, dir, "add", baseFile)
+			runGit(t, dir, "commit", "-m", "source work")
+
+			backend, err := newExternalBackend(dir, "git")
+			require.NoError(t, err)
+			before := runGit(t, dir, "status", "--porcelain=v1")
+			conflict, err := backend.mergeWouldConflict(t.Context(), "master", "plan")
+			require.NoError(t, err)
+			assert.Equal(t, tc.conflict, conflict)
+			assert.Equal(t, before, runGit(t, dir, "status", "--porcelain=v1"))
+		})
+	}
+}
+
+func TestExternalBackendMergeWouldConflictUnsupported(t *testing.T) {
+	for _, diagnostic := range []string{
+		"error: unknown option 'write-tree'",
+		"fatal: unknown rev --write-tree",
+		"fatal: --write-tree is not a valid object name",
+	} {
+		t.Run(diagnostic, func(t *testing.T) {
+			dir := t.TempDir()
+			command := filepath.Join(t.TempDir(), "old-git")
+			script := "#!/bin/sh\nif [ \"$LC_ALL\" = C ]; then echo \"" + diagnostic + "\" >&2; else echo \"erreur: option inconnue write-tree\" >&2; fi\nexit 129\n"
+			require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+			backend := &externalBackend{path: dir, command: command}
+
+			conflict, err := backend.mergeWouldConflict(t.Context(), "master", "plan")
+
+			assert.False(t, conflict)
+			assert.ErrorIs(t, err, errMergeTreeUnsupported)
+		})
+	}
+}
+
+func TestExternalBackendMergeWouldConflictHonorsCancellation(t *testing.T) {
+	dir := t.TempDir()
+	command := filepath.Join(t.TempDir(), "slow-git")
+	require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\nsleep 30\n"), 0o755)) //nolint:gosec // executable test fixture
+	backend := &externalBackend{path: dir, command: command}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	conflict, err := backend.mergeWouldConflict(ctx, "master", "plan")
+
+	assert.False(t, conflict)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(started), 8*time.Second,
+		"cancellation must stop well before the command's 30-second fixture delay")
+}
+
+func TestExternalBackendMergeWorkingTreeWouldConflictPreservesIndexMetadata(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	runGit(t, dir, "checkout", "-b", "plan")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("plan version\n"), 0o600))
+	runGit(t, dir, "add", "README.md")
+	runGit(t, dir, "commit", "-m", "plan change")
+	runGit(t, dir, "checkout", "master")
+	runGit(t, dir, "update-index", "--assume-unchanged", "README.md")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("dirty source version\n"), 0o600))
+
+	backend, err := newExternalBackend(dir, "git")
+	require.NoError(t, err)
+	indexBefore, err := backend.snapshotIndex()
+	require.NoError(t, err)
+
+	conflict, err := backend.mergeWorkingTreeWouldConflict(t.Context(), "refs/heads/plan")
+
+	require.NoError(t, err)
+	assert.False(t, conflict, "prediction must model git add -A from the real index, including assume-unchanged entries")
+	indexAfter, err := backend.snapshotIndex()
+	require.NoError(t, err)
+	assert.Equal(t, indexBefore.data, indexAfter.data, "prediction must not alter the real index")
+}
+
 // setupExternalTestRepo creates a temp git repo using the git CLI for external backend tests.
 func setupExternalTestRepo(t *testing.T) string {
 	t.Helper()
@@ -1080,7 +1183,7 @@ func TestExternalBackend_AddWorktree(t *testing.T) {
 		require.NoError(t, err)
 
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		err = eb.addWorktree(wtDir, "wt-branch", true)
+		err = eb.addWorktree(t.Context(), wtDir, "wt-branch", true)
 		require.NoError(t, err)
 
 		// verify worktree exists and is on the correct branch
@@ -1101,7 +1204,7 @@ func TestExternalBackend_AddWorktree(t *testing.T) {
 		require.NoError(t, eb.checkoutBranch("master"))
 
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		err = eb.addWorktree(wtDir, "existing-branch", false)
+		err = eb.addWorktree(t.Context(), wtDir, "existing-branch", false)
 		require.NoError(t, err)
 
 		// verify worktree is on the existing branch
@@ -1119,7 +1222,7 @@ func TestExternalBackend_AddWorktree(t *testing.T) {
 
 		// master is currently checked out, trying to create worktree for it should fail
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		err = eb.addWorktree(wtDir, "master", false)
+		err = eb.addWorktree(t.Context(), wtDir, "master", false)
 		require.Error(t, err)
 	})
 }
@@ -1131,7 +1234,7 @@ func TestExternalBackend_RemoveWorktree(t *testing.T) {
 		require.NoError(t, err)
 
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		require.NoError(t, eb.addWorktree(wtDir, "wt-branch", true))
+		require.NoError(t, eb.addWorktree(t.Context(), wtDir, "wt-branch", true))
 
 		err = eb.removeWorktree(wtDir)
 		require.NoError(t, err)
@@ -1159,7 +1262,7 @@ func TestExternalBackend_PruneWorktrees(t *testing.T) {
 
 		// create and manually delete a worktree dir to leave a stale entry
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		require.NoError(t, eb.addWorktree(wtDir, "stale-branch", true))
+		require.NoError(t, eb.addWorktree(t.Context(), wtDir, "stale-branch", true))
 		require.NoError(t, os.RemoveAll(wtDir))
 
 		// prune should clean up the stale entry
