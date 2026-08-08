@@ -124,6 +124,30 @@ func TestExternalBackendMergeWouldConflictHonorsCancellation(t *testing.T) {
 		"cancellation must stop well before the command's 30-second fixture delay")
 }
 
+func TestExternalBackendMergeWorkingTreeWouldConflictPreservesIndexMetadata(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	runGit(t, dir, "checkout", "-b", "plan")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("plan version\n"), 0o600))
+	runGit(t, dir, "add", "README.md")
+	runGit(t, dir, "commit", "-m", "plan change")
+	runGit(t, dir, "checkout", "master")
+	runGit(t, dir, "update-index", "--assume-unchanged", "README.md")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("dirty source version\n"), 0o600))
+
+	backend, err := newExternalBackend(dir, "git")
+	require.NoError(t, err)
+	indexBefore, err := backend.snapshotIndex()
+	require.NoError(t, err)
+
+	conflict, err := backend.mergeWorkingTreeWouldConflict(t.Context(), "refs/heads/plan")
+
+	require.NoError(t, err)
+	assert.False(t, conflict, "prediction must model git add -A from the real index, including assume-unchanged entries")
+	indexAfter, err := backend.snapshotIndex()
+	require.NoError(t, err)
+	assert.Equal(t, indexBefore.data, indexAfter.data, "prediction must not alter the real index")
+}
+
 // setupExternalTestRepo creates a temp git repo using the git CLI for external backend tests.
 func setupExternalTestRepo(t *testing.T) string {
 	t.Helper()

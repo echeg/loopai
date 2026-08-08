@@ -266,6 +266,30 @@ func TestService_MergeBranch(t *testing.T) {
 			"configured branch merge options must not discard feature content")
 	})
 
+	t.Run("uses Git 2.30 compatible config override", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+		runGit(t, dir, "checkout", "master")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o600))
+		runGit(t, dir, "add", "base.txt")
+		runGit(t, dir, "commit", "-m", "advance base")
+		runGit(t, dir, "config", "branch.master.mergeOptions", "-s ours")
+		t.Setenv("GIT_CONFIG_PARAMETERS", "")
+
+		command := filepath.Join(t.TempDir(), "old-git")
+		script := "#!/bin/sh\nif [ -n \"$GIT_CONFIG_PARAMETERS\" ]; then echo 'error: bogus format in GIT_CONFIG_PARAMETERS' >&2; exit 1; fi\nexec git \"$@\"\n"
+		require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+		svc, err := NewService(dir, noopServiceLogger(), command)
+		require.NoError(t, err)
+
+		require.NoError(t, svc.MergeBranch("feature"))
+		assert.FileExists(t, filepath.Join(dir, "feature.txt"),
+			"the compatibility-safe override must still neutralize configured merge options")
+	})
+
 	t.Run("branch wins over a same-named tag", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		runGit(t, dir, "tag", "feature")
@@ -1613,6 +1637,34 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, committed)
 		assert.Contains(t, runGit(t, dir, "status", "--porcelain"), ".loopai/progress/run.log")
+	})
+
+	t.Run("auto-commit conflict describes dirty source changes when branch contains HEAD", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "ahead-conflict.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		sourceHead, err := svc.repo.headHash()
+		require.NoError(t, err)
+		require.NoError(t, svc.CreateBranch("ahead-conflict"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("plan version\n"), 0o600))
+		require.NoError(t, svc.repo.commitFiles("change README on plan branch", "README.md"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("dirty source version\n"), 0o600))
+
+		err = svc.PreflightWorktreeForPlanAutoCommitContext(t.Context(), planFile, "")
+
+		require.ErrorContains(t, err, "auto-committing the source changes")
+		require.ErrorContains(t, err, "would conflict")
+		assert.NotContains(t, err.Error(), "does not include current HEAD")
+		runGit(t, dir, "merge-base", "--is-ancestor", sourceHead, "refs/heads/ahead-conflict")
+		assert.Contains(t, runGit(t, dir, "status", "--porcelain"), "README.md",
+			"preflight must leave dirty source changes untouched")
 	})
 
 	t.Run("clean auto-commit preflight does not require author identity", func(t *testing.T) {

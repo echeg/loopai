@@ -4938,7 +4938,9 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
 		}, "dirty-conflict")
 
-		require.ErrorContains(t, err, "would conflict; merge or rebase the source changes into it")
+		require.ErrorContains(t, err, "auto-committing the source changes")
+		require.ErrorContains(t, err, "would conflict")
+		assert.NotContains(t, err.Error(), "does not include current HEAD")
 		assert.Equal(t, sourceBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
 		assert.Equal(t, branchBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "dirty-conflict")))
 		assert.Equal(t, statusBefore, gitOutput(t, dir, "status", "--porcelain"))
@@ -5004,7 +5006,7 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 
 		marker := filepath.Join(t.TempDir(), "merge-started")
 		command := filepath.Join(t.TempDir(), "slow-git")
-		writeExecutable(t, command, fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = merge ]; then : > %q; sleep 30; fi\nexec git \"$@\"\n", marker))
+		writeExecutable(t, command, fmt.Sprintf("#!/bin/sh\ncommand_name=$1\nif [ \"$1\" = -c ]; then command_name=$3; fi\nif [ \"$command_name\" = merge ]; then : > %q; sleep 30; fi\nexec git \"$@\"\n", marker))
 		gitSvc, err := git.NewService(dir, noopLogger(), command)
 		require.NoError(t, err)
 		ctx, cancel := context.WithCancel(t.Context())

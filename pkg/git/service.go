@@ -722,7 +722,7 @@ func (s *Service) PreflightWorktreeForPlanAutoCommitContext(
 		return fmt.Errorf("predict auto-committed source merge into existing plan branch %q: %w", branchName, err)
 	}
 	if wouldConflict {
-		return existingPlanBranchConflictError(branchName)
+		return autoCommittedSourceConflictError(branchName)
 	}
 	return nil
 }
@@ -810,6 +810,10 @@ func (s *Service) validateExistingPlanBranchAt(ctx context.Context, branchName, 
 
 func existingPlanBranchConflictError(branchName string) error {
 	return fmt.Errorf("existing plan branch %q does not include current HEAD and merging the source changes would conflict; merge or rebase the source changes into it, or choose another --branch", branchName)
+}
+
+func autoCommittedSourceConflictError(branchName string) error {
+	return fmt.Errorf("auto-committing the source changes and merging the resulting commit into existing plan branch %q would conflict; commit and merge or rebase the source changes into it manually, or choose another --branch", branchName)
 }
 
 // CommitPlanFile stages and commits a plan file on the current branch.
@@ -1100,24 +1104,36 @@ func (s *Service) EnsureLocalGitignore() error {
 	if err := os.MkdirAll(loopaiDir, 0o750); err != nil {
 		return fmt.Errorf("create .loopai dir: %w", err)
 	}
-	for _, runtimeDir := range []string{"progress", "worktrees"} {
-		if err := s.validateRuntimeDirectoryPath(filepath.Join(loopaiDir, runtimeDir)); err != nil {
+	runtimePaths := loopaiRuntimePaths()
+	runtimeDirs := make([]string, 0, len(runtimePaths))
+	runtimeExcludes := make([]string, 0, len(runtimePaths))
+	var content strings.Builder
+	content.WriteString(".gitignore\n")
+	for _, runtimePath := range runtimePaths {
+		runtimeDir, ok := strings.CutPrefix(runtimePath, ".loopai/")
+		if !ok || runtimeDir == "" {
+			return fmt.Errorf("invalid loopai runtime path %q", runtimePath)
+		}
+		runtimeDirs = append(runtimeDirs, runtimeDir)
+		runtimeExcludes = append(runtimeExcludes, "/"+runtimePath+"/")
+		content.WriteString(runtimeDir + "/\n")
+		if err := s.validateRuntimeDirectoryPath(filepath.Join(loopaiDir, filepath.FromSlash(runtimeDir))); err != nil {
 			return fmt.Errorf("validate .loopai runtime directories: %w", err)
 		}
 	}
 
 	gitignorePath := filepath.Join(loopaiDir, ".gitignore")
-	const content = ".gitignore\nprogress/\nworktrees/\n"
+	gitignoreContent := content.String()
 
 	if existing, err := os.ReadFile(gitignorePath); err == nil { //nolint:gosec // .gitignore is world-readable
-		if string(existing) == content {
+		if string(existing) == gitignoreContent {
 			return nil
 		}
-		if excludeErr := s.repo.ensureRuntimeExcludes("/.loopai/progress/", "/.loopai/worktrees/"); excludeErr != nil {
+		if excludeErr := s.repo.ensureRuntimeExcludes(runtimeExcludes...); excludeErr != nil {
 			return fmt.Errorf("preserve custom .loopai/.gitignore: %w", excludeErr)
 		}
-		for _, runtimeDir := range []string{"progress", "worktrees"} {
-			if ignoreErr := ensureRuntimeDirectoryIgnored(filepath.Join(loopaiDir, runtimeDir)); ignoreErr != nil {
+		for _, runtimeDir := range runtimeDirs {
+			if ignoreErr := ensureRuntimeDirectoryIgnored(filepath.Join(loopaiDir, filepath.FromSlash(runtimeDir))); ignoreErr != nil {
 				return fmt.Errorf("preserve custom .loopai/.gitignore: %w", ignoreErr)
 			}
 		}
@@ -1127,7 +1143,7 @@ func (s *Service) EnsureLocalGitignore() error {
 		return fmt.Errorf("read .loopai/.gitignore: %w", err)
 	}
 
-	if err := os.WriteFile(gitignorePath, []byte(content), 0o644); err != nil { //nolint:gosec // .gitignore needs world-readable
+	if err := os.WriteFile(gitignorePath, []byte(gitignoreContent), 0o644); err != nil { //nolint:gosec // .gitignore needs world-readable
 		return fmt.Errorf("write .loopai/.gitignore: %w", err)
 	}
 
