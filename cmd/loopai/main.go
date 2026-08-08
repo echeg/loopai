@@ -65,7 +65,6 @@ type opts struct {
 	PassClaudeMd            bool          `long:"pass-claude-md" description:"pass project CLAUDE.md to codex via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is NOT auto-passed but a one-time setup hint is shown (codex executor only)"`
 	Worktree                bool          `long:"worktree" description:"run in isolated git worktree"`
 	Commit                  bool          `short:"c" long:"commit" description:"auto-commit the dirty source checkout before creating the worktree (requires --worktree)"`
-	ResumeWorktree          bool          `long:"resume-worktree" description:"continue in an existing interrupted worktree (implies --worktree)"`
 	Branch                  string        `long:"branch" description:"override branch name for worktree/branch creation (default: derived from plan filename)"`
 	PlanDescription         string        `long:"plan" description:"create plan interactively (enter plan description)"`
 	GenAgents               bool          `long:"gen-agents" description:"generate project-specific review agents into .loopai/agents/ and exit"`
@@ -142,7 +141,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 		"external-review-tool", "external-review-model", "external-reviewers", "custom-review-script",
 		"review", "external-only", "codex-only", "tasks-only", "base-ref", "wait",
 		"session-timeout", "idle-timeout", "skip-finalize", "preserve-anthropic-api-key",
-		"no-claude-swap", "codex", "pass-claude-md", "worktree", "resume-worktree",
+		"no-claude-swap", "codex", "pass-claude-md", "worktree",
 		"branch", "plan", "gen-agents", "serve", "watch", "init", "reset", "dump-defaults",
 	} {
 		if isFlagSet(parser, name) {
@@ -407,7 +406,7 @@ func run(ctx context.Context, o opts) error {
 	// {{DEFAULT_BRANCH}} template variable. In worktree mode --base-ref stays diff-only because
 	// the worktree branch is always cut from the current HEAD.
 	branchMode := modeCreatesBranch(mode)
-	creationMode := branchMode && !o.ResumeWorktree
+	creationMode := branchMode
 	defaultBranch, baseRef, err := resolveBaseRefs(gitSvc, o.BaseRef, cfg.DefaultBranch,
 		creationMode, cfg.WorktreeEnabled && creationMode)
 	if err != nil {
@@ -1036,6 +1035,10 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	release, lockErr := git.AcquireWorktreeRunLock(wt.path)
 	if lockErr != nil {
 		if wt.resumed {
+			var busyErr *git.ErrWorktreeBusy
+			if errors.As(lockErr, &busyErr) {
+				return worktreeBusyError(wt.path, busyErr.Info(), lockErr)
+			}
 			return fmt.Errorf("resume worktree: acquire run lock: %w", lockErr)
 		}
 		return fmt.Errorf("acquire run lock for newly created worktree: %w", lockErr)
@@ -1108,7 +1111,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 
 	// register cleanup. New worktrees retain the existing remove-on-any-exit behavior. Resumed
 	// worktrees are removed only after success; failure or interruption leaves them available for
-	// another --resume-worktree run.
+	// another auto-resume run.
 	var restoreOnce sync.Once
 	restoreCWD := func() {
 		restoreOnce.Do(func() {
@@ -1235,24 +1238,25 @@ type worktreeRun struct {
 	resumed         bool
 }
 
-// prepareWorktreeRun creates a new worktree or validates an existing resume target.
-// It never removes a resumed worktree on error.
+// prepareWorktreeRun creates a new worktree or auto-resumes an existing target.
+// It never removes an existing worktree on error.
 func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktreeRun, error) {
 	return prepareWorktreeRunContext(context.Background(), o, req, branch)
 }
 
 func prepareWorktreeRunContext(ctx context.Context, o opts, req executePlanRequest, branch string) (worktreeRun, error) {
 	wt := worktreeRun{
-		path:    filepath.Join(req.GitSvc.Root(), ".loopai", "worktrees", branch),
-		resumed: o.ResumeWorktree,
+		path: filepath.Join(req.GitSvc.Root(), ".loopai", "worktrees", branch),
 	}
 
-	if wt.resumed {
+	_, statErr := os.Lstat(wt.path)
+	switch {
+	case statErr == nil:
+		wt.resumed = true
 		if err := requireResumeWorktree(wt.path); err != nil {
 			return worktreeRun{}, err
 		}
-	}
-	if !wt.resumed {
+	case os.IsNotExist(statErr), errors.Is(statErr, syscall.ENOTDIR):
 		var err error
 		wt.path, wt.planNeedsCommit, err = prepareFreshWorktree(ctx, o, req, branch)
 		if err != nil {
@@ -1263,6 +1267,8 @@ func prepareWorktreeRunContext(ctx context.Context, o opts, req executePlanReque
 				fmt.Fprintf(os.Stderr, "warning: failed to remove worktree: %v\n", rmErr)
 			}
 		})
+	default:
+		return worktreeRun{}, fmt.Errorf("inspect plan worktree %s: %w", wt.path, statErr)
 	}
 
 	wtSvc, err := git.NewService(wt.path, req.Colors.Info(), req.Config.VcsCommand)
@@ -1283,8 +1289,29 @@ func prepareWorktreeRunContext(ctx context.Context, o opts, req executePlanReque
 	if err := validateResumeWorktree(wt, branch); err != nil {
 		return worktreeRun{}, err
 	}
-	req.Colors.Info().Printf("resuming existing worktree: %s\n", wt.path)
+	busy, info, err := git.ProbeWorktreeRunLock(wt.path)
+	if err != nil {
+		return worktreeRun{}, fmt.Errorf("probe plan worktree run lock: %w", err)
+	}
+	if busy {
+		return worktreeRun{}, worktreeBusyError(wt.path, info, nil)
+	}
+	if o.Commit {
+		req.Colors.Warn().Printf("warning: -c/--commit is ignored when resuming interrupted worktree %s\n", wt.path)
+	}
+	req.Colors.Info().Printf("resuming interrupted worktree %s\n", wt.path)
 	return wt, nil
+}
+
+func worktreeBusyError(path, info string, cause error) error {
+	if info == "" {
+		info = "holder details unavailable"
+	}
+	err := fmt.Errorf("plan worktree %s is busy: loopai is already running in it (%s)", path, info)
+	if cause != nil {
+		return fmt.Errorf("%w: %w", err, cause)
+	}
+	return err
 }
 
 // prepareWorktreeSource optionally commits the source checkout before a fresh worktree is cut.
@@ -1374,7 +1401,7 @@ func requireResumeWorktree(path string) error {
 		return nil
 	}
 	if os.IsNotExist(err) {
-		return fmt.Errorf("resume worktree: worktree does not exist at %s; use --worktree to create it", path)
+		return fmt.Errorf("resume worktree: worktree does not exist at %s", path)
 	}
 	return fmt.Errorf("resume worktree: stat %s: %w", path, err)
 }
@@ -1815,12 +1842,6 @@ func validateFlags(o opts) error {
 	if err := validateGenAgentsFlags(o); err != nil {
 		return err
 	}
-	if o.ResumeWorktree && o.PlanDescription != "" {
-		return errors.New("--resume-worktree cannot be used with --plan; resume requires an existing plan worktree")
-	}
-	if o.ResumeWorktree && (o.Review || o.ExternalOnly || o.CodexOnly) {
-		return errors.New("--resume-worktree is only supported for full or --tasks-only execution")
-	}
 	if err := validateCommitFlags(o); err != nil {
 		return err
 	}
@@ -1862,7 +1883,6 @@ func validateGenAgentsFlags(o opts) error {
 		{"--codex-only", o.CodexOnly},
 		{"--tasks-only", o.TasksOnly},
 		{"--worktree", o.Worktree},
-		{"--resume-worktree", o.ResumeWorktree},
 		{"--commit", o.Commit},
 		{"--init", o.Init},
 		{"--reset", o.Reset},
@@ -1902,7 +1922,7 @@ func hasExecutionMode(o opts) bool {
 		o.PlanDescription != "", o.Review, o.ExternalOnly, o.CodexOnly, o.TasksOnly,
 		o.BaseRef != "", o.waitSet || o.Wait != 0, o.sessionTimeoutSet || o.SessionTimeout != 0,
 		o.idleTimeoutSet || o.IdleTimeout != 0, o.SkipFinalize, o.PreserveAnthropicAPIKey,
-		o.NoClaudeSwap, o.Codex, o.PassClaudeMd, o.Worktree, o.Commit, o.ResumeWorktree, o.Branch != "",
+		o.NoClaudeSwap, o.Codex, o.PassClaudeMd, o.Worktree, o.Commit, o.Branch != "",
 		o.Serve, len(o.Watch) != 0, o.Init, o.Reset, o.DumpDefaults != "", o.GenAgents,
 	} {
 		if set {
@@ -4315,7 +4335,6 @@ func isResetOnly(o opts) bool {
 		!o.ExternalOnly &&
 		!o.CodexOnly &&
 		!o.TasksOnly &&
-		!o.ResumeWorktree &&
 		!o.Serve &&
 		o.PlanDescription == "" &&
 		len(o.Watch) == 0 &&
@@ -4398,7 +4417,7 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 	if o.PreserveAnthropicAPIKey {
 		cfg.PreserveAnthropicAPIKey = true
 	}
-	if o.Worktree || o.ResumeWorktree {
+	if o.Worktree {
 		cfg.WorktreeEnabled = true
 	}
 	if o.Commit && !cfg.WorktreeEnabled {

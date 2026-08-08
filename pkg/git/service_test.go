@@ -2026,7 +2026,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		// second attempt should fail
 		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "worktree already exists")
+		assert.Contains(t, err.Error(), "worktree target already exists")
 
 		// cleanup
 		require.NoError(t, svc.RemoveWorktree(wtPath))

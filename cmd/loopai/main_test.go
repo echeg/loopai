@@ -158,6 +158,7 @@ func TestRunWithSectionTimingFinishesBeforeReturning(t *testing.T) {
 			assert.Equal(t, "downstream result handling", inner.calls[5])
 		})
 	}
+
 }
 
 func TestExecutePlan_ValidationTimingFromClaudeStreamReachesProgressLog(t *testing.T) {
@@ -1980,15 +1981,8 @@ func TestValidateFlags(t *testing.T) {
 		{name: "codex_with_pass_claude_md_is_valid", opts: opts{Codex: true, PassClaudeMd: true}, wantErr: false},
 		{name: "commit_with_worktree_is_valid", opts: opts{Commit: true, Worktree: true}, wantErr: false},
 		{name: "commit_without_worktree_is_deferred_until_config_merge", opts: opts{Commit: true}, wantErr: false},
-		{name: "commit_with_resume_is_inert", opts: opts{Commit: true, Worktree: true, ResumeWorktree: true}, wantErr: false},
-		{name: "commit_with_implicit_resume_is_inert", opts: opts{Commit: true, ResumeWorktree: true}, wantErr: false},
 		{name: "commit_with_review_is_invalid", opts: opts{Commit: true, Worktree: true, Review: true}, wantErr: true, errMsg: "only supported for full"},
 		{name: "commit_with_external_only_is_invalid", opts: opts{Commit: true, Worktree: true, ExternalOnly: true}, wantErr: true, errMsg: "only supported for full"},
-		{name: "resume_worktree_is_valid", opts: opts{ResumeWorktree: true}, wantErr: false},
-		{name: "resume_worktree_with_tasks_only_is_valid", opts: opts{ResumeWorktree: true, TasksOnly: true}, wantErr: false},
-		{name: "resume_worktree_with_plan_conflicts", opts: opts{ResumeWorktree: true, PlanDescription: "add feature"}, wantErr: true, errMsg: "--plan"},
-		{name: "resume_worktree_with_review_conflicts", opts: opts{ResumeWorktree: true, Review: true}, wantErr: true, errMsg: "full or --tasks-only"},
-		{name: "resume_worktree_with_external_only_conflicts", opts: opts{ResumeWorktree: true, ExternalOnly: true}, wantErr: true, errMsg: "full or --tasks-only"},
 		// the --codex / --external-only / --codex-only / --external-review-tool / --pass-claude-md
 		// mutex checks moved to applyCodexOverrides so config-file executor=codex is also enforced;
 		// validateFlags accepts those combos at CLI parse time and the post-merge gate rejects them.
@@ -2063,6 +2057,14 @@ func TestValidateFlags(t *testing.T) {
 	}
 }
 
+func TestResumeWorktreeFlagIsRemoved(t *testing.T) {
+	var parsed opts
+	parser := flags.NewParser(&parsed, flags.Default)
+	_, err := parser.ParseArgs([]string{"--resume-worktree"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown flag")
+}
+
 func TestApplyCodexOverrides_AllowsSymmetricExternalReview(t *testing.T) {
 	t.Run("cli_codex_plus_external_only_allowed", func(t *testing.T) {
 		cfg := &config.Config{}
@@ -2131,12 +2133,6 @@ func TestApplyCodexOverrides_AllowsSymmetricExternalReview(t *testing.T) {
 	})
 }
 
-func TestApplyCLIOverrides_ResumeWorktreeImpliesWorktree(t *testing.T) {
-	cfg := &config.Config{}
-	require.NoError(t, applyCLIOverrides(opts{ResumeWorktree: true}, cfg))
-	assert.True(t, cfg.WorktreeEnabled)
-}
-
 func TestApplyCLIOverrides_CommitRequiresEffectiveWorktree(t *testing.T) {
 	t.Run("accepts config enabled worktree", func(t *testing.T) {
 		cfg := &config.Config{WorktreeEnabled: true}
@@ -2147,12 +2143,6 @@ func TestApplyCLIOverrides_CommitRequiresEffectiveWorktree(t *testing.T) {
 	t.Run("accepts CLI enabled worktree", func(t *testing.T) {
 		cfg := &config.Config{}
 		require.NoError(t, applyCLIOverrides(opts{Commit: true, Worktree: true}, cfg))
-		assert.True(t, cfg.WorktreeEnabled)
-	})
-
-	t.Run("accepts resume implied worktree", func(t *testing.T) {
-		cfg := &config.Config{}
-		require.NoError(t, applyCLIOverrides(opts{Commit: true, ResumeWorktree: true}, cfg))
 		assert.True(t, cfg.WorktreeEnabled)
 	})
 
@@ -4750,9 +4740,6 @@ func TestIsResetOnly(t *testing.T) {
 		assert.False(t, isResetOnly(opts{Reset: true, Init: true}))
 	})
 
-	t.Run("reset_with_resume_worktree", func(t *testing.T) {
-		assert.False(t, isResetOnly(opts{Reset: true, ResumeWorktree: true}))
-	})
 }
 
 func TestResolveVersion(t *testing.T) {
@@ -5291,8 +5278,7 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
 		}, "dangling-target")
 
-		require.ErrorContains(t, err, "preflight worktree creation")
-		require.ErrorContains(t, err, "worktree already exists")
+		require.ErrorContains(t, err, "resume worktree: worktree does not exist")
 		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
 		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
 		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "dangling-target")))
@@ -5376,12 +5362,17 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Still dirty\n"), 0o600))
 
-		wt, err := prepareWorktreeRun(opts{Commit: true, ResumeWorktree: true}, executePlanRequest{
-			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
-			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
-		}, "resume-no-commit")
+		var wt worktreeRun
+		output := captureStdout(t, func() {
+			wt, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+				PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+				Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+			}, "resume-no-commit")
+		})
 		require.NoError(t, err)
 		assert.True(t, wt.resumed)
+		assert.Contains(t, output, "warning: -c/--commit is ignored")
+		assert.Contains(t, output, "resuming interrupted worktree "+wtPath)
 		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
 		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
 	})
@@ -5527,7 +5518,7 @@ func TestRunWithWorktree(t *testing.T) {
 	})
 }
 
-func TestRunWithWorktreeResume(t *testing.T) {
+func TestRunWithWorktreeAutoResume(t *testing.T) {
 	t.Run("accepts_case_mismatched_plan_path", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		origDir, err := os.Getwd()
@@ -5551,7 +5542,7 @@ func TestRunWithWorktreeResume(t *testing.T) {
 
 		branch := gitSvc.EffectiveBranchName(requestedPlanPath, "")
 		assert.Equal(t, "Resume-Mixed-Case", branch)
-		wt, err := prepareWorktreeRun(opts{ResumeWorktree: true}, executePlanRequest{
+		wt, err := prepareWorktreeRun(opts{Worktree: true}, executePlanRequest{
 			PlanFile: requestedPlanPath, GitSvc: gitSvc, Config: &config.Config{},
 			Colors: testColors(), WtCleanup: &cleanupHolder{},
 		}, branch)
@@ -5580,7 +5571,7 @@ func TestRunWithWorktreeResume(t *testing.T) {
 
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
-		err = runWithWorktree(t.Context(), opts{ResumeWorktree: true, NoColor: true}, executePlanRequest{
+		err = runWithWorktree(t.Context(), opts{Worktree: true, NoColor: true}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc,
 			Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
 			DefaultBranch: "master", WtCleanup: &cleanupHolder{},
@@ -5609,7 +5600,7 @@ func TestRunWithWorktreeResume(t *testing.T) {
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
-		err = runWithWorktree(t.Context(), opts{ResumeWorktree: true, NoColor: true}, executePlanRequest{
+		err = runWithWorktree(t.Context(), opts{Worktree: true, NoColor: true}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc,
 			Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
 			DefaultBranch: "master", WtCleanup: &cleanupHolder{},
@@ -5641,15 +5632,15 @@ func TestRunWithWorktreeResume(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, release()) })
 
-		err = runWithWorktree(t.Context(), opts{ResumeWorktree: true, NoColor: true}, executePlanRequest{
+		err = runWithWorktree(t.Context(), opts{Worktree: true, NoColor: true}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc,
 			Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
 			DefaultBranch: "master", WtCleanup: &cleanupHolder{},
 		})
 
-		var busyErr *git.ErrWorktreeBusy
-		require.ErrorAs(t, err, &busyErr)
-		assert.Equal(t, os.Getpid(), busyErr.PID)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "plan worktree "+wtPath+" is busy")
+		assert.Contains(t, err.Error(), "loopai is already running in it")
 		assert.Contains(t, err.Error(), fmt.Sprintf("pid=%d", os.Getpid()))
 		assert.DirExists(t, wtPath, "a busy resume target must not be removed")
 	})
@@ -5677,7 +5668,7 @@ func TestRunWithWorktreeResume(t *testing.T) {
 		require.NoError(t, os.WriteFile(dirtyPath, []byte("keep me"), 0o600))
 
 		err = runWithWorktree(t.Context(), opts{
-			ResumeWorktree: true, TasksOnly: true, MaxIterations: 1, NoColor: true,
+			Worktree: true, TasksOnly: true, MaxIterations: 1, NoColor: true,
 		}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
 			Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
@@ -5741,7 +5732,7 @@ printf '%s\n' "$*" >> "$CMUX_ARGV_LOG"
 		t.Setenv("CMUX_TEST_COMPLETED_PLAN", completedPlan)
 
 		err = runWithWorktree(t.Context(), opts{
-			ResumeWorktree: true, TasksOnly: true, MaxIterations: 1, NoColor: true,
+			Worktree: true, TasksOnly: true, MaxIterations: 1, NoColor: true,
 		}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
 			Config: &config.Config{
@@ -5973,7 +5964,7 @@ func TestRunWithWorktree_CreateWorktreeError(t *testing.T) {
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
 
-	// pre-create worktree dir to force "already exists" error
+	// Pre-create an unregistered target to exercise auto-resume validation.
 	wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-fail")
 	require.NoError(t, os.MkdirAll(wtPath, 0o750))
 
@@ -5986,7 +5977,7 @@ func TestRunWithWorktree_CreateWorktreeError(t *testing.T) {
 		Colors: colors, DefaultBranch: "master", WtCleanup: wtCleanup,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "preflight worktree creation")
+	assert.Contains(t, err.Error(), "not a registered git worktree")
 }
 
 func TestRunWithWorktree_HandsOffFailureNotification(t *testing.T) {
@@ -7214,7 +7205,6 @@ func TestValidateGenAgentsFlags(t *testing.T) {
 		{"--codex-only", opts{CodexOnly: true}},
 		{"--tasks-only", opts{TasksOnly: true}},
 		{"--worktree", opts{Worktree: true}},
-		{"--resume-worktree", opts{ResumeWorktree: true}},
 		{"--commit", opts{Commit: true}},
 		{"--init", opts{Init: true}},
 		{"--reset", opts{Reset: true}},

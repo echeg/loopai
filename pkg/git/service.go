@@ -751,7 +751,7 @@ func (s *Service) preflightWorktreeForPlan(
 		return fmt.Errorf("plan branch %q is already checked out here; switch to the source branch or run without --worktree", branchName)
 	}
 	if _, statErr := os.Lstat(wtPath); statErr == nil {
-		return fmt.Errorf("worktree already exists at %s, another instance may be running", wtPath)
+		return fmt.Errorf("worktree target already exists at %s", wtPath)
 	} else if !os.IsNotExist(statErr) {
 		return fmt.Errorf("inspect worktree target %s: %w", wtPath, statErr)
 	}

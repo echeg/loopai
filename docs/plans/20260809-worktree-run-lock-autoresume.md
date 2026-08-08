@@ -61,12 +61,12 @@
 - [x] run tests - must pass before next task
 
 ### Task 3: Auto-resume routing for --worktree with an existing worktree
-- [ ] replace the unconditional rejection (`worktree already exists at %s, another instance may be running`, `pkg/git/service.go:~754` and its callers) with lock-aware routing: probe the run lock; busy → error `plan worktree %s is busy: loopai is already running in it (%s)` with the recorded pid/started info; free → route into the existing resume path (`validateResumeWorktree` consistency checks included) and log `resuming interrupted worktree %s`
-- [ ] when `-c/--commit` was passed and routing lands on auto-resume, print a warning that the flag is ignored (resume never auto-commits) and do not touch the source checkout
-- [ ] remove the `--resume-worktree` option from the options struct and all validation/routing that references it; the resume machinery it drove (`requireResumeWorktree`, `validateResumeWorktree`, the `resumed:` wiring) stays and is now reached only via auto-resume; delete or repurpose its flag-level tests
-- [ ] worktree exists but fails resume validation (branch mismatch, foreign directory) → keep failing with the validation error; never silently delete or recreate
-- [ ] update existing tests asserting the old "already exists" error; add routing tests: existing worktree + free lock + plain `--worktree` → resume; + held lock → busy error; + `-c` → resume with ignored-flag warning; missing worktree → creation flow unchanged (automerge behavior intact)
-- [ ] run tests - must pass before next task
+- [x] replace the unconditional rejection (`worktree already exists at %s, another instance may be running`, `pkg/git/service.go:~754` and its callers) with lock-aware routing: probe the run lock; busy → error `plan worktree %s is busy: loopai is already running in it (%s)` with the recorded pid/started info; free → route into the existing resume path (`validateResumeWorktree` consistency checks included) and log `resuming interrupted worktree %s`
+- [x] when `-c/--commit` was passed and routing lands on auto-resume, print a warning that the flag is ignored (resume never auto-commits) and do not touch the source checkout
+- [x] remove the `--resume-worktree` option from the options struct and all validation/routing that references it; the resume machinery it drove (`requireResumeWorktree`, `validateResumeWorktree`, the `resumed:` wiring) stays and is now reached only via auto-resume; delete or repurpose its flag-level tests
+- [x] worktree exists but fails resume validation (branch mismatch, foreign directory) → keep failing with the validation error; never silently delete or recreate
+- [x] update existing tests asserting the old "already exists" error; add routing tests: existing worktree + free lock + plain `--worktree` → resume; + held lock → busy error; + `-c` → resume with ignored-flag warning; missing worktree → creation flow unchanged (automerge behavior intact)
+- [x] run tests - must pass before next task
 
 ### Task 4: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented (crash → same command continues; live run → precise busy error; fresh creation untouched; `--resume-worktree` rejected as unknown flag)
