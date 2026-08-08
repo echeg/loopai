@@ -76,6 +76,10 @@ func (e *externalBackend) runContext(ctx context.Context, args ...string) (strin
 	return e.runCommand(ctx, commandCancellationGroup, args...)
 }
 
+func (e *externalBackend) runContextWithEnv(ctx context.Context, env []string, args ...string) (string, error) {
+	return e.runCommandWithEnv(ctx, commandCancellationGroup, env, args...)
+}
+
 func (e *externalBackend) runContextWithTerminal(ctx context.Context, args ...string) (string, error) {
 	return e.runCommand(ctx, commandCancellationDirect, args...)
 }
@@ -87,8 +91,17 @@ func configureDirectCommandCancellation(cmd *exec.Cmd) {
 }
 
 func (e *externalBackend) runCommand(ctx context.Context, cancellation commandCancellation, args ...string) (string, error) {
+	return e.runCommandWithEnv(ctx, cancellation, nil, args...)
+}
+
+func (e *externalBackend) runCommandWithEnv(
+	ctx context.Context, cancellation commandCancellation, env []string, args ...string,
+) (string, error) {
 	cmd := exec.CommandContext(ctx, e.command, args...)
 	cmd.Dir = e.path
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	switch cancellation {
 	case commandCancellationNone:
 	case commandCancellationDirect:
@@ -416,13 +429,20 @@ func (e *externalBackend) mergeRevision(ctx context.Context, revision, expectedH
 		return fmt.Errorf("read current branch before merge: %w", err)
 	}
 	mergeArgs := []string{"merge", "--commit", "--no-squash", "--no-overwrite-ignore", revision}
+	var mergeEnv []string
 	if currentBranch != "" {
 		// Branch mergeOptions can select a strategy such as "ours", which creates a merge
 		// commit and passes the ancestry check while discarding the feature tree. Clear the
 		// option at command scope so close-out always uses Git's ordinary merge semantics.
-		mergeArgs = append([]string{"-c", "branch." + currentBranch + ".mergeOptions="}, mergeArgs...)
+		// GIT_CONFIG_PARAMETERS avoids -c's first-'=' ambiguity for valid names such as a=b.
+		configKey := "branch." + currentBranch + ".mergeOptions"
+		configOverride := quoteGitConfigParameter(configKey) + "=" + quoteGitConfigParameter("")
+		if inherited := os.Getenv("GIT_CONFIG_PARAMETERS"); inherited != "" {
+			configOverride = inherited + " " + configOverride
+		}
+		mergeEnv = []string{"GIT_CONFIG_PARAMETERS=" + configOverride}
 	}
-	_, err = e.runContext(ctx, mergeArgs...)
+	_, err = e.runContextWithEnv(ctx, mergeEnv, mergeArgs...)
 	if err == nil {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), mergeCleanupTimeout)
 		defer cancel()
@@ -451,11 +471,15 @@ func (e *externalBackend) mergeRevision(ctx context.Context, revision, expectedH
 func (e *externalBackend) isAncestor(ctx context.Context, ancestor, descendant string) (bool, error) {
 	cmd := exec.CommandContext(ctx, e.command, "merge-base", "--is-ancestor", ancestor, descendant)
 	cmd.Dir = e.path
+	configureCommandCancellation(cmd)
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	err := cmd.Run()
 	if err == nil {
 		return true, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, fmt.Errorf("git merge-base: %w", ctxErr)
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -474,11 +498,16 @@ func (e *externalBackend) isAncestor(ctx context.Context, ancestor, descendant s
 func (e *externalBackend) mergeWouldConflict(ctx context.Context, base, branch string) (bool, error) {
 	cmd := exec.CommandContext(ctx, e.command, "merge-tree", "--write-tree", base, branch)
 	cmd.Dir = e.path
+	cmd.Env = append(os.Environ(), "LC_ALL=C") // force English stderr for reliable parsing
+	configureCommandCancellation(cmd)
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	err := cmd.Run()
 	if err == nil {
 		return false, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, fmt.Errorf("git merge-tree: %w", ctxErr)
 	}
 
 	var exitErr *exec.ExitError
@@ -494,6 +523,10 @@ func (e *externalBackend) mergeWouldConflict(ctx context.Context, base, branch s
 		return false, fmt.Errorf("git merge-tree: %s", details)
 	}
 	return false, fmt.Errorf("git merge-tree: %w", err)
+}
+
+func quoteGitConfigParameter(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func mergeTreeWriteTreeUnsupported(output string) bool {

@@ -572,7 +572,7 @@ func (s *Service) createWorktreeForPlan(
 		s.log.Printf("warning: prune worktrees: %v\n", pruneErr)
 	}
 
-	if err := s.preflightWorktreeForPlan(planFile, branchOverride, existingBranchAncestor); err != nil {
+	if err := s.preflightWorktreeForPlan(ctx, planFile, branchOverride, existingBranchAncestor); err != nil {
 		return "", false, err
 	}
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
@@ -674,10 +674,17 @@ func (s *Service) mergeSourceHead(ctx context.Context, wtPath, branchName string
 // state. Callers that may mutate the source checkout must run this while holding the repository
 // lock before installing runtime ignores, and again afterward before creating an auto-commit.
 func (s *Service) PreflightWorktreeForPlan(planFile, branchOverride string) error {
-	return s.preflightWorktreeForPlan(planFile, branchOverride, "")
+	return s.PreflightWorktreeForPlanContext(context.Background(), planFile, branchOverride)
 }
 
-func (s *Service) preflightWorktreeForPlan(planFile, branchOverride, existingBranchAncestor string) error {
+// PreflightWorktreeForPlanContext is PreflightWorktreeForPlan with caller cancellation.
+func (s *Service) PreflightWorktreeForPlanContext(ctx context.Context, planFile, branchOverride string) error {
+	return s.preflightWorktreeForPlan(ctx, planFile, branchOverride, "")
+}
+
+func (s *Service) preflightWorktreeForPlan(
+	ctx context.Context, planFile, branchOverride, existingBranchAncestor string,
+) error {
 	planFile = s.resolveFilesystemCase(planFile)
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
 	if branchName == "" {
@@ -720,24 +727,20 @@ func (s *Service) preflightWorktreeForPlan(planFile, branchOverride, existingBra
 	}
 
 	if s.repo.branchExists(branchName) {
-		if err := s.validateExistingPlanBranchAt(context.Background(), branchName, existingBranchAncestor); err != nil {
+		if err := s.validateExistingPlanBranchAt(ctx, branchName, existingBranchAncestor); err != nil {
 			return err
 		}
 	}
 	return s.validateWorktreePlanFile(planFile)
 }
 
-func (s *Service) validateExistingPlanBranch(branchName string) error {
-	head, err := s.repo.headHash()
-	if err != nil {
-		return fmt.Errorf("identify current HEAD before reusing plan branch: %w", err)
-	}
-	return s.validateExistingPlanBranchAt(context.Background(), branchName, head)
-}
-
 func (s *Service) validateExistingPlanBranchAt(ctx context.Context, branchName, requiredAncestor string) error {
 	if requiredAncestor == "" {
-		return s.validateExistingPlanBranch(branchName)
+		var err error
+		requiredAncestor, err = s.repo.headHash()
+		if err != nil {
+			return fmt.Errorf("identify current HEAD before reusing plan branch: %w", err)
+		}
 	}
 	branchRef := "refs/heads/" + branchName
 	containsHead, err := s.repo.isAncestor(ctx, requiredAncestor, branchRef)

@@ -1561,12 +1561,14 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		svc, err := NewService(dir, log)
 		require.NoError(t, err)
 
-		require.NoError(t, svc.CreateBranch("stale-feature"))
+		const branchName = "stale=a'b"
+		require.NoError(t, svc.CreateBranch(branchName))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "branch-only.txt"), []byte("branch work\n"), 0o600))
 		require.NoError(t, svc.repo.add("branch-only.txt"))
 		require.NoError(t, svc.repo.commit("add branch work"))
 		branchHead, err := svc.repo.headHash()
 		require.NoError(t, err)
+		runGit(t, dir, "config", "branch."+branchName+".mergeOptions", "-s ours")
 		require.NoError(t, svc.repo.checkoutBranch("master"))
 		planFile := filepath.Join(dir, "docs", "plans", "stale-feature.md")
 		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
@@ -1576,7 +1578,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		sourceHead, err := svc.repo.headHash()
 		require.NoError(t, err)
 
-		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, branchName)
 		require.NoError(t, err)
 		assert.False(t, planNeedsCommit)
 		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
@@ -1584,10 +1586,12 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		runGit(t, wtPath, "merge-base", "--is-ancestor", branchHead, "HEAD")
 		runGit(t, wtPath, "merge-base", "--is-ancestor", sourceHead, "HEAD")
 		assert.Equal(t, "branch work", strings.TrimSpace(runGit(t, wtPath, "show", "HEAD:branch-only.txt")))
+		assert.Equal(t, "# Plan", strings.TrimSpace(runGit(t, wtPath, "show", "HEAD:docs/plans/stale-feature.md")),
+			"configured branch merge options must not discard source changes")
 		assert.Equal(t, branchHead, strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD^1")))
 		assert.Equal(t, sourceHead, strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD^2")))
 		assert.Contains(t, strings.Join(log.logs, ""),
-			"merging source HEAD "+sourceHead[:7]+" into existing plan branch stale-feature")
+			"merging source HEAD "+sourceHead[:7]+" into existing plan branch "+branchName)
 	})
 
 	t.Run("reuses stale branch when same-named tag contains current HEAD", func(t *testing.T) {
@@ -1669,6 +1673,42 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		wtPath := filepath.Join(dir, ".loopai", "worktrees", "fallback-conflict")
 		assert.NoDirExists(t, wtPath)
 		assert.NotContains(t, runGit(t, dir, "worktree", "list", "--porcelain"), wtPath)
+	})
+
+	t.Run("propagates ordinary merge-tree failures without creating a worktree", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		command := filepath.Join(t.TempDir(), "broken-git")
+		script := "#!/bin/sh\nif [ \"$1\" = \"merge-tree\" ]; then echo \"fatal: bad revision\" >&2; exit 128; fi\nexec git \"$@\"\n"
+		require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+		svc, err := NewService(dir, noopServiceLogger(), command)
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "prediction-error.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		require.NoError(t, svc.CreateBranch("prediction-error"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "branch.txt"), []byte("branch\n"), 0o600))
+		require.NoError(t, svc.repo.add("branch.txt"))
+		require.NoError(t, svc.repo.commit("advance branch"))
+		branchHead := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "source.txt"), []byte("source\n"), 0o600))
+		require.NoError(t, svc.repo.add("source.txt"))
+		require.NoError(t, svc.repo.commit("advance source"))
+		sourceHead := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+		statusBefore := runGit(t, dir, "status", "--porcelain")
+
+		err = svc.PreflightWorktreeForPlan(planFile, "")
+		require.ErrorContains(t, err, "predict source merge into existing plan branch")
+		require.ErrorContains(t, err, "fatal: bad revision")
+		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
+		require.ErrorContains(t, err, "predict source merge into existing plan branch")
+		assert.Equal(t, sourceHead, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, branchHead, strings.TrimSpace(runGit(t, dir, "rev-parse", "prediction-error")))
+		assert.Equal(t, statusBefore, runGit(t, dir, "status", "--porcelain"))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "prediction-error"))
 	})
 
 	t.Run("creates worktree from non-default branch HEAD", func(t *testing.T) {

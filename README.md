@@ -525,11 +525,12 @@ The model syntax is `model[:effort]`; either half may be omitted. Provider-speci
 
 `--worktree` creates an isolated checkout under `.loopai/worktrees/<branch>`. A new plan
 branch is cut from the current checkout's `HEAD`, whether it is a branch or a detached
-commit. When an existing plan branch has diverged from the source `HEAD` seen before any
-`--commit` auto-commit, loopai reuses it and automatically merges the source HEAD into the
-fresh worktree. Only a predicted merge conflict aborts, with guidance to merge or rebase
-the source changes manually. This is useful for parallel plans and for starting work from
-any source branch.
+commit. When an existing plan branch does not already contain the source `HEAD` seen before
+any `--commit` auto-commit, loopai reuses it and automatically merges the source HEAD into
+the fresh worktree. Git 2.38+ predicts conflicts before source mutation. Older Git falls
+back to the real merge and removes the worktree if that merge conflicts. An actual conflict
+aborts with guidance to merge or rebase the source changes manually. This is useful for
+parallel plans and for starting work from any source branch.
 
 ```bash
 git checkout release/13

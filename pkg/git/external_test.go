@@ -89,13 +89,31 @@ func TestExternalBackendMergeWouldConflict(t *testing.T) {
 func TestExternalBackendMergeWouldConflictUnsupported(t *testing.T) {
 	dir := t.TempDir()
 	command := filepath.Join(t.TempDir(), "old-git")
-	require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\necho \"error: unknown option 'write-tree'\" >&2\nexit 129\n"), 0o755)) //nolint:gosec // executable test fixture
+	script := "#!/bin/sh\nif [ \"$LC_ALL\" = C ]; then echo \"error: unknown option 'write-tree'\" >&2; else echo \"erreur: option inconnue write-tree\" >&2; fi\nexit 129\n"
+	require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
 	backend := &externalBackend{path: dir, command: command}
 
 	conflict, err := backend.mergeWouldConflict(t.Context(), "master", "plan")
 
 	assert.False(t, conflict)
 	assert.ErrorIs(t, err, errMergeTreeUnsupported)
+}
+
+func TestExternalBackendMergeWouldConflictHonorsCancellation(t *testing.T) {
+	dir := t.TempDir()
+	command := filepath.Join(t.TempDir(), "slow-git")
+	require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\nsleep 30\n"), 0o755)) //nolint:gosec // executable test fixture
+	backend := &externalBackend{path: dir, command: command}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	conflict, err := backend.mergeWouldConflict(ctx, "master", "plan")
+
+	assert.False(t, conflict)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(started), 8*time.Second,
+		"cancellation must stop well before the command's 30-second fixture delay")
 }
 
 // setupExternalTestRepo creates a temp git repo using the git CLI for external backend tests.

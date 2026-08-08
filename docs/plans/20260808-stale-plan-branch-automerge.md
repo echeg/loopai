@@ -3,7 +3,7 @@
 ## Overview
 - When a plan is re-run and its existing branch no longer contains the source HEAD (an unrelated plan advanced the source branch between runs), loopai currently aborts with `existing plan branch "X" does not include current HEAD; merge or rebase ...`. Change this to attempt the merge automatically: reuse the branch, merge the current source HEAD into it inside the fresh worktree, and proceed. Only a real merge conflict aborts, with the current actionable error text.
 - Problem it solves: interleaved plans on one source branch make every resume fail with a manual-merge chore, even though in practice the merge is clean (the divergence is usually plan-bookkeeping commits like `move completed plan: ...`). The error message tells the human to do exactly what the tool can do itself.
-- Conflict prediction happens in preflight via a `git merge-tree` dry-run, so a doomed run is rejected BEFORE `--commit` mutates the source checkout — preserving today's guarantee that preflight failures leave the repository untouched.
+- On Git 2.38+, conflict prediction happens in preflight via a `git merge-tree` dry-run, so a predicted conflict is rejected BEFORE `--commit` mutates the source checkout. Older Git skips prediction and relies on the real merge backstop; that path removes the new worktree on conflict, but a requested source auto-commit may already have occurred.
 
 ## Context (from discovery)
 - Files/components involved:
@@ -63,7 +63,7 @@
 - [x] run tests - must pass before next task
 
 ### Task 3: Verify acceptance criteria
-- [x] verify all requirements from Overview are implemented (clean reuse just works; conflicts fail early with actionable text; `--commit` sources not mutated on predicted conflict)
+- [x] verify all requirements from Overview are implemented (clean reuse just works; predicted conflicts fail early with actionable text; `--commit` sources not mutated on predicted conflict)
 - [x] verify edge cases: detached HEAD source, branch identical to HEAD (no merge), plan branch checked out in another worktree (existing guard unaffected), git older than 2.38 fallback
 - [x] run full test suite (`make test`)
 - [x] run linter (`make lint`) - all issues must be fixed
@@ -71,12 +71,12 @@
 - [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 4: [Final] Update documentation
-- [x] update CLAUDE.md worktree paragraph: reuse now auto-merges a diverged source HEAD; only conflicts abort
+- [x] update CLAUDE.md worktree paragraph: reuse now auto-merges a source HEAD the plan branch does not already contain; only conflicts abort
 - [x] update llms.txt `--worktree` paragraph ("An existing plan branch is reused only when it contains the source HEAD ... otherwise merge or rebase first" → new semantics)
 - [x] update README.md if it repeats the strict rule
 
 ## Technical Details
-- Reuse decision flow after the change: branch exists → dry-run `merge-tree` against current HEAD → clean: create worktree on branch, `mergeRevision(sourceHead)` inside it (no-op when already contained) → run proceeds; conflict: fail preflight before any source mutation.
+- Reuse decision flow after the change: branch exists → on Git 2.38+, dry-run `merge-tree` against current HEAD → predicted conflict: fail preflight before source mutation; clean or prediction unsupported: create worktree on branch → `mergeRevision(sourceHead)` inside it (no-op when already contained) → success proceeds, while a real merge failure removes the worktree and aborts.
 - The `-c/--commit` auto-commit case needs no special handling anymore: the generalized source-sync merge covers both "HEAD advanced by auto-commit" and "HEAD advanced by unrelated plans" with one code path — `existingBranchAncestor` plumbing can likely be simplified once both callers use the merged semantics (do it only if it falls out naturally; do not force a refactor).
 - Preflight runs twice under the repository lock (before runtime ignores and after auto-commit, per `PreflightWorktreeForPlan` docs); the dry-run must be cheap enough for that (merge-tree is in-memory, no worktree I/O).
 - Merge commit authored by the run inherits the same identity as today's auto-commit merge (`mergeRevision` path), so progress logs and `--merge` close-out behavior are unchanged.
