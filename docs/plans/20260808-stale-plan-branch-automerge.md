@@ -71,9 +71,9 @@
 - [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 4: [Final] Update documentation
-- [ ] update CLAUDE.md worktree paragraph: reuse now auto-merges a diverged source HEAD; only conflicts abort
-- [ ] update llms.txt `--worktree` paragraph ("An existing plan branch is reused only when it contains the source HEAD ... otherwise merge or rebase first" → new semantics)
-- [ ] update README.md if it repeats the strict rule
+- [x] update CLAUDE.md worktree paragraph: reuse now auto-merges a diverged source HEAD; only conflicts abort
+- [x] update llms.txt `--worktree` paragraph ("An existing plan branch is reused only when it contains the source HEAD ... otherwise merge or rebase first" → new semantics)
+- [x] update README.md if it repeats the strict rule
 
 ## Technical Details
 - Reuse decision flow after the change: branch exists → dry-run `merge-tree` against current HEAD → clean: create worktree on branch, `mergeRevision(sourceHead)` inside it (no-op when already contained) → run proceeds; conflict: fail preflight before any source mutation.
