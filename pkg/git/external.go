@@ -568,9 +568,19 @@ func (e *externalBackend) mergeWorkingTreeWouldConflict(ctx context.Context, bas
 	if _, err = run("add", "-A"); err != nil {
 		return false, fmt.Errorf("stage source snapshot in temporary Git index: %w", err)
 	}
+	if _, err = run("reset", "--quiet", "HEAD", "--", ".loopai/progress", ".loopai/worktrees"); err != nil {
+		return false, fmt.Errorf("exclude runtime artifacts from source snapshot: %w", err)
+	}
 	tree, err := run("write-tree")
 	if err != nil {
 		return false, fmt.Errorf("write source snapshot tree: %w", err)
+	}
+	headTree, err := run("rev-parse", "HEAD^{tree}")
+	if err != nil {
+		return false, fmt.Errorf("identify committed source tree: %w", err)
+	}
+	if tree == headTree {
+		return e.mergeWouldConflict(ctx, base, "HEAD")
 	}
 	snapshot, err := run("commit-tree", tree, "-p", "HEAD", "-m", "loopai preflight source snapshot")
 	if err != nil {
@@ -1122,15 +1132,18 @@ func (e *externalBackend) toRelative(path string) (string, error) {
 // addWorktree creates a git worktree at the given path.
 // when createBranch is true, creates a new branch with `git worktree add <path> -b <branch>`.
 // when createBranch is false, uses existing branch with `git worktree add <path> <branch>`.
-func (e *externalBackend) addWorktree(path, branch string, createBranch bool) error {
+func (e *externalBackend) addWorktree(ctx context.Context, path, branch string, createBranch bool) error {
 	var args []string
 	if createBranch {
 		args = []string{"worktree", "add", path, "-b", branch}
 	} else {
 		args = []string{"worktree", "add", path, branch}
 	}
-	_, err := e.run(args...)
+	_, err := e.runContext(ctx, args...)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("add worktree: %w", ctxErr)
+		}
 		return fmt.Errorf("add worktree: %w", err)
 	}
 	return nil

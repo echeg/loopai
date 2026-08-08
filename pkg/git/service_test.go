@@ -1555,6 +1555,96 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, svc.RemoveWorktree(wtPath))
 	})
 
+	t.Run("existing branch worktree creation honors cancellation", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "cancel-add.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add cancellation plan"))
+		require.NoError(t, svc.CreateBranch("cancel-add"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+
+		command := filepath.Join(t.TempDir(), "slow-git")
+		script := "#!/bin/sh\nif [ \"$1\" = worktree ] && [ \"$2\" = add ]; then git \"$@\" || exit $?; sleep 30; exit 0; fi\nexec git \"$@\"\n"
+		require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+		svc, err = NewService(dir, noopServiceLogger(), command)
+		require.NoError(t, err)
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancel()
+
+		started := time.Now()
+		_, _, err = svc.CreateWorktreeForPlanContext(ctx, planFile, "")
+
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Less(t, time.Since(started), 8*time.Second,
+			"cancellation must stop well before the command's 30-second fixture delay")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "cancel-add"))
+	})
+
+	t.Run("auto-commit preflight excludes tracked runtime changes", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "runtime-conflict.md")
+		runtimeFile := filepath.Join(dir, ".loopai", "progress", "run.log")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.MkdirAll(filepath.Dir(runtimeFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, os.WriteFile(runtimeFile, []byte("base\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.add(runtimeFile))
+		require.NoError(t, svc.repo.commit("add plan and tracked runtime file"))
+		require.NoError(t, svc.CreateBranch("runtime-conflict"))
+		require.NoError(t, os.WriteFile(runtimeFile, []byte("branch version\n"), 0o600))
+		require.NoError(t, svc.repo.commitFiles("change runtime file on plan branch", runtimeFile))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "source.txt"), []byte("source\n"), 0o600))
+		require.NoError(t, svc.repo.add("source.txt"))
+		require.NoError(t, svc.repo.commit("advance source"))
+		require.NoError(t, os.WriteFile(runtimeFile, []byte("dirty source version\n"), 0o600))
+
+		require.NoError(t, svc.PreflightWorktreeForPlanAutoCommitContext(t.Context(), planFile, ""))
+		committed, err := svc.AutoCommitAll("must ignore runtime-only changes")
+		require.NoError(t, err)
+		assert.False(t, committed)
+		assert.Contains(t, runGit(t, dir, "status", "--porcelain"), ".loopai/progress/run.log")
+	})
+
+	t.Run("clean auto-commit preflight does not require author identity", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "identity-free.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add identity-free plan"))
+		require.NoError(t, svc.CreateBranch("identity-free"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "branch.txt"), []byte("branch\n"), 0o600))
+		require.NoError(t, svc.repo.add("branch.txt"))
+		require.NoError(t, svc.repo.commit("advance plan branch"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "source.txt"), []byte("source\n"), 0o600))
+		require.NoError(t, svc.repo.add("source.txt"))
+		require.NoError(t, svc.repo.commit("advance source branch"))
+		runGit(t, dir, "config", "--unset", "user.name")
+		runGit(t, dir, "config", "--unset", "user.email")
+
+		command := filepath.Join(t.TempDir(), "identity-free-git")
+		script := "#!/bin/sh\nunset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL\nexport GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1\nexec git \"$@\"\n"
+		require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+		svc, err = NewService(dir, noopServiceLogger(), command)
+		require.NoError(t, err)
+
+		require.NoError(t, svc.PreflightWorktreeForPlanAutoCommitContext(t.Context(), planFile, ""))
+	})
+
 	t.Run("merges clean divergence into existing branch", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		log := &mockLogger{}
@@ -1962,7 +2052,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		// try to create second worktree at different path but same branch.
 		// use AddWorktree directly to bypass dir-exists check.
 		secondPath := filepath.Join(dir, ".loopai", "worktrees", "branch-conflict-2")
-		err = svc.repo.addWorktree(secondPath, "branch-conflict", false)
+		err = svc.repo.addWorktree(t.Context(), secondPath, "branch-conflict", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "already used by worktree")
 	})

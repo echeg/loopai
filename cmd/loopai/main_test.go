@@ -3371,6 +3371,28 @@ func writeExecutable(t *testing.T, path, content string) {
 	require.NoError(t, err)
 }
 
+func cancelWhenPathExists(cancel context.CancelFunc, path string) {
+	go func() {
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		for {
+			if _, err := os.Stat(path); err == nil {
+				time.Sleep(20 * time.Millisecond)
+				cancel()
+				return
+			}
+			select {
+			case <-ticker.C:
+			case <-timer.C:
+				cancel()
+				return
+			}
+		}
+	}()
+}
+
 // runGit executes a git command in the given directory and fails the test on error.
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
@@ -5397,9 +5419,12 @@ func TestRunWithWorktree(t *testing.T) {
 		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
 		t.Setenv("CMUX_ARGV_LOG", argvLog)
 
-		// cancel context immediately to stop executePlan fast
+		// Cancel after setup so this exercises runner-abort cleanup rather than
+		// cancellation-aware worktree creation.
+		wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-test")
 		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
+		cancelWhenPathExists(cancel, filepath.Join(wtPath, "docs", "plans", "wt-test.md"))
+		defer cancel()
 
 		err = runWithWorktree(ctx, opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: cfg,
@@ -5414,7 +5439,6 @@ func TestRunWithWorktree(t *testing.T) {
 		assert.Equal(t, resolvedDir, cwd, "cwd should be restored after runWithWorktree")
 
 		// verify worktree directory cleaned up
-		wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-test")
 		assert.NoDirExists(t, wtPath, "worktree should be removed after runWithWorktree")
 
 		// verify branch was preserved (worktree creates the branch)
@@ -5488,7 +5512,8 @@ func TestRunWithWorktree(t *testing.T) {
 		wtCleanup := &cleanupHolder{}
 
 		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
+		cancelWhenPathExists(cancel, filepath.Join(dir, ".loopai", "worktrees", "wt-branch", "docs", "plans", "wt-branch.md"))
+		defer cancel()
 
 		_ = runWithWorktree(ctx, opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: cfg,
@@ -5864,7 +5889,8 @@ func TestRunWithWorktree_UntrackedPlan(t *testing.T) {
 	wtCleanup := &cleanupHolder{}
 
 	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
+	cancelWhenPathExists(cancel, filepath.Join(dir, ".loopai", "worktrees", "wt-untracked", "docs", "plans", "wt-untracked.md"))
+	defer cancel()
 
 	err = runWithWorktree(ctx, opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
 		PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: cfg,

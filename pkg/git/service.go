@@ -55,7 +55,7 @@ type backend interface {
 	autoCommitAll(msg string) (bool, error)
 	createInitialCommit(msg string) error
 	diffStats(baseBranch, headRef string) (DiffStats, error)
-	addWorktree(path, branch string, createBranch bool) error
+	addWorktree(ctx context.Context, path, branch string, createBranch bool) error
 	removeWorktree(path string) error
 	removeWorktreeSafe(path string) error
 	pruneWorktrees() error
@@ -613,8 +613,9 @@ func (s *Service) createWorktreeForPlan(
 		}
 	} else {
 		s.log.Printf("creating worktree with new branch: %s (from %s)\n", branchName, source)
-		if err := s.repo.addWorktree(wtPath, branchName, true); err != nil {
-			return "", false, fmt.Errorf("add worktree with new branch: %w", err)
+		if err := s.repo.addWorktree(ctx, wtPath, branchName, true); err != nil {
+			addErr := fmt.Errorf("add worktree with new branch: %w", err)
+			return "", false, s.cleanupFailedWorktreeAdd(wtPath, addErr)
 		}
 	}
 
@@ -637,8 +638,9 @@ func (s *Service) createExistingPlanWorktree(
 		return err
 	}
 	s.log.Printf("creating worktree with existing branch: %s\n", branchName)
-	if err := s.repo.addWorktree(wtPath, branchName, false); err != nil {
-		return fmt.Errorf("add worktree with existing branch: %w", err)
+	if err := s.repo.addWorktree(ctx, wtPath, branchName, false); err != nil {
+		addErr := fmt.Errorf("add worktree with existing branch: %w", err)
+		return s.cleanupFailedWorktreeAdd(wtPath, addErr)
 	}
 	mergeErr := s.mergeSourceHead(ctx, wtPath, branchName)
 	if mergeErr == nil {
@@ -648,6 +650,16 @@ func (s *Service) createExistingPlanWorktree(
 		return errors.Join(mergeErr, fmt.Errorf("remove worktree after source merge failure: %w", removeErr))
 	}
 	return mergeErr
+}
+
+func (s *Service) cleanupFailedWorktreeAdd(wtPath string, cause error) error {
+	if _, err := os.Stat(wtPath); err != nil {
+		return cause
+	}
+	if removeErr := s.repo.removeWorktree(wtPath); removeErr != nil {
+		return errors.Join(cause, fmt.Errorf("remove partial worktree after creation failure: %w", removeErr))
+	}
+	return cause
 }
 
 func (s *Service) mergeSourceHead(ctx context.Context, wtPath, branchName string) error {
