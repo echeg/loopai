@@ -63,12 +63,12 @@
 - [x] run tests - must pass before next task
 
 ### Task 3: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented (clean reuse just works; conflicts fail early with actionable text; `--commit` sources not mutated on predicted conflict)
-- [ ] verify edge cases: detached HEAD source, branch identical to HEAD (no merge), plan branch checked out in another worktree (existing guard unaffected), git older than 2.38 fallback
-- [ ] run full test suite (`make test`)
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] verify test coverage meets project standard (80%+) for the new code paths
-- [ ] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify all requirements from Overview are implemented (clean reuse just works; conflicts fail early with actionable text; `--commit` sources not mutated on predicted conflict)
+- [x] verify edge cases: detached HEAD source, branch identical to HEAD (no merge), plan branch checked out in another worktree (existing guard unaffected), git older than 2.38 fallback
+- [x] run full test suite (`make test`)
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] verify test coverage meets project standard (80%+) for the new code paths
+- [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 4: [Final] Update documentation
 - [ ] update CLAUDE.md worktree paragraph: reuse now auto-merges a diverged source HEAD; only conflicts abort
