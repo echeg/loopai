@@ -12,16 +12,27 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func tryLockRepositoryFile(f *os.File) (bool, error) {
+	err := windows.LockFileEx(windows.Handle(f.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0, 1, 0, new(windows.Overlapped))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+		return false, nil
+	}
+	return false, fmt.Errorf("LockFileEx: %w", err)
+}
+
 func lockRepositoryFile(ctx context.Context, f *os.File) error {
 	for {
-		err := windows.LockFileEx(windows.Handle(f.Fd()),
-			windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
-			0, 1, 0, new(windows.Overlapped))
-		if err == nil {
-			return nil
+		acquired, err := tryLockRepositoryFile(f)
+		if err != nil {
+			return err
 		}
-		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
-			return fmt.Errorf("LockFileEx: %w", err)
+		if acquired {
+			return nil
 		}
 		select {
 		case <-ctx.Done():

@@ -47,11 +47,11 @@
 ## Implementation Steps
 
 ### Task 1: Add non-blocking try-lock primitives and the run lock
-- [ ] add `tryLockRepositoryFile(f *os.File) (acquired bool, err error)` to both `repository_lock_unix.go` (flock LOCK_EX|LOCK_NB) and `repository_lock_windows.go` (LockFileEx with LOCKFILE_FAIL_IMMEDIATELY)
-- [ ] add `AcquireWorktreeRunLock(wtPath string) (release func() error, err error)` to `pkg/git`: resolve the worktree's private git dir via `rev-parse --git-dir` executed in `wtPath`, open/create `loopai-run.lock` there, try-lock non-blocking; on success truncate and write `pid=<pid> started=<RFC3339>` (diagnostic only — the flock is the authority, pids get reused); on contention return a typed `ErrWorktreeBusy` carrying the lock file's recorded pid/started values for the error message
-- [ ] add `ProbeWorktreeRunLock(wtPath string) (busy bool, info string, err error)`: same try-lock, immediately released when acquired; used by routing to classify an existing worktree
-- [ ] write tests: acquire/release cycle; second acquire while held → `ErrWorktreeBusy` with recorded info; probe on free lock → not busy and leaves the lock acquirable; missing/corrupt lock file content → still works (info empty); lock file lives under the worktree's git dir, not the working tree
-- [ ] run tests - must pass before next task
+- [x] add `tryLockRepositoryFile(f *os.File) (acquired bool, err error)` to both `repository_lock_unix.go` (flock LOCK_EX|LOCK_NB) and `repository_lock_windows.go` (LockFileEx with LOCKFILE_FAIL_IMMEDIATELY)
+- [x] add `AcquireWorktreeRunLock(wtPath string) (release func() error, err error)` to `pkg/git`: resolve the worktree's private git dir via `rev-parse --git-dir` executed in `wtPath`, open/create `loopai-run.lock` there, try-lock non-blocking; on success truncate and write `pid=<pid> started=<RFC3339>` (diagnostic only — the flock is the authority, pids get reused); on contention return a typed `ErrWorktreeBusy` carrying the lock file's recorded pid/started values for the error message
+- [x] add `ProbeWorktreeRunLock(wtPath string) (busy bool, info string, err error)`: same try-lock, immediately released when acquired; used by routing to classify an existing worktree
+- [x] write tests: acquire/release cycle; second acquire while held → `ErrWorktreeBusy` with recorded info; probe on free lock → not busy and leaves the lock acquirable; missing/corrupt lock file content → still works (info empty); lock file lives under the worktree's git dir, not the working tree
+- [x] run tests - must pass before next task
 
 ### Task 2: Hold the run lock for the lifetime of every worktree run
 - [ ] in `cmd/loopai/main.go` worktree setup: after a worktree is created or resumed, acquire the run lock and register release in the existing cleanup chain (same discipline as `WtCleanup`); a failed acquire on a *freshly created* worktree is an internal error (nothing else can know about it yet)
