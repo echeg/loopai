@@ -1528,6 +1528,8 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 
 		// create the existing branch at the source HEAD, then return to master
 		require.NoError(t, svc.CreateBranch("existing-feature"))
+		branchHeadBefore, err := svc.repo.headHash()
+		require.NoError(t, err)
 		require.NoError(t, svc.repo.checkoutBranch("master"))
 
 		log := &mockLogger{}
@@ -1543,6 +1545,9 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		branch, err := wtSvc.CurrentBranch()
 		require.NoError(t, err)
 		assert.Equal(t, "existing-feature", branch)
+		branchHeadAfter, err := wtSvc.repo.headHash()
+		require.NoError(t, err)
+		assert.Equal(t, branchHeadBefore, branchHeadAfter, "up-to-date reuse must not create a commit")
 
 		assert.Contains(t, log.logs[0], "existing branch")
 
@@ -1550,25 +1555,42 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, svc.RemoveWorktree(wtPath))
 	})
 
-	t.Run("rejects existing branch that omits current HEAD", func(t *testing.T) {
+	t.Run("merges clean divergence into existing branch", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
-		svc, err := NewService(dir, noopServiceLogger())
+		log := &mockLogger{}
+		svc, err := NewService(dir, log)
 		require.NoError(t, err)
 
 		require.NoError(t, svc.CreateBranch("stale-feature"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "branch-only.txt"), []byte("branch work\n"), 0o600))
+		require.NoError(t, svc.repo.add("branch-only.txt"))
+		require.NoError(t, svc.repo.commit("add branch work"))
+		branchHead, err := svc.repo.headHash()
+		require.NoError(t, err)
 		require.NoError(t, svc.repo.checkoutBranch("master"))
 		planFile := filepath.Join(dir, "docs", "plans", "stale-feature.md")
 		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
 		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
 		require.NoError(t, svc.repo.add(planFile))
 		require.NoError(t, svc.repo.commit("advance source with plan"))
+		sourceHead, err := svc.repo.headHash()
+		require.NoError(t, err)
 
-		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
-		require.ErrorContains(t, err, "does not include current HEAD")
-		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "stale-feature"))
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlan(planFile, "")
+		require.NoError(t, err)
+		assert.False(t, planNeedsCommit)
+		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
+
+		runGit(t, wtPath, "merge-base", "--is-ancestor", branchHead, "HEAD")
+		runGit(t, wtPath, "merge-base", "--is-ancestor", sourceHead, "HEAD")
+		assert.Equal(t, "branch work", strings.TrimSpace(runGit(t, wtPath, "show", "HEAD:branch-only.txt")))
+		assert.Equal(t, branchHead, strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD^1")))
+		assert.Equal(t, sourceHead, strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD^2")))
+		assert.Contains(t, strings.Join(log.logs, ""),
+			"merging source HEAD "+sourceHead[:7]+" into existing plan branch stale-feature")
 	})
 
-	t.Run("rejects stale branch when same-named tag contains current HEAD", func(t *testing.T) {
+	t.Run("reuses stale branch when same-named tag contains current HEAD", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())
 		require.NoError(t, err)
@@ -1581,10 +1603,72 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, svc.repo.add(planFile))
 		require.NoError(t, svc.repo.commit("advance source with plan"))
 		runGit(t, dir, "tag", "ambiguous-feature")
+		sourceHead, err := svc.repo.headHash()
+		require.NoError(t, err)
+
+		wtPath, _, err := svc.CreateWorktreeForPlan(planFile, "")
+		require.NoError(t, err)
+		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
+		assert.Equal(t, sourceHead, strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD")))
+		assert.Equal(t, sourceHead, strings.TrimSpace(runGit(t, dir, "rev-parse", "refs/heads/ambiguous-feature")))
+	})
+
+	t.Run("rejects conflicting divergence during preflight", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "conflicting-feature.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		require.NoError(t, svc.CreateBranch("conflicting-feature"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("branch version\n"), 0o600))
+		require.NoError(t, svc.repo.commitFiles("change README on plan branch", "README.md"))
+		branchHead := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("source version\n"), 0o600))
+		require.NoError(t, svc.repo.commitFiles("change README on source", "README.md"))
+		sourceHead := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+
+		err = svc.PreflightWorktreeForPlan(planFile, "")
+		require.ErrorContains(t, err, "would conflict; merge or rebase the source changes into it")
+		_, _, createErr := svc.CreateWorktreeForPlan(planFile, "")
+		require.ErrorContains(t, createErr, "would conflict")
+		assert.Equal(t, sourceHead, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD")))
+		assert.Equal(t, branchHead, strings.TrimSpace(runGit(t, dir, "rev-parse", "conflicting-feature")))
+		assert.Empty(t, strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "conflicting-feature"))
+	})
+
+	t.Run("removes worktree when fallback merge finds a conflict", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		command := filepath.Join(t.TempDir(), "old-git")
+		script := "#!/bin/sh\nif [ \"$1\" = \"merge-tree\" ]; then echo \"error: unknown option 'write-tree'\" >&2; exit 129; fi\nexec git \"$@\"\n"
+		require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
+		svc, err := NewService(dir, noopServiceLogger(), command)
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "fallback-conflict.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		require.NoError(t, svc.CreateBranch("fallback-conflict"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("branch version\n"), 0o600))
+		require.NoError(t, svc.repo.commitFiles("change README on plan branch", "README.md"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("source version\n"), 0o600))
+		require.NoError(t, svc.repo.commitFiles("change README on source", "README.md"))
 
 		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
-		require.ErrorContains(t, err, "does not include current HEAD")
-		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "ambiguous-feature"))
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrMergeConflict)
+		require.ErrorContains(t, err, "merge source HEAD into existing plan branch")
+		wtPath := filepath.Join(dir, ".loopai", "worktrees", "fallback-conflict")
+		assert.NoDirExists(t, wtPath)
+		assert.NotContains(t, runGit(t, dir, "worktree", "list", "--porcelain"), wtPath)
 	})
 
 	t.Run("creates worktree from non-default branch HEAD", func(t *testing.T) {

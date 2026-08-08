@@ -4861,7 +4861,7 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
 	})
 
-	t.Run("existing_plan_branch_merge_conflict_is_aborted_and_worktree_removed", func(t *testing.T) {
+	t.Run("existing_plan_branch_conflict_is_rejected_before_source_auto_commit", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
 		planPath := filepath.Join(dir, "docs", "plans", "existing-conflict.md")
@@ -4874,19 +4874,22 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		branchBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
 		runGit(t, dir, "switch", "master")
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("source version\n"), 0o600))
+		runGit(t, dir, "commit", "-am", "change README on source branch")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("must remain uncommitted\n"), 0o600))
 
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
 		sourceBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		statusBefore := gitOutput(t, dir, "status", "--porcelain")
 		_, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
 			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
 			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
 		}, "existing-conflict")
 
-		require.ErrorContains(t, err, "merge auto-committed source into existing plan branch")
-		assert.NotEqual(t, sourceBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+		require.ErrorContains(t, err, "would conflict; merge or rebase the source changes into it")
+		assert.Equal(t, sourceBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
 		assert.Equal(t, branchBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "existing-conflict")))
-		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
+		assert.Equal(t, statusBefore, gitOutput(t, dir, "status", "--porcelain"))
 		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "existing-conflict"))
 	})
 

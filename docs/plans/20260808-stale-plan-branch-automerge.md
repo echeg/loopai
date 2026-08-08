@@ -54,13 +54,13 @@
 - [x] run tests - must pass before next task
 
 ### Task 2: Replace the hard ancestor rejection with auto-merge semantics
-- [ ] in `preflightWorktreeForPlan` / `validateExistingPlanBranchAt`: when the existing branch does not contain the required ancestor, run the merge-tree dry-run instead of returning the error; predicted-clean → preflight passes; predicted-conflict → return the current error text extended with the conflicting outcome ("would conflict; merge or rebase the source changes into it, or choose another --branch"); dry-run unsupported → preflight passes (post-creation merge is the backstop)
-- [ ] generalize `mergeAutoCommittedSource` into a source-sync merge that runs for every reused branch, not only when `existingBranchAncestor != ""`: after `addWorktree`, if the branch lacks the current source HEAD, `mergeRevision` it in; keep the existing conflict → `removeWorktree` → propagate cleanup path
-- [ ] make sure the no-divergence fast path stays commit-free (isAncestor check already short-circuits before merging)
-- [ ] log the auto-merge visibly: `merging source HEAD <short> into existing plan branch <name>` so progress files explain the extra merge commit
-- [ ] update existing service tests expecting the "does not include current HEAD" error on clean divergence to expect successful reuse with a merge commit; keep/adjust an error-path test with genuinely conflicting content
-- [ ] write new tests: clean divergence reused (worktree HEAD contains both branch work and source HEAD), conflicting divergence rejected in preflight before any auto-commit (source checkout unmutated), conflict discovered post-creation removes the worktree
-- [ ] run tests - must pass before next task
+- [x] in `preflightWorktreeForPlan` / `validateExistingPlanBranchAt`: when the existing branch does not contain the required ancestor, run the merge-tree dry-run instead of returning the error; predicted-clean → preflight passes; predicted-conflict → return the current error text extended with the conflicting outcome ("would conflict; merge or rebase the source changes into it, or choose another --branch"); dry-run unsupported → preflight passes (post-creation merge is the backstop)
+- [x] generalize `mergeAutoCommittedSource` into a source-sync merge that runs for every reused branch, not only when `existingBranchAncestor != ""`: after `addWorktree`, if the branch lacks the current source HEAD, `mergeRevision` it in; keep the existing conflict → `removeWorktree` → propagate cleanup path
+- [x] make sure the no-divergence fast path stays commit-free (isAncestor check already short-circuits before merging)
+- [x] log the auto-merge visibly: `merging source HEAD <short> into existing plan branch <name>` so progress files explain the extra merge commit
+- [x] update existing service tests expecting the "does not include current HEAD" error on clean divergence to expect successful reuse with a merge commit; keep/adjust an error-path test with genuinely conflicting content
+- [x] write new tests: clean divergence reused (worktree HEAD contains both branch work and source HEAD), conflicting divergence rejected in preflight before any auto-commit (source checkout unmutated), conflict discovered post-creation removes the worktree
+- [x] run tests - must pass before next task
 
 ### Task 3: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented (clean reuse just works; conflicts fail early with actionable text; `--commit` sources not mutated on predicted conflict)
