@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -503,6 +504,80 @@ func TestService_WorktreeInspectionAndSafeRemoval(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, mainSvc.RemoveWorktreeSafe(worktreePath))
 	assert.NoDirExists(t, worktreePath)
+}
+
+func TestServiceOpenWorktreeRejectsForeignRepository(t *testing.T) {
+	sourceDir := setupExternalTestRepo(t)
+	foreignDir := setupExternalTestRepo(t)
+	svc, err := NewService(sourceDir, noopServiceLogger())
+	require.NoError(t, err)
+
+	opened, err := svc.OpenWorktree(foreignDir)
+	require.ErrorIs(t, err, ErrNotSameRepository)
+	assert.Nil(t, opened)
+}
+
+func TestServiceWorktreePreparationMarkerLifecycle(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	target := filepath.Join(dir, ".loopai", "worktrees", "marker-test")
+
+	marked, err := svc.HasWorktreePreparationMarker(target)
+	require.NoError(t, err)
+	assert.False(t, marked)
+	require.NoError(t, svc.MarkWorktreePreparation(target))
+	marked, err = svc.HasWorktreePreparationMarker(target)
+	require.NoError(t, err)
+	assert.True(t, marked)
+	require.Error(t, svc.MarkWorktreePreparation(target), "an active marker must not be overwritten")
+	require.NoError(t, svc.ClearWorktreePreparation(target))
+	require.NoError(t, svc.ClearWorktreePreparation(target), "clearing an absent marker is idempotent")
+	marked, err = svc.HasWorktreePreparationMarker(target)
+	require.NoError(t, err)
+	assert.False(t, marked)
+}
+
+func TestServiceWorktreePreparationMarkerSyncsDirectoryEntries(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	target := filepath.Join(dir, ".loopai", "worktrees", "durable-marker")
+	markerPath, err := svc.worktreePreparationMarkerPath(target)
+	require.NoError(t, err)
+
+	var synced []string
+	syncDir := func(path string) error {
+		synced = append(synced, path)
+		return nil
+	}
+	require.NoError(t, svc.markWorktreePreparation(target, syncDir))
+	assert.Equal(t, []string{filepath.Dir(markerPath)}, synced)
+
+	synced = nil
+	require.NoError(t, svc.clearWorktreePreparation(target, syncDir))
+	assert.Equal(t, []string{filepath.Dir(markerPath)}, synced)
+}
+
+func TestServiceWorktreePreparationMarkerDirectorySyncErrors(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	target := filepath.Join(dir, ".loopai", "worktrees", "marker-sync-error")
+	injected := errors.New("injected directory sync failure")
+
+	err = svc.markWorktreePreparation(target, func(string) error { return injected })
+	require.ErrorIs(t, err, injected)
+	marked, inspectErr := svc.HasWorktreePreparationMarker(target)
+	require.NoError(t, inspectErr)
+	assert.False(t, marked, "a marker whose directory entry was not synced must be rolled back")
+
+	require.NoError(t, svc.MarkWorktreePreparation(target))
+	err = svc.clearWorktreePreparation(target, func(string) error { return injected })
+	require.ErrorIs(t, err, injected)
+	marked, inspectErr = svc.HasWorktreePreparationMarker(target)
+	require.NoError(t, inspectErr)
+	assert.False(t, marked, "the namespace deletion occurred even when its durability sync failed")
 }
 
 func TestService_RemoveWorktreeSafeAllowsIgnoredFiles(t *testing.T) {
@@ -2026,7 +2101,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		// second attempt should fail
 		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "worktree already exists")
+		assert.Contains(t, err.Error(), "worktree target already exists")
 
 		// cleanup
 		require.NoError(t, svc.RemoveWorktree(wtPath))

@@ -82,6 +82,20 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// prepareWorktreeRun is a test helper for cases that inspect a prepared worktree without
+// exercising run-lock ownership. Production callers use prepareWorktreeRunContext and retain the
+// returned lock until execution and cleanup finish.
+func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktreeRun, error) {
+	wt, err := prepareWorktreeRunContext(context.Background(), o, req, branch)
+	if err != nil {
+		return worktreeRun{}, err
+	}
+	wt.releaseRunLock()
+	wt.releaseRunLock = nil
+	req.WtCleanup.set(nil)
+	return wt, nil
+}
+
 func TestBuildRunnerLoggerRecordsSectionsInOrder(t *testing.T) {
 	inner := &runnerLoggerRecorder{}
 	out, timer := buildRunnerLogger(nil, inner)
@@ -1980,15 +1994,8 @@ func TestValidateFlags(t *testing.T) {
 		{name: "codex_with_pass_claude_md_is_valid", opts: opts{Codex: true, PassClaudeMd: true}, wantErr: false},
 		{name: "commit_with_worktree_is_valid", opts: opts{Commit: true, Worktree: true}, wantErr: false},
 		{name: "commit_without_worktree_is_deferred_until_config_merge", opts: opts{Commit: true}, wantErr: false},
-		{name: "commit_with_resume_is_inert", opts: opts{Commit: true, Worktree: true, ResumeWorktree: true}, wantErr: false},
-		{name: "commit_with_implicit_resume_is_inert", opts: opts{Commit: true, ResumeWorktree: true}, wantErr: false},
 		{name: "commit_with_review_is_invalid", opts: opts{Commit: true, Worktree: true, Review: true}, wantErr: true, errMsg: "only supported for full"},
 		{name: "commit_with_external_only_is_invalid", opts: opts{Commit: true, Worktree: true, ExternalOnly: true}, wantErr: true, errMsg: "only supported for full"},
-		{name: "resume_worktree_is_valid", opts: opts{ResumeWorktree: true}, wantErr: false},
-		{name: "resume_worktree_with_tasks_only_is_valid", opts: opts{ResumeWorktree: true, TasksOnly: true}, wantErr: false},
-		{name: "resume_worktree_with_plan_conflicts", opts: opts{ResumeWorktree: true, PlanDescription: "add feature"}, wantErr: true, errMsg: "--plan"},
-		{name: "resume_worktree_with_review_conflicts", opts: opts{ResumeWorktree: true, Review: true}, wantErr: true, errMsg: "full or --tasks-only"},
-		{name: "resume_worktree_with_external_only_conflicts", opts: opts{ResumeWorktree: true, ExternalOnly: true}, wantErr: true, errMsg: "full or --tasks-only"},
 		// the --codex / --external-only / --codex-only / --external-review-tool / --pass-claude-md
 		// mutex checks moved to applyCodexOverrides so config-file executor=codex is also enforced;
 		// validateFlags accepts those combos at CLI parse time and the post-merge gate rejects them.
@@ -2063,6 +2070,14 @@ func TestValidateFlags(t *testing.T) {
 	}
 }
 
+func TestResumeWorktreeFlagIsRemoved(t *testing.T) {
+	var parsed opts
+	parser := flags.NewParser(&parsed, flags.Default)
+	_, err := parser.ParseArgs([]string{"--resume-worktree"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown flag")
+}
+
 func TestApplyCodexOverrides_AllowsSymmetricExternalReview(t *testing.T) {
 	t.Run("cli_codex_plus_external_only_allowed", func(t *testing.T) {
 		cfg := &config.Config{}
@@ -2131,12 +2146,6 @@ func TestApplyCodexOverrides_AllowsSymmetricExternalReview(t *testing.T) {
 	})
 }
 
-func TestApplyCLIOverrides_ResumeWorktreeImpliesWorktree(t *testing.T) {
-	cfg := &config.Config{}
-	require.NoError(t, applyCLIOverrides(opts{ResumeWorktree: true}, cfg))
-	assert.True(t, cfg.WorktreeEnabled)
-}
-
 func TestApplyCLIOverrides_CommitRequiresEffectiveWorktree(t *testing.T) {
 	t.Run("accepts config enabled worktree", func(t *testing.T) {
 		cfg := &config.Config{WorktreeEnabled: true}
@@ -2147,12 +2156,6 @@ func TestApplyCLIOverrides_CommitRequiresEffectiveWorktree(t *testing.T) {
 	t.Run("accepts CLI enabled worktree", func(t *testing.T) {
 		cfg := &config.Config{}
 		require.NoError(t, applyCLIOverrides(opts{Commit: true, Worktree: true}, cfg))
-		assert.True(t, cfg.WorktreeEnabled)
-	})
-
-	t.Run("accepts resume implied worktree", func(t *testing.T) {
-		cfg := &config.Config{}
-		require.NoError(t, applyCLIOverrides(opts{Commit: true, ResumeWorktree: true}, cfg))
 		assert.True(t, cfg.WorktreeEnabled)
 	})
 
@@ -3380,6 +3383,28 @@ func cancelWhenPathExists(cancel context.CancelFunc, path string) {
 		for {
 			if _, err := os.Stat(path); err == nil {
 				time.Sleep(20 * time.Millisecond)
+				cancel()
+				return
+			}
+			select {
+			case <-ticker.C:
+			case <-timer.C:
+				cancel()
+				return
+			}
+		}
+	}()
+}
+
+func cancelWhenFileContains(cancel context.CancelFunc, path, marker string) {
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		for {
+			contents, err := os.ReadFile(path) //nolint:gosec // test-controlled temporary path
+			if err == nil && strings.Contains(string(contents), marker) {
 				cancel()
 				return
 			}
@@ -4749,10 +4774,6 @@ func TestIsResetOnly(t *testing.T) {
 	t.Run("reset_with_init", func(t *testing.T) {
 		assert.False(t, isResetOnly(opts{Reset: true, Init: true}))
 	})
-
-	t.Run("reset_with_resume_worktree", func(t *testing.T) {
-		assert.False(t, isResetOnly(opts{Reset: true, ResumeWorktree: true}))
-	})
 }
 
 func TestResolveVersion(t *testing.T) {
@@ -5291,8 +5312,7 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
 		}, "dangling-target")
 
-		require.ErrorContains(t, err, "preflight worktree creation")
-		require.ErrorContains(t, err, "worktree already exists")
+		require.ErrorContains(t, err, "resume worktree: worktree does not exist")
 		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
 		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
 		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "dangling-target")))
@@ -5376,12 +5396,17 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		headBefore := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Still dirty\n"), 0o600))
 
-		wt, err := prepareWorktreeRun(opts{Commit: true, ResumeWorktree: true}, executePlanRequest{
-			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
-			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
-		}, "resume-no-commit")
+		var wt worktreeRun
+		output := captureStdout(t, func() {
+			wt, err = prepareWorktreeRun(opts{Commit: true, Worktree: true}, executePlanRequest{
+				PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+				Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+			}, "resume-no-commit")
+		})
 		require.NoError(t, err)
 		assert.True(t, wt.resumed)
+		assert.Contains(t, output, "warning: -c/--commit is ignored")
+		assert.Contains(t, output, "resuming interrupted worktree "+wtPath)
 		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
 		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
 	})
@@ -5425,7 +5450,8 @@ func TestRunWithWorktree(t *testing.T) {
 		// cancellation-aware worktree creation.
 		wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-test")
 		ctx, cancel := context.WithCancel(t.Context())
-		cancelWhenPathExists(cancel, filepath.Join(wtPath, "docs", "plans", "wt-test.md"))
+		cancelWhenFileContains(cancel,
+			filepath.Join(dir, ".git", "worktrees", "wt-test", "loopai-run.lock"), "pid=")
 		defer cancel()
 
 		err = runWithWorktree(ctx, opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
@@ -5527,7 +5553,346 @@ func TestRunWithWorktree(t *testing.T) {
 	})
 }
 
-func TestRunWithWorktreeResume(t *testing.T) {
+func TestPrepareWorktreeRunOwnershipAndForceCleanup(t *testing.T) {
+	setup := func(t *testing.T, name string) (string, string, *git.Service) {
+		t.Helper()
+		dir := setupTestRepo(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", name+".md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# "+name+"\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/"+name+".md")
+		runGit(t, dir, "commit", "-m", "add "+name+" plan")
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		return dir, planPath, gitSvc
+	}
+
+	t.Run("fresh preparation returns with authoritative lock held", func(t *testing.T) {
+		_, planPath, gitSvc := setup(t, "fresh-owned")
+		holder := &cleanupHolder{}
+		req := executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: holder,
+		}
+		wt, err := prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, req, "fresh-owned")
+		require.NoError(t, err)
+		t.Cleanup(func() { removeWorktreeWithRunLock(gitSvc, wt.path, wt.releaseRunLock) })
+
+		_, err = prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "fresh-owned")
+		var busyErr *git.ErrWorktreeBusy
+		require.ErrorAs(t, err, &busyErr)
+		assert.DirExists(t, wt.path, "a losing contender must not remove the creator's active worktree")
+	})
+
+	t.Run("interrupted fresh preparation is recreated instead of resumed", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planPath := filepath.Join(plansDir, "interrupted-create.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Interrupted Create\n"), 0o600))
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wtPath := filepath.Join(gitSvc.Root(), ".loopai", "worktrees", "interrupted-create")
+		require.NoError(t, gitSvc.MarkWorktreePreparation(wtPath))
+		runGit(t, dir, "worktree", "add", "-b", "interrupted-create", wtPath)
+		assert.NoFileExists(t, filepath.Join(wtPath, "docs", "plans", "interrupted-create.md"))
+
+		wt, err := prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "interrupted-create")
+		require.NoError(t, err)
+		t.Cleanup(func() { removeWorktreeWithRunLock(gitSvc, wt.path, wt.releaseRunLock) })
+		assert.False(t, wt.resumed)
+		assert.False(t, wt.planNeedsCommit)
+		assert.FileExists(t, filepath.Join(wt.path, "docs", "plans", "interrupted-create.md"))
+		assert.Equal(t, "# Interrupted Create",
+			strings.TrimSpace(gitOutput(t, wt.path, "show", "HEAD:docs/plans/interrupted-create.md")))
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, wt.path, "status", "--porcelain")))
+		marked, markerErr := gitSvc.HasWorktreePreparationMarker(wtPath)
+		require.NoError(t, markerErr)
+		assert.False(t, marked)
+	})
+
+	t.Run("fresh plan commit completes before preparation marker is cleared", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planPath := filepath.Join(plansDir, "marker-through-commit.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Marker Through Commit\n"), 0o600))
+		markerObserved := filepath.Join(t.TempDir(), "marker-observed")
+		hook := fmt.Sprintf("#!/bin/sh\nset -- %q/loopai-worktree-prepare-*.marker\n[ -f \"$1\" ] || exit 1\n: > %q\n", filepath.Join(dir, ".git"), markerObserved)
+		writeExecutable(t, filepath.Join(dir, ".git", "hooks", "pre-commit"), hook)
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wt, err := prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "marker-through-commit")
+		require.NoError(t, err)
+		t.Cleanup(func() { removeWorktreeWithRunLock(gitSvc, wt.path, wt.releaseRunLock) })
+
+		assert.FileExists(t, markerObserved, "the commit hook must run while the durable marker exists")
+		assert.False(t, wt.planNeedsCommit)
+		assert.Equal(t, "# Marker Through Commit",
+			strings.TrimSpace(gitOutput(t, wt.path, "show", "HEAD:docs/plans/marker-through-commit.md")))
+		marked, markerErr := gitSvc.HasWorktreePreparationMarker(wt.path)
+		require.NoError(t, markerErr)
+		assert.False(t, marked)
+	})
+
+	t.Run("post-creation cleanup failure preserves preparation marker", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planPath := filepath.Join(plansDir, "failed-created-cleanup.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Failed Created Cleanup\n"), 0o600))
+		writeExecutable(t, filepath.Join(dir, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n")
+		command := filepath.Join(t.TempDir(), "git-with-failed-remove")
+		writeExecutable(t, command, "#!/bin/sh\nif [ \"$1\" = worktree ] && [ \"$2\" = remove ]; then exit 86; fi\nexec git \"$@\"\n")
+
+		gitSvc, err := git.NewService(dir, noopLogger(), command)
+		require.NoError(t, err)
+		cleanupSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wtPath := filepath.Join(gitSvc.Root(), ".loopai", "worktrees", "failed-created-cleanup")
+		t.Cleanup(func() {
+			_ = cleanupSvc.RemoveWorktree(wtPath)
+			_ = cleanupSvc.ClearWorktreePreparation(wtPath)
+		})
+
+		_, err = prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{VcsCommand: command},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "failed-created-cleanup")
+		require.Error(t, err)
+		require.ErrorContains(t, err, "commit plan in worktree")
+		require.ErrorContains(t, err, "remove worktree after preparation error")
+		assert.DirExists(t, wtPath)
+		marked, markerErr := gitSvc.HasWorktreePreparationMarker(wtPath)
+		require.NoError(t, markerErr)
+		assert.True(t, marked, "a leftover target must remain marked for recovery")
+	})
+
+	t.Run("held lock is reported before mutable resume validation", func(t *testing.T) {
+		dir, planPath, gitSvc := setup(t, "busy-before-validation")
+		wtPath := filepath.Join(dir, ".loopai", "worktrees", "busy-before-validation")
+		runGit(t, dir, "worktree", "add", wtPath, "-b", "different-branch")
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
+		wtSvc, err := gitSvc.OpenWorktree(wtPath)
+		require.NoError(t, err)
+		release, err := wtSvc.AcquireWorktreeRunLock()
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, release()) })
+
+		_, err = prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "busy-before-validation")
+		var busyErr *git.ErrWorktreeBusy
+		require.ErrorAs(t, err, &busyErr)
+		assert.NotContains(t, err.Error(), "expected branch")
+	})
+
+	t.Run("force cleanup removes fresh worktree", func(t *testing.T) {
+		_, planPath, gitSvc := setup(t, "fresh-force-cleanup")
+		holder := &cleanupHolder{}
+		wt, err := prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: holder,
+		}, "fresh-force-cleanup")
+		require.NoError(t, err)
+
+		holder.call()
+		assert.NoDirExists(t, wt.path)
+	})
+
+	t.Run("force cleanup preserves and keeps ownership of resumed worktree", func(t *testing.T) {
+		_, planPath, gitSvc := setup(t, "resume-force-cleanup")
+		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
+		holder := &cleanupHolder{}
+		wt, err := prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: holder,
+		}, "resume-force-cleanup")
+		require.NoError(t, err)
+		require.True(t, wt.resumed)
+
+		holder.call()
+		assert.DirExists(t, wtPath)
+		wtSvc, openErr := gitSvc.OpenWorktree(wtPath)
+		require.NoError(t, openErr)
+		_, acquireErr := wtSvc.AcquireWorktreeRunLock()
+		var busyErr *git.ErrWorktreeBusy
+		require.ErrorAs(t, acquireErr, &busyErr,
+			"forced cleanup must retain ownership until the process exits")
+
+		wt.releaseRunLock()
+		release, acquireErr := wtSvc.AcquireWorktreeRunLock()
+		require.NoError(t, acquireErr, "normal cleanup must still release ownership")
+		require.NoError(t, release())
+	})
+
+	t.Run("canceled force cleanup preserves worktree ownership", func(t *testing.T) {
+		_, planPath, gitSvc := setup(t, "cleanup-lock-timeout")
+		wt, err := prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "cleanup-lock-timeout")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+
+		releasePreparationLock, err := gitSvc.AcquireWorktreeCreationLock()
+		require.NoError(t, err)
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		removeWorktreeWithRunLockContext(ctx, gitSvc, wt.path, wt.releaseRunLock)
+		cancel()
+		require.NoError(t, releasePreparationLock())
+
+		assert.DirExists(t, wt.path, "timed-out cleanup must preserve the worktree")
+		wtSvc, openErr := gitSvc.OpenWorktree(wt.path)
+		require.NoError(t, openErr)
+		_, acquireErr := wtSvc.AcquireWorktreeRunLock()
+		var busyErr *git.ErrWorktreeBusy
+		require.ErrorAs(t, acquireErr, &busyErr,
+			"timed-out force cleanup must retain ownership until process death")
+
+		wt.releaseRunLock()
+		release, acquireErr := wtSvc.AcquireWorktreeRunLock()
+		require.NoError(t, acquireErr)
+		require.NoError(t, release())
+	})
+
+	t.Run("normal cleanup waits for preparation lock and removes worktree", func(t *testing.T) {
+		_, planPath, gitSvc := setup(t, "cleanup-lock-wait")
+		wt, err := prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "cleanup-lock-wait")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+
+		releasePreparationLock, err := gitSvc.AcquireWorktreeCreationLock()
+		require.NoError(t, err)
+		removed := make(chan struct{})
+		go func() {
+			removeWorktreeWithRunLock(gitSvc, wt.path, wt.releaseRunLock)
+			close(removed)
+		}()
+
+		select {
+		case <-removed:
+			t.Fatal("normal cleanup returned before repository ownership was available")
+		case <-time.After(100 * time.Millisecond):
+		}
+		assert.DirExists(t, wt.path)
+		require.NoError(t, releasePreparationLock())
+		select {
+		case <-removed:
+		case <-time.After(5 * time.Second):
+			t.Fatal("normal cleanup did not resume after repository ownership became available")
+		}
+		assert.NoDirExists(t, wt.path)
+	})
+
+	t.Run("teardown never removes a successor worktree", func(t *testing.T) {
+		_, planPath, gitSvc := setup(t, "teardown-handoff")
+		req := func() executePlanRequest {
+			return executePlanRequest{
+				PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+				Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+			}
+		}
+
+		for range 5 {
+			owner, err := prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, req(), "teardown-handoff")
+			require.NoError(t, err)
+			removed := make(chan struct{})
+			go func() {
+				removeWorktreeWithRunLock(gitSvc, owner.path, owner.releaseRunLock)
+				close(removed)
+			}()
+
+			successor, successorErr := prepareWorktreeRunContext(
+				t.Context(), opts{Worktree: true}, req(), "teardown-handoff",
+			)
+			<-removed
+			if successorErr != nil {
+				var busyErr *git.ErrWorktreeBusy
+				require.ErrorAs(t, successorErr, &busyErr)
+				assert.NoDirExists(t, owner.path)
+				continue
+			}
+
+			assert.DirExists(t, successor.path,
+				"the old owner must not remove a worktree after ownership transfers")
+			removeWorktreeWithRunLock(gitSvc, successor.path, successor.releaseRunLock)
+		}
+	})
+}
+
+func TestFinalizeWorktreePreparationReleaseFailure(t *testing.T) {
+	injected := errors.New("injected preparation lock release failure")
+	t.Run("fresh worktree is removed through serialized cleanup", func(t *testing.T) {
+		var released, removed int
+		err := finalizeWorktreePreparation(nil, "/tmp/fresh", func() { released++ }, func() error {
+			return injected
+		}, func(string) error {
+			t.Fatal("locked rollback is only used for an earlier preparation error")
+			return nil
+		}, func() error { return nil }, func() {
+			removed++
+			released++
+		})
+
+		require.ErrorIs(t, err, injected)
+		assert.Equal(t, 1, removed)
+		assert.Equal(t, 1, released)
+	})
+
+	t.Run("resumed worktree is preserved and unlocked", func(t *testing.T) {
+		var released, removed int
+		err := finalizeWorktreePreparation(nil, "", func() { released++ }, func() error {
+			return injected
+		}, func(string) error { return nil }, func() error { return nil }, func() { removed++ })
+
+		require.ErrorIs(t, err, injected)
+		assert.Equal(t, 0, removed)
+		assert.Equal(t, 1, released)
+	})
+
+	t.Run("failed rollback preserves interrupted preparation marker", func(t *testing.T) {
+		removeErr := errors.New("injected worktree removal failure")
+		var markerClears int
+		err := finalizeWorktreePreparation(errors.New("injected preparation failure"), "/tmp/fresh",
+			func() {}, func() error { return nil }, func(string) error { return removeErr }, func() error {
+				markerClears++
+				return nil
+			}, func() {})
+
+		require.ErrorIs(t, err, removeErr)
+		assert.Equal(t, 0, markerClears,
+			"a partial target that could not be removed must remain marked for recovery")
+	})
+
+	t.Run("rollback verifies target removal before clearing marker", func(t *testing.T) {
+		target := t.TempDir()
+		err, cleanupComplete := rollbackWorktreePreparationLocked(
+			errors.New("injected preparation failure"), target, nil, func(string) error { return nil },
+		)
+
+		require.ErrorContains(t, err, "target still exists")
+		assert.False(t, cleanupComplete)
+	})
+}
+
+func TestRunWithWorktreeAutoResume(t *testing.T) {
 	t.Run("accepts_case_mismatched_plan_path", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		origDir, err := os.Getwd()
@@ -5551,7 +5916,7 @@ func TestRunWithWorktreeResume(t *testing.T) {
 
 		branch := gitSvc.EffectiveBranchName(requestedPlanPath, "")
 		assert.Equal(t, "Resume-Mixed-Case", branch)
-		wt, err := prepareWorktreeRun(opts{ResumeWorktree: true}, executePlanRequest{
+		wt, err := prepareWorktreeRun(opts{Worktree: true}, executePlanRequest{
 			PlanFile: requestedPlanPath, GitSvc: gitSvc, Config: &config.Config{},
 			Colors: testColors(), WtCleanup: &cleanupHolder{},
 		}, branch)
@@ -5580,7 +5945,7 @@ func TestRunWithWorktreeResume(t *testing.T) {
 
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
-		err = runWithWorktree(t.Context(), opts{ResumeWorktree: true, NoColor: true}, executePlanRequest{
+		err = runWithWorktree(t.Context(), opts{Worktree: true, NoColor: true}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc,
 			Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
 			DefaultBranch: "master", WtCleanup: &cleanupHolder{},
@@ -5588,6 +5953,43 @@ func TestRunWithWorktreeResume(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not a registered git worktree")
 		assert.DirExists(t, wtPath, "invalid resume targets must never be removed")
+	})
+
+	t.Run("rejects_foreign_repository_without_removing_it", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "resume-foreign.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Resume Foreign\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/resume-foreign.md")
+		runGit(t, dir, "commit", "-m", "add resume foreign plan")
+
+		wtPath := filepath.Join(dir, ".loopai", "worktrees", "resume-foreign")
+		require.NoError(t, os.MkdirAll(filepath.Join(wtPath, "docs", "plans"), 0o750))
+		runGit(t, wtPath, "init")
+		runGit(t, wtPath, "checkout", "-B", "resume-foreign")
+		runGit(t, wtPath, "config", "user.email", "test@test.com")
+		runGit(t, wtPath, "config", "user.name", "test")
+		runGit(t, wtPath, "config", "commit.gpgsign", "false")
+		foreignPlan := filepath.Join(wtPath, "docs", "plans", "resume-foreign.md")
+		require.NoError(t, os.WriteFile(foreignPlan, []byte("# Foreign Plan\n"), 0o600))
+		runGit(t, wtPath, "add", "docs/plans/resume-foreign.md")
+		runGit(t, wtPath, "commit", "-m", "foreign plan")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		_, err = prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "resume-foreign")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not a registered git worktree")
+		assert.DirExists(t, wtPath, "foreign repositories must never be removed")
+		assert.FileExists(t, foreignPlan)
 	})
 
 	t.Run("rejects_wrong_branch_without_removing_worktree", func(t *testing.T) {
@@ -5609,7 +6011,7 @@ func TestRunWithWorktreeResume(t *testing.T) {
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
-		err = runWithWorktree(t.Context(), opts{ResumeWorktree: true, NoColor: true}, executePlanRequest{
+		err = runWithWorktree(t.Context(), opts{Worktree: true, NoColor: true}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc,
 			Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
 			DefaultBranch: "master", WtCleanup: &cleanupHolder{},
@@ -5617,6 +6019,43 @@ func TestRunWithWorktreeResume(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `expected branch "resume-branch", found "different-branch"`)
 		assert.DirExists(t, wtPath, "branch mismatch must not remove the existing worktree")
+	})
+
+	t.Run("rejects_lock_contention_with_holder_pid", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "resume-busy.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Resume Busy\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/resume-busy.md")
+		runGit(t, dir, "commit", "-m", "add resume busy plan")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
+		wtSvc, err := gitSvc.OpenWorktree(wtPath)
+		require.NoError(t, err)
+		release, err := wtSvc.AcquireWorktreeRunLock()
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, release()) })
+
+		err = runWithWorktree(t.Context(), opts{Worktree: true, NoColor: true}, executePlanRequest{
+			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc,
+			Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
+			DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "plan worktree "+wtPath+" is busy")
+		assert.Contains(t, err.Error(), "loopai is already running in it")
+		assert.Contains(t, err.Error(), fmt.Sprintf("pid=%d", os.Getpid()))
+		assert.DirExists(t, wtPath, "a busy resume target must not be removed")
 	})
 
 	t.Run("preserves_dirty_worktree_on_failure", func(t *testing.T) {
@@ -5642,7 +6081,7 @@ func TestRunWithWorktreeResume(t *testing.T) {
 		require.NoError(t, os.WriteFile(dirtyPath, []byte("keep me"), 0o600))
 
 		err = runWithWorktree(t.Context(), opts{
-			ResumeWorktree: true, TasksOnly: true, MaxIterations: 1, NoColor: true,
+			Worktree: true, TasksOnly: true, MaxIterations: 1, NoColor: true,
 		}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
 			Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
@@ -5651,6 +6090,11 @@ func TestRunWithWorktreeResume(t *testing.T) {
 		require.Error(t, err)
 		assert.DirExists(t, wtPath)
 		assert.FileExists(t, dirtyPath, "failed resume must preserve unfinished changes")
+		wtSvc, openErr := gitSvc.OpenWorktree(wtPath)
+		require.NoError(t, openErr)
+		release, acquireErr := wtSvc.AcquireWorktreeRunLock()
+		require.NoError(t, acquireErr, "failed-run cleanup must release the lock while preserving the worktree")
+		require.NoError(t, release())
 	})
 
 	t.Run("removes_worktree_after_success", func(t *testing.T) {
@@ -5703,7 +6147,7 @@ printf '%s\n' "$*" >> "$CMUX_ARGV_LOG"
 		t.Setenv("CMUX_TEST_COMPLETED_PLAN", completedPlan)
 
 		err = runWithWorktree(t.Context(), opts{
-			ResumeWorktree: true, TasksOnly: true, MaxIterations: 1, NoColor: true,
+			Worktree: true, TasksOnly: true, MaxIterations: 1, NoColor: true,
 		}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
 			Config: &config.Config{
@@ -5801,6 +6245,12 @@ printf '%s\n' '{"type":"result","result":""}'
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Contains(t, string(body), "Serve Worktree")
 	assert.DirExists(t, wtPath, "dashboard idle must retain the plan-bearing worktree")
+	wtSvc, openErr := gitSvc.OpenWorktree(wtPath)
+	require.NoError(t, openErr)
+	_, acquireErr := wtSvc.AcquireWorktreeRunLock()
+	var busyErr *git.ErrWorktreeBusy
+	require.ErrorAs(t, acquireErr, &busyErr, "the run lock must remain held for the dashboard's lifetime")
+	assert.Equal(t, os.Getpid(), busyErr.PID)
 
 	cancel()
 	select {
@@ -5931,7 +6381,7 @@ func TestRunWithWorktree_CreateWorktreeError(t *testing.T) {
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
 
-	// pre-create worktree dir to force "already exists" error
+	// Pre-create an unregistered target to exercise auto-resume validation.
 	wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-fail")
 	require.NoError(t, os.MkdirAll(wtPath, 0o750))
 
@@ -5944,7 +6394,7 @@ func TestRunWithWorktree_CreateWorktreeError(t *testing.T) {
 		Colors: colors, DefaultBranch: "master", WtCleanup: wtCleanup,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "preflight worktree creation")
+	assert.Contains(t, err.Error(), "not a registered git worktree")
 }
 
 func TestRunWithWorktree_HandsOffFailureNotification(t *testing.T) {
@@ -6612,20 +7062,21 @@ func TestFinishCmuxCompletion_NilReporter(t *testing.T) {
 
 func TestWorktreeCmuxFinishCleanup(t *testing.T) {
 	tests := []struct {
-		name       string
-		resumed    bool
-		serve      bool
-		success    bool
-		wantRemove bool
+		name        string
+		resumed     bool
+		serve       bool
+		success     bool
+		wantRelease bool
+		wantRemove  bool
 	}{
-		{name: "new success removes", success: true, wantRemove: true},
-		{name: "new failure removes", wantRemove: true},
-		{name: "resumed success removes", resumed: true, success: true, wantRemove: true},
-		{name: "resumed failure preserves", resumed: true},
+		{name: "new success removes", success: true, wantRelease: true, wantRemove: true},
+		{name: "new failure removes", wantRelease: true, wantRemove: true},
+		{name: "resumed success removes", resumed: true, success: true, wantRelease: true, wantRemove: true},
+		{name: "resumed failure preserves", resumed: true, wantRelease: true},
 		{name: "serve success defers new removal", serve: true, success: true},
 		{name: "serve success defers resumed removal", resumed: true, serve: true, success: true},
-		{name: "serve failure still removes new worktree", serve: true, wantRemove: true},
-		{name: "serve failure still preserves resumed worktree", resumed: true, serve: true},
+		{name: "serve failure still removes new worktree", serve: true, wantRelease: true, wantRemove: true},
+		{name: "serve failure still preserves resumed worktree", resumed: true, serve: true, wantRelease: true},
 	}
 
 	for _, tt := range tests {
@@ -6633,13 +7084,21 @@ func TestWorktreeCmuxFinishCleanup(t *testing.T) {
 			var calls []string
 			cleanup := worktreeCmuxFinishCleanup(tt.resumed, tt.serve,
 				func() { calls = append(calls, "restore") },
-				func() { calls = append(calls, "remove") },
+				func(remove bool) {
+					calls = append(calls, "release")
+					if remove {
+						calls = append(calls, "remove")
+					}
+				},
 				func() { calls = append(calls, "close") },
 				func() { calls = append(calls, "enable-deferred") },
 			)
 			cleanup(tt.success)
 
 			want := []string{"restore"}
+			if tt.wantRelease {
+				want = append(want, "release")
+			}
 			if tt.wantRemove {
 				want = append(want, "remove")
 			}
@@ -7167,7 +7626,6 @@ func TestValidateGenAgentsFlags(t *testing.T) {
 		{"--codex-only", opts{CodexOnly: true}},
 		{"--tasks-only", opts{TasksOnly: true}},
 		{"--worktree", opts{Worktree: true}},
-		{"--resume-worktree", opts{ResumeWorktree: true}},
 		{"--commit", opts{Commit: true}},
 		{"--init", opts{Init: true}},
 		{"--reset", opts{Reset: true}},

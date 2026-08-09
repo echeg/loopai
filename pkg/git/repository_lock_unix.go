@@ -11,14 +11,29 @@ import (
 	"time"
 )
 
+func tryLockRepositoryFile(f *os.File) (bool, error) {
+	err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		return false, nil
+	}
+	return false, fmt.Errorf("flock: %w", err)
+}
+
+func tryLockWorktreeRunFile(f *os.File) (bool, error) {
+	return tryLockRepositoryFile(f)
+}
+
 func lockRepositoryFile(ctx context.Context, f *os.File) error {
 	for {
-		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			return nil
+		acquired, err := tryLockRepositoryFile(f)
+		if err != nil {
+			return err
 		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
-			return fmt.Errorf("flock: %w", err)
+		if acquired {
+			return nil
 		}
 		select {
 		case <-ctx.Done():
@@ -33,4 +48,8 @@ func unlockRepositoryFile(f *os.File) error {
 		return fmt.Errorf("flock unlock: %w", err)
 	}
 	return nil
+}
+
+func unlockWorktreeRunFile(f *os.File) error {
+	return unlockRepositoryFile(f)
 }

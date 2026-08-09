@@ -1004,7 +1004,7 @@ func (e *externalBackend) validateAutoCommitState() error {
 		return errors.New("refuse auto-commit with unmerged paths; finish or abort the current Git operation first")
 	}
 
-	gitDir, err := e.gitDir()
+	gitDir, err := e.gitDir(context.Background())
 	if err != nil {
 		return fmt.Errorf("locate Git operation state before auto-commit: %w", err)
 	}
@@ -1033,8 +1033,8 @@ func (e *externalBackend) validateAutoCommitState() error {
 	return nil
 }
 
-func (e *externalBackend) gitDir() (string, error) {
-	out, err := e.run("rev-parse", "--git-dir")
+func (e *externalBackend) gitDir(ctx context.Context) (string, error) {
+	out, err := e.runContext(ctx, "rev-parse", "--git-dir")
 	if err != nil {
 		return "", fmt.Errorf("get Git directory: %w", err)
 	}
