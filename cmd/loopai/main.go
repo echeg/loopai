@@ -1500,7 +1500,15 @@ func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, b
 // run lock must be released before Git removes the private metadata on Windows, while the shared
 // preparation lock prevents another process from acquiring the run lock in that interval.
 func removeWorktreeWithRunLock(gitSvc *git.Service, path string, releaseRunLock func()) {
-	releasePreparationLock, err := gitSvc.AcquireWorktreeCreationLock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	removeWorktreeWithRunLockContext(ctx, gitSvc, path, releaseRunLock)
+}
+
+func removeWorktreeWithRunLockContext(
+	ctx context.Context, gitSvc *git.Service, path string, releaseRunLock func(),
+) {
+	releasePreparationLock, err := gitSvc.AcquireWorktreeCreationLockContext(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to lock worktree removal: %v\n", err)
 		releaseRunLock()
