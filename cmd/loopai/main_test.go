@@ -3382,6 +3382,28 @@ func cancelWhenPathExists(cancel context.CancelFunc, path string) {
 	}()
 }
 
+func cancelWhenFileContains(cancel context.CancelFunc, path, marker string) {
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		for {
+			contents, err := os.ReadFile(path) //nolint:gosec // test-controlled temporary path
+			if err == nil && strings.Contains(string(contents), marker) {
+				cancel()
+				return
+			}
+			select {
+			case <-ticker.C:
+			case <-timer.C:
+				cancel()
+				return
+			}
+		}
+	}()
+}
+
 // runGit executes a git command in the given directory and fails the test on error.
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
@@ -5414,7 +5436,8 @@ func TestRunWithWorktree(t *testing.T) {
 		// cancellation-aware worktree creation.
 		wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-test")
 		ctx, cancel := context.WithCancel(t.Context())
-		cancelWhenPathExists(cancel, filepath.Join(wtPath, "docs", "plans", "wt-test.md"))
+		cancelWhenFileContains(cancel,
+			filepath.Join(dir, ".git", "worktrees", "wt-test", "loopai-run.lock"), "pid=")
 		defer cancel()
 
 		err = runWithWorktree(ctx, opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
@@ -5641,6 +5664,37 @@ func TestPrepareWorktreeRunOwnershipAndForceCleanup(t *testing.T) {
 	})
 }
 
+func TestFinalizeWorktreePreparationReleaseFailure(t *testing.T) {
+	injected := errors.New("injected preparation lock release failure")
+	t.Run("fresh worktree is removed through serialized cleanup", func(t *testing.T) {
+		var released, removed int
+		err := finalizeWorktreePreparation(nil, "/tmp/fresh", func() { released++ }, func() error {
+			return injected
+		}, func(string) error {
+			t.Fatal("locked rollback is only used for an earlier preparation error")
+			return nil
+		}, func() {
+			removed++
+			released++
+		})
+
+		require.ErrorIs(t, err, injected)
+		assert.Equal(t, 1, removed)
+		assert.Equal(t, 1, released)
+	})
+
+	t.Run("resumed worktree is preserved and unlocked", func(t *testing.T) {
+		var released, removed int
+		err := finalizeWorktreePreparation(nil, "", func() { released++ }, func() error {
+			return injected
+		}, func(string) error { return nil }, func() { removed++ })
+
+		require.ErrorIs(t, err, injected)
+		assert.Equal(t, 0, removed)
+		assert.Equal(t, 1, released)
+	})
+}
+
 func TestRunWithWorktreeAutoResume(t *testing.T) {
 	t.Run("accepts_case_mismatched_plan_path", func(t *testing.T) {
 		dir := setupTestRepo(t)
@@ -5702,6 +5756,43 @@ func TestRunWithWorktreeAutoResume(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not a registered git worktree")
 		assert.DirExists(t, wtPath, "invalid resume targets must never be removed")
+	})
+
+	t.Run("rejects_foreign_repository_without_removing_it", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "resume-foreign.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Resume Foreign\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/resume-foreign.md")
+		runGit(t, dir, "commit", "-m", "add resume foreign plan")
+
+		wtPath := filepath.Join(dir, ".loopai", "worktrees", "resume-foreign")
+		require.NoError(t, os.MkdirAll(filepath.Join(wtPath, "docs", "plans"), 0o750))
+		runGit(t, wtPath, "init")
+		runGit(t, wtPath, "checkout", "-B", "resume-foreign")
+		runGit(t, wtPath, "config", "user.email", "test@test.com")
+		runGit(t, wtPath, "config", "user.name", "test")
+		runGit(t, wtPath, "config", "commit.gpgsign", "false")
+		foreignPlan := filepath.Join(wtPath, "docs", "plans", "resume-foreign.md")
+		require.NoError(t, os.WriteFile(foreignPlan, []byte("# Foreign Plan\n"), 0o600))
+		runGit(t, wtPath, "add", "docs/plans/resume-foreign.md")
+		runGit(t, wtPath, "commit", "-m", "foreign plan")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		_, err = prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "resume-foreign")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not a registered git worktree")
+		assert.DirExists(t, wtPath, "foreign repositories must never be removed")
+		assert.FileExists(t, foreignPlan)
 	})
 
 	t.Run("rejects_wrong_branch_without_removing_worktree", func(t *testing.T) {

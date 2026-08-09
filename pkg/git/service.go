@@ -87,6 +87,9 @@ type Worktree struct {
 	Branch string
 }
 
+// ErrNotSameRepository indicates that a path opened as a worktree belongs to another repository.
+var ErrNotSameRepository = errors.New("repository does not share source Git metadata")
+
 // Service provides git operations for loopai workflows.
 // It is the single public API for the git package.
 type Service struct {
@@ -118,8 +121,33 @@ func (s *Service) OpenWorktree(path string) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	sourceCommonDir, err := s.repo.gitCommonDir()
+	if err != nil {
+		return nil, fmt.Errorf("locate source repository metadata: %w", err)
+	}
+	openedCommonDir, err := opened.repo.gitCommonDir()
+	if err != nil {
+		return nil, fmt.Errorf("locate opened repository metadata: %w", err)
+	}
+	if !sameGitDirectory(sourceCommonDir, openedCommonDir) {
+		return nil, fmt.Errorf("open worktree %s: %w", path, ErrNotSameRepository)
+	}
 	opened.trailer = s.trailer
 	return opened, nil
+}
+
+func sameGitDirectory(a, b string) bool {
+	infoA, statErrA := os.Stat(a)
+	infoB, statErrB := os.Stat(b)
+	if statErrA == nil && statErrB == nil {
+		return os.SameFile(infoA, infoB)
+	}
+	resolvedA, errA := filepath.EvalSymlinks(a)
+	resolvedB, errB := filepath.EvalSymlinks(b)
+	if errA == nil && errB == nil {
+		return filepath.Clean(resolvedA) == filepath.Clean(resolvedB)
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // SetCommitTrailer sets an optional trailer line appended to all commit messages.

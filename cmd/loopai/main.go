@@ -1228,22 +1228,9 @@ func prepareWorktreeRunContext(
 	createdPath := ""
 	var releaseOnError func()
 	defer func() {
-		if err != nil {
-			if releaseOnError != nil {
-				releaseOnError()
-			}
-			if createdPath != "" {
-				if removeErr := req.GitSvc.RemoveWorktree(createdPath); removeErr != nil {
-					err = errors.Join(err, fmt.Errorf("remove worktree after preparation error: %w", removeErr))
-				}
-			}
-		}
-		if releaseErr := releaseCreationLock(); releaseErr != nil {
-			if err == nil && releaseOnError != nil {
-				releaseOnError()
-			}
-			err = errors.Join(err, releaseErr)
-		}
+		err = finalizeWorktreePreparation(err, createdPath, releaseOnError, releaseCreationLock,
+			req.GitSvc.RemoveWorktree,
+			func() { removeWorktreeWithRunLock(req.GitSvc, createdPath, releaseOnError) })
 	}()
 
 	wt, createdPath, err = prepareWorktreeTargetLocked(ctx, o, req, branch)
@@ -1266,7 +1253,7 @@ func prepareWorktreeRunContext(
 	if !wt.resumed {
 		return wt, nil
 	}
-	if validationErr := validateResumeWorktree(wt, branch); validationErr != nil {
+	if validationErr := validateResumeWorktree(req.GitSvc, wt, branch); validationErr != nil {
 		return worktreeRun{}, validationErr
 	}
 	if o.Commit {
@@ -1274,6 +1261,49 @@ func prepareWorktreeRunContext(
 	}
 	req.Colors.Info().Printf("resuming interrupted worktree %s\n", wt.path)
 	return wt, nil
+}
+
+func rollbackWorktreePreparationLocked(
+	preparationErr error, createdPath string, releaseRunLock func(), removeWorktree func(string) error,
+) error {
+	if releaseRunLock != nil {
+		releaseRunLock()
+	}
+	if createdPath == "" {
+		return preparationErr
+	}
+	if removeErr := removeWorktree(createdPath); removeErr != nil {
+		return errors.Join(preparationErr, fmt.Errorf("remove worktree after preparation error: %w", removeErr))
+	}
+	return preparationErr
+}
+
+func finalizeWorktreePreparation(
+	preparationErr error,
+	createdPath string,
+	releaseRunLock func(),
+	releasePreparationLock func() error,
+	removeWorktreeLocked func(string) error,
+	removeWorktreeAfterUnlock func(),
+) error {
+	result := preparationErr
+	if preparationErr != nil {
+		result = rollbackWorktreePreparationLocked(
+			preparationErr, createdPath, releaseRunLock, removeWorktreeLocked,
+		)
+	}
+	releaseErr := releasePreparationLock()
+	if releaseErr == nil {
+		return result
+	}
+	if preparationErr == nil {
+		if createdPath != "" {
+			removeWorktreeAfterUnlock()
+		} else if releaseRunLock != nil {
+			releaseRunLock()
+		}
+	}
+	return errors.Join(result, releaseErr)
 }
 
 func prepareWorktreeTargetLocked(
@@ -1305,6 +1335,9 @@ func openAndLockWorktreeRun(
 	wtSvc, err := req.GitSvc.OpenWorktree(wt.path)
 	if err != nil {
 		if wt.resumed {
+			if errors.Is(err, git.ErrNotSameRepository) {
+				return worktreeRun{}, fmt.Errorf("resume worktree: %s is not a registered git worktree: %w", wt.path, err)
+			}
 			return worktreeRun{}, fmt.Errorf("resume worktree: open existing worktree: %w", err)
 		}
 		return worktreeRun{}, fmt.Errorf("open worktree git service: %w", err)
@@ -1432,13 +1465,27 @@ func requireResumeWorktree(path string) error {
 	return fmt.Errorf("resume worktree: stat %s: %w", path, err)
 }
 
-func validateResumeWorktree(wt worktreeRun, expectedBranch string) error {
+func validateResumeWorktree(sourceGitSvc *git.Service, wt worktreeRun, expectedBranch string) error {
 	resolvedPath, err := filepath.EvalSymlinks(wt.path)
 	if err != nil {
 		return fmt.Errorf("resume worktree: resolve path: %w", err)
 	}
 	rootRel, relErr := filepath.Rel(resolvedPath, wt.gitSvc.Root())
 	if relErr != nil || rootRel != "." {
+		return fmt.Errorf("resume worktree: %s is not a registered git worktree", wt.path)
+	}
+	worktrees, err := sourceGitSvc.Worktrees()
+	if err != nil {
+		return fmt.Errorf("resume worktree: list registered worktrees: %w", err)
+	}
+	registered := false
+	for _, candidate := range worktrees {
+		if sameProgressRoot(candidate.Path, resolvedPath) && !sameProgressRoot(candidate.Path, sourceGitSvc.Root()) {
+			registered = true
+			break
+		}
+	}
+	if !registered {
 		return fmt.Errorf("resume worktree: %s is not a registered git worktree", wt.path)
 	}
 

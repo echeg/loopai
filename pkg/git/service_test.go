@@ -505,6 +505,17 @@ func TestService_WorktreeInspectionAndSafeRemoval(t *testing.T) {
 	assert.NoDirExists(t, worktreePath)
 }
 
+func TestServiceOpenWorktreeRejectsForeignRepository(t *testing.T) {
+	sourceDir := setupExternalTestRepo(t)
+	foreignDir := setupExternalTestRepo(t)
+	svc, err := NewService(sourceDir, noopServiceLogger())
+	require.NoError(t, err)
+
+	opened, err := svc.OpenWorktree(foreignDir)
+	require.ErrorIs(t, err, ErrNotSameRepository)
+	assert.Nil(t, opened)
+}
+
 func TestService_RemoveWorktreeSafeAllowsIgnoredFiles(t *testing.T) {
 	dir := setupExternalTestRepo(t)
 	worktreePath := filepath.Join(t.TempDir(), "feature")
