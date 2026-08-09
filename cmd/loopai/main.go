@@ -1227,11 +1227,36 @@ func prepareWorktreeRunContext(
 	}
 	createdPath := ""
 	var releaseOnError func()
+	worktreePath := filepath.Join(req.GitSvc.Root(), ".loopai", "worktrees", branch)
+	markerActive := false
+	clearPreparationMarker := func() error {
+		if !markerActive {
+			return nil
+		}
+		if clearErr := req.GitSvc.ClearWorktreePreparation(worktreePath); clearErr != nil {
+			return fmt.Errorf("clear worktree preparation: %w", clearErr)
+		}
+		markerActive = false
+		return nil
+	}
 	defer func() {
 		err = finalizeWorktreePreparation(err, createdPath, releaseOnError, releaseCreationLock,
-			req.GitSvc.RemoveWorktree,
+			req.GitSvc.RemoveWorktree, clearPreparationMarker,
 			func() { removeWorktreeWithRunLock(req.GitSvc, createdPath, releaseOnError) })
 	}()
+
+	markerActive, err = recoverInterruptedWorktreePreparationLocked(req.GitSvc, worktreePath)
+	if err != nil {
+		return worktreeRun{}, err
+	}
+	if !markerActive {
+		if _, statErr := os.Lstat(worktreePath); os.IsNotExist(statErr) || errors.Is(statErr, syscall.ENOTDIR) {
+			if markErr := req.GitSvc.MarkWorktreePreparation(worktreePath); markErr != nil {
+				return worktreeRun{}, fmt.Errorf("mark worktree preparation: %w", markErr)
+			}
+			markerActive = true
+		}
+	}
 
 	wt, createdPath, err = prepareWorktreeTargetLocked(ctx, o, req, branch)
 	if err != nil {
@@ -1242,6 +1267,9 @@ func prepareWorktreeRunContext(
 		return worktreeRun{}, err
 	}
 	releaseOnError = wt.releaseRunLock
+	if clearErr := clearPreparationMarker(); clearErr != nil {
+		return worktreeRun{}, fmt.Errorf("complete worktree preparation: %w", clearErr)
+	}
 	if wt.resumed {
 		req.WtCleanup.set(wt.releaseRunLock)
 	} else {
@@ -1263,19 +1291,39 @@ func prepareWorktreeRunContext(
 	return wt, nil
 }
 
+func recoverInterruptedWorktreePreparationLocked(gitSvc *git.Service, path string) (bool, error) {
+	interrupted, err := gitSvc.HasWorktreePreparationMarker(path)
+	if err != nil {
+		return false, fmt.Errorf("inspect interrupted worktree preparation: %w", err)
+	}
+	if !interrupted {
+		return false, nil
+	}
+	if err := gitSvc.RemoveWorktree(path); err != nil {
+		// Keep the marker so the next invocation retries recovery instead of treating the partial
+		// target as a resumable worktree.
+		return false, fmt.Errorf("recover interrupted worktree preparation: %w", err)
+	}
+	if _, err := os.Lstat(path); err == nil || !os.IsNotExist(err) {
+		return false, fmt.Errorf("recover interrupted worktree preparation: target still exists at %s", path)
+	}
+	return true, nil
+}
+
 func rollbackWorktreePreparationLocked(
 	preparationErr error, createdPath string, releaseRunLock func(), removeWorktree func(string) error,
-) error {
+) (result error, cleanupComplete bool) {
 	if releaseRunLock != nil {
 		releaseRunLock()
 	}
 	if createdPath == "" {
-		return preparationErr
+		return preparationErr, true
 	}
 	if removeErr := removeWorktree(createdPath); removeErr != nil {
-		return errors.Join(preparationErr, fmt.Errorf("remove worktree after preparation error: %w", removeErr))
+		return errors.Join(preparationErr,
+			fmt.Errorf("remove worktree after preparation error: %w", removeErr)), false
 	}
-	return preparationErr
+	return preparationErr, true
 }
 
 func finalizeWorktreePreparation(
@@ -1284,13 +1332,20 @@ func finalizeWorktreePreparation(
 	releaseRunLock func(),
 	releasePreparationLock func() error,
 	removeWorktreeLocked func(string) error,
+	clearPreparationMarker func() error,
 	removeWorktreeAfterUnlock func(),
 ) error {
 	result := preparationErr
+	clearMarker := true
 	if preparationErr != nil {
-		result = rollbackWorktreePreparationLocked(
+		result, clearMarker = rollbackWorktreePreparationLocked(
 			preparationErr, createdPath, releaseRunLock, removeWorktreeLocked,
 		)
+	}
+	if clearMarker {
+		if markerErr := clearPreparationMarker(); markerErr != nil {
+			result = errors.Join(result, fmt.Errorf("clear worktree preparation marker: %w", markerErr))
+		}
 	}
 	releaseErr := releasePreparationLock()
 	if releaseErr == nil {

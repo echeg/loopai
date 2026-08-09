@@ -516,6 +516,27 @@ func TestServiceOpenWorktreeRejectsForeignRepository(t *testing.T) {
 	assert.Nil(t, opened)
 }
 
+func TestServiceWorktreePreparationMarkerLifecycle(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	target := filepath.Join(dir, ".loopai", "worktrees", "marker-test")
+
+	marked, err := svc.HasWorktreePreparationMarker(target)
+	require.NoError(t, err)
+	assert.False(t, marked)
+	require.NoError(t, svc.MarkWorktreePreparation(target))
+	marked, err = svc.HasWorktreePreparationMarker(target)
+	require.NoError(t, err)
+	assert.True(t, marked)
+	require.Error(t, svc.MarkWorktreePreparation(target), "an active marker must not be overwritten")
+	require.NoError(t, svc.ClearWorktreePreparation(target))
+	require.NoError(t, svc.ClearWorktreePreparation(target), "clearing an absent marker is idempotent")
+	marked, err = svc.HasWorktreePreparationMarker(target)
+	require.NoError(t, err)
+	assert.False(t, marked)
+}
+
 func TestService_RemoveWorktreeSafeAllowsIgnoredFiles(t *testing.T) {
 	dir := setupExternalTestRepo(t)
 	worktreePath := filepath.Join(t.TempDir(), "feature")

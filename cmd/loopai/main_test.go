@@ -5573,6 +5573,32 @@ func TestPrepareWorktreeRunOwnershipAndForceCleanup(t *testing.T) {
 		assert.DirExists(t, wt.path, "a losing contender must not remove the creator's active worktree")
 	})
 
+	t.Run("interrupted fresh preparation is recreated instead of resumed", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planPath := filepath.Join(plansDir, "interrupted-create.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Interrupted Create\n"), 0o600))
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wtPath := filepath.Join(gitSvc.Root(), ".loopai", "worktrees", "interrupted-create")
+		require.NoError(t, gitSvc.MarkWorktreePreparation(wtPath))
+		runGit(t, dir, "worktree", "add", "-b", "interrupted-create", wtPath)
+		assert.NoFileExists(t, filepath.Join(wtPath, "docs", "plans", "interrupted-create.md"))
+
+		wt, err := prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "interrupted-create")
+		require.NoError(t, err)
+		t.Cleanup(func() { removeWorktreeWithRunLock(gitSvc, wt.path, wt.releaseRunLock) })
+		assert.False(t, wt.resumed)
+		assert.FileExists(t, filepath.Join(wt.path, "docs", "plans", "interrupted-create.md"))
+		marked, markerErr := gitSvc.HasWorktreePreparationMarker(wtPath)
+		require.NoError(t, markerErr)
+		assert.False(t, marked)
+	})
+
 	t.Run("held lock is reported before mutable resume validation", func(t *testing.T) {
 		dir, planPath, gitSvc := setup(t, "busy-before-validation")
 		wtPath := filepath.Join(dir, ".loopai", "worktrees", "busy-before-validation")
@@ -5673,7 +5699,7 @@ func TestFinalizeWorktreePreparationReleaseFailure(t *testing.T) {
 		}, func(string) error {
 			t.Fatal("locked rollback is only used for an earlier preparation error")
 			return nil
-		}, func() {
+		}, func() error { return nil }, func() {
 			removed++
 			released++
 		})
@@ -5687,11 +5713,25 @@ func TestFinalizeWorktreePreparationReleaseFailure(t *testing.T) {
 		var released, removed int
 		err := finalizeWorktreePreparation(nil, "", func() { released++ }, func() error {
 			return injected
-		}, func(string) error { return nil }, func() { removed++ })
+		}, func(string) error { return nil }, func() error { return nil }, func() { removed++ })
 
 		require.ErrorIs(t, err, injected)
 		assert.Equal(t, 0, removed)
 		assert.Equal(t, 1, released)
+	})
+
+	t.Run("failed rollback preserves interrupted preparation marker", func(t *testing.T) {
+		removeErr := errors.New("injected worktree removal failure")
+		var markerClears int
+		err := finalizeWorktreePreparation(errors.New("injected preparation failure"), "/tmp/fresh",
+			func() {}, func() error { return nil }, func(string) error { return removeErr }, func() error {
+				markerClears++
+				return nil
+			}, func() {})
+
+		require.ErrorIs(t, err, removeErr)
+		assert.Equal(t, 0, markerClears,
+			"a partial target that could not be removed must remain marked for recovery")
 	})
 }
 
