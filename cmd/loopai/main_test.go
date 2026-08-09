@@ -158,7 +158,6 @@ func TestRunWithSectionTimingFinishesBeforeReturning(t *testing.T) {
 			assert.Equal(t, "downstream result handling", inner.calls[5])
 		})
 	}
-
 }
 
 func TestExecutePlan_ValidationTimingFromClaudeStreamReachesProgressLog(t *testing.T) {
@@ -4739,7 +4738,6 @@ func TestIsResetOnly(t *testing.T) {
 	t.Run("reset_with_init", func(t *testing.T) {
 		assert.False(t, isResetOnly(opts{Reset: true, Init: true}))
 	})
-
 }
 
 func TestResolveVersion(t *testing.T) {

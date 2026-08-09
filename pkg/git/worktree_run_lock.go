@@ -2,6 +2,7 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,11 +12,14 @@ import (
 	"time"
 )
 
+// The file is advisory infrastructure and must not be deleted while a run is active. Removing it
+// does not unlock the holder's open descriptor, but another process could create a replacement
+// inode at the same path and lock that independently.
 const worktreeRunLockName = "loopai-run.lock"
 
 // ErrWorktreeBusy reports that another process holds a worktree's run lock.
 // PID and Started are diagnostic only; the operating-system lock is authoritative.
-type ErrWorktreeBusy struct {
+type ErrWorktreeBusy struct { //nolint:errname // public name is part of the worktree-lock API
 	Path    string
 	PID     int
 	Started time.Time
@@ -125,7 +129,7 @@ func worktreeGitDir(wtPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve worktree path: %w", err)
 	}
-	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	cmd := exec.CommandContext(context.Background(), "git", "rev-parse", "--git-dir")
 	cmd.Dir = absPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -143,15 +147,18 @@ func worktreeGitDir(wtPath string) (string, error) {
 
 func replaceLockFileContents(lockFile *os.File, contents string) error {
 	if err := lockFile.Truncate(0); err != nil {
-		return err
+		return fmt.Errorf("truncate lock file: %w", err)
 	}
 	if _, err := lockFile.Seek(0, 0); err != nil {
-		return err
+		return fmt.Errorf("seek lock file: %w", err)
 	}
 	if _, err := lockFile.WriteString(contents); err != nil {
-		return err
+		return fmt.Errorf("write lock file: %w", err)
 	}
-	return lockFile.Sync()
+	if err := lockFile.Sync(); err != nil {
+		return fmt.Errorf("sync lock file: %w", err)
+	}
+	return nil
 }
 
 func readWorktreeBusyError(lockFile *os.File, lockPath string) *ErrWorktreeBusy {

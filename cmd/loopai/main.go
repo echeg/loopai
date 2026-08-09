@@ -1032,38 +1032,11 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		}
 	}()
 
-	release, lockErr := git.AcquireWorktreeRunLock(wt.path)
+	releaseRunLock, lockErr := acquireAndRegisterWorktreeRunLock(wt, req)
 	if lockErr != nil {
-		if wt.resumed {
-			var busyErr *git.ErrWorktreeBusy
-			if errors.As(lockErr, &busyErr) {
-				return worktreeBusyError(wt.path, busyErr.Info(), lockErr)
-			}
-			return fmt.Errorf("resume worktree: acquire run lock: %w", lockErr)
-		}
-		return fmt.Errorf("acquire run lock for newly created worktree: %w", lockErr)
-	}
-	var releaseLockOnce sync.Once
-	releaseRunLock := func() {
-		releaseLockOnce.Do(func() {
-			if releaseErr := release(); releaseErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to release worktree run lock: %v\n", releaseErr)
-			}
-		})
+		return lockErr
 	}
 	defer releaseRunLock()
-	// Cover setup errors and the force-exit window before cwd-aware cleanup is registered below.
-	// Releasing before removal matters on Windows, where an open lock file cannot be deleted.
-	if wt.resumed {
-		req.WtCleanup.set(releaseRunLock)
-	} else {
-		req.WtCleanup.set(func() {
-			releaseRunLock()
-			if rmErr := req.GitSvc.RemoveWorktree(wt.path); rmErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to remove worktree: %v\n", rmErr)
-			}
-		})
-	}
 
 	if igErr := req.GitSvc.EnsureLocalGitignore(); igErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: gitignore setup: %v\n", igErr)
@@ -1238,6 +1211,43 @@ type worktreeRun struct {
 	resumed         bool
 }
 
+func acquireAndRegisterWorktreeRunLock(wt worktreeRun, req executePlanRequest) (func(), error) {
+	release, err := git.AcquireWorktreeRunLock(wt.path)
+	if err != nil {
+		if wt.resumed {
+			var busyErr *git.ErrWorktreeBusy
+			if errors.As(err, &busyErr) {
+				return nil, worktreeBusyError(wt.path, busyErr.Info(), err)
+			}
+			return nil, fmt.Errorf("resume worktree: acquire run lock: %w", err)
+		}
+		return nil, fmt.Errorf("acquire run lock for newly created worktree: %w", err)
+	}
+
+	var releaseLockOnce sync.Once
+	releaseRunLock := func() {
+		releaseLockOnce.Do(func() {
+			if releaseErr := release(); releaseErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to release worktree run lock: %v\n", releaseErr)
+			}
+		})
+	}
+
+	// Cover setup errors and the force-exit window before cwd-aware cleanup is registered below.
+	// Releasing before removal matters on Windows, where an open lock file cannot be deleted.
+	if wt.resumed {
+		req.WtCleanup.set(releaseRunLock)
+	} else {
+		req.WtCleanup.set(func() {
+			releaseRunLock()
+			if rmErr := req.GitSvc.RemoveWorktree(wt.path); rmErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to remove worktree: %v\n", rmErr)
+			}
+		})
+	}
+	return releaseRunLock, nil
+}
+
 // prepareWorktreeRun creates a new worktree or auto-resumes an existing target.
 // It never removes an existing worktree on error.
 func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktreeRun, error) {
@@ -1286,8 +1296,8 @@ func prepareWorktreeRunContext(ctx context.Context, o opts, req executePlanReque
 	if !wt.resumed {
 		return wt, nil
 	}
-	if err := validateResumeWorktree(wt, branch); err != nil {
-		return worktreeRun{}, err
+	if validationErr := validateResumeWorktree(wt, branch); validationErr != nil {
+		return worktreeRun{}, validationErr
 	}
 	busy, info, err := git.ProbeWorktreeRunLock(wt.path)
 	if err != nil {

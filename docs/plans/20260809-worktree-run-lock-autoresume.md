@@ -69,12 +69,12 @@
 - [x] run tests - must pass before next task
 
 ### Task 4: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented (crash → same command continues; live run → precise busy error; fresh creation untouched; `--resume-worktree` rejected as unknown flag)
-- [ ] verify edge cases: two loopai processes racing to resume the same orphan (one wins the lock, the other gets busy), worktree removed between probe and resume (creation-lock serialization covers it), lock file deleted manually while held (flock on the open fd still held — document that the file is advisory)
-- [ ] run full test suite (`make test`)
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] verify test coverage meets project standard (80%+) for the new code paths
-- [ ] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` (platform lock code changed)
+- [x] verify all requirements from Overview are implemented (crash → same command continues; live run → precise busy error; fresh creation untouched; `--resume-worktree` rejected as unknown flag)
+- [x] verify edge cases: two loopai processes racing to resume the same orphan (one wins the lock, the other gets busy), worktree removed between probe and resume (creation-lock serialization covers it), lock file deleted manually while held (flock on the open fd still held — document that the file is advisory)
+- [x] run full test suite (`make test`)
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] verify test coverage meets project standard (80%+) for the new code paths
+- [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` (platform lock code changed)
 
 ### Task 5: [Final] Update documentation
 - [ ] update CLAUDE.md worktree section: run lock, auto-resume semantics, `-c` ignored on resume, `--resume-worktree` removed
