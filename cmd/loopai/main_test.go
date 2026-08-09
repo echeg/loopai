@@ -5593,10 +5593,75 @@ func TestPrepareWorktreeRunOwnershipAndForceCleanup(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { removeWorktreeWithRunLock(gitSvc, wt.path, wt.releaseRunLock) })
 		assert.False(t, wt.resumed)
+		assert.False(t, wt.planNeedsCommit)
 		assert.FileExists(t, filepath.Join(wt.path, "docs", "plans", "interrupted-create.md"))
+		assert.Equal(t, "# Interrupted Create",
+			strings.TrimSpace(gitOutput(t, wt.path, "show", "HEAD:docs/plans/interrupted-create.md")))
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, wt.path, "status", "--porcelain")))
 		marked, markerErr := gitSvc.HasWorktreePreparationMarker(wtPath)
 		require.NoError(t, markerErr)
 		assert.False(t, marked)
+	})
+
+	t.Run("fresh plan commit completes before preparation marker is cleared", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planPath := filepath.Join(plansDir, "marker-through-commit.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Marker Through Commit\n"), 0o600))
+		markerObserved := filepath.Join(t.TempDir(), "marker-observed")
+		hook := fmt.Sprintf("#!/bin/sh\nset -- %q/loopai-worktree-prepare-*.marker\n[ -f \"$1\" ] || exit 1\n: > %q\n", filepath.Join(dir, ".git"), markerObserved)
+		writeExecutable(t, filepath.Join(dir, ".git", "hooks", "pre-commit"), hook)
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wt, err := prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "marker-through-commit")
+		require.NoError(t, err)
+		t.Cleanup(func() { removeWorktreeWithRunLock(gitSvc, wt.path, wt.releaseRunLock) })
+
+		assert.FileExists(t, markerObserved, "the commit hook must run while the durable marker exists")
+		assert.False(t, wt.planNeedsCommit)
+		assert.Equal(t, "# Marker Through Commit",
+			strings.TrimSpace(gitOutput(t, wt.path, "show", "HEAD:docs/plans/marker-through-commit.md")))
+		marked, markerErr := gitSvc.HasWorktreePreparationMarker(wt.path)
+		require.NoError(t, markerErr)
+		assert.False(t, marked)
+	})
+
+	t.Run("post-creation cleanup failure preserves preparation marker", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planPath := filepath.Join(plansDir, "failed-created-cleanup.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Failed Created Cleanup\n"), 0o600))
+		writeExecutable(t, filepath.Join(dir, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n")
+		command := filepath.Join(t.TempDir(), "git-with-failed-remove")
+		writeExecutable(t, command, "#!/bin/sh\nif [ \"$1\" = worktree ] && [ \"$2\" = remove ]; then exit 86; fi\nexec git \"$@\"\n")
+
+		gitSvc, err := git.NewService(dir, noopLogger(), command)
+		require.NoError(t, err)
+		cleanupSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wtPath := filepath.Join(gitSvc.Root(), ".loopai", "worktrees", "failed-created-cleanup")
+		t.Cleanup(func() {
+			_ = cleanupSvc.RemoveWorktree(wtPath)
+			_ = cleanupSvc.ClearWorktreePreparation(wtPath)
+		})
+
+		_, err = prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{VcsCommand: command},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "failed-created-cleanup")
+		require.Error(t, err)
+		require.ErrorContains(t, err, "commit plan in worktree")
+		require.ErrorContains(t, err, "remove worktree after preparation error")
+		assert.DirExists(t, wtPath)
+		marked, markerErr := gitSvc.HasWorktreePreparationMarker(wtPath)
+		require.NoError(t, markerErr)
+		assert.True(t, marked, "a leftover target must remain marked for recovery")
 	})
 
 	t.Run("held lock is reported before mutable resume validation", func(t *testing.T) {
@@ -5732,6 +5797,16 @@ func TestFinalizeWorktreePreparationReleaseFailure(t *testing.T) {
 		require.ErrorIs(t, err, removeErr)
 		assert.Equal(t, 0, markerClears,
 			"a partial target that could not be removed must remain marked for recovery")
+	})
+
+	t.Run("rollback verifies target removal before clearing marker", func(t *testing.T) {
+		target := t.TempDir()
+		err, cleanupComplete := rollbackWorktreePreparationLocked(
+			errors.New("injected preparation failure"), target, nil, func(string) error { return nil },
+		)
+
+		require.ErrorContains(t, err, "target still exists")
+		assert.False(t, cleanupComplete)
 	})
 }
 

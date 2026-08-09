@@ -58,7 +58,7 @@ func (s *Service) AcquireWorktreeRunLockContext(ctx context.Context) (func() err
 func acquireWorktreeRunLockFile(
 	lockFile *os.File, worktreePath string, writeContents func(*os.File, string) error,
 ) (func() error, error) {
-	acquired, err := tryLockRepositoryFile(lockFile)
+	acquired, err := tryLockWorktreeRunFile(lockFile)
 	if err != nil {
 		_ = lockFile.Close()
 		return nil, fmt.Errorf("acquire worktree run lock: %w", err)
@@ -71,13 +71,13 @@ func acquireWorktreeRunLockFile(
 
 	metadata := fmt.Sprintf("pid=%d started=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339))
 	if err := writeContents(lockFile, metadata); err != nil {
-		_ = unlockRepositoryFile(lockFile)
+		_ = unlockWorktreeRunFile(lockFile)
 		_ = lockFile.Close()
 		return nil, fmt.Errorf("write worktree run lock: %w", err)
 	}
 
 	return func() error {
-		unlockErr := unlockRepositoryFile(lockFile)
+		unlockErr := unlockWorktreeRunFile(lockFile)
 		closeErr := lockFile.Close()
 		if unlockErr != nil {
 			return fmt.Errorf("release worktree run lock: %w", unlockErr)

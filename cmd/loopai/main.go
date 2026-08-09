@@ -1133,13 +1133,6 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		defer cleanup(true)
 	}
 
-	// commit plan file on the feature branch (inside worktree), not on the default branch
-	if wt.planNeedsCommit {
-		if commitErr := wt.gitSvc.CommitPlanFile(req.PlanFile, req.GitSvc.Root()); commitErr != nil {
-			return fmt.Errorf("commit plan in worktree: %w", commitErr)
-		}
-	}
-
 	// setup is done: executePlan creates its own reporter and owns every error from here on
 	handedOff = true
 
@@ -1267,6 +1260,15 @@ func prepareWorktreeRunContext(
 		return worktreeRun{}, err
 	}
 	releaseOnError = wt.releaseRunLock
+	// Committing an untracked/modified plan is part of fresh initialization. Keep both the durable
+	// marker and shared preparation lock until it finishes so a crash cannot turn a partially
+	// staged or uncommitted checkout into an auto-resume target.
+	if !wt.resumed && wt.planNeedsCommit {
+		if commitErr := wt.gitSvc.CommitPlanFile(req.PlanFile, req.GitSvc.Root()); commitErr != nil {
+			return worktreeRun{}, fmt.Errorf("commit plan in worktree: %w", commitErr)
+		}
+		wt.planNeedsCommit = false
+	}
 	if clearErr := clearPreparationMarker(); clearErr != nil {
 		return worktreeRun{}, fmt.Errorf("complete worktree preparation: %w", clearErr)
 	}
@@ -1323,6 +1325,10 @@ func rollbackWorktreePreparationLocked(
 		return errors.Join(preparationErr,
 			fmt.Errorf("remove worktree after preparation error: %w", removeErr)), false
 	}
+	if _, statErr := os.Lstat(createdPath); statErr == nil || !os.IsNotExist(statErr) {
+		return errors.Join(preparationErr,
+			fmt.Errorf("remove worktree after preparation error: target still exists at %s", createdPath)), false
+	}
 	return preparationErr, true
 }
 
@@ -1374,9 +1380,12 @@ func prepareWorktreeTargetLocked(
 		}
 		return wt, "", nil
 	case os.IsNotExist(statErr), errors.Is(statErr, syscall.ENOTDIR):
+		// The marker makes this expected path ours to clean up even if the creation API reports an
+		// error without returning the path after Git has already materialized part of the checkout.
+		createdPath = wt.path
 		wt.path, wt.planNeedsCommit, err = prepareFreshWorktree(ctx, o, req, branch)
 		if err != nil {
-			return worktreeRun{}, "", err
+			return worktreeRun{}, createdPath, err
 		}
 		return wt, wt.path, nil
 	default:

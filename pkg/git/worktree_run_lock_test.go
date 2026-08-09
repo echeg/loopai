@@ -167,7 +167,7 @@ func TestAcquireWorktreeRunLockCorruptDiagnostics(t *testing.T) {
 	require.NoError(t, err)
 	_, err = lockFile.WriteString("not valid lock metadata\n")
 	require.NoError(t, err)
-	acquired, err := tryLockRepositoryFile(lockFile)
+	acquired, err := tryLockWorktreeRunFile(lockFile)
 	require.NoError(t, err)
 	require.True(t, acquired)
 
@@ -176,7 +176,7 @@ func TestAcquireWorktreeRunLockCorruptDiagnostics(t *testing.T) {
 	require.ErrorAs(t, err, &busyErr)
 	assert.Empty(t, busyErr.Info())
 
-	require.NoError(t, unlockRepositoryFile(lockFile))
+	require.NoError(t, unlockWorktreeRunFile(lockFile))
 	require.NoError(t, lockFile.Close())
 	release, err := openRunLockService(t, wtPath).AcquireWorktreeRunLock()
 	require.NoError(t, err)
@@ -240,10 +240,10 @@ func TestAcquireWorktreeRunLockMetadataFailureReleasesLock(t *testing.T) {
 
 	secondFile, err := os.OpenFile(lockPath, os.O_RDWR, 0o600) //nolint:gosec // test-owned temporary path
 	require.NoError(t, err)
-	acquired, err := tryLockRepositoryFile(secondFile)
+	acquired, err := tryLockWorktreeRunFile(secondFile)
 	require.NoError(t, err)
 	assert.True(t, acquired, "failed metadata writes must roll back the acquired OS lock")
-	require.NoError(t, unlockRepositoryFile(secondFile))
+	require.NoError(t, unlockWorktreeRunFile(secondFile))
 	require.NoError(t, secondFile.Close())
 }
 

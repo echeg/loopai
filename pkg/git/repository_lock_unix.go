@@ -22,6 +22,10 @@ func tryLockRepositoryFile(f *os.File) (bool, error) {
 	return false, fmt.Errorf("flock: %w", err)
 }
 
+func tryLockWorktreeRunFile(f *os.File) (bool, error) {
+	return tryLockRepositoryFile(f)
+}
+
 func lockRepositoryFile(ctx context.Context, f *os.File) error {
 	for {
 		acquired, err := tryLockRepositoryFile(f)
@@ -44,4 +48,8 @@ func unlockRepositoryFile(f *os.File) error {
 		return fmt.Errorf("flock unlock: %w", err)
 	}
 	return nil
+}
+
+func unlockWorktreeRunFile(f *os.File) error {
+	return unlockRepositoryFile(f)
 }
