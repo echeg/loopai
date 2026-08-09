@@ -276,8 +276,8 @@ loopai --cmux-workspace=auto --worktree docs/plans/feature.md
 # commit local changes, then execute from a new isolated worktree
 loopai --worktree --commit docs/plans/feature.md
 
-# continue an interrupted isolated worktree
-loopai --resume-worktree docs/plans/feature.md
+# continue an interrupted isolated worktree by rerunning the same command
+loopai --worktree docs/plans/feature.md
 
 # generate project-specific review agents into .loopai/agents/
 loopai --gen-agents
@@ -546,7 +546,8 @@ loopai --worktree -c docs/plans/hotfix.md
 ```
 
 Gitignored files remain uncommitted, and a clean checkout makes `--commit` a no-op. The
-flag requires `--worktree` and does not run when resuming an existing worktree.
+flag requires `--worktree`. If the command resumes an existing worktree, loopai warns that
+`-c`/`--commit` is ignored and leaves the source checkout untouched.
 An uncommitted plan file may be the checkout's only change without `--commit`; loopai
 copies and commits it in the feature worktree. With `--commit`, the plan is included in
 the source-side all-files commit instead.
@@ -554,18 +555,24 @@ the source-side all-files commit instead.
 Breaking CLI change: the deprecated `-c` alias for `--codex-only` was removed. Use
 `--codex-only` explicitly. `-c` now means `--commit` and requires `--worktree`.
 
-If a process was interrupted before its worktree could be removed, resume it explicitly:
+For the lifetime of each worktree run, loopai holds an OS advisory lock in the worktree's
+private Git directory. A second invocation targeting the same worktree exits immediately
+with a busy error that includes the recorded process ID and start time. Those values are
+diagnostic only; the OS lock is the source of truth and is released automatically even if
+the original process crashes or is killed.
+
+If a process was interrupted before its worktree could be removed, rerun the same command:
 
 ```bash
-loopai --resume-worktree docs/plans/feature.md
+loopai --worktree docs/plans/feature.md
 ```
 
-`--resume-worktree` implies `--worktree`. It validates that the expected directory is a registered
-Git worktree on the plan's feature branch and that the plan exists inside it, then continues from
-the first incomplete task. Dirty changes are preserved. On another failure or interruption the
-worktree remains available for another resume; after successful completion it is removed normally.
-The progress-file lock rejects another live run that resolves to the same progress path. If the
-original run used `--branch`, pass the same option when resuming.
+When the expected worktree exists and its run lock is free, `--worktree` automatically validates
+that the directory is a registered Git worktree on the plan's feature branch and that the plan
+exists inside it, then continues from the first incomplete task. Dirty changes are preserved. On
+another failure or interruption the worktree remains available for the next invocation; after
+successful completion it is removed normally. The former explicit-resume option has been removed.
+If the original run used `--branch`, pass the same option when continuing it.
 
 Worktree creation does not use or record a base branch. `--base-ref` remains the base for
 review diffs and templates; without it, loopai uses `default_branch` configuration or its

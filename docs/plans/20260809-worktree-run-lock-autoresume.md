@@ -77,9 +77,9 @@
 - [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` (platform lock code changed)
 
 ### Task 5: [Final] Update documentation
-- [ ] update CLAUDE.md worktree section: run lock, auto-resume semantics, `-c` ignored on resume, `--resume-worktree` removed
-- [ ] update llms.txt `--worktree`/resume paragraphs (note the removal the same way the removed `--codex-only` alias is noted)
-- [ ] update README.md flag docs and any "interrupted run" guidance; remove every `--resume-worktree` mention
+- [x] update CLAUDE.md worktree section: run lock, auto-resume semantics, `-c` ignored on resume, `--resume-worktree` removed
+- [x] update llms.txt `--worktree`/resume paragraphs (note the removal the same way the removed `--codex-only` alias is noted)
+- [x] update README.md flag docs and any "interrupted run" guidance; remove every `--resume-worktree` mention
 
 ## Technical Details
 - The flock is the single source of truth for liveness; the pid inside the file is decoration for error messages (pid reuse makes pid-based checks unreliable — never gate behavior on it).
