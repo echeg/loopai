@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -535,6 +536,48 @@ func TestServiceWorktreePreparationMarkerLifecycle(t *testing.T) {
 	marked, err = svc.HasWorktreePreparationMarker(target)
 	require.NoError(t, err)
 	assert.False(t, marked)
+}
+
+func TestServiceWorktreePreparationMarkerSyncsDirectoryEntries(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	target := filepath.Join(dir, ".loopai", "worktrees", "durable-marker")
+	markerPath, err := svc.worktreePreparationMarkerPath(target)
+	require.NoError(t, err)
+
+	var synced []string
+	syncDir := func(path string) error {
+		synced = append(synced, path)
+		return nil
+	}
+	require.NoError(t, svc.markWorktreePreparation(target, syncDir))
+	assert.Equal(t, []string{filepath.Dir(markerPath)}, synced)
+
+	synced = nil
+	require.NoError(t, svc.clearWorktreePreparation(target, syncDir))
+	assert.Equal(t, []string{filepath.Dir(markerPath)}, synced)
+}
+
+func TestServiceWorktreePreparationMarkerDirectorySyncErrors(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	target := filepath.Join(dir, ".loopai", "worktrees", "marker-sync-error")
+	injected := errors.New("injected directory sync failure")
+
+	err = svc.markWorktreePreparation(target, func(string) error { return injected })
+	require.ErrorIs(t, err, injected)
+	marked, inspectErr := svc.HasWorktreePreparationMarker(target)
+	require.NoError(t, inspectErr)
+	assert.False(t, marked, "a marker whose directory entry was not synced must be rolled back")
+
+	require.NoError(t, svc.MarkWorktreePreparation(target))
+	err = svc.clearWorktreePreparation(target, func(string) error { return injected })
+	require.ErrorIs(t, err, injected)
+	marked, inspectErr = svc.HasWorktreePreparationMarker(target)
+	require.NoError(t, inspectErr)
+	assert.False(t, marked, "the namespace deletion occurred even when its durability sync failed")
 }
 
 func TestService_RemoveWorktreeSafeAllowsIgnoredFiles(t *testing.T) {

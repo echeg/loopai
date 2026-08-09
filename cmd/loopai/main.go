@@ -1035,7 +1035,13 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		}
 		releaseRunLock()
 	}
-	req.WtCleanup.set(func() { setupCleanup(!wt.resumed) })
+	if wt.resumed {
+		// A forced exit must not explicitly release a resumed worktree while execution may still
+		// be active. The operating system releases the advisory lock when os.Exit terminates us.
+		req.WtCleanup.set(nil)
+	} else {
+		req.WtCleanup.set(func() { setupCleanup(true) })
+	}
 
 	// Safety net for errors before cwd-aware cleanup is registered below. Fresh worktrees are
 	// removed while ownership is transferred under the repository coordination lock; resumed
@@ -1117,7 +1123,9 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 
 	setupDone = true // disable safety-net defer, main cleanup takes over
 	if wt.resumed {
-		req.WtCleanup.set(func() { cleanup(false) })
+		// Restore process-global cwd on forced exit, but retain run ownership until process death.
+		// Normal-return cleanup below explicitly releases the lock after execution has stopped.
+		req.WtCleanup.set(restoreCWD)
 		defer func() {
 			// executePlan deliberately returns nil for a user abort. Use its internal completion
 			// outcome instead of the public return value so aborted work remains resumable.
@@ -1273,7 +1281,9 @@ func prepareWorktreeRunContext(
 		return worktreeRun{}, fmt.Errorf("complete worktree preparation: %w", clearErr)
 	}
 	if wt.resumed {
-		req.WtCleanup.set(wt.releaseRunLock)
+		// WtCleanup is only for the forced os.Exit path. Keep the lock held until process death;
+		// preparation's normal error paths still release it through the defer above.
+		req.WtCleanup.set(nil)
 	} else {
 		req.WtCleanup.set(func() {
 			removeWorktreeWithRunLock(req.GitSvc, wt.path, wt.releaseRunLock)
@@ -1500,9 +1510,7 @@ func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, b
 // run lock must be released before Git removes the private metadata on Windows, while the shared
 // preparation lock prevents another process from acquiring the run lock in that interval.
 func removeWorktreeWithRunLock(gitSvc *git.Service, path string, releaseRunLock func()) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	removeWorktreeWithRunLockContext(ctx, gitSvc, path, releaseRunLock)
+	removeWorktreeWithRunLockContext(context.Background(), gitSvc, path, releaseRunLock)
 }
 
 func removeWorktreeWithRunLockContext(
@@ -1511,7 +1519,8 @@ func removeWorktreeWithRunLockContext(
 	releasePreparationLock, err := gitSvc.AcquireWorktreeCreationLockContext(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to lock worktree removal: %v\n", err)
-		releaseRunLock()
+		// Do not expose an unlocked, unremoved checkout. Normal cleanup waits with a background
+		// context; a bounded force-exit caller leaves ownership to the OS when the process dies.
 		return
 	}
 	defer func() {

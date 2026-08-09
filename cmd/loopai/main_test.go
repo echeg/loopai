@@ -5697,7 +5697,7 @@ func TestPrepareWorktreeRunOwnershipAndForceCleanup(t *testing.T) {
 		assert.NoDirExists(t, wt.path)
 	})
 
-	t.Run("force cleanup preserves and unlocks resumed worktree", func(t *testing.T) {
+	t.Run("force cleanup preserves and keeps ownership of resumed worktree", func(t *testing.T) {
 		_, planPath, gitSvc := setup(t, "resume-force-cleanup")
 		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "")
 		require.NoError(t, err)
@@ -5714,12 +5714,18 @@ func TestPrepareWorktreeRunOwnershipAndForceCleanup(t *testing.T) {
 		assert.DirExists(t, wtPath)
 		wtSvc, openErr := gitSvc.OpenWorktree(wtPath)
 		require.NoError(t, openErr)
+		_, acquireErr := wtSvc.AcquireWorktreeRunLock()
+		var busyErr *git.ErrWorktreeBusy
+		require.ErrorAs(t, acquireErr, &busyErr,
+			"forced cleanup must retain ownership until the process exits")
+
+		wt.releaseRunLock()
 		release, acquireErr := wtSvc.AcquireWorktreeRunLock()
-		require.NoError(t, acquireErr)
+		require.NoError(t, acquireErr, "normal cleanup must still release ownership")
 		require.NoError(t, release())
 	})
 
-	t.Run("cleanup preserves and unlocks worktree when preparation lock wait expires", func(t *testing.T) {
+	t.Run("canceled force cleanup preserves worktree ownership", func(t *testing.T) {
 		_, planPath, gitSvc := setup(t, "cleanup-lock-timeout")
 		wt, err := prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
 			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
@@ -5738,9 +5744,47 @@ func TestPrepareWorktreeRunOwnershipAndForceCleanup(t *testing.T) {
 		assert.DirExists(t, wt.path, "timed-out cleanup must preserve the worktree")
 		wtSvc, openErr := gitSvc.OpenWorktree(wt.path)
 		require.NoError(t, openErr)
+		_, acquireErr := wtSvc.AcquireWorktreeRunLock()
+		var busyErr *git.ErrWorktreeBusy
+		require.ErrorAs(t, acquireErr, &busyErr,
+			"timed-out force cleanup must retain ownership until process death")
+
+		wt.releaseRunLock()
 		release, acquireErr := wtSvc.AcquireWorktreeRunLock()
-		require.NoError(t, acquireErr, "timed-out cleanup must release run ownership")
+		require.NoError(t, acquireErr)
 		require.NoError(t, release())
+	})
+
+	t.Run("normal cleanup waits for preparation lock and removes worktree", func(t *testing.T) {
+		_, planPath, gitSvc := setup(t, "cleanup-lock-wait")
+		wt, err := prepareWorktreeRunContext(t.Context(), opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "cleanup-lock-wait")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+
+		releasePreparationLock, err := gitSvc.AcquireWorktreeCreationLock()
+		require.NoError(t, err)
+		removed := make(chan struct{})
+		go func() {
+			removeWorktreeWithRunLock(gitSvc, wt.path, wt.releaseRunLock)
+			close(removed)
+		}()
+
+		select {
+		case <-removed:
+			t.Fatal("normal cleanup returned before repository ownership was available")
+		case <-time.After(100 * time.Millisecond):
+		}
+		assert.DirExists(t, wt.path)
+		require.NoError(t, releasePreparationLock())
+		select {
+		case <-removed:
+		case <-time.After(5 * time.Second):
+			t.Fatal("normal cleanup did not resume after repository ownership became available")
+		}
+		assert.NoDirExists(t, wt.path)
 	})
 
 	t.Run("teardown never removes a successor worktree", func(t *testing.T) {
