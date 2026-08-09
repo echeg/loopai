@@ -1206,19 +1206,6 @@ type worktreeRun struct {
 	releaseRunLock  func()
 }
 
-// prepareWorktreeRun creates a new worktree or auto-resumes an existing target.
-// It never removes an existing worktree on error.
-func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktreeRun, error) {
-	wt, err := prepareWorktreeRunContext(context.Background(), o, req, branch)
-	if err != nil {
-		return worktreeRun{}, err
-	}
-	wt.releaseRunLock()
-	wt.releaseRunLock = nil
-	req.WtCleanup.set(nil)
-	return wt, nil
-}
-
 func prepareWorktreeRunContext(
 	ctx context.Context, o opts, req executePlanRequest, branch string,
 ) (wt worktreeRun, err error) {

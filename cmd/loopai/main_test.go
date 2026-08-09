@@ -82,6 +82,20 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// prepareWorktreeRun is a test helper for cases that inspect a prepared worktree without
+// exercising run-lock ownership. Production callers use prepareWorktreeRunContext and retain the
+// returned lock until execution and cleanup finish.
+func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktreeRun, error) {
+	wt, err := prepareWorktreeRunContext(context.Background(), o, req, branch)
+	if err != nil {
+		return worktreeRun{}, err
+	}
+	wt.releaseRunLock()
+	wt.releaseRunLock = nil
+	req.WtCleanup.set(nil)
+	return wt, nil
+}
+
 func TestBuildRunnerLoggerRecordsSectionsInOrder(t *testing.T) {
 	inner := &runnerLoggerRecorder{}
 	out, timer := buildRunnerLogger(nil, inner)
