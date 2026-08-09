@@ -2,7 +2,7 @@
 
 ## Overview
 - Give every worktree run a liveness lock: the loopai process holds an OS advisory file lock (flock/LockFileEx) on a per-worktree lock file for its entire lifetime, with pid and start time written inside for diagnostics. The OS releases the lock on any process death (crash, kill -9, closed terminal), so lock state precisely distinguishes "run alive in this worktree" from "orphaned worktree".
-- Change `--worktree` routing when the target worktree already exists: probe the run lock. Held → fail with a precise message naming the pid and path. Free → automatically resume in the existing worktree (today's `--resume-worktree` semantics: no auto-commit, no source sync). The user expectation becomes true: re-running the same `--worktree` command after an interruption just continues.
+- Change `--worktree` routing when the target worktree already exists: acquire the run lock. Held → fail with a precise message naming the pid and path. Acquired → validate and automatically resume in the existing worktree (today's `--resume-worktree` semantics: no auto-commit, no source sync). The user expectation becomes true: re-running the same `--worktree` command after an interruption just continues.
 - Remove the `--resume-worktree` flag entirely: auto-resume makes it redundant, and the project prefers clean removals over deprecated aliases (precedent: the removed `-c` alias for `--codex-only`). Passing it after this change is an unknown-flag error.
 - Problem it solves: today an existing worktree makes `--worktree` fail with a *guess* ("another instance may be running"), and the user must know a second flag to continue after a crash. The tool has no way to tell busy from orphaned; the lock provides exactly that signal.
 
@@ -30,7 +30,7 @@
 - **CRITICAL: all tests must pass before starting next task** - no exceptions
 - **CRITICAL: update this plan file when scope changes during implementation**
 - Run tests after each change
-- Maintain backward compatibility: `--resume-worktree` keeps working; fresh-creation flow (including stale-branch automerge) unchanged
+- Breaking change: remove `--resume-worktree`; users create or continue by rerunning the same `--worktree` command. Keep fresh-creation behavior (including stale-branch automerge) unchanged.
 - Tests must use `t.TempDir()` repositories and never touch real user configuration
 
 ## Testing Strategy
@@ -48,20 +48,20 @@
 
 ### Task 1: Add non-blocking try-lock primitives and the run lock
 - [x] add `tryLockRepositoryFile(f *os.File) (acquired bool, err error)` to both `repository_lock_unix.go` (flock LOCK_EX|LOCK_NB) and `repository_lock_windows.go` (LockFileEx with LOCKFILE_FAIL_IMMEDIATELY)
-- [x] add `AcquireWorktreeRunLock(wtPath string) (release func() error, err error)` to `pkg/git`: resolve the worktree's private git dir via `rev-parse --git-dir` executed in `wtPath`, open/create `loopai-run.lock` there, try-lock non-blocking; on success truncate and write `pid=<pid> started=<RFC3339>` (diagnostic only — the flock is the authority, pids get reused); on contention return a typed `ErrWorktreeBusy` carrying the lock file's recorded pid/started values for the error message
-- [x] add `ProbeWorktreeRunLock(wtPath string) (busy bool, info string, err error)`: same try-lock, immediately released when acquired; used by routing to classify an existing worktree
-- [x] write tests: acquire/release cycle; second acquire while held → `ErrWorktreeBusy` with recorded info; probe on free lock → not busy and leaves the lock acquirable; missing/corrupt lock file content → still works (info empty); lock file lives under the worktree's git dir, not the working tree
+- [x] add `Service.AcquireWorktreeRunLockContext(ctx)` to `pkg/git`: resolve the worktree's private git dir through the service's configured VCS command, open/create `loopai-run.lock` there, try-lock non-blocking; on success truncate and write `pid=<pid> started=<RFC3339>` (diagnostic only — the flock is the authority, pids get reused); on contention return a typed `ErrWorktreeBusy` carrying the worktree path and recorded pid/started values for the final error message
+- [x] use the authoritative acquisition itself for routing; do not maintain a separate probe path that cannot transfer ownership atomically
+- [x] write tests: acquire/release cycle; second acquire while held → `ErrWorktreeBusy` with recorded info; corrupt lock-file content leaves diagnostics empty without affecting contention; lock file lives under the worktree's git dir, not the working tree; configured VCS command and cancellation are honored; process death releases the lock
 - [x] run tests - must pass before next task
 
 ### Task 2: Hold the run lock for the lifetime of every worktree run
-- [x] in `cmd/loopai/main.go` worktree setup: after a worktree is created or resumed, acquire the run lock and register release in the existing cleanup chain (same discipline as `WtCleanup`); a failed acquire on a *freshly created* worktree is an internal error (nothing else can know about it yet)
+- [x] in `cmd/loopai/main.go` worktree setup: hold the shared repository preparation lock across target classification or creation and authoritative run-lock acquisition, then register release in the existing cleanup chain (same discipline as `WtCleanup`); a fresh worktree is never visible without its creator owning the run lock
 - [x] the resume code path acquires the lock the same way; contention → `ErrWorktreeBusy` message
 - [x] confirm the release also runs on the interrupt path (Ctrl+C cleanup), and that a kill -9 leaves only the OS to release the flock (no stale-state cleanup needed by design)
-- [x] write tests: run-lock acquired during a worktree run (probe from test → busy) and released after cleanup (probe → free); resume path contention error includes pid info
+- [x] write tests: a competing acquire reports busy during a worktree run and succeeds after cleanup; force-exit cleanup removes fresh worktrees but preserves and unlocks resumed worktrees; resume contention includes pid info
 - [x] run tests - must pass before next task
 
 ### Task 3: Auto-resume routing for --worktree with an existing worktree
-- [x] replace the unconditional rejection (`worktree already exists at %s, another instance may be running`, `pkg/git/service.go:~754` and its callers) with lock-aware routing: probe the run lock; busy → error `plan worktree %s is busy: loopai is already running in it (%s)` with the recorded pid/started info; free → route into the existing resume path (`validateResumeWorktree` consistency checks included) and log `resuming interrupted worktree %s`
+- [x] replace the unconditional rejection (`worktree already exists at %s, another instance may be running`, `pkg/git/service.go:~754` and its callers) with lock-aware routing: acquire the run lock before mutable resume validation; busy → typed error `plan worktree %s is busy: loopai is already running in it (%s)` with recorded pid/started info; acquired → validate the existing target and log `resuming interrupted worktree %s`
 - [x] when `-c/--commit` was passed and routing lands on auto-resume, print a warning that the flag is ignored (resume never auto-commits) and do not touch the source checkout
 - [x] remove the `--resume-worktree` option from the options struct and all validation/routing that references it; the resume machinery it drove (`requireResumeWorktree`, `validateResumeWorktree`, the `resumed:` wiring) stays and is now reached only via auto-resume; delete or repurpose its flag-level tests
 - [x] worktree exists but fails resume validation (branch mismatch, foreign directory) → keep failing with the validation error; never silently delete or recreate
@@ -70,7 +70,7 @@
 
 ### Task 4: Verify acceptance criteria
 - [x] verify all requirements from Overview are implemented (crash → same command continues; live run → precise busy error; fresh creation untouched; `--resume-worktree` rejected as unknown flag)
-- [x] verify edge cases: two loopai processes racing to resume the same orphan (one wins the lock, the other gets busy), worktree removed between probe and resume (creation-lock serialization covers it), lock file deleted manually while held (flock on the open fd still held — document that the file is advisory)
+- [x] verify edge cases: two loopai processes racing for the same orphan (one wins the lock, the other gets busy); shared repository locking makes classify/create/acquire atomic and guards release-before-remove teardown; if the worktree disappears before ownership is obtained, fail without deleting or recreating it; lock file deleted manually while held (flock on the open fd still held — document that the file is advisory)
 - [x] run full test suite (`make test`)
 - [x] run linter (`make lint`) - all issues must be fixed
 - [x] verify test coverage meets project standard (80%+) for the new code paths
@@ -85,7 +85,7 @@
 - The flock is the single source of truth for liveness; the pid inside the file is decoration for error messages (pid reuse makes pid-based checks unreliable — never gate behavior on it).
 - Lock file path: `$(git -C <wtPath> rev-parse --git-dir)/loopai-run.lock` — inside `.git/worktrees/<name>/` of the main repository; `git worktree remove` deletes it with the metadata, and it can never appear in `git status` of the worktree.
 - Auto-resume inherits resume's contract wholesale: no auto-commit, no source sync, no ancestor requirement — the earlier stale-branch automerge applies only to the create-from-existing-branch flow (worktree absent), which is unchanged.
-- Probe-then-acquire has a benign race (two resumers): the final non-blocking acquire decides; the loser gets the busy error. The existing creation lock already serializes create-vs-create.
+- The shared repository preparation lock serializes classification, fresh creation, and final non-blocking run-lock acquisition. Teardown takes the same shared lock before releasing the run lock and removing the worktree, which keeps the required Windows release-before-delete ordering without exposing an unlocked checkout to a resumer.
 - Non-worktree (single-checkout branch) runs are out of scope: no shared directory to contend over.
 
 ## Post-Completion

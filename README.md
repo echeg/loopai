@@ -559,7 +559,9 @@ For the lifetime of each worktree run, loopai holds an OS advisory lock in the w
 private Git directory. A second invocation targeting the same worktree exits immediately
 with a busy error that includes the recorded process ID and start time. Those values are
 diagnostic only; the OS lock is the source of truth and is released automatically even if
-the original process crashes or is killed.
+the original process crashes or is killed. Do not delete `loopai-run.lock` manually: deleting
+an advisory lock's pathname does not unlock its open file descriptor and can allow another
+process to create and independently lock a replacement file.
 
 If a process was interrupted before its worktree could be removed, rerun the same command:
 
@@ -571,7 +573,8 @@ When the expected worktree exists and its run lock is free, `--worktree` automat
 that the directory is a registered Git worktree on the plan's feature branch and that the plan
 exists inside it, then continues from the first incomplete task. Dirty changes are preserved. On
 another failure or interruption the worktree remains available for the next invocation; after
-successful completion it is removed normally. The former explicit-resume option has been removed.
+successful completion it is removed normally. The former `--resume-worktree` option has been
+removed and is now an unknown option; use `--worktree` for both creation and continuation.
 If the original run used `--branch`, pass the same option when continuing it.
 
 Worktree creation does not use or record a base branch. `--base-ref` remains the base for

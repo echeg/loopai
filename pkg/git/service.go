@@ -47,6 +47,7 @@ type backend interface {
 	fileTracked(path string) (bool, error)
 	hasChangesOtherThan(path string) ([]string, error)
 	gitCommonDir() (string, error)
+	gitDir(ctx context.Context) (string, error)
 	ensureRuntimeExcludes(patterns ...string) error
 	add(path string) error
 	moveFile(src, dst string) error

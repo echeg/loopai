@@ -1019,24 +1019,33 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	if err != nil {
 		return err
 	}
+	releaseRunLock := wt.releaseRunLock
+	defer releaseRunLock()
 
-	// safety net: remove worktree if setup fails before main cleanup is registered.
-	// once main cleanup takes over (setupDone=true), this defer becomes a no-op. Never remove a
-	// resumed worktree on setup failure: it may contain the changes the user is trying to recover.
+	var removeOnce sync.Once
+	removeWorktree := func() {
+		removeOnce.Do(func() {
+			removeWorktreeWithRunLock(req.GitSvc, wt.path, releaseRunLock)
+		})
+	}
+	setupCleanup := func(remove bool) {
+		if remove {
+			removeWorktree()
+			return
+		}
+		releaseRunLock()
+	}
+	req.WtCleanup.set(func() { setupCleanup(!wt.resumed) })
+
+	// Safety net for errors before cwd-aware cleanup is registered below. Fresh worktrees are
+	// removed while ownership is transferred under the repository coordination lock; resumed
+	// worktrees are preserved and only release their run lock.
 	setupDone := false
 	defer func() {
-		if !wt.resumed && !setupDone {
-			if rmErr := req.GitSvc.RemoveWorktree(wt.path); rmErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to remove worktree after setup error: %v\n", rmErr)
-			}
+		if !setupDone {
+			setupCleanup(!wt.resumed)
 		}
 	}()
-
-	releaseRunLock, lockErr := acquireAndRegisterWorktreeRunLock(wt, req)
-	if lockErr != nil {
-		return lockErr
-	}
-	defer releaseRunLock()
 
 	if igErr := req.GitSvc.EnsureLocalGitignore(); igErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: gitignore setup: %v\n", igErr)
@@ -1093,48 +1102,35 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 			}
 		})
 	}
-	var removeOnce sync.Once
-	removeWorktree := func() {
-		removeOnce.Do(func() {
-			if rmErr := req.GitSvc.RemoveWorktree(wt.path); rmErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to remove worktree: %v\n", rmErr)
-			}
-		})
-	}
-	cleanup := func() {
+	cleanup := func(remove bool) {
 		restoreCWD()
-		releaseRunLock()
-		removeWorktree()
-	}
-	preserveCleanup := func() {
-		restoreCWD()
-		releaseRunLock()
+		setupCleanup(remove)
 	}
 	finishState := worktreeFinishState{cleanup: worktreeCmuxFinishCleanup(
-		wt.resumed, o.Serve, restoreCWD, releaseRunLock, removeWorktree, closeLog,
+		wt.resumed, o.Serve, restoreCWD, cleanup, closeLog,
 		func() {
 			// During execution, resumed worktrees must survive interruption. Once execution has
 			// succeeded and only the dashboard is alive, force-exit cleanup may remove it too.
-			req.WtCleanup.set(cleanup)
+			req.WtCleanup.set(func() { cleanup(true) })
 		},
 	)}
 
 	setupDone = true // disable safety-net defer, main cleanup takes over
 	if wt.resumed {
-		req.WtCleanup.set(preserveCleanup)
+		req.WtCleanup.set(func() { cleanup(false) })
 		defer func() {
-			preserveCleanup()
 			// executePlan deliberately returns nil for a user abort. Use its internal completion
 			// outcome instead of the public return value so aborted work remains resumable.
 			if finishState.succeeded {
-				removeWorktree()
+				cleanup(true)
 				return
 			}
+			cleanup(false)
 			fmt.Fprintf(os.Stderr, "worktree preserved for resume: %s\n", wt.path)
 		}()
 	} else {
-		req.WtCleanup.set(cleanup)
-		defer cleanup()
+		req.WtCleanup.set(func() { cleanup(true) })
+		defer cleanup(true)
 	}
 
 	// commit plan file on the feature branch (inside worktree), not on the default branch
@@ -1183,7 +1179,7 @@ func (s *worktreeFinishState) beforeCmuxFinish(success bool) {
 
 func worktreeCmuxFinishCleanup(
 	resumed, serve bool,
-	restoreCWD, releaseRunLock, removeWorktree, closeLog, enableDeferredCleanup func(),
+	restoreCWD func(), cleanup func(remove bool), closeLog, enableDeferredCleanup func(),
 ) func(bool) {
 	return func(success bool) {
 		restoreCWD()
@@ -1191,10 +1187,7 @@ func worktreeCmuxFinishCleanup(
 		// plan-bearing worktree available to /api/plan; runWithWorktree's existing defer removes it
 		// when the dashboard exits. Failures never enter that idle period and retain normal cleanup.
 		if !serve || !success {
-			releaseRunLock()
-			if !resumed || success {
-				removeWorktree()
-			}
+			cleanup(!resumed || success)
 		}
 		closeLog()
 		if serve && success {
@@ -1209,102 +1202,72 @@ type worktreeRun struct {
 	gitSvc          *git.Service
 	planNeedsCommit bool
 	resumed         bool
-}
-
-func acquireAndRegisterWorktreeRunLock(wt worktreeRun, req executePlanRequest) (func(), error) {
-	release, err := git.AcquireWorktreeRunLock(wt.path)
-	if err != nil {
-		if wt.resumed {
-			var busyErr *git.ErrWorktreeBusy
-			if errors.As(err, &busyErr) {
-				return nil, worktreeBusyError(wt.path, busyErr.Info(), err)
-			}
-			return nil, fmt.Errorf("resume worktree: acquire run lock: %w", err)
-		}
-		return nil, fmt.Errorf("acquire run lock for newly created worktree: %w", err)
-	}
-
-	var releaseLockOnce sync.Once
-	releaseRunLock := func() {
-		releaseLockOnce.Do(func() {
-			if releaseErr := release(); releaseErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to release worktree run lock: %v\n", releaseErr)
-			}
-		})
-	}
-
-	// Cover setup errors and the force-exit window before cwd-aware cleanup is registered below.
-	// Releasing before removal matters on Windows, where an open lock file cannot be deleted.
-	if wt.resumed {
-		req.WtCleanup.set(releaseRunLock)
-	} else {
-		req.WtCleanup.set(func() {
-			releaseRunLock()
-			if rmErr := req.GitSvc.RemoveWorktree(wt.path); rmErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to remove worktree: %v\n", rmErr)
-			}
-		})
-	}
-	return releaseRunLock, nil
+	releaseRunLock  func()
 }
 
 // prepareWorktreeRun creates a new worktree or auto-resumes an existing target.
 // It never removes an existing worktree on error.
 func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktreeRun, error) {
-	return prepareWorktreeRunContext(context.Background(), o, req, branch)
+	wt, err := prepareWorktreeRunContext(context.Background(), o, req, branch)
+	if err != nil {
+		return worktreeRun{}, err
+	}
+	wt.releaseRunLock()
+	wt.releaseRunLock = nil
+	req.WtCleanup.set(nil)
+	return wt, nil
 }
 
-func prepareWorktreeRunContext(ctx context.Context, o opts, req executePlanRequest, branch string) (worktreeRun, error) {
-	wt := worktreeRun{
-		path: filepath.Join(req.GitSvc.Root(), ".loopai", "worktrees", branch),
-	}
-
-	_, statErr := os.Lstat(wt.path)
-	switch {
-	case statErr == nil:
-		wt.resumed = true
-		if err := requireResumeWorktree(wt.path); err != nil {
-			return worktreeRun{}, err
-		}
-	case os.IsNotExist(statErr), errors.Is(statErr, syscall.ENOTDIR):
-		var err error
-		wt.path, wt.planNeedsCommit, err = prepareFreshWorktree(ctx, o, req, branch)
-		if err != nil {
-			return worktreeRun{}, err
-		}
-		req.WtCleanup.set(func() {
-			if rmErr := req.GitSvc.RemoveWorktree(wt.path); rmErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to remove worktree: %v\n", rmErr)
-			}
-		})
-	default:
-		return worktreeRun{}, fmt.Errorf("inspect plan worktree %s: %w", wt.path, statErr)
-	}
-
-	wtSvc, err := git.NewService(wt.path, req.Colors.Info(), req.Config.VcsCommand)
+func prepareWorktreeRunContext(
+	ctx context.Context, o opts, req executePlanRequest, branch string,
+) (wt worktreeRun, err error) {
+	releaseCreationLock, err := req.GitSvc.AcquireWorktreeCreationLockContext(ctx)
 	if err != nil {
-		if wt.resumed {
-			return worktreeRun{}, fmt.Errorf("resume worktree: open existing worktree: %w", err)
-		}
-		_ = req.GitSvc.RemoveWorktree(wt.path)
-		return worktreeRun{}, fmt.Errorf("open worktree git service: %w", err)
+		return worktreeRun{}, fmt.Errorf("lock worktree preparation: %w", err)
 	}
-	wtSvc.SetCommitTrailer(req.Config.CommitTrailer)
-	wt.gitSvc = wtSvc
-	wt.planFile = resolveWorktreePlanFile(req.PlanFile, req.GitSvc.Root(), wtSvc.Root())
+	createdPath := ""
+	var releaseOnError func()
+	defer func() {
+		if err != nil {
+			if releaseOnError != nil {
+				releaseOnError()
+			}
+			if createdPath != "" {
+				if removeErr := req.GitSvc.RemoveWorktree(createdPath); removeErr != nil {
+					err = errors.Join(err, fmt.Errorf("remove worktree after preparation error: %w", removeErr))
+				}
+			}
+		}
+		if releaseErr := releaseCreationLock(); releaseErr != nil {
+			if err == nil && releaseOnError != nil {
+				releaseOnError()
+			}
+			err = errors.Join(err, releaseErr)
+		}
+	}()
+
+	wt, createdPath, err = prepareWorktreeTargetLocked(ctx, o, req, branch)
+	if err != nil {
+		return worktreeRun{}, err
+	}
+	wt, err = openAndLockWorktreeRun(ctx, req, wt)
+	if err != nil {
+		return worktreeRun{}, err
+	}
+	releaseOnError = wt.releaseRunLock
+	if wt.resumed {
+		req.WtCleanup.set(wt.releaseRunLock)
+	} else {
+		req.WtCleanup.set(func() {
+			removeWorktreeWithRunLock(req.GitSvc, wt.path, wt.releaseRunLock)
+		})
+	}
 
 	if !wt.resumed {
 		return wt, nil
 	}
 	if validationErr := validateResumeWorktree(wt, branch); validationErr != nil {
 		return worktreeRun{}, validationErr
-	}
-	busy, info, err := git.ProbeWorktreeRunLock(wt.path)
-	if err != nil {
-		return worktreeRun{}, fmt.Errorf("probe plan worktree run lock: %w", err)
-	}
-	if busy {
-		return worktreeRun{}, worktreeBusyError(wt.path, info, nil)
 	}
 	if o.Commit {
 		req.Colors.Warn().Printf("warning: -c/--commit is ignored when resuming interrupted worktree %s\n", wt.path)
@@ -1313,15 +1276,63 @@ func prepareWorktreeRunContext(ctx context.Context, o opts, req executePlanReque
 	return wt, nil
 }
 
-func worktreeBusyError(path, info string, cause error) error {
-	if info == "" {
-		info = "holder details unavailable"
+func prepareWorktreeTargetLocked(
+	ctx context.Context, o opts, req executePlanRequest, branch string,
+) (wt worktreeRun, createdPath string, err error) {
+	wt.path = filepath.Join(req.GitSvc.Root(), ".loopai", "worktrees", branch)
+	_, statErr := os.Lstat(wt.path)
+	switch {
+	case statErr == nil:
+		wt.resumed = true
+		if resumeErr := requireResumeWorktree(wt.path); resumeErr != nil {
+			return worktreeRun{}, "", resumeErr
+		}
+		return wt, "", nil
+	case os.IsNotExist(statErr), errors.Is(statErr, syscall.ENOTDIR):
+		wt.path, wt.planNeedsCommit, err = prepareFreshWorktree(ctx, o, req, branch)
+		if err != nil {
+			return worktreeRun{}, "", err
+		}
+		return wt, wt.path, nil
+	default:
+		return worktreeRun{}, "", fmt.Errorf("inspect plan worktree %s: %w", wt.path, statErr)
 	}
-	err := fmt.Errorf("plan worktree %s is busy: loopai is already running in it (%s)", path, info)
-	if cause != nil {
-		return fmt.Errorf("%w: %w", err, cause)
+}
+
+func openAndLockWorktreeRun(
+	ctx context.Context, req executePlanRequest, wt worktreeRun,
+) (worktreeRun, error) {
+	wtSvc, err := req.GitSvc.OpenWorktree(wt.path)
+	if err != nil {
+		if wt.resumed {
+			return worktreeRun{}, fmt.Errorf("resume worktree: open existing worktree: %w", err)
+		}
+		return worktreeRun{}, fmt.Errorf("open worktree git service: %w", err)
 	}
-	return err
+	wtSvc.SetCommitTrailer(req.Config.CommitTrailer)
+	wt.gitSvc = wtSvc
+	wt.planFile = resolveWorktreePlanFile(req.PlanFile, req.GitSvc.Root(), wtSvc.Root())
+
+	release, lockErr := wtSvc.AcquireWorktreeRunLockContext(ctx)
+	if lockErr != nil {
+		if wt.resumed {
+			var busyErr *git.ErrWorktreeBusy
+			if errors.As(lockErr, &busyErr) {
+				return worktreeRun{}, busyErr
+			}
+			return worktreeRun{}, fmt.Errorf("resume worktree: acquire run lock: %w", lockErr)
+		}
+		return worktreeRun{}, fmt.Errorf("acquire run lock for newly created worktree: %w", lockErr)
+	}
+	var releaseLockOnce sync.Once
+	wt.releaseRunLock = func() {
+		releaseLockOnce.Do(func() {
+			if releaseErr := release(); releaseErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to release worktree run lock: %v\n", releaseErr)
+			}
+		})
+	}
+	return wt, nil
 }
 
 // prepareWorktreeSource optionally commits the source checkout before a fresh worktree is cut.
@@ -1341,26 +1352,9 @@ func prepareWorktreeSource(o opts, req executePlanRequest, branch string) (bool,
 	return false, nil
 }
 
-// prepareFreshWorktree holds the repository lock across source mutation and branch creation.
+// prepareFreshWorktree mutates the source and creates the worktree while its caller holds the
+// repository worktree-preparation lock.
 func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, branch string) (path string, planNeedsCommit bool, err error) {
-	release, err := req.GitSvc.AcquireWorktreeCreationLockContext(ctx)
-	if err != nil {
-		return "", false, fmt.Errorf("lock worktree creation: %w", err)
-	}
-	defer func() {
-		if releaseErr := release(); releaseErr != nil && err == nil {
-			if path != "" {
-				if removeErr := req.GitSvc.RemoveWorktree(path); removeErr != nil {
-					err = errors.Join(releaseErr, fmt.Errorf("remove worktree after lock release failure: %w", removeErr))
-					return
-				}
-				path = ""
-				planNeedsCommit = false
-			}
-			err = releaseErr
-		}
-	}()
-
 	if preflightErr := req.GitSvc.PreflightWorktreeForPlanContext(ctx, req.PlanFile, req.BranchOverride); preflightErr != nil {
 		return "", false, fmt.Errorf("preflight worktree creation: %w", preflightErr)
 	}
@@ -1403,6 +1397,28 @@ func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, b
 		return "", false, fmt.Errorf("create worktree: %w", err)
 	}
 	return path, planNeedsCommit, nil
+}
+
+// removeWorktreeWithRunLock serializes the ownership handoff with worktree classification. The
+// run lock must be released before Git removes the private metadata on Windows, while the shared
+// preparation lock prevents another process from acquiring the run lock in that interval.
+func removeWorktreeWithRunLock(gitSvc *git.Service, path string, releaseRunLock func()) {
+	releasePreparationLock, err := gitSvc.AcquireWorktreeCreationLock()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to lock worktree removal: %v\n", err)
+		releaseRunLock()
+		return
+	}
+	defer func() {
+		if releaseErr := releasePreparationLock(); releaseErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to release worktree removal lock: %v\n", releaseErr)
+		}
+	}()
+
+	releaseRunLock()
+	if rmErr := gitSvc.RemoveWorktree(path); rmErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to remove worktree: %v\n", rmErr)
+	}
 }
 
 func requireResumeWorktree(path string) error {

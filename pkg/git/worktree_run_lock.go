@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -27,9 +26,9 @@ type ErrWorktreeBusy struct { //nolint:errname // public name is part of the wor
 
 func (e *ErrWorktreeBusy) Error() string {
 	if info := e.Info(); info != "" {
-		return fmt.Sprintf("worktree run lock %s is busy (%s)", e.Path, info)
+		return fmt.Sprintf("plan worktree %s is busy: loopai is already running in it (%s)", e.Path, info)
 	}
-	return fmt.Sprintf("worktree run lock %s is busy", e.Path)
+	return fmt.Sprintf("plan worktree %s is busy: loopai is already running in it (holder details unavailable)", e.Path)
 }
 
 // Info returns the validated diagnostic metadata recorded by the lock holder.
@@ -40,27 +39,38 @@ func (e *ErrWorktreeBusy) Info() string {
 	return fmt.Sprintf("pid=%d started=%s", e.PID, e.Started.Format(time.RFC3339))
 }
 
-// AcquireWorktreeRunLock acquires the non-blocking liveness lock for wtPath.
+// AcquireWorktreeRunLock acquires the non-blocking liveness lock for this worktree.
 // The returned function releases the lock and closes its file descriptor.
-func AcquireWorktreeRunLock(wtPath string) (func() error, error) {
-	lockFile, lockPath, err := openWorktreeRunLock(wtPath)
+func (s *Service) AcquireWorktreeRunLock() (func() error, error) {
+	return s.AcquireWorktreeRunLockContext(context.Background())
+}
+
+// AcquireWorktreeRunLockContext is AcquireWorktreeRunLock with cancellation support while
+// resolving the worktree's private Git directory through the configured VCS command.
+func (s *Service) AcquireWorktreeRunLockContext(ctx context.Context) (func() error, error) {
+	lockFile, err := s.openWorktreeRunLock(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return acquireWorktreeRunLockFile(lockFile, s.repo.root(), replaceLockFileContents)
+}
 
+func acquireWorktreeRunLockFile(
+	lockFile *os.File, worktreePath string, writeContents func(*os.File, string) error,
+) (func() error, error) {
 	acquired, err := tryLockRepositoryFile(lockFile)
 	if err != nil {
 		_ = lockFile.Close()
 		return nil, fmt.Errorf("acquire worktree run lock: %w", err)
 	}
 	if !acquired {
-		busyErr := readWorktreeBusyError(lockFile, lockPath)
+		busyErr := readWorktreeBusyError(lockFile, worktreePath)
 		_ = lockFile.Close()
 		return nil, busyErr
 	}
 
 	metadata := fmt.Sprintf("pid=%d started=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339))
-	if err := replaceLockFileContents(lockFile, metadata); err != nil {
+	if err := writeContents(lockFile, metadata); err != nil {
 		_ = unlockRepositoryFile(lockFile)
 		_ = lockFile.Close()
 		return nil, fmt.Errorf("write worktree run lock: %w", err)
@@ -79,70 +89,17 @@ func AcquireWorktreeRunLock(wtPath string) (func() error, error) {
 	}, nil
 }
 
-// ProbeWorktreeRunLock reports whether wtPath's run lock is currently held.
-// When busy, info contains validated pid and start-time diagnostics when available.
-func ProbeWorktreeRunLock(wtPath string) (busy bool, info string, err error) {
-	lockFile, lockPath, err := openWorktreeRunLock(wtPath)
+func (s *Service) openWorktreeRunLock(ctx context.Context) (*os.File, error) {
+	gitDir, err := s.repo.gitDir(ctx)
 	if err != nil {
-		return false, "", err
-	}
-
-	acquired, err := tryLockRepositoryFile(lockFile)
-	if err != nil {
-		_ = lockFile.Close()
-		return false, "", fmt.Errorf("probe worktree run lock: %w", err)
-	}
-	if !acquired {
-		busyErr := readWorktreeBusyError(lockFile, lockPath)
-		if closeErr := lockFile.Close(); closeErr != nil {
-			return false, "", fmt.Errorf("close worktree run lock after probe: %w", closeErr)
-		}
-		return true, busyErr.Info(), nil
-	}
-
-	unlockErr := unlockRepositoryFile(lockFile)
-	closeErr := lockFile.Close()
-	if unlockErr != nil {
-		return false, "", fmt.Errorf("release worktree run lock after probe: %w", unlockErr)
-	}
-	if closeErr != nil {
-		return false, "", fmt.Errorf("close worktree run lock after probe: %w", closeErr)
-	}
-	return false, "", nil
-}
-
-func openWorktreeRunLock(wtPath string) (*os.File, string, error) {
-	gitDir, err := worktreeGitDir(wtPath)
-	if err != nil {
-		return nil, "", err
+		return nil, fmt.Errorf("locate worktree Git directory: %w", err)
 	}
 	lockPath := filepath.Join(gitDir, worktreeRunLockName)
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // gitDir is resolved by Git
 	if err != nil {
-		return nil, "", fmt.Errorf("open worktree run lock: %w", err)
+		return nil, fmt.Errorf("open worktree run lock: %w", err)
 	}
-	return lockFile, lockPath, nil
-}
-
-func worktreeGitDir(wtPath string) (string, error) {
-	absPath, err := filepath.Abs(wtPath)
-	if err != nil {
-		return "", fmt.Errorf("resolve worktree path: %w", err)
-	}
-	cmd := exec.CommandContext(context.Background(), "git", "rev-parse", "--git-dir")
-	cmd.Dir = absPath
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		if detail := strings.TrimSpace(string(out)); detail != "" {
-			return "", fmt.Errorf("locate worktree Git directory: %s", detail)
-		}
-		return "", fmt.Errorf("locate worktree Git directory: %w", err)
-	}
-	gitDir := strings.TrimSpace(string(out))
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(absPath, gitDir)
-	}
-	return filepath.Clean(gitDir), nil
+	return lockFile, nil
 }
 
 func replaceLockFileContents(lockFile *os.File, contents string) error {
@@ -154,9 +111,6 @@ func replaceLockFileContents(lockFile *os.File, contents string) error {
 	}
 	if _, err := lockFile.WriteString(contents); err != nil {
 		return fmt.Errorf("write lock file: %w", err)
-	}
-	if err := lockFile.Sync(); err != nil {
-		return fmt.Errorf("sync lock file: %w", err)
 	}
 	return nil
 }
