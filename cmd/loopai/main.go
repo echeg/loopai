@@ -46,6 +46,7 @@ type opts struct {
 	ReviewModel             string        `long:"review-model" description:"model for review phases as model[:effort] (falls back to --task-model)"`
 	ClaudeCommand           string        `long:"claude-command" description:"override claude-compatible command for this run"`
 	ClaudeArgs              string        `long:"claude-args" description:"override claude-compatible command args for this run"`
+	CodexArgs               string        `long:"codex-args" description:"extra arguments appended to every codex invocation (additive; explicit -c values override loopai's)"`
 	ExternalReviewTool      string        `long:"external-review-tool" choice:"auto" choice:"claude" choice:"codex" choice:"custom" choice:"none" description:"override external review tool for this run"`
 	ExternalReviewModel     string        `long:"external-review-model" description:"external review model as model[:effort]"`
 	ExternalReviewers       string        `long:"external-reviewers" description:"ordered external reviewers as provider[:model[:effort]],..."`
@@ -100,6 +101,7 @@ type opts struct {
 
 	claudeCommandSet       bool
 	claudeArgsSet          bool
+	codexArgsSet           bool
 	externalReviewToolSet  bool
 	externalReviewModelSet bool
 	externalReviewersSet   bool
@@ -131,13 +133,14 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 	o.prSet = isFlagSet(parser, "pr")
 	o.claudeCommandSet = isFlagSet(parser, "claude-command")
 	o.claudeArgsSet = isFlagSet(parser, "claude-args")
+	o.codexArgsSet = isFlagSet(parser, "codex-args")
 	o.externalReviewToolSet = isFlagSet(parser, "external-review-tool")
 	o.externalReviewModelSet = isFlagSet(parser, "external-review-model")
 	o.externalReviewersSet = isFlagSet(parser, "external-reviewers")
 	o.customReviewScriptSet = isFlagSet(parser, "custom-review-script")
 	for _, name := range []string{
 		"max-iterations", "max-external-iterations", "review-patience",
-		"plan-model", "task-model", "review-model", "claude-command", "claude-args",
+		"plan-model", "task-model", "review-model", "claude-command", "claude-args", "codex-args",
 		"external-review-tool", "external-review-model", "external-reviewers", "custom-review-script",
 		"review", "external-only", "codex-only", "tasks-only", "base-ref", "wait",
 		"session-timeout", "idle-timeout", "skip-finalize", "preserve-anthropic-api-key",
@@ -2058,7 +2061,7 @@ func hasExecutionMode(o opts) bool {
 	for _, set := range []bool{
 		o.PlanFile != "", o.MaxIterations != 0, o.MaxExternalIterations != 0,
 		o.ReviewPatience != 0, o.PlanModel != "", o.TaskModel != "", o.ReviewModel != "",
-		o.ClaudeCommand != "", o.ClaudeArgs != "", o.ExternalReviewTool != "",
+		o.ClaudeCommand != "", o.ClaudeArgs != "", o.CodexArgs != "", o.ExternalReviewTool != "",
 		o.ExternalReviewModel != "", o.ExternalReviewers != "", o.CustomReviewScript != "",
 		o.PlanDescription != "", o.Review, o.ExternalOnly, o.CodexOnly, o.TasksOnly,
 		o.BaseRef != "", o.waitSet || o.Wait != 0, o.sessionTimeoutSet || o.SessionTimeout != 0,
@@ -4582,6 +4585,12 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 	if o.claudeArgsSet {
 		cfg.ClaudeArgs = o.ClaudeArgs
 		cfg.ClaudeArgsSet = true
+	}
+	if o.codexArgsSet {
+		// assigning unconditionally under the set guard is what clears an inherited
+		// config value on an explicit --codex-args=; empty extras append nothing, so
+		// unlike claude args there is nothing downstream that needs "set" vs "unset"
+		cfg.CodexArgs = o.CodexArgs
 	}
 	if err := applyExternalReviewCLIOverrides(o, cfg); err != nil {
 		return err

@@ -120,6 +120,7 @@ type Config struct {
 	CodexEnabled         bool   `json:"codex_enabled"`
 	CodexEnabledSet      bool   `json:"-"` // tracks if codex_enabled was explicitly set in config
 	CodexCommand         string `json:"codex_command"`
+	CodexArgs            string `json:"codex_args"`
 	CodexModel           string `json:"codex_model"`
 	CodexReasoningEffort string `json:"codex_reasoning_effort"`
 	CodexTimeoutMs       int    `json:"codex_timeout_ms"`
@@ -369,6 +370,7 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		CodexEnabled:            values.CodexEnabled,
 		CodexEnabledSet:         values.CodexEnabledSet,
 		CodexCommand:            values.CodexCommand,
+		CodexArgs:               values.CodexArgs,
 		CodexModel:              values.CodexModel,
 		CodexReasoningEffort:    values.CodexReasoningEffort,
 		CodexTimeoutMs:          values.CodexTimeoutMs,

@@ -33,6 +33,33 @@ executor       = codex
 pass_claude_md = true
 ```
 
+### Extra codex arguments
+
+`--codex-args`, or `codex_args` in config, appends extra arguments to every codex invocation loopai composes — both `--codex` phases and external codex review under a Claude primary. Unlike `claude_args`, which replaces the claude command's whole argument list, these are strictly additive and land after loopai's own `-c` overrides and sandbox flags, so an explicit `-c` value wins on key collision. An explicit `--codex-args=` clears a value inherited from configuration. The `codex-as-claude.sh` wrapper path below is unaffected; it uses `claude_args` and its own `CODEX_*` variables.
+
+```bash
+loopai --codex '--codex-args=-c service_tier="default"' docs/plans/feature.md
+```
+
+```ini
+codex_args = -c service_tier="default"
+```
+
+On the command line the value must be attached with `=`, as above: a value starting with `-` is otherwise read as the next option and loopai exits with `expected argument for flag '--codex-args'`. Quote the whole `--codex-args=...` token so the shell keeps it together.
+
+The value is tokenized like a shell word list, and quotes group whitespace but are then removed. Backslashes follow the same shell rules: literal inside single quotes, an escape for `"` and `\` inside double quotes, and an escape for the next character when unquoted, so `-c cwd="C:\work dir"` keeps its backslash. Codex parses each `-c` value as TOML and falls back to a literal string, which is what makes the example above work. A value whose TOML *type* depends on its quotes must escape them, or codex fails to load its config and every codex phase dies at startup — note that the `--pass-claude-md` override above is exactly this shape:
+
+```ini
+# wrong: reaches codex as [CLAUDE.md]
+codex_args = -c project_doc_fallback_filenames=["CLAUDE.md"]
+# right
+codex_args = -c project_doc_fallback_filenames=[\"CLAUDE.md\"]
+```
+
+Last-occurrence-wins covers `-c key=value` only. Repeating any flag loopai already passes — one that takes a value or a bare switch — is a fatal codex parse error rather than an override, so set `codex_sandbox` instead of putting `--sandbox` here. First-class `--codex` runs also pass `--dangerously-bypass-approvals-and-sandbox` whenever the effective sandbox is `danger-full-access` (the default for `--codex`), so repeating that one aborts every phase as well. Extras land after the `exec` subcommand, so an option that exists only on the top-level `codex` command (`--search`) is a fatal `unexpected argument` error rather than a pass-through; most global options (`-c`, `--model`, `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too. A bare positional token becomes `codex exec`'s prompt, and codex then appends the prompt loopai sends on stdin as a trailing `<stdin>` block, so the task instructions are demoted to an appendix of the stray token.
+
+Extras are trusted input, like `codex_command`. They also reach the external codex reviewer that loopai otherwise pins to a read-only sandbox so it can only report findings. loopai never emits `--dangerously-bypass-approvals-and-sandbox` on that path, so codex accepts it alongside the `--sandbox read-only` pin and putting it here gives the reviewer write access to the repository; a first-class `--codex` run rejects the same value as a duplicate flag only when its effective sandbox is `danger-full-access` (the `--codex` default), because that is when loopai emits the flag itself — with `codex_sandbox` set to anything else the primary executor accepts the bypass silently as well.
+
 ### Requirements
 
 `--codex` requires the codex CLI version 0.130.0 or newer. The mode relies on `[features] multi_agent`, `[agents.<name>]` agent registration, and (with `--pass-claude-md`) `project_doc_fallback_filenames` — all supported in 0.130.0. Older codex versions silently ignore unknown `-c` overrides, so a misconfigured run will not error visibly. There is no runtime version check; verify with `codex --version`.
@@ -89,7 +116,7 @@ loopai prompts instruct the agent to emit phase-specific signals such as `<<<RAL
 
 The prompt is passed via stdin (not as a CLI argument). This avoids the cmd.exe 8191-character command-line limit on Windows, where large prompts (e.g., after variable expansion) can exceed the limit.
 
-When `claude_args` has a value (default: `--dangerously-skip-permissions --output-format stream-json --verbose`), those flags are split and passed as arguments. Wrapper scripts should normally ignore unknown Claude flags. If a wrapper cannot tolerate configured/default arguments, use `--claude-args=` on the command line to explicitly clear them for a single run.
+When `claude_args` has a value (default: `--dangerously-skip-permissions --output-format stream-json --verbose`), those flags are split and passed as arguments. Splitting uses the same tokenizer as `codex_args`: quotes group whitespace and are then removed, and backslashes follow shell rules — literal inside single quotes, an escape for `"` and `\` inside double quotes, and an escape for the next character when unquoted. A backslash inside single quotes is therefore kept as a literal character rather than escaping what follows it. Wrapper scripts should normally ignore unknown Claude flags. If a wrapper cannot tolerate configured/default arguments, use `--claude-args=` on the command line to explicitly clear them for a single run.
 
 **Wrapper scripts should accept the prompt via stdin** and also accept `-p <prompt>` for backward compatibility. Use `[[ ! -t 0 ]]` to detect non-interactive stdin before reading. **Wrapper scripts should also ignore unknown flags gracefully** — use a catch-all `*) shift ;;` in the argument parser.
 

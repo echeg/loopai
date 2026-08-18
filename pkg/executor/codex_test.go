@@ -3653,3 +3653,116 @@ func TestCodexExecutor_firstRunHeaderEmission(t *testing.T) {
 		assert.Contains(t, secondCaptured, "Thinking", "bold summary still shown on second run")
 	})
 }
+
+func TestCodexExecutor_Run_ExtraArgs(t *testing.T) {
+	tests := []struct {
+		name      string
+		extraArgs string
+		newExec   func() *CodexExecutor // fresh instance per run; CodexExecutor holds a mutex and an atomic and cannot be copied
+		expect    []string              // exact tail expected after loopai's own args
+	}{
+		{
+			name:      "empty extras add nothing",
+			extraArgs: "",
+			expect:    nil,
+		},
+		{
+			name:      "whitespace-only extras add nothing",
+			extraArgs: "   ",
+			expect:    nil,
+		},
+		{
+			name:      "tab-only extras add nothing",
+			extraArgs: "\t\n",
+			expect:    nil,
+		},
+		{
+			// a tab folded into the neighboring token would make "b=2" a bare positional,
+			// which codex exec takes as its prompt and demotes loopai's stdin prompt to an appendix
+			name:      "tab separated extras stay separate tokens",
+			extraArgs: "-c a=1\t-c b=2",
+			expect:    []string{"-c", "a=1", "-c", "b=2"},
+		},
+		{
+			name:      "quoted value survives splitting",
+			extraArgs: `-c service_tier="default"`,
+			expect:    []string{"-c", "service_tier=default"},
+		},
+		{
+			name:      "value containing = survives intact",
+			extraArgs: `-c shell_environment_policy.set.FOO="a=b"`,
+			expect:    []string{"-c", "shell_environment_policy.set.FOO=a=b"},
+		},
+		{
+			name:      "quoted whitespace stays one argument",
+			extraArgs: `-c notify="say hi"`,
+			expect:    []string{"-c", "notify=say hi"},
+		},
+		{
+			name:      "multiple extras keep their order",
+			extraArgs: `-c service_tier="default" --color never`,
+			expect:    []string{"-c", "service_tier=default", "--color", "never"},
+		},
+		{
+			// splitArgs consumes unescaped quotes, so a TOML value whose type depends on
+			// them must be backslash-escaped: codex parses each -c value as TOML and a
+			// bare [CLAUDE.md] fails to load, taking the whole session with it
+			name:      "escaped quotes reach codex intact",
+			extraArgs: `-c project_doc_fallback_filenames=[\"CLAUDE.md\"]`,
+			expect:    []string{"-c", `project_doc_fallback_filenames=["CLAUDE.md"]`},
+		},
+		{
+			// extras are appended even on the findings-only reviewer, after its
+			// --sandbox read-only, so this flag defeats ForceReadOnly. codex accepts the
+			// two together (verified against codex-cli 0.147.0); pinned so the exposure
+			// is a deliberate documented property rather than an accident.
+			name:      "extras reach the ForceReadOnly reviewer and can bypass its sandbox",
+			extraArgs: "--dangerously-bypass-approvals-and-sandbox",
+			newExec: func() *CodexExecutor {
+				return &CodexExecutor{ForceReadOnly: true, Sandbox: "danger-full-access"}
+			},
+			expect: []string{"--dangerously-bypass-approvals-and-sandbox"},
+		},
+		{
+			name:      "extras land after loopai overrides so the user wins on collision",
+			extraArgs: `-c model="user-choice"`,
+			newExec: func() *CodexExecutor {
+				return &CodexExecutor{Model: "loopai-choice", ReasoningEffort: "high", ProjectDoc: "DOC.md", MultiAgent: true}
+			},
+			expect: []string{"-c", "model=user-choice"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var withExtras, without []string
+			mock := &mockCodexRunner{
+				runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
+					withExtras = args
+					return mockStreams("", "result"), mockWait(), nil
+				},
+			}
+			newExec := tt.newExec
+			if newExec == nil {
+				newExec = func() *CodexExecutor { return &CodexExecutor{} }
+			}
+
+			e := newExec()
+			e.runner, e.ExtraArgs = mock, tt.extraArgs
+			require.NoError(t, e.Run(context.Background(), "prompt").Error)
+
+			baseMock := &mockCodexRunner{
+				runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
+					without = args
+					return mockStreams("", "result"), mockWait(), nil
+				},
+			}
+			base := newExec()
+			base.runner = baseMock
+			require.NoError(t, base.Run(context.Background(), "prompt").Error)
+
+			// everything loopai composes itself stays byte-identical; extras are strictly appended
+			assert.Equal(t, append(without, tt.expect...), withExtras)
+		})
+	}
+}

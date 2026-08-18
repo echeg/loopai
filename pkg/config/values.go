@@ -27,6 +27,7 @@ type Values struct {
 	ClaudeRetryPatterns        []string
 	ClaudeSwapEnabled          bool
 	ClaudeSwapEnabledSet       bool
+	CodexArgs                  string
 	CodexEnabled               bool
 	CodexEnabledSet            bool // tracks if codex_enabled was explicitly set
 	CodexCommand               string
@@ -240,6 +241,9 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 	}
 	if key, err := section.GetKey("codex_command"); err == nil {
 		values.CodexCommand = key.String()
+	}
+	if key, err := section.GetKey("codex_args"); err == nil {
+		values.CodexArgs = key.String()
 	}
 	if key, err := section.GetKey("codex_model"); err == nil {
 		values.CodexModel = key.String()
@@ -494,12 +498,40 @@ func (dst *Values) mergeFrom(src *Values) {
 	if src.ReviewModel != "" {
 		dst.ReviewModel = src.ReviewModel
 	}
+	dst.mergeCodexFrom(src)
+	if src.ExternalReviewToolSet {
+		dst.ExternalReviewTool = src.ExternalReviewTool
+		dst.ExternalReviewToolSet = true
+	} else if src.ExternalReviewTool != "" {
+		dst.ExternalReviewTool = src.ExternalReviewTool
+	}
+	if src.ExternalReviewModelSet {
+		dst.ExternalReviewModel = src.ExternalReviewModel
+		dst.ExternalReviewModelSet = true
+	} else if src.ExternalReviewModel != "" {
+		dst.ExternalReviewModel = src.ExternalReviewModel
+	}
+	dst.mergeExternalReviewersFrom(src)
+	if src.CustomReviewScript != "" {
+		dst.CustomReviewScript = src.CustomReviewScript
+	}
+	dst.mergeExecutionFrom(src)
+	dst.mergeExtraFrom(src)
+	dst.mergeNotifyFrom(src)
+}
+
+// mergeCodexFrom merges codex executor fields from src into dst.
+// called from mergeFrom to manage cyclomatic complexity.
+func (dst *Values) mergeCodexFrom(src *Values) {
 	if src.CodexEnabledSet {
 		dst.CodexEnabled = src.CodexEnabled
 		dst.CodexEnabledSet = true
 	}
 	if src.CodexCommand != "" {
 		dst.CodexCommand = src.CodexCommand
+	}
+	if src.CodexArgs != "" {
+		dst.CodexArgs = src.CodexArgs
 	}
 	if src.CodexModelSet {
 		dst.CodexModel = src.CodexModel
@@ -523,25 +555,6 @@ func (dst *Values) mergeFrom(src *Values) {
 	} else if src.CodexSandbox != "" {
 		dst.CodexSandbox = src.CodexSandbox
 	}
-	if src.ExternalReviewToolSet {
-		dst.ExternalReviewTool = src.ExternalReviewTool
-		dst.ExternalReviewToolSet = true
-	} else if src.ExternalReviewTool != "" {
-		dst.ExternalReviewTool = src.ExternalReviewTool
-	}
-	if src.ExternalReviewModelSet {
-		dst.ExternalReviewModel = src.ExternalReviewModel
-		dst.ExternalReviewModelSet = true
-	} else if src.ExternalReviewModel != "" {
-		dst.ExternalReviewModel = src.ExternalReviewModel
-	}
-	dst.mergeExternalReviewersFrom(src)
-	if src.CustomReviewScript != "" {
-		dst.CustomReviewScript = src.CustomReviewScript
-	}
-	dst.mergeExecutionFrom(src)
-	dst.mergeExtraFrom(src)
-	dst.mergeNotifyFrom(src)
 }
 
 func (dst *Values) mergeExternalReviewersFrom(src *Values) {

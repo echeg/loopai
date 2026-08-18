@@ -524,6 +524,7 @@ func TestCloseoutRejectsExplicitZeroOrEmptyExecutionFlags(t *testing.T) {
 		{name: "clear with zero max iterations", args: []string{"--clear", "--max-iterations=0"}},
 		{name: "merge with zero review patience", args: []string{"--merge", "--review-patience=0"}},
 		{name: "pr with empty claude command", args: []string{"--pr", "--claude-command="}},
+		{name: "clear with empty codex args", args: []string{"--clear", "--codex-args="}},
 	}
 
 	for _, tt := range tests {
@@ -1400,6 +1401,44 @@ func TestProviderOverrideFlags(t *testing.T) {
 
 		assert.Empty(t, cfg.ClaudeArgs)
 		assert.True(t, cfg.ClaudeArgsSet)
+	})
+
+	t.Run("codex_args_overrides_config", func(t *testing.T) {
+		cfg := &config.Config{CodexArgs: `-c service_tier="flex"`}
+		o := parseTestOpts(t, `--codex-args=-c service_tier="default"`)
+
+		require.NoError(t, applyCLIOverrides(o, cfg))
+
+		assert.Equal(t, `-c service_tier="default"`, cfg.CodexArgs)
+	})
+
+	t.Run("empty_codex_args_clears_config", func(t *testing.T) {
+		cfg := &config.Config{CodexArgs: `-c service_tier="default"`}
+		o := parseTestOpts(t, "--codex-args=")
+
+		require.NoError(t, applyCLIOverrides(o, cfg))
+
+		assert.Empty(t, cfg.CodexArgs)
+	})
+
+	t.Run("detached_codex_args_value_is_rejected", func(t *testing.T) {
+		// realistic values start with "-", which go-flags reads as the next option unless the
+		// value is attached with "="; documented examples must use the attached form
+		var o opts
+		parser := flags.NewParser(&o, flags.Default&^flags.PrintErrors)
+		_, err := parser.ParseArgs([]string{"--codex-args", `-c service_tier="default"`})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "expected argument for flag")
+	})
+
+	t.Run("absent_codex_args_keeps_config", func(t *testing.T) {
+		cfg := &config.Config{CodexArgs: `-c service_tier="default"`}
+		o := parseTestOpts(t)
+
+		require.NoError(t, applyCLIOverrides(o, cfg))
+
+		assert.Equal(t, `-c service_tier="default"`, cfg.CodexArgs)
 	})
 
 	t.Run("external_review_tool_overrides_config", func(t *testing.T) {

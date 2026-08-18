@@ -115,22 +115,31 @@ func (r *execClaudeRunner) Run(ctx context.Context, name string, args ...string)
 	return stdout, cleanup.Wait, nil
 }
 
-// splitArgs splits a space-separated argument string into a slice.
-// handles quoted strings (both single and double quotes).
+// splitArgs splits a whitespace-separated argument string into a slice. any unquoted,
+// unescaped ASCII whitespace separates tokens, not just the space: a tab or newline reaching
+// here from a config value would otherwise be folded into the neighboring token, and for
+// codex_args that turns a stray `-c a=1\t-c b=2` into a bare positional codex exec takes as
+// its prompt, silently demoting the one loopai sends on stdin.
+// handles quoted strings (both single and double quotes) with POSIX-shell backslash rules:
+// outside quotes a backslash escapes the next rune, inside double quotes it escapes only `"`
+// and `\`, and inside single quotes it is literal. anything else keeps the backslash, so
+// Windows paths and other literal backslashes survive (`-c cwd="C:\work dir"`) while the
+// documented quote-escaping recipes (`-c key=[\"CLAUDE.md\"]`) still work.
 func splitArgs(s string) []string {
 	var args []string
 	var current strings.Builder
 	var inQuote rune
 	var escaped bool
 
-	for _, r := range s {
+	runes := []rune(s)
+	for i, r := range runes {
 		if escaped {
 			current.WriteRune(r)
 			escaped = false
 			continue
 		}
 
-		if r == '\\' {
+		if r == '\\' && backslashEscapes(inQuote, runes, i) {
 			escaped = true
 			continue
 		}
@@ -147,7 +156,7 @@ func splitArgs(s string) []string {
 			continue
 		}
 
-		if r == ' ' && inQuote == 0 {
+		if isArgSeparator(r) && inQuote == 0 {
 			if current.Len() > 0 {
 				args = append(args, current.String())
 				current.Reset()
@@ -163,6 +172,33 @@ func splitArgs(s string) []string {
 	}
 
 	return args
+}
+
+// isArgSeparator reports whether r separates tokens outside quotes. deliberately the ASCII
+// whitespace set and not unicode.IsSpace: no shell splits on U+00A0 and friends, and a
+// non-breaking or thin space pasted from rendered documentation into an unquoted value would
+// otherwise break the token in two, leaving the tail as the bare positional codex exec takes
+// as its prompt — the exact failure the whitespace split exists to prevent.
+func isArgSeparator(r rune) bool {
+	return strings.ContainsRune(" \t\n\v\f\r", r)
+}
+
+// backslashEscapes reports whether the backslash at runes[i] starts an escape sequence,
+// given the quote context. a trailing backslash with nothing to escape stays literal.
+func backslashEscapes(inQuote rune, runes []rune, i int) bool {
+	if i+1 >= len(runes) {
+		return false
+	}
+	switch inQuote {
+	case '\'':
+		// single quotes are literal in POSIX shells, backslash included
+		return false
+	case '"':
+		next := runes[i+1]
+		return next == '"' || next == '\\'
+	default:
+		return true
+	}
 }
 
 // stripFlag removes all occurrences of a flag and its value from args. Handles three forms:

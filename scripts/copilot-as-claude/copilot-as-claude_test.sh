@@ -105,13 +105,13 @@ EOF
 output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/signal_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "test prompt" 2>/dev/null)
 
-if echo "$output" | grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>'; then
+if grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>' <<< "$output"; then
     pass "ALL_TASKS_DONE signal preserved in output"
 else
     fail "ALL_TASKS_DONE signal not found in output" "got: $output"
 fi
 
-signal_event=$(echo "$output" | grep 'ALL_TASKS_DONE' | head -1)
+signal_event=$(grep -m1 'ALL_TASKS_DONE' <<< "$output")
 if echo "$signal_event" | jq -e '.type == "content_block_delta"' >/dev/null 2>&1; then
     pass "signal emitted as content_block_delta event"
 else
@@ -131,7 +131,7 @@ EOF
 output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/review_done_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "review prompt <<<RALPHEX:REVIEW_DONE>>>" 2>/dev/null)
 
-if echo "$output" | grep -q '<<<RALPHEX:REVIEW_DONE>>>'; then
+if grep -q '<<<RALPHEX:REVIEW_DONE>>>' <<< "$output"; then
     pass "REVIEW_DONE signal preserved in output"
 else
     fail "REVIEW_DONE signal not found in output" "got: $output"
@@ -149,7 +149,7 @@ EOF
 output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/task_failed_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "failure prompt" 2>/dev/null)
 
-if echo "$output" | grep -q '<<<RALPHEX:TASK_FAILED>>>'; then
+if grep -q '<<<RALPHEX:TASK_FAILED>>>' <<< "$output"; then
     pass "TASK_FAILED signal preserved in output"
 else
     fail "TASK_FAILED signal not found in output" "got: $output"
@@ -169,7 +169,7 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/non_json_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "test prompt" 2>/dev/null)
 
 raw_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$raw_text" | grep -q 'raw progress line from copilot'; then
+if grep -q 'raw progress line from copilot' <<< "$raw_text"; then
     pass "non-JSON lines are emitted as text deltas"
 else
     fail "non-JSON line was not emitted" "got: $output"
@@ -191,7 +191,7 @@ output=$(printf '%s' "prompt from stdin" | \
     MOCK_STDOUT_FILE="$TMPDIR_TEST/minimal_events.jsonl" \
     run_wrapper bash "$WRAPPER" --dangerously-skip-permissions --output-format stream-json --verbose 2>/dev/null)
 
-if echo "$output" | grep -q '"content_block_delta"'; then
+if grep -q '"content_block_delta"' <<< "$output"; then
     pass "stdin prompt produces output"
 else
     fail "wrapper failed with stdin prompt" "got: $output"
@@ -214,18 +214,18 @@ MOCK_STDOUT_FILE="$TMPDIR_TEST/minimal_events.jsonl" \
 
 if [[ -f "$TMPDIR_TEST/copilot_args" ]]; then
     recorded_args=$(tr '\n' ' ' < "$TMPDIR_TEST/copilot_args")
-    if echo "$recorded_args" | grep -q -- '-s ' && \
-        echo "$recorded_args" | grep -q -- '--output-format json' && \
-        echo "$recorded_args" | grep -q -- '--stream on' && \
-        echo "$recorded_args" | grep -q -- '--autopilot' && \
-        echo "$recorded_args" | grep -q -- '--no-ask-user' && \
-        echo "$recorded_args" | grep -q -- '--allow-all'; then
+    if grep -q -- '-s ' <<< "$recorded_args" && \
+        grep -q -- '--output-format json' <<< "$recorded_args" && \
+        grep -q -- '--stream on' <<< "$recorded_args" && \
+        grep -q -- '--autopilot' <<< "$recorded_args" && \
+        grep -q -- '--no-ask-user' <<< "$recorded_args" && \
+        grep -q -- '--allow-all' <<< "$recorded_args"; then
         pass "non-plan wrapper passes required Copilot JSON, autopilot, and autonomy flags"
     else
         fail "required Copilot flags missing" "args: $recorded_args"
     fi
 
-    if echo "$recorded_args" | grep -q -- '-p'; then
+    if grep -q -- '-p' <<< "$recorded_args"; then
         fail "prompt should not be passed via -p to copilot" "args: $recorded_args"
     else
         pass "prompt is not passed via -p"
@@ -252,7 +252,7 @@ COPILOT_MODEL="gpt-5.4" \
 
 if [[ -f "$TMPDIR_TEST/copilot_args" ]]; then
     recorded_args=$(tr '\n' ' ' < "$TMPDIR_TEST/copilot_args")
-    if echo "$recorded_args" | grep -q -- '--model gpt-5.4'; then
+    if grep -q -- '--model gpt-5.4' <<< "$recorded_args"; then
         pass "COPILOT_MODEL forwards to --model"
     else
         fail "COPILOT_MODEL should forward to --model" "args: $recorded_args"
@@ -272,18 +272,18 @@ MOCK_STDOUT_FILE="$TMPDIR_TEST/minimal_events.jsonl" \
 
 if [[ -f "$TMPDIR_TEST/copilot_args" ]]; then
     recorded_args=$(tr '\n' ' ' < "$TMPDIR_TEST/copilot_args")
-    if echo "$recorded_args" | grep -q -- '-s ' && \
-        echo "$recorded_args" | grep -q -- '--output-format json' && \
-        echo "$recorded_args" | grep -q -- '--stream on' && \
-        echo "$recorded_args" | grep -q -- '--autopilot' && \
-        echo "$recorded_args" | grep -q -- '--allow-all'; then
+    if grep -q -- '-s ' <<< "$recorded_args" && \
+        grep -q -- '--output-format json' <<< "$recorded_args" && \
+        grep -q -- '--stream on' <<< "$recorded_args" && \
+        grep -q -- '--autopilot' <<< "$recorded_args" && \
+        grep -q -- '--allow-all' <<< "$recorded_args"; then
         pass "plan mode wrapper passes JSON, autopilot, and allow-all flags"
     else
         fail "required plan mode flags missing" "args: $recorded_args"
     fi
 
-    if echo "$recorded_args" | grep -q -- '--no-ask-user' || \
-        echo "$recorded_args" | grep -q -- '--mode plan'; then
+    if grep -q -- '--no-ask-user' <<< "$recorded_args" || \
+        grep -q -- '--mode plan' <<< "$recorded_args"; then
         fail "plan mode should not use question suppression or native plan mode" "args: $recorded_args"
     else
         pass "plan mode omits no-ask-user and native plan mode"
@@ -322,7 +322,7 @@ else
 fi
 
 completed_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta" and .delta.text != "") | .delta.text')
-if echo "$completed_text" | grep -q '^TASK OVERVIEW:'; then
+if grep -q '^TASK OVERVIEW:' <<< "$completed_text"; then
     pass "non-plan mode preserves completed assistant message text"
 else
     fail "completed assistant message text missing" "text: $completed_text"
@@ -351,19 +351,19 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/first_turn_only_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "regular task prompt" 2>/dev/null)
 
 turn_messages=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$turn_messages" | grep -q 'I found the moved plan in docs/plans/completed.'; then
+if grep -q 'I found the moved plan in docs/plans/completed.' <<< "$turn_messages"; then
     pass "first assistant turn is preserved"
 else
     fail "first assistant turn missing" "output: $turn_messages"
 fi
 
-if echo "$turn_messages" | grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>'; then
+if grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>' <<< "$turn_messages"; then
     pass "wrapper preserves later autonomous completion signal"
 else
     fail "wrapper should preserve later autonomous completion signal" "output: $turn_messages"
 fi
 
-if echo "$turn_messages" | grep -q 'Continuing autonomously (1 premium request)'; then
+if grep -q 'Continuing autonomously (1 premium request)' <<< "$turn_messages"; then
     pass "wrapper preserves cross-turn session progress text"
 else
     fail "wrapper should preserve cross-turn session progress text" "output: $turn_messages"
@@ -388,14 +388,14 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/ignore_tool_request_turns_events.jsonl" 
     run_wrapper bash "$WRAPPER" -p "regular task prompt" 2>/dev/null)
 
 visible_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$visible_text" | grep -q 'Let me first examine the existing code structure:' && \
-    echo "$visible_text" | grep -q 'I found the plan under docs/plans/completed and every task section is already checked off.'; then
+if grep -q 'Let me first examine the existing code structure:' <<< "$visible_text" && \
+    grep -q 'I found the plan under docs/plans/completed and every task section is already checked off.' <<< "$visible_text"; then
     pass "wrapper preserves tool-request turn output and later analysis turn output"
 else
     fail "expected both tool-request and later analysis turn output" "output: $visible_text"
 fi
 
-if echo "$visible_text" | grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>'; then
+if grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>' <<< "$visible_text"; then
     pass "wrapper preserves later completion signal after tool-request turn"
 else
     fail "wrapper should preserve later completion signal after tool-request turn" "output: $visible_text"
@@ -424,19 +424,19 @@ else
 fi
 
 question_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta" and .delta.text != "") | .delta.text')
-if echo "$question_text" | grep -q 'chunk-one\|chunk-two'; then
+if grep -q 'chunk-one\|chunk-two' <<< "$question_text"; then
     fail "plan mode should suppress assistant.message_delta chunks" "text: $question_text"
 else
     pass "plan mode suppresses assistant.message_delta chunks"
 fi
 
-if echo "$question_text" | grep -q '<<<RALPHEX:QUESTION>>>'; then
+if grep -q '<<<RALPHEX:QUESTION>>>' <<< "$question_text"; then
     pass "plan mode preserves QUESTION block"
 else
     fail "QUESTION block not found in plan mode output" "text: $question_text"
 fi
 
-if echo "$question_text" | grep -q 'Continuing autonomously\|Wrong Draft\|post-boundary noise'; then
+if grep -q 'Continuing autonomously\|Wrong Draft\|post-boundary noise' <<< "$question_text"; then
     fail "plan mode should truncate output at QUESTION boundary" "text: $question_text"
 else
     pass "plan mode truncates output at QUESTION boundary"
@@ -457,13 +457,13 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/plan_draft_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "$plan_prompt" 2>/dev/null)
 
 draft_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta" and .delta.text != "") | .delta.text')
-if echo "$draft_text" | grep -q '<<<RALPHEX:PLAN_DRAFT>>>'; then
+if grep -q '<<<RALPHEX:PLAN_DRAFT>>>' <<< "$draft_text"; then
     pass "plan mode preserves PLAN_DRAFT block"
 else
     fail "PLAN_DRAFT block not found in plan mode output" "text: $draft_text"
 fi
 
-if echo "$draft_text" | grep -q 'draft-chunk\|extra trailing text\|late noise'; then
+if grep -q 'draft-chunk\|extra trailing text\|late noise' <<< "$draft_text"; then
     fail "plan mode should truncate output at PLAN_DRAFT boundary" "text: $draft_text"
 else
     pass "plan mode truncates output at PLAN_DRAFT boundary"
@@ -501,19 +501,19 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/plan_ready_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "$plan_prompt" 2>/dev/null)
 
 ready_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta" and .delta.text != "") | .delta.text')
-if echo "$ready_text" | grep -q '<<<RALPHEX:PLAN_READY>>>'; then
+if grep -q '<<<RALPHEX:PLAN_READY>>>' <<< "$ready_text"; then
     pass "plan mode preserves PLAN_READY signal"
 else
     fail "PLAN_READY signal not found in plan mode output" "text: $ready_text"
 fi
 
-if echo "$ready_text" | grep -q 'docs/plans/test plan.md'; then
+if grep -q 'docs/plans/test plan.md' <<< "$ready_text"; then
     pass "plan mode preserves plan path text before PLAN_READY"
 else
     fail "plan mode should preserve plan path text before PLAN_READY" "text: $ready_text"
 fi
 
-if echo "$ready_text" | grep -q 'Continuing autonomously\|Implemented app.py\|late session noise'; then
+if grep -q 'Continuing autonomously\|Implemented app.py\|late session noise' <<< "$ready_text"; then
     fail "plan mode should truncate output at PLAN_READY" "text: $ready_text"
 else
     pass "plan mode truncates output at PLAN_READY"
@@ -580,8 +580,8 @@ output=$(cd "$TMPDIR_TEST" && \
 wait "$writer_pid"
 
 fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$fallback_text" | grep -q "^$generated_plan_path$" && \
-    echo "$fallback_text" | grep -q '<<<RALPHEX:PLAN_READY>>>'; then
+if grep -q "^$generated_plan_path$" <<< "$fallback_text" && \
+    grep -q '<<<RALPHEX:PLAN_READY>>>' <<< "$fallback_text"; then
     pass "wrapper synthesizes PLAN_READY after accepted draft matching-file write"
 else
     fail "wrapper should synthesize PLAN_READY after accepted draft matching-file write" "text: $fallback_text"
@@ -624,7 +624,7 @@ output=$(cd "$TMPDIR_TEST" && \
 wait "$writer_pid"
 
 fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$fallback_text" | grep -q '<<<RALPHEX:PLAN_READY>>>'; then
+if grep -q '<<<RALPHEX:PLAN_READY>>>' <<< "$fallback_text"; then
     fail "wrapper should ignore unrelated new plan files" "text: $fallback_text"
 else
     pass "wrapper ignores unrelated new plan files"
@@ -668,8 +668,8 @@ output=$(cd "$basename_project" && \
 wait "$writer_pid"
 
 fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$fallback_text" | grep -q '^plans/from-basename.md$' && \
-    echo "$fallback_text" | grep -q '<<<RALPHEX:PLAN_READY>>>'; then
+if grep -q '^plans/from-basename.md$' <<< "$fallback_text" && \
+    grep -q '<<<RALPHEX:PLAN_READY>>>' <<< "$fallback_text"; then
     pass "wrapper resolves basename progress paths from .loopai/progress"
 else
     fail "wrapper should resolve basename progress paths from .loopai/progress" "text: $fallback_text"
@@ -706,8 +706,8 @@ output=$(cd "$scan_project" && \
 wait "$writer_pid"
 
 fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$fallback_text" | grep -q '^plans/from-scan.md$' && \
-    echo "$fallback_text" | grep -q '<<<RALPHEX:PLAN_READY>>>'; then
+if grep -q '^plans/from-scan.md$' <<< "$fallback_text" && \
+    grep -q '<<<RALPHEX:PLAN_READY>>>' <<< "$fallback_text"; then
     pass "wrapper discovers the latest plan progress file under .loopai/progress"
 else
     fail "wrapper should discover plan progress under .loopai/progress" "text: $fallback_text"
@@ -750,7 +750,7 @@ output=$(cd "$prune_project" && \
 wait "$writer_pid"
 
 fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$fallback_text" | grep -q '<<<RALPHEX:PLAN_READY>>>'; then
+if grep -q '<<<RALPHEX:PLAN_READY>>>' <<< "$fallback_text"; then
     fail "wrapper should prune matching plans inside .loopai" "text: $fallback_text"
 else
     pass "wrapper prunes matching plans inside .loopai"
@@ -770,17 +770,17 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/native_ask_user_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "$plan_prompt" 2>/dev/null)
 
 native_question_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$native_question_text" | grep -Fq '<<<RALPHEX:QUESTION>>>' && \
-    echo "$native_question_text" | grep -Fq '"question":"Which deployment mode?"' && \
-    echo "$native_question_text" | grep -Fq '"Docker"' && \
-    echo "$native_question_text" | grep -Fq '"Systemd"' && \
-    ! echo "$native_question_text" | grep -Fq '"null"'; then
+if grep -Fq '<<<RALPHEX:QUESTION>>>' <<< "$native_question_text" && \
+    grep -Fq '"question":"Which deployment mode?"' <<< "$native_question_text" && \
+    grep -Fq '"Docker"' <<< "$native_question_text" && \
+    grep -Fq '"Systemd"' <<< "$native_question_text" && \
+    ! grep -Fq '"null"' <<< "$native_question_text"; then
     pass "wrapper translates native ask_user tool requests into QUESTION signals"
 else
     fail "wrapper should translate native ask_user tool requests into QUESTION signals" "text: $native_question_text"
 fi
 
-if echo "$native_question_text" | grep -q 'late native question noise'; then
+if grep -q 'late native question noise' <<< "$native_question_text"; then
     fail "wrapper should stop after translated native question" "text: $native_question_text"
 else
     pass "wrapper truncates output after translated native question"
@@ -808,7 +808,7 @@ else
 fi
 
 native_question_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$native_question_text" | grep -q 'without concrete options'; then
+if grep -q 'without concrete options' <<< "$native_question_text"; then
     pass "unsupported native ask_user requests emit a clear error"
 else
     fail "unsupported native ask_user requests should emit a clear error" "text: $native_question_text"
@@ -829,9 +829,9 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/session_status_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "test prompt" 2>/dev/null)
 
 status_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta" and .delta.text != "") | .delta.text')
-if echo "$status_text" | grep -q 'warning: review quota nearly exhausted' && \
-    echo "$status_text" | grep -q 'error: transient failure' && \
-    echo "$status_text" | grep -q 'info: continuing'; then
+if grep -q 'warning: review quota nearly exhausted' <<< "$status_text" && \
+    grep -q 'error: transient failure' <<< "$status_text" && \
+    grep -q 'info: continuing' <<< "$status_text"; then
     pass "session warning, error, and info text are forwarded"
 else
     fail "session status text should be forwarded" "text: $status_text"
@@ -850,13 +850,13 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/minimal_events.jsonl" \
     MOCK_STDERR_FILE="$TMPDIR_TEST/stderr_content.txt" \
     run_wrapper bash "$WRAPPER" -p "test prompt" 2>/dev/null)
 
-if echo "$output" | grep -q 'rate limit exceeded'; then
+if grep -q 'rate limit exceeded' <<< "$output"; then
     pass "stderr content emitted in output stream"
 else
     fail "stderr content not found in output" "got: $output"
 fi
 
-stderr_event=$(echo "$output" | grep 'rate limit exceeded' | head -1)
+stderr_event=$(grep -m1 'rate limit exceeded' <<< "$output")
 if echo "$stderr_event" | jq -e '.type == "content_block_delta"' >/dev/null 2>&1; then
     pass "stderr emitted as content_block_delta event"
 else
@@ -900,14 +900,14 @@ escaped_tab='\t'
 combined_text=$(echo "$output" | jq -r 'select(.type == "content_block_delta") | .delta.text' 2>/dev/null | tr -d '\n')
 if [[ "$combined_text" == *"$tab_char"* || "$combined_text" == *"$escaped_tab"* ]]; then
     fail "leading tabs not stripped from output" "text: $combined_text"
-elif echo "$combined_text" | grep -q 'All tests pass'; then
+elif grep -q 'All tests pass' <<< "$combined_text"; then
     pass "leading tabs stripped from assistant.message content"
 else
     fail "expected tab-normalized text not found" "got: $combined_text"
 fi
 
 # verify clean line is preserved
-if echo "$combined_text" | grep -q 'Clean line'; then
+if grep -q 'Clean line' <<< "$combined_text"; then
     pass "non-indented lines preserved after tab stripping"
 else
     fail "non-indented line missing after tab stripping" "got: $combined_text"
@@ -933,7 +933,7 @@ while IFS= read -r text_line || [[ -n "$text_line" ]]; do
 done <<< "$raw_text"
 if [[ "$has_trailing_tab" -eq 1 ]]; then
     fail "trailing tabs not stripped from output" "raw text: $raw_text"
-elif echo "$raw_text" | grep -q 'Line with trailing tab'; then
+elif grep -q 'Line with trailing tab' <<< "$raw_text"; then
     pass "trailing tabs stripped from assistant.message content"
 else
     fail "expected trailing-tab-normalized text not found" "got: $raw_text"
@@ -1022,19 +1022,19 @@ MOCK_STDOUT_FILE="$TMPDIR_TEST/review_done_events.jsonl" \
 
 if [[ -f "$TMPDIR_TEST/copilot_stdin" ]]; then
     captured_prompt=$(cat "$TMPDIR_TEST/copilot_stdin")
-    if echo "$captured_prompt" | grep -q 'loopai review adapter for GitHub Copilot CLI'; then
+    if grep -q 'loopai review adapter for GitHub Copilot CLI' <<< "$captured_prompt"; then
         pass "review adapter prepended to review prompt"
     else
         fail "review adapter not prepended" "prompt: $captured_prompt"
     fi
-    if echo "$captured_prompt" | grep -q 'FORMATTING RULE (strict)'; then
+    if grep -q 'FORMATTING RULE (strict)' <<< "$captured_prompt"; then
         pass "formatting rule included in review adapter"
     else
         fail "formatting rule missing from review adapter" "prompt: $captured_prompt"
     fi
     # formatting rule must appear before the loopai adapter section
-    fmt_pos=$(echo "$captured_prompt" | grep -n 'FORMATTING RULE' | head -1 | cut -d: -f1)
-    adapter_pos=$(echo "$captured_prompt" | grep -n 'loopai review adapter' | head -1 | cut -d: -f1)
+    fmt_pos=$(grep -m1 -n 'FORMATTING RULE' <<< "$captured_prompt" | cut -d: -f1)
+    adapter_pos=$(grep -m1 -n 'loopai review adapter' <<< "$captured_prompt" | cut -d: -f1)
     if [[ -n "$fmt_pos" && -n "$adapter_pos" && "$fmt_pos" -lt "$adapter_pos" ]]; then
         pass "formatting rule precedes adapter instructions"
     else
@@ -1050,7 +1050,7 @@ MOCK_STDOUT_FILE="$TMPDIR_TEST/minimal_events.jsonl" \
 
 if [[ -f "$TMPDIR_TEST/copilot_stdin" ]]; then
     captured_prompt=$(cat "$TMPDIR_TEST/copilot_stdin")
-    if echo "$captured_prompt" | grep -q 'loopai review adapter for GitHub Copilot CLI'; then
+    if grep -q 'loopai review adapter for GitHub Copilot CLI' <<< "$captured_prompt"; then
         fail "review adapter should not be added to non-review prompts" "prompt: $captured_prompt"
     else
         pass "review adapter omitted for non-review prompts"
@@ -1068,62 +1068,62 @@ MOCK_STDOUT_FILE="$TMPDIR_TEST/minimal_events.jsonl" \
 
 if [[ -f "$TMPDIR_TEST/copilot_stdin" ]]; then
     captured_prompt=$(cat "$TMPDIR_TEST/copilot_stdin")
-    if echo "$captured_prompt" | grep -q 'FORMATTING RULE (strict)'; then
+    if grep -q 'FORMATTING RULE (strict)' <<< "$captured_prompt"; then
         pass "plan adapter formatting rule prepended to plan prompt"
     else
         fail "plan adapter formatting rule not prepended" "prompt start: ${captured_prompt:0:200}"
     fi
-    if echo "$captured_prompt" | grep -q 'plain text only'; then
+    if grep -q 'plain text only' <<< "$captured_prompt"; then
         pass "plan adapter instructs plain text for analysis"
     else
         fail "plan adapter plain text instruction missing" "prompt: ${captured_prompt:0:200}"
     fi
-    if echo "$captured_prompt" | grep -q 'PLAN REVIEW RULE'; then
+    if grep -q 'PLAN REVIEW RULE' <<< "$captured_prompt"; then
         pass "plan adapter requires PLAN_DRAFT before PLAN_READY"
     else
         fail "plan adapter missing PLAN_DRAFT-before-PLAN_READY rule" "prompt: ${captured_prompt:0:400}"
     fi
-    if echo "$captured_prompt" | grep -q 'do NOT emit another PLAN_DRAFT'; then
+    if grep -q 'do NOT emit another PLAN_DRAFT' <<< "$captured_prompt"; then
         pass "plan adapter forbids repeat draft after accept"
     else
         fail "plan adapter should forbid repeat draft after accept" "prompt: ${captured_prompt:0:600}"
     fi
-    if echo "$captured_prompt" | grep -q 'QUESTION RULE'; then
+    if grep -q 'QUESTION RULE' <<< "$captured_prompt"; then
         pass "plan adapter adds explicit question rule"
     else
         fail "plan adapter missing question rule" "prompt: ${captured_prompt:0:500}"
     fi
-    if echo "$captured_prompt" | grep -q 'ask_user tool'; then
+    if grep -q 'ask_user tool' <<< "$captured_prompt"; then
         pass "plan adapter forbids native ask_user tool"
     else
         fail "plan adapter should forbid native ask_user tool" "prompt: ${captured_prompt:0:500}"
     fi
-    if echo "$captured_prompt" | grep -q 'implementation-blocking uncertainty'; then
+    if grep -q 'implementation-blocking uncertainty' <<< "$captured_prompt"; then
         pass "plan adapter forbids unresolved blockers in drafts"
     else
         fail "plan adapter missing unresolved blocker rule" "prompt: ${captured_prompt:0:500}"
     fi
-    if echo "$captured_prompt" | grep -q 'existing plan file'; then
+    if grep -q 'existing plan file' <<< "$captured_prompt"; then
         pass "plan adapter covers existing plan file case"
     else
         fail "plan adapter does not cover existing plan file case" "prompt: ${captured_prompt:0:400}"
     fi
-    if echo "$captured_prompt" | grep -q 'do NOT modify it'; then
+    if grep -q 'do NOT modify it' <<< "$captured_prompt"; then
         pass "plan adapter keeps existing-plan handling read-only"
     else
         fail "plan adapter should keep existing-plan handling read-only" "prompt: ${captured_prompt:0:600}"
     fi
-    if echo "$captured_prompt" | grep -q 'exact plan path'; then
+    if grep -q 'exact plan path' <<< "$captured_prompt"; then
         pass "plan adapter requires exact path before direct PLAN_READY"
     else
         fail "plan adapter missing exact path fallback for direct PLAN_READY" "prompt: ${captured_prompt:0:500}"
     fi
-    if echo "$captured_prompt" | grep -q 'present them inside a PLAN_DRAFT'; then
+    if grep -q 'present them inside a PLAN_DRAFT' <<< "$captured_prompt"; then
         fail "plan adapter should not re-draft existing plans" "prompt: ${captured_prompt:0:700}"
     else
         pass "plan adapter avoids re-drafting existing plans"
     fi
-    if echo "$captured_prompt" | grep -q 'loopai review adapter for GitHub Copilot CLI'; then
+    if grep -q 'loopai review adapter for GitHub Copilot CLI' <<< "$captured_prompt"; then
         fail "review adapter should not be added to plan prompts"
     else
         pass "review adapter omitted for plan prompts"
@@ -1139,7 +1139,7 @@ MOCK_STDOUT_FILE="$TMPDIR_TEST/minimal_events.jsonl" \
 if [[ -f "$TMPDIR_TEST/copilot_stdin" ]]; then
     captured_prompt=$(cat "$TMPDIR_TEST/copilot_stdin")
     # plan adapter formatting rule text is distinct enough — check for the plan-specific phrasing
-    if echo "$captured_prompt" | grep -q 'before emitting.*PLAN_DRAFT'; then
+    if grep -q 'before emitting.*PLAN_DRAFT' <<< "$captured_prompt"; then
         fail "plan adapter should not be added to non-plan prompts"
     else
         pass "plan adapter omitted for non-plan prompts"
@@ -1309,7 +1309,7 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/task_no_signal_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "$task_prompt" 2>/dev/null)
 
 fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$fallback_text" | grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>'; then
+if grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>' <<< "$fallback_text"; then
     pass "wrapper synthesizes ALL_TASKS_DONE when plan has no remaining tasks"
 else
     fail "wrapper should synthesize ALL_TASKS_DONE for complete plan" "text: $fallback_text"
@@ -1346,7 +1346,7 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/task_no_signal_events2.jsonl" \
     run_wrapper bash "$WRAPPER" -p "$task_prompt_incomplete" 2>/dev/null)
 
 fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$fallback_text" | grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>'; then
+if grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>' <<< "$fallback_text"; then
     fail "wrapper should NOT synthesize ALL_TASKS_DONE when plan has unchecked tasks" "text: $fallback_text"
 else
     pass "wrapper correctly skips ALL_TASKS_DONE fallback for incomplete plan"
@@ -1367,7 +1367,7 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/task_error_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "$task_prompt" 2>/dev/null || true)
 
 fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$fallback_text" | grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>'; then
+if grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>' <<< "$fallback_text"; then
     fail "wrapper should NOT synthesize ALL_TASKS_DONE on non-zero exit" "text: $fallback_text"
 else
     pass "wrapper correctly skips ALL_TASKS_DONE fallback on error exit"
@@ -1388,8 +1388,8 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/task_failed_with_complete_plan_events.js
     run_wrapper bash "$WRAPPER" -p "$task_prompt" 2>/dev/null || true)
 
 fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta" and .delta.text != "") | .delta.text')
-if echo "$fallback_text" | grep -q '<<<RALPHEX:TASK_FAILED>>>' && \
-    ! echo "$fallback_text" | grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>'; then
+if grep -q '<<<RALPHEX:TASK_FAILED>>>' <<< "$fallback_text" && \
+    ! grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>' <<< "$fallback_text"; then
     pass "wrapper preserves TASK_FAILED without synthesizing ALL_TASKS_DONE"
 else
     fail "wrapper should not append ALL_TASKS_DONE after TASK_FAILED" "text: $fallback_text"
@@ -1421,7 +1421,7 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/task_no_signal_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "$task_prompt_format" 2>/dev/null)
 
 fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$fallback_text" | grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>'; then
+if grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>' <<< "$fallback_text"; then
     pass "wrapper handles format-description checkboxes correctly"
 else
     fail "wrapper should synthesize ALL_TASKS_DONE when only format-description [ ] remain" "text: $fallback_text"
@@ -1448,7 +1448,7 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/task_no_signal_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "$task_prompt_no_headers" 2>/dev/null)
 
 fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta") | .delta.text')
-if echo "$fallback_text" | grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>'; then
+if grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>' <<< "$fallback_text"; then
     fail "wrapper should NOT synthesize ALL_TASKS_DONE for plan with unchecked items and no task headers" "text: $fallback_text"
 else
     pass "wrapper correctly detects unchecked items in headerless plan"
@@ -1479,7 +1479,7 @@ output=$(MOCK_STDOUT_FILE="$TMPDIR_TEST/task_no_signal_events.jsonl" \
     run_wrapper bash "$WRAPPER" -p "$task_prompt_subsections" 2>/dev/null)
 
 fallback_text=$(echo "$output" | jq -r 'select(.type=="content_block_delta" and .delta.text != "") | .delta.text')
-if echo "$fallback_text" | grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>'; then
+if grep -q '<<<RALPHEX:ALL_TASKS_DONE>>>' <<< "$fallback_text"; then
     fail "wrapper should keep subsection checkboxes attached to the task" "text: $fallback_text"
 else
     pass "wrapper keeps subsection checkboxes actionable for fallback completion checks"

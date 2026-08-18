@@ -264,6 +264,9 @@ loopai --codex docs/plans/feature.md
 # let Codex also discover project-level CLAUDE.md
 loopai --codex --pass-claude-md docs/plans/feature.md
 
+# append extra arguments to every codex invocation
+loopai --codex '--codex-args=-c service_tier="default"' docs/plans/feature.md
+
 # execute in an isolated worktree
 loopai --worktree docs/plans/feature.md
 
@@ -470,6 +473,74 @@ removed, since with an explicit feature that directory is not the one you ran fr
 ## Executors and reviews
 
 Claude Code is the default primary executor. Pass `--codex`, or set `executor = codex`, to use Codex for plan creation, task execution, internal reviews, finding evaluation, and finalize.
+
+Codex invocations are composed by loopai and use additive `-c` overrides, so `~/.codex/config.toml`
+settings remain available. `--codex-args`, or the `codex_args` config key, appends extra arguments
+to every codex invocation loopai spawns — both first-class `--codex` phases and external codex
+review under a Claude primary. Unlike `claude_args`, which *is* the claude command's argument list,
+codex args are strictly additive and are appended last, so an explicit `-c` value there overrides
+the matching override loopai sets. The motivating recipe keeps long autonomous runs off the
+priority tier while interactive codex sessions keep `service_tier = "priority"`:
+
+```bash
+loopai --codex '--codex-args=-c service_tier="default"' docs/plans/feature.md
+```
+
+```ini
+codex_args = -c service_tier="default"
+```
+
+On the command line the value must be attached with `=`, as above: a value that starts with `-`
+is otherwise read as the next option, and loopai exits with `expected argument for flag
+'--codex-args'`. Quote the whole `--codex-args=...` token so the shell keeps it together.
+
+An explicit `--codex-args=` clears a value inherited from configuration. Without the flag or key,
+codex invocations are unchanged. The wrapper path (`claude_command = .../codex-as-claude.sh`) is
+not affected; it is configured through `claude_args` and the wrapper's own `CODEX_*` variables.
+
+The value is tokenized like a shell word list, and quotes group whitespace but are then removed,
+so `-c notify="say hi"` reaches codex as the single argument `notify=say hi`. Backslashes follow
+the same shell rules: literal inside single quotes, an escape for `"` and `\` inside double quotes,
+and an escape for the next character when unquoted, so `-c cwd="C:\work dir"` keeps its
+backslash. Codex parses each
+`-c` value as TOML and falls back to treating it as a literal string, which is why the
+`service_tier` recipe above works — but a value whose *type* depends on its quotes needs the
+quotes escaped, or codex fails to load its config and every codex phase dies at startup:
+
+```ini
+# wrong: reaches codex as [CLAUDE.md], which is not valid TOML
+codex_args = -c project_doc_fallback_filenames=["CLAUDE.md"]
+# right
+codex_args = -c project_doc_fallback_filenames=[\"CLAUDE.md\"]
+```
+
+Three more sharp edges, since loopai appends the extras rather than merging them:
+
+- Last-occurrence-wins applies to `-c key=value` only. Repeating any flag loopai already passes —
+  one that takes a value or a bare switch — is a fatal codex parse error, not an override:
+  `'--codex-args=--sandbox workspace-write'` aborts every codex session with `the argument
+  '--sandbox <SANDBOX_MODE>' cannot be used multiple times`. Set `codex_sandbox` instead. Which
+  flags loopai emits depends on the path: first-class `--codex` runs also pass
+  `--dangerously-bypass-approvals-and-sandbox` whenever the effective sandbox is
+  `danger-full-access` (the default for `--codex`), so repeating that one aborts every phase too.
+- Extras land after the `exec` subcommand, so they must be options `codex exec` itself accepts.
+  Options that exist only on the top-level `codex` command — `--search`, for example — are a fatal
+  `unexpected argument` error rather than a pass-through. Most global options (`-c`, `--model`,
+  `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too; set the rest through
+  `~/.codex/config.toml` or an equivalent `-c` key.
+- Extras must contain no bare positional token. `codex exec` takes an optional positional prompt,
+  and loopai sends its own prompt on stdin. When both are present codex uses the positional as the
+  prompt and appends the piped stdin as a trailing `<stdin>` block, so a stray word in `codex_args`
+  demotes loopai's task instructions into an appendix of the stray word.
+
+Extras are trusted input, like `codex_command`. They also reach the external codex reviewer, which
+loopai otherwise pins to a read-only sandbox so it can only report findings. loopai never emits
+`--dangerously-bypass-approvals-and-sandbox` on that path, so codex accepts it alongside the
+`--sandbox read-only` pin — putting it in `codex_args` gives the reviewer write access to the
+repository. A first-class `--codex` run rejects the duplicate outright only when its effective
+sandbox is `danger-full-access` (the `--codex` default), since that is when loopai emits the flag
+itself; setting `codex_sandbox` to anything else means the primary executor accepts the bypass
+silently too.
 
 With `external_review_tool = auto`, loopai selects the other installed first-class provider:
 
