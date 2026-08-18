@@ -265,7 +265,7 @@ loopai --codex docs/plans/feature.md
 loopai --codex --pass-claude-md docs/plans/feature.md
 
 # append extra arguments to every codex invocation
-loopai --codex --codex-args '-c service_tier="default"' docs/plans/feature.md
+loopai --codex '--codex-args=-c service_tier="default"' docs/plans/feature.md
 
 # execute in an isolated worktree
 loopai --worktree docs/plans/feature.md
@@ -483,12 +483,16 @@ the matching override loopai sets. The motivating recipe keeps long autonomous r
 priority tier while interactive codex sessions keep `service_tier = "priority"`:
 
 ```bash
-loopai --codex --codex-args '-c service_tier="default"' docs/plans/feature.md
+loopai --codex '--codex-args=-c service_tier="default"' docs/plans/feature.md
 ```
 
 ```ini
 codex_args = -c service_tier="default"
 ```
+
+On the command line the value must be attached with `=`, as above: a value that starts with `-`
+is otherwise read as the next option, and loopai exits with `expected argument for flag
+'--codex-args'`. Quote the whole `--codex-args=...` token so the shell keeps it together.
 
 An explicit `--codex-args=` clears a value inherited from configuration. Without the flag or key,
 codex invocations are unchanged. The wrapper path (`claude_command = .../codex-as-claude.sh`) is
@@ -512,10 +516,13 @@ codex_args = -c project_doc_fallback_filenames=[\"CLAUDE.md\"]
 
 Three more sharp edges, since loopai appends the extras rather than merging them:
 
-- Last-occurrence-wins applies to `-c key=value` only. Repeating a *typed* flag loopai already
-  passes is a fatal codex parse error, not an override — `--codex-args '--sandbox workspace-write'`
-  aborts every codex session with `the argument '--sandbox <SANDBOX_MODE>' cannot be used multiple
-  times`. Set `codex_sandbox` instead.
+- Last-occurrence-wins applies to `-c key=value` only. Repeating any flag loopai already passes —
+  one that takes a value or a bare switch — is a fatal codex parse error, not an override:
+  `'--codex-args=--sandbox workspace-write'` aborts every codex session with `the argument
+  '--sandbox <SANDBOX_MODE>' cannot be used multiple times`. Set `codex_sandbox` instead. Which
+  flags loopai emits depends on the path: first-class `--codex` runs also pass
+  `--dangerously-bypass-approvals-and-sandbox` whenever the effective sandbox is
+  `danger-full-access` (the default for `--codex`), so repeating that one aborts every phase too.
 - Extras land after the `exec` subcommand, so they must be options `codex exec` itself accepts.
   Options that exist only on the top-level `codex` command — `--search`, for example — are a fatal
   `unexpected argument` error rather than a pass-through. Most global options (`-c`, `--model`,
@@ -527,9 +534,10 @@ Three more sharp edges, since loopai appends the extras rather than merging them
   demotes loopai's task instructions into an appendix of the stray word.
 
 Extras are trusted input, like `codex_command`. They also reach the external codex reviewer, which
-loopai otherwise pins to a read-only sandbox so it can only report findings, and
-`--dangerously-bypass-approvals-and-sandbox` is accepted alongside that pin — putting it in
-`codex_args` gives the reviewer write access to the repository.
+loopai otherwise pins to a read-only sandbox so it can only report findings. loopai never emits
+`--dangerously-bypass-approvals-and-sandbox` on that path, so codex accepts it alongside the
+`--sandbox read-only` pin — putting it in `codex_args` gives the reviewer write access to the
+repository, while a first-class `--codex` run rejects the duplicate outright.
 
 With `external_review_tool = auto`, loopai selects the other installed first-class provider:
 

@@ -227,11 +227,13 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	// nothing, keeping the invocation byte-identical to a run without the option.
 	// three consequences are the user's to avoid, documented in README and the config
 	// comment rather than policed here, since extras are trusted input like CodexCommand:
-	// repeating a typed flag loopai already emits (--sandbox) is a fatal codex parse error
-	// rather than an override; a bare token becomes codex exec's positional PROMPT, which
+	// repeating any flag loopai already emits, valued or bare, is a fatal codex parse error
+	// rather than an override — --sandbox everywhere, plus the bypass flag above whenever
+	// this run emits it; a bare token becomes codex exec's positional PROMPT, which
 	// demotes the prompt loopai sends on stdin to the trailing <stdin> block codex appends
 	// when both are present; and --dangerously-bypass-approvals-and-sandbox parses fine next
-	// to --sandbox read-only, so it defeats ForceReadOnly on the external reviewer too.
+	// to --sandbox read-only on the external reviewer, which emits no bypass flag of its own,
+	// so it defeats ForceReadOnly there.
 	args = append(args, splitArgs(e.ExtraArgs)...)
 
 	// pass prompt via stdin to avoid Windows 8191-char command-line limit;

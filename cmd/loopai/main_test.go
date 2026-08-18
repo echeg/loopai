@@ -1421,6 +1421,17 @@ func TestProviderOverrideFlags(t *testing.T) {
 		assert.Empty(t, cfg.CodexArgs)
 	})
 
+	t.Run("detached_codex_args_value_is_rejected", func(t *testing.T) {
+		// realistic values start with "-", which go-flags reads as the next option unless the
+		// value is attached with "="; documented examples must use the attached form
+		var o opts
+		parser := flags.NewParser(&o, flags.Default&^flags.PrintErrors)
+		_, err := parser.ParseArgs([]string{"--codex-args", `-c service_tier="default"`})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "expected argument for flag")
+	})
+
 	t.Run("absent_codex_args_keeps_config", func(t *testing.T) {
 		cfg := &config.Config{CodexArgs: `-c service_tier="default"`}
 		o := parseTestOpts(t)

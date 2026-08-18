@@ -91,16 +91,20 @@ codex_command = codex
 # phase dies at startup:
 #   codex_args = -c project_doc_fallback_filenames=[\"CLAUDE.md\"]
 #
-# last-occurrence-wins covers -c key=value only. repeating a typed flag loopai
-# already passes is a fatal codex parse error, not an override, so use
-# codex_sandbox rather than putting --sandbox here. extras land after the exec
+# last-occurrence-wins covers -c key=value only. repeating any flag loopai
+# already passes, valued or bare, is a fatal codex parse error, not an override,
+# so use codex_sandbox rather than putting --sandbox here. executor = codex also
+# passes --dangerously-bypass-approvals-and-sandbox whenever the effective
+# sandbox is danger-full-access (its default), so repeating that one aborts
+# every phase too. extras land after the exec
 # subcommand, so an option only the top-level codex command accepts (--search)
 # is a fatal unexpected-argument error. a bare positional token becomes codex
 # exec's prompt and demotes loopai's own to a trailing <stdin> block.
 #
 # extras are trusted like codex_command: they also reach the external codex
-# reviewer that loopai otherwise pins to a read-only sandbox, and
-# --dangerously-bypass-approvals-and-sandbox is accepted alongside that pin.
+# reviewer that loopai otherwise pins to a read-only sandbox, where loopai emits
+# no bypass flag, so --dangerously-bypass-approvals-and-sandbox is accepted
+# alongside that pin and grants the reviewer write access.
 # default: empty (codex invocations are unchanged)
 # codex_args =
 
