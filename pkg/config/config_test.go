@@ -712,7 +712,6 @@ plans_dir = my/plans
 	assert.False(t, cfg.CodexEnabled)
 	assert.Equal(t, "/custom/codex", cfg.CodexCommand)
 	assert.Equal(t, `-c service_tier="default"`, cfg.CodexArgs)
-	assert.False(t, cfg.CodexArgsSet, "config-sourced value is not a runtime override")
 	assert.Equal(t, "custom-model", cfg.CodexModel)
 	assert.Equal(t, "low", cfg.CodexReasoningEffort)
 	assert.Equal(t, 1000, cfg.CodexTimeoutMs)
@@ -1730,7 +1729,7 @@ func TestConfig_JSONShape(t *testing.T) {
 	assert.JSONEq(t, `"codex:gpt-5.5:high,claude:fable:max"`, string(got["external_reviewers"]))
 
 	// the *Set sentinels and the loaded-from-files fields carry json:"-" and must be absent
-	for _, absent := range []string{"claude_args_set", "codex_args_set", "external_review_model_set", "external_reviewers_set", "wait_on_limit_set", "notify_params", "colors", "task_prompt"} {
+	for _, absent := range []string{"claude_args_set", "external_review_model_set", "external_reviewers_set", "wait_on_limit_set", "notify_params", "colors", "task_prompt"} {
 		_, present := got[absent]
 		assert.False(t, present, "unexpected json key %q present", absent)
 	}

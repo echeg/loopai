@@ -524,6 +524,7 @@ func TestCloseoutRejectsExplicitZeroOrEmptyExecutionFlags(t *testing.T) {
 		{name: "clear with zero max iterations", args: []string{"--clear", "--max-iterations=0"}},
 		{name: "merge with zero review patience", args: []string{"--merge", "--review-patience=0"}},
 		{name: "pr with empty claude command", args: []string{"--pr", "--claude-command="}},
+		{name: "clear with empty codex args", args: []string{"--clear", "--codex-args="}},
 	}
 
 	for _, tt := range tests {
@@ -1409,7 +1410,6 @@ func TestProviderOverrideFlags(t *testing.T) {
 		require.NoError(t, applyCLIOverrides(o, cfg))
 
 		assert.Equal(t, `-c service_tier="default"`, cfg.CodexArgs)
-		assert.True(t, cfg.CodexArgsSet)
 	})
 
 	t.Run("empty_codex_args_clears_config", func(t *testing.T) {
@@ -1419,7 +1419,6 @@ func TestProviderOverrideFlags(t *testing.T) {
 		require.NoError(t, applyCLIOverrides(o, cfg))
 
 		assert.Empty(t, cfg.CodexArgs)
-		assert.True(t, cfg.CodexArgsSet)
 	})
 
 	t.Run("absent_codex_args_keeps_config", func(t *testing.T) {
@@ -1429,7 +1428,6 @@ func TestProviderOverrideFlags(t *testing.T) {
 		require.NoError(t, applyCLIOverrides(o, cfg))
 
 		assert.Equal(t, `-c service_tier="default"`, cfg.CodexArgs)
-		assert.False(t, cfg.CodexArgsSet)
 	})
 
 	t.Run("external_review_tool_overrides_config", func(t *testing.T) {

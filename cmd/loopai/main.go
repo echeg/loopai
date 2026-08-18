@@ -140,8 +140,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 	o.customReviewScriptSet = isFlagSet(parser, "custom-review-script")
 	for _, name := range []string{
 		"max-iterations", "max-external-iterations", "review-patience",
-		"plan-model", "task-model", "review-model", "claude-command", "claude-args",
-		"codex-args",
+		"plan-model", "task-model", "review-model", "claude-command", "claude-args", "codex-args",
 		"external-review-tool", "external-review-model", "external-reviewers", "custom-review-script",
 		"review", "external-only", "codex-only", "tasks-only", "base-ref", "wait",
 		"session-timeout", "idle-timeout", "skip-finalize", "preserve-anthropic-api-key",
@@ -4588,8 +4587,10 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 		cfg.ClaudeArgsSet = true
 	}
 	if o.codexArgsSet {
+		// assigning unconditionally under the set guard is what clears an inherited
+		// config value on an explicit --codex-args=; empty extras append nothing, so
+		// unlike claude args there is nothing downstream that needs "set" vs "unset"
 		cfg.CodexArgs = o.CodexArgs
-		cfg.CodexArgsSet = true
 	}
 	if err := applyExternalReviewCLIOverrides(o, cfg); err != nil {
 		return err

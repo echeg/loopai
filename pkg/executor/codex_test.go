@@ -3692,6 +3692,26 @@ func TestCodexExecutor_Run_ExtraArgs(t *testing.T) {
 			expect:    []string{"-c", "service_tier=default", "--color", "never"},
 		},
 		{
+			// splitArgs consumes unescaped quotes, so a TOML value whose type depends on
+			// them must be backslash-escaped: codex parses each -c value as TOML and a
+			// bare [CLAUDE.md] fails to load, taking the whole session with it
+			name:      "escaped quotes reach codex intact",
+			extraArgs: `-c project_doc_fallback_filenames=[\"CLAUDE.md\"]`,
+			expect:    []string{"-c", `project_doc_fallback_filenames=["CLAUDE.md"]`},
+		},
+		{
+			// extras are appended even on the findings-only reviewer, after its
+			// --sandbox read-only, so this flag defeats ForceReadOnly. codex accepts the
+			// two together (verified against codex-cli 0.147.0); pinned so the exposure
+			// is a deliberate documented property rather than an accident.
+			name:      "extras reach the ForceReadOnly reviewer and can bypass its sandbox",
+			extraArgs: "--dangerously-bypass-approvals-and-sandbox",
+			newExec: func() *CodexExecutor {
+				return &CodexExecutor{ForceReadOnly: true, Sandbox: "danger-full-access"}
+			},
+			expect: []string{"--dangerously-bypass-approvals-and-sandbox"},
+		},
+		{
 			name:      "extras land after loopai overrides so the user wins on collision",
 			extraArgs: `-c model="user-choice"`,
 			newExec: func() *CodexExecutor {
@@ -3733,23 +3753,4 @@ func TestCodexExecutor_Run_ExtraArgs(t *testing.T) {
 			assert.Equal(t, append(without, tt.expect...), withExtras)
 		})
 	}
-}
-
-func TestCodexExecutor_Run_ExtraArgsOverrideLoopaiModel(t *testing.T) {
-	var capturedArgs []string
-	mock := &mockCodexRunner{
-		runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
-			capturedArgs = args
-			return mockStreams("", "result"), mockWait(), nil
-		},
-	}
-	e := &CodexExecutor{runner: mock, Model: "loopai-choice", ExtraArgs: `-c model="user-choice"`}
-	require.NoError(t, e.Run(context.Background(), "prompt").Error)
-
-	// codex resolves repeated -c keys last-occurrence-wins, so the user value must come later
-	loopaiIdx := slices.Index(capturedArgs, `model="loopai-choice"`)
-	userIdx := slices.Index(capturedArgs, "model=user-choice")
-	require.NotEqual(t, -1, loopaiIdx, "args: %v", capturedArgs)
-	require.NotEqual(t, -1, userIdx, "args: %v", capturedArgs)
-	assert.Greater(t, userIdx, loopaiIdx, "user extras must come after loopai's own -c overrides")
 }

@@ -121,7 +121,6 @@ type Config struct {
 	CodexEnabledSet      bool   `json:"-"` // tracks if codex_enabled was explicitly set in config
 	CodexCommand         string `json:"codex_command"`
 	CodexArgs            string `json:"codex_args"`
-	CodexArgsSet         bool   `json:"-"` // tracks runtime overrides, including an explicit empty --codex-args=
 	CodexModel           string `json:"codex_model"`
 	CodexReasoningEffort string `json:"codex_reasoning_effort"`
 	CodexTimeoutMs       int    `json:"codex_timeout_ms"`

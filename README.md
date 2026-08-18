@@ -491,7 +491,36 @@ codex_args = -c service_tier="default"
 ```
 
 An explicit `--codex-args=` clears a value inherited from configuration. Without the flag or key,
-codex invocations are unchanged.
+codex invocations are unchanged. The wrapper path (`claude_command = .../codex-as-claude.sh`) is
+not affected; it is configured through `claude_args` and the wrapper's own `CODEX_*` variables.
+
+The value is tokenized like a shell word list, and quotes group whitespace but are then removed,
+so `-c notify="say hi"` reaches codex as the single argument `notify=say hi`. Codex parses each
+`-c` value as TOML and falls back to treating it as a literal string, which is why the
+`service_tier` recipe above works — but a value whose *type* depends on its quotes needs the
+quotes escaped, or codex fails to load its config and every codex phase dies at startup:
+
+```ini
+# wrong: reaches codex as [CLAUDE.md], which is not valid TOML
+codex_args = -c project_doc_fallback_filenames=["CLAUDE.md"]
+# right
+codex_args = -c project_doc_fallback_filenames=[\"CLAUDE.md\"]
+```
+
+Two more sharp edges, since loopai appends the extras rather than merging them:
+
+- Last-occurrence-wins applies to `-c key=value` only. Repeating a *typed* flag loopai already
+  passes is a fatal codex parse error, not an override — `--codex-args '--sandbox workspace-write'`
+  aborts every codex session with `the argument '--sandbox <SANDBOX_MODE>' cannot be used multiple
+  times`. Set `codex_sandbox` instead.
+- Extras must contain no bare positional token. `codex exec` takes an optional positional prompt,
+  and loopai sends its own prompt on stdin, which codex reads only when no positional is given. A
+  stray word in `codex_args` therefore becomes the prompt and silently discards the task.
+
+Extras are trusted input, like `codex_command`. They also reach the external codex reviewer, which
+loopai otherwise pins to a read-only sandbox so it can only report findings, and
+`--dangerously-bypass-approvals-and-sandbox` is accepted alongside that pin — putting it in
+`codex_args` gives the reviewer write access to the repository.
 
 With `external_review_tool = auto`, loopai selects the other installed first-class provider:
 

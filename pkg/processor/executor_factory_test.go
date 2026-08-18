@@ -967,8 +967,6 @@ func TestRunner_WaitOnLimit_ZeroReturnsLimitError(t *testing.T) {
 }
 
 func TestExecutorFactory_Build_CodexArgs(t *testing.T) {
-	log := newMockLogger()
-
 	tests := []struct {
 		name      string
 		primary   string
@@ -994,7 +992,7 @@ func TestExecutorFactory_Build_CodexArgs(t *testing.T) {
 				ExternalReviewTool: config.ExternalReviewToolCodex,
 				AppConfig:          appCfg,
 			}
-			_, execs := (&executorFactory{}).Build(cfg, log)
+			_, execs := (&executorFactory{}).Build(cfg, newMockLogger())
 
 			// the external codex reviewer exists in both primaries and must carry the extras
 			externalExec, ok := externalExecutor(t, execs).(*executor.CodexExecutor)

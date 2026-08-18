@@ -33,6 +33,31 @@ executor       = codex
 pass_claude_md = true
 ```
 
+### Extra codex arguments
+
+`--codex-args`, or `codex_args` in config, appends extra arguments to every codex invocation loopai composes — both `--codex` phases and external codex review under a Claude primary. Unlike `claude_args`, which replaces the claude command's whole argument list, these are strictly additive and land after loopai's own `-c` overrides and sandbox flags, so an explicit `-c` value wins on key collision. An explicit `--codex-args=` clears a value inherited from configuration. The `codex-as-claude.sh` wrapper path below is unaffected; it uses `claude_args` and its own `CODEX_*` variables.
+
+```bash
+loopai --codex --codex-args '-c service_tier="default"' docs/plans/feature.md
+```
+
+```ini
+codex_args = -c service_tier="default"
+```
+
+The value is tokenized like a shell word list, and quotes group whitespace but are then removed. Codex parses each `-c` value as TOML and falls back to a literal string, which is what makes the example above work. A value whose TOML *type* depends on its quotes must escape them, or codex fails to load its config and every codex phase dies at startup — note that the `--pass-claude-md` override above is exactly this shape:
+
+```ini
+# wrong: reaches codex as [CLAUDE.md]
+codex_args = -c project_doc_fallback_filenames=["CLAUDE.md"]
+# right
+codex_args = -c project_doc_fallback_filenames=[\"CLAUDE.md\"]
+```
+
+Last-occurrence-wins covers `-c key=value` only. Repeating a typed flag loopai already passes is a fatal codex parse error rather than an override, so set `codex_sandbox` instead of putting `--sandbox` here. A bare positional token becomes `codex exec`'s prompt and silently discards the prompt loopai sends on stdin.
+
+Extras are trusted input, like `codex_command`. They also reach the external codex reviewer that loopai otherwise pins to a read-only sandbox so it can only report findings, and `--dangerously-bypass-approvals-and-sandbox` is accepted alongside that pin, so putting it here gives the reviewer write access to the repository.
+
 ### Requirements
 
 `--codex` requires the codex CLI version 0.130.0 or newer. The mode relies on `[features] multi_agent`, `[agents.<name>]` agent registration, and (with `--pass-claude-md`) `project_doc_fallback_filenames` — all supported in 0.130.0. Older codex versions silently ignore unknown `-c` overrides, so a misconfigured run will not error visibly. There is no runtime version check; verify with `codex --version`.
