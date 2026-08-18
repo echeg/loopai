@@ -83,7 +83,9 @@ codex_command = codex
 # example: codex_args = -c service_tier="default"
 #
 # the value is tokenized like a shell word list: quotes group whitespace but are
-# then removed. codex parses each -c value as TOML and falls back to a literal
+# then removed, and backslashes follow shell rules (literal in single quotes,
+# escaping \" and \\ in double quotes, escaping the next character unquoted).
+# codex parses each -c value as TOML and falls back to a literal
 # string, so the example above works, but a value whose TOML *type* depends on
 # its quotes must escape them or codex fails to load its config and every codex
 # phase dies at startup:
@@ -91,8 +93,10 @@ codex_command = codex
 #
 # last-occurrence-wins covers -c key=value only. repeating a typed flag loopai
 # already passes is a fatal codex parse error, not an override, so use
-# codex_sandbox rather than putting --sandbox here. a bare positional token
-# becomes codex exec's prompt and silently discards loopai's own.
+# codex_sandbox rather than putting --sandbox here. extras land after the exec
+# subcommand, so an option only the top-level codex command accepts (--search)
+# is a fatal unexpected-argument error. a bare positional token becomes codex
+# exec's prompt and demotes loopai's own to a trailing <stdin> block.
 #
 # extras are trusted like codex_command: they also reach the external codex
 # reviewer that loopai otherwise pins to a read-only sandbox, and

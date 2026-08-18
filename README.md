@@ -495,7 +495,10 @@ codex invocations are unchanged. The wrapper path (`claude_command = .../codex-a
 not affected; it is configured through `claude_args` and the wrapper's own `CODEX_*` variables.
 
 The value is tokenized like a shell word list, and quotes group whitespace but are then removed,
-so `-c notify="say hi"` reaches codex as the single argument `notify=say hi`. Codex parses each
+so `-c notify="say hi"` reaches codex as the single argument `notify=say hi`. Backslashes follow
+the same shell rules: literal inside single quotes, an escape for `"` and `\` inside double quotes,
+and an escape for the next character when unquoted, so `-c cwd="C:\work dir"` keeps its
+backslash. Codex parses each
 `-c` value as TOML and falls back to treating it as a literal string, which is why the
 `service_tier` recipe above works — but a value whose *type* depends on its quotes needs the
 quotes escaped, or codex fails to load its config and every codex phase dies at startup:
@@ -507,15 +510,21 @@ codex_args = -c project_doc_fallback_filenames=["CLAUDE.md"]
 codex_args = -c project_doc_fallback_filenames=[\"CLAUDE.md\"]
 ```
 
-Two more sharp edges, since loopai appends the extras rather than merging them:
+Three more sharp edges, since loopai appends the extras rather than merging them:
 
 - Last-occurrence-wins applies to `-c key=value` only. Repeating a *typed* flag loopai already
   passes is a fatal codex parse error, not an override — `--codex-args '--sandbox workspace-write'`
   aborts every codex session with `the argument '--sandbox <SANDBOX_MODE>' cannot be used multiple
   times`. Set `codex_sandbox` instead.
+- Extras land after the `exec` subcommand, so they must be options `codex exec` itself accepts.
+  Options that exist only on the top-level `codex` command — `--search`, for example — are a fatal
+  `unexpected argument` error rather than a pass-through. Most global options (`-c`, `--model`,
+  `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too; set the rest through
+  `~/.codex/config.toml` or an equivalent `-c` key.
 - Extras must contain no bare positional token. `codex exec` takes an optional positional prompt,
-  and loopai sends its own prompt on stdin, which codex reads only when no positional is given. A
-  stray word in `codex_args` therefore becomes the prompt and silently discards the task.
+  and loopai sends its own prompt on stdin. When both are present codex uses the positional as the
+  prompt and appends the piped stdin as a trailing `<stdin>` block, so a stray word in `codex_args`
+  demotes loopai's task instructions into an appendix of the stray word.
 
 Extras are trusted input, like `codex_command`. They also reach the external codex reviewer, which
 loopai otherwise pins to a read-only sandbox so it can only report findings, and

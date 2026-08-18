@@ -777,6 +777,13 @@ func TestSplitArgs(t *testing.T) {
 		{name: "multiple spaces between", input: "arg1   arg2", want: []string{"arg1", "arg2"}},
 		{name: "mixed quotes", input: `--a "b" --c 'd'`, want: []string{"--a", "b", "--c", "d"}},
 		{name: "escaped quote", input: `--flag \"quoted\"`, want: []string{"--flag", `"quoted"`}},
+		{name: "backslash literal in single quotes", input: `--cd 'C:\work dir'`, want: []string{"--cd", `C:\work dir`}},
+		{name: "backslash literal in double quotes", input: `--cd "C:\work dir"`, want: []string{"--cd", `C:\work dir`}},
+		{name: "escaped quote inside double quotes", input: `-c k="a\"b"`, want: []string{"-c", `k=a"b`}},
+		{name: "escaped backslash inside double quotes", input: `-c k="a\\b"`, want: []string{"-c", `k=a\b`}},
+		{name: "backslash escapes space outside quotes", input: `--cd C:\ work`, want: []string{"--cd", "C: work"}},
+		{name: "trailing backslash kept", input: `--cd C:\`, want: []string{"--cd", `C:\`}},
+		{name: "toml list with escaped quotes", input: `-c project_doc_fallback_filenames=[\"CLAUDE.md\"]`, want: []string{"-c", `project_doc_fallback_filenames=["CLAUDE.md"]`}},
 		{name: "real claude args", input: "--dangerously-skip-permissions --output-format stream-json --verbose", want: []string{"--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"}},
 	}
 

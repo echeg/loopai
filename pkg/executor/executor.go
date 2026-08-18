@@ -116,21 +116,26 @@ func (r *execClaudeRunner) Run(ctx context.Context, name string, args ...string)
 }
 
 // splitArgs splits a space-separated argument string into a slice.
-// handles quoted strings (both single and double quotes).
+// handles quoted strings (both single and double quotes) with POSIX-shell backslash rules:
+// outside quotes a backslash escapes the next rune, inside double quotes it escapes only `"`
+// and `\`, and inside single quotes it is literal. anything else keeps the backslash, so
+// Windows paths and other literal backslashes survive (`-c cwd="C:\work dir"`) while the
+// documented quote-escaping recipes (`-c key=[\"CLAUDE.md\"]`) still work.
 func splitArgs(s string) []string {
 	var args []string
 	var current strings.Builder
 	var inQuote rune
 	var escaped bool
 
-	for _, r := range s {
+	runes := []rune(s)
+	for i, r := range runes {
 		if escaped {
 			current.WriteRune(r)
 			escaped = false
 			continue
 		}
 
-		if r == '\\' {
+		if r == '\\' && backslashEscapes(inQuote, runes, i) {
 			escaped = true
 			continue
 		}
@@ -163,6 +168,24 @@ func splitArgs(s string) []string {
 	}
 
 	return args
+}
+
+// backslashEscapes reports whether the backslash at runes[i] starts an escape sequence,
+// given the quote context. a trailing backslash with nothing to escape stays literal.
+func backslashEscapes(inQuote rune, runes []rune, i int) bool {
+	if i+1 >= len(runes) {
+		return false
+	}
+	switch inQuote {
+	case '\'':
+		// single quotes are literal in POSIX shells, backslash included
+		return false
+	case '"':
+		next := runes[i+1]
+		return next == '"' || next == '\\'
+	default:
+		return true
+	}
 }
 
 // stripFlag removes all occurrences of a flag and its value from args. Handles three forms:

@@ -45,7 +45,7 @@ loopai --codex --codex-args '-c service_tier="default"' docs/plans/feature.md
 codex_args = -c service_tier="default"
 ```
 
-The value is tokenized like a shell word list, and quotes group whitespace but are then removed. Codex parses each `-c` value as TOML and falls back to a literal string, which is what makes the example above work. A value whose TOML *type* depends on its quotes must escape them, or codex fails to load its config and every codex phase dies at startup — note that the `--pass-claude-md` override above is exactly this shape:
+The value is tokenized like a shell word list, and quotes group whitespace but are then removed. Backslashes follow the same shell rules: literal inside single quotes, an escape for `"` and `\` inside double quotes, and an escape for the next character when unquoted, so `-c cwd="C:\work dir"` keeps its backslash. Codex parses each `-c` value as TOML and falls back to a literal string, which is what makes the example above work. A value whose TOML *type* depends on its quotes must escape them, or codex fails to load its config and every codex phase dies at startup — note that the `--pass-claude-md` override above is exactly this shape:
 
 ```ini
 # wrong: reaches codex as [CLAUDE.md]
@@ -54,7 +54,7 @@ codex_args = -c project_doc_fallback_filenames=["CLAUDE.md"]
 codex_args = -c project_doc_fallback_filenames=[\"CLAUDE.md\"]
 ```
 
-Last-occurrence-wins covers `-c key=value` only. Repeating a typed flag loopai already passes is a fatal codex parse error rather than an override, so set `codex_sandbox` instead of putting `--sandbox` here. A bare positional token becomes `codex exec`'s prompt and silently discards the prompt loopai sends on stdin.
+Last-occurrence-wins covers `-c key=value` only. Repeating a typed flag loopai already passes is a fatal codex parse error rather than an override, so set `codex_sandbox` instead of putting `--sandbox` here. Extras land after the `exec` subcommand, so an option that exists only on the top-level `codex` command (`--search`) is a fatal `unexpected argument` error rather than a pass-through; most global options (`-c`, `--model`, `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too. A bare positional token becomes `codex exec`'s prompt, and codex then appends the prompt loopai sends on stdin as a trailing `<stdin>` block, so the task instructions are demoted to an appendix of the stray token.
 
 Extras are trusted input, like `codex_command`. They also reach the external codex reviewer that loopai otherwise pins to a read-only sandbox so it can only report findings, and `--dangerously-bypass-approvals-and-sandbox` is accepted alongside that pin, so putting it here gives the reviewer write access to the repository.
 
