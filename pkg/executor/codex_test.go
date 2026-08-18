@@ -3677,6 +3677,16 @@ func TestCodexExecutor_Run_ExtraArgs(t *testing.T) {
 			expect:    []string{"-c", "service_tier=default"},
 		},
 		{
+			name:      "value containing = survives intact",
+			extraArgs: `-c shell_environment_policy.set.FOO="a=b"`,
+			expect:    []string{"-c", "shell_environment_policy.set.FOO=a=b"},
+		},
+		{
+			name:      "quoted whitespace stays one argument",
+			extraArgs: `-c notify="say hi"`,
+			expect:    []string{"-c", "notify=say hi"},
+		},
+		{
 			name:      "multiple extras keep their order",
 			extraArgs: `-c service_tier="default" --color never`,
 			expect:    []string{"-c", "service_tier=default", "--color", "never"},

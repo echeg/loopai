@@ -68,11 +68,15 @@
 - ➕ `--codex-args` also added to `hasExecutionMode`/`markFlagsSet` so it counts as an execution option like `--claude-args`
 
 ### Task 3: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented (flag + config key, additive append, both codex paths, user-wins precedence)
-- [ ] verify edge cases: extras containing `=` and quotes, whitespace-only value, config value plus flag override, `--codex-args` without `--codex` (applies to external codex review; harmless no-op when no codex invocation happens)
-- [ ] run full test suite (`make test`)
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] verify test coverage meets project standard (80%+) for the new code paths
+- [x] verify all requirements from Overview are implemented (flag + config key, additive append, both codex paths, user-wins precedence)
+- [x] verify edge cases: extras containing `=` and quotes, whitespace-only value, config value plus flag override, `--codex-args` without `--codex` (applies to external codex review; harmless no-op when no codex invocation happens)
+- [x] run full test suite (`make test`)
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] verify test coverage meets project standard (80%+) for the new code paths
+- ➕ added two `TestCodexExecutor_Run_ExtraArgs` rows for the remaining uncovered edge cases: a value containing `=` (`-c shell_environment_policy.set.FOO="a=b"`) and a quoted value containing whitespace (`-c notify="say hi"`), both of which stay a single argument through `splitArgs`
+- ➕ both codex construction sites are covered by one assignment in `newBaseCodexExecutor`, which `buildCodexExecutor` and `buildExternalCodexExecutor` share, so `--codex-args` without `--codex` reaches the external codex reviewer (asserted in `TestExecutorFactory_Build_CodexArgs`)
+- ➕ coverage after the run: config 90.3%, executor 89.2%, processor 91.5%, cmd/loopai 85.9% — all above the 80% standard; `make lint` reports 0 issues
+- ⚠️ `scripts/copilot-as-claude/copilot-as-claude_test.sh` failed sporadically with `echo: write error: Broken pipe` on one `make test` run and passed on repeated standalone and full-suite runs; pre-existing flake in that shell suite, unrelated to codex args
 
 ### Task 4: [Final] Update documentation
 - [ ] update README.md flag list and the codex configuration section with the service_tier recipe
