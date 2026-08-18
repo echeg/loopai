@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/umputun/ralphex/pkg/status"
 )
@@ -117,7 +116,7 @@ func (r *execClaudeRunner) Run(ctx context.Context, name string, args ...string)
 }
 
 // splitArgs splits a whitespace-separated argument string into a slice. any unquoted,
-// unescaped whitespace separates tokens, not just the ASCII space: a tab or newline reaching
+// unescaped ASCII whitespace separates tokens, not just the space: a tab or newline reaching
 // here from a config value would otherwise be folded into the neighboring token, and for
 // codex_args that turns a stray `-c a=1\t-c b=2` into a bare positional codex exec takes as
 // its prompt, silently demoting the one loopai sends on stdin.
@@ -157,7 +156,7 @@ func splitArgs(s string) []string {
 			continue
 		}
 
-		if unicode.IsSpace(r) && inQuote == 0 {
+		if isArgSeparator(r) && inQuote == 0 {
 			if current.Len() > 0 {
 				args = append(args, current.String())
 				current.Reset()
@@ -173,6 +172,15 @@ func splitArgs(s string) []string {
 	}
 
 	return args
+}
+
+// isArgSeparator reports whether r separates tokens outside quotes. deliberately the ASCII
+// whitespace set and not unicode.IsSpace: no shell splits on U+00A0 and friends, and a
+// non-breaking or thin space pasted from rendered documentation into an unquoted value would
+// otherwise break the token in two, leaving the tail as the bare positional codex exec takes
+// as its prompt — the exact failure the whitespace split exists to prevent.
+func isArgSeparator(r rune) bool {
+	return strings.ContainsRune(" \t\n\v\f\r", r)
 }
 
 // backslashEscapes reports whether the backslash at runes[i] starts an escape sequence,
