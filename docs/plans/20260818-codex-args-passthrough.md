@@ -93,13 +93,13 @@
 - `splitArgs` (executor.go:120) handles quoting/escaping — no new tokenizer, but review changed the existing one: backslash handling now follows POSIX-shell rules through the added `backslashEscapes` helper (literal in single quotes, escaping only `"` and `\` in double quotes, escaping the next rune unquoted, literal when nothing follows). Before that, every backslash was consumed, so a Windows path in a `-c` value lost its separators.
 - Additive-vs-replace asymmetry with `claude_args` is intentional and must be called out in the flag description and docs: claude args ARE the command's args; codex args extend a command loopai composes.
 - The example recipe for the motivating use case, to appear in README and embedded config comments:
-  `loopai --codex --codex-args '-c service_tier="default"' ...` or `codex_args = -c service_tier="default"` in `.loopai/config`.
+  `loopai --codex '--codex-args=-c service_tier="default"' ...` or `codex_args = -c service_tier="default"` in `.loopai/config`.
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
 
 **Manual verification**:
-- With `service_tier = "priority"` in `~/.codex/config.toml`: run `loopai --codex --codex-args '-c service_tier="default"' <plan>` and confirm via codex session logs that the run used the default tier while an interactive `codex` session still uses priority
+- With `service_tier = "priority"` in `~/.codex/config.toml`: run `loopai --codex '--codex-args=-c service_tier="default"' <plan>` and confirm via codex session logs that the run used the default tier while an interactive `codex` session still uses priority
 - Run without the flag and diff the spawned codex command line against a pre-change build (byte-identical)
 
 **External system updates**: none

@@ -3672,6 +3672,18 @@ func TestCodexExecutor_Run_ExtraArgs(t *testing.T) {
 			expect:    nil,
 		},
 		{
+			name:      "tab-only extras add nothing",
+			extraArgs: "\t\n",
+			expect:    nil,
+		},
+		{
+			// a tab folded into the neighboring token would make "b=2" a bare positional,
+			// which codex exec takes as its prompt and demotes loopai's stdin prompt to an appendix
+			name:      "tab separated extras stay separate tokens",
+			extraArgs: "-c a=1\t-c b=2",
+			expect:    []string{"-c", "a=1", "-c", "b=2"},
+		},
+		{
 			name:      "quoted value survives splitting",
 			extraArgs: `-c service_tier="default"`,
 			expect:    []string{"-c", "service_tier=default"},

@@ -537,7 +537,10 @@ Extras are trusted input, like `codex_command`. They also reach the external cod
 loopai otherwise pins to a read-only sandbox so it can only report findings. loopai never emits
 `--dangerously-bypass-approvals-and-sandbox` on that path, so codex accepts it alongside the
 `--sandbox read-only` pin — putting it in `codex_args` gives the reviewer write access to the
-repository, while a first-class `--codex` run rejects the duplicate outright.
+repository. A first-class `--codex` run rejects the duplicate outright only when its effective
+sandbox is `danger-full-access` (the `--codex` default), since that is when loopai emits the flag
+itself; setting `codex_sandbox` to anything else means the primary executor accepts the bypass
+silently too.
 
 With `external_review_tool = auto`, loopai selects the other installed first-class provider:
 

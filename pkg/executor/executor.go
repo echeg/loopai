@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/umputun/ralphex/pkg/status"
 )
@@ -115,7 +116,11 @@ func (r *execClaudeRunner) Run(ctx context.Context, name string, args ...string)
 	return stdout, cleanup.Wait, nil
 }
 
-// splitArgs splits a space-separated argument string into a slice.
+// splitArgs splits a whitespace-separated argument string into a slice. any unquoted,
+// unescaped whitespace separates tokens, not just the ASCII space: a tab or newline reaching
+// here from a config value would otherwise be folded into the neighboring token, and for
+// codex_args that turns a stray `-c a=1\t-c b=2` into a bare positional codex exec takes as
+// its prompt, silently demoting the one loopai sends on stdin.
 // handles quoted strings (both single and double quotes) with POSIX-shell backslash rules:
 // outside quotes a backslash escapes the next rune, inside double quotes it escapes only `"`
 // and `\`, and inside single quotes it is literal. anything else keeps the backslash, so
@@ -152,7 +157,7 @@ func splitArgs(s string) []string {
 			continue
 		}
 
-		if r == ' ' && inQuote == 0 {
+		if unicode.IsSpace(r) && inQuote == 0 {
 			if current.Len() > 0 {
 				args = append(args, current.String())
 				current.Reset()
