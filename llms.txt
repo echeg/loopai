@@ -76,6 +76,7 @@ loopai --review
 loopai --external-only
 loopai --codex docs/plans/feature.md
 loopai --codex --pass-claude-md docs/plans/feature.md
+loopai --codex --codex-args '-c service_tier="default"' docs/plans/feature.md
 loopai --worktree docs/plans/feature.md
 loopai --worktree --commit docs/plans/feature.md
 loopai --serve docs/plans/feature.md
@@ -133,6 +134,8 @@ The full pipeline is:
 7. optionally finalize and move the plan to `docs/plans/completed/`
 
 Claude Code is primary by default. `--codex` makes Codex primary for planning, task execution, internal review, fixes, and finalize. `external_review_tool = auto` selects the other installed provider. Set it to `none` to disable the legacy review path when `external_reviewers` is unset.
+
+`--codex-args`, or `codex_args` in config, appends extra arguments to every codex invocation loopai spawns, covering both `--codex` phases and external codex review under a Claude primary. They are strictly additive, unlike `claude_args`, which is the claude command's whole argument list, and are appended after loopai's own `-c` overrides, so an explicit `-c` value there wins on key collision. Example: `codex_args = -c service_tier="default"` keeps long autonomous runs off the priority tier while interactive codex sessions keep `service_tier = "priority"` in `~/.codex/config.toml`. An explicit `--codex-args=` clears an inherited value; unset leaves codex invocations unchanged.
 
 For an ordered chain, configure `external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max` using `provider[:model[:effort]]` entries. It takes precedence over `external_review_tool` and `external_review_model`; an empty local value or `--external-reviewers=` clears/disables an inherited chain. Reviewers run sequentially until clean, their per-reviewer iteration cap, or their per-reviewer stalemate threshold; they only report findings, while the primary executor evaluates and fixes them with `review_model` (falling back to `task_model`). Bare `claude` defaults to `opus:xhigh`; bare `codex` uses the configured Codex defaults, and Codex ignores `max` effort with a warning. Providers may repeat, with each entry creating a separate loop. Providers are `claude`, `codex`, and `custom`; a `custom` entry cannot include a model, requires `custom_review_script`, and repeated custom entries share that script.
 

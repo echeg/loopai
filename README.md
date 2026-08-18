@@ -264,6 +264,9 @@ loopai --codex docs/plans/feature.md
 # let Codex also discover project-level CLAUDE.md
 loopai --codex --pass-claude-md docs/plans/feature.md
 
+# append extra arguments to every codex invocation
+loopai --codex --codex-args '-c service_tier="default"' docs/plans/feature.md
+
 # execute in an isolated worktree
 loopai --worktree docs/plans/feature.md
 
@@ -470,6 +473,25 @@ removed, since with an explicit feature that directory is not the one you ran fr
 ## Executors and reviews
 
 Claude Code is the default primary executor. Pass `--codex`, or set `executor = codex`, to use Codex for plan creation, task execution, internal reviews, finding evaluation, and finalize.
+
+Codex invocations are composed by loopai and use additive `-c` overrides, so `~/.codex/config.toml`
+settings remain available. `--codex-args`, or the `codex_args` config key, appends extra arguments
+to every codex invocation loopai spawns — both first-class `--codex` phases and external codex
+review under a Claude primary. Unlike `claude_args`, which *is* the claude command's argument list,
+codex args are strictly additive and are appended last, so an explicit `-c` value there overrides
+the matching override loopai sets. The motivating recipe keeps long autonomous runs off the
+priority tier while interactive codex sessions keep `service_tier = "priority"`:
+
+```bash
+loopai --codex --codex-args '-c service_tier="default"' docs/plans/feature.md
+```
+
+```ini
+codex_args = -c service_tier="default"
+```
+
+An explicit `--codex-args=` clears a value inherited from configuration. Without the flag or key,
+codex invocations are unchanged.
 
 With `external_review_tool = auto`, loopai selects the other installed first-class provider:
 

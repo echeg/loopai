@@ -79,10 +79,12 @@
 - ⚠️ `scripts/copilot-as-claude/copilot-as-claude_test.sh` failed sporadically with `echo: write error: Broken pipe` on one `make test` run and passed on repeated standalone and full-suite runs; pre-existing flake in that shell suite, unrelated to codex args
 
 ### Task 4: [Final] Update documentation
-- [ ] update README.md flag list and the codex configuration section with the service_tier recipe
-- [ ] update CLAUDE.md codex paragraph (additive `-c` overrides now include user extras; user extras win on collision)
-- [ ] update llms.txt codex/flags coverage
-- [ ] verify embedded config comments match the implemented behavior (checked by make test)
+- [x] update README.md flag list and the codex configuration section with the service_tier recipe
+- [x] update CLAUDE.md codex paragraph (additive `-c` overrides now include user extras; user extras win on collision)
+- [x] update llms.txt codex/flags coverage
+- [x] verify embedded config comments match the implemented behavior (checked by make test)
+- ➕ README has no exhaustive flag table, so the "flag list" item became the `## Common commands` example block plus a new paragraph in `## Executors and reviews` carrying the recipe in both flag and `codex_args` form
+- ⚠️ `scripts/copilot-as-claude/copilot-as-claude_test.sh` fails 6-7 of 86 assertions with `echo: write error: Broken pipe`; reproduced identically on the pre-plan master checkout at 0c22741, so it is pre-existing and unrelated. Go suite, asset/manifest checks, and `make lint` (0 issues) all pass
 
 ## Technical Details
 - Append order in `codex.go`: `exec` → bypass/sandbox flags → loopai `-c` overrides (model, reasoning effort, idle timeout, project_doc, multi-agent) → **user extras** → prompt via stdin. User extras can therefore override any loopai-set `-c` key, deliberately.
