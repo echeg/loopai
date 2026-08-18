@@ -3653,3 +3653,93 @@ func TestCodexExecutor_firstRunHeaderEmission(t *testing.T) {
 		assert.Contains(t, secondCaptured, "Thinking", "bold summary still shown on second run")
 	})
 }
+
+func TestCodexExecutor_Run_ExtraArgs(t *testing.T) {
+	tests := []struct {
+		name      string
+		extraArgs string
+		newExec   func() *CodexExecutor // fresh instance per run; CodexExecutor holds a mutex and an atomic and cannot be copied
+		expect    []string              // exact tail expected after loopai's own args
+	}{
+		{
+			name:      "empty extras add nothing",
+			extraArgs: "",
+			expect:    nil,
+		},
+		{
+			name:      "whitespace-only extras add nothing",
+			extraArgs: "   ",
+			expect:    nil,
+		},
+		{
+			name:      "quoted value survives splitting",
+			extraArgs: `-c service_tier="default"`,
+			expect:    []string{"-c", "service_tier=default"},
+		},
+		{
+			name:      "multiple extras keep their order",
+			extraArgs: `-c service_tier="default" --color never`,
+			expect:    []string{"-c", "service_tier=default", "--color", "never"},
+		},
+		{
+			name:      "extras land after loopai overrides so the user wins on collision",
+			extraArgs: `-c model="user-choice"`,
+			newExec: func() *CodexExecutor {
+				return &CodexExecutor{Model: "loopai-choice", ReasoningEffort: "high", ProjectDoc: "DOC.md", MultiAgent: true}
+			},
+			expect: []string{"-c", "model=user-choice"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var withExtras, without []string
+			mock := &mockCodexRunner{
+				runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
+					withExtras = args
+					return mockStreams("", "result"), mockWait(), nil
+				},
+			}
+			newExec := tt.newExec
+			if newExec == nil {
+				newExec = func() *CodexExecutor { return &CodexExecutor{} }
+			}
+
+			e := newExec()
+			e.runner, e.ExtraArgs = mock, tt.extraArgs
+			require.NoError(t, e.Run(context.Background(), "prompt").Error)
+
+			baseMock := &mockCodexRunner{
+				runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
+					without = args
+					return mockStreams("", "result"), mockWait(), nil
+				},
+			}
+			base := newExec()
+			base.runner = baseMock
+			require.NoError(t, base.Run(context.Background(), "prompt").Error)
+
+			// everything loopai composes itself stays byte-identical; extras are strictly appended
+			assert.Equal(t, append(without, tt.expect...), withExtras)
+		})
+	}
+}
+
+func TestCodexExecutor_Run_ExtraArgsOverrideLoopaiModel(t *testing.T) {
+	var capturedArgs []string
+	mock := &mockCodexRunner{
+		runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
+			capturedArgs = args
+			return mockStreams("", "result"), mockWait(), nil
+		},
+	}
+	e := &CodexExecutor{runner: mock, Model: "loopai-choice", ExtraArgs: `-c model="user-choice"`}
+	require.NoError(t, e.Run(context.Background(), "prompt").Error)
+
+	// codex resolves repeated -c keys last-occurrence-wins, so the user value must come later
+	loopaiIdx := slices.Index(capturedArgs, `model="loopai-choice"`)
+	userIdx := slices.Index(capturedArgs, "model=user-choice")
+	require.NotEqual(t, -1, loopaiIdx, "args: %v", capturedArgs)
+	require.NotEqual(t, -1, userIdx, "args: %v", capturedArgs)
+	assert.Greater(t, userIdx, loopaiIdx, "user extras must come after loopai's own -c overrides")
+}

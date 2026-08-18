@@ -327,6 +327,9 @@ func (cfg Config) newBaseCodexExecutor(log Logger) *executor.CodexExecutor {
 		return e
 	}
 	e.Command = cfg.AppConfig.CodexCommand
+	// set here so both codex paths carry the extras: first-class --codex and the
+	// external codex reviewer under a claude primary
+	e.ExtraArgs = cfg.AppConfig.CodexArgs
 	e.Model = cfg.AppConfig.CodexModel
 	e.ReasoningEffort = cfg.AppConfig.CodexReasoningEffort
 	e.TimeoutMs = cfg.AppConfig.CodexTimeoutMs

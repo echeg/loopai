@@ -965,3 +965,47 @@ func TestRunner_WaitOnLimit_ZeroReturnsLimitError(t *testing.T) {
 	assert.Contains(t, err.Error(), "pattern handling")
 	assert.Len(t, task.RunCalls(), 1)
 }
+
+func TestExecutorFactory_Build_CodexArgs(t *testing.T) {
+	log := newMockLogger()
+
+	tests := []struct {
+		name      string
+		primary   string
+		codexArgs string
+	}{
+		{name: "first-class codex", primary: config.ExecutorCodex, codexArgs: `-c service_tier="default"`},
+		{name: "external codex review under claude primary", primary: config.ExecutorClaude, codexArgs: `-c service_tier="default"`},
+		{name: "unset leaves extras empty", primary: config.ExecutorCodex},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			appCfg := testAppConfig(t)
+			appCfg.Executor = tc.primary
+			appCfg.ExternalReviewTool = config.ExternalReviewToolCodex
+			appCfg.ExternalReviewToolSet = true
+			appCfg.CodexArgs = tc.codexArgs
+
+			cfg := Config{
+				Mode:               ModeReview,
+				MaxIterations:      50,
+				CodexEnabled:       true,
+				ExternalReviewTool: config.ExternalReviewToolCodex,
+				AppConfig:          appCfg,
+			}
+			_, execs := (&executorFactory{}).Build(cfg, log)
+
+			// the external codex reviewer exists in both primaries and must carry the extras
+			externalExec, ok := externalExecutor(t, execs).(*executor.CodexExecutor)
+			require.True(t, ok)
+			assert.Equal(t, tc.codexArgs, externalExec.ExtraArgs)
+
+			if tc.primary == config.ExecutorCodex {
+				taskExec, ok := execs.Task.(*executor.CodexExecutor)
+				require.True(t, ok)
+				assert.Equal(t, tc.codexArgs, taskExec.ExtraArgs, "first-class --codex task executor carries the extras")
+			}
+		})
+	}
+}

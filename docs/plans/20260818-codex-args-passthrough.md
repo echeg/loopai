@@ -58,12 +58,14 @@
 - ➕ extracted `Values.mergeCodexFrom` from `mergeFrom`: the added merge clause pushed `mergeFrom` past the gocyclo limit of 20
 
 ### Task 2: Wire the flag and executor pass-through
-- [ ] add `CodexArgs string` option with `long:"codex-args"` and description "extra arguments appended to every codex invocation (additive; explicit -c values override loopai's)" to `cmd/loopai/main.go`, wiring `cfg.CodexArgs`/`CodexArgsSet` exactly like the ClaudeArgs runtime override (explicit empty `--codex-args=` clears an inherited config value)
-- [ ] add `ExtraArgs string` to the codex executor and append `splitArgs(e.ExtraArgs)` in `pkg/executor/codex.go` arg construction AFTER loopai's `-c` overrides (model, effort, timeout, project_doc) and sandbox flags
-- [ ] pass the config value into BOTH codex executor construction sites in `pkg/processor/executor_factory.go`: first-class `--codex` and external codex review under a Claude primary
-- [ ] confirm codex CLI gives later `-c` occurrences precedence (document the verified behavior in a code comment; if earlier-wins, move extras before loopai's overrides and update the flag description)
-- [ ] write tests: extras appended in the right position, quoted values survive splitting (`-c service_tier="default"`), empty extras → byte-identical args to today (update existing golden arg tests), both construction sites carry the value, explicit-empty flag clears config value
-- [ ] run tests - must pass before next task
+- [x] add `CodexArgs string` option with `long:"codex-args"` and description "extra arguments appended to every codex invocation (additive; explicit -c values override loopai's)" to `cmd/loopai/main.go`, wiring `cfg.CodexArgs`/`CodexArgsSet` exactly like the ClaudeArgs runtime override (explicit empty `--codex-args=` clears an inherited config value)
+- [x] add `ExtraArgs string` to the codex executor and append `splitArgs(e.ExtraArgs)` in `pkg/executor/codex.go` arg construction AFTER loopai's `-c` overrides (model, effort, timeout, project_doc) and sandbox flags
+- [x] pass the config value into BOTH codex executor construction sites in `pkg/processor/executor_factory.go`: first-class `--codex` and external codex review under a Claude primary
+- [x] confirm codex CLI gives later `-c` occurrences precedence (document the verified behavior in a code comment; if earlier-wins, move extras before loopai's overrides and update the flag description)
+- [x] write tests: extras appended in the right position, quoted values survive splitting (`-c service_tier="default"`), empty extras → byte-identical args to today (update existing golden arg tests), both construction sites carry the value, explicit-empty flag clears config value
+- [x] run tests - must pass before next task
+- ➕ verified against codex-cli 0.147.0 that repeated `-c` keys resolve last-occurrence-wins (`-c model="aaa-first" -c model="zzz-second"` reported `model: zzz-second`), so appending extras last gives the user precedence as designed; recorded in a comment in `pkg/executor/codex.go`
+- ➕ `--codex-args` also added to `hasExecutionMode`/`markFlagsSet` so it counts as an execution option like `--claude-args`
 
 ### Task 3: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented (flag + config key, additive append, both codex paths, user-wins precedence)

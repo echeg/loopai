@@ -117,6 +117,7 @@ type CodexExecutor struct {
 	MultiAgent           bool                                  // enable codex multi_agent feature + reviewer agent registration; set to true on the review-phase codex instance built by processor.New() for first-class --codex mode
 	PassClaudeMd         bool                                  // pass project-level CLAUDE.md to codex via project_doc_fallback_filenames (set by processor.New() only when cfg.AppConfig.Executor == ExecutorCodex)
 	ForceReadOnly        bool                                  // require the read-only sandbox even when the runtime disables its default sandbox; used by external review so it cannot modify the project
+	ExtraArgs            string                                // user-supplied extras (codex_args / --codex-args), appended after loopai's own -c overrides so an explicit user value wins on key collision
 	IdleTimeout          time.Duration                         // kill session after this duration of no output, zero = disabled
 	headerEmitted        atomic.Bool                           // tracks first invocation across Run() calls; false until first task/review then suppressed permanently — used to emit codex's resolved model/sandbox/effort once at the top of the run
 	callbackMu           sync.Mutex                            // serializes output and timing handlers; runner loggers require serialized calls
@@ -219,6 +220,12 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	if e.ProjectDoc != "" {
 		args = append(args, "-c", fmt.Sprintf("project_doc=%q", e.ProjectDoc))
 	}
+
+	// user extras go last on purpose: codex resolves repeated -c keys with the last
+	// occurrence winning (verified against codex-cli 0.147.0), so appending here lets
+	// codex_args / --codex-args override any key loopai set above. empty extras add
+	// nothing, keeping the invocation byte-identical to a run without the option.
+	args = append(args, splitArgs(e.ExtraArgs)...)
 
 	// pass prompt via stdin to avoid Windows 8191-char command-line limit;
 	// codex reads from stdin when no positional prompt argument is given.
