@@ -50,11 +50,12 @@
 ## Implementation Steps
 
 ### Task 1: Add codex_args to configuration
-- [ ] add `CodexArgs string` (json `codex_args`) and runtime-only `CodexArgsSet bool` (json `-`) to `pkg/config/config.go`, documented like `ClaudeArgsSet`
-- [ ] parse `codex_args` in `pkg/config/values.go` and include it in the local-over-global merge (non-empty local wins, mirroring `claude_args`)
-- [ ] add a commented `codex_args` entry with the service_tier example to `pkg/config/defaults/config` next to `claude_args`, stating additive semantics and user-wins precedence
-- [ ] write tests: key parsed from global, local override, absent key → empty, embedded default remains commented-out/empty
-- [ ] run tests - must pass before next task
+- [x] add `CodexArgs string` (json `codex_args`) and runtime-only `CodexArgsSet bool` (json `-`) to `pkg/config/config.go`, documented like `ClaudeArgsSet`
+- [x] parse `codex_args` in `pkg/config/values.go` and include it in the local-over-global merge (non-empty local wins, mirroring `claude_args`)
+- [x] add a commented `codex_args` entry with the service_tier example to `pkg/config/defaults/config` (placed in the codex executor section next to `codex_command`, not next to `claude_args`, so the codex block stays coherent), stating additive semantics and user-wins precedence
+- [x] write tests: key parsed from global, local override, absent key → empty, embedded default remains commented-out/empty
+- [x] run tests - must pass before next task
+- ➕ extracted `Values.mergeCodexFrom` from `mergeFrom`: the added merge clause pushed `mergeFrom` past the gocyclo limit of 20
 
 ### Task 2: Wire the flag and executor pass-through
 - [ ] add `CodexArgs string` option with `long:"codex-args"` and description "extra arguments appended to every codex invocation (additive; explicit -c values override loopai's)" to `cmd/loopai/main.go`, wiring `cfg.CodexArgs`/`CodexArgsSet` exactly like the ClaudeArgs runtime override (explicit empty `--codex-args=` clears an inherited config value)

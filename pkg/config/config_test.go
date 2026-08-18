@@ -333,6 +333,7 @@ func TestLoad_PartialConfig(t *testing.T) {
 	assert.Equal(t, "claude", cfg.ClaudeCommand)
 	assert.Equal(t, "--dangerously-skip-permissions --output-format stream-json --verbose", cfg.ClaudeArgs)
 	assert.Equal(t, "codex", cfg.CodexCommand)
+	assert.Empty(t, cfg.CodexArgs, "codex_args stays empty unless the user sets it")
 	assert.Equal(t, "gpt-5.5", cfg.CodexModel, "codex_model defaults to embedded gpt-5.5")
 	assert.Equal(t, "xhigh", cfg.CodexReasoningEffort)
 	assert.Equal(t, "read-only", cfg.CodexSandbox)
@@ -690,6 +691,7 @@ claude_args = --custom
 plan_model = opus:high
 codex_enabled = false
 codex_command = /custom/codex
+codex_args = -c service_tier="default"
 codex_model = custom-model
 codex_reasoning_effort = low
 codex_timeout_ms = 1000
@@ -709,6 +711,8 @@ plans_dir = my/plans
 	assert.Equal(t, "opus:high", cfg.PlanModel)
 	assert.False(t, cfg.CodexEnabled)
 	assert.Equal(t, "/custom/codex", cfg.CodexCommand)
+	assert.Equal(t, `-c service_tier="default"`, cfg.CodexArgs)
+	assert.False(t, cfg.CodexArgsSet, "config-sourced value is not a runtime override")
 	assert.Equal(t, "custom-model", cfg.CodexModel)
 	assert.Equal(t, "low", cfg.CodexReasoningEffort)
 	assert.Equal(t, 1000, cfg.CodexTimeoutMs)
@@ -1701,7 +1705,7 @@ func TestConfig_JSONShape(t *testing.T) {
 
 	wantKeys := []string{
 		"claude_command", "claude_args", "plan_model", "task_model", "review_model",
-		"codex_enabled", "codex_command", "codex_model", "codex_reasoning_effort",
+		"codex_enabled", "codex_command", "codex_args", "codex_model", "codex_reasoning_effort",
 		"codex_timeout_ms", "codex_sandbox", "external_review_tool", "external_review_model", "external_reviewers", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
 		"review_patience", "finalize_enabled", "preserve_anthropic_api_key", "executor",
@@ -1726,7 +1730,7 @@ func TestConfig_JSONShape(t *testing.T) {
 	assert.JSONEq(t, `"codex:gpt-5.5:high,claude:fable:max"`, string(got["external_reviewers"]))
 
 	// the *Set sentinels and the loaded-from-files fields carry json:"-" and must be absent
-	for _, absent := range []string{"claude_args_set", "external_review_model_set", "external_reviewers_set", "wait_on_limit_set", "notify_params", "colors", "task_prompt"} {
+	for _, absent := range []string{"claude_args_set", "codex_args_set", "external_review_model_set", "external_reviewers_set", "wait_on_limit_set", "notify_params", "colors", "task_prompt"} {
 		_, present := got[absent]
 		assert.False(t, present, "unexpected json key %q present", absent)
 	}

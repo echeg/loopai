@@ -56,6 +56,7 @@ func TestValuesLoader_Load_EmbeddedOnly(t *testing.T) {
 	assert.True(t, values.CodexEnabled)
 	assert.True(t, values.CodexEnabledSet)
 	assert.Equal(t, "codex", values.CodexCommand)
+	assert.Empty(t, values.CodexArgs, "codex_args stays commented out in embedded defaults")
 	assert.Equal(t, "gpt-5.5", values.CodexModel, "codex_model defaults to embedded gpt-5.5")
 	assert.False(t, values.CodexModelSet, "embedded default carries the value but not the explicit-set flag")
 	assert.Equal(t, "xhigh", values.CodexReasoningEffort, "codex_reasoning_effort defaults to embedded xhigh")
@@ -865,11 +866,13 @@ func TestValues_mergeFrom(t *testing.T) {
 		src := Values{
 			ClaudeCommand: "src-claude",
 			ClaudeArgs:    "src-args",
+			CodexArgs:     "src-codex-args",
 		}
 		dst.mergeFrom(&src)
 
 		assert.Equal(t, "src-claude", dst.ClaudeCommand)
 		assert.Equal(t, "src-args", dst.ClaudeArgs)
+		assert.Equal(t, "src-codex-args", dst.CodexArgs)
 		assert.Equal(t, "dst-plans", dst.PlansDir)
 	})
 
@@ -2806,4 +2809,60 @@ func TestValues_mergeFrom_ReviewModel(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "haiku", values.ReviewModel)
 	})
+}
+
+func TestValuesLoader_Load_CodexArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		global   string
+		local    string
+		expected string
+	}{
+		{
+			name:     "absent from user config",
+			expected: "",
+		},
+		{
+			name:     "parsed from global",
+			global:   `codex_args = -c service_tier="default"`,
+			expected: `-c service_tier="default"`,
+		},
+		{
+			name:     "local overrides global",
+			global:   `codex_args = -c service_tier="default"`,
+			local:    `codex_args = -c service_tier="flex" -c foo=1`,
+			expected: `-c service_tier="flex" -c foo=1`,
+		},
+		{
+			name:     "empty local keeps global",
+			global:   `codex_args = -c service_tier="default"`,
+			local:    "codex_args =",
+			expected: `-c service_tier="default"`,
+		},
+		{
+			name:     "local only",
+			local:    "codex_args = --search",
+			expected: "--search",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			var globalPath, localPath string
+			if tt.global != "" {
+				globalPath = filepath.Join(tmpDir, "global-config")
+				require.NoError(t, os.WriteFile(globalPath, []byte(tt.global+"\n"), 0o600))
+			}
+			if tt.local != "" {
+				localPath = filepath.Join(tmpDir, "local-config")
+				require.NoError(t, os.WriteFile(localPath, []byte(tt.local+"\n"), 0o600))
+			}
+
+			loader := newValuesLoader(defaultsFS)
+			values, err := loader.Load(localPath, globalPath)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, values.CodexArgs)
+		})
+	}
 }
