@@ -1988,6 +1988,8 @@ func (s *Service) RemoveWorktree(path string) error {
 }
 
 // MovePlanToCompleted moves a plan file to the completed/ subdirectory and commits.
+// The commit is restricted to the plan paths, so unrelated staged changes in the
+// repository are left staged rather than swept into it.
 // Creates the completed/ directory if it doesn't exist.
 // Uses git mv if the file is tracked, falls back to os.Rename for untracked files.
 // If the source file doesn't exist but the destination does, logs a message and returns nil.
@@ -2011,9 +2013,16 @@ func (s *Service) MovePlanToCompleted(planFile string) error {
 		return nil
 	}
 
+	// paths come from the branch taken, never from re-testing the file. git mv stages the
+	// source deletion, so the source must be committed alongside the destination or the
+	// rename is only half recorded. The fallback carries no such guarantee - an untracked
+	// source reaches it, but so does a tracked one when the destination already exists -
+	// and naming a path git does not know fails the whole commit.
+	commitPaths := []string{destPath}
+
 	// use git mv
 	if err := s.repo.moveFile(sourceFile, destPath); err != nil {
-		// fallback to regular move for untracked files
+		// fallback for anything git mv refuses, an untracked source most commonly
 		if renameErr := os.Rename(sourceFile, destPath); renameErr != nil {
 			return fmt.Errorf("move plan: %w", renameErr)
 		}
@@ -2021,11 +2030,15 @@ func (s *Service) MovePlanToCompleted(planFile string) error {
 		if addErr := s.repo.add(destPath); addErr != nil {
 			s.log.Printf("warning: failed to stage moved plan: %v\n", addErr)
 		}
+	} else {
+		commitPaths = append(commitPaths, sourceFile)
 	}
 
-	// commit the move
+	// commit the move, restricted to the plan paths. a bare commit would take the whole
+	// index, and in worktree mode this runs against the user's main checkout, where
+	// anything staged during the run would land under ralphex's message.
 	commitMsg := "move completed plan: " + filepath.Base(sourceFile)
-	if err := s.repo.commit(s.appendTrailer(commitMsg)); err != nil {
+	if err := s.repo.commitFiles(s.appendTrailer(commitMsg), commitPaths...); err != nil {
 		return fmt.Errorf("commit plan move: %w", err)
 	}
 
