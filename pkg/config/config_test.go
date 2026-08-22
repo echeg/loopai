@@ -184,9 +184,17 @@ func Test_defaultsFS_EmbeddedAgentsExist(t *testing.T) {
 
 // --- Load tests ---
 
+// isolateHome points DefaultConfigDir() at a temp dir. Load("") installs defaults into whatever
+// it resolves, so without this a test run rewrites the user's own ~/.config/loopai.
+func isolateHome(t *testing.T) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
+}
+
 func TestLoad_SetsConfigDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateHome(t)
 
 	cfg, err := Load("") // empty uses default
 	require.NoError(t, err)
@@ -208,7 +216,7 @@ func TestLoad_WithCustomDir(t *testing.T) {
 }
 
 func TestLoad_PopulatesAllFields(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateHome(t)
 
 	cfg, err := Load("") // empty uses default
 	require.NoError(t, err)

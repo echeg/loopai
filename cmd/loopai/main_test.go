@@ -841,11 +841,11 @@ func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integratio
 		require.NoError(t, err)
 		finalizing := false
 
-		moved, err := moveCompletedPlan(executePlanRequest{
+		moved, _, err := moveCompletedPlan(executePlanRequest{
 			PlanFile: planFile, GitSvc: gitSvc, Mode: processor.ModeFull,
 			Config: &config.Config{MovePlanOnCompletion: true}, ChainPlanFiles: []string{planFile, "two.md"},
 			ChainFinalizing: func() error { finalizing = true; return nil },
-		}, "")
+		}, "", &recordingWarner{})
 		assert.False(t, moved)
 		assert.True(t, finalizing)
 		require.ErrorContains(t, err, "archive completed chain plan")
@@ -853,12 +853,12 @@ func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integratio
 
 	t.Run("chain_finalization_is_checkpointed_when_archival_is_disabled", func(t *testing.T) {
 		finalizing := false
-		moved, err := moveCompletedPlan(executePlanRequest{
+		moved, _, err := moveCompletedPlan(executePlanRequest{
 			PlanFile: "docs/plans/one.md", Mode: processor.ModeFull,
 			Config:          &config.Config{MovePlanOnCompletion: false},
 			ChainPlanFiles:  []string{"docs/plans/one.md", "docs/plans/two.md"},
 			ChainFinalizing: func() error { finalizing = true; return nil },
-		}, "")
+		}, "", &recordingWarner{})
 		require.NoError(t, err)
 		assert.False(t, moved)
 		assert.True(t, finalizing)
@@ -875,10 +875,10 @@ func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integratio
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
 
-		moved, err := moveCompletedPlan(executePlanRequest{
+		moved, _, err := moveCompletedPlan(executePlanRequest{
 			PlanFile: planFile, GitSvc: gitSvc, Mode: processor.ModeFull,
 			Config: &config.Config{MovePlanOnCompletion: true}, ChainPlanFiles: []string{planFile, "two.md"},
-		}, "# Report: One\n")
+		}, "# Report: One\n", &recordingWarner{})
 
 		require.NoError(t, err)
 		assert.True(t, moved)
@@ -901,11 +901,11 @@ func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integratio
 		executionDir := setupTestRepo(t)
 		executionSvc, err := git.NewService(executionDir, noopLogger())
 		require.NoError(t, err)
-		moved, err := moveCompletedPlan(executePlanRequest{
+		moved, _, err := moveCompletedPlan(executePlanRequest{
 			PlanFile: filepath.Join(executionDir, "docs", "plans", "main.md"), MainPlanFile: planFile,
 			GitSvc: executionSvc, MainGitSvc: mainSvc, Mode: processor.ModeFull,
 			Config: &config.Config{MovePlanOnCompletion: true},
-		}, "# Report: Main\n")
+		}, "# Report: Main\n", &recordingWarner{})
 
 		require.NoError(t, err)
 		assert.True(t, moved)
@@ -925,22 +925,49 @@ func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integratio
 		runGit(t, dir, "commit", "-m", "add failure plan")
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
-		var moved bool
-		var moveErr error
+		warner := &recordingWarner{}
 
-		stderr := captureStderr(t, func() {
-			moved, moveErr = moveCompletedPlan(executePlanRequest{
-				PlanFile: planFile, GitSvc: gitSvc, Mode: processor.ModeFull,
-				Config: &config.Config{MovePlanOnCompletion: true},
-			}, "# Report: Failure\n")
-		})
+		moved, incomplete, moveErr := moveCompletedPlan(executePlanRequest{
+			PlanFile: planFile, GitSvc: gitSvc, Mode: processor.ModeFull,
+			Config: &config.Config{MovePlanOnCompletion: true},
+		}, "# Report: Failure\n", warner)
 
 		require.NoError(t, moveErr)
+		require.NoError(t, incomplete, "the plan itself archived, only its sidecar failed")
 		assert.True(t, moved)
-		assert.Contains(t, stderr, "warning: failed to write completion report:")
+		require.Len(t, warner.msgs, 1)
+		assert.Contains(t, warner.msgs[0], "failed to write completion report:")
 		assert.FileExists(t, filepath.Join(completedDir, "failure.md"))
 		assert.Equal(t, "move completed plan: failure.md",
 			strings.TrimSpace(gitOutput(t, dir, "log", "-1", "--format=%s")))
+	})
+
+	t.Run("rejected_single_plan_archive_warns_and_reports_incomplete", func(t *testing.T) {
+		// pins upstream #441: a commit hook rejecting the archive commit left the move staged
+		// while the run reported a clean success with the reason only on stderr
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "hooked.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/hooked.md")
+		runGit(t, dir, "commit", "-m", "add hooked plan")
+		hook := filepath.Join(dir, ".git", "hooks", "commit-msg")
+		require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\necho rejected by hook >&2\nexit 1\n"), 0o700)) //nolint:gosec // hook must be executable
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		warner := &recordingWarner{}
+
+		moved, incomplete, moveErr := moveCompletedPlan(executePlanRequest{
+			PlanFile: planFile, GitSvc: gitSvc, Mode: processor.ModeFull,
+			Config: &config.Config{MovePlanOnCompletion: true},
+		}, "", warner)
+
+		require.NoError(t, moveErr, "a single plan's archive failure must not fail the run")
+		assert.False(t, moved)
+		require.ErrorContains(t, incomplete, "move hooked.md")
+		require.Len(t, warner.msgs, 1)
+		assert.Contains(t, warner.msgs[0], "failed to move plan to completed:")
 	})
 
 	t.Run("stops_on_abort_even_when_executor_returns_nil", func(t *testing.T) {
@@ -9164,7 +9191,7 @@ func TestDisplayStats(t *testing.T) {
 
 		req := executePlanRequest{PlanFile: "docs/plans/feature.md", Colors: colors}
 		stats := git.DiffStats{Files: 5, Additions: 200, Deletions: 50}
-		displayStats(req, baseLog, stats, "2m15s", "feature-branch", false)
+		displayStats(req, baseLog, stats, "2m15s", "feature-branch", false, nil)
 	})
 
 	t.Run("without_diff_stats", func(t *testing.T) {
@@ -9179,7 +9206,7 @@ func TestDisplayStats(t *testing.T) {
 		defer func() { _ = baseLog.Close() }()
 
 		req := executePlanRequest{Colors: colors}
-		displayStats(req, baseLog, git.DiffStats{}, "30s", "main", false)
+		displayStats(req, baseLog, git.DiffStats{}, "30s", "main", false, nil)
 	})
 
 	t.Run("with_main_plan_file", func(t *testing.T) {
@@ -9198,7 +9225,7 @@ func TestDisplayStats(t *testing.T) {
 			MainPlanFile: "docs/plans/feature.md",
 			Colors:       colors,
 		}
-		displayStats(req, baseLog, git.DiffStats{Files: 1, Additions: 10, Deletions: 5}, "10s", "feature-wt", false)
+		displayStats(req, baseLog, git.DiffStats{Files: 1, Additions: 10, Deletions: 5}, "10s", "feature-wt", false, nil)
 	})
 
 	// plan-path display must reflect the actual location of the plan file:
@@ -9281,12 +9308,37 @@ func TestDisplayStats(t *testing.T) {
 				req.Colors = colors
 
 				output := captureStdout(t, func() {
-					displayStats(req, baseLog, git.DiffStats{}, "1s", "main", tc.planMoved)
+					displayStats(req, baseLog, git.DiffStats{}, "1s", "main", tc.planMoved, nil)
 				})
 				assert.Contains(t, output, "  plan: "+tc.wantPath+"\n")
 			})
 		}
 	})
+
+	t.Run("archive_incomplete_is_repeated_last", func(t *testing.T) {
+		chdirTemp(t)
+		colors := testColors()
+		baseLog, err := progress.NewLogger(progress.Config{
+			PlanFile: "x.md", Mode: "full", Branch: "main", NoColor: true,
+		}, colors, &status.PhaseHolder{})
+		require.NoError(t, err)
+		defer func() { _ = baseLog.Close() }()
+
+		req := executePlanRequest{PlanFile: "docs/plans/feature.md", Colors: colors}
+		output := captureStdout(t, func() {
+			displayStats(req, baseLog, git.DiffStats{}, "1s", "main", false, errors.New("move feature.md: hook rejected"))
+		})
+		assert.Contains(t, output, "plan archive incomplete: move feature.md: hook rejected")
+		assert.Greater(t, strings.Index(output, "plan archive incomplete"), strings.Index(output, "progress log:"),
+			"the incomplete note must come after the plan/branch/progress lines")
+	})
+}
+
+// recordingWarner captures archive warnings that moveCompletedPlan routes to the progress log.
+type recordingWarner struct{ msgs []string }
+
+func (w *recordingWarner) Warn(format string, args ...any) {
+	w.msgs = append(w.msgs, fmt.Sprintf(format, args...))
 }
 
 func TestDisplayMeta(t *testing.T) {
