@@ -55,6 +55,7 @@ const (
 // SessionMetadata holds parsed information from progress file header.
 type SessionMetadata struct {
 	PlanPath            string    // path to plan file (from "Plan:" header line)
+	WorktreePlanPath    string    // path to the worktree's plan copy, ticked by the run (from "Worktree plan:" header line); empty outside worktree mode
 	Branch              string    // git branch (from "Branch:" header line)
 	Mode                string    // execution mode: full, review, codex-only (from "Mode:" header line)
 	Executor            string    // executor name when not the default claude (from "Executor:" header line)

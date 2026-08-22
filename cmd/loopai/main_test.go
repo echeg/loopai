@@ -8770,6 +8770,17 @@ printf '%s\n' '{"type":"result","result":""}'
 	require.ErrorAs(t, acquireErr, &busyErr, "the run lock must remain held for the dashboard's lifetime")
 	assert.Equal(t, os.Getpid(), busyErr.PID)
 
+	// the header records the worktree copy the run ticks, so a watch-mode dashboard reads it
+	// rather than the unticked main-checkout plan named on the Plan: line
+	logs, globErr := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "*.txt"))
+	require.NoError(t, globErr)
+	require.Len(t, logs, 1)
+	logData, logErr := os.ReadFile(logs[0])
+	require.NoError(t, logErr)
+	resolvedWtPath, evalErr := filepath.EvalSymlinks(wtPath)
+	require.NoError(t, evalErr)
+	assert.Contains(t, string(logData), "Worktree plan: "+filepath.Join(resolvedWtPath, "docs", "plans", "serve-worktree.md")+"\n")
+
 	cancel()
 	select {
 	case runErr := <-done:

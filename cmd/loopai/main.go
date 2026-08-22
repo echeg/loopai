@@ -1862,14 +1862,21 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	// create progress logger BEFORE chdir so progress files land in main repo's .loopai/progress/.
 	// uses the branch name derived from the plan file above, since gitSvc still points at the main
 	// repo (on master). Its exclusive file lock also rejects a live run using the same progress path.
+	// the run ticks the plan copy inside the worktree, not req.PlanFile; record it so a watch-mode
+	// dashboard reads the file the run actually writes to while the worktree exists.
+	worktreePlanFile := ""
+	if wt.planFile != req.PlanFile {
+		worktreePlanFile = wt.planFile
+	}
 	holder := &status.PhaseHolder{}
 	baseLog, err := progress.NewLogger(progress.Config{
-		PlanFile:       req.PlanFile,
-		Mode:           string(req.Mode),
-		Branch:         branch,
-		BranchOverride: req.BranchOverride,
-		Params:         runHeaderParams(o, req.Config, req.Mode, req.ExternalReview),
-		NoColor:        o.NoColor,
+		PlanFile:         req.PlanFile,
+		WorktreePlanFile: worktreePlanFile,
+		Mode:             string(req.Mode),
+		Branch:           branch,
+		BranchOverride:   req.BranchOverride,
+		Params:           runHeaderParams(o, req.Config, req.Mode, req.ExternalReview),
+		NoColor:          o.NoColor,
 	}, req.Colors, holder)
 	if err != nil {
 		return fmt.Errorf("create progress logger: %w", err)
