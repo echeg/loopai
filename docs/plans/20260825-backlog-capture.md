@@ -93,10 +93,12 @@ Key benefits: out-of-scope findings survive the run, live in git history, are sh
 
 ### Task 2: Expand `{{BACKLOG_DIR}}` placeholder in prompts
 
-- [ ] in `pkg/processor/prompts.go`, expand `{{BACKLOG_DIR}}` from the configured `BacklogDir` in every builder that expands `{{PLANS_DIR}}` (task, review, evaluation, planning paths)
-- [ ] update the "supported placeholders" comments in `prompts.go` and the variable-list header comments in every embedded prompt file that gains the placeholder
-- [ ] write tests in `pkg/processor/prompts_test.go`: placeholder replaced with configured value, default value when unset, no literal `{{BACKLOG_DIR}}` left in any built prompt
-- [ ] run `go test ./pkg/processor/...` - must pass before task 3
+- [x] in `pkg/processor/prompts.go`, expand `{{BACKLOG_DIR}}` from the configured `BacklogDir` in every builder that expands `{{PLANS_DIR}}` (task, review, evaluation, planning paths)
+- [x] update the "supported placeholders" comments in `prompts.go` and the variable-list header comments in every embedded prompt file that gains the placeholder
+- [x] write tests in `pkg/processor/prompts_test.go`: placeholder replaced with configured value, default value when unset, no literal `{{BACKLOG_DIR}}` left in any built prompt
+- [x] run `go test ./pkg/processor/...` - must pass before task 3
+- ➕ expansion added once in `replaceBaseVariables`, the choke point every builder funnels through, so all twelve prompt paths (task, both internal reviews, three external reviews, three evaluations, plan, finalize, gen-agents) are covered by one line plus `getBacklogDir`, mirroring `getPlansDir`
+- ⚠️ no embedded prompt file gains the placeholder in this task, so no variable-list header comment changed: the headers document the variables a prompt actually uses (`task.txt` omits `{{PLANS_DIR}}` though it is expanded there). Task 3 adds the usage and its header lines together.
 
 ### Task 3: Backlog capture instructions in embedded prompts
 

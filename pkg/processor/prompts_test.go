@@ -2057,3 +2057,109 @@ func TestRunner_replaceExternalVariablesWithIteration_ExpandsDynamicCatalog(t *t
 	assert.NotContains(t, result, "{{agents:dynamic}}")
 	assert.Contains(t, result, "- dyn — project specific")
 }
+
+// TestPromptBuilder_BacklogDirPlaceholder covers {{BACKLOG_DIR}} expansion across every
+// builder that expands {{PLANS_DIR}}: the placeholder is substituted from the configured
+// backlog_dir and falls back to docs/backlog when the key is unset.
+func TestPromptBuilder_BacklogDirPlaceholder(t *testing.T) {
+	// each prompt field carries the placeholder so the builder output is the resolved path alone
+	promptWithPlaceholder := func() *config.Config {
+		return &config.Config{
+			TaskPrompt:                 "{{BACKLOG_DIR}}",
+			ReviewFirstPrompt:          "{{BACKLOG_DIR}}",
+			ReviewSecondPrompt:         "{{BACKLOG_DIR}}",
+			CodexReviewPrompt:          "{{BACKLOG_DIR}}",
+			CodexPrompt:                "{{BACKLOG_DIR}}",
+			CustomReviewPrompt:         "{{BACKLOG_DIR}}",
+			CustomEvalPrompt:           "{{BACKLOG_DIR}}",
+			ExternalClaudeReviewPrompt: "{{BACKLOG_DIR}}",
+			ExternalClaudeEvalPrompt:   "{{BACKLOG_DIR}}",
+			MakePlanPrompt:             "{{BACKLOG_DIR}}",
+			FinalizePrompt:             "{{BACKLOG_DIR}}",
+			GenAgentsPrompt:            "{{BACKLOG_DIR}}",
+		}
+	}
+
+	builders := []struct {
+		name  string
+		build func(b *promptBuilder) string
+	}{
+		{"task", func(b *promptBuilder) string { return b.TaskPrompt() }},
+		{"review first", func(b *promptBuilder) string { return b.FirstReviewPrompt() }},
+		{"review second", func(b *promptBuilder) string { return b.SecondReviewPrompt("") }},
+		{"external review codex", func(b *promptBuilder) string {
+			return b.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, "")
+		}},
+		{"external review claude", func(b *promptBuilder) string {
+			return b.ExternalReviewPrompt(config.ExternalReviewToolClaude, true, "")
+		}},
+		{"external review custom", func(b *promptBuilder) string {
+			return b.ExternalReviewPrompt(config.ExternalReviewToolCustom, true, "")
+		}},
+		{"eval codex", func(b *promptBuilder) string {
+			return b.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings")
+		}},
+		{"eval claude", func(b *promptBuilder) string {
+			return b.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings")
+		}},
+		{"eval custom", func(b *promptBuilder) string {
+			return b.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings")
+		}},
+		{"plan", func(b *promptBuilder) string { return b.PlanPrompt() }},
+		{"finalize", func(b *promptBuilder) string { return b.FinalizePrompt() }},
+		{"gen agents", func(b *promptBuilder) string { return b.GenAgentsPrompt() }},
+	}
+
+	tests := []struct {
+		name       string
+		backlogDir string
+		want       string
+	}{
+		{name: "configured value", backlogDir: "custom/backlog", want: "custom/backlog"},
+		{name: "unset falls back to default", backlogDir: "", want: "docs/backlog"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			appCfg := promptWithPlaceholder()
+			appCfg.BacklogDir = tc.backlogDir
+			cfg := Config{PlanFile: "docs/plans/test.md", ProgressPath: "progress.txt", DefaultBranch: "main", AppConfig: appCfg}
+			builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
+			for _, bc := range builders {
+				t.Run(bc.name, func(t *testing.T) {
+					prompt := bc.build(builder)
+					assert.Contains(t, prompt, tc.want)
+					assert.NotContains(t, prompt, "{{BACKLOG_DIR}}")
+				})
+			}
+		})
+	}
+}
+
+// TestPromptBuilder_BacklogDirNoLiteralLeak guards the embedded prompts: whichever of them
+// carry {{BACKLOG_DIR}}, none may reach the executor with the raw placeholder intact.
+func TestPromptBuilder_BacklogDirNoLiteralLeak(t *testing.T) {
+	appCfg := testAppConfig(t)
+	appCfg.BacklogDir = "docs/backlog"
+	cfg := Config{PlanFile: "docs/plans/test.md", ProgressPath: "progress.txt", DefaultBranch: "main",
+		PlanDescription: "add feature", AppConfig: appCfg}
+	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
+
+	prompts := map[string]string{
+		"task":                   builder.TaskPrompt(),
+		"review first":           builder.FirstReviewPrompt(),
+		"review second":          builder.SecondReviewPrompt(""),
+		"external review codex":  builder.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, ""),
+		"external review claude": builder.ExternalReviewPrompt(config.ExternalReviewToolClaude, true, ""),
+		"external review custom": builder.ExternalReviewPrompt(config.ExternalReviewToolCustom, true, ""),
+		"eval codex":             builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"),
+		"eval claude":            builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"),
+		"eval custom":            builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"),
+		"plan":                   builder.PlanPrompt(),
+		"finalize":               builder.FinalizePrompt(),
+		"gen agents":             builder.GenAgentsPrompt(),
+	}
+	for name, prompt := range prompts {
+		assert.NotContains(t, prompt, "{{BACKLOG_DIR}}", "%s prompt leaks the raw placeholder", name)
+	}
+}
