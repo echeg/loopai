@@ -142,11 +142,15 @@ Key benefits: out-of-scope findings survive the run, live in git history, are sh
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview are implemented (backlog capture reachable from task, internal review, evaluation, and planning paths; Decision Log written by grill and plan revision)
-- [ ] verify edge cases: unset `backlog_dir` renders default; custom `backlog_dir` renders everywhere; no literal `{{BACKLOG_DIR}}` leaks into any built prompt; `## Decision Log` never carries checkboxes
-- [ ] run full test suite: `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] cross-compile check not needed (no platform-sensitive code); confirm no test touched real user config directories
+- [x] verify all requirements from Overview are implemented (backlog capture reachable from task, internal review, evaluation, and planning paths; Decision Log written by grill and plan revision)
+- [x] verify edge cases: unset `backlog_dir` renders default; custom `backlog_dir` renders everywhere; no literal `{{BACKLOG_DIR}}` leaks into any built prompt; `## Decision Log` never carries checkboxes
+- [x] run full test suite: `make test`
+- [x] run `make lint` - all issues must be fixed
+- [x] cross-compile check not needed (no platform-sensitive code); confirm no test touched real user config directories
+- ➕ evidence: `make test` exit 0, 15/15 Go packages ok (processor 91.6%, config 90.4%), 0 FAIL lines, wrapper suite 71/71; `make lint` exit 0 with `0 issues`
+- ➕ evidence: capture text reaches all four paths — `task.txt` (task), `review_first.txt`/`review_second.txt` (internal review), `codex.txt`/`external_claude_eval.txt`/`custom_eval.txt` (evaluation), `make_plan.txt` (planning); grill's Decision Log contract is asserted by `scripts/check-grill-skill_test.sh` inside `make test`
+- ➕ evidence: `TestPromptBuilder_BacklogDirPlaceholder` covers configured-value and unset-default across all twelve prompt paths, `TestPromptBuilder_BacklogDirNoLiteralLeak` proves no raw placeholder survives, and a section-bounded scan of `make_plan.txt` plus the three skills found no checkbox under any `Decision Log` heading
+- ➕ real-config safety verified by hashing `~/.config/loopai/` and `~/.config/ralphex/` before and after the suite: byte-identical (40 tracked files), so no test wrote to either
 
 ### Task 7: [Final] Update documentation
 
