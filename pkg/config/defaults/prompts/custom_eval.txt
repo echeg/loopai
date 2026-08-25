@@ -35,7 +35,8 @@ Then categorize:
     "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction
   - list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate
   - a pre-existing linter error or failing test is never out of scope - fix it, do not file it
-  - when {{PLAN_FILE}} names no plan, the scope is this branch's own diff - never file a finding about code this branch changed
+  - never file a finding about code this branch changed: a defect in the branch's own work is in scope whether or
+    not {{PLAN_FILE}} names a plan, and with no plan the branch diff is the whole scope
   - say in your response that the finding was filed and why it is out of scope; your response is passed back to the review tool
   - leave the entry uncommitted alongside your other changes - it is swept into the final commit below;
     committing mid-loop hides the accumulated fixes from the next reviewer iteration, which is shown only the uncommitted diff
@@ -62,8 +63,9 @@ Do NOT reject issues just because they existed before this branch - fix them any
 
 **If the review tool reports NO actionable issues** (empty output, "no issues found", "NO ISSUES FOUND"):
 - Run `git diff HEAD` to review ALL uncommitted changes (accumulated fixes from multiple iterations, plus any backlog entry you staged)
-- Stage everything with `git add -A`, then commit with message: "fix: address external review findings" -
-  a bare `git commit -m` would commit only the already-staged backlog entry and silently drop every accumulated fix
+- Stage every file you changed, plus any backlog entry, with `git add <paths>`, then commit with message: "fix: address external review findings" -
+  a bare `git commit -m` would commit only the already-staged backlog entry and silently drop every accumulated fix.
+  Do NOT `git add -A`: `--external-only` and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work
 - Output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
 
 The EXTERNAL_REVIEW_DONE signal is valid only after the external review tool reports no actionable issues. Never emit it after fixing or dismissing findings.

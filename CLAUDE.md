@@ -123,8 +123,9 @@ reason as rejected, and findings merely not selected as deferred — before
 `replace-active` publishes it, since the skill never edits the plan at
 its repository path and a post-publication write would need a second guarded
 replacement. The section is created immediately before `## Implementation
-Steps` when absent, existing entries are preserved, and it must never carry a
-checkbox. `ParsePlan` ignores a checkbox above `## Implementation Steps`,
+Steps` when absent, existing entries are preserved, a finding already recorded
+as deferred has that entry's date updated in place instead of a second
+near-identical line appended, and it must never carry a checkbox. `ParsePlan` ignores a checkbox above `## Implementation Steps`,
 since the H2 closes the current task, but `FileHasUncompletedCheckbox` — the
 fallback used when a plan has no task headings — counts it, so such a plan
 never reads as complete; the executor also reads the section as text and can
@@ -163,16 +164,19 @@ internal review, external-review evaluation, and plan creation. The three extern
 *review* prompts deliberately omit it, since external reviewers are read-only and
 their findings reach the backlog through the primary evaluator. Each path states its
 own commit rule, and they are not interchangeable. Task and internal review commit the
-entry in phase, and both are told to `git add` it first. All three of those prompts spell
-their own end-of-phase sweep as `git add -A`, matching the evaluation prompts, and that sweep
-does pick an untracked entry up; the explicit stage exists for the path it does not cover.
-`review_first.txt` and `review_second.txt` also offer to commit the entry on its own as
-`docs: add backlog entry` when there is nothing else to commit, and that one is a literal bare
-`git commit -m`, which cannot pick up a new untracked file, so without the stage the entry is
-silently dropped and dies with the worktree. In `task.txt`, which has no entry-only commit
-path, the stage is the same guard against a customized sweep. Do not restate the rationale as
-"the commit instructions are a bare `git commit -m`" — that was true before the sweeps were
-spelled out and is now false at all three sites. The three evaluation prompts must leave it uncommitted: after the first
+entry in phase, and all three prompts stage it with `git add` first, since it is untracked and
+no commit picks it up on its own. `task.txt` is the only capture path that sweeps with
+`git add -A`, and only because `modeRequiresBranch` is true for the two modes that run it, so
+the tree it commits is either a fresh worktree or a checkout `CreateBranchForPlan` already
+proved clean. `review_first.txt` and `review_second.txt` deliberately do not sweep and say so
+inline: `ModeReview` and `ModeCodexOnly` create no branch and no worktree, so `--review`,
+`--external-only`, and `--codex-only` commit in the user's own checkout, where a dirty tree is
+allowed and never gated, and a sweep there would commit their unrelated work in progress. Those
+two prompts stage the files the model itself created or modified, and their entry-only
+`docs: add backlog entry` commit uses the pathspec form
+`git commit -m "docs: add backlog entry" -- <entry>` for the same reason `make_plan.txt` does.
+Do not restore a bare `git commit -m` at either site: with the entry staged it succeeds and
+commits only the entry. The three evaluation prompts must leave it uncommitted: after the first
 round `getDiffInstruction` shows the external reviewer only the uncommitted diff, so a
 mid-loop commit hides the accumulated fixes, the next round reports clean, and
 `EXTERNAL_REVIEW_DONE` fires with the fixes unverified — the entry is swept into the
@@ -180,11 +184,13 @@ final commit instead. Those three prompts do say to `git add` the entry alone: t
 sweep is described as reviewing `git diff`, which never shows a new untracked file, and
 staging keeps the entry out of the unstaged diff the reviewer is shown while guaranteeing
 the commit picks it up. Because that leaves the index deliberately non-empty, the same three
-prompts also spell the final sweep as `git diff HEAD` plus `git add -A`: a bare `git commit -m`
-used to fail loudly with `no changes added to commit`, and with the entry staged it would
-instead succeed, commit only the entry, and drop every accumulated fix right before
-`EXTERNAL_REVIEW_DONE`. Staging does not weaken the stalemate reset either, since
-`diffFingerprint` runs `git diff HEAD`. Plan creation runs in the source checkout before
+prompts spell the final commit as `git diff HEAD` plus an explicit `git add <paths>` over every
+file the model changed: a bare `git commit -m` used to fail loudly with `no changes added to
+commit`, and with the entry staged it would instead succeed, commit only the entry, and drop
+every accumulated fix right before `EXTERNAL_REVIEW_DONE`. That explicit stage is deliberately
+not `git add -A`, for the same reason the internal-review prompts avoid one: these prompts also
+run under `--external-only` and `--codex-only`, which create no worktree. Staging does not
+weaken the stalemate reset either, since `diffFingerprint` runs `git diff HEAD`. Plan creation runs in the source checkout before
 the branch and worktree exist, so it stages that one file and commits it through the
 pathspec form `git commit -m "docs: add backlog entry" -- <entry>`; an uncommitted
 entry there never reaches the branch, and an untracked one fails branch and worktree
@@ -203,11 +209,13 @@ explicitly, because the category is otherwise an escape hatch from the pre-exist
 rule that sits beside it in the same prompts, and `task.txt` and `external_claude_eval.txt`
 carry no such rule of their own. `make_plan.txt` is the deliberate exception: plan creation
 fixes nothing, so filing is the only thing it can do with such a finding. The review and
-evaluation prompts additionally bound the category when `{{PLAN_FILE}}` renders its
-no-plan fallback: under `--review`, `--external-only`, and
-`--codex-only` there is no plan for a finding to be out of scope of, and filing is
-dismissal-equivalent for the signal, so an unbounded block would be a new way to end a
-review with real findings unfixed.
+evaluation prompts additionally bound the category unconditionally: a defect in code the branch
+itself wrote is never out of scope, whether or not `{{PLAN_FILE}}` names a plan. Filing is
+dismissal-equivalent for the signal, so without that bound "outside this plan's scope" is a new
+way to end a review green with a defect this branch introduced. The bound must not be written as
+a consequence of the no-plan fallback alone: under `--review`, `--external-only`, and
+`--codex-only` there is additionally no plan for any finding to be out of scope of, but the
+dangerous case is the ordinary one where a plan is present.
 
 Agent files may carry YAML frontmatter parsed into `config.Options` (`model`,
 `agent`, `description`). A non-empty `description` marks the file as a *dynamic

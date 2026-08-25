@@ -93,10 +93,12 @@ Out-of-scope findings go to the backlog instead of into this branch:
   "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction
 - list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate
 - a pre-existing linter error or failing test is never out of scope - fix it, do not file it
-- when {{PLAN_FILE}} names no plan, the scope is this branch's own diff - never file a finding about code this branch changed
-- stage the new entry with `git add <path>`: it is untracked, so a commit that does not sweep with `git add -A` -
-  the entry-only `docs: add backlog entry` below - cannot pick it up, and the entry would die with the worktree
-- commit the entry with your fixes, or on its own as "docs: add backlog entry" when there is nothing else to commit
+- never file a finding about code this branch changed: a defect in the branch's own work is in scope whether or
+  not {{PLAN_FILE}} names a plan, and with no plan the branch diff is the whole scope
+- stage the new entry with `git add <path>`: it is untracked, so no commit picks it up on its own, and the entry
+  would die with the worktree
+- commit the entry with your fixes, or on its own as `git commit -m "docs: add backlog entry" -- <entry>` when
+  there is nothing else to commit - the pathspec keeps anything the user had already staged out of that commit
 - filing an entry is not a fix: it does not count as a confirmed issue in the Step 4 signal logic
 
 IMPORTANT: Pre-existing issues (linter errors, failed tests) should also be fixed.
@@ -105,7 +107,9 @@ Do NOT reject issues just because they existed before this branch - fix them any
 ### 3.3 Fix All Confirmed Issues
 1. Fix all CONFIRMED issues (all types: bugs, tests, smells, docs, etc.)
 2. Run tests and linter to verify fixes - ALL tests must pass, ALL linter issues resolved
-3. Commit fixes: `git add -A && git commit -m "fix: address code review findings"`
+3. Stage every file you created or modified, including any backlog entry, with `git add <paths>`, then commit:
+   `git commit -m "fix: address code review findings"`. Do NOT `git add -A`: `--review`, `--external-only`,
+   and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work.
 
 ## Step 4: Signal Completion
 

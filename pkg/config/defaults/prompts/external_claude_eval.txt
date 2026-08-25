@@ -23,7 +23,7 @@ create {{BACKLOG_DIR}}/<kebab-slug>.md with a "# <short problem title>" heading,
 "- severity: minor|major", "- area: <primary file or package>", and a short description with file:line references and a suggested fix direction.
 List existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate.
 A pre-existing linter error or failing test is never out of scope - fix it, do not file it.
-When {{PLAN_FILE}} names no plan, the scope is this branch's own diff - never file a finding about code this branch changed.
+A defect in the branch's own work is in scope whether or not {{PLAN_FILE}} names a plan, and with no plan the branch diff is the whole scope - never file a finding about code this branch changed.
 Leave the entry uncommitted alongside your other changes - it is swept into the final commit below;
 committing mid-loop hides the accumulated fixes from the next reviewer iteration, which is shown only the uncommitted diff.
 Stage that one file with `git add` and nothing else, so the final commit cannot miss a new untracked file; a staged entry stays out of the unstaged diff the reviewer is shown.
@@ -35,7 +35,7 @@ If you fixed any issue, do not commit and do not emit a completion signal. Stop 
 
 If you dismissed all findings, make no code changes (a backlog entry filed above is the only permitted write), emit no completion signal, and stop so the external reviewer can reconsider your explanations.
 
-Only when the external reviewer reports no actionable issues (empty output, "no issues found", or "NO ISSUES FOUND"), review all accumulated uncommitted changes with `git diff HEAD`, stage everything with `git add -A`, and commit with message "fix: address external review findings" - a bare `git commit -m` would commit only the already-staged backlog entry and silently drop every accumulated fix. Then output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
+Only when the external reviewer reports no actionable issues (empty output, "no issues found", or "NO ISSUES FOUND"), review all accumulated uncommitted changes with `git diff HEAD`, stage every file you changed plus any backlog entry with `git add <paths>`, and commit with message "fix: address external review findings" - a bare `git commit -m` would commit only the already-staged backlog entry and silently drop every accumulated fix. Do NOT `git add -A`: `--external-only` and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work. Then output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
 
 The EXTERNAL_REVIEW_DONE signal means the external reviewer found nothing actionable. Never emit it after fixing or dismissing findings. Never run the external reviewer yourself; the external loop owns reviewer execution.
 
