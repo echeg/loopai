@@ -68,7 +68,8 @@ Before asking questions, understand what the user is working on:
    - real issues discovered during exploration that are outside this plan's goal go to `docs/backlog/<kebab-slug>.md` (or the project's configured `backlog_dir`)
    - entry format: a `# <short problem title>` heading, then `- found: <YYYY-MM-DD>, plan: <plan-name>, phase: planning`, `- severity: minor|major`, `- area: <primary file or package>`, then a short description with file:line references and a suggested fix direction
    - list existing files in the backlog directory first - update a similar entry instead of creating a duplicate
-   - do NOT fix them now; commit the entry with the plan so it survives the run
+   - do NOT fix them now; stage only that entry file and commit it as `docs: add backlog entry` right away
+   - commit it before loopai runs the plan: loopai tolerates exactly one uncommitted path, the plan file, so an untracked backlog entry makes branch and worktree creation fail with `worktree has uncommitted changes`
 
 ## Step 1: Present Context and Ask Focused Questions
 

@@ -35,9 +35,12 @@ Then categorize:
     "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction
   - list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate
   - a pre-existing linter error or failing test is never out of scope - fix it, do not file it
+  - when {{PLAN_FILE}} names no plan, the scope is this branch's own diff - never file a finding about code this branch changed
   - say in your response that the finding was filed and why it is out of scope; your response is passed back to Codex
   - leave the entry uncommitted alongside your other changes - it is swept into the final commit below;
     committing mid-loop hides the accumulated fixes from the next reviewer iteration, which is shown only the uncommitted diff
+  - stage that one file with `git add` and nothing else, so the final commit cannot miss a new untracked file;
+    a staged entry stays out of the unstaged diff the reviewer is shown
   - filing is not a fix, so treat these findings like dismissals in the signal logic below
 
 IMPORTANT: Pre-existing issues (linter errors, failed tests) should also be fixed.

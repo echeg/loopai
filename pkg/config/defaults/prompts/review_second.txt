@@ -54,6 +54,7 @@ Real but out of this plan's scope? Do NOT fix it here - file it to the backlog:
   "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction
 - list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate
 - a pre-existing linter error or failing test is never out of scope - fix it, do not file it
+- when {{PLAN_FILE}} names no plan, the scope is this branch's own diff - never file a finding about code this branch changed
 - commit the entry with your fixes, or on its own as "docs: add backlog entry" when there is nothing else to commit
 - filing an entry is not a fix: it does not count as an issue found in the signal logic below
 

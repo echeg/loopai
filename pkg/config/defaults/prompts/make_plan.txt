@@ -136,9 +136,11 @@ Write the accepted plan to disk:
 - **CRITICAL: all tests must pass before starting next task**
 
 ## Decision Log
-(optional - only when the plan was revised after feedback or critique; NEVER put checkboxes in this section)
-- <YYYY-MM-DD> <source>: **accepted** - <what changed and where>
-- <YYYY-MM-DD> <source>: **rejected** - "<the point>" - <one-line reasoning>
+<!-- Omit this whole section from a first-time plan. Add it only when revising after feedback or
+     critique, and then replace this comment with one list item per point:
+     - <YYYY-MM-DD> <source>: **accepted** - <what changed and where>
+     - <YYYY-MM-DD> <source>: **rejected** - "<the point>" - <one-line reasoning>
+     NEVER put checkboxes in this section. -->
 
 ## Implementation Steps
 

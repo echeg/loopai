@@ -437,9 +437,20 @@ file under `backlog_dir` (`docs/backlog/` by default):
 ```
 
 Capture is a prompt convention, not a code path: loopai never reads, validates, or creates the
-directory, and the path is only substituted into prompts as `{{BACKLOG_DIR}}`. Entries are
-written inside the worktree and committed with the run's normal commits, so they survive
-worktree removal and arrive on the default branch through `--merge`.
+directory, and the path is only substituted into prompts as `{{BACKLOG_DIR}}`. Where the entry
+gets committed depends on the path that files it, and the three rules are not interchangeable:
+
+- **Task and internal review** write the entry inside the worktree and commit it in phase, with
+  the fixes or on its own as `docs: add backlog entry`, so it survives worktree removal and
+  arrives on the default branch through `--merge`.
+- **External-review evaluation** writes it inside the worktree, stages it, and leaves it
+  uncommitted until the reviewer chain finishes: after the first round the external reviewer is
+  shown only the uncommitted diff, so a mid-loop commit would hide the accumulated fixes. The
+  final `fix: address ... review findings` commit sweeps the staged entry up.
+- **Plan creation** runs in the source checkout before the branch and worktree exist, so it stages
+  that one file and commits it there as `docs: add backlog entry` — on whatever branch is checked
+  out, normally `main` or `master`. An uncommitted entry would never reach the feature branch, and
+  an untracked one blocks branch and worktree creation, which tolerate only the plan file itself.
 
 Filing is not a fix: an out-of-scope finding behaves like a dismissal in the completion-signal
 logic, so an agent never keeps a review loop alive by claiming it fixed something. The write is

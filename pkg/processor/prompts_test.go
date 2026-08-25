@@ -2187,14 +2187,24 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 		// evaluation prompts accumulate fixes uncommitted across reviewer iterations; the
 		// other capture paths commit in-phase.
 		mustNotCommit bool
+		// review and evaluation prompts also run without a plan (--review, --external-only,
+		// --codex-only), where "outside this plan's scope" has no referent; task and plan
+		// creation always have one.
+		noPlanBound bool
+		// the exact commit rule the path states; the paths are not interchangeable, so a bare
+		// "commit" substring would pass on unrelated prompt text.
+		commitRule string
+		// paths that can fix must not let out-of-scope become an escape hatch from the
+		// pre-existing-issues rule; plan creation fixes nothing, so it files instead.
+		fixCapable bool
 	}{
-		"task":          {builder.TaskPrompt(), "phase: task", false, false},
-		"review first":  {builder.FirstReviewPrompt(), "phase: internal review", true, false},
-		"review second": {builder.SecondReviewPrompt(""), "phase: internal review", true, false},
-		"eval codex":    {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"), "phase: evaluation", true, true},
-		"eval claude":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"), "phase: evaluation", true, true},
-		"eval custom":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"), "phase: evaluation", true, true},
-		"plan":          {builder.PlanPrompt(), "phase: planning", false, false},
+		"task":          {builder.TaskPrompt(), "phase: task", false, false, false, "The entry is committed with this task's changes", true},
+		"review first":  {builder.FirstReviewPrompt(), "phase: internal review", true, false, true, `commit the entry with your fixes, or on its own as "docs: add backlog entry"`, true},
+		"review second": {builder.SecondReviewPrompt(""), "phase: internal review", true, false, true, `commit the entry with your fixes, or on its own as "docs: add backlog entry"`, true},
+		"eval codex":    {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"), "phase: evaluation", true, true, true, "", true},
+		"eval claude":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"), "phase: evaluation", true, true, true, "", true},
+		"eval custom":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"), "phase: evaluation", true, true, true, "", true},
+		"plan":          {builder.PlanPrompt(), "phase: planning", false, false, false, "stage only the entry file and commit it", false},
 	}
 	for name, tc := range capturing {
 		t.Run(name, func(t *testing.T) {
@@ -2208,6 +2218,20 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 			assert.Contains(t, tc.prompt, "- area: <primary file or package>", "entry must record area")
 			assert.Contains(t, tc.prompt, "update it instead of creating a duplicate",
 				"capture must instruct dedup against existing entries")
+
+			// out-of-scope is otherwise an escape hatch from the pre-existing-issues rule. plan
+			// creation is exempt: it fixes nothing, so filing is the only thing it can do.
+			if tc.fixCapable {
+				assert.Contains(t, tc.prompt, "never out of scope - fix it, do not file it",
+					"capture must exempt pre-existing linter errors and failing tests")
+			}
+
+			// without a plan there is nothing for a finding to be out of scope of, and filing is
+			// dismissal-equivalent, so an unbounded block would end a review with findings unfixed
+			if tc.noPlanBound {
+				assert.Contains(t, tc.prompt, "never file a finding about code this branch changed",
+					"plan-less review and evaluation runs must bound the out-of-scope category")
+			}
 
 			// filing must never read as a fix, or an out-of-scope finding would keep a loop alive
 			if tc.notAFix {
@@ -2223,8 +2247,12 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 					"evaluation prompts must not instruct a mid-loop commit")
 				assert.Contains(t, strings.ToLower(tc.prompt), "leave the entry uncommitted",
 					"evaluation prompts must defer the entry to the final commit")
+				// that final sweep is described as reviewing `git diff`, which never shows a new
+				// untracked file, so the entry has to be staged or it is silently dropped
+				assert.Contains(t, strings.ToLower(tc.prompt), "stage that one file with `git add` and nothing else",
+					"evaluation prompts must stage the entry so the final commit picks it up")
 			} else {
-				assert.Contains(t, tc.prompt, "commit", "in-phase capture paths must instruct a commit")
+				assert.Contains(t, tc.prompt, tc.commitRule, "in-phase capture paths must state their own commit rule")
 			}
 		})
 	}

@@ -37,6 +37,7 @@ OUT-OF-SCOPE FINDINGS: found a real issue outside this plan's scope? Do NOT fix 
 Create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, then "- found: <YYYY-MM-DD>, plan: <plan-name>, phase: task",
 "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction.
 List existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate.
+A pre-existing linter error or failing test is never out of scope - fix it, do not file it.
 The entry is committed with this task's changes; filing it is never a reason to expand the current task.
 
 STEP 2 - VALIDATE:

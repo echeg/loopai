@@ -167,14 +167,29 @@ entry in phase. The three evaluation prompts must leave it uncommitted: after th
 round `getDiffInstruction` shows the external reviewer only the uncommitted diff, so a
 mid-loop commit hides the accumulated fixes, the next round reports clean, and
 `EXTERNAL_REVIEW_DONE` fires with the fixes unverified — the entry is swept into the
-final commit instead. Plan creation runs in the source checkout before the branch and
-worktree exist, so it stages that one file and commits it; an uncommitted entry there
-never reaches the branch. Filing is dismissal-equivalent only for the completion signal:
+final commit instead. Those three prompts do say to `git add` the entry alone: the final
+sweep is described as reviewing `git diff`, which never shows a new untracked file, and
+staging keeps the entry out of the unstaged diff the reviewer is shown while guaranteeing
+the commit picks it up. Staging does not weaken the stalemate reset either, since
+`diffFingerprint` runs `git diff HEAD`. Plan creation runs in the source checkout before
+the branch and worktree exist, so it stages that one file and commits it; an uncommitted
+entry there never reaches the branch, and an untracked one fails branch and worktree
+creation outright, because `hasChangesOtherThan` counts untracked files and exempts only
+the plan file. The `loopai-plan` and `loopai-brainstorm` skills file entries too and carry
+that same commit rule for the same reason: they run before loopai does, and loopai commits
+nothing but the plan. Filing is dismissal-equivalent only for the completion signal:
 the write is a real repository change, so the round that makes it resets
 `review_patience` stalemate detection. A pre-existing linter error or failing test is
-never out of scope on any path — the capture blocks say so explicitly, because the
-category is otherwise an escape hatch from the pre-existing-issues rule that sits beside
-it in the same prompts.
+never out of scope on any path that can fix — all six such capture blocks say so
+explicitly, because the category is otherwise an escape hatch from the pre-existing-issues
+rule that sits beside it in the same prompts, and `task.txt` and `external_claude_eval.txt`
+carry no such rule of their own. `make_plan.txt` is the deliberate exception: plan creation
+fixes nothing, so filing is the only thing it can do with such a finding. The review and
+evaluation prompts additionally bound the category when `{{PLAN_FILE}}` renders its
+no-plan fallback: under `--review`, `--external-only`, and
+`--codex-only` there is no plan for a finding to be out of scope of, and filing is
+dismissal-equivalent for the signal, so an unbounded block would be a new way to end a
+review with real findings unfixed.
 
 Agent files may carry YAML frontmatter parsed into `config.Options` (`model`,
 `agent`, `description`). A non-empty `description` marks the file as a *dynamic
