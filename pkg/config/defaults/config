@@ -282,8 +282,10 @@ task_retry_count = 1
 plans_dir = docs/plans
 
 # backlog_dir: directory where agents file out-of-scope findings, one markdown file per entry
-# relative paths are resolved from the project root, the directory is committed with the branch
-# loopai never reads or creates it, the path is only substituted into prompts as {{BACKLOG_DIR}}
+# loopai never reads, resolves, or creates it: the value is substituted into prompts as
+# {{BACKLOG_DIR}} and the agent resolves it against the checkout it runs in, normally the worktree
+# keep it repository-relative - an absolute or out-of-repository path produces entries the run
+# never commits, which disappear when the worktree is removed
 # default: docs/backlog
 backlog_dir = docs/backlog
 

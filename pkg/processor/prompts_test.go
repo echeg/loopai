@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -2175,20 +2176,56 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 		PlanDescription: "add feature", AppConfig: appCfg}
 	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
 
-	capturing := map[string]string{
-		"task":          builder.TaskPrompt(),
-		"review first":  builder.FirstReviewPrompt(),
-		"review second": builder.SecondReviewPrompt(""),
-		"eval codex":    builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"),
-		"eval claude":   builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"),
-		"eval custom":   builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"),
-		"plan":          builder.PlanPrompt(),
+	// each capture path carries the same entry contract; phase differs per path, and only the
+	// prompts that commit in-phase may instruct a commit - see the mustNotCommit note below.
+	capturing := map[string]struct {
+		prompt string
+		phase  string
+		// review and evaluation prompts gate their completion signal on whether issues were
+		// found, so they must state that filing is not one; task and plan creation do not.
+		notAFix bool
+		// evaluation prompts accumulate fixes uncommitted across reviewer iterations; the
+		// other capture paths commit in-phase.
+		mustNotCommit bool
+	}{
+		"task":          {builder.TaskPrompt(), "phase: task", false, false},
+		"review first":  {builder.FirstReviewPrompt(), "phase: internal review", true, false},
+		"review second": {builder.SecondReviewPrompt(""), "phase: internal review", true, false},
+		"eval codex":    {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"), "phase: evaluation", true, true},
+		"eval claude":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"), "phase: evaluation", true, true},
+		"eval custom":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"), "phase: evaluation", true, true},
+		"plan":          {builder.PlanPrompt(), "phase: planning", false, false},
 	}
-	for name, prompt := range capturing {
+	for name, tc := range capturing {
 		t.Run(name, func(t *testing.T) {
-			assert.Contains(t, prompt, "custom/backlog", "expanded backlog directory missing")
-			assert.NotContains(t, prompt, "{{BACKLOG_DIR}}")
-			assert.NotContains(t, prompt, "docs/backlog", "default path must not be hardcoded in the prompt")
+			assert.Contains(t, tc.prompt, "custom/backlog", "expanded backlog directory missing")
+			assert.NotContains(t, tc.prompt, "{{BACKLOG_DIR}}")
+			assert.NotContains(t, tc.prompt, "docs/backlog", "default path must not be hardcoded in the prompt")
+
+			// the entry format is what makes an entry adoptable by loopai-adopt
+			assert.Contains(t, tc.prompt, tc.phase, "entry must record the capture phase")
+			assert.Contains(t, tc.prompt, "- severity: minor|major", "entry must record severity")
+			assert.Contains(t, tc.prompt, "- area: <primary file or package>", "entry must record area")
+			assert.Contains(t, tc.prompt, "update it instead of creating a duplicate",
+				"capture must instruct dedup against existing entries")
+
+			// filing must never read as a fix, or an out-of-scope finding would keep a loop alive
+			if tc.notAFix {
+				assert.Contains(t, tc.prompt, "not a fix", "filing must not count as a fix in the signal logic")
+			}
+
+			// the external evaluation prompts accumulate fixes uncommitted across reviewer
+			// iterations and commit once at EXTERNAL_REVIEW_DONE; getDiffInstruction shows the
+			// reviewer only the uncommitted diff after the first round, so a mid-loop commit
+			// hides the accumulated fixes and lets the loop terminate early.
+			if tc.mustNotCommit {
+				assert.NotContains(t, tc.prompt, "docs: add backlog entry",
+					"evaluation prompts must not instruct a mid-loop commit")
+				assert.Contains(t, strings.ToLower(tc.prompt), "leave the entry uncommitted",
+					"evaluation prompts must defer the entry to the final commit")
+			} else {
+				assert.Contains(t, tc.prompt, "commit", "in-phase capture paths must instruct a commit")
+			}
 		})
 	}
 
@@ -2206,8 +2243,8 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 
 // TestPromptBuilder_DecisionLogConvention covers the plan-revision convention: the planning
 // prompt tells the model to record accepted and rejected critique points in the plan's
-// `## Decision Log` section, and that section never carries checkboxes - the plan parser
-// reacts to checkboxes, so one there would be picked up as an implementation step.
+// `## Decision Log` section, and that section never carries checkboxes - a checkbox outside a
+// task section makes the plan read as unfinished work and costs extra loop iterations.
 func TestPromptBuilder_DecisionLogConvention(t *testing.T) {
 	cfg := Config{PlanFile: "docs/plans/test.md", ProgressPath: "progress.txt", DefaultBranch: "main",
 		PlanDescription: "add feature", AppConfig: testAppConfig(t)}
@@ -2222,7 +2259,10 @@ func TestPromptBuilder_DecisionLogConvention(t *testing.T) {
 	assert.Contains(t, prompt, "does not re-raise a point already rejected",
 		"revision path must state why the log exists")
 
-	// the template block for the section must not itself contain a checkbox
+	// the template block for the section must not itself contain a checkbox. the pattern mirrors
+	// plan.checkboxPattern so the guard and the parser cannot disagree about what a checkbox is:
+	// a literal "- [ ]"/"- [x]" scan misses "- [X]" and "-  [ ]", which the parser accepts.
+	checkbox := regexp.MustCompile(`^\s*-\s+\[[ xX]\]`)
 	lines := strings.Split(prompt, "\n")
 	idx := -1
 	for i, line := range lines {
@@ -2236,7 +2276,6 @@ func TestPromptBuilder_DecisionLogConvention(t *testing.T) {
 		if strings.HasPrefix(strings.TrimSpace(line), "## ") && strings.TrimSpace(line) != "## Decision Log" {
 			break
 		}
-		assert.NotContains(t, line, "- [ ]", "decision log section must not contain checkboxes")
-		assert.NotContains(t, line, "- [x]", "decision log section must not contain checkboxes")
+		assert.NotRegexp(t, checkbox, line, "decision log section must not contain checkboxes")
 	}
 }

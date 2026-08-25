@@ -76,6 +76,9 @@ assert_contains "missing decision-log Codex critique contract" 'do not re-raise 
 assert_contains "missing decision-log apply step" "Record the round in the draft's \`## Decision Log\` section"
 assert_contains "missing decision-log accepted entry format" 'grill: **accepted** - <what changed and where>'
 assert_contains "missing decision-log rejected entry format" 'grill: **rejected** - "<the finding>"'
+assert_contains "missing decision-log deferred entry format" 'grill: **deferred** - "<the finding>" - not selected this round'
+assert_contains "missing decision-log deferral distinction" 'only a **rejected** entry suppresses a later re-raise'
+assert_contains "missing decision-log critic deferral allowance" 'a point recorded as deferred may be raised again'
 assert_contains "missing decision-log entry preservation" 'preserve every existing entry'
 assert_contains "missing decision-log checkbox prohibition" 'never put a checkbox in it'
 assert_contains "missing decision-log checkbox reverification" '`## Decision Log` carries no checkbox'

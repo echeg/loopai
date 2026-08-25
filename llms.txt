@@ -121,7 +121,7 @@ Describe the outcome.
 
 Task headings must be `### Task N:` or `### Iteration N:`. Incomplete work uses `[ ]`; loopai marks successful work `[x]`. Put actionable checkboxes inside task sections and include validation commands.
 
-A plan may also carry an optional `## Decision Log` recording how earlier critique rounds were resolved, one line per finding as `<YYYY-MM-DD> grill: **accepted** - <what changed>` or `**rejected** - "<finding>" - <reason>`. `loopai-grill` writes it when applying selected findings, and later rounds do not re-raise a recorded rejection without new evidence. The section never contains checkboxes; the plan parser would read one as work.
+A plan may also carry an optional `## Decision Log` recording how earlier critique rounds were resolved, one line per finding as `<YYYY-MM-DD> grill: **accepted** - <what changed>` or `**rejected** - "<finding>" - <reason>`. `loopai-grill` writes it when applying selected findings, recording a finding you were shown but did not pick as `**deferred**` rather than rejected; later rounds do not re-raise a recorded rejection without new evidence, but may raise a deferred point again. The section never contains checkboxes; a checkbox outside a task section makes the plan read as unfinished work.
 
 ## Execution
 
@@ -162,7 +162,7 @@ Project config and runtime data:
 
 Local files override global files, which override embedded defaults. `LOOPAI_CONFIG_DIR` or `--config-dir` overrides the global location. Old `~/.config/ralphex/` and `.ralphex/` directories are intentionally ignored.
 
-`plans_dir` (default `docs/plans`) and `backlog_dir` (default `docs/backlog`) reach prompts as `{{PLANS_DIR}}` and `{{BACKLOG_DIR}}`. The backlog is a prompt convention with no Go consumer: when an agent finds a real issue outside the current plan's scope it does not fix it, it writes one markdown file per finding under `backlog_dir` — title, `found`/`plan`/`phase`, `severity`, `area`, then a description with file:line references — and commits it with the run, so it survives worktree removal and arrives through `--merge`. Filing is not a fix and does not keep a review loop running. Entries are plain markdown, so `loopai-adopt docs/backlog/<entry>.md` converts one into a full plan.
+`plans_dir` (default `docs/plans`) and `backlog_dir` (default `docs/backlog`) reach prompts as `{{PLANS_DIR}}` and `{{BACKLOG_DIR}}`. The backlog is a prompt convention with no Go consumer: when an agent finds a real issue outside the current plan's scope it does not fix it, it writes one markdown file per finding under `backlog_dir` — title, `found`/`plan`/`phase`, `severity`, `area`, then a description with file:line references — and commits it with the run, so it survives worktree removal and arrives through `--merge`. Filing is not a fix: it does not count as a confirmed issue in the completion-signal logic, though a round that writes an entry still resets `review_patience` stalemate detection. Entries are plain markdown, so `loopai-adopt docs/backlog/<entry>.md` converts one into a full plan.
 
 ## Review agents
 

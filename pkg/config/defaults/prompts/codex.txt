@@ -34,8 +34,11 @@ Then categorize:
   - create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, then "- found: <YYYY-MM-DD>, plan: <plan-name>, phase: evaluation",
     "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction
   - list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate
+  - a pre-existing linter error or failing test is never out of scope - fix it, do not file it
   - say in your response that the finding was filed and why it is out of scope; your response is passed back to Codex
-  - commit the entry on its own as "docs: add backlog entry", or with your other fixes; filing is not a fix, so treat these findings like dismissals in the signal logic below
+  - leave the entry uncommitted alongside your other changes - it is swept into the final commit below;
+    committing mid-loop hides the accumulated fixes from the next reviewer iteration, which is shown only the uncommitted diff
+  - filing is not a fix, so treat these findings like dismissals in the signal logic below
 
 IMPORTANT: Pre-existing issues (linter errors, failed tests) should also be fixed.
 Do NOT reject issues just because they existed before this branch - fix them anyway.

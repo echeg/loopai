@@ -118,15 +118,22 @@ approval escalation. Candidate and judging scratch files live outside the
 repository and are removed on every exit. Grill mode reports Codex failure
 and degrades to Claude-only; plan-off requires Codex and fails closed. Grill
 mode's apply path also records the round in the draft's `## Decision Log` —
-accepted findings with what changed, rejected ones with the user's reason —
-before `replace-active` publishes it, since the skill never edits the plan at
+accepted findings with what changed, findings the user declined with a stated
+reason as rejected, and findings merely not selected as deferred — before
+`replace-active` publishes it, since the skill never edits the plan at
 its repository path and a post-publication write would need a second guarded
 replacement. The section is created immediately before `## Implementation
 Steps` when absent, existing entries are preserved, and it must never carry a
-checkbox: the plan parser reads checkboxes as work, so one leaking in would
-become an implementation step. Every critic and the verification pass are told
+checkbox. `ParsePlan` ignores a checkbox above `## Implementation Steps`,
+since the H2 closes the current task, but `FileHasUncompletedCheckbox` — the
+fallback used when a plan has no task headings — counts it, so such a plan
+never reads as complete; the executor also reads the section as text and can
+treat the line as outstanding work. Every critic and the verification pass are told
 to read the log and not re-raise a recorded rejection absent contradicting
-evidence. The log is written only when the user selects at least one finding;
+evidence, while a deferred entry may be raised again: `AskUserQuestion` with
+`multiSelect` captures no reason, so recording an unexplained non-selection as
+rejected would silently suppress the finding in every later round. The log is
+written only when the user selects at least one finding;
 a round where nothing is selected leaves the plan untouched, so its rejections
 go unrecorded rather than loopai writing to a plan the user asked to leave
 alone. When these contracts change, update and run `scripts/check-grill-skill_test.sh`.
@@ -154,7 +161,20 @@ whose worktrees are removed after a run, so an entry written there would be lost
 before `--merge`. Capture is instructed on the four paths that can write: task,
 internal review, external-review evaluation, and plan creation. The three external
 *review* prompts deliberately omit it, since external reviewers are read-only and
-their findings reach the backlog through the primary evaluator.
+their findings reach the backlog through the primary evaluator. Each path states its
+own commit rule, and they are not interchangeable. Task and internal review commit the
+entry in phase. The three evaluation prompts must leave it uncommitted: after the first
+round `getDiffInstruction` shows the external reviewer only the uncommitted diff, so a
+mid-loop commit hides the accumulated fixes, the next round reports clean, and
+`EXTERNAL_REVIEW_DONE` fires with the fixes unverified — the entry is swept into the
+final commit instead. Plan creation runs in the source checkout before the branch and
+worktree exist, so it stages that one file and commits it; an uncommitted entry there
+never reaches the branch. Filing is dismissal-equivalent only for the completion signal:
+the write is a real repository change, so the round that makes it resets
+`review_patience` stalemate detection. A pre-existing linter error or failing test is
+never out of scope on any path — the capture blocks say so explicitly, because the
+category is otherwise an escape hatch from the pre-existing-issues rule that sits beside
+it in the same prompts.
 
 Agent files may carry YAML frontmatter parsed into `config.Options` (`model`,
 `agent`, `description`). A non-empty `description` marks the file as a *dynamic

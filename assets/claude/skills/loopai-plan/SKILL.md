@@ -157,13 +157,6 @@ Check `docs/plans/` for existing files, then create `docs/plans/YYYYMMDD-<task-n
 - **Rejected alternatives**: [other approaches considered and why they were not selected]
 - **Verified facts**: [facts established during discovery that constrain the implementation]
 
-## Decision Log
-<!-- Optional. Only when the plan was revised after feedback or critique (loopai-grill, draft review).
-     Record every accepted and every rejected point so a later critique round does not re-raise it.
-     NEVER put checkboxes in this section. -->
-- [YYYY-MM-DD] [source]: **accepted** - [what changed and where]
-- [YYYY-MM-DD] [source]: **rejected** - "[the point]" - [one-line reasoning]
-
 ## Context (from discovery)
 - Files/components involved: [list from step 0]
 - Related patterns found: [patterns discovered]
@@ -204,6 +197,13 @@ Check `docs/plans/` for existing files, then create `docs/plans/YYYYMMDD-<task-n
 - **Implementation Steps** (`[ ]` checkboxes): tasks achievable within this codebase - code changes, tests, documentation updates
 - **Post-Completion** (no checkboxes): items requiring external action - manual testing, changes in consuming projects, deployment configs, third-party verifications
 - **Checkbox placement**: Checkboxes belong only in Task sections (`### Task N:` or `### Iteration N:`). Do not put checkboxes in Success criteria, Overview, Context, Decisions, or Decision Log — they cause extra loop iterations.
+
+## Decision Log
+<!-- Optional. Only when the plan was revised after feedback or critique (loopai-grill, draft review).
+     Record every accepted and every rejected point so a later critique round does not re-raise it.
+     NEVER put checkboxes in this section. -->
+- <YYYY-MM-DD> <source>: **accepted** - <what changed and where>
+- <YYYY-MM-DD> <source>: **rejected** - "<the point>" - <one-line reasoning>
 
 ## Implementation Steps
 

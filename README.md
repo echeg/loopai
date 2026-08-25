@@ -17,6 +17,8 @@ workflows are distributed through this repository's plugin marketplace.
 - Adds project-specific review agents, drafted for the repository by `--gen-agents`
 - Creates a branch automatically and optionally uses isolated Git worktrees
 - Commits after completed tasks and review fixes
+- Files out-of-scope findings to a committed backlog instead of fixing or dropping them
+- Records accepted, rejected, and deferred plan-critique points in the plan's Decision Log
 - Streams timestamped progress to `.loopai/progress/`
 - Serves a real-time web dashboard with `--serve`
 - Reports live and persistent completion status to the cmux sidebar when available
@@ -110,7 +112,11 @@ specific plan, or generate a competing-plan comparison:
 ```
 
 With no path, the skill proposes the newest active plan for confirmation. Grill
-mode applies only the verified findings you select; if Codex is unavailable or
+mode applies only the verified findings you select, and records the round in the
+plan's [Decision Log](#decision-log) — what it accepted, what you rejected, and
+what you simply did not select — so a later round does not re-raise a rejected
+point without new evidence. A round where you select nothing leaves the plan
+untouched. If Codex is unavailable or
 fails, it reports that and continues with Claude critics. Compare mode requires
 Codex, never edits a source plan, and creates one new plan without overwriting
 an existing path. Both modes reject completed plans, symlinked plans or plan
@@ -401,13 +407,18 @@ rounds were resolved:
 
 - 2026-08-25 grill: **accepted** - split lock acquisition into prepare/commit (tasks 3-4 updated)
 - 2026-08-25 grill: **rejected** - "add retry around merge" - merge is already the backstop
+- 2026-08-25 grill: **deferred** - "split the git package" - not selected this round
 ```
+
+`accepted` and `rejected` record decisions you made explicitly; `deferred` records a
+finding you were shown and did not pick. Only a `rejected` entry stops a later round from
+raising the point again.
 
 `loopai-grill` writes the section when it applies user-selected findings, and plan revision
 after critique records accepted and rejected points there. Later critique rounds read it and
 do not re-raise a rejected point without new evidence, so repeated rounds converge instead of
-relitigating. The section never contains checkboxes: the plan parser reads checkboxes as work,
-so one leaking in would become an implementation step.
+relitigating. The section never contains checkboxes: a checkbox outside a task section is not an
+implementation step, but it makes the plan read as unfinished work and costs extra loop iterations.
 
 ## Backlog capture
 
@@ -430,14 +441,23 @@ directory, and the path is only substituted into prompts as `{{BACKLOG_DIR}}`. E
 written inside the worktree and committed with the run's normal commits, so they survive
 worktree removal and arrive on the default branch through `--merge`.
 
-Filing is not a fix. Out-of-scope findings behave like dismissals, so they do not keep a review
-loop running. Before creating an entry an agent lists the existing ones and updates a matching
-entry rather than duplicating it.
+Filing is not a fix: an out-of-scope finding behaves like a dismissal in the completion-signal
+logic, so an agent never keeps a review loop alive by claiming it fixed something. The write is
+still a repository change, so a round that creates or updates an entry does reset external-review
+stalemate detection (`review_patience`). Before creating an entry an agent lists the existing ones
+and updates a matching entry rather than duplicating it.
 
 Capture is instructed on four paths: task execution, internal review consolidation, evaluation
 of external-review findings (external reviewers are read-only, so their out-of-scope findings are
 filed by the primary evaluator), and plan creation. Entries are plain Markdown, so
-`loopai-adopt docs/backlog/<entry>.md` turns one into a full plan.
+`/loopai:loopai-adopt docs/backlog/<entry>.md` turns one into a full plan. Nothing prunes the
+directory, so delete or archive an entry once it has become a plan, or a later run may file it again.
+
+Capture cannot be switched off with configuration: an empty `backlog_dir` falls back to
+`docs/backlog`, the same way `plans_dir` does. To disable it, extract the prompts with
+`loopai --dump-defaults`, remove the out-of-scope block from `task.txt`, `review_first.txt`,
+`review_second.txt`, `codex.txt`, `external_claude_eval.txt`, `custom_eval.txt`, and
+`make_plan.txt`, and install those copies in `.loopai/prompts/`.
 
 ## Completion and close-out
 
