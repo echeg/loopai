@@ -85,58 +85,82 @@ Key benefits: out-of-scope findings survive the run, live in git history, are sh
 
 ### Task 1: Add `backlog_dir` config key
 
-- [ ] add `BacklogDir string \`json:"backlog_dir"\`` to the config struct in `pkg/config/config.go`, default `docs/backlog`, wired exactly like `PlansDir` (embedded default, global/local override, empty value falls back the same way `plans_dir` does)
-- [ ] add commented `backlog_dir` entry with a short description to `pkg/config/defaults/config` next to `plans_dir`
-- [ ] write table-driven tests in `pkg/config/config_test.go`: default value, local override, global override, empty/unset behavior matching `plans_dir` semantics
-- [ ] run `go test ./pkg/config/...` - must pass before task 2
+- [x] add `BacklogDir string \`json:"backlog_dir"\`` to the config struct in `pkg/config/config.go`, default `docs/backlog`, wired exactly like `PlansDir` (embedded default, global/local override, empty value falls back the same way `plans_dir` does)
+- [x] add commented `backlog_dir` entry with a short description to `pkg/config/defaults/config` next to `plans_dir`
+- [x] write table-driven tests in `pkg/config/config_test.go`: default value, local override, global override, empty/unset behavior matching `plans_dir` semantics
+- [x] run `go test ./pkg/config/...` - must pass before task 2
+- ➕ extracted `Values.mergePathsFrom` from `mergeExtraFrom` in `pkg/config/values.go`: the new key pushed `mergeExtraFrom` to gocyclo 21 (limit 20)
 
 ### Task 2: Expand `{{BACKLOG_DIR}}` placeholder in prompts
 
-- [ ] in `pkg/processor/prompts.go`, expand `{{BACKLOG_DIR}}` from the configured `BacklogDir` in every builder that expands `{{PLANS_DIR}}` (task, review, evaluation, planning paths)
-- [ ] update the "supported placeholders" comments in `prompts.go` and the variable-list header comments in every embedded prompt file that gains the placeholder
-- [ ] write tests in `pkg/processor/prompts_test.go`: placeholder replaced with configured value, default value when unset, no literal `{{BACKLOG_DIR}}` left in any built prompt
-- [ ] run `go test ./pkg/processor/...` - must pass before task 3
+- [x] in `pkg/processor/prompts.go`, expand `{{BACKLOG_DIR}}` from the configured `BacklogDir` in every builder that expands `{{PLANS_DIR}}` (task, review, evaluation, planning paths)
+- [x] update the "supported placeholders" comments in `prompts.go` and the variable-list header comments in every embedded prompt file that gains the placeholder
+- [x] write tests in `pkg/processor/prompts_test.go`: placeholder replaced with configured value, default value when unset, no literal `{{BACKLOG_DIR}}` left in any built prompt
+- [x] run `go test ./pkg/processor/...` - must pass before task 3
+- ➕ expansion added once in `replaceBaseVariables`, the choke point every builder funnels through, so all twelve prompt paths (task, both internal reviews, three external reviews, three evaluations, plan, finalize, gen-agents) are covered by one line plus `getBacklogDir`, mirroring `getPlansDir`
+- ⚠️ no embedded prompt file gains the placeholder in this task, so no variable-list header comment changed: the headers document the variables a prompt actually uses (`task.txt` omits `{{PLANS_DIR}}` though it is expanded there). Task 3 adds the usage and its header lines together.
 
 ### Task 3: Backlog capture instructions in embedded prompts
 
-- [ ] `task.txt`: add a short paragraph — a real issue outside the current plan's scope must NOT be fixed; file it as `{{BACKLOG_DIR}}/<kebab-slug>.md` using the entry format (see Technical Details), checking existing filenames first to avoid duplicates
-- [ ] `review_first.txt` and `review_second.txt`: in the consolidation step, findings that are real but out of plan scope go to the backlog instead of being fixed
-- [ ] `codex.txt`, `external_claude_eval.txt`, `custom_eval.txt`: add a third verdict category — "valid but out of scope → file to backlog and say so in the response passed back to the reviewer" (alongside the existing fix/dismiss categories)
-- [ ] `make_plan.txt`: adjacent problems discovered while researching the plan go to the backlog; also add the `## Decision Log` convention for plan revisions (see Task 4)
-- [ ] keep every instruction to 3-5 lines; reuse the same wording across prompts
-- [ ] update or add prompt-content assertions if the test suite checks embedded prompt text; otherwise verify via `go test ./pkg/config/... ./pkg/processor/...`
-- [ ] run `make test` - must pass before task 4
+- [x] `task.txt`: add a short paragraph — a real issue outside the current plan's scope must NOT be fixed; file it as `{{BACKLOG_DIR}}/<kebab-slug>.md` using the entry format (see Technical Details), checking existing filenames first to avoid duplicates
+- [x] `review_first.txt` and `review_second.txt`: in the consolidation step, findings that are real but out of plan scope go to the backlog instead of being fixed
+- [x] `codex.txt`, `external_claude_eval.txt`, `custom_eval.txt`: add a third verdict category — "valid but out of scope → file to backlog and say so in the response passed back to the reviewer" (alongside the existing fix/dismiss categories)
+- [x] `make_plan.txt`: adjacent problems discovered while researching the plan go to the backlog; also add the `## Decision Log` convention for plan revisions (see Task 4)
+- [x] keep every instruction to 3-5 lines; reuse the same wording across prompts
+- [x] update or add prompt-content assertions if the test suite checks embedded prompt text; otherwise verify via `go test ./pkg/config/... ./pkg/processor/...`
+- [x] run `make test` - must pass before task 4
+- ➕ every capture block ends with an explicit commit instruction (`docs: add backlog entry`, or alongside the fixes): `.loopai/` worktrees are removed after a run, so an entry left untracked on a path that commits nothing else would be lost
+- ➕ each capture block states that filing is not a fix, so it does not flip the REVIEW_DONE / EXTERNAL_REVIEW_DONE signal logic; out-of-scope findings behave like dismissals and the existing stalemate detection still terminates the loop
+- ➕ added `TestPromptBuilder_BacklogCaptureInstructions` in `pkg/processor/prompts_test.go`: the seven capture-path prompts carry the expanded directory, and the three read-only external *review* prompts deliberately do not
+- ⚠️ the `## Decision Log` convention now also lives in `make_plan.txt` (template section plus the draft-revision path), which pre-satisfies the second checkbox of Task 4
 
 ### Task 4: Decision Log convention in plan-related prompts and skills
 
-- [ ] define the convention (see Technical Details): `## Decision Log` section in the plan, entries `accepted:`/`rejected:` with one-line reasoning, NO checkboxes ever in this section
-- [ ] `make_plan.txt`: when revising a plan after critique, record accepted and rejected findings in `## Decision Log`
-- [ ] `assets/claude/skills/loopai-plan/SKILL.md`: plan template gains the optional `## Decision Log` section note; discovery step gains the backlog-capture note
-- [ ] `assets/claude/skills/loopai-brainstorm/SKILL.md`: same backlog-capture note for issues discovered during design exploration
-- [ ] run `make check-symlinks` - must pass before task 5
+- [x] define the convention (see Technical Details): `## Decision Log` section in the plan, entries `accepted:`/`rejected:` with one-line reasoning, NO checkboxes ever in this section
+- [x] `make_plan.txt`: when revising a plan after critique, record accepted and rejected findings in `## Decision Log`
+- [x] `assets/claude/skills/loopai-plan/SKILL.md`: plan template gains the optional `## Decision Log` section note; discovery step gains the backlog-capture note
+- [x] `assets/claude/skills/loopai-brainstorm/SKILL.md`: same backlog-capture note for issues discovered during design exploration
+- [x] run `make check-symlinks` - must pass before task 5
+- ➕ added `TestPromptBuilder_DecisionLogConvention` in `pkg/processor/prompts_test.go`: the planning prompt defines the section, records accepted/rejected points, forbids checkboxes, and the template block itself carries none - the plan parser reacts to checkboxes, so one leaking in would become an implementation step
+- ➕ `loopai-plan` skill: `Decisions` and `Decision Log` added to the checkbox-placement denylist alongside Success criteria/Overview/Context
+- ➕ `loopai-brainstorm` skill: hand-off step also asks `loopai-plan` to record accepted/rejected points from the design dialogue, not only the `## Decisions` context
+- ⚠️ the skills are Claude Code skills, not loopai prompts, so `{{BACKLOG_DIR}}` is not expanded there; both name the literal `docs/backlog/` default and point at the `backlog_dir` config key for overrides
+- ⚠️ the first two checkboxes were pre-satisfied by Task 3, which landed the convention in `make_plan.txt` (template section at line 136 plus the draft-revision path); this task verified them and added the regression test that was missing
 
 ### Task 5: loopai-grill integration
 
-- [ ] grill apply step: after applying user-selected findings, add or update `## Decision Log` in the plan — accepted findings with what changed, rejected findings with the user's reason; preserve existing entries
-- [ ] grill critique prompts (Claude and Codex wrapper prompts): instruct critics to read `## Decision Log` and not re-raise rejected items unless new evidence contradicts the recorded reasoning
-- [ ] verify the change does not touch grill safety contracts (path helper, snapshot rules, sandbox pins) — behavior additions are prompt/workflow text only
-- [ ] update `scripts/check-grill-skill_test.sh` to cover the Decision Log contract (present after apply, respected by critique prompts)
-- [ ] bump version to `0.3.0` in both `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`
-- [ ] run `make test-grill-skill` and `make check-plugin` - must pass before task 6
+- [x] grill apply step: after applying user-selected findings, add or update `## Decision Log` in the plan — accepted findings with what changed, rejected findings with the user's reason; preserve existing entries
+- [x] grill critique prompts (Claude and Codex wrapper prompts): instruct critics to read `## Decision Log` and not re-raise rejected items unless new evidence contradicts the recorded reasoning
+- [x] verify the change does not touch grill safety contracts (path helper, snapshot rules, sandbox pins) — behavior additions are prompt/workflow text only
+- [x] update `scripts/check-grill-skill_test.sh` to cover the Decision Log contract (present after apply, respected by critique prompts)
+- [x] bump version to `0.3.0` in both `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`
+- [x] run `make test-grill-skill` and `make check-plugin` - must pass before task 6
+- ➕ the apply sequence gained a dedicated numbered step (former steps 6-7 renumbered to 7-8), so the log is written to the temporary draft before `replace-active` publishes it: the skill never edits the plan at its repository path, so recording the round after publication would need a second guarded replacement
+- ➕ the re-read verification step now also confirms the `## Decision Log` carries no checkbox, and the suite asserts both that prohibition and the entry formats — a checkbox leaking into the log would be parsed as an implementation step
+- ⚠️ the Decision Log is written only on the apply path, which runs when the user selects at least one finding. A round where nothing survives verification, or where the user selects nothing, still leaves the plan untouched as before, so its rejections are not recorded; changing that would mean writing to a plan the user asked to leave unchanged and is out of this plan's scope
+- ⚠️ no grill safety contract changed: only `SKILL.md` prose and the assertion suite were touched — `plan_paths.py`, `snapshot_repository.py`, `run-claude.sh`, and `run-codex.sh` are byte-identical
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview are implemented (backlog capture reachable from task, internal review, evaluation, and planning paths; Decision Log written by grill and plan revision)
-- [ ] verify edge cases: unset `backlog_dir` renders default; custom `backlog_dir` renders everywhere; no literal `{{BACKLOG_DIR}}` leaks into any built prompt; `## Decision Log` never carries checkboxes
-- [ ] run full test suite: `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] cross-compile check not needed (no platform-sensitive code); confirm no test touched real user config directories
+- [x] verify all requirements from Overview are implemented (backlog capture reachable from task, internal review, evaluation, and planning paths; Decision Log written by grill and plan revision)
+- [x] verify edge cases: unset `backlog_dir` renders default; custom `backlog_dir` renders everywhere; no literal `{{BACKLOG_DIR}}` leaks into any built prompt; `## Decision Log` never carries checkboxes
+- [x] run full test suite: `make test`
+- [x] run `make lint` - all issues must be fixed
+- [x] cross-compile check not needed (no platform-sensitive code); confirm no test touched real user config directories
+- ➕ evidence: `make test` exit 0, 15/15 Go packages ok (processor 91.6%, config 90.4%), 0 FAIL lines, wrapper suite 71/71; `make lint` exit 0 with `0 issues`
+- ➕ evidence: capture text reaches all four paths — `task.txt` (task), `review_first.txt`/`review_second.txt` (internal review), `codex.txt`/`external_claude_eval.txt`/`custom_eval.txt` (evaluation), `make_plan.txt` (planning); grill's Decision Log contract is asserted by `scripts/check-grill-skill_test.sh` inside `make test`
+- ➕ evidence: `TestPromptBuilder_BacklogDirPlaceholder` covers configured-value and unset-default across all twelve prompt paths, `TestPromptBuilder_BacklogDirNoLiteralLeak` proves no raw placeholder survives, and a section-bounded scan of `make_plan.txt` plus the three skills found no checkbox under any `Decision Log` heading
+- ➕ real-config safety verified by hashing `~/.config/loopai/` and `~/.config/ralphex/` before and after the suite: byte-identical (40 tracked files), so no test wrote to either
 
 ### Task 7: [Final] Update documentation
 
-- [ ] `README.md`: document `backlog_dir`, the backlog entry format, the capture behavior, and the `## Decision Log` convention
-- [ ] `CLAUDE.md`: add `backlog_dir` to the configuration section; extend the grill contract paragraph with the Decision Log behavior; mention the `{{BACKLOG_DIR}}` placeholder next to the existing prompt-placeholder documentation
-- [ ] `llms.txt`: update if it enumerates config keys or prompt placeholders
+- [x] `README.md`: document `backlog_dir`, the backlog entry format, the capture behavior, and the `## Decision Log` convention
+- [x] `CLAUDE.md`: add `backlog_dir` to the configuration section; extend the grill contract paragraph with the Decision Log behavior; mention the `{{BACKLOG_DIR}}` placeholder next to the existing prompt-placeholder documentation
+- [x] `llms.txt`: update if it enumerates config keys or prompt placeholders
+- ➕ README gained a `## Backlog capture` section and a `### Decision Log` subsection under `## Plan format`, plus a `{{PLANS_DIR}}`/`{{BACKLOG_DIR}}` note in `## Configuration`: the config key alone does not explain that capture is a prompt convention with no Go consumer, nor why the directory must be a committed path rather than `.loopai/`
+- ➕ llms.txt does enumerate both (plan format and the config/data section), so it gained a compact Decision Log paragraph and a `plans_dir`/`backlog_dir` placeholder paragraph
+- ⚠️ CLAUDE.md's grill paragraph also records the two limits Task 5 discovered: the log is written to the draft before `replace-active` publishes it, and a round where the user selects nothing leaves the plan and its rejections unrecorded
+- ➕ evidence: `make test` exit 0 (15/15 Go packages ok, wrapper suite 71/71), `make lint` exit 0 with `0 issues`
 
 *Note: loopai automatically moves completed plans to `docs/plans/completed/`*
 

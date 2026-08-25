@@ -64,6 +64,14 @@ Before asking questions, understand what the user is working on:
    - what the apparent goal is
    - relevant patterns or structure discovered
 
+4. **File adjacent problems to the backlog**, do not widen the plan to cover them:
+   - real issues discovered during exploration that are outside this plan's goal go to `docs/backlog/<kebab-slug>.md` (or the project's configured `backlog_dir`)
+   - entry format: a `# <short problem title>` heading, then `- found: <YYYY-MM-DD>, plan: <plan-name>, phase: planning`, `- severity: minor|major`, `- area: <primary file or package>`, then a short description with file:line references and a suggested fix direction
+   - list existing files in the backlog directory first - update a similar entry instead of creating a duplicate
+   - do NOT fix them now; commit that entry on its own right away with `git add <entry>` then
+     `git commit -m "docs: add backlog entry" -- <entry>` - the pathspec keeps anything the user had already staged out of this commit
+   - commit it before loopai runs the plan: loopai tolerates exactly one uncommitted path, the plan file, so an untracked backlog entry makes branch and worktree creation fail with `worktree has uncommitted changes`
+
 ## Step 1: Present Context and Ask Focused Questions
 
 Show the discovered context, then ask questions **one at a time** using the AskUserQuestion tool:
@@ -190,7 +198,14 @@ Check `docs/plans/` for existing files, then create `docs/plans/YYYYMMDD-<task-n
 ## What Goes Where
 - **Implementation Steps** (`[ ]` checkboxes): tasks achievable within this codebase - code changes, tests, documentation updates
 - **Post-Completion** (no checkboxes): items requiring external action - manual testing, changes in consuming projects, deployment configs, third-party verifications
-- **Checkbox placement**: Checkboxes belong only in Task sections (`### Task N:` or `### Iteration N:`). Do not put checkboxes in Success criteria, Overview, or Context — they cause extra loop iterations.
+- **Checkbox placement**: Checkboxes belong only in Task sections (`### Task N:` or `### Iteration N:`). Do not put checkboxes in Success criteria, Overview, Context, Decisions, or Decision Log — they cause extra loop iterations.
+
+## Decision Log
+<!-- Omit this whole section from a first-time plan. Add it only when the plan was revised after feedback or
+     critique (loopai-grill, draft review), and then replace this comment with one list item per point:
+     - <YYYY-MM-DD> <source>: **accepted** - <what changed and where>
+     - <YYYY-MM-DD> <source>: **rejected** - "<the point>" - <one-line reasoning>
+     NEVER put checkboxes in this section. -->
 
 ## Implementation Steps
 

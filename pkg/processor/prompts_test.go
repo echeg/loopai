@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -2056,4 +2057,349 @@ func TestRunner_replaceExternalVariablesWithIteration_ExpandsDynamicCatalog(t *t
 
 	assert.NotContains(t, result, "{{agents:dynamic}}")
 	assert.Contains(t, result, "- dyn — project specific")
+}
+
+// TestPromptBuilder_BacklogDirPlaceholder covers {{BACKLOG_DIR}} expansion across every
+// builder that expands {{PLANS_DIR}}: the placeholder is substituted from the configured
+// backlog_dir and falls back to docs/backlog when the key is unset.
+func TestPromptBuilder_BacklogDirPlaceholder(t *testing.T) {
+	// each prompt field carries the placeholder so the builder output is the resolved path alone
+	promptWithPlaceholder := func() *config.Config {
+		return &config.Config{
+			TaskPrompt:                 "{{BACKLOG_DIR}}",
+			ReviewFirstPrompt:          "{{BACKLOG_DIR}}",
+			ReviewSecondPrompt:         "{{BACKLOG_DIR}}",
+			CodexReviewPrompt:          "{{BACKLOG_DIR}}",
+			CodexPrompt:                "{{BACKLOG_DIR}}",
+			CustomReviewPrompt:         "{{BACKLOG_DIR}}",
+			CustomEvalPrompt:           "{{BACKLOG_DIR}}",
+			ExternalClaudeReviewPrompt: "{{BACKLOG_DIR}}",
+			ExternalClaudeEvalPrompt:   "{{BACKLOG_DIR}}",
+			MakePlanPrompt:             "{{BACKLOG_DIR}}",
+			FinalizePrompt:             "{{BACKLOG_DIR}}",
+			GenAgentsPrompt:            "{{BACKLOG_DIR}}",
+		}
+	}
+
+	builders := []struct {
+		name  string
+		build func(b *promptBuilder) string
+	}{
+		{"task", func(b *promptBuilder) string { return b.TaskPrompt() }},
+		{"review first", func(b *promptBuilder) string { return b.FirstReviewPrompt() }},
+		{"review second", func(b *promptBuilder) string { return b.SecondReviewPrompt("") }},
+		{"external review codex", func(b *promptBuilder) string {
+			return b.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, "")
+		}},
+		{"external review claude", func(b *promptBuilder) string {
+			return b.ExternalReviewPrompt(config.ExternalReviewToolClaude, true, "")
+		}},
+		{"external review custom", func(b *promptBuilder) string {
+			return b.ExternalReviewPrompt(config.ExternalReviewToolCustom, true, "")
+		}},
+		{"eval codex", func(b *promptBuilder) string {
+			return b.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings")
+		}},
+		{"eval claude", func(b *promptBuilder) string {
+			return b.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings")
+		}},
+		{"eval custom", func(b *promptBuilder) string {
+			return b.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings")
+		}},
+		{"plan", func(b *promptBuilder) string { return b.PlanPrompt() }},
+		{"finalize", func(b *promptBuilder) string { return b.FinalizePrompt() }},
+		{"gen agents", func(b *promptBuilder) string { return b.GenAgentsPrompt() }},
+	}
+
+	tests := []struct {
+		name       string
+		backlogDir string
+		want       string
+	}{
+		{name: "configured value", backlogDir: "custom/backlog", want: "custom/backlog"},
+		{name: "unset falls back to default", backlogDir: "", want: "docs/backlog"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			appCfg := promptWithPlaceholder()
+			appCfg.BacklogDir = tc.backlogDir
+			cfg := Config{PlanFile: "docs/plans/test.md", ProgressPath: "progress.txt", DefaultBranch: "main", AppConfig: appCfg}
+			builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
+			for _, bc := range builders {
+				t.Run(bc.name, func(t *testing.T) {
+					prompt := bc.build(builder)
+					assert.Contains(t, prompt, tc.want)
+					assert.NotContains(t, prompt, "{{BACKLOG_DIR}}")
+				})
+			}
+		})
+	}
+}
+
+// TestPromptBuilder_BacklogDirNoLiteralLeak guards the embedded prompts: whichever of them
+// carry {{BACKLOG_DIR}}, none may reach the executor with the raw placeholder intact.
+func TestPromptBuilder_BacklogDirNoLiteralLeak(t *testing.T) {
+	appCfg := testAppConfig(t)
+	appCfg.BacklogDir = "docs/backlog"
+	cfg := Config{PlanFile: "docs/plans/test.md", ProgressPath: "progress.txt", DefaultBranch: "main",
+		PlanDescription: "add feature", AppConfig: appCfg}
+	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
+
+	prompts := map[string]string{
+		"task":                   builder.TaskPrompt(),
+		"review first":           builder.FirstReviewPrompt(),
+		"review second":          builder.SecondReviewPrompt(""),
+		"external review codex":  builder.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, ""),
+		"external review claude": builder.ExternalReviewPrompt(config.ExternalReviewToolClaude, true, ""),
+		"external review custom": builder.ExternalReviewPrompt(config.ExternalReviewToolCustom, true, ""),
+		"eval codex":             builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"),
+		"eval claude":            builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"),
+		"eval custom":            builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"),
+		"plan":                   builder.PlanPrompt(),
+		"finalize":               builder.FinalizePrompt(),
+		"gen agents":             builder.GenAgentsPrompt(),
+	}
+	for name, prompt := range prompts {
+		assert.NotContains(t, prompt, "{{BACKLOG_DIR}}", "%s prompt leaks the raw placeholder", name)
+	}
+}
+
+// TestPromptBuilder_BacklogCaptureInstructions covers the embedded capture convention: the
+// prompts on the four capture paths (task, internal review, external evaluation, planning)
+// carry the instruction with the configured directory expanded, while the prompts sent to the
+// read-only external reviewers deliberately do not - the primary evaluator is the only funnel.
+func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
+	appCfg := testAppConfig(t)
+	appCfg.BacklogDir = "custom/backlog"
+	cfg := Config{PlanFile: "docs/plans/test.md", ProgressPath: "progress.txt", DefaultBranch: "main",
+		PlanDescription: "add feature", AppConfig: appCfg}
+	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
+
+	// each capture path carries the same entry contract; phase differs per path, and only the
+	// prompts that commit in-phase may instruct a commit - see the mustNotCommit note below.
+	capturing := map[string]struct {
+		prompt string
+		phase  string
+		// review and evaluation prompts gate their completion signal on whether issues were
+		// found, so they must state that filing is not one; task and plan creation do not.
+		notAFix bool
+		// evaluation prompts accumulate fixes uncommitted across reviewer iterations; the
+		// other capture paths commit in-phase.
+		mustNotCommit bool
+		// every path that owns a completion signal can end a run green once filing is
+		// dismissal-equivalent, so a defect in the branch's own work must never be filable.
+		// plan creation is the only exception: it writes no code and emits no such signal.
+		ownWorkBound bool
+		// review and evaluation additionally run with no plan at all under --review,
+		// --external-only, and --codex-only, so their bound must not rest on the plan's scope.
+		noPlanBound bool
+		// the exact commit rule the path states; the paths are not interchangeable, so a bare
+		// "commit" substring would pass on unrelated prompt text.
+		commitRule string
+		// paths that can fix must not let out-of-scope become an escape hatch from the
+		// pre-existing-issues rule; plan creation fixes nothing, so it files instead.
+		fixCapable bool
+		// the exact per-entry stage instruction, lowercased. asserting a bare "git add" would be
+		// satisfied by the end-of-phase commit's own `git add <paths>` and would not notice the
+		// stage bullet being deleted, and plan creation stages a pathspec rather than the entry.
+		stageRule string
+	}{
+		"task": {prompt: builder.TaskPrompt(), phase: "phase: task", ownWorkBound: true, fixCapable: true,
+			commitRule: "The entry is committed with this task's changes",
+			stageRule:  "stage the new entry with `git add <path>`"},
+		"review first": {prompt: builder.FirstReviewPrompt(), phase: "phase: internal review",
+			notAFix: true, ownWorkBound: true, noPlanBound: true, fixCapable: true,
+			commitRule: "commit the entry with your fixes, or on its own as `git commit -m \"docs: add backlog entry\" -- <entry>`",
+			stageRule:  "stage the new entry with `git add <path>`"},
+		"review second": {prompt: builder.SecondReviewPrompt(""), phase: "phase: internal review",
+			notAFix: true, ownWorkBound: true, noPlanBound: true, fixCapable: true,
+			commitRule: "commit the entry with your fixes, or on its own as `git commit -m \"docs: add backlog entry\" -- <entry>`",
+			stageRule:  "stage the new entry with `git add <path>`"},
+		"eval codex": {prompt: builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"),
+			phase: "phase: evaluation", notAFix: true, mustNotCommit: true, ownWorkBound: true, noPlanBound: true, fixCapable: true},
+		"eval claude": {prompt: builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"),
+			phase: "phase: evaluation", notAFix: true, mustNotCommit: true, ownWorkBound: true, noPlanBound: true, fixCapable: true},
+		"eval custom": {prompt: builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"),
+			phase: "phase: evaluation", notAFix: true, mustNotCommit: true, ownWorkBound: true, noPlanBound: true, fixCapable: true},
+		"plan": {prompt: builder.PlanPrompt(), phase: "phase: planning",
+			commitRule: `git commit -m "docs: add backlog entry" -- <entry>`,
+			stageRule:  "run `git add <entry>` then `git commit -m \"docs: add backlog entry\" -- <entry>`"},
+	}
+	for name, tc := range capturing {
+		t.Run(name, func(t *testing.T) {
+			assert.Contains(t, tc.prompt, "custom/backlog", "expanded backlog directory missing")
+			assert.NotContains(t, tc.prompt, "{{BACKLOG_DIR}}")
+			assert.NotContains(t, tc.prompt, "docs/backlog", "default path must not be hardcoded in the prompt")
+
+			// the entry format is what makes an entry adoptable by loopai-adopt
+			assert.Contains(t, tc.prompt, tc.phase, "entry must record the capture phase")
+			assert.Contains(t, tc.prompt, "- severity: minor|major", "entry must record severity")
+			assert.Contains(t, tc.prompt, "- area: <primary file or package>", "entry must record area")
+			assert.Contains(t, tc.prompt, "update it instead of creating a duplicate",
+				"capture must instruct dedup against existing entries")
+
+			// out-of-scope is otherwise an escape hatch from the pre-existing-issues rule. plan
+			// creation is exempt: it fixes nothing, so filing is the only thing it can do.
+			if tc.fixCapable {
+				assert.Contains(t, tc.prompt, "never out of scope - fix it, do not file it",
+					"capture must exempt pre-existing linter errors and failing tests")
+			}
+
+			// filing is dismissal-equivalent for the signal, so an unbounded out-of-scope category
+			// would be a new way to end a review green with a defect this branch introduced. the
+			// bound holds with or without a plan: under --review, --external-only, and --codex-only
+			// there is no plan for a finding to be out of scope of at all.
+			if tc.ownWorkBound {
+				assert.Contains(t, tc.prompt, "never file a finding about code this branch changed",
+					"paths that own a completion signal must bound the out-of-scope category")
+			}
+			if tc.noPlanBound {
+				assert.Contains(t, tc.prompt, "in scope whether or",
+					"the bound must not depend on the no-plan fallback")
+			}
+			// --review, --external-only, and --codex-only create no branch and no worktree, and the
+			// task phase runs without one whenever CreateBranchForPlan short-circuits on an
+			// already-checked-out feature branch, which skips its dirty-tree gate entirely. a
+			// `git add -A` on any of those paths commits the user's unrelated work in progress.
+			assert.Equal(t, strings.Count(tc.prompt, "git add -A"),
+				strings.Count(tc.prompt, "Do NOT `git add -A`"),
+				"capture prompts must not instruct a sweep of a checkout that was never proved clean")
+
+			// filing must never read as a fix, or an out-of-scope finding would keep a loop alive
+			if tc.notAFix {
+				assert.Contains(t, tc.prompt, "not a fix", "filing must not count as a fix in the signal logic")
+			}
+
+			// the external evaluation prompts accumulate fixes uncommitted across reviewer
+			// iterations and commit once at EXTERNAL_REVIEW_DONE; getDiffInstruction shows the
+			// reviewer only the uncommitted diff after the first round, so a mid-loop commit
+			// hides the accumulated fixes and lets the loop terminate early.
+			if tc.mustNotCommit {
+				assert.NotContains(t, tc.prompt, "docs: add backlog entry",
+					"evaluation prompts must not instruct a mid-loop commit")
+				assert.Contains(t, strings.ToLower(tc.prompt), "leave the entry uncommitted",
+					"evaluation prompts must defer the entry to the final commit")
+				// that final sweep is described as reviewing `git diff`, which never shows a new
+				// untracked file, so the entry has to be staged or it is silently dropped
+				assert.Contains(t, strings.ToLower(tc.prompt), "stage that one file with `git add` and nothing else",
+					"evaluation prompts must stage the entry so the final commit picks it up")
+				// with the index deliberately non-empty, a bare `git commit -m` no longer fails with
+				// "no changes added to commit" - it succeeds and commits only the staged entry, so the
+				// final commit has to stage the unstaged fixes explicitly. it must not do that with
+				// `git add -A`: --external-only and --codex-only create no worktree and run in the
+				// user's own checkout, where a sweep commits their unrelated work in progress.
+				assert.Contains(t, strings.ToLower(tc.prompt), "stage only the paths this external",
+					"the final commit must stage the accumulated fixes, not just the staged entry")
+				// `git status --porcelain` lists the whole dirty tree, so an unbounded "stage every
+				// path those commands list" is `git add -A` by another name and would commit the
+				// user's unrelated work on the three modes that run in their own checkout. staging
+				// must be bounded by what this loop produced, not by what the tree happens to hold.
+				assert.Contains(t, strings.ToLower(tc.prompt), "enumerate the whole dirty tree",
+					"the final commit must not treat the enumeration as the staging set")
+				assert.Contains(t, strings.ToLower(tc.prompt), "cannot attribute to this loop",
+					"the final commit must leave unattributable dirty paths unstaged")
+				// each evaluation runs as a fresh session, so the session that reaches this branch
+				// authored none of the accumulated fixes; enumerating by authorship names nothing
+				assert.Contains(t, strings.ToLower(tc.prompt), "earlier iterations of this loop",
+					"the final commit must not be scoped to this session's own edits")
+				// `git diff HEAD` never lists an untracked file, so enumerating the commit from it
+				// alone silently drops a new test or helper written while fixing findings
+				assert.Contains(t, tc.prompt, "git status --porcelain",
+					"the final review must also enumerate new untracked files")
+				assert.Contains(t, strings.ToLower(tc.prompt), "do not `git add -a`",
+					"the final commit must not sweep the user's own checkout")
+				assert.Contains(t, tc.prompt, "git diff HEAD",
+					"the final review must use a staged-inclusive diff")
+			} else {
+				assert.Contains(t, tc.prompt, tc.commitRule, "in-phase capture paths must state their own commit rule")
+				// a backlog entry is always a new untracked file and no capture path sweeps, so
+				// nothing picks it up implicitly. the review prompts also offer an entry-only
+				// `docs: add backlog entry` commit, and both it and plan creation use the pathspec
+				// form, which rejects an untracked path, so each states its own per-entry stage
+				assert.Contains(t, strings.ToLower(tc.prompt), tc.stageRule,
+					"in-phase capture paths must stage the untracked entry before committing")
+			}
+		})
+	}
+
+	// the task phase is the only capture path whose in-phase commit sits behind a success gate:
+	// STEP 3 runs only after validation passes. a fresh --worktree run is removed with --force on
+	// failure, so a staged but uncommitted entry dies with it unless TASK_FAILED commits it first.
+	taskPrompt := builder.TaskPrompt()
+	assert.Contains(t, taskPrompt, `commit it on its own first with`+"\n"+
+		"`git commit -m \"docs: add backlog entry\" -- <entry>`",
+		"the task phase must commit a filed entry before failing, or the worktree removal discards it")
+	// the bound names the branch, not the current iteration: the task phase runs one task per
+	// iteration on the same branch, so an earlier task's defect must not become filable.
+	assert.Contains(t, taskPrompt, "a defect in this branch's own work - this task's or an\nearlier task's - is in scope",
+		"the task phase's own-work bound must cover earlier tasks on the same branch")
+
+	// the internal review prompts fail through Path C, which returns an error and lets a fresh
+	// --worktree run be removed with --force. a filed entry staged but not yet committed dies with
+	// it, so both prompts have to commit it by pathspec before emitting the failure signal.
+	for name, prompt := range map[string]string{
+		"review first":  builder.FirstReviewPrompt(),
+		"review second": builder.SecondReviewPrompt(""),
+	} {
+		t.Run(name+" failure path commits the entry", func(t *testing.T) {
+			idx := strings.Index(prompt, "Path C - Issues found but cannot fix:")
+			require.NotEqual(t, -1, idx, "review prompts must state a failure path")
+			pathC := prompt[idx:]
+			assert.Contains(t, pathC, "commit it on its own first with",
+				"the failure path must commit a filed entry before the worktree is removed")
+			assert.Contains(t, pathC, "`git commit -m \"docs: add backlog entry\" -- <entry>`",
+				"the failure-path commit must use the pathspec form to exclude unfinished fixes")
+		})
+	}
+
+	readOnly := map[string]string{
+		"external review codex":  builder.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, ""),
+		"external review claude": builder.ExternalReviewPrompt(config.ExternalReviewToolClaude, true, ""),
+		"external review custom": builder.ExternalReviewPrompt(config.ExternalReviewToolCustom, true, ""),
+	}
+	for name, prompt := range readOnly {
+		t.Run(name, func(t *testing.T) {
+			assert.NotContains(t, prompt, "custom/backlog", "read-only reviewers must not be told to write backlog entries")
+		})
+	}
+}
+
+// TestPromptBuilder_DecisionLogConvention covers the plan-revision convention: the planning
+// prompt tells the model to record accepted and rejected critique points in the plan's
+// `## Decision Log` section, and that section never carries checkboxes - a checkbox outside a
+// task section makes the plan read as unfinished work and costs extra loop iterations.
+func TestPromptBuilder_DecisionLogConvention(t *testing.T) {
+	cfg := Config{PlanFile: "docs/plans/test.md", ProgressPath: "progress.txt", DefaultBranch: "main",
+		PlanDescription: "add feature", AppConfig: testAppConfig(t)}
+	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
+	prompt := builder.PlanPrompt()
+
+	require.Contains(t, prompt, "## Decision Log", "planning prompt must define the decision log section")
+	assert.Contains(t, prompt, "**accepted**", "decision log must record accepted points")
+	assert.Contains(t, prompt, "**rejected**", "decision log must record rejected points")
+	assert.Contains(t, prompt, "NEVER put checkboxes in this section",
+		"decision log must forbid checkboxes so the plan parser stays inert")
+	assert.Contains(t, prompt, "does not re-raise a point already rejected",
+		"revision path must state why the log exists")
+
+	// the template block for the section must not itself contain a checkbox. the pattern mirrors
+	// plan.checkboxPattern so the guard and the parser cannot disagree about what a checkbox is:
+	// a literal "- [ ]"/"- [x]" scan misses "- [X]" and "-  [ ]", which the parser accepts.
+	checkbox := regexp.MustCompile(`^\s*-\s+\[[ xX]\]`)
+	lines := strings.Split(prompt, "\n")
+	idx := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "## Decision Log" {
+			idx = i
+			break
+		}
+	}
+	require.NotEqual(t, -1, idx, "decision log heading not found")
+	for _, line := range lines[idx:] {
+		if strings.HasPrefix(strings.TrimSpace(line), "## ") && strings.TrimSpace(line) != "## Decision Log" {
+			break
+		}
+		assert.NotRegexp(t, checkbox, line, "decision log section must not contain checkboxes")
+	}
 }

@@ -47,7 +47,7 @@ func (b *promptBuilder) getProgressFileRef() string {
 }
 
 // replaceBaseVariables replaces common template variables in prompts.
-// supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}}
+// supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}}, {{BACKLOG_DIR}}
 // this is the core replacement function used by all prompt builders.
 // replaces common template variables shared across all prompt types.
 // does not append trailer instruction — callers are responsible for calling appendCommitTrailerInstruction
@@ -59,6 +59,7 @@ func (b *promptBuilder) replaceBaseVariables(prompt string) string {
 	result = strings.ReplaceAll(result, "{{GOAL}}", b.getGoal())
 	result = strings.ReplaceAll(result, "{{DEFAULT_BRANCH}}", b.getDefaultBranch())
 	result = strings.ReplaceAll(result, "{{PLANS_DIR}}", b.getPlansDir())
+	result = strings.ReplaceAll(result, "{{BACKLOG_DIR}}", b.getBacklogDir())
 	return result
 }
 
@@ -100,7 +101,7 @@ If the dismissals are invalid, explain why the issues still exist.`, providerDis
 }
 
 // replaceVariablesWithIteration replaces all template variables including iteration-aware ones.
-// supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}},
+// supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}}, {{BACKLOG_DIR}},
 // {{DIFF_INSTRUCTION}}, {{PREVIOUS_REVIEW_CONTEXT}}, {{agent:name}}, {{agents:dynamic}}
 // the embedded external-review prompts use neither agent token; both are expanded here so
 // a customized external prompt behaves like the internal ones.
@@ -439,7 +440,7 @@ func (b *promptBuilder) warnCodexFrontmatterDiscarded(name string, opts config.O
 }
 
 // replacePromptVariables replaces all template variables including agent references.
-// supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}},
+// supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}}, {{BACKLOG_DIR}},
 // {{agent:name}}, {{agents:dynamic}}
 // note: {{CODEX_OUTPUT}} and {{PLAN_DESCRIPTION}} are handled by specific build functions.
 func (b *promptBuilder) replacePromptVariables(prompt string) string {
@@ -464,4 +465,13 @@ func (b *promptBuilder) getPlansDir() string {
 		return "docs/plans"
 	}
 	return b.cfg.AppConfig.PlansDir
+}
+
+// getBacklogDir returns the backlog directory or "docs/backlog" as fallback.
+// the path is prompt text only: loopai never reads or creates the directory itself.
+func (b *promptBuilder) getBacklogDir() string {
+	if b.cfg.AppConfig == nil || b.cfg.AppConfig.BacklogDir == "" {
+		return "docs/backlog"
+	}
+	return b.cfg.AppConfig.BacklogDir
 }

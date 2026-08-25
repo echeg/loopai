@@ -7,6 +7,7 @@
 #   {{PROGRESS_FILE}} - path to the progress log (task execution + previous reviews)
 #   {{GOAL}} - human-readable goal description
 #   {{DEFAULT_BRANCH}} - default branch name (main, master, trunk, etc.)
+#   {{BACKLOG_DIR}} - backlog directory for out-of-scope findings (default: docs/backlog)
 #   {{agent:<name>}} - expands to the executor-appropriate agent invocation
 #                      (Task tool for claude, spawn_agent for codex)
 #   {{agents:<dynamic>}} - the literal placeholder, written without the angle
@@ -85,6 +86,20 @@ For EACH issue (bugs, test gaps, smells, over-engineering, error handling, docs,
 Classify as:
 - CONFIRMED: Real issue, fix it
 - FALSE POSITIVE: Doesn't exist or already mitigated - discard
+- OUT OF SCOPE: Real issue, but outside this plan's scope - do NOT fix it, file it to the backlog
+
+Out-of-scope findings go to the backlog instead of into this branch:
+- create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, then "- found: <YYYY-MM-DD>, plan: <plan-name>, phase: internal review",
+  "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction
+- list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate; the directory may not exist yet, so create it and treat a missing one as an empty backlog rather than as capture being disabled
+- a pre-existing linter error or failing test is never out of scope - fix it, do not file it
+- never file a finding about code this branch changed: a defect in the branch's own work is in scope whether or
+  not {{PLAN_FILE}} names a plan, and with no plan the branch diff is the whole scope
+- stage the new entry with `git add <path>`: it is untracked, so no commit picks it up on its own. staging alone
+  does not save it - the index is removed with the worktree too, so only the commit below makes the entry survive
+- commit the entry with your fixes, or on its own as `git commit -m "docs: add backlog entry" -- <entry>` when
+  there is nothing else to commit - the pathspec keeps anything the user had already staged out of that commit
+- filing an entry is not a fix: it does not count as a confirmed issue in the Step 4 signal logic
 
 IMPORTANT: Pre-existing issues (linter errors, failed tests) should also be fixed.
 Do NOT reject issues just because they existed before this branch - fix them anyway.
@@ -92,7 +107,13 @@ Do NOT reject issues just because they existed before this branch - fix them any
 ### 3.3 Fix All Confirmed Issues
 1. Fix all CONFIRMED issues (all types: bugs, tests, smells, docs, etc.)
 2. Run tests and linter to verify fixes - ALL tests must pass, ALL linter issues resolved
-3. Commit fixes: `git commit -m "fix: address code review findings"`
+3. Run `git status --porcelain` to enumerate what changed: a file you created while fixing is untracked, so no
+   diff lists it and an unstaged new file dies with the worktree
+4. Stage every file you created, modified, or deleted, including any backlog entry, with `git add <paths>`, then commit:
+   `git commit -m "fix: address code review findings"`. Do NOT `git add -A`: `--review`, `--external-only`,
+   and `--codex-only` run in the user's own checkout with no worktree, and without --worktree a run resumed on
+   its own feature branch skips branch creation and the clean-tree gate with it, so a sweep commits their
+   unrelated work in progress.
 
 ## Step 4: Signal Completion
 
@@ -113,6 +134,10 @@ Path B - Issues found AND fixed:
 - Your fixes might have introduced new issues - another iteration must check.
 
 Path C - Issues found but cannot fix:
+- If you filed a backlog entry above and it is not committed yet, commit it on its own first with
+  `git commit -m "docs: add backlog entry" -- <entry>` - this run fails, a fresh --worktree run is then removed
+  with --force, and a staged but uncommitted entry dies with it, while the pathspec keeps the unfinished
+  fixes out of that commit
 - Output: <<<RALPHEX:TASK_FAILED>>>
 
 OUTPUT FORMAT: No markdown formatting (no **bold**, `code`, # headers). Plain text and - lists are fine.

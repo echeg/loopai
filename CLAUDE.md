@@ -116,8 +116,28 @@ user/project config, rules, MCP and external tools, strips
 credential-like shell variables, and starts an ephemeral session without
 approval escalation. Candidate and judging scratch files live outside the
 repository and are removed on every exit. Grill mode reports Codex failure
-and degrades to Claude-only; plan-off requires Codex and fails closed. When
-these contracts change, update and run `scripts/check-grill-skill_test.sh`.
+and degrades to Claude-only; plan-off requires Codex and fails closed. Grill
+mode's apply path also records the round in the draft's `## Decision Log` —
+accepted findings with what changed, findings the user declined with a stated
+reason as rejected, and findings merely not selected as deferred — before
+`replace-active` publishes it, since the skill never edits the plan at
+its repository path and a post-publication write would need a second guarded
+replacement. The section is created immediately before `## Implementation
+Steps` when absent, existing entries are preserved, a finding already recorded
+as deferred has that entry's date updated in place instead of a second
+near-identical line appended, and it must never carry a checkbox. `ParsePlan` ignores a checkbox above `## Implementation Steps`,
+since the H2 closes the current task, but `FileHasUncompletedCheckbox` — the
+fallback used when a plan has no task headings — counts it, so such a plan
+never reads as complete; the executor also reads the section as text and can
+treat the line as outstanding work. Every critic and the verification pass are told
+to read the log and not re-raise a recorded rejection absent contradicting
+evidence, while a deferred entry may be raised again: `AskUserQuestion` with
+`multiSelect` captures no reason, so recording an unexplained non-selection as
+rejected would silently suppress the finding in every later round. The log is
+written only when the user selects at least one finding;
+a round where nothing is selected leaves the plan untouched, so its rejections
+go unrecorded rather than loopai writing to a plan the user asked to leave
+alone. When these contracts change, update and run `scripts/check-grill-skill_test.sh`.
 
 ## Configuration
 
@@ -132,6 +152,109 @@ these contracts change, update and run `scripts/check-grill-skill_test.sh`.
 - Override: `--config-dir` or `LOOPAI_CONFIG_DIR`
 
 Local files override global files, which override embedded defaults. Embedded defaults remain the per-file fallback, so deleting an installed prompt or agent does not disable it. Remove its template reference to disable an agent.
+
+`backlog_dir` (default `docs/backlog`) names the directory where agents file
+out-of-scope findings, one markdown file per entry. It has no Go consumer: loopai
+never reads, validates, or creates it, and the path only reaches prompts through
+the `{{BACKLOG_DIR}}` placeholder — do not add containment or creation logic. It is
+deliberately a committed repository path and not `.loopai/`, which is gitignored and
+whose worktrees are removed after a run, so an entry written there would be lost
+before `--merge`. Capture is instructed on the four paths that can write: task,
+internal review, external-review evaluation, and plan creation. The three external
+*review* prompts deliberately omit it, since external reviewers are read-only and
+their findings reach the backlog through the primary evaluator. Each path states its
+own commit rule, and they are not interchangeable. Task and internal review commit the
+entry in phase, and all three prompts stage it with `git add` first, since it is untracked and
+no commit picks it up on its own. No capture path sweeps with `git add -A`, `task.txt` included:
+`modeRequiresBranch` being true for the two modes that run it does not make the tree clean, because
+`prepareBranchPlan` returns early — "already on feature branch, caller should skip" — the moment
+`matchesDefaultBranch` is false, which is *before* its uncommitted-changes gate. `use_worktree`
+defaults to false, so a resumed run whose HEAD is already the plan's feature branch commits in the
+user's own checkout with no clean-tree check anywhere on the path, and a sweep there would commit
+their unrelated work in progress. `task.txt` therefore stages `git add <paths>` over the files the
+model created, modified, or deleted, plus `{{PLAN_FILE}}` and any backlog entry. It also carries the
+same bound the review prompts do — a defect in code this branch changed is never out of scope —
+because it owns `ALL_TASKS_DONE` and filing is dismissal-equivalent, so an unbounded category would
+let the executor file its own defect and tick the checkboxes. That bound names the branch and not the
+current task: the task phase runs one task per iteration on the same branch, so a justification scoped to
+"this task's own work" would leave an earlier task's defect filable and `ALL_TASKS_DONE` still reachable.
+`task.txt` is also the one capture path whose in-phase commit sits behind a success gate — STEP 3 runs only
+after validation passes — so its `TASK_FAILED` branch commits any filed entry on its own through the
+pathspec form first: a fresh `--worktree` run is removed with `--force` on failure, and a staged but
+uncommitted entry dies with it while the failed task's own work is meant to. Every path that stages a *set* of
+files it has to discover is preceded by a `git status --porcelain` enumeration, including the Go-side
+`commitPrefix` in `Runner.runExternalAndPostReview`: enumerating from `git diff HEAD` alone, or from memory,
+drops a file the model created while working, which under `--worktree` then dies with the worktree. The
+entry-only stages in `make_plan.txt` and the two internal-review prompts name one path the model just
+created and deliberately carry no enumeration of their own. Where a prompt does enumerate, it must also say
+what the enumeration covers: each external evaluation runs as a fresh session, so a final commit scoped to
+the files *that session* created names an empty set — the round that reaches `EXTERNAL_REVIEW_DONE` is by
+definition the one that fixed nothing — and would commit only the already-staged backlog entry while
+dropping every accumulated fix. The three evaluation prompts therefore bound staging by *the loop's* output
+rather than the session's, naming earlier iterations of the loop explicitly instead of the files the model
+itself wrote. The enumeration is deliberately not the staging set: `git status --porcelain` lists the whole
+dirty tree, so "stage every path those commands list" is `git add -A` spelled out and would commit the user's
+unrelated work on the three modes that run in their own checkout. Those prompts say the two commands enumerate
+the whole tree, stage only what this loop produced, and leave unstaged any dirty path the model cannot
+attribute to the loop. For the same reason, no prompt may justify staging an entry as what saves it from worktree removal:
+the index lives in the worktree's own Git metadata and is removed with it, so only the commit does. That
+`commitPrefix` carries the same pathspec bound and the same `git add -A` prohibition as the seven
+prompt sites, because it is prepended to `review_second.txt` — which forbids the sweep inline — and
+runs on the `runReviewOnly` and `runCodexOnly` paths that create no worktree — and, like the two
+internal-review prompts, on a `runFull` run without `--worktree` whose `prepareBranchPlan` short-circuits,
+so all three sites name that case too rather than resting on the three no-worktree modes alone. Do not restore a bare
+"stage and commit them" there.
+`review_first.txt` and `review_second.txt` deliberately do not sweep and say so
+inline: `ModeReview` and `ModeCodexOnly` create no branch and no worktree, so `--review`,
+`--external-only`, and `--codex-only` commit in the user's own checkout, where a dirty tree is
+allowed and never gated, and a sweep there would commit their unrelated work in progress. Those
+two prompts stage the files the model itself created or modified, and their entry-only
+`docs: add backlog entry` commit uses the pathspec form
+`git commit -m "docs: add backlog entry" -- <entry>` for the same reason `make_plan.txt` does.
+Do not restore a bare `git commit -m` at either site: with the entry staged it succeeds and
+commits only the entry. The three evaluation prompts must leave it uncommitted: after the first
+round `getDiffInstruction` shows the external reviewer only the uncommitted diff, so a
+mid-loop commit hides the accumulated fixes, the next round reports clean, and
+`EXTERNAL_REVIEW_DONE` fires with the fixes unverified — the entry is swept into the
+final commit instead. Those three prompts do say to `git add` the entry alone: the final
+sweep is described as reviewing `git diff`, which never shows a new untracked file, and
+staging keeps the entry out of the unstaged diff the reviewer is shown while guaranteeing
+the commit picks it up. Because that leaves the index deliberately non-empty, the same three
+prompts spell the final commit as `git diff HEAD` plus an explicit `git add <paths>` over every
+file the model created, modified, or deleted: a bare `git commit -m` used to fail loudly with
+`no changes added to commit`, and with the entry staged it would instead succeed, commit only the
+entry, and drop every accumulated fix right before `EXTERNAL_REVIEW_DONE`. Those three prompts pair
+`git diff HEAD` with `git status --porcelain`, because the diff never lists an untracked file:
+enumerating the commit from the diff alone drops a new test or helper the model wrote while fixing
+findings, which under `--worktree` then dies with the worktree. That explicit stage is deliberately
+not `git add -A`, for the same reason the internal-review prompts avoid one: these prompts also
+run under `--review`, `--external-only`, and `--codex-only`, which create no worktree. Staging does not
+weaken the stalemate reset either, since `diffFingerprint` runs `git diff HEAD`. Plan creation runs in the source checkout before
+the branch and worktree exist, so it stages that one file and commits it through the
+pathspec form `git commit -m "docs: add backlog entry" -- <entry>`; an uncommitted
+entry there never reaches the branch, and an untracked one fails branch and worktree
+creation outright, because `hasChangesOtherThan` counts untracked files and exempts only
+the plan file. The pathspec is what keeps that commit honest: this is the user's own
+checkout rather than a loopai worktree, so a bare `git commit -m` would sweep whatever they
+had already staged into a commit labelled as a backlog entry, on whatever branch is checked
+out — normally `main` or `master`, and the same happens on a session the user later cancels
+at draft review. The `loopai-plan` and `loopai-brainstorm` skills file entries too and carry
+that same commit rule for the same reason: they run before loopai does, and loopai commits
+nothing but the plan. Filing is dismissal-equivalent only for the completion signal:
+the write is a real repository change, so the round that makes it resets
+`review_patience` stalemate detection. A pre-existing linter error or failing test is
+never out of scope on any path that can fix — all six such capture blocks say so
+explicitly, because the category is otherwise an escape hatch from the pre-existing-issues
+rule that sits beside it in the same prompts, and `task.txt` and `external_claude_eval.txt`
+carry no such rule of their own. `make_plan.txt` is the deliberate exception: plan creation
+fixes nothing, so filing is the only thing it can do with such a finding. The review and
+evaluation prompts additionally bound the category unconditionally: a defect in code the branch
+itself wrote is never out of scope, whether or not `{{PLAN_FILE}}` names a plan. Filing is
+dismissal-equivalent for the signal, so without that bound "outside this plan's scope" is a new
+way to end a review green with a defect this branch introduced. The bound must not be written as
+a consequence of the no-plan fallback alone: under `--review`, `--external-only`, and
+`--codex-only` there is additionally no plan for any finding to be out of scope of, but the
+dangerous case is the ordinary one where a plan is present.
 
 Agent files may carry YAML frontmatter parsed into `config.Options` (`model`,
 `agent`, `description`). A non-empty `description` marks the file as a *dynamic
@@ -172,6 +295,13 @@ Tests must redirect HOME or config paths to `t.TempDir()` and must never touch e
 - `pkg/config/defaults` contains embedded config, prompts, and agents.
 
 Task plans use `### Task N:` or `### Iteration N:` headings and Markdown checkboxes. The task phase handles only the first incomplete section per executor iteration.
+
+`pkg/processor/prompts.go` expands `{{BACKLOG_DIR}}` alongside `{{PLANS_DIR}}` in
+`replaceBaseVariables`, the choke point every builder funnels through, so all twelve
+prompt paths get it from one line plus `getBacklogDir`, which mirrors `getPlansDir`
+and falls back to `docs/backlog` when `BacklogDir` is unset. A prompt file's header
+comment lists the variables that prompt actually uses, not every variable expanded in
+it, so adding the placeholder to a prompt and its header happen together.
 
 `pkg/processor/prompts.go` expands two agent placeholders with the same
 per-executor invocation snippet builder (Task tool for Claude, `spawn_agent` for

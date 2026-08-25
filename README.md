@@ -17,6 +17,8 @@ workflows are distributed through this repository's plugin marketplace.
 - Adds project-specific review agents, drafted for the repository by `--gen-agents`
 - Creates a branch automatically and optionally uses isolated Git worktrees
 - Commits after completed tasks and review fixes
+- Files out-of-scope findings to a committed backlog instead of fixing or dropping them
+- Records accepted, rejected, and deferred plan-critique points in the plan's Decision Log
 - Streams timestamped progress to `.loopai/progress/`
 - Serves a real-time web dashboard with `--serve`
 - Reports live and persistent completion status to the cmux sidebar when available
@@ -110,7 +112,11 @@ specific plan, or generate a competing-plan comparison:
 ```
 
 With no path, the skill proposes the newest active plan for confirmation. Grill
-mode applies only the verified findings you select; if Codex is unavailable or
+mode applies only the verified findings you select, and records the round in the
+plan's [Decision Log](#decision-log) — what it accepted, what you rejected, and
+what you simply did not select — so a later round does not re-raise a rejected
+point without new evidence. A round where you select nothing leaves the plan
+untouched. If Codex is unavailable or
 fails, it reports that and continues with Claude critics. Compare mode requires
 Codex, never edits a source plan, and creates one new plan without overwriting
 an existing path. Both modes reject completed plans, symlinked plans or plan
@@ -390,6 +396,95 @@ Plans are Markdown files, normally stored in `docs/plans/`.
 - Keep tasks small enough for one fresh agent context.
 
 By default, a successfully completed plan moves to `docs/plans/completed/`. Set `move_plan_on_completion = false` when another workflow owns plan archival.
+
+### Decision Log
+
+A plan may carry an optional `## Decision Log` section recording how earlier critique
+rounds were resolved:
+
+```markdown
+## Decision Log
+
+- 2026-08-25 grill: **accepted** - split lock acquisition into prepare/commit (tasks 3-4 updated)
+- 2026-08-25 grill: **rejected** - "add retry around merge" - merge is already the backstop
+- 2026-08-25 grill: **deferred** - "split the git package" - not selected this round
+```
+
+`accepted` and `rejected` record decisions you made explicitly; `deferred` records a
+finding you were shown and did not pick. Only a `rejected` entry stops a later round from
+raising the point again.
+
+`loopai-grill` writes the section when it applies user-selected findings, and plan revision
+after critique records accepted and rejected points there. Later critique rounds read it and
+do not re-raise a rejected point without new evidence, so repeated rounds converge instead of
+relitigating. The section never contains checkboxes: a checkbox outside a task section is not an
+implementation step, but it makes the plan read as unfinished work and costs extra loop iterations.
+
+## Backlog capture
+
+Agents regularly notice real problems outside the current plan's scope. Instead of fixing them
+as scope creep or dropping them, the primary executor files each one as a separate Markdown
+file under `backlog_dir` (`docs/backlog/` by default):
+
+```markdown
+# Worktree lock left behind on SIGKILL
+
+- found: 2026-08-25, plan: backlog-capture, phase: task
+- severity: minor
+- area: pkg/git/worktree.go
+
+`prepareWorktree` (pkg/git/worktree.go:214) ... suggested fix direction ...
+```
+
+Capture is a prompt convention, not a code path: loopai never reads, validates, or creates the
+directory, and the path is only substituted into prompts as `{{BACKLOG_DIR}}`. Where the entry
+gets committed depends on the path that files it, and the three rules are not interchangeable:
+
+- **Task and internal review** stage the entry and commit it in phase, with the fixes or on its
+  own as `docs: add backlog entry`, so that when a worktree is in use it survives worktree removal
+  and arrives on the default branch through `--merge`. An entry is always a new untracked file, so
+  each of those prompts stages it explicitly before committing.
+- **External-review evaluation** writes it inside the worktree, stages it, and leaves it
+  uncommitted until the reviewer chain finishes: after the first round the external reviewer is
+  shown only the uncommitted diff, so a mid-loop commit would hide the accumulated fixes. The
+  final `fix: address ... review findings` commit picks the staged entry up.
+
+  `--review`, `--external-only`, and `--codex-only` create no branch and no worktree, so the review
+  and evaluation prompts commit in your own checkout. No capture path sweeps with `git add -A`:
+  each stages only the files it created, modified, or deleted — or, for the evaluation prompts,
+  which run as fresh sessions that authored none of the accumulated fixes, only the files this
+  review loop produced across its iterations. Either way a dirty path that cannot be attributed is
+  left unstaged, so unrelated work in progress stays out of loopai's commits. Only the entry-only `docs: add backlog entry` commit names the entry by
+  pathspec and so leaves anything you already had staged alone; the `fix: address ... review
+  findings` commits are ordinary commits of the index, so start these modes with a clean index if
+  you have staged work you do not want committed. The task phase avoids the sweep for the same reason — without `--worktree`,
+  loopai skips branch creation when you are already on a feature branch, and that path runs no
+  clean-tree check.
+- **Plan creation** runs in the source checkout before the branch and worktree exist, so it stages
+  that one file and commits it there with `git commit -m "docs: add backlog entry" -- <entry>` — on
+  whatever branch is checked out, normally `main` or `master`. An uncommitted entry would never
+  reach the feature branch, and an untracked one blocks branch and worktree creation, which
+  tolerate only the plan file itself. Because this is your own checkout rather than a loopai
+  worktree, the commit names the entry explicitly, so anything you already had staged stays staged
+  instead of being swept into it.
+
+Filing is not a fix: an out-of-scope finding behaves like a dismissal in the completion-signal
+logic, so an agent never keeps a review loop alive by claiming it fixed something. The write is
+still a repository change, so a round that creates or updates an entry does reset external-review
+stalemate detection (`review_patience`). Before creating an entry an agent lists the existing ones
+and updates a matching entry rather than duplicating it.
+
+Capture is instructed on four paths: task execution, internal review consolidation, evaluation
+of external-review findings (external reviewers are read-only, so their out-of-scope findings are
+filed by the primary evaluator), and plan creation. Entries are plain Markdown, so
+`/loopai:loopai-adopt docs/backlog/<entry>.md` turns one into a full plan. Nothing prunes the
+directory, so delete or archive an entry once it has become a plan, or a later run may file it again.
+
+Capture cannot be switched off with configuration: an empty `backlog_dir` falls back to
+`docs/backlog`, the same way `plans_dir` does. To disable it, extract the prompts with
+`loopai --dump-defaults`, remove the out-of-scope block from `task.txt`, `review_first.txt`,
+`review_second.txt`, `codex.txt`, `external_claude_eval.txt`, `custom_eval.txt`, and
+`make_plan.txt`, and install those copies in `.loopai/prompts/`.
 
 ## Completion and close-out
 
@@ -696,6 +791,10 @@ loopai --dump-defaults /tmp/loopai-defaults
 ```
 
 Custom prompts and agents use the same filenames as the embedded defaults. At runtime the `{{agent:name}}` template syntax expands one named review agent, and `{{agents:dynamic}}` expands the catalog of project-specific agents described in [Review agents](#review-agents).
+
+Two directory keys are exposed to prompts as placeholders: `plans_dir` as `{{PLANS_DIR}}` and
+`backlog_dir` as `{{BACKLOG_DIR}}` (default `docs/backlog`, see [Backlog capture](#backlog-capture)).
+Both are substituted into every prompt loopai builds; a custom prompt can use either.
 
 ## Alternative providers
 

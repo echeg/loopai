@@ -75,6 +75,7 @@ type Values struct {
 	VcsCommand                 string // custom VCS command (default: "git")
 	CommitTrailer              string // trailer line to append to all commits (e.g., "Co-authored-by: ...")
 	PlansDir                   string
+	BacklogDir                 string
 	DefaultBranch              string   // override auto-detected default branch
 	WatchDirs                  []string // directories to watch for progress files
 
@@ -406,6 +407,9 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 	if key, err := section.GetKey("plans_dir"); err == nil {
 		values.PlansDir = key.String()
 	}
+	if key, err := section.GetKey("backlog_dir"); err == nil {
+		values.BacklogDir = key.String()
+	}
 	if key, err := section.GetKey("default_branch"); err == nil {
 		values.DefaultBranch = strings.TrimSpace(key.String())
 	}
@@ -620,21 +624,7 @@ func (dst *Values) mergeExtraFrom(src *Values) {
 		dst.WorktreeEnabled = src.WorktreeEnabled
 		dst.WorktreeEnabledSet = true
 	}
-	if src.PlansDir != "" {
-		dst.PlansDir = src.PlansDir
-	}
-	if src.DefaultBranch != "" {
-		dst.DefaultBranch = src.DefaultBranch
-	}
-	if src.VcsCommand != "" {
-		dst.VcsCommand = src.VcsCommand
-	}
-	if src.CommitTrailer != "" {
-		dst.CommitTrailer = src.CommitTrailer
-	}
-	if len(src.WatchDirs) > 0 {
-		dst.WatchDirs = src.WatchDirs
-	}
+	dst.mergePathsFrom(src)
 	if len(src.ClaudeErrorPatterns) > 0 {
 		dst.ClaudeErrorPatterns = src.ClaudeErrorPatterns
 	}
@@ -661,6 +651,29 @@ func (dst *Values) mergeExtraFrom(src *Values) {
 	if src.IdleTimeoutSet {
 		dst.IdleTimeout = src.IdleTimeout
 		dst.IdleTimeoutSet = true
+	}
+}
+
+// mergePathsFrom merges path and VCS-related fields from src into dst.
+// called from mergeExtraFrom to manage cyclomatic complexity.
+func (dst *Values) mergePathsFrom(src *Values) {
+	if src.PlansDir != "" {
+		dst.PlansDir = src.PlansDir
+	}
+	if src.BacklogDir != "" {
+		dst.BacklogDir = src.BacklogDir
+	}
+	if src.DefaultBranch != "" {
+		dst.DefaultBranch = src.DefaultBranch
+	}
+	if src.VcsCommand != "" {
+		dst.VcsCommand = src.VcsCommand
+	}
+	if src.CommitTrailer != "" {
+		dst.CommitTrailer = src.CommitTrailer
+	}
+	if len(src.WatchDirs) > 0 {
+		dst.WatchDirs = src.WatchDirs
 	}
 }
 

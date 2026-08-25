@@ -2866,3 +2866,43 @@ func TestValuesLoader_Load_CodexArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestValues_mergeFrom_BacklogDir(t *testing.T) {
+	t.Run("non-empty src overrides dst", func(t *testing.T) {
+		dst := Values{BacklogDir: "dst-backlog"}
+		src := Values{BacklogDir: "src-backlog"}
+		dst.mergeFrom(&src)
+		assert.Equal(t, "src-backlog", dst.BacklogDir)
+	})
+
+	t.Run("empty src keeps dst", func(t *testing.T) {
+		dst := Values{BacklogDir: "dst-backlog"}
+		src := Values{}
+		dst.mergeFrom(&src)
+		assert.Equal(t, "dst-backlog", dst.BacklogDir)
+	})
+}
+
+func TestValuesLoader_Load_BacklogDir(t *testing.T) {
+	t.Run("embedded default", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cfgPath := filepath.Join(tmpDir, "config")
+		require.NoError(t, os.WriteFile(cfgPath, []byte("plans_dir = docs/plans\n"), 0o600))
+
+		loader := newValuesLoader(defaultsFS)
+		values, err := loader.Load("", cfgPath)
+		require.NoError(t, err)
+		assert.Equal(t, "docs/backlog", values.BacklogDir)
+	})
+
+	t.Run("explicit value", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cfgPath := filepath.Join(tmpDir, "config")
+		require.NoError(t, os.WriteFile(cfgPath, []byte("backlog_dir = custom/backlog\n"), 0o600))
+
+		loader := newValuesLoader(defaultsFS)
+		values, err := loader.Load("", cfgPath)
+		require.NoError(t, err)
+		assert.Equal(t, "custom/backlog", values.BacklogDir)
+	})
+}

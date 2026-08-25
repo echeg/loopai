@@ -428,10 +428,15 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 
 	r.phaseHolder.Set(status.PhaseReview)
 
-	commitPrefix := "IMPORTANT: Before starting the review, run `git status`. " +
-		"If there are uncommitted changes from previous review phases, " +
-		"stage and commit them with message: " +
-		"`fix: address code review findings`\n" +
+	commitPrefix := "IMPORTANT: Before starting the review, run `git status --porcelain`. " +
+		"If there are uncommitted changes from previous review phases, stage them with " +
+		"`git add <paths>` over the files those phases created, modified, or deleted, " +
+		"and commit with message: `fix: address code review findings`. " +
+		"Do NOT `git add -A`: `--review`, `--external-only`, and `--codex-only` create no " +
+		"worktree and run in the user's own checkout, where a dirty tree is allowed and never " +
+		"gated, and without --worktree a run resumed on its own feature branch skips branch " +
+		"creation and the clean-tree gate with it, so a sweep commits their unrelated work " +
+		"in progress.\n" +
 		"Then continue with the sequence below.\n\n"
 	if err := r.phases.review.Loop(ctx, commitPrefix); err != nil {
 		return fmt.Errorf("post-external review loop: %w", err)

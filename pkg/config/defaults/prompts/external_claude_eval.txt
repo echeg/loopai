@@ -5,6 +5,7 @@
 #   {{PLAN_FILE}} - path to the plan file being executed
 #   {{GOAL}} - human-readable goal description
 #   {{DEFAULT_BRANCH}} - default branch name (main, master, trunk, etc.)
+#   {{BACKLOG_DIR}} - backlog directory for out-of-scope findings (default: docs/backlog)
 #   {{CLAUDE_OUTPUT}} - findings from the external claude reviewer
 
 External code review evaluation.
@@ -17,13 +18,24 @@ Claude reviewed the code and reported:
 
 Verify every finding against the actual code, its callers, the plan at {{PLAN_FILE}}, and the intended behavior. Fix only valid issues, then run the relevant tests and lint checks. For invalid or irrelevant findings, explain each dismissal clearly; your response will be passed back to Claude on the next review iteration.
 
+A finding that is real but outside this plan's scope must NOT be fixed here - file it to the backlog instead:
+create {{BACKLOG_DIR}}/<kebab-slug>.md with a "# <short problem title>" heading, then "- found: <YYYY-MM-DD>, plan: <plan-name>, phase: evaluation",
+"- severity: minor|major", "- area: <primary file or package>", and a short description with file:line references and a suggested fix direction.
+List existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate. The directory may not exist yet, so create it and treat a missing one as an empty backlog rather than as capture being disabled.
+A pre-existing linter error or failing test is never out of scope - fix it, do not file it.
+A defect in the branch's own work is in scope whether or not {{PLAN_FILE}} names a plan, and with no plan the branch diff is the whole scope - never file a finding about code this branch changed.
+Leave the entry uncommitted alongside your other changes - it is swept into the final commit below;
+committing mid-loop hides the accumulated fixes from the next reviewer iteration, which is shown only the uncommitted diff.
+Stage that one file with `git add` and nothing else, so the final commit cannot miss a new untracked file; a staged entry stays out of the unstaged diff the reviewer is shown.
+Say in your response that the finding was filed and why it is out of scope; filing is not a fix, so treat these findings like dismissals for signalling purposes.
+
 The primary executor owns all repository writes and commits. Do not ask the external reviewer to edit files or run side-effecting commands.
 
 If you fixed any issue, do not commit and do not emit a completion signal. Stop so the external reviewer can review the updated diff.
 
-If you dismissed all findings, make no changes, emit no completion signal, and stop so the external reviewer can reconsider your explanations.
+If you dismissed all findings, make no code changes (a backlog entry filed above is the only permitted write), emit no completion signal, and stop so the external reviewer can reconsider your explanations.
 
-Only when the external reviewer reports no actionable issues (empty output, "no issues found", or "NO ISSUES FOUND"), review all accumulated uncommitted changes, commit the fixes with message "fix: address external review findings", and output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
+Only when the external reviewer reports no actionable issues (empty output, "no issues found", or "NO ISSUES FOUND"), review all accumulated uncommitted changes with `git diff HEAD` and `git status --porcelain` - `git diff HEAD` never lists a new untracked file, so a test or helper you added while fixing findings is invisible in it - then note that those two commands enumerate the whole dirty tree, not just this loop's output, and stage only the paths this external review loop produced - every file changed, created, or deleted to fix a finding in this iteration or in earlier iterations of this loop, not only this session's, since each evaluation runs as a fresh session - plus any backlog entry with `git add <paths>`, and commit with message "fix: address external review findings" - a bare `git commit -m` would commit only the already-staged backlog entry and silently drop every accumulated fix. Leave unstaged any dirty path you cannot attribute to this loop. Do NOT `git add -A`: `--review`, `--external-only`, and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work. Then output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
 
 The EXTERNAL_REVIEW_DONE signal means the external reviewer found nothing actionable. Never emit it after fixing or dismissing findings. Never run the external reviewer yourself; the external loop owns reviewer execution.
 

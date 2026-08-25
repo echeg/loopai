@@ -14,6 +14,7 @@ Supported source shapes:
 - **GitHub or GitLab issue**: URL, `#N`, or `owner/repo#N` with body that contains a task checklist
 - **Generic task-list**: any structured markdown/text with headings and bullet items
 - **Free-form markdown**: prose brain dump with no fixed structure
+- **loopai backlog entry**: a single-finding markdown file under the project's `backlog_dir` (`docs/backlog/` by default) with `found`/`plan`/`phase`, `severity`, and `area` lines; convert it as free-form markdown and do not treat its small size as a scope ambiguity
 
 This is a single-skill conversion: discover, classify, ask focused questions when in doubt, draft, review, write. Do not modify code, do not run tests, do not commit. Output is the new plan file only.
 
