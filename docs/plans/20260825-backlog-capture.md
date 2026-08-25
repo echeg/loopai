@@ -129,12 +129,16 @@ Key benefits: out-of-scope findings survive the run, live in git history, are sh
 
 ### Task 5: loopai-grill integration
 
-- [ ] grill apply step: after applying user-selected findings, add or update `## Decision Log` in the plan — accepted findings with what changed, rejected findings with the user's reason; preserve existing entries
-- [ ] grill critique prompts (Claude and Codex wrapper prompts): instruct critics to read `## Decision Log` and not re-raise rejected items unless new evidence contradicts the recorded reasoning
-- [ ] verify the change does not touch grill safety contracts (path helper, snapshot rules, sandbox pins) — behavior additions are prompt/workflow text only
-- [ ] update `scripts/check-grill-skill_test.sh` to cover the Decision Log contract (present after apply, respected by critique prompts)
-- [ ] bump version to `0.3.0` in both `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`
-- [ ] run `make test-grill-skill` and `make check-plugin` - must pass before task 6
+- [x] grill apply step: after applying user-selected findings, add or update `## Decision Log` in the plan — accepted findings with what changed, rejected findings with the user's reason; preserve existing entries
+- [x] grill critique prompts (Claude and Codex wrapper prompts): instruct critics to read `## Decision Log` and not re-raise rejected items unless new evidence contradicts the recorded reasoning
+- [x] verify the change does not touch grill safety contracts (path helper, snapshot rules, sandbox pins) — behavior additions are prompt/workflow text only
+- [x] update `scripts/check-grill-skill_test.sh` to cover the Decision Log contract (present after apply, respected by critique prompts)
+- [x] bump version to `0.3.0` in both `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`
+- [x] run `make test-grill-skill` and `make check-plugin` - must pass before task 6
+- ➕ the apply sequence gained a dedicated numbered step (former steps 6-7 renumbered to 7-8), so the log is written to the temporary draft before `replace-active` publishes it: the skill never edits the plan at its repository path, so recording the round after publication would need a second guarded replacement
+- ➕ the re-read verification step now also confirms the `## Decision Log` carries no checkbox, and the suite asserts both that prohibition and the entry formats — a checkbox leaking into the log would be parsed as an implementation step
+- ⚠️ the Decision Log is written only on the apply path, which runs when the user selects at least one finding. A round where nothing survives verification, or where the user selects nothing, still leaves the plan untouched as before, so its rejections are not recorded; changing that would mean writing to a plan the user asked to leave unchanged and is out of this plan's scope
+- ⚠️ no grill safety contract changed: only `SKILL.md` prose and the assertion suite were touched — `plan_paths.py`, `snapshot_repository.py`, `run-claude.sh`, and `run-codex.sh` are byte-identical
 
 ### Task 6: Verify acceptance criteria
 
