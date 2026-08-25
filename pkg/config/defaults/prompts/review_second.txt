@@ -78,10 +78,12 @@ Path A - NO issues found in this iteration:
 Path B - Issues found AND fixed:
 1. Fix verified critical/major issues only
 2. Run tests and linter - ALL tests must pass, ALL linter issues resolved
-3. Stage every file you created or modified, including any backlog entry, with `git add <paths>`, then commit:
+3. Run `git status --porcelain` to enumerate what changed: a file you created while fixing is untracked, so no
+   diff lists it and an unstaged new file dies with the worktree
+4. Stage every file you created, modified, or deleted, including any backlog entry, with `git add <paths>`, then commit:
    `git commit -m "fix: address code review findings"`. Do NOT `git add -A`: `--review`, `--external-only`,
    and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work.
-4. STOP HERE. Do NOT output any signal. Do NOT output REVIEW_DONE.
+5. STOP HERE. Do NOT output any signal. Do NOT output REVIEW_DONE.
    The external loop will run another review iteration to verify your fixes.
    Your fixes might have introduced new issues - another iteration must check.
 

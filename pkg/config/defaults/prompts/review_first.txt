@@ -107,7 +107,9 @@ Do NOT reject issues just because they existed before this branch - fix them any
 ### 3.3 Fix All Confirmed Issues
 1. Fix all CONFIRMED issues (all types: bugs, tests, smells, docs, etc.)
 2. Run tests and linter to verify fixes - ALL tests must pass, ALL linter issues resolved
-3. Stage every file you created or modified, including any backlog entry, with `git add <paths>`, then commit:
+3. Run `git status --porcelain` to enumerate what changed: a file you created while fixing is untracked, so no
+   diff lists it and an unstaged new file dies with the worktree
+4. Stage every file you created, modified, or deleted, including any backlog entry, with `git add <paths>`, then commit:
    `git commit -m "fix: address code review findings"`. Do NOT `git add -A`: `--review`, `--external-only`,
    and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work.
 

@@ -79,6 +79,7 @@ assert_contains "missing decision-log rejected entry format" '- <YYYY-MM-DD> gri
 assert_contains "missing decision-log deferred entry format" '- <YYYY-MM-DD> grill: **deferred** - "<the finding>" - not selected this round'
 assert_contains "missing decision-log deferral distinction" 'only a **rejected** entry suppresses a later re-raise'
 assert_contains "missing decision-log critic deferral allowance" 'a point recorded as deferred may be raised again'
+assert_contains "missing decision-log rejection-reason source" 'A stated reason is one the user gave in their own words'
 assert_contains "missing decision-log list-item format" 'write each entry as a Markdown list item'
 assert_contains "missing decision-log deferred dedup" "update that entry's date in place instead of appending a second line"
 assert_contains "missing decision-log entry preservation" 'preserve every existing entry'

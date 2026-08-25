@@ -1113,8 +1113,13 @@ func TestRunner_CodexAndPostReview_CommitPendingPrefix(t *testing.T) {
 
 		require.NoError(t, err)
 		require.Len(t, capturedPrompts, 3)
-		assert.Contains(t, capturedPrompts[2], "IMPORTANT: Before starting the review, run `git status`")
+		assert.Contains(t, capturedPrompts[2], "IMPORTANT: Before starting the review, run `git status --porcelain`")
 		assert.Contains(t, capturedPrompts[2], "fix: address code review findings")
+		// the prefix is the seventh commit-instruction site and runs on the no-worktree
+		// --review/--external-only/--codex-only paths, so it must carry the same pathspec bound
+		// as the six prompts and must not contradict review_second.txt, which forbids the sweep
+		assert.Contains(t, capturedPrompts[2], "`git add <paths>`")
+		assert.Contains(t, strings.ToLower(capturedPrompts[2]), "do not `git add -a`")
 	})
 
 	t.Run("no prefix when external review disabled", func(t *testing.T) {

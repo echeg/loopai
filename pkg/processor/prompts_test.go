@@ -2290,9 +2290,8 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 				assert.Contains(t, tc.prompt, tc.commitRule, "in-phase capture paths must state their own commit rule")
 				// a backlog entry is always a new untracked file and no capture path sweeps, so
 				// nothing picks it up implicitly. the review prompts also offer an entry-only
-				// `docs: add backlog entry` commit that is a literal bare `git commit -m`, and plan
-				// creation commits through a pathspec that rejects an untracked path, so each
-				// states its own per-entry stage
+				// `docs: add backlog entry` commit, and both it and plan creation use the pathspec
+				// form, which rejects an untracked path, so each states its own per-entry stage
 				assert.Contains(t, strings.ToLower(tc.prompt), tc.stageRule,
 					"in-phase capture paths must stage the untracked entry before committing")
 			}

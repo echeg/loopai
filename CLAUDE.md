@@ -175,7 +175,14 @@ their unrelated work in progress. `task.txt` therefore stages `git add <paths>` 
 model created, modified, or deleted, plus `{{PLAN_FILE}}` and any backlog entry. It also carries the
 same bound the review prompts do — a defect in code this branch changed is never out of scope —
 because it owns `ALL_TASKS_DONE` and filing is dismissal-equivalent, so an unbounded category would
-let the executor file its own defect and tick the checkboxes.
+let the executor file its own defect and tick the checkboxes. Every path that stages by pathspec
+is preceded by a `git status --porcelain` enumeration, including the Go-side `commitPrefix` in
+`Runner.runExternalAndPostReview`: enumerating from `git diff HEAD` alone, or from memory, drops a
+file the model created while working, which under `--worktree` then dies with the worktree. That
+`commitPrefix` carries the same pathspec bound and the same `git add -A` prohibition as the seven
+prompt sites, because it is prepended to `review_second.txt` — which forbids the sweep inline — and
+runs on the `runReviewOnly` and `runCodexOnly` paths that create no worktree. Do not restore a bare
+"stage and commit them" there.
 `review_first.txt` and `review_second.txt` deliberately do not sweep and say so
 inline: `ModeReview` and `ModeCodexOnly` create no branch and no worktree, so `--review`,
 `--external-only`, and `--codex-only` commit in the user's own checkout, where a dirty tree is

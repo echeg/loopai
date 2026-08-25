@@ -49,6 +49,8 @@ STEP 2 - VALIDATE:
 
 STEP 3 - COMPLETE (after validation passes):
 - Update progress: edit {{PLAN_FILE}} and change [ ] to [x] for each checkbox you implemented in the current Task section. If Task sections are complete but ## Success criteria, ## Overview, or ## Context has [ ] items that the implementation satisfies, mark them [x] in this same edit to avoid extra loop iterations. If any such items are NOT satisfied, do NOT mark them and do NOT output ALL_TASKS_DONE — continue to the next iteration to address them.
+- Run `git status --porcelain` to enumerate what changed: a file you created is untracked, so no diff lists it and
+  an unstaged new file dies with the worktree
 - Stage every file you created, modified, or deleted, including {{PLAN_FILE}} and any backlog entry, with `git add <paths>`,
   then commit with message: feat: <brief task description>. Do NOT `git add -A`: without --worktree loopai skips branch
   creation when HEAD is already on a feature branch, so the checkout can still hold the user's unrelated work in progress.
