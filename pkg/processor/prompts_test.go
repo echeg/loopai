@@ -2289,8 +2289,16 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 				// final commit has to stage the unstaged fixes explicitly. it must not do that with
 				// `git add -A`: --external-only and --codex-only create no worktree and run in the
 				// user's own checkout, where a sweep commits their unrelated work in progress.
-				assert.Contains(t, strings.ToLower(tc.prompt), "stage every path those two commands list",
+				assert.Contains(t, strings.ToLower(tc.prompt), "stage only the paths this external",
 					"the final commit must stage the accumulated fixes, not just the staged entry")
+				// `git status --porcelain` lists the whole dirty tree, so an unbounded "stage every
+				// path those commands list" is `git add -A` by another name and would commit the
+				// user's unrelated work on the three modes that run in their own checkout. staging
+				// must be bounded by what this loop produced, not by what the tree happens to hold.
+				assert.Contains(t, strings.ToLower(tc.prompt), "enumerate the whole dirty tree",
+					"the final commit must not treat the enumeration as the staging set")
+				assert.Contains(t, strings.ToLower(tc.prompt), "cannot attribute to this loop",
+					"the final commit must leave unattributable dirty paths unstaged")
 				// each evaluation runs as a fresh session, so the session that reaches this branch
 				// authored none of the accumulated fixes; enumerating by authorship names nothing
 				assert.Contains(t, strings.ToLower(tc.prompt), "earlier iterations of this loop",

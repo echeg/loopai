@@ -451,8 +451,10 @@ gets committed depends on the path that files it, and the three rules are not in
 
   `--review`, `--external-only`, and `--codex-only` create no branch and no worktree, so the review
   and evaluation prompts commit in your own checkout. No capture path sweeps with `git add -A`:
-  each stages only the files it created, modified, or deleted, so unrelated work in progress stays
-  out of loopai's commits. Only the entry-only `docs: add backlog entry` commit names the entry by
+  each stages only the files it created, modified, or deleted — or, for the evaluation prompts,
+  which run as fresh sessions that authored none of the accumulated fixes, only the files this
+  review loop produced across its iterations. Either way a dirty path that cannot be attributed is
+  left unstaged, so unrelated work in progress stays out of loopai's commits. Only the entry-only `docs: add backlog entry` commit names the entry by
   pathspec and so leaves anything you already had staged alone; the `fix: address ... review
   findings` commits are ordinary commits of the index, so start these modes with a clean index if
   you have staged work you do not want committed. The task phase avoids the sweep for the same reason — without `--worktree`,

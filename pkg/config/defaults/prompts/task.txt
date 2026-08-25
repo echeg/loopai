@@ -36,7 +36,7 @@ STEP 1 - IMPLEMENT:
 OUT-OF-SCOPE FINDINGS: found a real issue outside this plan's scope? Do NOT fix it here - file it.
 Create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, then "- found: <YYYY-MM-DD>, plan: <plan-name>, phase: task",
 "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction.
-List existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate.
+List existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate. The directory may not exist yet, so create it and treat a missing one as an empty backlog rather than as capture being disabled.
 A pre-existing linter error or failing test is never out of scope - fix it, do not file it.
 Also never file a finding about code this branch changed: a defect in this branch's own work - this task's or an
 earlier task's - is in scope, and filing it while ticking the checkboxes would end the plan green with a defect

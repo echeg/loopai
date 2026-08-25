@@ -91,7 +91,7 @@ Classify as:
 Out-of-scope findings go to the backlog instead of into this branch:
 - create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, then "- found: <YYYY-MM-DD>, plan: <plan-name>, phase: internal review",
   "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction
-- list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate
+- list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate; the directory may not exist yet, so create it and treat a missing one as an empty backlog rather than as capture being disabled
 - a pre-existing linter error or failing test is never out of scope - fix it, do not file it
 - never file a finding about code this branch changed: a defect in the branch's own work is in scope whether or
   not {{PLAN_FILE}} names a plan, and with no plan the branch diff is the whole scope

@@ -33,7 +33,7 @@ Then categorize:
 - **Valid but out of scope**: Real issue, but outside this plan's scope - do NOT fix it here, file it to the backlog:
   - create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, then "- found: <YYYY-MM-DD>, plan: <plan-name>, phase: evaluation",
     "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction
-  - list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate
+  - list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate; the directory may not exist yet, so create it and treat a missing one as an empty backlog rather than as capture being disabled
   - a pre-existing linter error or failing test is never out of scope - fix it, do not file it
   - never file a finding about code this branch changed: a defect in the branch's own work is in scope whether or
     not {{PLAN_FILE}} names a plan, and with no plan the branch diff is the whole scope
@@ -65,11 +65,13 @@ Do NOT reject issues just because they existed before this branch - fix them any
 - Run `git diff HEAD` to review ALL uncommitted changes (accumulated fixes from multiple iterations, plus any backlog entry you staged),
   and `git status --porcelain` as well: `git diff HEAD` never lists a new untracked file, so a test or helper you added while fixing
   findings is invisible in it and would be dropped by the commit below
-- Stage every path those two commands list - including fixes made in earlier iterations of this loop, not only this
-  session's, since each evaluation runs as a fresh session - plus any backlog entry, with `git add <paths>`,
-  then commit with message: "fix: address codex review findings" -
+- Those two commands enumerate the whole dirty tree, not just this loop's output. Stage only the paths this external
+  review loop produced - every file changed, created, or deleted to fix a finding in this iteration or in
+  earlier iterations of this loop, not only this session's, since each evaluation runs as a fresh session -
+  plus any backlog entry, with `git add <paths>`, then commit with message: "fix: address codex review findings" -
   a bare `git commit -m` would commit only the already-staged backlog entry and silently drop every accumulated fix.
-  Do NOT `git add -A`: `--review`, `--external-only`, and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work
+  Leave unstaged any dirty path you cannot attribute to this loop. Do NOT `git add -A`: `--review`,
+  `--external-only`, and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work
 - Output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
 
 CRITICAL: The EXTERNAL_REVIEW_DONE signal means "codex found nothing to fix". Only output it when codex itself reported no issues. If you fixed anything, do NOT output the signal.

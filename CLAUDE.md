@@ -190,9 +190,13 @@ created and deliberately carry no enumeration of their own. Where a prompt does 
 what the enumeration covers: each external evaluation runs as a fresh session, so a final commit scoped to
 the files *that session* created names an empty set — the round that reaches `EXTERNAL_REVIEW_DONE` is by
 definition the one that fixed nothing — and would commit only the already-staged backlog entry while
-dropping every accumulated fix. The three evaluation prompts therefore stage every path the two enumeration
-commands list, naming earlier iterations of the loop explicitly, rather than the files the model itself
-wrote. For the same reason, no prompt may justify staging an entry as what saves it from worktree removal:
+dropping every accumulated fix. The three evaluation prompts therefore bound staging by *the loop's* output
+rather than the session's, naming earlier iterations of the loop explicitly instead of the files the model
+itself wrote. The enumeration is deliberately not the staging set: `git status --porcelain` lists the whole
+dirty tree, so "stage every path those commands list" is `git add -A` spelled out and would commit the user's
+unrelated work on the three modes that run in their own checkout. Those prompts say the two commands enumerate
+the whole tree, stage only what this loop produced, and leave unstaged any dirty path the model cannot
+attribute to the loop. For the same reason, no prompt may justify staging an entry as what saves it from worktree removal:
 the index lives in the worktree's own Git metadata and is removed with it, so only the commit does. That
 `commitPrefix` carries the same pathspec bound and the same `git add -A` prohibition as the seven
 prompt sites, because it is prepended to `review_second.txt` — which forbids the sweep inline — and

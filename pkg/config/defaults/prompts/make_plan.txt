@@ -41,7 +41,7 @@ If this is your first iteration (no Q&A in progress file):
 Adjacent problems you notice while researching belong in the backlog, not in this plan:
 - create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, then "- found: <YYYY-MM-DD>, plan: <plan-name>, phase: planning",
   "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction
-- list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate
+- list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate; the directory may not exist yet, so create it and treat a missing one as an empty backlog rather than as capture being disabled
 - do NOT widen the plan to cover them and do NOT fix them now
 - planning runs before the plan branch and worktree are created, so commit the entry on its own - an uncommitted
   entry never reaches the branch. Run `git add <entry>` then `git commit -m "docs: add backlog entry" -- <entry>`:
