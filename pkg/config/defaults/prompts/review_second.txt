@@ -56,8 +56,8 @@ Real but out of this plan's scope? Do NOT fix it here - file it to the backlog:
 - a pre-existing linter error or failing test is never out of scope - fix it, do not file it
 - never file a finding about code this branch changed: a defect in the branch's own work is in scope whether or
   not {{PLAN_FILE}} names a plan, and with no plan the branch diff is the whole scope
-- stage the new entry with `git add <path>`: it is untracked, so no commit picks it up on its own, and the entry
-  would die with the worktree
+- stage the new entry with `git add <path>`: it is untracked, so no commit picks it up on its own. staging alone
+  does not save it - the index is removed with the worktree too, so only the commit below makes the entry survive
 - commit the entry with your fixes, or on its own as `git commit -m "docs: add backlog entry" -- <entry>` when
   there is nothing else to commit - the pathspec keeps anything the user had already staged out of that commit
 - filing an entry is not a fix: it does not count as an issue found in the signal logic below
@@ -90,6 +90,10 @@ Path B - Issues found AND fixed:
    Your fixes might have introduced new issues - another iteration must check.
 
 Path C - Issues found but cannot fix:
+- If you filed a backlog entry above and it is not committed yet, commit it on its own first with
+  `git commit -m "docs: add backlog entry" -- <entry>` - this run fails, a fresh --worktree run is then removed
+  with --force, and a staged but uncommitted entry dies with it, while the pathspec keeps the unfinished
+  fixes out of that commit
 - Output: <<<RALPHEX:TASK_FAILED>>>
 
 OUTPUT FORMAT: No markdown formatting (no **bold**, `code`, # headers). Plain text and - lists are fine.

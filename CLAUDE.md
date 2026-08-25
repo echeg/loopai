@@ -181,10 +181,19 @@ current task: the task phase runs one task per iteration on the same branch, so 
 `task.txt` is also the one capture path whose in-phase commit sits behind a success gate — STEP 3 runs only
 after validation passes — so its `TASK_FAILED` branch commits any filed entry on its own through the
 pathspec form first: a fresh `--worktree` run is removed with `--force` on failure, and a staged but
-uncommitted entry dies with it while the failed task's own work is meant to. Every path that stages by pathspec
-is preceded by a `git status --porcelain` enumeration, including the Go-side `commitPrefix` in
-`Runner.runExternalAndPostReview`: enumerating from `git diff HEAD` alone, or from memory, drops a
-file the model created while working, which under `--worktree` then dies with the worktree. That
+uncommitted entry dies with it while the failed task's own work is meant to. Every path that stages a *set* of
+files it has to discover is preceded by a `git status --porcelain` enumeration, including the Go-side
+`commitPrefix` in `Runner.runExternalAndPostReview`: enumerating from `git diff HEAD` alone, or from memory,
+drops a file the model created while working, which under `--worktree` then dies with the worktree. The
+entry-only stages in `make_plan.txt` and the two internal-review prompts name one path the model just
+created and deliberately carry no enumeration of their own. Where a prompt does enumerate, it must also say
+what the enumeration covers: each external evaluation runs as a fresh session, so a final commit scoped to
+the files *that session* created names an empty set — the round that reaches `EXTERNAL_REVIEW_DONE` is by
+definition the one that fixed nothing — and would commit only the already-staged backlog entry while
+dropping every accumulated fix. The three evaluation prompts therefore stage every path the two enumeration
+commands list, naming earlier iterations of the loop explicitly, rather than the files the model itself
+wrote. For the same reason, no prompt may justify staging an entry as what saves it from worktree removal:
+the index lives in the worktree's own Git metadata and is removed with it, so only the commit does. That
 `commitPrefix` carries the same pathspec bound and the same `git add -A` prohibition as the seven
 prompt sites, because it is prepended to `review_second.txt` — which forbids the sweep inline — and
 runs on the `runReviewOnly` and `runCodexOnly` paths that create no worktree — and, like the two

@@ -41,7 +41,9 @@ A pre-existing linter error or failing test is never out of scope - fix it, do n
 Also never file a finding about code this branch changed: a defect in this branch's own work - this task's or an
 earlier task's - is in scope, and filing it while ticking the checkboxes would end the plan green with a defect
 this branch introduced.
-Stage the new entry with `git add <path>` - it is untracked, so no commit picks it up on its own, and an unstaged entry would die with the worktree.
+Stage the new entry with `git add <path>` - it is untracked, so no commit picks it up on its own. Staging alone does
+not save it: the index lives in the worktree's own Git metadata and is removed with it, so only the commit below
+makes the entry survive.
 The entry is committed with this task's changes; filing it is never a reason to expand the current task.
 
 STEP 2 - VALIDATE:

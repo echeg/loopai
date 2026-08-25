@@ -2205,13 +2205,26 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 		// stage bullet being deleted, and plan creation stages a pathspec rather than the entry.
 		stageRule string
 	}{
-		"task":          {builder.TaskPrompt(), "phase: task", false, false, true, false, "The entry is committed with this task's changes", true, "stage the new entry with `git add <path>`"},
-		"review first":  {builder.FirstReviewPrompt(), "phase: internal review", true, false, true, true, "commit the entry with your fixes, or on its own as `git commit -m \"docs: add backlog entry\" -- <entry>`", true, "stage the new entry with `git add <path>`"},
-		"review second": {builder.SecondReviewPrompt(""), "phase: internal review", true, false, true, true, "commit the entry with your fixes, or on its own as `git commit -m \"docs: add backlog entry\" -- <entry>`", true, "stage the new entry with `git add <path>`"},
-		"eval codex":    {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"), "phase: evaluation", true, true, true, true, "", true, ""},
-		"eval claude":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"), "phase: evaluation", true, true, true, true, "", true, ""},
-		"eval custom":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"), "phase: evaluation", true, true, true, true, "", true, ""},
-		"plan":          {builder.PlanPrompt(), "phase: planning", false, false, false, false, `git commit -m "docs: add backlog entry" -- <entry>`, false, "run `git add <entry>` then `git commit -m \"docs: add backlog entry\" -- <entry>`"},
+		"task": {prompt: builder.TaskPrompt(), phase: "phase: task", ownWorkBound: true, fixCapable: true,
+			commitRule: "The entry is committed with this task's changes",
+			stageRule:  "stage the new entry with `git add <path>`"},
+		"review first": {prompt: builder.FirstReviewPrompt(), phase: "phase: internal review",
+			notAFix: true, ownWorkBound: true, noPlanBound: true, fixCapable: true,
+			commitRule: "commit the entry with your fixes, or on its own as `git commit -m \"docs: add backlog entry\" -- <entry>`",
+			stageRule:  "stage the new entry with `git add <path>`"},
+		"review second": {prompt: builder.SecondReviewPrompt(""), phase: "phase: internal review",
+			notAFix: true, ownWorkBound: true, noPlanBound: true, fixCapable: true,
+			commitRule: "commit the entry with your fixes, or on its own as `git commit -m \"docs: add backlog entry\" -- <entry>`",
+			stageRule:  "stage the new entry with `git add <path>`"},
+		"eval codex": {prompt: builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"),
+			phase: "phase: evaluation", notAFix: true, mustNotCommit: true, ownWorkBound: true, noPlanBound: true, fixCapable: true},
+		"eval claude": {prompt: builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"),
+			phase: "phase: evaluation", notAFix: true, mustNotCommit: true, ownWorkBound: true, noPlanBound: true, fixCapable: true},
+		"eval custom": {prompt: builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"),
+			phase: "phase: evaluation", notAFix: true, mustNotCommit: true, ownWorkBound: true, noPlanBound: true, fixCapable: true},
+		"plan": {prompt: builder.PlanPrompt(), phase: "phase: planning",
+			commitRule: `git commit -m "docs: add backlog entry" -- <entry>`,
+			stageRule:  "run `git add <entry>` then `git commit -m \"docs: add backlog entry\" -- <entry>`"},
 	}
 	for name, tc := range capturing {
 		t.Run(name, func(t *testing.T) {
@@ -2276,8 +2289,12 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 				// final commit has to stage the unstaged fixes explicitly. it must not do that with
 				// `git add -A`: --external-only and --codex-only create no worktree and run in the
 				// user's own checkout, where a sweep commits their unrelated work in progress.
-				assert.Contains(t, strings.ToLower(tc.prompt), "stage every file you created, modified, or deleted",
+				assert.Contains(t, strings.ToLower(tc.prompt), "stage every path those two commands list",
 					"the final commit must stage the accumulated fixes, not just the staged entry")
+				// each evaluation runs as a fresh session, so the session that reaches this branch
+				// authored none of the accumulated fixes; enumerating by authorship names nothing
+				assert.Contains(t, strings.ToLower(tc.prompt), "earlier iterations of this loop",
+					"the final commit must not be scoped to this session's own edits")
 				// `git diff HEAD` never lists an untracked file, so enumerating the commit from it
 				// alone silently drops a new test or helper written while fixing findings
 				assert.Contains(t, tc.prompt, "git status --porcelain",
@@ -2309,6 +2326,24 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 	// iteration on the same branch, so an earlier task's defect must not become filable.
 	assert.Contains(t, taskPrompt, "a defect in this branch's own work - this task's or an\nearlier task's - is in scope",
 		"the task phase's own-work bound must cover earlier tasks on the same branch")
+
+	// the internal review prompts fail through Path C, which returns an error and lets a fresh
+	// --worktree run be removed with --force. a filed entry staged but not yet committed dies with
+	// it, so both prompts have to commit it by pathspec before emitting the failure signal.
+	for name, prompt := range map[string]string{
+		"review first":  builder.FirstReviewPrompt(),
+		"review second": builder.SecondReviewPrompt(""),
+	} {
+		t.Run(name+" failure path commits the entry", func(t *testing.T) {
+			idx := strings.Index(prompt, "Path C - Issues found but cannot fix:")
+			require.NotEqual(t, -1, idx, "review prompts must state a failure path")
+			pathC := prompt[idx:]
+			assert.Contains(t, pathC, "commit it on its own first with",
+				"the failure path must commit a filed entry before the worktree is removed")
+			assert.Contains(t, pathC, "`git commit -m \"docs: add backlog entry\" -- <entry>`",
+				"the failure-path commit must use the pathspec form to exclude unfinished fixes")
+		})
+	}
 
 	readOnly := map[string]string{
 		"external review codex":  builder.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, ""),
