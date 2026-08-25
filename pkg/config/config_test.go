@@ -1682,6 +1682,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		MovePlanOnCompletion:    true,
 		WorktreeEnabled:         true,
 		PlansDir:                "docs/plans",
+		BacklogDir:              "docs/backlog",
 		WatchDirs:               []string{"a", "b"},
 		DefaultBranch:           "main",
 		VcsCommand:              "git",
@@ -1708,7 +1709,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		"codex_timeout_ms", "codex_sandbox", "external_review_tool", "external_review_model", "external_reviewers", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
 		"review_patience", "finalize_enabled", "preserve_anthropic_api_key", "executor",
-		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "plans_dir",
+		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "plans_dir", "backlog_dir",
 		"watch_dirs", "default_branch", "vcs_command", "commit_trailer",
 		"claude_error_patterns", "codex_error_patterns", "claude_limit_patterns",
 		"codex_limit_patterns", "claude_retry_patterns", "claude_swap_enabled", "wait_on_limit", "session_timeout", "idle_timeout",
@@ -1732,5 +1733,51 @@ func TestConfig_JSONShape(t *testing.T) {
 	for _, absent := range []string{"claude_args_set", "external_review_model_set", "external_reviewers_set", "wait_on_limit_set", "notify_params", "colors", "task_prompt"} {
 		_, present := got[absent]
 		assert.False(t, present, "unexpected json key %q present", absent)
+	}
+}
+
+// TestLoad_BacklogDir covers backlog_dir resolution: it follows the exact plans_dir
+// semantics, so an unset, commented, or empty key all fall back to the embedded default.
+func TestLoad_BacklogDir(t *testing.T) {
+	tests := []struct {
+		name         string
+		globalConfig string
+		localConfig  string
+		want         string
+	}{
+		{name: "unset uses embedded default", globalConfig: "plans_dir = docs/plans", want: "docs/backlog"},
+		{name: "commented out uses embedded default", globalConfig: "# backlog_dir = custom/backlog", want: "docs/backlog"},
+		{name: "empty value uses embedded default", globalConfig: "backlog_dir =", want: "docs/backlog"},
+		{name: "global override", globalConfig: "backlog_dir = global/backlog", want: "global/backlog"},
+		{name: "local override wins", globalConfig: "backlog_dir = global/backlog", localConfig: "backlog_dir = local/backlog", want: "local/backlog"},
+		{name: "local only", localConfig: "backlog_dir = local/backlog", want: "local/backlog"},
+		{
+			name:         "empty local value keeps global",
+			globalConfig: "backlog_dir = global/backlog",
+			localConfig:  "backlog_dir =",
+			want:         "global/backlog",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			globalDir := filepath.Join(tmpDir, "global")
+			localDir := filepath.Join(tmpDir, ".loopai")
+			require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
+			require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "agents"), 0o700))
+			require.NoError(t, os.MkdirAll(localDir, 0o700))
+
+			if tc.globalConfig != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(globalDir, "config"), []byte(tc.globalConfig+"\n"), 0o600))
+			}
+			if tc.localConfig != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(localDir, "config"), []byte(tc.localConfig+"\n"), 0o600))
+			}
+
+			cfg, err := loadWithLocal(globalDir, localDir)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.BacklogDir)
+		})
 	}
 }

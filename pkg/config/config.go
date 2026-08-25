@@ -159,6 +159,7 @@ type Config struct {
 	WorktreeEnabledSet bool `json:"-"` // tracks if use_worktree was explicitly set in config
 
 	PlansDir      string   `json:"plans_dir"`
+	BacklogDir    string   `json:"backlog_dir"`    // directory for out-of-scope finding entries, exposed to prompts as {{BACKLOG_DIR}}
 	WatchDirs     []string `json:"watch_dirs"`     // directories to watch for progress files
 	DefaultBranch string   `json:"default_branch"` // override auto-detected default branch
 	VcsCommand    string   `json:"vcs_command"`    // custom VCS command (default: "git")
@@ -401,6 +402,7 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		WorktreeEnabled:         values.WorktreeEnabled,
 		WorktreeEnabledSet:      values.WorktreeEnabledSet,
 		PlansDir:                values.PlansDir,
+		BacklogDir:              values.BacklogDir,
 		DefaultBranch:           values.DefaultBranch,
 		VcsCommand:              values.VcsCommand,
 		CommitTrailer:           values.CommitTrailer,

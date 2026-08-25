@@ -85,10 +85,11 @@ Key benefits: out-of-scope findings survive the run, live in git history, are sh
 
 ### Task 1: Add `backlog_dir` config key
 
-- [ ] add `BacklogDir string \`json:"backlog_dir"\`` to the config struct in `pkg/config/config.go`, default `docs/backlog`, wired exactly like `PlansDir` (embedded default, global/local override, empty value falls back the same way `plans_dir` does)
-- [ ] add commented `backlog_dir` entry with a short description to `pkg/config/defaults/config` next to `plans_dir`
-- [ ] write table-driven tests in `pkg/config/config_test.go`: default value, local override, global override, empty/unset behavior matching `plans_dir` semantics
-- [ ] run `go test ./pkg/config/...` - must pass before task 2
+- [x] add `BacklogDir string \`json:"backlog_dir"\`` to the config struct in `pkg/config/config.go`, default `docs/backlog`, wired exactly like `PlansDir` (embedded default, global/local override, empty value falls back the same way `plans_dir` does)
+- [x] add commented `backlog_dir` entry with a short description to `pkg/config/defaults/config` next to `plans_dir`
+- [x] write table-driven tests in `pkg/config/config_test.go`: default value, local override, global override, empty/unset behavior matching `plans_dir` semantics
+- [x] run `go test ./pkg/config/...` - must pass before task 2
+- ➕ extracted `Values.mergePathsFrom` from `mergeExtraFrom` in `pkg/config/values.go`: the new key pushed `mergeExtraFrom` to gocyclo 21 (limit 20)
 
 ### Task 2: Expand `{{BACKLOG_DIR}}` placeholder in prompts
 

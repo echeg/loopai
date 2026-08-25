@@ -281,6 +281,12 @@ task_retry_count = 1
 # default: docs/plans
 plans_dir = docs/plans
 
+# backlog_dir: directory where agents file out-of-scope findings, one markdown file per entry
+# relative paths are resolved from the project root, the directory is committed with the branch
+# loopai never reads or creates it, the path is only substituted into prompts as {{BACKLOG_DIR}}
+# default: docs/backlog
+backlog_dir = docs/backlog
+
 # default_branch: override the auto-detected default branch used for code review
 # by default, loopai detects the default branch from origin/HEAD or fallbacks to main/master,
 # set this to override for projects using non-standard branch names or Git flow
