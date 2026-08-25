@@ -67,7 +67,7 @@ Do NOT reject issues just because they existed before this branch - fix them any
   findings is invisible in it and would be dropped by the commit below
 - Stage every file you created, modified, or deleted, plus any backlog entry, with `git add <paths>`, then commit with message: "fix: address codex review findings" -
   a bare `git commit -m` would commit only the already-staged backlog entry and silently drop every accumulated fix.
-  Do NOT `git add -A`: `--external-only` and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work
+  Do NOT `git add -A`: `--review`, `--external-only`, and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work
 - Output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
 
 CRITICAL: The EXTERNAL_REVIEW_DONE signal means "codex found nothing to fix". Only output it when codex itself reported no issues. If you fixed anything, do NOT output the signal.

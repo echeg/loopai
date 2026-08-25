@@ -175,13 +175,21 @@ their unrelated work in progress. `task.txt` therefore stages `git add <paths>` 
 model created, modified, or deleted, plus `{{PLAN_FILE}}` and any backlog entry. It also carries the
 same bound the review prompts do — a defect in code this branch changed is never out of scope —
 because it owns `ALL_TASKS_DONE` and filing is dismissal-equivalent, so an unbounded category would
-let the executor file its own defect and tick the checkboxes. Every path that stages by pathspec
+let the executor file its own defect and tick the checkboxes. That bound names the branch and not the
+current task: the task phase runs one task per iteration on the same branch, so a justification scoped to
+"this task's own work" would leave an earlier task's defect filable and `ALL_TASKS_DONE` still reachable.
+`task.txt` is also the one capture path whose in-phase commit sits behind a success gate — STEP 3 runs only
+after validation passes — so its `TASK_FAILED` branch commits any filed entry on its own through the
+pathspec form first: a fresh `--worktree` run is removed with `--force` on failure, and a staged but
+uncommitted entry dies with it while the failed task's own work is meant to. Every path that stages by pathspec
 is preceded by a `git status --porcelain` enumeration, including the Go-side `commitPrefix` in
 `Runner.runExternalAndPostReview`: enumerating from `git diff HEAD` alone, or from memory, drops a
 file the model created while working, which under `--worktree` then dies with the worktree. That
 `commitPrefix` carries the same pathspec bound and the same `git add -A` prohibition as the seven
 prompt sites, because it is prepended to `review_second.txt` — which forbids the sweep inline — and
-runs on the `runReviewOnly` and `runCodexOnly` paths that create no worktree. Do not restore a bare
+runs on the `runReviewOnly` and `runCodexOnly` paths that create no worktree — and, like the two
+internal-review prompts, on a `runFull` run without `--worktree` whose `prepareBranchPlan` short-circuits,
+so all three sites name that case too rather than resting on the three no-worktree modes alone. Do not restore a bare
 "stage and commit them" there.
 `review_first.txt` and `review_second.txt` deliberately do not sweep and say so
 inline: `ModeReview` and `ModeCodexOnly` create no branch and no worktree, so `--review`,
@@ -207,7 +215,7 @@ entry, and drop every accumulated fix right before `EXTERNAL_REVIEW_DONE`. Those
 enumerating the commit from the diff alone drops a new test or helper the model wrote while fixing
 findings, which under `--worktree` then dies with the worktree. That explicit stage is deliberately
 not `git add -A`, for the same reason the internal-review prompts avoid one: these prompts also
-run under `--external-only` and `--codex-only`, which create no worktree. Staging does not
+run under `--review`, `--external-only`, and `--codex-only`, which create no worktree. Staging does not
 weaken the stalemate reset either, since `diffFingerprint` runs `git diff HEAD`. Plan creation runs in the source checkout before
 the branch and worktree exist, so it stages that one file and commits it through the
 pathspec form `git commit -m "docs: add backlog entry" -- <entry>`; an uncommitted

@@ -82,7 +82,9 @@ Path B - Issues found AND fixed:
    diff lists it and an unstaged new file dies with the worktree
 4. Stage every file you created, modified, or deleted, including any backlog entry, with `git add <paths>`, then commit:
    `git commit -m "fix: address code review findings"`. Do NOT `git add -A`: `--review`, `--external-only`,
-   and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work.
+   and `--codex-only` run in the user's own checkout with no worktree, and without --worktree a run resumed on
+   its own feature branch skips branch creation and the clean-tree gate with it, so a sweep commits their
+   unrelated work in progress.
 5. STOP HERE. Do NOT output any signal. Do NOT output REVIEW_DONE.
    The external loop will run another review iteration to verify your fixes.
    Your fixes might have introduced new issues - another iteration must check.

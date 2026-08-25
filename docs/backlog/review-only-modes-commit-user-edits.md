@@ -15,10 +15,10 @@ uncommitted-changes gate at service.go:494. `use_worktree` defaults to false, so
 while its own feature branch is checked out runs `task.txt` in a dirty user checkout that nothing
 ever proved clean.
 
-Every commit instruction on those paths stages by file path: task.txt:52, review_first.txt:110,
-review_second.txt:81, codex.txt:68, custom_eval.txt:68, external_claude_eval.txt:38, and the
-Go-side `commitPrefix` at pkg/processor/runner.go:431, which is the widest of the seven because it
-says only "stage and commit them" without naming paths at all. `git add <file>` is
+Every commit instruction on those paths stages by file path: task.txt, review_first.txt,
+review_second.txt, codex.txt, custom_eval.txt, external_claude_eval.txt, and the Go-side
+`commitPrefix` in `Runner.runExternalAndPostReview`, which names the files the previous phases
+created, modified, or deleted rather than sweeping. `git add <file>` is
 file-granular, so whenever a review fix lands in a file the user was already editing, the user's
 unrelated hunks in that same file are staged with it and land in loopai's
 `fix: address code review findings` commit (or the task phase's `feat: <task>`), on whatever

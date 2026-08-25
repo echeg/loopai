@@ -38,8 +38,9 @@ Create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, the
 "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction.
 List existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate.
 A pre-existing linter error or failing test is never out of scope - fix it, do not file it.
-Also never file a finding about code this branch changed: a defect in this task's own work is in scope, and
-filing it while ticking the checkboxes would end the plan green with a defect this branch introduced.
+Also never file a finding about code this branch changed: a defect in this branch's own work - this task's or an
+earlier task's - is in scope, and filing it while ticking the checkboxes would end the plan green with a defect
+this branch introduced.
 Stage the new entry with `git add <path>` - it is untracked, so no commit picks it up on its own, and an unstaged entry would die with the worktree.
 The entry is committed with this task's changes; filing it is never a reason to expand the current task.
 
@@ -58,7 +59,10 @@ STEP 3 - COMPLETE (after validation passes):
 - If NO more [ ] checkboxes in the entire plan, output exactly: <<<RALPHEX:ALL_TASKS_DONE>>>
 - If more Task sections have [ ] checkboxes, STOP HERE - do not continue
 
-If any phase fails after reasonable fix attempts, output exactly: <<<RALPHEX:TASK_FAILED>>>
+If any phase fails after reasonable fix attempts: if you filed a backlog entry above, commit it on its own first with
+`git commit -m "docs: add backlog entry" -- <entry>` - a failed run's worktree is removed and a staged but uncommitted
+entry dies with it, while the pathspec keeps this task's unfinished work out of that commit. Then output exactly:
+<<<RALPHEX:TASK_FAILED>>>
 
 REMINDER: ONE section (Task/Iteration) per loop cycle. After commit, STOP and let the loop handle the next section.
 

@@ -434,7 +434,9 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 		"and commit with message: `fix: address code review findings`. " +
 		"Do NOT `git add -A`: `--review`, `--external-only`, and `--codex-only` create no " +
 		"worktree and run in the user's own checkout, where a dirty tree is allowed and never " +
-		"gated, so a sweep commits their unrelated work in progress.\n" +
+		"gated, and without --worktree a run resumed on its own feature branch skips branch " +
+		"creation and the clean-tree gate with it, so a sweep commits their unrelated work " +
+		"in progress.\n" +
 		"Then continue with the sequence below.\n\n"
 	if err := r.phases.review.Loop(ctx, commitPrefix); err != nil {
 		return fmt.Errorf("post-external review loop: %w", err)

@@ -111,7 +111,9 @@ Do NOT reject issues just because they existed before this branch - fix them any
    diff lists it and an unstaged new file dies with the worktree
 4. Stage every file you created, modified, or deleted, including any backlog entry, with `git add <paths>`, then commit:
    `git commit -m "fix: address code review findings"`. Do NOT `git add -A`: `--review`, `--external-only`,
-   and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work.
+   and `--codex-only` run in the user's own checkout with no worktree, and without --worktree a run resumed on
+   its own feature branch skips branch creation and the clean-tree gate with it, so a sweep commits their
+   unrelated work in progress.
 
 ## Step 4: Signal Completion
 

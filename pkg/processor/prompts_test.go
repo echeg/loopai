@@ -2298,6 +2298,18 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 		})
 	}
 
+	// the task phase is the only capture path whose in-phase commit sits behind a success gate:
+	// STEP 3 runs only after validation passes. a fresh --worktree run is removed with --force on
+	// failure, so a staged but uncommitted entry dies with it unless TASK_FAILED commits it first.
+	taskPrompt := builder.TaskPrompt()
+	assert.Contains(t, taskPrompt, `commit it on its own first with`+"\n"+
+		"`git commit -m \"docs: add backlog entry\" -- <entry>`",
+		"the task phase must commit a filed entry before failing, or the worktree removal discards it")
+	// the bound names the branch, not the current iteration: the task phase runs one task per
+	// iteration on the same branch, so an earlier task's defect must not become filable.
+	assert.Contains(t, taskPrompt, "a defect in this branch's own work - this task's or an\nearlier task's - is in scope",
+		"the task phase's own-work bound must cover earlier tasks on the same branch")
+
 	readOnly := map[string]string{
 		"external review codex":  builder.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, ""),
 		"external review claude": builder.ExternalReviewPrompt(config.ExternalReviewToolClaude, true, ""),
