@@ -391,6 +391,54 @@ Plans are Markdown files, normally stored in `docs/plans/`.
 
 By default, a successfully completed plan moves to `docs/plans/completed/`. Set `move_plan_on_completion = false` when another workflow owns plan archival.
 
+### Decision Log
+
+A plan may carry an optional `## Decision Log` section recording how earlier critique
+rounds were resolved:
+
+```markdown
+## Decision Log
+
+- 2026-08-25 grill: **accepted** - split lock acquisition into prepare/commit (tasks 3-4 updated)
+- 2026-08-25 grill: **rejected** - "add retry around merge" - merge is already the backstop
+```
+
+`loopai-grill` writes the section when it applies user-selected findings, and plan revision
+after critique records accepted and rejected points there. Later critique rounds read it and
+do not re-raise a rejected point without new evidence, so repeated rounds converge instead of
+relitigating. The section never contains checkboxes: the plan parser reads checkboxes as work,
+so one leaking in would become an implementation step.
+
+## Backlog capture
+
+Agents regularly notice real problems outside the current plan's scope. Instead of fixing them
+as scope creep or dropping them, the primary executor files each one as a separate Markdown
+file under `backlog_dir` (`docs/backlog/` by default):
+
+```markdown
+# Worktree lock left behind on SIGKILL
+
+- found: 2026-08-25, plan: backlog-capture, phase: task
+- severity: minor
+- area: pkg/git/worktree.go
+
+`prepareWorktree` (pkg/git/worktree.go:214) ... suggested fix direction ...
+```
+
+Capture is a prompt convention, not a code path: loopai never reads, validates, or creates the
+directory, and the path is only substituted into prompts as `{{BACKLOG_DIR}}`. Entries are
+written inside the worktree and committed with the run's normal commits, so they survive
+worktree removal and arrive on the default branch through `--merge`.
+
+Filing is not a fix. Out-of-scope findings behave like dismissals, so they do not keep a review
+loop running. Before creating an entry an agent lists the existing ones and updates a matching
+entry rather than duplicating it.
+
+Capture is instructed on four paths: task execution, internal review consolidation, evaluation
+of external-review findings (external reviewers are read-only, so their out-of-scope findings are
+filed by the primary evaluator), and plan creation. Entries are plain Markdown, so
+`loopai-adopt docs/backlog/<entry>.md` turns one into a full plan.
+
 ## Completion and close-out
 
 Inside cmux, an implementation or review run that reached execution leaves a persistent
@@ -696,6 +744,10 @@ loopai --dump-defaults /tmp/loopai-defaults
 ```
 
 Custom prompts and agents use the same filenames as the embedded defaults. At runtime the `{{agent:name}}` template syntax expands one named review agent, and `{{agents:dynamic}}` expands the catalog of project-specific agents described in [Review agents](#review-agents).
+
+Two directory keys are exposed to prompts as placeholders: `plans_dir` as `{{PLANS_DIR}}` and
+`backlog_dir` as `{{BACKLOG_DIR}}` (default `docs/backlog`, see [Backlog capture](#backlog-capture)).
+Both are substituted into every prompt loopai builds; a custom prompt can use either.
 
 ## Alternative providers
 

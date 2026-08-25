@@ -116,8 +116,20 @@ user/project config, rules, MCP and external tools, strips
 credential-like shell variables, and starts an ephemeral session without
 approval escalation. Candidate and judging scratch files live outside the
 repository and are removed on every exit. Grill mode reports Codex failure
-and degrades to Claude-only; plan-off requires Codex and fails closed. When
-these contracts change, update and run `scripts/check-grill-skill_test.sh`.
+and degrades to Claude-only; plan-off requires Codex and fails closed. Grill
+mode's apply path also records the round in the draft's `## Decision Log` —
+accepted findings with what changed, rejected ones with the user's reason —
+before `replace-active` publishes it, since the skill never edits the plan at
+its repository path and a post-publication write would need a second guarded
+replacement. The section is created immediately before `## Implementation
+Steps` when absent, existing entries are preserved, and it must never carry a
+checkbox: the plan parser reads checkboxes as work, so one leaking in would
+become an implementation step. Every critic and the verification pass are told
+to read the log and not re-raise a recorded rejection absent contradicting
+evidence. The log is written only when the user selects at least one finding;
+a round where nothing is selected leaves the plan untouched, so its rejections
+go unrecorded rather than loopai writing to a plan the user asked to leave
+alone. When these contracts change, update and run `scripts/check-grill-skill_test.sh`.
 
 ## Configuration
 
@@ -132,6 +144,17 @@ these contracts change, update and run `scripts/check-grill-skill_test.sh`.
 - Override: `--config-dir` or `LOOPAI_CONFIG_DIR`
 
 Local files override global files, which override embedded defaults. Embedded defaults remain the per-file fallback, so deleting an installed prompt or agent does not disable it. Remove its template reference to disable an agent.
+
+`backlog_dir` (default `docs/backlog`) names the directory where agents file
+out-of-scope findings, one markdown file per entry. It has no Go consumer: loopai
+never reads, validates, or creates it, and the path only reaches prompts through
+the `{{BACKLOG_DIR}}` placeholder — do not add containment or creation logic. It is
+deliberately a committed repository path and not `.loopai/`, which is gitignored and
+whose worktrees are removed after a run, so an entry written there would be lost
+before `--merge`. Capture is instructed on the four paths that can write: task,
+internal review, external-review evaluation, and plan creation. The three external
+*review* prompts deliberately omit it, since external reviewers are read-only and
+their findings reach the backlog through the primary evaluator.
 
 Agent files may carry YAML frontmatter parsed into `config.Options` (`model`,
 `agent`, `description`). A non-empty `description` marks the file as a *dynamic
@@ -172,6 +195,13 @@ Tests must redirect HOME or config paths to `t.TempDir()` and must never touch e
 - `pkg/config/defaults` contains embedded config, prompts, and agents.
 
 Task plans use `### Task N:` or `### Iteration N:` headings and Markdown checkboxes. The task phase handles only the first incomplete section per executor iteration.
+
+`pkg/processor/prompts.go` expands `{{BACKLOG_DIR}}` alongside `{{PLANS_DIR}}` in
+`replaceBaseVariables`, the choke point every builder funnels through, so all twelve
+prompt paths get it from one line plus `getBacklogDir`, which mirrors `getPlansDir`
+and falls back to `docs/backlog` when `BacklogDir` is unset. A prompt file's header
+comment lists the variables that prompt actually uses, not every variable expanded in
+it, so adding the placeholder to a prompt and its header happen together.
 
 `pkg/processor/prompts.go` expands two agent placeholders with the same
 per-executor invocation snippet builder (Task tool for Claude, `spawn_agent` for

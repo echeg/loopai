@@ -154,9 +154,13 @@ Key benefits: out-of-scope findings survive the run, live in git history, are sh
 
 ### Task 7: [Final] Update documentation
 
-- [ ] `README.md`: document `backlog_dir`, the backlog entry format, the capture behavior, and the `## Decision Log` convention
-- [ ] `CLAUDE.md`: add `backlog_dir` to the configuration section; extend the grill contract paragraph with the Decision Log behavior; mention the `{{BACKLOG_DIR}}` placeholder next to the existing prompt-placeholder documentation
-- [ ] `llms.txt`: update if it enumerates config keys or prompt placeholders
+- [x] `README.md`: document `backlog_dir`, the backlog entry format, the capture behavior, and the `## Decision Log` convention
+- [x] `CLAUDE.md`: add `backlog_dir` to the configuration section; extend the grill contract paragraph with the Decision Log behavior; mention the `{{BACKLOG_DIR}}` placeholder next to the existing prompt-placeholder documentation
+- [x] `llms.txt`: update if it enumerates config keys or prompt placeholders
+- ➕ README gained a `## Backlog capture` section and a `### Decision Log` subsection under `## Plan format`, plus a `{{PLANS_DIR}}`/`{{BACKLOG_DIR}}` note in `## Configuration`: the config key alone does not explain that capture is a prompt convention with no Go consumer, nor why the directory must be a committed path rather than `.loopai/`
+- ➕ llms.txt does enumerate both (plan format and the config/data section), so it gained a compact Decision Log paragraph and a `plans_dir`/`backlog_dir` placeholder paragraph
+- ⚠️ CLAUDE.md's grill paragraph also records the two limits Task 5 discovered: the log is written to the draft before `replace-active` publishes it, and a round where the user selects nothing leaves the plan and its rejections unrecorded
+- ➕ evidence: `make test` exit 0 (15/15 Go packages ok, wrapper suite 71/71), `make lint` exit 0 with `0 issues`
 
 *Note: loopai automatically moves completed plans to `docs/plans/completed/`*
 
