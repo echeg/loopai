@@ -7,6 +7,7 @@
 #   {{PROGRESS_FILE}} - path to progress file with Q&A history
 #   {{DEFAULT_BRANCH}} - default branch name (main, master, trunk, etc.)
 #   {{PLANS_DIR}} - plans directory (default: docs/plans)
+#   {{BACKLOG_DIR}} - backlog directory for out-of-scope findings (default: docs/backlog)
 
 You are helping create an implementation plan for: {{PLAN_DESCRIPTION}}
 
@@ -36,6 +37,12 @@ If this is your first iteration (no Q&A in progress file):
 - Understand the project structure
 - Identify existing conventions and patterns
 - Find related code that will inform the implementation
+
+Adjacent problems you notice while researching belong in the backlog, not in this plan:
+- create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, then "- found: <YYYY-MM-DD>, plan: <plan-name>, phase: planning",
+  "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction
+- list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate
+- do NOT widen the plan to cover them and do NOT fix them now
 
 ## Step 3: Ask Clarifying Questions (if needed)
 
@@ -91,6 +98,7 @@ If user requests REVISION (progress file contains "DRAFT REVIEW: revise" and "FE
 - Read the feedback from the progress file
 - Feedback may be free-form text (from "Revise") or a unified diff with interpretation instructions (from "Interactive review" where the user edited the plan in $EDITOR). Both formats indicate what the user wants changed — apply the requested modifications
 - Modify the plan based on the feedback
+- Record the outcome in the plan's `## Decision Log` section (see Step 4): one line per accepted and per rejected point, so a later critique round does not re-raise a point already rejected
 - Emit a new PLAN_DRAFT with the updated plan
 - STOP and wait for next review
 
@@ -124,6 +132,11 @@ Write the accepted plan to disk:
 - <Any project-specific approaches>
 - **CRITICAL: every task MUST include new/updated tests**
 - **CRITICAL: all tests must pass before starting next task**
+
+## Decision Log
+(optional - only when the plan was revised after feedback or critique; NEVER put checkboxes in this section)
+- <YYYY-MM-DD> <source>: **accepted** - <what changed and where>
+- <YYYY-MM-DD> <source>: **rejected** - "<the point>" - <one-line reasoning>
 
 ## Implementation Steps
 

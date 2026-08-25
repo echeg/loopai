@@ -6,6 +6,7 @@
 #   {{PROGRESS_FILE}} - path to the progress log file
 #   {{GOAL}} - human-readable goal description
 #   {{DEFAULT_BRANCH}} - default branch name (main, master, trunk, etc.)
+#   {{BACKLOG_DIR}} - backlog directory for out-of-scope findings (default: docs/backlog)
 
 Read the plan file at {{PLAN_FILE}}. Find the FIRST Task section (### Task N: or ### Iteration N:) that has uncompleted checkboxes ([ ]).
 
@@ -31,6 +32,12 @@ STEP 1 - IMPLEMENT:
 - Read the plan's Overview and Context sections to understand the work
 - Implement ALL items in the current Task section (all [ ] checkboxes under it)
 - Write tests for the implementation
+
+OUT-OF-SCOPE FINDINGS: found a real issue outside this plan's scope? Do NOT fix it here - file it.
+Create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, then "- found: <YYYY-MM-DD>, plan: <plan-name>, phase: task",
+"- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction.
+List existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate.
+The entry is committed with this task's changes; filing it is never a reason to expand the current task.
 
 STEP 2 - VALIDATE:
 - Run the test and lint commands specified in the plan (e.g., "cargo test", "go test ./...", etc.)

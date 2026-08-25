@@ -7,6 +7,7 @@
 #   {{PROGRESS_FILE}} - path to the progress log (task execution + previous reviews)
 #   {{GOAL}} - human-readable goal description
 #   {{DEFAULT_BRANCH}} - default branch name (main, master, trunk, etc.)
+#   {{BACKLOG_DIR}} - backlog directory for out-of-scope findings (default: docs/backlog)
 #   {{agent:<name>}} - expands to the executor-appropriate agent invocation
 #                      (Task tool for claude, spawn_agent for codex)
 #   {{agents:<dynamic>}} - the literal placeholder, written without the angle
@@ -85,6 +86,14 @@ For EACH issue (bugs, test gaps, smells, over-engineering, error handling, docs,
 Classify as:
 - CONFIRMED: Real issue, fix it
 - FALSE POSITIVE: Doesn't exist or already mitigated - discard
+- OUT OF SCOPE: Real issue, but outside this plan's scope - do NOT fix it, file it to the backlog
+
+Out-of-scope findings go to the backlog instead of into this branch:
+- create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, then "- found: <YYYY-MM-DD>, plan: <plan-name>, phase: internal review",
+  "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction
+- list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate
+- commit the entry with your fixes, or on its own as "docs: add backlog entry" when there is nothing else to commit
+- filing an entry is not a fix: it does not count as a confirmed issue in the Step 4 signal logic
 
 IMPORTANT: Pre-existing issues (linter errors, failed tests) should also be fixed.
 Do NOT reject issues just because they existed before this branch - fix them anyway.

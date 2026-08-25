@@ -2163,3 +2163,43 @@ func TestPromptBuilder_BacklogDirNoLiteralLeak(t *testing.T) {
 		assert.NotContains(t, prompt, "{{BACKLOG_DIR}}", "%s prompt leaks the raw placeholder", name)
 	}
 }
+
+// TestPromptBuilder_BacklogCaptureInstructions covers the embedded capture convention: the
+// prompts on the four capture paths (task, internal review, external evaluation, planning)
+// carry the instruction with the configured directory expanded, while the prompts sent to the
+// read-only external reviewers deliberately do not - the primary evaluator is the only funnel.
+func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
+	appCfg := testAppConfig(t)
+	appCfg.BacklogDir = "custom/backlog"
+	cfg := Config{PlanFile: "docs/plans/test.md", ProgressPath: "progress.txt", DefaultBranch: "main",
+		PlanDescription: "add feature", AppConfig: appCfg}
+	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
+
+	capturing := map[string]string{
+		"task":          builder.TaskPrompt(),
+		"review first":  builder.FirstReviewPrompt(),
+		"review second": builder.SecondReviewPrompt(""),
+		"eval codex":    builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"),
+		"eval claude":   builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"),
+		"eval custom":   builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"),
+		"plan":          builder.PlanPrompt(),
+	}
+	for name, prompt := range capturing {
+		t.Run(name, func(t *testing.T) {
+			assert.Contains(t, prompt, "custom/backlog", "expanded backlog directory missing")
+			assert.NotContains(t, prompt, "{{BACKLOG_DIR}}")
+			assert.NotContains(t, prompt, "docs/backlog", "default path must not be hardcoded in the prompt")
+		})
+	}
+
+	readOnly := map[string]string{
+		"external review codex":  builder.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, ""),
+		"external review claude": builder.ExternalReviewPrompt(config.ExternalReviewToolClaude, true, ""),
+		"external review custom": builder.ExternalReviewPrompt(config.ExternalReviewToolCustom, true, ""),
+	}
+	for name, prompt := range readOnly {
+		t.Run(name, func(t *testing.T) {
+			assert.NotContains(t, prompt, "custom/backlog", "read-only reviewers must not be told to write backlog entries")
+		})
+	}
+}

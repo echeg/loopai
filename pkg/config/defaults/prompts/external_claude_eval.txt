@@ -5,6 +5,7 @@
 #   {{PLAN_FILE}} - path to the plan file being executed
 #   {{GOAL}} - human-readable goal description
 #   {{DEFAULT_BRANCH}} - default branch name (main, master, trunk, etc.)
+#   {{BACKLOG_DIR}} - backlog directory for out-of-scope findings (default: docs/backlog)
 #   {{CLAUDE_OUTPUT}} - findings from the external claude reviewer
 
 External code review evaluation.
@@ -16,6 +17,12 @@ Claude reviewed the code and reported:
 ---
 
 Verify every finding against the actual code, its callers, the plan at {{PLAN_FILE}}, and the intended behavior. Fix only valid issues, then run the relevant tests and lint checks. For invalid or irrelevant findings, explain each dismissal clearly; your response will be passed back to Claude on the next review iteration.
+
+A finding that is real but outside this plan's scope must NOT be fixed here - file it to the backlog instead:
+create {{BACKLOG_DIR}}/<kebab-slug>.md with a "# <short problem title>" heading, then "- found: <YYYY-MM-DD>, plan: <plan-name>, phase: evaluation",
+"- severity: minor|major", "- area: <primary file or package>", and a short description with file:line references and a suggested fix direction.
+List existing files in {{BACKLOG_DIR}}/ first and update a similar entry instead of duplicating it. Commit the entry on its own as "docs: add backlog entry", or with your other fixes.
+Say in your response that the finding was filed and why it is out of scope; filing is not a fix, so treat these findings like dismissals for signalling purposes.
 
 The primary executor owns all repository writes and commits. Do not ask the external reviewer to edit files or run side-effecting commands.
 

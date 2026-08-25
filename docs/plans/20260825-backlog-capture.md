@@ -102,13 +102,17 @@ Key benefits: out-of-scope findings survive the run, live in git history, are sh
 
 ### Task 3: Backlog capture instructions in embedded prompts
 
-- [ ] `task.txt`: add a short paragraph — a real issue outside the current plan's scope must NOT be fixed; file it as `{{BACKLOG_DIR}}/<kebab-slug>.md` using the entry format (see Technical Details), checking existing filenames first to avoid duplicates
-- [ ] `review_first.txt` and `review_second.txt`: in the consolidation step, findings that are real but out of plan scope go to the backlog instead of being fixed
-- [ ] `codex.txt`, `external_claude_eval.txt`, `custom_eval.txt`: add a third verdict category — "valid but out of scope → file to backlog and say so in the response passed back to the reviewer" (alongside the existing fix/dismiss categories)
-- [ ] `make_plan.txt`: adjacent problems discovered while researching the plan go to the backlog; also add the `## Decision Log` convention for plan revisions (see Task 4)
-- [ ] keep every instruction to 3-5 lines; reuse the same wording across prompts
-- [ ] update or add prompt-content assertions if the test suite checks embedded prompt text; otherwise verify via `go test ./pkg/config/... ./pkg/processor/...`
-- [ ] run `make test` - must pass before task 4
+- [x] `task.txt`: add a short paragraph — a real issue outside the current plan's scope must NOT be fixed; file it as `{{BACKLOG_DIR}}/<kebab-slug>.md` using the entry format (see Technical Details), checking existing filenames first to avoid duplicates
+- [x] `review_first.txt` and `review_second.txt`: in the consolidation step, findings that are real but out of plan scope go to the backlog instead of being fixed
+- [x] `codex.txt`, `external_claude_eval.txt`, `custom_eval.txt`: add a third verdict category — "valid but out of scope → file to backlog and say so in the response passed back to the reviewer" (alongside the existing fix/dismiss categories)
+- [x] `make_plan.txt`: adjacent problems discovered while researching the plan go to the backlog; also add the `## Decision Log` convention for plan revisions (see Task 4)
+- [x] keep every instruction to 3-5 lines; reuse the same wording across prompts
+- [x] update or add prompt-content assertions if the test suite checks embedded prompt text; otherwise verify via `go test ./pkg/config/... ./pkg/processor/...`
+- [x] run `make test` - must pass before task 4
+- ➕ every capture block ends with an explicit commit instruction (`docs: add backlog entry`, or alongside the fixes): `.loopai/` worktrees are removed after a run, so an entry left untracked on a path that commits nothing else would be lost
+- ➕ each capture block states that filing is not a fix, so it does not flip the REVIEW_DONE / EXTERNAL_REVIEW_DONE signal logic; out-of-scope findings behave like dismissals and the existing stalemate detection still terminates the loop
+- ➕ added `TestPromptBuilder_BacklogCaptureInstructions` in `pkg/processor/prompts_test.go`: the seven capture-path prompts carry the expanded directory, and the three read-only external *review* prompts deliberately do not
+- ⚠️ the `## Decision Log` convention now also lives in `make_plan.txt` (template section plus the draft-revision path), which pre-satisfies the second checkbox of Task 4
 
 ### Task 4: Decision Log convention in plan-related prompts and skills
 

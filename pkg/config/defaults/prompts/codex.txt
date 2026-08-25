@@ -6,6 +6,7 @@
 #   {{PLAN_FILE}} - path to the plan file being executed
 #   {{GOAL}} - human-readable goal description
 #   {{DEFAULT_BRANCH}} - default branch name (main, master, trunk, etc.)
+#   {{BACKLOG_DIR}} - backlog directory for out-of-scope findings (default: docs/backlog)
 #   {{CODEX_OUTPUT}} - output from codex code review
 
 External code review evaluation.
@@ -29,6 +30,12 @@ Then categorize:
 
 - **Valid issues**: Fix them (edit files, run tests/linter to verify)
 - **Invalid/irrelevant issues**: Explain why they don't apply (intentional design, already mitigated, misunderstood context) - your explanation will be passed to Codex for re-evaluation
+- **Valid but out of scope**: Real issue, but outside this plan's scope - do NOT fix it here, file it to the backlog:
+  - create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, then "- found: <YYYY-MM-DD>, plan: <plan-name>, phase: evaluation",
+    "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction
+  - list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate
+  - say in your response that the finding was filed and why it is out of scope; your response is passed back to Codex
+  - commit the entry on its own as "docs: add backlog entry", or with your other fixes; filing is not a fix, so treat these findings like dismissals in the signal logic below
 
 IMPORTANT: Pre-existing issues (linter errors, failed tests) should also be fixed.
 Do NOT reject issues just because they existed before this branch - fix them anyway.
