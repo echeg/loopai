@@ -38,7 +38,7 @@ Create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, the
 "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction.
 List existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate.
 A pre-existing linter error or failing test is never out of scope - fix it, do not file it.
-Stage the new entry with `git add <path>` - it is untracked, so the Step 3 commit would otherwise miss it and the worktree removal would destroy it.
+Stage the new entry with `git add <path>` - it is untracked, so any commit that does not sweep with `git add -A` would leave it behind and the entry would die with the worktree.
 The entry is committed with this task's changes; filing it is never a reason to expand the current task.
 
 STEP 2 - VALIDATE:

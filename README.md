@@ -443,7 +443,8 @@ gets committed depends on the path that files it, and the three rules are not in
 - **Task and internal review** write the entry inside the worktree, stage it, and commit it in
   phase, with the fixes or on its own as `docs: add backlog entry`, so it survives worktree
   removal and arrives on the default branch through `--merge`. An entry is always a new untracked
-  file, so the stage is what keeps a plain `git commit -m` from silently leaving it behind.
+  file: the end-of-phase sweep stages it with `git add -A`, and the explicit stage is what keeps the
+  entry-only `docs: add backlog entry` commit from silently leaving it behind.
 - **External-review evaluation** writes it inside the worktree, stages it, and leaves it
   uncommitted until the reviewer chain finishes: after the first round the external reviewer is
   shown only the uncommitted diff, so a mid-loop commit would hide the accumulated fixes. The

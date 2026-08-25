@@ -2197,14 +2197,18 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 		// paths that can fix must not let out-of-scope become an escape hatch from the
 		// pre-existing-issues rule; plan creation fixes nothing, so it files instead.
 		fixCapable bool
+		// the exact per-entry stage instruction, lowercased. asserting a bare "git add" would be
+		// satisfied by the end-of-phase `git add -A` sweep and would not notice the stage bullet
+		// being deleted, and plan creation stages a pathspec rather than the worktree entry.
+		stageRule string
 	}{
-		"task":          {builder.TaskPrompt(), "phase: task", false, false, false, "The entry is committed with this task's changes", true},
-		"review first":  {builder.FirstReviewPrompt(), "phase: internal review", true, false, true, `commit the entry with your fixes, or on its own as "docs: add backlog entry"`, true},
-		"review second": {builder.SecondReviewPrompt(""), "phase: internal review", true, false, true, `commit the entry with your fixes, or on its own as "docs: add backlog entry"`, true},
-		"eval codex":    {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"), "phase: evaluation", true, true, true, "", true},
-		"eval claude":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"), "phase: evaluation", true, true, true, "", true},
-		"eval custom":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"), "phase: evaluation", true, true, true, "", true},
-		"plan":          {builder.PlanPrompt(), "phase: planning", false, false, false, `git commit -m "docs: add backlog entry" -- <entry>`, false},
+		"task":          {builder.TaskPrompt(), "phase: task", false, false, false, "The entry is committed with this task's changes", true, "stage the new entry with `git add <path>`"},
+		"review first":  {builder.FirstReviewPrompt(), "phase: internal review", true, false, true, `commit the entry with your fixes, or on its own as "docs: add backlog entry"`, true, "stage the new entry with `git add <path>`"},
+		"review second": {builder.SecondReviewPrompt(""), "phase: internal review", true, false, true, `commit the entry with your fixes, or on its own as "docs: add backlog entry"`, true, "stage the new entry with `git add <path>`"},
+		"eval codex":    {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"), "phase: evaluation", true, true, true, "", true, ""},
+		"eval claude":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"), "phase: evaluation", true, true, true, "", true, ""},
+		"eval custom":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"), "phase: evaluation", true, true, true, "", true, ""},
+		"plan":          {builder.PlanPrompt(), "phase: planning", false, false, false, `git commit -m "docs: add backlog entry" -- <entry>`, false, "run `git add <entry>` then `git commit -m \"docs: add backlog entry\" -- <entry>`"},
 	}
 	for name, tc := range capturing {
 		t.Run(name, func(t *testing.T) {
@@ -2260,10 +2264,12 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 					"the final review must use a staged-inclusive diff")
 			} else {
 				assert.Contains(t, tc.prompt, tc.commitRule, "in-phase capture paths must state their own commit rule")
-				// a backlog entry is always a new untracked file, and every in-phase commit
-				// instruction is a literal `git commit -m`, which cannot pick one up; without an
-				// explicit stage the entry is silently dropped and dies with the worktree
-				assert.Contains(t, tc.prompt, "git add",
+				// a backlog entry is always a new untracked file. task and internal review sweep
+				// with `git add -A`, which does pick it up, but the review prompts also offer an
+				// entry-only `docs: add backlog entry` commit that is a literal bare
+				// `git commit -m`, and plan creation commits through a pathspec that rejects an
+				// untracked path, so each states its own per-entry stage
+				assert.Contains(t, strings.ToLower(tc.prompt), tc.stageRule,
 					"in-phase capture paths must stage the untracked entry before committing")
 			}
 		})

@@ -163,10 +163,16 @@ internal review, external-review evaluation, and plan creation. The three extern
 *review* prompts deliberately omit it, since external reviewers are read-only and
 their findings reach the backlog through the primary evaluator. Each path states its
 own commit rule, and they are not interchangeable. Task and internal review commit the
-entry in phase, and both are told to `git add` it first: an entry is always a new untracked
-file, while their literal commit instructions are a bare `git commit -m`, which cannot pick
-one up, so without the explicit stage the entry is silently dropped and dies with the
-worktree. `task.txt` spells its own sweep as `git add -A`, matching the evaluation prompts. The three evaluation prompts must leave it uncommitted: after the first
+entry in phase, and both are told to `git add` it first. All three of those prompts spell
+their own end-of-phase sweep as `git add -A`, matching the evaluation prompts, and that sweep
+does pick an untracked entry up; the explicit stage exists for the path it does not cover.
+`review_first.txt` and `review_second.txt` also offer to commit the entry on its own as
+`docs: add backlog entry` when there is nothing else to commit, and that one is a literal bare
+`git commit -m`, which cannot pick up a new untracked file, so without the stage the entry is
+silently dropped and dies with the worktree. In `task.txt`, which has no entry-only commit
+path, the stage is the same guard against a customized sweep. Do not restate the rationale as
+"the commit instructions are a bare `git commit -m`" — that was true before the sweeps were
+spelled out and is now false at all three sites. The three evaluation prompts must leave it uncommitted: after the first
 round `getDiffInstruction` shows the external reviewer only the uncommitted diff, so a
 mid-loop commit hides the accumulated fixes, the next round reports clean, and
 `EXTERNAL_REVIEW_DONE` fires with the fixes unverified — the entry is swept into the
