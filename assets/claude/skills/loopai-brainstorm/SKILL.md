@@ -31,6 +31,7 @@ Complete these activities in order:
 - Prefer multiple-choice questions when they make the decision easier, while allowing open-ended answers when needed.
 - Establish the goal, scope, constraints, success criteria, and important non-goals.
 - Improve affected code boundaries when that directly serves the goal, but do not introduce unrelated refactoring.
+- File adjacent problems noticed during exploration to the backlog instead of growing the design: create `docs/backlog/<kebab-slug>.md` (or the project's configured `backlog_dir`) with a `# <short problem title>` heading, then `- found: <YYYY-MM-DD>, plan: <plan-name>, phase: planning`, `- severity: minor|major`, `- area: <primary file or package>`, then a short description with file:line references and a suggested fix direction. List existing backlog files first and update a similar entry rather than duplicating it. Do not fix the problem now and do not pull it into scope.
 
 ## Explore Approaches
 
@@ -57,7 +58,7 @@ After every design section is approved:
    - rejected alternatives and their trade-offs
    - verified project facts and constraints
    - success criteria, non-goals, and testing expectations
-2. Invoke the `loopai-plan` skill and instruct it to record that context in the plan's `## Decisions` section.
+2. Invoke the `loopai-plan` skill and instruct it to record that context in the plan's `## Decisions` section. When the design changed during this dialogue in ways a later critique might relitigate, also ask it to record the accepted and rejected points in the plan's `## Decision Log` section (no checkboxes there).
 3. Let `loopai-plan` ask only for information still missing from the approved design.
 
 Do not create a design spec or any file under `docs/superpowers/specs/`. The loopai plan is the durable output of this workflow. A slim architecture decision record is allowed only as a rare exception when the user explicitly requests one for a long-lived architectural decision; it does not replace the `loopai-plan` handoff.

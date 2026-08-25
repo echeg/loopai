@@ -2203,3 +2203,40 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 		})
 	}
 }
+
+// TestPromptBuilder_DecisionLogConvention covers the plan-revision convention: the planning
+// prompt tells the model to record accepted and rejected critique points in the plan's
+// `## Decision Log` section, and that section never carries checkboxes - the plan parser
+// reacts to checkboxes, so one there would be picked up as an implementation step.
+func TestPromptBuilder_DecisionLogConvention(t *testing.T) {
+	cfg := Config{PlanFile: "docs/plans/test.md", ProgressPath: "progress.txt", DefaultBranch: "main",
+		PlanDescription: "add feature", AppConfig: testAppConfig(t)}
+	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
+	prompt := builder.PlanPrompt()
+
+	require.Contains(t, prompt, "## Decision Log", "planning prompt must define the decision log section")
+	assert.Contains(t, prompt, "**accepted**", "decision log must record accepted points")
+	assert.Contains(t, prompt, "**rejected**", "decision log must record rejected points")
+	assert.Contains(t, prompt, "NEVER put checkboxes in this section",
+		"decision log must forbid checkboxes so the plan parser stays inert")
+	assert.Contains(t, prompt, "does not re-raise a point already rejected",
+		"revision path must state why the log exists")
+
+	// the template block for the section must not itself contain a checkbox
+	lines := strings.Split(prompt, "\n")
+	idx := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "## Decision Log" {
+			idx = i
+			break
+		}
+	}
+	require.NotEqual(t, -1, idx, "decision log heading not found")
+	for _, line := range lines[idx:] {
+		if strings.HasPrefix(strings.TrimSpace(line), "## ") && strings.TrimSpace(line) != "## Decision Log" {
+			break
+		}
+		assert.NotContains(t, line, "- [ ]", "decision log section must not contain checkboxes")
+		assert.NotContains(t, line, "- [x]", "decision log section must not contain checkboxes")
+	}
+}

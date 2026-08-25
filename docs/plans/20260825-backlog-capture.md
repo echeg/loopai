@@ -116,11 +116,16 @@ Key benefits: out-of-scope findings survive the run, live in git history, are sh
 
 ### Task 4: Decision Log convention in plan-related prompts and skills
 
-- [ ] define the convention (see Technical Details): `## Decision Log` section in the plan, entries `accepted:`/`rejected:` with one-line reasoning, NO checkboxes ever in this section
-- [ ] `make_plan.txt`: when revising a plan after critique, record accepted and rejected findings in `## Decision Log`
-- [ ] `assets/claude/skills/loopai-plan/SKILL.md`: plan template gains the optional `## Decision Log` section note; discovery step gains the backlog-capture note
-- [ ] `assets/claude/skills/loopai-brainstorm/SKILL.md`: same backlog-capture note for issues discovered during design exploration
-- [ ] run `make check-symlinks` - must pass before task 5
+- [x] define the convention (see Technical Details): `## Decision Log` section in the plan, entries `accepted:`/`rejected:` with one-line reasoning, NO checkboxes ever in this section
+- [x] `make_plan.txt`: when revising a plan after critique, record accepted and rejected findings in `## Decision Log`
+- [x] `assets/claude/skills/loopai-plan/SKILL.md`: plan template gains the optional `## Decision Log` section note; discovery step gains the backlog-capture note
+- [x] `assets/claude/skills/loopai-brainstorm/SKILL.md`: same backlog-capture note for issues discovered during design exploration
+- [x] run `make check-symlinks` - must pass before task 5
+- ➕ added `TestPromptBuilder_DecisionLogConvention` in `pkg/processor/prompts_test.go`: the planning prompt defines the section, records accepted/rejected points, forbids checkboxes, and the template block itself carries none - the plan parser reacts to checkboxes, so one leaking in would become an implementation step
+- ➕ `loopai-plan` skill: `Decisions` and `Decision Log` added to the checkbox-placement denylist alongside Success criteria/Overview/Context
+- ➕ `loopai-brainstorm` skill: hand-off step also asks `loopai-plan` to record accepted/rejected points from the design dialogue, not only the `## Decisions` context
+- ⚠️ the skills are Claude Code skills, not loopai prompts, so `{{BACKLOG_DIR}}` is not expanded there; both name the literal `docs/backlog/` default and point at the `backlog_dir` config key for overrides
+- ⚠️ the first two checkboxes were pre-satisfied by Task 3, which landed the convention in `make_plan.txt` (template section at line 136 plus the draft-revision path); this task verified them and added the regression test that was missing
 
 ### Task 5: loopai-grill integration
 
