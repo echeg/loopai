@@ -440,19 +440,22 @@ Capture is a prompt convention, not a code path: loopai never reads, validates, 
 directory, and the path is only substituted into prompts as `{{BACKLOG_DIR}}`. Where the entry
 gets committed depends on the path that files it, and the three rules are not interchangeable:
 
-- **Task and internal review** write the entry inside the worktree, stage it, and commit it in
-  phase, with the fixes or on its own as `docs: add backlog entry`, so it survives worktree
-  removal and arrives on the default branch through `--merge`. An entry is always a new untracked
-  file, so each of those prompts stages it explicitly before committing.
+- **Task and internal review** stage the entry and commit it in phase, with the fixes or on its
+  own as `docs: add backlog entry`, so that when a worktree is in use it survives worktree removal
+  and arrives on the default branch through `--merge`. An entry is always a new untracked file, so
+  each of those prompts stages it explicitly before committing.
 - **External-review evaluation** writes it inside the worktree, stages it, and leaves it
   uncommitted until the reviewer chain finishes: after the first round the external reviewer is
   shown only the uncommitted diff, so a mid-loop commit would hide the accumulated fixes. The
   final `fix: address ... review findings` commit picks the staged entry up.
 
-`--review`, `--external-only`, and `--codex-only` create no branch and no worktree, so the review
-and evaluation prompts commit in your own checkout. They stage only the files they changed rather
-than sweeping with `git add -A`, and their entry-only commit names the entry by pathspec, so
-unrelated work in progress and anything you already had staged stay out of loopai's commits.
+  `--review`, `--external-only`, and `--codex-only` create no branch and no worktree, so the review
+  and evaluation prompts commit in your own checkout. No capture path sweeps with `git add -A`:
+  each stages only the files it created, modified, or deleted, and the entry-only commit names the
+  entry by pathspec, so unrelated work in progress and anything you already had staged stay out of
+  loopai's commits. The task phase avoids the sweep for the same reason — without `--worktree`,
+  loopai skips branch creation when you are already on a feature branch, and that path runs no
+  clean-tree check.
 - **Plan creation** runs in the source checkout before the branch and worktree exist, so it stages
   that one file and commits it there with `git commit -m "docs: add backlog entry" -- <entry>` — on
   whatever branch is checked out, normally `main` or `master`. An uncommitted entry would never

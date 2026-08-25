@@ -38,7 +38,9 @@ Create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, the
 "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction.
 List existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate.
 A pre-existing linter error or failing test is never out of scope - fix it, do not file it.
-Stage the new entry with `git add <path>` - it is untracked, so any commit that does not sweep with `git add -A` would leave it behind and the entry would die with the worktree.
+Also never file a finding about code this branch changed: a defect in this task's own work is in scope, and
+filing it while ticking the checkboxes would end the plan green with a defect this branch introduced.
+Stage the new entry with `git add <path>` - it is untracked, so no commit picks it up on its own, and an unstaged entry would die with the worktree.
 The entry is committed with this task's changes; filing it is never a reason to expand the current task.
 
 STEP 2 - VALIDATE:
@@ -47,7 +49,9 @@ STEP 2 - VALIDATE:
 
 STEP 3 - COMPLETE (after validation passes):
 - Update progress: edit {{PLAN_FILE}} and change [ ] to [x] for each checkbox you implemented in the current Task section. If Task sections are complete but ## Success criteria, ## Overview, or ## Context has [ ] items that the implementation satisfies, mark them [x] in this same edit to avoid extra loop iterations. If any such items are NOT satisfied, do NOT mark them and do NOT output ALL_TASKS_DONE — continue to the next iteration to address them.
-- Stage everything with `git add -A`, then commit all changes (code + updated plan) with message: feat: <brief task description>
+- Stage every file you created, modified, or deleted, including {{PLAN_FILE}} and any backlog entry, with `git add <paths>`,
+  then commit with message: feat: <brief task description>. Do NOT `git add -A`: without --worktree loopai skips branch
+  creation when HEAD is already on a feature branch, so the checkout can still hold the user's unrelated work in progress.
 - Check if any [ ] checkboxes remain in Task sections (### Task N: or ### Iteration N:)
 - If NO more [ ] checkboxes in the entire plan, output exactly: <<<RALPHEX:ALL_TASKS_DONE>>>
 - If more Task sections have [ ] checkboxes, STOP HERE - do not continue

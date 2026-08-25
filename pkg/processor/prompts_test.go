@@ -2187,9 +2187,12 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 		// evaluation prompts accumulate fixes uncommitted across reviewer iterations; the
 		// other capture paths commit in-phase.
 		mustNotCommit bool
-		// review and evaluation prompts can end a run green once filing is dismissal-equivalent,
-		// so a defect in the branch's own work must never be filable; task and plan creation
-		// carry no such signal.
+		// every path that owns a completion signal can end a run green once filing is
+		// dismissal-equivalent, so a defect in the branch's own work must never be filable.
+		// plan creation is the only exception: it writes no code and emits no such signal.
+		ownWorkBound bool
+		// review and evaluation additionally run with no plan at all under --review,
+		// --external-only, and --codex-only, so their bound must not rest on the plan's scope.
 		noPlanBound bool
 		// the exact commit rule the path states; the paths are not interchangeable, so a bare
 		// "commit" substring would pass on unrelated prompt text.
@@ -2198,17 +2201,17 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 		// pre-existing-issues rule; plan creation fixes nothing, so it files instead.
 		fixCapable bool
 		// the exact per-entry stage instruction, lowercased. asserting a bare "git add" would be
-		// satisfied by the end-of-phase `git add -A` sweep and would not notice the stage bullet
-		// being deleted, and plan creation stages a pathspec rather than the worktree entry.
+		// satisfied by the end-of-phase commit's own `git add <paths>` and would not notice the
+		// stage bullet being deleted, and plan creation stages a pathspec rather than the entry.
 		stageRule string
 	}{
-		"task":          {builder.TaskPrompt(), "phase: task", false, false, false, "The entry is committed with this task's changes", true, "stage the new entry with `git add <path>`"},
-		"review first":  {builder.FirstReviewPrompt(), "phase: internal review", true, false, true, "commit the entry with your fixes, or on its own as `git commit -m \"docs: add backlog entry\" -- <entry>`", true, "stage the new entry with `git add <path>`"},
-		"review second": {builder.SecondReviewPrompt(""), "phase: internal review", true, false, true, "commit the entry with your fixes, or on its own as `git commit -m \"docs: add backlog entry\" -- <entry>`", true, "stage the new entry with `git add <path>`"},
-		"eval codex":    {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"), "phase: evaluation", true, true, true, "", true, ""},
-		"eval claude":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"), "phase: evaluation", true, true, true, "", true, ""},
-		"eval custom":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"), "phase: evaluation", true, true, true, "", true, ""},
-		"plan":          {builder.PlanPrompt(), "phase: planning", false, false, false, `git commit -m "docs: add backlog entry" -- <entry>`, false, "run `git add <entry>` then `git commit -m \"docs: add backlog entry\" -- <entry>`"},
+		"task":          {builder.TaskPrompt(), "phase: task", false, false, true, false, "The entry is committed with this task's changes", true, "stage the new entry with `git add <path>`"},
+		"review first":  {builder.FirstReviewPrompt(), "phase: internal review", true, false, true, true, "commit the entry with your fixes, or on its own as `git commit -m \"docs: add backlog entry\" -- <entry>`", true, "stage the new entry with `git add <path>`"},
+		"review second": {builder.SecondReviewPrompt(""), "phase: internal review", true, false, true, true, "commit the entry with your fixes, or on its own as `git commit -m \"docs: add backlog entry\" -- <entry>`", true, "stage the new entry with `git add <path>`"},
+		"eval codex":    {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"), "phase: evaluation", true, true, true, true, "", true, ""},
+		"eval claude":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"), "phase: evaluation", true, true, true, true, "", true, ""},
+		"eval custom":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"), "phase: evaluation", true, true, true, true, "", true, ""},
+		"plan":          {builder.PlanPrompt(), "phase: planning", false, false, false, false, `git commit -m "docs: add backlog entry" -- <entry>`, false, "run `git add <entry>` then `git commit -m \"docs: add backlog entry\" -- <entry>`"},
 	}
 	for name, tc := range capturing {
 		t.Run(name, func(t *testing.T) {
@@ -2234,18 +2237,21 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 			// would be a new way to end a review green with a defect this branch introduced. the
 			// bound holds with or without a plan: under --review, --external-only, and --codex-only
 			// there is no plan for a finding to be out of scope of at all.
-			if tc.noPlanBound {
+			if tc.ownWorkBound {
 				assert.Contains(t, tc.prompt, "never file a finding about code this branch changed",
-					"review and evaluation prompts must bound the out-of-scope category")
+					"paths that own a completion signal must bound the out-of-scope category")
+			}
+			if tc.noPlanBound {
 				assert.Contains(t, tc.prompt, "in scope whether or",
 					"the bound must not depend on the no-plan fallback")
-				// --review, --external-only, and --codex-only create no branch and no worktree, so
-				// these prompts commit in the user's own checkout, where a dirty tree is allowed and
-				// never gated. a `git add -A` there commits their unrelated work in progress.
-				assert.Equal(t, strings.Count(tc.prompt, "git add -A"),
-					strings.Count(tc.prompt, "Do NOT `git add -A`"),
-					"prompts that can run outside a worktree must not instruct a sweep of the user's checkout")
 			}
+			// --review, --external-only, and --codex-only create no branch and no worktree, and the
+			// task phase runs without one whenever CreateBranchForPlan short-circuits on an
+			// already-checked-out feature branch, which skips its dirty-tree gate entirely. a
+			// `git add -A` on any of those paths commits the user's unrelated work in progress.
+			assert.Equal(t, strings.Count(tc.prompt, "git add -A"),
+				strings.Count(tc.prompt, "Do NOT `git add -A`"),
+				"capture prompts must not instruct a sweep of a checkout that was never proved clean")
 
 			// filing must never read as a fix, or an out-of-scope finding would keep a loop alive
 			if tc.notAFix {
@@ -2270,19 +2276,23 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 				// final commit has to stage the unstaged fixes explicitly. it must not do that with
 				// `git add -A`: --external-only and --codex-only create no worktree and run in the
 				// user's own checkout, where a sweep commits their unrelated work in progress.
-				assert.Contains(t, strings.ToLower(tc.prompt), "stage every file you changed",
+				assert.Contains(t, strings.ToLower(tc.prompt), "stage every file you created, modified, or deleted",
 					"the final commit must stage the accumulated fixes, not just the staged entry")
+				// `git diff HEAD` never lists an untracked file, so enumerating the commit from it
+				// alone silently drops a new test or helper written while fixing findings
+				assert.Contains(t, tc.prompt, "git status --porcelain",
+					"the final review must also enumerate new untracked files")
 				assert.Contains(t, strings.ToLower(tc.prompt), "do not `git add -a`",
 					"the final commit must not sweep the user's own checkout")
 				assert.Contains(t, tc.prompt, "git diff HEAD",
 					"the final review must use a staged-inclusive diff")
 			} else {
 				assert.Contains(t, tc.prompt, tc.commitRule, "in-phase capture paths must state their own commit rule")
-				// a backlog entry is always a new untracked file. task and internal review sweep
-				// with `git add -A`, which does pick it up, but the review prompts also offer an
-				// entry-only `docs: add backlog entry` commit that is a literal bare
-				// `git commit -m`, and plan creation commits through a pathspec that rejects an
-				// untracked path, so each states its own per-entry stage
+				// a backlog entry is always a new untracked file and no capture path sweeps, so
+				// nothing picks it up implicitly. the review prompts also offer an entry-only
+				// `docs: add backlog entry` commit that is a literal bare `git commit -m`, and plan
+				// creation commits through a pathspec that rejects an untracked path, so each
+				// states its own per-entry stage
 				assert.Contains(t, strings.ToLower(tc.prompt), tc.stageRule,
 					"in-phase capture paths must stage the untracked entry before committing")
 			}

@@ -165,10 +165,18 @@ internal review, external-review evaluation, and plan creation. The three extern
 their findings reach the backlog through the primary evaluator. Each path states its
 own commit rule, and they are not interchangeable. Task and internal review commit the
 entry in phase, and all three prompts stage it with `git add` first, since it is untracked and
-no commit picks it up on its own. `task.txt` is the only capture path that sweeps with
-`git add -A`, and only because `modeRequiresBranch` is true for the two modes that run it, so
-the tree it commits is either a fresh worktree or a checkout `CreateBranchForPlan` already
-proved clean. `review_first.txt` and `review_second.txt` deliberately do not sweep and say so
+no commit picks it up on its own. No capture path sweeps with `git add -A`, `task.txt` included:
+`modeRequiresBranch` being true for the two modes that run it does not make the tree clean, because
+`prepareBranchPlan` returns early — "already on feature branch, caller should skip" — the moment
+`matchesDefaultBranch` is false, which is *before* its uncommitted-changes gate. `use_worktree`
+defaults to false, so a resumed run whose HEAD is already the plan's feature branch commits in the
+user's own checkout with no clean-tree check anywhere on the path, and a sweep there would commit
+their unrelated work in progress. `task.txt` therefore stages `git add <paths>` over the files the
+model created, modified, or deleted, plus `{{PLAN_FILE}}` and any backlog entry. It also carries the
+same bound the review prompts do — a defect in code this branch changed is never out of scope —
+because it owns `ALL_TASKS_DONE` and filing is dismissal-equivalent, so an unbounded category would
+let the executor file its own defect and tick the checkboxes.
+`review_first.txt` and `review_second.txt` deliberately do not sweep and say so
 inline: `ModeReview` and `ModeCodexOnly` create no branch and no worktree, so `--review`,
 `--external-only`, and `--codex-only` commit in the user's own checkout, where a dirty tree is
 allowed and never gated, and a sweep there would commit their unrelated work in progress. Those
@@ -185,9 +193,12 @@ sweep is described as reviewing `git diff`, which never shows a new untracked fi
 staging keeps the entry out of the unstaged diff the reviewer is shown while guaranteeing
 the commit picks it up. Because that leaves the index deliberately non-empty, the same three
 prompts spell the final commit as `git diff HEAD` plus an explicit `git add <paths>` over every
-file the model changed: a bare `git commit -m` used to fail loudly with `no changes added to
-commit`, and with the entry staged it would instead succeed, commit only the entry, and drop
-every accumulated fix right before `EXTERNAL_REVIEW_DONE`. That explicit stage is deliberately
+file the model created, modified, or deleted: a bare `git commit -m` used to fail loudly with
+`no changes added to commit`, and with the entry staged it would instead succeed, commit only the
+entry, and drop every accumulated fix right before `EXTERNAL_REVIEW_DONE`. Those three prompts pair
+`git diff HEAD` with `git status --porcelain`, because the diff never lists an untracked file:
+enumerating the commit from the diff alone drops a new test or helper the model wrote while fixing
+findings, which under `--worktree` then dies with the worktree. That explicit stage is deliberately
 not `git add -A`, for the same reason the internal-review prompts avoid one: these prompts also
 run under `--external-only` and `--codex-only`, which create no worktree. Staging does not
 weaken the stalemate reset either, since `diffFingerprint` runs `git diff HEAD`. Plan creation runs in the source checkout before

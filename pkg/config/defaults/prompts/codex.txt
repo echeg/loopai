@@ -62,8 +62,10 @@ Do NOT reject issues just because they existed before this branch - fix them any
 - STOP here — the loop will re-run the external tool with your explanations for context
 
 **If Codex reports NO actionable issues** (empty output, "no issues found", "NO ISSUES FOUND"):
-- Run `git diff HEAD` to review ALL uncommitted changes (accumulated fixes from multiple iterations, plus any backlog entry you staged)
-- Stage every file you changed, plus any backlog entry, with `git add <paths>`, then commit with message: "fix: address codex review findings" -
+- Run `git diff HEAD` to review ALL uncommitted changes (accumulated fixes from multiple iterations, plus any backlog entry you staged),
+  and `git status --porcelain` as well: `git diff HEAD` never lists a new untracked file, so a test or helper you added while fixing
+  findings is invisible in it and would be dropped by the commit below
+- Stage every file you created, modified, or deleted, plus any backlog entry, with `git add <paths>`, then commit with message: "fix: address codex review findings" -
   a bare `git commit -m` would commit only the already-staged backlog entry and silently drop every accumulated fix.
   Do NOT `git add -A`: `--external-only` and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work
 - Output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
