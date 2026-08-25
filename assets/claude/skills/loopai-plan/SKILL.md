@@ -68,7 +68,8 @@ Before asking questions, understand what the user is working on:
    - real issues discovered during exploration that are outside this plan's goal go to `docs/backlog/<kebab-slug>.md` (or the project's configured `backlog_dir`)
    - entry format: a `# <short problem title>` heading, then `- found: <YYYY-MM-DD>, plan: <plan-name>, phase: planning`, `- severity: minor|major`, `- area: <primary file or package>`, then a short description with file:line references and a suggested fix direction
    - list existing files in the backlog directory first - update a similar entry instead of creating a duplicate
-   - do NOT fix them now; stage only that entry file and commit it as `docs: add backlog entry` right away
+   - do NOT fix them now; commit that entry on its own right away with `git add <entry>` then
+     `git commit -m "docs: add backlog entry" -- <entry>` - the pathspec keeps anything the user had already staged out of this commit
    - commit it before loopai runs the plan: loopai tolerates exactly one uncommitted path, the plan file, so an untracked backlog entry makes branch and worktree creation fail with `worktree has uncommitted changes`
 
 ## Step 1: Present Context and Ask Focused Questions
@@ -200,11 +201,11 @@ Check `docs/plans/` for existing files, then create `docs/plans/YYYYMMDD-<task-n
 - **Checkbox placement**: Checkboxes belong only in Task sections (`### Task N:` or `### Iteration N:`). Do not put checkboxes in Success criteria, Overview, Context, Decisions, or Decision Log — they cause extra loop iterations.
 
 ## Decision Log
-<!-- Optional. Only when the plan was revised after feedback or critique (loopai-grill, draft review).
-     Record every accepted and every rejected point so a later critique round does not re-raise it.
+<!-- Omit this whole section from a first-time plan. Add it only when the plan was revised after feedback or
+     critique (loopai-grill, draft review), and then replace this comment with one list item per point:
+     - <YYYY-MM-DD> <source>: **accepted** - <what changed and where>
+     - <YYYY-MM-DD> <source>: **rejected** - "<the point>" - <one-line reasoning>
      NEVER put checkboxes in this section. -->
-- <YYYY-MM-DD> <source>: **accepted** - <what changed and where>
-- <YYYY-MM-DD> <source>: **rejected** - "<the point>" - <one-line reasoning>
 
 ## Implementation Steps
 

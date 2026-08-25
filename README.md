@@ -440,17 +440,21 @@ Capture is a prompt convention, not a code path: loopai never reads, validates, 
 directory, and the path is only substituted into prompts as `{{BACKLOG_DIR}}`. Where the entry
 gets committed depends on the path that files it, and the three rules are not interchangeable:
 
-- **Task and internal review** write the entry inside the worktree and commit it in phase, with
-  the fixes or on its own as `docs: add backlog entry`, so it survives worktree removal and
-  arrives on the default branch through `--merge`.
+- **Task and internal review** write the entry inside the worktree, stage it, and commit it in
+  phase, with the fixes or on its own as `docs: add backlog entry`, so it survives worktree
+  removal and arrives on the default branch through `--merge`. An entry is always a new untracked
+  file, so the stage is what keeps a plain `git commit -m` from silently leaving it behind.
 - **External-review evaluation** writes it inside the worktree, stages it, and leaves it
   uncommitted until the reviewer chain finishes: after the first round the external reviewer is
   shown only the uncommitted diff, so a mid-loop commit would hide the accumulated fixes. The
   final `fix: address ... review findings` commit sweeps the staged entry up.
 - **Plan creation** runs in the source checkout before the branch and worktree exist, so it stages
-  that one file and commits it there as `docs: add backlog entry` — on whatever branch is checked
-  out, normally `main` or `master`. An uncommitted entry would never reach the feature branch, and
-  an untracked one blocks branch and worktree creation, which tolerate only the plan file itself.
+  that one file and commits it there with `git commit -m "docs: add backlog entry" -- <entry>` — on
+  whatever branch is checked out, normally `main` or `master`. An uncommitted entry would never
+  reach the feature branch, and an untracked one blocks branch and worktree creation, which
+  tolerate only the plan file itself. Because this is your own checkout rather than a loopai
+  worktree, the commit names the entry explicitly, so anything you already had staged stays staged
+  instead of being swept into it.
 
 Filing is not a fix: an out-of-scope finding behaves like a dismissal in the completion-signal
 logic, so an agent never keeps a review loop alive by claiming it fixed something. The write is

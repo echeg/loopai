@@ -2204,7 +2204,7 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 		"eval codex":    {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"), "phase: evaluation", true, true, true, "", true},
 		"eval claude":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"), "phase: evaluation", true, true, true, "", true},
 		"eval custom":   {builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"), "phase: evaluation", true, true, true, "", true},
-		"plan":          {builder.PlanPrompt(), "phase: planning", false, false, false, "stage only the entry file and commit it", false},
+		"plan":          {builder.PlanPrompt(), "phase: planning", false, false, false, `git commit -m "docs: add backlog entry" -- <entry>`, false},
 	}
 	for name, tc := range capturing {
 		t.Run(name, func(t *testing.T) {
@@ -2260,6 +2260,11 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 					"the final review must use a staged-inclusive diff")
 			} else {
 				assert.Contains(t, tc.prompt, tc.commitRule, "in-phase capture paths must state their own commit rule")
+				// a backlog entry is always a new untracked file, and every in-phase commit
+				// instruction is a literal `git commit -m`, which cannot pick one up; without an
+				// explicit stage the entry is silently dropped and dies with the worktree
+				assert.Contains(t, tc.prompt, "git add",
+					"in-phase capture paths must stage the untracked entry before committing")
 			}
 		})
 	}

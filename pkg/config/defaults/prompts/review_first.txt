@@ -94,6 +94,8 @@ Out-of-scope findings go to the backlog instead of into this branch:
 - list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate
 - a pre-existing linter error or failing test is never out of scope - fix it, do not file it
 - when {{PLAN_FILE}} names no plan, the scope is this branch's own diff - never file a finding about code this branch changed
+- stage the new entry with `git add <path>`: it is untracked, so the bare `git commit -m` below cannot pick it up
+  and the entry would die with the worktree
 - commit the entry with your fixes, or on its own as "docs: add backlog entry" when there is nothing else to commit
 - filing an entry is not a fix: it does not count as a confirmed issue in the Step 4 signal logic
 
@@ -103,7 +105,7 @@ Do NOT reject issues just because they existed before this branch - fix them any
 ### 3.3 Fix All Confirmed Issues
 1. Fix all CONFIRMED issues (all types: bugs, tests, smells, docs, etc.)
 2. Run tests and linter to verify fixes - ALL tests must pass, ALL linter issues resolved
-3. Commit fixes: `git commit -m "fix: address code review findings"`
+3. Commit fixes: `git add -A && git commit -m "fix: address code review findings"`
 
 ## Step 4: Signal Completion
 

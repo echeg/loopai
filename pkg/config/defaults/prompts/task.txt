@@ -38,6 +38,7 @@ Create {{BACKLOG_DIR}}/<kebab-slug>.md: a "# <short problem title>" heading, the
 "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction.
 List existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate.
 A pre-existing linter error or failing test is never out of scope - fix it, do not file it.
+Stage the new entry with `git add <path>` - it is untracked, so the Step 3 commit would otherwise miss it and the worktree removal would destroy it.
 The entry is committed with this task's changes; filing it is never a reason to expand the current task.
 
 STEP 2 - VALIDATE:
@@ -46,7 +47,7 @@ STEP 2 - VALIDATE:
 
 STEP 3 - COMPLETE (after validation passes):
 - Update progress: edit {{PLAN_FILE}} and change [ ] to [x] for each checkbox you implemented in the current Task section. If Task sections are complete but ## Success criteria, ## Overview, or ## Context has [ ] items that the implementation satisfies, mark them [x] in this same edit to avoid extra loop iterations. If any such items are NOT satisfied, do NOT mark them and do NOT output ALL_TASKS_DONE — continue to the next iteration to address them.
-- Commit all changes (code + updated plan) with message: feat: <brief task description>
+- Stage everything with `git add -A`, then commit all changes (code + updated plan) with message: feat: <brief task description>
 - Check if any [ ] checkboxes remain in Task sections (### Task N: or ### Iteration N:)
 - If NO more [ ] checkboxes in the entire plan, output exactly: <<<RALPHEX:ALL_TASKS_DONE>>>
 - If more Task sections have [ ] checkboxes, STOP HERE - do not continue

@@ -43,8 +43,9 @@ Adjacent problems you notice while researching belong in the backlog, not in thi
   "- severity: minor|major", "- area: <primary file or package>", then a short description with file:line references and a suggested fix direction
 - list existing files in {{BACKLOG_DIR}}/ first - if a similar entry is already there, update it instead of creating a duplicate
 - do NOT widen the plan to cover them and do NOT fix them now
-- planning runs before the plan branch and worktree are created, so stage only the entry file and commit it
-  as "docs: add backlog entry" - an uncommitted entry never reaches the branch. Do not stage anything else.
+- planning runs before the plan branch and worktree are created, so commit the entry on its own - an uncommitted
+  entry never reaches the branch. Run `git add <entry>` then `git commit -m "docs: add backlog entry" -- <entry>`:
+  the pathspec keeps anything the user had already staged out of this commit. Do not stage anything else.
 
 ## Step 3: Ask Clarifying Questions (if needed)
 

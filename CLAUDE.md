@@ -163,7 +163,10 @@ internal review, external-review evaluation, and plan creation. The three extern
 *review* prompts deliberately omit it, since external reviewers are read-only and
 their findings reach the backlog through the primary evaluator. Each path states its
 own commit rule, and they are not interchangeable. Task and internal review commit the
-entry in phase. The three evaluation prompts must leave it uncommitted: after the first
+entry in phase, and both are told to `git add` it first: an entry is always a new untracked
+file, while their literal commit instructions are a bare `git commit -m`, which cannot pick
+one up, so without the explicit stage the entry is silently dropped and dies with the
+worktree. `task.txt` spells its own sweep as `git add -A`, matching the evaluation prompts. The three evaluation prompts must leave it uncommitted: after the first
 round `getDiffInstruction` shows the external reviewer only the uncommitted diff, so a
 mid-loop commit hides the accumulated fixes, the next round reports clean, and
 `EXTERNAL_REVIEW_DONE` fires with the fixes unverified — the entry is swept into the
@@ -176,10 +179,15 @@ used to fail loudly with `no changes added to commit`, and with the entry staged
 instead succeed, commit only the entry, and drop every accumulated fix right before
 `EXTERNAL_REVIEW_DONE`. Staging does not weaken the stalemate reset either, since
 `diffFingerprint` runs `git diff HEAD`. Plan creation runs in the source checkout before
-the branch and worktree exist, so it stages that one file and commits it; an uncommitted
+the branch and worktree exist, so it stages that one file and commits it through the
+pathspec form `git commit -m "docs: add backlog entry" -- <entry>`; an uncommitted
 entry there never reaches the branch, and an untracked one fails branch and worktree
 creation outright, because `hasChangesOtherThan` counts untracked files and exempts only
-the plan file. The `loopai-plan` and `loopai-brainstorm` skills file entries too and carry
+the plan file. The pathspec is what keeps that commit honest: this is the user's own
+checkout rather than a loopai worktree, so a bare `git commit -m` would sweep whatever they
+had already staged into a commit labelled as a backlog entry, on whatever branch is checked
+out — normally `main` or `master`, and the same happens on a session the user later cancels
+at draft review. The `loopai-plan` and `loopai-brainstorm` skills file entries too and carry
 that same commit rule for the same reason: they run before loopai does, and loopai commits
 nothing but the plan. Filing is dismissal-equivalent only for the completion signal:
 the write is a real repository change, so the round that makes it resets
