@@ -61,8 +61,9 @@ Do NOT reject issues just because they existed before this branch - fix them any
 - STOP here — the loop will re-run the external tool with your explanations for context
 
 **If the review tool reports NO actionable issues** (empty output, "no issues found", "NO ISSUES FOUND"):
-- Run `git diff` to review ALL uncommitted changes (accumulated fixes from multiple iterations)
-- Commit all fixes with message: "fix: address external review findings"
+- Run `git diff HEAD` to review ALL uncommitted changes (accumulated fixes from multiple iterations, plus any backlog entry you staged)
+- Stage everything with `git add -A`, then commit with message: "fix: address external review findings" -
+  a bare `git commit -m` would commit only the already-staged backlog entry and silently drop every accumulated fix
 - Output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
 
 The EXTERNAL_REVIEW_DONE signal is valid only after the external review tool reports no actionable issues. Never emit it after fixing or dismissing findings.

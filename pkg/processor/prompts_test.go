@@ -2251,6 +2251,13 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 				// untracked file, so the entry has to be staged or it is silently dropped
 				assert.Contains(t, strings.ToLower(tc.prompt), "stage that one file with `git add` and nothing else",
 					"evaluation prompts must stage the entry so the final commit picks it up")
+				// with the index deliberately non-empty, a bare `git commit -m` no longer fails with
+				// "no changes added to commit" - it succeeds and commits only the staged entry, so the
+				// final sweep has to stage the unstaged fixes explicitly
+				assert.Contains(t, strings.ToLower(tc.prompt), "`git add -a`",
+					"the final commit must stage the accumulated fixes, not just the staged entry")
+				assert.Contains(t, tc.prompt, "git diff HEAD",
+					"the final review must use a staged-inclusive diff")
 			} else {
 				assert.Contains(t, tc.prompt, tc.commitRule, "in-phase capture paths must state their own commit rule")
 			}

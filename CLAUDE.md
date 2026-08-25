@@ -170,7 +170,11 @@ mid-loop commit hides the accumulated fixes, the next round reports clean, and
 final commit instead. Those three prompts do say to `git add` the entry alone: the final
 sweep is described as reviewing `git diff`, which never shows a new untracked file, and
 staging keeps the entry out of the unstaged diff the reviewer is shown while guaranteeing
-the commit picks it up. Staging does not weaken the stalemate reset either, since
+the commit picks it up. Because that leaves the index deliberately non-empty, the same three
+prompts also spell the final sweep as `git diff HEAD` plus `git add -A`: a bare `git commit -m`
+used to fail loudly with `no changes added to commit`, and with the entry staged it would
+instead succeed, commit only the entry, and drop every accumulated fix right before
+`EXTERNAL_REVIEW_DONE`. Staging does not weaken the stalemate reset either, since
 `diffFingerprint` runs `git diff HEAD`. Plan creation runs in the source checkout before
 the branch and worktree exist, so it stages that one file and commits it; an uncommitted
 entry there never reaches the branch, and an untracked one fails branch and worktree

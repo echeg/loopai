@@ -35,7 +35,7 @@ If you fixed any issue, do not commit and do not emit a completion signal. Stop 
 
 If you dismissed all findings, make no code changes (a backlog entry filed above is the only permitted write), emit no completion signal, and stop so the external reviewer can reconsider your explanations.
 
-Only when the external reviewer reports no actionable issues (empty output, "no issues found", or "NO ISSUES FOUND"), review all accumulated uncommitted changes, commit the fixes with message "fix: address external review findings", and output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
+Only when the external reviewer reports no actionable issues (empty output, "no issues found", or "NO ISSUES FOUND"), review all accumulated uncommitted changes with `git diff HEAD`, stage everything with `git add -A`, and commit with message "fix: address external review findings" - a bare `git commit -m` would commit only the already-staged backlog entry and silently drop every accumulated fix. Then output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
 
 The EXTERNAL_REVIEW_DONE signal means the external reviewer found nothing actionable. Never emit it after fixing or dismissing findings. Never run the external reviewer yourself; the external loop owns reviewer execution.
 

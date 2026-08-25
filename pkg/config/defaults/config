@@ -284,8 +284,8 @@ plans_dir = docs/plans
 # backlog_dir: directory where agents file out-of-scope findings, one markdown file per entry
 # loopai never reads, resolves, or creates it: the value is substituted into prompts as
 # {{BACKLOG_DIR}} and the agent resolves it against the checkout it runs in, normally the worktree
-# keep it repository-relative - an absolute or out-of-repository path produces entries the run
-# never commits, which disappear when the worktree is removed
+# keep it repository-relative and inside the checkout - an entry written outside the repository is
+# never committed, so it never reaches the plan branch and --merge never sees it
 # default: docs/backlog
 backlog_dir = docs/backlog
 
