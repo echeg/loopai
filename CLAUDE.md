@@ -491,6 +491,14 @@ A rejected single-plan archive (a `commit-msg` hook is the reported case) keeps 
 not silent: `moveCompletedPlan` warns through the progress logger and returns it as `incomplete`,
 which `displayStats` repeats last as `plan archive incomplete`, since the move may be left staged. A
 chain archive failure stays fatal.
+The archive's `os.Rename` fallback (reached when `git mv` refuses, an existing destination included)
+first `Lstat`s the destination and refuses to overwrite it, and `resolvePlanMoveTargets` returns
+`done=true` only when the source is gone and a `completed/` copy exists, so a collision reaches that
+guard instead of passing for an archived plan. This is what makes a dirty source checkout safe for a
+single-plan `--worktree` run: `prepareWorktreePlan` only warns about unrelated dirty files, while
+`inspectWorktreePlanChanges` refuses an unfinished Git operation through `operationInProgress`, the
+same marker scan `--commit`'s `validateAutoCommitState` uses. Worktree chains keep the strict
+dirty-tree check.
 
 `phase.ReportPhase` runs after finalize and before the successful review-checkpoint clear on every review pipeline when `report_enabled` is true. It receives rendered deterministic facts and returns ordinary assistant Markdown; the model must not write the repository file because a single-plan worktree run archives through `MainGitSvc` in the main checkout, outside the executor's worktree. `Runner.Report()` exposes the extracted report, or a nine-section facts-only fallback when model assessment is unavailable. `MovePlanToCompletedWithReport` writes `docs/plans/completed/<stem>.report.md` beside the archived plan in the same commit; tasks-only never generates a report, and review-only modes may populate `Runner.Report()` but do not archive a sidecar because `shouldMovePlan` is false. A non-empty review-checkpoint invalidation reason resets and removes stale run-record state together with the checkpoint. Current-invocation task counts and start time survive post-task invalidation so newly completed work remains in the report. The success clear intentionally removes only the checkpoint, preserving the record through report generation and archival; successful archival then removes the `.run.json` file.
 
