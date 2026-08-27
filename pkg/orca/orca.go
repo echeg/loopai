@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/umputun/ralphex/pkg/config"
+	"github.com/umputun/ralphex/pkg/plan"
 	"github.com/umputun/ralphex/pkg/status"
 	"golang.org/x/term"
 )
@@ -112,17 +113,76 @@ func (r *Reporter) OnPhase(_, cur status.Phase) {
 	r.emitLocked()
 }
 
-// OnSection observes a structured log section. Section-specific title updates are implemented by
-// the logger integration; the lifecycle gate lives here so late observations stay harmless.
-func (r *Reporter) OnSection(_ status.Section) {
+// OnSection publishes task progress and review or plan iteration titles. It is called by the
+// logger wrapper after the section reaches the regular log.
+func (r *Reporter) OnSection(section status.Section) {
 	if r == nil {
 		return
 	}
+
+	var next state
+	switch section.Type {
+	case status.SectionTaskIteration:
+		next = state{phase: status.PhaseTask, task: section.Iteration, total: planTaskTotal(r.planFile)}
+	case status.SectionInternalReview:
+		next = state{phase: status.PhaseReview, iteration: section.Iteration}
+	case status.SectionExternalReviewIteration:
+		next = state{phase: status.PhaseExternalReview, iteration: section.Iteration}
+	case status.SectionPlanIteration:
+		next = state{phase: status.PhasePlan, iteration: section.Iteration}
+	default:
+		return
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.quiesced || r.stopped || r.finished {
 		return
 	}
+	r.current = next
+	r.emitLocked()
+}
+
+// Logger is the execution logger surface needed to observe structured sections.
+type Logger interface {
+	Print(format string, args ...any)
+	PrintRaw(format string, args ...any)
+	PrintSection(section status.Section)
+	PrintAligned(text string)
+	LogQuestion(question string, options []string)
+	LogAnswer(answer string)
+	LogDraftReview(action string, feedback string)
+	Path() string
+}
+
+// WrapLogger decorates an execution logger so structured sections update the terminal title. A
+// disabled reporter returns the original logger unchanged.
+func (r *Reporter) WrapLogger(logger Logger) Logger {
+	if r == nil {
+		return logger
+	}
+	return &titleLogger{Logger: logger, rep: r}
+}
+
+type titleLogger struct {
+	Logger
+	rep *Reporter
+}
+
+func (l *titleLogger) PrintSection(section status.Section) {
+	l.Logger.PrintSection(section)
+	l.rep.OnSection(section)
+}
+
+func planTaskTotal(planFile string) int {
+	if planFile == "" {
+		return 0
+	}
+	parsed, err := plan.ParsePlanFile(planFile)
+	if err != nil {
+		return 0
+	}
+	return len(parsed.Tasks)
 }
 
 // Finish publishes the final idle outcome and freezes the reporter against later updates.

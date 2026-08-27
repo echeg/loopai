@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -133,9 +135,205 @@ func TestReporterStop(t *testing.T) {
 	})
 }
 
+func TestReporterOnSection(t *testing.T) {
+	planFile := writeTestPlan(t, `# plan
+
+### Task 1: one
+- [ ] one
+### Task 2: two
+- [ ] two
+### Task 3: three
+- [ ] three
+### Task 4: four
+- [ ] four
+### Task 5: five
+- [ ] five
+### Task 6: six
+- [ ] six
+### Task 7: seven
+- [ ] seven
+`)
+	tests := []struct {
+		name     string
+		planFile string
+		section  status.Section
+		want     string
+	}{
+		{
+			name:     "task with known total",
+			planFile: planFile,
+			section:  status.NewTaskIterationSection(3),
+			want:     "\x1b]0;◐ loopai · task 3/7 · claude\a",
+		},
+		{
+			name:    "task with empty plan path",
+			section: status.NewTaskIterationSection(3),
+			want:    "\x1b]0;◐ loopai · task 3 · claude\a",
+		},
+		{
+			name:     "task with unreadable plan",
+			planFile: filepath.Join(t.TempDir(), "missing.md"),
+			section:  status.NewTaskIterationSection(3),
+			want:     "\x1b]0;◐ loopai · task 3 · claude\a",
+		},
+		{
+			name:    "internal review iteration",
+			section: status.NewInternalReviewSection(2, ""),
+			want:    "\x1b]0;◐ loopai · review · iteration 2 · claude\a",
+		},
+		{
+			name:    "external review iteration",
+			section: status.NewExternalReviewIterationSection("codex", 4),
+			want:    "\x1b]0;◐ loopai · external review · iteration 4 · claude\a",
+		},
+		{
+			name:    "plan iteration",
+			section: status.NewPlanIterationSection(5),
+			want:    "\x1b]0;◐ loopai · plan · iteration 5 · claude\a",
+		},
+		{name: "generic ignored", section: status.NewGenericSection("ignored")},
+		{name: "external evaluation ignored", section: status.NewExternalEvaluationSection("claude", "codex")},
+		{name: "custom iteration ignored", section: status.NewCustomIterationSection(6)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			r := requireReporterWithPlan(t, &out, config.ExecutorClaude, tt.planFile)
+
+			r.OnSection(tt.section)
+
+			assert.Equal(t, tt.want, out.String())
+		})
+	}
+}
+
+func TestReporterOnSectionAfterCompletionWritesNothing(t *testing.T) {
+	tests := []struct {
+		name     string
+		complete func(*Reporter)
+		want     string
+	}{
+		{name: "finish", complete: func(r *Reporter) { r.Finish(true) }, want: "\x1b]0;✳ loopai · done\a"},
+		{name: "stop", complete: func(r *Reporter) { r.Stop() }, want: "\x1b]0;✳ loopai\a"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			r := requireReporter(t, &out, config.ExecutorClaude)
+			tt.complete(r)
+
+			r.OnSection(status.NewTaskIterationSection(3))
+			r.OnSection(status.NewInternalReviewSection(2, ""))
+
+			assert.Equal(t, tt.want, out.String())
+		})
+	}
+}
+
+func TestReporterWrapLogger(t *testing.T) {
+	inner := &fakeLogger{}
+	var nilReporter *Reporter
+	assert.Same(t, inner, nilReporter.WrapLogger(inner))
+
+	var out bytes.Buffer
+	r := requireReporter(t, &out, config.ExecutorClaude)
+	wrapped := r.WrapLogger(inner)
+	section := status.NewInternalReviewSection(4, "")
+
+	wrapped.Print("value %d", 7)
+	wrapped.PrintRaw("raw %s", "text")
+	wrapped.PrintSection(section)
+	wrapped.PrintAligned("aligned")
+	wrapped.LogQuestion("continue?", []string{"yes", "no"})
+	wrapped.LogAnswer("yes")
+	wrapped.LogDraftReview("accept", "looks good")
+
+	assert.Equal(t, "value %d", inner.printFormat)
+	assert.Equal(t, []any{7}, inner.printArgs)
+	assert.Equal(t, "raw %s", inner.rawFormat)
+	assert.Equal(t, []any{"text"}, inner.rawArgs)
+	assert.Equal(t, []status.Section{section}, inner.sections)
+	assert.Equal(t, "aligned", inner.aligned)
+	assert.Equal(t, "continue?", inner.question)
+	assert.Equal(t, []string{"yes", "no"}, inner.options)
+	assert.Equal(t, "yes", inner.answer)
+	assert.Equal(t, "accept", inner.draftAction)
+	assert.Equal(t, "looks good", inner.draftFeedback)
+	assert.Equal(t, "progress.txt", wrapped.Path())
+	assert.Equal(t, "\x1b]0;◐ loopai · review · iteration 4 · claude\a", out.String())
+}
+
+func TestReporterWrapLoggerPrintsSectionBeforeTitle(t *testing.T) {
+	order := make([]string, 0, 2)
+	inner := &fakeLogger{onSection: func() { order = append(order, "section") }}
+	r := requireReporter(t, orderedWriter{write: func([]byte) { order = append(order, "title") }}, config.ExecutorClaude)
+
+	r.WrapLogger(inner).PrintSection(status.NewInternalReviewSection(2, ""))
+
+	assert.Equal(t, []string{"section", "title"}, order)
+}
+
+type fakeLogger struct {
+	printFormat   string
+	printArgs     []any
+	rawFormat     string
+	rawArgs       []any
+	sections      []status.Section
+	aligned       string
+	question      string
+	options       []string
+	answer        string
+	draftAction   string
+	draftFeedback string
+	onSection     func()
+}
+
+func (l *fakeLogger) Print(format string, args ...any) { l.printFormat, l.printArgs = format, args }
+func (l *fakeLogger) PrintRaw(format string, args ...any) {
+	l.rawFormat, l.rawArgs = format, args
+}
+func (l *fakeLogger) PrintSection(section status.Section) {
+	l.sections = append(l.sections, section)
+	if l.onSection != nil {
+		l.onSection()
+	}
+}
+func (l *fakeLogger) PrintAligned(text string) { l.aligned = text }
+func (l *fakeLogger) LogQuestion(question string, options []string) {
+	l.question, l.options = question, options
+}
+func (l *fakeLogger) LogAnswer(answer string) { l.answer = answer }
+func (l *fakeLogger) LogDraftReview(action, feedback string) {
+	l.draftAction, l.draftFeedback = action, feedback
+}
+func (l *fakeLogger) Path() string { return "progress.txt" }
+
+type orderedWriter struct {
+	write func([]byte)
+}
+
+func (w orderedWriter) Write(p []byte) (int, error) {
+	w.write(p)
+	return len(p), nil
+}
+
+func writeTestPlan(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "plan.md")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
+}
+
 func requireReporter(t *testing.T, w io.Writer, executor string) *Reporter {
 	t.Helper()
-	r := newReporter(true, "plan.md", executor, w, func() bool { return true })
+	return requireReporterWithPlan(t, w, executor, "plan.md")
+}
+
+func requireReporterWithPlan(t *testing.T, w io.Writer, executor, planFile string) *Reporter {
+	t.Helper()
+	r := newReporter(true, planFile, executor, w, func() bool { return true })
 	require.NotNil(t, r)
 	return r
 }

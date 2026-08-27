@@ -201,21 +201,21 @@ wiring exists.
 
 ### Task 3: Section observer and logger wrapper for task and iteration numbers
 
-- [ ] write failing tests for `OnSection`: `SectionTaskIteration{Iteration: 3}` with a plan file
+- [x] write failing tests for `OnSection`: `SectionTaskIteration{Iteration: 3}` with a plan file
       of 7 tasks writes `◐ loopai · task 3/7 · claude`; with `planFile == ""` or an unparsable
       plan writes `◐ loopai · task 3 · claude` (never fails); `SectionInternalReview{Iteration: 2}`
       writes the review iteration title; `SectionExternalReviewIteration` and
       `SectionPlanIteration` likewise; `SectionGeneric`, `SectionExternalEvaluation`, and
       `SectionCustomIteration` write nothing; nothing is written after `Finish`/`Stop`
-- [ ] write failing tests for `WrapLogger`: a nil reporter returns the inner logger unchanged
+- [x] write failing tests for `WrapLogger`: a nil reporter returns the inner logger unchanged
       (`assert.Same`); the wrapper forwards every method of the `Logger` interface to the inner
       logger (mirror `TestReporterWrapLoggerForwardsAllMethods` at `pkg/cmux/cmux_test.go:787`);
       `PrintSection` reaches the inner logger *before* the title is written
-- [ ] declare `orca.Logger` mirroring `cmux.Logger` (`pkg/cmux/cmux.go:681-691`, i.e.
+- [x] declare `orca.Logger` mirroring `cmux.Logger` (`pkg/cmux/cmux.go:681-691`, i.e.
       `progress.SectionLogger`), implement `OnSection`, the `titleLogger` wrapper with an
       embedded inner `Logger` and a `PrintSection` override, and `planTaskTotal` using
       `plan.ParsePlanFile` with every error mapped to total 0
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 4: Waiting-for-input decorator (`WrapInput`)
 
