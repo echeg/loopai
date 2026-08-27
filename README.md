@@ -23,6 +23,7 @@ workflows are distributed through this repository's plugin marketplace.
 - Serves a real-time web dashboard with `--serve`
 - Reports live and persistent completion status to the cmux sidebar when available
 - Optionally hands a run off to its own cmux workspace with `--cmux-workspace[=always|auto]`
+- Reports working, waiting, and completion state through Orca terminal titles with `--orca`
 - Sends optional Telegram, email, Slack, webhook, or custom-script notifications
 
 ## Requirements
@@ -782,6 +783,7 @@ Run `loopai --init` to create a commented project-local configuration. Local fil
 Useful environment variables include:
 
 - `LOOPAI_CONFIG_DIR` — override the global configuration directory
+- `LOOPAI_ORCA` — enable Orca terminal-title status
 - `LOOPAI_WEB_HOST` — dashboard listen address
 
 The embedded configuration documents every option. Extract it with:
@@ -863,6 +865,27 @@ loopai --serve --watch=/path/to/project-a --watch=/path/to/project-b
 
 When loopai runs inside cmux, it reports the phase and effective model, review iteration, task count, spinner, and completion notifications through the public cmux CLI. Started implementation and review runs retain the completion pill described above after success or non-abort execution failure; startup/preflight failures, plan-creation failures, and aborts do not. Outside cmux this integration is a no-op.
 
+Pass `--orca`, set `orca = true` in the loopai configuration, or set `LOOPAI_ORCA=1` to report
+the run through OSC terminal titles. Orca needs no configuration: it reads the terminal title to
+derive the tab name and whether the agent is working, waiting for permission, or idle. loopai emits
+titles only when standard output is a terminal, so redirected and piped output contains no escape
+sequences. The executor suffix is `codex` when Codex is primary and `claude` otherwise.
+
+| loopai state | Terminal title | Orca status |
+|---|---|---|
+| Task phase | `◐ loopai · task 3/7 · claude` | Working |
+| Task phase, total unknown | `◐ loopai · task 3 · claude` | Working |
+| Internal review | `◐ loopai · review · iteration 2 · claude` | Working |
+| External review | `◐ loopai · external review · iteration 1 · claude` | Working |
+| External evaluation | `◐ loopai · external eval · claude` | Working |
+| Plan creation | `◐ loopai · plan · iteration 2 · claude` | Working |
+| Finalize | `◐ loopai · finalize · claude` | Working |
+| Waiting for user input | `loopai · waiting for input · claude` | Permission |
+| Provider limit wait | `loopai · waiting for limit · claude` | Permission |
+| Success | `✳ loopai · done` | Idle |
+| Failure | `✳ loopai · failed` | Idle |
+| Stopped before completion | `✳ loopai` | Idle |
+
 The cmux status pill and progress bar belong to the workspace, not to an individual run, so
 several runs started from one workspace overwrite each other's status. Bare `--cmux-workspace`
 and `--cmux-workspace=always` avoid that by unconditionally handing the run off: loopai creates a
@@ -918,8 +941,9 @@ and is performed once, in the new workspace. With `--plan`, the interactive plan
 the new workspace's terminal.
 
 The new workspace starts a fresh shell, so it does not inherit the environment of the terminal the
-run was started from. `LOOPAI_CONFIG_DIR` and `LOOPAI_WEB_HOST` are carried over with the command;
-anything else the run needs, such as provider credentials, has to come from the shell profile.
+run was started from. `LOOPAI_CONFIG_DIR`, `LOOPAI_ORCA`, and `LOOPAI_WEB_HOST` are carried over
+with the command; anything else the run needs, such as provider credentials, has to come from the
+shell profile.
 The `ANTHROPIC_API_KEY` pass-through travels with the command but the key does not, so loopai warns
 at hand-off when `ANTHROPIC_API_KEY` is set in the current terminal: unless the key also comes from
 the shell profile, the handed-off run falls back to OAuth or the keychain. The warning covers both

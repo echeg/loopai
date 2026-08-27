@@ -55,6 +55,7 @@ pkg/executor/        Claude-compatible and Codex process execution
 pkg/git/             Git CLI operations and worktree management
 pkg/input/           interactive input, fzf fallback, draft review
 pkg/notify/          Telegram, email, Slack, webhook, custom notifications
+pkg/orca/            best-effort OSC terminal-title status integration
 pkg/plan/            plan discovery, parsing, and mutation
 pkg/processor/       pipeline coordinator, prompts, executor policy
 pkg/processor/phase/ task, review, external, finalize, and planning phases
@@ -404,12 +405,14 @@ Standalone close-out routing happens before executor and notification dependenci
 
 `cmd/loopai` resolves effective plan, task, review, and external-review models
 and passes them to `cmux.Reporter`. Phase labels come from `status.PhaseHolder`;
-review iteration labels come from `Reporter.WrapLogger`, which observes
+review iteration labels come from `cmux.Reporter.WrapLogger`, which observes
 structured `PrintSection` calls while forwarding the complete logger interface.
-Keep `Reporter.WrapLogger` in the logger chain after dashboard setup. The
-`progress.SectionTimer` sits below that cmux wrapper and above the dashboard
-broadcast logger, preserving cmux's outermost rate-limit interfaces while timing
-the structured sections. `progress.ValidationTimer` receives that wrapped runner
+Keep `cmux.Reporter.WrapLogger` in the logger chain after dashboard setup. The
+Orca title wrapper sits below the cmux wrapper and above `progress.SectionTimer`,
+which in turn sits above the dashboard broadcast logger. This preserves cmux's
+outermost rate-limit interfaces while timing structured sections. Orca's
+limit-wait title comes from its `status.PhaseHolder` observer, not from the logger
+chain. `progress.ValidationTimer` receives that wrapped runner
 logger, filters executor command-timing events against the plan's `## Validation
 Commands`, and writes per-run and aggregate `validation:` lines through the same
 chain. Its aggregate sums command durations, so concurrent commands can overlap

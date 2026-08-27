@@ -295,16 +295,16 @@ wiring exists.
 
 ### Task 9: Update documentation
 
-- [ ] `README.md`: add a `--orca` bullet to the feature list near the cmux bullets (`:24-25`) and
+- [x] `README.md`: add a `--orca` bullet to the feature list near the cmux bullets (`:24-25`) and
       an "Orca terminal titles" paragraph in `## Progress and dashboard` after the cmux paragraph
       (`:864`), including the title table, the TTY rule, and that orca needs no configuration
-- [ ] `llms.txt`: add the flag to the option list (`:201`) and a one-paragraph description next
+- [x] `llms.txt`: add the flag to the option list (`:201`) and a one-paragraph description next
       to the cmux paragraph (`:179`)
-- [ ] `CLAUDE.md`: add `pkg/orca/` to the project structure list (`:52`), and extend the
+- [x] `CLAUDE.md`: add `pkg/orca/` to the project structure list (`:52`), and extend the
       logger-chain paragraph ("Keep `Reporter.WrapLogger` in the logger chain after dashboard
       setup…") to state that the orca title wrapper sits below the cmux wrapper and above the
       section timer, and that limit-wait titles come from the phase observer, not the logger
-- [ ] `docs/custom-providers.md` or a new short `docs/orca.md` only if README grows past a
+- [x] `docs/custom-providers.md` or a new short `docs/orca.md` only if README grows past a
       screen; otherwise leave README as the single source
 
 ## Technical Details
