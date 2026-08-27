@@ -99,9 +99,41 @@ func TestSelector_SelectWithFzf(t *testing.T) {
 		require.NoError(t, os.WriteFile(planFile, []byte("# Test"), 0o600))
 
 		sel := NewSelector(tmpDir, colors)
+		waitCalled := false
+		sel.SetInputWait(func(wait func() bool) bool {
+			waitCalled = true
+			return wait()
+		})
 		result, err := sel.selectWithFzf(context.Background())
 		require.NoError(t, err)
 		assert.Equal(t, planFile, result)
+		assert.False(t, waitCalled, "auto-selection must not report a human wait")
+	})
+
+	t.Run("multiple plans decorate the interactive wait", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		firstPlan := filepath.Join(tmpDir, "first.md")
+		require.NoError(t, os.WriteFile(firstPlan, []byte("# First"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "second.md"), []byte("# Second"), 0o600))
+
+		binDir := t.TempDir()
+		fzfPath := filepath.Join(binDir, "fzf")
+		require.NoError(t, os.WriteFile(fzfPath, []byte("#!/bin/sh\nsed -n '1p'\n"), 0o755)) //nolint:gosec // executable test fixture
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		sel := NewSelector(tmpDir, colors)
+		var events []string
+		sel.SetInputWait(func(wait func() bool) bool {
+			events = append(events, "waiting")
+			ok := wait()
+			events = append(events, "restored")
+			return ok
+		})
+
+		result, err := sel.selectWithFzf(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, firstPlan, result)
+		assert.Equal(t, []string{"waiting", "restored"}, events)
 	})
 }
 

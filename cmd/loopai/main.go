@@ -433,6 +433,9 @@ func run(ctx context.Context, o opts) (runErr error) {
 
 	// create plan selector for use by plan selection and plan mode
 	selector := plan.NewSelector(cfg.PlansDir, colors)
+	if setupTitles != nil {
+		selector.SetInputWait(setupTitles.WithInputWait)
+	}
 
 	// plan mode has different flow - doesn't require plan file selection
 	if mode == processor.ModePlan {
@@ -1222,6 +1225,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		NotifySvc:        req.NotifySvc,
 		CmuxStop:         req.CmuxStop,
 		CmuxHandoff:      req.CmuxHandoff,
+		SetupTitles:      req.SetupTitles,
 		BeforeCmuxFinish: finishState.beforeCmuxFinish,
 		ProgressLog:      baseLog,
 		PhaseHolder:      holder,

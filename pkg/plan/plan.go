@@ -26,8 +26,9 @@ var ErrNoPlansFound = errors.New("no plans found")
 
 // Selector handles plan file selection and resolution.
 type Selector struct {
-	PlansDir string
-	Colors   *progress.Colors
+	PlansDir  string
+	Colors    *progress.Colors
+	inputWait func(func() bool) bool
 }
 
 // NewSelector creates a new Selector with the given plans directory and colors.
@@ -36,6 +37,12 @@ func NewSelector(plansDir string, colors *progress.Colors) *Selector {
 		PlansDir: plansDir,
 		Colors:   colors,
 	}
+}
+
+// SetInputWait installs a decorator for the blocking interactive selection step. Validation and
+// single-plan auto-selection remain outside the decorator because they do not wait for a human.
+func (s *Selector) SetInputWait(wait func(func() bool) bool) {
+	s.inputWait = wait
 }
 
 // Select selects and prepares a plan file.
@@ -114,7 +121,16 @@ func (s *Selector) selectWithFzf(ctx context.Context) (string, error) {
 	cmd.Stdin = strings.NewReader(strings.Join(plans, "\n"))
 	cmd.Stderr = os.Stderr
 
-	out, err := cmd.Output()
+	var out []byte
+	run := func() bool {
+		out, err = cmd.Output()
+		return err == nil
+	}
+	if s.inputWait != nil {
+		s.inputWait(run)
+	} else {
+		run()
+	}
 	if err != nil {
 		return "", errors.New("no plan selected")
 	}

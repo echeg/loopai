@@ -6298,6 +6298,14 @@ func TestRunWithWorktreeAutoResume(t *testing.T) {
 		require.NoError(t, err)
 		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "")
 		require.NoError(t, err)
+		var setupTitleOut, executionTitleOut bytes.Buffer
+		setupTitles := orca.NewWithOutput(true, "", config.ExecutorClaude, &setupTitleOut, func() bool { return true })
+		require.NotNil(t, setupTitles)
+		originalNewOrcaReporter := newOrcaReporter
+		t.Cleanup(func() { newOrcaReporter = originalNewOrcaReporter })
+		newOrcaReporter = func(enabled bool, planFile, executor string) *orca.Reporter {
+			return orca.NewWithOutput(enabled, planFile, executor, &executionTitleOut, func() bool { return true })
+		}
 
 		fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
 		writeExecutable(t, fakeClaude, `#!/bin/sh
@@ -6334,11 +6342,15 @@ printf '%s\n' "$*" >> "$CMUX_ARGV_LOG"
 		}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
 			Config: &config.Config{
-				WorktreeEnabled: true, ClaudeCommand: fakeClaude, MovePlanOnCompletion: true,
+				WorktreeEnabled: true, ClaudeCommand: fakeClaude, MovePlanOnCompletion: true, Orca: true,
 			}, Colors: testColors(),
-			DefaultBranch: "master", BaseRef: "master", WtCleanup: &cleanupHolder{},
+			DefaultBranch: "master", BaseRef: "master", WtCleanup: &cleanupHolder{}, SetupTitles: setupTitles,
 		})
 		require.NoError(t, err)
+		assert.Equal(t, "\x1b]0;✳ loopai\a", setupTitleOut.String(),
+			"worktree execution must stop the setup reporter when taking ownership")
+		assert.True(t, strings.HasSuffix(executionTitleOut.String(), "\x1b]0;✳ loopai · done\a"),
+			"the execution reporter's persistent success title must be the final title: %q", executionTitleOut.String())
 		assert.NoDirExists(t, wtPath)
 		assert.FileExists(t, completedPlan)
 		assert.NoFileExists(t, planPath)
