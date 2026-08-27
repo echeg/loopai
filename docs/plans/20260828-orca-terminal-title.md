@@ -230,19 +230,19 @@ wiring exists.
 
 ### Task 5: `orca` config key with `…Set` twin, embedded default, and merge
 
-- [ ] write failing tests in `pkg/config/values_test.go` (or the file that tests `use_worktree`
+- [x] write failing tests in `pkg/config/values_test.go` (or the file that tests `use_worktree`
       parsing): `orca = true` sets `Orca=true, OrcaSet=true`; `orca = false` sets
       `Orca=false, OrcaSet=true`; absent key leaves both false; `orca = maybe` returns
       `invalid orca: …`; `mergeFrom` copies the value only when `OrcaSet`
-- [ ] write failing test in `pkg/config/config_test.go` that `Load` surfaces `Orca`/`OrcaSet` on
+- [x] write failing test in `pkg/config/config_test.go` that `Load` surfaces `Orca`/`OrcaSet` on
       `config.Config`
-- [ ] add `Orca bool` and `OrcaSet bool` to `Values` (`pkg/config/values.go:73-74` pattern), parse
+- [x] add `Orca bool` and `OrcaSet bool` to `Values` (`pkg/config/values.go:73-74` pattern), parse
       `orca` next to `use_worktree` (`:397-403`), merge next to `WorktreeEnabledSet` (`:623-625`),
       and copy to `Config` (`pkg/config/config.go:158-159`, `:402-403`)
-- [ ] add a commented `# orca = false` block to `pkg/config/defaults/config` beside `use_worktree`
+- [x] add a commented `# orca = false` block to `pkg/config/defaults/config` beside `use_worktree`
       (`:217-221`) explaining that it emits OSC terminal titles for orca and is ignored when stdout
       is not a terminal; confirm `make test`'s asset checks and any defaults-config test still pass
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 6: `--orca` flag, env tag, CLI override, and hand-off env list
 

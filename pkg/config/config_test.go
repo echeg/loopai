@@ -26,6 +26,7 @@ func Test_defaultsFS(t *testing.T) {
 	assert.Contains(t, string(data), "the primary fixes them using review_model (or task_model)")
 	assert.Contains(t, string(data), "custom entries in external_reviewers")
 	assert.Contains(t, string(data), "iteration_delay_ms")
+	assert.Contains(t, string(data), "# orca = false")
 }
 
 func TestDumpDefaults_ContainsExternalReviewersComment(t *testing.T) {
@@ -1605,6 +1606,20 @@ func TestLoad_IdleTimeout_DefaultDisabled(t *testing.T) {
 	assert.False(t, cfg.IdleTimeoutSet)
 }
 
+func TestLoad_Orca(t *testing.T) {
+	tmpDir := t.TempDir()
+	configDir := filepath.Join(tmpDir, "ralphex")
+	require.NoError(t, os.MkdirAll(configDir, 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(configDir, "prompts"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(configDir, "agents"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte("orca = true"), 0o600))
+
+	cfg, err := Load(configDir)
+	require.NoError(t, err)
+	assert.True(t, cfg.Orca)
+	assert.True(t, cfg.OrcaSet)
+}
+
 func TestLocalConfig_LocalOverridesIdleTimeout(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalDir := filepath.Join(tmpDir, "global")
@@ -1681,6 +1696,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		PassClaudeMd:            true,
 		MovePlanOnCompletion:    true,
 		WorktreeEnabled:         true,
+		Orca:                    true,
 		PlansDir:                "docs/plans",
 		BacklogDir:              "docs/backlog",
 		WatchDirs:               []string{"a", "b"},
@@ -1709,7 +1725,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		"codex_timeout_ms", "codex_sandbox", "external_review_tool", "external_review_model", "external_reviewers", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
 		"review_patience", "finalize_enabled", "preserve_anthropic_api_key", "executor",
-		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "plans_dir", "backlog_dir",
+		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "orca", "plans_dir", "backlog_dir",
 		"watch_dirs", "default_branch", "vcs_command", "commit_trailer",
 		"claude_error_patterns", "codex_error_patterns", "claude_limit_patterns",
 		"codex_limit_patterns", "claude_retry_patterns", "claude_swap_enabled", "wait_on_limit", "session_timeout", "idle_timeout",
