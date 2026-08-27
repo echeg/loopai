@@ -224,6 +224,7 @@ type executePlanRequest struct {
 	WtCleanup        *cleanupHolder      // worktree cleanup for interrupt handler; nil when not in worktree mode
 	CmuxStop         *cleanupHolder      // cmux sidebar reset for interrupt handler; nil when not wired
 	CmuxHandoff      func()              // releases a quiesced predecessor after this reporter starts
+	SetupTitles      *orca.Reporter      // setup reporter retained until the phase-specific reporter starts
 	BeforeCmuxFinish func(bool)          // final repository/log cleanup; bool reports execution success
 	ProgressLog      *progress.Logger    // pre-created logger (worktree mode); nil in normal mode
 	PhaseHolder      *status.PhaseHolder // pre-created holder (worktree mode); nil in normal mode
@@ -294,7 +295,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, o opts) error {
+func run(ctx context.Context, o opts) (runErr error) {
 	// suppress ^C echo in terminal before setting up interrupt watcher
 	restoreTerminal := disableCtrlCEcho()
 	defer restoreTerminal()
@@ -359,6 +360,18 @@ func run(ctx context.Context, o opts) error {
 	}
 
 	mode := determineMode(o)
+	// Startup and setup happen before executePlan or runPlanMode can construct their reporters.
+	// Keep a title reporter alive across those boundaries so prompts and genuine preflight errors
+	// are visible. Standalone agent generation deliberately does not emit Orca titles.
+	var setupTitles *orca.Reporter
+	if mode != processor.ModeGenAgents {
+		setupTitles = orcaReporter(cfg, "")
+	}
+	defer func() {
+		finishOrcaFailure(setupTitles, runErr)
+		setupTitles.Stop()
+	}()
+
 	externalReview, resolveErr := resolveExternalReviewSelection(o, cfg, mode)
 	if resolveErr != nil {
 		return resolveErr
@@ -403,7 +416,7 @@ func run(ctx context.Context, o opts) error {
 	gitSvc.SetCommitTrailer(cfg.CommitTrailer)
 
 	// ensure repository has commits (prompts to create initial commit if empty)
-	if ensureErr := ensureRepoHasCommits(ctx, gitSvc, os.Stdin, os.Stdout); ensureErr != nil {
+	if ensureErr := ensureRepoHasCommits(ctx, gitSvc, os.Stdin, os.Stdout, setupTitles); ensureErr != nil {
 		return ensureErr
 	}
 
@@ -433,6 +446,7 @@ func run(ctx context.Context, o opts) error {
 			NotifySvc:      notifySvc,
 			WtCleanup:      wtCleanup,
 			CmuxStop:       cmuxStop,
+			SetupTitles:    setupTitles,
 			BranchOverride: o.Branch,
 			ExternalReview: externalReview,
 			LimitRecovery:  limitRecovery,
@@ -449,6 +463,7 @@ func run(ctx context.Context, o opts) error {
 		NotifySvc:      notifySvc,
 		WtCleanup:      wtCleanup,
 		CmuxStop:       cmuxStop,
+		SetupTitles:    setupTitles,
 		BranchOverride: o.Branch,
 		ExternalReview: externalReview,
 		LimitRecovery:  limitRecovery,
@@ -502,7 +517,9 @@ func loadRunConfig(o opts) (*config.Config, error) {
 }
 
 // selectAndExecutePlan selects a plan file, sets up branch or worktree, and runs execution.
-func selectAndExecutePlan(ctx context.Context, o opts, req executePlanRequest, selector *plan.Selector) error {
+func selectAndExecutePlan(ctx context.Context, o opts, req executePlanRequest, selector *plan.Selector) (runErr error) {
+	defer func() { finishOrcaFailure(req.SetupTitles, runErr) }()
+
 	// plan is optional only for review modes (ModeReview, ModeCodexOnly)
 	planOptional := req.Mode == processor.ModeReview || req.Mode == processor.ModeCodexOnly
 	planFile, err := selector.Select(ctx, o.PlanFile, planOptional)
@@ -580,8 +597,11 @@ func tryAutoPlanMode(ctx context.Context, err error, o opts, req executePlanRequ
 			defaultName, getCurrentBranch(req.GitSvc), defaultName, err)
 	}
 
-	description := plan.PromptDescription(ctx, os.Stdin, req.Colors)
-	if description == "" {
+	var description string
+	if !req.SetupTitles.WithInputWait(func() bool {
+		description = plan.PromptDescription(ctx, os.Stdin, req.Colors)
+		return description != ""
+	}) {
 		return true, nil // user canceled
 	}
 
@@ -820,6 +840,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// set up progress logger and phase holder
 	plr, err := setupProgressLogger(o, req, branch)
 	if err != nil {
+		finishOrcaFailure(req.SetupTitles, err)
 		return err
 	}
 	defer plr.closeLog()
@@ -828,6 +849,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// is also registered with the interrupt handler because defers are skipped on force exit.
 	rep := cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview))
 	titles := orcaReporter(req.Config, req.PlanFile)
+	req.SetupTitles.Stop()
 	var cmuxCleanupOnce sync.Once
 	completeCmux := func(elapsed string, runErr error) {
 		cmuxCleanupOnce.Do(func() {
@@ -1054,6 +1076,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	defer func() {
 		if err != nil && !handedOff {
 			notifyCmuxCompletion(cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview)), req.PlanFile, branch, "", err)
+			finishOrcaFailure(req.SetupTitles, err)
 		}
 	}()
 
@@ -2497,7 +2520,9 @@ func codexPlanBanner(o opts, cfg *config.Config) codexBannerInfo {
 // runPlanMode executes interactive plan creation mode.
 // creates input collector, progress logger, and runs the plan creation loop.
 // after plan creation, prompts user to continue with implementation or exit.
-func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *plan.Selector) error {
+func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *plan.Selector) (runErr error) {
+	defer func() { finishOrcaFailure(req.SetupTitles, runErr) }()
+
 	if err := req.GitSvc.EnsureLocalGitignore(); err != nil {
 		return fmt.Errorf("ensure gitignore: %w", err)
 	}
@@ -2536,6 +2561,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	// orca still receives phase and iteration titles.
 	rep := cmux.New("", cmuxRunModels(o, req.Config, req.ExternalReview))
 	titles := orcaReporter(req.Config, "")
+	req.SetupTitles.Stop()
 	defer rep.Stop()
 	defer titles.Stop()
 	if req.CmuxStop != nil {
@@ -2607,7 +2633,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	r.SetInputCollector(rep.WrapInput(titles.WrapInput(collector)))
 
 	// run the plan creation loop
-	runErr := runWithSectionTiming(ctx, r.Run, sectionTimer)
+	runErr = runWithSectionTiming(ctx, r.Run, sectionTimer)
 	if runErr != nil {
 		wrapped := fmt.Errorf("plan creation: %w", runErr)
 		planCreationErr = wrapped
@@ -2669,7 +2695,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 
 	// worktree mode: create worktree and run from there
 	if req.Config.WorktreeEnabled {
-		runErr := runWithWorktree(ctx, o, executePlanRequest{
+		runErr = runWithWorktree(ctx, o, executePlanRequest{
 			PlanFile:       planFile,
 			Mode:           processor.ModeFull,
 			GitSvc:         req.GitSvc,
@@ -2681,6 +2707,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 			WtCleanup:      req.WtCleanup,
 			CmuxStop:       req.CmuxStop,
 			CmuxHandoff:    cmuxHandoff,
+			SetupTitles:    titles,
 			BranchOverride: req.BranchOverride,
 			ExternalReview: req.ExternalReview,
 			LimitRecovery:  req.LimitRecovery,
@@ -2699,7 +2726,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		return wrapped
 	}
 
-	return executePlan(ctx, o, executePlanRequest{
+	runErr = executePlan(ctx, o, executePlanRequest{
 		PlanFile:       planFile,
 		Mode:           processor.ModeFull,
 		GitSvc:         req.GitSvc,
@@ -2710,9 +2737,12 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		NotifySvc:      req.NotifySvc,
 		CmuxStop:       req.CmuxStop,
 		CmuxHandoff:    cmuxHandoff,
+		SetupTitles:    titles,
 		ExternalReview: req.ExternalReview,
 		LimitRecovery:  req.LimitRecovery,
 	})
+	finishOrcaFailure(titles, runErr)
+	return runErr
 }
 
 // reservedAgentNames are the built-in review agent names. A generated file using one
@@ -4804,18 +4834,26 @@ func sameBranch(branch, ref string) bool {
 
 // ensureRepoHasCommits checks that the repository has at least one commit.
 // If the repository is empty, prompts the user to create an initial commit.
-func ensureRepoHasCommits(ctx context.Context, gitSvc *git.Service, stdin io.Reader, stdout io.Writer) error {
+func ensureRepoHasCommits(
+	ctx context.Context,
+	gitSvc *git.Service,
+	stdin io.Reader,
+	stdout io.Writer,
+	titles *orca.Reporter,
+) error {
 	// track if we actually created a commit
 	createdCommit := false
 	promptFn := func() bool {
-		fmt.Fprintln(stdout, "repository has no commits")
-		fmt.Fprintln(stdout, "loopai needs at least one commit to create feature branches.")
-		fmt.Fprintln(stdout)
-		if !input.AskYesNo(ctx, "create initial commit?", stdin, stdout) {
-			return false
-		}
-		createdCommit = true
-		return true
+		return titles.WithInputWait(func() bool {
+			fmt.Fprintln(stdout, "repository has no commits")
+			fmt.Fprintln(stdout, "loopai needs at least one commit to create feature branches.")
+			fmt.Fprintln(stdout)
+			if !input.AskYesNo(ctx, "create initial commit?", stdin, stdout) {
+				return false
+			}
+			createdCommit = true
+			return true
+		})
 	}
 
 	if err := gitSvc.EnsureHasCommits(promptFn); err != nil {

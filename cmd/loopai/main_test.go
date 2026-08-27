@@ -984,6 +984,29 @@ func TestTryAutoPlanMode(t *testing.T) {
 		assert.False(t, handled, "non-missing-plans error propagates to caller untouched")
 		require.NoError(t, err)
 	})
+
+	t.Run("description_prompt_reports_input_wait", func(t *testing.T) {
+		req, selector := newReq(t, "master")
+		var titleOut bytes.Buffer
+		req.SetupTitles = orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
+
+		oldStdin := os.Stdin
+		stdin, inputWriter, pipeErr := os.Pipe()
+		require.NoError(t, pipeErr)
+		_, writeErr := inputWriter.WriteString("\n")
+		require.NoError(t, writeErr)
+		require.NoError(t, inputWriter.Close())
+		os.Stdin = stdin
+		t.Cleanup(func() {
+			os.Stdin = oldStdin
+			_ = stdin.Close()
+		})
+
+		handled, err := tryAutoPlanMode(t.Context(), plan.ErrNoPlansFound, opts{}, req, selector)
+		assert.True(t, handled)
+		require.NoError(t, err)
+		assert.Equal(t, "\x1b]0;loopai · waiting for input · claude\a", titleOut.String())
+	})
 }
 
 func TestCheckClaudeDep(t *testing.T) {
@@ -3125,7 +3148,7 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		require.NoError(t, err)
 
 		var stdout bytes.Buffer
-		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader(""), &stdout)
+		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader(""), &stdout, nil)
 		assert.NoError(t, err)
 	})
 
@@ -3145,7 +3168,7 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		assert.False(t, hasCommits)
 
 		var stdout bytes.Buffer
-		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("y\n"), &stdout)
+		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("y\n"), &stdout, nil)
 		require.NoError(t, err)
 
 		// verify commit was created
@@ -3166,9 +3189,22 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		require.NoError(t, err)
 
 		var stdout bytes.Buffer
-		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("n\n"), &stdout)
+		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("n\n"), &stdout, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no commits - please create initial commit manually")
+	})
+
+	t.Run("initial commit prompt reports input wait", func(t *testing.T) {
+		dir := initEmptyRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		var stdout, titleOut bytes.Buffer
+		titles := orca.NewWithOutput(true, "", config.ExecutorCodex, &titleOut, func() bool { return true })
+
+		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("n\n"), &stdout, titles)
+
+		require.Error(t, err)
+		assert.Equal(t, "\x1b]0;loopai · waiting for input · codex\a", titleOut.String())
 	})
 
 	t.Run("returns error on EOF", func(t *testing.T) {
@@ -3178,7 +3214,7 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		require.NoError(t, err)
 
 		var stdout bytes.Buffer
-		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader(""), &stdout)
+		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader(""), &stdout, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no commits - please create initial commit manually")
 	})
@@ -3192,7 +3228,7 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		require.NoError(t, err)
 
 		var stdout bytes.Buffer
-		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("y\n"), &stdout)
+		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("y\n"), &stdout, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create initial commit")
 	})
@@ -3207,7 +3243,7 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		cancel() // cancel immediately
 
 		var stdout bytes.Buffer
-		err = ensureRepoHasCommits(ctx, gitSvc, strings.NewReader("y\n"), &stdout)
+		err = ensureRepoHasCommits(ctx, gitSvc, strings.NewReader("y\n"), &stdout, nil)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
 	})
@@ -6610,8 +6646,7 @@ printf '%s\n' "$*" >> "$CMUX_ARGV_LOG"
 
 func TestRunWithWorktree_NotifiesSetupFailure(t *testing.T) {
 	// worktree setup runs before executePlan creates its own reporter, so runWithWorktree must
-	// raise the cmux banner for its own failures: the plan-mode handoff already stopped its
-	// reporter and a direct run never had one, so nothing downstream would report this.
+	// raise the cmux banner and finish the predecessor Orca reporter for its own failures.
 	dir := setupTestRepo(t)
 	origDir, err := os.Getwd()
 	require.NoError(t, err)
@@ -6638,12 +6673,15 @@ func TestRunWithWorktree_NotifiesSetupFailure(t *testing.T) {
 
 	// pre-create the worktree dir to force an "already exists" failure during setup
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "worktrees", "wt-notify"), 0o750))
+	var titleOut bytes.Buffer
+	setupTitles := orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
 
 	err = runWithWorktree(t.Context(), opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
 		PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{WorktreeEnabled: true},
-		Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{}, SetupTitles: setupTitles,
 	})
 	require.Error(t, err)
+	assert.Equal(t, "\x1b]0;✳ loopai · failed\a", titleOut.String())
 
 	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 	require.NoError(t, readErr, "setup failure must reach the cmux CLI")

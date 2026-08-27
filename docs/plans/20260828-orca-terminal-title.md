@@ -352,7 +352,8 @@ first section) writes `◐ loopai · task · claude`.
 
 ### Processing flow
 
-1. `executePlan` builds `titles := orcaReporter(cfg, planFile)` (nil unless `cfg.Orca` and TTY).
+1. `run` builds a setup reporter (nil unless `cfg.Orca` and TTY) for startup prompts and errors;
+   `runPlanMode` or `executePlan` replaces it only after progress setup succeeds.
 2. Logger chain, innermost → outermost: `progress.Logger` → `web.BroadcastLogger` (optional) →
    `progress.SectionTimer` → `orca.titleLogger` → `cmux.reportingLogger`.
 3. Phase changes reach `titles.OnPhase` from the `PhaseHolder`; task/iteration numbers reach
