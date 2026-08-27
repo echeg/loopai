@@ -2,6 +2,7 @@ package orca
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -273,6 +274,109 @@ func TestReporterWrapLoggerPrintsSectionBeforeTitle(t *testing.T) {
 	r.WrapLogger(inner).PrintSection(status.NewInternalReviewSection(2, ""))
 
 	assert.Equal(t, []string{"section", "title"}, order)
+}
+
+func TestReporterWrapInputNilReporter(t *testing.T) {
+	var r *Reporter
+	inner := &fakeInputCollector{}
+
+	assert.Same(t, inner, r.WrapInput(inner))
+}
+
+func TestReporterWrapInputAskQuestion(t *testing.T) {
+	var out bytes.Buffer
+	r := requireReporter(t, &out, config.ExecutorClaude)
+	r.OnSection(status.NewTaskIterationSection(3))
+	out.Reset()
+
+	wantErr := errors.New("collector failed")
+	inner := &fakeInputCollector{
+		answer: "option b",
+		err:    wantErr,
+		onCall: func() {
+			assert.Equal(t, "\x1b]0;loopai · waiting for input · claude\a", out.String(),
+				"the waiting title must be written before delegating")
+		},
+	}
+
+	answer, err := r.WrapInput(inner).AskQuestion(t.Context(), "which storage?", []string{"a", "b"})
+
+	assert.Equal(t, "option b", answer)
+	assert.Same(t, wantErr, err, "the inner error must pass through unchanged")
+	assert.Equal(t, "which storage?", inner.question)
+	assert.Equal(t, []string{"a", "b"}, inner.options)
+	assert.Equal(t, "\x1b]0;loopai · waiting for input · claude\a"+
+		"\x1b]0;◐ loopai · task 3 · claude\a", out.String())
+}
+
+func TestReporterWrapInputAskDraftReview(t *testing.T) {
+	var out bytes.Buffer
+	r := requireReporter(t, &out, config.ExecutorCodex)
+	r.OnSection(status.NewInternalReviewSection(2, ""))
+	out.Reset()
+
+	wantErr := errors.New("editor failed")
+	inner := &fakeInputCollector{
+		action:   "revise",
+		feedback: "add details",
+		err:      wantErr,
+		onCall: func() {
+			assert.Equal(t, "\x1b]0;loopai · waiting for input · codex\a", out.String(),
+				"the waiting title must be written before delegating")
+		},
+	}
+
+	action, feedback, err := r.WrapInput(inner).AskDraftReview(t.Context(), "review the draft", "# plan\n")
+
+	assert.Equal(t, "revise", action)
+	assert.Equal(t, "add details", feedback)
+	assert.Same(t, wantErr, err, "the inner error must pass through unchanged")
+	assert.Equal(t, "review the draft", inner.question)
+	assert.Equal(t, "# plan\n", inner.planContent)
+	assert.Equal(t, "\x1b]0;loopai · waiting for input · codex\a"+
+		"\x1b]0;◐ loopai · review · iteration 2 · codex\a", out.String())
+}
+
+func TestReporterWrapInputAfterFinishWritesNothing(t *testing.T) {
+	var out bytes.Buffer
+	r := requireReporter(t, &out, config.ExecutorClaude)
+	r.Finish(true)
+	out.Reset()
+	inner := &fakeInputCollector{answer: "yes"}
+
+	answer, err := r.WrapInput(inner).AskQuestion(t.Context(), "continue?", nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, "yes", answer)
+	assert.Equal(t, "continue?", inner.question, "the finished reporter must still delegate")
+	assert.Empty(t, out.String())
+}
+
+type fakeInputCollector struct {
+	question    string
+	options     []string
+	planContent string
+	answer      string
+	action      string
+	feedback    string
+	err         error
+	onCall      func()
+}
+
+func (c *fakeInputCollector) AskQuestion(_ context.Context, question string, options []string) (string, error) {
+	c.question, c.options = question, options
+	if c.onCall != nil {
+		c.onCall()
+	}
+	return c.answer, c.err
+}
+
+func (c *fakeInputCollector) AskDraftReview(_ context.Context, question, planContent string) (string, string, error) {
+	c.question, c.planContent = question, planContent
+	if c.onCall != nil {
+		c.onCall()
+	}
+	return c.action, c.feedback, c.err
 }
 
 type fakeLogger struct {

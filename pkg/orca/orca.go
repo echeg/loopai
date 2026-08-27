@@ -6,6 +6,7 @@
 package orca
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -172,6 +173,65 @@ type titleLogger struct {
 func (l *titleLogger) PrintSection(section status.Section) {
 	l.Logger.PrintSection(section)
 	l.rep.OnSection(section)
+}
+
+// inputCollector collects interactive input during plan creation. It mirrors
+// processor.InputCollector and is declared here because the wrapper below is the only consumer,
+// which also keeps pkg/orca free of a dependency on pkg/processor.
+type inputCollector interface {
+	AskQuestion(ctx context.Context, question string, options []string) (string, error)
+	AskDraftReview(ctx context.Context, question, planContent string) (action, feedback string, err error)
+}
+
+// WrapInput decorates an input collector so terminal titles show when the run is waiting for a
+// human. A disabled reporter returns the original collector unchanged.
+func (r *Reporter) WrapInput(collector inputCollector) inputCollector {
+	if r == nil {
+		return collector
+	}
+	return &titleCollector{rep: r, inner: collector}
+}
+
+type titleCollector struct {
+	rep   *Reporter
+	inner inputCollector
+}
+
+// AskQuestion publishes the waiting title, delegates, and restores the preceding working title.
+func (c *titleCollector) AskQuestion(ctx context.Context, question string, options []string) (string, error) {
+	restore := c.rep.beginInputWait()
+	defer restore()
+	return c.inner.AskQuestion(ctx, question, options) //nolint:wrapcheck // decorator passes the inner error through unchanged
+}
+
+// AskDraftReview publishes the waiting title, delegates, and restores the preceding working title.
+func (c *titleCollector) AskDraftReview(ctx context.Context, question, planContent string) (action, feedback string, err error) {
+	restore := c.rep.beginInputWait()
+	defer restore()
+	return c.inner.AskDraftReview(ctx, question, planContent) //nolint:wrapcheck // decorator passes the inner error through unchanged
+}
+
+func (r *Reporter) beginInputWait() func() {
+	r.mu.Lock()
+	if r.quiesced || r.stopped || r.finished {
+		r.mu.Unlock()
+		return func() {}
+	}
+
+	previous := r.current
+	r.current.waiting = waitingInput
+	r.emitLocked()
+	r.mu.Unlock()
+
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.quiesced || r.stopped || r.finished {
+			return
+		}
+		r.current = previous
+		r.emitLocked()
+	}
 }
 
 func planTaskTotal(planFile string) int {

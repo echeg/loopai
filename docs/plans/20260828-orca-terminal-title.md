@@ -219,14 +219,14 @@ wiring exists.
 
 ### Task 4: Waiting-for-input decorator (`WrapInput`)
 
-- [ ] write failing tests: `WrapInput` on a nil reporter returns the collector unchanged;
+- [x] write failing tests: `WrapInput` on a nil reporter returns the collector unchanged;
       `AskQuestion` writes `loopai · waiting for input · claude` before delegating, returns the
       inner result and error untouched, and restores the previous working title after the inner
       call returns; `AskDraftReview` behaves the same; after `Finish` no title is written
-- [ ] declare a local `inputCollector` interface mirroring `processor.InputCollector` (as
+- [x] declare a local `inputCollector` interface mirroring `processor.InputCollector` (as
       `pkg/cmux/cmux.go:729-733` does, to keep `pkg/orca` free of a `pkg/processor` import) and
       implement the decorator with the same `//nolint:wrapcheck` pass-through comment style
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 5: `orca` config key with `…Set` twin, embedded default, and merge
 
