@@ -282,16 +282,16 @@ wiring exists.
 
 ### Task 8: Verify acceptance criteria
 
-- [ ] verify every row of the Overview title table has a passing exact-bytes test
-- [ ] verify a run without `--orca` and without `orca = true` writes no escape sequence
+- [x] verify every row of the Overview title table has a passing exact-bytes test
+- [x] verify a run without `--orca` and without `orca = true` writes no escape sequence
       (test `New` disabled path plus `buildRunnerLogger` with nil reporters)
-- [ ] verify the non-TTY path writes nothing even with the flag on
-- [ ] verify `--orca` combined with `--cmux-workspace` is accepted by `validateFlags` and that
+- [x] verify the non-TTY path writes nothing even with the flag on
+- [x] verify `--orca` combined with `--cmux-workspace` is accepted by `validateFlags` and that
       `cmuxHandOffArgv` carries `LOOPAI_ORCA` when set in the environment
-- [ ] run `make test` (full suite, race-enabled) — must pass
-- [ ] run `make lint` — all issues fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...` — must compile
-- [ ] verify `pkg/orca` coverage is at or above the project standard (80%+)
+- [x] run `make test` (full suite, race-enabled) — must pass
+- [x] run `make lint` — all issues fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...` — must compile
+- [x] verify `pkg/orca` coverage is at or above the project standard (80%+)
 
 ### Task 9: Update documentation
 

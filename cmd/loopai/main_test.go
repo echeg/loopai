@@ -469,6 +469,14 @@ func TestCmuxWorkspaceFlagParsing(t *testing.T) {
 	}
 }
 
+func TestOrcaWithCmuxWorkspaceIsValid(t *testing.T) {
+	o := parseTestOpts(t, "--orca", "--cmux-workspace=always", "plan.md")
+
+	assert.True(t, o.Orca)
+	assert.Equal(t, "always", o.CmuxWorkspace)
+	require.NoError(t, validateFlags(o))
+}
+
 func TestCommitFlagParsing(t *testing.T) {
 	t.Run("short flag sets commit", func(t *testing.T) {
 		o := parseTestOpts(t, "-c")
@@ -10221,9 +10229,13 @@ func TestCmuxHandOffArgv(t *testing.T) {
 	t.Run("every environment option is forwarded", func(t *testing.T) {
 		clearCmuxEnvOptions(t)
 		t.Setenv("LOOPAI_CONFIG_DIR", "/cfg")
+		t.Setenv("LOOPAI_ORCA", "true")
 		t.Setenv("LOOPAI_WEB_HOST", "0.0.0.0")
 		argv := cmuxHandOffArgv("/bin/loopai", []string{"--serve"})
-		assert.Equal(t, []string{"env", "LOOPAI_CONFIG_DIR=/cfg", "LOOPAI_WEB_HOST=0.0.0.0", "/bin/loopai", "--serve"}, argv)
+		assert.Equal(t, []string{
+			"env", "LOOPAI_CONFIG_DIR=/cfg", "LOOPAI_ORCA=true", "LOOPAI_WEB_HOST=0.0.0.0",
+			"/bin/loopai", "--serve",
+		}, argv)
 	})
 }
 
