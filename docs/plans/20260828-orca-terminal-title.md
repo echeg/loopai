@@ -162,19 +162,19 @@ GOOS=windows GOARCH=amd64 go build ./...
 Pure functions first, so the vocabulary in the Overview table is pinned by tests before any
 wiring exists.
 
-- [ ] write failing table-driven tests in `pkg/orca/orca_test.go` for `titleFor(state, executor)`
+- [x] write failing table-driven tests in `pkg/orca/orca_test.go` for `titleFor(state, executor)`
       covering every row of the Overview table: task with total, task without total (0), each
       phase label, review/external-review iterations, plan iteration, waiting-for-input,
       waiting-for-limit, done, failed, stopped; assert exact strings including `◐`, `✳`, ` · `
-- [ ] write failing tests for `writeTitle(w io.Writer, title string)` asserting the exact bytes
+- [x] write failing tests for `writeTitle(w io.Writer, title string)` asserting the exact bytes
       `"\x1b]0;" + title + "\a"` land in a `bytes.Buffer` in a single `Write` call (use a writer
       double that counts calls), and that a writer error is swallowed and returns nothing
-- [ ] create `pkg/orca/orca.go` with a package doc mirroring `pkg/cmux/cmux.go:1-5` (best-effort,
+- [x] create `pkg/orca/orca.go` with a package doc mirroring `pkg/cmux/cmux.go:1-5` (best-effort,
       one-directional, nil reporter = no-op), a `state` value type (phase, task, total, iteration,
       waiting kind, final kind), `titleFor`, and `writeTitle`; every title is emitted through
       `writeTitle` and nothing else in the package touches the writer
-- [ ] make the tests pass; run `go test ./pkg/orca/...`
-- [ ] run tests - must pass before next task
+- [x] make the tests pass; run `go test ./pkg/orca/...`
+- [x] run tests - must pass before next task
 
 ### Task 2: `Reporter` lifecycle: `New`, TTY gating, `OnPhase`, `Finish`, `Stop`, nil safety
 
