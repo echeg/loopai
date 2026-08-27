@@ -223,6 +223,7 @@ type executePlanRequest struct {
 	BranchOverride   string              // branch name override (--branch flag); empty = derive from plan filename
 	WtCleanup        *cleanupHolder      // worktree cleanup for interrupt handler; nil when not in worktree mode
 	CmuxStop         *cleanupHolder      // cmux sidebar reset for interrupt handler; nil when not wired
+	OrcaStop         *cleanupHolder      // terminal-title reset for interrupt handler; nil when not wired
 	CmuxHandoff      func()              // releases a quiesced predecessor after this reporter starts
 	SetupTitles      *orca.Reporter      // setup reporter retained until the phase-specific reporter starts
 	BeforeCmuxFinish func(bool)          // final repository/log cleanup; bool reports execution success
@@ -309,10 +310,11 @@ func run(ctx context.Context, o opts) (runErr error) {
 	// sidebar until cmux itself restarts.
 	cmuxStop := &cleanupHolder{}
 	defer cmuxStop.call()
+	orcaStop := &cleanupHolder{}
 
 	// print immediate feedback when context is canceled (Ctrl+C).
 	// returned cleanup ensures goroutine exits when run() returns, avoiding leaks in tests.
-	defer startInterruptWatcher(ctx, forceExitCleanup(restoreTerminal, cmuxStop, wtCleanup))()
+	defer startInterruptWatcher(ctx, forceExitCleanup(restoreTerminal, cmuxStop, orcaStop, wtCleanup))()
 
 	// A normal invocation replaces any prior completion outcome even when startup or preflight
 	// fails. Auto mode waits until it owns a reservation or reporter, since a pre-validation pill
@@ -366,6 +368,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 	var setupTitles *orca.Reporter
 	if mode != processor.ModeGenAgents {
 		setupTitles = orcaReporter(cfg, "")
+		setOrcaCleanup(orcaStop, setupTitles)
 	}
 	defer func() {
 		finishOrcaFailure(setupTitles, runErr)
@@ -449,6 +452,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 			NotifySvc:      notifySvc,
 			WtCleanup:      wtCleanup,
 			CmuxStop:       cmuxStop,
+			OrcaStop:       orcaStop,
 			SetupTitles:    setupTitles,
 			BranchOverride: o.Branch,
 			ExternalReview: externalReview,
@@ -466,6 +470,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 		NotifySvc:      notifySvc,
 		WtCleanup:      wtCleanup,
 		CmuxStop:       cmuxStop,
+		OrcaStop:       orcaStop,
 		SetupTitles:    setupTitles,
 		BranchOverride: o.Branch,
 		ExternalReview: externalReview,
@@ -818,6 +823,12 @@ func orcaReporter(cfg *config.Config, planFile string) *orca.Reporter {
 	return newOrcaReporter(true, planFile, executor)
 }
 
+func setOrcaCleanup(holder *cleanupHolder, titles *orca.Reporter) {
+	if holder != nil {
+		holder.set(titles.Stop)
+	}
+}
+
 // buildRunnerLogger installs the orca title wrapper below cmux and above section timing. Keeping
 // cmux outermost preserves its optional rate-limit reporting methods.
 func buildRunnerLogger(rep *cmux.Reporter, titles *orca.Reporter, inner progress.SectionLogger) (processor.Logger, *progress.SectionTimer) {
@@ -852,6 +863,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// is also registered with the interrupt handler because defers are skipped on force exit.
 	rep := cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview))
 	titles := orcaReporter(req.Config, req.PlanFile)
+	setOrcaCleanup(req.OrcaStop, titles)
 	req.SetupTitles.Stop()
 	var cmuxCleanupOnce sync.Once
 	completeCmux := func(elapsed string, runErr error) {
@@ -1224,6 +1236,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		BaseRef:          req.BaseRef,
 		NotifySvc:        req.NotifySvc,
 		CmuxStop:         req.CmuxStop,
+		OrcaStop:         req.OrcaStop,
 		CmuxHandoff:      req.CmuxHandoff,
 		SetupTitles:      req.SetupTitles,
 		BeforeCmuxFinish: finishState.beforeCmuxFinish,
@@ -2565,6 +2578,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	// orca still receives phase and iteration titles.
 	rep := cmux.New("", cmuxRunModels(o, req.Config, req.ExternalReview))
 	titles := orcaReporter(req.Config, "")
+	setOrcaCleanup(req.OrcaStop, titles)
 	req.SetupTitles.Stop()
 	defer rep.Stop()
 	defer titles.Stop()
@@ -2710,6 +2724,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 			NotifySvc:      req.NotifySvc,
 			WtCleanup:      req.WtCleanup,
 			CmuxStop:       req.CmuxStop,
+			OrcaStop:       req.OrcaStop,
 			CmuxHandoff:    cmuxHandoff,
 			SetupTitles:    titles,
 			BranchOverride: req.BranchOverride,
@@ -2740,6 +2755,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		BaseRef:        req.BaseRef,
 		NotifySvc:      req.NotifySvc,
 		CmuxStop:       req.CmuxStop,
+		OrcaStop:       req.OrcaStop,
 		CmuxHandoff:    cmuxHandoff,
 		SetupTitles:    titles,
 		ExternalReview: req.ExternalReview,

@@ -135,6 +135,24 @@ func TestSelector_SelectWithFzf(t *testing.T) {
 		assert.Equal(t, firstPlan, result)
 		assert.Equal(t, []string{"waiting", "restored"}, events)
 	})
+
+	t.Run("multiple plan selection preserves context cancellation", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "first.md"), []byte("# First"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "second.md"), []byte("# Second"), 0o600))
+
+		binDir := t.TempDir()
+		fzfPath := filepath.Join(binDir, "fzf")
+		require.NoError(t, os.WriteFile(fzfPath, []byte("#!/bin/sh\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, err := NewSelector(tmpDir, colors).selectWithFzf(ctx)
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
 }
 
 func TestSelector_FindRecent(t *testing.T) {

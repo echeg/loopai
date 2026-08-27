@@ -163,6 +163,18 @@ func TestOrcaReporter(t *testing.T) {
 	}, calls)
 }
 
+func TestSetOrcaCleanupStopsReporterOnForceExit(t *testing.T) {
+	var titleOut bytes.Buffer
+	titles := orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
+	require.NotNil(t, titles)
+	holder := &cleanupHolder{}
+
+	setOrcaCleanup(holder, titles)
+	forceExitCleanup(func() {}, holder)()
+
+	assert.Equal(t, "\x1b]0;✳ loopai\a", titleOut.String())
+}
+
 func TestBuildRunnerLoggerWithOrcaReporterWritesTitle(t *testing.T) {
 	var titles bytes.Buffer
 	titleRep := orca.NewWithOutput(true, "", config.ExecutorClaude, &titles, func() bool { return true })
@@ -1005,7 +1017,8 @@ func TestTryAutoPlanMode(t *testing.T) {
 		handled, err := tryAutoPlanMode(t.Context(), plan.ErrNoPlansFound, opts{}, req, selector)
 		assert.True(t, handled)
 		require.NoError(t, err)
-		assert.Equal(t, "\x1b]0;loopai · waiting for input · claude\a", titleOut.String())
+		assert.Equal(t, "\x1b]0;loopai · waiting for input · claude\a"+
+			"\x1b]0;✳ loopai\a", titleOut.String())
 	})
 }
 
@@ -3204,7 +3217,8 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("n\n"), &stdout, titles)
 
 		require.Error(t, err)
-		assert.Equal(t, "\x1b]0;loopai · waiting for input · codex\a", titleOut.String())
+		assert.Equal(t, "\x1b]0;loopai · waiting for input · codex\a"+
+			"\x1b]0;✳ loopai\a", titleOut.String())
 	})
 
 	t.Run("returns error on EOF", func(t *testing.T) {

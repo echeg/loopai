@@ -251,6 +251,14 @@ func (r *Reporter) beginInputWait() func() {
 			return
 		}
 		r.current = previous
+		// Setup reporters can enter an input wait before any phase or section has supplied a
+		// working title. Restore those reporters to a visible, non-final idle title instead of
+		// leaving Orca stuck on the permission state. Do not store finalStopped here: the same
+		// reporter must remain able to publish later setup waits and failures.
+		if titleFor(r.current, r.executor) == "" {
+			writeTitle(r.writer, "✳ loopai")
+			return
+		}
 		r.emitLocked()
 	}
 }

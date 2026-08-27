@@ -132,6 +132,9 @@ func (s *Selector) selectWithFzf(ctx context.Context) (string, error) {
 		run()
 	}
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("select plan: %w", ctxErr)
+		}
 		return "", errors.New("no plan selected")
 	}
 
