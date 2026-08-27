@@ -3,12 +3,142 @@ package orca
 import (
 	"bytes"
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/status"
 )
+
+func TestNew(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		assert.Nil(t, newReporter(false, "plan.md", config.ExecutorClaude, io.Discard, func() bool { return true }))
+	})
+
+	t.Run("stdout is not terminal", func(t *testing.T) {
+		assert.Nil(t, newReporter(true, "plan.md", config.ExecutorClaude, io.Discard, func() bool { return false }))
+	})
+
+	t.Run("enabled terminal", func(t *testing.T) {
+		r := newReporter(true, "plan.md", config.ExecutorCodex, io.Discard, func() bool { return true })
+		require.NotNil(t, r)
+		assert.Equal(t, "plan.md", r.planFile)
+		assert.Equal(t, "codex", r.executor)
+	})
+
+	assert.Nil(t, New(false, "plan.md", config.ExecutorClaude))
+}
+
+func TestReporterNilReceiver(t *testing.T) {
+	var r *Reporter
+
+	tests := []struct {
+		name string
+		call func()
+	}{
+		{name: "on phase", call: func() { r.OnPhase(status.PhaseTask, status.PhaseReview) }},
+		{name: "on section", call: func() { r.OnSection(status.NewTaskIterationSection(1)) }},
+		{name: "finish", call: func() { r.Finish(true) }},
+		{name: "stop", call: func() { r.Stop() }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.NotPanics(t, tt.call)
+		})
+	}
+}
+
+func TestReporterOnPhaseAsObserver(t *testing.T) {
+	tests := []struct {
+		name     string
+		phase    status.Phase
+		executor string
+		want     string
+	}{
+		{name: "task", phase: status.PhaseTask, executor: config.ExecutorClaude, want: "\x1b]0;◐ loopai · task · claude\a"},
+		{name: "review", phase: status.PhaseReview, executor: config.ExecutorClaude, want: "\x1b]0;◐ loopai · review · claude\a"},
+		{name: "external review", phase: status.PhaseExternalReview, executor: config.ExecutorClaude, want: "\x1b]0;◐ loopai · external review · claude\a"},
+		{name: "external evaluation", phase: status.PhaseExternalEval, executor: config.ExecutorCodex, want: "\x1b]0;◐ loopai · external eval · codex\a"},
+		{name: "plan", phase: status.PhasePlan, executor: config.ExecutorClaude, want: "\x1b]0;◐ loopai · plan · claude\a"},
+		{name: "finalize", phase: status.PhaseFinalize, executor: config.ExecutorCodex, want: "\x1b]0;◐ loopai · finalize · codex\a"},
+		{name: "limit wait", phase: status.PhaseLimitWait, executor: config.ExecutorCodex, want: "\x1b]0;loopai · waiting for limit · codex\a"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			r := requireReporter(t, &out, tt.executor)
+			holder := &status.PhaseHolder{}
+			holder.OnChange(r.OnPhase)
+
+			holder.Set(tt.phase)
+			holder.Set(tt.phase)
+
+			assert.Equal(t, tt.want, out.String(), "a repeated phase must not emit another title")
+		})
+	}
+}
+
+func TestReporterFinish(t *testing.T) {
+	tests := []struct {
+		name    string
+		success bool
+		want    string
+	}{
+		{name: "success", success: true, want: "\x1b]0;✳ loopai · done\a"},
+		{name: "failure", success: false, want: "\x1b]0;✳ loopai · failed\a"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			r := requireReporter(t, &out, config.ExecutorClaude)
+
+			r.Finish(tt.success)
+			r.OnPhase(status.PhaseTask, status.PhaseReview)
+			r.OnSection(status.NewInternalReviewSection(2, ""))
+			r.Finish(!tt.success)
+
+			assert.Equal(t, tt.want, out.String(), "the final title must freeze the reporter")
+		})
+	}
+}
+
+func TestReporterStop(t *testing.T) {
+	t.Run("without finish", func(t *testing.T) {
+		var out bytes.Buffer
+		r := requireReporter(t, &out, config.ExecutorClaude)
+
+		r.Stop()
+		r.Stop()
+		r.OnPhase(status.PhaseTask, status.PhaseReview)
+		r.OnSection(status.NewInternalReviewSection(2, ""))
+
+		assert.Equal(t, "\x1b]0;✳ loopai\a", out.String())
+	})
+
+	t.Run("after finish", func(t *testing.T) {
+		var out bytes.Buffer
+		r := requireReporter(t, &out, config.ExecutorClaude)
+
+		r.Finish(true)
+		r.Stop()
+		r.Stop()
+
+		assert.Equal(t, "\x1b]0;✳ loopai · done\a", out.String())
+	})
+}
+
+func requireReporter(t *testing.T, w io.Writer, executor string) *Reporter {
+	t.Helper()
+	r := newReporter(true, "plan.md", executor, w, func() bool { return true })
+	require.NotNil(t, r)
+	return r
+}
 
 func TestTitleFor(t *testing.T) {
 	tests := []struct {

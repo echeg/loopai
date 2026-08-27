@@ -178,26 +178,26 @@ wiring exists.
 
 ### Task 2: `Reporter` lifecycle: `New`, TTY gating, `OnPhase`, `Finish`, `Stop`, nil safety
 
-- [ ] write failing tests: `New` with `enabled=false` returns nil; `New` with an enabled flag but a
+- [x] write failing tests: `New` with `enabled=false` returns nil; `New` with an enabled flag but a
       non-TTY stdout returns nil; a `var r *Reporter` survives every exported method
       (`assert.NotPanics` table, mirror `TestReporterNilReceiver` at `pkg/cmux/cmux_test.go:998`)
-- [ ] write failing tests: `OnPhase` driven through a real `status.PhaseHolder` writes the
+- [x] write failing tests: `OnPhase` driven through a real `status.PhaseHolder` writes the
       matching working title for `PhaseTask`, `PhaseReview`, `PhaseExternalReview`,
       `PhaseExternalEval`, `PhasePlan`, `PhaseFinalize`, and the `waiting for limit` title for
       `PhaseLimitWait`; a repeated `Set` of the same phase writes nothing; the executor suffix is
       `codex` when constructed with `config.ExecutorCodex` and `claude` for the empty default
-- [ ] write failing tests: `Finish(true, …)` writes `✳ loopai · done`, `Finish(false, …)` writes
+- [x] write failing tests: `Finish(true, …)` writes `✳ loopai · done`, `Finish(false, …)` writes
       `✳ loopai · failed`, and any `OnPhase`/`OnSection` after `Finish` writes nothing; `Stop`
       without a preceding `Finish` writes `✳ loopai` once, `Stop` after `Finish` writes nothing,
       and a second `Stop` writes nothing (`sync.Once`)
-- [ ] implement `Reporter` with an injectable `io.Writer` and an injectable `isTerminal func() bool`
+- [x] implement `Reporter` with an injectable `io.Writer` and an injectable `isTerminal func() bool`
       (production default `term.IsTerminal(int(os.Stdout.Fd()))` from `golang.org/x/term`,
       checking stdout rather than stdin); guard state with a mutex the way `pkg/cmux` guards
       `statusMu`; keep the `quiesced || stopped || finished` gate so a late phase observer on the
       execution goroutine cannot overwrite the final idle title
-- [ ] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` to confirm the `x/term` call needs
+- [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` to confirm the `x/term` call needs
       no build-tag stub
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 3: Section observer and logger wrapper for task and iteration numbers
 

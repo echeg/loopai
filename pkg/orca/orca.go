@@ -8,8 +8,12 @@ package orca
 import (
 	"fmt"
 	"io"
+	"os"
+	"sync"
 
+	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/status"
+	"golang.org/x/term"
 )
 
 type waitingKind uint8
@@ -38,6 +42,135 @@ type state struct {
 	iteration int
 	waiting   waitingKind
 	final     finalKind
+}
+
+// Reporter publishes execution state as terminal titles. The zero value is not usable; use New.
+// A nil *Reporter is valid and every exported method is a no-op.
+type Reporter struct {
+	writer   io.Writer
+	planFile string
+	executor string
+
+	mu       sync.Mutex
+	stopOnce sync.Once
+	current  state
+	quiesced bool
+	stopped  bool
+	finished bool
+}
+
+// New returns a reporter when title reporting is enabled and stdout is a terminal. Otherwise it
+// returns nil. All Reporter methods are nil-safe, so callers do not need to check the result.
+func New(enabled bool, planFile, executor string) *Reporter {
+	return newReporter(enabled, planFile, executor, os.Stdout, func() bool {
+		return term.IsTerminal(int(os.Stdout.Fd()))
+	})
+}
+
+func newReporter(enabled bool, planFile, executor string, writer io.Writer, isTerminal func() bool) *Reporter {
+	if !enabled || isTerminal == nil || !isTerminal() {
+		return nil
+	}
+	return &Reporter{
+		writer:   writer,
+		planFile: planFile,
+		executor: executorName(executor),
+	}
+}
+
+func executorName(executor string) string {
+	if executor == config.ExecutorCodex {
+		return "codex"
+	}
+	return "claude"
+}
+
+// OnPhase publishes the current working or provider-limit title. Its signature matches
+// status.PhaseHolder.OnChange.
+func (r *Reporter) OnPhase(_, cur status.Phase) {
+	if r == nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.quiesced || r.stopped || r.finished {
+		return
+	}
+
+	if cur == status.PhaseLimitWait {
+		r.current.waiting = waitingLimit
+		r.emitLocked()
+		return
+	}
+
+	if r.current.phase != cur {
+		r.current = state{phase: cur}
+	} else {
+		r.current.waiting = waitingNone
+	}
+	r.emitLocked()
+}
+
+// OnSection observes a structured log section. Section-specific title updates are implemented by
+// the logger integration; the lifecycle gate lives here so late observations stay harmless.
+func (r *Reporter) OnSection(_ status.Section) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.quiesced || r.stopped || r.finished {
+		return
+	}
+}
+
+// Finish publishes the final idle outcome and freezes the reporter against later updates.
+func (r *Reporter) Finish(success bool) {
+	if r == nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped || r.finished {
+		return
+	}
+	if success {
+		r.current = state{final: finalDone}
+	} else {
+		r.current = state{final: finalFailed}
+	}
+	r.finished = true
+	r.emitLocked()
+}
+
+// Stop publishes a bare idle title when Finish has not already published an outcome. It is safe
+// to call more than once.
+func (r *Reporter) Stop() {
+	if r == nil {
+		return
+	}
+	r.stopOnce.Do(func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.stopped {
+			return
+		}
+		r.stopped = true
+		if r.finished {
+			return
+		}
+		r.current = state{final: finalStopped}
+		r.emitLocked()
+	})
+}
+
+func (r *Reporter) emitLocked() {
+	title := titleFor(r.current, r.executor)
+	if title != "" {
+		writeTitle(r.writer, title)
+	}
 }
 
 // titleFor formats the terminal title for an execution state. Final and waiting states take
