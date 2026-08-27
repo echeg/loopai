@@ -71,6 +71,7 @@ type opts struct {
 	GenAgents               bool          `long:"gen-agents" description:"generate project-specific review agents into .loopai/agents/ and exit"`
 	Debug                   bool          `short:"d" long:"debug" description:"enable debug logging"`
 	NoColor                 bool          `long:"no-color" description:"disable color output"`
+	Orca                    bool          `long:"orca" env:"LOOPAI_ORCA" description:"emit terminal title status for orca"`
 	Version                 bool          `short:"v" long:"version" description:"print version and exit"`
 	Serve                   bool          `short:"s" long:"serve" description:"start web dashboard for real-time streaming"`
 	Port                    int           `short:"p" long:"port" default:"8080" description:"web dashboard port"`
@@ -3147,7 +3148,7 @@ func cmuxWorkspaceName(o opts) string {
 // the new workspace from a shell of its own, which inherits cmux's environment and not this
 // process's, so an option provided through the environment would silently revert to its default
 // after hand-off. TestCmuxEnvOptionsCoversOptionTags keeps the list in sync with the struct tags.
-var cmuxEnvOptions = []string{"LOOPAI_CONFIG_DIR", "LOOPAI_WEB_HOST"}
+var cmuxEnvOptions = []string{"LOOPAI_CONFIG_DIR", "LOOPAI_ORCA", "LOOPAI_WEB_HOST"}
 
 // cmuxHandOffArgv builds the command the new workspace runs: this executable, the arguments minus
 // the hand-off flag, and an env prefix carrying the environment-provided options across. env is
@@ -4561,6 +4562,7 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 	if o.PreserveAnthropicAPIKey {
 		cfg.PreserveAnthropicAPIKey = true
 	}
+	cfg.Orca = enabledByCLI(cfg.Orca, o.Orca)
 	if o.Worktree {
 		cfg.WorktreeEnabled = true
 	}
@@ -4599,6 +4601,10 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 		cfg.CustomReviewScript = o.CustomReviewScript
 	}
 	return applyCodexOverrides(o, cfg, os.Stderr)
+}
+
+func enabledByCLI(configured, requested bool) bool {
+	return configured || requested
 }
 
 func applyExternalReviewCLIOverrides(o opts, cfg *config.Config) error {

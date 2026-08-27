@@ -246,16 +246,16 @@ wiring exists.
 
 ### Task 6: `--orca` flag, env tag, CLI override, and hand-off env list
 
-- [ ] write failing tests in `cmd/loopai/main_test.go`: `applyCLIOverrides` with `o.Orca=true`
+- [x] write failing tests in `cmd/loopai/main_test.go`: `applyCLIOverrides` with `o.Orca=true`
       sets `cfg.Orca=true`; with `o.Orca=false` leaves a config-provided `cfg.Orca=true` intact
       (flag only turns it on, mirroring `--worktree`); `cmuxEnvOptions` contains `LOOPAI_ORCA`
       (`TestCmuxEnvOptionsCoversOptionTags` at `cmd/loopai/main_test.go:10075` fails until it does)
-- [ ] add `Orca bool \`long:"orca" env:"LOOPAI_ORCA" description:"emit terminal title status for orca"\``
+- [x] add `Orca bool \`long:"orca" env:"LOOPAI_ORCA" description:"emit terminal title status for orca"\``
       to `opts` next to `NoColor` (`cmd/loopai/main.go:73`); do **not** add it to
       `executionModeSet` in `markFlagsSet` (`:145-154`) — it is cosmetic and must not turn an
       invocation into an execution run
-- [ ] extend `applyCLIOverrides` (`:4557`) and `cmuxEnvOptions` (`:3150`)
-- [ ] run tests - must pass before next task
+- [x] extend `applyCLIOverrides` (`:4557`) and `cmuxEnvOptions` (`:3150`)
+- [x] run tests - must pass before next task
 
 ### Task 7: Wire the reporter into the execution and plan-creation paths
 

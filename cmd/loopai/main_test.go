@@ -1348,6 +1348,26 @@ func TestPreserveAnthropicAPIKeyFlag(t *testing.T) {
 	})
 }
 
+func TestOrcaFlag(t *testing.T) {
+	t.Run("flag enables when config disabled", func(t *testing.T) {
+		cfg := &config.Config{}
+		o := opts{Orca: true}
+
+		require.NoError(t, applyCLIOverrides(o, cfg))
+
+		assert.True(t, cfg.Orca)
+	})
+
+	t.Run("absent flag preserves config true", func(t *testing.T) {
+		cfg := &config.Config{Orca: true}
+		o := opts{Orca: false}
+
+		require.NoError(t, applyCLIOverrides(o, cfg))
+
+		assert.True(t, cfg.Orca)
+	})
+}
+
 func TestProviderOverrideFlags(t *testing.T) {
 	t.Run("external_reviewers_flag_is_tracked_and_overrides_config", func(t *testing.T) {
 		cfg := &config.Config{ExternalReviewers: "claude:sonnet", ExternalReviewersSet: true}
