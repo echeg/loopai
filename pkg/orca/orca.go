@@ -64,9 +64,20 @@ type Reporter struct {
 // New returns a reporter when title reporting is enabled and stdout is a terminal. Otherwise it
 // returns nil. All Reporter methods are nil-safe, so callers do not need to check the result.
 func New(enabled bool, planFile, executor string) *Reporter {
-	return newReporter(enabled, planFile, executor, os.Stdout, func() bool {
+	return NewWithOutput(enabled, planFile, executor, os.Stdout, func() bool {
 		return term.IsTerminal(int(os.Stdout.Fd()))
 	})
+}
+
+// NewWithOutput is the dependency-injected form of New. It is useful to callers that need to
+// verify title wiring without depending on the process stdout or its terminal state.
+func NewWithOutput(
+	enabled bool,
+	planFile, executor string,
+	writer io.Writer,
+	isTerminal func() bool,
+) *Reporter {
+	return newReporter(enabled, planFile, executor, writer, isTerminal)
 }
 
 func newReporter(enabled bool, planFile, executor string, writer io.Writer, isTerminal func() bool) *Reporter {

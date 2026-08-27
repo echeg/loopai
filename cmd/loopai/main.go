@@ -29,6 +29,7 @@ import (
 	"github.com/umputun/ralphex/pkg/input"
 	"github.com/umputun/ralphex/pkg/limits"
 	"github.com/umputun/ralphex/pkg/notify"
+	"github.com/umputun/ralphex/pkg/orca"
 	"github.com/umputun/ralphex/pkg/plan"
 	"github.com/umputun/ralphex/pkg/processor"
 	"github.com/umputun/ralphex/pkg/progress"
@@ -653,7 +654,7 @@ func notifyCmuxCompletion(rep *cmux.Reporter, planFile, branch, elapsed string, 
 // finishCmuxCompletion raises the transient completion notification and leaves the matching
 // persistent final-status pill. It is used by execution and review runs only; plan creation uses
 // notifyCmuxCompletion directly because a created plan is not a finished implementation run.
-func finishCmuxCompletion(rep *cmux.Reporter, planFile, branch, elapsed string, runErr error) {
+func finishCmuxCompletion(rep *cmux.Reporter, titles *orca.Reporter, planFile, branch, elapsed string, runErr error) {
 	subtitle, body, ok := cmuxCompletionNotice(planFile, branch, elapsed, runErr)
 	if !ok {
 		return
@@ -661,9 +662,11 @@ func finishCmuxCompletion(rep *cmux.Reporter, planFile, branch, elapsed string, 
 	rep.Notify(subtitle, body)
 	if runErr != nil {
 		rep.Finish(false, runErr.Error())
+		titles.Finish(false)
 		return
 	}
 	rep.Finish(true, elapsed)
+	titles.Finish(true)
 }
 
 // cmuxCompletionNotice builds the subtitle and body of the end-of-run cmux notification.
@@ -768,11 +771,26 @@ func keepDashboardAlive(ctx context.Context, o opts, req executePlanRequest, clo
 	<-ctx.Done()
 }
 
-// buildRunnerLogger installs section timing below the cmux wrapper so the outermost
-// logger retains cmux's optional rate-limit reporting methods.
-func buildRunnerLogger(rep *cmux.Reporter, inner progress.SectionLogger) (processor.Logger, *progress.SectionTimer) {
+var newOrcaReporter = orca.New
+
+// orcaReporter constructs the stdout title reporter selected by configuration. ExecutorClaude is
+// the empty config value, so map it to the explicit agent name expected in terminal titles.
+func orcaReporter(cfg *config.Config, planFile string) *orca.Reporter {
+	if cfg == nil || !cfg.Orca {
+		return nil
+	}
+	executor := "claude"
+	if cfg.Executor == config.ExecutorCodex {
+		executor = "codex"
+	}
+	return newOrcaReporter(true, planFile, executor)
+}
+
+// buildRunnerLogger installs the orca title wrapper below cmux and above section timing. Keeping
+// cmux outermost preserves its optional rate-limit reporting methods.
+func buildRunnerLogger(rep *cmux.Reporter, titles *orca.Reporter, inner progress.SectionLogger) (processor.Logger, *progress.SectionTimer) {
 	timer := progress.NewSectionTimer(inner, nil)
-	return rep.WrapLogger(timer), timer
+	return rep.WrapLogger(titles.WrapLogger(timer)), timer
 }
 
 // runWithSectionTiming guarantees the final section and aggregate summary are
@@ -797,23 +815,28 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 	defer plr.closeLog()
 
-	// cmux sidebar reporter, nil and fully no-op outside cmux. Stop is also registered with the
-	// interrupt handler because defers are skipped on the force-exit path.
+	// cmux sidebar and orca terminal-title reporters. Both are nil-safe no-ops when disabled. Stop
+	// is also registered with the interrupt handler because defers are skipped on force exit.
 	rep := cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview))
+	titles := orcaReporter(req.Config, req.PlanFile)
 	var cmuxCleanupOnce sync.Once
 	completeCmux := func(elapsed string, runErr error) {
 		cmuxCleanupOnce.Do(func() {
-			finishCmuxAfterCleanup(req, plr, rep, branch, elapsed, runErr)
+			finishCmuxAfterCleanup(req, plr, rep, titles, branch, elapsed, runErr)
 		})
 	}
 	defer func() {
 		cmuxCleanupOnce.Do(func() {
-			stopCmuxAfterCleanup(req, plr, rep)
+			stopCmuxAfterCleanup(req, plr, rep, titles)
 		})
 		rep.Stop()
+		titles.Stop()
 	}()
 	if req.CmuxStop != nil {
-		req.CmuxStop.set(rep.Stop)
+		req.CmuxStop.set(func() {
+			rep.Stop()
+			titles.Stop()
+		})
 	}
 	rep.Start(ctx)
 	if req.CmuxHandoff != nil {
@@ -858,11 +881,12 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 			return wrapped
 		}
 	}
-	runnerLog, sectionTimer := buildRunnerLogger(rep, runnerLog)
+	runnerLog, sectionTimer := buildRunnerLogger(rep, titles, runnerLog)
 	validationTimer := progress.NewValidationTimer(validationCommands, runnerLog)
 
-	// subscribe the sidebar to phase changes after the dashboard so both observers coexist
+	// subscribe status reporters after the dashboard so all observers coexist
 	plr.holder.OnChange(rep.OnPhase)
+	plr.holder.OnChange(titles.OnPhase)
 
 	// resolve effective codex model/effort for the banner so it reflects what
 	// the codex task and review executors actually receive (--task-model /
@@ -961,6 +985,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// clear the sidebar before the dashboard idles: with --serve the run is done but the process
 	// stays alive until Ctrl+C, and a spinner left spinning reports it as still working
 	rep.Stop()
+	titles.Stop()
 	keepDashboardAlive(ctx, o, req, plr.closeLog)
 
 	return nil
@@ -969,13 +994,14 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 // stopCmuxAfterCleanup removes a non-final pill only after every operation that must stay isolated
 // from a subsequent local auto run. It covers preflight failures and user aborts, which deliberately
 // do not publish a persistent completion pill.
-func stopCmuxAfterCleanup(req executePlanRequest, plr progressLogResult, rep *cmux.Reporter) {
+func stopCmuxAfterCleanup(req executePlanRequest, plr progressLogResult, rep *cmux.Reporter, titles *orca.Reporter) {
 	rep.Quiesce()
 	plr.closeLog()
 	if req.BeforeCmuxFinish != nil {
 		req.BeforeCmuxFinish(false)
 	}
 	rep.Stop()
+	titles.Stop()
 }
 
 // finishCmuxAfterCleanup publishes the final/free pill only after every operation that must stay
@@ -987,6 +1013,7 @@ func finishCmuxAfterCleanup(
 	req executePlanRequest,
 	plr progressLogResult,
 	rep *cmux.Reporter,
+	titles *orca.Reporter,
 	branch, elapsed string,
 	runErr error,
 ) {
@@ -995,7 +1022,7 @@ func finishCmuxAfterCleanup(
 	if req.BeforeCmuxFinish != nil {
 		req.BeforeCmuxFinish(runErr == nil)
 	}
-	finishCmuxCompletion(rep, req.PlanFile, branch, elapsed, runErr)
+	finishCmuxCompletion(rep, titles, req.PlanFile, branch, elapsed, runErr)
 }
 
 // runWithWorktree creates or resumes a worktree, creates the progress logger (before chdir so it
@@ -2492,16 +2519,22 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		}
 	}()
 
-	// cmux sidebar reporter, nil and fully no-op outside cmux. no plan file exists yet, so the
-	// progress bar stays empty and only the spinner and the phase pill are reported.
+	// Status reporters for plan creation. No plan file exists yet, so cmux progress stays empty;
+	// orca still receives phase and iteration titles.
 	rep := cmux.New("", cmuxRunModels(o, req.Config, req.ExternalReview))
+	titles := orcaReporter(req.Config, "")
 	defer rep.Stop()
+	defer titles.Stop()
 	if req.CmuxStop != nil {
-		req.CmuxStop.set(rep.Stop)
+		req.CmuxStop.set(func() {
+			rep.Stop()
+			titles.Stop()
+		})
 	}
 	rep.Start(ctx)
 	holder.OnChange(rep.OnPhase)
-	planLog, sectionTimer := buildRunnerLogger(rep, baseLog)
+	holder.OnChange(titles.OnPhase)
+	planLog, sectionTimer := buildRunnerLogger(rep, titles, baseLog)
 
 	maxIter := resolveMaxIterations(o.MaxIterations, req.Config)
 
@@ -2558,7 +2591,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	}, planLog, holder)
 	// the collector is called exactly when the run stalls waiting for a human, so wrapping it
 	// notifies cmux on questions and on the ready draft without touching the phase engines
-	r.SetInputCollector(rep.WrapInput(collector))
+	r.SetInputCollector(rep.WrapInput(titles.WrapInput(collector)))
 
 	// run the plan creation loop
 	runErr := runWithSectionTiming(ctx, r.Run, sectionTimer)
@@ -2612,7 +2645,10 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	// Keep the non-final pill in place across branch/worktree setup, but tear down this reporter's
 	// spinner and polling before the execution reporter takes ownership.
 	rep.Quiesce()
-	cmuxHandoff := rep.Release
+	cmuxHandoff := func() {
+		rep.Release()
+		titles.Stop()
+	}
 
 	// worktree mode: create worktree and run from there
 	if req.Config.WorktreeEnabled {
@@ -2697,7 +2733,7 @@ func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *p
 		}
 	}()
 
-	genLog, sectionTimer := buildRunnerLogger(nil, baseLog)
+	genLog, sectionTimer := buildRunnerLogger(nil, nil, baseLog)
 
 	colors.Info().Printf("generating project-specific review agents\n")
 	colors.Info().Printf("progress log: %s\n", toRelPath(baseLog.Path()))

@@ -259,26 +259,26 @@ wiring exists.
 
 ### Task 7: Wire the reporter into the execution and plan-creation paths
 
-- [ ] write failing tests for a new `orcaReporter(cfg *config.Config, planFile string) *orca.Reporter`
+- [x] write failing tests for a new `orcaReporter(cfg *config.Config, planFile string) *orca.Reporter`
       helper in `cmd/loopai`: returns nil when `cfg.Orca` is false; passes `codex` for
       `config.ExecutorCodex` and `claude` otherwise (inject the TTY check so the test does not
       depend on the test runner's stdout)
-- [ ] write a failing test that `buildRunnerLogger` with a non-nil orca reporter and a nil cmux
+- [x] write a failing test that `buildRunnerLogger` with a non-nil orca reporter and a nil cmux
       reporter returns a logger whose `PrintSection` writes a title, and that with both reporters
       nil it still returns the section timer unchanged (existing behaviour)
-- [ ] change `buildRunnerLogger` (`cmd/loopai/main.go:772`) to
+- [x] change `buildRunnerLogger` (`cmd/loopai/main.go:772`) to
       `rep.WrapLogger(titles.WrapLogger(timer))` and update its doc comment: the orca wrapper sits
       below cmux and above the section timer so the outermost logger keeps cmux's optional
       rate-limit methods; update both call sites (`:864`, `:2502`)
-- [ ] in `executePlan`: construct the reporter beside `cmux.New` (`:801`), register
+- [x] in `executePlan`: construct the reporter beside `cmux.New` (`:801`), register
       `plr.holder.OnChange(titles.OnPhase)` after the cmux observer (`:868`), call `titles.Finish`
       wherever `finishCmuxCompletion` decides success/failure (`:655-666`), and `titles.Stop()`
       on every path that calls `rep.Stop()` (`:812`, `:962`, `:977`)
-- [ ] in the plan-creation path (`:2496-2614`): construct beside `cmux.New("", …)`, register the
+- [x] in the plan-creation path (`:2496-2614`): construct beside `cmux.New("", …)`, register the
       phase observer next to `:2502`, wrap the collector with `titles.WrapInput` alongside
       `rep.WrapInput` (`:2560`), and `Stop` when the creation reporter is released so the
       execution reporter starts from a clean title
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 8: Verify acceptance criteria
 

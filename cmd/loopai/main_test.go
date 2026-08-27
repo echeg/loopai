@@ -30,6 +30,7 @@ import (
 	"github.com/umputun/ralphex/pkg/git"
 	gitmocks "github.com/umputun/ralphex/pkg/git/mocks"
 	"github.com/umputun/ralphex/pkg/notify"
+	"github.com/umputun/ralphex/pkg/orca"
 	"github.com/umputun/ralphex/pkg/plan"
 	"github.com/umputun/ralphex/pkg/processor"
 	"github.com/umputun/ralphex/pkg/progress"
@@ -98,7 +99,7 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 
 func TestBuildRunnerLoggerRecordsSectionsInOrder(t *testing.T) {
 	inner := &runnerLoggerRecorder{}
-	out, timer := buildRunnerLogger(nil, inner)
+	out, timer := buildRunnerLogger(nil, nil, inner)
 
 	out.PrintSection(status.NewTaskIterationSection(1))
 	out.PrintSection(status.NewInternalReviewSection(1, ""))
@@ -120,7 +121,7 @@ func TestBuildRunnerLoggerKeepsCmuxOutermost(t *testing.T) {
 	rep := cmux.New("plan.md", cmux.Models{})
 	require.NotNil(t, rep)
 
-	out, _ := buildRunnerLogger(rep, &runnerLoggerRecorder{})
+	out, _ := buildRunnerLogger(rep, nil, &runnerLoggerRecorder{})
 	_, ok := out.(interface {
 		LogLimitWait(pattern, tool, waitLabel string)
 	})
@@ -128,9 +129,49 @@ func TestBuildRunnerLoggerKeepsCmuxOutermost(t *testing.T) {
 }
 
 func TestBuildRunnerLoggerWithoutReporterReturnsTimer(t *testing.T) {
-	out, timer := buildRunnerLogger(nil, &runnerLoggerRecorder{})
+	out, timer := buildRunnerLogger(nil, nil, &runnerLoggerRecorder{})
 
 	assert.Same(t, timer, out)
+}
+
+func TestOrcaReporter(t *testing.T) {
+	original := newOrcaReporter
+	t.Cleanup(func() { newOrcaReporter = original })
+
+	type call struct {
+		enabled  bool
+		planFile string
+		executor string
+	}
+	var calls []call
+	newOrcaReporter = func(enabled bool, planFile, executor string) *orca.Reporter {
+		calls = append(calls, call{enabled: enabled, planFile: planFile, executor: executor})
+		return &orca.Reporter{}
+	}
+
+	assert.Nil(t, orcaReporter(&config.Config{}, "disabled.md"))
+	assert.Empty(t, calls, "disabled reporting must not consult terminal state")
+
+	claude := orcaReporter(&config.Config{Orca: true}, "claude.md")
+	require.NotNil(t, claude)
+	codex := orcaReporter(&config.Config{Orca: true, Executor: config.ExecutorCodex}, "codex.md")
+	require.NotNil(t, codex)
+
+	assert.Equal(t, []call{
+		{enabled: true, planFile: "claude.md", executor: "claude"},
+		{enabled: true, planFile: "codex.md", executor: "codex"},
+	}, calls)
+}
+
+func TestBuildRunnerLoggerWithOrcaReporterWritesTitle(t *testing.T) {
+	var titles bytes.Buffer
+	titleRep := orca.NewWithOutput(true, "", config.ExecutorClaude, &titles, func() bool { return true })
+	require.NotNil(t, titleRep)
+
+	out, _ := buildRunnerLogger(nil, titleRep, &runnerLoggerRecorder{})
+	out.PrintSection(status.NewTaskIterationSection(3))
+
+	assert.Equal(t, "\x1b]0;◐ loopai · task 3 · claude\a", titles.String())
 }
 
 func TestRunWithSectionTimingFinishesBeforeReturning(t *testing.T) {
@@ -7073,17 +7114,20 @@ func TestFinishCmuxCompletion(t *testing.T) {
 		name       string
 		runErr     error
 		wantStatus string
+		wantTitle  string
 		wantNotify bool
 	}{
 		{
 			name:       "success finishes with elapsed time",
 			wantStatus: "set-status loopai done in 12m30s --icon bolt --color #34c759 --priority 90",
+			wantTitle:  "\x1b]0;✳ loopai · done\a",
 			wantNotify: true,
 		},
 		{
 			name:       "run error finishes with error detail",
 			runErr:     errors.New("boom"),
 			wantStatus: "set-status loopai failed · boom --icon exclamationmark.triangle --color #ff3b30 --priority 90",
+			wantTitle:  "\x1b]0;✳ loopai · failed\a",
 			wantNotify: true,
 		},
 		{name: "user abort does not finish", runErr: processor.ErrUserAborted},
@@ -7095,8 +7139,12 @@ func TestFinishCmuxCompletion(t *testing.T) {
 			require.NoError(t, os.RemoveAll(argvLog))
 			rep := cmux.New("plan.md", cmux.Models{})
 			require.NotNil(t, rep)
+			var titleOut bytes.Buffer
+			titles := orca.NewWithOutput(true, "plan.md", config.ExecutorClaude, &titleOut, func() bool { return true })
+			require.NotNil(t, titles)
 
-			finishCmuxCompletion(rep, "plan.md", "branch", "12m30s", tt.runErr)
+			finishCmuxCompletion(rep, titles, "plan.md", "branch", "12m30s", tt.runErr)
+			assert.Equal(t, tt.wantTitle, titleOut.String())
 
 			recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 			if !tt.wantNotify {
@@ -7113,9 +7161,9 @@ func TestFinishCmuxCompletion(t *testing.T) {
 
 func TestFinishCmuxCompletion_NilReporter(t *testing.T) {
 	assert.NotPanics(t, func() {
-		finishCmuxCompletion(nil, "plan.md", "branch", "1m", nil)
-		finishCmuxCompletion(nil, "plan.md", "branch", "1m", errors.New("boom"))
-		finishCmuxCompletion(nil, "plan.md", "branch", "1m", context.Canceled)
+		finishCmuxCompletion(nil, nil, "plan.md", "branch", "1m", nil)
+		finishCmuxCompletion(nil, nil, "plan.md", "branch", "1m", errors.New("boom"))
+		finishCmuxCompletion(nil, nil, "plan.md", "branch", "1m", context.Canceled)
 	})
 }
 
@@ -7218,7 +7266,7 @@ func TestFinishCmuxAfterCleanupPublishesFinalStatusLast(t *testing.T) {
 		assert.NotContains(t, string(recorded), "set-status loopai done", "final status must follow repository cleanup")
 	}}
 
-	finishCmuxAfterCleanup(req, plr, rep, "branch", "12s", nil)
+	finishCmuxAfterCleanup(req, plr, rep, nil, "branch", "12s", nil)
 	recorded, err := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
 	require.NoError(t, err)
 	beforeStop := string(recorded)
@@ -7259,7 +7307,7 @@ func TestStopCmuxAfterCleanupClearsStatusLast(t *testing.T) {
 		assert.NotContains(t, string(recorded), "clear-status loopai", "status must remain busy through repository cleanup")
 	}}
 
-	stopCmuxAfterCleanup(req, plr, rep)
+	stopCmuxAfterCleanup(req, plr, rep, nil)
 	recorded, err := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
 	require.NoError(t, err)
 	assert.True(t, strings.HasSuffix(strings.TrimSpace(string(recorded)), "clear-status loopai"))
