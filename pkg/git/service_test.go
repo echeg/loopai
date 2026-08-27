@@ -1282,6 +1282,7 @@ func TestService_EnsureHasCommits(t *testing.T) {
 
 		err = svc.EnsureHasCommits(promptFn)
 		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInitialCommitDeclined)
 		assert.Contains(t, err.Error(), "no commits")
 	})
 

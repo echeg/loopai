@@ -24,6 +24,9 @@ var datePrefixRe = regexp.MustCompile(`^[\d-]+`)
 // ErrNoPlansFound is returned when no plan files exist in the plans directory.
 var ErrNoPlansFound = errors.New("no plans found")
 
+// ErrPlanSelectionCanceled is returned when the user cancels interactive plan selection.
+var ErrPlanSelectionCanceled = errors.New("no plan selected")
+
 // Selector handles plan file selection and resolution.
 type Selector struct {
 	PlansDir  string
@@ -135,7 +138,11 @@ func (s *Selector) selectWithFzf(ctx context.Context) (string, error) {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", fmt.Errorf("select plan: %w", ctxErr)
 		}
-		return "", errors.New("no plan selected")
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 130 {
+			return "", ErrPlanSelectionCanceled
+		}
+		return "", fmt.Errorf("select plan with fzf: %w", err)
 	}
 
 	return strings.TrimSpace(string(out)), nil

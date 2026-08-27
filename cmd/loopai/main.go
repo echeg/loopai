@@ -698,12 +698,20 @@ func finishCmuxCompletion(rep *cmux.Reporter, titles *orca.Reporter, planFile, b
 }
 
 // finishOrcaFailure publishes a failed title for genuine errors that occur outside the normal
-// execution-completion path. User aborts and context cancellation remain neutral stops.
+// execution-completion path. User-controlled cancellations remain neutral stops.
 func finishOrcaFailure(titles *orca.Reporter, runErr error) {
-	if runErr == nil || errors.Is(runErr, processor.ErrUserAborted) || errors.Is(runErr, context.Canceled) {
+	if runErr == nil || isNeutralOrcaStop(runErr) {
 		return
 	}
 	titles.Finish(false)
+}
+
+func isNeutralOrcaStop(runErr error) bool {
+	return errors.Is(runErr, processor.ErrUserAborted) ||
+		errors.Is(runErr, processor.ErrUserRejectedPlan) ||
+		errors.Is(runErr, plan.ErrPlanSelectionCanceled) ||
+		errors.Is(runErr, git.ErrInitialCommitDeclined) ||
+		errors.Is(runErr, context.Canceled)
 }
 
 // cmuxCompletionNotice builds the subtitle and body of the end-of-run cmux notification.

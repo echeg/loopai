@@ -3204,6 +3204,7 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		var stdout bytes.Buffer
 		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("n\n"), &stdout, nil)
 		require.Error(t, err)
+		require.ErrorIs(t, err, git.ErrInitialCommitDeclined)
 		assert.Contains(t, err.Error(), "no commits - please create initial commit manually")
 	})
 
@@ -3230,6 +3231,7 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		var stdout bytes.Buffer
 		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader(""), &stdout, nil)
 		require.Error(t, err)
+		require.ErrorIs(t, err, git.ErrInitialCommitDeclined)
 		assert.Contains(t, err.Error(), "no commits - please create initial commit manually")
 	})
 
@@ -7302,6 +7304,9 @@ func TestFinishOrcaFailure(t *testing.T) {
 		{name: "failure", runErr: errors.New("boom"), wantOut: "\x1b]0;✳ loopai · failed\a"},
 		{name: "nil error"},
 		{name: "user abort", runErr: processor.ErrUserAborted},
+		{name: "plan rejected", runErr: processor.ErrUserRejectedPlan},
+		{name: "plan selection canceled", runErr: plan.ErrPlanSelectionCanceled},
+		{name: "initial commit declined", runErr: git.ErrInitialCommitDeclined},
 		{name: "context cancellation", runErr: context.Canceled},
 	}
 
@@ -7314,6 +7319,30 @@ func TestFinishOrcaFailure(t *testing.T) {
 			finishOrcaFailure(titles, tt.runErr)
 
 			assert.Equal(t, tt.wantOut, out.String())
+		})
+	}
+}
+
+func TestFinishOrcaFailureLeavesUserCancellationsStopped(t *testing.T) {
+	tests := []struct {
+		name   string
+		runErr error
+	}{
+		{name: "plan rejected", runErr: fmt.Errorf("plan creation: %w", processor.ErrUserRejectedPlan)},
+		{name: "plan selection canceled", runErr: fmt.Errorf("select plan: %w", plan.ErrPlanSelectionCanceled)},
+		{name: "initial commit declined", runErr: fmt.Errorf("ensure has commits: %w", git.ErrInitialCommitDeclined)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			titles := orca.NewWithOutput(true, "", config.ExecutorClaude, &out, func() bool { return true })
+			require.NotNil(t, titles)
+
+			finishOrcaFailure(titles, tt.runErr)
+			titles.Stop()
+
+			assert.Equal(t, "\x1b]0;✳ loopai\a", out.String())
 		})
 	}
 }
