@@ -407,6 +407,13 @@ Standalone close-out routing happens before executor and notification dependenci
 and passes them to `cmux.Reporter`. Phase labels come from `status.PhaseHolder`;
 review iteration labels come from `cmux.Reporter.WrapLogger`, which observes
 structured `PrintSection` calls while forwarding the complete logger interface.
+Interactive plan creation and execution/review construct `orca.Reporter`; watch-only,
+agent-generation, and standalone utility paths do not. `orca.New` is gated by both the
+resolved config and a stdout TTY check and returns a nil-safe no-op when inactive. Phase
+changes come from `status.PhaseHolder`, task and iteration detail from `WrapLogger`, and
+human waits from `WrapInput` or `WithInputWait`. `Finish` freezes a persistent done/failed
+title, while `Stop` emits the bare idle title for aborts, declined continuation, and other
+non-completions. OSC writes are best-effort single writes to stdout and never fail the run.
 Keep `cmux.Reporter.WrapLogger` in the logger chain after dashboard setup. The
 Orca title wrapper sits below the cmux wrapper and above `progress.SectionTimer`,
 which in turn sits above the dashboard broadcast logger. This preserves cmux's

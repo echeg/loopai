@@ -44,6 +44,7 @@ func TestReporterNilReceiver(t *testing.T) {
 	}{
 		{name: "on phase", call: func() { r.OnPhase(status.PhaseTask, status.PhaseReview) }},
 		{name: "on section", call: func() { r.OnSection(status.NewTaskIterationSection(1)) }},
+		{name: "with input wait", call: func() { assert.True(t, r.WithInputWait(func() bool { return true })) }},
 		{name: "finish", call: func() { r.Finish(true) }},
 		{name: "stop", call: func() { r.Stop() }},
 	}
@@ -84,6 +85,18 @@ func TestReporterOnPhaseAsObserver(t *testing.T) {
 			assert.Equal(t, tt.want, out.String(), "a repeated phase must not emit another title")
 		})
 	}
+}
+
+func TestReporterRestoresDetailedTitleAfterLimitWait(t *testing.T) {
+	var out bytes.Buffer
+	r := requireReporter(t, &out, config.ExecutorClaude)
+	r.OnSection(status.NewTaskIterationSection(3))
+	r.OnPhase(status.PhaseTask, status.PhaseLimitWait)
+	r.OnPhase(status.PhaseLimitWait, status.PhaseTask)
+
+	assert.Equal(t, "\x1b]0;◐ loopai · task 3 · claude\a"+
+		"\x1b]0;loopai · waiting for limit · claude\a"+
+		"\x1b]0;◐ loopai · task 3 · claude\a", out.String())
 }
 
 func TestReporterFinish(t *testing.T) {
@@ -350,6 +363,25 @@ func TestReporterWrapInputAfterFinishWritesNothing(t *testing.T) {
 	assert.Equal(t, "yes", answer)
 	assert.Equal(t, "continue?", inner.question, "the finished reporter must still delegate")
 	assert.Empty(t, out.String())
+}
+
+func TestReporterWithInputWait(t *testing.T) {
+	var out bytes.Buffer
+	r := requireReporter(t, &out, config.ExecutorCodex)
+	r.OnSection(status.NewInternalReviewSection(2, ""))
+	out.Reset()
+
+	called := false
+	result := r.WithInputWait(func() bool {
+		called = true
+		assert.Equal(t, "\x1b]0;loopai · waiting for input · codex\a", out.String())
+		return true
+	})
+
+	assert.True(t, result)
+	assert.True(t, called)
+	assert.Equal(t, "\x1b]0;loopai · waiting for input · codex\a"+
+		"\x1b]0;◐ loopai · review · iteration 2 · codex\a", out.String())
 }
 
 type fakeInputCollector struct {

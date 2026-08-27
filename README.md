@@ -866,10 +866,12 @@ loopai --serve --watch=/path/to/project-a --watch=/path/to/project-b
 When loopai runs inside cmux, it reports the phase and effective model, review iteration, task count, spinner, and completion notifications through the public cmux CLI. Started implementation and review runs retain the completion pill described above after success or non-abort execution failure; startup/preflight failures, plan-creation failures, and aborts do not. Outside cmux this integration is a no-op.
 
 Pass `--orca`, set `orca = true` in the loopai configuration, or set `LOOPAI_ORCA=1` to report
-the run through OSC terminal titles. Orca needs no configuration: it reads the terminal title to
-derive the tab name and whether the agent is working, waiting for permission, or idle. loopai emits
-titles only when standard output is a terminal, so redirected and piped output contains no escape
-sequences. The executor suffix is `codex` when Codex is primary and `claude` otherwise.
+interactive plan creation and plan execution/review through OSC terminal titles. Orca needs no
+configuration: it reads the terminal title to derive the tab name and whether the agent is working,
+waiting for permission, or idle. loopai emits titles only when standard output is a terminal, so
+redirected and piped output contains no escape sequences. Watch-only dashboard mode,
+`--gen-agents`, and standalone utility commands do not emit titles. The executor suffix is `codex`
+when Codex is primary and `claude` otherwise.
 
 | loopai state | Terminal title | Orca status |
 |---|---|---|

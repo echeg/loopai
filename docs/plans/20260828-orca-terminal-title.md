@@ -69,7 +69,8 @@ and `claude` otherwise (`ExecutorClaude` is the empty string).
   - No code in the repository writes raw escape sequences today; colours go through
     `fatih/color`. `golang.org/x/term` is vendored and used once in
     `cmd/loopai/terminal_unix.go:16`; it also works on Windows, so no build-tag stub is needed.
-  - Only two `env:` tags exist on `opts` (`LOOPAI_CONFIG_DIR`, `LOOPAI_WEB_HOST`);
+  - Three `env:` tags exist on `opts` (`LOOPAI_CONFIG_DIR`, `LOOPAI_ORCA`,
+    `LOOPAI_WEB_HOST`);
     `TestCmuxEnvOptionsCoversOptionTags` (`cmd/loopai/main_test.go`) fails unless every `env:` tag
     is listed in `cmuxEnvOptions` (`cmd/loopai/main.go:3150`).
   - `progress.Logger` serialises its own file+stdout writes under `writeMu`
@@ -193,7 +194,7 @@ wiring exists.
 - [x] implement `Reporter` with an injectable `io.Writer` and an injectable `isTerminal func() bool`
       (production default `term.IsTerminal(int(os.Stdout.Fd()))` from `golang.org/x/term`,
       checking stdout rather than stdin); guard state with a mutex the way `pkg/cmux` guards
-      `statusMu`; keep the `quiesced || stopped || finished` gate so a late phase observer on the
+      `statusMu`; keep the `stopped || finished` gate so a late phase observer on the
       execution goroutine cannot overwrite the final idle title
 - [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` to confirm the `x/term` call needs
       no build-tag stub
@@ -226,6 +227,8 @@ wiring exists.
 - [x] declare a local `inputCollector` interface mirroring `processor.InputCollector` (as
       `pkg/cmux/cmux.go:729-733` does, to keep `pkg/orca` free of a `pkg/processor` import) and
       implement the decorator with the same `//nolint:wrapcheck` pass-through comment style
+- [x] expose `WithInputWait` for blocking prompts outside the collector interface and use it for
+      the post-plan continuation prompt and the task/review pause handler
 - [x] run tests - must pass before next task
 
 ### Task 5: `orca` config key with `…Set` twin, embedded default, and merge
@@ -274,6 +277,8 @@ wiring exists.
       `plr.holder.OnChange(titles.OnPhase)` after the cmux observer (`:868`), call `titles.Finish`
       wherever `finishCmuxCompletion` decides success/failure (`:655-666`), and `titles.Stop()`
       on every path that calls `rep.Stop()` (`:812`, `:962`, `:977`)
+- [x] publish `failed` independently for genuine preflight, plan-creation, and branch/worktree
+      setup errors; keep user aborts and context cancellation as neutral stopped outcomes
 - [x] in the plan-creation path (`:2496-2614`): construct beside `cmux.New("", …)`, register the
       phase observer next to `:2502`, wrap the collector with `titles.WrapInput` alongside
       `rep.WrapInput` (`:2560`), and `Stop` when the creation reporter is released so the
@@ -314,17 +319,19 @@ wiring exists.
 ```go
 // New returns a reporter when enabled and stdout is a terminal, otherwise nil.
 func New(enabled bool, planFile, executor string) *Reporter
+func NewWithOutput(enabled bool, planFile, executor string, writer io.Writer, isTerminal func() bool) *Reporter
 
 func (r *Reporter) OnPhase(_, cur status.Phase)            // status.PhaseHolder.OnChange
 func (r *Reporter) OnSection(section status.Section)        // called by the logger wrapper
 func (r *Reporter) WrapLogger(logger Logger) Logger          // nil → logger unchanged
 func (r *Reporter) WrapInput(c inputCollector) inputCollector // nil → c unchanged
+func (r *Reporter) WithInputWait(wait func() bool) bool         // scoped arbitrary prompt wait
 func (r *Reporter) Finish(success bool)                       // final idle title, then frozen
 func (r *Reporter) Stop()                                     // idle title unless finished; once
 ```
 
-Test constructors inject `io.Writer` and the TTY predicate; production `New` binds
-`os.Stdout` and `term.IsTerminal`.
+`NewWithOutput` injects `io.Writer` and the TTY predicate for wiring tests; production `New`
+binds `os.Stdout` and `term.IsTerminal`.
 
 ### State → title
 

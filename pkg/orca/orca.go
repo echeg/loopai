@@ -56,7 +56,6 @@ type Reporter struct {
 	mu       sync.Mutex
 	stopOnce sync.Once
 	current  state
-	quiesced bool
 	stopped  bool
 	finished bool
 }
@@ -107,7 +106,7 @@ func (r *Reporter) OnPhase(_, cur status.Phase) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.quiesced || r.stopped || r.finished {
+	if r.stopped || r.finished {
 		return
 	}
 
@@ -148,7 +147,7 @@ func (r *Reporter) OnSection(section status.Section) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.quiesced || r.stopped || r.finished {
+	if r.stopped || r.finished {
 		return
 	}
 	r.current = next
@@ -208,6 +207,17 @@ type titleCollector struct {
 	inner inputCollector
 }
 
+// WithInputWait publishes the waiting title while wait blocks and restores the preceding working
+// title afterward. It covers blocking prompts that do not use the plan input-collector interface.
+func (r *Reporter) WithInputWait(wait func() bool) bool {
+	if r == nil {
+		return wait()
+	}
+	restore := r.beginInputWait()
+	defer restore()
+	return wait()
+}
+
 // AskQuestion publishes the waiting title, delegates, and restores the preceding working title.
 func (c *titleCollector) AskQuestion(ctx context.Context, question string, options []string) (string, error) {
 	restore := c.rep.beginInputWait()
@@ -224,7 +234,7 @@ func (c *titleCollector) AskDraftReview(ctx context.Context, question, planConte
 
 func (r *Reporter) beginInputWait() func() {
 	r.mu.Lock()
-	if r.quiesced || r.stopped || r.finished {
+	if r.stopped || r.finished {
 		r.mu.Unlock()
 		return func() {}
 	}
@@ -237,7 +247,7 @@ func (r *Reporter) beginInputWait() func() {
 	return func() {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		if r.quiesced || r.stopped || r.finished {
+		if r.stopped || r.finished {
 			return
 		}
 		r.current = previous

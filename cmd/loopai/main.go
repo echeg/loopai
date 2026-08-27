@@ -669,6 +669,15 @@ func finishCmuxCompletion(rep *cmux.Reporter, titles *orca.Reporter, planFile, b
 	titles.Finish(true)
 }
 
+// finishOrcaFailure publishes a failed title for genuine errors that occur outside the normal
+// execution-completion path. User aborts and context cancellation remain neutral stops.
+func finishOrcaFailure(titles *orca.Reporter, runErr error) {
+	if runErr == nil || errors.Is(runErr, processor.ErrUserAborted) || errors.Is(runErr, context.Canceled) {
+		return
+	}
+	titles.Finish(false)
+}
+
 // cmuxCompletionNotice builds the subtitle and body of the end-of-run cmux notification.
 // ok is false for a user abort: the person who aborted is already at the terminal, so a
 // banner would only be noise. both abort routes count — Ctrl+\ declining to resume yields
@@ -850,6 +859,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 			wrapped := fmt.Errorf("parse plan validation commands: %w", parseErr)
 			plr.baseLog.SetFailed(wrapped)
 			notifyCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), wrapped)
+			finishOrcaFailure(titles, wrapped)
 			return wrapped
 		}
 		validationCommands = parsedPlan.ValidationCommands
@@ -878,6 +888,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 			// dashboard startup is still preflight: raise a banner, but let Stop clear every
 			// transient artifact rather than leaving a persistent execution-failure pill.
 			notifyCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), wrapped)
+			finishOrcaFailure(titles, wrapped)
 			return wrapped
 		}
 	}
@@ -926,7 +937,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// listen for SIGQUIT (Ctrl+\) for manual break during task and review loops
 	if breakCh := startBreakSignal(); breakCh != nil {
 		r.SetBreakCh(breakCh)
-		r.SetPauseHandler(makePauseHandler(os.Stdin, os.Stdout))
+		r.SetPauseHandler(makePauseHandler(os.Stdin, os.Stdout, titles))
 	}
 
 	runErr := runWithSectionTiming(ctx, r.Run, sectionTimer)
@@ -1976,23 +1987,25 @@ func modeCreatesBranch(mode processor.Mode) bool {
 // makePauseHandler returns a context-aware pause handler for task loop breaks.
 // on break, prints a message and waits for Enter to resume or context cancellation to abort.
 // stdin read runs in a goroutine so the handler responds to Ctrl+C (SIGINT) promptly.
-func makePauseHandler(stdin io.Reader, stdout io.Writer) func(ctx context.Context) bool {
+func makePauseHandler(stdin io.Reader, stdout io.Writer, titles *orca.Reporter) func(ctx context.Context) bool {
 	return func(ctx context.Context) bool {
-		fmt.Fprintln(stdout, "\nsession interrupted. press Enter to continue, Ctrl+C to abort")
+		return titles.WithInputWait(func() bool {
+			fmt.Fprintln(stdout, "\nsession interrupted. press Enter to continue, Ctrl+C to abort")
 
-		resultCh := make(chan bool, 1)
-		go func() {
-			buf := make([]byte, 1)
-			n, _ := stdin.Read(buf) // blocks until Enter or EOF
-			resultCh <- n > 0       // true = Enter (resume), false = EOF (abort)
-		}()
+			resultCh := make(chan bool, 1)
+			go func() {
+				buf := make([]byte, 1)
+				n, _ := stdin.Read(buf) // blocks until Enter or EOF
+				resultCh <- n > 0       // true = Enter (resume), false = EOF (abort)
+			}()
 
-		select {
-		case resume := <-resultCh:
-			return resume
-		case <-ctx.Done():
-			return false
-		}
+			select {
+			case resume := <-resultCh:
+				return resume
+			case <-ctx.Done():
+				return false
+			}
+		})
 	}
 }
 
@@ -2599,6 +2612,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		wrapped := fmt.Errorf("plan creation: %w", runErr)
 		planCreationErr = wrapped
 		notifyCmuxCompletion(rep, "", branch, baseLog.Elapsed(), runErr)
+		finishOrcaFailure(titles, runErr)
 		return wrapped
 	}
 
@@ -2624,7 +2638,9 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	rep.Notify("plan created", fmt.Sprintf("%s in %s", filepath.Base(planFile), elapsed))
 
 	// ask user if they want to continue with plan implementation
-	if !input.AskYesNo(ctx, "Continue with plan implementation?", os.Stdin, os.Stdout) {
+	if !titles.WithInputWait(func() bool {
+		return input.AskYesNo(ctx, "Continue with plan implementation?", os.Stdin, os.Stdout)
+	}) {
 		return nil
 	}
 
@@ -2635,6 +2651,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	if absErr != nil {
 		wrapped := fmt.Errorf("resolve plan file: %w", absErr)
 		notifyCmuxCompletion(rep, planFile, branch, baseLog.Elapsed(), wrapped)
+		finishOrcaFailure(titles, wrapped)
 		return wrapped
 	}
 	planFile = absPlanFile
@@ -2652,7 +2669,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 
 	// worktree mode: create worktree and run from there
 	if req.Config.WorktreeEnabled {
-		return runWithWorktree(ctx, o, executePlanRequest{
+		runErr := runWithWorktree(ctx, o, executePlanRequest{
 			PlanFile:       planFile,
 			Mode:           processor.ModeFull,
 			GitSvc:         req.GitSvc,
@@ -2668,6 +2685,8 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 			ExternalReview: req.ExternalReview,
 			LimitRecovery:  req.LimitRecovery,
 		})
+		finishOrcaFailure(titles, runErr)
+		return runErr
 	}
 
 	// normal mode: create branch and run in place
@@ -2676,6 +2695,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		// the handoff dies before executePlan gets its own reporter, so this one raises the banner.
 		// Quiesce only tore down transient state; the deferred Stop clears the preserved pill.
 		notifyCmuxCompletion(rep, planFile, branch, baseLog.Elapsed(), wrapped)
+		finishOrcaFailure(titles, wrapped)
 		return wrapped
 	}
 

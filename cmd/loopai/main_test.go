@@ -323,15 +323,22 @@ func TestExecutePlan_PlanParseFailureUsesReporterAfterWorktreeHandoff(t *testing
 
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
+	originalNewOrcaReporter := newOrcaReporter
+	t.Cleanup(func() { newOrcaReporter = originalNewOrcaReporter })
+	var titleOut bytes.Buffer
+	newOrcaReporter = func(enabled bool, planFile, executor string) *orca.Reporter {
+		return orca.NewWithOutput(enabled, planFile, executor, &titleOut, func() bool { return true })
+	}
 	missingPlan := filepath.Join(dir, "docs", "plans", "removed.md")
 	handedOff := false
 	err = executePlan(t.Context(), opts{NoColor: true}, executePlanRequest{
 		PlanFile: missingPlan, Mode: processor.ModeFull, GitSvc: gitSvc,
-		Config: &config.Config{}, Colors: testColors(), BaseRef: "master",
+		Config: &config.Config{Orca: true}, Colors: testColors(), BaseRef: "master",
 		CmuxHandoff: func() { handedOff = true },
 	})
 	require.ErrorContains(t, err, "parse plan validation commands")
 	assert.True(t, handedOff, "the predecessor must release ownership once the execution reporter starts")
+	assert.Equal(t, "\x1b]0;✳ loopai · failed\a", titleOut.String())
 
 	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path is a test-owned file under t.TempDir
 	require.NoError(t, readErr)
@@ -437,11 +444,43 @@ func parseTestOpts(t *testing.T, args ...string) opts {
 func TestLoopaiEnvironmentOptions(t *testing.T) {
 	t.Setenv("LOOPAI_WEB_HOST", "0.0.0.0")
 	t.Setenv("LOOPAI_CONFIG_DIR", "/tmp/loopai-config")
+	t.Setenv("LOOPAI_ORCA", "true")
 
 	o := parseTestOpts(t)
 
 	assert.Equal(t, "0.0.0.0", o.Host)
 	assert.Equal(t, "/tmp/loopai-config", o.ConfigDir)
+	assert.True(t, o.Orca)
+}
+
+func TestOrcaEnvironmentOptionRejectsInvalidBoolean(t *testing.T) {
+	t.Setenv("LOOPAI_ORCA", "maybe")
+	var o opts
+	parser := flags.NewParser(&o, flags.Default&^flags.PrintErrors)
+
+	_, err := parser.ParseArgs(nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--orca")
+	assert.Contains(t, err.Error(), "expected bool")
+}
+
+func TestOrcaEnvironmentOptionBooleanValues(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		want  bool
+	}{
+		{value: "true", want: true},
+		{value: "1", want: true},
+		{value: "false"},
+		{value: "0"},
+	} {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Setenv("LOOPAI_ORCA", tt.value)
+			o := parseTestOpts(t)
+			assert.Equal(t, tt.want, o.Orca)
+		})
+	}
 }
 
 func TestClearFlagParsing(t *testing.T) {
@@ -6954,7 +6993,7 @@ func TestKeepDashboardAlive(t *testing.T) {
 func TestMakePauseHandler_EnterResumes(t *testing.T) {
 	stdin := bytes.NewReader([]byte("\n"))
 	var stdout bytes.Buffer
-	handler := makePauseHandler(stdin, &stdout)
+	handler := makePauseHandler(stdin, &stdout, nil)
 	result := handler(context.Background())
 	assert.True(t, result, "handler should return true on Enter")
 	assert.Contains(t, stdout.String(), "session interrupted")
@@ -6968,7 +7007,7 @@ func TestMakePauseHandler_ContextCancelAborts(t *testing.T) {
 	var stdout bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
-	handler := makePauseHandler(r, &stdout)
+	handler := makePauseHandler(r, &stdout, nil)
 	result := handler(ctx)
 	assert.False(t, result, "handler should return false on context cancel")
 }
@@ -6977,9 +7016,24 @@ func TestMakePauseHandler_EOFAborts(t *testing.T) {
 	// empty reader returns EOF immediately, treated as abort (safe default for piped stdin)
 	stdin := bytes.NewReader(nil)
 	var stdout bytes.Buffer
-	handler := makePauseHandler(stdin, &stdout)
+	handler := makePauseHandler(stdin, &stdout, nil)
 	result := handler(context.Background())
 	assert.False(t, result, "handler should return false on EOF (stdin closed = abort)")
+}
+
+func TestMakePauseHandlerReportsInputWait(t *testing.T) {
+	stdin := bytes.NewReader([]byte("\n"))
+	var stdout, titleOut bytes.Buffer
+	titles := orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
+	require.NotNil(t, titles)
+	titles.OnPhase("", status.PhaseTask)
+	titleOut.Reset()
+
+	result := makePauseHandler(stdin, &stdout, titles)(context.Background())
+
+	assert.True(t, result)
+	assert.Equal(t, "\x1b]0;loopai · waiting for input · claude\a"+
+		"\x1b]0;◐ loopai · task · claude\a", titleOut.String())
 }
 
 func TestCleanupHolder(t *testing.T) {
@@ -7173,6 +7227,31 @@ func TestFinishCmuxCompletion_NilReporter(t *testing.T) {
 		finishCmuxCompletion(nil, nil, "plan.md", "branch", "1m", errors.New("boom"))
 		finishCmuxCompletion(nil, nil, "plan.md", "branch", "1m", context.Canceled)
 	})
+}
+
+func TestFinishOrcaFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		runErr  error
+		wantOut string
+	}{
+		{name: "failure", runErr: errors.New("boom"), wantOut: "\x1b]0;✳ loopai · failed\a"},
+		{name: "nil error"},
+		{name: "user abort", runErr: processor.ErrUserAborted},
+		{name: "context cancellation", runErr: context.Canceled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			titles := orca.NewWithOutput(true, "", config.ExecutorClaude, &out, func() bool { return true })
+			require.NotNil(t, titles)
+
+			finishOrcaFailure(titles, tt.runErr)
+
+			assert.Equal(t, tt.wantOut, out.String())
+		})
+	}
 }
 
 func TestWorktreeCmuxFinishCleanup(t *testing.T) {
