@@ -71,7 +71,9 @@ type Values struct {
 	MovePlanOnCompletion       bool
 	MovePlanOnCompletionSet    bool // tracks if move_plan_on_completion was explicitly set
 	WorktreeEnabled            bool
-	WorktreeEnabledSet         bool   // tracks if use_worktree was explicitly set
+	WorktreeEnabledSet         bool // tracks if use_worktree was explicitly set
+	Orca                       bool
+	OrcaSet                    bool   // tracks if orca was explicitly set
 	VcsCommand                 string // custom VCS command (default: "git")
 	CommitTrailer              string // trailer line to append to all commits (e.g., "Co-authored-by: ...")
 	PlansDir                   string
@@ -402,6 +404,14 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 		values.WorktreeEnabled = val
 		values.WorktreeEnabledSet = true
 	}
+	if key, err := section.GetKey("orca"); err == nil {
+		val, boolErr := key.Bool()
+		if boolErr != nil {
+			return Values{}, fmt.Errorf("invalid orca: %w", boolErr)
+		}
+		values.Orca = val
+		values.OrcaSet = true
+	}
 
 	// paths
 	if key, err := section.GetKey("plans_dir"); err == nil {
@@ -623,6 +633,10 @@ func (dst *Values) mergeExtraFrom(src *Values) {
 	if src.WorktreeEnabledSet {
 		dst.WorktreeEnabled = src.WorktreeEnabled
 		dst.WorktreeEnabledSet = true
+	}
+	if src.OrcaSet {
+		dst.Orca = src.Orca
+		dst.OrcaSet = true
 	}
 	dst.mergePathsFrom(src)
 	if len(src.ClaudeErrorPatterns) > 0 {

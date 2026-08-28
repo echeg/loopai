@@ -427,6 +427,80 @@ func TestValues_mergeFrom_WorktreeEnabled(t *testing.T) {
 	})
 }
 
+func TestValuesLoader_Load_Orca(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  string
+		want    bool
+		wantSet bool
+		wantErr string
+	}{
+		{name: "parse true", config: "orca = true", want: true, wantSet: true},
+		{name: "parse false", config: "orca = false", want: false, wantSet: true},
+		{name: "absent", config: "", want: false, wantSet: false},
+		{name: "invalid", config: "orca = maybe", wantErr: "invalid orca:"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			cfgPath := filepath.Join(tmpDir, "config")
+			require.NoError(t, os.WriteFile(cfgPath, []byte(tc.config), 0o600))
+
+			loader := newValuesLoader(defaultsFS)
+			values, err := loader.Load("", cfgPath)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, values.Orca)
+			assert.Equal(t, tc.wantSet, values.OrcaSet)
+		})
+	}
+}
+
+func TestValues_mergeFrom_Orca(t *testing.T) {
+	tests := []struct {
+		name    string
+		dst     Values
+		src     Values
+		want    bool
+		wantSet bool
+	}{
+		{
+			name:    "explicit true merges",
+			src:     Values{Orca: true, OrcaSet: true},
+			want:    true,
+			wantSet: true,
+		},
+		{
+			name:    "unset source is ignored",
+			dst:     Values{Orca: true, OrcaSet: true},
+			src:     Values{Orca: false, OrcaSet: false},
+			want:    true,
+			wantSet: true,
+		},
+		{
+			name:    "explicit false merges",
+			dst:     Values{Orca: true, OrcaSet: true},
+			src:     Values{Orca: false, OrcaSet: true},
+			want:    false,
+			wantSet: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.dst.mergeFrom(&tc.src)
+			assert.Equal(t, tc.want, tc.dst.Orca)
+			assert.Equal(t, tc.wantSet, tc.dst.OrcaSet)
+		})
+	}
+}
+
 func TestValuesLoader_Load_MovePlanOnCompletion(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -55,6 +55,7 @@ pkg/executor/        Claude-compatible and Codex process execution
 pkg/git/             Git CLI operations and worktree management
 pkg/input/           interactive input, fzf fallback, draft review
 pkg/notify/          Telegram, email, Slack, webhook, custom notifications
+pkg/orca/            best-effort OSC terminal-title status integration
 pkg/plan/            plan discovery, parsing, and mutation
 pkg/processor/       pipeline coordinator, prompts, executor policy
 pkg/processor/phase/ task, review, external, finalize, and planning phases
@@ -404,12 +405,25 @@ Standalone close-out routing happens before executor and notification dependenci
 
 `cmd/loopai` resolves effective plan, task, review, and external-review models
 and passes them to `cmux.Reporter`. Phase labels come from `status.PhaseHolder`;
-review iteration labels come from `Reporter.WrapLogger`, which observes
+review iteration labels come from `cmux.Reporter.WrapLogger`, which observes
 structured `PrintSection` calls while forwarding the complete logger interface.
-Keep `Reporter.WrapLogger` in the logger chain after dashboard setup. The
-`progress.SectionTimer` sits below that cmux wrapper and above the dashboard
-broadcast logger, preserving cmux's outermost rate-limit interfaces while timing
-the structured sections. `progress.ValidationTimer` receives that wrapped runner
+Normal execution paths construct a setup `orca.Reporter` after config loading and retain it
+through dependency checks, startup prompts, plan selection, branch/worktree setup, and progress
+logger creation. Interactive plan creation and execution/review then construct phase-specific
+reporters, publish the replacement's working title, and silently quiesce the setup predecessor;
+watch-only,
+agent-generation, and standalone utility paths do not construct reporters. `orca.New` is gated by
+both the resolved config and a stdout TTY check and returns a nil-safe no-op when inactive. Phase
+changes come from `status.PhaseHolder`, task and iteration detail from `WrapLogger`, and
+human waits from `WrapInput` or `WithInputWait`. `Finish` freezes a persistent done/failed
+title, while `Stop` emits the bare idle title for aborts, declined continuation, and other
+non-completions. OSC writes are best-effort single writes to stdout and never fail the run.
+Keep `cmux.Reporter.WrapLogger` in the logger chain after dashboard setup. The
+Orca title wrapper sits below the cmux wrapper and above `progress.SectionTimer`,
+which in turn sits above the dashboard broadcast logger. This preserves cmux's
+outermost rate-limit interfaces while timing structured sections. Orca's
+limit-wait title comes from its `status.PhaseHolder` observer, not from the logger
+chain. `progress.ValidationTimer` receives that wrapped runner
 logger, filters executor command-timing events against the plan's `## Validation
 Commands`, and writes per-run and aggregate `validation:` lines through the same
 chain. Its aggregate sums command durations, so concurrent commands can overlap

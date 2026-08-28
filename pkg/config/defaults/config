@@ -220,6 +220,11 @@ move_plan_on_completion = true
 # default: false
 # use_worktree = false
 
+# orca: emit OSC terminal-title status for the orca terminal orchestrator
+# ignored when stdout is not a terminal
+# default: false
+# orca = false
+
 # ------------------------------------------------------------------------------
 # timing
 # ------------------------------------------------------------------------------

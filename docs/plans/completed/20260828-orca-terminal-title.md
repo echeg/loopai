@@ -69,7 +69,8 @@ and `claude` otherwise (`ExecutorClaude` is the empty string).
   - No code in the repository writes raw escape sequences today; colours go through
     `fatih/color`. `golang.org/x/term` is vendored and used once in
     `cmd/loopai/terminal_unix.go:16`; it also works on Windows, so no build-tag stub is needed.
-  - Only two `env:` tags exist on `opts` (`LOOPAI_CONFIG_DIR`, `LOOPAI_WEB_HOST`);
+  - Three `env:` tags exist on `opts` (`LOOPAI_CONFIG_DIR`, `LOOPAI_ORCA`,
+    `LOOPAI_WEB_HOST`);
     `TestCmuxEnvOptionsCoversOptionTags` (`cmd/loopai/main_test.go`) fails unless every `env:` tag
     is listed in `cmuxEnvOptions` (`cmd/loopai/main.go:3150`).
   - `progress.Logger` serialises its own file+stdout writes under `writeMu`
@@ -162,149 +163,153 @@ GOOS=windows GOARCH=amd64 go build ./...
 Pure functions first, so the vocabulary in the Overview table is pinned by tests before any
 wiring exists.
 
-- [ ] write failing table-driven tests in `pkg/orca/orca_test.go` for `titleFor(state, executor)`
+- [x] write failing table-driven tests in `pkg/orca/orca_test.go` for `titleFor(state, executor)`
       covering every row of the Overview table: task with total, task without total (0), each
       phase label, review/external-review iterations, plan iteration, waiting-for-input,
       waiting-for-limit, done, failed, stopped; assert exact strings including `◐`, `✳`, ` · `
-- [ ] write failing tests for `writeTitle(w io.Writer, title string)` asserting the exact bytes
+- [x] write failing tests for `writeTitle(w io.Writer, title string)` asserting the exact bytes
       `"\x1b]0;" + title + "\a"` land in a `bytes.Buffer` in a single `Write` call (use a writer
       double that counts calls), and that a writer error is swallowed and returns nothing
-- [ ] create `pkg/orca/orca.go` with a package doc mirroring `pkg/cmux/cmux.go:1-5` (best-effort,
+- [x] create `pkg/orca/orca.go` with a package doc mirroring `pkg/cmux/cmux.go:1-5` (best-effort,
       one-directional, nil reporter = no-op), a `state` value type (phase, task, total, iteration,
       waiting kind, final kind), `titleFor`, and `writeTitle`; every title is emitted through
       `writeTitle` and nothing else in the package touches the writer
-- [ ] make the tests pass; run `go test ./pkg/orca/...`
-- [ ] run tests - must pass before next task
+- [x] make the tests pass; run `go test ./pkg/orca/...`
+- [x] run tests - must pass before next task
 
 ### Task 2: `Reporter` lifecycle: `New`, TTY gating, `OnPhase`, `Finish`, `Stop`, nil safety
 
-- [ ] write failing tests: `New` with `enabled=false` returns nil; `New` with an enabled flag but a
+- [x] write failing tests: `New` with `enabled=false` returns nil; `New` with an enabled flag but a
       non-TTY stdout returns nil; a `var r *Reporter` survives every exported method
       (`assert.NotPanics` table, mirror `TestReporterNilReceiver` at `pkg/cmux/cmux_test.go:998`)
-- [ ] write failing tests: `OnPhase` driven through a real `status.PhaseHolder` writes the
+- [x] write failing tests: `OnPhase` driven through a real `status.PhaseHolder` writes the
       matching working title for `PhaseTask`, `PhaseReview`, `PhaseExternalReview`,
       `PhaseExternalEval`, `PhasePlan`, `PhaseFinalize`, and the `waiting for limit` title for
       `PhaseLimitWait`; a repeated `Set` of the same phase writes nothing; the executor suffix is
       `codex` when constructed with `config.ExecutorCodex` and `claude` for the empty default
-- [ ] write failing tests: `Finish(true, …)` writes `✳ loopai · done`, `Finish(false, …)` writes
+- [x] write failing tests: `Finish(true, …)` writes `✳ loopai · done`, `Finish(false, …)` writes
       `✳ loopai · failed`, and any `OnPhase`/`OnSection` after `Finish` writes nothing; `Stop`
       without a preceding `Finish` writes `✳ loopai` once, `Stop` after `Finish` writes nothing,
       and a second `Stop` writes nothing (`sync.Once`)
-- [ ] implement `Reporter` with an injectable `io.Writer` and an injectable `isTerminal func() bool`
+- [x] implement `Reporter` with an injectable `io.Writer` and an injectable `isTerminal func() bool`
       (production default `term.IsTerminal(int(os.Stdout.Fd()))` from `golang.org/x/term`,
       checking stdout rather than stdin); guard state with a mutex the way `pkg/cmux` guards
-      `statusMu`; keep the `quiesced || stopped || finished` gate so a late phase observer on the
+      `statusMu`; keep the `stopped || finished` gate so a late phase observer on the
       execution goroutine cannot overwrite the final idle title
-- [ ] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` to confirm the `x/term` call needs
+- [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` to confirm the `x/term` call needs
       no build-tag stub
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 3: Section observer and logger wrapper for task and iteration numbers
 
-- [ ] write failing tests for `OnSection`: `SectionTaskIteration{Iteration: 3}` with a plan file
+- [x] write failing tests for `OnSection`: `SectionTaskIteration{Iteration: 3}` with a plan file
       of 7 tasks writes `◐ loopai · task 3/7 · claude`; with `planFile == ""` or an unparsable
       plan writes `◐ loopai · task 3 · claude` (never fails); `SectionInternalReview{Iteration: 2}`
       writes the review iteration title; `SectionExternalReviewIteration` and
       `SectionPlanIteration` likewise; `SectionGeneric`, `SectionExternalEvaluation`, and
       `SectionCustomIteration` write nothing; nothing is written after `Finish`/`Stop`
-- [ ] write failing tests for `WrapLogger`: a nil reporter returns the inner logger unchanged
+- [x] write failing tests for `WrapLogger`: a nil reporter returns the inner logger unchanged
       (`assert.Same`); the wrapper forwards every method of the `Logger` interface to the inner
       logger (mirror `TestReporterWrapLoggerForwardsAllMethods` at `pkg/cmux/cmux_test.go:787`);
       `PrintSection` reaches the inner logger *before* the title is written
-- [ ] declare `orca.Logger` mirroring `cmux.Logger` (`pkg/cmux/cmux.go:681-691`, i.e.
+- [x] declare `orca.Logger` mirroring `cmux.Logger` (`pkg/cmux/cmux.go:681-691`, i.e.
       `progress.SectionLogger`), implement `OnSection`, the `titleLogger` wrapper with an
       embedded inner `Logger` and a `PrintSection` override, and `planTaskTotal` using
       `plan.ParsePlanFile` with every error mapped to total 0
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 4: Waiting-for-input decorator (`WrapInput`)
 
-- [ ] write failing tests: `WrapInput` on a nil reporter returns the collector unchanged;
+- [x] write failing tests: `WrapInput` on a nil reporter returns the collector unchanged;
       `AskQuestion` writes `loopai · waiting for input · claude` before delegating, returns the
       inner result and error untouched, and restores the previous working title after the inner
       call returns; `AskDraftReview` behaves the same; after `Finish` no title is written
-- [ ] declare a local `inputCollector` interface mirroring `processor.InputCollector` (as
+- [x] declare a local `inputCollector` interface mirroring `processor.InputCollector` (as
       `pkg/cmux/cmux.go:729-733` does, to keep `pkg/orca` free of a `pkg/processor` import) and
       implement the decorator with the same `//nolint:wrapcheck` pass-through comment style
-- [ ] run tests - must pass before next task
+- [x] expose `WithInputWait` for blocking prompts outside the collector interface and use it for
+      the post-plan continuation prompt and the task/review pause handler
+- [x] run tests - must pass before next task
 
 ### Task 5: `orca` config key with `…Set` twin, embedded default, and merge
 
-- [ ] write failing tests in `pkg/config/values_test.go` (or the file that tests `use_worktree`
+- [x] write failing tests in `pkg/config/values_test.go` (or the file that tests `use_worktree`
       parsing): `orca = true` sets `Orca=true, OrcaSet=true`; `orca = false` sets
       `Orca=false, OrcaSet=true`; absent key leaves both false; `orca = maybe` returns
       `invalid orca: …`; `mergeFrom` copies the value only when `OrcaSet`
-- [ ] write failing test in `pkg/config/config_test.go` that `Load` surfaces `Orca`/`OrcaSet` on
+- [x] write failing test in `pkg/config/config_test.go` that `Load` surfaces `Orca`/`OrcaSet` on
       `config.Config`
-- [ ] add `Orca bool` and `OrcaSet bool` to `Values` (`pkg/config/values.go:73-74` pattern), parse
+- [x] add `Orca bool` and `OrcaSet bool` to `Values` (`pkg/config/values.go:73-74` pattern), parse
       `orca` next to `use_worktree` (`:397-403`), merge next to `WorktreeEnabledSet` (`:623-625`),
       and copy to `Config` (`pkg/config/config.go:158-159`, `:402-403`)
-- [ ] add a commented `# orca = false` block to `pkg/config/defaults/config` beside `use_worktree`
+- [x] add a commented `# orca = false` block to `pkg/config/defaults/config` beside `use_worktree`
       (`:217-221`) explaining that it emits OSC terminal titles for orca and is ignored when stdout
       is not a terminal; confirm `make test`'s asset checks and any defaults-config test still pass
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 6: `--orca` flag, env tag, CLI override, and hand-off env list
 
-- [ ] write failing tests in `cmd/loopai/main_test.go`: `applyCLIOverrides` with `o.Orca=true`
+- [x] write failing tests in `cmd/loopai/main_test.go`: `applyCLIOverrides` with `o.Orca=true`
       sets `cfg.Orca=true`; with `o.Orca=false` leaves a config-provided `cfg.Orca=true` intact
       (flag only turns it on, mirroring `--worktree`); `cmuxEnvOptions` contains `LOOPAI_ORCA`
       (`TestCmuxEnvOptionsCoversOptionTags` at `cmd/loopai/main_test.go:10075` fails until it does)
-- [ ] add `Orca bool \`long:"orca" env:"LOOPAI_ORCA" description:"emit terminal title status for orca"\``
+- [x] add `Orca bool \`long:"orca" env:"LOOPAI_ORCA" description:"emit terminal title status for orca"\``
       to `opts` next to `NoColor` (`cmd/loopai/main.go:73`); do **not** add it to
       `executionModeSet` in `markFlagsSet` (`:145-154`) — it is cosmetic and must not turn an
       invocation into an execution run
-- [ ] extend `applyCLIOverrides` (`:4557`) and `cmuxEnvOptions` (`:3150`)
-- [ ] run tests - must pass before next task
+- [x] extend `applyCLIOverrides` (`:4557`) and `cmuxEnvOptions` (`:3150`)
+- [x] run tests - must pass before next task
 
 ### Task 7: Wire the reporter into the execution and plan-creation paths
 
-- [ ] write failing tests for a new `orcaReporter(cfg *config.Config, planFile string) *orca.Reporter`
+- [x] write failing tests for a new `orcaReporter(cfg *config.Config, planFile string) *orca.Reporter`
       helper in `cmd/loopai`: returns nil when `cfg.Orca` is false; passes `codex` for
       `config.ExecutorCodex` and `claude` otherwise (inject the TTY check so the test does not
       depend on the test runner's stdout)
-- [ ] write a failing test that `buildRunnerLogger` with a non-nil orca reporter and a nil cmux
+- [x] write a failing test that `buildRunnerLogger` with a non-nil orca reporter and a nil cmux
       reporter returns a logger whose `PrintSection` writes a title, and that with both reporters
       nil it still returns the section timer unchanged (existing behaviour)
-- [ ] change `buildRunnerLogger` (`cmd/loopai/main.go:772`) to
+- [x] change `buildRunnerLogger` (`cmd/loopai/main.go:772`) to
       `rep.WrapLogger(titles.WrapLogger(timer))` and update its doc comment: the orca wrapper sits
       below cmux and above the section timer so the outermost logger keeps cmux's optional
       rate-limit methods; update both call sites (`:864`, `:2502`)
-- [ ] in `executePlan`: construct the reporter beside `cmux.New` (`:801`), register
+- [x] in `executePlan`: construct the reporter beside `cmux.New` (`:801`), register
       `plr.holder.OnChange(titles.OnPhase)` after the cmux observer (`:868`), call `titles.Finish`
       wherever `finishCmuxCompletion` decides success/failure (`:655-666`), and `titles.Stop()`
       on every path that calls `rep.Stop()` (`:812`, `:962`, `:977`)
-- [ ] in the plan-creation path (`:2496-2614`): construct beside `cmux.New("", …)`, register the
+- [x] publish `failed` independently for genuine preflight, plan-creation, and branch/worktree
+      setup errors; keep user aborts and context cancellation as neutral stopped outcomes
+- [x] in the plan-creation path (`:2496-2614`): construct beside `cmux.New("", …)`, register the
       phase observer next to `:2502`, wrap the collector with `titles.WrapInput` alongside
       `rep.WrapInput` (`:2560`), and `Stop` when the creation reporter is released so the
       execution reporter starts from a clean title
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 8: Verify acceptance criteria
 
-- [ ] verify every row of the Overview title table has a passing exact-bytes test
-- [ ] verify a run without `--orca` and without `orca = true` writes no escape sequence
+- [x] verify every row of the Overview title table has a passing exact-bytes test
+- [x] verify a run without `--orca` and without `orca = true` writes no escape sequence
       (test `New` disabled path plus `buildRunnerLogger` with nil reporters)
-- [ ] verify the non-TTY path writes nothing even with the flag on
-- [ ] verify `--orca` combined with `--cmux-workspace` is accepted by `validateFlags` and that
+- [x] verify the non-TTY path writes nothing even with the flag on
+- [x] verify `--orca` combined with `--cmux-workspace` is accepted by `validateFlags` and that
       `cmuxHandOffArgv` carries `LOOPAI_ORCA` when set in the environment
-- [ ] run `make test` (full suite, race-enabled) — must pass
-- [ ] run `make lint` — all issues fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...` — must compile
-- [ ] verify `pkg/orca` coverage is at or above the project standard (80%+)
+- [x] run `make test` (full suite, race-enabled) — must pass
+- [x] run `make lint` — all issues fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...` — must compile
+- [x] verify `pkg/orca` coverage is at or above the project standard (80%+)
 
 ### Task 9: Update documentation
 
-- [ ] `README.md`: add a `--orca` bullet to the feature list near the cmux bullets (`:24-25`) and
+- [x] `README.md`: add a `--orca` bullet to the feature list near the cmux bullets (`:24-25`) and
       an "Orca terminal titles" paragraph in `## Progress and dashboard` after the cmux paragraph
       (`:864`), including the title table, the TTY rule, and that orca needs no configuration
-- [ ] `llms.txt`: add the flag to the option list (`:201`) and a one-paragraph description next
+- [x] `llms.txt`: add the flag to the option list (`:201`) and a one-paragraph description next
       to the cmux paragraph (`:179`)
-- [ ] `CLAUDE.md`: add `pkg/orca/` to the project structure list (`:52`), and extend the
+- [x] `CLAUDE.md`: add `pkg/orca/` to the project structure list (`:52`), and extend the
       logger-chain paragraph ("Keep `Reporter.WrapLogger` in the logger chain after dashboard
       setup…") to state that the orca title wrapper sits below the cmux wrapper and above the
       section timer, and that limit-wait titles come from the phase observer, not the logger
-- [ ] `docs/custom-providers.md` or a new short `docs/orca.md` only if README grows past a
+- [x] `docs/custom-providers.md` or a new short `docs/orca.md` only if README grows past a
       screen; otherwise leave README as the single source
 
 ## Technical Details
@@ -314,17 +319,20 @@ wiring exists.
 ```go
 // New returns a reporter when enabled and stdout is a terminal, otherwise nil.
 func New(enabled bool, planFile, executor string) *Reporter
+func NewWithOutput(enabled bool, planFile, executor string, writer io.Writer, isTerminal func() bool) *Reporter
 
 func (r *Reporter) OnPhase(_, cur status.Phase)            // status.PhaseHolder.OnChange
 func (r *Reporter) OnSection(section status.Section)        // called by the logger wrapper
 func (r *Reporter) WrapLogger(logger Logger) Logger          // nil → logger unchanged
 func (r *Reporter) WrapInput(c inputCollector) inputCollector // nil → c unchanged
+func (r *Reporter) WithInputWait(wait func() bool) bool         // scoped arbitrary prompt wait
 func (r *Reporter) Finish(success bool)                       // final idle title, then frozen
+func (r *Reporter) Quiesce()                                  // freeze silently for reporter handoff
 func (r *Reporter) Stop()                                     // idle title unless finished; once
 ```
 
-Test constructors inject `io.Writer` and the TTY predicate; production `New` binds
-`os.Stdout` and `term.IsTerminal`.
+`NewWithOutput` injects `io.Writer` and the TTY predicate for wiring tests; production `New`
+binds `os.Stdout` and `term.IsTerminal`.
 
 ### State → title
 
@@ -345,12 +353,16 @@ first section) writes `◐ loopai · task · claude`.
 
 ### Processing flow
 
-1. `executePlan` builds `titles := orcaReporter(cfg, planFile)` (nil unless `cfg.Orca` and TTY).
+1. `run` builds a setup reporter (nil unless `cfg.Orca` and TTY), seeds it with the mode's working
+   phase, and uses it for startup prompts and errors; `runPlanMode` or `executePlan` replaces it
+   only after progress setup succeeds and the successor has published its working title.
 2. Logger chain, innermost → outermost: `progress.Logger` → `web.BroadcastLogger` (optional) →
    `progress.SectionTimer` → `orca.titleLogger` → `cmux.reportingLogger`.
 3. Phase changes reach `titles.OnPhase` from the `PhaseHolder`; task/iteration numbers reach
    `titles.OnSection` from `titleLogger.PrintSection`; both write one escape sequence.
 4. Interactive waits set the permission title and restore the previous working title afterward.
+   Reporter replacement uses `Quiesce`, which freezes the predecessor without emitting an idle
+   title, so the handoff cannot look like a completed run.
 5. `Finish` writes the idle done/failed title and freezes the reporter; `Stop` writes the bare
    idle title only if `Finish` never ran, so an abort does not leave `◐` in the tab.
 

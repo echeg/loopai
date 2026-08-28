@@ -30,6 +30,7 @@ import (
 	"github.com/umputun/ralphex/pkg/git"
 	gitmocks "github.com/umputun/ralphex/pkg/git/mocks"
 	"github.com/umputun/ralphex/pkg/notify"
+	"github.com/umputun/ralphex/pkg/orca"
 	"github.com/umputun/ralphex/pkg/plan"
 	"github.com/umputun/ralphex/pkg/processor"
 	"github.com/umputun/ralphex/pkg/progress"
@@ -98,7 +99,7 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 
 func TestBuildRunnerLoggerRecordsSectionsInOrder(t *testing.T) {
 	inner := &runnerLoggerRecorder{}
-	out, timer := buildRunnerLogger(nil, inner)
+	out, timer := buildRunnerLogger(nil, nil, inner)
 
 	out.PrintSection(status.NewTaskIterationSection(1))
 	out.PrintSection(status.NewInternalReviewSection(1, ""))
@@ -120,7 +121,7 @@ func TestBuildRunnerLoggerKeepsCmuxOutermost(t *testing.T) {
 	rep := cmux.New("plan.md", cmux.Models{})
 	require.NotNil(t, rep)
 
-	out, _ := buildRunnerLogger(rep, &runnerLoggerRecorder{})
+	out, _ := buildRunnerLogger(rep, nil, &runnerLoggerRecorder{})
 	_, ok := out.(interface {
 		LogLimitWait(pattern, tool, waitLabel string)
 	})
@@ -128,9 +129,92 @@ func TestBuildRunnerLoggerKeepsCmuxOutermost(t *testing.T) {
 }
 
 func TestBuildRunnerLoggerWithoutReporterReturnsTimer(t *testing.T) {
-	out, timer := buildRunnerLogger(nil, &runnerLoggerRecorder{})
+	out, timer := buildRunnerLogger(nil, nil, &runnerLoggerRecorder{})
 
 	assert.Same(t, timer, out)
+}
+
+func TestOrcaReporter(t *testing.T) {
+	original := newOrcaReporter
+	t.Cleanup(func() { newOrcaReporter = original })
+
+	type call struct {
+		enabled  bool
+		planFile string
+		executor string
+	}
+	var calls []call
+	newOrcaReporter = func(enabled bool, planFile, executor string) *orca.Reporter {
+		calls = append(calls, call{enabled: enabled, planFile: planFile, executor: executor})
+		return &orca.Reporter{}
+	}
+
+	assert.Nil(t, orcaReporter(&config.Config{}, "disabled.md"))
+	assert.Empty(t, calls, "disabled reporting must not consult terminal state")
+
+	claude := orcaReporter(&config.Config{Orca: true}, "claude.md")
+	require.NotNil(t, claude)
+	codex := orcaReporter(&config.Config{Orca: true, Executor: config.ExecutorCodex}, "codex.md")
+	require.NotNil(t, codex)
+
+	assert.Equal(t, []call{
+		{enabled: true, planFile: "claude.md", executor: "claude"},
+		{enabled: true, planFile: "codex.md", executor: "codex"},
+	}, calls)
+}
+
+func TestInitialOrcaPhase(t *testing.T) {
+	tests := []struct {
+		mode processor.Mode
+		want status.Phase
+	}{
+		{mode: processor.ModeFull, want: status.PhaseTask},
+		{mode: processor.ModeTasksOnly, want: status.PhaseTask},
+		{mode: processor.ModeReview, want: status.PhaseReview},
+		{mode: processor.ModeCodexOnly, want: status.PhaseExternalReview},
+		{mode: processor.ModePlan, want: status.PhasePlan},
+		{mode: processor.ModeGenAgents},
+	}
+
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, initialOrcaPhase(tt.mode), "mode %s", tt.mode)
+	}
+}
+
+func TestStartOrcaReporterPublishesWorkingTitle(t *testing.T) {
+	original := newOrcaReporter
+	t.Cleanup(func() { newOrcaReporter = original })
+	var out bytes.Buffer
+	newOrcaReporter = func(enabled bool, planFile, executor string) *orca.Reporter {
+		return orca.NewWithOutput(enabled, planFile, executor, &out, func() bool { return true })
+	}
+
+	titles := startOrcaReporter(&config.Config{Orca: true}, "plan.md", status.PhaseReview)
+	require.NotNil(t, titles)
+	assert.Equal(t, "\x1b]0;◐ loopai · review · claude\a", out.String())
+}
+
+func TestSetOrcaCleanupStopsReporterOnForceExit(t *testing.T) {
+	var titleOut bytes.Buffer
+	titles := orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
+	require.NotNil(t, titles)
+	holder := &cleanupHolder{}
+
+	setOrcaCleanup(holder, titles)
+	forceExitCleanup(func() {}, holder)()
+
+	assert.Equal(t, "\x1b]0;✳ loopai\a", titleOut.String())
+}
+
+func TestBuildRunnerLoggerWithOrcaReporterWritesTitle(t *testing.T) {
+	var titles bytes.Buffer
+	titleRep := orca.NewWithOutput(true, "", config.ExecutorClaude, &titles, func() bool { return true })
+	require.NotNil(t, titleRep)
+
+	out, _ := buildRunnerLogger(nil, titleRep, &runnerLoggerRecorder{})
+	out.PrintSection(status.NewTaskIterationSection(3))
+
+	assert.Equal(t, "\x1b]0;◐ loopai · task 3 · claude\a", titles.String())
 }
 
 func TestRunWithSectionTimingFinishesBeforeReturning(t *testing.T) {
@@ -282,15 +366,23 @@ func TestExecutePlan_PlanParseFailureUsesReporterAfterWorktreeHandoff(t *testing
 
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
+	originalNewOrcaReporter := newOrcaReporter
+	t.Cleanup(func() { newOrcaReporter = originalNewOrcaReporter })
+	var titleOut bytes.Buffer
+	newOrcaReporter = func(enabled bool, planFile, executor string) *orca.Reporter {
+		return orca.NewWithOutput(enabled, planFile, executor, &titleOut, func() bool { return true })
+	}
 	missingPlan := filepath.Join(dir, "docs", "plans", "removed.md")
 	handedOff := false
 	err = executePlan(t.Context(), opts{NoColor: true}, executePlanRequest{
 		PlanFile: missingPlan, Mode: processor.ModeFull, GitSvc: gitSvc,
-		Config: &config.Config{}, Colors: testColors(), BaseRef: "master",
+		Config: &config.Config{Orca: true}, Colors: testColors(), BaseRef: "master",
 		CmuxHandoff: func() { handedOff = true },
 	})
 	require.ErrorContains(t, err, "parse plan validation commands")
 	assert.True(t, handedOff, "the predecessor must release ownership once the execution reporter starts")
+	assert.Equal(t, "\x1b]0;◐ loopai · task · claude\a"+
+		"\x1b]0;✳ loopai · failed\a", titleOut.String())
 
 	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path is a test-owned file under t.TempDir
 	require.NoError(t, readErr)
@@ -396,11 +488,43 @@ func parseTestOpts(t *testing.T, args ...string) opts {
 func TestLoopaiEnvironmentOptions(t *testing.T) {
 	t.Setenv("LOOPAI_WEB_HOST", "0.0.0.0")
 	t.Setenv("LOOPAI_CONFIG_DIR", "/tmp/loopai-config")
+	t.Setenv("LOOPAI_ORCA", "true")
 
 	o := parseTestOpts(t)
 
 	assert.Equal(t, "0.0.0.0", o.Host)
 	assert.Equal(t, "/tmp/loopai-config", o.ConfigDir)
+	assert.True(t, o.Orca)
+}
+
+func TestOrcaEnvironmentOptionRejectsInvalidBoolean(t *testing.T) {
+	t.Setenv("LOOPAI_ORCA", "maybe")
+	var o opts
+	parser := flags.NewParser(&o, flags.Default&^flags.PrintErrors)
+
+	_, err := parser.ParseArgs(nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--orca")
+	assert.Contains(t, err.Error(), "expected bool")
+}
+
+func TestOrcaEnvironmentOptionBooleanValues(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		want  bool
+	}{
+		{value: "true", want: true},
+		{value: "1", want: true},
+		{value: "false"},
+		{value: "0"},
+	} {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Setenv("LOOPAI_ORCA", tt.value)
+			o := parseTestOpts(t)
+			assert.Equal(t, tt.want, o.Orca)
+		})
+	}
 }
 
 func TestClearFlagParsing(t *testing.T) {
@@ -426,6 +550,14 @@ func TestCmuxWorkspaceFlagParsing(t *testing.T) {
 			assert.Equal(t, tc.want, o.CmuxWorkspace)
 		})
 	}
+}
+
+func TestOrcaWithCmuxWorkspaceIsValid(t *testing.T) {
+	o := parseTestOpts(t, "--orca", "--cmux-workspace=always", "plan.md")
+
+	assert.True(t, o.Orca)
+	assert.Equal(t, "always", o.CmuxWorkspace)
+	require.NoError(t, validateFlags(o))
 }
 
 func TestCommitFlagParsing(t *testing.T) {
@@ -896,6 +1028,32 @@ func TestTryAutoPlanMode(t *testing.T) {
 		assert.False(t, handled, "non-missing-plans error propagates to caller untouched")
 		require.NoError(t, err)
 	})
+
+	t.Run("description_prompt_reports_input_wait", func(t *testing.T) {
+		req, selector := newReq(t, "master")
+		var titleOut bytes.Buffer
+		req.SetupTitles = orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
+		req.SetupTitles.OnPhase("", status.PhaseTask)
+		titleOut.Reset()
+
+		oldStdin := os.Stdin
+		stdin, inputWriter, pipeErr := os.Pipe()
+		require.NoError(t, pipeErr)
+		_, writeErr := inputWriter.WriteString("\n")
+		require.NoError(t, writeErr)
+		require.NoError(t, inputWriter.Close())
+		os.Stdin = stdin
+		t.Cleanup(func() {
+			os.Stdin = oldStdin
+			_ = stdin.Close()
+		})
+
+		handled, err := tryAutoPlanMode(t.Context(), plan.ErrNoPlansFound, opts{}, req, selector)
+		assert.True(t, handled)
+		require.NoError(t, err)
+		assert.Equal(t, "\x1b]0;loopai · waiting for input · claude\a"+
+			"\x1b]0;◐ loopai · task · claude\a", titleOut.String())
+	})
 }
 
 func TestCheckClaudeDep(t *testing.T) {
@@ -1345,6 +1503,26 @@ func TestPreserveAnthropicAPIKeyFlag(t *testing.T) {
 		require.NoError(t, applyCLIOverrides(o, cfg))
 
 		assert.False(t, cfg.PreserveAnthropicAPIKey)
+	})
+}
+
+func TestOrcaFlag(t *testing.T) {
+	t.Run("flag enables when config disabled", func(t *testing.T) {
+		cfg := &config.Config{}
+		o := opts{Orca: true}
+
+		require.NoError(t, applyCLIOverrides(o, cfg))
+
+		assert.True(t, cfg.Orca)
+	})
+
+	t.Run("absent flag preserves config true", func(t *testing.T) {
+		cfg := &config.Config{Orca: true}
+		o := opts{Orca: false}
+
+		require.NoError(t, applyCLIOverrides(o, cfg))
+
+		assert.True(t, cfg.Orca)
 	})
 }
 
@@ -3017,7 +3195,7 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		require.NoError(t, err)
 
 		var stdout bytes.Buffer
-		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader(""), &stdout)
+		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader(""), &stdout, nil)
 		assert.NoError(t, err)
 	})
 
@@ -3037,7 +3215,7 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		assert.False(t, hasCommits)
 
 		var stdout bytes.Buffer
-		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("y\n"), &stdout)
+		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("y\n"), &stdout, nil)
 		require.NoError(t, err)
 
 		// verify commit was created
@@ -3058,9 +3236,26 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		require.NoError(t, err)
 
 		var stdout bytes.Buffer
-		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("n\n"), &stdout)
+		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("n\n"), &stdout, nil)
 		require.Error(t, err)
+		require.ErrorIs(t, err, git.ErrInitialCommitDeclined)
 		assert.Contains(t, err.Error(), "no commits - please create initial commit manually")
+	})
+
+	t.Run("initial commit prompt reports input wait", func(t *testing.T) {
+		dir := initEmptyRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		var stdout, titleOut bytes.Buffer
+		titles := orca.NewWithOutput(true, "", config.ExecutorCodex, &titleOut, func() bool { return true })
+		titles.OnPhase("", status.PhaseTask)
+		titleOut.Reset()
+
+		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("n\n"), &stdout, titles)
+
+		require.Error(t, err)
+		assert.Equal(t, "\x1b]0;loopai · waiting for input · codex\a"+
+			"\x1b]0;◐ loopai · task · codex\a", titleOut.String())
 	})
 
 	t.Run("returns error on EOF", func(t *testing.T) {
@@ -3070,8 +3265,9 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		require.NoError(t, err)
 
 		var stdout bytes.Buffer
-		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader(""), &stdout)
+		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader(""), &stdout, nil)
 		require.Error(t, err)
+		require.ErrorIs(t, err, git.ErrInitialCommitDeclined)
 		assert.Contains(t, err.Error(), "no commits - please create initial commit manually")
 	})
 
@@ -3084,7 +3280,7 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		require.NoError(t, err)
 
 		var stdout bytes.Buffer
-		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("y\n"), &stdout)
+		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("y\n"), &stdout, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create initial commit")
 	})
@@ -3099,7 +3295,7 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		cancel() // cancel immediately
 
 		var stdout bytes.Buffer
-		err = ensureRepoHasCommits(ctx, gitSvc, strings.NewReader("y\n"), &stdout)
+		err = ensureRepoHasCommits(ctx, gitSvc, strings.NewReader("y\n"), &stdout, nil)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
 	})
@@ -6154,6 +6350,14 @@ func TestRunWithWorktreeAutoResume(t *testing.T) {
 		require.NoError(t, err)
 		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "")
 		require.NoError(t, err)
+		var setupTitleOut, executionTitleOut bytes.Buffer
+		setupTitles := orca.NewWithOutput(true, "", config.ExecutorClaude, &setupTitleOut, func() bool { return true })
+		require.NotNil(t, setupTitles)
+		originalNewOrcaReporter := newOrcaReporter
+		t.Cleanup(func() { newOrcaReporter = originalNewOrcaReporter })
+		newOrcaReporter = func(enabled bool, planFile, executor string) *orca.Reporter {
+			return orca.NewWithOutput(enabled, planFile, executor, &executionTitleOut, func() bool { return true })
+		}
 
 		fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
 		writeExecutable(t, fakeClaude, `#!/bin/sh
@@ -6190,11 +6394,17 @@ printf '%s\n' "$*" >> "$CMUX_ARGV_LOG"
 		}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
 			Config: &config.Config{
-				WorktreeEnabled: true, ClaudeCommand: fakeClaude, MovePlanOnCompletion: true,
+				WorktreeEnabled: true, ClaudeCommand: fakeClaude, MovePlanOnCompletion: true, Orca: true,
 			}, Colors: testColors(),
-			DefaultBranch: "master", BaseRef: "master", WtCleanup: &cleanupHolder{},
+			DefaultBranch: "master", BaseRef: "master", WtCleanup: &cleanupHolder{}, SetupTitles: setupTitles,
 		})
 		require.NoError(t, err)
+		assert.Empty(t, setupTitleOut.String(),
+			"worktree execution must quiesce the setup reporter without publishing idle")
+		assert.True(t, strings.HasPrefix(executionTitleOut.String(), "\x1b]0;◐ loopai · task · claude\a"),
+			"the execution reporter must publish working before taking ownership: %q", executionTitleOut.String())
+		assert.True(t, strings.HasSuffix(executionTitleOut.String(), "\x1b]0;✳ loopai · done\a"),
+			"the execution reporter's persistent success title must be the final title: %q", executionTitleOut.String())
 		assert.NoDirExists(t, wtPath)
 		assert.FileExists(t, completedPlan)
 		assert.NoFileExists(t, planPath)
@@ -6502,8 +6712,7 @@ printf '%s\n' "$*" >> "$CMUX_ARGV_LOG"
 
 func TestRunWithWorktree_NotifiesSetupFailure(t *testing.T) {
 	// worktree setup runs before executePlan creates its own reporter, so runWithWorktree must
-	// raise the cmux banner for its own failures: the plan-mode handoff already stopped its
-	// reporter and a direct run never had one, so nothing downstream would report this.
+	// raise the cmux banner and finish the predecessor Orca reporter for its own failures.
 	dir := setupTestRepo(t)
 	origDir, err := os.Getwd()
 	require.NoError(t, err)
@@ -6530,12 +6739,15 @@ func TestRunWithWorktree_NotifiesSetupFailure(t *testing.T) {
 
 	// pre-create the worktree dir to force an "already exists" failure during setup
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "worktrees", "wt-notify"), 0o750))
+	var titleOut bytes.Buffer
+	setupTitles := orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
 
 	err = runWithWorktree(t.Context(), opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
 		PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{WorktreeEnabled: true},
-		Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{}, SetupTitles: setupTitles,
 	})
 	require.Error(t, err)
+	assert.Equal(t, "\x1b]0;✳ loopai · failed\a", titleOut.String())
 
 	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 	require.NoError(t, readErr, "setup failure must reach the cmux CLI")
@@ -6885,7 +7097,7 @@ func TestKeepDashboardAlive(t *testing.T) {
 func TestMakePauseHandler_EnterResumes(t *testing.T) {
 	stdin := bytes.NewReader([]byte("\n"))
 	var stdout bytes.Buffer
-	handler := makePauseHandler(stdin, &stdout)
+	handler := makePauseHandler(stdin, &stdout, nil)
 	result := handler(context.Background())
 	assert.True(t, result, "handler should return true on Enter")
 	assert.Contains(t, stdout.String(), "session interrupted")
@@ -6899,7 +7111,7 @@ func TestMakePauseHandler_ContextCancelAborts(t *testing.T) {
 	var stdout bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
-	handler := makePauseHandler(r, &stdout)
+	handler := makePauseHandler(r, &stdout, nil)
 	result := handler(ctx)
 	assert.False(t, result, "handler should return false on context cancel")
 }
@@ -6908,9 +7120,24 @@ func TestMakePauseHandler_EOFAborts(t *testing.T) {
 	// empty reader returns EOF immediately, treated as abort (safe default for piped stdin)
 	stdin := bytes.NewReader(nil)
 	var stdout bytes.Buffer
-	handler := makePauseHandler(stdin, &stdout)
+	handler := makePauseHandler(stdin, &stdout, nil)
 	result := handler(context.Background())
 	assert.False(t, result, "handler should return false on EOF (stdin closed = abort)")
+}
+
+func TestMakePauseHandlerReportsInputWait(t *testing.T) {
+	stdin := bytes.NewReader([]byte("\n"))
+	var stdout, titleOut bytes.Buffer
+	titles := orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
+	require.NotNil(t, titles)
+	titles.OnPhase("", status.PhaseTask)
+	titleOut.Reset()
+
+	result := makePauseHandler(stdin, &stdout, titles)(context.Background())
+
+	assert.True(t, result)
+	assert.Equal(t, "\x1b]0;loopai · waiting for input · claude\a"+
+		"\x1b]0;◐ loopai · task · claude\a", titleOut.String())
 }
 
 func TestCleanupHolder(t *testing.T) {
@@ -7053,17 +7280,20 @@ func TestFinishCmuxCompletion(t *testing.T) {
 		name       string
 		runErr     error
 		wantStatus string
+		wantTitle  string
 		wantNotify bool
 	}{
 		{
 			name:       "success finishes with elapsed time",
 			wantStatus: "set-status loopai done in 12m30s --icon bolt --color #34c759 --priority 90",
+			wantTitle:  "\x1b]0;✳ loopai · done\a",
 			wantNotify: true,
 		},
 		{
 			name:       "run error finishes with error detail",
 			runErr:     errors.New("boom"),
 			wantStatus: "set-status loopai failed · boom --icon exclamationmark.triangle --color #ff3b30 --priority 90",
+			wantTitle:  "\x1b]0;✳ loopai · failed\a",
 			wantNotify: true,
 		},
 		{name: "user abort does not finish", runErr: processor.ErrUserAborted},
@@ -7075,8 +7305,12 @@ func TestFinishCmuxCompletion(t *testing.T) {
 			require.NoError(t, os.RemoveAll(argvLog))
 			rep := cmux.New("plan.md", cmux.Models{})
 			require.NotNil(t, rep)
+			var titleOut bytes.Buffer
+			titles := orca.NewWithOutput(true, "plan.md", config.ExecutorClaude, &titleOut, func() bool { return true })
+			require.NotNil(t, titles)
 
-			finishCmuxCompletion(rep, "plan.md", "branch", "12m30s", tt.runErr)
+			finishCmuxCompletion(rep, titles, "plan.md", "branch", "12m30s", tt.runErr)
+			assert.Equal(t, tt.wantTitle, titleOut.String())
 
 			recorded, err := os.ReadFile(argvLog) //nolint:gosec // path built from t.TempDir
 			if !tt.wantNotify {
@@ -7093,10 +7327,62 @@ func TestFinishCmuxCompletion(t *testing.T) {
 
 func TestFinishCmuxCompletion_NilReporter(t *testing.T) {
 	assert.NotPanics(t, func() {
-		finishCmuxCompletion(nil, "plan.md", "branch", "1m", nil)
-		finishCmuxCompletion(nil, "plan.md", "branch", "1m", errors.New("boom"))
-		finishCmuxCompletion(nil, "plan.md", "branch", "1m", context.Canceled)
+		finishCmuxCompletion(nil, nil, "plan.md", "branch", "1m", nil)
+		finishCmuxCompletion(nil, nil, "plan.md", "branch", "1m", errors.New("boom"))
+		finishCmuxCompletion(nil, nil, "plan.md", "branch", "1m", context.Canceled)
 	})
+}
+
+func TestFinishOrcaFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		runErr  error
+		wantOut string
+	}{
+		{name: "failure", runErr: errors.New("boom"), wantOut: "\x1b]0;✳ loopai · failed\a"},
+		{name: "nil error"},
+		{name: "user abort", runErr: processor.ErrUserAborted},
+		{name: "plan rejected", runErr: processor.ErrUserRejectedPlan},
+		{name: "plan selection canceled", runErr: plan.ErrPlanSelectionCanceled},
+		{name: "initial commit declined", runErr: git.ErrInitialCommitDeclined},
+		{name: "context cancellation", runErr: context.Canceled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			titles := orca.NewWithOutput(true, "", config.ExecutorClaude, &out, func() bool { return true })
+			require.NotNil(t, titles)
+
+			finishOrcaFailure(titles, tt.runErr)
+
+			assert.Equal(t, tt.wantOut, out.String())
+		})
+	}
+}
+
+func TestFinishOrcaFailureLeavesUserCancellationsStopped(t *testing.T) {
+	tests := []struct {
+		name   string
+		runErr error
+	}{
+		{name: "plan rejected", runErr: fmt.Errorf("plan creation: %w", processor.ErrUserRejectedPlan)},
+		{name: "plan selection canceled", runErr: fmt.Errorf("select plan: %w", plan.ErrPlanSelectionCanceled)},
+		{name: "initial commit declined", runErr: fmt.Errorf("ensure has commits: %w", git.ErrInitialCommitDeclined)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			titles := orca.NewWithOutput(true, "", config.ExecutorClaude, &out, func() bool { return true })
+			require.NotNil(t, titles)
+
+			finishOrcaFailure(titles, tt.runErr)
+			titles.Stop()
+
+			assert.Equal(t, "\x1b]0;✳ loopai\a", out.String())
+		})
+	}
 }
 
 func TestWorktreeCmuxFinishCleanup(t *testing.T) {
@@ -7198,7 +7484,7 @@ func TestFinishCmuxAfterCleanupPublishesFinalStatusLast(t *testing.T) {
 		assert.NotContains(t, string(recorded), "set-status loopai done", "final status must follow repository cleanup")
 	}}
 
-	finishCmuxAfterCleanup(req, plr, rep, "branch", "12s", nil)
+	finishCmuxAfterCleanup(req, plr, rep, nil, "branch", "12s", nil)
 	recorded, err := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
 	require.NoError(t, err)
 	beforeStop := string(recorded)
@@ -7239,7 +7525,7 @@ func TestStopCmuxAfterCleanupClearsStatusLast(t *testing.T) {
 		assert.NotContains(t, string(recorded), "clear-status loopai", "status must remain busy through repository cleanup")
 	}}
 
-	stopCmuxAfterCleanup(req, plr, rep)
+	stopCmuxAfterCleanup(req, plr, rep, nil)
 	recorded, err := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
 	require.NoError(t, err)
 	assert.True(t, strings.HasSuffix(strings.TrimSpace(string(recorded)), "clear-status loopai"))
@@ -10153,9 +10439,13 @@ func TestCmuxHandOffArgv(t *testing.T) {
 	t.Run("every environment option is forwarded", func(t *testing.T) {
 		clearCmuxEnvOptions(t)
 		t.Setenv("LOOPAI_CONFIG_DIR", "/cfg")
+		t.Setenv("LOOPAI_ORCA", "true")
 		t.Setenv("LOOPAI_WEB_HOST", "0.0.0.0")
 		argv := cmuxHandOffArgv("/bin/loopai", []string{"--serve"})
-		assert.Equal(t, []string{"env", "LOOPAI_CONFIG_DIR=/cfg", "LOOPAI_WEB_HOST=0.0.0.0", "/bin/loopai", "--serve"}, argv)
+		assert.Equal(t, []string{
+			"env", "LOOPAI_CONFIG_DIR=/cfg", "LOOPAI_ORCA=true", "LOOPAI_WEB_HOST=0.0.0.0",
+			"/bin/loopai", "--serve",
+		}, argv)
 	})
 }
 

@@ -1080,6 +1080,9 @@ func (s *Service) resolvePlanMoveTargets(planFile, completedDir string) (sourceF
 	return sourceFile, destPath, false
 }
 
+// ErrInitialCommitDeclined is returned when an empty repository's initial-commit prompt is declined.
+var ErrInitialCommitDeclined = errors.New("no commits - please create initial commit manually")
+
 // EnsureHasCommits checks that the repository has at least one commit.
 // If the repository is empty, calls promptFn to ask user whether to create initial commit.
 // promptFn should return true to create the commit, false to abort.
@@ -1095,7 +1098,7 @@ func (s *Service) EnsureHasCommits(promptFn func() bool) error {
 
 	// prompt user to create initial commit
 	if !promptFn() {
-		return errors.New("no commits - please create initial commit manually")
+		return ErrInitialCommitDeclined
 	}
 
 	// create the commit
