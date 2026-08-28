@@ -523,6 +523,15 @@ work; the three shapes that are not loopai's to delete are still refused with th
 checkout unmutated, which is what keeps `--commit` from advancing before the failure: a
 symlink, a plain file, and a directory carrying its own `.git`. A held run lock produces a precise busy error before mutable resume validation; an acquired lock routes through existing-worktree validation and automatically resumes from the first incomplete task without source synchronization or auto-commit. Any supplied `-c`/`--commit` is ignored with a warning on this path. Teardown takes the same shared lock before releasing the run lock and removing the worktree, preventing another process from acquiring ownership in the Windows-required release-before-delete interval. The lock file is advisory: deleting its directory entry while held does not release the open file lock and can allow a replacement file to be locked independently, so users must not delete it manually. The former `--resume-worktree` flag was removed and is an unknown option. Shared lock waits and run-lock Git-directory lookup honor cancellation and the configured `vcs_command`. The progress logger is created before changing into a worktree, so logs and chain checkpoints remain in the invoking checkout at `.loopai/progress/`.
 
+Reusing a progress log whose last line is a `Completed:` footer archives it first: the locked
+canonical file is copied to `.loopai/progress/history/<stem>/archive-<YYYYMMDD-HHMMSS>-<token>.txt`,
+then truncated with a fresh header, then older archives are pruned to keep the live file plus nine.
+The timestamp comes from the archived footer. Archive names deliberately lack the `progress-`
+prefix: the dashboard's recursive discovery matches `progress-*.txt` and skips neither `.loopai` nor
+`history`, so a prefixed archive would replay as a session of its own. `readProgressAssociations`
+reads only the top level of each progress directory, so archives never supply a plan-to-branch
+association. Failed or unfinished logs keep appending after a restart separator.
+
 Review checkpoint architecture is split across `pkg/processor/review_checkpoint.go` (the versioned
 model and resume resolution), `pkg/processor/review_resume.go` (runner load/save/invalidation), and
 `cmd/loopai/review_checkpoint_state.go` (atomic file storage beside the progress log). The ordered

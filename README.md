@@ -1041,6 +1041,12 @@ Progress logs are written to `.loopai/progress/`. Watch the active run with:
 tail -f .loopai/progress/progress-*.txt
 ```
 
+Rerunning the same plan or mode reuses its log. A log that ended with a `Completed:` footer is
+first archived under `.loopai/progress/history/<stem>/archive-<timestamp>-<token>.txt`, so a
+second `--review` no longer destroys the first run's transcript; the current log plus its nine
+newest archives are kept. A failed or interrupted run keeps appending to the same log after a
+restart separator. Archives are plain files and do not appear in the dashboard.
+
 Each section is followed by a wall-clock duration line such as `task iteration 1 took 3m38s`
 when the next section starts or the run ends. The end-of-run summary groups those durations by
 phase, for example `phase durations: tasks 32m26s (8), internal review 2h23m (10)`. The number in
