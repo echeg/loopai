@@ -367,7 +367,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 	// are visible. Standalone agent generation deliberately does not emit Orca titles.
 	var setupTitles *orca.Reporter
 	if mode != processor.ModeGenAgents {
-		setupTitles = orcaReporter(cfg, "")
+		setupTitles = startOrcaReporter(cfg, "", initialOrcaPhase(mode))
 		setOrcaCleanup(orcaStop, setupTitles)
 	}
 	defer func() {
@@ -831,6 +831,29 @@ func orcaReporter(cfg *config.Config, planFile string) *orca.Reporter {
 	return newOrcaReporter(true, planFile, executor)
 }
 
+// startOrcaReporter publishes a working title immediately so setup prompts can restore a working
+// state and reporter handoffs never introduce a false working-to-idle completion transition.
+func startOrcaReporter(cfg *config.Config, planFile string, phase status.Phase) *orca.Reporter {
+	titles := orcaReporter(cfg, planFile)
+	titles.OnPhase("", phase)
+	return titles
+}
+
+func initialOrcaPhase(mode processor.Mode) status.Phase {
+	switch mode {
+	case processor.ModeFull, processor.ModeTasksOnly:
+		return status.PhaseTask
+	case processor.ModeReview:
+		return status.PhaseReview
+	case processor.ModeCodexOnly:
+		return status.PhaseExternalReview
+	case processor.ModePlan:
+		return status.PhasePlan
+	default:
+		return ""
+	}
+}
+
 func setOrcaCleanup(holder *cleanupHolder, titles *orca.Reporter) {
 	if holder != nil {
 		holder.set(titles.Stop)
@@ -870,9 +893,9 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// cmux sidebar and orca terminal-title reporters. Both are nil-safe no-ops when disabled. Stop
 	// is also registered with the interrupt handler because defers are skipped on force exit.
 	rep := cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview))
-	titles := orcaReporter(req.Config, req.PlanFile)
+	titles := startOrcaReporter(req.Config, req.PlanFile, initialOrcaPhase(req.Mode))
 	setOrcaCleanup(req.OrcaStop, titles)
-	req.SetupTitles.Stop()
+	req.SetupTitles.Quiesce()
 	var cmuxCleanupOnce sync.Once
 	completeCmux := func(elapsed string, runErr error) {
 		cmuxCleanupOnce.Do(func() {
@@ -2585,9 +2608,9 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	// Status reporters for plan creation. No plan file exists yet, so cmux progress stays empty;
 	// orca still receives phase and iteration titles.
 	rep := cmux.New("", cmuxRunModels(o, req.Config, req.ExternalReview))
-	titles := orcaReporter(req.Config, "")
+	titles := startOrcaReporter(req.Config, "", status.PhasePlan)
 	setOrcaCleanup(req.OrcaStop, titles)
-	req.SetupTitles.Stop()
+	req.SetupTitles.Quiesce()
 	defer rep.Stop()
 	defer titles.Stop()
 	if req.CmuxStop != nil {

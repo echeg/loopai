@@ -410,7 +410,8 @@ structured `PrintSection` calls while forwarding the complete logger interface.
 Normal execution paths construct a setup `orca.Reporter` after config loading and retain it
 through dependency checks, startup prompts, plan selection, branch/worktree setup, and progress
 logger creation. Interactive plan creation and execution/review then construct phase-specific
-reporters and stop the setup predecessor only after the replacement exists; watch-only,
+reporters, publish the replacement's working title, and silently quiesce the setup predecessor;
+watch-only,
 agent-generation, and standalone utility paths do not construct reporters. `orca.New` is gated by
 both the resolved config and a stdout TTY check and returns a nil-safe no-op when inactive. Phase
 changes come from `status.PhaseHolder`, task and iteration detail from `WrapLogger`, and

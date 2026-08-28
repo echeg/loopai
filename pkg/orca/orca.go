@@ -294,6 +294,21 @@ func (r *Reporter) Finish(success bool) {
 	r.emitLocked()
 }
 
+// Quiesce freezes the reporter without changing the terminal title. It is used when a successor
+// reporter has already published its working title and takes ownership of subsequent updates.
+func (r *Reporter) Quiesce() {
+	if r == nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.finished {
+		return
+	}
+	r.stopped = true
+}
+
 // Stop publishes a bare idle title when Finish has not already published an outcome. It is safe
 // to call more than once.
 func (r *Reporter) Stop() {

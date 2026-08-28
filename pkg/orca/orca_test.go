@@ -46,6 +46,7 @@ func TestReporterNilReceiver(t *testing.T) {
 		{name: "on section", call: func() { r.OnSection(status.NewTaskIterationSection(1)) }},
 		{name: "with input wait", call: func() { assert.True(t, r.WithInputWait(func() bool { return true })) }},
 		{name: "finish", call: func() { r.Finish(true) }},
+		{name: "quiesce", call: func() { r.Quiesce() }},
 		{name: "stop", call: func() { r.Stop() }},
 	}
 
@@ -147,6 +148,21 @@ func TestReporterStop(t *testing.T) {
 
 		assert.Equal(t, "\x1b]0;✳ loopai · done\a", out.String())
 	})
+}
+
+func TestReporterQuiesce(t *testing.T) {
+	var out bytes.Buffer
+	r := requireReporter(t, &out, config.ExecutorClaude)
+	r.OnPhase("", status.PhaseTask)
+	out.Reset()
+
+	r.Quiesce()
+	r.OnPhase(status.PhaseTask, status.PhaseReview)
+	r.OnSection(status.NewInternalReviewSection(2, ""))
+	r.Finish(true)
+	r.Stop()
+
+	assert.Empty(t, out.String(), "a handed-off reporter must never emit an idle or final title")
 }
 
 func TestReporterOnSection(t *testing.T) {

@@ -163,6 +163,37 @@ func TestOrcaReporter(t *testing.T) {
 	}, calls)
 }
 
+func TestInitialOrcaPhase(t *testing.T) {
+	tests := []struct {
+		mode processor.Mode
+		want status.Phase
+	}{
+		{mode: processor.ModeFull, want: status.PhaseTask},
+		{mode: processor.ModeTasksOnly, want: status.PhaseTask},
+		{mode: processor.ModeReview, want: status.PhaseReview},
+		{mode: processor.ModeCodexOnly, want: status.PhaseExternalReview},
+		{mode: processor.ModePlan, want: status.PhasePlan},
+		{mode: processor.ModeGenAgents},
+	}
+
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, initialOrcaPhase(tt.mode), "mode %s", tt.mode)
+	}
+}
+
+func TestStartOrcaReporterPublishesWorkingTitle(t *testing.T) {
+	original := newOrcaReporter
+	t.Cleanup(func() { newOrcaReporter = original })
+	var out bytes.Buffer
+	newOrcaReporter = func(enabled bool, planFile, executor string) *orca.Reporter {
+		return orca.NewWithOutput(enabled, planFile, executor, &out, func() bool { return true })
+	}
+
+	titles := startOrcaReporter(&config.Config{Orca: true}, "plan.md", status.PhaseReview)
+	require.NotNil(t, titles)
+	assert.Equal(t, "\x1b]0;◐ loopai · review · claude\a", out.String())
+}
+
 func TestSetOrcaCleanupStopsReporterOnForceExit(t *testing.T) {
 	var titleOut bytes.Buffer
 	titles := orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
@@ -350,7 +381,8 @@ func TestExecutePlan_PlanParseFailureUsesReporterAfterWorktreeHandoff(t *testing
 	})
 	require.ErrorContains(t, err, "parse plan validation commands")
 	assert.True(t, handedOff, "the predecessor must release ownership once the execution reporter starts")
-	assert.Equal(t, "\x1b]0;✳ loopai · failed\a", titleOut.String())
+	assert.Equal(t, "\x1b]0;◐ loopai · task · claude\a"+
+		"\x1b]0;✳ loopai · failed\a", titleOut.String())
 
 	recorded, readErr := os.ReadFile(argvLog) //nolint:gosec // path is a test-owned file under t.TempDir
 	require.NoError(t, readErr)
@@ -6363,8 +6395,10 @@ printf '%s\n' "$*" >> "$CMUX_ARGV_LOG"
 			DefaultBranch: "master", BaseRef: "master", WtCleanup: &cleanupHolder{}, SetupTitles: setupTitles,
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "\x1b]0;✳ loopai\a", setupTitleOut.String(),
-			"worktree execution must stop the setup reporter when taking ownership")
+		assert.Empty(t, setupTitleOut.String(),
+			"worktree execution must quiesce the setup reporter without publishing idle")
+		assert.True(t, strings.HasPrefix(executionTitleOut.String(), "\x1b]0;◐ loopai · task · claude\a"),
+			"the execution reporter must publish working before taking ownership: %q", executionTitleOut.String())
 		assert.True(t, strings.HasSuffix(executionTitleOut.String(), "\x1b]0;✳ loopai · done\a"),
 			"the execution reporter's persistent success title must be the final title: %q", executionTitleOut.String())
 		assert.NoDirExists(t, wtPath)

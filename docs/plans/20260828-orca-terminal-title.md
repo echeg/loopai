@@ -327,6 +327,7 @@ func (r *Reporter) WrapLogger(logger Logger) Logger          // nil → logger u
 func (r *Reporter) WrapInput(c inputCollector) inputCollector // nil → c unchanged
 func (r *Reporter) WithInputWait(wait func() bool) bool         // scoped arbitrary prompt wait
 func (r *Reporter) Finish(success bool)                       // final idle title, then frozen
+func (r *Reporter) Quiesce()                                  // freeze silently for reporter handoff
 func (r *Reporter) Stop()                                     // idle title unless finished; once
 ```
 
@@ -352,13 +353,16 @@ first section) writes `◐ loopai · task · claude`.
 
 ### Processing flow
 
-1. `run` builds a setup reporter (nil unless `cfg.Orca` and TTY) for startup prompts and errors;
-   `runPlanMode` or `executePlan` replaces it only after progress setup succeeds.
+1. `run` builds a setup reporter (nil unless `cfg.Orca` and TTY), seeds it with the mode's working
+   phase, and uses it for startup prompts and errors; `runPlanMode` or `executePlan` replaces it
+   only after progress setup succeeds and the successor has published its working title.
 2. Logger chain, innermost → outermost: `progress.Logger` → `web.BroadcastLogger` (optional) →
    `progress.SectionTimer` → `orca.titleLogger` → `cmux.reportingLogger`.
 3. Phase changes reach `titles.OnPhase` from the `PhaseHolder`; task/iteration numbers reach
    `titles.OnSection` from `titleLogger.PrintSection`; both write one escape sequence.
 4. Interactive waits set the permission title and restore the previous working title afterward.
+   Reporter replacement uses `Quiesce`, which freezes the predecessor without emitting an idle
+   title, so the handoff cannot look like a completed run.
 5. `Finish` writes the idle done/failed title and freezes the reporter; `Stop` writes the bare
    idle title only if `Finish` never ran, so an abort does not leave `◐` in the tab.
 
