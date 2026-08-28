@@ -170,6 +170,40 @@ func TestSelector_SelectWithFzf(t *testing.T) {
 		require.ErrorIs(t, err, ErrPlanSelectionCanceled)
 		assert.Equal(t, "no plan selected", err.Error())
 	})
+
+	t.Run("multiple plan selection with no match reports user cancellation", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "first.md"), []byte("# First"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "second.md"), []byte("# Second"), 0o600))
+
+		binDir := t.TempDir()
+		fzfPath := filepath.Join(binDir, "fzf")
+		require.NoError(t, os.WriteFile(fzfPath, []byte("#!/bin/sh\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		_, err := NewSelector(tmpDir, colors).selectWithFzf(t.Context())
+
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrPlanSelectionCanceled)
+		assert.Equal(t, "no plan selected", err.Error())
+	})
+
+	t.Run("multiple plan selection preserves fzf internal errors", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "first.md"), []byte("# First"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "second.md"), []byte("# Second"), 0o600))
+
+		binDir := t.TempDir()
+		fzfPath := filepath.Join(binDir, "fzf")
+		require.NoError(t, os.WriteFile(fzfPath, []byte("#!/bin/sh\nexit 2\n"), 0o755)) //nolint:gosec // executable test fixture
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		_, err := NewSelector(tmpDir, colors).selectWithFzf(t.Context())
+
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrPlanSelectionCanceled)
+		assert.Equal(t, "select plan with fzf: exit status 2", err.Error())
+	})
 }
 
 func TestSelector_FindRecent(t *testing.T) {

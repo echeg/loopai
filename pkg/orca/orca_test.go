@@ -400,18 +400,18 @@ func TestReporterWithInputWait(t *testing.T) {
 		"\x1b]0;◐ loopai · review · iteration 2 · codex\a", out.String())
 }
 
-func TestReporterWithInputWaitRestoresSetupReporterToIdle(t *testing.T) {
+func TestReporterWithInputWaitWithoutWorkingStateDoesNotPublishIdle(t *testing.T) {
 	var out bytes.Buffer
 	r := requireReporter(t, &out, config.ExecutorClaude)
 
 	assert.True(t, r.WithInputWait(func() bool { return true }))
-	assert.Equal(t, "\x1b]0;loopai · waiting for input · claude\a"+
-		"\x1b]0;✳ loopai\a", out.String())
+	assert.Equal(t, "\x1b]0;loopai · waiting for input · claude\a", out.String(),
+		"restoring an empty state must not falsely report that an active run finished")
 
 	out.Reset()
 	r.OnPhase("", status.PhaseTask)
 	assert.Equal(t, "\x1b]0;◐ loopai · task · claude\a", out.String(),
-		"the transient idle restoration must not freeze later reporter updates")
+		"an empty restoration must not freeze later reporter updates")
 }
 
 type fakeInputCollector struct {

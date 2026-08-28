@@ -1033,6 +1033,8 @@ func TestTryAutoPlanMode(t *testing.T) {
 		req, selector := newReq(t, "master")
 		var titleOut bytes.Buffer
 		req.SetupTitles = orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
+		req.SetupTitles.OnPhase("", status.PhaseTask)
+		titleOut.Reset()
 
 		oldStdin := os.Stdin
 		stdin, inputWriter, pipeErr := os.Pipe()
@@ -1050,7 +1052,7 @@ func TestTryAutoPlanMode(t *testing.T) {
 		assert.True(t, handled)
 		require.NoError(t, err)
 		assert.Equal(t, "\x1b]0;loopai · waiting for input · claude\a"+
-			"\x1b]0;✳ loopai\a", titleOut.String())
+			"\x1b]0;◐ loopai · task · claude\a", titleOut.String())
 	})
 }
 
@@ -3246,12 +3248,14 @@ func TestEnsureRepoHasCommits(t *testing.T) {
 		require.NoError(t, err)
 		var stdout, titleOut bytes.Buffer
 		titles := orca.NewWithOutput(true, "", config.ExecutorCodex, &titleOut, func() bool { return true })
+		titles.OnPhase("", status.PhaseTask)
+		titleOut.Reset()
 
 		err = ensureRepoHasCommits(t.Context(), gitSvc, strings.NewReader("n\n"), &stdout, titles)
 
 		require.Error(t, err)
 		assert.Equal(t, "\x1b]0;loopai · waiting for input · codex\a"+
-			"\x1b]0;✳ loopai\a", titleOut.String())
+			"\x1b]0;◐ loopai · task · codex\a", titleOut.String())
 	})
 
 	t.Run("returns error on EOF", func(t *testing.T) {

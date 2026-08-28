@@ -139,7 +139,7 @@ func (s *Selector) selectWithFzf(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("select plan: %w", ctxErr)
 		}
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 130 {
+		if errors.As(err, &exitErr) && (exitErr.ExitCode() == 1 || exitErr.ExitCode() == 130) {
 			return "", ErrPlanSelectionCanceled
 		}
 		return "", fmt.Errorf("select plan with fzf: %w", err)
