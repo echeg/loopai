@@ -7739,6 +7739,45 @@ func TestFinishCmuxCompletion_NilReporter(t *testing.T) {
 	})
 }
 
+func TestCmuxPlanChainReporterLifecycleLeavesLastOutcome(t *testing.T) {
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_ARGV_LOG\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "cmux"), []byte(script), 0o755)) //nolint:gosec // executable test fixture
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	t.Setenv("CMUX_ARGV_LOG", argvLog)
+
+	first := cmux.New("first.md", cmux.Models{})
+	require.NotNil(t, first)
+	first.Start(t.Context())
+	first.Quiesce()
+	finishCmuxCompletion(first, nil, "first.md", "first", "10s", nil)
+	first.Stop()
+
+	second := cmux.New("second.md", cmux.Models{})
+	require.NotNil(t, second)
+	second.Start(t.Context())
+	second.Quiesce()
+	finishCmuxCompletion(second, nil, "second.md", "second", "20s", errors.New("second failed"))
+	second.Stop()
+
+	recorded, err := os.ReadFile(argvLog) //nolint:gosec // test-owned temporary path
+	require.NoError(t, err)
+	var statusMutations []string
+	for line := range strings.SplitSeq(strings.TrimSpace(string(recorded)), "\n") {
+		if strings.HasPrefix(line, "set-status loopai ") || strings.HasPrefix(line, "clear-status loopai") {
+			statusMutations = append(statusMutations, line)
+		}
+	}
+	assert.Equal(t, []string{
+		"set-status loopai starting --icon hourglass --color #3b82f6 --priority 90",
+		"set-status loopai done in 10s --icon bolt --color #34c759 --priority 90",
+		"set-status loopai starting --icon hourglass --color #3b82f6 --priority 90",
+		"set-status loopai failed · second failed --icon exclamationmark.triangle --color #ff3b30 --priority 90",
+	}, statusMutations, "each Start must replace the prior pill and Stop must preserve the last Finish")
+}
+
 func TestFinishOrcaFailure(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -9793,6 +9832,14 @@ func TestCmuxWorkspaceName(t *testing.T) {
 		{name: "no plan file", o: opts{}, want: "loopai"},
 		{name: "plan file", o: opts{PlanFile: "docs/plans/20260807-my-feature.md"}, want: "my-feature"},
 		{name: "plan file without date", o: opts{PlanFile: "docs/plans/feature.md"}, want: "feature"},
+		{
+			name: "plan chain uses first plan",
+			o: opts{
+				PlanFile:  "docs/plans/20260807-first.md",
+				PlanFiles: []string{"docs/plans/20260807-first.md", "docs/plans/20260808-second.md"},
+			},
+			want: "first",
+		},
 		{name: "branch override wins", o: opts{PlanFile: "docs/plans/p.md", Branch: "custom"}, want: "custom"},
 		{name: "blank branch override ignored", o: opts{PlanFile: "p.md", Branch: "  "}, want: "p"},
 		// a plan path whose base is nothing but the extension derives an empty branch, which would
@@ -10196,6 +10243,47 @@ func TestHandOffToCmuxWorkspace(t *testing.T) {
 		assert.Contains(t, stderr.String(), "hand-off skipped, running here: plan file not found: docs/plans/typo.md")
 		_, statErr := os.Stat(argvLog)
 		require.ErrorIs(t, statErr, os.ErrNotExist, "the local run reports the missing plan itself")
+	})
+
+	t.Run("plan chain validates every file before spawning", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			prepareBad func(t *testing.T, path string)
+			want       string
+		}{
+			{
+				name: "missing successor",
+				prepareBad: func(_ *testing.T, _ string) {
+					// Leave the path absent.
+				},
+				want: "plan file not found",
+			},
+			{
+				name: "successor is a directory",
+				prepareBad: func(t *testing.T, path string) {
+					require.NoError(t, os.MkdirAll(path, 0o750))
+				},
+				want: "plan file is not a regular file",
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				argvLog := cmuxSpawnStub(t, 0)
+				t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+				first, second := "docs/plans/first.md", "docs/plans/second.md"
+				chdirWithPlan(t, first)
+				tc.prepareBad(t, second)
+
+				stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+				o := opts{CmuxWorkspace: "always", PlanFile: first, PlanFiles: []string{first, second}}
+				assert.False(t, handOffStops(t, o, []string{first + "," + second}, stdout, stderr))
+				assert.Empty(t, stdout.String())
+				assert.Contains(t, stderr.String(), tc.want+": "+second)
+				_, statErr := os.Stat(argvLog)
+				require.ErrorIs(t, statErr, os.ErrNotExist, "no workspace may spawn for a partially valid chain")
+			})
+		}
 	})
 
 	t.Run("plan file that is a directory continues locally", func(t *testing.T) {

@@ -94,11 +94,11 @@
 - [x] run tests - must pass before next task
 
 ### Task 5: cmux hand-off and status integration for chains
-- [ ] `planFileHandOffRefusal` (main.go:3237) validates every file in the comma list before spawning a workspace
-- [ ] `cmuxWorkspaceName` (main.go:3270) derives the workspace name from the first plan (documented behavior)
-- [ ] per-plan cmux reporters overwrite the previous plan's pill as runs progress; the final pill reflects the last executed plan (done or failed) — verify `Finish`/`Stop` ordering across the chain
-- [ ] write tests for multi-plan hand-off refusal and workspace naming
-- [ ] run tests - must pass before next task
+- [x] `planFileHandOffRefusal` (main.go:3237) validates every file in the comma list before spawning a workspace
+- [x] `cmuxWorkspaceName` (main.go:3270) derives the workspace name from the first plan (documented behavior)
+- [x] per-plan cmux reporters overwrite the previous plan's pill as runs progress; the final pill reflects the last executed plan (done or failed) — verify `Finish`/`Stop` ordering across the chain
+- [x] write tests for multi-plan hand-off refusal and workspace naming
+- [x] run tests - must pass before next task
 
 ### Task 6: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented (comma syntax, sequential stacked execution, stop on failure/abort, single-plan behavior unchanged)

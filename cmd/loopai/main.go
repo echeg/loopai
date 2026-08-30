@@ -692,6 +692,9 @@ func runPlanChain(
 			planReq.WorktreeStartRef = "refs/heads/" + previousBranch
 		}
 
+		// Execution returns only after its cmux reporter has published Finish and completed Stop.
+		// Every reporter owns the same loopai pill: the next plan's Start overwrites the preceding
+		// final pill, while the last executed plan's Stop preserves its done or failed outcome.
 		err := execute(ctx, planOpts, planReq, selector)
 		finishOrcaFailure(setupTitles, err)
 		setupTitles.Stop()
@@ -3286,11 +3289,16 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bo
 		return handOffRefusal("not a repository root: "+cwd, handOffRequired, stderr)
 	}
 
-	// an unusable plan file is otherwise only detected in the child, long after the workspace was
+	// An unusable plan file is otherwise only detected in the child, long after the workspace was
 	// created and focused: the terminal the user typed in prints a success line and exits 0 while
-	// the new card dies immediately, leaving an orphan to close by hand.
-	if o.PlanFile != "" {
-		if reason := planFileHandOffRefusal(o.PlanFile); reason != "" {
+	// the new card dies immediately, leaving an orphan to close by hand. A chain is handed off as
+	// one child invocation, so every entry must be usable before that workspace is spawned.
+	planFiles := o.PlanFiles
+	if len(planFiles) == 0 && o.PlanFile != "" {
+		planFiles = []string{o.PlanFile}
+	}
+	for _, planFile := range planFiles {
+		if reason := planFileHandOffRefusal(planFile); reason != "" {
 			return handOffRefusal(reason, handOffRequired, stderr)
 		}
 	}
@@ -3458,17 +3466,22 @@ func handOffAllowedOutsideRepo(o opts) bool {
 }
 
 // cmuxWorkspaceName titles the new workspace after the branch the run will use, so sidebar cards
-// line up with .loopai/worktrees/<branch>. plan creation has no plan file yet and falls back to
-// the app name.
+// line up with .loopai/worktrees/<branch>. A chain uses its first plan because that is the branch
+// checked out when the workspace opens; successor plans create their stacked branches inside the
+// same workspace. Plan creation has no plan file yet and falls back to the app name.
 func cmuxWorkspaceName(o opts) string {
 	if name := strings.TrimSpace(o.Branch); name != "" {
 		return name
 	}
+	planFile := o.PlanFile
+	if len(o.PlanFiles) > 0 {
+		planFile = o.PlanFiles[0]
+	}
 	// an empty plan file must not reach ExtractBranchName: filepath.Base("") is "."
-	if strings.TrimSpace(o.PlanFile) == "" {
+	if strings.TrimSpace(planFile) == "" {
 		return "loopai"
 	}
-	if name := strings.TrimSpace(plan.ExtractBranchName(o.PlanFile)); name != "" {
+	if name := strings.TrimSpace(plan.ExtractBranchName(planFile)); name != "" {
 		return name
 	}
 	return "loopai"
