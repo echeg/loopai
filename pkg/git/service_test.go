@@ -2180,7 +2180,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		// try to create second worktree at different path but same branch.
 		// use AddWorktree directly to bypass dir-exists check.
 		secondPath := filepath.Join(dir, ".loopai", "worktrees", "branch-conflict-2")
-		err = svc.repo.addWorktree(t.Context(), secondPath, "branch-conflict", false)
+		err = svc.repo.addWorktree(t.Context(), secondPath, "branch-conflict", false, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "already used by worktree")
 	})
@@ -2209,6 +2209,125 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 
 		// cleanup
 		require.NoError(t, svc.RemoveWorktree(wtPath))
+	})
+}
+
+func TestService_CreateWorktreeForPlanStartRef(t *testing.T) {
+	t.Run("empty start ref uses source HEAD", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		planFile := filepath.Join(dir, "docs", "plans", "default-start.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "source-only.txt"), []byte("source\n"), 0o600))
+		require.NoError(t, svc.repo.add("source-only.txt"))
+		require.NoError(t, svc.repo.commit("advance source"))
+		sourceHead, err := svc.HeadHash()
+		require.NoError(t, err)
+
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlanFromRefContext(t.Context(), planFile, "", "")
+		require.NoError(t, err)
+		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
+		assert.False(t, planNeedsCommit)
+		assert.Equal(t, sourceHead, strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD")))
+	})
+
+	t.Run("explicit ref creates branch from exact commit and carries selected plan", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, svc.CreateBranch("previous-plan"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "previous-only.txt"), []byte("previous\n"), 0o600))
+		require.NoError(t, svc.repo.add("previous-only.txt"))
+		require.NoError(t, svc.repo.commit("complete previous plan"))
+		previousHead, err := svc.HeadHash()
+		require.NoError(t, err)
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+
+		planFile := filepath.Join(dir, "docs", "plans", "next-plan.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Next plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add next plan to source"))
+
+		wtPath, planNeedsCommit, err := svc.CreateWorktreeForPlanFromRefContext(
+			t.Context(), planFile, "", "refs/heads/previous-plan",
+		)
+		require.NoError(t, err)
+		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
+		assert.True(t, planNeedsCommit, "the source plan must be copied into a worktree whose ref predates it")
+		assert.Equal(t, previousHead, strings.TrimSpace(runGit(t, wtPath, "rev-parse", "HEAD")))
+		assert.FileExists(t, filepath.Join(wtPath, "docs", "plans", "next-plan.md"))
+		assert.Contains(t, runGit(t, wtPath, "status", "--porcelain", "--untracked-files=all"), "docs/plans/next-plan.md")
+	})
+
+	t.Run("missing ref fails before creating a branch or worktree", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "docs", "plans", "missing-start.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+
+		_, _, err = svc.CreateWorktreeForPlanFromRefContext(
+			t.Context(), planFile, "", "refs/heads/does-not-exist",
+		)
+		require.ErrorContains(t, err, `resolve worktree start ref "refs/heads/does-not-exist"`)
+		assert.False(t, svc.BranchExists("missing-start"))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "missing-start"))
+	})
+
+	t.Run("existing branch merges explicit ref instead of source HEAD", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "docs", "plans", "reuse-start.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+
+		require.NoError(t, svc.CreateBranch("previous-plan"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "previous-only.txt"), []byte("previous\n"), 0o600))
+		require.NoError(t, svc.repo.add("previous-only.txt"))
+		require.NoError(t, svc.repo.commit("complete previous plan"))
+		previousHead, err := svc.HeadHash()
+		require.NoError(t, err)
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+
+		require.NoError(t, svc.CreateBranch("reuse-start"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "target-only.txt"), []byte("target\n"), 0o600))
+		require.NoError(t, svc.repo.add("target-only.txt"))
+		require.NoError(t, svc.repo.commit("advance target branch"))
+		targetHead, err := svc.HeadHash()
+		require.NoError(t, err)
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "source-only.txt"), []byte("source\n"), 0o600))
+		require.NoError(t, svc.repo.add("source-only.txt"))
+		require.NoError(t, svc.repo.commit("advance source independently"))
+		sourceHead, err := svc.HeadHash()
+		require.NoError(t, err)
+
+		wtPath, _, err := svc.CreateWorktreeForPlanFromRefContext(
+			t.Context(), planFile, "", "refs/heads/previous-plan",
+		)
+		require.NoError(t, err)
+		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
+		runGit(t, wtPath, "merge-base", "--is-ancestor", previousHead, "HEAD")
+		runGit(t, wtPath, "merge-base", "--is-ancestor", targetHead, "HEAD")
+		cmd := exec.Command("git", "merge-base", "--is-ancestor", sourceHead, "HEAD")
+		cmd.Dir = wtPath
+		require.Error(t, cmd.Run(), "branch reuse must not merge the source checkout HEAD")
+		assert.FileExists(t, filepath.Join(wtPath, "previous-only.txt"))
+		assert.NoFileExists(t, filepath.Join(wtPath, "source-only.txt"))
 	})
 }
 

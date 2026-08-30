@@ -5152,6 +5152,39 @@ func TestResolveVersion(t *testing.T) {
 	})
 }
 
+func TestPrepareWorktreeRunStartRef(t *testing.T) {
+	dir := setupTestRepo(t)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	runGit(t, dir, "checkout", "-b", "previous-plan")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "previous-only.txt"), []byte("previous\n"), 0o600))
+	runGit(t, dir, "add", "previous-only.txt")
+	runGit(t, dir, "commit", "-m", "complete previous plan")
+	previousHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+	runGit(t, dir, "checkout", "master")
+
+	planPath := filepath.Join(dir, "docs", "plans", "stacked-next.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath, []byte("# Stacked next\n"), 0o600))
+	runGit(t, dir, "add", "docs/plans/stacked-next.md")
+	runGit(t, dir, "commit", "-m", "add next plan to source")
+	sourceHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+
+	wt, err := prepareWorktreeRun(opts{Worktree: true}, executePlanRequest{
+		PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{}, Colors: testColors(),
+		DefaultBranch: "master", WorktreeStartRef: "refs/heads/previous-plan", WtCleanup: &cleanupHolder{},
+	}, "stacked-next")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+	runGit(t, wt.path, "merge-base", "--is-ancestor", previousHead, "HEAD")
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", sourceHead, "HEAD")
+	cmd.Dir = wt.path
+	require.Error(t, cmd.Run(), "prepareWorktreeRunContext must thread the explicit ref into Git creation")
+	assert.FileExists(t, filepath.Join(wt.path, "previous-only.txt"))
+	assert.FileExists(t, filepath.Join(wt.path, "docs", "plans", "stacked-next.md"))
+}
+
 func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 	t.Run("invalid_branch_is_rejected_before_source_mutation", func(t *testing.T) {
 		dir := setupTestRepo(t)

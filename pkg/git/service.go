@@ -33,6 +33,7 @@ type backend interface {
 	validateBranchName(name string) error
 	branchExists(name string) bool
 	branchHash(name string) (string, error)
+	revParse(ref string) (string, error)
 	createBranch(name string) error
 	checkoutBranch(name string) error
 	mergeBranch(ctx context.Context, name, expectedHead string) error
@@ -56,7 +57,7 @@ type backend interface {
 	autoCommitAll(msg string) (bool, error)
 	createInitialCommit(msg string) error
 	diffStats(baseBranch, headRef string) (DiffStats, error)
-	addWorktree(ctx context.Context, path, branch string, createBranch bool) error
+	addWorktree(ctx context.Context, path, branch string, createBranch bool, startRef string) error
 	removeWorktree(path string) error
 	removeWorktreeSafe(path string) error
 	pruneWorktrees() error
@@ -584,7 +585,16 @@ func (s *Service) CreateWorktreeForPlan(planFile, branchOverride string) (string
 func (s *Service) CreateWorktreeForPlanContext(
 	ctx context.Context, planFile, branchOverride string,
 ) (string, bool, error) {
-	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "")
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", "")
+}
+
+// CreateWorktreeForPlanFromRefContext creates a plan worktree whose new branch starts at
+// startRef. An empty startRef preserves CreateWorktreeForPlanContext's current-HEAD behavior.
+// Existing plan branches are synchronized with startRef before they are reused.
+func (s *Service) CreateWorktreeForPlanFromRefContext(
+	ctx context.Context, planFile, branchOverride, startRef string,
+) (string, bool, error) {
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", startRef)
 }
 
 // CreateWorktreeForPlanAfterAutoCommit creates a plan worktree after sourceHeadBefore was
@@ -596,21 +606,29 @@ func (s *Service) CreateWorktreeForPlanAfterAutoCommit(
 	if sourceHeadBefore == "" {
 		return "", false, errors.New("source HEAD before auto-commit is empty")
 	}
-	return s.createWorktreeForPlan(ctx, planFile, branchOverride, sourceHeadBefore)
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, sourceHeadBefore, "")
 }
 
 func (s *Service) createWorktreeForPlan(
-	ctx context.Context, planFile, branchOverride, existingBranchAncestor string,
+	ctx context.Context, planFile, branchOverride, existingBranchAncestor, startRef string,
 ) (string, bool, error) {
 	planFile = s.resolveFilesystemCase(planFile)
+	startCommit, err := s.resolveWorktreeStartCommit(startRef)
+	if err != nil {
+		return "", false, err
+	}
 
 	// prune stale worktree entries first
 	if pruneErr := s.repo.pruneWorktrees(); pruneErr != nil {
 		s.log.Printf("warning: prune worktrees: %v\n", pruneErr)
 	}
 
-	if err := s.preflightWorktreeForPlan(ctx, planFile, branchOverride, existingBranchAncestor); err != nil {
-		return "", false, err
+	validationAncestor := existingBranchAncestor
+	if validationAncestor == "" {
+		validationAncestor = startCommit
+	}
+	if preflightErr := s.preflightWorktreeForPlan(ctx, planFile, branchOverride, validationAncestor, startRef); preflightErr != nil {
+		return "", false, preflightErr
 	}
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
 	wtPath := filepath.Join(s.repo.root(), ".loopai", "worktrees", branchName)
@@ -637,41 +655,49 @@ func (s *Service) createWorktreeForPlan(
 
 	// create worktree with branch
 	if s.repo.branchExists(branchName) {
-		if err := s.createExistingPlanWorktree(ctx, wtPath, branchName, existingBranchAncestor); err != nil {
+		if err := s.createExistingPlanWorktree(
+			ctx, wtPath, branchName, validationAncestor, startCommit, startRef,
+		); err != nil {
 			return "", false, err
 		}
 	} else {
+		if startRef != "" {
+			source = startRef
+		}
 		s.log.Printf("creating worktree with new branch: %s (from %s)\n", branchName, source)
-		if err := s.repo.addWorktree(ctx, wtPath, branchName, true); err != nil {
+		if err := s.repo.addWorktree(ctx, wtPath, branchName, true, startCommit); err != nil {
 			addErr := fmt.Errorf("add worktree with new branch: %w", err)
 			return "", false, s.cleanupFailedWorktreeAdd(wtPath, addErr)
 		}
 	}
 
-	// copy plan file into worktree so the caller can commit it on the feature branch.
-	// without this, the plan file only exists in main's working tree (not committed to HEAD).
-	if planHasChanges {
+	// Git worktrees contain committed files from their starting revision, never uncommitted files
+	// from the source checkout. An explicit start ref may also predate a clean, source-committed
+	// plan. Copy the selected plan in both cases so the caller can commit it on the new branch;
+	// CommitPlanFile is intentionally a no-op when the copied content is already identical.
+	if planHasChanges || startRef != "" {
 		if cpErr := s.copyToWorktree(planFile, wtPath); cpErr != nil {
 			_ = s.repo.removeWorktree(wtPath)
 			return "", false, fmt.Errorf("copy plan to worktree: %w", cpErr)
 		}
+		planHasChanges = true
 	}
 
 	return wtPath, planHasChanges, nil
 }
 
 func (s *Service) createExistingPlanWorktree(
-	ctx context.Context, wtPath, branchName, existingBranchAncestor string,
+	ctx context.Context, wtPath, branchName, validationAncestor, startCommit, startRef string,
 ) error {
-	if err := s.validateExistingPlanBranchAt(ctx, branchName, existingBranchAncestor); err != nil {
+	if err := s.validateExistingPlanBranchAt(ctx, branchName, validationAncestor, startRef); err != nil {
 		return err
 	}
 	s.log.Printf("creating worktree with existing branch: %s\n", branchName)
-	if err := s.repo.addWorktree(ctx, wtPath, branchName, false); err != nil {
+	if err := s.repo.addWorktree(ctx, wtPath, branchName, false, ""); err != nil {
 		addErr := fmt.Errorf("add worktree with existing branch: %w", err)
 		return s.cleanupFailedWorktreeAdd(wtPath, addErr)
 	}
-	mergeErr := s.mergeSourceHead(ctx, wtPath, branchName)
+	mergeErr := s.mergeWorktreeStart(ctx, wtPath, branchName, startCommit, startRef)
 	if mergeErr == nil {
 		return nil
 	}
@@ -691,32 +717,55 @@ func (s *Service) cleanupFailedWorktreeAdd(wtPath string, cause error) error {
 	return cause
 }
 
-func (s *Service) mergeSourceHead(ctx context.Context, wtPath, branchName string) error {
-	sourceHead, err := s.repo.headHash()
-	if err != nil {
-		return fmt.Errorf("identify source HEAD: %w", err)
+func (s *Service) mergeWorktreeStart(
+	ctx context.Context, wtPath, branchName, startCommit, startRef string,
+) error {
+	if startCommit == "" {
+		var err error
+		startCommit, err = s.repo.headHash()
+		if err != nil {
+			return fmt.Errorf("identify source HEAD: %w", err)
+		}
 	}
 	wtSvc, err := s.OpenWorktree(wtPath)
 	if err != nil {
 		return fmt.Errorf("open existing plan worktree: %w", err)
 	}
-	containsSource, err := wtSvc.repo.isAncestor(ctx, sourceHead, "HEAD")
+	containsSource, err := wtSvc.repo.isAncestor(ctx, startCommit, "HEAD")
 	if err != nil {
-		return fmt.Errorf("check existing plan branch against source HEAD: %w", err)
+		return fmt.Errorf("check existing plan branch against %s: %w", worktreeStartLabel(startRef), err)
 	}
 	if containsSource {
 		return nil
 	}
-	shortHead := sourceHead
+	shortHead := startCommit
 	const shortHashLength = 7
 	if len(shortHead) > shortHashLength {
 		shortHead = shortHead[:shortHashLength]
 	}
-	s.log.Printf("merging source HEAD %s into existing plan branch %s\n", shortHead, branchName)
-	if err := wtSvc.repo.mergeRevision(ctx, sourceHead, sourceHead); err != nil {
-		return fmt.Errorf("merge source HEAD into existing plan branch: %w", err)
+	s.log.Printf("merging %s %s into existing plan branch %s\n", worktreeStartLabel(startRef), shortHead, branchName)
+	if err := wtSvc.repo.mergeRevision(ctx, startCommit, startCommit); err != nil {
+		return fmt.Errorf("merge %s into existing plan branch: %w", worktreeStartLabel(startRef), err)
 	}
 	return nil
+}
+
+func (s *Service) resolveWorktreeStartCommit(startRef string) (string, error) {
+	if startRef == "" {
+		return "", nil
+	}
+	commit, err := s.repo.revParse(startRef + "^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree start ref %q: %w", startRef, err)
+	}
+	return commit, nil
+}
+
+func worktreeStartLabel(startRef string) string {
+	if startRef == "" {
+		return "source HEAD"
+	}
+	return fmt.Sprintf("start ref %q", startRef)
 }
 
 // PreflightWorktreeForPlan rejects deterministic target conflicts without changing repository
@@ -728,7 +777,19 @@ func (s *Service) PreflightWorktreeForPlan(planFile, branchOverride string) erro
 
 // PreflightWorktreeForPlanContext is PreflightWorktreeForPlan with caller cancellation.
 func (s *Service) PreflightWorktreeForPlanContext(ctx context.Context, planFile, branchOverride string) error {
-	return s.preflightWorktreeForPlan(ctx, planFile, branchOverride, "")
+	return s.preflightWorktreeForPlan(ctx, planFile, branchOverride, "", "")
+}
+
+// PreflightWorktreeForPlanFromRefContext validates worktree creation from startRef without
+// changing repository state. An empty startRef preserves the current-HEAD behavior.
+func (s *Service) PreflightWorktreeForPlanFromRefContext(
+	ctx context.Context, planFile, branchOverride, startRef string,
+) error {
+	startCommit, err := s.resolveWorktreeStartCommit(startRef)
+	if err != nil {
+		return err
+	}
+	return s.preflightWorktreeForPlan(ctx, planFile, branchOverride, startCommit, startRef)
 }
 
 // PreflightWorktreeForPlanAutoCommitContext validates the tree that AutoCommitAll would
@@ -736,7 +797,7 @@ func (s *Service) PreflightWorktreeForPlanContext(ctx context.Context, planFile,
 func (s *Service) PreflightWorktreeForPlanAutoCommitContext(
 	ctx context.Context, planFile, branchOverride string,
 ) error {
-	if err := s.preflightWorktreeForPlan(ctx, planFile, branchOverride, ""); err != nil {
+	if err := s.preflightWorktreeForPlan(ctx, planFile, branchOverride, "", ""); err != nil {
 		return err
 	}
 	branchName := s.EffectiveBranchName(s.resolveFilesystemCase(planFile), branchOverride)
@@ -757,7 +818,7 @@ func (s *Service) PreflightWorktreeForPlanAutoCommitContext(
 }
 
 func (s *Service) preflightWorktreeForPlan(
-	ctx context.Context, planFile, branchOverride, existingBranchAncestor string,
+	ctx context.Context, planFile, branchOverride, existingBranchAncestor, startRef string,
 ) error {
 	planFile = s.resolveFilesystemCase(planFile)
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
@@ -801,14 +862,16 @@ func (s *Service) preflightWorktreeForPlan(
 	}
 
 	if s.repo.branchExists(branchName) {
-		if err := s.validateExistingPlanBranchAt(ctx, branchName, existingBranchAncestor); err != nil {
+		if err := s.validateExistingPlanBranchAt(ctx, branchName, existingBranchAncestor, startRef); err != nil {
 			return err
 		}
 	}
 	return s.validateWorktreePlanFile(planFile)
 }
 
-func (s *Service) validateExistingPlanBranchAt(ctx context.Context, branchName, requiredAncestor string) error {
+func (s *Service) validateExistingPlanBranchAt(
+	ctx context.Context, branchName, requiredAncestor, startRef string,
+) error {
 	if requiredAncestor == "" {
 		var err error
 		requiredAncestor, err = s.repo.headHash()
@@ -832,13 +895,16 @@ func (s *Service) validateExistingPlanBranchAt(ctx context.Context, branchName, 
 		return fmt.Errorf("predict source merge into existing plan branch %q: %w", branchName, err)
 	}
 	if wouldConflict {
-		return existingPlanBranchConflictError(branchName)
+		return existingPlanBranchConflictError(branchName, startRef)
 	}
 	return nil
 }
 
-func existingPlanBranchConflictError(branchName string) error {
-	return fmt.Errorf("existing plan branch %q does not include current HEAD and merging the source changes would conflict; merge or rebase the source changes into it, or choose another --branch", branchName)
+func existingPlanBranchConflictError(branchName, startRef string) error {
+	if startRef == "" {
+		return fmt.Errorf("existing plan branch %q does not include current HEAD and merging the source changes would conflict; merge or rebase the source changes into it, or choose another --branch", branchName)
+	}
+	return fmt.Errorf("existing plan branch %q does not include start ref %q and merging the start-ref changes would conflict; merge or rebase the start-ref changes into it, or choose another plan", branchName, startRef)
 }
 
 func autoCommittedSourceConflictError(branchName string) error {

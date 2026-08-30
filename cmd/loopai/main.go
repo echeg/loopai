@@ -251,6 +251,7 @@ type executePlanRequest struct {
 	Colors           *progress.Colors
 	DefaultBranch    string // base for non-worktree branch creation; worktrees are created from current HEAD
 	BaseRef          string // base reference for review diffs and templates (--base-ref override or DefaultBranch)
+	WorktreeStartRef string // optional refs/heads/<previous-plan-branch> for stacked chain worktrees
 	NotifySvc        *notify.Service
 	BranchOverride   string              // branch name override (--branch flag); empty = derive from plan filename
 	WtCleanup        *cleanupHolder      // worktree cleanup for interrupt handler; nil when not in worktree mode
@@ -1597,7 +1598,12 @@ func prepareWorktreeSource(o opts, req executePlanRequest, branch string) (bool,
 // prepareFreshWorktree mutates the source and creates the worktree while its caller holds the
 // repository worktree-preparation lock.
 func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, branch string) (path string, planNeedsCommit bool, err error) {
-	if preflightErr := req.GitSvc.PreflightWorktreeForPlanContext(ctx, req.PlanFile, req.BranchOverride); preflightErr != nil {
+	if o.Commit && req.WorktreeStartRef != "" {
+		return "", false, errors.New("source auto-commit cannot be combined with an explicit worktree start ref")
+	}
+	if preflightErr := req.GitSvc.PreflightWorktreeForPlanFromRefContext(
+		ctx, req.PlanFile, req.BranchOverride, req.WorktreeStartRef,
+	); preflightErr != nil {
 		return "", false, fmt.Errorf("preflight worktree creation: %w", preflightErr)
 	}
 
@@ -1610,7 +1616,9 @@ func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, b
 	// Ignore installation can change whether an untracked plan is visible to Git,
 	// particularly for plans placed under loopai's reserved runtime directories.
 	// Revalidate before an auto-commit is allowed to advance the source checkout.
-	if preflightErr := req.GitSvc.PreflightWorktreeForPlanContext(ctx, req.PlanFile, req.BranchOverride); preflightErr != nil {
+	if preflightErr := req.GitSvc.PreflightWorktreeForPlanFromRefContext(
+		ctx, req.PlanFile, req.BranchOverride, req.WorktreeStartRef,
+	); preflightErr != nil {
 		return "", false, fmt.Errorf("preflight worktree creation after ignore setup: %w", preflightErr)
 	}
 	if o.Commit {
@@ -1633,7 +1641,9 @@ func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, b
 		path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlanAfterAutoCommit(
 			ctx, req.PlanFile, req.BranchOverride, sourceHeadBefore)
 	} else {
-		path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlanContext(ctx, req.PlanFile, req.BranchOverride)
+		path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlanFromRefContext(
+			ctx, req.PlanFile, req.BranchOverride, req.WorktreeStartRef,
+		)
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("create worktree: %w", err)

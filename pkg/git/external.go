@@ -1183,12 +1183,17 @@ func (e *externalBackend) toRelative(path string) (string, error) {
 }
 
 // addWorktree creates a git worktree at the given path.
-// when createBranch is true, creates a new branch with `git worktree add <path> -b <branch>`.
+// when createBranch is true, creates a new branch with `git worktree add <path> -b <branch> [<start-ref>]`.
 // when createBranch is false, uses existing branch with `git worktree add <path> <branch>`.
-func (e *externalBackend) addWorktree(ctx context.Context, path, branch string, createBranch bool) error {
+func (e *externalBackend) addWorktree(
+	ctx context.Context, path, branch string, createBranch bool, startRef string,
+) error {
 	var args []string
 	if createBranch {
 		args = []string{"worktree", "add", path, "-b", branch}
+		if startRef != "" {
+			args = append(args, startRef)
+		}
 	} else {
 		args = []string{"worktree", "add", path, branch}
 	}

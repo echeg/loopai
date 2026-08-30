@@ -1183,7 +1183,7 @@ func TestExternalBackend_AddWorktree(t *testing.T) {
 		require.NoError(t, err)
 
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		err = eb.addWorktree(t.Context(), wtDir, "wt-branch", true)
+		err = eb.addWorktree(t.Context(), wtDir, "wt-branch", true, "")
 		require.NoError(t, err)
 
 		// verify worktree exists and is on the correct branch
@@ -1204,7 +1204,7 @@ func TestExternalBackend_AddWorktree(t *testing.T) {
 		require.NoError(t, eb.checkoutBranch("master"))
 
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		err = eb.addWorktree(t.Context(), wtDir, "existing-branch", false)
+		err = eb.addWorktree(t.Context(), wtDir, "existing-branch", false, "")
 		require.NoError(t, err)
 
 		// verify worktree is on the existing branch
@@ -1222,7 +1222,7 @@ func TestExternalBackend_AddWorktree(t *testing.T) {
 
 		// master is currently checked out, trying to create worktree for it should fail
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		err = eb.addWorktree(t.Context(), wtDir, "master", false)
+		err = eb.addWorktree(t.Context(), wtDir, "master", false, "")
 		require.Error(t, err)
 	})
 }
@@ -1234,7 +1234,7 @@ func TestExternalBackend_RemoveWorktree(t *testing.T) {
 		require.NoError(t, err)
 
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		require.NoError(t, eb.addWorktree(t.Context(), wtDir, "wt-branch", true))
+		require.NoError(t, eb.addWorktree(t.Context(), wtDir, "wt-branch", true, ""))
 
 		err = eb.removeWorktree(wtDir)
 		require.NoError(t, err)
@@ -1262,7 +1262,7 @@ func TestExternalBackend_PruneWorktrees(t *testing.T) {
 
 		// create and manually delete a worktree dir to leave a stale entry
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		require.NoError(t, eb.addWorktree(t.Context(), wtDir, "stale-branch", true))
+		require.NoError(t, eb.addWorktree(t.Context(), wtDir, "stale-branch", true, ""))
 		require.NoError(t, os.RemoveAll(wtDir))
 
 		// prune should clean up the stale entry

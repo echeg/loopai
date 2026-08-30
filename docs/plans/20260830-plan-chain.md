@@ -66,13 +66,13 @@
 - [x] run tests - must pass before next task
 
 ### Task 2: Support cutting a worktree branch from an explicit start ref
-- [ ] extend the worktree/branch creation path (`pkg/git/service.go` and `prepareWorktreeRunContext` in cmd/loopai/main.go) with an optional start ref; default (empty) keeps today's "source checkout HEAD" behavior
-- [ ] chain callers pass `refs/heads/<previous-plan-branch>` as the start ref for plan N+1
-- [ ] branch-reuse synchronization for a chained plan merges the start ref (previous branch tip), not source HEAD
-- [ ] verify the plan file for plan N+1 reaches its worktree the same way a single run guarantees it today (worktrees carry committed files only); document the mechanism in code comments
-- [ ] write tests in pkg/git for start-ref worktree creation (default HEAD, explicit ref, missing ref error)
-- [ ] write tests for branch reuse against a start ref
-- [ ] run tests - must pass before next task
+- [x] extend the worktree/branch creation path (`pkg/git/service.go` and `prepareWorktreeRunContext` in cmd/loopai/main.go) with an optional start ref; default (empty) keeps today's "source checkout HEAD" behavior
+- [x] chain callers pass `refs/heads/<previous-plan-branch>` as the start ref for plan N+1
+- [x] branch-reuse synchronization for a chained plan merges the start ref (previous branch tip), not source HEAD
+- [x] verify the plan file for plan N+1 reaches its worktree the same way a single run guarantees it today (worktrees carry committed files only); document the mechanism in code comments
+- [x] write tests in pkg/git for start-ref worktree creation (default HEAD, explicit ref, missing ref error)
+- [x] write tests for branch reuse against a start ref
+- [x] run tests - must pass before next task
 
 ### Task 3: Chain loop in `run` with per-plan lifecycle
 - [ ] loop over `o.PlanFiles` around `selectAndExecutePlan` (cmd/loopai/main.go:463): reuse loaded config, git service, notifier, and selector; construct fresh orca `setupTitles` and cmux reporter per plan following the `runPlanMode` hand-off pattern (main.go:2739-2743)
