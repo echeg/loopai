@@ -494,7 +494,9 @@ func run(ctx context.Context, o opts) (runErr error) {
 
 	// Ensure the repository is executable and reject repository-dependent chain problems before
 	// resolving branches or creating any plan artifacts.
-	if repoErr := validateExecutionRepository(ctx, o, gitSvc, cfg.WorktreeEnabled, setupTitles); repoErr != nil {
+	if repoErr := validateExecutionRepository(
+		ctx, o, gitSvc, cfg.WorktreeEnabled, cfg.MovePlanOnCompletion, setupTitles,
+	); repoErr != nil {
 		return repoErr
 	}
 
@@ -555,7 +557,8 @@ func run(ctx context.Context, o opts) (runErr error) {
 }
 
 func validateExecutionRepository(
-	ctx context.Context, o opts, gitSvc *git.Service, worktree bool, setupTitles *orca.Reporter,
+	ctx context.Context, o opts, gitSvc *git.Service, worktree, movePlanOnCompletion bool,
+	setupTitles *orca.Reporter,
 ) error {
 	if err := ensureRepoHasCommits(ctx, gitSvc, os.Stdin, os.Stdout, setupTitles); err != nil {
 		return err
@@ -566,7 +569,7 @@ func validateExecutionRepository(
 	if err := gitSvc.EnsureLocalGitignore(); err != nil {
 		return fmt.Errorf("prepare plan chain runtime state: %w", err)
 	}
-	state, found, err := verifiedPlanChainCheckpoint(ctx, o, gitSvc, worktree)
+	state, found, err := verifiedPlanChainCheckpoint(ctx, o, gitSvc, worktree, movePlanOnCompletion)
 	if err != nil {
 		return err
 	}
@@ -722,7 +725,9 @@ func initializePlanChainRun(
 	if err := req.GitSvc.EnsureLocalGitignore(); err != nil {
 		return planChainCheckpoint{}, false, fmt.Errorf("prepare plan chain runtime state: %w", err)
 	}
-	state, found, err := verifiedPlanChainCheckpoint(ctx, o, req.GitSvc, req.Config.WorktreeEnabled)
+	state, found, err := verifiedPlanChainCheckpoint(
+		ctx, o, req.GitSvc, req.Config.WorktreeEnabled, req.Config.MovePlanOnCompletion,
+	)
 	if err != nil {
 		return planChainCheckpoint{}, false, err
 	}
@@ -1467,22 +1472,22 @@ func stopCmuxUnlessRetained(rep *cmux.Reporter, retained bool) {
 }
 
 func moveCompletedPlan(req executePlanRequest) (bool, error) {
+	chainRun := len(req.ChainPlanFiles) > 1
+	if chainRun && req.PlanFile != "" && modeRequiresBranch(req.Mode) && req.ChainFinalizing != nil {
+		if err := req.ChainFinalizing(); err != nil {
+			return false, fmt.Errorf("checkpoint chain finalization: %w", err)
+		}
+	}
 	if !shouldMovePlan(req) {
 		return false, nil
 	}
 	moveSvc := req.GitSvc
 	movePlanFile := req.PlanFile
-	chainRun := len(req.ChainPlanFiles) > 1
 	if req.MainGitSvc != nil && !chainRun {
 		moveSvc = req.MainGitSvc
 	}
 	if req.MainPlanFile != "" && !chainRun {
 		movePlanFile = req.MainPlanFile
-	}
-	if chainRun && req.ChainFinalizing != nil {
-		if err := req.ChainFinalizing(); err != nil {
-			return false, fmt.Errorf("checkpoint chain finalization: %w", err)
-		}
 	}
 	if err := moveSvc.MovePlanToCompleted(movePlanFile); err != nil {
 		if chainRun {

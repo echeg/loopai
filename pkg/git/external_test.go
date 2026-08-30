@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -288,6 +289,45 @@ func TestExternalBackend_headHash(t *testing.T) {
 
 		_, err = eb.headHash()
 		require.Error(t, err)
+	})
+}
+
+func TestExternalBackend_RevisionExists(t *testing.T) {
+	t.Run("distinguishes commits from missing revisions", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+		head, err := eb.headHash()
+		require.NoError(t, err)
+
+		exists, err := eb.revisionExists(t.Context(), head)
+		require.NoError(t, err)
+		assert.True(t, exists)
+
+		exists, err = eb.revisionExists(t.Context(), strings.Repeat("1", 40))
+		require.NoError(t, err)
+		assert.False(t, exists)
+	})
+
+	t.Run("propagates cancellation", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		exists, err := eb.revisionExists(ctx, "HEAD")
+		require.ErrorIs(t, err, context.Canceled)
+		assert.False(t, exists)
+	})
+
+	t.Run("propagates repository errors", func(t *testing.T) {
+		eb := &externalBackend{path: t.TempDir(), command: "git"}
+
+		exists, err := eb.revisionExists(t.Context(), "HEAD")
+		require.Error(t, err)
+		assert.False(t, exists)
+		assert.Contains(t, err.Error(), "not a git repository")
 	})
 }
 

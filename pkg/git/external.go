@@ -210,6 +210,30 @@ func (e *externalBackend) revParse(ref string) (string, error) {
 	return out, nil
 }
 
+func (e *externalBackend) revisionExists(ctx context.Context, revision string) (bool, error) {
+	cmd := exec.CommandContext(ctx, e.command, "rev-parse", "--verify", "--quiet", revision+"^{commit}")
+	cmd.Dir = e.path
+	configureCommandCancellation(cmd)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, fmt.Errorf("git rev-parse: %w", ctxErr)
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	details := strings.TrimSpace(output.String())
+	if details != "" {
+		return false, fmt.Errorf("git rev-parse: %s", details)
+	}
+	return false, fmt.Errorf("git rev-parse: %w", err)
+}
+
 // fileExistsAt reports whether path is a regular file in ref. Git represents symlinks as blobs
 // too, so checking object existence or type is insufficient: only normal executable/non-executable
 // blob modes are accepted. A missing or non-regular entry is not an error; malformed revisions and

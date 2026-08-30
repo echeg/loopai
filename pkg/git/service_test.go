@@ -2719,6 +2719,25 @@ func TestService_CreateBranchForPlanChain(t *testing.T) {
 		assert.Equal(t, "one", strings.TrimSpace(runGit(t, dir, "branch", "--show-current")))
 	})
 
+	t.Run("reused first branch commits an untracked plan carried through checkout", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+		require.NoError(t, os.WriteFile(plans[0], []byte("# One\n"), 0o600))
+		require.NoError(t, svc.repo.add(plans[0]))
+		require.NoError(t, svc.repo.commit("add first plan"))
+		runGit(t, dir, "branch", "one")
+		require.NoError(t, os.WriteFile(plans[1], []byte("# Two\n"), 0o600))
+
+		require.NoError(t, svc.CreateBranchForPlanChainContext(t.Context(), plans[0], "", plans))
+		assert.Equal(t, "one", strings.TrimSpace(runGit(t, dir, "branch", "--show-current")))
+		assert.Empty(t, strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
+		assert.Equal(t, "# Two\n", runGit(t, dir, "show", "HEAD:docs/plans/two.md"))
+	})
+
 	t.Run("prepared first branch allows local task changes and requires saved tip", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())

@@ -210,7 +210,7 @@ func removePlanChainCheckpoint(root string, plans []string, mode string) error {
 }
 
 func verifiedPlanChainCheckpoint(
-	ctx context.Context, o opts, gitSvc *git.Service, worktree bool,
+	ctx context.Context, o opts, gitSvc *git.Service, worktree, movePlanOnCompletion bool,
 ) (planChainCheckpoint, bool, error) {
 	state, found, err := loadPlanChainCheckpoint(gitSvc.Root(), o.PlanFiles, string(resolvePlanChainMode(o)))
 	if err != nil || !found {
@@ -220,10 +220,14 @@ func verifiedPlanChainCheckpoint(
 		return planChainCheckpoint{}, false, errors.New("plan chain checkpoint was created with a different worktree setting")
 	}
 	if state.Active != 0 {
-		state, err = recoverActivePlanChainMember(o, gitSvc, state)
+		state, err = recoverActivePlanChainMember(o, gitSvc, state, movePlanOnCompletion)
 		if err != nil {
 			return planChainCheckpoint{}, false, err
 		}
+	}
+	state, err = discardStaleResumePreparedTip(ctx, o, gitSvc, state)
+	if err != nil {
+		return planChainCheckpoint{}, false, err
 	}
 	if state.Completed == 0 {
 		return state, true, nil
@@ -243,13 +247,12 @@ func verifiedPlanChainCheckpoint(
 	return state, true, nil
 }
 
-// recoverActivePlanChainMember closes the only non-atomic completion window: MovePlanToCompleted
-// commits before the coordinator can advance its external checkpoint. The coordinator persists a
-// finalization marker immediately before archival, so a stale completed copy left by an older run
-// cannot make an aborted member look successful. Without both that marker and a new archived tip,
-// the member remains pending and can be run again.
+// recoverActivePlanChainMember closes the only non-atomic completion window after successful plan
+// processing and before the coordinator advances its external checkpoint. The coordinator persists
+// a finalization marker before optional archival. When archival is enabled, the archived plan is an
+// additional completion guard so a stale completed copy cannot make an aborted member look successful.
 func recoverActivePlanChainMember(
-	o opts, gitSvc *git.Service, state planChainCheckpoint,
+	o opts, gitSvc *git.Service, state planChainCheckpoint, movePlanOnCompletion bool,
 ) (planChainCheckpoint, error) {
 	activeIndex := state.Active - 1
 	planFile := o.PlanFiles[activeIndex]
@@ -259,11 +262,11 @@ func recoverActivePlanChainMember(
 		if err != nil {
 			return planChainCheckpoint{}, fmt.Errorf("recover active plan chain member: %w", err)
 		}
-		archived, err := gitSvc.PlanArchivedAtRevision(tip, planFile)
+		completedAtTip, err := planChainMemberCompletedAtTip(gitSvc, tip, planFile, movePlanOnCompletion)
 		if err != nil {
-			return planChainCheckpoint{}, fmt.Errorf("recover active plan chain member: %w", err)
+			return planChainCheckpoint{}, err
 		}
-		if state.ActiveFinalizing && archived && tip != state.ActiveStartTip {
+		if state.ActiveFinalizing && completedAtTip && tip != state.ActiveStartTip {
 			state.Completed = state.Active
 			state.PreviousTip = tip
 			state.ResumePreparedTip = ""
@@ -279,6 +282,66 @@ func recoverActivePlanChainMember(
 		return planChainCheckpoint{}, err
 	}
 	return state, nil
+}
+
+func planChainMemberCompletedAtTip(
+	gitSvc *git.Service, tip, planFile string, movePlanOnCompletion bool,
+) (bool, error) {
+	if !movePlanOnCompletion {
+		return true, nil
+	}
+	archived, err := gitSvc.PlanArchivedAtRevision(tip, planFile)
+	if err != nil {
+		return false, fmt.Errorf("recover active plan chain member: %w", err)
+	}
+	return archived, nil
+}
+
+func discardStaleResumePreparedTip(
+	ctx context.Context, o opts, gitSvc *git.Service, state planChainCheckpoint,
+) (planChainCheckpoint, error) {
+	if state.ResumePreparedTip == "" {
+		return state, nil
+	}
+	valid, err := preparedResumeTipValid(ctx, o, gitSvc, state)
+	if err != nil {
+		return planChainCheckpoint{}, fmt.Errorf("validate prepared plan chain resume tip: %w", err)
+	}
+	if valid {
+		return state, nil
+	}
+	state.ResumePreparedTip = ""
+	if err := savePlanChainCheckpoint(gitSvc.Root(), o.PlanFiles, state); err != nil {
+		return planChainCheckpoint{}, err
+	}
+	return state, nil
+}
+
+func preparedResumeTipValid(
+	ctx context.Context, o opts, gitSvc *git.Service, state planChainCheckpoint,
+) (bool, error) {
+	if state.Completed >= len(o.PlanFiles) {
+		return false, nil
+	}
+	branch := gitSvc.EffectiveBranchName(o.PlanFiles[state.Completed], "")
+	if !gitSvc.BranchExists(branch) {
+		return false, nil
+	}
+	exists, err := gitSvc.RevisionExistsContext(ctx, state.ResumePreparedTip)
+	if err != nil {
+		return false, fmt.Errorf("check prepared revision: %w", err)
+	}
+	if !exists {
+		return false, nil
+	}
+	contains, err := gitSvc.BranchContainsRevisionContext(ctx, branch, state.ResumePreparedTip)
+	if err != nil {
+		return false, fmt.Errorf("check prepared branch ancestry: %w", err)
+	}
+	if !contains {
+		return false, fmt.Errorf("branch %q no longer contains saved prepared tip %s", branch, state.ResumePreparedTip)
+	}
+	return true, nil
 }
 
 func resolvePlanChainMode(o opts) processor.Mode {

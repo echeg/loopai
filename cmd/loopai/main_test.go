@@ -540,6 +540,11 @@ func TestRunPlanChain(t *testing.T) {
 		assert.Equal(t, 1, calls)
 	})
 
+	t.Run("recovers_finalized_member_when_archival_is_disabled", testPlanChainRecoveryWithoutArchival)
+	t.Run("clears_prepared_resume_tip_after_branch_deletion", testPlanChainClearsDeletedPreparedBranch)
+	t.Run("clears_prepared_resume_tip_after_revision_pruned", testPlanChainClearsMissingPreparedRevision)
+	t.Run("rejects_rewound_prepared_resume_branch", testPlanChainRejectsRewoundPreparedBranch)
+
 	t.Run("does_not_recover_unchanged_preexisting_archive_branch", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		plansDir := filepath.Join(dir, "docs", "plans")
@@ -636,6 +641,19 @@ func TestRunPlanChain(t *testing.T) {
 		assert.False(t, moved)
 		assert.True(t, finalizing)
 		require.ErrorContains(t, err, "archive completed chain plan")
+	})
+
+	t.Run("chain_finalization_is_checkpointed_when_archival_is_disabled", func(t *testing.T) {
+		finalizing := false
+		moved, err := moveCompletedPlan(executePlanRequest{
+			PlanFile: "docs/plans/one.md", Mode: processor.ModeFull,
+			Config:          &config.Config{MovePlanOnCompletion: false},
+			ChainPlanFiles:  []string{"docs/plans/one.md", "docs/plans/two.md"},
+			ChainFinalizing: func() error { finalizing = true; return nil },
+		})
+		require.NoError(t, err)
+		assert.False(t, moved)
+		assert.True(t, finalizing)
 	})
 
 	t.Run("stops_on_abort_even_when_executor_returns_nil", func(t *testing.T) {
@@ -836,6 +854,143 @@ printf '%s\n' '{"type":"result","result":""}'
 		assert.FileExists(t, filepath.Join(plansDir, "completed", "one.md"))
 		assert.FileExists(t, filepath.Join(plansDir, "completed", "two.md"))
 	})
+}
+
+func testPlanChainRecoveryWithoutArchival(t *testing.T) {
+	dir := setupTestRepo(t)
+	plansDir := filepath.Join(dir, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+	for _, planFile := range plans {
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+	}
+	runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+	runGit(t, dir, "commit", "-m", "add no-archive recovery plans")
+	runGit(t, dir, "checkout", "-b", "one")
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	activeStartTip, err := gitSvc.HeadHash()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(plans[0], []byte("# Plan\n\n- [x] Done\n"), 0o600))
+	runGit(t, dir, "add", "docs/plans/one.md")
+	runGit(t, dir, "commit", "-m", "complete first plan without archival")
+	completedTip, err := gitSvc.HeadHash()
+	require.NoError(t, err)
+	o := opts{PlanFile: plans[0], PlanFiles: plans}
+	require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
+		Mode: string(processor.ModeFull), Active: 1, ActiveStartTip: activeStartTip,
+		ActivePrepared: true, ActiveFinalizing: true,
+	}))
+
+	calls := 0
+	err = runPlanChain(t.Context(), o, executePlanRequest{
+		Mode: processor.ModeFull, GitSvc: gitSvc,
+		Config: &config.Config{MovePlanOnCompletion: false}, OrcaStop: &cleanupHolder{},
+	}, nil, nil, io.Discard, func(_ context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
+		calls++
+		assert.Equal(t, plans[1], gotOpts.PlanFile)
+		assert.Equal(t, completedTip, gotReq.WorktreeStartRef)
+		gotReq.Outcome.succeeded = true
+		gotReq.Outcome.branchTip = completedTip
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls)
+}
+
+func testPlanChainClearsDeletedPreparedBranch(t *testing.T) {
+	dir := setupTestRepo(t)
+	plansDir := filepath.Join(dir, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+	for _, planFile := range plans {
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+	}
+	runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+	runGit(t, dir, "commit", "-m", "add prepared resume plans")
+	runGit(t, dir, "branch", "one")
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	preparedTip, err := gitSvc.BranchHash("one")
+	require.NoError(t, err)
+	o := opts{PlanFile: plans[0], PlanFiles: plans}
+	require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
+		Mode: string(processor.ModeFull), Worktree: true, Active: 1,
+		ActiveStartTip: preparedTip, ActivePrepared: true,
+	}))
+
+	state, found, err := verifiedPlanChainCheckpoint(t.Context(), o, gitSvc, true, true)
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, preparedTip, state.ResumePreparedTip)
+	runGit(t, dir, "branch", "-D", "one")
+
+	state, found, err = verifiedPlanChainCheckpoint(t.Context(), o, gitSvc, true, true)
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.Empty(t, state.ResumePreparedTip)
+	saved, savedFound, err := loadPlanChainCheckpoint(dir, plans, string(processor.ModeFull))
+	require.NoError(t, err)
+	assert.True(t, savedFound)
+	assert.Empty(t, saved.ResumePreparedTip)
+}
+
+func testPlanChainClearsMissingPreparedRevision(t *testing.T) {
+	dir := setupTestRepo(t)
+	plansDir := filepath.Join(dir, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+	for _, planFile := range plans {
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+	}
+	runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+	runGit(t, dir, "commit", "-m", "add missing prepared revision plans")
+	runGit(t, dir, "branch", "one")
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	o := opts{PlanFile: plans[0], PlanFiles: plans}
+	missingTip := strings.Repeat("1", 40)
+	require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
+		Mode: string(processor.ModeFull), Worktree: true, ResumePreparedTip: missingTip,
+	}))
+
+	state, found, err := verifiedPlanChainCheckpoint(t.Context(), o, gitSvc, true, true)
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.Empty(t, state.ResumePreparedTip)
+	saved, savedFound, err := loadPlanChainCheckpoint(dir, plans, string(processor.ModeFull))
+	require.NoError(t, err)
+	assert.True(t, savedFound)
+	assert.Empty(t, saved.ResumePreparedTip)
+}
+
+func testPlanChainRejectsRewoundPreparedBranch(t *testing.T) {
+	dir := setupTestRepo(t)
+	plansDir := filepath.Join(dir, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+	for _, planFile := range plans {
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+	}
+	runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+	runGit(t, dir, "commit", "-m", "add rewound prepared resume plans")
+	runGit(t, dir, "branch", "one")
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	preparedTip, err := gitSvc.BranchHash("one")
+	require.NoError(t, err)
+	o := opts{PlanFile: plans[0], PlanFiles: plans}
+	require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
+		Mode: string(processor.ModeFull), Worktree: true, ResumePreparedTip: preparedTip,
+	}))
+	runGit(t, dir, "branch", "-f", "one", "HEAD~1")
+
+	_, _, err = verifiedPlanChainCheckpoint(t.Context(), o, gitSvc, true, true)
+	require.ErrorContains(t, err, "no longer contains saved prepared tip")
+	saved, found, err := loadPlanChainCheckpoint(dir, plans, string(processor.ModeFull))
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, preparedTip, saved.ResumePreparedTip)
 }
 
 func TestRunSelectedPlansKeepsSinglePlanPath(t *testing.T) {

@@ -37,6 +37,7 @@ type backend interface {
 	branchExists(name string) bool
 	branchHash(name string) (string, error)
 	revParse(ref string) (string, error)
+	revisionExists(ctx context.Context, revision string) (bool, error)
 	fileExistsAt(ref, path string) (bool, error)
 	createBranch(name string) error
 	checkoutBranch(name string) error
@@ -379,6 +380,20 @@ func (s *Service) BranchHash(name string) (string, error) {
 		return "", fmt.Errorf("branch head: %w", err)
 	}
 	return hash, nil
+}
+
+// RevisionExistsContext reports whether revision resolves to a commit and honors cancellation.
+// Missing or malformed revisions return false without an error; repository and command failures
+// are returned to the caller.
+func (s *Service) RevisionExistsContext(ctx context.Context, revision string) (bool, error) {
+	if revision == "" {
+		return false, nil
+	}
+	exists, err := s.repo.revisionExists(ctx, revision)
+	if err != nil {
+		return false, fmt.Errorf("check revision %q: %w", revision, err)
+	}
+	return exists, nil
 }
 
 // PlanArchivedAtRevision reports whether planFile has been removed from its active path and exists
@@ -734,10 +749,15 @@ func (s *Service) createBranchForPlanFromCurrentHEADContext(
 		return switchErr
 	}
 	if reusingBranch && len(planSnapshots) > 0 {
-		changedPlans, err = s.restorePlanSnapshots(planSnapshots)
+		var restoredPlans []string
+		restoredPlans, err = s.restorePlanSnapshots(planSnapshots)
 		if err != nil {
 			return fmt.Errorf("restore chain plans on reused branch %q: %w", branchName, err)
 		}
+		// Checkout can carry a dirty or untracked source plan onto the reused branch
+		// byte-for-byte. Keep those source changes even when no snapshot rewrite was needed;
+		// commitChangedChainPlans asks Git which candidates still differ from the new HEAD.
+		changedPlans = append(changedPlans, restoredPlans...)
 	}
 	return s.commitChangedChainPlans(branchName, changedPlans)
 }
@@ -1022,15 +1042,28 @@ func (s *Service) resumePreparedPlanChainBranch(
 }
 
 func (s *Service) commitChangedChainPlans(branchName string, changedPlans []string) error {
+	committablePlans := make([]string, 0, len(changedPlans))
+	seen := make(map[string]struct{}, len(changedPlans))
 	for _, changedPlan := range changedPlans {
+		if _, exists := seen[changedPlan]; exists {
+			continue
+		}
+		seen[changedPlan] = struct{}{}
 		if err := s.repo.add(changedPlan); err != nil {
 			return fmt.Errorf("stage chain plan file %q: %w", changedPlan, err)
 		}
+		changed, err := s.repo.fileHasChanges(changedPlan)
+		if err != nil {
+			return fmt.Errorf("check staged chain plan file %q: %w", changedPlan, err)
+		}
+		if changed {
+			committablePlans = append(committablePlans, changedPlan)
+		}
 	}
-	if len(changedPlans) == 0 {
+	if len(committablePlans) == 0 {
 		return nil
 	}
-	if err := s.repo.commitFiles(s.appendTrailer("add plan chain: "+branchName), changedPlans...); err != nil {
+	if err := s.repo.commitFiles(s.appendTrailer("add plan chain: "+branchName), committablePlans...); err != nil {
 		return fmt.Errorf("commit chain plan files: %w", err)
 	}
 	return nil
