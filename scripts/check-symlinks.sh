@@ -6,7 +6,7 @@ repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 claude_dir="$repo_root/assets/claude"
 skills_dir="$claude_dir/skills"
 status=0
-expected_skills="$(printf '%s\n' loopai loopai-adopt loopai-brainstorm loopai-grill loopai-plan loopai-update | sort)"
+expected_skills="$(printf '%s\n' loopai loopai-adopt loopai-brainstorm loopai-grill loopai-orca loopai-plan loopai-update | sort)"
 
 fail() {
 	printf '%s\n' "$*" >&2

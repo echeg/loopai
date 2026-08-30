@@ -1,0 +1,1 @@
+./skills/loopai-orca/SKILL.md

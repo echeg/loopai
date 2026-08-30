@@ -360,8 +360,8 @@ claude_limit_patterns = You've hit your limit,You've hit your session limit,Your
 # codex_limit_patterns: patterns to detect rate limits in codex/external output
 # comma-separated list of substrings (case-insensitive matching)
 # same retry behavior as claude_limit_patterns
-# default: Rate limit exceeded,rate limit reached,429 Too Many Requests,quota exceeded,insufficient_quota,You've hit your usage limit
-codex_limit_patterns = Rate limit exceeded,rate limit reached,429 Too Many Requests,quota exceeded,insufficient_quota,You've hit your usage limit
+# default: Rate limit exceeded,rate limit reached,429 Too Many Requests,quota exceeded,insufficient_quota,You've hit your usage limit,is at capacity
+codex_limit_patterns = Rate limit exceeded,rate limit reached,429 Too Many Requests,quota exceeded,insufficient_quota,You've hit your usage limit,is at capacity
 
 # wait_on_limit: duration to wait before retrying after a rate limit is detected
 # uses Go duration format (e.g., "1h", "30m", "1h30m", "90s")

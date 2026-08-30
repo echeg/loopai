@@ -21,7 +21,7 @@ The fork does not contain upstream packaging/release infrastructure or the upstr
 ```bash
 make build      # build .bin/loopai
 make test       # asset checks, race-enabled unit tests with coverage, provider-wrapper suites
-make check-symlinks # validate the six Claude skill assets and links
+make check-symlinks # validate the seven Claude skill assets and links
 make test-symlinks  # regression tests for Claude skill asset validation
 make check-plugin   # validate Claude plugin and marketplace manifests
 make test-plugin    # regression tests for manifest validation
@@ -77,8 +77,15 @@ The top-level `assets/claude/loopai*.md` files are symlinks to the matching
 directory name, and link target aligned; `make check-symlinks` rejects broken,
 missing, incorrect, and orphan links, requires skill descriptions, and verifies
 the exact skill inventory. The current set is `loopai`, `loopai-plan`,
-`loopai-brainstorm`, `loopai-adopt`, `loopai-update`, and `loopai-grill`; every
-added skill needs the matching top-level symlink. When adding or removing a
+`loopai-brainstorm`, `loopai-adopt`, `loopai-update`, `loopai-grill`, and
+`loopai-orca`; every added skill needs the matching top-level symlink.
+`loopai-orca` drives the Orca desktop app's `orca` CLI and executes nothing
+itself: it creates an Orca-managed worktree cut from the current branch (Orca's
+default base is the remote-tracking ref, so `--base-branch` is always passed and
+Orca names the branch `<git-user>/<name>`), copies the plan and untracked
+`.loopai/` overrides into that checkout because a worktree carries committed
+files only, and launches `loopai --orca <plan>` without `--worktree` in an Orca
+terminal tab, where the OSC titles from `pkg/orca` give the card its status. When adding or removing a
 skill, update `expected_skills` in `scripts/check-symlinks.sh` and the valid
 fixture inventory in `scripts/check-symlinks_test.sh`, then bump both manifest
 versions.

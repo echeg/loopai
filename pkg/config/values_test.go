@@ -80,7 +80,7 @@ func TestValuesLoader_Load_EmbeddedOnly(t *testing.T) {
 	assert.Equal(t, []string{"You've hit your limit", "You've hit your session limit", "API Error:", "cannot be launched inside another Claude Code session", "Not logged in", "Your usage allocation has been disabled by your admin", "You've hit your org's monthly usage limit"}, values.ClaudeErrorPatterns)
 	assert.Equal(t, []string{"Rate limit exceeded", "rate limit reached", "429 Too Many Requests", "quota exceeded", "insufficient_quota", "You've hit your usage limit"}, values.CodexErrorPatterns)
 	assert.Equal(t, []string{"You've hit your limit", "You've hit your session limit", "Your usage allocation has been disabled by your admin", "You've hit your org's monthly usage limit"}, values.ClaudeLimitPatterns)
-	assert.Equal(t, []string{"Rate limit exceeded", "rate limit reached", "429 Too Many Requests", "quota exceeded", "insufficient_quota", "You've hit your usage limit"}, values.CodexLimitPatterns)
+	assert.Equal(t, []string{"Rate limit exceeded", "rate limit reached", "429 Too Many Requests", "quota exceeded", "insufficient_quota", "You've hit your usage limit", "is at capacity"}, values.CodexLimitPatterns)
 	assert.Equal(t, []string{"FYA_TRANSIENT_TIMEOUT", "API Error: 529", "API Error: 502", "API Error: 503", "API Error: 504"}, values.ClaudeRetryPatterns)
 	assert.Equal(t, 10*time.Minute, values.WaitOnLimit)
 	assert.True(t, values.WaitOnLimitSet)
