@@ -241,6 +241,30 @@ func TestRunPlanChain(t *testing.T) {
 		assert.Contains(t, out.String(), "plan chain complete: 3/3 plans succeeded")
 	})
 
+	t.Run("successful_chain_removes_checkpoint_and_same_paths_run_again", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		plans := []string{filepath.Join(dir, "one.md"), filepath.Join(dir, "two.md")}
+		o := opts{PlanFile: plans[0], PlanFiles: plans}
+		req := executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{}, OrcaStop: &cleanupHolder{},
+		}
+		calls := 0
+		execute := func(_ context.Context, _ opts, gotReq executePlanRequest, _ *plan.Selector) error {
+			calls++
+			gotReq.Outcome.succeeded = true
+			return nil
+		}
+
+		require.NoError(t, runPlanChain(t.Context(), o, req, nil, nil, io.Discard, execute))
+		checkpointPath, _, err := planChainCheckpointPath(dir, plans, string(processor.ModeFull))
+		require.NoError(t, err)
+		assert.NoFileExists(t, checkpointPath)
+		require.NoError(t, runPlanChain(t.Context(), o, req, nil, nil, io.Discard, execute))
+		assert.Equal(t, 4, calls)
+	})
+
 	t.Run("non_worktree_successor_branches_from_previous_plan_tip", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		plansDir := filepath.Join(dir, "docs", "plans")
@@ -403,6 +427,103 @@ func TestRunPlanChain(t *testing.T) {
 			})
 		require.NoError(t, err)
 		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("recovers_archive_committed_before_checkpoint_advance", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		originalDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { require.NoError(t, os.Chdir(originalDir)) })
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		}
+		runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+		runGit(t, dir, "commit", "-m", "add crash recovery plans")
+		runGit(t, dir, "checkout", "-b", "one")
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		activeStartTip, err := gitSvc.HeadHash()
+		require.NoError(t, err)
+		require.NoError(t, gitSvc.MovePlanToCompleted(plans[0]))
+		archivedTip, err := gitSvc.HeadHash()
+		require.NoError(t, err)
+		o := opts{PlanFile: plans[0], PlanFiles: plans}
+		require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
+			Mode: string(processor.ModeFull), Active: 1, ActiveStartTip: activeStartTip,
+		}))
+		assert.Equal(t, 1, checkpointCompletedPrefix(dir, o), "startup validation must defer the active member to Git recovery")
+
+		calls := 0
+		err = runPlanChain(t.Context(), o, executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{}, OrcaStop: &cleanupHolder{},
+		}, nil, nil, io.Discard, func(_ context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
+			calls++
+			assert.Equal(t, plans[1], gotOpts.PlanFile)
+			assert.Equal(t, archivedTip, gotReq.WorktreeStartRef)
+			gotReq.Outcome.succeeded = true
+			gotReq.Outcome.branchTip = archivedTip
+			return nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("does_not_recover_unchanged_preexisting_archive_branch", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		}
+		runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+		runGit(t, dir, "commit", "-m", "add reused branch plans")
+		runGit(t, dir, "checkout", "-b", "one")
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		require.NoError(t, gitSvc.MovePlanToCompleted(plans[0]))
+		oldArchiveTip, err := gitSvc.HeadHash()
+		require.NoError(t, err)
+		runGit(t, dir, "checkout", "master")
+		o := opts{PlanFile: plans[0], PlanFiles: plans}
+		require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
+			Mode: string(processor.ModeFull), Active: 1, ActiveStartTip: oldArchiveTip,
+		}))
+
+		calls := 0
+		err = runPlanChain(t.Context(), o, executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{}, OrcaStop: &cleanupHolder{},
+		}, nil, nil, io.Discard, func(_ context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
+			calls++
+			assert.Equal(t, plans[calls-1], gotOpts.PlanFile)
+			gotReq.Outcome.succeeded = true
+			gotReq.Outcome.branchTip = oldArchiveTip
+			return nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 2, calls)
+	})
+
+	t.Run("chain_archive_failure_is_fatal", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "one.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "completed"), []byte("not a directory\n"), 0o600))
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		moved, err := moveCompletedPlan(executePlanRequest{
+			PlanFile: planFile, GitSvc: gitSvc, Mode: processor.ModeFull,
+			Config: &config.Config{MovePlanOnCompletion: true}, ChainPlanFiles: []string{planFile, "two.md"},
+		})
+		assert.False(t, moved)
+		require.ErrorContains(t, err, "archive completed chain plan")
 	})
 
 	t.Run("stops_on_abort_even_when_executor_returns_nil", func(t *testing.T) {

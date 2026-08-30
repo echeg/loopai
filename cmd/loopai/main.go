@@ -773,6 +773,18 @@ func runPlanChain(
 			return nil
 		}
 		fmt.Fprintf(out, "\nplan %d/%d: %s\n", i+1, total, planFile)
+		state.Active = i + 1
+		state.ActiveStartTip = ""
+		activeBranch := req.GitSvc.EffectiveBranchName(planFile, "")
+		if req.GitSvc.BranchExists(activeBranch) {
+			state.ActiveStartTip, err = req.GitSvc.BranchHash(activeBranch)
+			if err != nil {
+				return fmt.Errorf("capture active plan branch tip: %w", err)
+			}
+		}
+		if err := savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, state); err != nil {
+			return err
+		}
 
 		outcome, nextRetained, err := executePlanChainMember(
 			ctx, o, req, selector, startupTitles, execute, i, startIndex, planFile, previousTip, retained,
@@ -795,12 +807,14 @@ func runPlanChain(
 			}
 		}
 		state.Completed = completed
+		state.Active = 0
+		state.ActiveStartTip = ""
 		state.PreviousTip = previousTip
 		if err := savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, state); err != nil {
 			return err
 		}
 	}
-	return reconcileCompletedPlanChain(o, req, &state)
+	return finalizeCompletedPlanChain(o, req, &state)
 }
 
 func finishRetainedChainCmux(retained *retainedCmuxRun, runErr error, complete bool) {
@@ -864,15 +878,17 @@ func executePlanChainMember(
 	return outcome, retained, err
 }
 
-func reconcileCompletedPlanChain(o opts, req executePlanRequest, state *planChainCheckpoint) error {
-	if !req.Config.WorktreeEnabled || state.SourceReconciled {
-		return nil
+func finalizeCompletedPlanChain(o opts, req executePlanRequest, state *planChainCheckpoint) error {
+	if req.Config.WorktreeEnabled && !state.SourceReconciled {
+		if err := req.GitSvc.ReconcilePlanChainSourceState(state.SourcePlans); err != nil {
+			return fmt.Errorf("reconcile completed plan chain source files: %w", err)
+		}
+		state.SourceReconciled = true
+		if err := savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, *state); err != nil {
+			return err
+		}
 	}
-	if err := req.GitSvc.ReconcilePlanChainSourceState(state.SourcePlans); err != nil {
-		return fmt.Errorf("reconcile completed plan chain source files: %w", err)
-	}
-	state.SourceReconciled = true
-	return savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, *state)
+	return removePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, state.Mode)
 }
 
 // getCurrentBranch returns the current git branch name or "unknown" if unavailable.
@@ -1360,14 +1376,19 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		fmt.Fprintf(os.Stderr, "warning: failed to get diff stats: %v\n", statsErr)
 	}
 
-	sendNotification(req, branch, elapsed, stats, nil)
-
 	// Move completed plans before capturing the branch tip so archival is part of the stack. A
 	// single worktree run retains its historical source-checkout archival behavior; a chain archives
 	// inside each execution worktree so the source checkout stays untouched between plans and the
 	// final branch contains every completed-plan move.
 	// track actual success so the completion summary reflects where the plan really lives.
-	planMoved := moveCompletedPlan(req)
+	planMoved, moveErr := moveCompletedPlan(req)
+	if moveErr != nil {
+		plr.baseLog.SetFailed(moveErr)
+		sendNotification(req, branch, elapsed, stats, moveErr)
+		completeCmux(elapsed, moveErr)
+		return moveErr
+	}
+	sendNotification(req, branch, elapsed, stats, nil)
 
 	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved)
 	if outcomeErr := capturePlanOutcome(req); outcomeErr != nil {
@@ -1395,9 +1416,9 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	return nil
 }
 
-func moveCompletedPlan(req executePlanRequest) bool {
+func moveCompletedPlan(req executePlanRequest) (bool, error) {
 	if !shouldMovePlan(req) {
-		return false
+		return false, nil
 	}
 	moveSvc := req.GitSvc
 	movePlanFile := req.PlanFile
@@ -1409,10 +1430,13 @@ func moveCompletedPlan(req executePlanRequest) bool {
 		movePlanFile = req.MainPlanFile
 	}
 	if err := moveSvc.MovePlanToCompleted(movePlanFile); err != nil {
+		if chainRun {
+			return false, fmt.Errorf("archive completed chain plan: %w", err)
+		}
 		fmt.Fprintf(os.Stderr, "warning: failed to move plan to completed: %v\n", err)
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
 func capturePlanOutcome(req executePlanRequest) error {

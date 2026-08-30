@@ -22,6 +22,8 @@ type planChainCheckpoint struct {
 	Mode             string                `json:"mode"`
 	Plans            []string              `json:"plans"`
 	Completed        int                   `json:"completed"`
+	Active           int                   `json:"active,omitempty"` // one-based member whose execution started but was not checkpointed
+	ActiveStartTip   string                `json:"active_start_tip,omitempty"`
 	PreviousTip      string                `json:"previous_tip,omitempty"`
 	SourcePlans      []git.PlanSourceState `json:"source_plans,omitempty"`
 	SourceReconciled bool                  `json:"source_reconciled,omitempty"`
@@ -138,6 +140,12 @@ func validatePlanChainCheckpoint(state planChainCheckpoint, normalized []string,
 	if state.Completed < 0 || state.Completed > planCount || (state.Completed > 0 && state.PreviousTip == "") {
 		return errors.New("plan chain checkpoint has invalid completion state")
 	}
+	if state.Active < 0 || state.Active > planCount || (state.Active != 0 && state.Active != state.Completed+1) {
+		return errors.New("plan chain checkpoint has invalid active member")
+	}
+	if state.Active == 0 && state.ActiveStartTip != "" {
+		return errors.New("plan chain checkpoint has active branch tip without an active member")
+	}
 	return nil
 }
 
@@ -176,12 +184,32 @@ func savePlanChainCheckpoint(root string, plans []string, state planChainCheckpo
 	return nil
 }
 
+func removePlanChainCheckpoint(root string, plans []string, mode string) error {
+	path, _, err := planChainCheckpointPath(root, plans, mode)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove completed plan chain checkpoint: %w", err)
+	}
+	return nil
+}
+
 func verifiedPlanChainCheckpoint(
 	ctx context.Context, o opts, gitSvc *git.Service,
 ) (planChainCheckpoint, bool, error) {
 	state, found, err := loadPlanChainCheckpoint(gitSvc.Root(), o.PlanFiles, string(resolvePlanChainMode(o)))
-	if err != nil || !found || state.Completed == 0 {
+	if err != nil || !found {
 		return state, found, err
+	}
+	if state.Active != 0 {
+		state, err = recoverActivePlanChainMember(o, gitSvc, state)
+		if err != nil {
+			return planChainCheckpoint{}, false, err
+		}
+	}
+	if state.Completed == 0 {
+		return state, true, nil
 	}
 	lastPlan := o.PlanFiles[state.Completed-1]
 	branch := gitSvc.EffectiveBranchName(lastPlan, "")
@@ -198,6 +226,38 @@ func verifiedPlanChainCheckpoint(
 	return state, true, nil
 }
 
+// recoverActivePlanChainMember closes the only non-atomic completion window: MovePlanToCompleted
+// commits before the coordinator can advance its external checkpoint. An archived plan at the
+// member branch tip is durable proof that execution reached successful post-processing; otherwise
+// the member remains pending and can be run again.
+func recoverActivePlanChainMember(
+	o opts, gitSvc *git.Service, state planChainCheckpoint,
+) (planChainCheckpoint, error) {
+	activeIndex := state.Active - 1
+	planFile := o.PlanFiles[activeIndex]
+	branch := gitSvc.EffectiveBranchName(planFile, "")
+	if gitSvc.BranchExists(branch) {
+		tip, err := gitSvc.BranchHash(branch)
+		if err != nil {
+			return planChainCheckpoint{}, fmt.Errorf("recover active plan chain member: %w", err)
+		}
+		archived, err := gitSvc.PlanArchivedAtRevision(tip, planFile)
+		if err != nil {
+			return planChainCheckpoint{}, fmt.Errorf("recover active plan chain member: %w", err)
+		}
+		if archived && tip != state.ActiveStartTip {
+			state.Completed = state.Active
+			state.PreviousTip = tip
+		}
+	}
+	state.Active = 0
+	state.ActiveStartTip = ""
+	if err := savePlanChainCheckpoint(gitSvc.Root(), o.PlanFiles, state); err != nil {
+		return planChainCheckpoint{}, err
+	}
+	return state, nil
+}
+
 func resolvePlanChainMode(o opts) processor.Mode {
 	if o.TasksOnly {
 		return processor.ModeTasksOnly
@@ -209,6 +269,9 @@ func checkpointCompletedPrefix(root string, o opts) int {
 	state, found, err := loadPlanChainCheckpoint(root, o.PlanFiles, planChainModeFromOpts(o))
 	if err != nil || !found {
 		return 0
+	}
+	if state.Active == state.Completed+1 {
+		return state.Active
 	}
 	return state.Completed
 }

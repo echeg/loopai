@@ -380,6 +380,41 @@ func (s *Service) BranchHash(name string) (string, error) {
 	return hash, nil
 }
 
+// PlanArchivedAtRevision reports whether planFile has been removed from its active path and exists
+// in completed/ at revision. Both supported date-prefix spellings are checked because plan agents
+// may normalize the filename before MovePlanToCompleted commits the archive.
+func (s *Service) PlanArchivedAtRevision(revision, planFile string) (bool, error) {
+	planFile = s.resolveFilesystemCase(planFile)
+	if resolvedDir, err := filepath.EvalSymlinks(filepath.Dir(planFile)); err == nil {
+		planFile = filepath.Join(resolvedDir, filepath.Base(planFile))
+	}
+	activePaths := []string{planFile}
+	archivePaths := []string{filepath.Join(filepath.Dir(planFile), "completed", filepath.Base(planFile))}
+	if altBase := plan.AltDateBasename(filepath.Base(planFile)); altBase != "" {
+		activePaths = append(activePaths, filepath.Join(filepath.Dir(planFile), altBase))
+		archivePaths = append(archivePaths, filepath.Join(filepath.Dir(planFile), "completed", altBase))
+	}
+	for _, path := range activePaths {
+		exists, err := s.repo.fileExistsAt(revision, path)
+		if err != nil {
+			return false, fmt.Errorf("inspect active plan %q at %q: %w", path, revision, err)
+		}
+		if exists {
+			return false, nil
+		}
+	}
+	for _, path := range archivePaths {
+		exists, err := s.repo.fileExistsAt(revision, path)
+		if err != nil {
+			return false, fmt.Errorf("inspect archived plan %q at %q: %w", path, revision, err)
+		}
+		if exists {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // ResolveBaseBranch validates an explicit local base branch or auto-detects main/master.
 func (s *Service) ResolveBaseBranch(explicit string) (string, error) {
 	if explicit != "" {
@@ -1884,6 +1919,15 @@ func (s *Service) ReconcilePlanChainSourceState(states []PlanSourceState) error 
 			if err := s.repo.restoreFile(path); err != nil {
 				reconcileErrs = append(reconcileErrs, fmt.Errorf("restore tracked chain source plan %q: %w", state.Path, err))
 			}
+			continue
+		}
+		tracked, trackErr := s.repo.fileTracked(path)
+		if trackErr != nil {
+			reconcileErrs = append(reconcileErrs, fmt.Errorf("inspect chain source tracking for %q: %w", state.Path, trackErr))
+			continue
+		}
+		if tracked {
+			reconcileErrs = append(reconcileErrs, fmt.Errorf("chain source plan %q became tracked during execution; left untouched", state.Path))
 			continue
 		}
 		if err := os.Remove(path); err != nil {

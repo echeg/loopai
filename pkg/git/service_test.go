@@ -2717,6 +2717,23 @@ func TestService_ReconcilePlanChainSourceState(t *testing.T) {
 		require.NoError(t, readErr)
 		assert.Equal(t, "concurrent\n", string(contents))
 	})
+
+	t.Run("untracked plan that becomes tracked is left untouched", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "plan.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("initial\n"), 0o600))
+		states, err := svc.CapturePlanChainSourceState([]string{planFile})
+		require.NoError(t, err)
+		require.NoError(t, svc.repo.add(planFile))
+
+		err = svc.ReconcilePlanChainSourceState(states)
+		require.ErrorContains(t, err, "became tracked during execution")
+		assert.FileExists(t, planFile)
+		staged := strings.TrimSpace(runGit(t, dir, "diff", "--cached", "--name-only"))
+		assert.Equal(t, "plan.md", staged)
+	})
 }
 
 func TestService_CommitPlanFile(t *testing.T) {
