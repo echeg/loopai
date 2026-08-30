@@ -75,15 +75,15 @@
 - [x] run tests - must pass before next task
 
 ### Task 3: Chain loop in `run` with per-plan lifecycle
-- [ ] loop over `o.PlanFiles` around `selectAndExecutePlan` (cmd/loopai/main.go:463): reuse loaded config, git service, notifier, and selector; construct fresh orca `setupTitles` and cmux reporter per plan following the `runPlanMode` hand-off pattern (main.go:2739-2743)
-- [ ] thread the previous plan's effective branch name into the next iteration as the worktree start ref
-- [ ] stop the chain on the first failed plan; also stop on user abort by observing an explicit success signal (mirror `worktreeFinishState.succeeded`), since `executePlan` returns nil for `ErrUserAborted`
-- [ ] guarantee cwd restoration and progress-logger closure between plans (logger for plan N+1 must open only after plan N's is closed)
-- [ ] log a clear chain header per plan (`plan 2/3: <file>`) and a final chain summary line
-- [ ] `-c`/`--commit` applies to the first plan only (source auto-commit); later plans cut from branch tips and must not re-trigger it
-- [ ] write tests for chain iteration order, stop-on-failure, and stop-on-abort
-- [ ] write tests for reporter/logger lifecycle between plans (no double-open, cwd restored)
-- [ ] run tests - must pass before next task
+- [x] loop over `o.PlanFiles` around `selectAndExecutePlan` (cmd/loopai/main.go:463): reuse loaded config, git service, notifier, and selector; construct fresh orca `setupTitles` and cmux reporter per plan following the `runPlanMode` hand-off pattern (main.go:2739-2743)
+- [x] thread the previous plan's effective branch name into the next iteration as the worktree start ref
+- [x] stop the chain on the first failed plan; also stop on user abort by observing an explicit success signal (mirror `worktreeFinishState.succeeded`), since `executePlan` returns nil for `ErrUserAborted`
+- [x] guarantee cwd restoration and progress-logger closure between plans (logger for plan N+1 must open only after plan N's is closed)
+- [x] log a clear chain header per plan (`plan 2/3: <file>`) and a final chain summary line
+- [x] `-c`/`--commit` applies to the first plan only (source auto-commit); later plans cut from branch tips and must not re-trigger it
+- [x] write tests for chain iteration order, stop-on-failure, and stop-on-abort
+- [x] write tests for reporter/logger lifecycle between plans (no double-open, cwd restored)
+- [x] run tests - must pass before next task
 
 ### Task 4: Non-worktree chain stacking
 - [ ] with `use_worktree` disabled, after plan N the checkout sits on plan N's branch; for a chain, explicitly create plan N+1's branch from the current HEAD instead of relying on `prepareBranchPlan`'s early return ("already on feature branch, caller should skip")

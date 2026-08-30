@@ -253,17 +253,25 @@ type executePlanRequest struct {
 	BaseRef          string // base reference for review diffs and templates (--base-ref override or DefaultBranch)
 	WorktreeStartRef string // optional refs/heads/<previous-plan-branch> for stacked chain worktrees
 	NotifySvc        *notify.Service
-	BranchOverride   string              // branch name override (--branch flag); empty = derive from plan filename
-	WtCleanup        *cleanupHolder      // worktree cleanup for interrupt handler; nil when not in worktree mode
-	CmuxStop         *cleanupHolder      // cmux sidebar reset for interrupt handler; nil when not wired
-	OrcaStop         *cleanupHolder      // terminal-title reset for interrupt handler; nil when not wired
-	CmuxHandoff      func()              // releases a quiesced predecessor after this reporter starts
-	SetupTitles      *orca.Reporter      // setup reporter retained until the phase-specific reporter starts
-	BeforeCmuxFinish func(bool)          // final repository/log cleanup; bool reports execution success
-	ProgressLog      *progress.Logger    // pre-created logger (worktree mode); nil in normal mode
-	PhaseHolder      *status.PhaseHolder // pre-created holder (worktree mode); nil in normal mode
+	BranchOverride   string                // branch name override (--branch flag); empty = derive from plan filename
+	WtCleanup        *cleanupHolder        // worktree cleanup for interrupt handler; nil when not in worktree mode
+	CmuxStop         *cleanupHolder        // cmux sidebar reset for interrupt handler; nil when not wired
+	OrcaStop         *cleanupHolder        // terminal-title reset for interrupt handler; nil when not wired
+	CmuxHandoff      func()                // releases a quiesced predecessor after this reporter starts
+	SetupTitles      *orca.Reporter        // setup reporter retained until the phase-specific reporter starts
+	BeforeCmuxFinish func(bool)            // final repository/log cleanup; bool reports execution success
+	Outcome          *planExecutionOutcome // explicit completion state; aborts return nil but do not succeed
+	ProgressLog      *progress.Logger      // pre-created logger (worktree mode); nil in normal mode
+	PhaseHolder      *status.PhaseHolder   // pre-created holder (worktree mode); nil in normal mode
 	ExternalReview   externalReviewSelection
 	LimitRecovery    limits.Recovery
+}
+
+// planExecutionOutcome separates a completed plan from a nil command error. executePlan returns
+// nil when the user aborts, so chain callers must require this explicit success signal before
+// starting a dependent plan.
+type planExecutionOutcome struct {
+	succeeded bool
 }
 
 // cleanupHolder holds a cleanup function with mutex for safe cross-goroutine access.
@@ -496,7 +504,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 		}, selector)
 	}
 
-	return selectAndExecutePlan(ctx, o, executePlanRequest{
+	req := executePlanRequest{
 		Mode:           mode,
 		GitSvc:         gitSvc,
 		Config:         cfg,
@@ -511,7 +519,8 @@ func run(ctx context.Context, o opts) (runErr error) {
 		BranchOverride: o.Branch,
 		ExternalReview: externalReview,
 		LimitRecovery:  limitRecovery,
-	}, selector)
+	}
+	return runSelectedPlans(ctx, o, req, selector, setupTitles, os.Stdout, selectAndExecutePlan)
 }
 
 // prepareRunBeforeConfig decides hand-off before taking a local reservation: otherwise auto mode
@@ -593,6 +602,93 @@ func selectAndExecutePlan(ctx context.Context, o opts, req executePlanRequest, s
 	}
 
 	return executePlan(ctx, o, req)
+}
+
+type planChainExecutor func(context.Context, opts, executePlanRequest, *plan.Selector) error
+
+// runSelectedPlans preserves the existing single-plan path and activates chain lifecycle handling
+// only for validated comma-separated inputs.
+func runSelectedPlans(
+	ctx context.Context,
+	o opts,
+	req executePlanRequest,
+	selector *plan.Selector,
+	startupTitles *orca.Reporter,
+	out io.Writer,
+	execute planChainExecutor,
+) error {
+	if len(o.PlanFiles) <= 1 {
+		return execute(ctx, o, req, selector)
+	}
+	return runPlanChain(ctx, o, req, selector, startupTitles, out, execute)
+}
+
+// runPlanChain executes validated plan files in order. Each call must return only after its
+// reporter, progress logger, and worktree cwd have been released; the next logger therefore cannot
+// contend with the previous plan and the next worktree is always prepared from the source cwd.
+func runPlanChain(
+	ctx context.Context,
+	o opts,
+	req executePlanRequest,
+	selector *plan.Selector,
+	startupTitles *orca.Reporter,
+	out io.Writer,
+	execute planChainExecutor,
+) (runErr error) {
+	total := len(o.PlanFiles)
+	completed := 0
+	defer func() {
+		if completed == total {
+			fmt.Fprintf(out, "\nplan chain complete: %d/%d plans succeeded\n", completed, total)
+			return
+		}
+		fmt.Fprintf(out, "\nplan chain stopped: %d/%d plans succeeded\n", completed, total)
+	}()
+
+	previousBranch := ""
+	for i, planFile := range o.PlanFiles {
+		fmt.Fprintf(out, "\nplan %d/%d: %s\n", i+1, total, planFile)
+
+		// Start the successor before stopping the startup/previous title reporter so Orca observes a
+		// working-to-working hand-off rather than a false idle transition.
+		setupTitles := startOrcaReporter(req.Config, planFile, initialOrcaPhase(req.Mode))
+		setOrcaCleanup(req.OrcaStop, setupTitles)
+		if i == 0 && startupTitles != nil {
+			startupTitles.Stop()
+		}
+
+		planOpts := o
+		planOpts.PlanFile = planFile
+		if i > 0 {
+			// Source auto-commit belongs to the first plan only. Later plans start from the prior
+			// branch tip, which already contains the preceding plan's committed result.
+			planOpts.Commit = false
+		}
+
+		outcome := &planExecutionOutcome{}
+		planReq := req
+		planReq.SetupTitles = setupTitles
+		planReq.CmuxHandoff = setupTitles.Stop
+		planReq.Outcome = outcome
+		if previousBranch != "" {
+			planReq.WorktreeStartRef = "refs/heads/" + previousBranch
+		}
+
+		err := execute(ctx, planOpts, planReq, selector)
+		finishOrcaFailure(setupTitles, err)
+		setupTitles.Stop()
+		if err != nil {
+			return err
+		}
+		if !outcome.succeeded {
+			// executePlan deliberately maps a user abort to nil. Do not start a dependent plan.
+			return nil
+		}
+
+		completed++
+		previousBranch = req.GitSvc.EffectiveBranchName(planFile, req.BranchOverride)
+	}
+	return nil
 }
 
 // getCurrentBranch returns the current git branch name or "unknown" if unavailable.
@@ -1102,6 +1198,9 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	rep.Stop()
 	titles.Stop()
 	keepDashboardAlive(ctx, o, req, plr.closeLog)
+	if req.Outcome != nil {
+		req.Outcome.succeeded = true
+	}
 
 	return nil
 }
@@ -1307,6 +1406,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		CmuxHandoff:      req.CmuxHandoff,
 		SetupTitles:      req.SetupTitles,
 		BeforeCmuxFinish: finishState.beforeCmuxFinish,
+		Outcome:          req.Outcome,
 		ProgressLog:      baseLog,
 		PhaseHolder:      holder,
 		ExternalReview:   req.ExternalReview,

@@ -194,6 +194,162 @@ func TestStartOrcaReporterPublishesWorkingTitle(t *testing.T) {
 	assert.Equal(t, "\x1b]0;◐ loopai · review · claude\a", out.String())
 }
 
+func TestRunPlanChain(t *testing.T) {
+	t.Run("runs_in_order_stacks_branches_and_commits_source_once", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		plans := []string{
+			filepath.Join(dir, "docs", "plans", "one.md"),
+			filepath.Join(dir, "docs", "plans", "two.md"),
+			filepath.Join(dir, "docs", "plans", "three.md"),
+		}
+		o := opts{PlanFile: plans[0], PlanFiles: plans, Commit: true}
+		req := executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), OrcaStop: &cleanupHolder{},
+		}
+
+		var order, startRefs []string
+		var commits []bool
+		var out bytes.Buffer
+		execute := func(_ context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
+			order = append(order, gotOpts.PlanFile)
+			startRefs = append(startRefs, gotReq.WorktreeStartRef)
+			commits = append(commits, gotOpts.Commit)
+			require.NotNil(t, gotReq.Outcome)
+			gotReq.Outcome.succeeded = true
+			return nil
+		}
+
+		err = runPlanChain(t.Context(), o, req, nil, nil, &out, execute)
+		require.NoError(t, err)
+		assert.Equal(t, plans, order)
+		assert.Equal(t, []bool{true, false, false}, commits)
+		assert.Equal(t, []string{
+			"",
+			"refs/heads/" + gitSvc.EffectiveBranchName(plans[0], ""),
+			"refs/heads/" + gitSvc.EffectiveBranchName(plans[1], ""),
+		}, startRefs)
+		assert.Contains(t, out.String(), "plan 1/3: "+plans[0])
+		assert.Contains(t, out.String(), "plan 2/3: "+plans[1])
+		assert.Contains(t, out.String(), "plan 3/3: "+plans[2])
+		assert.Contains(t, out.String(), "plan chain complete: 3/3 plans succeeded")
+	})
+
+	t.Run("stops_on_failure", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		plans := []string{"one.md", "two.md", "three.md"}
+		wantErr := errors.New("plan two failed")
+		var calls []string
+		var out bytes.Buffer
+		err = runPlanChain(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), OrcaStop: &cleanupHolder{},
+		}, nil, nil, &out, func(_ context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
+			calls = append(calls, gotOpts.PlanFile)
+			if gotOpts.PlanFile == plans[1] {
+				return wantErr
+			}
+			gotReq.Outcome.succeeded = true
+			return nil
+		})
+		require.ErrorIs(t, err, wantErr)
+		assert.Equal(t, plans[:2], calls)
+		assert.Contains(t, out.String(), "plan chain stopped: 1/3 plans succeeded")
+		assert.NotContains(t, out.String(), "plan 3/3")
+	})
+
+	t.Run("stops_on_abort_even_when_executor_returns_nil", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		plans := []string{"one.md", "two.md"}
+		calls := 0
+		var out bytes.Buffer
+		err = runPlanChain(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), OrcaStop: &cleanupHolder{},
+		}, nil, nil, &out, func(_ context.Context, _ opts, _ executePlanRequest, _ *plan.Selector) error {
+			calls++
+			return nil // executePlan's public abort contract
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 1, calls)
+		assert.Contains(t, out.String(), "plan chain stopped: 0/2 plans succeeded")
+		assert.NotContains(t, out.String(), "plan 2/2")
+	})
+}
+
+func TestRunSelectedPlansKeepsSinglePlanPath(t *testing.T) {
+	wantErr := errors.New("single plan result")
+	for _, planFiles := range [][]string{nil, {"one.md"}} {
+		calls := 0
+		o := opts{PlanFile: "one.md", PlanFiles: planFiles, Commit: true}
+		req := executePlanRequest{Mode: processor.ModeFull}
+		err := runSelectedPlans(t.Context(), o, req, nil, nil, io.Discard,
+			func(_ context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
+				calls++
+				assert.Equal(t, o, gotOpts)
+				assert.Equal(t, req, gotReq)
+				return wantErr
+			})
+		require.ErrorIs(t, err, wantErr)
+		assert.Equal(t, 1, calls)
+	}
+}
+
+func TestRunPlanChainWaitsForPerPlanLifecycle(t *testing.T) {
+	dir := setupTestRepo(t)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	originalDir, err := os.Getwd()
+	require.NoError(t, err)
+	worktreeDir := t.TempDir()
+
+	originalNewOrcaReporter := newOrcaReporter
+	t.Cleanup(func() { newOrcaReporter = originalNewOrcaReporter })
+	var reporterPlans []string
+	var titleOut bytes.Buffer
+	newOrcaReporter = func(enabled bool, planFile, executor string) *orca.Reporter {
+		reporterPlans = append(reporterPlans, planFile)
+		return orca.NewWithOutput(enabled, planFile, executor, &titleOut, func() bool { return true })
+	}
+
+	plans := []string{"one.md", "two.md"}
+	loggerOpen := false
+	handoffs := 0
+	calls := 0
+	err = runPlanChain(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, executePlanRequest{
+		Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{Orca: true},
+		Colors: testColors(), OrcaStop: &cleanupHolder{},
+	}, nil, nil, io.Discard, func(_ context.Context, _ opts, gotReq executePlanRequest, _ *plan.Selector) error {
+		assert.False(t, loggerOpen, "the previous plan logger must be closed before the next opens")
+		loggerOpen = true
+		defer func() { loggerOpen = false }()
+		if calls == 0 {
+			require.NoError(t, os.Chdir(worktreeDir))
+			defer func() { require.NoError(t, os.Chdir(originalDir)) }()
+		} else {
+			cwd, cwdErr := os.Getwd()
+			require.NoError(t, cwdErr)
+			assert.Equal(t, originalDir, cwd, "cwd must be restored before the next plan starts")
+		}
+		calls++
+		require.NotNil(t, gotReq.CmuxHandoff)
+		gotReq.CmuxHandoff()
+		handoffs++
+		gotReq.Outcome.succeeded = true
+		return nil
+	})
+	require.NoError(t, err)
+	assert.False(t, loggerOpen)
+	assert.Equal(t, 2, handoffs)
+	assert.Equal(t, plans, reporterPlans, "each plan gets a fresh setup reporter")
+}
+
 func TestSetOrcaCleanupStopsReporterOnForceExit(t *testing.T) {
 	var titleOut bytes.Buffer
 	titles := orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
@@ -289,12 +445,15 @@ printf '%s\n' '{"type":"result","result":""}'
 `)
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
+	outcome := &planExecutionOutcome{}
 
 	err = executePlan(t.Context(), opts{TasksOnly: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
 		PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
 		Config: &config.Config{ClaudeCommand: fakeClaude}, Colors: testColors(), BaseRef: "master",
+		Outcome: outcome,
 	})
 	require.NoError(t, err)
+	assert.True(t, outcome.succeeded)
 
 	logs, err := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "progress-*.txt"))
 	require.NoError(t, err)
@@ -334,12 +493,15 @@ printf '%s\n' '{"type":"result","result":""}'
 `)
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
+	outcome := &planExecutionOutcome{}
 
 	err = executePlan(t.Context(), opts{TasksOnly: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
 		PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
 		Config: &config.Config{ClaudeCommand: fakeClaude}, Colors: testColors(), BaseRef: "master",
+		Outcome: outcome,
 	})
 	require.Error(t, err)
+	assert.False(t, outcome.succeeded)
 
 	logs, globErr := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "progress-*.txt"))
 	require.NoError(t, globErr)
