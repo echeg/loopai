@@ -720,12 +720,64 @@ func (s *Service) CreateBranchForPlanChainContext(
 	return s.createBranchForPlanFromCurrentHEADContext(ctx, planFile, branchOverride, "", chainPlanFiles)
 }
 
+// CreateBranchForPlanChainFromExpectedHEADContext retries preparation of the first non-worktree
+// chain member against the immutable source tip captured before any checkout. It also repairs the
+// crash window where an existing plan branch was checked out but not yet synchronized.
+func (s *Service) CreateBranchForPlanChainFromExpectedHEADContext(
+	ctx context.Context, planFile, branchOverride, expectedHead string, chainPlanFiles []string,
+) error {
+	return s.createBranchForPlanFromExpectedHEADContext(
+		ctx, planFile, branchOverride, expectedHead, chainPlanFiles,
+	)
+}
+
 // CreateBranchForPlanFromExpectedHEADContext creates a successor branch only when the checkout is
 // still at the immutable predecessor tip captured by the chain coordinator.
 func (s *Service) CreateBranchForPlanFromExpectedHEADContext(
 	ctx context.Context, planFile, branchOverride, expectedHead string,
 ) error {
-	return s.createBranchForPlanFromCurrentHEADContext(ctx, planFile, branchOverride, expectedHead, nil)
+	return s.createBranchForPlanFromExpectedHEADContext(ctx, planFile, branchOverride, expectedHead, nil)
+}
+
+func (s *Service) createBranchForPlanFromExpectedHEADContext(
+	ctx context.Context, planFile, branchOverride, expectedHead string, chainPlanFiles []string,
+) error {
+	planFile = s.resolveFilesystemCase(planFile)
+	branchName := s.EffectiveBranchName(planFile, branchOverride)
+	currentBranch, err := s.repo.currentBranch()
+	if err != nil {
+		return fmt.Errorf("identify current branch before recovering chained plan %q: %w", branchName, err)
+	}
+	if currentBranch == branchName || (currentBranch != "" && strings.EqualFold(currentBranch, branchName)) {
+		return s.finishInterruptedChainedBranchPreparation(
+			ctx, branchName, expectedHead, chainPlanFiles,
+		)
+	}
+	return s.createBranchForPlanFromCurrentHEADContext(
+		ctx, planFile, branchOverride, expectedHead, chainPlanFiles,
+	)
+}
+
+func (s *Service) finishInterruptedChainedBranchPreparation(
+	ctx context.Context, branchName, expectedHead string, chainPlanFiles []string,
+) error {
+	if expectedHead == "" {
+		return fmt.Errorf("recover chained plan branch %q: saved start tip is missing", branchName)
+	}
+	changedPlans, err := s.validateChainedBranchDirtyState(branchName, chainPlanFiles)
+	if err != nil {
+		return err
+	}
+	containsStart, err := s.repo.isAncestor(ctx, expectedHead, "HEAD")
+	if err != nil {
+		return fmt.Errorf("recover chained plan branch %q: validate saved start tip: %w", branchName, err)
+	}
+	if !containsStart {
+		if err := s.repo.mergeRevision(ctx, expectedHead, expectedHead); err != nil {
+			return fmt.Errorf("recover chained plan branch %q: merge saved start tip: %w", branchName, err)
+		}
+	}
+	return s.commitChangedChainPlans(branchName, changedPlans)
 }
 
 func (s *Service) createBranchForPlanFromCurrentHEADContext(
@@ -1820,33 +1872,55 @@ func mkdirAllNoSymlinks(root, relDir string) (string, error) {
 	return current, nil
 }
 
-// resolveFilesystemCase returns the path with the actual on-disk filename case.
-// reads the parent directory and finds a case-insensitive match for the basename.
+// resolveFilesystemCase returns the path with the actual on-disk case for every component.
 // falls back to the original path if the directory can't be read or no match is found.
 // this handles macOS APFS case-insensitive filesystems where git tracks one case
 // but the caller may provide a different case.
 func (s *Service) resolveFilesystemCase(path string) string {
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-
-	entries, err := os.ReadDir(dir)
+	original := path
+	wasAbs := filepath.IsAbs(path)
+	if !wasAbs {
+		path = filepath.Join(s.repo.root(), path)
+	}
+	path = filepath.Clean(path)
+	volume := filepath.VolumeName(path)
+	rest := strings.TrimPrefix(path, volume)
+	rest = strings.TrimLeft(rest, string(filepath.Separator))
+	current := volume + string(filepath.Separator)
+	if volume == "" {
+		current = string(filepath.Separator)
+	}
+	for component := range strings.SplitSeq(rest, string(filepath.Separator)) {
+		if component == "" {
+			continue
+		}
+		entries, err := os.ReadDir(current)
+		if err != nil {
+			return original
+		}
+		match := ""
+		for _, entry := range entries {
+			if entry.Name() == component {
+				match = component
+				break
+			}
+			if match == "" && strings.EqualFold(entry.Name(), component) {
+				match = entry.Name()
+			}
+		}
+		if match == "" {
+			return original
+		}
+		current = filepath.Join(current, match)
+	}
+	if wasAbs {
+		return current
+	}
+	rel, err := filepath.Rel(s.repo.root(), current)
 	if err != nil {
-		return path
+		return original
 	}
-
-	var foldMatch string
-	for _, entry := range entries {
-		if entry.Name() == base {
-			return path // exact match, no case resolution needed
-		}
-		if foldMatch == "" && strings.EqualFold(entry.Name(), base) {
-			foldMatch = filepath.Join(dir, entry.Name())
-		}
-	}
-	if foldMatch != "" {
-		return foldMatch
-	}
-	return path
+	return rel
 }
 
 // RemoveWorktree removes a git worktree at the given path.

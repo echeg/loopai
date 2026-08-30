@@ -15,7 +15,7 @@ import (
 	"github.com/umputun/ralphex/pkg/processor"
 )
 
-const planChainCheckpointVersion = 3
+const planChainCheckpointVersion = 4
 
 type planChainCheckpoint struct {
 	Version              int                   `json:"version"`
@@ -31,6 +31,7 @@ type planChainCheckpoint struct {
 	ActiveFinalizing     bool                  `json:"active_finalizing,omitempty"`
 	ResumePreparedTip    string                `json:"resume_prepared_tip,omitempty"`
 	PreviousTip          string                `json:"previous_tip,omitempty"`
+	InitialTip           string                `json:"initial_tip,omitempty"`
 	SourcePlans          []git.PlanSourceState `json:"source_plans,omitempty"`
 	SourceReconciled     bool                  `json:"source_reconciled,omitempty"`
 }
@@ -85,12 +86,11 @@ func planChainCheckpointPath(root string, plans []string, mode string) (string, 
 	return filepath.Join(root, ".loopai", "progress", name), normalized, nil
 }
 
-func planChainRunLockIdentity(root string, plans []string) (string, error) {
-	normalized, err := normalizePlanChainPaths(root, plans)
-	if err != nil {
-		return "", err
-	}
-	return strings.Join(normalized, "\x00"), nil
+func planChainRunLockIdentity() string {
+	// Non-worktree chains all switch the same checkout, and worktree chains still share
+	// source-plan reconciliation and branch refs with them. Serialize the complete chain
+	// lifecycle at repository scope rather than allowing different plan lists to race.
+	return "repository"
 }
 
 func loadPlanChainCheckpoint(root string, plans []string, mode string) (planChainCheckpoint, bool, error) {

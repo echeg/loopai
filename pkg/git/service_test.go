@@ -2739,6 +2739,65 @@ func TestService_CreateBranchForPlanChain(t *testing.T) {
 		runGit(t, dir, "merge-base", "--is-ancestor", targetTip, "HEAD")
 	})
 
+	t.Run("interrupted successor preparation finishes from the saved predecessor tip", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "docs", "plans", "next.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Next\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add successor plan"))
+		require.NoError(t, svc.CreateBranch("next"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "target.txt"), []byte("target\n"), 0o600))
+		require.NoError(t, svc.repo.add("target.txt"))
+		require.NoError(t, svc.repo.commit("advance target"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, svc.CreateBranch("previous"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "previous.txt"), []byte("previous\n"), 0o600))
+		require.NoError(t, svc.repo.add("previous.txt"))
+		require.NoError(t, svc.repo.commit("complete predecessor"))
+		previousTip, err := svc.HeadHash()
+		require.NoError(t, err)
+		require.NoError(t, svc.repo.checkoutBranch("next"), "simulate a crash after target checkout")
+
+		require.NoError(t, svc.CreateBranchForPlanFromExpectedHEADContext(
+			t.Context(), planFile, "", previousTip,
+		))
+		contains, err := svc.BranchContainsRevisionContext(t.Context(), "next", previousTip)
+		require.NoError(t, err)
+		assert.True(t, contains)
+	})
+
+	t.Run("interrupted first branch preparation finishes from the saved source tip", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+			require.NoError(t, svc.repo.add(planFile))
+		}
+		require.NoError(t, svc.repo.commit("add first-member plans"))
+		require.NoError(t, svc.CreateBranch("one"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "source.txt"), []byte("source\n"), 0o600))
+		require.NoError(t, svc.repo.add("source.txt"))
+		require.NoError(t, svc.repo.commit("advance source"))
+		sourceTip, err := svc.HeadHash()
+		require.NoError(t, err)
+		require.NoError(t, svc.repo.checkoutBranch("one"), "simulate a crash after target checkout")
+
+		require.NoError(t, svc.CreateBranchForPlanChainFromExpectedHEADContext(
+			t.Context(), plans[0], "", sourceTip, plans,
+		))
+		contains, err := svc.BranchContainsRevisionContext(t.Context(), "one", sourceTip)
+		require.NoError(t, err)
+		assert.True(t, contains)
+	})
+
 	t.Run("reused first branch restores clean source plans", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())
@@ -3875,4 +3934,12 @@ func TestService_resolveFilesystemCase(t *testing.T) {
 			assert.Equal(t, tt.wantBase, filepath.Base(got))
 		})
 	}
+
+	t.Run("resolves every path component", func(t *testing.T) {
+		actual := filepath.Join(dir, "Docs", "Plans", "My-Plan.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(actual), 0o750))
+		require.NoError(t, os.WriteFile(actual, []byte("x"), 0o600))
+		input := filepath.Join(dir, "docs", "plans", "my-plan.md")
+		assert.Equal(t, actual, svc.resolveFilesystemCase(input))
+	})
 }

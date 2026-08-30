@@ -942,8 +942,7 @@ func TestValidateExecutionRepositoryRejectsBusyChainBeforeCheckpointRecovery(t *
 
 	owner, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
-	lockIdentity, err := planChainRunLockIdentity(dir, plans)
-	require.NoError(t, err)
+	lockIdentity := planChainRunLockIdentity()
 	release, err := owner.AcquirePlanChainRunLock(lockIdentity)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, release()) }()
@@ -959,6 +958,12 @@ func TestValidateExecutionRepositoryRejectsBusyChainBeforeCheckpointRecovery(t *
 	require.NoError(t, loadErr)
 	assert.True(t, found)
 	assert.Equal(t, 1, saved.Active, "a busy contender must not rewrite a live checkpoint")
+
+	otherPlans := []string{filepath.Join(plansDir, "three.md"), filepath.Join(plansDir, "four.md")}
+	returnedRelease, err = validateExecutionRepository(t.Context(),
+		opts{PlanFile: otherPlans[0], PlanFiles: otherPlans}, contender, false, false, nil)
+	assert.Nil(t, returnedRelease)
+	require.ErrorAs(t, err, &busyErr, "different plan lists must share the repository-wide chain lock")
 }
 
 func TestValidateExecutionRepositoryReleasesChainLockAfterValidationFailure(t *testing.T) {
@@ -979,8 +984,7 @@ func TestValidateExecutionRepositoryReleasesChainLockAfterValidationFailure(t *t
 	assert.Nil(t, release)
 	require.ErrorContains(t, err, "invalid plan branch")
 
-	lockIdentity, err := planChainRunLockIdentity(dir, plans)
-	require.NoError(t, err)
+	lockIdentity := planChainRunLockIdentity()
 	release, err = svc.AcquirePlanChainRunLock(lockIdentity)
 	require.NoError(t, err, "validation failure must release the chain lock")
 	require.NoError(t, release())

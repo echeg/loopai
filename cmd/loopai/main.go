@@ -269,6 +269,7 @@ type executePlanRequest struct {
 	ChainResume            bool               // true for the first pending member of a resumed chain
 	ChainResumePrepared    bool               // retry follows a fully prepared first-member branch/worktree
 	ChainResumePreparedTip string             // immutable prepared tip that a resumed first member must contain
+	ChainInitialTip        string             // immutable source tip captured before the first chain member
 	ChainPlanFiles         []string           // all chain inputs; non-empty only for multi-plan execution
 	ChainPrepared          func(string) error // persists the prepared branch tip before execution begins
 	ChainFinalizing        func() error       // persists that successful post-processing began before archival
@@ -569,10 +570,7 @@ func validateExecutionRepository(
 	if len(o.PlanFiles) <= 1 {
 		return func() error { return nil }, nil
 	}
-	lockIdentity, err := planChainRunLockIdentity(gitSvc.Root(), o.PlanFiles)
-	if err != nil {
-		return nil, fmt.Errorf("identify plan chain lock: %w", err)
-	}
+	lockIdentity := planChainRunLockIdentity()
 	releaseChainLock, err := gitSvc.AcquirePlanChainRunLock(lockIdentity)
 	if err != nil {
 		return nil, fmt.Errorf("acquire plan chain execution lock: %w", err)
@@ -690,22 +688,14 @@ func selectAndExecutePlan(ctx context.Context, o opts, req executePlanRequest, s
 func prepareSelectedPlanBranch(ctx context.Context, req executePlanRequest, planFile string) error {
 	if len(req.ChainPlanFiles) > 1 && !req.ChainSuccessor {
 		branch := req.GitSvc.EffectiveBranchName(planFile, req.BranchOverride)
-		if req.ChainResume && req.GitSvc.BranchExists(branch) {
-			if err := req.GitSvc.ResumeFirstPlanChainBranchContext(
-				ctx, branch, req.ChainPlanFiles, req.ChainResumePreparedTip,
-			); err != nil {
-				return fmt.Errorf("resume first chain branch for plan: %w", err)
-			}
-		} else if err := req.GitSvc.CreateBranchForPlanChainContext(
-			ctx, planFile, req.BranchOverride, req.ChainPlanFiles,
-		); err != nil {
-			return fmt.Errorf("create first chain branch for plan: %w", err)
+		if err := prepareFirstPlanChainBranch(ctx, req, planFile, branch); err != nil {
+			return err
 		}
 		return recordPreparedChainBranch(req, branch)
 	}
 	if req.ChainSuccessor {
 		branch := req.GitSvc.EffectiveBranchName(planFile, req.BranchOverride)
-		if req.ChainResume && req.GitSvc.BranchExists(branch) {
+		if req.ChainResumePrepared && req.GitSvc.BranchExists(branch) {
 			if err := req.GitSvc.ResumePlanChainBranchContext(ctx, branch, req.WorktreeStartRef); err != nil {
 				return fmt.Errorf("resume branch for plan: %w", err)
 			}
@@ -720,6 +710,33 @@ func prepareSelectedPlanBranch(ctx context.Context, req executePlanRequest, plan
 	}
 	if err := req.GitSvc.CreateBranchForPlan(planFile, req.DefaultBranch, req.BranchOverride); err != nil {
 		return fmt.Errorf("create branch for plan: %w", err)
+	}
+	return nil
+}
+
+func prepareFirstPlanChainBranch(
+	ctx context.Context, req executePlanRequest, planFile, branch string,
+) error {
+	if req.ChainResumePrepared && req.GitSvc.BranchExists(branch) {
+		if err := req.GitSvc.ResumeFirstPlanChainBranchContext(
+			ctx, branch, req.ChainPlanFiles, req.ChainResumePreparedTip,
+		); err != nil {
+			return fmt.Errorf("resume first chain branch for plan: %w", err)
+		}
+		return nil
+	}
+	if req.ChainResume {
+		if err := req.GitSvc.CreateBranchForPlanChainFromExpectedHEADContext(
+			ctx, planFile, req.BranchOverride, req.ChainInitialTip, req.ChainPlanFiles,
+		); err != nil {
+			return fmt.Errorf("create first chain branch for plan: %w", err)
+		}
+		return nil
+	}
+	if err := req.GitSvc.CreateBranchForPlanChainContext(
+		ctx, planFile, req.BranchOverride, req.ChainPlanFiles,
+	); err != nil {
+		return fmt.Errorf("create first chain branch for plan: %w", err)
 	}
 	return nil
 }
@@ -758,6 +775,10 @@ func initializePlanChainRun(
 	state = planChainCheckpoint{
 		Mode: string(req.Mode), Worktree: req.Config.WorktreeEnabled, Commit: o.Commit,
 		MovePlanOnCompletion: req.Config.MovePlanOnCompletion,
+	}
+	state.InitialTip, err = req.GitSvc.HeadHash()
+	if err != nil {
+		return planChainCheckpoint{}, false, fmt.Errorf("capture initial plan chain tip: %w", err)
 	}
 	if req.Config.WorktreeEnabled && !o.Commit {
 		state.SourcePlans, err = req.GitSvc.CapturePlanChainSourceState(o.PlanFiles)
@@ -934,6 +955,7 @@ func executePlanChainMember(
 	planReq.ChainResume = index == startIndex && resumed
 	planReq.ChainResumePrepared = planReq.ChainResume && state.ResumePreparedTip != ""
 	planReq.ChainResumePreparedTip = state.ResumePreparedTip
+	planReq.ChainInitialTip = state.InitialTip
 	planReq.ChainPlanFiles = o.PlanFiles
 	planReq.WorktreeStartRef = previousTip
 	planReq.ChainPrepared = func(tip string) error {
