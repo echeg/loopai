@@ -101,12 +101,12 @@
 - [x] run tests - must pass before next task
 
 ### Task 6: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented (comma syntax, sequential stacked execution, stop on failure/abort, single-plan behavior unchanged)
-- [ ] verify edge cases: nonexistent second plan fails before any run; abort during plan 1 leaves no plan 2 artifacts; plan archival and progress files correct per plan
-- [ ] run full test suite (`make test`)
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] cross-compile check for platform-sensitive code (`GOOS=windows GOARCH=amd64 go build ./...`)
-- [ ] verify test coverage of new code meets project standard
+- [x] verify all requirements from Overview are implemented (comma syntax, sequential stacked execution, stop on failure/abort, single-plan behavior unchanged)
+- [x] verify edge cases: nonexistent second plan fails before any run; abort during plan 1 leaves no plan 2 artifacts; plan archival and progress files correct per plan
+- [x] run full test suite (`make test`)
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] cross-compile check for platform-sensitive code (`GOOS=windows GOARCH=amd64 go build ./...`)
+- [x] verify test coverage of new code meets project standard
 
 ### Task 7: [Final] Update documentation
 - [ ] update README.md: chain syntax, stacked-branch semantics, close-out guidance (merge the last branch), rejected flag combinations

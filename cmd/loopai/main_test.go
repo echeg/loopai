@@ -355,20 +355,90 @@ func TestRunPlanChain(t *testing.T) {
 		dir := setupTestRepo(t)
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
-		plans := []string{"one.md", "two.md"}
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{
+			filepath.Join(plansDir, "one.md"),
+			filepath.Join(plansDir, "two.md"),
+		}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		}
+		runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+		runGit(t, dir, "commit", "-m", "add abort chain plans")
+
+		progressDir := filepath.Join(dir, ".loopai", "progress")
+		require.NoError(t, os.MkdirAll(progressDir, 0o750))
 		calls := 0
 		var out bytes.Buffer
 		err = runPlanChain(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, executePlanRequest{
 			Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{},
 			Colors: testColors(), OrcaStop: &cleanupHolder{},
-		}, nil, nil, &out, func(_ context.Context, _ opts, _ executePlanRequest, _ *plan.Selector) error {
+		}, nil, nil, &out, func(_ context.Context, gotOpts opts, _ executePlanRequest, _ *plan.Selector) error {
 			calls++
+			artifact := filepath.Join(progressDir,
+				"progress-"+strings.TrimSuffix(filepath.Base(gotOpts.PlanFile), ".md")+".txt")
+			require.NoError(t, os.WriteFile(artifact, []byte("started\n"), 0o600))
 			return nil // executePlan's public abort contract
 		})
 		require.NoError(t, err)
 		assert.Equal(t, 1, calls)
 		assert.Contains(t, out.String(), "plan chain stopped: 0/2 plans succeeded")
 		assert.NotContains(t, out.String(), "plan 2/2")
+		assert.FileExists(t, filepath.Join(progressDir, "progress-one.txt"))
+		assert.NoFileExists(t, filepath.Join(progressDir, "progress-two.txt"))
+		assert.FileExists(t, plans[1], "the successor plan must remain active and untouched")
+		assert.NoFileExists(t, filepath.Join(plansDir, "completed", "two.md"))
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "two")))
+	})
+
+	t.Run("archives_each_plan_and_writes_distinct_progress_files", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		originalDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { require.NoError(t, os.Chdir(originalDir)) })
+
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{
+			filepath.Join(plansDir, "one.md"),
+			filepath.Join(plansDir, "two.md"),
+		}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		}
+		runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+		runGit(t, dir, "commit", "-m", "add archival chain plans")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		cfg := &config.Config{MovePlanOnCompletion: true}
+		err = runPlanChain(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc, Config: cfg,
+			Colors: testColors(), OrcaStop: &cleanupHolder{},
+		}, nil, nil, io.Discard, func(_ context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
+			branch := gotReq.GitSvc.EffectiveBranchName(gotOpts.PlanFile, "")
+			log, logErr := progress.NewLogger(progress.Config{
+				PlanFile: gotOpts.PlanFile, Mode: string(gotReq.Mode), Branch: branch, NoColor: true,
+			}, testColors(), &status.PhaseHolder{})
+			require.NoError(t, logErr)
+			require.NoError(t, log.Close())
+			require.NoError(t, gotReq.GitSvc.MovePlanToCompleted(gotOpts.PlanFile))
+			gotReq.Outcome.succeeded = true
+			return nil
+		})
+		require.NoError(t, err)
+
+		for _, name := range []string{"one", "two"} {
+			assert.NoFileExists(t, filepath.Join(plansDir, name+".md"))
+			assert.FileExists(t, filepath.Join(plansDir, "completed", name+".md"))
+			progressPath := filepath.Join(dir, ".loopai", "progress", "progress-"+name+".txt")
+			assert.FileExists(t, progressPath)
+			content, readErr := os.ReadFile(progressPath) //nolint:gosec // test-owned path under t.TempDir
+			require.NoError(t, readErr)
+			assert.Contains(t, string(content), filepath.Join(plansDir, name+".md"))
+		}
 	})
 }
 
@@ -2657,6 +2727,27 @@ func TestValidatePlanChain(t *testing.T) {
 		missing := filepath.Join(dir, "single-missing.md")
 		o := opts{PlanFile: missing, PlanFiles: []string{missing}}
 		require.NoError(t, validateFlags(o))
+	})
+
+	t.Run("missing successor fails before branch or runtime artifacts", func(t *testing.T) {
+		repo := setupTestRepo(t)
+		plansDir := filepath.Join(repo, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		firstPlan := filepath.Join(plansDir, "first.md")
+		require.NoError(t, os.WriteFile(firstPlan, []byte("# First\n"), 0o600))
+		runGit(t, repo, "add", "docs/plans/first.md")
+		runGit(t, repo, "commit", "-m", "add first plan")
+		branchesBefore := gitOutput(t, repo, "for-each-ref", "--format=%(refname)", "refs/heads")
+
+		o := opts{PlanFile: firstPlan, PlanFiles: []string{
+			firstPlan,
+			filepath.Join(plansDir, "missing.md"),
+		}}
+		require.ErrorContains(t, validateFlags(o), "plan file not found")
+
+		assert.Equal(t, branchesBefore,
+			gitOutput(t, repo, "for-each-ref", "--format=%(refname)", "refs/heads"))
+		assert.NoDirExists(t, filepath.Join(repo, ".loopai"))
 	})
 }
 
