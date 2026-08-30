@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -855,21 +854,24 @@ func (e *externalBackend) restoreFile(path string) error {
 	return nil
 }
 
-// hasChangesOtherThan returns the list of dirty file paths (excluding the given paths, case-insensitive).
+// hasChangesOtherThan returns the list of dirty file paths (excluding the given paths).
 // this includes modified/deleted tracked files, staged changes, and untracked files (excluding gitignored).
 // an empty slice means no other changes.
 func (e *externalBackend) hasChangesOtherThan(paths ...string) ([]string, error) {
-	excluded := make([]string, 0, len(paths))
+	excluded := make(map[string]struct{}, len(paths))
 	for _, path := range paths {
 		rel, err := e.toRelative(path)
 		if err != nil {
 			return nil, err
 		}
-		excluded = append(excluded, rel)
+		excluded[filepath.ToSlash(rel)] = struct{}{}
 	}
 
-	// use -uall to list individual files, not collapsed directories
-	out, err := e.run("status", "--porcelain", "-uall")
+	// NUL delimiters make every valid Git filename unambiguous. In -z mode a rename/copy
+	// record contains the destination in the status record followed by the source as the next
+	// NUL-delimited field; both paths must be classified so an unrelated source deletion cannot
+	// hide behind an excluded destination plan.
+	out, err := e.run("status", "--porcelain=v1", "-z", "-uall")
 	if err != nil {
 		return nil, fmt.Errorf("get status: %w", err)
 	}
@@ -878,21 +880,48 @@ func (e *externalBackend) hasChangesOtherThan(paths ...string) ([]string, error)
 		return nil, nil
 	}
 
-	// one entry per porcelain line at most, some are skipped below
-	dirty := make([]string, 0, strings.Count(out, "\n")+1)
-	for line := range strings.SplitSeq(out, "\n") {
-		if line == "" {
-			continue
+	changes, err := parsePorcelainV1Z(out)
+	if err != nil {
+		return nil, fmt.Errorf("parse status: %w", err)
+	}
+	dirty := make([]string, 0, len(changes))
+	for _, changePaths := range changes {
+		for _, filePath := range changePaths {
+			filePath = filepath.ToSlash(filePath)
+			if _, ok := excluded[filePath]; ok || isLoopaiRuntimePath(filePath) {
+				continue
+			}
+			dirty = append(dirty, filePath)
 		}
-		// extract file path from porcelain output: "XY path" or "XY path -> newpath"
-		filePath := e.extractPathFromPorcelain(line)
-		if slices.ContainsFunc(excluded, func(path string) bool { return strings.EqualFold(filePath, path) }) ||
-			isLoopaiRuntimePath(filePath) {
-			continue
-		}
-		dirty = append(dirty, filePath)
 	}
 	return dirty, nil
+}
+
+func parsePorcelainV1Z(out string) ([][]string, error) {
+	fields := strings.Split(out, "\x00")
+	changes := make([][]string, 0, len(fields))
+	for i := 0; i < len(fields); i++ {
+		record := fields[i]
+		if record == "" {
+			if i != len(fields)-1 {
+				return nil, errors.New("empty path in porcelain status")
+			}
+			break
+		}
+		if len(record) < 4 || record[2] != ' ' {
+			return nil, fmt.Errorf("malformed porcelain status record %q", record)
+		}
+		paths := []string{record[3:]}
+		if record[0] == 'R' || record[0] == 'C' || record[1] == 'R' || record[1] == 'C' {
+			i++
+			if i >= len(fields) || fields[i] == "" {
+				return nil, fmt.Errorf("rename/copy status for %q is missing its source path", record[3:])
+			}
+			paths = append(paths, fields[i])
+		}
+		changes = append(changes, paths)
+	}
+	return changes, nil
 }
 
 func isLoopaiRuntimePath(path string) bool {
@@ -1336,19 +1365,4 @@ func (e *externalBackend) pruneWorktrees() error {
 		return fmt.Errorf("prune worktrees: %w", err)
 	}
 	return nil
-}
-
-// extractPathFromPorcelain extracts file path from git status --porcelain output.
-// format: "XY path" or "XY original -> renamed"
-func (e *externalBackend) extractPathFromPorcelain(line string) string {
-	if len(line) < 4 {
-		return ""
-	}
-	// skip the 2-char status code and space
-	path := line[3:]
-	// handle renames: "XY old -> new"
-	if idx := strings.Index(path, " -> "); idx >= 0 {
-		path = path[idx+4:]
-	}
-	return path
 }

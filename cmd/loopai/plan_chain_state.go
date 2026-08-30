@@ -85,6 +85,14 @@ func planChainCheckpointPath(root string, plans []string, mode string) (string, 
 	return filepath.Join(root, ".loopai", "progress", name), normalized, nil
 }
 
+func planChainRunLockIdentity(root string, plans []string) (string, error) {
+	normalized, err := normalizePlanChainPaths(root, plans)
+	if err != nil {
+		return "", err
+	}
+	return strings.Join(normalized, "\x00"), nil
+}
+
 func loadPlanChainCheckpoint(root string, plans []string, mode string) (planChainCheckpoint, bool, error) {
 	path, normalized, err := planChainCheckpointPath(root, plans, mode)
 	if err != nil {

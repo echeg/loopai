@@ -2479,6 +2479,38 @@ func TestService_CreateWorktreeForPlanStartRef(t *testing.T) {
 	})
 }
 
+func TestService_CreateWorktreeForPlanChainPreservesModeOnlyChange(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve POSIX executable mode changes")
+	}
+	dir := setupExternalTestRepo(t)
+	runGit(t, dir, "config", "core.filemode", "true")
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	plansDir := filepath.Join(dir, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+	for _, planFile := range plans {
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+	}
+	require.NoError(t, svc.repo.commit("add mode-preservation plans"))
+	require.NoError(t, os.Chmod(plans[0], 0o700)) //nolint:gosec // test intentionally exercises a mode-only change
+
+	wtPath, needsCommit, err := svc.CreateWorktreeForPlanChainContext(t.Context(), plans[0], "", "", plans)
+	require.NoError(t, err)
+	assert.True(t, needsCommit)
+	wtSvc, err := NewService(wtPath, noopServiceLogger())
+	require.NoError(t, err)
+	require.NoError(t, wtSvc.CommitPlanFiles(plans, svc.Root()))
+	defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
+
+	info, err := os.Stat(filepath.Join(wtPath, "docs", "plans", "one.md"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+	assert.Contains(t, runGit(t, wtPath, "ls-tree", "HEAD", "docs/plans/one.md"), "100755 blob")
+}
+
 func TestService_ValidatePlanChain(t *testing.T) {
 	t.Run("rejects invalid derived branch before execution", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
@@ -2753,6 +2785,31 @@ func TestService_CreateBranchForPlanChain(t *testing.T) {
 		assert.Equal(t, "one", strings.TrimSpace(runGit(t, dir, "branch", "--show-current")))
 		assert.Empty(t, strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
 		assert.Equal(t, "# Dirty source plan\n", runGit(t, dir, "show", "HEAD:docs/plans/one.md"))
+	})
+
+	t.Run("reused first branch carries a mode-only tracked source plan change", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows does not preserve POSIX executable mode changes")
+		}
+		dir := setupExternalTestRepo(t)
+		runGit(t, dir, "config", "core.filemode", "true")
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+			require.NoError(t, svc.repo.add(planFile))
+		}
+		require.NoError(t, svc.repo.commit("add mode-only chain plans"))
+		runGit(t, dir, "branch", "one")
+		require.NoError(t, os.Chmod(plans[0], 0o700)) //nolint:gosec // test intentionally exercises a mode-only change
+
+		require.NoError(t, svc.CreateBranchForPlanChainContext(t.Context(), plans[0], "", plans))
+		assert.Equal(t, "one", strings.TrimSpace(runGit(t, dir, "branch", "--show-current")))
+		assert.Empty(t, strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
+		assert.Contains(t, runGit(t, dir, "ls-tree", "HEAD", "docs/plans/one.md"), "100755 blob")
 	})
 
 	t.Run("reused first branch commits an untracked plan carried through checkout", func(t *testing.T) {

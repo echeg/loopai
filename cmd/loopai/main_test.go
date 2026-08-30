@@ -925,6 +925,67 @@ func testPlanChainRejectsAdvancedCompletedBranch(t *testing.T) {
 	require.ErrorContains(t, err, "tip changed from saved predecessor tip")
 }
 
+func TestValidateExecutionRepositoryRejectsBusyChainBeforeCheckpointRecovery(t *testing.T) {
+	dir := setupTestRepo(t)
+	plansDir := filepath.Join(dir, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+	for _, planFile := range plans {
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+	}
+	runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+	runGit(t, dir, "commit", "-m", "add lock test plans")
+	o := opts{PlanFile: plans[0], PlanFiles: plans}
+	require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
+		Mode: string(processor.ModeFull), Active: 1,
+	}))
+
+	owner, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	lockIdentity, err := planChainRunLockIdentity(dir, plans)
+	require.NoError(t, err)
+	release, err := owner.AcquirePlanChainRunLock(lockIdentity)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, release()) }()
+
+	contender, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	returnedRelease, err := validateExecutionRepository(t.Context(), o, contender, false, false, nil)
+	assert.Nil(t, returnedRelease)
+	var busyErr *git.ErrPlanChainBusy
+	require.ErrorAs(t, err, &busyErr)
+
+	saved, found, loadErr := loadPlanChainCheckpoint(dir, plans, string(processor.ModeFull))
+	require.NoError(t, loadErr)
+	assert.True(t, found)
+	assert.Equal(t, 1, saved.Active, "a busy contender must not rewrite a live checkpoint")
+}
+
+func TestValidateExecutionRepositoryReleasesChainLockAfterValidationFailure(t *testing.T) {
+	dir := setupTestRepo(t)
+	plansDir := filepath.Join(dir, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two..bad.md")}
+	for _, planFile := range plans {
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+	}
+	runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two..bad.md")
+	runGit(t, dir, "commit", "-m", "add invalid lock test plans")
+	o := opts{PlanFile: plans[0], PlanFiles: plans}
+
+	svc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	release, err := validateExecutionRepository(t.Context(), o, svc, false, false, nil)
+	assert.Nil(t, release)
+	require.ErrorContains(t, err, "invalid plan branch")
+
+	lockIdentity, err := planChainRunLockIdentity(dir, plans)
+	require.NoError(t, err)
+	release, err = svc.AcquirePlanChainRunLock(lockIdentity)
+	require.NoError(t, err, "validation failure must release the chain lock")
+	require.NoError(t, release())
+}
+
 func testPlanChainRejectsRewrittenActiveBranch(t *testing.T) {
 	dir := setupTestRepo(t)
 	plansDir := filepath.Join(dir, "docs", "plans")

@@ -493,12 +493,15 @@ func run(ctx context.Context, o opts) (runErr error) {
 	gitSvc.SetCommitTrailer(cfg.CommitTrailer)
 
 	// Ensure the repository is executable and reject repository-dependent chain problems before
-	// resolving branches or creating any plan artifacts.
-	if repoErr := validateExecutionRepository(
+	// resolving branches or creating any plan artifacts. A chain lock returned here is held until
+	// the complete lifecycle (including checkpoint removal and inter-plan transitions) finishes.
+	releaseChainLock, repoErr := validateExecutionRepository(
 		ctx, o, gitSvc, cfg.WorktreeEnabled, cfg.MovePlanOnCompletion, setupTitles,
-	); repoErr != nil {
+	)
+	if repoErr != nil {
 		return repoErr
 	}
+	defer func() { runErr = releasePlanChainExecutionLock(runErr, releaseChainLock) }()
 
 	// defaultBranch is for non-worktree branch creation, baseRef for review diffs and the
 	// {{DEFAULT_BRANCH}} template variable. In worktree mode --base-ref stays diff-only because
@@ -559,28 +562,46 @@ func run(ctx context.Context, o opts) (runErr error) {
 func validateExecutionRepository(
 	ctx context.Context, o opts, gitSvc *git.Service, worktree, movePlanOnCompletion bool,
 	setupTitles *orca.Reporter,
-) error {
-	if err := ensureRepoHasCommits(ctx, gitSvc, os.Stdin, os.Stdout, setupTitles); err != nil {
-		return err
+) (func() error, error) {
+	if ensureErr := ensureRepoHasCommits(ctx, gitSvc, os.Stdin, os.Stdout, setupTitles); ensureErr != nil {
+		return nil, ensureErr
 	}
 	if len(o.PlanFiles) <= 1 {
-		return nil
+		return func() error { return nil }, nil
 	}
-	if err := gitSvc.EnsureLocalGitignore(); err != nil {
-		return fmt.Errorf("prepare plan chain runtime state: %w", err)
+	lockIdentity, err := planChainRunLockIdentity(gitSvc.Root(), o.PlanFiles)
+	if err != nil {
+		return nil, fmt.Errorf("identify plan chain lock: %w", err)
+	}
+	releaseChainLock, err := gitSvc.AcquirePlanChainRunLock(lockIdentity)
+	if err != nil {
+		return nil, fmt.Errorf("acquire plan chain execution lock: %w", err)
+	}
+	if ignoreErr := gitSvc.EnsureLocalGitignore(); ignoreErr != nil {
+		return releasePlanChainLockAfterError(releaseChainLock,
+			fmt.Errorf("prepare plan chain runtime state: %w", ignoreErr))
 	}
 	state, found, err := verifiedPlanChainCheckpoint(ctx, o, gitSvc, worktree, movePlanOnCompletion)
 	if err != nil {
-		return err
+		return releasePlanChainLockAfterError(releaseChainLock, err)
 	}
 	completed := 0
 	if found {
 		completed = state.Completed
 	}
-	if err := gitSvc.ValidatePlanChain(o.PlanFiles[completed:]); err != nil {
-		return fmt.Errorf("validate plan chain repository state: %w", err)
+	if validateErr := gitSvc.ValidatePlanChain(o.PlanFiles[completed:]); validateErr != nil {
+		return releasePlanChainLockAfterError(releaseChainLock,
+			fmt.Errorf("validate plan chain repository state: %w", validateErr))
 	}
-	return nil
+	return releaseChainLock, nil
+}
+
+func releasePlanChainLockAfterError(release func() error, cause error) (func() error, error) {
+	return nil, errors.Join(cause, release())
+}
+
+func releasePlanChainExecutionLock(runErr error, release func() error) error {
+	return errors.Join(runErr, release())
 }
 
 // prepareRunBeforeConfig decides hand-off before taking a local reservation: otherwise auto mode

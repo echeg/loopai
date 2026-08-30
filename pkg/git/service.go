@@ -828,10 +828,16 @@ func (s *Service) restorePlanSnapshots(snapshots []planFileSnapshot) ([]string, 
 		if err := validateCopyDestination(dstPath); err != nil {
 			return nil, err
 		}
-		if current, readErr := os.ReadFile(dstPath); //nolint:gosec // root-contained path validated above
-		readErr == nil && bytes.Equal(current, snapshot.data) {
-			continue
-		} else if readErr != nil && !os.IsNotExist(readErr) {
+		current, readErr := os.ReadFile(dstPath) //nolint:gosec // root-contained path validated above
+		if readErr == nil {
+			info, statErr := os.Lstat(dstPath)
+			if statErr != nil {
+				return nil, fmt.Errorf("inspect destination plan %q: %w", dstPath, statErr)
+			}
+			if bytes.Equal(current, snapshot.data) && info.Mode().Perm() == snapshot.mode.Perm() {
+				continue
+			}
+		} else if !os.IsNotExist(readErr) {
 			return nil, fmt.Errorf("read destination plan %q: %w", dstPath, readErr)
 		}
 		if err := writeFileReplacing(snapshot.data, snapshot.mode.Perm(), dstDir, dstPath); err != nil {
@@ -1718,6 +1724,10 @@ func copyFileReplacing(absSrc, dstDir, dstPath string) error {
 		return fmt.Errorf("open source: %w", err)
 	}
 	defer src.Close()
+	srcInfo, err := src.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect source: %w", err)
+	}
 
 	dst, err := os.CreateTemp(dstDir, ".loopai-plan-*")
 	if err != nil {
@@ -1725,6 +1735,10 @@ func copyFileReplacing(absSrc, dstDir, dstPath string) error {
 	}
 	tmpPath := dst.Name()
 	defer os.Remove(tmpPath) //nolint:errcheck // best-effort cleanup after errors or rename
+	if err := dst.Chmod(srcInfo.Mode().Perm()); err != nil {
+		_ = dst.Close()
+		return fmt.Errorf("set copied plan permissions: %w", err)
+	}
 
 	if _, err := io.Copy(dst, src); err != nil {
 		_ = dst.Close()
