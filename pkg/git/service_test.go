@@ -3166,6 +3166,45 @@ func TestService_ReconcilePlanChainSourceState(t *testing.T) {
 	}
 }
 
+func TestService_ValidateFinalizingPlanWorktreeRemoval(t *testing.T) {
+	t.Run("accepts clean worktree and interrupted archive move", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "docs", "plans", "plan.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/plan.md")
+		runGit(t, dir, "commit", "-m", "add plan")
+		require.NoError(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile))
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans", "completed"), 0o750))
+		runGit(t, dir, "mv", "docs/plans/plan.md", "docs/plans/completed/plan.md")
+		require.NoError(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile))
+	})
+
+	t.Run("rejects unrelated or subsequently edited files", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "docs", "plans", "plan.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/plan.md")
+		runGit(t, dir, "commit", "-m", "add plan")
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans", "completed"), 0o750))
+		runGit(t, dir, "mv", "docs/plans/plan.md", "docs/plans/completed/plan.md")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "user.txt"), []byte("preserve\n"), 0o600))
+		require.ErrorContains(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "unrelated changes")
+
+		require.NoError(t, os.Remove(filepath.Join(dir, "user.txt")))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "docs", "plans", "completed", "plan.md"), []byte("# User edit\n"), 0o600,
+		))
+		require.ErrorContains(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "other than the interrupted archive move")
+	})
+}
+
 func TestService_CommitPlanFile(t *testing.T) {
 	t.Run("commits plan file in worktree", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

@@ -780,10 +780,13 @@ func initializePlanChainRun(
 	if err != nil {
 		return planChainCheckpoint{}, false, fmt.Errorf("capture initial plan chain tip: %w", err)
 	}
-	if req.Config.WorktreeEnabled && !o.Commit {
-		state.SourcePlans, err = req.GitSvc.CapturePlanChainSourceState(o.PlanFiles)
+	if req.Config.WorktreeEnabled {
+		state.InitialPlanStates, err = req.GitSvc.CapturePlanChainSourceState(o.PlanFiles)
 		if err != nil {
 			return planChainCheckpoint{}, false, fmt.Errorf("capture plan chain source state: %w", err)
+		}
+		if !o.Commit {
+			state.SourcePlans = state.InitialPlanStates
 		}
 	}
 	if err := savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, state); err != nil {

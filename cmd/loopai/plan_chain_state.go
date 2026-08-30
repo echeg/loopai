@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/umputun/ralphex/pkg/git"
@@ -32,6 +33,7 @@ type planChainCheckpoint struct {
 	ResumePreparedTip    string                `json:"resume_prepared_tip,omitempty"`
 	PreviousTip          string                `json:"previous_tip,omitempty"`
 	InitialTip           string                `json:"initial_tip,omitempty"`
+	InitialPlanStates    []git.PlanSourceState `json:"initial_plan_states,omitempty"`
 	SourcePlans          []git.PlanSourceState `json:"source_plans,omitempty"`
 	SourceReconciled     bool                  `json:"source_reconciled,omitempty"`
 }
@@ -246,6 +248,11 @@ func verifiedPlanChainCheckpoint(
 		return planChainCheckpoint{}, false, err
 	}
 	if state.Completed == 0 {
+		if state.Worktree && state.ResumePreparedTip == "" {
+			if validationErr := validateUnpreparedPlanChainSource(o, gitSvc, state); validationErr != nil {
+				return planChainCheckpoint{}, false, validationErr
+			}
+		}
 		return state, true, nil
 	}
 	lastPlan := o.PlanFiles[state.Completed-1]
@@ -261,6 +268,39 @@ func verifiedPlanChainCheckpoint(
 		return planChainCheckpoint{}, false, fmt.Errorf("resume plan chain: completed branch %q tip changed from saved predecessor tip %s to %s", branch, state.PreviousTip, tip)
 	}
 	return state, true, nil
+}
+
+// validateUnpreparedPlanChainSource prevents a checkpoint created before plan one's branch was
+// prepared from silently adopting a later source HEAD or different plan inputs. Once a prepared
+// tip exists, the branch itself is the immutable resume source and source-checkout drift is safe.
+func validateUnpreparedPlanChainSource(o opts, gitSvc *git.Service, state planChainCheckpoint) error {
+	currentTip, err := gitSvc.HeadHash()
+	if err != nil {
+		return fmt.Errorf("resume unprepared plan chain: read source HEAD: %w", err)
+	}
+	if state.InitialTip == "" || currentTip != state.InitialTip {
+		return fmt.Errorf(
+			"resume unprepared plan chain: source HEAD changed from saved initial tip %s to %s; remove the chain checkpoint under .loopai/progress and rerun",
+			state.InitialTip, currentTip,
+		)
+	}
+	currentPlans, err := gitSvc.CapturePlanChainSourceState(o.PlanFiles)
+	if err != nil {
+		return fmt.Errorf(
+			"resume unprepared plan chain: inspect source plan inputs: %w; remove the chain checkpoint under .loopai/progress and rerun",
+			err,
+		)
+	}
+	expectedPlans := state.InitialPlanStates
+	if expectedPlans == nil && state.SourcePlans != nil {
+		// Checkpoints written before InitialPlanStates was introduced already captured the
+		// non-commit worktree input state in SourcePlans.
+		expectedPlans = state.SourcePlans
+	}
+	if !slices.Equal(currentPlans, expectedPlans) {
+		return errors.New("resume unprepared plan chain: source plan inputs changed since the checkpoint was created; remove the chain checkpoint under .loopai/progress and rerun")
+	}
+	return nil
 }
 
 // recoverActivePlanChainMember closes the only non-atomic completion window after successful plan
@@ -281,6 +321,11 @@ func recoverActivePlanChainMember(
 		if err != nil {
 			return planChainCheckpoint{}, err
 		}
+		if state.Worktree && state.ActiveFinalizing {
+			if err := removeRecoveredPlanChainWorktree(ctx, gitSvc, branch, planFile); err != nil {
+				return planChainCheckpoint{}, fmt.Errorf("recover active plan chain member: clean up finalized worktree: %w", err)
+			}
+		}
 	}
 	state.Active = 0
 	state.ActiveStartTip = ""
@@ -290,6 +335,76 @@ func recoverActivePlanChainMember(
 		return planChainCheckpoint{}, err
 	}
 	return state, nil
+}
+
+// removeRecoveredPlanChainWorktree removes a generated worktree left behind when the process died
+// after successful execution entered finalization. The repository preparation lock and per-worktree
+// run lock preserve the same ownership ordering used by normal teardown. A live owner therefore
+// blocks recovery, while a dead owner's OS-released lock allows the stale checkout to be recreated
+// from the saved prepared branch tip or skipped after an already-committed archive.
+func removeRecoveredPlanChainWorktree(
+	ctx context.Context, gitSvc *git.Service, branch, planFile string,
+) (err error) {
+	releasePreparation, err := gitSvc.AcquireWorktreeCreationLockContext(ctx)
+	if err != nil {
+		return fmt.Errorf("lock worktree recovery: %w", err)
+	}
+	defer func() { err = errors.Join(err, releasePreparation()) }()
+
+	worktrees, err := gitSvc.Worktrees()
+	if err != nil {
+		return fmt.Errorf("list worktrees during finalized recovery: %w", err)
+	}
+	target := ""
+	for _, worktree := range worktrees {
+		if worktree.Branch == branch {
+			target = worktree.Path
+			break
+		}
+	}
+	if target == "" {
+		return nil
+	}
+	if filepath.Clean(target) == filepath.Clean(gitSvc.Root()) {
+		return fmt.Errorf("refuse to remove primary checkout for branch %q", branch)
+	}
+
+	worktreeSvc, err := gitSvc.OpenWorktree(target)
+	if err != nil {
+		return fmt.Errorf("open finalized worktree %s: %w", target, err)
+	}
+	releaseRun, err := worktreeSvc.AcquireWorktreeRunLockContext(ctx)
+	if err != nil {
+		return fmt.Errorf("lock finalized worktree %s: %w", target, err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			err = errors.Join(err, releaseRun())
+		}
+	}()
+	currentBranch, err := worktreeSvc.CurrentBranch()
+	if err != nil {
+		return fmt.Errorf("identify finalized worktree branch: %w", err)
+	}
+	if currentBranch != branch {
+		return fmt.Errorf("refuse to remove worktree %s: expected branch %q, found %q", target, branch, currentBranch)
+	}
+	worktreePlan := resolveWorktreePlanFile(planFile, gitSvc.Root(), worktreeSvc.Root())
+	if !filepath.IsAbs(worktreePlan) {
+		worktreePlan = filepath.Join(worktreeSvc.Root(), worktreePlan)
+	}
+	if err := worktreeSvc.ValidateFinalizingPlanWorktreeRemoval(worktreePlan); err != nil {
+		return fmt.Errorf("refuse to remove finalized worktree %s: %w; preserve it for manual recovery", target, err)
+	}
+	if err := releaseRun(); err != nil {
+		return fmt.Errorf("release finalized worktree run lock: %w", err)
+	}
+	released = true
+	if err := gitSvc.RemoveWorktree(target); err != nil {
+		return fmt.Errorf("remove finalized worktree %s: %w", target, err)
+	}
+	return nil
 }
 
 func recoverExistingActivePlanChainMember(

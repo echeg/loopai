@@ -1982,6 +1982,69 @@ func (s *Service) MovePlanToCompleted(planFile string) error {
 	return nil
 }
 
+// ValidateFinalizingPlanWorktreeRemoval permits crash recovery to force-remove a generated
+// worktree only when it is clean or its sole changes are the exact staged active-to-completed plan
+// move that MovePlanToCompleted performs before committing. This prevents recovery from discarding
+// unrelated edits made after the interrupted process released its run lock.
+func (s *Service) ValidateFinalizingPlanWorktreeRemoval(planFile string) error {
+	if resolvedDir, resolveErr := filepath.EvalSymlinks(filepath.Dir(planFile)); resolveErr == nil {
+		planFile = filepath.Join(resolvedDir, filepath.Base(planFile))
+	}
+	completedPath := filepath.Join(filepath.Dir(planFile), "completed", filepath.Base(planFile))
+	dirtyFiles, err := s.repo.hasChangesOtherThan(planFile, completedPath)
+	if err != nil {
+		return fmt.Errorf("inspect finalized worktree changes: %w", err)
+	}
+	if len(dirtyFiles) > 0 {
+		return fmt.Errorf("finalized worktree contains unrelated changes: %s", strings.Join(dirtyFiles, ", "))
+	}
+	activeChanged, err := s.repo.fileHasChanges(planFile)
+	if err != nil {
+		return fmt.Errorf("inspect finalized active plan: %w", err)
+	}
+	_, activeStatErr := os.Lstat(planFile)
+	activeExists := activeStatErr == nil
+	if activeStatErr != nil && !os.IsNotExist(activeStatErr) {
+		return fmt.Errorf("inspect finalized active plan path: %w", activeStatErr)
+	}
+	_, completedStatErr := os.Lstat(completedPath)
+	completedExists := completedStatErr == nil
+	if completedStatErr != nil && !os.IsNotExist(completedStatErr) {
+		return fmt.Errorf("inspect finalized archived plan path: %w", completedStatErr)
+	}
+	if activeExists && !activeChanged && !completedExists {
+		return nil
+	}
+	activeState, err := s.repo.fileStateFingerprint(planFile)
+	if err != nil {
+		return fmt.Errorf("inspect finalized active plan state: %w", err)
+	}
+	completedState := ""
+	completedChanged := false
+	if completedExists {
+		completedChanged, err = s.repo.fileHasChanges(completedPath)
+		if err != nil {
+			return fmt.Errorf("inspect finalized archived plan: %w", err)
+		}
+		completedState, err = s.repo.fileStateFingerprint(completedPath)
+		if err != nil {
+			return fmt.Errorf("inspect finalized archived plan state: %w", err)
+		}
+	}
+	if !activeChanged && !completedChanged {
+		return nil
+	}
+	activeStatus, _, _ := strings.Cut(activeState, "\x00")
+	completedStatus, _, _ := strings.Cut(completedState, "\x00")
+	if strings.HasPrefix(activeStatus, "D ") && strings.HasPrefix(completedStatus, "A ") {
+		return nil
+	}
+	return fmt.Errorf(
+		"finalized worktree contains plan changes other than the interrupted archive move (active status %q, archived status %q)",
+		activeStatus, completedStatus,
+	)
+}
+
 // resolvePlanMoveTargets determines the source and destination for MovePlanToCompleted,
 // accounting for files already moved to completed/ or renamed between the dashed
 // (YYYY-MM-DD) and compact (YYYYMMDD) date-prefix conventions. Returns done=true in
