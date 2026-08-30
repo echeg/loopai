@@ -570,6 +570,74 @@ func (s *Service) CreateBranchForPlan(planFile, defaultBranch, branchOverride st
 	return nil
 }
 
+// CreateBranchForPlanFromCurrentHEADContext creates or reuses a chained plan branch from the
+// currently checked-out plan branch. Unlike CreateBranchForPlan, it intentionally does not skip
+// when HEAD is already on a feature branch. Chained plan phases must commit everything before the
+// hand-off, so any dirty state is rejected rather than auto-committed onto the successor branch.
+func (s *Service) CreateBranchForPlanFromCurrentHEADContext(
+	ctx context.Context, planFile, branchOverride string,
+) error {
+	planFile = s.resolveFilesystemCase(planFile)
+	branchName := s.EffectiveBranchName(planFile, branchOverride)
+	if branchName == "" {
+		return errors.New("plan branch name is empty")
+	}
+	if err := s.repo.validateBranchName(branchName); err != nil {
+		return fmt.Errorf("invalid plan branch %q: %w", branchName, err)
+	}
+
+	dirty, err := s.repo.isDirtyAll()
+	if err != nil {
+		return fmt.Errorf("check working tree before starting chained plan %q: %w", branchName, err)
+	}
+	if dirty {
+		return fmt.Errorf("cannot start chained plan branch %q: working tree has uncommitted changes; each plan must leave a clean tree before the next plan starts", branchName)
+	}
+
+	currentBranch, err := s.repo.currentBranch()
+	if err != nil {
+		return fmt.Errorf("identify current branch before starting chained plan %q: %w", branchName, err)
+	}
+	if currentBranch == branchName || (currentBranch != "" && strings.EqualFold(currentBranch, branchName)) {
+		return fmt.Errorf("cannot start chained plan branch %q: previous and next plans resolve to the same branch", branchName)
+	}
+	startCommit, err := s.repo.headHash()
+	if err != nil {
+		return fmt.Errorf("identify current HEAD before starting chained plan %q: %w", branchName, err)
+	}
+
+	if !s.repo.branchExists(branchName) {
+		s.log.Printf("creating chained plan branch: %s (from current HEAD)\n", branchName)
+		if createErr := s.repo.createBranch(branchName); createErr != nil {
+			return fmt.Errorf("create chained plan branch %s: %w", branchName, createErr)
+		}
+		return nil
+	}
+
+	startRef := "current HEAD"
+	if currentBranch != "" {
+		startRef = "refs/heads/" + currentBranch
+	}
+	if validateErr := s.validateExistingPlanBranchAt(ctx, branchName, startCommit, startRef); validateErr != nil {
+		return validateErr
+	}
+	s.log.Printf("switching to existing chained plan branch: %s\n", branchName)
+	if checkoutErr := s.repo.checkoutBranch(branchName); checkoutErr != nil {
+		return fmt.Errorf("checkout chained plan branch %s: %w", branchName, checkoutErr)
+	}
+	containsStart, err := s.repo.isAncestor(ctx, startCommit, "HEAD")
+	if err != nil {
+		return fmt.Errorf("check chained plan branch %q against previous plan tip: %w", branchName, err)
+	}
+	if containsStart {
+		return nil
+	}
+	if err := s.repo.mergeRevision(ctx, startCommit, startCommit); err != nil {
+		return fmt.Errorf("merge previous plan tip into chained plan branch %q: %w", branchName, err)
+	}
+	return nil
+}
+
 // CreateWorktreeForPlan creates an isolated git worktree for plan execution from the current HEAD.
 // It derives the branch name from the plan file and creates the worktree at
 // .loopai/worktrees/<branch>.

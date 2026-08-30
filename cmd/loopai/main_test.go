@@ -212,11 +212,13 @@ func TestRunPlanChain(t *testing.T) {
 
 		var order, startRefs []string
 		var commits []bool
+		var successors []bool
 		var out bytes.Buffer
 		execute := func(_ context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
 			order = append(order, gotOpts.PlanFile)
 			startRefs = append(startRefs, gotReq.WorktreeStartRef)
 			commits = append(commits, gotOpts.Commit)
+			successors = append(successors, gotReq.ChainSuccessor)
 			require.NotNil(t, gotReq.Outcome)
 			gotReq.Outcome.succeeded = true
 			return nil
@@ -226,6 +228,7 @@ func TestRunPlanChain(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, plans, order)
 		assert.Equal(t, []bool{true, false, false}, commits)
+		assert.Equal(t, []bool{false, true, true}, successors)
 		assert.Equal(t, []string{
 			"",
 			"refs/heads/" + gitSvc.EffectiveBranchName(plans[0], ""),
@@ -235,6 +238,92 @@ func TestRunPlanChain(t *testing.T) {
 		assert.Contains(t, out.String(), "plan 2/3: "+plans[1])
 		assert.Contains(t, out.String(), "plan 3/3: "+plans[2])
 		assert.Contains(t, out.String(), "plan chain complete: 3/3 plans succeeded")
+	})
+
+	t.Run("non_worktree_successor_branches_from_previous_plan_tip", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{
+			filepath.Join(plansDir, "one.md"),
+			filepath.Join(plansDir, "two.md"),
+		}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		}
+		runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+		runGit(t, dir, "commit", "-m", "add chain plans")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		req := executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{WorktreeEnabled: false},
+			Colors: testColors(), DefaultBranch: "master", OrcaStop: &cleanupHolder{},
+		}
+		calls := 0
+		err = runPlanChain(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, req,
+			nil, nil, io.Discard, func(ctx context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
+				calls++
+				if branchErr := prepareSelectedPlanBranch(ctx, gotReq, gotOpts.PlanFile); branchErr != nil {
+					return branchErr
+				}
+				if calls == 1 {
+					assert.False(t, gotReq.ChainSuccessor)
+					require.NoError(t, os.WriteFile(filepath.Join(dir, "one-result.txt"), []byte("one\n"), 0o600))
+					runGit(t, dir, "add", "one-result.txt")
+					runGit(t, dir, "commit", "-m", "complete plan one")
+				} else {
+					assert.True(t, gotReq.ChainSuccessor)
+					assert.Equal(t, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "one")),
+						strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
+				}
+				gotReq.Outcome.succeeded = true
+				return nil
+			})
+		require.NoError(t, err)
+		assert.Equal(t, 2, calls)
+		assert.Equal(t, "two", strings.TrimSpace(gitOutput(t, dir, "branch", "--show-current")))
+		runGit(t, dir, "merge-base", "--is-ancestor", "one", "two")
+	})
+
+	t.Run("non_worktree_successor_rejects_dirty_tree_between_plans", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{
+			filepath.Join(plansDir, "one.md"),
+			filepath.Join(plansDir, "two.md"),
+		}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		}
+		runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+		runGit(t, dir, "commit", "-m", "add chain plans")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		req := executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{WorktreeEnabled: false},
+			Colors: testColors(), DefaultBranch: "master", OrcaStop: &cleanupHolder{},
+		}
+		calls := 0
+		err = runPlanChain(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, req,
+			nil, nil, io.Discard, func(ctx context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
+				calls++
+				if branchErr := prepareSelectedPlanBranch(ctx, gotReq, gotOpts.PlanFile); branchErr != nil {
+					return branchErr
+				}
+				if calls == 1 {
+					require.NoError(t, os.WriteFile(filepath.Join(dir, "unfinished.txt"), []byte("dirty\n"), 0o600))
+				}
+				gotReq.Outcome.succeeded = true
+				return nil
+			})
+		require.ErrorContains(t, err, "working tree has uncommitted changes")
+		require.ErrorContains(t, err, "each plan must leave a clean tree")
+		assert.Equal(t, 2, calls)
+		assert.Equal(t, "one", strings.TrimSpace(gitOutput(t, dir, "branch", "--show-current")))
+		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "two")))
 	})
 
 	t.Run("stops_on_failure", func(t *testing.T) {

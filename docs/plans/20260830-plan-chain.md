@@ -86,12 +86,12 @@
 - [x] run tests - must pass before next task
 
 ### Task 4: Non-worktree chain stacking
-- [ ] with `use_worktree` disabled, after plan N the checkout sits on plan N's branch; for a chain, explicitly create plan N+1's branch from the current HEAD instead of relying on `prepareBranchPlan`'s early return ("already on feature branch, caller should skip")
-- [ ] keep the existing single-plan early-return behavior untouched for non-chain runs
-- [ ] verify clean-tree expectations between chained plans (each plan's phases commit their work; a dirty tree between plans is a chain error with a clear message)
-- [ ] write tests for non-worktree chaining (branch N+1 created from branch N tip, single-plan path unchanged)
-- [ ] write tests for the dirty-tree-between-plans error
-- [ ] run tests - must pass before next task
+- [x] with `use_worktree` disabled, after plan N the checkout sits on plan N's branch; for a chain, explicitly create plan N+1's branch from the current HEAD instead of relying on `prepareBranchPlan`'s early return ("already on feature branch, caller should skip")
+- [x] keep the existing single-plan early-return behavior untouched for non-chain runs
+- [x] verify clean-tree expectations between chained plans (each plan's phases commit their work; a dirty tree between plans is a chain error with a clear message)
+- [x] write tests for non-worktree chaining (branch N+1 created from branch N tip, single-plan path unchanged)
+- [x] write tests for the dirty-tree-between-plans error
+- [x] run tests - must pass before next task
 
 ### Task 5: cmux hand-off and status integration for chains
 - [ ] `planFileHandOffRefusal` (main.go:3237) validates every file in the comma list before spawning a workspace

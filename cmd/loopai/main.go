@@ -252,6 +252,7 @@ type executePlanRequest struct {
 	DefaultBranch    string // base for non-worktree branch creation; worktrees are created from current HEAD
 	BaseRef          string // base reference for review diffs and templates (--base-ref override or DefaultBranch)
 	WorktreeStartRef string // optional refs/heads/<previous-plan-branch> for stacked chain worktrees
+	ChainSuccessor   bool   // true for plan N+1; non-worktree runs branch from the current plan N tip
 	NotifySvc        *notify.Service
 	BranchOverride   string                // branch name override (--branch flag); empty = derive from plan filename
 	WtCleanup        *cleanupHolder        // worktree cleanup for interrupt handler; nil when not in worktree mode
@@ -596,12 +597,28 @@ func selectAndExecutePlan(ctx context.Context, o opts, req executePlanRequest, s
 		return fmt.Errorf("ensure gitignore: %w", err)
 	}
 	if planFile != "" && modeRequiresBranch(req.Mode) {
-		if err := req.GitSvc.CreateBranchForPlan(planFile, req.DefaultBranch, req.BranchOverride); err != nil {
-			return fmt.Errorf("create branch for plan: %w", err)
+		if err := prepareSelectedPlanBranch(ctx, req, planFile); err != nil {
+			return err
 		}
 	}
 
 	return executePlan(ctx, o, req)
+}
+
+// prepareSelectedPlanBranch keeps the historical single-plan behavior while allowing a
+// non-worktree chain successor to branch from the preceding plan's checked-out tip. The chained
+// path also enforces the clean hand-off promised by the per-plan execution lifecycle.
+func prepareSelectedPlanBranch(ctx context.Context, req executePlanRequest, planFile string) error {
+	if req.ChainSuccessor {
+		if err := req.GitSvc.CreateBranchForPlanFromCurrentHEADContext(ctx, planFile, req.BranchOverride); err != nil {
+			return fmt.Errorf("create branch for plan: %w", err)
+		}
+		return nil
+	}
+	if err := req.GitSvc.CreateBranchForPlan(planFile, req.DefaultBranch, req.BranchOverride); err != nil {
+		return fmt.Errorf("create branch for plan: %w", err)
+	}
+	return nil
 }
 
 type planChainExecutor func(context.Context, opts, executePlanRequest, *plan.Selector) error
@@ -670,6 +687,7 @@ func runPlanChain(
 		planReq.SetupTitles = setupTitles
 		planReq.CmuxHandoff = setupTitles.Stop
 		planReq.Outcome = outcome
+		planReq.ChainSuccessor = i > 0
 		if previousBranch != "" {
 			planReq.WorktreeStartRef = "refs/heads/" + previousBranch
 		}
