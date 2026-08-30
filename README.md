@@ -11,6 +11,7 @@ workflows are distributed through this repository's plugin marketplace.
 ## Features
 
 - Executes Markdown plans one task at a time with automatic retries
+- Executes comma-separated plan chains sequentially on stacked branches
 - Creates plans interactively with `--plan`
 - Supports Claude Code and Codex as primary executors
 - Runs configurable internal and external review phases
@@ -279,6 +280,9 @@ loopai --codex '--codex-args=-c service_tier="default"' docs/plans/feature.md
 # execute in an isolated worktree
 loopai --worktree docs/plans/feature.md
 
+# execute dependent plans sequentially on stacked branches
+loopai --worktree docs/plans/schema.md,docs/plans/api.md,docs/plans/ui.md
+
 # hand the run off to its own cmux workspace, so it gets its own sidebar card
 loopai --cmux-workspace --worktree docs/plans/feature.md
 
@@ -308,6 +312,45 @@ loopai --serve docs/plans/feature.md
 ```
 
 Use `loopai --help` for the complete flag list.
+
+## Plan chains
+
+Pass multiple plan paths as one comma-separated positional argument when later plans depend
+on earlier work:
+
+```bash
+loopai --worktree docs/plans/schema.md,docs/plans/api.md,docs/plans/ui.md
+```
+
+loopai validates every file before starting, then runs each plan through the complete normal
+pipeline in order. Each plan gets its own branch, archived plan, and progress log. The second
+branch starts from the immutable completed tip of the first branch, the third starts from the
+second, and so on, whether worktree isolation is enabled or not. Consequently, the last branch
+contains the complete chain. A failure or user abort stops the chain before the next plan starts;
+branches and artifacts from plans that already completed are retained. Full and `--tasks-only`
+runs support chains; review-only modes do not because they intentionally create no feature branch.
+Rerun the same comma-separated command after an interruption: a checkpoint under
+`.loopai/progress/` skips the verified completed prefix and resumes from its saved immutable tip.
+
+Entries are trimmed, so a quoted value may contain spaces around commas. Empty entries, aliases
+to the same file, and plans that derive the same branch name are rejected. `--branch`, `--serve`,
+interactive `--plan`, `--review`, `--external-only`, and `--codex-only` cannot be combined with a
+chain. Without `--commit`, uncommitted plan files may be the only source-checkout changes; they are
+captured together on the first chain branch. With `--worktree --commit`, the source-checkout
+auto-commit applies only to the first plan. After every worktree-chain member succeeds, unchanged
+dirty tracked inputs are restored to the source `HEAD` and unchanged untracked inputs are removed,
+so the primary checkout is clean for `--merge`; a source plan edited concurrently is left untouched
+and reported instead of being overwritten.
+
+Without worktree isolation, loopai switches the current checkout through each plan branch and
+finishes on the last branch. Each completed plan must leave the checkout clean before the next
+branch is created; otherwise the chain stops with the earlier completed branches retained.
+
+To land the complete result, merge the last plan's branch. A successful worktree run removes its
+temporary worktree, so run `loopai --merge ui` (naming the final branch or plan) from the primary
+checkout or another registered worktree. A non-worktree chain finishes on the final branch and
+can use bare `loopai --merge`. Earlier branches may be kept for review or merged separately, but
+they do not need to be merged first because their commits are ancestors of the last branch.
 
 ## Execution pipeline
 
@@ -694,12 +737,14 @@ The model syntax is `model[:effort]`; either half may be omitted. Provider-speci
 
 `--worktree` creates an isolated checkout under `.loopai/worktrees/<branch>`. A new plan
 branch is cut from the current checkout's `HEAD`, whether it is a branch or a detached
-commit. When an existing plan branch does not already contain the source `HEAD` seen before
-any `--commit` auto-commit, loopai reuses it and automatically merges the source HEAD into
-the fresh worktree. Git 2.38+ predicts conflicts before source mutation. Older Git falls
-back to the real merge and removes the worktree if that merge conflicts. An actual conflict
-aborts with guidance to merge or rebase the source changes manually. This is useful for
-parallel plans and for starting work from any source branch.
+commit. For a plan chain, each successor worktree branch is instead cut from the preceding
+plan branch's tip, so it includes all earlier results without mutating the source checkout.
+When an existing plan branch does not already contain the applicable start commit, loopai
+reuses it and automatically merges that commit into the fresh worktree. Git 2.38+ predicts
+conflicts before source mutation. Older Git falls back to the real merge and removes the
+worktree if that merge conflicts. An actual conflict aborts with guidance to merge or rebase
+the source changes manually. This is useful for parallel plans and for starting work from any
+source branch.
 
 ```bash
 git checkout release/13
@@ -892,10 +937,11 @@ when Codex is primary and `claude` otherwise.
 
 The cmux status pill and progress bar belong to the workspace, not to an individual run, so
 several runs started from one workspace overwrite each other's status. Bare `--cmux-workspace`
-and `--cmux-workspace=always` avoid that by unconditionally handing the run off: loopai creates a
-new cmux workspace named after the branch the run will use, relaunches itself there without the
-flag, prints `handed off to cmux workspace <name>`, and exits. The run then owns its own sidebar
-card, pill, spinner, and progress bar, which makes parallel runs independent.
+and `--cmux-workspace=always` avoid that by unconditionally handing the run off: loopai validates
+every chain entry, creates one cmux workspace named after the first plan's branch, relaunches itself
+there without the flag, prints `handed off to cmux workspace <name>`, and exits. Successor reporters
+reuse that card and replace its pill as the chain advances; the isolated workspace owns the pill,
+spinner, and progress bar, which makes parallel runs independent.
 
 ```bash
 loopai --cmux-workspace --worktree docs/plans/feature.md

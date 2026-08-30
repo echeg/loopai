@@ -209,6 +209,62 @@ func (e *externalBackend) revParse(ref string) (string, error) {
 	return out, nil
 }
 
+func (e *externalBackend) revisionExists(ctx context.Context, revision string) (bool, error) {
+	cmd := exec.CommandContext(ctx, e.command, "rev-parse", "--verify", "--quiet", revision+"^{commit}")
+	cmd.Dir = e.path
+	configureCommandCancellation(cmd)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, fmt.Errorf("git rev-parse: %w", ctxErr)
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	details := strings.TrimSpace(output.String())
+	if details != "" {
+		return false, fmt.Errorf("git rev-parse: %s", details)
+	}
+	return false, fmt.Errorf("git rev-parse: %w", err)
+}
+
+// fileExistsAt reports whether path is a regular file in ref. Git represents symlinks as blobs
+// too, so checking object existence or type is insufficient: only normal executable/non-executable
+// blob modes are accepted. A missing or non-regular entry is not an error; malformed revisions and
+// other repository failures are.
+func (e *externalBackend) fileExistsAt(ref, path string) (bool, error) {
+	rel, err := e.toRelative(path)
+	if err != nil {
+		return false, err
+	}
+	out, err := e.run("ls-tree", "-z", ref, "--", filepath.ToSlash(rel))
+	if err != nil {
+		// Keep the previous actionable missing-revision diagnostic instead of presenting every
+		// ls-tree failure as though the path were simply absent.
+		if _, resolveErr := e.revParse(ref + "^{commit}"); resolveErr != nil {
+			return false, resolveErr
+		}
+		return false, fmt.Errorf("inspect path %q at %q: %w", rel, ref, err)
+	}
+	if out == "" {
+		return false, nil
+	}
+	metadata, _, found := strings.Cut(out, "\t")
+	if !found {
+		return false, fmt.Errorf("inspect path %q at %q: malformed ls-tree output", rel, ref)
+	}
+	fields := strings.Fields(metadata)
+	if len(fields) != 3 {
+		return false, fmt.Errorf("inspect path %q at %q: malformed ls-tree metadata", rel, ref)
+	}
+	return fields[1] == "blob" && (fields[0] == "100644" || fields[0] == "100755"), nil
+}
+
 // diffFingerprint returns a sha256 hash of the working tree state (tracked diffs + untracked file content).
 // includes untracked file content hashes so that edits to existing untracked files are detected,
 // not just new file creation.
@@ -768,17 +824,54 @@ func (e *externalBackend) fileTracked(path string) (bool, error) {
 	return out != "", nil
 }
 
-// hasChangesOtherThan returns the list of dirty file paths (excluding the given file, case-insensitive).
-// this includes modified/deleted tracked files, staged changes, and untracked files (excluding gitignored).
-// an empty slice means no other changes.
-func (e *externalBackend) hasChangesOtherThan(path string) ([]string, error) {
+// fileStateFingerprint returns the exact per-path porcelain and index state. Source-plan
+// reconciliation compares it with the captured value so index-only concurrent changes are never
+// discarded by a later git restore.
+func (e *externalBackend) fileStateFingerprint(path string) (string, error) {
 	rel, err := e.toRelative(path)
 	if err != nil {
-		return nil, err
+		return "", err
+	}
+	status, err := e.run("status", "--porcelain=v1", "-z", "-uall", "--", rel)
+	if err != nil {
+		return "", fmt.Errorf("read file status: %w", err)
+	}
+	index, err := e.run("ls-files", "--stage", "-z", "--", rel)
+	if err != nil {
+		return "", fmt.Errorf("read file index entry: %w", err)
+	}
+	return status + "\x00" + index, nil
+}
+
+func (e *externalBackend) restoreFile(path string) error {
+	rel, err := e.toRelative(path)
+	if err != nil {
+		return err
+	}
+	if _, err = e.run("restore", "--source=HEAD", "--staged", "--worktree", "--", rel); err != nil {
+		return fmt.Errorf("restore file: %w", err)
+	}
+	return nil
+}
+
+// hasChangesOtherThan returns the list of dirty file paths (excluding the given paths).
+// this includes modified/deleted tracked files, staged changes, and untracked files (excluding gitignored).
+// an empty slice means no other changes.
+func (e *externalBackend) hasChangesOtherThan(paths ...string) ([]string, error) {
+	excluded := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		rel, err := e.toRelative(path)
+		if err != nil {
+			return nil, err
+		}
+		excluded[filepath.ToSlash(rel)] = struct{}{}
 	}
 
-	// use -uall to list individual files, not collapsed directories
-	out, err := e.run("status", "--porcelain", "-uall")
+	// NUL delimiters make every valid Git filename unambiguous. In -z mode a rename/copy
+	// record contains the destination in the status record followed by the source as the next
+	// NUL-delimited field; both paths must be classified so an unrelated source deletion cannot
+	// hide behind an excluded destination plan.
+	out, err := e.run("status", "--porcelain=v1", "-z", "-uall")
 	if err != nil {
 		return nil, fmt.Errorf("get status: %w", err)
 	}
@@ -787,20 +880,48 @@ func (e *externalBackend) hasChangesOtherThan(path string) ([]string, error) {
 		return nil, nil
 	}
 
-	// one entry per porcelain line at most, some are skipped below
-	dirty := make([]string, 0, strings.Count(out, "\n")+1)
-	for line := range strings.SplitSeq(out, "\n") {
-		if line == "" {
-			continue
+	changes, err := parsePorcelainV1Z(out)
+	if err != nil {
+		return nil, fmt.Errorf("parse status: %w", err)
+	}
+	dirty := make([]string, 0, len(changes))
+	for _, changePaths := range changes {
+		for _, filePath := range changePaths {
+			filePath = filepath.ToSlash(filePath)
+			if _, ok := excluded[filePath]; ok || isLoopaiRuntimePath(filePath) {
+				continue
+			}
+			dirty = append(dirty, filePath)
 		}
-		// extract file path from porcelain output: "XY path" or "XY path -> newpath"
-		filePath := e.extractPathFromPorcelain(line)
-		if strings.EqualFold(filePath, rel) || isLoopaiRuntimePath(filePath) {
-			continue
-		}
-		dirty = append(dirty, filePath)
 	}
 	return dirty, nil
+}
+
+func parsePorcelainV1Z(out string) ([][]string, error) {
+	fields := strings.Split(out, "\x00")
+	changes := make([][]string, 0, len(fields))
+	for i := 0; i < len(fields); i++ {
+		record := fields[i]
+		if record == "" {
+			if i != len(fields)-1 {
+				return nil, errors.New("empty path in porcelain status")
+			}
+			break
+		}
+		if len(record) < 4 || record[2] != ' ' {
+			return nil, fmt.Errorf("malformed porcelain status record %q", record)
+		}
+		paths := []string{record[3:]}
+		if record[0] == 'R' || record[0] == 'C' || record[1] == 'R' || record[1] == 'C' {
+			i++
+			if i >= len(fields) || fields[i] == "" {
+				return nil, fmt.Errorf("rename/copy status for %q is missing its source path", record[3:])
+			}
+			paths = append(paths, fields[i])
+		}
+		changes = append(changes, paths)
+	}
+	return changes, nil
 }
 
 func isLoopaiRuntimePath(path string) bool {
@@ -1183,12 +1304,17 @@ func (e *externalBackend) toRelative(path string) (string, error) {
 }
 
 // addWorktree creates a git worktree at the given path.
-// when createBranch is true, creates a new branch with `git worktree add <path> -b <branch>`.
+// when createBranch is true, creates a new branch with `git worktree add <path> -b <branch> [<start-ref>]`.
 // when createBranch is false, uses existing branch with `git worktree add <path> <branch>`.
-func (e *externalBackend) addWorktree(ctx context.Context, path, branch string, createBranch bool) error {
+func (e *externalBackend) addWorktree(
+	ctx context.Context, path, branch string, createBranch bool, startRef string,
+) error {
 	var args []string
 	if createBranch {
 		args = []string{"worktree", "add", path, "-b", branch}
+		if startRef != "" {
+			args = append(args, startRef)
+		}
 	} else {
 		args = []string{"worktree", "add", path, branch}
 	}
@@ -1239,19 +1365,4 @@ func (e *externalBackend) pruneWorktrees() error {
 		return fmt.Errorf("prune worktrees: %w", err)
 	}
 	return nil
-}
-
-// extractPathFromPorcelain extracts file path from git status --porcelain output.
-// format: "XY path" or "XY original -> renamed"
-func (e *externalBackend) extractPathFromPorcelain(line string) string {
-	if len(line) < 4 {
-		return ""
-	}
-	// skip the 2-char status code and space
-	path := line[3:]
-	// handle renames: "XY old -> new"
-	if idx := strings.Index(path, " -> "); idx >= 0 {
-		path = path[idx+4:]
-	}
-	return path
 }

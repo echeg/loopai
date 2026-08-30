@@ -87,7 +87,8 @@ type opts struct {
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
 	ConfigDir               string        `long:"config-dir" env:"LOOPAI_CONFIG_DIR" description:"custom config directory"`
 
-	PlanFile string `positional-arg-name:"plan-file" description:"path to plan file (optional, uses fzf if omitted); with --merge/--pr it names the feature to close out"`
+	PlanFile  string   `positional-arg-name:"plan-file" description:"path to one plan file or a comma-separated plan chain (optional, uses fzf if omitted); with --merge/--pr it names the feature to close out"`
+	PlanFiles []string // normalized comma-separated plan chain; PlanFile is always its first entry
 
 	// positional arguments beyond the first, recorded by main so close-out validation can reject
 	// them instead of silently acting on the wrong feature
@@ -110,15 +111,59 @@ type opts struct {
 	customReviewScriptSet  bool
 }
 
-// applyPositionalArgs records the parsed positional arguments: the first names the plan file, or
-// the feature to close out under --merge/--pr. the rest are kept so close-out validation can reject
-// them; go-flags never fills a positional field beyond the first one declared.
-func (o *opts) applyPositionalArgs(args []string) {
+const commandUsage = "[OPTIONS] [plan-file[,plan-file...]]"
+
+// applyPositionalArgs records the parsed positional arguments: the first names a comma-separated
+// plan chain, or the feature to close out under --merge/--pr. the rest are kept so close-out
+// validation can reject them; go-flags never fills a positional field beyond the first one
+// declared. Close-out identifiers are deliberately not split because they do not name plans.
+func (o *opts) applyPositionalArgs(args []string) error {
 	if len(args) == 0 {
-		return
+		return nil
 	}
 	o.PlanFile = args[0]
 	o.extraArgs = args[1:]
+	if closeoutRequested(*o) {
+		return nil
+	}
+
+	planFiles, err := parsePlanFiles(args[0])
+	if err != nil {
+		return err
+	}
+	o.PlanFiles = planFiles
+	o.PlanFile = planFiles[0]
+	return nil
+}
+
+func parsePlanFiles(arg string) ([]string, error) {
+	parts := strings.Split(arg, ",")
+	result := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for i, part := range parts {
+		planFile := strings.TrimSpace(part)
+		if planFile == "" {
+			return nil, fmt.Errorf("plan chain entry %d is empty", i+1)
+		}
+		duplicateKey := canonicalPlanPath(planFile)
+		if _, exists := seen[duplicateKey]; exists {
+			return nil, fmt.Errorf("plan chain contains duplicate entry %q", planFile)
+		}
+		seen[duplicateKey] = struct{}{}
+		result = append(result, planFile)
+	}
+	return result, nil
+}
+
+func canonicalPlanPath(planFile string) string {
+	absPath, err := filepath.Abs(planFile)
+	if err != nil {
+		return filepath.Clean(planFile)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(absPath); resolveErr == nil {
+		absPath = resolved
+	}
+	return filepath.Clean(absPath)
 }
 
 // markFlagsSet detects options whose explicit presence matters even when their parsed value is
@@ -210,27 +255,54 @@ type startupInfo struct {
 
 // executePlanRequest holds parameters for plan execution.
 type executePlanRequest struct {
-	PlanFile         string
-	MainPlanFile     string // original plan path in main repo (worktree mode); empty in normal mode
-	Mode             processor.Mode
-	GitSvc           *git.Service
-	MainGitSvc       *git.Service // main repo service for cross-boundary ops (worktree mode); nil in normal mode
-	Config           *config.Config
-	Colors           *progress.Colors
-	DefaultBranch    string // base for non-worktree branch creation; worktrees are created from current HEAD
-	BaseRef          string // base reference for review diffs and templates (--base-ref override or DefaultBranch)
-	NotifySvc        *notify.Service
-	BranchOverride   string              // branch name override (--branch flag); empty = derive from plan filename
-	WtCleanup        *cleanupHolder      // worktree cleanup for interrupt handler; nil when not in worktree mode
-	CmuxStop         *cleanupHolder      // cmux sidebar reset for interrupt handler; nil when not wired
-	OrcaStop         *cleanupHolder      // terminal-title reset for interrupt handler; nil when not wired
-	CmuxHandoff      func()              // releases a quiesced predecessor after this reporter starts
-	SetupTitles      *orca.Reporter      // setup reporter retained until the phase-specific reporter starts
-	BeforeCmuxFinish func(bool)          // final repository/log cleanup; bool reports execution success
-	ProgressLog      *progress.Logger    // pre-created logger (worktree mode); nil in normal mode
-	PhaseHolder      *status.PhaseHolder // pre-created holder (worktree mode); nil in normal mode
-	ExternalReview   externalReviewSelection
-	LimitRecovery    limits.Recovery
+	PlanFile               string
+	MainPlanFile           string // original plan path in main repo (worktree mode); empty in normal mode
+	Mode                   processor.Mode
+	GitSvc                 *git.Service
+	MainGitSvc             *git.Service // main repo service for cross-boundary ops (worktree mode); nil in normal mode
+	Config                 *config.Config
+	Colors                 *progress.Colors
+	DefaultBranch          string             // base for non-worktree branch creation; worktrees are created from current HEAD
+	BaseRef                string             // base reference for review diffs and templates (--base-ref override or DefaultBranch)
+	WorktreeStartRef       string             // immutable predecessor tip for stacked chain worktrees and branch hand-off
+	ChainSuccessor         bool               // true for plan N+1; non-worktree runs branch from the current plan N tip
+	ChainResume            bool               // true for the first pending member of a resumed chain
+	ChainResumePrepared    bool               // retry follows a fully prepared first-member branch/worktree
+	ChainResumePreparedTip string             // immutable prepared tip that a resumed first member must contain
+	ChainInitialTip        string             // immutable source tip captured before the first chain member
+	ChainPlanFiles         []string           // all chain inputs; non-empty only for multi-plan execution
+	ChainPrepared          func(string) error // persists the prepared branch tip before execution begins
+	ChainFinalizing        func() error       // persists that successful post-processing began before archival
+	NotifySvc              *notify.Service
+	BranchOverride         string                // branch name override (--branch flag); empty = derive from plan filename
+	WtCleanup              *cleanupHolder        // worktree cleanup for interrupt handler; nil when not in worktree mode
+	CmuxStop               *cleanupHolder        // cmux sidebar reset for interrupt handler; nil when not wired
+	OrcaStop               *cleanupHolder        // terminal-title reset for interrupt handler; nil when not wired
+	CmuxHandoff            func()                // releases a quiesced predecessor after this reporter starts
+	CmuxPredecessorStop    func()                // clears a retained predecessor on force-exit before hand-off
+	CmuxRetain             func(retainedCmuxRun) // keeps a successful chain member busy until its successor starts
+	SetupTitles            *orca.Reporter        // setup reporter retained until the phase-specific reporter starts
+	BeforeCmuxFinish       func(bool)            // final repository/log cleanup; bool reports execution success
+	Outcome                *planExecutionOutcome // explicit completion state; aborts return nil but do not succeed
+	ProgressLog            *progress.Logger      // pre-created logger (worktree mode); nil in normal mode
+	PhaseHolder            *status.PhaseHolder   // pre-created holder (worktree mode); nil in normal mode
+	ExternalReview         externalReviewSelection
+	LimitRecovery          limits.Recovery
+}
+
+type retainedCmuxRun struct {
+	reporter *cmux.Reporter
+	planFile string
+	branch   string
+	elapsed  string
+}
+
+// planExecutionOutcome separates a completed plan from a nil command error. executePlan returns
+// nil when the user aborts, so chain callers must require this explicit success signal before
+// starting a dependent plan.
+type planExecutionOutcome struct {
+	succeeded bool
+	branchTip string
 }
 
 // cleanupHolder holds a cleanup function with mutex for safe cross-goroutine access.
@@ -264,7 +336,7 @@ func main() {
 
 	var o opts
 	parser := flags.NewParser(&o, flags.Default)
-	parser.Usage = "[OPTIONS] [plan-file]"
+	parser.Usage = commandUsage
 
 	args, err := parser.Parse()
 	if err != nil {
@@ -279,16 +351,19 @@ func main() {
 		os.Exit(0)
 	}
 
-	// handle positional arguments
-	o.applyPositionalArgs(args)
+	// detect explicitly-set zero values for duration flags so --flag 0 can disable config values.
+	// go-flags can't distinguish "not provided" from "set to zero" via the field alone.
+	o.markFlagsSet(parser)
+
+	// handle positional arguments after marking flags so --merge/--pr identifiers remain opaque.
+	if err := o.applyPositionalArgs(args); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 
 	// setup context with signal handling
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-
-	// detect explicitly-set zero values for duration flags so --flag 0 can disable config values.
-	// go-flags can't distinguish "not provided" from "set to zero" via the field alone.
-	o.markFlagsSet(parser)
 
 	if err := run(ctx, o); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -418,10 +493,16 @@ func run(ctx context.Context, o opts) (runErr error) {
 	}
 	gitSvc.SetCommitTrailer(cfg.CommitTrailer)
 
-	// ensure repository has commits (prompts to create initial commit if empty)
-	if ensureErr := ensureRepoHasCommits(ctx, gitSvc, os.Stdin, os.Stdout, setupTitles); ensureErr != nil {
-		return ensureErr
+	// Ensure the repository is executable and reject repository-dependent chain problems before
+	// resolving branches or creating any plan artifacts. A chain lock returned here is held until
+	// the complete lifecycle (including checkpoint removal and inter-plan transitions) finishes.
+	releaseChainLock, repoErr := validateExecutionRepository(
+		ctx, o, gitSvc, cfg.WorktreeEnabled, cfg.MovePlanOnCompletion, setupTitles,
+	)
+	if repoErr != nil {
+		return repoErr
 	}
+	defer func() { runErr = releasePlanChainExecutionLock(runErr, releaseChainLock) }()
 
 	// defaultBranch is for non-worktree branch creation, baseRef for review diffs and the
 	// {{DEFAULT_BRANCH}} template variable. In worktree mode --base-ref stays diff-only because
@@ -460,7 +541,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 		}, selector)
 	}
 
-	return selectAndExecutePlan(ctx, o, executePlanRequest{
+	req := executePlanRequest{
 		Mode:           mode,
 		GitSvc:         gitSvc,
 		Config:         cfg,
@@ -475,7 +556,50 @@ func run(ctx context.Context, o opts) (runErr error) {
 		BranchOverride: o.Branch,
 		ExternalReview: externalReview,
 		LimitRecovery:  limitRecovery,
-	}, selector)
+	}
+	return runSelectedPlans(ctx, o, req, selector, setupTitles, os.Stdout, selectAndExecutePlan)
+}
+
+func validateExecutionRepository(
+	ctx context.Context, o opts, gitSvc *git.Service, worktree, movePlanOnCompletion bool,
+	setupTitles *orca.Reporter,
+) (func() error, error) {
+	if ensureErr := ensureRepoHasCommits(ctx, gitSvc, os.Stdin, os.Stdout, setupTitles); ensureErr != nil {
+		return nil, ensureErr
+	}
+	if len(o.PlanFiles) <= 1 {
+		return func() error { return nil }, nil
+	}
+	lockIdentity := planChainRunLockIdentity()
+	releaseChainLock, err := gitSvc.AcquirePlanChainRunLock(lockIdentity)
+	if err != nil {
+		return nil, fmt.Errorf("acquire plan chain execution lock: %w", err)
+	}
+	if ignoreErr := gitSvc.EnsureLocalGitignore(); ignoreErr != nil {
+		return releasePlanChainLockAfterError(releaseChainLock,
+			fmt.Errorf("prepare plan chain runtime state: %w", ignoreErr))
+	}
+	state, found, err := verifiedPlanChainCheckpoint(ctx, o, gitSvc, worktree, movePlanOnCompletion)
+	if err != nil {
+		return releasePlanChainLockAfterError(releaseChainLock, err)
+	}
+	completed := 0
+	if found {
+		completed = state.Completed
+	}
+	if validateErr := gitSvc.ValidatePlanChain(o.PlanFiles[completed:]); validateErr != nil {
+		return releasePlanChainLockAfterError(releaseChainLock,
+			fmt.Errorf("validate plan chain repository state: %w", validateErr))
+	}
+	return releaseChainLock, nil
+}
+
+func releasePlanChainLockAfterError(release func() error, cause error) (func() error, error) {
+	return nil, errors.Join(cause, release())
+}
+
+func releasePlanChainExecutionLock(runErr error, release func() error) error {
+	return errors.Join(runErr, release())
 }
 
 // prepareRunBeforeConfig decides hand-off before taking a local reservation: otherwise auto mode
@@ -551,12 +675,318 @@ func selectAndExecutePlan(ctx context.Context, o opts, req executePlanRequest, s
 		return fmt.Errorf("ensure gitignore: %w", err)
 	}
 	if planFile != "" && modeRequiresBranch(req.Mode) {
-		if err := req.GitSvc.CreateBranchForPlan(planFile, req.DefaultBranch, req.BranchOverride); err != nil {
-			return fmt.Errorf("create branch for plan: %w", err)
+		if err := prepareSelectedPlanBranch(ctx, req, planFile); err != nil {
+			return err
 		}
 	}
 
 	return executePlan(ctx, o, req)
+}
+
+// prepareSelectedPlanBranch keeps the historical single-plan behavior while forcing every
+// non-worktree chain member onto its own plan-derived branch.
+func prepareSelectedPlanBranch(ctx context.Context, req executePlanRequest, planFile string) error {
+	if len(req.ChainPlanFiles) > 1 && !req.ChainSuccessor {
+		branch := req.GitSvc.EffectiveBranchName(planFile, req.BranchOverride)
+		if err := prepareFirstPlanChainBranch(ctx, req, planFile, branch); err != nil {
+			return err
+		}
+		return recordPreparedChainBranch(req, branch)
+	}
+	if req.ChainSuccessor {
+		branch := req.GitSvc.EffectiveBranchName(planFile, req.BranchOverride)
+		if req.ChainResumePrepared && req.GitSvc.BranchExists(branch) {
+			if err := req.GitSvc.ResumePlanChainBranchContext(ctx, branch, req.WorktreeStartRef); err != nil {
+				return fmt.Errorf("resume branch for plan: %w", err)
+			}
+			return recordPreparedChainBranch(req, branch)
+		}
+		if err := req.GitSvc.CreateBranchForPlanFromExpectedHEADContext(
+			ctx, planFile, req.BranchOverride, req.WorktreeStartRef,
+		); err != nil {
+			return fmt.Errorf("create branch for plan: %w", err)
+		}
+		return recordPreparedChainBranch(req, branch)
+	}
+	if err := req.GitSvc.CreateBranchForPlan(planFile, req.DefaultBranch, req.BranchOverride); err != nil {
+		return fmt.Errorf("create branch for plan: %w", err)
+	}
+	return nil
+}
+
+func prepareFirstPlanChainBranch(
+	ctx context.Context, req executePlanRequest, planFile, branch string,
+) error {
+	if req.ChainResumePrepared && req.GitSvc.BranchExists(branch) {
+		if err := req.GitSvc.ResumeFirstPlanChainBranchContext(
+			ctx, branch, req.ChainPlanFiles, req.ChainResumePreparedTip,
+		); err != nil {
+			return fmt.Errorf("resume first chain branch for plan: %w", err)
+		}
+		return nil
+	}
+	if req.ChainResume {
+		if err := req.GitSvc.CreateBranchForPlanChainFromExpectedHEADContext(
+			ctx, planFile, req.BranchOverride, req.ChainInitialTip, req.ChainPlanFiles,
+		); err != nil {
+			return fmt.Errorf("create first chain branch for plan: %w", err)
+		}
+		return nil
+	}
+	if err := req.GitSvc.CreateBranchForPlanChainContext(
+		ctx, planFile, req.BranchOverride, req.ChainPlanFiles,
+	); err != nil {
+		return fmt.Errorf("create first chain branch for plan: %w", err)
+	}
+	return nil
+}
+
+func recordPreparedChainBranch(req executePlanRequest, branch string) error {
+	if req.ChainPrepared == nil {
+		return nil
+	}
+	tip, err := req.GitSvc.BranchHash(branch)
+	if err != nil {
+		return fmt.Errorf("capture prepared chain branch tip: %w", err)
+	}
+	if err := req.ChainPrepared(tip); err != nil {
+		return fmt.Errorf("checkpoint prepared chain branch: %w", err)
+	}
+	return nil
+}
+
+type planChainExecutor func(context.Context, opts, executePlanRequest, *plan.Selector) error
+
+func initializePlanChainRun(
+	ctx context.Context, o opts, req executePlanRequest,
+) (planChainCheckpoint, bool, error) {
+	if err := req.GitSvc.EnsureLocalGitignore(); err != nil {
+		return planChainCheckpoint{}, false, fmt.Errorf("prepare plan chain runtime state: %w", err)
+	}
+	state, found, err := verifiedPlanChainCheckpoint(
+		ctx, o, req.GitSvc, req.Config.WorktreeEnabled, req.Config.MovePlanOnCompletion,
+	)
+	if err != nil {
+		return planChainCheckpoint{}, false, err
+	}
+	if found {
+		return state, true, nil
+	}
+	state = planChainCheckpoint{
+		Mode: string(req.Mode), Worktree: req.Config.WorktreeEnabled, Commit: o.Commit,
+		MovePlanOnCompletion: req.Config.MovePlanOnCompletion,
+	}
+	state.InitialTip, err = req.GitSvc.HeadHash()
+	if err != nil {
+		return planChainCheckpoint{}, false, fmt.Errorf("capture initial plan chain tip: %w", err)
+	}
+	if req.Config.WorktreeEnabled {
+		state.InitialPlanStates, err = req.GitSvc.CapturePlanChainSourceState(o.PlanFiles)
+		if err != nil {
+			return planChainCheckpoint{}, false, fmt.Errorf("capture plan chain source state: %w", err)
+		}
+		if !o.Commit {
+			state.SourcePlans = state.InitialPlanStates
+		}
+	}
+	if err := savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, state); err != nil {
+		return planChainCheckpoint{}, false, err
+	}
+	return state, false, nil
+}
+
+// runSelectedPlans preserves the existing single-plan path and activates chain lifecycle handling
+// only for validated comma-separated inputs.
+func runSelectedPlans(
+	ctx context.Context,
+	o opts,
+	req executePlanRequest,
+	selector *plan.Selector,
+	startupTitles *orca.Reporter,
+	out io.Writer,
+	execute planChainExecutor,
+) error {
+	if len(o.PlanFiles) <= 1 {
+		return execute(ctx, o, req, selector)
+	}
+	return runPlanChain(ctx, o, req, selector, startupTitles, out, execute)
+}
+
+// runPlanChain executes validated plan files in order. Each call must return only after its
+// reporter, progress logger, and worktree cwd have been released; the next logger therefore cannot
+// contend with the previous plan and the next worktree is always prepared from the source cwd.
+func runPlanChain(
+	ctx context.Context,
+	o opts,
+	req executePlanRequest,
+	selector *plan.Selector,
+	startupTitles *orca.Reporter,
+	out io.Writer,
+	execute planChainExecutor,
+) (runErr error) {
+	total := len(o.PlanFiles)
+	state, resumed, err := initializePlanChainRun(ctx, o, req)
+	if err != nil {
+		return err
+	}
+	completed := state.Completed
+	startIndex := state.Completed
+	previousTip := state.PreviousTip
+	if startIndex > 0 && startIndex < total {
+		fmt.Fprintf(out, "\nresuming plan chain at plan %d/%d from %s\n", startIndex+1, total, previousTip)
+	}
+	var retained *retainedCmuxRun
+	defer func() {
+		finishRetainedChainCmux(retained, runErr, completed == total)
+		if completed == total {
+			fmt.Fprintf(out, "\nplan chain complete: %d/%d plans succeeded\n", completed, total)
+			return
+		}
+		fmt.Fprintf(out, "\nplan chain stopped: %d/%d plans succeeded\n", completed, total)
+	}()
+
+	for i := startIndex; i < total; i++ {
+		planFile := o.PlanFiles[i]
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			return fmt.Errorf("plan chain canceled before plan %d/%d: %w", i+1, total, cancelErr)
+		}
+		fmt.Fprintf(out, "\nplan %d/%d: %s\n", i+1, total, planFile)
+		state.Active = i + 1
+		state.ActiveStartTip = ""
+		state.ActivePrepared = false
+		state.ActiveFinalizing = false
+		activeBranch := req.GitSvc.EffectiveBranchName(planFile, "")
+		if req.GitSvc.BranchExists(activeBranch) {
+			state.ActiveStartTip, err = req.GitSvc.BranchHash(activeBranch)
+			if err != nil {
+				return fmt.Errorf("capture active plan branch tip: %w", err)
+			}
+		}
+		if err := savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, state); err != nil {
+			return err
+		}
+
+		outcome, nextRetained, err := executePlanChainMember(
+			ctx, o, req, selector, startupTitles, execute, i, startIndex, planFile, previousTip,
+			resumed, &state, retained,
+		)
+		retained = nextRetained
+		if err != nil {
+			return err
+		}
+		if !outcome.succeeded {
+			// executePlan deliberately maps a user abort to nil. Do not start a dependent plan.
+			return nil
+		}
+
+		completed++
+		previousTip = outcome.branchTip
+		if previousTip == "" {
+			previousTip, err = req.GitSvc.HeadHash()
+			if err != nil {
+				return fmt.Errorf("capture completed plan tip: %w", err)
+			}
+		}
+		state.Completed = completed
+		state.Active = 0
+		state.ActiveStartTip = ""
+		state.ActivePrepared = false
+		state.ActiveFinalizing = false
+		state.ResumePreparedTip = ""
+		state.PreviousTip = previousTip
+		if err := savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, state); err != nil {
+			return err
+		}
+	}
+	return finalizeCompletedPlanChain(o, req, &state)
+}
+
+func finishRetainedChainCmux(retained *retainedCmuxRun, runErr error, complete bool) {
+	if retained == nil {
+		return
+	}
+	if runErr != nil {
+		retained.reporter.Finish(false, runErr.Error())
+	} else if complete {
+		finishCmuxCompletion(retained.reporter, nil, retained.planFile, retained.branch, retained.elapsed, nil)
+	}
+	retained.reporter.Stop()
+}
+
+func executePlanChainMember(
+	ctx context.Context,
+	o opts,
+	req executePlanRequest,
+	selector *plan.Selector,
+	startupTitles *orca.Reporter,
+	execute planChainExecutor,
+	index, startIndex int,
+	planFile, previousTip string,
+	resumed bool,
+	state *planChainCheckpoint,
+	retained *retainedCmuxRun,
+) (*planExecutionOutcome, *retainedCmuxRun, error) {
+	setupTitles := startOrcaReporter(req.Config, planFile, initialOrcaPhase(req.Mode))
+	setOrcaCleanup(req.OrcaStop, setupTitles)
+	if index == startIndex && startupTitles != nil {
+		startupTitles.Stop()
+	}
+	planOpts := o
+	planOpts.PlanFile = planFile
+	if index > 0 {
+		planOpts.Commit = false
+	}
+	outcome := &planExecutionOutcome{}
+	planReq := req
+	planReq.SetupTitles = setupTitles
+	predecessor := retained
+	if predecessor != nil {
+		planReq.CmuxPredecessorStop = predecessor.reporter.Stop
+	}
+	planReq.CmuxHandoff = func() {
+		if predecessor != nil {
+			predecessor.reporter.Release()
+			if retained == predecessor {
+				retained = nil
+			}
+		}
+		setupTitles.Stop()
+	}
+	planReq.CmuxRetain = func(run retainedCmuxRun) { retained = &run }
+	planReq.Outcome = outcome
+	planReq.ChainSuccessor = index > 0
+	planReq.ChainResume = index == startIndex && resumed
+	planReq.ChainResumePrepared = planReq.ChainResume && state.ResumePreparedTip != ""
+	planReq.ChainResumePreparedTip = state.ResumePreparedTip
+	planReq.ChainInitialTip = state.InitialTip
+	planReq.ChainPlanFiles = o.PlanFiles
+	planReq.WorktreeStartRef = previousTip
+	planReq.ChainPrepared = func(tip string) error {
+		state.ActiveStartTip = tip
+		state.ActivePrepared = true
+		return savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, *state)
+	}
+	planReq.ChainFinalizing = func() error {
+		state.ActiveFinalizing = true
+		return savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, *state)
+	}
+	err := execute(ctx, planOpts, planReq, selector)
+	finishOrcaFailure(setupTitles, err)
+	setupTitles.Stop()
+	return outcome, retained, err
+}
+
+func finalizeCompletedPlanChain(o opts, req executePlanRequest, state *planChainCheckpoint) error {
+	if req.Config.WorktreeEnabled && !state.SourceReconciled {
+		if err := req.GitSvc.ReconcilePlanChainSourceState(state.SourcePlans); err != nil {
+			return fmt.Errorf("reconcile completed plan chain source files: %w", err)
+		}
+		state.SourceReconciled = true
+		if err := savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, *state); err != nil {
+			return err
+		}
+	}
+	return removePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, state.Mode)
 }
 
 // getCurrentBranch returns the current git branch name or "unknown" if unavailable.
@@ -782,7 +1212,9 @@ func displayStats(req executePlanRequest, baseLog *progress.Logger, stats git.Di
 	planPath := ""
 	if req.PlanFile != "" {
 		planFile := req.PlanFile
-		if req.MainPlanFile != "" {
+		// A worktree chain archives on the execution branch, not in the source checkout. Keep
+		// its displayed path relative to that branch instead of claiming the source copy moved.
+		if req.MainPlanFile != "" && len(req.ChainPlanFiles) <= 1 {
 			planFile = req.MainPlanFile
 		}
 		planPath = planFile
@@ -897,6 +1329,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	setOrcaCleanup(req.OrcaStop, titles)
 	req.SetupTitles.Quiesce()
 	var cmuxCleanupOnce sync.Once
+	cmuxRetained := false
 	completeCmux := func(elapsed string, runErr error) {
 		cmuxCleanupOnce.Do(func() {
 			finishCmuxAfterCleanup(req, plr, rep, titles, branch, elapsed, runErr)
@@ -906,13 +1339,18 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		cmuxCleanupOnce.Do(func() {
 			stopCmuxAfterCleanup(req, plr, rep, titles)
 		})
-		rep.Stop()
+		if !cmuxRetained {
+			rep.Stop()
+		}
 		titles.Stop()
 	}()
 	if req.CmuxStop != nil {
 		req.CmuxStop.set(func() {
 			rep.Stop()
 			titles.Stop()
+			if req.CmuxPredecessorStop != nil {
+				req.CmuxPredecessorStop()
+			}
 		})
 	}
 	rep.Start(ctx)
@@ -1036,37 +1474,89 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		fmt.Fprintf(os.Stderr, "warning: failed to get diff stats: %v\n", statsErr)
 	}
 
+	// Move completed plans before capturing the branch tip so archival is part of the stack. A
+	// single worktree run retains its historical source-checkout archival behavior; a chain archives
+	// inside each execution worktree so the source checkout stays untouched between plans and the
+	// final branch contains every completed-plan move.
+	// track actual success so the completion summary reflects where the plan really lives.
+	planMoved, moveErr := moveCompletedPlan(req)
+	if moveErr != nil {
+		plr.baseLog.SetFailed(moveErr)
+		sendNotification(req, branch, elapsed, stats, moveErr)
+		completeCmux(elapsed, moveErr)
+		return moveErr
+	}
 	sendNotification(req, branch, elapsed, stats, nil)
 
-	// move completed plan to completed/ directory.
-	// use MainGitSvc+MainPlanFile when available (worktree mode) because the plan file is in the main repo.
-	// track actual success so the completion summary reflects where the plan really lives.
-	planMoved := false
-	if shouldMovePlan(req) {
-		moveSvc := req.GitSvc
-		movePlanFile := req.PlanFile
-		if req.MainGitSvc != nil {
-			moveSvc = req.MainGitSvc
-		}
-		if req.MainPlanFile != "" {
-			movePlanFile = req.MainPlanFile
-		}
-		if moveErr := moveSvc.MovePlanToCompleted(movePlanFile); moveErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to move plan to completed: %v\n", moveErr)
-		} else {
-			planMoved = true
-		}
-	}
-
 	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved)
-	completeCmux(elapsed, nil)
+	if outcomeErr := capturePlanOutcome(req); outcomeErr != nil {
+		return outcomeErr
+	}
+	if req.CmuxRetain != nil {
+		cmuxCleanupOnce.Do(func() {
+			retainCmuxAfterCleanup(req, plr, rep)
+			cmuxRetained = true
+			req.CmuxRetain(retainedCmuxRun{reporter: rep, planFile: req.PlanFile, branch: branch, elapsed: elapsed})
+		})
+	} else {
+		completeCmux(elapsed, nil)
+	}
 
 	// clear the sidebar before the dashboard idles: with --serve the run is done but the process
 	// stays alive until Ctrl+C, and a spinner left spinning reports it as still working
-	rep.Stop()
+	stopCmuxUnlessRetained(rep, cmuxRetained)
 	titles.Stop()
 	keepDashboardAlive(ctx, o, req, plr.closeLog)
+	if req.Outcome != nil {
+		req.Outcome.succeeded = true
+	}
 
+	return nil
+}
+
+func stopCmuxUnlessRetained(rep *cmux.Reporter, retained bool) {
+	if !retained {
+		rep.Stop()
+	}
+}
+
+func moveCompletedPlan(req executePlanRequest) (bool, error) {
+	chainRun := len(req.ChainPlanFiles) > 1
+	if chainRun && req.PlanFile != "" && modeRequiresBranch(req.Mode) && req.ChainFinalizing != nil {
+		if err := req.ChainFinalizing(); err != nil {
+			return false, fmt.Errorf("checkpoint chain finalization: %w", err)
+		}
+	}
+	if !shouldMovePlan(req) {
+		return false, nil
+	}
+	moveSvc := req.GitSvc
+	movePlanFile := req.PlanFile
+	if req.MainGitSvc != nil && !chainRun {
+		moveSvc = req.MainGitSvc
+	}
+	if req.MainPlanFile != "" && !chainRun {
+		movePlanFile = req.MainPlanFile
+	}
+	if err := moveSvc.MovePlanToCompleted(movePlanFile); err != nil {
+		if chainRun {
+			return false, fmt.Errorf("archive completed chain plan: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "warning: failed to move plan to completed: %v\n", err)
+		return false, nil
+	}
+	return true, nil
+}
+
+func capturePlanOutcome(req executePlanRequest) error {
+	if req.Outcome == nil {
+		return nil
+	}
+	branchTip, err := req.GitSvc.HeadHash()
+	if err != nil {
+		return fmt.Errorf("capture completed plan tip: %w", err)
+	}
+	req.Outcome.branchTip = branchTip
 	return nil
 }
 
@@ -1102,6 +1592,17 @@ func finishCmuxAfterCleanup(
 		req.BeforeCmuxFinish(runErr == nil)
 	}
 	finishCmuxCompletion(rep, titles, req.PlanFile, branch, elapsed, runErr)
+}
+
+// retainCmuxAfterCleanup preserves the non-final busy pill while the chain coordinator checkpoints
+// the completed member and prepares its successor. Ownership transfers only after the next reporter
+// has started, eliminating the free-workspace gap between dependent plans.
+func retainCmuxAfterCleanup(req executePlanRequest, plr progressLogResult, rep *cmux.Reporter) {
+	rep.Quiesce()
+	plr.closeLog()
+	if req.BeforeCmuxFinish != nil {
+		req.BeforeCmuxFinish(true)
+	}
 }
 
 // runWithWorktree creates or resumes a worktree, creates the progress logger (before chdir so it
@@ -1163,6 +1664,9 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 			setupCleanup(!wt.resumed)
 		}
 	}()
+	if preparedErr := recordPreparedChainBranch(req, branch); preparedErr != nil {
+		return preparedErr
+	}
 
 	if igErr := req.GitSvc.EnsureLocalGitignore(); igErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: gitignore setup: %v\n", igErr)
@@ -1256,25 +1760,36 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	handedOff = true
 
 	return executePlan(ctx, o, executePlanRequest{
-		PlanFile:         wt.planFile,
-		MainPlanFile:     req.PlanFile, // original path in main repo for MovePlanToCompleted
-		Mode:             req.Mode,
-		GitSvc:           wt.gitSvc,
-		MainGitSvc:       req.GitSvc,
-		Config:           req.Config,
-		Colors:           req.Colors,
-		DefaultBranch:    req.DefaultBranch,
-		BaseRef:          req.BaseRef,
-		NotifySvc:        req.NotifySvc,
-		CmuxStop:         req.CmuxStop,
-		OrcaStop:         req.OrcaStop,
-		CmuxHandoff:      req.CmuxHandoff,
-		SetupTitles:      req.SetupTitles,
-		BeforeCmuxFinish: finishState.beforeCmuxFinish,
-		ProgressLog:      baseLog,
-		PhaseHolder:      holder,
-		ExternalReview:   req.ExternalReview,
-		LimitRecovery:    req.LimitRecovery,
+		PlanFile:               wt.planFile,
+		MainPlanFile:           req.PlanFile, // original path in main repo for MovePlanToCompleted
+		Mode:                   req.Mode,
+		GitSvc:                 wt.gitSvc,
+		MainGitSvc:             req.GitSvc,
+		Config:                 req.Config,
+		Colors:                 req.Colors,
+		DefaultBranch:          req.DefaultBranch,
+		BaseRef:                req.BaseRef,
+		NotifySvc:              req.NotifySvc,
+		CmuxStop:               req.CmuxStop,
+		OrcaStop:               req.OrcaStop,
+		CmuxHandoff:            req.CmuxHandoff,
+		CmuxPredecessorStop:    req.CmuxPredecessorStop,
+		CmuxRetain:             req.CmuxRetain,
+		SetupTitles:            req.SetupTitles,
+		BeforeCmuxFinish:       finishState.beforeCmuxFinish,
+		Outcome:                req.Outcome,
+		ChainSuccessor:         req.ChainSuccessor,
+		ChainResume:            req.ChainResume,
+		ChainResumePrepared:    req.ChainResumePrepared,
+		ChainResumePreparedTip: req.ChainResumePreparedTip,
+		ChainPlanFiles:         req.ChainPlanFiles,
+		ChainPrepared:          req.ChainPrepared,
+		ChainFinalizing:        req.ChainFinalizing,
+		WorktreeStartRef:       req.WorktreeStartRef,
+		ProgressLog:            baseLog,
+		PhaseHolder:            holder,
+		ExternalReview:         req.ExternalReview,
+		LimitRecovery:          req.LimitRecovery,
 	})
 }
 
@@ -1371,10 +1886,10 @@ func prepareWorktreeRunContext(
 	// Committing an untracked/modified plan is part of fresh initialization. Keep both the durable
 	// marker and shared preparation lock until it finishes so a crash cannot turn a partially
 	// staged or uncommitted checkout into an auto-resume target.
+	if commitErr := commitPreparedWorktreePlans(wt, req); commitErr != nil {
+		return worktreeRun{}, commitErr
+	}
 	if !wt.resumed && wt.planNeedsCommit {
-		if commitErr := wt.gitSvc.CommitPlanFile(req.PlanFile, req.GitSvc.Root()); commitErr != nil {
-			return worktreeRun{}, fmt.Errorf("commit plan in worktree: %w", commitErr)
-		}
 		wt.planNeedsCommit = false
 	}
 	if clearErr := clearPreparationMarker(); clearErr != nil {
@@ -1393,7 +1908,11 @@ func prepareWorktreeRunContext(
 	if !wt.resumed {
 		return wt, nil
 	}
-	if validationErr := validateResumeWorktree(req.GitSvc, wt, branch); validationErr != nil {
+	requiredStart := req.WorktreeStartRef
+	if req.ChainResumePreparedTip != "" {
+		requiredStart = req.ChainResumePreparedTip
+	}
+	if validationErr := validateResumeWorktree(ctx, req.GitSvc, wt, branch, requiredStart); validationErr != nil {
 		return worktreeRun{}, validationErr
 	}
 	if o.Commit {
@@ -1401,6 +1920,20 @@ func prepareWorktreeRunContext(
 	}
 	req.Colors.Info().Printf("resuming interrupted worktree %s\n", wt.path)
 	return wt, nil
+}
+
+func commitPreparedWorktreePlans(wt worktreeRun, req executePlanRequest) error {
+	if wt.resumed || !wt.planNeedsCommit {
+		return nil
+	}
+	planFiles := []string{req.PlanFile}
+	if len(req.ChainPlanFiles) > 1 && !req.ChainSuccessor {
+		planFiles = req.ChainPlanFiles
+	}
+	if err := wt.gitSvc.CommitPlanFiles(planFiles, req.GitSvc.Root()); err != nil {
+		return fmt.Errorf("commit plan in worktree: %w", err)
+	}
+	return nil
 }
 
 func recoverInterruptedWorktreePreparationLocked(gitSvc *git.Service, path string) (bool, error) {
@@ -1539,6 +2072,10 @@ func openAndLockWorktreeRun(
 			}
 		})
 	}
+	if validationErr := wtSvc.ValidatePlanFile(wt.planFile); validationErr != nil {
+		wt.releaseRunLock()
+		return worktreeRun{}, fmt.Errorf("validate plan inside worktree: %w", validationErr)
+	}
 	return wt, nil
 }
 
@@ -1562,8 +2099,18 @@ func prepareWorktreeSource(o opts, req executePlanRequest, branch string) (bool,
 // prepareFreshWorktree mutates the source and creates the worktree while its caller holds the
 // repository worktree-preparation lock.
 func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, branch string) (path string, planNeedsCommit bool, err error) {
-	if preflightErr := req.GitSvc.PreflightWorktreeForPlanContext(ctx, req.PlanFile, req.BranchOverride); preflightErr != nil {
+	if o.Commit && req.WorktreeStartRef != "" {
+		return "", false, errors.New("source auto-commit cannot be combined with an explicit worktree start ref")
+	}
+	if preflightErr := req.GitSvc.PreflightWorktreeForPlanFromRefContext(
+		ctx, req.PlanFile, req.BranchOverride, req.WorktreeStartRef,
+	); preflightErr != nil {
 		return "", false, fmt.Errorf("preflight worktree creation: %w", preflightErr)
+	}
+	if len(req.ChainPlanFiles) > 1 {
+		if chainErr := req.GitSvc.ValidatePlanChain(req.ChainPlanFiles); chainErr != nil {
+			return "", false, fmt.Errorf("preflight plan chain: %w", chainErr)
+		}
 	}
 
 	// Install runtime ignores while holding the repository lock so another fresh run
@@ -1575,8 +2122,15 @@ func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, b
 	// Ignore installation can change whether an untracked plan is visible to Git,
 	// particularly for plans placed under loopai's reserved runtime directories.
 	// Revalidate before an auto-commit is allowed to advance the source checkout.
-	if preflightErr := req.GitSvc.PreflightWorktreeForPlanContext(ctx, req.PlanFile, req.BranchOverride); preflightErr != nil {
+	if preflightErr := req.GitSvc.PreflightWorktreeForPlanFromRefContext(
+		ctx, req.PlanFile, req.BranchOverride, req.WorktreeStartRef,
+	); preflightErr != nil {
 		return "", false, fmt.Errorf("preflight worktree creation after ignore setup: %w", preflightErr)
+	}
+	if len(req.ChainPlanFiles) > 1 {
+		if chainErr := req.GitSvc.ValidatePlanChain(req.ChainPlanFiles); chainErr != nil {
+			return "", false, fmt.Errorf("preflight plan chain after ignore setup: %w", chainErr)
+		}
 	}
 	if o.Commit {
 		if preflightErr := req.GitSvc.PreflightWorktreeForPlanAutoCommitContext(ctx, req.PlanFile, req.BranchOverride); preflightErr != nil {
@@ -1598,12 +2152,37 @@ func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, b
 		path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlanAfterAutoCommit(
 			ctx, req.PlanFile, req.BranchOverride, sourceHeadBefore)
 	} else {
-		path, planNeedsCommit, err = req.GitSvc.CreateWorktreeForPlanContext(ctx, req.PlanFile, req.BranchOverride)
+		path, planNeedsCommit, err = createUncommittedPlanWorktree(ctx, req)
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("create worktree: %w", err)
 	}
 	return path, planNeedsCommit, nil
+}
+
+func createUncommittedPlanWorktree(ctx context.Context, req executePlanRequest) (string, bool, error) {
+	var path string
+	var needsCommit bool
+	var err error
+	switch {
+	case len(req.ChainPlanFiles) <= 1:
+		path, needsCommit, err = req.GitSvc.CreateWorktreeForPlanFromRefContext(
+			ctx, req.PlanFile, req.BranchOverride, req.WorktreeStartRef,
+		)
+	case req.ChainResumePrepared && !req.ChainSuccessor:
+		path, needsCommit, err = req.GitSvc.CreateWorktreeForResumedPlanChainContext(
+			ctx, req.PlanFile, req.BranchOverride, req.WorktreeStartRef,
+			req.ChainResumePreparedTip, req.ChainPlanFiles,
+		)
+	default:
+		path, needsCommit, err = req.GitSvc.CreateWorktreeForPlanChainContext(
+			ctx, req.PlanFile, req.BranchOverride, req.WorktreeStartRef, req.ChainPlanFiles,
+		)
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("prepare plan worktree target: %w", err)
+	}
+	return path, needsCommit, nil
 }
 
 // removeWorktreeWithRunLock serializes the ownership handoff with worktree classification. The
@@ -1646,7 +2225,9 @@ func requireResumeWorktree(path string) error {
 	return fmt.Errorf("resume worktree: stat %s: %w", path, err)
 }
 
-func validateResumeWorktree(sourceGitSvc *git.Service, wt worktreeRun, expectedBranch string) error {
+func validateResumeWorktree(
+	ctx context.Context, sourceGitSvc *git.Service, wt worktreeRun, expectedBranch, requiredStart string,
+) error {
 	resolvedPath, err := filepath.EvalSymlinks(wt.path)
 	if err != nil {
 		return fmt.Errorf("resume worktree: resolve path: %w", err)
@@ -1676,6 +2257,16 @@ func validateResumeWorktree(sourceGitSvc *git.Service, wt worktreeRun, expectedB
 	}
 	if branch != expectedBranch {
 		return fmt.Errorf("resume worktree: expected branch %q, found %q at %s", expectedBranch, branch, wt.path)
+	}
+	if requiredStart != "" {
+		containsStart, containsErr := wt.gitSvc.ContainsRevisionContext(ctx, requiredStart)
+		if containsErr != nil {
+			return fmt.Errorf("resume worktree: validate predecessor tip: %w", containsErr)
+		}
+		if !containsStart {
+			return fmt.Errorf("resume worktree: branch %q does not contain required predecessor tip %s; remove the stale worktree and rerun the chain",
+				expectedBranch, requiredStart)
+		}
 	}
 
 	planInfo, err := os.Stat(wt.planFile)
@@ -2092,6 +2683,9 @@ func validateFlags(o opts) error {
 	if err := validateCloseoutFlags(o); err != nil {
 		return err
 	}
+	if err := validatePlanChain(o); err != nil {
+		return err
+	}
 	if o.PlanDescription != "" && o.PlanFile != "" {
 		return errors.New("--plan flag conflicts with plan file argument; use one or the other")
 	}
@@ -2116,6 +2710,63 @@ func validateFlags(o opts) error {
 	// --codex / --pass-claude-md / --external-only / --codex-only / --external-review-tool
 	// mutual-exclusion checks are deferred to applyCodexOverrides, which runs after the
 	// config-file merge so that executor=codex coming from config is also enforced.
+	return nil
+}
+
+// validatePlanChain rejects chain-only incompatibilities and verifies every input before any
+// config, git service, branch, or worktree is created. Single-plan invocations retain the existing
+// selector-driven validation path.
+func validatePlanChain(o opts) error {
+	if len(o.PlanFiles) <= 1 {
+		return nil
+	}
+	for _, conflict := range []struct {
+		flag string
+		set  bool
+	}{
+		{"--branch", o.Branch != ""},
+		{"--serve", o.Serve},
+		{"--plan", o.PlanDescription != ""},
+		{"--review", o.Review},
+		{"--external-only", o.ExternalOnly},
+		{"--codex-only", o.CodexOnly},
+	} {
+		if conflict.set {
+			return fmt.Errorf("%s cannot be combined with a plan chain", conflict.flag)
+		}
+	}
+	completedPrefix := 0
+	if root, err := os.Getwd(); err == nil {
+		completedPrefix = checkpointCompletedPrefix(root, o)
+	}
+	seenFiles := make([]os.FileInfo, 0, len(o.PlanFiles))
+	seenFileNames := make([]string, 0, len(o.PlanFiles))
+	seenBranches := make(map[string]string, len(o.PlanFiles))
+	for planIndex, planFile := range o.PlanFiles {
+		if planIndex >= completedPrefix {
+			if reason := planFileRefusal(planFile); reason != "" {
+				return errors.New(reason)
+			}
+			info, err := os.Stat(planFile)
+			if err != nil {
+				return fmt.Errorf("inspect plan file %q: %w", planFile, err)
+			}
+			for i, previousInfo := range seenFiles {
+				if os.SameFile(previousInfo, info) {
+					return fmt.Errorf("plan chain contains duplicate file %q (same file as %q)", planFile, seenFileNames[i])
+				}
+			}
+			seenFiles = append(seenFiles, info)
+			seenFileNames = append(seenFileNames, planFile)
+		}
+
+		branchName := plan.ExtractBranchName(planFile)
+		branchKey := strings.ToLower(branchName)
+		if previous, exists := seenBranches[branchKey]; exists {
+			return fmt.Errorf("plan chain entries %q and %q resolve to the same branch %q", previous, planFile, branchName)
+		}
+		seenBranches[branchKey] = planFile
+	}
 	return nil
 }
 
@@ -3093,11 +3744,20 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bo
 		return handOffRefusal("not a repository root: "+cwd, handOffRequired, stderr)
 	}
 
-	// an unusable plan file is otherwise only detected in the child, long after the workspace was
+	// An unusable plan file is otherwise only detected in the child, long after the workspace was
 	// created and focused: the terminal the user typed in prints a success line and exits 0 while
-	// the new card dies immediately, leaving an orphan to close by hand.
-	if o.PlanFile != "" {
-		if reason := planFileHandOffRefusal(o.PlanFile); reason != "" {
+	// the new card dies immediately, leaving an orphan to close by hand. A chain is handed off as
+	// one child invocation, so every entry must be usable before that workspace is spawned.
+	planFiles := o.PlanFiles
+	if len(planFiles) == 0 && o.PlanFile != "" {
+		planFiles = []string{o.PlanFile}
+	}
+	completedPrefix := checkpointCompletedPrefix(cwd, o)
+	for i, planFile := range planFiles {
+		if i < completedPrefix {
+			continue
+		}
+		if reason := planFileRefusal(planFile); reason != "" {
 			return handOffRefusal(reason, handOffRequired, stderr)
 		}
 	}
@@ -3226,15 +3886,15 @@ func executableHandOffRefusal(exe string, err error) string {
 	return ""
 }
 
-// planFileHandOffRefusal reports why a non-empty plan path cannot produce a run that survives, or ""
-// when it can. existence is the plan selector's whole test, resolved here against the same working
+// planFileRefusal reports why a non-empty plan path cannot produce a run that survives, or "" when
+// it can. Existence is the plan selector's whole test, resolved here against the same working
 // directory, but it is not enough on its own: a directory stats fine, so "loopai --cmux-workspace
 // docs/plans" (the filename forgotten) would hand off, and the child would only fail once it read
 // the plan, in full mode after the branch already exists. an unreadable file fails the same read.
 // both are refused here for the same reason a missing plan is, and neither refuses a hand-off that
 // would have worked, since the child cannot read either one. the regular-file test comes before the
 // open because opening a fifo blocks until a writer appears, and this check must not hang.
-func planFileHandOffRefusal(planFile string) string {
+func planFileRefusal(planFile string) string {
 	info, err := os.Stat(planFile)
 	if err != nil {
 		return "plan file not found: " + planFile
@@ -3265,17 +3925,22 @@ func handOffAllowedOutsideRepo(o opts) bool {
 }
 
 // cmuxWorkspaceName titles the new workspace after the branch the run will use, so sidebar cards
-// line up with .loopai/worktrees/<branch>. plan creation has no plan file yet and falls back to
-// the app name.
+// line up with .loopai/worktrees/<branch>. A chain uses its first plan because that is the branch
+// checked out when the workspace opens; successor plans create their stacked branches inside the
+// same workspace. Plan creation has no plan file yet and falls back to the app name.
 func cmuxWorkspaceName(o opts) string {
 	if name := strings.TrimSpace(o.Branch); name != "" {
 		return name
 	}
+	planFile := o.PlanFile
+	if len(o.PlanFiles) > 0 {
+		planFile = o.PlanFiles[0]
+	}
 	// an empty plan file must not reach ExtractBranchName: filepath.Base("") is "."
-	if strings.TrimSpace(o.PlanFile) == "" {
+	if strings.TrimSpace(planFile) == "" {
 		return "loopai"
 	}
-	if name := strings.TrimSpace(plan.ExtractBranchName(o.PlanFile)); name != "" {
+	if name := strings.TrimSpace(plan.ExtractBranchName(planFile)); name != "" {
 		return name
 	}
 	return "loopai"

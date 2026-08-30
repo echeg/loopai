@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +45,35 @@ func TestDirectCancellationPreservesCallerSession(t *testing.T) {
 
 	assert.Nil(t, cmd.SysProcAttr)
 	assert.Equal(t, commandWaitDelay, cmd.WaitDelay)
+}
+
+func TestExternalBackendFileExistsAtAcceptsOnlyRegularFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on Windows")
+	}
+	dir := setupExternalTestRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "regular.md"), []byte("regular\n"), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "plans"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "plans", "nested.md"), []byte("nested\n"), 0o600))
+	require.NoError(t, os.Symlink("regular.md", filepath.Join(dir, "linked.md")))
+	runGit(t, dir, "add", "regular.md", "plans/nested.md", "linked.md")
+	runGit(t, dir, "commit", "-m", "add tree entry modes")
+
+	backend, err := newExternalBackend(dir, "git")
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{path: "regular.md", want: true},
+		{path: "linked.md", want: false},
+		{path: "plans", want: false},
+		{path: "missing.md", want: false},
+	} {
+		got, existsErr := backend.fileExistsAt("HEAD", tc.path)
+		require.NoError(t, existsErr)
+		assert.Equal(t, tc.want, got, tc.path)
+	}
 }
 
 func TestExternalBackendMergeWouldConflict(t *testing.T) {
@@ -258,6 +289,45 @@ func TestExternalBackend_headHash(t *testing.T) {
 
 		_, err = eb.headHash()
 		require.Error(t, err)
+	})
+}
+
+func TestExternalBackend_RevisionExists(t *testing.T) {
+	t.Run("distinguishes commits from missing revisions", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+		head, err := eb.headHash()
+		require.NoError(t, err)
+
+		exists, err := eb.revisionExists(t.Context(), head)
+		require.NoError(t, err)
+		assert.True(t, exists)
+
+		exists, err = eb.revisionExists(t.Context(), strings.Repeat("1", 40))
+		require.NoError(t, err)
+		assert.False(t, exists)
+	})
+
+	t.Run("propagates cancellation", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		exists, err := eb.revisionExists(ctx, "HEAD")
+		require.ErrorIs(t, err, context.Canceled)
+		assert.False(t, exists)
+	})
+
+	t.Run("propagates repository errors", func(t *testing.T) {
+		eb := &externalBackend{path: t.TempDir(), command: "git"}
+
+		exists, err := eb.revisionExists(t.Context(), "HEAD")
+		require.Error(t, err)
+		assert.False(t, exists)
+		assert.Contains(t, err.Error(), "not a git repository")
 	})
 }
 
@@ -705,26 +775,62 @@ func TestExternalBackend_HasChangesOtherThan(t *testing.T) {
 		assert.Equal(t, []string{"README.md"}, dirty)
 	})
 
-	t.Run("excludes plan file with different case", func(t *testing.T) {
+	t.Run("preserves exact case on case-sensitive filesystems", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		eb, err := newExternalBackend(dir, "git")
 		require.NoError(t, err)
 
-		// create and commit plan file with specific case
 		plansDir := filepath.Join(dir, "docs", "plans")
 		require.NoError(t, os.MkdirAll(plansDir, 0o750))
-		planFile := filepath.Join(plansDir, "My-Plan.md")
-		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
-		runGit(t, dir, "add", "docs/plans/My-Plan.md")
-		runGit(t, dir, "commit", "-m", "add plan")
-
-		// modify the plan file to make it dirty
-		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\nupdated content\n"), 0o600))
-
-		// call with lowercase path — should still exclude it
-		dirty, err := eb.hasChangesOtherThan(filepath.Join("docs", "plans", "my-plan.md"))
+		upper := filepath.Join(plansDir, "My-Plan.md")
+		lower := filepath.Join(plansDir, "my-plan.md")
+		require.NoError(t, os.WriteFile(upper, []byte("# Upper\n"), 0o600))
+		require.NoError(t, os.WriteFile(lower, []byte("# Lower\n"), 0o600))
+		upperInfo, err := os.Stat(upper)
 		require.NoError(t, err)
-		assert.Empty(t, dirty, "plan file with different case should be excluded")
+		lowerInfo, err := os.Stat(lower)
+		require.NoError(t, err)
+		if os.SameFile(upperInfo, lowerInfo) {
+			t.Skip("filesystem is case-insensitive")
+		}
+
+		dirty, err := eb.hasChangesOtherThan(filepath.Join("docs", "plans", "My-Plan.md"))
+		require.NoError(t, err)
+		assert.Equal(t, []string{"docs/plans/my-plan.md"}, dirty)
+	})
+
+	t.Run("handles excluded plan names that porcelain normally quotes", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows forbids quotes in filenames")
+		}
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		specialName := "quoted\"line" + "\n" + "plan.md"
+		planFile := filepath.Join("docs", "plans", specialName)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, planFile), []byte("# Plan\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "other.txt"), []byte("other\n"), 0o600))
+
+		dirty, err := eb.hasChangesOtherThan(planFile)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"other.txt"}, dirty)
+	})
+
+	t.Run("reports unrelated source of rename into excluded plan", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "outside.md"), []byte("outside\n"), 0o600))
+		runGit(t, dir, "add", "outside.md")
+		runGit(t, dir, "commit", "-m", "add rename source")
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		runGit(t, dir, "mv", "outside.md", "docs/plans/one.md")
+
+		dirty, err := eb.hasChangesOtherThan("docs/plans/one.md")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"outside.md"}, dirty)
 	})
 }
 
@@ -1183,7 +1289,7 @@ func TestExternalBackend_AddWorktree(t *testing.T) {
 		require.NoError(t, err)
 
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		err = eb.addWorktree(t.Context(), wtDir, "wt-branch", true)
+		err = eb.addWorktree(t.Context(), wtDir, "wt-branch", true, "")
 		require.NoError(t, err)
 
 		// verify worktree exists and is on the correct branch
@@ -1204,7 +1310,7 @@ func TestExternalBackend_AddWorktree(t *testing.T) {
 		require.NoError(t, eb.checkoutBranch("master"))
 
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		err = eb.addWorktree(t.Context(), wtDir, "existing-branch", false)
+		err = eb.addWorktree(t.Context(), wtDir, "existing-branch", false, "")
 		require.NoError(t, err)
 
 		// verify worktree is on the existing branch
@@ -1222,7 +1328,7 @@ func TestExternalBackend_AddWorktree(t *testing.T) {
 
 		// master is currently checked out, trying to create worktree for it should fail
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		err = eb.addWorktree(t.Context(), wtDir, "master", false)
+		err = eb.addWorktree(t.Context(), wtDir, "master", false, "")
 		require.Error(t, err)
 	})
 }
@@ -1234,7 +1340,7 @@ func TestExternalBackend_RemoveWorktree(t *testing.T) {
 		require.NoError(t, err)
 
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		require.NoError(t, eb.addWorktree(t.Context(), wtDir, "wt-branch", true))
+		require.NoError(t, eb.addWorktree(t.Context(), wtDir, "wt-branch", true, ""))
 
 		err = eb.removeWorktree(wtDir)
 		require.NoError(t, err)
@@ -1262,7 +1368,7 @@ func TestExternalBackend_PruneWorktrees(t *testing.T) {
 
 		// create and manually delete a worktree dir to leave a stale entry
 		wtDir := filepath.Join(t.TempDir(), "wt")
-		require.NoError(t, eb.addWorktree(t.Context(), wtDir, "stale-branch", true))
+		require.NoError(t, eb.addWorktree(t.Context(), wtDir, "stale-branch", true, ""))
 		require.NoError(t, os.RemoveAll(wtDir))
 
 		// prune should clean up the stale entry
@@ -1280,24 +1386,13 @@ func TestExternalBackend_PruneWorktrees(t *testing.T) {
 	})
 }
 
-func TestExternalBackend_extractPathFromPorcelain(t *testing.T) {
-	eb := &externalBackend{path: "/tmp", command: "git"}
+func TestParsePorcelainV1Z(t *testing.T) {
+	changes, err := parsePorcelainV1Z("?? plain file.txt\x00R  new\nname.md\x00old\"name.md\x00")
+	require.NoError(t, err)
+	assert.Equal(t, [][]string{{"plain file.txt"}, {"new\nname.md", "old\"name.md"}}, changes)
 
-	t.Run("extracts simple path", func(t *testing.T) {
-		assert.Equal(t, "file.txt", eb.extractPathFromPorcelain("?? file.txt"))
-	})
-
-	t.Run("extracts modified path", func(t *testing.T) {
-		assert.Equal(t, "README.md", eb.extractPathFromPorcelain(" M README.md"))
-	})
-
-	t.Run("extracts renamed path", func(t *testing.T) {
-		assert.Equal(t, "new.txt", eb.extractPathFromPorcelain("R  old.txt -> new.txt"))
-	})
-
-	t.Run("returns empty for short line", func(t *testing.T) {
-		assert.Empty(t, eb.extractPathFromPorcelain("??"))
-	})
+	_, err = parsePorcelainV1Z("R  destination.md\x00")
+	require.ErrorContains(t, err, "missing its source path")
 }
 
 func TestExternalBackend_CustomCommand(t *testing.T) {
