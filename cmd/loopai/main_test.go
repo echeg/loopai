@@ -226,13 +226,14 @@ func TestRunPlanChain(t *testing.T) {
 
 		err = runPlanChain(t.Context(), o, req, nil, nil, &out, execute)
 		require.NoError(t, err)
+		head := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
 		assert.Equal(t, plans, order)
 		assert.Equal(t, []bool{true, false, false}, commits)
 		assert.Equal(t, []bool{false, true, true}, successors)
 		assert.Equal(t, []string{
 			"",
-			"refs/heads/" + gitSvc.EffectiveBranchName(plans[0], ""),
-			"refs/heads/" + gitSvc.EffectiveBranchName(plans[1], ""),
+			head,
+			head,
 		}, startRefs)
 		assert.Contains(t, out.String(), "plan 1/3: "+plans[0])
 		assert.Contains(t, out.String(), "plan 2/3: "+plans[1])
@@ -440,6 +441,59 @@ func TestRunPlanChain(t *testing.T) {
 			assert.Contains(t, string(content), filepath.Join(plansDir, name+".md"))
 		}
 	})
+
+	t.Run("production_worktree_pipeline_stacks_archives_and_cleans_up", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		originalDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { require.NoError(t, os.Chdir(originalDir)) })
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile,
+				[]byte("# Plan\n\n### Task 1: Done\n\n- [x] already complete\n"), 0o600))
+		}
+		runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+		runGit(t, dir, "commit", "-m", "add production chain plans")
+		fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+		writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		cfg := &config.Config{
+			WorktreeEnabled: true, ClaudeCommand: fakeClaude, MovePlanOnCompletion: true,
+		}
+		req := executePlanRequest{
+			Mode: processor.ModeTasksOnly, GitSvc: gitSvc, Config: cfg, Colors: testColors(),
+			DefaultBranch: "master", BaseRef: "master", WtCleanup: &cleanupHolder{},
+			OrcaStop: &cleanupHolder{}, SetupTitles: startOrcaReporter(cfg, "", status.PhaseTask),
+		}
+		err = runSelectedPlans(t.Context(), opts{
+			TasksOnly: true, MaxIterations: 1, NoColor: true, Worktree: true,
+			PlanFile: plans[0], PlanFiles: plans,
+		}, req, plan.NewSelector(plansDir, testColors()), req.SetupTitles, io.Discard, selectAndExecutePlan)
+		require.NoError(t, err)
+
+		cwd, err := os.Getwd()
+		require.NoError(t, err)
+		resolvedDir, err := filepath.EvalSymlinks(dir)
+		require.NoError(t, err)
+		assert.Equal(t, resolvedDir, cwd)
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "one"))
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "two"))
+		runGit(t, dir, "merge-base", "--is-ancestor", "one", "two")
+		for _, name := range []string{"one", "two"} {
+			assert.FileExists(t, filepath.Join(plansDir, "completed", name+".md"))
+			logs, globErr := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "progress-"+name+"*.txt"))
+			require.NoError(t, globErr)
+			assert.NotEmpty(t, logs)
+		}
+	})
 }
 
 func TestRunSelectedPlansKeepsSinglePlanPath(t *testing.T) {
@@ -458,6 +512,45 @@ func TestRunSelectedPlansKeepsSinglePlanPath(t *testing.T) {
 		require.ErrorIs(t, err, wantErr)
 		assert.Equal(t, 1, calls)
 	}
+}
+
+func TestRunSelectedPlansDispatchesChain(t *testing.T) {
+	dir := setupTestRepo(t)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	plans := []string{"one.md", "two.md"}
+	var calls []string
+	err = runSelectedPlans(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, executePlanRequest{
+		Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{}, OrcaStop: &cleanupHolder{},
+	}, nil, nil, io.Discard, func(_ context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
+		calls = append(calls, gotOpts.PlanFile)
+		assert.Equal(t, plans, gotReq.ChainPlanFiles)
+		gotReq.Outcome.succeeded = true
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, plans, calls)
+}
+
+func TestRunPlanChainStopsBeforeCanceledSuccessorSetup(t *testing.T) {
+	dir := setupTestRepo(t)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	plans := []string{"one.md", "two.md"}
+	var out bytes.Buffer
+	calls := 0
+	err = runPlanChain(ctx, opts{PlanFile: plans[0], PlanFiles: plans}, executePlanRequest{
+		Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{}, OrcaStop: &cleanupHolder{},
+	}, nil, nil, &out, func(_ context.Context, _ opts, gotReq executePlanRequest, _ *plan.Selector) error {
+		calls++
+		gotReq.Outcome.succeeded = true
+		cancel()
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls)
+	assert.NotContains(t, out.String(), "plan 2/2")
 }
 
 func TestRunPlanChainWaitsForPerPlanLifecycle(t *testing.T) {
@@ -833,6 +926,22 @@ func TestParsePlanFiles(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestParsePlanFilesRejectsFilesystemAliases(t *testing.T) {
+	dir := t.TempDir()
+	planPath := filepath.Join(dir, "plan.md")
+	require.NoError(t, os.WriteFile(planPath, []byte("# Plan\n"), 0o600))
+
+	_, err := parsePlanFiles(filepath.Join(dir, ".", "plan.md") + "," + planPath)
+	require.ErrorContains(t, err, "duplicate entry")
+
+	alias := filepath.Join(dir, "alias.md")
+	if symlinkErr := os.Symlink(planPath, alias); symlinkErr != nil {
+		t.Skipf("symlinks unavailable: %v", symlinkErr)
+	}
+	_, err = parsePlanFiles(planPath + "," + alias)
+	require.ErrorContains(t, err, "duplicate entry")
 }
 
 func TestApplyPositionalArgsPlanChain(t *testing.T) {
@@ -2707,6 +2816,16 @@ func TestValidatePlanChain(t *testing.T) {
 			want: "--plan cannot be combined with a plan chain",
 		},
 		{
+			name: "review mode rejected",
+			o:    opts{PlanFile: first, PlanFiles: []string{first, second}, Review: true},
+			want: "--review cannot be combined with a plan chain",
+		},
+		{
+			name: "external-only mode rejected",
+			o:    opts{PlanFile: first, PlanFiles: []string{first, second}, ExternalOnly: true},
+			want: "--external-only cannot be combined with a plan chain",
+		},
+		{
 			name: "missing second file",
 			o:    opts{PlanFile: first, PlanFiles: []string{first, filepath.Join(dir, "missing.md")}},
 			want: "plan file not found",
@@ -2721,6 +2840,22 @@ func TestValidatePlanChain(t *testing.T) {
 			require.ErrorContains(t, validateFlags(tc.o), tc.want)
 		})
 	}
+
+	t.Run("same file through hard link is rejected", func(t *testing.T) {
+		alias := filepath.Join(dir, "hard-link.md")
+		require.NoError(t, os.Link(first, alias))
+		err := validateFlags(opts{PlanFile: first, PlanFiles: []string{first, alias}})
+		require.ErrorContains(t, err, "duplicate file")
+	})
+
+	t.Run("derived branch collision is rejected", func(t *testing.T) {
+		firstCollision := filepath.Join(dir, "20260830-api.md")
+		secondCollision := filepath.Join(dir, "20260831-api.md")
+		require.NoError(t, os.WriteFile(firstCollision, []byte("# First\n"), 0o600))
+		require.NoError(t, os.WriteFile(secondCollision, []byte("# Second\n"), 0o600))
+		err := validateFlags(opts{PlanFile: firstCollision, PlanFiles: []string{firstCollision, secondCollision}})
+		require.ErrorContains(t, err, `resolve to the same branch "api"`)
+	})
 
 	t.Run("unreadable second file", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
@@ -6156,6 +6291,35 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 		assert.Contains(t, output, "resuming interrupted worktree "+wtPath)
 		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
 		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
+	})
+
+	t.Run("resume_rejects_successor_missing_predecessor_tip", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planPath := filepath.Join(plansDir, "successor.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Successor\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/successor.md")
+		runGit(t, dir, "commit", "-m", "add successor plan")
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		wtPath, _, err := gitSvc.CreateWorktreeForPlan(planPath, "")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wtPath) })
+
+		runGit(t, dir, "checkout", "-b", "predecessor")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "predecessor.txt"), []byte("done\n"), 0o600))
+		runGit(t, dir, "add", "predecessor.txt")
+		runGit(t, dir, "commit", "-m", "complete predecessor")
+		predecessorTip := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+
+		_, err = prepareWorktreeRun(opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{}, Colors: testColors(),
+			DefaultBranch: "master", WorktreeStartRef: predecessorTip, ChainSuccessor: true,
+			ChainPlanFiles: []string{filepath.Join(plansDir, "first.md"), planPath}, WtCleanup: &cleanupHolder{},
+		}, "successor")
+		require.ErrorContains(t, err, "does not contain required predecessor tip")
+		assert.DirExists(t, wtPath, "stale resume target must be preserved for manual recovery")
 	})
 }
 

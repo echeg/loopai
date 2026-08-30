@@ -114,10 +114,18 @@
 - [x] update CLAUDE.md architecture notes (worktree start-ref override, chain loop location)
 - [x] update embedded config/help text if the positional arg description mentions a single plan
 
+### Internal review fixes
+- [x] reject file aliases and plan-derived branch collisions before execution
+- [x] force the first non-worktree chain plan onto its own branch and carry all uncommitted chain plans
+- [x] use immutable predecessor commit IDs, honor cancellation before successor setup, and validate resumed ancestry
+- [x] preserve predecessor edits to successor plans and reject symlinked worktree copy destinations
+- [x] reject review-only chains and correct close-out, non-worktree, cmux, and developer documentation
+- [x] add production-path and focused regression tests for the review findings
+
 ## Technical Details
 - CLI: positional arg split on `,`; `o.PlanFiles []string` with `o.PlanFile == o.PlanFiles[0]`; no new flags in v1.
-- Chain state threaded between iterations: previous plan's effective branch name (after `--branch` rejection, always derived from the plan filename via `EffectiveBranchName`).
-- Worktree start ref: plan 1 uses today's default (source HEAD); plan N+1 uses `refs/heads/<branch N>`. Branch reuse for a chained plan synchronizes against the start ref.
+- Chain state threaded between iterations: the immutable completed commit ID of the previous plan branch.
+- Worktree start ref: plan 1 uses today's default (source HEAD); plan N+1 uses the captured plan N commit ID. Branch reuse and resume validation synchronize against that immutable commit.
 - Outcome signal: chain continues only on an explicit per-plan success (pattern of `worktreeFinishState.succeeded`), treating `ErrUserAborted`-with-nil-error as a stop.
 - Exit code: unchanged binary contract — first failure prints `error: %v` and exits 1; earlier completed plans remain archived with their branches intact.
 

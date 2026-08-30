@@ -34,6 +34,7 @@ type backend interface {
 	branchExists(name string) bool
 	branchHash(name string) (string, error)
 	revParse(ref string) (string, error)
+	fileExistsAt(ref, path string) (bool, error)
 	createBranch(name string) error
 	checkoutBranch(name string) error
 	mergeBranch(ctx context.Context, name, expectedHead string) error
@@ -46,7 +47,7 @@ type backend interface {
 	isDirtyAll() (bool, error)
 	fileHasChanges(path string) (bool, error)
 	fileTracked(path string) (bool, error)
-	hasChangesOtherThan(path string) ([]string, error)
+	hasChangesOtherThan(paths ...string) ([]string, error)
 	gitCommonDir() (string, error)
 	gitDir(ctx context.Context) (string, error)
 	ensureRuntimeExcludes(patterns ...string) error
@@ -218,6 +219,15 @@ func (s *Service) Root() string {
 // HeadHash returns the current HEAD commit hash as a hex string.
 func (s *Service) HeadHash() (string, error) {
 	return s.repo.headHash()
+}
+
+// ContainsRevisionContext reports whether revision is an ancestor of this checkout's HEAD.
+func (s *Service) ContainsRevisionContext(ctx context.Context, revision string) (bool, error) {
+	contains, err := s.repo.isAncestor(ctx, revision, "HEAD")
+	if err != nil {
+		return false, fmt.Errorf("check whether HEAD contains %q: %w", revision, err)
+	}
+	return contains, nil
 }
 
 // DiffFingerprint returns a hash of the current working tree state (tracked diffs + untracked file content).
@@ -444,6 +454,24 @@ func (s *Service) inspectPlanChanges(planFile string) ([]string, bool, error) {
 	return dirtyFiles, planHasChanges, nil
 }
 
+func (s *Service) inspectPlanChainChanges(planFiles []string) ([]string, []string, error) {
+	dirtyFiles, err := s.repo.hasChangesOtherThan(planFiles...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("check uncommitted files: %w", err)
+	}
+	changedPlans := make([]string, 0, len(planFiles))
+	for _, planFile := range planFiles {
+		changed, changeErr := s.repo.fileHasChanges(planFile)
+		if changeErr != nil {
+			return nil, nil, fmt.Errorf("check plan file status %q: %w", planFile, changeErr)
+		}
+		if changed {
+			changedPlans = append(changedPlans, planFile)
+		}
+	}
+	return dirtyFiles, changedPlans, nil
+}
+
 // validateWorktreePlanFile rejects plans that cannot be carried into the new worktree.
 // In particular, ignored untracked files and paths outside the repository must fail before
 // --commit is allowed to mutate the source checkout.
@@ -577,53 +605,128 @@ func (s *Service) CreateBranchForPlan(planFile, defaultBranch, branchOverride st
 func (s *Service) CreateBranchForPlanFromCurrentHEADContext(
 	ctx context.Context, planFile, branchOverride string,
 ) error {
+	return s.createBranchForPlanFromCurrentHEADContext(ctx, planFile, branchOverride, "", nil)
+}
+
+// CreateBranchForPlanChainContext creates the first non-worktree chain branch from the current
+// HEAD even when the source checkout is already on a feature branch. The listed plan files are the
+// only dirty paths allowed and are committed together on the new chain branch.
+func (s *Service) CreateBranchForPlanChainContext(
+	ctx context.Context, planFile, branchOverride string, chainPlanFiles []string,
+) error {
+	return s.createBranchForPlanFromCurrentHEADContext(ctx, planFile, branchOverride, "", chainPlanFiles)
+}
+
+// CreateBranchForPlanFromExpectedHEADContext creates a successor branch only when the checkout is
+// still at the immutable predecessor tip captured by the chain coordinator.
+func (s *Service) CreateBranchForPlanFromExpectedHEADContext(
+	ctx context.Context, planFile, branchOverride, expectedHead string,
+) error {
+	return s.createBranchForPlanFromCurrentHEADContext(ctx, planFile, branchOverride, expectedHead, nil)
+}
+
+func (s *Service) createBranchForPlanFromCurrentHEADContext(
+	ctx context.Context, planFile, branchOverride, expectedHead string, chainPlanFiles []string,
+) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("start chained plan branch: %w", err)
+	}
 	planFile = s.resolveFilesystemCase(planFile)
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
+	changedPlans, currentBranch, startCommit, err := s.prepareChainedBranchSource(
+		branchName, expectedHead, chainPlanFiles,
+	)
+	if err != nil {
+		return err
+	}
+	if err := s.switchToChainedPlanBranch(ctx, branchName, currentBranch, startCommit); err != nil {
+		return err
+	}
+	return s.commitChangedChainPlans(branchName, changedPlans)
+}
+
+func (s *Service) prepareChainedBranchSource(
+	branchName, expectedHead string, chainPlanFiles []string,
+) ([]string, string, string, error) {
 	if branchName == "" {
-		return errors.New("plan branch name is empty")
+		return nil, "", "", errors.New("plan branch name is empty")
 	}
 	if err := s.repo.validateBranchName(branchName); err != nil {
-		return fmt.Errorf("invalid plan branch %q: %w", branchName, err)
+		return nil, "", "", fmt.Errorf("invalid plan branch %q: %w", branchName, err)
 	}
-
-	dirty, err := s.repo.isDirtyAll()
+	changedPlans, err := s.validateChainedBranchDirtyState(branchName, chainPlanFiles)
 	if err != nil {
-		return fmt.Errorf("check working tree before starting chained plan %q: %w", branchName, err)
+		return nil, "", "", err
 	}
-	if dirty {
-		return fmt.Errorf("cannot start chained plan branch %q: working tree has uncommitted changes; each plan must leave a clean tree before the next plan starts", branchName)
-	}
-
 	currentBranch, err := s.repo.currentBranch()
 	if err != nil {
-		return fmt.Errorf("identify current branch before starting chained plan %q: %w", branchName, err)
+		return nil, "", "", fmt.Errorf("identify current branch before starting chained plan %q: %w", branchName, err)
 	}
 	if currentBranch == branchName || (currentBranch != "" && strings.EqualFold(currentBranch, branchName)) {
-		return fmt.Errorf("cannot start chained plan branch %q: previous and next plans resolve to the same branch", branchName)
+		return nil, "", "", fmt.Errorf("cannot start chained plan branch %q: previous and next plans resolve to the same branch", branchName)
 	}
 	startCommit, err := s.repo.headHash()
 	if err != nil {
-		return fmt.Errorf("identify current HEAD before starting chained plan %q: %w", branchName, err)
+		return nil, "", "", fmt.Errorf("identify current HEAD before starting chained plan %q: %w", branchName, err)
 	}
+	if expectedHead != "" && startCommit != expectedHead {
+		return nil, "", "", fmt.Errorf("cannot start chained plan branch %q: previous plan tip changed from %s to %s", branchName, expectedHead, startCommit)
+	}
+	return changedPlans, currentBranch, startCommit, nil
+}
 
+func (s *Service) validateChainedBranchDirtyState(branchName string, chainPlanFiles []string) ([]string, error) {
+	if len(chainPlanFiles) == 0 {
+		dirty, err := s.repo.isDirtyAll()
+		if err != nil {
+			return nil, fmt.Errorf("check working tree before starting chained plan %q: %w", branchName, err)
+		}
+		if dirty {
+			return nil, fmt.Errorf("cannot start chained plan branch %q: working tree has uncommitted changes; each plan must leave a clean tree before the next plan starts", branchName)
+		}
+		return nil, nil
+	}
+	resolvedPlans := make([]string, 0, len(chainPlanFiles))
+	for _, path := range chainPlanFiles {
+		resolvedPlans = append(resolvedPlans, s.resolveFilesystemCase(path))
+	}
+	dirtyFiles, changedPlans, err := s.inspectPlanChainChanges(resolvedPlans)
+	if err != nil {
+		return nil, err
+	}
+	if len(dirtyFiles) > 0 {
+		return nil, fmt.Errorf("cannot start chained plan branch %q: working tree has uncommitted changes outside the plan chain\n\nuncommitted files:\n%s",
+			branchName, s.formatDirtyFiles(dirtyFiles))
+	}
+	return changedPlans, nil
+}
+
+func (s *Service) switchToChainedPlanBranch(
+	ctx context.Context, branchName, currentBranch, startCommit string,
+) error {
 	if !s.repo.branchExists(branchName) {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("start chained plan branch: %w", err)
+		}
 		s.log.Printf("creating chained plan branch: %s (from current HEAD)\n", branchName)
-		if createErr := s.repo.createBranch(branchName); createErr != nil {
-			return fmt.Errorf("create chained plan branch %s: %w", branchName, createErr)
+		if err := s.repo.createBranch(branchName); err != nil {
+			return fmt.Errorf("create chained plan branch %s: %w", branchName, err)
 		}
 		return nil
 	}
-
 	startRef := "current HEAD"
 	if currentBranch != "" {
 		startRef = "refs/heads/" + currentBranch
 	}
-	if validateErr := s.validateExistingPlanBranchAt(ctx, branchName, startCommit, startRef); validateErr != nil {
-		return validateErr
+	if err := s.validateExistingPlanBranchAt(ctx, branchName, startCommit, startRef); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("start chained plan branch: %w", err)
 	}
 	s.log.Printf("switching to existing chained plan branch: %s\n", branchName)
-	if checkoutErr := s.repo.checkoutBranch(branchName); checkoutErr != nil {
-		return fmt.Errorf("checkout chained plan branch %s: %w", branchName, checkoutErr)
+	if err := s.repo.checkoutBranch(branchName); err != nil {
+		return fmt.Errorf("checkout chained plan branch %s: %w", branchName, err)
 	}
 	containsStart, err := s.repo.isAncestor(ctx, startCommit, "HEAD")
 	if err != nil {
@@ -634,6 +737,21 @@ func (s *Service) CreateBranchForPlanFromCurrentHEADContext(
 	}
 	if err := s.repo.mergeRevision(ctx, startCommit, startCommit); err != nil {
 		return fmt.Errorf("merge previous plan tip into chained plan branch %q: %w", branchName, err)
+	}
+	return nil
+}
+
+func (s *Service) commitChangedChainPlans(branchName string, changedPlans []string) error {
+	for _, changedPlan := range changedPlans {
+		if err := s.repo.add(changedPlan); err != nil {
+			return fmt.Errorf("stage chain plan file %q: %w", changedPlan, err)
+		}
+	}
+	if len(changedPlans) == 0 {
+		return nil
+	}
+	if err := s.repo.commitFiles(s.appendTrailer("add plan chain: "+branchName), changedPlans...); err != nil {
+		return fmt.Errorf("commit chain plan files: %w", err)
 	}
 	return nil
 }
@@ -653,7 +771,7 @@ func (s *Service) CreateWorktreeForPlan(planFile, branchOverride string) (string
 func (s *Service) CreateWorktreeForPlanContext(
 	ctx context.Context, planFile, branchOverride string,
 ) (string, bool, error) {
-	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", "")
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", "", nil)
 }
 
 // CreateWorktreeForPlanFromRefContext creates a plan worktree whose new branch starts at
@@ -662,7 +780,7 @@ func (s *Service) CreateWorktreeForPlanContext(
 func (s *Service) CreateWorktreeForPlanFromRefContext(
 	ctx context.Context, planFile, branchOverride, startRef string,
 ) (string, bool, error) {
-	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", startRef)
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", startRef, nil)
 }
 
 // CreateWorktreeForPlanAfterAutoCommit creates a plan worktree after sourceHeadBefore was
@@ -674,11 +792,21 @@ func (s *Service) CreateWorktreeForPlanAfterAutoCommit(
 	if sourceHeadBefore == "" {
 		return "", false, errors.New("source HEAD before auto-commit is empty")
 	}
-	return s.createWorktreeForPlan(ctx, planFile, branchOverride, sourceHeadBefore, "")
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, sourceHeadBefore, "", nil)
+}
+
+// CreateWorktreeForPlanChainContext creates a chain worktree while treating every listed plan as
+// an allowed source-checkout change. The first worktree carries all changed plans into the stacked
+// branch; successors preserve the predecessor's committed copy when it already exists.
+func (s *Service) CreateWorktreeForPlanChainContext(
+	ctx context.Context, planFile, branchOverride, startRef string, chainPlanFiles []string,
+) (string, bool, error) {
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", startRef, chainPlanFiles)
 }
 
 func (s *Service) createWorktreeForPlan(
 	ctx context.Context, planFile, branchOverride, existingBranchAncestor, startRef string,
+	chainPlanFiles []string,
 ) (string, bool, error) {
 	planFile = s.resolveFilesystemCase(planFile)
 	startCommit, err := s.resolveWorktreeStartCommit(startRef)
@@ -701,7 +829,9 @@ func (s *Service) createWorktreeForPlan(
 	branchName := s.EffectiveBranchName(planFile, branchOverride)
 	wtPath := filepath.Join(s.repo.root(), ".loopai", "worktrees", branchName)
 
-	_, planHasChanges, err := s.prepareWorktreePlan(planFile, branchOverride)
+	planHasChanges, changedChainPlans, err := s.inspectWorktreePlanChanges(
+		planFile, branchOverride, chainPlanFiles,
+	)
 	if err != nil {
 		return "", false, err
 	}
@@ -739,19 +869,76 @@ func (s *Service) createWorktreeForPlan(
 		}
 	}
 
-	// Git worktrees contain committed files from their starting revision, never uncommitted files
-	// from the source checkout. An explicit start ref may also predate a clean, source-committed
-	// plan. Copy the selected plan in both cases so the caller can commit it on the new branch;
-	// CommitPlanFile is intentionally a no-op when the copied content is already identical.
-	if planHasChanges || startRef != "" {
-		if cpErr := s.copyToWorktree(planFile, wtPath); cpErr != nil {
-			_ = s.repo.removeWorktree(wtPath)
-			return "", false, fmt.Errorf("copy plan to worktree: %w", cpErr)
-		}
-		planHasChanges = true
+	// A first chain worktree freezes every uncommitted plan into the stacked branch. A successor
+	// preserves the plan from its predecessor when present, so plan N can intentionally edit plan
+	// N+1. The source copy is used only when the explicit start commit predates the plan.
+	filesToCopy, copyErr := s.worktreePlanFilesToCopy(
+		planFile, startCommit, startRef, planHasChanges, changedChainPlans, len(chainPlanFiles) > 0,
+	)
+	if copyErr != nil {
+		_ = s.repo.removeWorktree(wtPath)
+		return "", false, copyErr
 	}
+	if copyErr = s.copyPlanFilesToWorktree(filesToCopy, wtPath); copyErr != nil {
+		_ = s.repo.removeWorktree(wtPath)
+		return "", false, copyErr
+	}
+	planHasChanges = len(filesToCopy) > 0
 
 	return wtPath, planHasChanges, nil
+}
+
+func (s *Service) inspectWorktreePlanChanges(
+	planFile, branchOverride string, chainPlanFiles []string,
+) (bool, []string, error) {
+	if len(chainPlanFiles) == 0 {
+		_, changed, err := s.prepareWorktreePlan(planFile, branchOverride)
+		return changed, nil, err
+	}
+	resolvedPlans := make([]string, 0, len(chainPlanFiles))
+	for _, path := range chainPlanFiles {
+		resolvedPlans = append(resolvedPlans, s.resolveFilesystemCase(path))
+	}
+	dirtyFiles, changedPlans, err := s.inspectPlanChainChanges(resolvedPlans)
+	if err != nil {
+		return false, nil, err
+	}
+	if len(dirtyFiles) > 0 {
+		return false, nil, fmt.Errorf("cannot create worktree: worktree has uncommitted changes outside the plan chain\n\nuncommitted files:\n%s",
+			s.formatDirtyFiles(dirtyFiles))
+	}
+	return false, changedPlans, nil
+}
+
+func (s *Service) worktreePlanFilesToCopy(
+	planFile, startCommit, startRef string, planHasChanges bool, changedChainPlans []string, chain bool,
+) ([]string, error) {
+	if startRef == "" {
+		if chain {
+			return changedChainPlans, nil
+		}
+		if planHasChanges {
+			return []string{planFile}, nil
+		}
+		return nil, nil
+	}
+	existsAtStart, err := s.repo.fileExistsAt(startCommit, planFile)
+	if err != nil {
+		return nil, fmt.Errorf("inspect plan at worktree start: %w", err)
+	}
+	if !existsAtStart || (!chain && planHasChanges) {
+		return []string{planFile}, nil
+	}
+	return nil, nil
+}
+
+func (s *Service) copyPlanFilesToWorktree(planFiles []string, wtPath string) error {
+	for _, planFile := range planFiles {
+		if err := s.copyToWorktree(planFile, wtPath); err != nil {
+			return fmt.Errorf("copy plan to worktree: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) createExistingPlanWorktree(
@@ -985,44 +1172,63 @@ func autoCommittedSourceConflictError(branchName string) error {
 // the plan file path is resolved to actual on-disk case before staging
 // to handle case-insensitive filesystems (macOS APFS).
 func (s *Service) CommitPlanFile(planFile, mainRepoRoot string) error {
+	return s.CommitPlanFiles([]string{planFile}, mainRepoRoot)
+}
+
+// CommitPlanFiles stages and commits plan files on the current branch. Paths are interpreted
+// relative to mainRepoRoot so callers operating in a linked worktree can pass source paths.
+func (s *Service) CommitPlanFiles(planFiles []string, mainRepoRoot string) error {
+	if len(planFiles) == 0 {
+		return errors.New("commit plan files: no paths provided")
+	}
 	branchName, err := s.repo.currentBranch()
 	if err != nil || branchName == "" {
-		branchName = plan.ExtractBranchName(planFile)
+		branchName = plan.ExtractBranchName(planFiles[0])
 	}
 
-	// compute the plan file's relative path from the main repo root, then resolve
-	// it inside this repo's root. this is needed because planFile is absolute and
-	// may point to the main repo's working tree, which is outside the worktree.
-	absPlan, err := filepath.Abs(planFile)
-	if err != nil {
-		return fmt.Errorf("resolve plan path: %w", err)
-	}
-	// resolve symlinks so both paths use the same prefix (macOS /var -> /private/var)
-	if resolved, evalErr := filepath.EvalSymlinks(absPlan); evalErr == nil {
-		absPlan = resolved
-	}
-	relPlan, err := filepath.Rel(mainRepoRoot, absPlan)
-	if err != nil {
-		return fmt.Errorf("relative plan path: %w", err)
-	}
-	localPlan := filepath.Join(s.repo.root(), relPlan)
-	localPlan = s.resolveFilesystemCase(localPlan)
-
-	if addErr := s.repo.add(localPlan); addErr != nil {
-		return fmt.Errorf("stage plan file: %w", addErr)
-	}
-	hasChanges, err := s.repo.fileHasChanges(localPlan)
-	if err != nil {
-		return fmt.Errorf("check staged plan file: %w", err)
+	localPlans := make([]string, 0, len(planFiles))
+	hasChanges := false
+	for _, planFile := range planFiles {
+		// Compute the plan file's relative path from the main repo root, then resolve it inside
+		// this repo's root. The caller may be operating in a linked worktree.
+		absPlan, absErr := filepath.Abs(planFile)
+		if absErr != nil {
+			return fmt.Errorf("resolve plan path: %w", absErr)
+		}
+		if resolved, evalErr := filepath.EvalSymlinks(absPlan); evalErr == nil {
+			absPlan = resolved
+		}
+		relPlan, relErr := filepath.Rel(mainRepoRoot, absPlan)
+		if relErr != nil {
+			return fmt.Errorf("relative plan path: %w", relErr)
+		}
+		localPlan := s.resolveFilesystemCase(filepath.Join(s.repo.root(), relPlan))
+		if addErr := s.repo.add(localPlan); addErr != nil {
+			return fmt.Errorf("stage plan file %q: %w", planFile, addErr)
+		}
+		changed, changeErr := s.repo.fileHasChanges(localPlan)
+		if changeErr != nil {
+			return fmt.Errorf("check staged plan file %q: %w", planFile, changeErr)
+		}
+		hasChanges = hasChanges || changed
+		localPlans = append(localPlans, localPlan)
 	}
 	if !hasChanges {
-		s.log.Printf("plan file already committed: %s\n", filepath.Base(planFile))
+		if len(planFiles) == 1 {
+			s.log.Printf("plan file already committed: %s\n", filepath.Base(planFiles[0]))
+		} else {
+			s.log.Printf("plan files already committed: %s\n", filepath.Base(planFiles[0]))
+		}
 		return nil
 	}
 
-	s.log.Printf("committing plan file: %s\n", filepath.Base(planFile))
-	if err := s.repo.commit(s.appendTrailer("add plan: " + branchName)); err != nil {
-		return fmt.Errorf("commit plan file: %w", err)
+	if len(planFiles) == 1 {
+		s.log.Printf("committing plan file: %s\n", filepath.Base(planFiles[0]))
+	} else {
+		s.log.Printf("committing %d plan files\n", len(planFiles))
+	}
+	if err := s.repo.commitFiles(s.appendTrailer("add plan: "+branchName), localPlans...); err != nil {
+		return fmt.Errorf("commit plan files: %w", err)
 	}
 	return nil
 }
@@ -1030,41 +1236,122 @@ func (s *Service) CommitPlanFile(planFile, mainRepoRoot string) error {
 // copyToWorktree copies a file from the main repo working tree into the worktree,
 // preserving its relative path from the repo root.
 func (s *Service) copyToWorktree(srcPath, wtPath string) error {
+	absSrc, dstDir, dstPath, err := s.resolveWorktreeCopyPaths(srcPath, wtPath)
+	if err != nil {
+		return err
+	}
+	if err := validateCopyDestination(dstPath); err != nil {
+		return err
+	}
+	return copyFileReplacing(absSrc, dstDir, dstPath)
+}
+
+func (s *Service) resolveWorktreeCopyPaths(srcPath, wtPath string) (string, string, string, error) {
 	absSrc, err := filepath.Abs(srcPath)
 	if err != nil {
-		return fmt.Errorf("resolve source path: %w", err)
+		return "", "", "", fmt.Errorf("resolve source path: %w", err)
 	}
 	// resolve symlinks to match s.repo.root() which is also resolved (via EvalSymlinks in NewService)
 	absSrc, err = filepath.EvalSymlinks(absSrc)
 	if err != nil {
-		return fmt.Errorf("eval symlinks for source: %w", err)
+		return "", "", "", fmt.Errorf("eval symlinks for source: %w", err)
 	}
 	relPath, err := filepath.Rel(s.repo.root(), absSrc)
 	if err != nil {
-		return fmt.Errorf("relative path: %w", err)
+		return "", "", "", fmt.Errorf("relative path: %w", err)
+	}
+	if filepath.IsAbs(relPath) || relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+		return "", "", "", fmt.Errorf("source plan escapes repository root: %s", srcPath)
 	}
 
-	dstPath := filepath.Join(wtPath, relPath)
-	if err = os.MkdirAll(filepath.Dir(dstPath), 0o750); err != nil {
-		return fmt.Errorf("create directories: %w", err)
+	resolvedWorktree, err := filepath.EvalSymlinks(wtPath)
+	if err != nil {
+		return "", "", "", fmt.Errorf("resolve worktree path: %w", err)
 	}
+	dstDir, err := mkdirAllNoSymlinks(resolvedWorktree, filepath.Dir(relPath))
+	if err != nil {
+		return "", "", "", err
+	}
+	return absSrc, dstDir, filepath.Join(dstDir, filepath.Base(relPath)), nil
+}
 
-	src, err := os.Open(absSrc)
+func validateCopyDestination(dstPath string) error {
+	if info, statErr := os.Lstat(dstPath); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("destination plan path is a symbolic link: %s", dstPath)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("destination plan path is not a regular file: %s", dstPath)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect destination plan path: %w", statErr)
+	}
+	return nil
+}
+
+func copyFileReplacing(absSrc, dstDir, dstPath string) error {
+	src, err := os.Open(absSrc) //nolint:gosec // validated repository-contained plan path
 	if err != nil {
 		return fmt.Errorf("open source: %w", err)
 	}
 	defer src.Close()
 
-	dst, err := os.Create(dstPath) //nolint:gosec // plan file doesn't need restricted perms
+	dst, err := os.CreateTemp(dstDir, ".loopai-plan-*")
 	if err != nil {
-		return fmt.Errorf("create destination: %w", err)
+		return fmt.Errorf("create temporary destination: %w", err)
 	}
-	defer dst.Close()
+	tmpPath := dst.Name()
+	defer os.Remove(tmpPath) //nolint:errcheck // best-effort cleanup after errors or rename
 
 	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
 		return fmt.Errorf("copy file: %w", err)
 	}
+	if closeErr := dst.Close(); closeErr != nil {
+		return fmt.Errorf("close copied plan: %w", closeErr)
+	}
+	if renameErr := os.Rename(tmpPath, dstPath); renameErr != nil {
+		// Windows cannot atomically replace an existing file. The destination was lstat-validated
+		// above, so remove only that regular file and retry without following a symlink.
+		if removeErr := os.Remove(dstPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("replace destination plan: %w", removeErr)
+		}
+		if retryErr := os.Rename(tmpPath, dstPath); retryErr != nil {
+			return fmt.Errorf("install copied plan: %w", retryErr)
+		}
+	}
 	return nil
+}
+
+func mkdirAllNoSymlinks(root, relDir string) (string, error) {
+	current := root
+	for component := range strings.SplitSeq(filepath.Clean(relDir), string(filepath.Separator)) {
+		if component == "." || component == "" {
+			continue
+		}
+		if component == ".." {
+			return "", fmt.Errorf("destination directory escapes worktree root: %s", relDir)
+		}
+		next := filepath.Join(current, component)
+		info, err := os.Lstat(next)
+		switch {
+		case err == nil:
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", fmt.Errorf("destination directory is a symbolic link: %s", next)
+			}
+			if !info.IsDir() {
+				return "", fmt.Errorf("destination path component is not a directory: %s", next)
+			}
+		case os.IsNotExist(err):
+			if mkdirErr := os.Mkdir(next, 0o750); mkdirErr != nil {
+				return "", fmt.Errorf("create destination directory: %w", mkdirErr)
+			}
+		default:
+			return "", fmt.Errorf("inspect destination directory: %w", err)
+		}
+		current = next
+	}
+	return current, nil
 }
 
 // resolveFilesystemCase returns the path with the actual on-disk filename case.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -207,6 +208,25 @@ func (e *externalBackend) revParse(ref string) (string, error) {
 		return "", fmt.Errorf("resolve %q: %w", ref, err)
 	}
 	return out, nil
+}
+
+// fileExistsAt reports whether path is a regular Git entry in ref. A missing entry is not an
+// error; malformed revisions and other repository failures are.
+func (e *externalBackend) fileExistsAt(ref, path string) (bool, error) {
+	rel, err := e.toRelative(path)
+	if err != nil {
+		return false, err
+	}
+	_, err = e.run("cat-file", "-e", ref+":"+filepath.ToSlash(rel))
+	if err == nil {
+		return true, nil
+	}
+	// cat-file does not distinguish a missing path from a missing revision. Resolve the revision
+	// separately so callers still receive an actionable error for the latter.
+	if _, resolveErr := e.revParse(ref + "^{commit}"); resolveErr != nil {
+		return false, resolveErr
+	}
+	return false, nil
 }
 
 // diffFingerprint returns a sha256 hash of the working tree state (tracked diffs + untracked file content).
@@ -768,13 +788,17 @@ func (e *externalBackend) fileTracked(path string) (bool, error) {
 	return out != "", nil
 }
 
-// hasChangesOtherThan returns the list of dirty file paths (excluding the given file, case-insensitive).
+// hasChangesOtherThan returns the list of dirty file paths (excluding the given paths, case-insensitive).
 // this includes modified/deleted tracked files, staged changes, and untracked files (excluding gitignored).
 // an empty slice means no other changes.
-func (e *externalBackend) hasChangesOtherThan(path string) ([]string, error) {
-	rel, err := e.toRelative(path)
-	if err != nil {
-		return nil, err
+func (e *externalBackend) hasChangesOtherThan(paths ...string) ([]string, error) {
+	excluded := make([]string, 0, len(paths))
+	for _, path := range paths {
+		rel, err := e.toRelative(path)
+		if err != nil {
+			return nil, err
+		}
+		excluded = append(excluded, rel)
 	}
 
 	// use -uall to list individual files, not collapsed directories
@@ -795,7 +819,8 @@ func (e *externalBackend) hasChangesOtherThan(path string) ([]string, error) {
 		}
 		// extract file path from porcelain output: "XY path" or "XY path -> newpath"
 		filePath := e.extractPathFromPorcelain(line)
-		if strings.EqualFold(filePath, rel) || isLoopaiRuntimePath(filePath) {
+		if slices.ContainsFunc(excluded, func(path string) bool { return strings.EqualFold(filePath, path) }) ||
+			isLoopaiRuntimePath(filePath) {
 			continue
 		}
 		dirty = append(dirty, filePath)

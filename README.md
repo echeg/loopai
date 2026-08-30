@@ -324,20 +324,28 @@ loopai --worktree docs/plans/schema.md,docs/plans/api.md,docs/plans/ui.md
 
 loopai validates every file before starting, then runs each plan through the complete normal
 pipeline in order. Each plan gets its own branch, archived plan, and progress log. The second
-branch starts from the first branch's tip, the third starts from the second branch's tip, and
-so on, whether worktree isolation is enabled or not. Consequently, the last branch contains
-the complete chain. A failure or user abort stops the chain before the next plan starts;
-branches and artifacts from plans that already completed are retained.
+branch starts from the immutable completed tip of the first branch, the third starts from the
+second, and so on, whether worktree isolation is enabled or not. Consequently, the last branch
+contains the complete chain. A failure or user abort stops the chain before the next plan starts;
+branches and artifacts from plans that already completed are retained. Full and `--tasks-only`
+runs support chains; review-only modes do not because they intentionally create no feature branch.
 
-Entries are trimmed, so a quoted value may contain spaces around commas. Empty or duplicate
-entries are rejected. `--branch`, `--serve`, and interactive `--plan` cannot be combined with
-a chain. With `--worktree --commit`, the source-checkout auto-commit applies only to the first
-plan; later plans start from their predecessor's committed branch tip.
+Entries are trimmed, so a quoted value may contain spaces around commas. Empty entries, aliases
+to the same file, and plans that derive the same branch name are rejected. `--branch`, `--serve`,
+interactive `--plan`, `--review`, `--external-only`, and `--codex-only` cannot be combined with a
+chain. Without `--commit`, uncommitted plan files may be the only source-checkout changes; they are
+captured together on the first chain branch. With `--worktree --commit`, the source-checkout
+auto-commit applies only to the first plan.
 
-To land the complete result, merge the last plan's branch. From its worktree, run
-`loopai --merge`; from another checkout, name that final branch or plan explicitly, for
-example `loopai --merge ui`. Earlier branches may be kept for review or merged separately,
-but they do not need to be merged first because their commits are ancestors of the last branch.
+Without worktree isolation, loopai switches the current checkout through each plan branch and
+finishes on the last branch. Each completed plan must leave the checkout clean before the next
+branch is created; otherwise the chain stops with the earlier completed branches retained.
+
+To land the complete result, merge the last plan's branch. A successful worktree run removes its
+temporary worktree, so run `loopai --merge ui` (naming the final branch or plan) from the primary
+checkout or another registered worktree. A non-worktree chain finishes on the final branch and
+can use bare `loopai --merge`. Earlier branches may be kept for review or merged separately, but
+they do not need to be merged first because their commits are ancestors of the last branch.
 
 ## Execution pipeline
 
@@ -924,10 +932,11 @@ when Codex is primary and `claude` otherwise.
 
 The cmux status pill and progress bar belong to the workspace, not to an individual run, so
 several runs started from one workspace overwrite each other's status. Bare `--cmux-workspace`
-and `--cmux-workspace=always` avoid that by unconditionally handing the run off: loopai creates a
-new cmux workspace named after the branch the run will use, relaunches itself there without the
-flag, prints `handed off to cmux workspace <name>`, and exits. The run then owns its own sidebar
-card, pill, spinner, and progress bar, which makes parallel runs independent.
+and `--cmux-workspace=always` avoid that by unconditionally handing the run off: loopai validates
+every chain entry, creates one cmux workspace named after the first plan's branch, relaunches itself
+there without the flag, prints `handed off to cmux workspace <name>`, and exits. Successor reporters
+reuse that card and replace its pill as the chain advances; the isolated workspace owns the pill,
+spinner, and progress bar, which makes parallel runs independent.
 
 ```bash
 loopai --cmux-workspace --worktree docs/plans/feature.md

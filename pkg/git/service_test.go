@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -2213,6 +2214,40 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 }
 
 func TestService_CreateWorktreeForPlanStartRef(t *testing.T) {
+	t.Run("chain carries multiple untracked plans through successors", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		}
+
+		firstWT, needsCommit, err := svc.CreateWorktreeForPlanChainContext(
+			t.Context(), plans[0], "", "", plans,
+		)
+		require.NoError(t, err)
+		assert.True(t, needsCommit)
+		firstSvc, err := svc.OpenWorktree(firstWT)
+		require.NoError(t, err)
+		require.NoError(t, firstSvc.CommitPlanFiles(plans, svc.Root()))
+		firstTip, err := firstSvc.HeadHash()
+		require.NoError(t, err)
+		require.NoError(t, svc.RemoveWorktree(firstWT))
+
+		secondWT, needsCommit, err := svc.CreateWorktreeForPlanChainContext(
+			t.Context(), plans[1], "", firstTip, plans,
+		)
+		require.NoError(t, err)
+		defer svc.RemoveWorktree(secondWT) //nolint:errcheck // test cleanup
+		assert.False(t, needsCommit)
+		assert.FileExists(t, filepath.Join(secondWT, "docs", "plans", "one.md"))
+		assert.FileExists(t, filepath.Join(secondWT, "docs", "plans", "two.md"))
+		runGit(t, secondWT, "merge-base", "--is-ancestor", firstTip, "HEAD")
+	})
+
 	t.Run("empty start ref uses source HEAD", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())
@@ -2328,6 +2363,166 @@ func TestService_CreateWorktreeForPlanStartRef(t *testing.T) {
 		require.Error(t, cmd.Run(), "branch reuse must not merge the source checkout HEAD")
 		assert.FileExists(t, filepath.Join(wtPath, "previous-only.txt"))
 		assert.NoFileExists(t, filepath.Join(wtPath, "source-only.txt"))
+	})
+
+	t.Run("predecessor plan edits are preserved", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "docs", "plans", "next.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Source version\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add next plan"))
+		require.NoError(t, svc.CreateBranch("previous"))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Predecessor version\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("refine next plan"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+
+		wtPath, needsCommit, err := svc.CreateWorktreeForPlanFromRefContext(
+			t.Context(), planFile, "", "refs/heads/previous",
+		)
+		require.NoError(t, err)
+		defer svc.RemoveWorktree(wtPath) //nolint:errcheck // test cleanup
+		assert.False(t, needsCommit)
+		contents, readErr := os.ReadFile(filepath.Join(wtPath, "docs", "plans", "next.md")) //nolint:gosec // test-owned temporary worktree
+		require.NoError(t, readErr)
+		assert.Equal(t, "# Predecessor version\n", string(contents))
+	})
+
+	t.Run("destination plan symlink is rejected", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation requires privileges on Windows")
+		}
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "docs", "plans", "linked.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Source\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add source plan"))
+		require.NoError(t, svc.CreateBranch("previous"))
+		require.NoError(t, os.Remove(planFile))
+		require.NoError(t, os.Symlink(filepath.Join(dir, "outside.md"), planFile))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("replace plan with symlink"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Dirty source\n"), 0o600))
+
+		_, _, err = svc.CreateWorktreeForPlanFromRefContext(
+			t.Context(), planFile, "linked", "refs/heads/previous",
+		)
+		require.ErrorContains(t, err, "destination plan path is a symbolic link")
+		assert.NoFileExists(t, filepath.Join(dir, "outside.md"))
+	})
+}
+
+func TestService_CreateBranchForPlanChain(t *testing.T) {
+	t.Run("branches from feature checkout and commits all untracked plans", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		require.NoError(t, svc.CreateBranch("source-feature"))
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		}
+
+		require.NoError(t, svc.CreateBranchForPlanChainContext(t.Context(), plans[0], "", plans))
+		branch, err := svc.CurrentBranch()
+		require.NoError(t, err)
+		assert.Equal(t, "one", branch)
+		assert.Empty(t, strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
+		assert.Contains(t, runGit(t, dir, "show", "--pretty=format:", "--name-only", "HEAD"), "docs/plans/two.md")
+	})
+
+	t.Run("canceled context creates no successor branch", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "docs", "plans", "next.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Next\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add next plan"))
+		before, err := svc.HeadHash()
+		require.NoError(t, err)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		err = svc.CreateBranchForPlanFromExpectedHEADContext(ctx, planFile, "", before)
+		require.ErrorIs(t, err, context.Canceled)
+		assert.False(t, svc.BranchExists("next"))
+		after, hashErr := svc.HeadHash()
+		require.NoError(t, hashErr)
+		assert.Equal(t, before, after)
+	})
+
+	t.Run("existing successor branch merges the expected predecessor tip", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "docs", "plans", "next.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Next\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		require.NoError(t, svc.CreateBranch("next"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "target.txt"), []byte("target\n"), 0o600))
+		require.NoError(t, svc.repo.add("target.txt"))
+		require.NoError(t, svc.repo.commit("advance target"))
+		targetTip, err := svc.HeadHash()
+		require.NoError(t, err)
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, svc.CreateBranch("previous"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "previous.txt"), []byte("previous\n"), 0o600))
+		require.NoError(t, svc.repo.add("previous.txt"))
+		require.NoError(t, svc.repo.commit("complete previous"))
+		previousTip, err := svc.HeadHash()
+		require.NoError(t, err)
+
+		require.NoError(t, svc.CreateBranchForPlanFromExpectedHEADContext(
+			t.Context(), planFile, "", previousTip,
+		))
+		branch, err := svc.CurrentBranch()
+		require.NoError(t, err)
+		assert.Equal(t, "next", branch)
+		runGit(t, dir, "merge-base", "--is-ancestor", previousTip, "HEAD")
+		runGit(t, dir, "merge-base", "--is-ancestor", targetTip, "HEAD")
+	})
+
+	t.Run("existing successor conflict is rejected before checkout", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "docs", "plans", "next.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Next\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("base\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.add("shared.txt"))
+		require.NoError(t, svc.repo.commit("add fixtures"))
+		require.NoError(t, svc.CreateBranch("next"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("target\n"), 0o600))
+		require.NoError(t, svc.repo.add("shared.txt"))
+		require.NoError(t, svc.repo.commit("change target"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, svc.CreateBranch("previous"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("previous\n"), 0o600))
+		require.NoError(t, svc.repo.add("shared.txt"))
+		require.NoError(t, svc.repo.commit("change predecessor"))
+		previousTip, err := svc.HeadHash()
+		require.NoError(t, err)
+
+		err = svc.CreateBranchForPlanFromExpectedHEADContext(t.Context(), planFile, "", previousTip)
+		require.ErrorContains(t, err, "would conflict")
+		branch, branchErr := svc.CurrentBranch()
+		require.NoError(t, branchErr)
+		assert.Equal(t, "previous", branch)
 	})
 }
 
