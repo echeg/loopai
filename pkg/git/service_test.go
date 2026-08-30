@@ -2519,6 +2519,46 @@ func TestService_ValidatePlanChain(t *testing.T) {
 	})
 }
 
+func TestService_CreateWorktreeForResumedPlanChainPreservesCommittedProgress(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	plansDir := filepath.Join(dir, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+	require.NoError(t, os.WriteFile(plans[0], []byte("source base\n"), 0o600))
+	require.NoError(t, svc.repo.add(plans[0]))
+	require.NoError(t, svc.repo.commit("add tracked first plan"))
+	require.NoError(t, os.WriteFile(plans[0], []byte("source initial\n"), 0o600))
+	require.NoError(t, os.WriteFile(plans[1], []byte("source second\n"), 0o600))
+
+	firstWT, needsCommit, err := svc.CreateWorktreeForPlanChainContext(
+		t.Context(), plans[0], "", "", plans,
+	)
+	require.NoError(t, err)
+	assert.True(t, needsCommit)
+	firstSvc, err := NewService(firstWT, noopServiceLogger())
+	require.NoError(t, err)
+	require.NoError(t, firstSvc.CommitPlanFiles(plans, svc.Root()))
+	require.NoError(t, os.WriteFile(filepath.Join(firstWT, "docs", "plans", "one.md"), []byte("branch progress\n"), 0o600))
+	require.NoError(t, os.Remove(filepath.Join(firstWT, "docs", "plans", "two.md")))
+	runGit(t, firstWT, "add", "docs/plans/one.md", "docs/plans/two.md")
+	runGit(t, firstWT, "commit", "-m", "record progress and remove successor")
+	require.NoError(t, svc.RemoveWorktree(firstWT))
+
+	resumedWT, needsCommit, err := svc.CreateWorktreeForResumedPlanChainContext(
+		t.Context(), plans[0], "", "", plans,
+	)
+	require.NoError(t, err)
+	defer svc.RemoveWorktree(resumedWT) //nolint:errcheck // test cleanup
+	assert.False(t, needsCommit, "prepared branch state must not be replaced from the source checkout")
+	firstContents, err := os.ReadFile(filepath.Join(resumedWT, "docs", "plans", "one.md")) //nolint:gosec // test-owned worktree
+	require.NoError(t, err)
+	assert.Equal(t, "branch progress\n", string(firstContents))
+	assert.NoFileExists(t, filepath.Join(resumedWT, "docs", "plans", "two.md"),
+		"a successor deleted by the interrupted member must not be resurrected")
+}
+
 func TestService_CreateBranchForPlanChain(t *testing.T) {
 	t.Run("branches from feature checkout and commits all untracked plans", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

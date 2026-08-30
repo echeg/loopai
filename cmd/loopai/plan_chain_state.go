@@ -15,18 +15,21 @@ import (
 	"github.com/umputun/ralphex/pkg/processor"
 )
 
-const planChainCheckpointVersion = 1
+const planChainCheckpointVersion = 2
 
 type planChainCheckpoint struct {
-	Version          int                   `json:"version"`
-	Mode             string                `json:"mode"`
-	Plans            []string              `json:"plans"`
-	Completed        int                   `json:"completed"`
-	Active           int                   `json:"active,omitempty"` // one-based member whose execution started but was not checkpointed
-	ActiveStartTip   string                `json:"active_start_tip,omitempty"`
-	PreviousTip      string                `json:"previous_tip,omitempty"`
-	SourcePlans      []git.PlanSourceState `json:"source_plans,omitempty"`
-	SourceReconciled bool                  `json:"source_reconciled,omitempty"`
+	Version           int                   `json:"version"`
+	Mode              string                `json:"mode"`
+	Worktree          bool                  `json:"worktree"`
+	Plans             []string              `json:"plans"`
+	Completed         int                   `json:"completed"`
+	Active            int                   `json:"active,omitempty"` // one-based member whose execution started but was not checkpointed
+	ActiveStartTip    string                `json:"active_start_tip,omitempty"`
+	ActivePrepared    bool                  `json:"active_prepared,omitempty"`
+	ResumePreparedTip string                `json:"resume_prepared_tip,omitempty"`
+	PreviousTip       string                `json:"previous_tip,omitempty"`
+	SourcePlans       []git.PlanSourceState `json:"source_plans,omitempty"`
+	SourceReconciled  bool                  `json:"source_reconciled,omitempty"`
 }
 
 func planChainModeFromOpts(o opts) string {
@@ -143,8 +146,11 @@ func validatePlanChainCheckpoint(state planChainCheckpoint, normalized []string,
 	if state.Active < 0 || state.Active > planCount || (state.Active != 0 && state.Active != state.Completed+1) {
 		return errors.New("plan chain checkpoint has invalid active member")
 	}
-	if state.Active == 0 && state.ActiveStartTip != "" {
+	if state.Active == 0 && (state.ActiveStartTip != "" || state.ActivePrepared) {
 		return errors.New("plan chain checkpoint has active branch tip without an active member")
+	}
+	if state.ActivePrepared && state.ActiveStartTip == "" {
+		return errors.New("plan chain checkpoint has prepared active member without a branch tip")
 	}
 	return nil
 }
@@ -196,11 +202,14 @@ func removePlanChainCheckpoint(root string, plans []string, mode string) error {
 }
 
 func verifiedPlanChainCheckpoint(
-	ctx context.Context, o opts, gitSvc *git.Service,
+	ctx context.Context, o opts, gitSvc *git.Service, worktree bool,
 ) (planChainCheckpoint, bool, error) {
 	state, found, err := loadPlanChainCheckpoint(gitSvc.Root(), o.PlanFiles, string(resolvePlanChainMode(o)))
 	if err != nil || !found {
 		return state, found, err
+	}
+	if state.Worktree != worktree {
+		return planChainCheckpoint{}, false, errors.New("plan chain checkpoint was created with a different worktree setting")
 	}
 	if state.Active != 0 {
 		state, err = recoverActivePlanChainMember(o, gitSvc, state)
@@ -248,10 +257,14 @@ func recoverActivePlanChainMember(
 		if archived && tip != state.ActiveStartTip {
 			state.Completed = state.Active
 			state.PreviousTip = tip
+			state.ResumePreparedTip = ""
+		} else if state.ActivePrepared {
+			state.ResumePreparedTip = state.ActiveStartTip
 		}
 	}
 	state.Active = 0
 	state.ActiveStartTip = ""
+	state.ActivePrepared = false
 	if err := savePlanChainCheckpoint(gitSvc.Root(), o.PlanFiles, state); err != nil {
 		return planChainCheckpoint{}, err
 	}

@@ -122,6 +122,7 @@
 - [x] reject review-only chains and correct close-out, non-worktree, cmux, and developer documentation
 - [x] add production-path and focused regression tests for the review findings
 - [x] persist and resume completed chain prefixes, retain cmux busy ownership between members, restore failed successor checkouts, and reconcile dirty source-plan inputs before close-out
+- [x] resume interrupted first members, bind checkpoints to worktree topology, preserve committed worktree plan progress, and retain cmux ownership through the production cleanup path
 
 ## Technical Details
 - CLI: positional arg split on `,`; `o.PlanFiles []string` with `o.PlanFile == o.PlanFiles[0]`; no new flags in v1.

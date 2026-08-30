@@ -429,6 +429,70 @@ func TestRunPlanChain(t *testing.T) {
 		assert.Equal(t, 1, calls)
 	})
 
+	t.Run("rerun_resumes_interrupted_first_non_worktree_member", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		}
+		runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+		runGit(t, dir, "commit", "-m", "add first-member resume plans")
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		req := executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{},
+			Colors: testColors(), DefaultBranch: "master", OrcaStop: &cleanupHolder{},
+		}
+		stopErr := errors.New("first member interrupted")
+		err = runPlanChain(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, req,
+			nil, nil, io.Discard, func(ctx context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
+				require.NoError(t, prepareSelectedPlanBranch(ctx, gotReq, gotOpts.PlanFile))
+				return stopErr
+			})
+		require.ErrorIs(t, err, stopErr)
+		assert.Equal(t, "one", strings.TrimSpace(gitOutput(t, dir, "branch", "--show-current")))
+
+		calls := 0
+		err = runPlanChain(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, req,
+			nil, nil, io.Discard, func(ctx context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
+				calls++
+				if calls == 1 {
+					assert.Equal(t, plans[0], gotOpts.PlanFile)
+					assert.True(t, gotReq.ChainResume)
+					assert.True(t, gotReq.ChainResumePrepared)
+				}
+				require.NoError(t, prepareSelectedPlanBranch(ctx, gotReq, gotOpts.PlanFile))
+				gotReq.Outcome.succeeded = true
+				gotReq.Outcome.branchTip, err = gotReq.GitSvc.HeadHash()
+				require.NoError(t, err)
+				return nil
+			})
+		require.NoError(t, err)
+		assert.Equal(t, 2, calls)
+		assert.Equal(t, "two", strings.TrimSpace(gitOutput(t, dir, "branch", "--show-current")))
+	})
+
+	t.Run("rejects_checkpoint_from_different_worktree_topology", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plans := []string{"one.md", "two.md"}
+		require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
+			Mode: string(processor.ModeFull), Worktree: true,
+		}))
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		calls := 0
+		err = runPlanChain(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{}, OrcaStop: &cleanupHolder{},
+		}, nil, nil, io.Discard, func(context.Context, opts, executePlanRequest, *plan.Selector) error {
+			calls++
+			return nil
+		})
+		require.ErrorContains(t, err, "different worktree setting")
+		assert.Zero(t, calls)
+	})
+
 	t.Run("recovers_archive_committed_before_checkpoint_advance", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		originalDir, err := os.Getwd()
@@ -873,6 +937,51 @@ printf '%s\n' "$*" >> "$CMUX_TEST_LOG"
 	assert.Equal(t, 2, strings.Count(commands, "set-status loopai starting"))
 	assert.Contains(t, commands, "set-status loopai done in 1s")
 	assert.NotContains(t, commands, "clear-status loopai")
+}
+
+func TestExecutePlanRetainsCmuxBusyStateUntilCoordinatorRelease(t *testing.T) {
+	dir := setupTestRepo(t)
+	originalDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { require.NoError(t, os.Chdir(originalDir)) })
+	planPath := filepath.Join(dir, "docs", "plans", "one.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath,
+		[]byte("# Plan\n\n### Task 1: Done\n\n- [x] already complete\n"), 0o600))
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+	binDir := t.TempDir()
+	commandLog := filepath.Join(binDir, "commands.log")
+	writeExecutable(t, filepath.Join(binDir, "cmux"), `#!/bin/sh
+printf '%s\n' "$*" >> "$CMUX_TEST_LOG"
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-chain-execute")
+	t.Setenv("CMUX_TEST_LOG", commandLog)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	var retained *retainedCmuxRun
+	err = executePlan(t.Context(), opts{TasksOnly: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
+		Config: &config.Config{ClaudeCommand: fakeClaude}, Colors: testColors(), BaseRef: "master",
+		ChainPlanFiles: []string{planPath, filepath.Join(dir, "docs", "plans", "two.md")},
+		CmuxRetain:     func(run retainedCmuxRun) { retained = &run }, Outcome: &planExecutionOutcome{},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, retained)
+	data, err := os.ReadFile(commandLog) //nolint:gosec // test-owned command log
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "clear-status loopai")
+
+	retained.reporter.Stop()
+	data, err = os.ReadFile(commandLog) //nolint:gosec // test-owned command log
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "clear-status loopai")
 }
 
 func TestSetOrcaCleanupStopsReporterOnForceExit(t *testing.T) {

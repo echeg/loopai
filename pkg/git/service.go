@@ -885,6 +885,39 @@ func (s *Service) ResumePlanChainBranchContext(ctx context.Context, branch, pred
 	return nil
 }
 
+// ResumeFirstPlanChainBranchContext resumes an interrupted first non-worktree member. If branch is
+// already checked out, dirty chain-plan inputs are accepted and committed so a crash during initial
+// branch preparation can finish safely; unrelated dirty files remain an error.
+func (s *Service) ResumeFirstPlanChainBranchContext(ctx context.Context, branch string, chainPlanFiles []string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("resume first chained plan branch: %w", err)
+	}
+	if !s.repo.branchExists(branch) {
+		return fmt.Errorf("resume first chained plan branch %q: branch does not exist", branch)
+	}
+	current, err := s.repo.currentBranch()
+	if err != nil {
+		return fmt.Errorf("identify current branch before resuming first chained plan %q: %w", branch, err)
+	}
+	if current != branch && (current == "" || !strings.EqualFold(current, branch)) {
+		dirty, dirtyErr := s.repo.isDirtyAll()
+		if dirtyErr != nil {
+			return fmt.Errorf("check working tree before resuming first chained plan %q: %w", branch, dirtyErr)
+		}
+		if dirty {
+			return fmt.Errorf("cannot resume first chained plan branch %q from another branch with uncommitted changes", branch)
+		}
+		if checkoutErr := s.repo.checkoutBranch(branch); checkoutErr != nil {
+			return fmt.Errorf("checkout first chained plan branch %q for resume: %w", branch, checkoutErr)
+		}
+	}
+	changedPlans, err := s.validateChainedBranchDirtyState(branch, chainPlanFiles)
+	if err != nil {
+		return err
+	}
+	return s.commitChangedChainPlans(branch, changedPlans)
+}
+
 func (s *Service) commitChangedChainPlans(branchName string, changedPlans []string) error {
 	for _, changedPlan := range changedPlans {
 		if err := s.repo.add(changedPlan); err != nil {
@@ -915,7 +948,7 @@ func (s *Service) CreateWorktreeForPlan(planFile, branchOverride string) (string
 func (s *Service) CreateWorktreeForPlanContext(
 	ctx context.Context, planFile, branchOverride string,
 ) (string, bool, error) {
-	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", "", nil)
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", "", nil, false)
 }
 
 // CreateWorktreeForPlanFromRefContext creates a plan worktree whose new branch starts at
@@ -924,7 +957,7 @@ func (s *Service) CreateWorktreeForPlanContext(
 func (s *Service) CreateWorktreeForPlanFromRefContext(
 	ctx context.Context, planFile, branchOverride, startRef string,
 ) (string, bool, error) {
-	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", startRef, nil)
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", startRef, nil, false)
 }
 
 // CreateWorktreeForPlanAfterAutoCommit creates a plan worktree after sourceHeadBefore was
@@ -936,7 +969,7 @@ func (s *Service) CreateWorktreeForPlanAfterAutoCommit(
 	if sourceHeadBefore == "" {
 		return "", false, errors.New("source HEAD before auto-commit is empty")
 	}
-	return s.createWorktreeForPlan(ctx, planFile, branchOverride, sourceHeadBefore, "", nil)
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, sourceHeadBefore, "", nil, false)
 }
 
 // CreateWorktreeForPlanChainContext creates a chain worktree while treating every listed plan as
@@ -945,12 +978,20 @@ func (s *Service) CreateWorktreeForPlanAfterAutoCommit(
 func (s *Service) CreateWorktreeForPlanChainContext(
 	ctx context.Context, planFile, branchOverride, startRef string, chainPlanFiles []string,
 ) (string, bool, error) {
-	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", startRef, chainPlanFiles)
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", startRef, chainPlanFiles, false)
+}
+
+// CreateWorktreeForResumedPlanChainContext recreates a removed first-member worktree without
+// replacing or resurrecting plan state already committed on its fully prepared branch.
+func (s *Service) CreateWorktreeForResumedPlanChainContext(
+	ctx context.Context, planFile, branchOverride, startRef string, chainPlanFiles []string,
+) (string, bool, error) {
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", startRef, chainPlanFiles, true)
 }
 
 func (s *Service) createWorktreeForPlan(
 	ctx context.Context, planFile, branchOverride, existingBranchAncestor, startRef string,
-	chainPlanFiles []string,
+	chainPlanFiles []string, preserveExistingChainPlans bool,
 ) (string, bool, error) {
 	planFile = s.resolveFilesystemCase(planFile)
 	startCommit, err := s.resolveWorktreeStartCommit(startRef)
@@ -1019,6 +1060,9 @@ func (s *Service) createWorktreeForPlan(
 	filesToCopy, copyErr := s.worktreePlanFilesToCopy(
 		planFile, startCommit, startRef, planHasChanges, changedChainPlans, len(chainPlanFiles) > 0,
 	)
+	if copyErr == nil && preserveExistingChainPlans {
+		filesToCopy = nil
+	}
 	if copyErr != nil {
 		_ = s.repo.removeWorktree(wtPath)
 		return "", false, copyErr
