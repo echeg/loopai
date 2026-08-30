@@ -26,6 +26,7 @@ type planChainCheckpoint struct {
 	Active            int                   `json:"active,omitempty"` // one-based member whose execution started but was not checkpointed
 	ActiveStartTip    string                `json:"active_start_tip,omitempty"`
 	ActivePrepared    bool                  `json:"active_prepared,omitempty"`
+	ActiveFinalizing  bool                  `json:"active_finalizing,omitempty"`
 	ResumePreparedTip string                `json:"resume_prepared_tip,omitempty"`
 	PreviousTip       string                `json:"previous_tip,omitempty"`
 	SourcePlans       []git.PlanSourceState `json:"source_plans,omitempty"`
@@ -143,6 +144,10 @@ func validatePlanChainCheckpoint(state planChainCheckpoint, normalized []string,
 	if state.Completed < 0 || state.Completed > planCount || (state.Completed > 0 && state.PreviousTip == "") {
 		return errors.New("plan chain checkpoint has invalid completion state")
 	}
+	return validateActivePlanChainCheckpoint(state, planCount)
+}
+
+func validateActivePlanChainCheckpoint(state planChainCheckpoint, planCount int) error {
 	if state.Active < 0 || state.Active > planCount || (state.Active != 0 && state.Active != state.Completed+1) {
 		return errors.New("plan chain checkpoint has invalid active member")
 	}
@@ -151,6 +156,9 @@ func validatePlanChainCheckpoint(state planChainCheckpoint, normalized []string,
 	}
 	if state.ActivePrepared && state.ActiveStartTip == "" {
 		return errors.New("plan chain checkpoint has prepared active member without a branch tip")
+	}
+	if state.ActiveFinalizing && !state.ActivePrepared {
+		return errors.New("plan chain checkpoint has finalizing member that was not prepared")
 	}
 	return nil
 }
@@ -236,8 +244,9 @@ func verifiedPlanChainCheckpoint(
 }
 
 // recoverActivePlanChainMember closes the only non-atomic completion window: MovePlanToCompleted
-// commits before the coordinator can advance its external checkpoint. An archived plan at the
-// member branch tip is durable proof that execution reached successful post-processing; otherwise
+// commits before the coordinator can advance its external checkpoint. The coordinator persists a
+// finalization marker immediately before archival, so a stale completed copy left by an older run
+// cannot make an aborted member look successful. Without both that marker and a new archived tip,
 // the member remains pending and can be run again.
 func recoverActivePlanChainMember(
 	o opts, gitSvc *git.Service, state planChainCheckpoint,
@@ -254,7 +263,7 @@ func recoverActivePlanChainMember(
 		if err != nil {
 			return planChainCheckpoint{}, fmt.Errorf("recover active plan chain member: %w", err)
 		}
-		if archived && tip != state.ActiveStartTip {
+		if state.ActiveFinalizing && archived && tip != state.ActiveStartTip {
 			state.Completed = state.Active
 			state.PreviousTip = tip
 			state.ResumePreparedTip = ""
@@ -265,6 +274,7 @@ func recoverActivePlanChainMember(
 	state.Active = 0
 	state.ActiveStartTip = ""
 	state.ActivePrepared = false
+	state.ActiveFinalizing = false
 	if err := savePlanChainCheckpoint(gitSvc.Root(), o.PlanFiles, state); err != nil {
 		return planChainCheckpoint{}, err
 	}

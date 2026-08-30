@@ -453,6 +453,8 @@ func TestRunPlanChain(t *testing.T) {
 			})
 		require.ErrorIs(t, err, stopErr)
 		assert.Equal(t, "one", strings.TrimSpace(gitOutput(t, dir, "branch", "--show-current")))
+		preparedTip, err := gitSvc.BranchHash("one")
+		require.NoError(t, err)
 
 		calls := 0
 		err = runPlanChain(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, req,
@@ -462,6 +464,7 @@ func TestRunPlanChain(t *testing.T) {
 					assert.Equal(t, plans[0], gotOpts.PlanFile)
 					assert.True(t, gotReq.ChainResume)
 					assert.True(t, gotReq.ChainResumePrepared)
+					assert.Equal(t, preparedTip, gotReq.ChainResumePreparedTip)
 				}
 				require.NoError(t, prepareSelectedPlanBranch(ctx, gotReq, gotOpts.PlanFile))
 				gotReq.Outcome.succeeded = true
@@ -518,6 +521,7 @@ func TestRunPlanChain(t *testing.T) {
 		o := opts{PlanFile: plans[0], PlanFiles: plans}
 		require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
 			Mode: string(processor.ModeFull), Active: 1, ActiveStartTip: activeStartTip,
+			ActivePrepared: true, ActiveFinalizing: true,
 		}))
 		assert.Equal(t, 1, checkpointCompletedPrefix(dir, o), "startup validation must defer the active member to Git recovery")
 
@@ -572,6 +576,47 @@ func TestRunPlanChain(t *testing.T) {
 		assert.Equal(t, 2, calls)
 	})
 
+	t.Run("does_not_recover_failed_member_from_stale_archive", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		}
+		runGit(t, dir, "add", "docs/plans/one.md", "docs/plans/two.md")
+		runGit(t, dir, "commit", "-m", "add stale archive plans")
+		runGit(t, dir, "checkout", "-b", "one")
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		require.NoError(t, gitSvc.MovePlanToCompleted(plans[0]))
+		require.NoError(t, os.WriteFile(plans[0], []byte("# Rerun plan\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/one.md")
+		runGit(t, dir, "commit", "-m", "prepare rerun with stale archive")
+		preparedTip, err := gitSvc.HeadHash()
+		require.NoError(t, err)
+		require.NoError(t, os.Remove(plans[0]))
+		runGit(t, dir, "add", "docs/plans/one.md")
+		runGit(t, dir, "commit", "-m", "failed task removed active plan")
+		o := opts{PlanFile: plans[0], PlanFiles: plans}
+		require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
+			Mode: string(processor.ModeFull), Active: 1, ActiveStartTip: preparedTip,
+			ActivePrepared: true,
+		}))
+
+		stopErr := errors.New("stop after observing recovered member")
+		calls := 0
+		err = runPlanChain(t.Context(), o, executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{}, OrcaStop: &cleanupHolder{},
+		}, nil, nil, io.Discard, func(_ context.Context, gotOpts opts, _ executePlanRequest, _ *plan.Selector) error {
+			calls++
+			assert.Equal(t, plans[0], gotOpts.PlanFile)
+			return stopErr
+		})
+		require.ErrorIs(t, err, stopErr)
+		assert.Equal(t, 1, calls)
+	})
+
 	t.Run("chain_archive_failure_is_fatal", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		plansDir := filepath.Join(dir, "docs", "plans")
@@ -581,12 +626,15 @@ func TestRunPlanChain(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "completed"), []byte("not a directory\n"), 0o600))
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
+		finalizing := false
 
 		moved, err := moveCompletedPlan(executePlanRequest{
 			PlanFile: planFile, GitSvc: gitSvc, Mode: processor.ModeFull,
 			Config: &config.Config{MovePlanOnCompletion: true}, ChainPlanFiles: []string{planFile, "two.md"},
+			ChainFinalizing: func() error { finalizing = true; return nil },
 		})
 		assert.False(t, moved)
+		assert.True(t, finalizing)
 		require.ErrorContains(t, err, "archive completed chain plan")
 	})
 

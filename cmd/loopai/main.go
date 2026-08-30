@@ -255,36 +255,38 @@ type startupInfo struct {
 
 // executePlanRequest holds parameters for plan execution.
 type executePlanRequest struct {
-	PlanFile            string
-	MainPlanFile        string // original plan path in main repo (worktree mode); empty in normal mode
-	Mode                processor.Mode
-	GitSvc              *git.Service
-	MainGitSvc          *git.Service // main repo service for cross-boundary ops (worktree mode); nil in normal mode
-	Config              *config.Config
-	Colors              *progress.Colors
-	DefaultBranch       string             // base for non-worktree branch creation; worktrees are created from current HEAD
-	BaseRef             string             // base reference for review diffs and templates (--base-ref override or DefaultBranch)
-	WorktreeStartRef    string             // immutable predecessor tip for stacked chain worktrees and branch hand-off
-	ChainSuccessor      bool               // true for plan N+1; non-worktree runs branch from the current plan N tip
-	ChainResume         bool               // true for the first pending member of a resumed chain
-	ChainResumePrepared bool               // retry follows a fully prepared first-member branch/worktree
-	ChainPlanFiles      []string           // all chain inputs; non-empty only for multi-plan execution
-	ChainPrepared       func(string) error // persists the prepared branch tip before execution begins
-	NotifySvc           *notify.Service
-	BranchOverride      string                // branch name override (--branch flag); empty = derive from plan filename
-	WtCleanup           *cleanupHolder        // worktree cleanup for interrupt handler; nil when not in worktree mode
-	CmuxStop            *cleanupHolder        // cmux sidebar reset for interrupt handler; nil when not wired
-	OrcaStop            *cleanupHolder        // terminal-title reset for interrupt handler; nil when not wired
-	CmuxHandoff         func()                // releases a quiesced predecessor after this reporter starts
-	CmuxPredecessorStop func()                // clears a retained predecessor on force-exit before hand-off
-	CmuxRetain          func(retainedCmuxRun) // keeps a successful chain member busy until its successor starts
-	SetupTitles         *orca.Reporter        // setup reporter retained until the phase-specific reporter starts
-	BeforeCmuxFinish    func(bool)            // final repository/log cleanup; bool reports execution success
-	Outcome             *planExecutionOutcome // explicit completion state; aborts return nil but do not succeed
-	ProgressLog         *progress.Logger      // pre-created logger (worktree mode); nil in normal mode
-	PhaseHolder         *status.PhaseHolder   // pre-created holder (worktree mode); nil in normal mode
-	ExternalReview      externalReviewSelection
-	LimitRecovery       limits.Recovery
+	PlanFile               string
+	MainPlanFile           string // original plan path in main repo (worktree mode); empty in normal mode
+	Mode                   processor.Mode
+	GitSvc                 *git.Service
+	MainGitSvc             *git.Service // main repo service for cross-boundary ops (worktree mode); nil in normal mode
+	Config                 *config.Config
+	Colors                 *progress.Colors
+	DefaultBranch          string             // base for non-worktree branch creation; worktrees are created from current HEAD
+	BaseRef                string             // base reference for review diffs and templates (--base-ref override or DefaultBranch)
+	WorktreeStartRef       string             // immutable predecessor tip for stacked chain worktrees and branch hand-off
+	ChainSuccessor         bool               // true for plan N+1; non-worktree runs branch from the current plan N tip
+	ChainResume            bool               // true for the first pending member of a resumed chain
+	ChainResumePrepared    bool               // retry follows a fully prepared first-member branch/worktree
+	ChainResumePreparedTip string             // immutable prepared tip that a resumed first member must contain
+	ChainPlanFiles         []string           // all chain inputs; non-empty only for multi-plan execution
+	ChainPrepared          func(string) error // persists the prepared branch tip before execution begins
+	ChainFinalizing        func() error       // persists that successful post-processing began before archival
+	NotifySvc              *notify.Service
+	BranchOverride         string                // branch name override (--branch flag); empty = derive from plan filename
+	WtCleanup              *cleanupHolder        // worktree cleanup for interrupt handler; nil when not in worktree mode
+	CmuxStop               *cleanupHolder        // cmux sidebar reset for interrupt handler; nil when not wired
+	OrcaStop               *cleanupHolder        // terminal-title reset for interrupt handler; nil when not wired
+	CmuxHandoff            func()                // releases a quiesced predecessor after this reporter starts
+	CmuxPredecessorStop    func()                // clears a retained predecessor on force-exit before hand-off
+	CmuxRetain             func(retainedCmuxRun) // keeps a successful chain member busy until its successor starts
+	SetupTitles            *orca.Reporter        // setup reporter retained until the phase-specific reporter starts
+	BeforeCmuxFinish       func(bool)            // final repository/log cleanup; bool reports execution success
+	Outcome                *planExecutionOutcome // explicit completion state; aborts return nil but do not succeed
+	ProgressLog            *progress.Logger      // pre-created logger (worktree mode); nil in normal mode
+	PhaseHolder            *status.PhaseHolder   // pre-created holder (worktree mode); nil in normal mode
+	ExternalReview         externalReviewSelection
+	LimitRecovery          limits.Recovery
 }
 
 type retainedCmuxRun struct {
@@ -665,7 +667,9 @@ func prepareSelectedPlanBranch(ctx context.Context, req executePlanRequest, plan
 	if len(req.ChainPlanFiles) > 1 && !req.ChainSuccessor {
 		branch := req.GitSvc.EffectiveBranchName(planFile, req.BranchOverride)
 		if req.ChainResume && req.GitSvc.BranchExists(branch) {
-			if err := req.GitSvc.ResumeFirstPlanChainBranchContext(ctx, branch, req.ChainPlanFiles); err != nil {
+			if err := req.GitSvc.ResumeFirstPlanChainBranchContext(
+				ctx, branch, req.ChainPlanFiles, req.ChainResumePreparedTip,
+			); err != nil {
 				return fmt.Errorf("resume first chain branch for plan: %w", err)
 			}
 		} else if err := req.GitSvc.CreateBranchForPlanChainContext(
@@ -797,6 +801,7 @@ func runPlanChain(
 		state.Active = i + 1
 		state.ActiveStartTip = ""
 		state.ActivePrepared = false
+		state.ActiveFinalizing = false
 		activeBranch := req.GitSvc.EffectiveBranchName(planFile, "")
 		if req.GitSvc.BranchExists(activeBranch) {
 			state.ActiveStartTip, err = req.GitSvc.BranchHash(activeBranch)
@@ -833,6 +838,7 @@ func runPlanChain(
 		state.Active = 0
 		state.ActiveStartTip = ""
 		state.ActivePrepared = false
+		state.ActiveFinalizing = false
 		state.ResumePreparedTip = ""
 		state.PreviousTip = previousTip
 		if err := savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, state); err != nil {
@@ -898,11 +904,16 @@ func executePlanChainMember(
 	planReq.ChainSuccessor = index > 0
 	planReq.ChainResume = index == startIndex && resumed
 	planReq.ChainResumePrepared = planReq.ChainResume && state.ResumePreparedTip != ""
+	planReq.ChainResumePreparedTip = state.ResumePreparedTip
 	planReq.ChainPlanFiles = o.PlanFiles
 	planReq.WorktreeStartRef = previousTip
 	planReq.ChainPrepared = func(tip string) error {
 		state.ActiveStartTip = tip
 		state.ActivePrepared = true
+		return savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, *state)
+	}
+	planReq.ChainFinalizing = func() error {
+		state.ActiveFinalizing = true
 		return savePlanChainCheckpoint(req.GitSvc.Root(), o.PlanFiles, *state)
 	}
 	err := execute(ctx, planOpts, planReq, selector)
@@ -1468,6 +1479,11 @@ func moveCompletedPlan(req executePlanRequest) (bool, error) {
 	if req.MainPlanFile != "" && !chainRun {
 		movePlanFile = req.MainPlanFile
 	}
+	if chainRun && req.ChainFinalizing != nil {
+		if err := req.ChainFinalizing(); err != nil {
+			return false, fmt.Errorf("checkpoint chain finalization: %w", err)
+		}
+	}
 	if err := moveSvc.MovePlanToCompleted(movePlanFile); err != nil {
 		if chainRun {
 			return false, fmt.Errorf("archive completed chain plan: %w", err)
@@ -1690,34 +1706,36 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	handedOff = true
 
 	return executePlan(ctx, o, executePlanRequest{
-		PlanFile:            wt.planFile,
-		MainPlanFile:        req.PlanFile, // original path in main repo for MovePlanToCompleted
-		Mode:                req.Mode,
-		GitSvc:              wt.gitSvc,
-		MainGitSvc:          req.GitSvc,
-		Config:              req.Config,
-		Colors:              req.Colors,
-		DefaultBranch:       req.DefaultBranch,
-		BaseRef:             req.BaseRef,
-		NotifySvc:           req.NotifySvc,
-		CmuxStop:            req.CmuxStop,
-		OrcaStop:            req.OrcaStop,
-		CmuxHandoff:         req.CmuxHandoff,
-		CmuxPredecessorStop: req.CmuxPredecessorStop,
-		CmuxRetain:          req.CmuxRetain,
-		SetupTitles:         req.SetupTitles,
-		BeforeCmuxFinish:    finishState.beforeCmuxFinish,
-		Outcome:             req.Outcome,
-		ChainSuccessor:      req.ChainSuccessor,
-		ChainResume:         req.ChainResume,
-		ChainResumePrepared: req.ChainResumePrepared,
-		ChainPlanFiles:      req.ChainPlanFiles,
-		ChainPrepared:       req.ChainPrepared,
-		WorktreeStartRef:    req.WorktreeStartRef,
-		ProgressLog:         baseLog,
-		PhaseHolder:         holder,
-		ExternalReview:      req.ExternalReview,
-		LimitRecovery:       req.LimitRecovery,
+		PlanFile:               wt.planFile,
+		MainPlanFile:           req.PlanFile, // original path in main repo for MovePlanToCompleted
+		Mode:                   req.Mode,
+		GitSvc:                 wt.gitSvc,
+		MainGitSvc:             req.GitSvc,
+		Config:                 req.Config,
+		Colors:                 req.Colors,
+		DefaultBranch:          req.DefaultBranch,
+		BaseRef:                req.BaseRef,
+		NotifySvc:              req.NotifySvc,
+		CmuxStop:               req.CmuxStop,
+		OrcaStop:               req.OrcaStop,
+		CmuxHandoff:            req.CmuxHandoff,
+		CmuxPredecessorStop:    req.CmuxPredecessorStop,
+		CmuxRetain:             req.CmuxRetain,
+		SetupTitles:            req.SetupTitles,
+		BeforeCmuxFinish:       finishState.beforeCmuxFinish,
+		Outcome:                req.Outcome,
+		ChainSuccessor:         req.ChainSuccessor,
+		ChainResume:            req.ChainResume,
+		ChainResumePrepared:    req.ChainResumePrepared,
+		ChainResumePreparedTip: req.ChainResumePreparedTip,
+		ChainPlanFiles:         req.ChainPlanFiles,
+		ChainPrepared:          req.ChainPrepared,
+		ChainFinalizing:        req.ChainFinalizing,
+		WorktreeStartRef:       req.WorktreeStartRef,
+		ProgressLog:            baseLog,
+		PhaseHolder:            holder,
+		ExternalReview:         req.ExternalReview,
+		LimitRecovery:          req.LimitRecovery,
 	})
 }
 
@@ -1836,7 +1854,11 @@ func prepareWorktreeRunContext(
 	if !wt.resumed {
 		return wt, nil
 	}
-	if validationErr := validateResumeWorktree(ctx, req.GitSvc, wt, branch, req.WorktreeStartRef); validationErr != nil {
+	requiredStart := req.WorktreeStartRef
+	if req.ChainResumePreparedTip != "" {
+		requiredStart = req.ChainResumePreparedTip
+	}
+	if validationErr := validateResumeWorktree(ctx, req.GitSvc, wt, branch, requiredStart); validationErr != nil {
 		return worktreeRun{}, validationErr
 	}
 	if o.Commit {
@@ -2095,7 +2117,8 @@ func createUncommittedPlanWorktree(ctx context.Context, req executePlanRequest) 
 		)
 	case req.ChainResumePrepared && !req.ChainSuccessor:
 		path, needsCommit, err = req.GitSvc.CreateWorktreeForResumedPlanChainContext(
-			ctx, req.PlanFile, req.BranchOverride, req.WorktreeStartRef, req.ChainPlanFiles,
+			ctx, req.PlanFile, req.BranchOverride, req.WorktreeStartRef,
+			req.ChainResumePreparedTip, req.ChainPlanFiles,
 		)
 	default:
 		path, needsCommit, err = req.GitSvc.CreateWorktreeForPlanChainContext(

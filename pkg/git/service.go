@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -721,10 +722,82 @@ func (s *Service) createBranchForPlanFromCurrentHEADContext(
 	if err != nil {
 		return err
 	}
-	if err := s.switchToChainedPlanBranch(ctx, branchName, currentBranch, startCommit); err != nil {
-		return err
+	reusingBranch := s.repo.branchExists(branchName)
+	var planSnapshots []planFileSnapshot
+	if reusingBranch && len(chainPlanFiles) > 0 {
+		planSnapshots, err = s.snapshotPlanFiles(chainPlanFiles)
+		if err != nil {
+			return fmt.Errorf("snapshot chain plans before reusing branch %q: %w", branchName, err)
+		}
+	}
+	if switchErr := s.switchToChainedPlanBranch(ctx, branchName, currentBranch, startCommit); switchErr != nil {
+		return switchErr
+	}
+	if reusingBranch && len(planSnapshots) > 0 {
+		changedPlans, err = s.restorePlanSnapshots(planSnapshots)
+		if err != nil {
+			return fmt.Errorf("restore chain plans on reused branch %q: %w", branchName, err)
+		}
 	}
 	return s.commitChangedChainPlans(branchName, changedPlans)
+}
+
+type planFileSnapshot struct {
+	path string
+	data []byte
+	mode os.FileMode
+}
+
+func (s *Service) snapshotPlanFiles(planFiles []string) ([]planFileSnapshot, error) {
+	snapshots := make([]planFileSnapshot, 0, len(planFiles))
+	for _, planFile := range planFiles {
+		path := s.resolveFilesystemCase(planFile)
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			path = resolved
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect plan file %q: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("plan file %q is not a regular file", path)
+		}
+		data, err := os.ReadFile(path) //nolint:gosec // validated repository plan path
+		if err != nil {
+			return nil, fmt.Errorf("read plan file %q: %w", path, err)
+		}
+		snapshots = append(snapshots, planFileSnapshot{path: path, data: data, mode: info.Mode()})
+	}
+	return snapshots, nil
+}
+
+func (s *Service) restorePlanSnapshots(snapshots []planFileSnapshot) ([]string, error) {
+	changedPlans := make([]string, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		relPath, err := filepath.Rel(s.repo.root(), snapshot.path)
+		if err != nil || filepath.IsAbs(relPath) || relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("plan file escapes repository root: %s", snapshot.path)
+		}
+		dstDir, err := mkdirAllNoSymlinks(s.repo.root(), filepath.Dir(relPath))
+		if err != nil {
+			return nil, err
+		}
+		dstPath := filepath.Join(dstDir, filepath.Base(relPath))
+		if err := validateCopyDestination(dstPath); err != nil {
+			return nil, err
+		}
+		if current, readErr := os.ReadFile(dstPath); //nolint:gosec // root-contained path validated above
+		readErr == nil && bytes.Equal(current, snapshot.data) {
+			continue
+		} else if readErr != nil && !os.IsNotExist(readErr) {
+			return nil, fmt.Errorf("read destination plan %q: %w", dstPath, readErr)
+		}
+		if err := writeFileReplacing(snapshot.data, snapshot.mode.Perm(), dstDir, dstPath); err != nil {
+			return nil, err
+		}
+		changedPlans = append(changedPlans, dstPath)
+	}
+	return changedPlans, nil
 }
 
 func (s *Service) prepareChainedBranchSource(
@@ -888,7 +961,9 @@ func (s *Service) ResumePlanChainBranchContext(ctx context.Context, branch, pred
 // ResumeFirstPlanChainBranchContext resumes an interrupted first non-worktree member. If branch is
 // already checked out, dirty chain-plan inputs are accepted and committed so a crash during initial
 // branch preparation can finish safely; unrelated dirty files remain an error.
-func (s *Service) ResumeFirstPlanChainBranchContext(ctx context.Context, branch string, chainPlanFiles []string) error {
+func (s *Service) ResumeFirstPlanChainBranchContext(
+	ctx context.Context, branch string, chainPlanFiles []string, preparedTip string,
+) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("resume first chained plan branch: %w", err)
 	}
@@ -898,6 +973,9 @@ func (s *Service) ResumeFirstPlanChainBranchContext(ctx context.Context, branch 
 	current, err := s.repo.currentBranch()
 	if err != nil {
 		return fmt.Errorf("identify current branch before resuming first chained plan %q: %w", branch, err)
+	}
+	if preparedTip != "" {
+		return s.resumePreparedPlanChainBranch(ctx, branch, current, preparedTip)
 	}
 	if current != branch && (current == "" || !strings.EqualFold(current, branch)) {
 		dirty, dirtyErr := s.repo.isDirtyAll()
@@ -916,6 +994,31 @@ func (s *Service) ResumeFirstPlanChainBranchContext(ctx context.Context, branch 
 		return err
 	}
 	return s.commitChangedChainPlans(branch, changedPlans)
+}
+
+func (s *Service) resumePreparedPlanChainBranch(
+	ctx context.Context, branch, current, preparedTip string,
+) error {
+	if current != branch && (current == "" || !strings.EqualFold(current, branch)) {
+		dirty, err := s.repo.isDirtyAll()
+		if err != nil {
+			return fmt.Errorf("check working tree before resuming prepared chain branch %q: %w", branch, err)
+		}
+		if dirty {
+			return fmt.Errorf("cannot resume prepared chain branch %q from another branch with uncommitted changes", branch)
+		}
+		if err := s.repo.checkoutBranch(branch); err != nil {
+			return fmt.Errorf("checkout prepared chain branch %q for resume: %w", branch, err)
+		}
+	}
+	contains, err := s.repo.isAncestor(ctx, preparedTip, "HEAD")
+	if err != nil {
+		return fmt.Errorf("validate prepared chain branch %q: %w", branch, err)
+	}
+	if !contains {
+		return fmt.Errorf("cannot resume prepared chain branch %q: HEAD does not contain saved prepared tip %s", branch, preparedTip)
+	}
+	return nil
 }
 
 func (s *Service) commitChangedChainPlans(branchName string, changedPlans []string) error {
@@ -984,9 +1087,9 @@ func (s *Service) CreateWorktreeForPlanChainContext(
 // CreateWorktreeForResumedPlanChainContext recreates a removed first-member worktree without
 // replacing or resurrecting plan state already committed on its fully prepared branch.
 func (s *Service) CreateWorktreeForResumedPlanChainContext(
-	ctx context.Context, planFile, branchOverride, startRef string, chainPlanFiles []string,
+	ctx context.Context, planFile, branchOverride, startRef, preparedTip string, chainPlanFiles []string,
 ) (string, bool, error) {
-	return s.createWorktreeForPlan(ctx, planFile, branchOverride, "", startRef, chainPlanFiles, true)
+	return s.createWorktreeForPlan(ctx, planFile, branchOverride, preparedTip, startRef, chainPlanFiles, true)
 }
 
 func (s *Service) createWorktreeForPlan(
@@ -1004,6 +1107,13 @@ func (s *Service) createWorktreeForPlan(
 		s.log.Printf("warning: prune worktrees: %v\n", pruneErr)
 	}
 
+	branchName := s.EffectiveBranchName(planFile, branchOverride)
+	if validateErr := s.validatePreparedPlanChainBranch(
+		ctx, branchName, existingBranchAncestor, preserveExistingChainPlans,
+	); validateErr != nil {
+		return "", false, validateErr
+	}
+
 	validationAncestor := existingBranchAncestor
 	if validationAncestor == "" {
 		validationAncestor = startCommit
@@ -1011,7 +1121,6 @@ func (s *Service) createWorktreeForPlan(
 	if preflightErr := s.preflightWorktreeForPlan(ctx, planFile, branchOverride, validationAncestor, startRef); preflightErr != nil {
 		return "", false, preflightErr
 	}
-	branchName := s.EffectiveBranchName(planFile, branchOverride)
 	wtPath := filepath.Join(s.repo.root(), ".loopai", "worktrees", branchName)
 
 	planHasChanges, changedChainPlans, err := s.inspectWorktreePlanChanges(
@@ -1037,7 +1146,8 @@ func (s *Service) createWorktreeForPlan(
 	}
 
 	// create worktree with branch
-	if s.repo.branchExists(branchName) {
+	reusingBranch := s.repo.branchExists(branchName)
+	if reusingBranch {
 		if err := s.createExistingPlanWorktree(
 			ctx, wtPath, branchName, validationAncestor, startCommit, startRef,
 		); err != nil {
@@ -1058,7 +1168,8 @@ func (s *Service) createWorktreeForPlan(
 	// preserves the plan from its predecessor when present, so plan N can intentionally edit plan
 	// N+1. The source copy is used only when the explicit start commit predates the plan.
 	filesToCopy, copyErr := s.worktreePlanFilesToCopy(
-		planFile, startCommit, startRef, planHasChanges, changedChainPlans, len(chainPlanFiles) > 0,
+		planFile, startCommit, startRef, planHasChanges, changedChainPlans,
+		len(chainPlanFiles) > 0, reusingBranch, chainPlanFiles,
 	)
 	if copyErr == nil && preserveExistingChainPlans {
 		filesToCopy = nil
@@ -1074,6 +1185,25 @@ func (s *Service) createWorktreeForPlan(
 	planHasChanges = len(filesToCopy) > 0
 
 	return wtPath, planHasChanges, nil
+}
+
+func (s *Service) validatePreparedPlanChainBranch(
+	ctx context.Context, branchName, preparedTip string, required bool,
+) error {
+	if !required {
+		return nil
+	}
+	if !s.repo.branchExists(branchName) {
+		return fmt.Errorf("resume prepared plan branch %q: branch does not exist", branchName)
+	}
+	containsPrepared, err := s.repo.isAncestor(ctx, preparedTip, "refs/heads/"+branchName)
+	if err != nil {
+		return fmt.Errorf("validate prepared plan branch %q: %w", branchName, err)
+	}
+	if !containsPrepared {
+		return fmt.Errorf("resume prepared plan branch %q: branch does not contain saved prepared tip %s", branchName, preparedTip)
+	}
+	return nil
 }
 
 func (s *Service) inspectWorktreePlanChanges(
@@ -1099,10 +1229,14 @@ func (s *Service) inspectWorktreePlanChanges(
 }
 
 func (s *Service) worktreePlanFilesToCopy(
-	planFile, startCommit, startRef string, planHasChanges bool, changedChainPlans []string, chain bool,
+	planFile, startCommit, startRef string, planHasChanges bool, changedChainPlans []string,
+	chain, reusingBranch bool, chainPlanFiles []string,
 ) ([]string, error) {
 	if startRef == "" {
 		if chain {
+			if reusingBranch {
+				return chainPlanFiles, nil
+			}
 			return changedChainPlans, nil
 		}
 		if planHasChanges {
@@ -1504,6 +1638,35 @@ func copyFileReplacing(absSrc, dstDir, dstPath string) error {
 	if renameErr := os.Rename(tmpPath, dstPath); renameErr != nil {
 		// Windows cannot atomically replace an existing file. The destination was lstat-validated
 		// above, so remove only that regular file and retry without following a symlink.
+		if removeErr := os.Remove(dstPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("replace destination plan: %w", removeErr)
+		}
+		if retryErr := os.Rename(tmpPath, dstPath); retryErr != nil {
+			return fmt.Errorf("install copied plan: %w", retryErr)
+		}
+	}
+	return nil
+}
+
+func writeFileReplacing(data []byte, mode os.FileMode, dstDir, dstPath string) error {
+	dst, err := os.CreateTemp(dstDir, ".loopai-plan-*")
+	if err != nil {
+		return fmt.Errorf("create temporary destination: %w", err)
+	}
+	tmpPath := dst.Name()
+	defer os.Remove(tmpPath) //nolint:errcheck // best-effort cleanup after errors or rename
+	if err := dst.Chmod(mode); err != nil {
+		_ = dst.Close()
+		return fmt.Errorf("set copied plan permissions: %w", err)
+	}
+	if _, err := dst.Write(data); err != nil {
+		_ = dst.Close()
+		return fmt.Errorf("write copied plan: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("close copied plan: %w", err)
+	}
+	if err := os.Rename(tmpPath, dstPath); err != nil {
 		if removeErr := os.Remove(dstPath); removeErr != nil && !os.IsNotExist(removeErr) {
 			return fmt.Errorf("replace destination plan: %w", removeErr)
 		}
