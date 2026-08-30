@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -43,6 +44,35 @@ func TestDirectCancellationPreservesCallerSession(t *testing.T) {
 
 	assert.Nil(t, cmd.SysProcAttr)
 	assert.Equal(t, commandWaitDelay, cmd.WaitDelay)
+}
+
+func TestExternalBackendFileExistsAtAcceptsOnlyRegularFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on Windows")
+	}
+	dir := setupExternalTestRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "regular.md"), []byte("regular\n"), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "plans"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "plans", "nested.md"), []byte("nested\n"), 0o600))
+	require.NoError(t, os.Symlink("regular.md", filepath.Join(dir, "linked.md")))
+	runGit(t, dir, "add", "regular.md", "plans/nested.md", "linked.md")
+	runGit(t, dir, "commit", "-m", "add tree entry modes")
+
+	backend, err := newExternalBackend(dir, "git")
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{path: "regular.md", want: true},
+		{path: "linked.md", want: false},
+		{path: "plans", want: false},
+		{path: "missing.md", want: false},
+	} {
+		got, existsErr := backend.fileExistsAt("HEAD", tc.path)
+		require.NoError(t, existsErr)
+		assert.Equal(t, tc.want, got, tc.path)
+	}
 }
 
 func TestExternalBackendMergeWouldConflict(t *testing.T) {

@@ -2417,6 +2417,106 @@ func TestService_CreateWorktreeForPlanStartRef(t *testing.T) {
 		require.ErrorContains(t, err, "destination plan path is a symbolic link")
 		assert.NoFileExists(t, filepath.Join(dir, "outside.md"))
 	})
+
+	t.Run("chain successor deleted by predecessor is not resurrected", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		}
+		require.NoError(t, svc.repo.add("docs/plans/one.md"))
+		require.NoError(t, svc.repo.add("docs/plans/two.md"))
+		require.NoError(t, svc.repo.commit("add chain plans"))
+		require.NoError(t, svc.CreateBranch("previous"))
+		require.NoError(t, os.Remove(plans[1]))
+		require.NoError(t, svc.repo.add("docs/plans/two.md"))
+		require.NoError(t, svc.repo.commit("remove successor plan"))
+		previousTip, err := svc.HeadHash()
+		require.NoError(t, err)
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+
+		_, _, err = svc.CreateWorktreeForPlanChainContext(
+			t.Context(), plans[1], "", previousTip, plans,
+		)
+		require.ErrorContains(t, err, "is missing or not a regular file at predecessor tip")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "two"))
+	})
+
+	t.Run("chain successor replaced by symlink is rejected", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation requires privileges on Windows")
+		}
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		}
+		require.NoError(t, svc.repo.add("docs/plans/one.md"))
+		require.NoError(t, svc.repo.add("docs/plans/two.md"))
+		require.NoError(t, svc.repo.commit("add chain plans"))
+		require.NoError(t, svc.CreateBranch("previous"))
+		require.NoError(t, os.Remove(plans[1]))
+		require.NoError(t, os.Symlink("../../../outside.md", plans[1]))
+		require.NoError(t, svc.repo.add("docs/plans/two.md"))
+		require.NoError(t, svc.repo.commit("replace successor with symlink"))
+		previousTip, err := svc.HeadHash()
+		require.NoError(t, err)
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+
+		_, _, err = svc.CreateWorktreeForPlanChainContext(
+			t.Context(), plans[1], "", previousTip, plans,
+		)
+		require.ErrorContains(t, err, "is missing or not a regular file at predecessor tip")
+		assert.NoFileExists(t, filepath.Join(dir, "outside.md"))
+	})
+}
+
+func TestService_ValidatePlanChain(t *testing.T) {
+	t.Run("rejects invalid derived branch before execution", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two..bad.md")}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+			require.NoError(t, svc.repo.add(planFile))
+		}
+		require.NoError(t, svc.repo.commit("add invalid branch chain"))
+
+		err = svc.ValidatePlanChain(plans)
+		require.ErrorContains(t, err, `invalid plan branch "two..bad"`)
+		assert.False(t, svc.BranchExists("one"))
+	})
+
+	t.Run("rejects ignored untracked successor", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		first := filepath.Join(plansDir, "one.md")
+		second := filepath.Join(plansDir, "ignored.md")
+		require.NoError(t, os.WriteFile(first, []byte("# One\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("docs/plans/ignored.md\n"), 0o600))
+		require.NoError(t, svc.repo.add(first))
+		require.NoError(t, svc.repo.add(".gitignore"))
+		require.NoError(t, svc.repo.commit("add chain fixtures"))
+		require.NoError(t, os.WriteFile(second, []byte("# Ignored\n"), 0o600))
+
+		err = svc.ValidatePlanChain([]string{first, second})
+		require.ErrorContains(t, err, "is ignored or otherwise unavailable to Git")
+		assert.False(t, svc.BranchExists("one"))
+	})
 }
 
 func TestService_CreateBranchForPlanChain(t *testing.T) {

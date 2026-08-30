@@ -478,9 +478,10 @@ func run(ctx context.Context, o opts) (runErr error) {
 	}
 	gitSvc.SetCommitTrailer(cfg.CommitTrailer)
 
-	// ensure repository has commits (prompts to create initial commit if empty)
-	if ensureErr := ensureRepoHasCommits(ctx, gitSvc, os.Stdin, os.Stdout, setupTitles); ensureErr != nil {
-		return ensureErr
+	// Ensure the repository is executable and reject repository-dependent chain problems before
+	// resolving branches or creating any plan artifacts.
+	if repoErr := validateExecutionRepository(ctx, o, gitSvc, setupTitles); repoErr != nil {
+		return repoErr
 	}
 
 	// defaultBranch is for non-worktree branch creation, baseRef for review diffs and the
@@ -537,6 +538,21 @@ func run(ctx context.Context, o opts) (runErr error) {
 		LimitRecovery:  limitRecovery,
 	}
 	return runSelectedPlans(ctx, o, req, selector, setupTitles, os.Stdout, selectAndExecutePlan)
+}
+
+func validateExecutionRepository(
+	ctx context.Context, o opts, gitSvc *git.Service, setupTitles *orca.Reporter,
+) error {
+	if err := ensureRepoHasCommits(ctx, gitSvc, os.Stdin, os.Stdout, setupTitles); err != nil {
+		return err
+	}
+	if len(o.PlanFiles) <= 1 {
+		return nil
+	}
+	if err := gitSvc.ValidatePlanChain(o.PlanFiles); err != nil {
+		return fmt.Errorf("validate plan chain repository state: %w", err)
+	}
+	return nil
 }
 
 // prepareRunBeforeConfig decides hand-off before taking a local reservation: otherwise auto mode
@@ -967,7 +983,9 @@ func displayStats(req executePlanRequest, baseLog *progress.Logger, stats git.Di
 	planPath := ""
 	if req.PlanFile != "" {
 		planFile := req.PlanFile
-		if req.MainPlanFile != "" {
+		// A worktree chain archives on the execution branch, not in the source checkout. Keep
+		// its displayed path relative to that branch instead of claiming the source copy moved.
+		if req.MainPlanFile != "" && len(req.ChainPlanFiles) <= 1 {
 			planFile = req.MainPlanFile
 		}
 		planPath = planFile
@@ -1223,25 +1241,12 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 
 	sendNotification(req, branch, elapsed, stats, nil)
 
-	// move completed plan to completed/ directory.
-	// use MainGitSvc+MainPlanFile when available (worktree mode) because the plan file is in the main repo.
+	// Move completed plans before capturing the branch tip so archival is part of the stack. A
+	// single worktree run retains its historical source-checkout archival behavior; a chain archives
+	// inside each execution worktree so the source checkout stays untouched between plans and the
+	// final branch contains every completed-plan move.
 	// track actual success so the completion summary reflects where the plan really lives.
-	planMoved := false
-	if shouldMovePlan(req) {
-		moveSvc := req.GitSvc
-		movePlanFile := req.PlanFile
-		if req.MainGitSvc != nil {
-			moveSvc = req.MainGitSvc
-		}
-		if req.MainPlanFile != "" {
-			movePlanFile = req.MainPlanFile
-		}
-		if moveErr := moveSvc.MovePlanToCompleted(movePlanFile); moveErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to move plan to completed: %v\n", moveErr)
-		} else {
-			planMoved = true
-		}
-	}
+	planMoved := moveCompletedPlan(req)
 
 	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved)
 	if outcomeErr := capturePlanOutcome(req); outcomeErr != nil {
@@ -1259,6 +1264,26 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 
 	return nil
+}
+
+func moveCompletedPlan(req executePlanRequest) bool {
+	if !shouldMovePlan(req) {
+		return false
+	}
+	moveSvc := req.GitSvc
+	movePlanFile := req.PlanFile
+	chainRun := len(req.ChainPlanFiles) > 1
+	if req.MainGitSvc != nil && !chainRun {
+		moveSvc = req.MainGitSvc
+	}
+	if req.MainPlanFile != "" && !chainRun {
+		movePlanFile = req.MainPlanFile
+	}
+	if err := moveSvc.MovePlanToCompleted(movePlanFile); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to move plan to completed: %v\n", err)
+		return false
+	}
+	return true
 }
 
 func capturePlanOutcome(req executePlanRequest) error {
@@ -1475,6 +1500,9 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		SetupTitles:      req.SetupTitles,
 		BeforeCmuxFinish: finishState.beforeCmuxFinish,
 		Outcome:          req.Outcome,
+		ChainSuccessor:   req.ChainSuccessor,
+		ChainPlanFiles:   req.ChainPlanFiles,
+		WorktreeStartRef: req.WorktreeStartRef,
 		ProgressLog:      baseLog,
 		PhaseHolder:      holder,
 		ExternalReview:   req.ExternalReview,
@@ -1757,6 +1785,10 @@ func openAndLockWorktreeRun(
 			}
 		})
 	}
+	if validationErr := wtSvc.ValidatePlanFile(wt.planFile); validationErr != nil {
+		wt.releaseRunLock()
+		return worktreeRun{}, fmt.Errorf("validate plan inside worktree: %w", validationErr)
+	}
 	return wt, nil
 }
 
@@ -1788,6 +1820,11 @@ func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, b
 	); preflightErr != nil {
 		return "", false, fmt.Errorf("preflight worktree creation: %w", preflightErr)
 	}
+	if len(req.ChainPlanFiles) > 1 {
+		if chainErr := req.GitSvc.ValidatePlanChain(req.ChainPlanFiles); chainErr != nil {
+			return "", false, fmt.Errorf("preflight plan chain: %w", chainErr)
+		}
+	}
 
 	// Install runtime ignores while holding the repository lock so another fresh run
 	// cannot observe this run's worktree directory as an untracked source change.
@@ -1802,6 +1839,11 @@ func prepareFreshWorktree(ctx context.Context, o opts, req executePlanRequest, b
 		ctx, req.PlanFile, req.BranchOverride, req.WorktreeStartRef,
 	); preflightErr != nil {
 		return "", false, fmt.Errorf("preflight worktree creation after ignore setup: %w", preflightErr)
+	}
+	if len(req.ChainPlanFiles) > 1 {
+		if chainErr := req.GitSvc.ValidatePlanChain(req.ChainPlanFiles); chainErr != nil {
+			return "", false, fmt.Errorf("preflight plan chain after ignore setup: %w", chainErr)
+		}
 	}
 	if o.Commit {
 		if preflightErr := req.GitSvc.PreflightWorktreeForPlanAutoCommitContext(ctx, req.PlanFile, req.BranchOverride); preflightErr != nil {

@@ -441,6 +441,30 @@ func (s *Service) EffectiveBranchName(planFile, branchOverride string) string {
 	return plan.ExtractBranchName(s.resolveFilesystemCase(planFile))
 }
 
+// ValidatePlanChain verifies repository-dependent chain invariants before any plan branch is
+// created. The CLI's filesystem validation cannot tell whether an untracked plan is ignored or
+// whether a derived name is a valid literal Git branch.
+func (s *Service) ValidatePlanChain(planFiles []string) error {
+	for _, planFile := range planFiles {
+		resolved := s.resolveFilesystemCase(planFile)
+		if err := s.validateWorktreePlanFile(resolved); err != nil {
+			return fmt.Errorf("validate plan chain entry %q: %w", planFile, err)
+		}
+		branchName := s.EffectiveBranchName(resolved, "")
+		if err := s.repo.validateBranchName(branchName); err != nil {
+			return fmt.Errorf("invalid plan branch %q for %q: %w", branchName, planFile, err)
+		}
+	}
+	return nil
+}
+
+// ValidatePlanFile verifies that a plan is a regular, repository-contained path that Git can
+// carry. It is used again inside a prepared worktree so a tree-entry substitution cannot reach the
+// plan parser.
+func (s *Service) ValidatePlanFile(planFile string) error {
+	return s.validateWorktreePlanFile(planFile)
+}
+
 // inspectPlanChanges returns dirty files other than the plan and whether the plan itself changed.
 func (s *Service) inspectPlanChanges(planFile string) ([]string, bool, error) {
 	dirtyFiles, err := s.repo.hasChangesOtherThan(planFile)
@@ -925,6 +949,9 @@ func (s *Service) worktreePlanFilesToCopy(
 	existsAtStart, err := s.repo.fileExistsAt(startCommit, planFile)
 	if err != nil {
 		return nil, fmt.Errorf("inspect plan at worktree start: %w", err)
+	}
+	if chain && !existsAtStart {
+		return nil, fmt.Errorf("chained plan %q is missing or not a regular file at predecessor tip %s", planFile, startCommit)
 	}
 	if !existsAtStart || (!chain && planHasChanges) {
 		return []string{planFile}, nil

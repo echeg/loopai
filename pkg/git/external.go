@@ -210,23 +210,36 @@ func (e *externalBackend) revParse(ref string) (string, error) {
 	return out, nil
 }
 
-// fileExistsAt reports whether path is a regular Git entry in ref. A missing entry is not an
-// error; malformed revisions and other repository failures are.
+// fileExistsAt reports whether path is a regular file in ref. Git represents symlinks as blobs
+// too, so checking object existence or type is insufficient: only normal executable/non-executable
+// blob modes are accepted. A missing or non-regular entry is not an error; malformed revisions and
+// other repository failures are.
 func (e *externalBackend) fileExistsAt(ref, path string) (bool, error) {
 	rel, err := e.toRelative(path)
 	if err != nil {
 		return false, err
 	}
-	_, err = e.run("cat-file", "-e", ref+":"+filepath.ToSlash(rel))
-	if err == nil {
-		return true, nil
+	out, err := e.run("ls-tree", "-z", ref, "--", filepath.ToSlash(rel))
+	if err != nil {
+		// Keep the previous actionable missing-revision diagnostic instead of presenting every
+		// ls-tree failure as though the path were simply absent.
+		if _, resolveErr := e.revParse(ref + "^{commit}"); resolveErr != nil {
+			return false, resolveErr
+		}
+		return false, fmt.Errorf("inspect path %q at %q: %w", rel, ref, err)
 	}
-	// cat-file does not distinguish a missing path from a missing revision. Resolve the revision
-	// separately so callers still receive an actionable error for the latter.
-	if _, resolveErr := e.revParse(ref + "^{commit}"); resolveErr != nil {
-		return false, resolveErr
+	if out == "" {
+		return false, nil
 	}
-	return false, nil
+	metadata, _, found := strings.Cut(out, "\t")
+	if !found {
+		return false, fmt.Errorf("inspect path %q at %q: malformed ls-tree output", rel, ref)
+	}
+	fields := strings.Fields(metadata)
+	if len(fields) != 3 {
+		return false, fmt.Errorf("inspect path %q at %q: malformed ls-tree metadata", rel, ref)
+	}
+	return fields[1] == "blob" && (fields[0] == "100644" || fields[0] == "100755"), nil
 }
 
 // diffFingerprint returns a sha256 hash of the working tree state (tracked diffs + untracked file content).

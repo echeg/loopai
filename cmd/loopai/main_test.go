@@ -488,11 +488,20 @@ printf '%s\n' '{"type":"result","result":""}'
 		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "two"))
 		runGit(t, dir, "merge-base", "--is-ancestor", "one", "two")
 		for _, name := range []string{"one", "two"} {
-			assert.FileExists(t, filepath.Join(plansDir, "completed", name+".md"))
+			assert.FileExists(t, filepath.Join(plansDir, name+".md"),
+				"worktree chains must leave the source checkout untouched")
+			assert.NoFileExists(t, filepath.Join(plansDir, "completed", name+".md"))
+			assert.Contains(t, gitOutput(t, dir, "ls-tree", "--name-only", "two", "docs/plans/completed/"+name+".md"),
+				"docs/plans/completed/"+name+".md")
+			assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "ls-tree", "--name-only", "two", "docs/plans/"+name+".md")))
 			logs, globErr := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "progress-"+name+"*.txt"))
 			require.NoError(t, globErr)
 			assert.NotEmpty(t, logs)
 		}
+		assert.Contains(t, gitOutput(t, dir, "ls-tree", "--name-only", "one", "docs/plans/completed/one.md"),
+			"docs/plans/completed/one.md")
+		assert.Contains(t, gitOutput(t, dir, "ls-tree", "--name-only", "one", "docs/plans/two.md"),
+			"docs/plans/two.md")
 	})
 }
 
@@ -7659,6 +7668,18 @@ func TestDisplayStats(t *testing.T) {
 				},
 				planMoved: false,
 				wantPath:  "docs/plans/feature.md",
+			},
+			{
+				name: "worktree_chain_shows_execution_branch_archive",
+				req: executePlanRequest{
+					PlanFile:       "worktree/docs/plans/feature.md",
+					MainPlanFile:   "docs/plans/feature.md",
+					ChainPlanFiles: []string{"docs/plans/one.md", "docs/plans/feature.md"},
+					Mode:           processor.ModeFull,
+					Config:         &config.Config{MovePlanOnCompletion: true},
+				},
+				planMoved: true,
+				wantPath:  filepath.Join("worktree", "docs", "plans", "completed", "feature.md"),
 			},
 			{
 				name: "move_failed_shows_original_path",
