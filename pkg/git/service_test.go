@@ -2624,6 +2624,99 @@ func TestService_CreateBranchForPlanChain(t *testing.T) {
 		require.NoError(t, branchErr)
 		assert.Equal(t, "previous", branch)
 	})
+
+	t.Run("post-checkout cancellation restores predecessor branch", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "docs", "plans", "next.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Next\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		require.NoError(t, svc.CreateBranch("next"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "target.txt"), []byte("target\n"), 0o600))
+		require.NoError(t, svc.repo.add("target.txt"))
+		require.NoError(t, svc.repo.commit("advance target"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, svc.CreateBranch("previous"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "previous.txt"), []byte("previous\n"), 0o600))
+		require.NoError(t, svc.repo.add("previous.txt"))
+		require.NoError(t, svc.repo.commit("complete previous"))
+		previousTip, err := svc.HeadHash()
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		svc.repo = &cancelSecondAncestorBackend{backend: svc.repo, cancel: cancel}
+		err = svc.CreateBranchForPlanFromExpectedHEADContext(ctx, planFile, "", previousTip)
+		require.ErrorIs(t, err, context.Canceled)
+		branch, branchErr := svc.CurrentBranch()
+		require.NoError(t, branchErr)
+		assert.Equal(t, "previous", branch)
+	})
+}
+
+type cancelSecondAncestorBackend struct {
+	backend
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (b *cancelSecondAncestorBackend) isAncestor(ctx context.Context, ancestor, descendant string) (bool, error) {
+	b.calls++
+	if b.calls == 2 {
+		b.cancel()
+		return false, fmt.Errorf("cancel injected ancestry check: %w", ctx.Err())
+	}
+	return b.backend.isAncestor(ctx, ancestor, descendant)
+}
+
+func TestService_ReconcilePlanChainSourceState(t *testing.T) {
+	t.Run("restores tracked plan and removes untracked plan", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		tracked := filepath.Join(plansDir, "tracked.md")
+		untracked := filepath.Join(plansDir, "untracked.md")
+		require.NoError(t, os.WriteFile(tracked, []byte("base\n"), 0o600))
+		require.NoError(t, svc.repo.add(tracked))
+		require.NoError(t, svc.repo.commit("add tracked plan"))
+		require.NoError(t, os.WriteFile(tracked, []byte("changed\n"), 0o600))
+		require.NoError(t, os.WriteFile(untracked, []byte("new\n"), 0o600))
+
+		states, err := svc.CapturePlanChainSourceState([]string{tracked, untracked})
+		require.NoError(t, err)
+		require.Len(t, states, 2)
+		require.NoError(t, svc.ReconcilePlanChainSourceState(states))
+		require.NoError(t, svc.ReconcilePlanChainSourceState(states), "reconciliation must be restart-safe")
+
+		contents, err := os.ReadFile(tracked) //nolint:gosec // test-owned temporary repository
+		require.NoError(t, err)
+		assert.Equal(t, "base\n", string(contents))
+		assert.NoFileExists(t, untracked)
+		dirty, err := svc.IsDirtyAll()
+		require.NoError(t, err)
+		assert.False(t, dirty)
+	})
+
+	t.Run("concurrent source edit is left untouched", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "plan.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("initial\n"), 0o600))
+		states, err := svc.CapturePlanChainSourceState([]string{planFile})
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(planFile, []byte("concurrent\n"), 0o600))
+
+		err = svc.ReconcilePlanChainSourceState(states)
+		require.ErrorContains(t, err, "changed during execution")
+		contents, readErr := os.ReadFile(planFile) //nolint:gosec // test-owned temporary repository
+		require.NoError(t, readErr)
+		assert.Equal(t, "concurrent\n", string(contents))
+	})
 }
 
 func TestService_CommitPlanFile(t *testing.T) {

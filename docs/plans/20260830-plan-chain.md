@@ -121,10 +121,12 @@
 - [x] preserve predecessor edits to successor plans and reject symlinked worktree copy destinations
 - [x] reject review-only chains and correct close-out, non-worktree, cmux, and developer documentation
 - [x] add production-path and focused regression tests for the review findings
+- [x] persist and resume completed chain prefixes, retain cmux busy ownership between members, restore failed successor checkouts, and reconcile dirty source-plan inputs before close-out
 
 ## Technical Details
 - CLI: positional arg split on `,`; `o.PlanFiles []string` with `o.PlanFile == o.PlanFiles[0]`; no new flags in v1.
 - Chain state threaded between iterations: the immutable completed commit ID of the previous plan branch.
+- Restart state: an ignored checkpoint under `.loopai/progress/` records the completed prefix and immutable predecessor SHA; rerunning the same chain validates the saved branch ancestry and starts at the first pending plan.
 - Worktree start ref: plan 1 uses today's default (source HEAD); plan N+1 uses the captured plan N commit ID. Branch reuse and resume validation synchronize against that immutable commit.
 - Outcome signal: chain continues only on an explicit per-plan success (pattern of `worktreeFinishState.succeeded`), treating `ErrUserAborted`-with-nil-error as a stop.
 - Exit code: unchanged binary contract — first failure prints `error: %v` and exits 1; earlier completed plans remain archived with their branches intact.

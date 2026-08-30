@@ -801,6 +801,17 @@ func (e *externalBackend) fileTracked(path string) (bool, error) {
 	return out != "", nil
 }
 
+func (e *externalBackend) restoreFile(path string) error {
+	rel, err := e.toRelative(path)
+	if err != nil {
+		return err
+	}
+	if _, err = e.run("restore", "--source=HEAD", "--staged", "--worktree", "--", rel); err != nil {
+		return fmt.Errorf("restore file: %w", err)
+	}
+	return nil
+}
+
 // hasChangesOtherThan returns the list of dirty file paths (excluding the given paths, case-insensitive).
 // this includes modified/deleted tracked files, staged changes, and untracked files (excluding gitignored).
 // an empty slice means no other changes.

@@ -329,13 +329,18 @@ second, and so on, whether worktree isolation is enabled or not. Consequently, t
 contains the complete chain. A failure or user abort stops the chain before the next plan starts;
 branches and artifacts from plans that already completed are retained. Full and `--tasks-only`
 runs support chains; review-only modes do not because they intentionally create no feature branch.
+Rerun the same comma-separated command after an interruption: a checkpoint under
+`.loopai/progress/` skips the verified completed prefix and resumes from its saved immutable tip.
 
 Entries are trimmed, so a quoted value may contain spaces around commas. Empty entries, aliases
 to the same file, and plans that derive the same branch name are rejected. `--branch`, `--serve`,
 interactive `--plan`, `--review`, `--external-only`, and `--codex-only` cannot be combined with a
 chain. Without `--commit`, uncommitted plan files may be the only source-checkout changes; they are
 captured together on the first chain branch. With `--worktree --commit`, the source-checkout
-auto-commit applies only to the first plan.
+auto-commit applies only to the first plan. After every worktree-chain member succeeds, unchanged
+dirty tracked inputs are restored to the source `HEAD` and unchanged untracked inputs are removed,
+so the primary checkout is clean for `--merge`; a source plan edited concurrently is left untouched
+and reported instead of being overwritten.
 
 Without worktree isolation, loopai switches the current checkout through each plan branch and
 finishes on the last branch. Each completed plan must leave the checkout clean before the next

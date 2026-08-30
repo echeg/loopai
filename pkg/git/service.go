@@ -2,6 +2,8 @@ package git
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -65,6 +67,7 @@ type backend interface {
 	isAncestor(ctx context.Context, ancestor, descendant string) (bool, error)
 	mergeWouldConflict(ctx context.Context, base, branch string) (bool, error)
 	mergeWorkingTreeWouldConflict(ctx context.Context, base string) (bool, error)
+	restoreFile(path string) error
 }
 
 // ErrMergeConflict identifies a merge that could not be completed because of conflicts.
@@ -87,6 +90,14 @@ type DiffStats struct {
 type Worktree struct {
 	Path   string
 	Branch string
+}
+
+// PlanSourceState records an initially dirty chain plan in the source checkout. Digest protects
+// concurrent user edits while a worktree chain runs; Tracked selects restore-to-HEAD versus removal.
+type PlanSourceState struct {
+	Path    string `json:"path"`
+	Digest  string `json:"digest"`
+	Tracked bool   `json:"tracked"`
 }
 
 // ErrNotSameRepository indicates that a path opened as a worktree belongs to another repository.
@@ -226,6 +237,18 @@ func (s *Service) ContainsRevisionContext(ctx context.Context, revision string) 
 	contains, err := s.repo.isAncestor(ctx, revision, "HEAD")
 	if err != nil {
 		return false, fmt.Errorf("check whether HEAD contains %q: %w", revision, err)
+	}
+	return contains, nil
+}
+
+// BranchContainsRevisionContext reports whether revision is an ancestor of a local branch tip.
+func (s *Service) BranchContainsRevisionContext(ctx context.Context, branch, revision string) (bool, error) {
+	if branch == "" || revision == "" {
+		return false, errors.New("branch ancestry check requires a branch and revision")
+	}
+	contains, err := s.repo.isAncestor(ctx, revision, "refs/heads/"+branch)
+	if err != nil {
+		return false, fmt.Errorf("check whether branch %q contains %q: %w", branch, revision, err)
 	}
 	return contains, nil
 }
@@ -754,13 +777,75 @@ func (s *Service) switchToChainedPlanBranch(
 	}
 	containsStart, err := s.repo.isAncestor(ctx, startCommit, "HEAD")
 	if err != nil {
-		return fmt.Errorf("check chained plan branch %q against previous plan tip: %w", branchName, err)
+		return s.restoreChainedPlanSource(currentBranch, startCommit,
+			fmt.Errorf("check chained plan branch %q against previous plan tip: %w", branchName, err))
 	}
 	if containsStart {
 		return nil
 	}
 	if err := s.repo.mergeRevision(ctx, startCommit, startCommit); err != nil {
-		return fmt.Errorf("merge previous plan tip into chained plan branch %q: %w", branchName, err)
+		return s.restoreChainedPlanSource(currentBranch, startCommit,
+			fmt.Errorf("merge previous plan tip into chained plan branch %q: %w", branchName, err))
+	}
+	return nil
+}
+
+func (s *Service) restoreChainedPlanSource(currentBranch, startCommit string, cause error) error {
+	target := currentBranch
+	if target == "" {
+		target = startCommit
+	}
+	if err := s.repo.checkoutBranch(target); err != nil {
+		return errors.Join(cause, fmt.Errorf("restore chained plan source %q: %w", target, err))
+	}
+	return cause
+}
+
+// ResumePlanChainBranchContext switches to an already-created successor branch and verifies that
+// it still contains the immutable completed predecessor tip. Dirty state is accepted only when the
+// target branch is already checked out, matching ordinary interrupted non-worktree resume behavior.
+func (s *Service) ResumePlanChainBranchContext(ctx context.Context, branch, predecessorTip string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("resume chained plan branch: %w", err)
+	}
+	if !s.repo.branchExists(branch) {
+		return fmt.Errorf("resume chained plan branch %q: branch does not exist", branch)
+	}
+	current, err := s.repo.currentBranch()
+	if err != nil {
+		return fmt.Errorf("identify current branch before resuming chained plan %q: %w", branch, err)
+	}
+	startCommit, err := s.repo.headHash()
+	if err != nil {
+		return fmt.Errorf("identify current HEAD before resuming chained plan %q: %w", branch, err)
+	}
+	switched := current != branch
+	if switched {
+		dirty, dirtyErr := s.repo.isDirtyAll()
+		if dirtyErr != nil {
+			return fmt.Errorf("check working tree before resuming chained plan %q: %w", branch, dirtyErr)
+		}
+		if dirty {
+			return fmt.Errorf("cannot resume chained plan branch %q from another branch with uncommitted changes", branch)
+		}
+		if checkoutErr := s.repo.checkoutBranch(branch); checkoutErr != nil {
+			return fmt.Errorf("checkout chained plan branch %q for resume: %w", branch, checkoutErr)
+		}
+	}
+	contains, err := s.repo.isAncestor(ctx, predecessorTip, "HEAD")
+	if err != nil {
+		cause := fmt.Errorf("validate resumed chained plan branch %q: %w", branch, err)
+		if switched {
+			return s.restoreChainedPlanSource(current, startCommit, cause)
+		}
+		return cause
+	}
+	if !contains {
+		cause := fmt.Errorf("cannot resume chained plan branch %q: HEAD does not contain predecessor tip %s", branch, predecessorTip)
+		if switched {
+			return s.restoreChainedPlanSource(current, startCommit, cause)
+		}
+		return cause
 	}
 	return nil
 }
@@ -1708,6 +1793,104 @@ func (s *Service) FileHasChanges(path string) (bool, error) {
 		return false, fmt.Errorf("file has changes %q: %w", path, err)
 	}
 	return changed, nil
+}
+
+// CapturePlanChainSourceState snapshots only changed plan inputs. Clean tracked plans already allow
+// close-out merges; dirty tracked and untracked plans must be reconciled after a successful chain.
+func (s *Service) CapturePlanChainSourceState(planFiles []string) ([]PlanSourceState, error) {
+	states := make([]PlanSourceState, 0, len(planFiles))
+	for _, planFile := range planFiles {
+		path := planFile
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(s.repo.root(), path)
+		}
+		if resolvedDir, resolveErr := filepath.EvalSymlinks(filepath.Dir(path)); resolveErr == nil {
+			path = filepath.Join(resolvedDir, filepath.Base(path))
+		}
+		changed, err := s.repo.fileHasChanges(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect chain source plan %q: %w", planFile, err)
+		}
+		if !changed {
+			continue
+		}
+		rel, err := filepath.Rel(s.repo.root(), path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			return nil, fmt.Errorf("resolve chain source plan %q inside repository", planFile)
+		}
+		data, err := os.ReadFile(path) //nolint:gosec // validated plan path inside repository
+		if err != nil {
+			return nil, fmt.Errorf("read chain source plan %q: %w", planFile, err)
+		}
+		tracked, err := s.repo.fileTracked(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect chain source tracking for %q: %w", planFile, err)
+		}
+		digest := sha256.Sum256(data)
+		states = append(states, PlanSourceState{
+			Path: filepath.ToSlash(rel), Digest: hex.EncodeToString(digest[:]), Tracked: tracked,
+		})
+	}
+	return states, nil
+}
+
+// ReconcilePlanChainSourceState makes the source checkout merge-ready after a successful worktree
+// chain. It refuses to touch any input whose contents changed since capture.
+func (s *Service) ReconcilePlanChainSourceState(states []PlanSourceState) error {
+	var reconcileErrs []error
+	for _, state := range states {
+		path := filepath.Join(s.repo.root(), filepath.FromSlash(state.Path))
+		rel, err := filepath.Rel(s.repo.root(), path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			reconcileErrs = append(reconcileErrs, fmt.Errorf("refuse chain source path outside repository: %q", state.Path))
+			continue
+		}
+		if state.Tracked {
+			changed, changeErr := s.repo.fileHasChanges(path)
+			if changeErr != nil {
+				reconcileErrs = append(reconcileErrs, fmt.Errorf("inspect tracked chain source plan %q: %w", state.Path, changeErr))
+				continue
+			}
+			if !changed {
+				continue // already restored by an earlier reconciliation attempt
+			}
+		}
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			if state.Tracked {
+				reconcileErrs = append(reconcileErrs, fmt.Errorf("tracked chain source plan %q was deleted during execution; left untouched", state.Path))
+			}
+			continue
+		}
+		if err != nil {
+			reconcileErrs = append(reconcileErrs, fmt.Errorf("inspect chain source plan %q: %w", state.Path, err))
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			reconcileErrs = append(reconcileErrs, fmt.Errorf("refuse changed non-regular chain source plan %q", state.Path))
+			continue
+		}
+		data, err := os.ReadFile(path) //nolint:gosec // path is constrained to the repository root
+		if err != nil {
+			reconcileErrs = append(reconcileErrs, fmt.Errorf("read chain source plan %q: %w", state.Path, err))
+			continue
+		}
+		digest := sha256.Sum256(data)
+		if hex.EncodeToString(digest[:]) != state.Digest {
+			reconcileErrs = append(reconcileErrs, fmt.Errorf("chain source plan %q changed during execution; left untouched", state.Path))
+			continue
+		}
+		if state.Tracked {
+			if err := s.repo.restoreFile(path); err != nil {
+				reconcileErrs = append(reconcileErrs, fmt.Errorf("restore tracked chain source plan %q: %w", state.Path, err))
+			}
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			reconcileErrs = append(reconcileErrs, fmt.Errorf("remove consumed untracked chain source plan %q: %w", state.Path, err))
+		}
+	}
+	return errors.Join(reconcileErrs...)
 }
 
 // formatDirtyFiles formats a list of dirty file paths for display in error messages.
