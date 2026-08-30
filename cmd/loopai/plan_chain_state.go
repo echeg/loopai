@@ -15,22 +15,24 @@ import (
 	"github.com/umputun/ralphex/pkg/processor"
 )
 
-const planChainCheckpointVersion = 2
+const planChainCheckpointVersion = 3
 
 type planChainCheckpoint struct {
-	Version           int                   `json:"version"`
-	Mode              string                `json:"mode"`
-	Worktree          bool                  `json:"worktree"`
-	Plans             []string              `json:"plans"`
-	Completed         int                   `json:"completed"`
-	Active            int                   `json:"active,omitempty"` // one-based member whose execution started but was not checkpointed
-	ActiveStartTip    string                `json:"active_start_tip,omitempty"`
-	ActivePrepared    bool                  `json:"active_prepared,omitempty"`
-	ActiveFinalizing  bool                  `json:"active_finalizing,omitempty"`
-	ResumePreparedTip string                `json:"resume_prepared_tip,omitempty"`
-	PreviousTip       string                `json:"previous_tip,omitempty"`
-	SourcePlans       []git.PlanSourceState `json:"source_plans,omitempty"`
-	SourceReconciled  bool                  `json:"source_reconciled,omitempty"`
+	Version              int                   `json:"version"`
+	Mode                 string                `json:"mode"`
+	Worktree             bool                  `json:"worktree"`
+	Commit               bool                  `json:"commit"`
+	MovePlanOnCompletion bool                  `json:"move_plan_on_completion"`
+	Plans                []string              `json:"plans"`
+	Completed            int                   `json:"completed"`
+	Active               int                   `json:"active,omitempty"` // one-based member whose execution started but was not checkpointed
+	ActiveStartTip       string                `json:"active_start_tip,omitempty"`
+	ActivePrepared       bool                  `json:"active_prepared,omitempty"`
+	ActiveFinalizing     bool                  `json:"active_finalizing,omitempty"`
+	ResumePreparedTip    string                `json:"resume_prepared_tip,omitempty"`
+	PreviousTip          string                `json:"previous_tip,omitempty"`
+	SourcePlans          []git.PlanSourceState `json:"source_plans,omitempty"`
+	SourceReconciled     bool                  `json:"source_reconciled,omitempty"`
 }
 
 func planChainModeFromOpts(o opts) string {
@@ -219,8 +221,14 @@ func verifiedPlanChainCheckpoint(
 	if state.Worktree != worktree {
 		return planChainCheckpoint{}, false, errors.New("plan chain checkpoint was created with a different worktree setting")
 	}
+	if state.Commit != o.Commit {
+		return planChainCheckpoint{}, false, errors.New("plan chain checkpoint was created with a different commit setting")
+	}
+	if state.MovePlanOnCompletion != movePlanOnCompletion {
+		return planChainCheckpoint{}, false, errors.New("plan chain checkpoint was created with a different move-plan-on-completion setting")
+	}
 	if state.Active != 0 {
-		state, err = recoverActivePlanChainMember(o, gitSvc, state, movePlanOnCompletion)
+		state, err = recoverActivePlanChainMember(o, gitSvc, state, state.MovePlanOnCompletion)
 		if err != nil {
 			return planChainCheckpoint{}, false, err
 		}

@@ -825,6 +825,25 @@ func (e *externalBackend) fileTracked(path string) (bool, error) {
 	return out != "", nil
 }
 
+// fileStateFingerprint returns the exact per-path porcelain and index state. Source-plan
+// reconciliation compares it with the captured value so index-only concurrent changes are never
+// discarded by a later git restore.
+func (e *externalBackend) fileStateFingerprint(path string) (string, error) {
+	rel, err := e.toRelative(path)
+	if err != nil {
+		return "", err
+	}
+	status, err := e.run("status", "--porcelain=v1", "-z", "-uall", "--", rel)
+	if err != nil {
+		return "", fmt.Errorf("read file status: %w", err)
+	}
+	index, err := e.run("ls-files", "--stage", "-z", "--", rel)
+	if err != nil {
+		return "", fmt.Errorf("read file index entry: %w", err)
+	}
+	return status + "\x00" + index, nil
+}
+
 func (e *externalBackend) restoreFile(path string) error {
 	rel, err := e.toRelative(path)
 	if err != nil {

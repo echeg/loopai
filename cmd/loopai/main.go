@@ -734,7 +734,10 @@ func initializePlanChainRun(
 	if found {
 		return state, true, nil
 	}
-	state = planChainCheckpoint{Mode: string(req.Mode), Worktree: req.Config.WorktreeEnabled}
+	state = planChainCheckpoint{
+		Mode: string(req.Mode), Worktree: req.Config.WorktreeEnabled, Commit: o.Commit,
+		MovePlanOnCompletion: req.Config.MovePlanOnCompletion,
+	}
 	if req.Config.WorktreeEnabled && !o.Commit {
 		state.SourcePlans, err = req.GitSvc.CapturePlanChainSourceState(o.PlanFiles)
 		if err != nil {

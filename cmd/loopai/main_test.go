@@ -496,6 +496,45 @@ func TestRunPlanChain(t *testing.T) {
 		assert.Zero(t, calls)
 	})
 
+	t.Run("rejects checkpoint from different commit setting", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plans := []string{"one.md", "two.md"}
+		require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
+			Mode: string(processor.ModeFull), Worktree: true, Commit: true,
+		}))
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		calls := 0
+		err = runPlanChain(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc,
+			Config: &config.Config{WorktreeEnabled: true}, OrcaStop: &cleanupHolder{},
+		}, nil, nil, io.Discard, func(context.Context, opts, executePlanRequest, *plan.Selector) error {
+			calls++
+			return nil
+		})
+		require.ErrorContains(t, err, "different commit setting")
+		assert.Zero(t, calls)
+	})
+
+	t.Run("rejects checkpoint from different archival setting", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plans := []string{"one.md", "two.md"}
+		require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
+			Mode: string(processor.ModeFull), MovePlanOnCompletion: true,
+		}))
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		calls := 0
+		err = runPlanChain(t.Context(), opts{PlanFile: plans[0], PlanFiles: plans}, executePlanRequest{
+			Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{}, OrcaStop: &cleanupHolder{},
+		}, nil, nil, io.Discard, func(context.Context, opts, executePlanRequest, *plan.Selector) error {
+			calls++
+			return nil
+		})
+		require.ErrorContains(t, err, "different move-plan-on-completion setting")
+		assert.Zero(t, calls)
+	})
+
 	t.Run("recovers_archive_committed_before_checkpoint_advance", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		originalDir, err := os.Getwd()
@@ -915,7 +954,7 @@ func testPlanChainClearsDeletedPreparedBranch(t *testing.T) {
 	require.NoError(t, err)
 	o := opts{PlanFile: plans[0], PlanFiles: plans}
 	require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
-		Mode: string(processor.ModeFull), Worktree: true, Active: 1,
+		Mode: string(processor.ModeFull), Worktree: true, MovePlanOnCompletion: true, Active: 1,
 		ActiveStartTip: preparedTip, ActivePrepared: true,
 	}))
 
@@ -951,7 +990,7 @@ func testPlanChainClearsMissingPreparedRevision(t *testing.T) {
 	o := opts{PlanFile: plans[0], PlanFiles: plans}
 	missingTip := strings.Repeat("1", 40)
 	require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
-		Mode: string(processor.ModeFull), Worktree: true, ResumePreparedTip: missingTip,
+		Mode: string(processor.ModeFull), Worktree: true, MovePlanOnCompletion: true, ResumePreparedTip: missingTip,
 	}))
 
 	state, found, err := verifiedPlanChainCheckpoint(t.Context(), o, gitSvc, true, true)
@@ -981,7 +1020,7 @@ func testPlanChainRejectsRewoundPreparedBranch(t *testing.T) {
 	require.NoError(t, err)
 	o := opts{PlanFile: plans[0], PlanFiles: plans}
 	require.NoError(t, savePlanChainCheckpoint(dir, plans, planChainCheckpoint{
-		Mode: string(processor.ModeFull), Worktree: true, ResumePreparedTip: preparedTip,
+		Mode: string(processor.ModeFull), Worktree: true, MovePlanOnCompletion: true, ResumePreparedTip: preparedTip,
 	}))
 	runGit(t, dir, "branch", "-f", "one", "HEAD~1")
 

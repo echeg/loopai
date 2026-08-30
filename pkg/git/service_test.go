@@ -2547,6 +2547,11 @@ func TestService_CreateWorktreeForResumedPlanChainPreservesCommittedProgress(t *
 	runGit(t, firstWT, "add", "docs/plans/one.md", "docs/plans/two.md")
 	runGit(t, firstWT, "commit", "-m", "record progress and remove successor")
 	require.NoError(t, svc.RemoveWorktree(firstWT))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "source-advance.txt"), []byte("unrelated\n"), 0o600))
+	require.NoError(t, svc.repo.add("source-advance.txt"))
+	require.NoError(t, svc.repo.commit("advance source after interruption"))
+	sourceTip, err := svc.HeadHash()
+	require.NoError(t, err)
 
 	resumedWT, needsCommit, err := svc.CreateWorktreeForResumedPlanChainContext(
 		t.Context(), plans[0], "", "", preparedTip, plans,
@@ -2559,6 +2564,12 @@ func TestService_CreateWorktreeForResumedPlanChainPreservesCommittedProgress(t *
 	assert.Equal(t, "branch progress\n", string(firstContents))
 	assert.NoFileExists(t, filepath.Join(resumedWT, "docs", "plans", "two.md"),
 		"a successor deleted by the interrupted member must not be resurrected")
+	resumedTip, err := svc.BranchHash("one")
+	require.NoError(t, err)
+	assert.NotEqual(t, sourceTip, resumedTip)
+	containsSource, err := svc.BranchContainsRevisionContext(t.Context(), "one", sourceTip)
+	require.NoError(t, err)
+	assert.False(t, containsSource, "immutable prepared resume must not merge a later source HEAD")
 }
 
 func TestService_FirstPlanChainWorktreeReuseRestoresSourcePlans(t *testing.T) {
@@ -2907,6 +2918,111 @@ func TestService_ReconcilePlanChainSourceState(t *testing.T) {
 		staged := strings.TrimSpace(runGit(t, dir, "diff", "--cached", "--name-only"))
 		assert.Equal(t, "plan.md", staged)
 	})
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(t *testing.T, dir, planFile string)
+	}{
+		{
+			name: "staged during execution",
+			mutate: func(t *testing.T, dir, planFile string) {
+				runGit(t, dir, "add", planFile)
+			},
+		},
+		{
+			name: "unstaged during execution",
+			mutate: func(t *testing.T, dir, planFile string) {
+				runGit(t, dir, "restore", "--staged", "--", planFile)
+			},
+		},
+		{
+			name: "removed from index during execution",
+			mutate: func(t *testing.T, dir, planFile string) {
+				runGit(t, dir, "rm", "--cached", "-f", "--", planFile)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := setupExternalTestRepo(t)
+			svc, err := NewService(dir, noopServiceLogger())
+			require.NoError(t, err)
+			planFile := filepath.Join(dir, "plan.md")
+			require.NoError(t, os.WriteFile(planFile, []byte("base\n"), 0o600))
+			runGit(t, dir, "add", "plan.md")
+			runGit(t, dir, "commit", "-m", "add plan")
+			require.NoError(t, os.WriteFile(planFile, []byte("changed\n"), 0o600))
+			if tc.name == "unstaged during execution" {
+				runGit(t, dir, "add", "plan.md")
+			}
+			states, err := svc.CapturePlanChainSourceState([]string{planFile})
+			require.NoError(t, err)
+			tc.mutate(t, dir, "plan.md")
+
+			err = svc.ReconcilePlanChainSourceState(states)
+			require.ErrorContains(t, err, "Git state changed during execution")
+			contents, readErr := os.ReadFile(planFile) //nolint:gosec // test-owned temporary repository
+			require.NoError(t, readErr)
+			assert.Equal(t, "changed\n", string(contents))
+		})
+	}
+
+	t.Run("mode changed during execution is left untouched", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows does not preserve POSIX executable mode changes")
+		}
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		planFile := filepath.Join(dir, "plan.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("initial\n"), 0o600))
+		states, err := svc.CapturePlanChainSourceState([]string{planFile})
+		require.NoError(t, err)
+		require.NoError(t, os.Chmod(planFile, 0o700)) //nolint:gosec // test intentionally exercises a mode change
+
+		err = svc.ReconcilePlanChainSourceState(states)
+		require.ErrorContains(t, err, "mode changed during execution")
+		info, statErr := os.Stat(planFile)
+		require.NoError(t, statErr)
+		assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+	})
+
+	for _, tracked := range []bool{false, true} {
+		name := "untracked"
+		if tracked {
+			name = "tracked"
+		}
+		t.Run(name+" plan behind replaced parent symlink is left untouched", func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("symlink creation requires privileges on Windows")
+			}
+			dir := setupExternalTestRepo(t)
+			svc, err := NewService(dir, noopServiceLogger())
+			require.NoError(t, err)
+			plansDir := filepath.Join(dir, "docs", "plans")
+			require.NoError(t, os.MkdirAll(plansDir, 0o750))
+			planFile := filepath.Join(plansDir, "plan.md")
+			if tracked {
+				require.NoError(t, os.WriteFile(planFile, []byte("base\n"), 0o600))
+				runGit(t, dir, "add", "docs/plans/plan.md")
+				runGit(t, dir, "commit", "-m", "add plan")
+			}
+			require.NoError(t, os.WriteFile(planFile, []byte("changed\n"), 0o600))
+			states, err := svc.CapturePlanChainSourceState([]string{planFile})
+			require.NoError(t, err)
+
+			externalDir := t.TempDir()
+			externalPlan := filepath.Join(externalDir, "plan.md")
+			require.NoError(t, os.WriteFile(externalPlan, []byte("changed\n"), 0o600))
+			require.NoError(t, os.Rename(plansDir, plansDir+"-original"))
+			require.NoError(t, os.Symlink(externalDir, plansDir))
+
+			err = svc.ReconcilePlanChainSourceState(states)
+			require.ErrorContains(t, err, "is a symbolic link")
+			contents, readErr := os.ReadFile(externalPlan) //nolint:gosec // test-owned external target
+			require.NoError(t, readErr)
+			assert.Equal(t, "changed\n", string(contents))
+		})
+	}
 }
 
 func TestService_CommitPlanFile(t *testing.T) {

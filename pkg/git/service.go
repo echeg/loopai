@@ -51,6 +51,7 @@ type backend interface {
 	isDirtyAll() (bool, error)
 	fileHasChanges(path string) (bool, error)
 	fileTracked(path string) (bool, error)
+	fileStateFingerprint(path string) (string, error)
 	hasChangesOtherThan(paths ...string) ([]string, error)
 	gitCommonDir() (string, error)
 	gitDir(ctx context.Context) (string, error)
@@ -94,12 +95,15 @@ type Worktree struct {
 	Branch string
 }
 
-// PlanSourceState records an initially dirty chain plan in the source checkout. Digest protects
-// concurrent user edits while a worktree chain runs; Tracked selects restore-to-HEAD versus removal.
+// PlanSourceState records an initially dirty chain plan in the source checkout. Digest, GitState,
+// and Mode protect concurrent content, index, tracking, and permission changes while a worktree
+// chain runs; Tracked selects restore-to-HEAD versus removal.
 type PlanSourceState struct {
-	Path    string `json:"path"`
-	Digest  string `json:"digest"`
-	Tracked bool   `json:"tracked"`
+	Path     string `json:"path"`
+	Digest   string `json:"digest"`
+	GitState string `json:"git_state"`
+	Mode     uint32 `json:"mode"`
+	Tracked  bool   `json:"tracked"`
 }
 
 // ErrNotSameRepository indicates that a path opened as a worktree belongs to another repository.
@@ -1180,9 +1184,16 @@ func (s *Service) createWorktreeForPlan(
 
 	// create worktree with branch
 	reusingBranch := s.repo.branchExists(branchName)
+	mergeStartCommit := startCommit
+	if preserveExistingChainPlans {
+		// A prepared first-member branch is an immutable resume target. It has already
+		// been validated against the saved tip, so never synchronize it with a source
+		// checkout that may have advanced while the worktree was absent.
+		mergeStartCommit = existingBranchAncestor
+	}
 	if reusingBranch {
 		if err := s.createExistingPlanWorktree(
-			ctx, wtPath, branchName, validationAncestor, startCommit, startRef,
+			ctx, wtPath, branchName, validationAncestor, mergeStartCommit, startRef,
 		); err != nil {
 			return "", false, err
 		}
@@ -2093,7 +2104,14 @@ func (s *Service) CapturePlanChainSourceState(planFiles []string) ([]PlanSourceS
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 			return nil, fmt.Errorf("resolve chain source plan %q inside repository", planFile)
 		}
-		data, err := os.ReadFile(path) //nolint:gosec // validated plan path inside repository
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect chain source plan %q: %w", planFile, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("chain source plan %q is not a regular file", planFile)
+		}
+		data, err := os.ReadFile(path) //nolint:gosec // validated regular plan path inside repository
 		if err != nil {
 			return nil, fmt.Errorf("read chain source plan %q: %w", planFile, err)
 		}
@@ -2101,9 +2119,14 @@ func (s *Service) CapturePlanChainSourceState(planFiles []string) ([]PlanSourceS
 		if err != nil {
 			return nil, fmt.Errorf("inspect chain source tracking for %q: %w", planFile, err)
 		}
+		gitState, err := s.repo.fileStateFingerprint(path)
+		if err != nil {
+			return nil, fmt.Errorf("capture chain source Git state for %q: %w", planFile, err)
+		}
 		digest := sha256.Sum256(data)
 		states = append(states, PlanSourceState{
-			Path: filepath.ToSlash(rel), Digest: hex.EncodeToString(digest[:]), Tracked: tracked,
+			Path: filepath.ToSlash(rel), Digest: hex.EncodeToString(digest[:]), GitState: gitState,
+			Mode: uint32(info.Mode().Perm()), Tracked: tracked,
 		})
 	}
 	return states, nil
@@ -2114,67 +2137,138 @@ func (s *Service) CapturePlanChainSourceState(planFiles []string) ([]PlanSourceS
 func (s *Service) ReconcilePlanChainSourceState(states []PlanSourceState) error {
 	var reconcileErrs []error
 	for _, state := range states {
-		path := filepath.Join(s.repo.root(), filepath.FromSlash(state.Path))
-		rel, err := filepath.Rel(s.repo.root(), path)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-			reconcileErrs = append(reconcileErrs, fmt.Errorf("refuse chain source path outside repository: %q", state.Path))
-			continue
-		}
-		if state.Tracked {
-			changed, changeErr := s.repo.fileHasChanges(path)
-			if changeErr != nil {
-				reconcileErrs = append(reconcileErrs, fmt.Errorf("inspect tracked chain source plan %q: %w", state.Path, changeErr))
-				continue
-			}
-			if !changed {
-				continue // already restored by an earlier reconciliation attempt
-			}
-		}
-		info, err := os.Lstat(path)
-		if os.IsNotExist(err) {
-			if state.Tracked {
-				reconcileErrs = append(reconcileErrs, fmt.Errorf("tracked chain source plan %q was deleted during execution; left untouched", state.Path))
-			}
-			continue
-		}
-		if err != nil {
-			reconcileErrs = append(reconcileErrs, fmt.Errorf("inspect chain source plan %q: %w", state.Path, err))
-			continue
-		}
-		if !info.Mode().IsRegular() {
-			reconcileErrs = append(reconcileErrs, fmt.Errorf("refuse changed non-regular chain source plan %q", state.Path))
-			continue
-		}
-		data, err := os.ReadFile(path) //nolint:gosec // path is constrained to the repository root
-		if err != nil {
-			reconcileErrs = append(reconcileErrs, fmt.Errorf("read chain source plan %q: %w", state.Path, err))
-			continue
-		}
-		digest := sha256.Sum256(data)
-		if hex.EncodeToString(digest[:]) != state.Digest {
-			reconcileErrs = append(reconcileErrs, fmt.Errorf("chain source plan %q changed during execution; left untouched", state.Path))
-			continue
-		}
-		if state.Tracked {
-			if err := s.repo.restoreFile(path); err != nil {
-				reconcileErrs = append(reconcileErrs, fmt.Errorf("restore tracked chain source plan %q: %w", state.Path, err))
-			}
-			continue
-		}
-		tracked, trackErr := s.repo.fileTracked(path)
-		if trackErr != nil {
-			reconcileErrs = append(reconcileErrs, fmt.Errorf("inspect chain source tracking for %q: %w", state.Path, trackErr))
-			continue
-		}
-		if tracked {
-			reconcileErrs = append(reconcileErrs, fmt.Errorf("chain source plan %q became tracked during execution; left untouched", state.Path))
-			continue
-		}
-		if err := os.Remove(path); err != nil {
-			reconcileErrs = append(reconcileErrs, fmt.Errorf("remove consumed untracked chain source plan %q: %w", state.Path, err))
+		if err := s.reconcilePlanChainSourceState(state); err != nil {
+			reconcileErrs = append(reconcileErrs, err)
 		}
 	}
 	return errors.Join(reconcileErrs...)
+}
+
+func (s *Service) reconcilePlanChainSourceState(state PlanSourceState) error {
+	path, err := s.planChainSourcePath(state.Path)
+	if err != nil {
+		return err
+	}
+	if err = s.validatePlanChainSourceParents(path); err != nil {
+		return fmt.Errorf("refuse unsafe chain source plan %q: %w", state.Path, err)
+	}
+	if state.Tracked {
+		changed, changeErr := s.repo.fileHasChanges(path)
+		if changeErr != nil {
+			return fmt.Errorf("inspect tracked chain source plan %q: %w", state.Path, changeErr)
+		}
+		if !changed {
+			return nil // already restored by an earlier reconciliation attempt
+		}
+	}
+	exists, err := s.capturedPlanChainSourceStillMatches(path, state)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if state.Tracked {
+			return fmt.Errorf("tracked chain source plan %q was deleted during execution; left untouched", state.Path)
+		}
+		return nil
+	}
+	if err = s.validatePlanChainSourceParents(path); err != nil {
+		return fmt.Errorf("refuse unsafe chain source plan %q: %w", state.Path, err)
+	}
+	if state.Tracked {
+		if err = s.repo.restoreFile(path); err != nil {
+			return fmt.Errorf("restore tracked chain source plan %q: %w", state.Path, err)
+		}
+		return nil
+	}
+	if err = os.Remove(path); err != nil {
+		return fmt.Errorf("remove consumed untracked chain source plan %q: %w", state.Path, err)
+	}
+	return nil
+}
+
+func (s *Service) planChainSourcePath(storedPath string) (string, error) {
+	path := filepath.Join(s.repo.root(), filepath.FromSlash(storedPath))
+	rel, err := filepath.Rel(s.repo.root(), path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("refuse chain source path outside repository: %q", storedPath)
+	}
+	return path, nil
+}
+
+func (s *Service) capturedPlanChainSourceStillMatches(path string, state PlanSourceState) (bool, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect chain source plan %q: %w", state.Path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("refuse changed non-regular chain source plan %q", state.Path)
+	}
+	if uint32(info.Mode().Perm()) != state.Mode {
+		return false, fmt.Errorf("chain source plan %q mode changed during execution; left untouched", state.Path)
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // path is constrained to the repository root
+	if err != nil {
+		return false, fmt.Errorf("read chain source plan %q: %w", state.Path, err)
+	}
+	digest := sha256.Sum256(data)
+	if hex.EncodeToString(digest[:]) != state.Digest {
+		return false, fmt.Errorf("chain source plan %q changed during execution; left untouched", state.Path)
+	}
+	return true, s.validatePlanChainSourceGitState(path, state)
+}
+
+func (s *Service) validatePlanChainSourceGitState(path string, state PlanSourceState) error {
+	gitState, err := s.repo.fileStateFingerprint(path)
+	if err != nil {
+		return fmt.Errorf("inspect chain source Git state for %q: %w", state.Path, err)
+	}
+	if gitState == state.GitState {
+		return nil
+	}
+	if !state.Tracked {
+		tracked, trackErr := s.repo.fileTracked(path)
+		if trackErr != nil {
+			return fmt.Errorf("inspect chain source tracking for %q: %w", state.Path, trackErr)
+		}
+		if tracked {
+			return fmt.Errorf("chain source plan %q became tracked during execution; left untouched", state.Path)
+		}
+	}
+	return fmt.Errorf("chain source plan %q Git state changed during execution; left untouched", state.Path)
+}
+
+// validatePlanChainSourceParents rejects path-topology changes before source reconciliation.
+// A lexical containment check is insufficient because an intermediate symlink can redirect
+// os.Remove or git restore outside the checkout.
+func (s *Service) validatePlanChainSourceParents(path string) error {
+	root := filepath.Clean(s.repo.root())
+	parent := filepath.Dir(filepath.Clean(path))
+	rel, err := filepath.Rel(root, parent)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return errors.New("parent path is outside repository")
+	}
+	current := root
+	for component := range strings.SplitSeq(rel, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, statErr := os.Lstat(current)
+		switch {
+		case os.IsNotExist(statErr):
+			return nil
+		case statErr != nil:
+			return fmt.Errorf("inspect parent %s: %w", current, statErr)
+		case info.Mode()&os.ModeSymlink != 0:
+			return fmt.Errorf("parent %s is a symbolic link", current)
+		case !info.IsDir():
+			return fmt.Errorf("parent %s is not a directory", current)
+		}
+	}
+	return nil
 }
 
 // formatDirtyFiles formats a list of dirty file paths for display in error messages.
