@@ -87,7 +87,8 @@ type opts struct {
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
 	ConfigDir               string        `long:"config-dir" env:"LOOPAI_CONFIG_DIR" description:"custom config directory"`
 
-	PlanFile string `positional-arg-name:"plan-file" description:"path to plan file (optional, uses fzf if omitted); with --merge/--pr it names the feature to close out"`
+	PlanFile  string   `positional-arg-name:"plan-file" description:"path to plan file (optional, uses fzf if omitted); with --merge/--pr it names the feature to close out"`
+	PlanFiles []string // normalized comma-separated plan chain; PlanFile is always its first entry
 
 	// positional arguments beyond the first, recorded by main so close-out validation can reject
 	// them instead of silently acting on the wrong feature
@@ -110,15 +111,46 @@ type opts struct {
 	customReviewScriptSet  bool
 }
 
-// applyPositionalArgs records the parsed positional arguments: the first names the plan file, or
-// the feature to close out under --merge/--pr. the rest are kept so close-out validation can reject
-// them; go-flags never fills a positional field beyond the first one declared.
-func (o *opts) applyPositionalArgs(args []string) {
+// applyPositionalArgs records the parsed positional arguments: the first names a comma-separated
+// plan chain, or the feature to close out under --merge/--pr. the rest are kept so close-out
+// validation can reject them; go-flags never fills a positional field beyond the first one
+// declared. Close-out identifiers are deliberately not split because they do not name plans.
+func (o *opts) applyPositionalArgs(args []string) error {
 	if len(args) == 0 {
-		return
+		return nil
 	}
 	o.PlanFile = args[0]
 	o.extraArgs = args[1:]
+	if closeoutRequested(*o) {
+		return nil
+	}
+
+	planFiles, err := parsePlanFiles(args[0])
+	if err != nil {
+		return err
+	}
+	o.PlanFiles = planFiles
+	o.PlanFile = planFiles[0]
+	return nil
+}
+
+func parsePlanFiles(arg string) ([]string, error) {
+	parts := strings.Split(arg, ",")
+	result := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for i, part := range parts {
+		planFile := strings.TrimSpace(part)
+		if planFile == "" {
+			return nil, fmt.Errorf("plan chain entry %d is empty", i+1)
+		}
+		duplicateKey := filepath.Clean(planFile)
+		if _, exists := seen[duplicateKey]; exists {
+			return nil, fmt.Errorf("plan chain contains duplicate entry %q", planFile)
+		}
+		seen[duplicateKey] = struct{}{}
+		result = append(result, planFile)
+	}
+	return result, nil
 }
 
 // markFlagsSet detects options whose explicit presence matters even when their parsed value is
@@ -279,16 +311,19 @@ func main() {
 		os.Exit(0)
 	}
 
-	// handle positional arguments
-	o.applyPositionalArgs(args)
+	// detect explicitly-set zero values for duration flags so --flag 0 can disable config values.
+	// go-flags can't distinguish "not provided" from "set to zero" via the field alone.
+	o.markFlagsSet(parser)
+
+	// handle positional arguments after marking flags so --merge/--pr identifiers remain opaque.
+	if err := o.applyPositionalArgs(args); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 
 	// setup context with signal handling
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-
-	// detect explicitly-set zero values for duration flags so --flag 0 can disable config values.
-	// go-flags can't distinguish "not provided" from "set to zero" via the field alone.
-	o.markFlagsSet(parser)
 
 	if err := run(ctx, o); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -2092,6 +2127,9 @@ func validateFlags(o opts) error {
 	if err := validateCloseoutFlags(o); err != nil {
 		return err
 	}
+	if err := validatePlanChain(o); err != nil {
+		return err
+	}
 	if o.PlanDescription != "" && o.PlanFile != "" {
 		return errors.New("--plan flag conflicts with plan file argument; use one or the other")
 	}
@@ -2116,6 +2154,33 @@ func validateFlags(o opts) error {
 	// --codex / --pass-claude-md / --external-only / --codex-only / --external-review-tool
 	// mutual-exclusion checks are deferred to applyCodexOverrides, which runs after the
 	// config-file merge so that executor=codex coming from config is also enforced.
+	return nil
+}
+
+// validatePlanChain rejects chain-only incompatibilities and verifies every input before any
+// config, git service, branch, or worktree is created. Single-plan invocations retain the existing
+// selector-driven validation path.
+func validatePlanChain(o opts) error {
+	if len(o.PlanFiles) <= 1 {
+		return nil
+	}
+	for _, conflict := range []struct {
+		flag string
+		set  bool
+	}{
+		{"--branch", o.Branch != ""},
+		{"--serve", o.Serve},
+		{"--plan", o.PlanDescription != ""},
+	} {
+		if conflict.set {
+			return fmt.Errorf("%s cannot be combined with a plan chain", conflict.flag)
+		}
+	}
+	for _, planFile := range o.PlanFiles {
+		if reason := planFileHandOffRefusal(planFile); reason != "" {
+			return errors.New(reason)
+		}
+	}
 	return nil
 }
 

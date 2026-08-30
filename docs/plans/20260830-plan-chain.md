@@ -57,13 +57,13 @@
 ## Implementation Steps
 
 ### Task 1: Parse the comma-separated plan chain and validate flag combinations
-- [ ] split the positional plan argument on commas into `o.PlanFiles []string` (trimmed, empty entries rejected); keep `o.PlanFile` as the first entry so all existing single-plan code paths stay valid
-- [ ] treat a single entry exactly as today (no behavior change without commas)
-- [ ] validation for chains (len > 1): every listed file must exist, be a regular file, and be readable at startup (fail fast before any branch is created); duplicate entries rejected
-- [ ] reject incompatible flags with a chain: `--branch` (collapses branch names and progress files), `--serve` (dashboard blocks between plans and rebinds its port), `--plan` (already conflicts with a positional plan)
-- [ ] write tests for chain parsing (single, multiple, whitespace, empty entry, duplicates)
-- [ ] write tests for flag-combination rejections and for unchanged single-plan behavior
-- [ ] run tests - must pass before next task
+- [x] split the positional plan argument on commas into `o.PlanFiles []string` (trimmed, empty entries rejected); keep `o.PlanFile` as the first entry so all existing single-plan code paths stay valid
+- [x] treat a single entry exactly as today (no behavior change without commas)
+- [x] validation for chains (len > 1): every listed file must exist, be a regular file, and be readable at startup (fail fast before any branch is created); duplicate entries rejected
+- [x] reject incompatible flags with a chain: `--branch` (collapses branch names and progress files), `--serve` (dashboard blocks between plans and rebinds its port), `--plan` (already conflicts with a positional plan)
+- [x] write tests for chain parsing (single, multiple, whitespace, empty entry, duplicates)
+- [x] write tests for flag-combination rejections and for unchanged single-plan behavior
+- [x] run tests - must pass before next task
 
 ### Task 2: Support cutting a worktree branch from an explicit start ref
 - [ ] extend the worktree/branch creation path (`pkg/git/service.go` and `prepareWorktreeRunContext` in cmd/loopai/main.go) with an optional start ref; default (empty) keeps today's "source checkout HEAD" behavior

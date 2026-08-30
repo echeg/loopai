@@ -478,11 +478,62 @@ func parseTestOpts(t *testing.T, args ...string) opts {
 	parser := flags.NewParser(&o, flags.Default)
 	remaining, err := parser.ParseArgs(args)
 	require.NoError(t, err)
-	if len(remaining) > 0 {
-		o.PlanFile = remaining[0]
-	}
 	o.markFlagsSet(parser)
+	require.NoError(t, o.applyPositionalArgs(remaining))
 	return o
+}
+
+func TestParsePlanFiles(t *testing.T) {
+	tests := []struct {
+		name    string
+		arg     string
+		want    []string
+		wantErr string
+	}{
+		{name: "single", arg: "docs/plans/one.md", want: []string{"docs/plans/one.md"}},
+		{name: "multiple", arg: "one.md,two.md,three.md", want: []string{"one.md", "two.md", "three.md"}},
+		{name: "whitespace trimmed", arg: " one.md,  two.md ,three.md  ", want: []string{"one.md", "two.md", "three.md"}},
+		{name: "empty argument", arg: "", wantErr: "entry 1 is empty"},
+		{name: "empty middle entry", arg: "one.md,,three.md", wantErr: "entry 2 is empty"},
+		{name: "empty trailing entry", arg: "one.md,two.md,", wantErr: "entry 3 is empty"},
+		{name: "duplicate", arg: "one.md, two.md,one.md", wantErr: "duplicate entry \"one.md\""},
+		{name: "cleaned duplicate", arg: "docs/plans/one.md,docs/plans/./one.md", wantErr: "duplicate entry"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parsePlanFiles(tc.arg)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				assert.Nil(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestApplyPositionalArgsPlanChain(t *testing.T) {
+	o := opts{}
+	require.NoError(t, o.applyPositionalArgs([]string{" one.md, two.md "}))
+	assert.Equal(t, "one.md", o.PlanFile)
+	assert.Equal(t, []string{"one.md", "two.md"}, o.PlanFiles)
+
+	t.Run("single plan remains the selected plan", func(t *testing.T) {
+		single := opts{}
+		require.NoError(t, single.applyPositionalArgs([]string{"docs/plans/one.md"}))
+		assert.Equal(t, "docs/plans/one.md", single.PlanFile)
+		assert.Equal(t, []string{"docs/plans/one.md"}, single.PlanFiles)
+		assert.Empty(t, single.extraArgs)
+	})
+
+	t.Run("closeout feature is not split", func(t *testing.T) {
+		closeout := opts{mergeSet: true}
+		require.NoError(t, closeout.applyPositionalArgs([]string{"feature,with-comma"}))
+		assert.Equal(t, "feature,with-comma", closeout.PlanFile)
+		assert.Nil(t, closeout.PlanFiles)
+	})
 }
 
 func TestLoopaiEnvironmentOptions(t *testing.T) {
@@ -2246,7 +2297,7 @@ func TestValidateFlags(t *testing.T) {
 			args, err := p.ParseArgs([]string{tc.args, "release/13", "feature"})
 			require.NoError(t, err)
 			o.markFlagsSet(p)
-			o.applyPositionalArgs(args)
+			require.NoError(t, o.applyPositionalArgs(args))
 			assert.Equal(t, "release/13", o.PlanFile)
 			assert.Equal(t, []string{"feature"}, o.extraArgs)
 			require.ErrorContains(t, validateFlags(o), tc.flag+" accepts at most one feature argument")
@@ -2259,7 +2310,7 @@ func TestValidateFlags(t *testing.T) {
 		args, err := p.ParseArgs([]string{"--merge", "feature"})
 		require.NoError(t, err)
 		o.markFlagsSet(p)
-		o.applyPositionalArgs(args)
+		require.NoError(t, o.applyPositionalArgs(args))
 		assert.Equal(t, "feature", o.PlanFile)
 		assert.Empty(t, o.extraArgs)
 		assert.NoError(t, validateFlags(o))
@@ -2285,6 +2336,77 @@ func TestValidateFlags(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidatePlanChain(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.md")
+	second := filepath.Join(dir, "second.md")
+	require.NoError(t, os.WriteFile(first, []byte("# First\n"), 0o600))
+	require.NoError(t, os.WriteFile(second, []byte("# Second\n"), 0o600))
+
+	t.Run("valid files", func(t *testing.T) {
+		o := opts{PlanFile: first, PlanFiles: []string{first, second}}
+		require.NoError(t, validateFlags(o))
+	})
+
+	for _, tc := range []struct {
+		name string
+		o    opts
+		want string
+	}{
+		{
+			name: "branch rejected",
+			o:    opts{PlanFile: first, PlanFiles: []string{first, second}, Branch: "shared"},
+			want: "--branch cannot be combined with a plan chain",
+		},
+		{
+			name: "serve rejected",
+			o:    opts{PlanFile: first, PlanFiles: []string{first, second}, Serve: true},
+			want: "--serve cannot be combined with a plan chain",
+		},
+		{
+			name: "plan mode rejected",
+			o:    opts{PlanFile: first, PlanFiles: []string{first, second}, PlanDescription: "make another plan"},
+			want: "--plan cannot be combined with a plan chain",
+		},
+		{
+			name: "missing second file",
+			o:    opts{PlanFile: first, PlanFiles: []string{first, filepath.Join(dir, "missing.md")}},
+			want: "plan file not found",
+		},
+		{
+			name: "second file is a directory",
+			o:    opts{PlanFile: first, PlanFiles: []string{first, dir}},
+			want: "plan file is not a regular file",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.ErrorContains(t, validateFlags(tc.o), tc.want)
+		})
+	}
+
+	t.Run("unreadable second file", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("os.Chmod does not restrict read access on Windows")
+		}
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses file permissions")
+		}
+		locked := filepath.Join(dir, "locked.md")
+		require.NoError(t, os.WriteFile(locked, []byte("# Locked\n"), 0o600))
+		require.NoError(t, os.Chmod(locked, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o600) })
+
+		o := opts{PlanFile: first, PlanFiles: []string{first, locked}}
+		require.ErrorContains(t, validateFlags(o), "plan file not readable")
+	})
+
+	t.Run("single plan retains deferred file validation", func(t *testing.T) {
+		missing := filepath.Join(dir, "single-missing.md")
+		o := opts{PlanFile: missing, PlanFiles: []string{missing}}
+		require.NoError(t, validateFlags(o))
+	})
 }
 
 func TestResumeWorktreeFlagIsRemoved(t *testing.T) {
