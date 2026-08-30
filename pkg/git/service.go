@@ -71,6 +71,7 @@ type backend interface {
 	mergeWouldConflict(ctx context.Context, base, branch string) (bool, error)
 	mergeWorkingTreeWouldConflict(ctx context.Context, base string) (bool, error)
 	restoreFile(path string) error
+	snapshotIndex() (indexSnapshot, error)
 }
 
 // ErrMergeConflict identifies a merge that could not be completed because of conflicts.
@@ -743,27 +744,44 @@ func (s *Service) createBranchForPlanFromCurrentHEADContext(
 	}
 	reusingBranch := s.repo.branchExists(branchName)
 	var planSnapshots []planFileSnapshot
+	var sourceIndex indexSnapshot
 	if reusingBranch && len(chainPlanFiles) > 0 {
 		planSnapshots, err = s.snapshotPlanFiles(chainPlanFiles)
 		if err != nil {
 			return fmt.Errorf("snapshot chain plans before reusing branch %q: %w", branchName, err)
 		}
+		sourceIndex, err = s.repo.snapshotIndex()
+		if err != nil {
+			return fmt.Errorf("snapshot Git index before reusing branch %q: %w", branchName, err)
+		}
+		if err = s.cleanPlanSnapshotPaths(planSnapshots); err != nil {
+			restoreErr := s.restorePlanSnapshotsAndIndex(planSnapshots, sourceIndex)
+			return errors.Join(fmt.Errorf("prepare chain plans for branch reuse %q: %w", branchName, err), restoreErr)
+		}
 	}
 	if switchErr := s.switchToChainedPlanBranch(ctx, branchName, currentBranch, startCommit); switchErr != nil {
+		if reusingBranch {
+			restoreErr := s.restorePlanSnapshotsAndIndex(planSnapshots, sourceIndex)
+			return errors.Join(switchErr, restoreErr)
+		}
 		return switchErr
 	}
 	if reusingBranch && len(planSnapshots) > 0 {
 		var restoredPlans []string
 		restoredPlans, err = s.restorePlanSnapshots(planSnapshots)
 		if err != nil {
-			return fmt.Errorf("restore chain plans on reused branch %q: %w", branchName, err)
+			return s.rollbackReusedChainedBranch(currentBranch, startCommit, planSnapshots, sourceIndex,
+				fmt.Errorf("restore chain plans on reused branch %q: %w", branchName, err))
 		}
 		// Checkout can carry a dirty or untracked source plan onto the reused branch
 		// byte-for-byte. Keep those source changes even when no snapshot rewrite was needed;
 		// commitChangedChainPlans asks Git which candidates still differ from the new HEAD.
 		changedPlans = append(changedPlans, restoredPlans...)
 	}
-	return s.commitChangedChainPlans(branchName, changedPlans)
+	if err = s.commitChangedChainPlans(branchName, changedPlans); err != nil && reusingBranch {
+		return s.rollbackReusedChainedBranch(currentBranch, startCommit, planSnapshots, sourceIndex, err)
+	}
+	return err
 }
 
 type planFileSnapshot struct {
@@ -822,6 +840,42 @@ func (s *Service) restorePlanSnapshots(snapshots []planFileSnapshot) ([]string, 
 		changedPlans = append(changedPlans, dstPath)
 	}
 	return changedPlans, nil
+}
+
+// cleanPlanSnapshotPaths makes a branch checkout possible when a reused branch has different
+// versions of initially dirty plan inputs. The caller owns snapshots of both file contents and the
+// index and must restore them on failure.
+func (s *Service) cleanPlanSnapshotPaths(snapshots []planFileSnapshot) error {
+	for _, snapshot := range snapshots {
+		tracked, err := s.repo.fileTracked(snapshot.path)
+		if err != nil {
+			return fmt.Errorf("check tracked plan file %q: %w", snapshot.path, err)
+		}
+		if tracked {
+			if err = s.repo.restoreFile(snapshot.path); err != nil {
+				return fmt.Errorf("temporarily restore plan file %q: %w", snapshot.path, err)
+			}
+			continue
+		}
+		if err = os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("temporarily remove untracked plan file %q: %w", snapshot.path, err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) restorePlanSnapshotsAndIndex(snapshots []planFileSnapshot, sourceIndex indexSnapshot) error {
+	_, filesErr := s.restorePlanSnapshots(snapshots)
+	return errors.Join(filesErr, sourceIndex.restore())
+}
+
+func (s *Service) rollbackReusedChainedBranch(
+	currentBranch, startCommit string, snapshots []planFileSnapshot, sourceIndex indexSnapshot, cause error,
+) error {
+	cleanErr := s.cleanPlanSnapshotPaths(snapshots)
+	restoreBranchErr := s.restoreChainedPlanSource(currentBranch, startCommit, cause)
+	restorePlansErr := s.restorePlanSnapshotsAndIndex(snapshots, sourceIndex)
+	return errors.Join(restoreBranchErr, cleanErr, restorePlansErr)
 }
 
 func (s *Service) prepareChainedBranchSource(

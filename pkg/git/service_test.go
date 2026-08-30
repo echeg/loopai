@@ -2730,6 +2730,31 @@ func TestService_CreateBranchForPlanChain(t *testing.T) {
 		assert.Equal(t, "one", strings.TrimSpace(runGit(t, dir, "branch", "--show-current")))
 	})
 
+	t.Run("reused first branch carries a modified tracked source plan", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		plans := []string{filepath.Join(plansDir, "one.md"), filepath.Join(plansDir, "two.md")}
+		for _, planFile := range plans {
+			require.NoError(t, os.WriteFile(planFile, []byte("# Base plan\n"), 0o600))
+			require.NoError(t, svc.repo.add(planFile))
+		}
+		require.NoError(t, svc.repo.commit("add tracked chain plans"))
+		require.NoError(t, svc.CreateBranch("one"))
+		require.NoError(t, os.WriteFile(plans[0], []byte("# Existing branch plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(plans[0]))
+		require.NoError(t, svc.repo.commit("change plan on existing branch"))
+		require.NoError(t, svc.repo.checkoutBranch("master"))
+		require.NoError(t, os.WriteFile(plans[0], []byte("# Dirty source plan\n"), 0o600))
+
+		require.NoError(t, svc.CreateBranchForPlanChainContext(t.Context(), plans[0], "", plans))
+		assert.Equal(t, "one", strings.TrimSpace(runGit(t, dir, "branch", "--show-current")))
+		assert.Empty(t, strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
+		assert.Equal(t, "# Dirty source plan\n", runGit(t, dir, "show", "HEAD:docs/plans/one.md"))
+	})
+
 	t.Run("reused first branch commits an untracked plan carried through checkout", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())

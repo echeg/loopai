@@ -802,8 +802,8 @@ func runPlanChain(
 
 	for i := startIndex; i < total; i++ {
 		planFile := o.PlanFiles[i]
-		if ctx.Err() != nil {
-			return nil
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			return fmt.Errorf("plan chain canceled before plan %d/%d: %w", i+1, total, cancelErr)
 		}
 		fmt.Fprintf(out, "\nplan %d/%d: %s\n", i+1, total, planFile)
 		state.Active = i + 1

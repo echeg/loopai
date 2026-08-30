@@ -228,7 +228,7 @@ func verifiedPlanChainCheckpoint(
 		return planChainCheckpoint{}, false, errors.New("plan chain checkpoint was created with a different move-plan-on-completion setting")
 	}
 	if state.Active != 0 {
-		state, err = recoverActivePlanChainMember(o, gitSvc, state, state.MovePlanOnCompletion)
+		state, err = recoverActivePlanChainMember(ctx, o, gitSvc, state, state.MovePlanOnCompletion)
 		if err != nil {
 			return planChainCheckpoint{}, false, err
 		}
@@ -245,12 +245,12 @@ func verifiedPlanChainCheckpoint(
 	if !gitSvc.BranchExists(branch) {
 		return planChainCheckpoint{}, false, fmt.Errorf("resume plan chain: completed branch %q no longer exists", branch)
 	}
-	contains, err := gitSvc.BranchContainsRevisionContext(ctx, branch, state.PreviousTip)
+	tip, err := gitSvc.BranchHash(branch)
 	if err != nil {
-		return planChainCheckpoint{}, false, fmt.Errorf("resume plan chain: %w", err)
+		return planChainCheckpoint{}, false, fmt.Errorf("resume plan chain: read completed branch %q tip: %w", branch, err)
 	}
-	if !contains {
-		return planChainCheckpoint{}, false, fmt.Errorf("resume plan chain: branch %q no longer contains saved predecessor tip %s", branch, state.PreviousTip)
+	if tip != state.PreviousTip {
+		return planChainCheckpoint{}, false, fmt.Errorf("resume plan chain: completed branch %q tip changed from saved predecessor tip %s to %s", branch, state.PreviousTip, tip)
 	}
 	return state, true, nil
 }
@@ -260,26 +260,18 @@ func verifiedPlanChainCheckpoint(
 // a finalization marker before optional archival. When archival is enabled, the archived plan is an
 // additional completion guard so a stale completed copy cannot make an aborted member look successful.
 func recoverActivePlanChainMember(
-	o opts, gitSvc *git.Service, state planChainCheckpoint, movePlanOnCompletion bool,
+	ctx context.Context, o opts, gitSvc *git.Service, state planChainCheckpoint, movePlanOnCompletion bool,
 ) (planChainCheckpoint, error) {
 	activeIndex := state.Active - 1
 	planFile := o.PlanFiles[activeIndex]
 	branch := gitSvc.EffectiveBranchName(planFile, "")
 	if gitSvc.BranchExists(branch) {
-		tip, err := gitSvc.BranchHash(branch)
-		if err != nil {
-			return planChainCheckpoint{}, fmt.Errorf("recover active plan chain member: %w", err)
-		}
-		completedAtTip, err := planChainMemberCompletedAtTip(gitSvc, tip, planFile, movePlanOnCompletion)
+		var err error
+		state, err = recoverExistingActivePlanChainMember(
+			ctx, gitSvc, state, planFile, branch, movePlanOnCompletion,
+		)
 		if err != nil {
 			return planChainCheckpoint{}, err
-		}
-		if state.ActiveFinalizing && completedAtTip && tip != state.ActiveStartTip {
-			state.Completed = state.Active
-			state.PreviousTip = tip
-			state.ResumePreparedTip = ""
-		} else if state.ActivePrepared {
-			state.ResumePreparedTip = state.ActiveStartTip
 		}
 	}
 	state.Active = 0
@@ -288,6 +280,37 @@ func recoverActivePlanChainMember(
 	state.ActiveFinalizing = false
 	if err := savePlanChainCheckpoint(gitSvc.Root(), o.PlanFiles, state); err != nil {
 		return planChainCheckpoint{}, err
+	}
+	return state, nil
+}
+
+func recoverExistingActivePlanChainMember(
+	ctx context.Context, gitSvc *git.Service, state planChainCheckpoint,
+	planFile, branch string, movePlanOnCompletion bool,
+) (planChainCheckpoint, error) {
+	tip, err := gitSvc.BranchHash(branch)
+	if err != nil {
+		return planChainCheckpoint{}, fmt.Errorf("recover active plan chain member: %w", err)
+	}
+	if state.ActiveStartTip != "" {
+		containsStart, containsErr := gitSvc.BranchContainsRevisionContext(ctx, branch, state.ActiveStartTip)
+		if containsErr != nil {
+			return planChainCheckpoint{}, fmt.Errorf("recover active plan chain member: validate branch ancestry: %w", containsErr)
+		}
+		if !containsStart {
+			return planChainCheckpoint{}, fmt.Errorf("recover active plan chain member: branch %q no longer contains saved start tip %s", branch, state.ActiveStartTip)
+		}
+	}
+	completedAtTip, err := planChainMemberCompletedAtTip(gitSvc, tip, planFile, movePlanOnCompletion)
+	if err != nil {
+		return planChainCheckpoint{}, err
+	}
+	if state.ActiveFinalizing && completedAtTip && tip != state.ActiveStartTip {
+		state.Completed = state.Active
+		state.PreviousTip = tip
+		state.ResumePreparedTip = ""
+	} else if state.ActivePrepared {
+		state.ResumePreparedTip = state.ActiveStartTip
 	}
 	return state, nil
 }
