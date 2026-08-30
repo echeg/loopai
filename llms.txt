@@ -72,6 +72,7 @@ projects, a `CLAUDE.md` directive can require plan creation through
 
 ```bash
 loopai docs/plans/feature.md
+loopai --worktree docs/plans/schema.md,docs/plans/api.md,docs/plans/ui.md
 loopai --plan "add a health-check endpoint"
 loopai --tasks-only docs/plans/feature.md
 loopai --review

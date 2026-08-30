@@ -857,6 +857,21 @@ func TestApplyPositionalArgsPlanChain(t *testing.T) {
 	})
 }
 
+func TestHelpDocumentsPlanChain(t *testing.T) {
+	var o opts
+	parser := flags.NewParser(&o, flags.HelpFlag)
+	parser.Name = "loopai"
+	parser.Usage = commandUsage
+
+	var help bytes.Buffer
+	parser.WriteHelp(&help)
+
+	assert.Contains(t, help.String(), "Usage:\n  loopai [OPTIONS] [plan-file[,plan-file...]]")
+	planFileField, ok := reflect.TypeFor[opts]().FieldByName("PlanFile")
+	require.True(t, ok)
+	assert.Contains(t, planFileField.Tag.Get("description"), "comma-separated plan chain")
+}
+
 func TestLoopaiEnvironmentOptions(t *testing.T) {
 	t.Setenv("LOOPAI_WEB_HOST", "0.0.0.0")
 	t.Setenv("LOOPAI_CONFIG_DIR", "/tmp/loopai-config")

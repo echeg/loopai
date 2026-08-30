@@ -87,7 +87,7 @@ type opts struct {
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
 	ConfigDir               string        `long:"config-dir" env:"LOOPAI_CONFIG_DIR" description:"custom config directory"`
 
-	PlanFile  string   `positional-arg-name:"plan-file" description:"path to plan file (optional, uses fzf if omitted); with --merge/--pr it names the feature to close out"`
+	PlanFile  string   `positional-arg-name:"plan-file" description:"path to one plan file or a comma-separated plan chain (optional, uses fzf if omitted); with --merge/--pr it names the feature to close out"`
 	PlanFiles []string // normalized comma-separated plan chain; PlanFile is always its first entry
 
 	// positional arguments beyond the first, recorded by main so close-out validation can reject
@@ -110,6 +110,8 @@ type opts struct {
 	externalReviewersSet   bool
 	customReviewScriptSet  bool
 }
+
+const commandUsage = "[OPTIONS] [plan-file[,plan-file...]]"
 
 // applyPositionalArgs records the parsed positional arguments: the first names a comma-separated
 // plan chain, or the feature to close out under --merge/--pr. the rest are kept so close-out
@@ -306,7 +308,7 @@ func main() {
 
 	var o opts
 	parser := flags.NewParser(&o, flags.Default)
-	parser.Usage = "[OPTIONS] [plan-file]"
+	parser.Usage = commandUsage
 
 	args, err := parser.Parse()
 	if err != nil {

@@ -11,6 +11,7 @@ workflows are distributed through this repository's plugin marketplace.
 ## Features
 
 - Executes Markdown plans one task at a time with automatic retries
+- Executes comma-separated plan chains sequentially on stacked branches
 - Creates plans interactively with `--plan`
 - Supports Claude Code and Codex as primary executors
 - Runs configurable internal and external review phases
@@ -279,6 +280,9 @@ loopai --codex '--codex-args=-c service_tier="default"' docs/plans/feature.md
 # execute in an isolated worktree
 loopai --worktree docs/plans/feature.md
 
+# execute dependent plans sequentially on stacked branches
+loopai --worktree docs/plans/schema.md,docs/plans/api.md,docs/plans/ui.md
+
 # hand the run off to its own cmux workspace, so it gets its own sidebar card
 loopai --cmux-workspace --worktree docs/plans/feature.md
 
@@ -308,6 +312,32 @@ loopai --serve docs/plans/feature.md
 ```
 
 Use `loopai --help` for the complete flag list.
+
+## Plan chains
+
+Pass multiple plan paths as one comma-separated positional argument when later plans depend
+on earlier work:
+
+```bash
+loopai --worktree docs/plans/schema.md,docs/plans/api.md,docs/plans/ui.md
+```
+
+loopai validates every file before starting, then runs each plan through the complete normal
+pipeline in order. Each plan gets its own branch, archived plan, and progress log. The second
+branch starts from the first branch's tip, the third starts from the second branch's tip, and
+so on, whether worktree isolation is enabled or not. Consequently, the last branch contains
+the complete chain. A failure or user abort stops the chain before the next plan starts;
+branches and artifacts from plans that already completed are retained.
+
+Entries are trimmed, so a quoted value may contain spaces around commas. Empty or duplicate
+entries are rejected. `--branch`, `--serve`, and interactive `--plan` cannot be combined with
+a chain. With `--worktree --commit`, the source-checkout auto-commit applies only to the first
+plan; later plans start from their predecessor's committed branch tip.
+
+To land the complete result, merge the last plan's branch. From its worktree, run
+`loopai --merge`; from another checkout, name that final branch or plan explicitly, for
+example `loopai --merge ui`. Earlier branches may be kept for review or merged separately,
+but they do not need to be merged first because their commits are ancestors of the last branch.
 
 ## Execution pipeline
 
@@ -694,12 +724,14 @@ The model syntax is `model[:effort]`; either half may be omitted. Provider-speci
 
 `--worktree` creates an isolated checkout under `.loopai/worktrees/<branch>`. A new plan
 branch is cut from the current checkout's `HEAD`, whether it is a branch or a detached
-commit. When an existing plan branch does not already contain the source `HEAD` seen before
-any `--commit` auto-commit, loopai reuses it and automatically merges the source HEAD into
-the fresh worktree. Git 2.38+ predicts conflicts before source mutation. Older Git falls
-back to the real merge and removes the worktree if that merge conflicts. An actual conflict
-aborts with guidance to merge or rebase the source changes manually. This is useful for
-parallel plans and for starting work from any source branch.
+commit. For a plan chain, each successor worktree branch is instead cut from the preceding
+plan branch's tip, so it includes all earlier results without mutating the source checkout.
+When an existing plan branch does not already contain the applicable start commit, loopai
+reuses it and automatically merges that commit into the fresh worktree. Git 2.38+ predicts
+conflicts before source mutation. Older Git falls back to the real merge and removes the
+worktree if that merge conflicts. An actual conflict aborts with guidance to merge or rebase
+the source changes manually. This is useful for parallel plans and for starting work from any
+source branch.
 
 ```bash
 git checkout release/13

@@ -109,10 +109,10 @@
 - [x] verify test coverage of new code meets project standard
 
 ### Task 7: [Final] Update documentation
-- [ ] update README.md: chain syntax, stacked-branch semantics, close-out guidance (merge the last branch), rejected flag combinations
-- [ ] update llms.txt with the chain usage line
-- [ ] update CLAUDE.md architecture notes (worktree start-ref override, chain loop location)
-- [ ] update embedded config/help text if the positional arg description mentions a single plan
+- [x] update README.md: chain syntax, stacked-branch semantics, close-out guidance (merge the last branch), rejected flag combinations
+- [x] update llms.txt with the chain usage line
+- [x] update CLAUDE.md architecture notes (worktree start-ref override, chain loop location)
+- [x] update embedded config/help text if the positional arg description mentions a single plan
 
 ## Technical Details
 - CLI: positional arg split on `,`; `o.PlanFiles []string` with `o.PlanFile == o.PlanFiles[0]`; no new flags in v1.
