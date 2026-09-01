@@ -587,6 +587,18 @@ block; `subagentLine` turns their `description` into an indented heartbeat sent 
 only, never into the output, recent text, or signal detection. Titles are unthrottled, per-step
 progress is limited to one line per `subagentProgressInterval` (10s).
 
+Claude pattern classification is by provenance. `parseStream` keeps three views: full surfaced
+`Output`, a bounded `RecentText` window, and a bounded `DiagnosticText` window filled by
+`extractDiagnostic` from self-authenticating error records (`is_error`, `terminal_reason:"api_error"`,
+non-zero `api_error_status`), assistant API-error messages, `system` error subtypes, `error` events,
+and non-JSON CLI lines. Ordinary assistant text, successful result summaries, `api_retry` telemetry,
+and subagent heartbeats never enter it. `resolveRunResult` always matches `DiagnosticText` and adds
+`RecentText` only on a non-zero exit or stream error; signal absence is deliberately not a promotion
+trigger, because a successful review path B emits no marker. This matters more here than upstream:
+`wait_on_limit` defaults to 10m and a limit match drives `claude-swap` failover, so a quoted limit
+phrase in narration would otherwise loop forever or rotate accounts for nothing. A non-JSON limit
+line with a non-zero exit, as `You're out of usage credits` arrives, still classifies.
+
 Claude command timing pairs foreground Bash `tool_use` and `tool_result` events
 by tool-use ID and measures their arrival times; background Bash calls are
 omitted because their first result is not process completion. Codex accepts both
