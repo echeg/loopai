@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -277,6 +278,11 @@ func TestClaudeExecutor_parseStream_tracksDiagnosticProvenance(t *testing.T) {
 			wantDiagnostic: "API Error: 429 rate_limit",
 		},
 		{
+			name:           "api error assistant retains status with prose",
+			input:          `{"type":"assistant","api_error_status":429,"is_api_error_message":true,"message":{"content":[{"type":"text","text":"rate limited"}]}}`,
+			wantDiagnostic: "API Error: 429 rate limited",
+		},
+		{
 			name:           "string result error",
 			input:          `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: 529 overloaded"}`,
 			wantDiagnostic: "API Error: 529 overloaded",
@@ -312,7 +318,7 @@ func TestClaudeExecutor_parseStream_tracksDiagnosticProvenance(t *testing.T) {
 		{
 			name:           "string result authenticated by api_error_status",
 			input:          `{"type":"result","subtype":"success","api_error_status":429,"result":"rate limited"}`,
-			wantDiagnostic: "rate limited",
+			wantDiagnostic: "API Error: 429 rate limited",
 		},
 		{
 			// a successful result can carry a terminal_reason of its own, so a bare one
@@ -1506,6 +1512,31 @@ func TestClaudeExecutor_Run_AssistantNarrationDoesNotTriggerPattern(t *testing.T
 	}
 }
 
+func TestClaudeExecutor_Run_WeeklyLimitWithStockPatterns(t *testing.T) {
+	stream := readClaudeFixture(t, "diagnostic-rate-limit.jsonl")
+	mock := &mocks.CommandRunnerMock{
+		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+			return strings.NewReader(stream), func() error { return nil }, nil
+		},
+	}
+	e := &ClaudeExecutor{
+		cmdRunner: mock,
+		LimitPatterns: strings.Split("You've hit your limit,You've hit your session limit,You've hit your weekly limit,API Error: 429,"+
+			"Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You've hit your individual spend limit", ","),
+		ErrorPatterns: strings.Split("You've hit your limit,You've hit your session limit,You've hit your weekly limit,"+
+			"API Error: 400,API Error: 401,API Error: 403,API Error: 404,API Error: 413,API Error: 429,API Error: 500,"+
+			"cannot be launched inside another Claude Code session,Not logged in,Your usage allocation has been disabled by your admin,"+
+			"You've hit your org's monthly usage limit,You've hit your individual spend limit", ","),
+	}
+
+	result := e.Run(t.Context(), "test prompt")
+
+	var limitErr *LimitPatternError
+	require.ErrorAs(t, result.Error, &limitErr)
+	assert.Equal(t, "You've hit your weekly limit", limitErr.Pattern)
+	assert.Contains(t, result.DiagnosticText, "API Error: 429")
+}
+
 func TestClaudeExecutor_Run_GenuineDiagnosticsMatchPatterns(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -1918,10 +1949,7 @@ func TestClaudeExecutor_Run_EvictsStaleTrustedDiagnostic(t *testing.T) {
 
 func readClaudeFixture(t *testing.T, name string) string {
 	t.Helper()
-	root, err := os.OpenRoot("testdata/claude")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, root.Close()) })
-	data, err := root.ReadFile(name)
+	data, err := os.ReadFile(filepath.Join("testdata", "claude", name)) //nolint:gosec // name comes from test cases
 	require.NoError(t, err)
 	return string(data)
 }
