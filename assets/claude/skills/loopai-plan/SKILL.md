@@ -309,7 +309,7 @@ Run in Orca:
 When `FLAGS` is empty, add one line: "No `executor`/`task_model`/`review_model`/`external_reviewers` set in `.loopai/config`, so the run uses loopai defaults — append `--codex`, `--task-model`, `--review-model`, `--external-reviewers` to the line above or set those keys in `.loopai/config`."
 
 Then use AskUserQuestion — "How do you want to proceed?" — with these options:
-- "Run in Orca now (Recommended)": invoke the `loopai-orca` skill with exactly the plan path and `FLAGS` printed above
+- "Run in Orca now (Recommended)": when `FLAGS` is non-empty, invoke the `loopai-orca` skill with exactly the plan path and `FLAGS` printed above. When `FLAGS` is empty, do not launch yet: ask a second AskUserQuestion — "Which loopai flags should the Orca run use? Choose Other and type them, e.g. `--codex --task-model gpt-5.6-sol:high --review-model gpt-5.6-sol:high --external-reviewers claude:opus:high,codex:gpt-6-astra:high,claude:fable:high`" — with the options "No flags (loopai defaults: Claude primary)" and "Cancel". Accept only `--codex`, `--task-model M`, `--review-model M`, `--external-reviewers LIST` with values matching `^[A-Za-z0-9._:,+-]+$`; on any other token repeat the question naming it verbatim. Then invoke `loopai-orca` with the plan path followed by the accepted string.
 - "Start implementation here": begin with task 1
 - "Not now": stop
 
