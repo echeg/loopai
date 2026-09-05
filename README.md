@@ -95,7 +95,9 @@ The plugin provides seven skills:
 
 - `loopai:loopai` launches loopai, monitors progress, and resumes active runs
 - `loopai:loopai-orca` launches a plan inside an Orca-managed worktree and
-  terminal tab with `--orca`, so the run appears as an Orca card with live status
+  terminal tab with `--orca`, so the run appears as an Orca card with live status;
+  it forwards `--codex`, `--task-model`, `--review-model`, and
+  `--external-reviewers` when given
 - `loopai:loopai-plan` creates an executable implementation plan
 - `loopai:loopai-brainstorm` designs a feature interactively, then hands the
   approved design to `loopai:loopai-plan`

@@ -40,7 +40,10 @@ The plugin provides `loopai:loopai`, `loopai:loopai-orca`, `loopai:loopai-plan`,
 `loopai:loopai-grill`. The CLI remains the execution
 engine. `loopai:loopai-orca` creates an Orca-managed worktree from the current
 branch through the `orca` CLI, copies the plan and untracked `.loopai/` overrides
-into it, and launches `loopai --orca <plan>` in an Orca terminal tab. `loopai:loopai-grill` critiques an existing plan with Claude and Codex;
+into it, and launches `loopai --orca <plan>` in an Orca terminal tab, forwarding
+only `--codex`, `--task-model`, `--review-model`, and `--external-reviewers`;
+when `orca` is installed, `loopai:loopai-plan` prints that invocation with flags
+derived from the effective config and offers to run it. `loopai:loopai-grill` critiques an existing plan with Claude and Codex;
 its `compare` mode generates, judges, and synthesizes competing plans.
 
 Invoke `/loopai:loopai-grill [docs/plans/X.md]` for an active-plan critique or

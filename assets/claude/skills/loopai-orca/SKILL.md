@@ -1,7 +1,7 @@
 ---
 name: loopai-orca
-description: "Use when the user wants to run an existing loopai plan inside an Orca-managed worktree and terminal tab (Orca desktop app, onorca.dev), so the run shows up as an Orca card with live status. Triggers: loopai-orca, run plan in orca, launch loopai in orca worktree, запусти план в orca."
-argument-hint: 'optional plan file path'
+description: "Use when the user wants to run an existing loopai plan inside an Orca-managed worktree and terminal tab (Orca desktop app, onorca.dev), so the run shows up as an Orca card with live status, optionally with explicit executor, model, or external-reviewer overrides. Triggers: loopai-orca, run plan in orca, launch loopai in orca worktree, запусти план в orca."
+argument-hint: '[plan file] [--codex] [--task-model M] [--review-model M] [--external-reviewers LIST]'
 allowed-tools: [Bash, Read, Glob, AskUserQuestion]
 ---
 
@@ -27,9 +27,24 @@ git branch --show-current
 - If HEAD is detached, ask the user which base branch to use and set `BASE` to their answer.
 - Record `ROOT` (repository root) and `BASE` (current branch); the Orca worktree is cut from `BASE`.
 
+## Step 0b: Parse Arguments
+
+Split `$ARGUMENTS` on whitespace. The first token that does not start with `--` is `PLAN_ARG` (may be absent). Every other token must be one of the pass-through flags below; collect them, in the order given, into `FLAGS` (one space-separated string, empty when no flags were given):
+
+| Flag | Form | Value |
+|------|------|-------|
+| `--codex` | bare | none |
+| `--task-model` | `--task-model M` or `--task-model=M` | one token |
+| `--review-model` | `--review-model M` or `--review-model=M` | one token |
+| `--external-reviewers` | `--external-reviewers LIST` or `--external-reviewers=LIST` | one token: comma-separated `provider[:model[:effort]]` entries |
+
+- Every value must match `^[A-Za-z0-9._:,+-]+$`. `FLAGS` is spliced into the `--command` string a shell executes in Step 5, so a value with whitespace, quotes, `$`, or `;` is rejected, not escaped.
+- Any token not in the table — `--worktree`, `--commit`, `--cmux-workspace`, `--serve`, `--plan`, `--codex-args`, a second plan path, anything else — a flag given twice, or a value-taking flag without a value **stops the run**. Report the offending token verbatim and state that only the four flags above are passed through. Do not drop it silently and do not forward it: `--worktree` would nest a second checkout inside Orca's worktree and `--serve` would block the tab after the run.
+- Forwarded flags override the matching keys in the `.loopai/config` carried over in Step 4 (`executor`, `task_model`, `review_model`, `external_reviewers`); a flag not given leaves the config value in force.
+
 ## Step 1: Choose the Plan
 
-- If `$ARGUMENTS` names a file: validate it exists with Read.
+- If `PLAN_ARG` is set: validate it exists with Read.
 - Otherwise Glob `docs/plans/*.md` (excludes `completed/`), reverse to newest-first, and AskUserQuestion with up to 4 plans, newest marked "(Recommended)".
 - Refuse a plan under `docs/plans/completed/` or under `.loopai/`.
 
@@ -37,10 +52,10 @@ Keep `PLAN` as the path relative to `ROOT` (for example `docs/plans/20260828-fea
 
 ## Step 2: Derive the Worktree Name
 
-`NAME` is the plan filename without the leading `YYYYMMDD-` date and without `.md` — the same derivation loopai uses for its own branches:
+`NAME` is the plan filename without `.md` and without any leading run of digits and dashes (`20260904-20-feature.md` → `feature`) — the same derivation loopai uses for its own branches (`plan.ExtractBranchName`):
 
 ```bash
-NAME=$(basename "$PLAN" .md | sed -E 's/^[0-9]{8}-//')
+NAME=$(basename "$PLAN" .md | sed -E 's/^[0-9-]+//')
 git branch --all --list "$NAME" "*/$NAME"                              # must print nothing
 orca worktree list --repo "path:$ROOT" --json                          # no entry with displayName == NAME, archived (isArchived: true) included
 ```
@@ -89,10 +104,11 @@ done
 orca terminal create \
   --worktree "id:$WT_ID" \
   --title "loopai $NAME" \
-  --command "$(command -v loopai) --orca '$PLAN'" \
+  --command "$(command -v loopai) --orca $FLAGS '$PLAN'" \
   --json
 ```
 
+- `$FLAGS` from Step 0b goes between `--orca` and the plan, unquoted; the plan stays last and single-quoted. With no flags the command is `loopai --orca '<plan>'`.
 - Absolute binary path: the tab runs Orca's own login shell, whose `PATH` may lack `~/.local/bin`.
 - No `--worktree` flag on loopai: it would create a second, nested checkout under `.loopai/worktrees/` inside Orca's worktree. Because the tab is already on a non-default branch, loopai runs there directly.
 - No pipes or `tee`: `--orca` writes OSC titles only when stdout is a terminal, and the title is what Orca reads for card status.
@@ -118,6 +134,7 @@ loopai started in Orca.
 Worktree: $WT_PATH  (id: $WT_ID)
 Branch:   <branch without refs/heads/>   cut from $BASE
 Plan:     $PLAN
+Flags:    $FLAGS  (empty = executor/models/reviewers from .loopai/config and defaults)
 Terminal: $HANDLE  (tab "loopai $NAME")
 Progress: $WT_PATH/.loopai/progress/progress-$STEM.txt
 
@@ -157,6 +174,7 @@ From the main checkout `loopai --merge $PLAN` (or `--pr $PLAN`) finds the Orca b
 | `selector_not_found` on a child worktree | `path:` or bare repo id used | Use `id:$WT_ID` verbatim |
 | Card stays "working" after loopai finished | Output piped, titles suppressed | Run without `tee`/pipes |
 | Two nested worktrees | `loopai --worktree` inside an Orca worktree | Drop the flag |
+| Skill stops on an unknown flag | only `--codex`, `--task-model`, `--review-model`, `--external-reviewers` pass through | Put other settings in `.loopai/config`; never forward the token |
 | Run uses default models/prompts unexpectedly | Untracked `.loopai/` overrides not carried over | Step 4 loop |
 | `ANTHROPIC_API_KEY` not picked up | Tab inherits the login shell, not this terminal | Export it in the shell profile |
 | Extra tabs appear on create | Repo setup hooks / default tabs ran per Orca settings | Expected; leave them alone |

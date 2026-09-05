@@ -283,7 +283,37 @@ Example (NOTICE: tests are separate checklist items):
 
 ## Step 3: Offer to Start
 
-After creating the file, tell user:
+After creating the file, detect Orca and build the launch line before speaking to the user:
+
+1. **Detect Orca.** `ORCA=${ORCA_CLI_COMMAND:-orca}`; on Linux outside an Orca terminal use `orca-ide` instead of bare `orca` (there `orca` is the GNOME screen reader). Orca is available when `command -v "$ORCA"` succeeds. Do not call `orca status`; the `loopai-orca` skill runs its own preflight.
+2. **Derive `FLAGS` from the effective loopai configuration.** For each key `executor`, `task_model`, `review_model`, `external_reviewers`, take the first uncommented `key = value` line from `<repo root>/.loopai/config`, falling back to `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/config`:
+
+   ```bash
+   cfgval() {
+     for f in "$(git rev-parse --show-toplevel)/.loopai/config" "${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/config"; do
+       v=$(grep -E "^[[:space:]]*$1[[:space:]]*=" "$f" 2>/dev/null | head -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+$//')
+       [ -n "$v" ] && { printf '%s\n' "$v"; return; }
+     done
+   }
+   ```
+
+   Map: `executor` equal to `codex` → `--codex`; `task_model` → `--task-model <value>`; `review_model` → `--review-model <value>`; `external_reviewers` → `--external-reviewers <value>`. Skip a key with no value. Skip a value that does not match `^[A-Za-z0-9._:,+-]+$` (the `loopai-orca` skill rejects it) and name the skipped key in the message. Join the results with single spaces into `FLAGS`.
+
+**With Orca available**, tell the user:
+
+"Created plan: `docs/plans/YYYYMMDD-<task-name>.md`
+
+Run in Orca:
+`/loopai:loopai-orca docs/plans/YYYYMMDD-<task-name>.md <FLAGS>`"
+
+When `FLAGS` is empty, add one line: "No `executor`/`task_model`/`review_model`/`external_reviewers` set in `.loopai/config`, so the run uses loopai defaults — append `--codex`, `--task-model`, `--review-model`, `--external-reviewers` to the line above or set those keys in `.loopai/config`."
+
+Then use AskUserQuestion — "How do you want to proceed?" — with these options:
+- "Run in Orca now (Recommended)": invoke the `loopai-orca` skill with exactly the plan path and `FLAGS` printed above
+- "Start implementation here": begin with task 1
+- "Not now": stop
+
+**Without Orca**, tell the user:
 
 "Created plan: `docs/plans/YYYYMMDD-<task-name>.md`
 

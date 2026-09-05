@@ -84,8 +84,15 @@ itself: it creates an Orca-managed worktree cut from the current branch (Orca's
 default base is the remote-tracking ref, so `--base-branch` is always passed and
 Orca names the branch `<git-user>/<name>`), copies the plan and untracked
 `.loopai/` overrides into that checkout because a worktree carries committed
-files only, and launches `loopai --orca <plan>` without `--worktree` in an Orca
-terminal tab, where the OSC titles from `pkg/orca` give the card its status. When adding or removing a
+files only, and launches `loopai --orca [flags] <plan>` without `--worktree` in an Orca
+terminal tab, where the OSC titles from `pkg/orca` give the card its status. It
+forwards only `--codex`, `--task-model`, `--review-model`, and
+`--external-reviewers` from its own arguments and stops on any other token,
+because the flags are spliced into a shell command string and `--worktree` or
+`--serve` would break the Orca flow. `loopai-plan` ends by printing that
+invocation when an `orca` binary is on `PATH`, deriving the flags from the
+effective `executor`, `task_model`, `review_model`, and `external_reviewers`
+config keys, and offers to launch it. When adding or removing a
 skill, update `expected_skills` in `scripts/check-symlinks.sh` and the valid
 fixture inventory in `scripts/check-symlinks_test.sh`, then bump both manifest
 versions.
