@@ -74,6 +74,22 @@ func TestReviewCheckpointStoreCleansTempFileOnRenameFailure(t *testing.T) {
 	assert.Empty(t, matches)
 }
 
+func TestReviewCheckpointStoreSaveReportsDirectoryError(t *testing.T) {
+	parentFile := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(parentFile, []byte("file"), 0o600))
+	store := newReviewCheckpointStore(filepath.Join(parentFile, "progress-plan.txt"))
+
+	require.ErrorContains(t, store.Save(processor.ReviewCheckpoint{}), "create review checkpoint directory")
+}
+
+func TestReviewCheckpointStoreRemoveReportsError(t *testing.T) {
+	store := newReviewCheckpointStore(filepath.Join(t.TempDir(), "progress-plan.txt"))
+	require.NoError(t, os.Mkdir(store.path, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store.path, "child"), []byte("file"), 0o600))
+
+	require.ErrorContains(t, store.Remove(), "remove review checkpoint")
+}
+
 func TestReviewCheckpointPath(t *testing.T) {
 	dir := t.TempDir()
 	tests := []struct {
@@ -99,6 +115,15 @@ func TestModeUsesReviewCheckpoints(t *testing.T) {
 	assert.False(t, modeUsesReviewCheckpoints(processor.ModeTasksOnly))
 	assert.False(t, modeUsesReviewCheckpoints(processor.ModePlan))
 	assert.False(t, modeUsesReviewCheckpoints(processor.ModeGenAgents))
+}
+
+func TestReviewCheckpointStoreForMode(t *testing.T) {
+	progressPath := filepath.Join(t.TempDir(), "progress-plan.txt")
+
+	assert.Nil(t, reviewCheckpointStoreForMode(processor.ModeTasksOnly, progressPath))
+	store, ok := reviewCheckpointStoreForMode(processor.ModeFull, progressPath).(*reviewCheckpointStore)
+	require.True(t, ok)
+	assert.Equal(t, filepath.Join(filepath.Dir(progressPath), "progress-plan.review.json"), store.path)
 }
 
 func TestReadProgressAssociationsIgnoresReviewCheckpoint(t *testing.T) {

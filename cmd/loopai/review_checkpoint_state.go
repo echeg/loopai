@@ -23,8 +23,15 @@ func newReviewCheckpointStore(progressLogPath string) *reviewCheckpointStore {
 	}
 }
 
+func reviewCheckpointStoreForMode(mode processor.Mode, progressLogPath string) processor.ReviewCheckpointStore {
+	if !modeUsesReviewCheckpoints(mode) {
+		return nil
+	}
+	return newReviewCheckpointStore(progressLogPath)
+}
+
 func (s *reviewCheckpointStore) Load() (processor.ReviewCheckpoint, bool, error) {
-	data, err := os.ReadFile(s.path) //nolint:gosec // path is derived from loopai's progress log path
+	data, err := os.ReadFile(s.path)
 	if os.IsNotExist(err) {
 		return processor.ReviewCheckpoint{}, false, nil
 	}

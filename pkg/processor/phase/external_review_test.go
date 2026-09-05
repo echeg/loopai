@@ -26,6 +26,21 @@ type externalReviewPhaseTestOpts struct {
 	log       *mockLogger
 }
 
+type recordingExternalReviewPrompts struct {
+	firstFlags []bool
+	responses  []string
+}
+
+func (p *recordingExternalReviewPrompts) ExternalReviewPrompt(_ string, isFirst bool, evaluatorResponse string) string {
+	p.firstFlags = append(p.firstFlags, isFirst)
+	p.responses = append(p.responses, evaluatorResponse)
+	return "external review prompt"
+}
+
+func (*recordingExternalReviewPrompts) ExternalEvaluationPrompt(reviewer, output string) string {
+	return reviewer + " eval: " + output
+}
+
 func externalReviewPhaseFromRunner(t *testing.T, opts externalReviewPhaseTestOpts) (*externalReviewPhase, *mockLogger) {
 	t.Helper()
 	if opts.cfg.AppConfig == nil {
@@ -469,6 +484,7 @@ func TestExternalReviewPhaseSetResume(t *testing.T) {
 	t.Run("skips completed and preserves findings", func(t *testing.T) {
 		second := newTaskPhaseMockExecutor([]executor.Result{{Output: "clean"}})
 		evaluator := newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.ExternalReviewDone}})
+		prompts := &recordingExternalReviewPrompts{}
 		phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 			cfg: Config{MaxIterations: 50, AppConfig: testAppConfig(t)}, review: evaluator,
 			reviewers: []ExternalReviewer{
@@ -476,6 +492,7 @@ func TestExternalReviewPhaseSetResume(t *testing.T) {
 				{Tool: config.ExternalReviewToolClaude, DisplayName: "claude second", Exec: second},
 			},
 		})
+		phase.prompts = prompts
 		phase.SetResume(1, true)
 
 		outcome, err := phase.Run(t.Context())
@@ -483,6 +500,8 @@ func TestExternalReviewPhaseSetResume(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, outcome.HadFindings)
 		assert.Len(t, second.RunCalls(), 1)
+		assert.Equal(t, []bool{true}, prompts.firstFlags, "the next reviewer must start with the full branch diff")
+		assert.Equal(t, []string{""}, prompts.responses, "a resumed reviewer must not inherit another reviewer's context")
 		sections := log.PrintSectionCalls()
 		require.NotEmpty(t, sections)
 		assert.Equal(t, "external review (codex first) - skipped, completed in an earlier run", sections[0].Section.Label)

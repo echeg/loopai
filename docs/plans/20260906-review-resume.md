@@ -171,13 +171,13 @@ atomically written JSON checkpoint in the same directory).
 - [x] run `go test ./cmd/...` - must pass before task 6
 
 ### Task 6: Verify acceptance criteria
-- [ ] verify a run without a checkpoint file produces the same phase order, prompts, and log lines as before (compare `TestRunner_CodexAndPostReview_PipelineOrder` and the full-mode tests still pass unchanged apart from the new setter)
-- [ ] verify resume after an external-reviewer crash skips internal review and the completed reviewers, and the next reviewer's first iteration still gets the full branch diff (`firstCompleted` is per `runLoop` and starts false)
-- [ ] verify the checkpoint is removed after a successful run and after a task-phase invalidation
-- [ ] run `make test` (asset checks, race-enabled Go suite, wrapper suites)
-- [ ] run `make lint` - all issues fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] verify test coverage for `pkg/processor` and `cmd/loopai` new files meets the project standard (80%+)
+- [x] verify a run without a checkpoint file produces the same phase order, prompts, and log lines as before (compare `TestRunner_CodexAndPostReview_PipelineOrder` and the full-mode tests still pass unchanged apart from the new setter)
+- [x] verify resume after an external-reviewer crash skips internal review and the completed reviewers, and the next reviewer's first iteration still gets the full branch diff (`firstCompleted` is per `runLoop` and starts false)
+- [x] verify the checkpoint is removed after a successful run and after a task-phase invalidation
+- [x] run `make test` (asset checks, race-enabled Go suite, wrapper suites)
+- [x] run `make lint` - all issues fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify test coverage for `pkg/processor` and `cmd/loopai` new files meets the project standard (80%+)
 
 ### Task 7: [Final] Update documentation
 - [ ] `README.md`: in the worktree resume section (around line 783) and the execution pipeline section (around line 356), describe review checkpoints: where the file lives, which stages it records, the clean-tree rule, the ancestor rule, task-phase invalidation, removal on success, and that `--review`/`--external-only` reruns honor it too
