@@ -16,6 +16,12 @@ type ExternalReviewOutcome struct {
 	HadFindings bool
 }
 
+const (
+	externalReviewEndedByDone          = "done"
+	externalReviewEndedByStalemate     = "stalemate"
+	externalReviewEndedByMaxIterations = "max_iterations"
+)
+
 // ExternalReviewer pairs an external-review provider with its read-only executor.
 type ExternalReviewer struct {
 	Tool        string
@@ -23,18 +29,30 @@ type ExternalReviewer struct {
 	Exec        Executor
 }
 
+// ReviewerCompletion describes a reviewer that completed its review loop.
+type ReviewerCompletion struct {
+	Index       int
+	Reviewer    ExternalReviewer
+	Label       string
+	HadFindings bool
+	EndedBy     string
+}
+
 // ExternalReviewPhase runs provider-aware external review loops.
 type ExternalReviewPhase struct {
-	cfg            Config
-	log            ExternalReviewLogger
-	reviewers      []ExternalReviewer
-	review         Executor
-	policy         Policy
-	prompts        ExternalReviewPrompts
-	breaks         *BreakController
-	git            *GitState
-	phaseHolder    *status.PhaseHolder
-	iterationDelay time.Duration
+	cfg             Config
+	log             ExternalReviewLogger
+	reviewers       []ExternalReviewer
+	review          Executor
+	policy          Policy
+	prompts         ExternalReviewPrompts
+	breaks          *BreakController
+	git             *GitState
+	phaseHolder     *status.PhaseHolder
+	iterationDelay  time.Duration
+	onReviewerDone  func(ctx context.Context, done ReviewerCompletion) error
+	resumeCompleted int
+	resumeFindings  bool
 }
 
 // ExternalReviewPhaseOpts contains dependencies for ExternalReviewPhase.
@@ -49,6 +67,7 @@ type ExternalReviewPhaseOpts struct {
 	Git            *GitState
 	PhaseHolder    *status.PhaseHolder
 	IterationDelay time.Duration
+	OnReviewerDone func(ctx context.Context, done ReviewerCompletion) error
 }
 
 // NewExternalReviewPhase creates an external review phase engine.
@@ -57,11 +76,19 @@ func NewExternalReviewPhase(opts ExternalReviewPhaseOpts) *ExternalReviewPhase {
 		cfg: opts.Cfg, log: opts.Log, reviewers: opts.Reviewers,
 		review: opts.Review, policy: opts.Policy, prompts: opts.Prompts, breaks: opts.Breaks,
 		git: opts.Git, phaseHolder: opts.PhaseHolder, iterationDelay: opts.IterationDelay,
+		onReviewerDone: opts.OnReviewerDone,
 	}
 }
 
 // Enabled reports whether at least one external reviewer is configured.
 func (p *ExternalReviewPhase) Enabled() bool { return len(p.reviewers) > 0 }
+
+// SetResume configures Run to skip reviewers completed in an earlier run and
+// preserve whether those reviewers found issues.
+func (p *ExternalReviewPhase) SetResume(completed int, hadFindings bool) {
+	p.resumeCompleted = max(completed, 0)
+	p.resumeFindings = hadFindings
+}
 
 // Label returns reviewer names in execution order. A one-reviewer phase keeps
 // the legacy provider-only label; chains include model details when available.
@@ -87,9 +114,13 @@ func (p *ExternalReviewPhase) Run(ctx context.Context) (ExternalReviewOutcome, e
 		return ExternalReviewOutcome{}, nil
 	}
 
-	outcome := ExternalReviewOutcome{}
-	for _, reviewer := range p.reviewers {
+	outcome := ExternalReviewOutcome{HadFindings: p.resumeFindings}
+	for index, reviewer := range p.reviewers {
 		label := p.reviewerLabel(reviewer)
+		if index < p.resumeCompleted {
+			p.log.PrintSection(status.NewGenericSection("external review (" + label + ") - skipped, completed in an earlier run"))
+			continue
+		}
 		if reviewer.Exec == nil {
 			if reviewer.Tool == config.ExternalReviewToolCustom {
 				return outcome, errors.New("custom review script not configured")
@@ -97,13 +128,22 @@ func (p *ExternalReviewPhase) Run(ctx context.Context) (ExternalReviewOutcome, e
 			return outcome, fmt.Errorf("%s review executor not configured", label)
 		}
 		p.log.PrintSection(status.NewGenericSection("external review (" + label + ")"))
-		reviewerOutcome, interrupted, err := p.runLoop(ctx, reviewer, label)
+		reviewerOutcome, interrupted, endedBy, err := p.runLoop(ctx, reviewer, label)
 		outcome.HadFindings = outcome.HadFindings || reviewerOutcome.HadFindings
 		if err != nil {
 			return outcome, err
 		}
 		if interrupted {
 			return outcome, nil
+		}
+		if p.onReviewerDone != nil {
+			done := ReviewerCompletion{
+				Index: index, Reviewer: reviewer, Label: label,
+				HadFindings: reviewerOutcome.HadFindings, EndedBy: endedBy,
+			}
+			if err := p.onReviewerDone(ctx, done); err != nil {
+				return outcome, fmt.Errorf("external review completion hook for %s: %w", label, err)
+			}
 		}
 	}
 	return outcome, nil
@@ -132,7 +172,7 @@ func (p *ExternalReviewPhase) showSummary(toolName, output string) {
 	}
 }
 
-func (p *ExternalReviewPhase) runLoop(ctx context.Context, reviewer ExternalReviewer, label string) (ExternalReviewOutcome, bool, error) {
+func (p *ExternalReviewPhase) runLoop(ctx context.Context, reviewer ExternalReviewer, label string) (ExternalReviewOutcome, bool, string, error) {
 	outcome := ExternalReviewOutcome{}
 	loopCtx, loopCancel := p.breaks.context(ctx)
 	defer loopCancel()
@@ -153,9 +193,9 @@ func (p *ExternalReviewPhase) runLoop(ctx context.Context, reviewer ExternalRevi
 		})
 		if err != nil {
 			if errors.Is(err, errExternalReviewBreak) {
-				return outcome, true, nil
+				return outcome, true, "", nil
 			}
-			return outcome, false, err
+			return outcome, false, "", err
 		}
 
 		if result.firstCompleted {
@@ -165,7 +205,7 @@ func (p *ExternalReviewPhase) runLoop(ctx context.Context, reviewer ExternalRevi
 		if result.hadFindings {
 			outcome.HadFindings = true
 			if stalemate.Update(result.before, p.git.snapshot()) {
-				return outcome, false, nil
+				return outcome, false, externalReviewEndedByStalemate, nil
 			}
 		}
 
@@ -173,21 +213,21 @@ func (p *ExternalReviewPhase) runLoop(ctx context.Context, reviewer ExternalRevi
 		case externalReviewContinue:
 			// fall through to the sleep before the next iteration below
 		case externalReviewStop:
-			return outcome, false, nil
+			return outcome, false, externalReviewEndedByDone, nil
 		case externalReviewRetry:
 			continue
 		}
 
 		if err := p.sleepBeforeNext(loopCtx, ctx); err != nil {
 			if errors.Is(err, errExternalReviewBreak) {
-				return outcome, true, nil
+				return outcome, true, "", nil
 			}
-			return outcome, false, err
+			return outcome, false, "", err
 		}
 	}
 
 	p.log.Print("max %s iterations reached, continuing to next phase...", label)
-	return outcome, false, nil
+	return outcome, false, externalReviewEndedByMaxIterations, nil
 }
 
 type externalReviewIterationAction int

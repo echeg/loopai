@@ -148,6 +148,7 @@ type reviewPhaseRunner interface {
 type externalReviewPhaseRunner interface {
 	Enabled() bool
 	Label() string
+	SetResume(completed int, hadFindings bool)
 	Run(ctx context.Context) (phase.ExternalReviewOutcome, error)
 }
 

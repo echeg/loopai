@@ -101,6 +101,8 @@ func (p testExternalReviewPhase) Label() string {
 
 func (p testExternalReviewPhase) Enabled() bool { return p.toolValue != "none" }
 
+func (p testExternalReviewPhase) SetResume(int, bool) {}
+
 func (p testExternalReviewPhase) Run(ctx context.Context) (phase.ExternalReviewOutcome, error) {
 	if p.runFunc != nil {
 		if err := p.runFunc(ctx); err != nil {

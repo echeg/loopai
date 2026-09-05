@@ -144,12 +144,12 @@ atomically written JSON checkpoint in the same directory).
 - [x] run `go build ./... && go test ./pkg/processor/... ./cmd/...` - must pass before task 3
 
 ### Task 3: External review phase resume hooks
-- [ ] add `ReviewerCompletion{Index int, Reviewer ExternalReviewer, Label string, HadFindings bool, EndedBy string}` to `pkg/processor/phase/external_review.go`, with `EndedBy` one of `done` (evaluator emitted `EXTERNAL_REVIEW_DONE`), `stalemate`, `max_iterations`; make `runLoop` return the reason alongside its outcome
-- [ ] add `OnReviewerDone func(ctx context.Context, done ReviewerCompletion) error` to `ExternalReviewPhaseOpts`; `Run` calls it after a reviewer's `runLoop` returns with no error and no interruption, and a hook error aborts the chain with a wrapped error
-- [ ] add `SetResume(completed int, hadFindings bool)` on `ExternalReviewPhase`: `Run` skips the first `completed` reviewers, printing `status.NewGenericSection("external review (" + label + ") - skipped, completed in an earlier run")` for each, and seeds `outcome.HadFindings` with `hadFindings`; `completed >= len(reviewers)` skips the whole chain; a manual break or error still leaves the hook uncalled
-- [ ] add `SetResume` to the runner's `externalReviewPhaseRunner` interface
-- [ ] write tests: hook receives index, label, `HadFindings`, and each `EndedBy` value; hook not called on reviewer error or interruption; hook error aborts the chain; `SetResume(1, true)` skips reviewer 0, runs reviewer 1, and reports `HadFindings` true even when reviewer 1 is clean; `SetResume(len, ...)` runs nothing
-- [ ] run `go test ./pkg/processor/...` - must pass before task 4
+- [x] add `ReviewerCompletion{Index int, Reviewer ExternalReviewer, Label string, HadFindings bool, EndedBy string}` to `pkg/processor/phase/external_review.go`, with `EndedBy` one of `done` (evaluator emitted `EXTERNAL_REVIEW_DONE`), `stalemate`, `max_iterations`; make `runLoop` return the reason alongside its outcome
+- [x] add `OnReviewerDone func(ctx context.Context, done ReviewerCompletion) error` to `ExternalReviewPhaseOpts`; `Run` calls it after a reviewer's `runLoop` returns with no error and no interruption, and a hook error aborts the chain with a wrapped error
+- [x] add `SetResume(completed int, hadFindings bool)` on `ExternalReviewPhase`: `Run` skips the first `completed` reviewers, printing `status.NewGenericSection("external review (" + label + ") - skipped, completed in an earlier run")` for each, and seeds `outcome.HadFindings` with `hadFindings`; `completed >= len(reviewers)` skips the whole chain; a manual break or error still leaves the hook uncalled
+- [x] add `SetResume` to the runner's `externalReviewPhaseRunner` interface
+- [x] write tests: hook receives index, label, `HadFindings`, and each `EndedBy` value; hook not called on reviewer error or interruption; hook error aborts the chain; `SetResume(1, true)` skips reviewer 0, runs reviewer 1, and reports `HadFindings` true even when reviewer 1 is clean; `SetResume(len, ...)` runs nothing
+- [x] run `go test ./pkg/processor/...` - must pass before task 4
 
 ### Task 4: Runner wiring: load, skip, save, invalidate, remove
 - [ ] add `SetReviewCheckpoints(store ReviewCheckpointStore)` to `Runner` and pass `OnReviewerDone` into `phase.NewExternalReviewPhase` from `NewWithExecutors` through a runner method so the phase can call back into the runner
