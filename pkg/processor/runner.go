@@ -107,6 +107,7 @@ type GitChecker interface {
 	HeadHash() (string, error)
 	DiffFingerprint() (string, error)
 	ContainsRevisionContext(ctx context.Context, revision string) (bool, error)
+	CurrentBranch() (string, error)
 }
 
 // ExternalReviewer is the shared runtime reviewer type used by the processor
@@ -129,6 +130,8 @@ type Runner struct {
 	phaseHolder *status.PhaseHolder
 	deps        *phase.Deps
 	git         GitChecker
+	checkpoints ReviewCheckpointStore
+	resume      reviewResume
 	phases      runnerPhases
 }
 
@@ -238,9 +241,13 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 			reviewers = append(reviewers, reviewer)
 		}
 	}
+	var runner *Runner
 	externalPhase := phase.NewExternalReviewPhase(phase.ExternalReviewPhaseOpts{
 		Cfg: phaseCfg, Log: log, Reviewers: reviewers, Review: review,
 		Policy: policy, Prompts: prompts, Breaks: breaks, Git: git, PhaseHolder: holder, IterationDelay: iterDelay,
+		OnReviewerDone: func(ctx context.Context, done phase.ReviewerCompletion) error {
+			return runner.onReviewerDone(ctx, done)
+		},
 	})
 	finalizePhase := phase.NewFinalizePhase(phase.FinalizePhaseOpts{
 		Cfg: phaseCfg, Log: log, Exec: review, Policy: policy, Prompts: prompts, PhaseHolder: holder,
@@ -258,13 +265,14 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 		genAgents: genAgentsPhase,
 	}
 
-	return &Runner{
+	runner = &Runner{
 		cfg:         cfg,
 		log:         log,
 		phaseHolder: holder,
 		deps:        deps,
 		phases:      phases,
 	}
+	return runner
 }
 
 // SetInputCollector sets the input collector for plan creation mode.
@@ -282,6 +290,11 @@ func (r *Runner) SetGitChecker(g GitChecker) {
 	}
 	r.git = g
 	r.deps.Git = g
+}
+
+// SetReviewCheckpoints configures durable review-stage checkpoint storage.
+func (r *Runner) SetReviewCheckpoints(store ReviewCheckpointStore) {
+	r.checkpoints = store
 }
 
 // SetBreakCh sets the break channel for manual termination of review and task loops.
@@ -341,6 +354,11 @@ func (r *Runner) runFull(ctx context.Context) error {
 		return fmt.Errorf("validate task plan: %w", err)
 	}
 
+	var headBeforeTask string
+	if r.git != nil {
+		headBeforeTask, _ = r.git.HeadHash()
+	}
+
 	// phase 1: task execution
 	r.phaseHolder.Set(status.PhaseTask)
 	r.log.PrintRaw("starting task execution phase\n")
@@ -353,14 +371,20 @@ func (r *Runner) runFull(ctx context.Context) error {
 		return fmt.Errorf("task phase: %w", err)
 	}
 
-	// phase 2: first review pass - address ALL findings
-	if err := r.phases.review.First(ctx); err != nil {
-		return fmt.Errorf("first review: %w", err)
+	r.resume = reviewResume{}
+	if r.git != nil && headBeforeTask != "" {
+		if headAfterTask, err := r.git.HeadHash(); err == nil && headAfterTask != headBeforeTask {
+			r.clearReviewCheckpoint("task phase committed new work")
+		} else {
+			r.resume = r.loadReviewResume(ctx)
+		}
+	} else {
+		r.resume = r.loadReviewResume(ctx)
 	}
 
-	// phase 2.1: review loop (critical/major) before external review
-	if err := r.phases.review.Loop(ctx, ""); err != nil {
-		return fmt.Errorf("pre-external review loop: %w", err)
+	// phase 2: first review pass - address ALL findings
+	if err := r.runInternalReview(ctx); err != nil {
+		return err
 	}
 
 	// phase 2.5+3: external review → post-external review → finalize
@@ -374,14 +398,9 @@ func (r *Runner) runFull(ctx context.Context) error {
 
 // runReviewOnly executes only the review pipeline: review → external review → review.
 func (r *Runner) runReviewOnly(ctx context.Context) error {
-	// phase 1: first review
-	if err := r.phases.review.First(ctx); err != nil {
-		return fmt.Errorf("first review: %w", err)
-	}
-
-	// phase 1.1: review loop (critical/major) before external review
-	if err := r.phases.review.Loop(ctx, ""); err != nil {
-		return fmt.Errorf("pre-external review loop: %w", err)
+	r.resume = r.loadReviewResume(ctx)
+	if err := r.runInternalReview(ctx); err != nil {
+		return err
 	}
 
 	// phase 2+3: external review → post-external review → finalize
@@ -395,6 +414,7 @@ func (r *Runner) runReviewOnly(ctx context.Context) error {
 
 // runCodexOnly executes only the external-review pipeline: external review → review → finalize.
 func (r *Runner) runCodexOnly(ctx context.Context) error {
+	r.resume = r.loadReviewResume(ctx)
 	if err := r.runExternalAndPostReview(ctx); err != nil {
 		return err
 	}
@@ -411,12 +431,14 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 		if err := r.phases.finalize.Run(ctx); err != nil {
 			return fmt.Errorf("finalize phase: %w", err)
 		}
+		r.clearReviewCheckpoint("")
 		return nil
 	}
 
 	r.phaseHolder.Set(status.PhaseExternalReview)
 	label := r.phases.external.Label()
 
+	r.phases.external.SetResume(r.resume.completedReviewers, r.resume.hadFindings)
 	outcome, err := r.phases.external.Run(ctx)
 	if err != nil {
 		return fmt.Errorf("%s loop: %w", label, err)
@@ -427,6 +449,7 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 		if err := r.phases.finalize.Run(ctx); err != nil {
 			return fmt.Errorf("finalize phase: %w", err)
 		}
+		r.clearReviewCheckpoint("")
 		return nil
 	}
 
@@ -442,13 +465,34 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 		"creation and the clean-tree gate with it, so a sweep commits their unrelated work " +
 		"in progress.\n" +
 		"Then continue with the sequence below.\n\n"
-	if err := r.phases.review.Loop(ctx, commitPrefix); err != nil {
-		return fmt.Errorf("post-external review loop: %w", err)
+	if r.resume.skipPostReview {
+		r.log.Print("review checkpoint: post-review completed in an earlier run, skipping")
+	} else {
+		if err := r.phases.review.Loop(ctx, commitPrefix); err != nil {
+			return fmt.Errorf("post-external review loop: %w", err)
+		}
+		r.saveReviewStage(ctx, ReviewStage{Stage: reviewStagePostReview})
 	}
 
 	if err := r.phases.finalize.Run(ctx); err != nil {
 		return fmt.Errorf("finalize phase: %w", err)
 	}
+	r.clearReviewCheckpoint("")
+	return nil
+}
+
+func (r *Runner) runInternalReview(ctx context.Context) error {
+	if r.resume.skipInternal {
+		r.log.Print("review checkpoint: internal review completed in an earlier run, skipping")
+		return nil
+	}
+	if err := r.phases.review.First(ctx); err != nil {
+		return fmt.Errorf("first review: %w", err)
+	}
+	if err := r.phases.review.Loop(ctx, ""); err != nil {
+		return fmt.Errorf("pre-external review loop: %w", err)
+	}
+	r.saveReviewStage(ctx, ReviewStage{Stage: reviewStageInternal})
 	return nil
 }
 

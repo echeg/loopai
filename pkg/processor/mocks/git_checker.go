@@ -17,6 +17,9 @@ import (
 //			ContainsRevisionContextFunc: func(ctx context.Context, revision string) (bool, error) {
 //				panic("mock out the ContainsRevisionContext method")
 //			},
+//			CurrentBranchFunc: func() (string, error) {
+//				panic("mock out the CurrentBranch method")
+//			},
 //			DiffFingerprintFunc: func() (string, error) {
 //				panic("mock out the DiffFingerprint method")
 //			},
@@ -33,6 +36,9 @@ type GitCheckerMock struct {
 	// ContainsRevisionContextFunc mocks the ContainsRevisionContext method.
 	ContainsRevisionContextFunc func(ctx context.Context, revision string) (bool, error)
 
+	// CurrentBranchFunc mocks the CurrentBranch method.
+	CurrentBranchFunc func() (string, error)
+
 	// DiffFingerprintFunc mocks the DiffFingerprint method.
 	DiffFingerprintFunc func() (string, error)
 
@@ -48,6 +54,9 @@ type GitCheckerMock struct {
 			// Revision is the revision argument value.
 			Revision string
 		}
+		// CurrentBranch holds details about calls to the CurrentBranch method.
+		CurrentBranch []struct {
+		}
 		// DiffFingerprint holds details about calls to the DiffFingerprint method.
 		DiffFingerprint []struct {
 		}
@@ -56,6 +65,7 @@ type GitCheckerMock struct {
 		}
 	}
 	lockContainsRevisionContext sync.RWMutex
+	lockCurrentBranch           sync.RWMutex
 	lockDiffFingerprint         sync.RWMutex
 	lockHeadHash                sync.RWMutex
 }
@@ -93,6 +103,33 @@ func (mock *GitCheckerMock) ContainsRevisionContextCalls() []struct {
 	mock.lockContainsRevisionContext.RLock()
 	calls = mock.calls.ContainsRevisionContext
 	mock.lockContainsRevisionContext.RUnlock()
+	return calls
+}
+
+// CurrentBranch calls CurrentBranchFunc.
+func (mock *GitCheckerMock) CurrentBranch() (string, error) {
+	if mock.CurrentBranchFunc == nil {
+		panic("GitCheckerMock.CurrentBranchFunc: method is nil but GitChecker.CurrentBranch was just called")
+	}
+	callInfo := struct {
+	}{}
+	mock.lockCurrentBranch.Lock()
+	mock.calls.CurrentBranch = append(mock.calls.CurrentBranch, callInfo)
+	mock.lockCurrentBranch.Unlock()
+	return mock.CurrentBranchFunc()
+}
+
+// CurrentBranchCalls gets all the calls that were made to CurrentBranch.
+// Check the length with:
+//
+//	len(mockedGitChecker.CurrentBranchCalls())
+func (mock *GitCheckerMock) CurrentBranchCalls() []struct {
+} {
+	var calls []struct {
+	}
+	mock.lockCurrentBranch.RLock()
+	calls = mock.calls.CurrentBranch
+	mock.lockCurrentBranch.RUnlock()
 	return calls
 }
 

@@ -125,6 +125,7 @@ func (testGitChecker) DiffFingerprint() (string, error) { return "diff", nil }
 func (testGitChecker) ContainsRevisionContext(context.Context, string) (bool, error) {
 	return true, nil
 }
+func (testGitChecker) CurrentBranch() (string, error) { return "main", nil }
 
 func (p testFinalizePhase) Run(ctx context.Context) error {
 	if p.runFunc == nil {
