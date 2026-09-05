@@ -136,12 +136,12 @@ atomically written JSON checkpoint in the same directory).
 - [x] run `go test ./pkg/processor/...` - must pass before task 2
 
 ### Task 2: Ancestry check on the runner's git checker
-- [ ] extend `processor.GitChecker` with `ContainsRevisionContext(ctx context.Context, revision string) (bool, error)`; `git.Service` already implements it at `pkg/git/service.go:244`
-- [ ] leave `phase.GitChecker` and `phase.Deps.Git` unchanged; store the checker on the runner in a new `git GitChecker` field set by `SetGitChecker` alongside the existing `deps.Git` assignment
-- [ ] regenerate `pkg/processor/mocks/git_checker.go` with `go generate ./pkg/processor/...`; do not hand-edit
-- [ ] update every hand-written `GitChecker` fake in `pkg/processor/*_test.go` and `cmd/loopai/*_test.go` that stops compiling
-- [ ] write a test that `SetGitChecker` populates both the runner field and `deps.Git`
-- [ ] run `go build ./... && go test ./pkg/processor/... ./cmd/...` - must pass before task 3
+- [x] extend `processor.GitChecker` with `ContainsRevisionContext(ctx context.Context, revision string) (bool, error)`; `git.Service` already implements it at `pkg/git/service.go:244`
+- [x] leave `phase.GitChecker` and `phase.Deps.Git` unchanged; store the checker on the runner in a new `git GitChecker` field set by `SetGitChecker` alongside the existing `deps.Git` assignment
+- [x] regenerate `pkg/processor/mocks/git_checker.go` with `go generate ./pkg/processor/...`; do not hand-edit
+- [x] update every hand-written `GitChecker` fake in `pkg/processor/*_test.go` and `cmd/loopai/*_test.go` that stops compiling
+- [x] write a test that `SetGitChecker` populates both the runner field and `deps.Git`
+- [x] run `go build ./... && go test ./pkg/processor/... ./cmd/...` - must pass before task 3
 
 ### Task 3: External review phase resume hooks
 - [ ] add `ReviewerCompletion{Index int, Reviewer ExternalReviewer, Label string, HadFindings bool, EndedBy string}` to `pkg/processor/phase/external_review.go`, with `EndedBy` one of `done` (evaluator emitted `EXTERNAL_REVIEW_DONE`), `stalemate`, `max_iterations`; make `runLoop` return the reason alongside its outcome

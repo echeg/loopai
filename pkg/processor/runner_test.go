@@ -114,6 +114,16 @@ type testFinalizePhase struct {
 	runFunc func(ctx context.Context) error
 }
 
+type testGitChecker struct{}
+
+func (testGitChecker) HeadHash() (string, error) { return "head", nil }
+
+func (testGitChecker) DiffFingerprint() (string, error) { return "diff", nil }
+
+func (testGitChecker) ContainsRevisionContext(context.Context, string) (bool, error) {
+	return true, nil
+}
+
 func (p testFinalizePhase) Run(ctx context.Context) error {
 	if p.runFunc == nil {
 		return nil
@@ -169,6 +179,17 @@ func TestRunner_NewWithExecutors_NilPhaseHolder(t *testing.T) {
 	require.NotNil(t, r.phaseHolder)
 	require.NoError(t, r.Run(t.Context()))
 	assert.Equal(t, status.PhaseTask, r.phaseHolder.Get())
+}
+
+func TestRunner_SetGitCheckerPopulatesRunnerAndPhaseDeps(t *testing.T) {
+	r := &Runner{}
+	checker := testGitChecker{}
+
+	r.SetGitChecker(checker)
+
+	assert.Equal(t, checker, r.git)
+	require.NotNil(t, r.deps)
+	assert.Equal(t, checker, r.deps.Git)
 }
 
 func TestRunner_RunFull_Success(t *testing.T) {

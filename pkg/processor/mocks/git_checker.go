@@ -4,6 +4,7 @@
 package mocks
 
 import (
+	"context"
 	"sync"
 )
 
@@ -13,6 +14,9 @@ import (
 //
 //		// make and configure a mocked processor.GitChecker
 //		mockedGitChecker := &GitCheckerMock{
+//			ContainsRevisionContextFunc: func(ctx context.Context, revision string) (bool, error) {
+//				panic("mock out the ContainsRevisionContext method")
+//			},
 //			DiffFingerprintFunc: func() (string, error) {
 //				panic("mock out the DiffFingerprint method")
 //			},
@@ -26,6 +30,9 @@ import (
 //
 //	}
 type GitCheckerMock struct {
+	// ContainsRevisionContextFunc mocks the ContainsRevisionContext method.
+	ContainsRevisionContextFunc func(ctx context.Context, revision string) (bool, error)
+
 	// DiffFingerprintFunc mocks the DiffFingerprint method.
 	DiffFingerprintFunc func() (string, error)
 
@@ -34,6 +41,13 @@ type GitCheckerMock struct {
 
 	// calls tracks calls to the methods.
 	calls struct {
+		// ContainsRevisionContext holds details about calls to the ContainsRevisionContext method.
+		ContainsRevisionContext []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// Revision is the revision argument value.
+			Revision string
+		}
 		// DiffFingerprint holds details about calls to the DiffFingerprint method.
 		DiffFingerprint []struct {
 		}
@@ -41,8 +55,45 @@ type GitCheckerMock struct {
 		HeadHash []struct {
 		}
 	}
-	lockDiffFingerprint sync.RWMutex
-	lockHeadHash        sync.RWMutex
+	lockContainsRevisionContext sync.RWMutex
+	lockDiffFingerprint         sync.RWMutex
+	lockHeadHash                sync.RWMutex
+}
+
+// ContainsRevisionContext calls ContainsRevisionContextFunc.
+func (mock *GitCheckerMock) ContainsRevisionContext(ctx context.Context, revision string) (bool, error) {
+	if mock.ContainsRevisionContextFunc == nil {
+		panic("GitCheckerMock.ContainsRevisionContextFunc: method is nil but GitChecker.ContainsRevisionContext was just called")
+	}
+	callInfo := struct {
+		Ctx      context.Context
+		Revision string
+	}{
+		Ctx:      ctx,
+		Revision: revision,
+	}
+	mock.lockContainsRevisionContext.Lock()
+	mock.calls.ContainsRevisionContext = append(mock.calls.ContainsRevisionContext, callInfo)
+	mock.lockContainsRevisionContext.Unlock()
+	return mock.ContainsRevisionContextFunc(ctx, revision)
+}
+
+// ContainsRevisionContextCalls gets all the calls that were made to ContainsRevisionContext.
+// Check the length with:
+//
+//	len(mockedGitChecker.ContainsRevisionContextCalls())
+func (mock *GitCheckerMock) ContainsRevisionContextCalls() []struct {
+	Ctx      context.Context
+	Revision string
+} {
+	var calls []struct {
+		Ctx      context.Context
+		Revision string
+	}
+	mock.lockContainsRevisionContext.RLock()
+	calls = mock.calls.ContainsRevisionContext
+	mock.lockContainsRevisionContext.RUnlock()
+	return calls
 }
 
 // DiffFingerprint calls DiffFingerprintFunc.

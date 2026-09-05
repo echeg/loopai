@@ -106,6 +106,7 @@ type InputCollector interface {
 type GitChecker interface {
 	HeadHash() (string, error)
 	DiffFingerprint() (string, error)
+	ContainsRevisionContext(ctx context.Context, revision string) (bool, error)
 }
 
 // ExternalReviewer is the shared runtime reviewer type used by the processor
@@ -127,6 +128,7 @@ type Runner struct {
 	log         Logger
 	phaseHolder *status.PhaseHolder
 	deps        *phase.Deps
+	git         GitChecker
 	phases      runnerPhases
 }
 
@@ -277,6 +279,7 @@ func (r *Runner) SetGitChecker(g GitChecker) {
 	if r.deps == nil {
 		r.deps = &phase.Deps{}
 	}
+	r.git = g
 	r.deps.Git = g
 }
 
