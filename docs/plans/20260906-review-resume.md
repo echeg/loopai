@@ -164,11 +164,11 @@ atomically written JSON checkpoint in the same directory).
 - [x] run `go test -race ./pkg/processor/...` - must pass before task 5
 
 ### Task 5: File-backed store in cmd/loopai and wiring
-- [ ] create `cmd/loopai/review_checkpoint_state.go` with `reviewCheckpointStore{path string}`: path is `filepath.Join(filepath.Dir(progressLogPath), strings.TrimSuffix(filepath.Base(progressLogPath), ".txt") + ".review.json")`; `Load` returns `found=false` on `os.IsNotExist`, a wrapped error on other read/parse failures; `Save` writes temp file + `Chmod(0o600)` + `os.Rename` like `savePlanChainCheckpoint`, stamping `Version`; `Remove` ignores not-exist
-- [ ] wire it in `executePlan` right after `createRunner`: `r.SetReviewCheckpoints(newReviewCheckpointStore(runnerLog.Path()))`, guarded so plan-creation and gen-agents modes (no review phases) skip it; the anchor is the progress log path, which is resolved in the main checkout before any worktree `chdir`, so the file survives worktree removal without consulting `MainGitSvc`
-- [ ] make `progressRecordRoots`/`readProgressAssociations` behavior explicit in a test: a `*.review.json` file in `.loopai/progress/` is ignored by the close-out association scan
-- [ ] write tests for the store with `t.TempDir()`: round-trip, missing file, corrupt JSON error, remove idempotent, temp file cleaned up, `0600` mode on Unix; and for the path derivation for `progress-<plan>.txt`, `progress-review.txt`, `progress-codex.txt`
-- [ ] run `go test ./cmd/...` - must pass before task 6
+- [x] create `cmd/loopai/review_checkpoint_state.go` with `reviewCheckpointStore{path string}`: path is `filepath.Join(filepath.Dir(progressLogPath), strings.TrimSuffix(filepath.Base(progressLogPath), ".txt") + ".review.json")`; `Load` returns `found=false` on `os.IsNotExist`, a wrapped error on other read/parse failures; `Save` writes temp file + `Chmod(0o600)` + `os.Rename` like `savePlanChainCheckpoint`, stamping `Version`; `Remove` ignores not-exist
+- [x] wire it in `executePlan` right after `createRunner`: `r.SetReviewCheckpoints(newReviewCheckpointStore(runnerLog.Path()))`, guarded so plan-creation and gen-agents modes (no review phases) skip it; the anchor is the progress log path, which is resolved in the main checkout before any worktree `chdir`, so the file survives worktree removal without consulting `MainGitSvc`
+- [x] make `progressRecordRoots`/`readProgressAssociations` behavior explicit in a test: a `*.review.json` file in `.loopai/progress/` is ignored by the close-out association scan
+- [x] write tests for the store with `t.TempDir()`: round-trip, missing file, corrupt JSON error, remove idempotent, temp file cleaned up, `0600` mode on Unix; and for the path derivation for `progress-<plan>.txt`, `progress-review.txt`, `progress-codex.txt`
+- [x] run `go test ./cmd/...` - must pass before task 6
 
 ### Task 6: Verify acceptance criteria
 - [ ] verify a run without a checkpoint file produces the same phase order, prompts, and log lines as before (compare `TestRunner_CodexAndPostReview_PipelineOrder` and the full-mode tests still pass unchanged apart from the new setter)
