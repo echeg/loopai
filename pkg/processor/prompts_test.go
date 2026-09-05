@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/umputun/ralphex/pkg/config"
-	"github.com/umputun/ralphex/pkg/processor/mocks"
 	"github.com/umputun/ralphex/pkg/status"
 )
 
@@ -1790,7 +1789,7 @@ func TestRunner_expandDynamicAgentCatalog_NoPlaceholder(t *testing.T) {
 // a review_first.txt copy installed before the catalog existed drops every dynamic
 // agent, so the drop must at least be visible in the progress log
 func TestPromptBuilder_FirstReviewPrompt_WarnsWhenCatalogPlaceholderMissing(t *testing.T) {
-	assertWarned := func(t *testing.T, log *mocks.LoggerMock, want bool) {
+	assertWarned := func(t *testing.T, log *testLoggerMock, want bool) {
 		t.Helper()
 		var warned int
 		for _, call := range log.PrintCalls() {

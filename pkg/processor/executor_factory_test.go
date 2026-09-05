@@ -15,7 +15,6 @@ import (
 
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
-	"github.com/umputun/ralphex/pkg/processor/mocks"
 	"github.com/umputun/ralphex/pkg/status"
 )
 
@@ -701,8 +700,8 @@ func TestRunner_New_AutoExternalRouting(t *testing.T) {
 
 // newCapturingLogger returns a logger mock that captures every Print invocation
 // into the returned slice pointer. used by tests asserting hint emission.
-func newCapturingLogger(captured *[]string) *mocks.LoggerMock {
-	return &mocks.LoggerMock{
+func newCapturingLogger(captured *[]string) *testLoggerMock {
+	return &testLoggerMock{
 		PrintFunc: func(format string, args ...any) {
 			*captured = append(*captured, fmt.Sprintf(format, args...))
 		},

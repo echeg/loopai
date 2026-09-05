@@ -14,15 +14,14 @@ import (
 
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
-	"github.com/umputun/ralphex/pkg/processor/mocks"
 	"github.com/umputun/ralphex/pkg/processor/phase"
 	"github.com/umputun/ralphex/pkg/status"
 )
 
 // newMockExecutor creates a mock executor with predefined results.
-func newMockExecutor(results []executor.Result) *mocks.ExecutorMock {
+func newMockExecutor(results []executor.Result) *testExecutorMock {
 	idx := 0
-	return &mocks.ExecutorMock{
+	return &testExecutorMock{
 		RunFunc: func(_ context.Context, _ string) executor.Result {
 			if idx >= len(results) {
 				return executor.Result{Error: errors.New("no more mock results")}
@@ -35,8 +34,8 @@ func newMockExecutor(results []executor.Result) *mocks.ExecutorMock {
 }
 
 // newMockLogger creates a mock logger with no-op implementations.
-func newRunnerMockLogger(path string) *mocks.LoggerMock {
-	return &mocks.LoggerMock{
+func newRunnerMockLogger(path string) *testLoggerMock {
+	return &testLoggerMock{
 		PrintFunc:          func(_ string, _ ...any) {},
 		PrintRawFunc:       func(_ string, _ ...any) {},
 		PrintSectionFunc:   func(_ status.Section) {},
@@ -821,7 +820,7 @@ func TestRunner_CodexExternalOnly_ClaudeFindingsAreHandledByPrimaryCodex(t *test
 		{Output: "finalize done"},
 	}
 	primaryIndex := 0
-	primaryCodex := &mocks.ExecutorMock{RunFunc: func(_ context.Context, _ string) executor.Result {
+	primaryCodex := &testExecutorMock{RunFunc: func(_ context.Context, _ string) executor.Result {
 		calls = append(calls, "primary-codex")
 		result := primaryResults[primaryIndex]
 		primaryIndex++
@@ -833,7 +832,7 @@ func TestRunner_CodexExternalOnly_ClaudeFindingsAreHandledByPrimaryCodex(t *test
 		{Output: "no issues found"},
 	}
 	externalIndex := 0
-	externalClaude := &mocks.ExecutorMock{RunFunc: func(_ context.Context, _ string) executor.Result {
+	externalClaude := &testExecutorMock{RunFunc: func(_ context.Context, _ string) executor.Result {
 		calls = append(calls, "external-claude")
 		result := externalResults[externalIndex]
 		externalIndex++
@@ -1084,7 +1083,7 @@ func TestRunner_CodexAndPostReview_CommitPendingPrefix(t *testing.T) {
 		log := newRunnerMockLogger("progress.txt")
 
 		var capturedPrompts []string
-		claude := &mocks.ExecutorMock{
+		claude := &testExecutorMock{
 			RunFunc: func(_ context.Context, prompt string) executor.Result {
 				capturedPrompts = append(capturedPrompts, prompt)
 				switch len(capturedPrompts) {
@@ -1191,7 +1190,7 @@ func TestRunner_SetInputCollector_ReachesConcretePlanPhase(t *testing.T) {
 <<<RALPHEX:END>>>`},
 		{Signal: status.PlanReady},
 	})
-	collector := &mocks.InputCollectorMock{
+	collector := &testInputCollectorMock{
 		AskQuestionFunc: func(_ context.Context, question string, options []string) (string, error) {
 			assert.Equal(t, "Choose storage", question)
 			assert.Equal(t, []string{"sqlite", "postgres"}, options)
@@ -1219,7 +1218,7 @@ func TestRunner_SetPauseHandler_ReachesConcreteTaskPhase(t *testing.T) {
 
 	breakCh := make(chan struct{}, 1)
 	pauseCalled := make(chan struct{}, 1)
-	exec := &mocks.ExecutorMock{RunFunc: func(ctx context.Context, _ string) executor.Result {
+	exec := &testExecutorMock{RunFunc: func(ctx context.Context, _ string) executor.Result {
 		breakCh <- struct{}{}
 		<-ctx.Done()
 		return executor.Result{Error: ctx.Err()}
@@ -1249,7 +1248,7 @@ func TestRunner_SleepWithContext_CancelDuringDelay(t *testing.T) {
 
 	// executor returns no signal (no completion), so runner will loop and hit sleepWithContext
 	var cancel context.CancelFunc
-	claude := &mocks.ExecutorMock{RunFunc: func(_ context.Context, _ string) executor.Result {
+	claude := &testExecutorMock{RunFunc: func(_ context.Context, _ string) executor.Result {
 		cancel()
 		return executor.Result{Output: "working on it"}
 	}}
@@ -1447,8 +1446,8 @@ func testAppConfig(t *testing.T) *config.Config {
 }
 
 // newMockLogger creates a moq-generated logger mock with no-op implementations.
-func newMockLogger() *mocks.LoggerMock {
-	return &mocks.LoggerMock{
+func newMockLogger() *testLoggerMock {
+	return &testLoggerMock{
 		PrintFunc:          func(_ string, _ ...any) {},
 		PrintRawFunc:       func(_ string, _ ...any) {},
 		PrintSectionFunc:   func(_ status.Section) {},
@@ -1460,7 +1459,7 @@ func newMockLogger() *mocks.LoggerMock {
 	}
 }
 
-func assertLogContains(t *testing.T, log *mocks.LoggerMock, text string) {
+func assertLogContains(t *testing.T, log *testLoggerMock, text string) {
 	t.Helper()
 	for _, call := range log.PrintCalls() {
 		if strings.Contains(call.Format, text) {
