@@ -62,6 +62,8 @@ type Values struct {
 	ReviewPatience             int  // terminate external review after N unchanged rounds (0 = disabled)
 	FinalizeEnabled            bool
 	FinalizeEnabledSet         bool // tracks if finalize_enabled was explicitly set
+	ReportEnabled              bool
+	ReportEnabledSet           bool // tracks if report_enabled was explicitly set
 	PreserveAnthropicAPIKey    bool
 	PreserveAnthropicAPIKeySet bool   // tracks if preserve_anthropic_api_key was explicitly set
 	Executor                   string // "" (= claude, default) or "codex"
@@ -192,6 +194,7 @@ func (vl *valuesLoader) parseValuesFromEmbedded() (Values, error) {
 	values.ExternalReviewToolSet = false
 	values.ExternalReviewModelSet = false
 	values.ExternalReviewersSet = false
+	values.ReportEnabledSet = false
 	return values, nil
 }
 
@@ -352,6 +355,14 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 		}
 		values.FinalizeEnabled = val
 		values.FinalizeEnabledSet = true
+	}
+	if key, err := section.GetKey("report_enabled"); err == nil {
+		val, boolErr := key.Bool()
+		if boolErr != nil {
+			return Values{}, fmt.Errorf("invalid report_enabled: %w", boolErr)
+		}
+		values.ReportEnabled = val
+		values.ReportEnabledSet = true
 	}
 
 	// preserve ANTHROPIC_API_KEY in claude child env (for users authenticating Claude Code via API key)
@@ -613,6 +624,10 @@ func (dst *Values) mergeExtraFrom(src *Values) {
 	if src.FinalizeEnabledSet {
 		dst.FinalizeEnabled = src.FinalizeEnabled
 		dst.FinalizeEnabledSet = true
+	}
+	if src.ReportEnabledSet {
+		dst.ReportEnabled = src.ReportEnabled
+		dst.ReportEnabledSet = true
 	}
 	if src.PreserveAnthropicAPIKeySet {
 		dst.PreserveAnthropicAPIKey = src.PreserveAnthropicAPIKey

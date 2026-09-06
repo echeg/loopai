@@ -50,6 +50,7 @@ type Config struct {
 	ExternalReviewEffort  string                      // resolved external provider effort
 	ExternalReviewers     []config.ReviewerSpec       // ordered resolved reviewer chain; empty uses the legacy fields above
 	FinalizeEnabled       bool                        // whether finalize step is enabled
+	ReportEnabled         bool                        // whether completion report generation is enabled
 	DefaultBranch         string                      // default branch name (detected from repo)
 	AppConfig             *config.Config              // full application config (for executors and prompts)
 	LimitRecovery         limits.Recovery             // optional provider-specific limit recovery
@@ -70,6 +71,7 @@ func toPhaseConfig(c Config) phase.Config {
 		MaxExternalIterations: c.MaxExternalIterations,
 		ReviewPatience:        c.ReviewPatience,
 		FinalizeEnabled:       c.FinalizeEnabled,
+		ReportEnabled:         c.ReportEnabled,
 		AppConfig:             c.AppConfig,
 	}
 }

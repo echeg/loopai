@@ -344,7 +344,7 @@ func spawnWorkspace(runner commandRunner, timeout time.Duration, name, cwd strin
 }
 
 // shellQuote wraps s in POSIX single quotes, ending and reopening the quoted run around every
-// literal quote ('\''). the result is safe in sh, bash and zsh alike, since nothing but the closing
+// literal quote ('\”). the result is safe in sh, bash and zsh alike, since nothing but the closing
 // quote is special inside a single-quoted string.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
@@ -848,7 +848,7 @@ func (r *Reporter) modelForPhase(phase status.Phase) string {
 		return r.models.Plan
 	case status.PhaseTask:
 		return r.models.Task
-	case status.PhaseReview, status.PhaseExternalEval, status.PhaseFinalize:
+	case status.PhaseReview, status.PhaseExternalEval, status.PhaseFinalize, status.PhaseReport:
 		return r.models.Review
 	case status.PhaseExternalReview:
 		return r.models.ExternalReview
@@ -873,6 +873,7 @@ var phaseStyles = map[status.Phase]phaseStyle{
 	status.PhaseExternalReview: {text: "external review", icon: "person.2", color: "#a855f7"},
 	status.PhaseExternalEval:   {text: "evaluating findings", icon: "checkmark.seal", color: "#a855f7"},
 	status.PhaseFinalize:       {text: "finalize", icon: "flag.checkered", color: "#22c55e"},
+	status.PhaseReport:         {text: "report", icon: "doc.text", color: "#22c55e"},
 	status.PhasePlan:           {text: "planning", icon: "list.bullet.clipboard", color: "#3b82f6"},
 	status.PhaseLimitWait:      {text: "rate limited", icon: "clock.arrow.circlepath", color: "#ef4444"},
 }

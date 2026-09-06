@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	gitpkg "github.com/umputun/ralphex/pkg/git"
 	"github.com/umputun/ralphex/pkg/plan"
@@ -145,4 +147,178 @@ func markdownTitle(content string) string {
 		}
 	}
 	return ""
+}
+
+// renderRunFacts renders deterministic run facts for the report model. Numeric
+// durations remain milliseconds so the model can copy Go-provided values exactly.
+func renderRunFacts(record RunRecord, facts RunFacts) string {
+	var b strings.Builder
+	b.WriteString("## Metadata\n")
+	writeMetadata(&b, record)
+
+	b.WriteString("\n## Phase durations\n")
+	writePhaseDurations(&b, record.PhaseDurations)
+
+	b.WriteString("\n## Files\n")
+	writeFilesTable(&b, facts.Files)
+
+	fmt.Fprintf(&b, "\n## Diff totals\n- files: %d\n- additions: %d\n- deletions: %d\n",
+		facts.DiffStats.Files, facts.DiffStats.Additions, facts.DiffStats.Deletions)
+
+	b.WriteString("\n## Commits\n")
+	if len(facts.Commits) == 0 {
+		b.WriteString("- none\n")
+	} else {
+		for _, commit := range facts.Commits {
+			fmt.Fprintf(&b, "- `%s` %s\n", inlineCode(commit.Hash), commit.Subject)
+		}
+	}
+
+	b.WriteString("\n## Backlog files\n")
+	writeBacklogTable(&b, facts.Backlog)
+
+	b.WriteString("\n## Plan drift\n")
+	writeDrift(&b, facts.Drift)
+
+	b.WriteString("\n## Validation\n### Commands\n")
+	writeStringList(&b, facts.ValidationCommands, true)
+	b.WriteString("### Timings\n")
+	b.WriteString("- not recorded\n")
+
+	b.WriteString("\n## External reviewers\n")
+	writeExternalReviewers(&b, record.External)
+	return strings.TrimSpace(b.String())
+}
+
+func writeMetadata(b *strings.Builder, record RunRecord) {
+	fields := []struct{ name, value string }{
+		{"plan", record.Plan}, {"branch", record.Branch}, {"base", record.BaseRef},
+		{"mode", string(record.Mode)}, {"executor", record.Executor}, {"task model", record.TaskModel},
+		{"review model", record.ReviewModel}, {"started", formatRecordTime(record.StartedAt)},
+		{"finished", formatRecordTime(record.FinishedAt)},
+	}
+	for _, field := range fields {
+		value := field.value
+		if value == "" {
+			value = "not recorded"
+		}
+		fmt.Fprintf(b, "- %s: %s\n", field.name, value)
+	}
+	fmt.Fprintf(b, "- task iterations: %d\n- task failed retries: %d\n", record.Tasks.Iterations, record.Tasks.FailedRetries)
+	fmt.Fprintf(b, "- internal review first ran: %t\n- internal review loop iterations: %d\n- internal review ended by: %s\n",
+		record.InternalReview.FirstRan, record.InternalReview.LoopIterations, valueOrNone(record.InternalReview.EndedBy))
+	fmt.Fprintf(b, "- post-review ran: %t\n- post-review iterations: %d\n", record.PostReview.Ran, record.PostReview.Iterations)
+}
+
+func writePhaseDurations(b *strings.Builder, durations map[string]Duration) {
+	if len(durations) == 0 {
+		b.WriteString("- none\n")
+		return
+	}
+	keys := make([]string, 0, len(durations))
+	for key := range durations {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	b.WriteString("| phase | duration_ms |\n|---|---:|\n")
+	for _, key := range keys {
+		fmt.Fprintf(b, "| %s | %d |\n", tableCell(key), time.Duration(durations[key]).Milliseconds())
+	}
+}
+
+func writeFilesTable(b *strings.Builder, files []gitpkg.FileChange) {
+	if len(files) == 0 {
+		b.WriteString("- none\n")
+		return
+	}
+	b.WriteString("| status | path |\n|---|---|\n")
+	for _, file := range files {
+		fmt.Fprintf(b, "| %s | %s |\n", tableCell(file.Status), tableCell(file.Path))
+	}
+}
+
+func writeBacklogTable(b *strings.Builder, backlog []BacklogFile) {
+	if len(backlog) == 0 {
+		b.WriteString("- none\n")
+		return
+	}
+	b.WriteString("| status | path | title |\n|---|---|---|\n")
+	for _, file := range backlog {
+		fmt.Fprintf(b, "| %s | %s | %s |\n", tableCell(file.Status), tableCell(file.Path), tableCell(valueOrNone(file.Title)))
+	}
+}
+
+func writeDrift(b *strings.Builder, drift plan.Drift) {
+	groups := []struct {
+		name  string
+		items []string
+	}{{"Added", drift.Added}, {"Blocked", drift.Blocked}, {"Skipped", drift.Skipped}}
+	for _, group := range groups {
+		fmt.Fprintf(b, "### %s\n", group.name)
+		writeStringList(b, group.items, false)
+	}
+}
+
+func writeExternalReviewers(b *strings.Builder, reviewers []ExternalReviewerRecord) {
+	if len(reviewers) == 0 {
+		b.WriteString("- none\n")
+		return
+	}
+	for _, reviewer := range reviewers {
+		fmt.Fprintf(b, "### %s\n", valueOrNone(reviewer.Key))
+		fmt.Fprintf(b, "- label: %s\n- iterations: %d\n- duration_ms: %d\n- ended by: %s\n- had findings: %t\n",
+			valueOrNone(reviewer.Label), len(reviewer.Iterations), time.Duration(reviewer.Duration).Milliseconds(),
+			valueOrNone(reviewer.EndedBy), reviewer.HadFindings)
+		for _, iteration := range reviewer.Iterations {
+			fmt.Fprintf(b, "#### Iteration %d\n- truncated: %t\n", iteration.Index, iteration.Truncated)
+			b.WriteString("Reviewer output:\n")
+			writeFencedBlock(b, iteration.ReviewerOutput)
+			b.WriteString("Evaluator response:\n")
+			writeFencedBlock(b, iteration.EvaluatorResponse)
+		}
+	}
+}
+
+func writeStringList(b *strings.Builder, items []string, code bool) {
+	if len(items) == 0 {
+		b.WriteString("- none\n")
+		return
+	}
+	for _, item := range items {
+		if code {
+			fmt.Fprintf(b, "- `%s`\n", inlineCode(item))
+		} else {
+			fmt.Fprintf(b, "- %s\n", item)
+		}
+	}
+}
+
+func writeFencedBlock(b *strings.Builder, content string) {
+	fence := "```"
+	for strings.Contains(content, fence) {
+		fence += "`"
+	}
+	fmt.Fprintf(b, "%s\n%s\n%s\n", fence, content, fence)
+}
+
+func tableCell(value string) string {
+	return strings.NewReplacer("|", "\\|", "\r", " ", "\n", " ").Replace(value)
+}
+
+func inlineCode(value string) string {
+	return strings.ReplaceAll(value, "`", "\\`")
+}
+
+func formatRecordTime(value time.Time) string {
+	if value.IsZero() {
+		return "not recorded"
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
+func valueOrNone(value string) string {
+	if value == "" {
+		return "none"
+	}
+	return value
 }

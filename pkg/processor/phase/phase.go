@@ -32,6 +32,7 @@ type Config struct {
 	MaxExternalIterations int
 	ReviewPatience        int
 	FinalizeEnabled       bool
+	ReportEnabled         bool
 	AppConfig             *config.Config
 }
 
@@ -90,6 +91,12 @@ type ExternalReviewLogger interface {
 
 // FinalizeLogger records finalize phase progress.
 type FinalizeLogger interface {
+	Logger
+	PrintSection(section status.Section)
+}
+
+// ReportLogger records completion report phase progress.
+type ReportLogger interface {
 	Logger
 	PrintSection(section status.Section)
 }
@@ -183,6 +190,11 @@ type GenAgentsPrompts interface {
 // FinalizePrompts renders finalize prompts.
 type FinalizePrompts interface {
 	FinalizePrompt() string
+}
+
+// ReportPrompts renders the completion report prompt.
+type ReportPrompts interface {
+	ReportPrompt(facts string) string
 }
 
 // Locator resolves the current plan file path.

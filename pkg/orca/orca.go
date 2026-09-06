@@ -378,6 +378,8 @@ func phaseLabel(s state) string {
 		return iterationLabel("plan", s.iteration)
 	case status.PhaseFinalize:
 		return "finalize"
+	case status.PhaseReport:
+		return "report"
 	default:
 		return ""
 	}

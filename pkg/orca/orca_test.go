@@ -70,6 +70,7 @@ func TestReporterOnPhaseAsObserver(t *testing.T) {
 		{name: "external evaluation", phase: status.PhaseExternalEval, executor: config.ExecutorCodex, want: "\x1b]0;◐ loopai · external eval · codex\a"},
 		{name: "plan", phase: status.PhasePlan, executor: config.ExecutorClaude, want: "\x1b]0;◐ loopai · plan · claude\a"},
 		{name: "finalize", phase: status.PhaseFinalize, executor: config.ExecutorCodex, want: "\x1b]0;◐ loopai · finalize · codex\a"},
+		{name: "report", phase: status.PhaseReport, executor: config.ExecutorCodex, want: "\x1b]0;◐ loopai · report · codex\a"},
 		{name: "limit wait", phase: status.PhaseLimitWait, executor: config.ExecutorCodex, want: "\x1b]0;loopai · waiting for limit · codex\a"},
 	}
 
@@ -522,6 +523,7 @@ func TestTitleFor(t *testing.T) {
 		{name: "plan phase", state: state{phase: status.PhasePlan}, executor: "claude", want: "◐ loopai · plan · claude"},
 		{name: "plan iteration", state: state{phase: status.PhasePlan, iteration: 2}, executor: "claude", want: "◐ loopai · plan · iteration 2 · claude"},
 		{name: "finalize", state: state{phase: status.PhaseFinalize}, executor: "codex", want: "◐ loopai · finalize · codex"},
+		{name: "report", state: state{phase: status.PhaseReport}, executor: "codex", want: "◐ loopai · report · codex"},
 		{name: "waiting for input", state: state{waiting: waitingInput}, executor: "claude", want: "loopai · waiting for input · claude"},
 		{name: "waiting for limit", state: state{waiting: waitingLimit}, executor: "codex", want: "loopai · waiting for limit · codex"},
 		{name: "done", state: state{final: finalDone}, executor: "claude", want: "✳ loopai · done"},

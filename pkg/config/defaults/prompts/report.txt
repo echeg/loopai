@@ -1,0 +1,39 @@
+# completion report prompt
+# available variables: {{PLAN_FILE}}, {{DEFAULT_BRANCH}}, {{BACKLOG_DIR}}, {{RUN_FACTS}}
+
+Create the completion report for the implementation at {{PLAN_FILE}}.
+
+Read the plan and run `git diff {{DEFAULT_BRANCH}}...HEAD` to understand the completed change in context. Treat the deterministic facts below as ground truth. Do not change, create, or delete any repository file. Return only the markdown report, with no preamble and no completion signal.
+
+The report must use exactly these sections in this order:
+
+# Report: <plan title>
+<one metadata line containing the plan, branch, base, mode, executor, task model, review model, start time, and finish time>
+
+## Summary
+Summarize what was delivered.
+
+## Change scope
+Describe the changed files, commits, and diff size from the supplied facts.
+
+## Risk
+State `low`, `medium`, or `high` and explain the assessment, explicitly considering public APIs, data schemas, configuration, concurrency, and migrations.
+
+## Migrations and operational steps
+List required database, configuration, data, or deployment actions. Write the literal `none` when no action is needed.
+
+## Plan deviation
+Compare the implementation to the plan and account for every supplied added, blocked, and skipped item.
+
+## Backlog
+List each supplied backlog entry and its disposition, or state that there were none.
+
+## External review
+For every reviewer, add one `### <reviewer key>` subsection. Copy all Go-provided numbers verbatim, then list each finding as `finding -> fixed | dismissed (reason) | filed to backlog`. Do not invent findings or outcomes absent from the facts.
+
+## Validation
+List the supplied validation commands and timings.
+
+Deterministic run facts:
+
+{{RUN_FACTS}}

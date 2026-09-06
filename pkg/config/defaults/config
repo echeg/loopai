@@ -188,6 +188,15 @@ external_review_model =
 # finalize_enabled = false
 
 # ------------------------------------------------------------------------------
+# completion report
+# ------------------------------------------------------------------------------
+
+# report_enabled: generate a completion report after finalize in full review runs
+# and persist it beside the archived plan. tasks-only runs do not generate a report.
+# default: true
+report_enabled = true
+
+# ------------------------------------------------------------------------------
 # claude authentication
 # ------------------------------------------------------------------------------
 

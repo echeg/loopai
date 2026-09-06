@@ -99,3 +99,11 @@ func (b *promptBuilder) GenAgentsPrompt() string {
 func (b *promptBuilder) FinalizePrompt() string {
 	return b.replacePromptVariables(b.cfg.AppConfig.FinalizePrompt)
 }
+
+// ReportPrompt renders the completion report prompt with deterministic facts.
+// Facts are inserted after base-variable expansion so their contents are never
+// interpreted as template variables.
+func (b *promptBuilder) ReportPrompt(facts string) string {
+	prompt := b.replaceBaseVariables(b.cfg.AppConfig.ReportPrompt)
+	return strings.ReplaceAll(prompt, "{{RUN_FACTS}}", facts)
+}

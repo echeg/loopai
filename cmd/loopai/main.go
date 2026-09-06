@@ -3086,6 +3086,7 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		ExternalReviewEffort:  reviewer.Effort,
 		ExternalReviewers:     reviewers,
 		FinalizeEnabled:       req.Config.FinalizeEnabled,
+		ReportEnabled:         req.Config.ReportEnabled,
 		DefaultBranch:         req.BaseRef,
 		TaskModel:             resolveSpec(o.TaskModel, req.Config.TaskModel),
 		ReviewModel:           resolveReviewSpec(o, req.Config),

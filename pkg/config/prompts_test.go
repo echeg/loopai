@@ -27,6 +27,7 @@ func TestPromptLoader_Load_FromUserDir(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "codex.txt"), []byte("custom codex prompt"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "make_plan.txt"), []byte("custom make plan prompt"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "finalize.txt"), []byte("custom finalize prompt"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "report.txt"), []byte("custom report prompt"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "custom_review.txt"), []byte("custom review prompt"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "custom_eval.txt"), []byte("custom eval prompt"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "codex_review.txt"), []byte("custom codex review prompt"), 0o600))
@@ -41,6 +42,7 @@ func TestPromptLoader_Load_FromUserDir(t *testing.T) {
 	assert.Equal(t, "custom codex prompt", prompts.Codex)
 	assert.Equal(t, "custom make plan prompt", prompts.MakePlan)
 	assert.Equal(t, "custom finalize prompt", prompts.Finalize)
+	assert.Equal(t, "custom report prompt", prompts.Report)
 	assert.Equal(t, "custom review prompt", prompts.CustomReview)
 	assert.Equal(t, "custom eval prompt", prompts.CustomEval)
 	assert.Equal(t, "custom codex review prompt", prompts.CodexReview)
@@ -687,6 +689,32 @@ func TestPromptLoader_Load_FinalizePrompt_LocalOverridesGlobal(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "local finalize", prompts.Finalize)
+}
+
+func TestPromptLoader_Load_ReportPromptFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	globalDir := filepath.Join(tmpDir, "global", "prompts")
+	localDir := filepath.Join(tmpDir, "local", "prompts")
+	require.NoError(t, os.MkdirAll(globalDir, 0o700))
+	require.NoError(t, os.MkdirAll(localDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "report.txt"), []byte("global report"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(localDir, "report.txt"), []byte("local report {{RUN_FACTS}}"), 0o600))
+
+	loader := newPromptLoader(defaultsFS)
+	prompts, err := loader.Load(localDir, globalDir)
+	require.NoError(t, err)
+	assert.Equal(t, "local report {{RUN_FACTS}}", prompts.Report)
+
+	require.NoError(t, os.Remove(filepath.Join(localDir, "report.txt")))
+	prompts, err = loader.Load(localDir, globalDir)
+	require.NoError(t, err)
+	assert.Equal(t, "global report", prompts.Report)
+
+	require.NoError(t, os.Remove(filepath.Join(globalDir, "report.txt")))
+	prompts, err = loader.Load(localDir, globalDir)
+	require.NoError(t, err)
+	assert.Contains(t, prompts.Report, "{{RUN_FACTS}}")
+	assert.Contains(t, prompts.Report, "# Report: <plan title>")
 }
 
 func TestPromptLoader_Load_CustomReviewPrompt(t *testing.T) {

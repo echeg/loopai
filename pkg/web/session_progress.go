@@ -229,6 +229,8 @@ func phaseFromSection(name string) status.Phase {
 	switch {
 	case strings.Contains(nameLower, "task"):
 		return status.PhaseTask
+	case nameLower == "report step":
+		return status.PhaseReport
 	case strings.HasPrefix(nameLower, "codex iteration"),
 		strings.HasPrefix(nameLower, "custom review iteration"),
 		nameLower == "codex external review":

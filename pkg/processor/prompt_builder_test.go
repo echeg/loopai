@@ -22,6 +22,7 @@ func TestPromptBuilder_FinalPrompts(t *testing.T) {
 		ExternalClaudeEvalPrompt:   "codex eval {{CLAUDE_OUTPUT}}",
 		MakePlanPrompt:             "make {{PLAN_DESCRIPTION}} {{PLANS_DIR}}",
 		FinalizePrompt:             "finalize {{GOAL}}",
+		ReportPrompt:               "report {{PLAN_FILE}} {{DEFAULT_BRANCH}} {{RUN_FACTS}}",
 		PlansDir:                   "custom/plans",
 	}
 	cfg := Config{
@@ -41,6 +42,7 @@ func TestPromptBuilder_FinalPrompts(t *testing.T) {
 	assert.Equal(t, "codex eval claude findings", builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "claude findings"))
 	assert.Equal(t, "make add feature custom/plans", builder.PlanPrompt())
 	assert.Equal(t, "finalize implementation of plan at docs/plans/test.md", builder.FinalizePrompt())
+	assert.Equal(t, "report docs/plans/test.md main facts {{PLAN_FILE}}", builder.ReportPrompt("facts {{PLAN_FILE}}"))
 }
 
 func TestPromptBuilder_GenAgentsPrompt(t *testing.T) {
@@ -73,6 +75,7 @@ func TestPromptBuilder_NilConfigDependencies(t *testing.T) {
 		assert.Empty(t, builder.FirstReviewPrompt())
 		assert.Empty(t, builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"))
 		assert.Empty(t, builder.FinalizePrompt())
+		assert.Empty(t, builder.ReportPrompt("facts"))
 		assert.Empty(t, builder.GenAgentsPrompt())
 	})
 }

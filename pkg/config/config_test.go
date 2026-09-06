@@ -482,6 +482,31 @@ func TestLoad_FinalizeEnabledDefaultFalse(t *testing.T) {
 	assert.False(t, cfg.FinalizeEnabledSet)
 }
 
+func TestLoad_ReportEnabled(t *testing.T) {
+	t.Run("embedded default is true but unset", func(t *testing.T) {
+		configDir := filepath.Join(t.TempDir(), "loopai")
+		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "prompts"), 0o700))
+		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "agents"), 0o700))
+
+		cfg, err := Load(configDir)
+		require.NoError(t, err)
+		assert.True(t, cfg.ReportEnabled)
+		assert.False(t, cfg.ReportEnabledSet)
+	})
+
+	t.Run("explicit false", func(t *testing.T) {
+		configDir := filepath.Join(t.TempDir(), "loopai")
+		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "prompts"), 0o700))
+		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "agents"), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte("report_enabled = false"), 0o600))
+
+		cfg, err := Load(configDir)
+		require.NoError(t, err)
+		assert.False(t, cfg.ReportEnabled)
+		assert.True(t, cfg.ReportEnabledSet)
+	})
+}
+
 func TestLoad_MovePlanOnCompletion(t *testing.T) {
 	testCases := []struct {
 		name       string
@@ -1691,6 +1716,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		MaxExternalIterations:   5,
 		ReviewPatience:          3,
 		FinalizeEnabled:         true,
+		ReportEnabled:           true,
 		PreserveAnthropicAPIKey: true,
 		Executor:                ExecutorCodex,
 		PassClaudeMd:            true,
@@ -1724,7 +1750,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		"codex_enabled", "codex_command", "codex_args", "codex_model", "codex_reasoning_effort",
 		"codex_timeout_ms", "codex_sandbox", "external_review_tool", "external_review_model", "external_reviewers", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
-		"review_patience", "finalize_enabled", "preserve_anthropic_api_key", "executor",
+		"review_patience", "finalize_enabled", "report_enabled", "preserve_anthropic_api_key", "executor",
 		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "orca", "plans_dir", "backlog_dir",
 		"watch_dirs", "default_branch", "vcs_command", "commit_trailer",
 		"claude_error_patterns", "codex_error_patterns", "claude_limit_patterns",
