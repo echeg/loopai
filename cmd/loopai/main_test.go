@@ -11497,6 +11497,35 @@ func TestRunCloseoutCommandRoutesPositionalFeature(t *testing.T) {
 }
 
 func TestRunReportCommand(t *testing.T) {
+	for _, branch := range []string{"feature", "custom/report-branch"} {
+		t.Run("deleted branch "+branch, func(t *testing.T) {
+			dir := setupTestRepo(t)
+			plansDir := filepath.Join(dir, "docs", "plans")
+			completedDir := filepath.Join(plansDir, "completed")
+			require.NoError(t, os.MkdirAll(completedDir, 0o750))
+			planFile := filepath.Join(completedDir, "20260906-feature.md")
+			const report = "# Report: merged feature\n"
+			runGit(t, dir, "checkout", "-b", branch)
+			require.NoError(t, os.WriteFile(planFile, []byte("# Feature\n"), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(completedDir, "20260906-feature.report.md"), []byte(report), 0o600))
+			runGit(t, dir, "add", "docs/plans/completed")
+			runGit(t, dir, "commit", "-m", "archive with report")
+			runGit(t, dir, "checkout", "master")
+			runGit(t, dir, "merge", "--ff-only", branch)
+			runGit(t, dir, "branch", "-d", branch)
+			if branch != "feature" {
+				writeProgressRecord(t, dir, "progress-feature.txt", planFile, branch, 1)
+			}
+
+			svc, err := git.NewService(dir, noopLogger())
+			require.NoError(t, err)
+			var out bytes.Buffer
+			err = runReportCommand(t.Context(), svc, closeoutTarget{identifier: branch, plansDir: plansDir}, &out)
+			require.NoError(t, err)
+			assert.Equal(t, "branch: (merged)\n\n"+report, out.String())
+		})
+	}
+
 	t.Run("same-named tag cannot shadow feature report", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		completedDir := filepath.Join(dir, "docs", "plans", "completed")

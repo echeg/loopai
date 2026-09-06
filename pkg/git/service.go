@@ -2133,14 +2133,23 @@ func (s *Service) commitPlanMoveAfterReportFailure(sourceFile, destPath string, 
 
 // ValidateFinalizingPlanWorktreeRemoval permits crash recovery to force-remove a generated
 // worktree only when it is clean or its sole changes are the exact staged active-to-completed plan
-// move that MovePlanToCompleted performs before committing. This prevents recovery from discarding
-// unrelated edits made after the interrupted process released its run lock.
+// move and optional staged report that archival prepares before committing. This prevents recovery
+// from discarding unrelated edits made after the interrupted process released its run lock.
 func (s *Service) ValidateFinalizingPlanWorktreeRemoval(planFile string) error {
 	if resolvedDir, resolveErr := filepath.EvalSymlinks(filepath.Dir(planFile)); resolveErr == nil {
 		planFile = filepath.Join(resolvedDir, filepath.Base(planFile))
 	}
 	completedPath := filepath.Join(filepath.Dir(planFile), "completed", filepath.Base(planFile))
-	dirtyFiles, err := s.repo.hasChangesOtherThan(planFile, completedPath)
+	reportPath := strings.TrimSuffix(completedPath, filepath.Ext(completedPath)) + ".report.md"
+	reportChanged, err := s.validateFinalizingReport(reportPath)
+	if err != nil {
+		return err
+	}
+	allowedPaths := []string{planFile, completedPath}
+	if reportChanged {
+		allowedPaths = append(allowedPaths, reportPath)
+	}
+	dirtyFiles, err := s.repo.hasChangesOtherThan(allowedPaths...)
 	if err != nil {
 		return fmt.Errorf("inspect finalized worktree changes: %w", err)
 	}
@@ -2152,7 +2161,6 @@ func (s *Service) ValidateFinalizingPlanWorktreeRemoval(planFile string) error {
 		return fmt.Errorf("inspect finalized active plan: %w", err)
 	}
 	_, activeStatErr := os.Lstat(planFile)
-	activeExists := activeStatErr == nil
 	if activeStatErr != nil && !os.IsNotExist(activeStatErr) {
 		return fmt.Errorf("inspect finalized active plan path: %w", activeStatErr)
 	}
@@ -2160,9 +2168,6 @@ func (s *Service) ValidateFinalizingPlanWorktreeRemoval(planFile string) error {
 	completedExists := completedStatErr == nil
 	if completedStatErr != nil && !os.IsNotExist(completedStatErr) {
 		return fmt.Errorf("inspect finalized archived plan path: %w", completedStatErr)
-	}
-	if activeExists && !activeChanged && !completedExists {
-		return nil
 	}
 	activeState, err := s.repo.fileStateFingerprint(planFile)
 	if err != nil {
@@ -2180,7 +2185,7 @@ func (s *Service) ValidateFinalizingPlanWorktreeRemoval(planFile string) error {
 			return fmt.Errorf("inspect finalized archived plan state: %w", err)
 		}
 	}
-	if !activeChanged && !completedChanged {
+	if !activeChanged && !completedChanged && !reportChanged {
 		return nil
 	}
 	activeStatus, _, _ := strings.Cut(activeState, "\x00")
@@ -2192,6 +2197,33 @@ func (s *Service) ValidateFinalizingPlanWorktreeRemoval(planFile string) error {
 		"finalized worktree contains plan changes other than the interrupted archive move (active status %q, archived status %q)",
 		activeStatus, completedStatus,
 	)
+}
+
+// validateFinalizingReport accepts only a regular staged addition without subsequent
+// working-tree edits. Untracked sidecars cannot be attributed to the interrupted archive.
+func (s *Service) validateFinalizingReport(reportPath string) (bool, error) {
+	info, err := os.Lstat(reportPath)
+	if os.IsNotExist(err) {
+		return false, nil // any deletion remains subject to the unrelated-changes check
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect finalized report path: %w", err)
+	}
+	changed, err := s.repo.fileHasChanges(reportPath)
+	if err != nil {
+		return false, fmt.Errorf("inspect finalized report: %w", err)
+	}
+	if !changed {
+		return false, nil
+	}
+	state, err := s.repo.fileStateFingerprint(reportPath)
+	if err != nil {
+		return false, fmt.Errorf("inspect finalized report state: %w", err)
+	}
+	if !info.Mode().IsRegular() || !strings.HasPrefix(state, "A ") {
+		return false, fmt.Errorf("finalized worktree contains report changes other than the interrupted archive addition: %s", reportPath)
+	}
+	return true, nil
 }
 
 // resolvePlanMoveTargets determines the source and destination for MovePlanToCompleted,

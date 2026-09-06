@@ -4372,9 +4372,13 @@ func runReportCommand(ctx context.Context, gitSvc *git.Service, target closeoutT
 	}
 
 	branch, branchErr := resolveCloseoutBranch(gitSvc, target, "--report")
-	if branchErr == nil && planFile == "" {
+	lookupBranch := branch
+	if branchErr != nil {
+		lookupBranch = identifier
+	}
+	if lookupBranch != "" && planFile == "" {
 		var err error
-		planFile, err = findReportPlanForBranch(gitSvc, plansDir, branch)
+		planFile, err = findReportPlanForBranch(gitSvc, plansDir, lookupBranch)
 		if err != nil {
 			return err
 		}

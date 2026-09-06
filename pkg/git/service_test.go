@@ -3544,6 +3544,37 @@ func TestService_ValidateFinalizingPlanWorktreeRemoval(t *testing.T) {
 	})
 }
 
+func TestService_ValidateFinalizingPlanWorktreeRemovalWithReport(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	planFile := filepath.Join(dir, "docs", "plans", "plan.md")
+	reportPath := filepath.Join(dir, "docs", "plans", "completed", "plan.report.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+	require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+	runGit(t, dir, "add", "docs/plans/plan.md")
+	runGit(t, dir, "commit", "-m", "add plan")
+	hook := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
+
+	require.ErrorContains(t, svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Plan\n")), "commit plan move and report")
+	require.NoError(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "staged report and plan move are recoverable")
+
+	require.NoError(t, os.WriteFile(reportPath, []byte("# User edit\n"), 0o600))
+	require.ErrorContains(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "report changes")
+	runGit(t, dir, "checkout", "--", reportPath)
+	require.NoError(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile))
+
+	runGit(t, dir, "reset", "HEAD", "--", reportPath)
+	require.ErrorContains(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "report changes", "preserve unattributed untracked sidecars")
+	require.NoError(t, os.Remove(reportPath))
+	require.NoError(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "interruption before report creation is recoverable")
+
+	require.NoError(t, os.Symlink("../plan.md", reportPath))
+	runGit(t, dir, "add", reportPath)
+	require.ErrorContains(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "report changes", "never accept a staged symlink as a generated report")
+}
+
 func TestService_CommitPlanFile(t *testing.T) {
 	t.Run("commits plan file in worktree", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
