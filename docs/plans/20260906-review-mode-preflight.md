@@ -36,13 +36,14 @@ for full, `--tasks-only`, `--plan`, or `--gen-agents` runs.
   `printExternalReviewWarnings`. It fires only on the explicit CLI flag `o.Worktree`, never on the
   `use_worktree` config key: a config default is meant for every run and would nag on every review.
 - **Chosen approach for the refusal**: a new `git.Service.DiffRangeEmptyContext(ctx, base)
-  (bool, error)` built on the existing `repo.resolveRef` and `repo.isAncestor`, plus a
-  `checkReviewDiffRange(ctx, gitSvc, mode, baseRef) error` helper in `cmd/loopai` called from
-  `selectAndExecutePlan` after plan selection and before `executePlan`, for `ModeReview` and
-  `ModeCodexOnly` only. `git diff A...B` is empty exactly when B is an ancestor of A, so
-  `isAncestor(HEAD, base)` is the precise test and also covers a detached HEAD at the base tip and
-  a feature branch already merged. Uncommitted changes are deliberately not consulted: the first
-  iteration diff is commit-to-commit and never shows them either.
+  (bool, error)` built on the existing `repo.resolveRef` and an exact context-aware
+  `git diff --quiet <base>...HEAD --` backend operation, plus a `checkReviewDiffRange(ctx, gitSvc,
+  mode, baseRef) error` helper in `cmd/loopai`. Review-only runs select their optional plan and run
+  the guard before executor dependency checks or reporter creation; `selectAndExecutePlan` retains
+  the check for direct callers. Testing the actual tree diff also catches empty commits and branches
+  whose net changes were reverted, while a missing merge base remains an error. Uncommitted changes
+  are deliberately not consulted: the first iteration diff is commit-to-commit and never shows
+  them either.
 - **Rejected: `IsDefaultBranch` check**. Misses `--base-ref <hash>`, a non-default base, and a
   merged feature branch, all of which produce the same empty range.
 - **Rejected: reusing `DiffStats`**. `externalBackend.diffStats` returns zero stats for an
@@ -58,9 +59,9 @@ for full, `--tasks-only`, `--plan`, or `--gen-agents` runs.
   (`main.go:2638`); `-e` maps to `ModeCodexOnly` (`main.go:2627`); `req.BaseRef` for review modes
   is `resolveDefaultBranch(cliBaseRef, configBranch, autoDetected)` and may carry an `origin/`
   prefix (`main.go:5473`, `5485`); `externalBackend.resolveRef` already tries local, remote, and
-  `origin/`-prefixed forms (`external.go:1239`); `repo.isAncestor` is context-aware
-  (`external.go:537`) and wrapped by `ContainsRevisionContext` (`service.go:244`); the `repo`
-  interface at `service.go:39-70` is the place to reach both; `setupTestRepo` and `runGit` in
+  `origin/`-prefixed forms (`external.go:1239`); backend Git commands support context-aware
+  cancellation and preserve diagnostics; the `repo` interface at `service.go:39-70` is the place
+  to expose the exact quiet diff operation; `setupTestRepo` and `runGit` in
   `cmd/loopai/main_test.go:5200-5218` build real temporary repositories for tests;
   `printExternalReviewWarnings` is the stderr-warning precedent and is tested by capturing a
   `bytes.Buffer` (`main_test.go:3254`).
@@ -131,20 +132,20 @@ for full, `--tasks-only`, `--plan`, or `--gen-agents` runs.
 - [x] run `go test ./cmd/...` - must pass before task 2
 
 ### Task 2: git.Service.DiffRangeEmptyContext
-- [x] add `DiffRangeEmptyContext(ctx context.Context, base string) (bool, error)` to `pkg/git/service.go`: resolve `base` through `s.repo.resolveRef` (add `resolveRef(branchName string) string` to the `repo` interface at `service.go:39-70`; `externalBackend` already implements it at `external.go:1239`), return `fmt.Errorf("resolve diff base %q: base ref not found", base)` when it resolves to `""`, then return `s.repo.isAncestor(ctx, "HEAD", resolved)` wrapped as `check diff range %s...HEAD: %w`
-- [x] document on the method that `git diff A...B` is empty exactly when B is an ancestor of A, and that uncommitted changes are not considered because the review's first-iteration diff is commit-to-commit
-- [x] write tests in `pkg/git/service_test.go` with temporary repositories: feature branch one commit ahead of `master` → `false`; HEAD checked out on `master` → `true`; detached HEAD at the `master` tip → `true`; feature branch already merged into `master` (fast-forward) → `true`; base given as `origin/master` with a local `master` present → resolves and returns the same as bare `master`; unknown base → error containing `base ref not found`; canceled context → error
+- [x] add `DiffRangeEmptyContext(ctx context.Context, base string) (bool, error)` to `pkg/git/service.go`: resolve `base` through `s.repo.resolveRef`, return a specific missing-base error when it resolves to `""`, then run the backend's exact `git diff --quiet <resolved>...HEAD --`, interpreting exit 0 as empty, exit 1 as non-empty, and other exits as errors
+- [x] document that uncommitted changes are not considered because the review's first-iteration diff is commit-to-commit
+- [x] write tests in `pkg/git/service_test.go` with temporary repositories: changed feature branch → `false`; base tip, detached base tip, merged feature, empty commit, and net-reverted branch → `true`; `origin/master` resolves locally; unknown base, unrelated history, and canceled context → errors
 - [x] run `go test ./pkg/git/...` - must pass before task 3
 
 ### Task 3: Refuse review-only runs with an empty diff range
-- [x] add `checkReviewDiffRange(ctx context.Context, gitSvc *git.Service, mode processor.Mode, baseRef string) error` to `cmd/loopai/main.go`: returns `nil` immediately unless `mode` is `processor.ModeReview` or `processor.ModeCodexOnly`; calls `gitSvc.DiffRangeEmptyContext(ctx, baseRef)`; a lookup error is returned wrapped as `review preflight: %w`; an empty range returns `nothing to review: HEAD (<branch or short hash>) is already contained in base %q, so git diff %s...HEAD is empty; check out the feature branch or pass --base-ref`, using `getCurrentBranch` for the branch name and `HeadHash` truncated to 7 characters when the branch is `unknown`
-- [x] call it in `selectAndExecutePlan` after `req.PlanFile = planFile` and before the worktree/branch dispatch (`main.go:668-683`), so the refusal happens before `EnsureLocalGitignore`, the progress log, and the cmux/Orca reporters; full and tasks-only modes pass through untouched because the helper returns `nil` for them
+- [x] add `checkReviewDiffRange(ctx context.Context, gitSvc *git.Service, mode processor.Mode, baseRef string) error`: return immediately for non-review modes; wrap lookup/diff errors as `review preflight`; and report an empty range with the base plus branch or detached short hash and guidance to check out the feature branch or pass `--base-ref`
+- [x] for review-only modes, select the optional plan and run the guard in `run` before executor dependency checks, progress logging, and reporter creation; mark the request so `selectAndExecutePlan` does not repeat selection, while retaining its guard for direct callers
 - [x] write tests for `checkReviewDiffRange` with `setupTestRepo`/`runGit`: `ModeReview` on a feature branch ahead of the base → `nil`; `ModeReview` on the base branch → error containing `nothing to review` and the base name; `ModeCodexOnly` on a merged feature branch → error; `ModeReview` with an unknown `--base-ref` → error containing `base ref not found`; `ModeFull` and `ModeTasksOnly` on the base branch → `nil`; `ModePlan` → `nil`
 - [x] add one test through `selectAndExecutePlan` (or its closest existing harness in `main_test.go`) proving a `ModeReview` request on the base branch fails before `.loopai/progress/` is created
 - [x] run `go test ./cmd/...` - must pass before task 4
 
 ### Task 4: Verify acceptance criteria
-- [x] verify `loopai --worktree --review` prints the warning once and still runs when HEAD is a feature branch (unit-level: warning function plus range check both exercised in one test)
+- [x] verify `loopai --worktree --review` prints the warning once and still runs when HEAD is a feature branch; a run-level empty-range test proves the warning is wired and the guard precedes reporters and dependency checks
 - [x] verify a review-only run on the base branch exits non-zero with the `nothing to review` message and creates no progress log
 - [x] verify full-mode behavior is unchanged: existing `TestResolveBaseRefs`, `TestApplyCLIOverrides_*`, and worktree tests pass without modification
 - [x] run `make test` (asset checks, race-enabled Go suite, wrapper suites)
@@ -153,9 +154,9 @@ for full, `--tasks-only`, `--plan`, or `--gen-agents` runs.
 - [x] verify test coverage for the new functions meets the project standard (80%+)
 
 ### Task 5: [Final] Update documentation
-- [x] `README.md`: in the usage examples (~262-280) add a comment under `loopai --review`/`loopai --external-only` that they run in the current checkout and fail with `nothing to review` when HEAD is already contained in the base; in the `--base-ref` review passage (~796-806) note that `--base-ref` is also how to review against a different base when the default range is empty; in the review-mode paragraph (~500) add that an explicit `--worktree` is ignored with a warning there
+- [x] `README.md`: in the usage examples (~262-280) add a comment under `loopai --review`/`loopai --external-only` that they run in the current checkout and fail with `nothing to review` when the range has no committed changes; in the `--base-ref` review passage (~796-806) note that `--base-ref` is also how to review against a different base when the default range is empty; in the review-mode paragraph (~500) add that an explicit `--worktree` is ignored with a warning there
 - [x] `llms.txt`: one sentence after the `loopai --review` / `loopai --external-only` lines (~82) stating the empty-range refusal and the ignored-`--worktree` warning
-- [x] `CLAUDE.md`: one short architecture note near the worktree paragraph naming `worktreeIgnoredWarning`, `checkReviewDiffRange`, and `git.Service.DiffRangeEmptyContext`, with the ancestor rule and why `DiffStats` was not reused
+- [x] `CLAUDE.md`: one short architecture note near the worktree paragraph naming `worktreeIgnoredWarning`, `checkReviewDiffRange`, and `git.Service.DiffRangeEmptyContext`, with the exact quiet-diff rule and why `DiffStats` was not reused
 - [x] confirm `make check-symlinks` and `make check-plugin` still pass (no skill changed, no manifest bump needed)
 
 ## Technical Details
@@ -171,25 +172,30 @@ Emitted once, to stderr, before executor resolution. Driven by `o.Worktree` only
 ### Empty-range check
 
 ```text
-selectAndExecutePlan
+run (review-only modes)
   select plan
   checkReviewDiffRange(mode, req.BaseRef)     # ModeReview / ModeCodexOnly only
     resolveRef(base) == ""  → error: base ref not found
-    isAncestor(HEAD, base)  → true: error: nothing to review
+    git diff --quiet base...HEAD --
+      exit 0 → error: nothing to review
+      exit 1 → continue
+      other  → preserve Git error
+  check executor dependencies and start setup reporter
   runWithWorktree | prepareSelectedPlanBranch | executePlan (unchanged)
 ```
 
 Error text:
 
 ```text
-nothing to review: HEAD (main) is already contained in base "main", so git diff main...HEAD is empty; check out the feature branch or pass --base-ref
+nothing to review: git diff main...HEAD is empty for HEAD (main) against base "main"; check out the feature branch or pass --base-ref
 ```
 
-### Ancestor rule
+### Exact diff rule
 
-`git diff A...B` shows `merge-base(A,B)..B`. It is empty when `merge-base(A,B) == B`, that is when
-B is an ancestor of A. With A = base and B = HEAD the test is `git merge-base --is-ancestor HEAD
-<base>`, which is what `repo.isAncestor(ctx, "HEAD", base)` runs.
+`git diff A...B` compares the merge-base tree to B's tree. An ancestry predicate catches the common
+base-tip and merged-feature cases but misses an ahead branch made only of empty commits or changes
+that net back to the merge-base tree. Running the same quiet three-dot diff used by the reviewer
+tests the actual patch and also reports unrelated histories instead of treating them as reviewable.
 
 ## Post-Completion
 

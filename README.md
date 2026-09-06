@@ -271,7 +271,7 @@ loopai --review
 loopai --external-only
 
 # review-only modes use the current checkout and fail with "nothing to review"
-# when HEAD is already contained in the selected base
+# when the selected base...HEAD range contains no committed changes
 
 # use Codex for planning, tasks, fixes, and internal reviews
 loopai --codex docs/plans/feature.md
@@ -799,10 +799,10 @@ If the original run used `--branch`, pass the same option when continuing it.
 
 Worktree creation does not use or record a base branch. `--base-ref` remains the base for
 review diffs and templates; without it, loopai uses `default_branch` configuration or its
-normal `main`/`master` detection. Review-only modes fail with `nothing to review` when HEAD is
-already contained in that base; use `--base-ref` to select a different comparison base when the
-default range is empty. Consequently, when a worktree was cut from a non-default branch, pass
-that branch explicitly to review against it or merge back into it:
+normal `main`/`master` detection. Review-only modes fail with `nothing to review` when that
+base-to-HEAD range contains no committed changes; use `--base-ref` to select a different comparison
+base when the default range is empty. Consequently, when a worktree was cut from a non-default
+branch, pass that branch explicitly to review against it or merge back into it:
 
 ```bash
 loopai --review --base-ref release/13

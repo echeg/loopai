@@ -1609,6 +1609,28 @@ func TestService_DiffRangeEmptyContext(t *testing.T) {
 		assert.False(t, empty)
 	})
 
+	t.Run("empty commit ahead of base is empty", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		runGit(t, dir, "checkout", "-b", "feature")
+		runGit(t, dir, "commit", "--allow-empty", "-m", "empty feature")
+
+		empty, err := newService(t, dir).DiffRangeEmptyContext(t.Context(), "master")
+		require.NoError(t, err)
+		assert.True(t, empty)
+	})
+
+	t.Run("net reverted changes ahead of base are empty", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		commitFeature(t, dir)
+		require.NoError(t, os.Remove(filepath.Join(dir, "feature.txt")))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "revert feature")
+
+		empty, err := newService(t, dir).DiffRangeEmptyContext(t.Context(), "master")
+		require.NoError(t, err)
+		assert.True(t, empty)
+	})
+
 	t.Run("head on base branch is empty", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 
@@ -1657,6 +1679,19 @@ func TestService_DiffRangeEmptyContext(t *testing.T) {
 		_, err := newService(t, dir).DiffRangeEmptyContext(t.Context(), "missing-base")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "base ref not found")
+	})
+
+	t.Run("unrelated histories return the diff error", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		runGit(t, dir, "checkout", "--orphan", "unrelated")
+		runGit(t, dir, "rm", "-rf", ".")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("unrelated\n"), 0o600))
+		runGit(t, dir, "add", "unrelated.txt")
+		runGit(t, dir, "commit", "-m", "unrelated root")
+
+		_, err := newService(t, dir).DiffRangeEmptyContext(t.Context(), "master")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "check diff range master...HEAD")
 	})
 
 	t.Run("canceled context returns an error", func(t *testing.T) {

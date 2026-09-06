@@ -288,6 +288,7 @@ type executePlanRequest struct {
 	PhaseHolder            *status.PhaseHolder   // pre-created holder (worktree mode); nil in normal mode
 	ExternalReview         externalReviewSelection
 	LimitRecovery          limits.Recovery
+	ReviewPreflightDone    bool // plan selection and empty-range check already completed in run
 }
 
 type retainedCmuxRun struct {
@@ -295,6 +296,13 @@ type retainedCmuxRun struct {
 	planFile string
 	branch   string
 	elapsed  string
+}
+
+type reviewStartup struct {
+	planFile       string
+	externalReview externalReviewSelection
+	limitRecovery  limits.Recovery
+	setupTitles    *orca.Reporter
 }
 
 // planExecutionOutcome separates a completed plan from a nil command error. executePlan returns
@@ -438,14 +446,11 @@ func run(ctx context.Context, o opts) (runErr error) {
 
 	mode := determineMode(o)
 	printWorktreeIgnoredWarning(os.Stderr, o, mode)
+	reviewPreflight := modeNeedsReviewPreflight(mode)
 	// Startup and setup happen before executePlan or runPlanMode can construct their reporters.
-	// Keep a title reporter alive across those boundaries so prompts and genuine preflight errors
-	// are visible. Standalone agent generation deliberately does not emit Orca titles.
-	var setupTitles *orca.Reporter
-	if mode != processor.ModeGenAgents {
-		setupTitles = startOrcaReporter(cfg, "", initialOrcaPhase(mode))
-		setOrcaCleanup(orcaStop, setupTitles)
-	}
+	// Keep a title reporter alive across those boundaries. Review-only modes start it after their
+	// empty-range preflight, and standalone agent generation deliberately does not emit titles.
+	setupTitles := initialSetupReporter(cfg, mode, reviewPreflight, orcaStop)
 	defer func() {
 		finishOrcaFailure(setupTitles, runErr)
 		setupTitles.Stop()
@@ -456,12 +461,12 @@ func run(ctx context.Context, o opts) (runErr error) {
 		return resolveErr
 	}
 	printExternalReviewWarnings(o, externalReview, cfg, os.Stderr)
-	externalReview, err = checkExecutionDeps(cfg, externalReview, os.Stderr)
+	externalReview, limitRecovery, err := resolveStartupExecutionDeps(
+		o, cfg, reviewPreflight, externalReview, os.Stderr,
+	)
 	if err != nil {
 		return err
 	}
-	applyEffectiveExternalReview(cfg, externalReview)
-	limitRecovery := detectClaudeSwapRecovery(o, cfg, externalReview)
 
 	if depErr := ctx.Err(); depErr != nil {
 		return fmt.Errorf("execution context: %w", depErr)
@@ -518,9 +523,16 @@ func run(ctx context.Context, o opts) (runErr error) {
 
 	// create plan selector for use by plan selection and plan mode
 	selector := plan.NewSelector(cfg.PlansDir, colors)
-	if setupTitles != nil {
-		selector.SetInputWait(setupTitles.WithInputWait)
+	startup, err := completeReviewStartup(ctx, o, cfg, mode, baseRef, gitSvc, selector, orcaStop,
+		reviewStartup{externalReview: externalReview, limitRecovery: limitRecovery, setupTitles: setupTitles})
+	if err != nil {
+		return err
 	}
+	selectedReviewPlan := startup.planFile
+	externalReview = startup.externalReview
+	limitRecovery = startup.limitRecovery
+	setupTitles = startup.setupTitles
+	setSelectorInputWait(selector, setupTitles)
 
 	// plan mode has different flow - doesn't require plan file selection
 	if mode == processor.ModePlan {
@@ -543,20 +555,22 @@ func run(ctx context.Context, o opts) (runErr error) {
 	}
 
 	req := executePlanRequest{
-		Mode:           mode,
-		GitSvc:         gitSvc,
-		Config:         cfg,
-		Colors:         colors,
-		DefaultBranch:  defaultBranch,
-		BaseRef:        baseRef,
-		NotifySvc:      notifySvc,
-		WtCleanup:      wtCleanup,
-		CmuxStop:       cmuxStop,
-		OrcaStop:       orcaStop,
-		SetupTitles:    setupTitles,
-		BranchOverride: o.Branch,
-		ExternalReview: externalReview,
-		LimitRecovery:  limitRecovery,
+		PlanFile:            selectedReviewPlan,
+		Mode:                mode,
+		GitSvc:              gitSvc,
+		Config:              cfg,
+		Colors:              colors,
+		DefaultBranch:       defaultBranch,
+		BaseRef:             baseRef,
+		NotifySvc:           notifySvc,
+		WtCleanup:           wtCleanup,
+		CmuxStop:            cmuxStop,
+		OrcaStop:            orcaStop,
+		SetupTitles:         setupTitles,
+		BranchOverride:      o.Branch,
+		ExternalReview:      externalReview,
+		LimitRecovery:       limitRecovery,
+		ReviewPreflightDone: reviewPreflight,
 	}
 	return runSelectedPlans(ctx, o, req, selector, setupTitles, os.Stdout, selectAndExecutePlan)
 }
@@ -649,26 +663,103 @@ func loadRunConfig(o opts) (*config.Config, error) {
 	return cfg, nil
 }
 
+func modeNeedsReviewPreflight(mode processor.Mode) bool {
+	return mode == processor.ModeReview || mode == processor.ModeCodexOnly
+}
+
+func initialSetupReporter(
+	cfg *config.Config, mode processor.Mode, reviewPreflight bool, orcaStop *cleanupHolder,
+) *orca.Reporter {
+	if mode == processor.ModeGenAgents || reviewPreflight {
+		return nil
+	}
+	titles := startOrcaReporter(cfg, "", initialOrcaPhase(mode))
+	setOrcaCleanup(orcaStop, titles)
+	return titles
+}
+
+func resolveStartupExecutionDeps(
+	o opts,
+	cfg *config.Config,
+	reviewPreflight bool,
+	externalReview externalReviewSelection,
+	warnings io.Writer,
+) (externalReviewSelection, limits.Recovery, error) {
+	if reviewPreflight {
+		return externalReview, nil, nil
+	}
+	resolved, err := checkExecutionDeps(cfg, externalReview, warnings)
+	if err != nil {
+		return externalReviewSelection{}, nil, err
+	}
+	applyEffectiveExternalReview(cfg, resolved)
+	return resolved, detectClaudeSwapRecovery(o, cfg, resolved), nil
+}
+
+func completeReviewStartup(
+	ctx context.Context,
+	o opts,
+	cfg *config.Config,
+	mode processor.Mode,
+	baseRef string,
+	gitSvc *git.Service,
+	selector *plan.Selector,
+	orcaStop *cleanupHolder,
+	startup reviewStartup,
+) (reviewStartup, error) {
+	if !modeNeedsReviewPreflight(mode) {
+		return startup, nil
+	}
+	selectedPlan, err := selector.Select(ctx, o.PlanFile, true)
+	if err != nil {
+		return reviewStartup{}, fmt.Errorf("select plan: %w", err)
+	}
+	if rangeErr := checkReviewDiffRange(ctx, gitSvc, mode, baseRef); rangeErr != nil {
+		return reviewStartup{}, rangeErr
+	}
+	resolved, err := checkExecutionDeps(cfg, startup.externalReview, os.Stderr)
+	if err != nil {
+		return reviewStartup{}, err
+	}
+	applyEffectiveExternalReview(cfg, resolved)
+	startup.planFile = selectedPlan
+	startup.externalReview = resolved
+	startup.limitRecovery = detectClaudeSwapRecovery(o, cfg, resolved)
+	startup.setupTitles = startOrcaReporter(cfg, selectedPlan, initialOrcaPhase(mode))
+	setOrcaCleanup(orcaStop, startup.setupTitles)
+	return startup, nil
+}
+
+func setSelectorInputWait(selector *plan.Selector, setupTitles *orca.Reporter) {
+	if setupTitles != nil {
+		selector.SetInputWait(setupTitles.WithInputWait)
+	}
+}
+
 // selectAndExecutePlan selects a plan file, sets up branch or worktree, and runs execution.
 func selectAndExecutePlan(ctx context.Context, o opts, req executePlanRequest, selector *plan.Selector) (runErr error) {
 	defer func() { finishOrcaFailure(req.SetupTitles, runErr) }()
 
-	// plan is optional only for review modes (ModeReview, ModeCodexOnly)
-	planOptional := req.Mode == processor.ModeReview || req.Mode == processor.ModeCodexOnly
-	planFile, err := selector.Select(ctx, o.PlanFile, planOptional)
-	if err != nil {
-		// check for auto-plan-mode: no plans found on default branch
-		handled, autoPlanErr := tryAutoPlanMode(ctx, err, o, req, selector)
-		if handled {
-			return autoPlanErr
+	planFile := req.PlanFile
+	if !req.ReviewPreflightDone {
+		// plan is optional only for review modes (ModeReview, ModeCodexOnly)
+		planOptional := req.Mode == processor.ModeReview || req.Mode == processor.ModeCodexOnly
+		var err error
+		planFile, err = selector.Select(ctx, o.PlanFile, planOptional)
+		if err != nil {
+			// check for auto-plan-mode: no plans found on default branch
+			handled, autoPlanErr := tryAutoPlanMode(ctx, err, o, req, selector)
+			if handled {
+				return autoPlanErr
+			}
+			return fmt.Errorf("select plan: %w", err)
 		}
-		return fmt.Errorf("select plan: %w", err)
-	}
 
-	req.PlanFile = planFile
-	if err := checkReviewDiffRange(ctx, req.GitSvc, req.Mode, req.BaseRef); err != nil {
-		return err
+		if err := checkReviewDiffRange(ctx, req.GitSvc, req.Mode, req.BaseRef); err != nil {
+			return err
+		}
 	}
+	req.PlanFile = planFile
 
 	// worktree mode: create worktree, chdir into it, run execution from there.
 	if req.Config.WorktreeEnabled && planFile != "" && modeRequiresBranch(req.Mode) {
@@ -1025,7 +1116,7 @@ func checkReviewDiffRange(ctx context.Context, gitSvc *git.Service, mode process
 			}
 		}
 	}
-	return fmt.Errorf("nothing to review: HEAD (%s) is already contained in base %q, so git diff %s...HEAD is empty; check out the feature branch or pass --base-ref", head, baseRef, baseRef)
+	return fmt.Errorf("nothing to review: git diff %s...HEAD is empty for HEAD (%s) against base %q; check out the feature branch or pass --base-ref", baseRef, head, baseRef)
 }
 
 // tryAutoPlanMode attempts to switch to plan mode when no plans are found on the default branch.

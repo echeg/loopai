@@ -313,9 +313,10 @@ Task plans use `### Task N:` or `### Iteration N:` headings and Markdown checkbo
 
 Review-only startup guards live in `cmd/loopai`: `worktreeIgnoredWarning` reports that an explicit
 `--worktree` has no effect, and `checkReviewDiffRange` calls
-`git.Service.DiffRangeEmptyContext` before progress logging or reporter creation. The Git helper
-tests whether HEAD is an ancestor of the resolved base, which is exactly when
-`git diff <base>...HEAD` is empty. It does not reuse `DiffStats`, because that helper treats an
+`git.Service.DiffRangeEmptyContext` before executor dependency checks, progress logging, or reporter
+creation. The Git helper resolves the base and runs the exact context-aware equivalent of
+`git diff --quiet <base>...HEAD --`, so empty commits and net-reverted branches are rejected while
+missing merge bases remain errors. It does not reuse `DiffStats`, because that helper treats an
 unresolvable base like an empty diff instead of preserving the base-ref error.
 
 `pkg/processor/prompts.go` expands `{{BACKLOG_DIR}}` alongside `{{PLANS_DIR}}` in

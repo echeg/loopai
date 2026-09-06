@@ -1763,6 +1763,32 @@ func captureStdout(t *testing.T, fn func()) string {
 	return <-done
 }
 
+// captureStderr runs fn while redirecting os.Stderr to a pipe and returns the captured output.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		done <- buf.String()
+	}()
+
+	defer func() {
+		_ = w.Close()
+		_ = r.Close()
+		os.Stderr = origStderr
+	}()
+
+	fn()
+	require.NoError(t, w.Close())
+	return <-done
+}
+
 // testColors returns a Colors instance for testing.
 func testColors() *progress.Colors {
 	return progress.NewColors(config.ColorConfig{
@@ -2214,6 +2240,100 @@ func TestReviewModePreflightWarnsAndAllowsFeatureBranch(t *testing.T) {
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
 	assert.NoError(t, checkReviewDiffRange(t.Context(), gitSvc, mode, "master"))
+}
+
+func TestRunReviewPreflightPrecedesReporterAndDependencies(t *testing.T) {
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	configDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(
+		"orca = true\nclaude_command = missing-loopai-claude-command\n"), 0o600))
+
+	originalNewOrcaReporter := newOrcaReporter
+	t.Cleanup(func() { newOrcaReporter = originalNewOrcaReporter })
+	reporterCalls := 0
+	newOrcaReporter = func(bool, string, string) *orca.Reporter {
+		reporterCalls++
+		return &orca.Reporter{}
+	}
+
+	var runErr error
+	stderr := captureStderr(t, func() {
+		runErr = run(t.Context(), opts{
+			Review: true, Worktree: true, ConfigDir: configDir, NoColor: true,
+		})
+	})
+
+	require.ErrorContains(t, runErr, "nothing to review")
+	assert.NotContains(t, runErr.Error(), "install Claude Code")
+	assert.Equal(t, 0, reporterCalls, "empty-range preflight must run before title reporting")
+	assert.Equal(t, 1, strings.Count(stderr, "warning: --worktree is ignored by --review"))
+	assert.NoDirExists(t, filepath.Join(dir, ".loopai", "progress"))
+}
+
+func TestCompleteReviewStartup(t *testing.T) {
+	dir := setupTestRepo(t)
+	runGit(t, dir, "checkout", "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+	runGit(t, dir, "add", "feature.txt")
+	runGit(t, dir, "commit", "-m", "feature")
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	selector := plan.NewSelector(filepath.Join(dir, "docs", "plans"), testColors())
+
+	t.Run("non-review mode preserves startup", func(t *testing.T) {
+		original := reviewStartup{planFile: "existing.md"}
+		got, startupErr := completeReviewStartup(t.Context(), opts{}, &config.Config{},
+			processor.ModeFull, "master", gitSvc, selector, &cleanupHolder{}, original)
+		require.NoError(t, startupErr)
+		assert.Equal(t, original.planFile, got.planFile)
+	})
+
+	t.Run("missing plan fails before dependencies", func(t *testing.T) {
+		got, startupErr := completeReviewStartup(t.Context(), opts{PlanFile: filepath.Join(dir, "missing.md")},
+			&config.Config{ClaudeCommand: "missing-loopai-claude-command"}, processor.ModeReview,
+			"master", gitSvc, selector, &cleanupHolder{}, reviewStartup{})
+		require.ErrorContains(t, startupErr, "select plan")
+		assert.Empty(t, got.planFile)
+	})
+
+	t.Run("missing dependency fails after non-empty range", func(t *testing.T) {
+		got, startupErr := completeReviewStartup(t.Context(), opts{},
+			&config.Config{ClaudeCommand: "missing-loopai-claude-command"}, processor.ModeReview,
+			"master", gitSvc, selector, &cleanupHolder{}, reviewStartup{})
+		require.ErrorContains(t, startupErr, "install Claude Code")
+		assert.Nil(t, got.setupTitles)
+	})
+
+	t.Run("successful review starts reporter", func(t *testing.T) {
+		fakeClaude := filepath.Join(t.TempDir(), "claude-ok")
+		writeExecutable(t, fakeClaude, "#!/bin/sh\nexit 0\n")
+		planPath := filepath.Join(dir, "review.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Review\n"), 0o600))
+
+		originalNewOrcaReporter := newOrcaReporter
+		t.Cleanup(func() { newOrcaReporter = originalNewOrcaReporter })
+		var titleOut bytes.Buffer
+		newOrcaReporter = func(enabled bool, planFile, executor string) *orca.Reporter {
+			return orca.NewWithOutput(enabled, planFile, executor, &titleOut, func() bool { return true })
+		}
+
+		got, startupErr := completeReviewStartup(t.Context(), opts{PlanFile: planPath},
+			&config.Config{ClaudeCommand: fakeClaude, Orca: true}, processor.ModeReview,
+			"master", gitSvc, selector, &cleanupHolder{}, reviewStartup{})
+		require.NoError(t, startupErr)
+		t.Cleanup(got.setupTitles.Stop)
+		assert.Equal(t, planPath, got.planFile)
+		assert.NotNil(t, got.setupTitles)
+		assert.Contains(t, titleOut.String(), "loopai · review · claude")
+
+		setSelectorInputWait(selector, nil)
+		setSelectorInputWait(selector, got.setupTitles)
+	})
 }
 
 func TestCheckReviewDiffRange(t *testing.T) {

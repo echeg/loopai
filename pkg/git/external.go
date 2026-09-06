@@ -1233,6 +1233,32 @@ func (e *externalBackend) diffStats(baseBranch, headRef string) (DiffStats, erro
 	return result, nil
 }
 
+// diffRangeEmpty reports whether the exact three-dot tree diff is empty. Git uses exit code 1
+// for a non-empty diff; every other failure (including a missing merge base) remains an error.
+func (e *externalBackend) diffRangeEmpty(ctx context.Context, baseRef, headRef string) (bool, error) {
+	cmd := exec.CommandContext(ctx, e.command, "diff", "--quiet", baseRef+"..."+headRef, "--")
+	cmd.Dir = e.path
+	configureCommandCancellation(cmd)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, fmt.Errorf("git diff: %w", ctxErr)
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	details := strings.TrimSpace(output.String())
+	if details != "" {
+		return false, fmt.Errorf("git diff: %s", details)
+	}
+	return false, fmt.Errorf("git diff: %w", err)
+}
+
 // resolveRef tries to resolve a branch name to a valid git ref.
 // checks local branch, remote tracking (origin/<name>), "origin/" prefixed names,
 // and finally arbitrary refs like commit hashes or tags via rev-parse.

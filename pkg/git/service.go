@@ -63,6 +63,7 @@ type backend interface {
 	autoCommitAll(msg string) (bool, error)
 	createInitialCommit(msg string) error
 	diffStats(baseBranch, headRef string) (DiffStats, error)
+	diffRangeEmpty(ctx context.Context, baseRef, headRef string) (bool, error)
 	addWorktree(ctx context.Context, path, branch string, createBranch bool, startRef string) error
 	removeWorktree(path string) error
 	removeWorktreeSafe(path string) error
@@ -250,14 +251,14 @@ func (s *Service) ContainsRevisionContext(ctx context.Context, revision string) 
 }
 
 // DiffRangeEmptyContext reports whether git diff base...HEAD contains no committed changes.
-// A three-dot diff is empty exactly when HEAD is an ancestor of base. Uncommitted changes are not
-// considered because the review's first-iteration diff compares commits.
+// Uncommitted changes are not considered because the review's first-iteration diff compares
+// commits.
 func (s *Service) DiffRangeEmptyContext(ctx context.Context, base string) (bool, error) {
 	resolved := s.repo.resolveRef(base)
 	if resolved == "" {
 		return false, fmt.Errorf("resolve diff base %q: base ref not found", base)
 	}
-	empty, err := s.repo.isAncestor(ctx, "HEAD", resolved)
+	empty, err := s.repo.diffRangeEmpty(ctx, resolved, "HEAD")
 	if err != nil {
 		return false, fmt.Errorf("check diff range %s...HEAD: %w", base, err)
 	}
