@@ -4,6 +4,7 @@
 package mocks
 
 import (
+	"context"
 	"sync"
 )
 
@@ -13,11 +14,20 @@ import (
 //
 //		// make and configure a mocked processor.GitChecker
 //		mockedGitChecker := &GitCheckerMock{
+//			ContainsRevisionContextFunc: func(ctx context.Context, revision string) (bool, error) {
+//				panic("mock out the ContainsRevisionContext method")
+//			},
+//			CurrentBranchFunc: func() (string, error) {
+//				panic("mock out the CurrentBranch method")
+//			},
 //			DiffFingerprintFunc: func() (string, error) {
 //				panic("mock out the DiffFingerprint method")
 //			},
 //			HeadHashFunc: func() (string, error) {
 //				panic("mock out the HeadHash method")
+//			},
+//			IsDirtyAllFunc: func() (bool, error) {
+//				panic("mock out the IsDirtyAll method")
 //			},
 //		}
 //
@@ -26,23 +36,111 @@ import (
 //
 //	}
 type GitCheckerMock struct {
+	// ContainsRevisionContextFunc mocks the ContainsRevisionContext method.
+	ContainsRevisionContextFunc func(ctx context.Context, revision string) (bool, error)
+
+	// CurrentBranchFunc mocks the CurrentBranch method.
+	CurrentBranchFunc func() (string, error)
+
 	// DiffFingerprintFunc mocks the DiffFingerprint method.
 	DiffFingerprintFunc func() (string, error)
 
 	// HeadHashFunc mocks the HeadHash method.
 	HeadHashFunc func() (string, error)
 
+	// IsDirtyAllFunc mocks the IsDirtyAll method.
+	IsDirtyAllFunc func() (bool, error)
+
 	// calls tracks calls to the methods.
 	calls struct {
+		// ContainsRevisionContext holds details about calls to the ContainsRevisionContext method.
+		ContainsRevisionContext []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// Revision is the revision argument value.
+			Revision string
+		}
+		// CurrentBranch holds details about calls to the CurrentBranch method.
+		CurrentBranch []struct {
+		}
 		// DiffFingerprint holds details about calls to the DiffFingerprint method.
 		DiffFingerprint []struct {
 		}
 		// HeadHash holds details about calls to the HeadHash method.
 		HeadHash []struct {
 		}
+		// IsDirtyAll holds details about calls to the IsDirtyAll method.
+		IsDirtyAll []struct {
+		}
 	}
-	lockDiffFingerprint sync.RWMutex
-	lockHeadHash        sync.RWMutex
+	lockContainsRevisionContext sync.RWMutex
+	lockCurrentBranch           sync.RWMutex
+	lockDiffFingerprint         sync.RWMutex
+	lockHeadHash                sync.RWMutex
+	lockIsDirtyAll              sync.RWMutex
+}
+
+// ContainsRevisionContext calls ContainsRevisionContextFunc.
+func (mock *GitCheckerMock) ContainsRevisionContext(ctx context.Context, revision string) (bool, error) {
+	if mock.ContainsRevisionContextFunc == nil {
+		panic("GitCheckerMock.ContainsRevisionContextFunc: method is nil but GitChecker.ContainsRevisionContext was just called")
+	}
+	callInfo := struct {
+		Ctx      context.Context
+		Revision string
+	}{
+		Ctx:      ctx,
+		Revision: revision,
+	}
+	mock.lockContainsRevisionContext.Lock()
+	mock.calls.ContainsRevisionContext = append(mock.calls.ContainsRevisionContext, callInfo)
+	mock.lockContainsRevisionContext.Unlock()
+	return mock.ContainsRevisionContextFunc(ctx, revision)
+}
+
+// ContainsRevisionContextCalls gets all the calls that were made to ContainsRevisionContext.
+// Check the length with:
+//
+//	len(mockedGitChecker.ContainsRevisionContextCalls())
+func (mock *GitCheckerMock) ContainsRevisionContextCalls() []struct {
+	Ctx      context.Context
+	Revision string
+} {
+	var calls []struct {
+		Ctx      context.Context
+		Revision string
+	}
+	mock.lockContainsRevisionContext.RLock()
+	calls = mock.calls.ContainsRevisionContext
+	mock.lockContainsRevisionContext.RUnlock()
+	return calls
+}
+
+// CurrentBranch calls CurrentBranchFunc.
+func (mock *GitCheckerMock) CurrentBranch() (string, error) {
+	if mock.CurrentBranchFunc == nil {
+		panic("GitCheckerMock.CurrentBranchFunc: method is nil but GitChecker.CurrentBranch was just called")
+	}
+	callInfo := struct {
+	}{}
+	mock.lockCurrentBranch.Lock()
+	mock.calls.CurrentBranch = append(mock.calls.CurrentBranch, callInfo)
+	mock.lockCurrentBranch.Unlock()
+	return mock.CurrentBranchFunc()
+}
+
+// CurrentBranchCalls gets all the calls that were made to CurrentBranch.
+// Check the length with:
+//
+//	len(mockedGitChecker.CurrentBranchCalls())
+func (mock *GitCheckerMock) CurrentBranchCalls() []struct {
+} {
+	var calls []struct {
+	}
+	mock.lockCurrentBranch.RLock()
+	calls = mock.calls.CurrentBranch
+	mock.lockCurrentBranch.RUnlock()
+	return calls
 }
 
 // DiffFingerprint calls DiffFingerprintFunc.
@@ -96,5 +194,32 @@ func (mock *GitCheckerMock) HeadHashCalls() []struct {
 	mock.lockHeadHash.RLock()
 	calls = mock.calls.HeadHash
 	mock.lockHeadHash.RUnlock()
+	return calls
+}
+
+// IsDirtyAll calls IsDirtyAllFunc.
+func (mock *GitCheckerMock) IsDirtyAll() (bool, error) {
+	if mock.IsDirtyAllFunc == nil {
+		panic("GitCheckerMock.IsDirtyAllFunc: method is nil but GitChecker.IsDirtyAll was just called")
+	}
+	callInfo := struct {
+	}{}
+	mock.lockIsDirtyAll.Lock()
+	mock.calls.IsDirtyAll = append(mock.calls.IsDirtyAll, callInfo)
+	mock.lockIsDirtyAll.Unlock()
+	return mock.IsDirtyAllFunc()
+}
+
+// IsDirtyAllCalls gets all the calls that were made to IsDirtyAll.
+// Check the length with:
+//
+//	len(mockedGitChecker.IsDirtyAllCalls())
+func (mock *GitCheckerMock) IsDirtyAllCalls() []struct {
+} {
+	var calls []struct {
+	}
+	mock.lockIsDirtyAll.RLock()
+	calls = mock.calls.IsDirtyAll
+	mock.lockIsDirtyAll.RUnlock()
 	return calls
 }

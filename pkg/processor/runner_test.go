@@ -102,6 +102,8 @@ func (p testExternalReviewPhase) Label() string {
 
 func (p testExternalReviewPhase) Enabled() bool { return p.toolValue != "none" }
 
+func (p testExternalReviewPhase) SetResume(int, bool) {}
+
 func (p testExternalReviewPhase) Run(ctx context.Context) (phase.ExternalReviewOutcome, error) {
 	if p.runFunc != nil {
 		if err := p.runFunc(ctx); err != nil {
@@ -170,6 +172,17 @@ func TestRunner_NewWithExecutors_NilPhaseHolder(t *testing.T) {
 	require.NotNil(t, r.phaseHolder)
 	require.NoError(t, r.Run(t.Context()))
 	assert.Equal(t, status.PhaseTask, r.phaseHolder.Get())
+}
+
+func TestRunner_SetGitCheckerPopulatesRunnerAndPhaseDeps(t *testing.T) {
+	r := &Runner{}
+	checker := &mocks.GitCheckerMock{}
+
+	r.SetGitChecker(checker)
+
+	assert.Equal(t, checker, r.git)
+	require.NotNil(t, r.deps)
+	assert.Equal(t, checker, r.deps.Git)
 }
 
 func TestRunner_RunFull_Success(t *testing.T) {

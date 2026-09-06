@@ -369,6 +369,17 @@ The full pipeline has four phases:
 
 An optional finalize step can run after review. It is disabled by default and controlled with `finalize_enabled`; `--skip-finalize` disables it for one invocation.
 
+After each completed review stage, loopai writes a review checkpoint beside the progress log as
+`.loopai/progress/<progress-log-stem>.review.json`. It records the internal review, each external
+reviewer in chain order, and post-review. A stage is recorded only after its fixes are committed and
+the working tree is clean; a dirty working tree also forces reviews to restart rather than trusting
+the checkpoint. Finalize is intentionally not checkpointed because it is cheap and
+best-effort. After an interruption, rerunning the same command skips recorded stages while each
+stage's commit remains an ancestor of the current branch tip. Before task execution, the checkpoint
+records the current HEAD so a task-phase commit invalidates it even if the process dies before the
+task returns; changed code is therefore reviewed again. A successful run removes the checkpoint. `--review`
+and `--external-only` reruns use the same checkpoint behavior.
+
 Press Ctrl+\ during a task iteration to pause it, edit the plan, and retry the same task in a fresh session. During external review, Ctrl+\ terminates the entire reviewer chain and skips all remaining reviewers. This shortcut is not available on Windows.
 
 ## Review agents
@@ -797,6 +808,18 @@ another failure or interruption the worktree remains available for the next invo
 successful completion it is removed normally. The former `--resume-worktree` option has been
 removed and is now an unknown option; use `--worktree` for both creation and continuation.
 If the original run used `--branch`, pass the same option when continuing it.
+
+Review progress survives worktree removal independently of task progress. The checkpoint lives in
+the invoking checkout's `.loopai/progress/` directory beside the run log and records completed
+internal,
+external-reviewer, and post-review stages only when their changes are committed and the tree is
+clean. On rerun, loopai accepts a recorded stage only when the current tree is clean and its commit
+is still an ancestor of the branch
+tip, so later commits do not force completed reviews to repeat; rewritten or reset history does. If
+the resumed task phase or a separate `--tasks-only` run creates a commit, all saved review stages are
+invalidated, including when the process dies before the task phase returns. The checkpoint is
+removed after a successful run. The same rules apply when rerunning `--review` or
+`--external-only`, even though those modes do not create a worktree.
 
 Worktree creation does not use or record a base branch. `--base-ref` remains the base for
 review diffs and templates; without it, loopai uses `default_branch` configuration or its
