@@ -169,6 +169,41 @@ updater. After pulling a newer repository version, rerun the copy command to
 refresh them. If replacing older command-file copies, remove only the
 `~/.claude/commands/loopai*.md` files that you previously installed.
 
+### Codex CLI skills
+
+Codex discovers skills from `${CODEX_HOME:-~/.codex}/skills` only, so there is no
+marketplace to subscribe to and installation is a copy:
+
+```bash
+make install-codex-skills          # add --dry-run first to see what changes
+```
+
+Six skills are installed: `loopai`, `loopai-plan`, `loopai-adopt`,
+`loopai-update`, `loopai-brainstorm`, and `loopai-orca`. Invoke them as
+`$loopai-plan` and so on. Re-run the command after pulling a newer repository
+version; each skill directory is replaced wholesale, so a file dropped upstream
+does not linger.
+
+The installer also removes pre-rename `ralphex-plan`, `ralphex-run`,
+`ralphex-adopt`, and `ralphex-update` skills, but only when they still have the
+shape the old hand-install produced. One you edited or extended is reported and
+left alone for you to remove yourself, and `--keep-legacy` skips the step
+entirely.
+
+`loopai-grill` is deliberately Claude-only. Its safety model is a read-only
+Claude tool pin plus helper scripts addressed through `${CLAUDE_SKILL_DIR}`, and
+Codex offers no equivalent way to confine a session to read-only repository
+tools.
+
+The Codex skills live in `assets/codex/skills/` and are written by hand rather
+than generated from `assets/claude/skills/`. The two hosts expose different
+tools: Claude Code has `AskUserQuestion`, `Task` subagents, and named file
+tools, while Codex has none of them, and `spawn_agent` works inside loopai's own
+Codex runs only because `pkg/executor/codex.go` registers that agent through
+`-c` overrides. A mechanically converted skill would stall at its first
+interactive step. `make check-codex-skills` keeps the two inventories aligned
+and rejects a Claude-only construct that reaches the Codex tree by copy-paste.
+
 When migrating from umputun's upstream plugin, remove its plugin and marketplace
 after installing this one:
 

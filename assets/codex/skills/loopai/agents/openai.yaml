@@ -1,0 +1,4 @@
+interface:
+  display_name: "loopai"
+  short_description: "Run and monitor a loopai plan"
+  default_prompt: "Use $loopai to launch an autonomous plan run."

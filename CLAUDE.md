@@ -23,6 +23,9 @@ make build      # build .bin/loopai
 make test       # asset checks, race-enabled unit tests with coverage, provider-wrapper suites
 make check-symlinks # validate the seven Claude skill assets and links
 make test-symlinks  # regression tests for Claude skill asset validation
+make check-codex-skills # validate the Codex skill tree against the Claude inventory
+make test-codex-skills  # regression tests for Codex skill validation and installation
+make install-codex-skills # copy the Codex skills into ${CODEX_HOME:-~/.codex}/skills
 make check-plugin   # validate Claude plugin and marketplace manifests
 make test-plugin    # regression tests for manifest validation
 make test-grill-skill # validate loopai-grill metadata and workflow contracts
@@ -68,6 +71,7 @@ scripts/copilot-as-claude/ # GitHub Copilot CLI wrapper for Claude-compatible ou
 scripts/pi-as-claude/ # pi wrapper for Claude-compatible output
 assets/claude/skills/ canonical Claude Code plugin skill sources
 assets/claude/loopai*.md legacy standalone-command compatibility symlinks
+assets/codex/skills/  hand-written Codex CLI skill sources
 .claude-plugin/      Claude Code plugin and marketplace manifests
 docs/                focused operational documentation and plans
 ```
@@ -102,6 +106,32 @@ Standalone installation must copy the complete directories under
 `loopai-grill` depends on bundled scripts addressed through
 `${CLAUDE_SKILL_DIR}` and requires Python 3 in a POSIX environment (Linux,
 macOS, or Windows via WSL) for its path helper.
+
+`assets/codex/skills/` is the Codex CLI counterpart, installed by
+`scripts/install-codex-skills.sh` into `${CODEX_HOME:-$HOME/.codex}/skills`,
+which is the only place Codex looks. Those skills are written by hand and are
+deliberately not generated from `assets/claude/skills/`: the two hosts expose
+different tools. Claude Code has `AskUserQuestion`, `Task` subagents, and named
+file tools; Codex has none of them, and `spawn_agent` resolves inside loopai's
+own Codex runs only because `pkg/executor/codex.go` registers that agent through
+`-c agents.reviewer.description=...`, which an interactive session never does.
+A mechanical conversion would produce a skill that stalls at its first
+interactive step. `scripts/check-codex-skills.sh` is what keeps the split honest:
+it derives the expected Codex inventory from the Claude inventory minus an
+explicit `exempt_skills` list, requires a `name` matching the directory (the
+Claude checker treats `name` as optional, Codex does not) plus
+`agents/openai.yaml` carrying `display_name`, `short_description`, and
+`default_prompt`, rejects any symlink under `assets/codex`, and greps every body
+for Claude-only constructs so an unadapted copy-paste fails the build rather
+than the user's first `$loopai-plan`. `loopai-grill` is the sole exemption: its
+safety model is the read-only Claude tool pin plus scripts addressed through
+`${CLAUDE_SKILL_DIR}`, and a half-ported grill is worse than an absent one.
+Adding a Claude skill therefore fails `make test` until the Codex counterpart
+exists or the name joins `exempt_skills`. The installer removes a pre-rename
+`ralphex-*` skill only when its file set is still exactly `SKILL.md` and
+optionally `agents/openai.yaml` — the shape the old hand-install produced —
+because anything else means the user extended it, and there is no baseline to
+diff against.
 
 `.claude-plugin/marketplace.json` exposes this repository as the `loopai`
 marketplace, and `.claude-plugin/plugin.json` points Claude Code at the skill
@@ -514,9 +544,9 @@ make lint
 ```
 
 The full suite is required because configuration and progress paths cross package boundaries.
-`make test` first validates Claude skill assets and plugin manifests, runs their
-regression suites and shell-completion checks, then runs the race-enabled Go
-suite with coverage and every retained provider-wrapper and wrapper-documentation
+`make test` first validates Claude skill assets, plugin manifests, and the Codex
+skill tree, runs their regression suites and shell-completion checks, then runs
+the race-enabled Go suite with coverage and every retained provider-wrapper and wrapper-documentation
 shell suite. The asset and manifest checks require Bash and `jq`; the focused
 `test-grill-skill` suite checks the grill skill's metadata and operational
 contracts. CI runs the same focused asset, manifest, grill-skill, completion,
@@ -588,6 +618,8 @@ tail -f .loopai/progress/progress-codex.txt
 - `make lint` reports no issues.
 - Documentation and embedded config comments match behavior.
 - Any Claude skill change bumps both manifest versions to the same value.
+- A new or removed Claude skill has a matching change under `assets/codex/skills/`
+  or an explicit `exempt_skills` entry in `scripts/check-codex-skills.sh`.
 - No test touched real user configuration.
 - The module path and `<<<RALPHEX:...>>>` signals remain unchanged.
 - `CHANGELOG.md` is untouched unless release work explicitly requires it.

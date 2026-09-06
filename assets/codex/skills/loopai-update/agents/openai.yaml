@@ -1,0 +1,4 @@
+interface:
+  display_name: "loopai Update"
+  short_description: "Merge new loopai defaults into custom prompts"
+  default_prompt: "Use $loopai-update to merge new loopai defaults into my config."

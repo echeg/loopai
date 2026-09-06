@@ -38,6 +38,16 @@ test-plugin:
 test-grill-skill:
 	@./scripts/check-grill-skill_test.sh
 
+check-codex-skills:
+	@./scripts/check-codex-skills.sh
+
+test-codex-skills:
+	@./scripts/check-codex-skills_test.sh
+	@./scripts/install-codex-skills_test.sh
+
+install-codex-skills:
+	@./scripts/install-codex-skills.sh
+
 test-wrappers:
 	@set -e; for test_script in $(WRAPPER_TESTS); do \
 		bash "$$test_script"; \
@@ -55,7 +65,7 @@ test-completions:
 	@if command -v zsh >/dev/null 2>&1; then zsh -n completions/loopai.zsh; fi
 	@if command -v fish >/dev/null 2>&1; then fish -n completions/loopai.fish; fi
 
-test: check-symlinks test-symlinks check-plugin test-plugin test-grill-skill test-completions
+test: check-symlinks test-symlinks check-plugin test-plugin test-grill-skill check-codex-skills test-codex-skills test-completions
 	go clean -testcache
 	go test -race -coverprofile=coverage.out ./...
 	grep -v "_mock.go" coverage.out | grep -v mocks > coverage_no_mocks.out
@@ -116,4 +126,4 @@ e2e-codex: build
 	@echo ""
 	@echo "Monitor: tail -f /tmp/loopai-review-test/.loopai/progress/progress-codex.txt"
 
-.PHONY: all build check-symlinks test-symlinks check-plugin test-plugin test-grill-skill test-wrappers test lint fmt race version e2e-setup e2e e2e-ui e2e-prep e2e-review e2e-codex
+.PHONY: all build check-symlinks test-symlinks check-plugin test-plugin test-grill-skill check-codex-skills test-codex-skills install-codex-skills test-wrappers test lint fmt race version e2e-setup e2e e2e-ui e2e-prep e2e-review e2e-codex

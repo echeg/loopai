@@ -1,0 +1,4 @@
+interface:
+  display_name: "loopai Brainstorm"
+  short_description: "Design a feature into a loopai plan"
+  default_prompt: "Use $loopai-brainstorm to design this before planning it."
