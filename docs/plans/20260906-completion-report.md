@@ -307,6 +307,8 @@ fallback to the working-tree file → error naming the plan. Output starts with 
 
 ## Internal review corrections
 
+- ➕ External evaluation: extract checkbox drift annotations and isolate fresh report archival commits, including report-write failures and untracked plans, from unrelated staged files.
+- ➕ External evaluation: accept bulleted drift annotations, recover staged report-only archival, isolate report-only commits from unrelated staged files, cap combined review text at 64 KiB (including resumed records and rendering), and preserve backlog paths when titles cannot be read.
 - ➕ Preserve current invocation task counts and start time while invalidating stale review state; report a timestamp captured before assessment generation and collect phase and validation timer snapshots.
 - ➕ Create report sidecars without clobbering existing files or following symlinks, preserve unusual Git filenames, and qualify live branch refs during report lookup.
 - ➕ Pass the confirmed base explicitly from merge skills and provide the Codex counterpart required by the merged skill inventory.

@@ -86,6 +86,7 @@ func (r *runRecorder) update(mutate func(*RunRecord)) {
 	}
 	r.mu.Lock()
 	mutate(&r.runner.record)
+	boundExternalReviewText(r.runner.record.External)
 	r.runner.snapshotRunTimings()
 	record := cloneRunRecord(r.runner.record)
 	r.mu.Unlock()
@@ -161,6 +162,7 @@ func (r *Runner) startRunRecord() {
 		}
 	}
 	r.record = fresh
+	boundExternalReviewText(r.record.External)
 	r.priorPhaseDurations = maps.Clone(fresh.PhaseDurations)
 	if fresh.Validation != nil {
 		r.priorValidation = *fresh.Validation

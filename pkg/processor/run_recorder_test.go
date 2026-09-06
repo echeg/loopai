@@ -5,9 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -96,6 +98,62 @@ func TestRunRecorderLogsSaveFailureOnce(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, count)
+}
+
+func TestRunRecorderBoundsAggregateReviewText(t *testing.T) {
+	store := &runRecordMemoryStore{}
+	runner := &Runner{log: newMockLogger(), recordStore: store}
+	recorder := &runRecorder{runner: runner}
+	output := strings.Repeat("界", runRecordTextCap)
+	for _, key := range []string{"one", "two", "three"} {
+		for i := 1; i <= 10; i++ {
+			recorder.ExternalIteration(i, key, key, output, output)
+		}
+	}
+	require.Len(t, store.saves, 30)
+	for _, saved := range store.saves {
+		total := 0
+		for _, reviewer := range saved.External {
+			for _, iteration := range reviewer.Iterations {
+				total += len(iteration.ReviewerOutput) + len(iteration.EvaluatorResponse)
+				assert.True(t, utf8.ValidString(iteration.ReviewerOutput))
+				assert.True(t, utf8.ValidString(iteration.EvaluatorResponse))
+				assert.True(t, iteration.Truncated)
+			}
+		}
+		assert.LessOrEqual(t, total, runRecordExternalTextCap)
+	}
+	for _, reviewer := range store.record.External {
+		require.Len(t, reviewer.Iterations, 10)
+		assert.Equal(t, 10, reviewer.Iterations[9].Index)
+		assert.NotEmpty(t, reviewer.Iterations[9].ReviewerOutput)
+		assert.NotEmpty(t, reviewer.Iterations[9].EvaluatorResponse)
+	}
+}
+
+func TestRunnerBoundsLoadedReviewTextBeforeSaving(t *testing.T) {
+	output := strings.Repeat("x", runRecordTextCap)
+	stored := RunRecord{Version: runRecordVersion, Branch: "feature", External: []ExternalReviewerRecord{{Key: "legacy"}}}
+	for i := 1; i <= 30; i++ {
+		stored.External[0].Iterations = append(stored.External[0].Iterations, ExternalIterationRecord{
+			Index: i, ReviewerOutput: output, EvaluatorResponse: output,
+		})
+	}
+	store := &runRecordMemoryStore{found: true, record: stored}
+	runner := &Runner{
+		cfg: Config{Mode: ModeFull}, log: newMockLogger(), recordStore: store,
+		git: &checkpointGit{branch: "feature"},
+	}
+	runner.startRunRecord()
+	require.Len(t, store.saves, 1)
+	require.Len(t, store.record.External, 1)
+	require.Len(t, store.record.External[0].Iterations, 30)
+	total := 0
+	for _, iteration := range store.record.External[0].Iterations {
+		total += len(iteration.ReviewerOutput) + len(iteration.EvaluatorResponse)
+		assert.True(t, iteration.Truncated)
+	}
+	assert.LessOrEqual(t, total, runRecordExternalTextCap)
 }
 
 func TestRunnerRunRecordStartupBranchAndCheckpointRules(t *testing.T) {

@@ -23,11 +23,19 @@ func ExtractDrift(content string) Drift {
 			continue
 		}
 		line := strings.TrimSpace(sourceLine)
+		annotation := line
+		if len(annotation) >= 2 && strings.ContainsAny(annotation[:1], "-*+") &&
+			(annotation[1] == ' ' || annotation[1] == '\t') {
+			annotation = strings.TrimSpace(annotation[2:])
+			if matches := checkboxPattern.FindStringSubmatch("- " + annotation); len(matches) >= 3 {
+				annotation = strings.TrimSpace(matches[2])
+			}
+		}
 		switch {
-		case strings.HasPrefix(line, "➕"):
-			result.Added = append(result.Added, line)
-		case strings.HasPrefix(line, "⚠️"):
-			result.Blocked = append(result.Blocked, line)
+		case strings.HasPrefix(annotation, "➕"):
+			result.Added = append(result.Added, annotation)
+		case strings.HasPrefix(annotation, "⚠️"):
+			result.Blocked = append(result.Blocked, annotation)
 		}
 		if matches := checkboxPattern.FindStringSubmatch(line); len(matches) >= 3 &&
 			strings.Contains(strings.ToLower(matches[2]), "(skipped") {

@@ -36,6 +36,31 @@ func TestExtractDrift(t *testing.T) {
 			},
 		},
 		{
+			name: "collects markdown bullets with indentation",
+			content: "- ➕ dash\n  * ➕ star\n\t+ ➕ plus\n" +
+				" - ⚠️ dash blocker\n*\t⚠️ star blocker\n+ ⚠️ plus blocker\n" +
+				"-➕ not a bullet\nprose ➕ not an annotation\n" +
+				"```md\n- ➕ fenced\n* ⚠️ fenced\n```\n",
+			want: Drift{
+				Added:   []string{"➕ dash", "➕ star", "➕ plus"},
+				Blocked: []string{"⚠️ dash blocker", "⚠️ star blocker", "⚠️ plus blocker"},
+				Skipped: []string{},
+			},
+		},
+		{
+			name: "collects checkbox annotations",
+			content: "- [x] ➕ completed addition\n  - [X] ➕ uppercase completion\r\n" +
+				"- [ ] ⚠️ pending blocker\n* [x] ➕ star addition\n+ [ ] ⚠️ plus blocker\n" +
+				"- [x] ⚠️ blocked work (Skipped manually)\n" +
+				"- [x] prose ➕ not an annotation\n- [y] ➕ invalid checkbox\n" +
+				"```md\n- [x] ➕ fenced addition\n- [ ] ⚠️ fenced blocker\n```\n",
+			want: Drift{
+				Added:   []string{"➕ completed addition", "➕ uppercase completion", "➕ star addition"},
+				Blocked: []string{"⚠️ pending blocker", "⚠️ plus blocker", "⚠️ blocked work (Skipped manually)"},
+				Skipped: []string{"⚠️ blocked work (Skipped manually)"},
+			},
+		},
+		{
 			name:    "no drift",
 			content: "# Plan\n\n- [x] regular work\n",
 			want:    Drift{Added: []string{}, Blocked: []string{}, Skipped: []string{}},

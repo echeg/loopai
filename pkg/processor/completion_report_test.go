@@ -111,6 +111,25 @@ func TestRenderRunFacts_BacklogTable(t *testing.T) {
 	assert.Contains(t, got, "| A | docs/backlog/item.md | A \\| B |")
 }
 
+func TestRenderRunFacts_BoundsLegacyReviewText(t *testing.T) {
+	output := strings.Repeat("x", runRecordTextCap)
+	record := RunRecord{External: []ExternalReviewerRecord{{Key: "legacy", EndedBy: "done", HadFindings: true}}}
+	for i := 1; i <= 30; i++ {
+		record.External[0].Iterations = append(record.External[0].Iterations, ExternalIterationRecord{
+			Index: i, ReviewerOutput: output, EvaluatorResponse: output,
+		})
+	}
+	for _, rendered := range []string{renderRunFacts(record, RunFacts{}), factsOnlyReport(record, RunFacts{})} {
+		assert.LessOrEqual(t, strings.Count(rendered, "x"), runRecordExternalTextCap)
+		assert.Contains(t, rendered, "- iterations: 30")
+		assert.Contains(t, rendered, "#### Iteration 30\n- truncated: true")
+		assert.Contains(t, rendered, "[truncated]")
+		assert.Contains(t, rendered, "- ended by: done\n- had findings: true")
+	}
+	assert.Equal(t, output, record.External[0].Iterations[0].ReviewerOutput)
+	assert.False(t, record.External[0].Iterations[0].Truncated)
+}
+
 func TestExtractReport(t *testing.T) {
 	tests := []struct {
 		name   string

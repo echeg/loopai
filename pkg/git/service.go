@@ -2074,7 +2074,7 @@ func (s *Service) MovePlanToCompletedWithReport(planFile string, report []byte) 
 	}
 
 	commitMsg := "move completed plan: " + filepath.Base(sourceFile) + " (+ report)"
-	if err := s.repo.commit(s.appendTrailer(commitMsg)); err != nil {
+	if err := s.commitReportPlanMove(commitMsg, sourceFile, destPath, reportPath); err != nil {
 		return fmt.Errorf("commit plan move and report: %w", err)
 	}
 
@@ -2099,7 +2099,7 @@ func (s *Service) writeReportForArchivedPlan(reportPath, destPath string, report
 		return fmt.Errorf("%w: stage sidecar: %w", ErrCompletionReportWrite, err)
 	}
 	commitMsg := "add completion report: " + filepath.Base(destPath)
-	if err := s.repo.commit(s.appendTrailer(commitMsg)); err != nil {
+	if err := s.repo.commitFiles(s.appendTrailer(commitMsg), reportPath); err != nil {
 		return fmt.Errorf("commit completion report: %w", err)
 	}
 	s.log.Printf("wrote completion report to %s\n", reportPath)
@@ -2124,16 +2124,30 @@ func createCompletionReport(path string, report []byte) error {
 
 func (s *Service) commitPlanMoveAfterReportFailure(sourceFile, destPath string, reportErr error) error {
 	commitMsg := "move completed plan: " + filepath.Base(sourceFile)
-	if err := s.repo.commit(s.appendTrailer(commitMsg)); err != nil {
+	if err := s.commitReportPlanMove(commitMsg, sourceFile, destPath); err != nil {
 		return fmt.Errorf("commit plan move after completion report failure: %w", err)
 	}
 	s.log.Printf("moved plan to %s\n", destPath)
 	return fmt.Errorf("%w: %w", ErrCompletionReportWrite, reportErr)
 }
 
+// commitReportPlanMove excludes unrelated staged files from report archival commits.
+func (s *Service) commitReportPlanMove(msg, sourceFile, destPath string, extraPaths ...string) error {
+	paths := append([]string{destPath}, extraPaths...)
+	// an untracked or newly staged source has no deletion to commit and no remaining pathspec.
+	sourceChanged, err := s.repo.fileHasChanges(sourceFile)
+	if err != nil {
+		return fmt.Errorf("inspect archived plan source: %w", err)
+	}
+	if sourceChanged {
+		paths = append(paths, sourceFile)
+	}
+	return s.repo.commitFiles(s.appendTrailer(msg), paths...)
+}
+
 // ValidateFinalizingPlanWorktreeRemoval permits crash recovery to force-remove a generated
 // worktree only when it is clean or its sole changes are the exact staged active-to-completed plan
-// move and optional staged report that archival prepares before committing. This prevents recovery
+// move, with or without a staged report, or a staged report alone after archival. This prevents recovery
 // from discarding unrelated edits made after the interrupted process released its run lock.
 func (s *Service) ValidateFinalizingPlanWorktreeRemoval(planFile string) error {
 	if resolvedDir, resolveErr := filepath.EvalSymlinks(filepath.Dir(planFile)); resolveErr == nil {
@@ -2185,7 +2199,7 @@ func (s *Service) ValidateFinalizingPlanWorktreeRemoval(planFile string) error {
 			return fmt.Errorf("inspect finalized archived plan state: %w", err)
 		}
 	}
-	if !activeChanged && !completedChanged && !reportChanged {
+	if !activeChanged && !completedChanged {
 		return nil
 	}
 	activeStatus, _, _ := strings.Cut(activeState, "\x00")

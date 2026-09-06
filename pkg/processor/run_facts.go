@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -72,9 +73,8 @@ func (r *Runner) collectRunFacts(ctx context.Context) RunFacts {
 	backlog, err := collectBacklogFiles(facts.Files, r.backlogDir())
 	if err != nil {
 		r.logRunFactsError("backlog", err)
-	} else {
-		facts.Backlog = backlog
 	}
+	facts.Backlog = backlog
 	return facts
 }
 
@@ -117,6 +117,7 @@ func (r *Runner) logRunFactsError(field string, err error) {
 
 func collectBacklogFiles(changes []gitpkg.FileChange, backlogDir string) ([]BacklogFile, error) {
 	result := make([]BacklogFile, 0)
+	var readErrors []error
 	dir := filepath.Clean(backlogDir)
 	for _, change := range changes {
 		path := filepath.Clean(filepath.FromSlash(change.Path))
@@ -125,13 +126,13 @@ func collectBacklogFiles(changes []gitpkg.FileChange, backlogDir string) ([]Back
 		}
 		content, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", change.Path, err)
+			readErrors = append(readErrors, fmt.Errorf("read %s: %w", change.Path, err))
 		}
 		result = append(result, BacklogFile{
 			Status: change.Status, Path: change.Path, Title: markdownTitle(string(content)),
 		})
 	}
-	return result, nil
+	return result, errors.Join(readErrors...)
 }
 
 func pathWithinDir(path, dir string) bool {
@@ -272,6 +273,9 @@ func writeExternalReviewers(b *strings.Builder, reviewers []ExternalReviewerReco
 		b.WriteString("- none\n")
 		return
 	}
+	// Also bound records persisted by older versions, without changing the caller's snapshot.
+	reviewers = cloneRunRecord(RunRecord{External: reviewers}).External
+	boundExternalReviewText(reviewers)
 	for _, reviewer := range reviewers {
 		fmt.Fprintf(b, "### %s\n", valueOrNone(reviewer.Key))
 		fmt.Fprintf(b, "- label: %s\n- iterations: %d\n- duration_ms: %d\n- ended by: %s\n- had findings: %t\n",

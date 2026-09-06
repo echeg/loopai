@@ -50,8 +50,8 @@ func TestRunnerCollectRunFacts(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
 		require.NoError(t, os.MkdirAll(filepath.Dir(backlogPath), 0o750))
 		planContent := "# Feature\n\n" +
-			"➕ added during work\n" +
-			"⚠️ waiting on upstream\n" +
+			"- [x] ➕ added during work\n" +
+			"- [ ] ⚠️ waiting on upstream\n" +
 			"- [x] manual check (skipped - not automatable)\n\n" +
 			"## Validation Commands\n\n" +
 			"- `make test`\n"
@@ -123,12 +123,18 @@ func TestRunnerCollectRunFacts(t *testing.T) {
 		assert.Contains(t, messages, "run facts: diff stats: stats unavailable")
 	})
 
-	t.Run("backlog read failure clears only backlog facts", func(t *testing.T) {
+	t.Run("backlog read failure preserves all paths and readable titles", func(t *testing.T) {
 		root := t.TempDir()
 		t.Chdir(root)
 		require.NoError(t, os.WriteFile("plan.md", []byte("# Feature\n"), 0o600))
+		require.NoError(t, os.MkdirAll("docs/backlog", 0o750))
+		require.NoError(t, os.WriteFile("docs/backlog/readable.md", []byte("# Readable issue\n"), 0o600))
 		source := &runFactsSourceStub{
-			files: []gitpkg.FileChange{{Status: "A", Path: "docs/backlog/missing.md"}},
+			files: []gitpkg.FileChange{
+				{Status: "A", Path: "docs/backlog/missing.md"},
+				{Status: "A", Path: "docs/backlog/readable.md"},
+				{Status: "A", Path: "docs/backlog/also-missing.md"},
+			},
 		}
 		logger := newMockLogger()
 		runner := &Runner{
@@ -137,7 +143,12 @@ func TestRunnerCollectRunFacts(t *testing.T) {
 
 		got := runner.collectRunFacts(t.Context())
 
-		assert.Empty(t, got.Backlog)
+		assert.Equal(t, []BacklogFile{
+			{Status: "A", Path: "docs/backlog/missing.md"},
+			{Status: "A", Path: "docs/backlog/readable.md", Title: "Readable issue"},
+			{Status: "A", Path: "docs/backlog/also-missing.md"},
+		}, got.Backlog)
+		assert.Contains(t, factsOnlyReport(RunRecord{}, got), "| A | docs/backlog/readable.md | Readable issue |")
 		assert.Equal(t, source.files, got.Files)
 		require.Len(t, logger.PrintCalls(), 1)
 		assert.Contains(t, fmt.Sprintf(logger.PrintCalls()[0].Format, logger.PrintCalls()[0].Args...), "run facts: backlog:")

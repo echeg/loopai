@@ -1243,6 +1243,45 @@ func TestService_MovePlanToCompletedWithReport(t *testing.T) {
 		assert.NoFileExists(t, filepath.Join(dir, "docs", "plans", "completed", "legacy.report.md"))
 	})
 
+	for _, sourceState := range []string{"tracked", "untracked", "newly staged"} {
+		for _, reportFails := range []bool{false, true} {
+			t.Run(fmt.Sprintf("isolates archive of %s plan with report failure %t", sourceState, reportFails), func(t *testing.T) {
+				dir, svc, planFile := newPlan(t, "isolated.md")
+				if sourceState != "tracked" {
+					runGit(t, dir, "rm", "--cached", "docs/plans/isolated.md")
+					runGit(t, dir, "commit", "-m", "leave plan untracked")
+					if sourceState == "newly staged" {
+						runGit(t, dir, "add", "docs/plans/isolated.md")
+					}
+				}
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("user work\n"), 0o600))
+				runGit(t, dir, "add", "unrelated.txt")
+				reportPath := filepath.Join(dir, "docs", "plans", "completed", "isolated.report.md")
+				if reportFails {
+					require.NoError(t, os.MkdirAll(reportPath, 0o750))
+				}
+
+				err := svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Isolated\n"))
+				if reportFails {
+					require.ErrorIs(t, err, ErrCompletionReportWrite)
+				} else {
+					require.NoError(t, err)
+				}
+
+				changed := strings.Fields(runGit(t, dir, "show", "--format=", "--name-only", "--no-renames", "HEAD"))
+				want := []string{"docs/plans/completed/isolated.md"}
+				if sourceState == "tracked" {
+					want = append(want, "docs/plans/isolated.md")
+				}
+				if !reportFails {
+					want = append(want, "docs/plans/completed/isolated.report.md")
+				}
+				assert.ElementsMatch(t, want, changed)
+				assert.Equal(t, "A  unrelated.txt", strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
+			})
+		}
+	}
+
 	t.Run("report write failure still commits the plan move", func(t *testing.T) {
 		dir, svc, planFile := newPlan(t, "report-failure.md")
 		reportPath := filepath.Join(dir, "docs", "plans", "completed", "report-failure.report.md")
@@ -1283,6 +1322,8 @@ func TestService_MovePlanToCompletedWithReport(t *testing.T) {
 		dir, svc, planFile := newPlan(t, "archived.md")
 		require.NoError(t, svc.MovePlanToCompleted(planFile))
 		before := strings.TrimSpace(runGit(t, dir, "rev-list", "--count", "HEAD"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("user work\n"), 0o600))
+		runGit(t, dir, "add", "unrelated.txt")
 
 		require.NoError(t, svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Archived\n")))
 		afterFirst := strings.TrimSpace(runGit(t, dir, "rev-list", "--count", "HEAD"))
@@ -1297,6 +1338,9 @@ func TestService_MovePlanToCompletedWithReport(t *testing.T) {
 		report, err := os.ReadFile(filepath.Join(dir, "docs", "plans", "completed", "archived.report.md")) //nolint:gosec // test-owned path
 		require.NoError(t, err)
 		assert.Equal(t, "# Report: Archived\n", string(report))
+		assert.Equal(t, "docs/plans/completed/archived.report.md",
+			strings.TrimSpace(runGit(t, dir, "show", "--format=", "--name-only", "HEAD")))
+		assert.Equal(t, "A  unrelated.txt", strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
 	})
 
 	t.Run("archived sidecar inspection failure is returned", func(t *testing.T) {
@@ -1331,6 +1375,13 @@ func TestService_MovePlanToCompletedWithReport(t *testing.T) {
 		err := svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Commit failure\n"))
 
 		require.ErrorContains(t, err, "commit completion report")
+		require.NoError(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "report-only staged addition is recoverable")
+		reportPath := filepath.Join(dir, "docs", "plans", "completed", "archived-commit-failure.report.md")
+		require.NoError(t, os.WriteFile(reportPath, []byte("user edit\n"), 0o600))
+		require.ErrorContains(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "report changes")
+		runGit(t, dir, "checkout", "--", reportPath)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("user work\n"), 0o600))
+		require.ErrorContains(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "unrelated changes")
 	})
 }
 

@@ -11,6 +11,8 @@ import (
 const (
 	runRecordVersion = 1
 	runRecordTextCap = 16 * 1024
+	// Bound combined reviewer/evaluator text, including truncation markers, across the whole chain.
+	runRecordExternalTextCap = 64 * 1024
 )
 
 const truncatedRecordMarker = "\n[truncated]"
@@ -117,4 +119,46 @@ func truncateForRecord(s string) (string, bool) {
 		cut--
 	}
 	return s[:cut] + truncatedRecordMarker, true
+}
+
+// boundExternalReviewText shares the aggregate budget among nonempty outputs.
+// Keep every iteration and its metadata so truncation never changes reported counts.
+func boundExternalReviewText(reviewers []ExternalReviewerRecord) {
+	fields := 0
+	total := 0
+	for i := range reviewers {
+		for j := range reviewers[i].Iterations {
+			iteration := &reviewers[i].Iterations[j]
+			for _, field := range []*string{&iteration.ReviewerOutput, &iteration.EvaluatorResponse} {
+				if *field != "" {
+					fields++
+					total += len(*field)
+				}
+			}
+		}
+	}
+	if total <= runRecordExternalTextCap {
+		return
+	}
+	limit := runRecordExternalTextCap / fields
+	for i := range reviewers {
+		for j := range reviewers[i].Iterations {
+			iteration := &reviewers[i].Iterations[j]
+			for _, field := range []*string{&iteration.ReviewerOutput, &iteration.EvaluatorResponse} {
+				if len(*field) <= limit {
+					continue
+				}
+				iteration.Truncated = true
+				if limit < len(truncatedRecordMarker) {
+					*field = ""
+					continue
+				}
+				cut := limit - len(truncatedRecordMarker)
+				for cut > 0 && !utf8.RuneStart((*field)[cut]) {
+					cut--
+				}
+				*field = (*field)[:cut] + truncatedRecordMarker
+			}
+		}
+	}
 }
