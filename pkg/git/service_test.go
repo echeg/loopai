@@ -1661,16 +1661,33 @@ func TestService_DiffRangeEmptyContext(t *testing.T) {
 		assert.True(t, empty)
 	})
 
-	t.Run("origin-prefixed base resolves to local branch", func(t *testing.T) {
+	t.Run("origin-prefixed base does not fall back to local branch", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		commitFeature(t, dir)
-		svc := newService(t, dir)
 
-		bareEmpty, err := svc.DiffRangeEmptyContext(t.Context(), "master")
+		_, err := newService(t, dir).DiffRangeEmptyContext(t.Context(), "origin/master")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "base ref not found")
+	})
+
+	t.Run("bare base does not fall back to remote tracking branch", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		commitFeature(t, dir)
+		runGit(t, dir, "update-ref", "refs/remotes/origin/base-only", "master")
+
+		_, err := newService(t, dir).DiffRangeEmptyContext(t.Context(), "base-only")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "base ref not found")
+	})
+
+	t.Run("existing remote tracking base is accepted literally", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		commitFeature(t, dir)
+		runGit(t, dir, "update-ref", "refs/remotes/origin/master", "master")
+
+		empty, err := newService(t, dir).DiffRangeEmptyContext(t.Context(), "origin/master")
 		require.NoError(t, err)
-		originEmpty, err := svc.DiffRangeEmptyContext(t.Context(), "origin/master")
-		require.NoError(t, err)
-		assert.Equal(t, bareEmpty, originEmpty)
+		assert.False(t, empty)
 	})
 
 	t.Run("unknown base returns a specific error", func(t *testing.T) {

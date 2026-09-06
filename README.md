@@ -264,14 +264,15 @@ loopai --plan "add a health-check endpoint"
 # execute tasks without review phases
 loopai --tasks-only docs/plans/feature.md
 
-# review existing branch changes without executing tasks
+# review existing branch changes without executing tasks; review-only modes use the current
+# checkout and fail with "nothing to review" when base...HEAD has no committed changes
 loopai --review
 
 # begin at the external-review phase
 loopai --external-only
 
-# review-only modes use the current checkout and fail with "nothing to review"
-# when the selected base...HEAD range contains no committed changes
+# deprecated alias for --external-only
+loopai --codex-only
 
 # use Codex for planning, tasks, fixes, and internal reviews
 loopai --codex docs/plans/feature.md

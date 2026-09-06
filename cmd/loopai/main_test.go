@@ -2199,10 +2199,16 @@ func TestWorktreeIgnoredWarning(t *testing.T) {
 			want: warningPrefix + "--codex-only; review modes run in the current checkout and create no branch or worktree",
 		},
 		{
-			name: "review flag takes naming precedence",
+			name: "external only takes mode precedence over review",
 			o:    opts{Worktree: true, Review: true, ExternalOnly: true, CodexOnly: true},
 			mode: processor.ModeCodexOnly,
-			want: warningPrefix + "--review; review modes run in the current checkout and create no branch or worktree",
+			want: warningPrefix + "--external-only; review modes run in the current checkout and create no branch or worktree",
+		},
+		{
+			name: "codex only takes mode precedence over review",
+			o:    opts{Worktree: true, Review: true, CodexOnly: true},
+			mode: processor.ModeCodexOnly,
+			want: warningPrefix + "--codex-only; review modes run in the current checkout and create no branch or worktree",
 		},
 		{name: "full mode", o: opts{Worktree: true}, mode: processor.ModeFull},
 		{name: "tasks only", o: opts{Worktree: true, TasksOnly: true}, mode: processor.ModeTasksOnly},
@@ -2288,7 +2294,7 @@ func TestCompleteReviewStartup(t *testing.T) {
 	t.Run("non-review mode preserves startup", func(t *testing.T) {
 		original := reviewStartup{planFile: "existing.md"}
 		got, startupErr := completeReviewStartup(t.Context(), opts{}, &config.Config{},
-			processor.ModeFull, "master", gitSvc, selector, &cleanupHolder{}, original)
+			processor.ModeFull, "master", gitSvc, selector, &cleanupHolder{}, io.Discard, original)
 		require.NoError(t, startupErr)
 		assert.Equal(t, original.planFile, got.planFile)
 	})
@@ -2296,7 +2302,7 @@ func TestCompleteReviewStartup(t *testing.T) {
 	t.Run("missing plan fails before dependencies", func(t *testing.T) {
 		got, startupErr := completeReviewStartup(t.Context(), opts{PlanFile: filepath.Join(dir, "missing.md")},
 			&config.Config{ClaudeCommand: "missing-loopai-claude-command"}, processor.ModeReview,
-			"master", gitSvc, selector, &cleanupHolder{}, reviewStartup{})
+			"master", gitSvc, selector, &cleanupHolder{}, io.Discard, reviewStartup{})
 		require.ErrorContains(t, startupErr, "select plan")
 		assert.Empty(t, got.planFile)
 	})
@@ -2304,7 +2310,7 @@ func TestCompleteReviewStartup(t *testing.T) {
 	t.Run("missing dependency fails after non-empty range", func(t *testing.T) {
 		got, startupErr := completeReviewStartup(t.Context(), opts{},
 			&config.Config{ClaudeCommand: "missing-loopai-claude-command"}, processor.ModeReview,
-			"master", gitSvc, selector, &cleanupHolder{}, reviewStartup{})
+			"master", gitSvc, selector, &cleanupHolder{}, io.Discard, reviewStartup{})
 		require.ErrorContains(t, startupErr, "install Claude Code")
 		assert.Nil(t, got.setupTitles)
 	})
@@ -2324,7 +2330,7 @@ func TestCompleteReviewStartup(t *testing.T) {
 
 		got, startupErr := completeReviewStartup(t.Context(), opts{PlanFile: planPath},
 			&config.Config{ClaudeCommand: fakeClaude, Orca: true}, processor.ModeReview,
-			"master", gitSvc, selector, &cleanupHolder{}, reviewStartup{})
+			"master", gitSvc, selector, &cleanupHolder{}, io.Discard, reviewStartup{})
 		require.NoError(t, startupErr)
 		t.Cleanup(got.setupTitles.Stop)
 		assert.Equal(t, planPath, got.planFile)
@@ -2333,6 +2339,25 @@ func TestCompleteReviewStartup(t *testing.T) {
 
 		setSelectorInputWait(selector, nil)
 		setSelectorInputWait(selector, got.setupTitles)
+	})
+
+	t.Run("automatic reviewer warning uses supplied writer", func(t *testing.T) {
+		fakeClaude := filepath.Join(t.TempDir(), "claude-ok")
+		writeExecutable(t, fakeClaude, "#!/bin/sh\nexit 0\n")
+		var warnings bytes.Buffer
+
+		got, startupErr := completeReviewStartup(t.Context(), opts{}, &config.Config{
+			ClaudeCommand: fakeClaude,
+			CodexCommand:  filepath.Join(t.TempDir(), "missing-codex"),
+		}, processor.ModeReview, "master", gitSvc, selector, &cleanupHolder{}, &warnings,
+			reviewStartup{externalReview: externalReviewSelection{
+				Reviewers:    []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}},
+				AutoSelected: true,
+			}})
+		require.NoError(t, startupErr)
+		t.Cleanup(got.setupTitles.Stop)
+		assert.True(t, got.externalReview.DisabledByMissing)
+		assert.Contains(t, warnings.String(), "automatically selected external reviewer unavailable")
 	})
 }
 

@@ -35,8 +35,10 @@ for full, `--tasks-only`, `--plan`, or `--gen-agents` runs.
   string` in `cmd/loopai/main.go`, printed to stderr right after `determineMode` next to
   `printExternalReviewWarnings`. It fires only on the explicit CLI flag `o.Worktree`, never on the
   `use_worktree` config key: a config default is meant for every run and would nag on every review.
+  When review flags are combined, the warning names the flag that selected the effective mode,
+  following `determineMode` precedence.
 - **Chosen approach for the refusal**: a new `git.Service.DiffRangeEmptyContext(ctx, base)
-  (bool, error)` built on the existing `repo.resolveRef` and an exact context-aware
+  (bool, error)` built on exact context-aware revision validation and
   `git diff --quiet <base>...HEAD --` backend operation, plus a `checkReviewDiffRange(ctx, gitSvc,
   mode, baseRef) error` helper in `cmd/loopai`. Review-only runs select their optional plan and run
   the guard before executor dependency checks or reporter creation; `selectAndExecutePlan` retains
@@ -58,8 +60,9 @@ for full, `--tasks-only`, `--plan`, or `--gen-agents` runs.
 - **Verified facts**: `modeRequiresBranch` is true only for `ModeFull` and `ModeTasksOnly`
   (`main.go:2638`); `-e` maps to `ModeCodexOnly` (`main.go:2627`); `req.BaseRef` for review modes
   is `resolveDefaultBranch(cliBaseRef, configBranch, autoDetected)` and may carry an `origin/`
-  prefix (`main.go:5473`, `5485`); `externalBackend.resolveRef` already tries local, remote, and
-  `origin/`-prefixed forms (`external.go:1239`); backend Git commands support context-aware
+  prefix (`main.go:5473`, `5485`); the preflight must validate that literal value rather than use
+  `externalBackend.resolveRef`, because the review prompt receives the literal value too; backend
+  Git commands support context-aware
   cancellation and preserve diagnostics; the `repo` interface at `service.go:39-70` is the place
   to expose the exact quiet diff operation; `setupTestRepo` and `runGit` in
   `cmd/loopai/main_test.go:5200-5218` build real temporary repositories for tests;
@@ -126,15 +129,15 @@ for full, `--tasks-only`, `--plan`, or `--gen-agents` runs.
 ## Implementation Steps
 
 ### Task 1: Warn when an explicit --worktree is ignored by a review-only mode
-- [x] add `worktreeIgnoredWarning(o opts, mode processor.Mode) string` to `cmd/loopai/main.go`: returns `""` unless `o.Worktree` is true and `mode` is `processor.ModeReview` or `processor.ModeCodexOnly`; otherwise returns `warning: --worktree is ignored by <flag>; review modes run in the current checkout and create no branch or worktree`, where `<flag>` is the review flag actually given (`--review`, `--external-only`, or `--codex-only`, chosen in that order from `o.Review`, `o.ExternalOnly`, `o.CodexOnly`)
+- [x] add `worktreeIgnoredWarning(o opts, mode processor.Mode) string` to `cmd/loopai/main.go`: returns `""` unless `o.Worktree` is true and `mode` is `processor.ModeReview` or `processor.ModeCodexOnly`; otherwise returns `warning: --worktree is ignored by <flag>; review modes run in the current checkout and create no branch or worktree`, where `<flag>` is the review flag that selected the effective mode (`--external-only`/`--codex-only` take precedence over `--review`, matching `determineMode`)
 - [x] print the non-empty result to `os.Stderr` immediately after `mode := determineMode(o)` (~`main.go:440`), before `resolveExternalReviewSelection`, so it appears with the other startup warnings and before any executor check can fail
 - [x] write table-driven tests for `worktreeIgnoredWarning`: `--worktree` with each of the three review flags names the right flag; `--worktree` in full, `--tasks-only`, `--plan`, and `--gen-agents` modes returns `""`; review modes without `--worktree` return `""`; `use_worktree` in config alone (`o.Worktree` false) returns `""`
 - [x] run `go test ./cmd/...` - must pass before task 2
 
 ### Task 2: git.Service.DiffRangeEmptyContext
-- [x] add `DiffRangeEmptyContext(ctx context.Context, base string) (bool, error)` to `pkg/git/service.go`: resolve `base` through `s.repo.resolveRef`, return a specific missing-base error when it resolves to `""`, then run the backend's exact `git diff --quiet <resolved>...HEAD --`, interpreting exit 0 as empty, exit 1 as non-empty, and other exits as errors
+- [x] add `DiffRangeEmptyContext(ctx context.Context, base string) (bool, error)` to `pkg/git/service.go`: validate the literal `base` through the context-aware revision check, return a specific missing-base error when absent, then run the backend's exact `git diff --quiet <base>...HEAD --`, interpreting exit 0 as empty, exit 1 as non-empty, and other exits as errors; do not normalize to a different ref because the reviewer prompt receives the literal value
 - [x] document that uncommitted changes are not considered because the review's first-iteration diff is commit-to-commit
-- [x] write tests in `pkg/git/service_test.go` with temporary repositories: changed feature branch → `false`; base tip, detached base tip, merged feature, empty commit, and net-reverted branch → `true`; `origin/master` resolves locally; unknown base, unrelated history, and canceled context → errors
+- [x] write tests in `pkg/git/service_test.go` with temporary repositories: changed feature branch → `false`; base tip, detached base tip, merged feature, empty commit, and net-reverted branch → `true`; literal remote-tracking refs resolve while unavailable `origin/master` and bare remote-only names do not fall back; unknown base, unrelated history, and canceled context → errors
 - [x] run `go test ./pkg/git/...` - must pass before task 3
 
 ### Task 3: Refuse review-only runs with an empty diff range
@@ -175,7 +178,7 @@ Emitted once, to stderr, before executor resolution. Driven by `o.Worktree` only
 run (review-only modes)
   select plan
   checkReviewDiffRange(mode, req.BaseRef)     # ModeReview / ModeCodexOnly only
-    resolveRef(base) == ""  → error: base ref not found
+    revisionExists(base) == false  → error: base ref not found
     git diff --quiet base...HEAD --
       exit 0 → error: nothing to review
       exit 1 → continue

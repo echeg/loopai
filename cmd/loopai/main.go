@@ -523,7 +523,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 
 	// create plan selector for use by plan selection and plan mode
 	selector := plan.NewSelector(cfg.PlansDir, colors)
-	startup, err := completeReviewStartup(ctx, o, cfg, mode, baseRef, gitSvc, selector, orcaStop,
+	startup, err := completeReviewStartup(ctx, o, cfg, mode, baseRef, gitSvc, selector, orcaStop, os.Stderr,
 		reviewStartup{externalReview: externalReview, limitRecovery: limitRecovery, setupTitles: setupTitles})
 	if err != nil {
 		return err
@@ -705,6 +705,7 @@ func completeReviewStartup(
 	gitSvc *git.Service,
 	selector *plan.Selector,
 	orcaStop *cleanupHolder,
+	warnings io.Writer,
 	startup reviewStartup,
 ) (reviewStartup, error) {
 	if !modeNeedsReviewPreflight(mode) {
@@ -717,14 +718,15 @@ func completeReviewStartup(
 	if rangeErr := checkReviewDiffRange(ctx, gitSvc, mode, baseRef); rangeErr != nil {
 		return reviewStartup{}, rangeErr
 	}
-	resolved, err := checkExecutionDeps(cfg, startup.externalReview, os.Stderr)
+	resolved, recovery, err := resolveStartupExecutionDeps(
+		o, cfg, false, startup.externalReview, warnings,
+	)
 	if err != nil {
 		return reviewStartup{}, err
 	}
-	applyEffectiveExternalReview(cfg, resolved)
 	startup.planFile = selectedPlan
 	startup.externalReview = resolved
-	startup.limitRecovery = detectClaudeSwapRecovery(o, cfg, resolved)
+	startup.limitRecovery = recovery
 	startup.setupTitles = startOrcaReporter(cfg, selectedPlan, initialOrcaPhase(mode))
 	setOrcaCleanup(orcaStop, startup.setupTitles)
 	return startup, nil
@@ -2761,13 +2763,21 @@ func worktreeIgnoredWarning(o opts, mode processor.Mode) string {
 	}
 
 	var flag string
-	switch {
-	case o.Review:
+	switch mode {
+	case processor.ModeReview:
+		if !o.Review {
+			return ""
+		}
 		flag = "--review"
-	case o.ExternalOnly:
-		flag = "--external-only"
-	case o.CodexOnly:
-		flag = "--codex-only"
+	case processor.ModeCodexOnly:
+		switch {
+		case o.ExternalOnly:
+			flag = "--external-only"
+		case o.CodexOnly:
+			flag = "--codex-only"
+		default:
+			return ""
+		}
 	default:
 		return ""
 	}

@@ -314,9 +314,10 @@ Task plans use `### Task N:` or `### Iteration N:` headings and Markdown checkbo
 Review-only startup guards live in `cmd/loopai`: `worktreeIgnoredWarning` reports that an explicit
 `--worktree` has no effect, and `checkReviewDiffRange` calls
 `git.Service.DiffRangeEmptyContext` before executor dependency checks, progress logging, or reporter
-creation. The Git helper resolves the base and runs the exact context-aware equivalent of
+creation. The Git helper validates the literal base and runs the exact context-aware equivalent of
 `git diff --quiet <base>...HEAD --`, so empty commits and net-reverted branches are rejected while
-missing merge bases remain errors. It does not reuse `DiffStats`, because that helper treats an
+missing merge bases remain errors. It never normalizes the base to a different ref because review
+prompts receive the literal value. It does not reuse `DiffStats`, because that helper treats an
 unresolvable base like an empty diff instead of preserving the base-ref error.
 
 `pkg/processor/prompts.go` expands `{{BACKLOG_DIR}}` alongside `{{PLANS_DIR}}` in
@@ -431,8 +432,11 @@ review iteration labels come from `cmux.Reporter.WrapLogger`, which observes
 structured `PrintSection` calls while forwarding the complete logger interface.
 Normal execution paths construct a setup `orca.Reporter` after config loading and retain it
 through dependency checks, startup prompts, plan selection, branch/worktree setup, and progress
-logger creation. Interactive plan creation and execution/review then construct phase-specific
-reporters, publish the replacement's working title, and silently quiesce the setup predecessor;
+logger creation. Review-only modes deliberately defer that reporter until after optional plan
+selection and the empty-range preflight, so repository validation, base resolution, and any initial
+commit prompt before the guard have no Orca title reporter. Interactive plan creation and
+execution/review then construct phase-specific reporters, publish the replacement's working title,
+and silently quiesce the setup predecessor;
 watch-only,
 agent-generation, and standalone utility paths do not construct reporters. `orca.New` is gated by
 both the resolved config and a stdout TTY check and returns a nil-safe no-op when inactive. Phase
