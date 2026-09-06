@@ -153,10 +153,10 @@ for full, `--tasks-only`, `--plan`, or `--gen-agents` runs.
 - [x] verify test coverage for the new functions meets the project standard (80%+)
 
 ### Task 5: [Final] Update documentation
-- [ ] `README.md`: in the usage examples (~262-280) add a comment under `loopai --review`/`loopai --external-only` that they run in the current checkout and fail with `nothing to review` when HEAD is already contained in the base; in the `--base-ref` review passage (~796-806) note that `--base-ref` is also how to review against a different base when the default range is empty; in the review-mode paragraph (~500) add that an explicit `--worktree` is ignored with a warning there
-- [ ] `llms.txt`: one sentence after the `loopai --review` / `loopai --external-only` lines (~82) stating the empty-range refusal and the ignored-`--worktree` warning
-- [ ] `CLAUDE.md`: one short architecture note near the worktree paragraph naming `worktreeIgnoredWarning`, `checkReviewDiffRange`, and `git.Service.DiffRangeEmptyContext`, with the ancestor rule and why `DiffStats` was not reused
-- [ ] confirm `make check-symlinks` and `make check-plugin` still pass (no skill changed, no manifest bump needed)
+- [x] `README.md`: in the usage examples (~262-280) add a comment under `loopai --review`/`loopai --external-only` that they run in the current checkout and fail with `nothing to review` when HEAD is already contained in the base; in the `--base-ref` review passage (~796-806) note that `--base-ref` is also how to review against a different base when the default range is empty; in the review-mode paragraph (~500) add that an explicit `--worktree` is ignored with a warning there
+- [x] `llms.txt`: one sentence after the `loopai --review` / `loopai --external-only` lines (~82) stating the empty-range refusal and the ignored-`--worktree` warning
+- [x] `CLAUDE.md`: one short architecture note near the worktree paragraph naming `worktreeIgnoredWarning`, `checkReviewDiffRange`, and `git.Service.DiffRangeEmptyContext`, with the ancestor rule and why `DiffStats` was not reused
+- [x] confirm `make check-symlinks` and `make check-plugin` still pass (no skill changed, no manifest bump needed)
 
 ## Technical Details
 

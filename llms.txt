@@ -80,6 +80,7 @@ loopai --plan "add a health-check endpoint"
 loopai --tasks-only docs/plans/feature.md
 loopai --review
 loopai --external-only
+# Review-only modes use the current checkout, refuse an empty base...HEAD range, and warn when an explicit --worktree is ignored.
 loopai --codex docs/plans/feature.md
 loopai --codex --pass-claude-md docs/plans/feature.md
 loopai --codex '--codex-args=-c service_tier="default"' docs/plans/feature.md

@@ -311,6 +311,13 @@ Tests must redirect HOME or config paths to `t.TempDir()` and must never touch e
 
 Task plans use `### Task N:` or `### Iteration N:` headings and Markdown checkboxes. The task phase handles only the first incomplete section per executor iteration.
 
+Review-only startup guards live in `cmd/loopai`: `worktreeIgnoredWarning` reports that an explicit
+`--worktree` has no effect, and `checkReviewDiffRange` calls
+`git.Service.DiffRangeEmptyContext` before progress logging or reporter creation. The Git helper
+tests whether HEAD is an ancestor of the resolved base, which is exactly when
+`git diff <base>...HEAD` is empty. It does not reuse `DiffStats`, because that helper treats an
+unresolvable base like an empty diff instead of preserving the base-ref error.
+
 `pkg/processor/prompts.go` expands `{{BACKLOG_DIR}}` alongside `{{PLANS_DIR}}` in
 `replaceBaseVariables`, the choke point every builder funnels through, so all twelve
 prompt paths get it from one line plus `getBacklogDir`, which mirrors `getPlansDir`

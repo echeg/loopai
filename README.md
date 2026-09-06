@@ -270,6 +270,9 @@ loopai --review
 # begin at the external-review phase
 loopai --external-only
 
+# review-only modes use the current checkout and fail with "nothing to review"
+# when HEAD is already contained in the selected base
+
 # use Codex for planning, tasks, fixes, and internal reviews
 loopai --codex docs/plans/feature.md
 
@@ -498,7 +501,8 @@ gets committed depends on the path that files it, and the three rules are not in
   final `fix: address ... review findings` commit picks the staged entry up.
 
   `--review`, `--external-only`, and `--codex-only` create no branch and no worktree, so the review
-  and evaluation prompts commit in your own checkout. No capture path sweeps with `git add -A`:
+  and evaluation prompts commit in your own checkout. An explicit `--worktree` is ignored in these
+  modes with a warning. No capture path sweeps with `git add -A`:
   each stages only the files it created, modified, or deleted — or, for the evaluation prompts,
   which run as fresh sessions that authored none of the accumulated fixes, only the files this
   review loop produced across its iterations. Either way a dirty path that cannot be attributed is
@@ -795,8 +799,10 @@ If the original run used `--branch`, pass the same option when continuing it.
 
 Worktree creation does not use or record a base branch. `--base-ref` remains the base for
 review diffs and templates; without it, loopai uses `default_branch` configuration or its
-normal `main`/`master` detection. Consequently, when a worktree was cut from a non-default
-branch, pass that branch explicitly to review against it or merge back into it:
+normal `main`/`master` detection. Review-only modes fail with `nothing to review` when HEAD is
+already contained in that base; use `--base-ref` to select a different comparison base when the
+default range is empty. Consequently, when a worktree was cut from a non-default branch, pass
+that branch explicitly to review against it or merge back into it:
 
 ```bash
 loopai --review --base-ref release/13
