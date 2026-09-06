@@ -318,6 +318,27 @@ block or folded scalar parses fine but yields embedded newlines, and the catalog
 renders the description as one Markdown list item followed by an indented
 invocation snippet, so continuation lines would land unindented between the two.
 
+`validateModelSpecs` runs at startup, before external-review resolution, and rejects a
+`plan_model`, `task_model`, `review_model`, or legacy `external_review_model` value the
+executor cannot accept. `parseModelEffort` splits at the first colon, which makes an
+`external_reviewers` entry syntactically valid input for these keys: `codex:gpt-6-astra:high`
+resolves to the model `codex` with the reasoning effort `gpt-6-astra:high`, and nothing
+objects until the provider's API rejects the model — in the review phase, after a task phase
+that can run for hours. A second colon is therefore reported as the reviewer-entry confusion
+it almost always is, naming both halves the spec would have produced, and an effort outside
+`low|medium|high|xhigh|max` is reported as unknown. `max` stays accepted here for both
+executors: codex already drops it through a dedicated warning, and re-reporting it as unknown
+would turn a deliberate downgrade into a hard failure. Validation runs on the resolved spec,
+so a CLI flag overriding a bad config value passes exactly as the executors would see it.
+`resolveExternalReviewSelection` applies the same effort list to the chain it resolves: it
+wraps `resolveReviewerChain` and calls `validateReviewerEfforts` on the result, because
+that resolver returns from several branches — the chain, the legacy single reviewer, the
+modes that disable review — and a check placed inside one of them leaves the others
+unguarded. The wrapper matters because `config.ParseExternalReviewers` checks the
+separator count and the provider name but never the effort value, so a typo would otherwise
+reach the reviewer process and fail there — after the task phase, and only for that one
+reviewer in the chain.
+
 `external_reviewers` configures an ordered comma-separated reviewer chain using
 `provider[:model[:effort]]` entries. It takes precedence over the legacy
 `external_review_tool` and `external_review_model` keys. `custom` entries use

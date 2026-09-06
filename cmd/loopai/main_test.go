@@ -12716,3 +12716,166 @@ func TestPrepareWorktreeRunReplacesLeftoverPath(t *testing.T) {
 	assert.FileExists(t, filepath.Join(wt.path, "task-work.txt"), "committed task work must survive the recreation")
 	assert.FileExists(t, filepath.Join(wt.path, "docs", "plans", "field-items-drop.md"))
 }
+
+func TestValidateModelSpec(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    string
+		wantErr string
+	}{
+		{name: "empty spec uses executor defaults", spec: ""},
+		{name: "bare model", spec: "opus"},
+		{name: "model with effort", spec: "gpt-5.6-sol:high"},
+		{name: "effort only", spec: ":medium"},
+		{name: "trailing colon is no effort at all", spec: "opus:"},
+		{name: "effort matching is case-insensitive", spec: "opus:XHigh"},
+		{name: "claude-only max stays accepted so codex keeps warning and downgrading", spec: "opus:max"},
+		{
+			name:    "reviewer chain entry is named for what it is",
+			spec:    "codex:gpt-6-astra:high",
+			wantErr: `looks like an external_reviewers entry`,
+		},
+		{
+			name:    "reviewer chain entry reports both halves it would have produced",
+			spec:    "codex:gpt-6-astra:high",
+			wantErr: `"codex" would be sent as the model and "gpt-6-astra:high" as the reasoning effort`,
+		},
+		{
+			name:    "misspelled effort",
+			spec:    "opus:hgih",
+			wantErr: `unknown reasoning effort "hgih" (valid: low, medium, high, xhigh, max)`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateModelSpec("--review-model / review_model", tt.spec)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Contains(t, err.Error(), "--review-model / review_model", "the error must name the offending option")
+		})
+	}
+}
+
+func TestValidateModelSpecs(t *testing.T) {
+	t.Run("every spec source is checked", func(t *testing.T) {
+		tests := []struct {
+			name string
+			o    opts
+			cfg  *config.Config
+			want string
+		}{
+			{
+				name: "plan model from cli",
+				o:    opts{PlanModel: "claude:opus:high"},
+				cfg:  &config.Config{},
+				want: "--plan-model / plan_model",
+			},
+			{
+				name: "task model from config",
+				cfg:  &config.Config{TaskModel: "opus:nope"},
+				want: "--task-model / task_model",
+			},
+			{
+				name: "review model from config, the reported failure",
+				cfg:  &config.Config{ReviewModel: "codex:gpt-6-astra:high"},
+				want: "--review-model / review_model",
+			},
+			{
+				name: "legacy external review model",
+				cfg:  &config.Config{ExternalReviewModel: "opus:sky-high"},
+				want: "--external-review-model / external_review_model",
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				require.ErrorContains(t, validateModelSpecs(tt.o, tt.cfg), tt.want)
+			})
+		}
+	})
+
+	t.Run("cli overrides a bad config value instead of tripping over it", func(t *testing.T) {
+		o := opts{ReviewModel: "gpt-5.6-sol:high"}
+		cfg := &config.Config{ReviewModel: "codex:gpt-6-astra:high"}
+		require.NoError(t, validateModelSpecs(o, cfg), "resolution order must match what the executors receive")
+	})
+
+	t.Run("the reported working configuration passes", func(t *testing.T) {
+		cfg := &config.Config{TaskModel: "gpt-5.6-sol:medium", ReviewModel: "gpt-5.6-sol:high"}
+		require.NoError(t, validateModelSpecs(opts{}, cfg))
+	})
+}
+
+func TestValidateReviewerEfforts(t *testing.T) {
+	t.Run("valid chain passes", func(t *testing.T) {
+		selection := externalReviewSelection{Reviewers: []resolvedReviewer{
+			{Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "high"},
+			{Provider: config.ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "xhigh"},
+		}}
+		require.NoError(t, validateReviewerEfforts(selection))
+	})
+
+	t.Run("empty effort inherits the executor default", func(t *testing.T) {
+		selection := externalReviewSelection{Reviewers: []resolvedReviewer{
+			{Provider: config.ExternalReviewToolCodex, Model: "gpt-6-astra"},
+			{Provider: config.ExternalReviewToolCustom},
+		}}
+		require.NoError(t, validateReviewerEfforts(selection))
+	})
+
+	t.Run("claude-only max is accepted so codex keeps its downgrade warning", func(t *testing.T) {
+		selection := externalReviewSelection{Reviewers: []resolvedReviewer{
+			{Provider: config.ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "max"},
+		}}
+		require.NoError(t, validateReviewerEfforts(selection))
+	})
+
+	t.Run("typo is named with its position in the chain", func(t *testing.T) {
+		selection := externalReviewSelection{Reviewers: []resolvedReviewer{
+			{Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "high"},
+			{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "hgih"},
+		}}
+		err := validateReviewerEfforts(selection)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "external reviewer entry 2 (claude)")
+		assert.Contains(t, err.Error(), `unknown reasoning effort "hgih"`)
+	})
+}
+
+// The unit test for validateReviewerEfforts passes even when the call is wired into a
+// branch the chain path never reaches, so this exercises the resolver itself.
+func TestResolveExternalReviewSelectionValidatesEfforts(t *testing.T) {
+	t.Run("chain entry with a bad effort is rejected", func(t *testing.T) {
+		_, err := resolveExternalReviewSelection(
+			opts{ExternalReviewers: "claude:opus:hgih"},
+			&config.Config{ExternalReviewers: "claude:opus:hgih", ExternalReviewersSet: true},
+			processor.ModeFull,
+		)
+		require.ErrorContains(t, err, `external reviewer entry 1 (claude) has unknown reasoning effort "hgih"`)
+	})
+
+	t.Run("bad effort later in the chain is rejected with its position", func(t *testing.T) {
+		chain := "claude:opus:high,claude:fable:sky-high"
+		_, err := resolveExternalReviewSelection(
+			opts{ExternalReviewers: chain},
+			&config.Config{ExternalReviewers: chain, ExternalReviewersSet: true},
+			processor.ModeFull,
+		)
+		require.ErrorContains(t, err, "external reviewer entry 2 (claude)")
+	})
+
+	t.Run("valid chain still resolves", func(t *testing.T) {
+		chain := "claude:opus:high,claude:fable:max"
+		selection, err := resolveExternalReviewSelection(
+			opts{ExternalReviewers: chain},
+			&config.Config{ExternalReviewers: chain, ExternalReviewersSet: true},
+			processor.ModeFull,
+		)
+		require.NoError(t, err)
+		require.Len(t, selection.Reviewers, 2)
+		assert.Equal(t, "high", selection.Reviewers[0].Effort)
+	})
+}

@@ -457,6 +457,9 @@ func run(ctx context.Context, o opts) (runErr error) {
 		setupTitles.Stop()
 	}()
 
+	if specErr := validateModelSpecs(o, cfg); specErr != nil {
+		return specErr
+	}
 	externalReview, resolveErr := resolveExternalReviewSelection(o, cfg, mode)
 	if resolveErr != nil {
 		return resolveErr
@@ -2647,7 +2650,23 @@ func primaryProvider(cfg *config.Config) string {
 // resolveExternalReviewSelection applies tool and model defaults after CLI and
 // config merging. ModeCodexOnly deliberately bypasses the legacy codex_enabled
 // gate because the user explicitly requested the external-review pipeline.
+// resolveExternalReviewSelection resolves the reviewer chain and validates it. The
+// validation is a wrapper rather than a line inside resolveReviewerChain because that
+// function returns from several branches - the chain, the legacy single reviewer, the
+// disabled modes - and an effort left unchecked on any of them reaches the reviewer
+// process and fails there, after the task phase has already run.
 func resolveExternalReviewSelection(o opts, cfg *config.Config, mode processor.Mode) (externalReviewSelection, error) {
+	selection, err := resolveReviewerChain(o, cfg, mode)
+	if err != nil {
+		return externalReviewSelection{}, err
+	}
+	if effortErr := validateReviewerEfforts(selection); effortErr != nil {
+		return externalReviewSelection{}, effortErr
+	}
+	return selection, nil
+}
+
+func resolveReviewerChain(o opts, cfg *config.Config, mode processor.Mode) (externalReviewSelection, error) {
 	if cfg == nil {
 		return externalReviewSelection{Resolved: true}, nil
 	}
@@ -2925,6 +2944,77 @@ func makePauseHandler(stdin io.Reader, stdout io.Writer, titles *orca.Reporter) 
 // has not opted out via move_plan_on_completion=false.
 func shouldMovePlan(req executePlanRequest) bool {
 	return req.PlanFile != "" && modeRequiresBranch(req.Mode) && req.Config.MovePlanOnCompletion
+}
+
+// knownEfforts lists the reasoning-effort levels loopai understands in a model[:effort]
+// spec. "max" is claude-only, but it is accepted here for both executors because codex
+// already drops it with a dedicated warning; re-reporting it as unknown would turn a
+// deliberate downgrade into a hard failure.
+var knownEfforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+// validateModelSpecs rejects plan, task, review, and legacy external-review model specs
+// that the executor cannot accept. The specs are parsed by splitting at the first colon,
+// which makes an external_reviewers entry (provider:model:effort) syntactically valid
+// input: "codex:gpt-6-astra:high" resolves to the model "codex" with the reasoning effort
+// "gpt-6-astra:high", and nothing downstream objects until the provider's API rejects the
+// model. That failure surfaces in the review phase, so a task phase can run for hours
+// first. Checking at startup turns it into an immediate, explanatory error.
+func validateModelSpecs(o opts, cfg *config.Config) error {
+	specs := []struct{ flag, value string }{
+		{"--plan-model / plan_model", resolveSpec(o.PlanModel, cfg.PlanModel)},
+		{"--task-model / task_model", resolveSpec(o.TaskModel, cfg.TaskModel)},
+		{"--review-model / review_model", resolveSpec(o.ReviewModel, cfg.ReviewModel)},
+		{"--external-review-model / external_review_model", resolveSpec(o.ExternalReviewModel, cfg.ExternalReviewModel)},
+	}
+	for _, spec := range specs {
+		if err := validateModelSpec(spec.flag, spec.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateModelSpec checks one model[:effort] value. An empty spec, a bare model, and a
+// model with an empty effort half all resolve to executor defaults and are left alone.
+func validateModelSpec(flag, spec string) error {
+	model, effort, hasEffort := strings.Cut(spec, ":")
+	if spec == "" || !hasEffort || effort == "" {
+		return nil
+	}
+	if strings.Contains(effort, ":") {
+		return fmt.Errorf(
+			"%s value %q looks like an external_reviewers entry (provider:model:effort); "+
+				"this option takes model[:effort], so %q would be sent as the model and %q as the reasoning effort",
+			flag, spec, model, effort)
+	}
+	return validateEffort(fmt.Sprintf("%s value %q", flag, spec), effort)
+}
+
+// validateEffort rejects a reasoning effort loopai does not recognize. An empty effort
+// means the executor default and is always allowed.
+func validateEffort(label, effort string) error {
+	if effort == "" {
+		return nil
+	}
+	if !slices.ContainsFunc(knownEfforts, func(known string) bool { return strings.EqualFold(known, effort) }) {
+		return fmt.Errorf("%s has unknown reasoning effort %q (valid: %s)",
+			label, effort, strings.Join(knownEfforts, ", "))
+	}
+	return nil
+}
+
+// validateReviewerEfforts rejects an unknown reasoning effort in a resolved external
+// reviewer. ParseExternalReviewers checks the separator count and the provider name but
+// never the effort value, so a typo travels all the way to the reviewer process and fails
+// there - after the task phase, and only for that one reviewer in the chain.
+func validateReviewerEfforts(selection externalReviewSelection) error {
+	for i, reviewer := range selection.Reviewers {
+		label := fmt.Sprintf("external reviewer entry %d (%s)", i+1, reviewer.Provider)
+		if err := validateEffort(label, reviewer.Effort); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // validateFlags checks for conflicting CLI flags.

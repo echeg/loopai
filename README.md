@@ -786,6 +786,24 @@ loopai \
 
 The model syntax is `model[:effort]`; either half may be omitted. Provider-specific defaults still apply.
 
+These options take `model[:effort]`, not the `provider:model[:effort]` form
+`--external-reviewers` uses. Passing a reviewer entry here is rejected at startup:
+
+```
+error: --review-model / review_model value "codex:gpt-6-astra:high" looks like an
+external_reviewers entry (provider:model:effort); this option takes model[:effort],
+so "codex" would be sent as the model and "gpt-6-astra:high" as the reasoning effort
+```
+
+Without that check the spec parses — the model becomes `codex` and the reasoning
+effort `gpt-6-astra:high` — and the run fails only when the provider rejects the
+model during review, after the task phase has already finished. An effort outside
+`low`, `medium`, `high`, `xhigh`, `max` is rejected the same way. `max` is
+claude-only; codex downgrades it with a warning rather than failing.
+
+The same effort check applies to each `--external-reviewers` entry, which is
+otherwise validated only for its separator count and provider name.
+
 ## Worktree isolation
 
 `--worktree` creates an isolated checkout under `.loopai/worktrees/<branch>`. A new plan
