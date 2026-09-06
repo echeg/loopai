@@ -191,9 +191,9 @@ external_review_model =
 # completion report
 # ------------------------------------------------------------------------------
 
-# report_enabled: generate a completion report after finalize in review pipelines
-# and persist it beside the archived plan when the plan is archived. tasks-only
-# runs do not generate a report.
+# report_enabled: generate a completion report after finalize in pipelines that
+# run reviews. full runs persist it beside the archived plan; tasks-only runs do
+# not generate a report, and review-only runs do not archive a report sidecar.
 # default: true
 report_enabled = true
 

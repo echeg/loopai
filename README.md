@@ -18,6 +18,7 @@ workflows are distributed through this repository's plugin marketplace.
 - Adds project-specific review agents, drafted for the repository by `--gen-agents`
 - Creates a branch automatically and optionally uses isolated Git worktrees
 - Commits after completed tasks and review fixes
+- Writes a durable completion report with scope, risk, migrations, plan drift, backlog, and review outcomes
 - Files out-of-scope findings to a committed backlog instead of fixing or dropping them
 - Records accepted, rejected, and deferred plan-critique points in the plan's Decision Log
 - Streams timestamped progress to `.loopai/progress/`
@@ -91,9 +92,11 @@ claude plugin marketplace add echeg/loopai
 claude plugin install loopai@loopai
 ```
 
-The plugin provides seven skills:
+The plugin provides eight skills:
 
 - `loopai:loopai` launches loopai, monitors progress, and resumes active runs
+- `loopai:loopai-merge` reads and narrates a completion report, then asks before
+  merging the plan or opening a pull request
 - `loopai:loopai-orca` launches a plan inside an Orca-managed worktree and
   terminal tab with `--orca`, so the run appears as an Orca card with live status;
   it forwards `--codex`, `--task-model`, `--review-model`, and
@@ -106,6 +109,10 @@ The plugin provides seven skills:
   customizations
 - `loopai:loopai-grill` critiques an existing plan with Claude and Codex, or
   runs a plan-off that compares and synthesizes competing plans
+
+Use `/loopai:loopai-merge <plan>` after a successful run to have Claude narrate the report in the
+conversation language and ask whether to merge, open a pull request, or cancel. The skill delegates
+close-out to `loopai --merge` or `loopai --pr`; it never runs `git merge` directly.
 
 Use the namespaced plugin command to review the newest active plan, review a
 specific plan, or generate a competing-plan comparison:
@@ -367,7 +374,20 @@ The full pipeline has four phases:
 3. External review runs the configured reviewer or reviewer chain for findings. The primary executor evaluates findings and owns all fixes.
 4. Second review checks the final changes for critical or major regressions.
 
-An optional finalize step can run after review. It is disabled by default and controlled with `finalize_enabled`; `--skip-finalize` disables it for one invocation.
+An optional finalize step can run after review. It is disabled by default and controlled with `finalize_enabled`; `--skip-finalize` disables it for one invocation. When `report_enabled = true` (the default), a best-effort report phase runs immediately afterwards in full and review-only pipelines. Tasks-only runs skip it.
+
+The report combines deterministic Go-collected facts with model assessments and uses these nine
+sections: `# Report: <plan title>`, `Summary`, `Change scope`, `Risk`, `Migrations and operational
+steps`, `Plan deviation`, `Backlog`, `External review`, and `Validation`. If the report model fails,
+times out, returns a failed signal, or omits the report heading, loopai writes the same section
+structure from deterministic facts and marks model-owned assessments as unavailable.
+
+During a full run that archives its plan, the report is written beside it as
+`docs/plans/completed/<stem>.report.md`. The plan and report are committed together. For a
+single-plan `--worktree` run, both are archived through the main-checkout Git service, so the
+sidecar lands next to the plan in the main checkout rather than in the temporary execution
+worktree. Tasks-only runs generate no report, and review-only modes generate a report in their run
+record but do not archive a plan or sidecar.
 
 After each completed review stage, loopai writes a review checkpoint beside the progress log as
 `.loopai/progress/<progress-log-stem>.review.json`. It records the internal review, each external
@@ -564,7 +584,7 @@ loopai --clear
 ```
 
 Outside cmux, `--clear` is a successful no-op. After a feature run completes, loopai
-can perform either of these standalone close-out actions from the repository root:
+can inspect its report or perform either standalone close-out action from the repository root:
 
 ```bash
 # Merge the current feature branch into main (or master when main does not exist).
@@ -577,13 +597,24 @@ loopai --merge=release/13
 loopai --pr
 loopai --pr=release/13
 
+# Print the completion report without changing the repository.
+loopai --report
+
 # Name the feature explicitly to close it out from the primary checkout.
 loopai --merge dynamic-review-agents
 loopai --merge 20260806-dynamic-review-agents
 loopai --merge docs/plans/20260806-dynamic-review-agents.md
 loopai --merge=release/13 dynamic-review-agents
 loopai --pr dynamic-review-agents
+loopai --report dynamic-review-agents
+loopai --report docs/plans/completed/20260806-dynamic-review-agents.md
 ```
+
+`--report [feature]` resolves the feature the same way as `--merge` and `--pr`, prints a `branch:`
+line and the report body, and makes no repository changes. It prefers the sidecar on a live feature
+branch and otherwise reads the working-tree copy; after the branch has been merged and removed, the
+fallback prints `branch: (merged)`. A missing report means the run predates `report_enabled` or the
+plan was archived without a sidecar.
 
 `--merge` requires clean feature and base worktrees, including no untracked files. It
 merges the current feature branch in the base worktree, safely removes a linked feature
@@ -597,9 +628,9 @@ statistics, and keeps the feature branch and worktree. Commit intended changes b
 running `--pr`. Each command clears the completion pill only after it succeeds, so a
 failed close-out remains visible.
 
-Without an argument both commands close out the current branch and must run from the
-feature worktree or checkout. The optional positional argument names the feature instead,
-so either command can run from the primary checkout or from any other registered worktree.
+Without an argument all three commands target the current branch; the mutating close-out commands
+must run from the feature worktree or checkout. The optional positional argument names the feature
+instead, so any of them can run from the primary checkout or from another registered worktree.
 Like every close-out invocation it still has to start at the root of a checkout, not in a
 subdirectory. It accepts a local branch name, a plan basename with or without `.md`, or a
 plan path, and combines with an explicit base such as

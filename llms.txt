@@ -140,7 +140,9 @@ The full pipeline is:
 4. run the first internal multi-agent review
 5. run external findings review and primary-executor evaluation/fixes
 6. run a final critical/major review
-7. optionally finalize and move the plan to `docs/plans/completed/`
+7. optionally finalize, generate a completion report, and move the plan to `docs/plans/completed/`
+
+With `report_enabled = true` (default), review pipelines run a best-effort report phase after finalize; full runs that archive the plan also archive `docs/plans/completed/<stem>.report.md`, while tasks-only produces no report and review-only modes produce no sidecar. The report covers summary, change scope, risk, migrations and operational steps, plan deviation, backlog, external-review outcomes, and validation, with a deterministic facts-only fallback when model assessment is unavailable. `loopai --report [plan-or-branch]` prints the sidecar from a live feature branch or falls back to the working tree after merge. Run facts and reviewer/evaluator output are persisted atomically with mode `0600` in `.loopai/progress/<progress-log-stem>.run.json`; task-driven review-checkpoint invalidation resets both state files, successful checkpoint clearing keeps the run record for reporting, and successful plan archival removes it.
 
 Claude Code is primary by default. `--codex` makes Codex primary for planning, task execution, internal review, fixes, and finalize. `external_review_tool = auto` selects the other installed provider. Set it to `none` to disable the legacy review path when `external_reviewers` is unset.
 

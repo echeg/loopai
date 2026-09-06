@@ -239,11 +239,11 @@ close-out routing (`--merge`/`--pr`), and the review checkpoint store introduced
 - [x] verify coverage for the new files in `pkg/processor`, `pkg/git`, `pkg/plan`, and `cmd/loopai` meets the project standard (80%+)
 
 ### Task 10: [Final] Update documentation
-- [ ] `README.md`: document the completion report (location, sections, `report_enabled`, facts-only fallback, worktree archival path), the `--report` command in the close-out section, and the `loopai-merge` skill in the skills list
-- [ ] `llms.txt`: one paragraph on the report, `--report`, and the run record file
-- [ ] `CLAUDE.md`: architecture notes on `RunRecord`/`RunRecorder`, the `report` phase position after finalize, why the model returns the report instead of writing it, the sidecar archival commit, the `.run.json` clear-together rule with the review checkpoint, and the eight-skill inventory
-- [ ] `pkg/config/defaults/config`: comments for `report_enabled` match behavior, including that tasks-only and review-only modes produce no sidecar
-- [ ] `docs/custom-providers.md`: note that wrappers must return the report text as ordinary assistant output for the report phase to capture it
+- [x] `README.md`: document the completion report (location, sections, `report_enabled`, facts-only fallback, worktree archival path), the `--report` command in the close-out section, and the `loopai-merge` skill in the skills list
+- [x] `llms.txt`: one paragraph on the report, `--report`, and the run record file
+- [x] `CLAUDE.md`: architecture notes on `RunRecord`/`RunRecorder`, the `report` phase position after finalize, why the model returns the report instead of writing it, the sidecar archival commit, the `.run.json` clear-together rule with the review checkpoint, and the eight-skill inventory
+- [x] `pkg/config/defaults/config`: comments for `report_enabled` match behavior, including that tasks-only and review-only modes produce no sidecar
+- [x] `docs/custom-providers.md`: note that wrappers must return the report text as ordinary assistant output for the report phase to capture it
 
 ## Technical Details
 
