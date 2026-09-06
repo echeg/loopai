@@ -124,6 +124,17 @@ func (p testFinalizePhase) Run(ctx context.Context) error {
 	return p.runFunc(ctx)
 }
 
+type testReportPhase struct {
+	runFunc func(ctx context.Context, facts string) (string, error)
+}
+
+func (p testReportPhase) Run(ctx context.Context, facts string) (string, error) {
+	if p.runFunc == nil {
+		return "", nil
+	}
+	return p.runFunc(ctx, facts)
+}
+
 type testPlanCreationPhase struct {
 	runFunc func(ctx context.Context) error
 }
@@ -193,12 +204,14 @@ func TestRunner_RunFull_Success(t *testing.T) {
 
 	log := newRunnerMockLogger("progress.txt")
 	claude := newMockExecutor([]executor.Result{
-		{Output: "task done", Signal: status.Completed},    // task phase completes
-		{Output: "review done", Signal: status.ReviewDone}, // first review
-		{Output: "review done", Signal: status.ReviewDone}, // pre-codex review loop
-		{Output: "fixed issues"},                           // codex eval iter 1 — findings fixed
-		{Output: "done", Signal: status.CodexDone},         // codex eval iter 2 — no more findings
-		{Output: "review done", Signal: status.ReviewDone}, // post-codex review loop
+		{Output: "task done", Signal: status.Completed},        // task phase completes
+		{Output: "review done", Signal: status.ReviewDone},     // first review
+		{Output: "review done", Signal: status.ReviewDone},     // pre-codex review loop
+		{Output: "fixed issues"},                               // codex eval iter 1 — findings fixed
+		{Output: "done", Signal: status.CodexDone},             // codex eval iter 2 — no more findings
+		{Output: "review done", Signal: status.ReviewDone},     // post-codex review loop
+		{Output: "finalize done"},                              // finalize step
+		{Output: "# Report: full run\n\n## Summary\ncomplete"}, // report step
 	})
 	codex := newMockExecutor([]executor.Result{
 		{Output: "found issue in foo.go"}, // codex iteration 1 — finds issues
@@ -207,13 +220,19 @@ func TestRunner_RunFull_Success(t *testing.T) {
 
 	cfg := Config{
 		Mode: ModeFull, PlanFile: planFile, MaxIterations: 50,
-		IterationDelayMs: 1, CodexEnabled: true, AppConfig: testAppConfig(t),
+		IterationDelayMs: 1, CodexEnabled: true, FinalizeEnabled: true, ReportEnabled: true,
+		AppConfig: testAppConfig(t),
 	}
-	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolCodex, Exec: codex}}}, &status.PhaseHolder{})
+	var phases []status.Phase
+	holder := &status.PhaseHolder{}
+	holder.OnChange(func(_, next status.Phase) { phases = append(phases, next) })
+	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolCodex, Exec: codex}}}, holder)
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
 	assert.Len(t, codex.RunCalls(), 2)
+	assert.Equal(t, status.PhaseReport, phases[len(phases)-1])
+	assert.Contains(t, r.Report(), "# Report: full run")
 }
 
 func TestRunner_RunFull_NoCodexFindings(t *testing.T) {
@@ -411,13 +430,14 @@ func TestRunner_RunTasksOnly_Success(t *testing.T) {
 	})
 	codex := newMockExecutor(nil)
 
-	cfg := Config{Mode: ModeTasksOnly, PlanFile: planFile, MaxIterations: 50, AppConfig: testAppConfig(t)}
+	cfg := Config{Mode: ModeTasksOnly, PlanFile: planFile, MaxIterations: 50, ReportEnabled: true, AppConfig: testAppConfig(t)}
 	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolCodex, Exec: codex}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
 	assert.Empty(t, codex.RunCalls(), "codex should not be called in tasks-only mode")
 	assert.Len(t, claude.RunCalls(), 1)
+	assert.Empty(t, r.Report(), "tasks-only mode must not generate a completion report")
 }
 
 func TestRunner_RunTasksOnly_NoPlanFile(t *testing.T) {
@@ -892,40 +912,42 @@ func TestRunner_CodexAndPostReview_PipelineOrder(t *testing.T) {
 			name: "codex-only runs codex then review then finalize",
 			mode: ModeCodexOnly,
 			claudeResults: []executor.Result{
-				{Output: "fixed issues"},                           // codex eval iter 1 — findings fixed
-				{Output: "done", Signal: status.CodexDone},         // codex eval iter 2 — no more findings
-				{Output: "review done", Signal: status.ReviewDone}, // post-codex review loop
-				{Output: "finalize done"},                          // finalize step
+				{Output: "fixed issues"},                             // codex eval iter 1 — findings fixed
+				{Output: "done", Signal: status.CodexDone},           // codex eval iter 2 — no more findings
+				{Output: "review done", Signal: status.ReviewDone},   // post-codex review loop
+				{Output: "finalize done"},                            // finalize step
+				{Output: "# Report: codex only\n\n## Summary\ndone"}, // report step
 			},
 			codexResults: []executor.Result{
 				{Output: "found issue"},     // codex iteration 1
 				{Output: "no issues found"}, // codex iteration 2
 			},
-			expClaude: 4,
+			expClaude: 5,
 			expCodex:  2,
 			expPhases: []status.Phase{
 				status.PhaseExternalReview,
 				status.PhaseExternalEval, status.PhaseExternalReview,
 				status.PhaseExternalEval, status.PhaseExternalReview,
-				status.PhaseReview, status.PhaseFinalize,
+				status.PhaseReview, status.PhaseFinalize, status.PhaseReport,
 			},
 		},
 		{
 			name: "review-only runs first review then codex then review then finalize",
 			mode: ModeReview,
 			claudeResults: []executor.Result{
-				{Output: "review done", Signal: status.ReviewDone}, // first review
-				{Output: "review done", Signal: status.ReviewDone}, // pre-codex review loop
-				{Output: "fixed issues"},                           // codex eval iter 1 — findings fixed
-				{Output: "done", Signal: status.CodexDone},         // codex eval iter 2 — no more findings
-				{Output: "review done", Signal: status.ReviewDone}, // post-codex review loop
-				{Output: "finalize done"},                          // finalize step
+				{Output: "review done", Signal: status.ReviewDone},    // first review
+				{Output: "review done", Signal: status.ReviewDone},    // pre-codex review loop
+				{Output: "fixed issues"},                              // codex eval iter 1 — findings fixed
+				{Output: "done", Signal: status.CodexDone},            // codex eval iter 2 — no more findings
+				{Output: "review done", Signal: status.ReviewDone},    // post-codex review loop
+				{Output: "finalize done"},                             // finalize step
+				{Output: "# Report: review only\n\n## Summary\ndone"}, // report step
 			},
 			codexResults: []executor.Result{
 				{Output: "found issue"},     // codex iteration 1
 				{Output: "no issues found"}, // codex iteration 2
 			},
-			expClaude: 6,
+			expClaude: 7,
 			expCodex:  2,
 			// review phase set once at start (covers first review + pre-codex loop),
 			// then codex loop (2 iterations), then review, then finalize
@@ -934,7 +956,7 @@ func TestRunner_CodexAndPostReview_PipelineOrder(t *testing.T) {
 				status.PhaseExternalReview,
 				status.PhaseExternalEval, status.PhaseExternalReview,
 				status.PhaseExternalEval, status.PhaseExternalReview,
-				status.PhaseReview, status.PhaseFinalize,
+				status.PhaseReview, status.PhaseFinalize, status.PhaseReport,
 			},
 		},
 	}
@@ -965,6 +987,7 @@ func TestRunner_CodexAndPostReview_PipelineOrder(t *testing.T) {
 				IterationDelayMs: 1,
 				CodexEnabled:     true,
 				FinalizeEnabled:  true,
+				ReportEnabled:    true,
 				AppConfig:        testAppConfig(t),
 			}
 			r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolCodex, Exec: codex}}}, holder)
@@ -974,6 +997,132 @@ func TestRunner_CodexAndPostReview_PipelineOrder(t *testing.T) {
 			assert.Len(t, claude.RunCalls(), tc.expClaude)
 			assert.Len(t, codex.RunCalls(), tc.expCodex)
 			assert.Equal(t, tc.expPhases, phases, "phase transitions should match expected order")
+			assert.Contains(t, r.Report(), "# Report:")
+		})
+	}
+}
+
+func TestRunner_ReportRunsAfterFinalizeOnEveryExternalPath(t *testing.T) {
+	tests := []struct {
+		name      string
+		external  testExternalReviewPhase
+		wantOrder []string
+	}{
+		{name: "external disabled", external: testExternalReviewPhase{toolValue: "none"}, wantOrder: []string{"finalize", "report"}},
+		{name: "no findings", external: testExternalReviewPhase{toolValue: "codex"}, wantOrder: []string{"external", "finalize", "report"}},
+		{name: "findings", external: testExternalReviewPhase{toolValue: "codex", hadFindings: true}, wantOrder: []string{"external", "review", "finalize", "report"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var order []string
+			external := tc.external
+			external.runFunc = func(context.Context) error {
+				order = append(order, "external")
+				return nil
+			}
+			r := NewWithExecutors(Config{Mode: ModeCodexOnly, ReportEnabled: true}, newRunnerMockLogger(""), Executors{Task: newMockExecutor(nil)}, &status.PhaseHolder{})
+			r.phases.external = external
+			r.phases.review = testReviewPhase{loopFunc: func(context.Context, string) error {
+				order = append(order, "review")
+				return nil
+			}}
+			r.phases.finalize = testFinalizePhase{runFunc: func(context.Context) error {
+				order = append(order, "finalize")
+				return nil
+			}}
+			r.phases.report = testReportPhase{runFunc: func(_ context.Context, facts string) (string, error) {
+				order = append(order, "report")
+				assert.Contains(t, facts, "## Metadata")
+				return "# Report: ordered\n\n## Summary\ndone", nil
+			}}
+
+			require.NoError(t, r.Run(t.Context()))
+			assert.Equal(t, tc.wantOrder, order)
+			assert.Equal(t, "# Report: ordered\n\n## Summary\ndone", r.Report())
+		})
+	}
+}
+
+func TestRunner_ReportDisabledPreservesExistingSequence(t *testing.T) {
+	var phases []status.Phase
+	holder := &status.PhaseHolder{}
+	holder.OnChange(func(_, next status.Phase) { phases = append(phases, next) })
+	r := NewWithExecutors(Config{Mode: ModeCodexOnly, FinalizeEnabled: true}, newRunnerMockLogger(""), Executors{
+		Task: newMockExecutor([]executor.Result{{Output: "finalized"}}),
+	}, holder)
+
+	require.NoError(t, r.Run(t.Context()))
+	assert.Equal(t, []status.Phase{status.PhaseFinalize}, phases)
+	assert.Empty(t, r.Report())
+}
+
+func TestRunner_ReportModelFailureUsesFactsOnlyFallbackAndSaves(t *testing.T) {
+	root := t.TempDir()
+	planFile := filepath.Join(root, "20260906-feature.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# Feature\n\n## Validation Commands\n- `go test ./...`\n"), 0o600))
+	store := &runRecordMemoryStore{}
+	r := NewWithExecutors(Config{
+		Mode: ModeCodexOnly, PlanFile: planFile, DefaultBranch: "main", ReportEnabled: true,
+		AppConfig: testAppConfig(t),
+	}, newRunnerMockLogger(""), Executors{Task: newMockExecutor([]executor.Result{{Output: "failed", Signal: status.Failed}})}, &status.PhaseHolder{})
+	r.SetRunRecordStore(store)
+
+	require.NoError(t, r.Run(t.Context()))
+	report := r.Report()
+	assert.Contains(t, report, "# Report:")
+	assert.Contains(t, report, "feature")
+	assert.Contains(t, report, "_assessment unavailable_")
+	assert.Contains(t, report, "go test ./...")
+	assert.Equal(t, report, store.record.Report)
+}
+
+func TestRunner_ReviewModesExposeReportText(t *testing.T) {
+	for _, mode := range []Mode{ModeReview, ModeCodexOnly} {
+		t.Run(string(mode), func(t *testing.T) {
+			r := NewWithExecutors(Config{Mode: mode, ReportEnabled: true}, newRunnerMockLogger(""), Executors{Task: newMockExecutor(nil)}, &status.PhaseHolder{})
+			r.phases.review = testReviewPhase{}
+			r.phases.external = testExternalReviewPhase{toolValue: "none"}
+			r.phases.finalize = testFinalizePhase{}
+			r.phases.report = testReportPhase{runFunc: func(context.Context, string) (string, error) {
+				return "preamble\n# Report: " + string(mode) + "\n\n## Summary\ndone\n<<<RALPHEX:ALL_TASKS_DONE>>>", nil
+			}}
+
+			require.NoError(t, r.Run(t.Context()))
+			assert.Equal(t, "# Report: "+string(mode)+"\n\n## Summary\ndone", r.Report())
+		})
+	}
+}
+
+func TestRunner_ReportUsesReviewExecutorAndFallsBackToTask(t *testing.T) {
+	tests := []struct {
+		name           string
+		separateReview bool
+	}{
+		{name: "separate review executor", separateReview: true},
+		{name: "task executor fallback"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			task := newMockExecutor([]executor.Result{{Output: "# Report: task\n\n## Summary\ndone"}})
+			review := newMockExecutor([]executor.Result{{Output: "# Report: review\n\n## Summary\ndone"}})
+			execs := Executors{Task: task}
+			if tc.separateReview {
+				execs.Review = review
+			}
+			r := NewWithExecutors(Config{Mode: ModeCodexOnly, ReportEnabled: true, AppConfig: testAppConfig(t)}, newRunnerMockLogger(""), execs, &status.PhaseHolder{})
+
+			require.NoError(t, r.Run(t.Context()))
+			if tc.separateReview {
+				assert.Empty(t, task.RunCalls())
+				assert.Len(t, review.RunCalls(), 1)
+				assert.Contains(t, r.Report(), "# Report: review")
+			} else {
+				assert.Len(t, task.RunCalls(), 1)
+				assert.Empty(t, review.RunCalls())
+				assert.Contains(t, r.Report(), "# Report: task")
+			}
 		})
 	}
 }

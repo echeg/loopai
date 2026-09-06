@@ -198,12 +198,12 @@ close-out routing (`--merge`/`--pr`), and the review checkpoint store introduced
 - [x] run `go test ./pkg/...` - must pass before task 5
 
 ### Task 5: Runner order and Report() result
-- [ ] `pkg/processor/runner.go`: construct `ReportPhase` in `NewWithExecutors` with the review executor (falling back to task) and `prompts`; add `report reportPhaseRunner` to `runnerPhases` with interface `Run(ctx, facts string) (string, error)`
-- [ ] in `runExternalAndPostReview`, on all three paths (external disabled, no findings, findings), call a new `r.runReport(ctx)` between `finalize.Run` and the success `clearReviewCheckpoint("")` (`pkg/processor/runner.go:426-429`, `444-447`, `472-475`), guarded by `cfg.ReportEnabled` only (`ModeTasksOnly` never reaches this function); `runReport` collects facts, renders them, runs the phase, and stores `extractReport(output)` or `factsOnlyReport(...)` into `r.record.Report`, then saves the record
-- [ ] add `func (r *Runner) Report() string` returning `r.record.Report` (empty when disabled or never run)
-- [ ] `runTasksOnly`: no report (no reviews to describe); document this in the config comment
-- [ ] update `TestRunner_CodexAndPostReview_PipelineOrder` and the full-mode tests for the new trailing `PhaseReport` when enabled; add tests: report disabled keeps the old sequence byte-for-byte, model failure yields a facts-only report, `--review` and `--external-only` modes still produce `Report()` text (archival is what skips the sidecar there, via `shouldMovePlan`), findings and no-findings paths both run report after finalize
-- [ ] run `go test -race ./pkg/processor/...` - must pass before task 6
+- [x] `pkg/processor/runner.go`: construct `ReportPhase` in `NewWithExecutors` with the review executor (falling back to task) and `prompts`; add `report reportPhaseRunner` to `runnerPhases` with interface `Run(ctx, facts string) (string, error)`
+- [x] in `runExternalAndPostReview`, on all three paths (external disabled, no findings, findings), call a new `r.runReport(ctx)` between `finalize.Run` and the success `clearReviewCheckpoint("")` (`pkg/processor/runner.go:426-429`, `444-447`, `472-475`), guarded by `cfg.ReportEnabled` only (`ModeTasksOnly` never reaches this function); `runReport` collects facts, renders them, runs the phase, and stores `extractReport(output)` or `factsOnlyReport(...)` into `r.record.Report`, then saves the record
+- [x] add `func (r *Runner) Report() string` returning `r.record.Report` (empty when disabled or never run)
+- [x] `runTasksOnly`: no report (no reviews to describe); document this in the config comment
+- [x] update `TestRunner_CodexAndPostReview_PipelineOrder` and the full-mode tests for the new trailing `PhaseReport` when enabled; add tests: report disabled keeps the old sequence byte-for-byte, model failure yields a facts-only report, `--review` and `--external-only` modes still produce `Report()` text (archival is what skips the sidecar there, via `shouldMovePlan`), findings and no-findings paths both run report after finalize
+- [x] run `go test -race ./pkg/processor/...` - must pass before task 6
 
 ### Task 6: Write the report sidecar in the archival commit
 - [ ] `pkg/git/service.go`: add `MovePlanToCompletedWithReport(planFile string, report []byte) error` that reuses `resolvePlanMoveTargets`, writes `<completedDir>/<stem>.report.md` (stem = dest basename without `.md`) with `0o644` via `os.WriteFile`, stages it, and commits with `move completed plan: <base> (+ report)`; empty `report` delegates to `MovePlanToCompleted` unchanged; when `resolvePlanMoveTargets` reports `done` (already archived), write and commit the report alone as `add completion report: <base>` only when the sidecar does not exist yet
