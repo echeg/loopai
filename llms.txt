@@ -64,6 +64,19 @@ context, chosen approach, rejected alternatives, and verified facts in the
 plan's `## Decisions` section. This pipeline does not create an intermediate
 spec file or invoke `superpowers:writing-plans`.
 
+## Codex CLI skills
+
+Codex reads skills from `${CODEX_HOME:-~/.codex}/skills` only, so `make
+install-codex-skills` copies them there (`--dry-run` previews, `--keep-legacy`
+skips pre-rename `ralphex-*` cleanup). It installs `$loopai`, `$loopai-plan`,
+`$loopai-adopt`, `$loopai-update`, `$loopai-brainstorm`, and `$loopai-orca`.
+`loopai-grill` stays Claude-only: its safety model is a read-only Claude tool
+pin that Codex cannot express. The Codex bodies live in `assets/codex/skills/`
+and are maintained by hand, because Codex has no `AskUserQuestion`, no `Task`
+subagents, and no `spawn_agent` outside loopai's own runs; `make
+check-codex-skills` keeps the inventories aligned and fails on a Claude-only
+construct copied across.
+
 Superpowers may remain installed for its other skills. When migrating from the
 upstream ralphex plugin, run `claude plugin uninstall ralphex` and
 `claude plugin marketplace remove ralphex` after installing loopai. In shared

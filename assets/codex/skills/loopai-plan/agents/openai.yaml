@@ -1,0 +1,4 @@
+interface:
+  display_name: "loopai Plan"
+  short_description: "Create an executable loopai plan"
+  default_prompt: "Use $loopai-plan to create a structured implementation plan."

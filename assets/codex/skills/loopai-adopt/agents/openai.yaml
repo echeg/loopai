@@ -1,0 +1,4 @@
+interface:
+  display_name: "loopai Adopt"
+  short_description: "Convert a foreign plan into loopai format"
+  default_prompt: "Use $loopai-adopt to convert this plan into loopai format."

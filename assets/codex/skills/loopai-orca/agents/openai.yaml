@@ -1,0 +1,4 @@
+interface:
+  display_name: "loopai Orca"
+  short_description: "Run a loopai plan in an Orca worktree"
+  default_prompt: "Use $loopai-orca to run this plan in an Orca worktree."
