@@ -11526,6 +11526,32 @@ func TestRunReportCommand(t *testing.T) {
 		})
 	}
 
+	t.Run("exact branch wins over unrelated same-named plan", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		completedDir := filepath.Join(plansDir, "completed")
+		require.NoError(t, os.MkdirAll(completedDir, 0o750))
+		for _, name := range []string{"foo", "actual-plan"} {
+			require.NoError(t, os.WriteFile(filepath.Join(completedDir, name+".md"), []byte("# "+name), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(completedDir, name+".report.md"), []byte("# Report: "+name+"\n"), 0o600))
+		}
+		runGit(t, dir, "add", "docs/plans/completed")
+		runGit(t, dir, "commit", "-m", "archive both plans")
+		runGit(t, dir, "branch", "foo")
+		runGit(t, dir, "branch", "bar")
+		writeProgressRecord(t, dir, "progress-actual.txt", filepath.Join(completedDir, "actual-plan.md"), "foo", 1)
+		writeProgressRecord(t, dir, "progress-foo.txt", filepath.Join(completedDir, "foo.md"), "bar", 2)
+
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		var out bytes.Buffer
+		require.NoError(t, runReportCommand(t.Context(), svc, closeoutTarget{identifier: "foo", plansDir: plansDir}, &out))
+		assert.Equal(t, "branch: foo\n\n# Report: actual-plan\n", out.String())
+		out.Reset()
+		require.NoError(t, runReportCommand(t.Context(), svc, closeoutTarget{identifier: "foo.md", plansDir: plansDir}, &out))
+		assert.Equal(t, "branch: bar\n\n# Report: foo\n", out.String())
+	})
+
 	t.Run("same-named tag cannot shadow feature report", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		completedDir := filepath.Join(dir, "docs", "plans", "completed")

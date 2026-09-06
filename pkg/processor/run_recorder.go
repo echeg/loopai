@@ -154,6 +154,7 @@ func (r *Runner) startRunRecord() {
 		switch {
 		case r.resumeReady && reviewResumeHasProgress(r.resume):
 			fresh = stored
+			reconcileRunRecord(&fresh, r.resume, reviewerKeys(r.cfg))
 		case r.cfg.Mode == ModeFull:
 			r.loadedRecord = true
 			fresh = stored
@@ -219,7 +220,14 @@ func (r *Runner) adoptLoadedRunRecord() {
 		return
 	}
 	if reviewResumeHasProgress(r.resume) {
+		// Task events may already have added this invocation's timings. Trim
+		// only the historical snapshot, then add current measurements once.
+		r.record.PhaseDurations = maps.Clone(r.priorPhaseDurations)
+		reconcileRunRecord(&r.record, r.resume, reviewerKeys(r.cfg))
+		r.priorPhaseDurations = maps.Clone(r.record.PhaseDurations)
+		r.snapshotRunTimings()
 		r.loadedRecord = false
+		r.recorder.save(cloneRunRecord(r.record))
 		return
 	}
 	r.record = r.newRunRecord()
@@ -231,6 +239,41 @@ func (r *Runner) adoptLoadedRunRecord() {
 	if r.recorder != nil {
 		r.recorder.save(cloneRunRecord(r.record))
 	}
+}
+
+// reconcileRunRecord keeps only review outcomes backed by honored checkpoints.
+// A changed chain or reset HEAD can invalidate a suffix while retaining internal
+// review or earlier reviewers; stale assessments must not enter the new report.
+func reconcileRunRecord(record *RunRecord, resume reviewResume, keys []string) {
+	var external []ExternalReviewerRecord
+	for _, key := range keys[:min(resume.completedReviewers, len(keys))] {
+		for _, reviewer := range record.External {
+			if reviewer.Key == key {
+				external = append(external, reviewer)
+				break
+			}
+		}
+	}
+	if len(external) != len(record.External) {
+		// These aggregate buckets cannot be split by reviewer. Omit the old
+		// measurements rather than attach invalidated stages to the new chain.
+		delete(record.PhaseDurations, "external review")
+		delete(record.PhaseDurations, "evaluation")
+	}
+	record.External = external
+	if !resume.skipInternal {
+		record.InternalReview = InternalReviewRunRecord{}
+		delete(record.PhaseDurations, "internal review")
+	}
+	if !resume.skipPostReview {
+		if record.PostReview.Ran {
+			// Post-review shares the internal-review timer bucket.
+			delete(record.PhaseDurations, "internal review")
+		}
+		record.PostReview = PostReviewRunRecord{}
+	}
+	delete(record.PhaseDurations, "other") // finalize/report always run again
+	record.Report = ""
 }
 
 func (r *Runner) newRunRecord() RunRecord {

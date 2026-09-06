@@ -4376,7 +4376,9 @@ func runReportCommand(ctx context.Context, gitSvc *git.Service, target closeoutT
 	if branchErr != nil {
 		lookupBranch = identifier
 	}
-	if lookupBranch != "" && planFile == "" {
+	// An exact branch identifier wins over a coincident plan filename, just as
+	// it does for merge/PR resolution. Recover that branch's own plan identity.
+	if lookupBranch != "" && (planFile == "" || branchErr == nil && branch == identifier) {
 		var err error
 		planFile, err = findReportPlanForBranch(gitSvc, plansDir, lookupBranch)
 		if err != nil {

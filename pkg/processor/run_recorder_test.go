@@ -208,3 +208,72 @@ func TestFullRunReportPreservesCurrentTasksAfterNewCommits(t *testing.T) {
 		})
 	}
 }
+
+func TestRunRecordPartialCheckpointRecovery(t *testing.T) {
+	for _, mode := range []Mode{ModeFull, ModeReview, ModeCodexOnly} {
+		for _, changedChain := range []bool{false, true} {
+			t.Run(string(mode)+"/changed-chain="+map[bool]string{false: "false", true: "true"}[changedChain], func(t *testing.T) {
+				if mode == ModeCodexOnly && changedChain {
+					t.Skip("a changed chain has no resumable prefix in external-only mode")
+				}
+				keys := []string{"codex:first", "claude:second"}
+				cfg := Config{Mode: mode, PlanFile: "plan.md", ExternalReviewers: []config.ReviewerSpec{
+					{Provider: "codex", ModelSpec: "first"}, {Provider: "claude", ModelSpec: "second"},
+				}}
+				cp := ReviewCheckpoint{Version: reviewCheckpointVersion, Mode: mode, Branch: "feature", Plan: "plan.md", Reviewers: keys}
+				if mode != ModeCodexOnly {
+					cp.Stages = append(cp.Stages, ReviewStage{Stage: reviewStageInternal, Head: "retained"})
+				}
+				cp.Stages = append(cp.Stages,
+					ReviewStage{Stage: reviewStageExternal, Index: 0, Reviewer: keys[0], Head: "retained"},
+					ReviewStage{Stage: reviewStageExternal, Index: 1, Reviewer: keys[1], Head: "reverted"},
+					ReviewStage{Stage: reviewStagePostReview, Head: "reverted"})
+				if changedChain {
+					cfg.ExternalReviewers = []config.ReviewerSpec{{Provider: "codex", ModelSpec: "replacement"}}
+				}
+				resume, err := resolveReviewResume(cp, reviewResumeInput{
+					Mode: mode, Branch: "feature", Plan: "plan.md", Reviewers: reviewerKeys(cfg), Head: "retained",
+				}, func(head string) (bool, error) { return head == "retained", nil })
+				require.NoError(t, err)
+				require.True(t, reviewResumeHasProgress(resume))
+				store := &runRecordMemoryStore{found: true, record: RunRecord{
+					Version: runRecordVersion, Branch: "feature", Tasks: TaskRunRecord{Iterations: 7},
+					InternalReview: InternalReviewRunRecord{FirstRan: true, LoopIterations: 2},
+					External: []ExternalReviewerRecord{
+						{Key: keys[0], Iterations: []ExternalIterationRecord{{ReviewerOutput: "retained finding"}}},
+						{Key: keys[1], Iterations: []ExternalIterationRecord{{EvaluatorResponse: "reverted fix"}}},
+					},
+					PostReview: PostReviewRunRecord{Ran: true, Iterations: 5}, Report: "stale report",
+					PhaseDurations: map[string]Duration{"tasks": Duration(time.Second), "external review": Duration(time.Hour),
+						"evaluation": Duration(time.Hour), "internal review": Duration(time.Hour), "other": Duration(time.Hour)},
+				}}
+				r := &Runner{cfg: cfg, log: newMockLogger(), git: &checkpointGit{branch: "feature"}, recordStore: store,
+					resume: resume, resumeReady: mode != ModeFull}
+				r.SetRunTimingsSource(func() (map[string]time.Duration, time.Duration, int) {
+					return map[string]time.Duration{"tasks": 2 * time.Second}, 0, 0
+				})
+				r.startRunRecord()
+				if mode == ModeFull {
+					r.recorder.TaskIteration(false)
+					r.adoptLoadedRunRecord()
+				}
+				r.snapshotRunTimings()
+				assert.Equal(t, Duration(3*time.Second), r.record.PhaseDurations["tasks"])
+				assert.NotContains(t, r.record.PhaseDurations, "external review")
+				assert.NotContains(t, r.record.PhaseDurations, "evaluation")
+				assert.NotContains(t, r.record.PhaseDurations, "internal review")
+				assert.NotContains(t, r.record.PhaseDurations, "other")
+				assert.Empty(t, r.record.PostReview)
+				assert.Empty(t, r.Report())
+				if changedChain {
+					assert.Empty(t, r.record.External)
+				} else {
+					require.Len(t, r.record.External, 1)
+					assert.Equal(t, "retained finding", r.record.External[0].Iterations[0].ReviewerOutput)
+				}
+				assert.Equal(t, mode != ModeCodexOnly, r.record.InternalReview.FirstRan)
+				assert.Equal(t, cloneRunRecord(r.record).External, store.record.External, "reconciled outcomes must be persisted")
+			})
+		}
+	}
+}
