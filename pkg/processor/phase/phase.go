@@ -122,12 +122,22 @@ type GitChecker interface {
 	DiffFingerprint() (string, error)
 }
 
+// RunRecorder captures phase events for the durable completion report record.
+type RunRecorder interface {
+	TaskIteration(failed bool)
+	InternalReviewDone(loopIterations int, endedBy string)
+	ExternalIteration(index int, key, label, reviewerOutput, evaluatorResponse string)
+	ExternalDone(done ReviewerCompletion)
+	PostReviewDone(iterations int)
+}
+
 // Deps holds late-bound dependencies shared by phase engines.
 type Deps struct {
 	Git            GitChecker
 	InputCollector InputCollector
 	BreakCh        <-chan struct{}
 	PauseHandler   func(ctx context.Context) bool
+	Recorder       RunRecorder
 }
 
 // ExecutionResult is the execution output plus phase-level timeout metadata.

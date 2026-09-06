@@ -161,12 +161,12 @@ close-out routing (`--merge`/`--pr`), and the review checkpoint store introduced
 ## Implementation Steps
 
 ### Task 1: RunRecord model, recorder interface, and store contract
-- [ ] create `pkg/processor/run_record.go` with `RunRecord{Version, Plan, Branch, BaseRef, Mode, Executor, TaskModel, ReviewModel, StartedAt, FinishedAt, PhaseDurations map[string]Duration, Tasks{Iterations, FailedRetries}, InternalReview{FirstRan, LoopIterations, EndedBy}, External []ExternalReviewerRecord, PostReview{Ran, Iterations}, Report string}` and `ExternalReviewerRecord{Key, Label, Iterations []ExternalIterationRecord, Duration, EndedBy, HadFindings}` with `ExternalIterationRecord{Index, ReviewerOutput, EvaluatorResponse, Truncated bool}`; `const runRecordVersion = 1`, `const runRecordTextCap = 16 * 1024`
-- [ ] add `truncateForRecord(s string) (string, bool)` that cuts at the cap on a rune boundary and appends `\n[truncated]`
-- [ ] define `RunRecordStore` interface at the consumer in `pkg/processor`: `Load() (RunRecord, bool, error)`, `Save(RunRecord) error`, `Remove() error`; add the `//go:generate moq` line and generate `mocks/run_record_store.go`
-- [ ] define `phase.RunRecorder` in `pkg/processor/phase/phase.go` with `TaskIteration(failed bool)`, `InternalReviewDone(loopIterations int, endedBy string)`, `ExternalIteration(index int, key, label, reviewerOutput, evaluatorResponse string)`, `ExternalDone(done ReviewerCompletion)`, `PostReviewDone(iterations int)`; add `Recorder RunRecorder` to `phase.Deps` (nil = no recording)
-- [ ] write tests: JSON round-trip of `RunRecord`, `truncateForRecord` below/at/above the cap and on multi-byte text, zero-value record marshals without panics
-- [ ] run `go test ./pkg/processor/...` - must pass before task 2
+- [x] create `pkg/processor/run_record.go` with `RunRecord{Version, Plan, Branch, BaseRef, Mode, Executor, TaskModel, ReviewModel, StartedAt, FinishedAt, PhaseDurations map[string]Duration, Tasks{Iterations, FailedRetries}, InternalReview{FirstRan, LoopIterations, EndedBy}, External []ExternalReviewerRecord, PostReview{Ran, Iterations}, Report string}` and `ExternalReviewerRecord{Key, Label, Iterations []ExternalIterationRecord, Duration, EndedBy, HadFindings}` with `ExternalIterationRecord{Index, ReviewerOutput, EvaluatorResponse, Truncated bool}`; `const runRecordVersion = 1`, `const runRecordTextCap = 16 * 1024`
+- [x] add `truncateForRecord(s string) (string, bool)` that cuts at the cap on a rune boundary and appends `\n[truncated]`
+- [x] define `RunRecordStore` interface at the consumer in `pkg/processor`: `Load() (RunRecord, bool, error)`, `Save(RunRecord) error`, `Remove() error`; add the `//go:generate moq` line and generate `run_record_store_mock_test.go` in the external `processor_test` package (`mocks/run_record_store.go` would create an import cycle with existing internal tests)
+- [x] define `phase.RunRecorder` in `pkg/processor/phase/phase.go` with `TaskIteration(failed bool)`, `InternalReviewDone(loopIterations int, endedBy string)`, `ExternalIteration(index int, key, label, reviewerOutput, evaluatorResponse string)`, `ExternalDone(done ReviewerCompletion)`, `PostReviewDone(iterations int)`; add `Recorder RunRecorder` to `phase.Deps` (nil = no recording)
+- [x] write tests: JSON round-trip of `RunRecord`, `truncateForRecord` below/at/above the cap and on multi-byte text, zero-value record marshals without panics
+- [x] run `go test ./pkg/processor/...` - must pass before task 2
 
 ### Task 2: Record events from the phases and persist after each one
 - [ ] `pkg/processor/phase/task.go`: call `Recorder.TaskIteration(result.Signal == SignalFailed)` once per executor iteration when `Deps.Recorder != nil`
