@@ -144,13 +144,13 @@ for full, `--tasks-only`, `--plan`, or `--gen-agents` runs.
 - [x] run `go test ./cmd/...` - must pass before task 4
 
 ### Task 4: Verify acceptance criteria
-- [ ] verify `loopai --worktree --review` prints the warning once and still runs when HEAD is a feature branch (unit-level: warning function plus range check both exercised in one test)
-- [ ] verify a review-only run on the base branch exits non-zero with the `nothing to review` message and creates no progress log
-- [ ] verify full-mode behavior is unchanged: existing `TestResolveBaseRefs`, `TestApplyCLIOverrides_*`, and worktree tests pass without modification
-- [ ] run `make test` (asset checks, race-enabled Go suite, wrapper suites)
-- [ ] run `make lint` - all issues fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] verify test coverage for the new functions meets the project standard (80%+)
+- [x] verify `loopai --worktree --review` prints the warning once and still runs when HEAD is a feature branch (unit-level: warning function plus range check both exercised in one test)
+- [x] verify a review-only run on the base branch exits non-zero with the `nothing to review` message and creates no progress log
+- [x] verify full-mode behavior is unchanged: existing `TestResolveBaseRefs`, `TestApplyCLIOverrides_*`, and worktree tests pass without modification
+- [x] run `make test` (asset checks, race-enabled Go suite, wrapper suites)
+- [x] run `make lint` - all issues fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify test coverage for the new functions meets the project standard (80%+)
 
 ### Task 5: [Final] Update documentation
 - [ ] `README.md`: in the usage examples (~262-280) add a comment under `loopai --review`/`loopai --external-only` that they run in the current checkout and fail with `nothing to review` when HEAD is already contained in the base; in the `--base-ref` review passage (~796-806) note that `--base-ref` is also how to review against a different base when the default range is empty; in the review-mode paragraph (~500) add that an explicit `--worktree` is ignored with a warning there

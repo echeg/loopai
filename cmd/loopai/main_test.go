@@ -2195,6 +2195,27 @@ func TestWorktreeIgnoredWarning(t *testing.T) {
 	}
 }
 
+func TestReviewModePreflightWarnsAndAllowsFeatureBranch(t *testing.T) {
+	dir := setupTestRepo(t)
+	runGit(t, dir, "checkout", "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+	runGit(t, dir, "add", "feature.txt")
+	runGit(t, dir, "commit", "-m", "feature")
+
+	o := opts{Worktree: true, Review: true}
+	mode := determineMode(o)
+	warning := worktreeIgnoredWarning(o, mode)
+	assert.Equal(t, "warning: --worktree is ignored by --review; review modes run in the current checkout and create no branch or worktree", warning)
+	var stderr bytes.Buffer
+	printWorktreeIgnoredWarning(&stderr, o, mode)
+	assert.Equal(t, warning+"\n", stderr.String())
+	assert.Equal(t, 1, strings.Count(stderr.String(), warning))
+
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	assert.NoError(t, checkReviewDiffRange(t.Context(), gitSvc, mode, "master"))
+}
+
 func TestCheckReviewDiffRange(t *testing.T) {
 	newService := func(t *testing.T, dir string) *git.Service {
 		t.Helper()
