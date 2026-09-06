@@ -1585,6 +1585,42 @@ func TestService_DiffStats(t *testing.T) {
 	})
 }
 
+func TestService_CommitsBetweenAndDiffNameStatus(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "deleted.txt"), []byte("remove me\n"), 0o600))
+	runGit(t, dir, "add", "deleted.txt")
+	runGit(t, dir, "commit", "-m", "add base fixture")
+
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	require.NoError(t, svc.CreateBranch("feature-facts"))
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "added.txt"), []byte("new\n"), 0o600))
+	runGit(t, dir, "add", "README.md", "added.txt")
+	runGit(t, dir, "commit", "-m", "modify and add")
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "deleted.txt")))
+	runGit(t, dir, "add", "deleted.txt")
+	runGit(t, dir, "commit", "-m", "delete old file")
+
+	commits, err := svc.CommitsBetween("master", "HEAD")
+	require.NoError(t, err)
+	require.Len(t, commits, 2)
+	assert.Len(t, commits[0].Hash, 40)
+	assert.Equal(t, "delete old file", commits[0].Subject)
+	assert.Len(t, commits[1].Hash, 40)
+	assert.Equal(t, "modify and add", commits[1].Subject)
+
+	changes, err := svc.DiffNameStatus("master")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []FileChange{
+		{Status: "A", Path: "added.txt"},
+		{Status: "M", Path: "README.md"},
+		{Status: "D", Path: "deleted.txt"},
+	}, changes)
+}
+
 func TestService_DiffRangeEmptyContext(t *testing.T) {
 	newService := func(t *testing.T, dir string) *Service {
 		t.Helper()

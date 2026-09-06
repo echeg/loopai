@@ -1177,6 +1177,46 @@ func (e *externalBackend) createInitialCommit(msg string) error {
 	return nil
 }
 
+func (e *externalBackend) commitsBetween(base, head string) ([]Commit, error) {
+	out, err := e.run("log", "--format=%H%x00%s", base+".."+head)
+	if err != nil {
+		return nil, fmt.Errorf("list commits between %s and %s: %w", base, head, err)
+	}
+	if out == "" {
+		return []Commit{}, nil
+	}
+
+	commits := make([]Commit, 0)
+	for line := range strings.SplitSeq(out, "\n") {
+		hash, subject, ok := strings.Cut(line, "\x00")
+		if !ok || hash == "" {
+			return nil, fmt.Errorf("parse commit log line %q", line)
+		}
+		commits = append(commits, Commit{Hash: hash, Subject: subject})
+	}
+	return commits, nil
+}
+
+func (e *externalBackend) diffNameStatus(base string) ([]FileChange, error) {
+	out, err := e.run("diff", "--name-status", base+"...HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("diff name-status: %w", err)
+	}
+	if out == "" {
+		return []FileChange{}, nil
+	}
+
+	changes := make([]FileChange, 0)
+	for line := range strings.SplitSeq(out, "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 || parts[0] == "" || parts[len(parts)-1] == "" {
+			return nil, fmt.Errorf("parse diff name-status line %q", line)
+		}
+		changes = append(changes, FileChange{Status: parts[0], Path: parts[len(parts)-1]})
+	}
+	return changes, nil
+}
+
 // diffStats returns change statistics between baseBranch and headRef, which must be a
 // resolvable revision such as HEAD or a branch name.
 // returns zero stats if either side doesn't resolve or both point at the same commit.

@@ -62,6 +62,8 @@ type backend interface {
 	commitFiles(msg string, paths ...string) error
 	autoCommitAll(msg string) (bool, error)
 	createInitialCommit(msg string) error
+	commitsBetween(base, head string) ([]Commit, error)
+	diffNameStatus(base string) ([]FileChange, error)
 	diffStats(baseBranch, headRef string) (DiffStats, error)
 	diffRangeEmpty(ctx context.Context, baseRef, headRef string) (bool, error)
 	addWorktree(ctx context.Context, path, branch string, createBranch bool, startRef string) error
@@ -88,6 +90,18 @@ type DiffStats struct {
 	Files     int // number of files changed
 	Additions int // lines added
 	Deletions int // lines deleted
+}
+
+// Commit identifies a commit and its one-line subject.
+type Commit struct {
+	Hash    string `json:"hash"`
+	Subject string `json:"subject"`
+}
+
+// FileChange identifies a changed path and its Git name-status code.
+type FileChange struct {
+	Status string `json:"status"`
+	Path   string `json:"path"`
 }
 
 // Worktree describes one registered Git worktree and the local branch checked out there.
@@ -2155,6 +2169,16 @@ func (s *Service) EnsureHasCommits(promptFn func() bool) error {
 // returns zero stats if baseBranch doesn't exist or HEAD equals baseBranch.
 func (s *Service) DiffStats(baseBranch string) (DiffStats, error) {
 	return s.repo.diffStats(baseBranch, "HEAD")
+}
+
+// CommitsBetween returns commits reachable from head but not base, newest first.
+func (s *Service) CommitsBetween(base, head string) ([]Commit, error) {
+	return s.repo.commitsBetween(base, head)
+}
+
+// DiffNameStatus returns the status and path of files changed between base and HEAD.
+func (s *Service) DiffNameStatus(base string) ([]FileChange, error) {
+	return s.repo.diffNameStatus(base)
 }
 
 // BranchDiffStats returns change statistics between baseBranch and a named branch, without

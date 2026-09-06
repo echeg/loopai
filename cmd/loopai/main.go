@@ -3095,6 +3095,7 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 	}, log, holder)
 	if req.GitSvc != nil {
 		r.SetGitChecker(req.GitSvc)
+		r.SetRunFactsSource(req.GitSvc)
 	}
 	return r
 }

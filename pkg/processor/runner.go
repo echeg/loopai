@@ -133,6 +133,7 @@ type Runner struct {
 	git          GitChecker
 	checkpoints  ReviewCheckpointStore
 	recordStore  RunRecordStore
+	factsSource  RunFactsSource
 	record       RunRecord
 	loadedRecord *RunRecord
 	loadedTasks  TaskRunRecord
