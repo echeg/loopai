@@ -265,6 +265,32 @@ func (e *externalBackend) fileExistsAt(ref, path string) (bool, error) {
 	return fields[1] == "blob" && (fields[0] == "100644" || fields[0] == "100755"), nil
 }
 
+func (e *externalBackend) showFile(ref, path string) ([]byte, error) {
+	rel, err := e.toRelative(path)
+	if err != nil {
+		return nil, err
+	}
+	exists, err := e.fileExistsAt(ref, rel)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrPathNotFound, filepath.ToSlash(rel))
+	}
+
+	cmd := exec.CommandContext(context.Background(), e.command, "show", ref+":"+filepath.ToSlash(rel))
+	cmd.Dir = e.path
+	content, err := cmd.Output()
+	if err == nil {
+		return content, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+		return nil, fmt.Errorf("git show: %s", strings.TrimSpace(string(exitErr.Stderr)))
+	}
+	return nil, fmt.Errorf("git show: %w", err)
+}
+
 // diffFingerprint returns a sha256 hash of the working tree state (tracked diffs + untracked file content).
 // includes untracked file content hashes so that edits to existing untracked files are detected,
 // not just new file creation.

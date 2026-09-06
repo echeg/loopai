@@ -2202,6 +2202,22 @@ func TestPRFlagParsing(t *testing.T) {
 	})
 }
 
+func TestReportFlagParsing(t *testing.T) {
+	t.Run("defaults to current branch", func(t *testing.T) {
+		o := parseTestOpts(t, "--report")
+		assert.True(t, o.Report)
+		assert.Empty(t, o.PlanFile)
+		require.NoError(t, validateFlags(o))
+	})
+
+	t.Run("leaves feature argument positional", func(t *testing.T) {
+		o := parseTestOpts(t, "--report", "20260807-feature")
+		assert.True(t, o.Report)
+		assert.Equal(t, "20260807-feature", o.PlanFile)
+		require.NoError(t, validateFlags(o))
+	})
+}
+
 func TestCloseoutRejectsExplicitZeroOrEmptyExecutionFlags(t *testing.T) {
 	tests := []struct {
 		name string
@@ -2210,6 +2226,7 @@ func TestCloseoutRejectsExplicitZeroOrEmptyExecutionFlags(t *testing.T) {
 		{name: "clear with zero max iterations", args: []string{"--clear", "--max-iterations=0"}},
 		{name: "merge with zero review patience", args: []string{"--merge", "--review-patience=0"}},
 		{name: "pr with empty claude command", args: []string{"--pr", "--claude-command="}},
+		{name: "report with zero max iterations", args: []string{"--report", "--max-iterations=0"}},
 		{name: "clear with empty codex args", args: []string{"--clear", "--codex-args="}},
 	}
 
@@ -10866,6 +10883,7 @@ func TestValidateCloseoutFlagsFeatureArgument(t *testing.T) {
 		{name: "merge with feature argument", opts: opts{mergeSet: true, PlanFile: "dynamic-review-agents"}},
 		{name: "merge with base and feature argument", opts: opts{Merge: "release/13", PlanFile: "docs/plans/20260807-x.md"}},
 		{name: "pr with feature argument", opts: opts{prSet: true, PlanFile: "dynamic-review-agents"}},
+		{name: "report with feature argument", opts: opts{Report: true, PlanFile: "dynamic-review-agents"}},
 		{name: "plan file alone stays a run", opts: opts{PlanFile: "docs/plans/20260807-x.md"}},
 		{
 			name:    "merge with feature argument and mode flag",
@@ -10881,6 +10899,11 @@ func TestValidateCloseoutFlagsFeatureArgument(t *testing.T) {
 			name:    "merge and pr together",
 			opts:    opts{mergeSet: true, prSet: true, PlanFile: "feature"},
 			wantErr: "--pr cannot be combined",
+		},
+		{
+			name:    "report with merge",
+			opts:    opts{Report: true, mergeSet: true, PlanFile: "feature"},
+			wantErr: "--report cannot be combined",
 		},
 		{
 			name:    "clear with feature argument",
@@ -10903,6 +10926,11 @@ func TestValidateCloseoutFlagsFeatureArgument(t *testing.T) {
 			name:    "pr with surplus positional",
 			opts:    opts{prSet: true, PlanFile: "release/13", extraArgs: []string{"feature"}},
 			wantErr: "--pr accepts at most one feature argument, got 2; use --pr=<base>",
+		},
+		{
+			name:    "report with surplus positional",
+			opts:    opts{Report: true, PlanFile: "feature", extraArgs: []string{"other"}},
+			wantErr: "--report accepts at most one feature argument, got 2",
 		},
 		{
 			name:    "merge with two surplus positionals",
@@ -11420,6 +11448,100 @@ func TestRunCloseoutCommandRoutesPositionalFeature(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no-such-feature")
 	})
+}
+
+func TestRunReportCommand(t *testing.T) {
+	t.Run("reads feature branch selected by recorded branch override", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		planFile := filepath.Join(plansDir, "20260906-completion-report.md")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Completion report\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/20260906-completion-report.md")
+		runGit(t, dir, "commit", "-m", "add plan")
+
+		runGit(t, dir, "checkout", "-b", "custom/report-branch")
+		require.NoError(t, os.MkdirAll(filepath.Join(plansDir, "completed"), 0o750))
+		runGit(t, dir, "mv", "docs/plans/20260906-completion-report.md", "docs/plans/completed/20260906-completion-report.md")
+		const report = "# Report: Completion report\n\n## Summary\n\nDone.\n"
+		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "completed", "20260906-completion-report.report.md"),
+			[]byte(report), 0o600))
+		runGit(t, dir, "add", "docs/plans/completed/20260906-completion-report.report.md")
+		runGit(t, dir, "commit", "-m", "archive with report")
+		runGit(t, dir, "checkout", "master")
+		writeProgressRecord(t, dir, "progress-completion-report.txt", planFile, "custom/report-branch", 1)
+
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		var out bytes.Buffer
+		err = runReportCommand(t.Context(), svc,
+			closeoutTarget{identifier: "20260906-completion-report", plansDir: plansDir}, &out)
+		require.NoError(t, err)
+		assert.Equal(t, "branch: custom/report-branch\n\n"+report, out.String())
+
+		out.Reset()
+		err = runReportCommand(t.Context(), svc,
+			closeoutTarget{identifier: "custom/report-branch", plansDir: plansDir}, &out)
+		require.NoError(t, err)
+		assert.Equal(t, "branch: custom/report-branch\n\n"+report, out.String(),
+			"a branch argument must recover its plan stem from the progress record")
+	})
+
+	t.Run("falls back to alternate-date report on disk after merge", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		completedDir := filepath.Join(dir, "docs", "plans", "completed")
+		require.NoError(t, os.MkdirAll(completedDir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(completedDir, "20260906-disk.md"), []byte("# Disk plan\n"), 0o600))
+		const report = "# Report: Disk plan\n"
+		require.NoError(t, os.WriteFile(filepath.Join(completedDir, "20260906-disk.report.md"), []byte(report), 0o600))
+
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		var out bytes.Buffer
+		err = runReportCommand(t.Context(), svc, closeoutTarget{
+			identifier: "2026-09-06-disk", plansDir: filepath.Join("docs", "plans"),
+		}, &out)
+		require.NoError(t, err)
+		assert.Equal(t, "branch: (merged)\n\n"+report, out.String())
+	})
+
+	t.Run("missing report returns actionable error", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "20260906-missing.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Missing\n"), 0o600))
+		runGit(t, dir, "branch", "missing")
+
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		err = runReportCommand(t.Context(), svc,
+			closeoutTarget{identifier: "20260906-missing", plansDir: plansDir}, io.Discard)
+		require.EqualError(t, err,
+			"no completion report for 20260906-missing.md; the run predates report_enabled or archived without one")
+	})
+}
+
+func TestRunDispatchesReportBeforeExecutionDependencies(t *testing.T) {
+	dir := setupTestRepo(t)
+	completedDir := filepath.Join(dir, "docs", "plans", "completed")
+	require.NoError(t, os.MkdirAll(completedDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(completedDir, "20260906-ready.md"), []byte("# Ready\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(completedDir, "20260906-ready.report.md"),
+		[]byte("# Report: Ready\n"), 0o600))
+
+	configDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"),
+		[]byte("claude_command = definitely-missing-claude\n"), 0o600))
+	t.Chdir(dir)
+
+	var runErr error
+	out := captureStdout(t, func() {
+		runErr = run(t.Context(), parseTestOpts(t,
+			"--config-dir", configDir, "--report", "20260906-ready"))
+	})
+	require.NoError(t, runErr)
+	assert.Equal(t, "branch: (merged)\n\n# Report: Ready\n", out)
 }
 
 func TestStripCmuxWorkspaceArg(t *testing.T) {

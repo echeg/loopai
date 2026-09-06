@@ -39,6 +39,7 @@ type backend interface {
 	revParse(ref string) (string, error)
 	revisionExists(ctx context.Context, revision string) (bool, error)
 	fileExistsAt(ref, path string) (bool, error)
+	showFile(ref, path string) ([]byte, error)
 	createBranch(name string) error
 	checkoutBranch(name string) error
 	mergeBranch(ctx context.Context, name, expectedHead string) error
@@ -85,6 +86,9 @@ var ErrMergeConflict = errors.New("merge conflict")
 // happened after the plan was already archived (or was found already archived).
 // Callers may warn and continue because the plan move itself succeeded.
 var ErrCompletionReportWrite = errors.New("completion report write failed")
+
+// ErrPathNotFound identifies a path that does not exist as a regular file at a Git revision.
+var ErrPathNotFound = errors.New("path not found")
 
 // errMergeTreeUnsupported indicates that the installed Git does not support the
 // merge-tree --write-tree form used for non-mutating conflict prediction.
@@ -472,6 +476,15 @@ func (s *Service) PlanArchivedAtRevision(revision, planFile string) (bool, error
 		}
 	}
 	return false, nil
+}
+
+// ShowFile returns the contents of a regular file at ref without modifying the working tree.
+func (s *Service) ShowFile(ref, path string) ([]byte, error) {
+	content, err := s.repo.showFile(ref, path)
+	if err != nil {
+		return nil, fmt.Errorf("show %q at %q: %w", path, ref, err)
+	}
+	return content, nil
 }
 
 // ResolveBaseBranch validates an explicit local base branch or auto-detects main/master.

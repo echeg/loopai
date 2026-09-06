@@ -1692,6 +1692,31 @@ func TestService_CommitsBetweenAndDiffNameStatus(t *testing.T) {
 	}, changes)
 }
 
+func TestService_ShowFile(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	reportPath := filepath.Join(dir, "docs", "plans", "completed", "feature.report.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(reportPath), 0o750))
+	const report = "# Report: Feature\n\nbody\n\n"
+	require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
+	runGit(t, dir, "add", "docs/plans/completed/feature.report.md")
+	runGit(t, dir, "commit", "-m", "add report")
+
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+
+	body, err := svc.ShowFile("HEAD", reportPath)
+	require.NoError(t, err)
+	assert.Equal(t, report, string(body), "ShowFile must preserve the report body exactly")
+
+	_, err = svc.ShowFile("HEAD", filepath.Join(dir, "docs", "plans", "completed", "missing.report.md"))
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrPathNotFound)
+
+	_, err = svc.ShowFile("missing-ref", reportPath)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrPathNotFound)
+}
+
 func TestService_DiffRangeEmptyContext(t *testing.T) {
 	newService := func(t *testing.T, dir string) *Service {
 		t.Helper()

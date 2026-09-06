@@ -84,10 +84,11 @@ type opts struct {
 	CmuxWorkspace           string        `long:"cmux-workspace" optional:"true" optional-value:"always" choice:"always" choice:"auto" description:"relaunch in a new cmux workspace: bare/always = unconditionally, auto = only when the current workspace already runs loopai"`
 	Merge                   string        `long:"merge" optional:"true" optional-value:"" value-name:"base" description:"merge feature branch into base branch; positional argument names the feature (branch or plan), default current branch"`
 	PR                      string        `long:"pr" optional:"true" optional-value:"" value-name:"base" description:"push feature branch and create a GitHub pull request; positional argument names the feature (branch or plan), default current branch"`
+	Report                  bool          `long:"report" description:"print the completion report for a plan or branch; positional argument names the feature (branch or plan), default current branch"`
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
 	ConfigDir               string        `long:"config-dir" env:"LOOPAI_CONFIG_DIR" description:"custom config directory"`
 
-	PlanFile  string   `positional-arg-name:"plan-file" description:"path to one plan file or a comma-separated plan chain (optional, uses fzf if omitted); with --merge/--pr it names the feature to close out"`
+	PlanFile  string   `positional-arg-name:"plan-file" description:"path to one plan file or a comma-separated plan chain (optional, uses fzf if omitted); with --merge/--pr/--report it names the feature to close out"`
 	PlanFiles []string // normalized comma-separated plan chain; PlanFile is always its first entry
 
 	// positional arguments beyond the first, recorded by main so close-out validation can reject
@@ -114,7 +115,7 @@ type opts struct {
 const commandUsage = "[OPTIONS] [plan-file[,plan-file...]]"
 
 // applyPositionalArgs records the parsed positional arguments: the first names a comma-separated
-// plan chain, or the feature to close out under --merge/--pr. the rest are kept so close-out
+// plan chain, or the feature to close out under --merge/--pr/--report. the rest are kept so close-out
 // validation can reject them; go-flags never fills a positional field beyond the first one
 // declared. Close-out identifiers are deliberately not split because they do not name plans.
 func (o *opts) applyPositionalArgs(args []string) error {
@@ -363,7 +364,7 @@ func main() {
 	// go-flags can't distinguish "not provided" from "set to zero" via the field alone.
 	o.markFlagsSet(parser)
 
-	// handle positional arguments after marking flags so --merge/--pr identifiers remain opaque.
+	// handle positional arguments after marking flags so --merge/--pr/--report identifiers remain opaque.
 	if err := o.applyPositionalArgs(args); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -3017,17 +3018,27 @@ func mergeRequested(o opts) bool { return o.mergeSet || o.Merge != "" }
 
 func prRequested(o opts) bool { return o.prSet || o.PR != "" }
 
-func closeoutRequested(o opts) bool { return mergeRequested(o) || prRequested(o) }
+func reportRequested(o opts) bool { return o.Report }
+
+func closeoutRequested(o opts) bool { return mergeRequested(o) || prRequested(o) || reportRequested(o) }
 
 func validateCloseoutFlags(o opts) error {
-	merge, pr, execution := mergeRequested(o), prRequested(o), hasExecutionMode(o)
-	if o.Clear && (merge || pr || execution) {
+	merge, pr, report := mergeRequested(o), prRequested(o), reportRequested(o)
+	if err := validateCloseoutModes(o, merge, pr, report); err != nil {
+		return err
+	}
+	return validateCloseoutPositionals(o, merge, pr, report)
+}
+
+func validateCloseoutModes(o opts, merge, pr, report bool) error {
+	execution := hasExecutionMode(o)
+	if o.Clear && (merge || pr || report || execution) {
 		return errors.New("--clear cannot be combined with a plan file or other mode flags")
 	}
-	// with --merge/--pr the positional argument names the feature to close out instead of
+	// with --merge/--pr/--report the positional argument names the feature to close out instead of
 	// selecting a plan to run, so it does not count as an execution mode for these checks.
 	closeoutExecution := execution
-	if merge || pr {
+	if merge || pr || report {
 		bare := o
 		bare.PlanFile = ""
 		closeoutExecution = hasExecutionMode(bare)
@@ -3038,19 +3049,29 @@ func validateCloseoutFlags(o opts) error {
 	if pr && (merge || closeoutExecution) {
 		return errors.New("--pr cannot be combined with other mode flags")
 	}
-	if (merge || pr) && len(o.extraArgs) > 0 {
-		// --merge and --pr take an optional base value only in the --merge=<base> form, so
-		// "--merge <base> <feature>" parses <base> as the feature and would merge and delete it.
-		// a surplus positional is the only observable trace of that mistake: reject it rather than
-		// silently closing out a branch the caller never named.
-		flag := "--merge"
-		if pr {
-			flag = "--pr"
-		}
-		return fmt.Errorf("%s accepts at most one feature argument, got %d; use %s=<base> to set the base branch",
-			flag, len(o.extraArgs)+1, flag)
+	if report && (merge || pr || closeoutExecution) {
+		return errors.New("--report cannot be combined with other mode flags")
 	}
 	return nil
+}
+
+func validateCloseoutPositionals(o opts, merge, pr, report bool) error {
+	if !merge && !pr && !report || len(o.extraArgs) == 0 {
+		return nil
+	}
+	// --merge and --pr take an optional base value only in the --merge=<base> form, so
+	// "--merge <base> <feature>" parses <base> as the feature and would merge and delete it.
+	// a surplus positional is the only observable trace of that mistake: reject it rather than
+	// silently closing out a branch the caller never named.
+	flag := "--merge"
+	if pr {
+		flag = "--pr"
+	}
+	if report {
+		return fmt.Errorf("--report accepts at most one feature argument, got %d", len(o.extraArgs)+1)
+	}
+	return fmt.Errorf("%s accepts at most one feature argument, got %d; use %s=<base> to set the base branch",
+		flag, len(o.extraArgs)+1, flag)
 }
 
 func validateExternalReviewFlags(o opts) error {
@@ -4287,6 +4308,11 @@ func existingPlanFile(path string) string {
 	if filepath.Ext(path) != ".md" {
 		candidates = append(candidates, path+".md")
 	}
+	for _, candidate := range slices.Clone(candidates) {
+		if altBase := plan.AltDateBasename(filepath.Base(candidate)); altBase != "" {
+			candidates = append(candidates, filepath.Join(filepath.Dir(candidate), altBase))
+		}
+	}
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
 			return candidate
@@ -4324,6 +4350,130 @@ func resolveCloseoutBranch(gitSvc *git.Service, target closeoutTarget, flagName 
 		return "", fmt.Errorf("%s requires a checked-out feature branch; detached HEAD is not supported", flagName)
 	}
 	return branch, nil
+}
+
+// runReportCommand prints the completion report associated with a feature. The feature branch is
+// preferred while it exists; the working tree copy is the durable fallback after merge removes it.
+func runReportCommand(ctx context.Context, gitSvc *git.Service, target closeoutTarget, stdout io.Writer) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("report command canceled: %w", err)
+	}
+
+	root := gitSvc.Root()
+	plansDir := plansDirPath(root, target.plansDir)
+	identifier := strings.TrimSpace(target.identifier)
+	planFile := ""
+	if identifier != "" {
+		planFile = findFeaturePlanFile(identifier, plansDir, filepath.Join(plansDir, "completed"))
+	}
+
+	branch, branchErr := resolveCloseoutBranch(gitSvc, target, "--report")
+	if branchErr == nil && planFile == "" {
+		var err error
+		planFile, err = findReportPlanForBranch(gitSvc, plansDir, branch)
+		if err != nil {
+			return err
+		}
+	}
+
+	paths := completionReportPaths(plansDir, planFile)
+	if branchErr == nil {
+		for _, path := range paths {
+			body, err := gitSvc.ShowFile(branch, path)
+			if err == nil {
+				return printCompletionReport(stdout, branch, body)
+			}
+			if !errors.Is(err, git.ErrPathNotFound) {
+				return fmt.Errorf("read completion report from branch %q: %w", branch, err)
+			}
+		}
+	}
+
+	for _, path := range paths {
+		body, err := os.ReadFile(path) //nolint:gosec // path is derived from the configured plans directory and resolved plan basename
+		if err == nil {
+			label := branch
+			if branchErr != nil {
+				label = "(merged)"
+			}
+			return printCompletionReport(stdout, label, body)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read completion report %q: %w", path, err)
+		}
+	}
+
+	name := identifier
+	if name == "" {
+		name = branch
+	}
+	if planFile != "" {
+		name = filepath.Base(planFile)
+	}
+	if name == "" {
+		name = "current branch"
+	}
+	return fmt.Errorf("no completion report for %s; the run predates report_enabled or archived without one", name)
+}
+
+// findReportPlanForBranch locates the plan identity needed to derive a report sidecar path.
+// Progress records take precedence because they preserve arbitrary --branch overrides.
+func findReportPlanForBranch(gitSvc *git.Service, plansDir, branch string) (string, error) {
+	progressRoots, err := progressRecordRoots(gitSvc)
+	if err != nil {
+		return "", err
+	}
+	var recorded string
+	var recordedTime time.Time
+	for _, root := range progressRoots {
+		assocs, readErr := readProgressAssociations(root)
+		if readErr != nil {
+			return "", readErr
+		}
+		for _, assoc := range assocs {
+			if assoc.branch != branch || !recordedBranchIsFeature(assoc.mode) {
+				continue
+			}
+			if recorded == "" || assoc.modTime.After(recordedTime) {
+				recorded, recordedTime = assoc.recordedPlan, assoc.modTime
+			}
+		}
+	}
+	if recorded != "" {
+		return recorded, nil
+	}
+	return findPRPlan(gitSvc.Root(), plansDir, branch)
+}
+
+func completionReportPaths(plansDir, planFile string) []string {
+	if planFile == "" {
+		return nil
+	}
+	base := filepath.Base(planFile)
+	if filepath.Ext(base) != ".md" || strings.HasSuffix(base, ".report.md") {
+		return nil
+	}
+	completedDir := filepath.Join(plansDir, "completed")
+	paths := []string{filepath.Join(completedDir, strings.TrimSuffix(base, ".md")+".report.md")}
+	if altBase := plan.AltDateBasename(base); altBase != "" {
+		paths = append(paths, filepath.Join(completedDir, strings.TrimSuffix(altBase, ".md")+".report.md"))
+	}
+	return paths
+}
+
+func printCompletionReport(stdout io.Writer, branch string, body []byte) error {
+	if _, err := fmt.Fprintf(stdout, "branch: %s\n\n", branch); err != nil {
+		return fmt.Errorf("write completion report header: %w", err)
+	}
+	if _, err := stdout.Write(body); err != nil {
+		return fmt.Errorf("write completion report: %w", err)
+	}
+	if len(body) == 0 || body[len(body)-1] != '\n' {
+		if _, err := fmt.Fprintln(stdout); err != nil {
+			return fmt.Errorf("finish completion report output: %w", err)
+		}
+	}
+	return nil
 }
 
 // progressRecordRoots returns every checkout that can own .loopai/progress: the primary first, the
@@ -4865,8 +5015,11 @@ func runCloseoutCommand(ctx context.Context, o opts, cfg *config.Config, colors 
 	if err != nil {
 		return fmt.Errorf("open git repo: %w", err)
 	}
-	rep := cmux.New("", cmux.Models{})
 	target := closeoutTarget{identifier: o.PlanFile, plansDir: cfg.PlansDir}
+	if reportRequested(o) {
+		return runReportCommand(ctx, gitSvc, target, os.Stdout)
+	}
+	rep := cmux.New("", cmux.Models{})
 	if mergeRequested(o) {
 		return runMergeCommand(ctx, gitSvc, o.Merge, target, rep, os.Stdout)
 	}
