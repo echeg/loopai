@@ -43,6 +43,19 @@ var (
 	_ cmux.Logger      = (*progress.SectionTimer)(nil)
 )
 
+type failOnWrite struct {
+	call   int
+	failAt int
+}
+
+func (w *failOnWrite) Write(p []byte) (int, error) {
+	w.call++
+	if w.call == w.failAt {
+		return 0, errors.New("injected write failure")
+	}
+	return len(p), nil
+}
+
 type runnerLoggerRecorder struct {
 	calls []string
 }
@@ -11520,6 +11533,27 @@ func TestRunReportCommand(t *testing.T) {
 		require.EqualError(t, err,
 			"no completion report for 20260906-missing.md; the run predates report_enabled or archived without one")
 	})
+}
+
+func TestPrintCompletionReportWriteErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		failAt int
+		body   []byte
+		want   string
+	}{
+		{name: "header", failAt: 1, body: []byte("report\n"), want: "write completion report header"},
+		{name: "body", failAt: 2, body: []byte("report\n"), want: "write completion report"},
+		{name: "trailing newline", failAt: 3, body: []byte("report"), want: "finish completion report output"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := printCompletionReport(&failOnWrite{failAt: tc.failAt}, "feature", tc.body)
+			require.ErrorContains(t, err, tc.want)
+			require.ErrorContains(t, err, "injected write failure")
+		})
+	}
 }
 
 func TestRunDispatchesReportBeforeExecutionDependencies(t *testing.T) {

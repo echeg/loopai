@@ -1,6 +1,8 @@
 package phase
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -58,6 +60,38 @@ func TestReportPhase_RunTimeoutIsNonBlocking(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, output)
 	assertLogContains(t, log, "report step timed out")
+}
+
+func TestReportPhase_RunExecutorErrors(t *testing.T) {
+	t.Run("ordinary error is non-blocking", func(t *testing.T) {
+		log := newMockLogger("progress.txt")
+		exec := newTaskPhaseMockExecutor([]executor.Result{{Error: errors.New("report unavailable")}})
+		phase := NewReportPhase(ReportPhaseOpts{
+			Cfg: Config{ReportEnabled: true}, Log: log, Exec: exec,
+			Policy: newTestPolicy(Config{}, log), Prompts: testPrompts{},
+		})
+
+		output, err := phase.Run(t.Context(), "facts")
+
+		require.NoError(t, err)
+		assert.Empty(t, output)
+		assertLogContains(t, log, "report step failed: %v")
+	})
+
+	t.Run("context cancellation remains blocking", func(t *testing.T) {
+		log := newMockLogger("progress.txt")
+		exec := newTaskPhaseMockExecutor([]executor.Result{{Error: context.Canceled}})
+		phase := NewReportPhase(ReportPhaseOpts{
+			Cfg: Config{ReportEnabled: true}, Log: log, Exec: exec,
+			Policy: newTestPolicy(Config{}, log), Prompts: testPrompts{},
+		})
+
+		output, err := phase.Run(t.Context(), "facts")
+
+		assert.Empty(t, output)
+		require.ErrorIs(t, err, context.Canceled)
+		assert.ErrorContains(t, err, "report step")
+	})
 }
 
 func TestReportPhase_RunDisabled(t *testing.T) {

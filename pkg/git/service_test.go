@@ -1243,6 +1243,42 @@ func TestService_MovePlanToCompletedWithReport(t *testing.T) {
 		assert.NoFileExists(t, filepath.Join(dir, "docs", "plans", "completed", "legacy.report.md"))
 	})
 
+	t.Run("report write failure still commits the plan move", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "report-failure.md")
+		reportPath := filepath.Join(dir, "docs", "plans", "completed", "report-failure.report.md")
+		require.NoError(t, os.MkdirAll(reportPath, 0o750))
+
+		err := svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: unavailable\n"))
+
+		require.ErrorIs(t, err, ErrCompletionReportWrite)
+		assert.Equal(t, "move completed plan: report-failure.md",
+			strings.TrimSpace(runGit(t, dir, "log", "-1", "--format=%s")))
+		assert.FileExists(t, filepath.Join(dir, "docs", "plans", "completed", "report-failure.md"))
+		assert.DirExists(t, reportPath)
+	})
+
+	t.Run("untracked plan uses the rename fallback", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "untracked.md")
+		runGit(t, dir, "rm", "--cached", "docs/plans/untracked.md")
+		runGit(t, dir, "commit", "-m", "leave plan untracked")
+
+		require.NoError(t, svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Untracked\n")))
+
+		assert.NoFileExists(t, planFile)
+		assert.FileExists(t, filepath.Join(dir, "docs", "plans", "completed", "untracked.md"))
+		assert.FileExists(t, filepath.Join(dir, "docs", "plans", "completed", "untracked.report.md"))
+	})
+
+	t.Run("completed directory creation failure is returned", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "blocked-dir.md")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "docs", "plans", "completed"), []byte("blocked\n"), 0o600))
+
+		err := svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Blocked\n"))
+
+		require.ErrorContains(t, err, "create completed dir")
+		assert.FileExists(t, planFile)
+	})
+
 	t.Run("adds missing report to an already archived plan once", func(t *testing.T) {
 		dir, svc, planFile := newPlan(t, "archived.md")
 		require.NoError(t, svc.MovePlanToCompleted(planFile))
@@ -1261,6 +1297,40 @@ func TestService_MovePlanToCompletedWithReport(t *testing.T) {
 		report, err := os.ReadFile(filepath.Join(dir, "docs", "plans", "completed", "archived.report.md")) //nolint:gosec // test-owned path
 		require.NoError(t, err)
 		assert.Equal(t, "# Report: Archived\n", string(report))
+	})
+
+	t.Run("archived sidecar inspection failure is returned", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "inspect-failure.md")
+		require.NoError(t, svc.MovePlanToCompleted(planFile))
+		reportPath := filepath.Join(dir, "docs", "plans", "completed", "inspect-failure.report.md")
+		require.NoError(t, os.Symlink(reportPath, reportPath))
+
+		err := svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Inspect failure\n"))
+
+		require.ErrorIs(t, err, ErrCompletionReportWrite)
+		require.ErrorContains(t, err, "inspect sidecar")
+	})
+
+	t.Run("archived sidecar write failure is returned", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "archived-write-failure.md")
+		require.NoError(t, svc.MovePlanToCompleted(planFile))
+		reportPath := filepath.Join(dir, "docs", "plans", "completed", "archived-write-failure.report.md")
+		require.NoError(t, os.Symlink(filepath.Join(dir, "missing", "report.md"), reportPath))
+
+		err := svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Write failure\n"))
+
+		require.ErrorIs(t, err, ErrCompletionReportWrite)
+	})
+
+	t.Run("archived sidecar commit failure is returned", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "archived-commit-failure.md")
+		require.NoError(t, svc.MovePlanToCompleted(planFile))
+		hook := filepath.Join(dir, ".git", "hooks", "pre-commit")
+		require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
+
+		err := svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Commit failure\n"))
+
+		require.ErrorContains(t, err, "commit completion report")
 	})
 }
 

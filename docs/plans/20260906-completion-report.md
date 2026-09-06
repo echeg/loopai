@@ -228,15 +228,15 @@ close-out routing (`--merge`/`--pr`), and the review checkpoint store introduced
 - [x] run `make check-symlinks`, `make test-symlinks`, `make check-plugin`, `make test-plugin` - must pass before task 9
 
 ### Task 9: Verify acceptance criteria
-- [ ] verify a full-mode run with `report_enabled = true` archives plan and `<stem>.report.md` in one commit and the report contains all nine sections with a `### <reviewer key>` per reviewer
-- [ ] verify a model failure in the report phase still archives a facts-only report
-- [ ] verify `report_enabled = false` produces the pre-change phase sequence, log lines, and commit message
-- [ ] verify `loopai --report <plan>` prints the report from the feature branch before merge and from disk after
-- [ ] verify the run record is removed after archival and reset when the review checkpoint is cleared
-- [ ] run `make test`
-- [ ] run `make lint` - all issues fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] verify coverage for the new files in `pkg/processor`, `pkg/git`, `pkg/plan`, and `cmd/loopai` meets the project standard (80%+)
+- [x] verify a full-mode run with `report_enabled = true` archives plan and `<stem>.report.md` in one commit and the report contains all nine sections with a `### <reviewer key>` per reviewer
+- [x] verify a model failure in the report phase still archives a facts-only report
+- [x] verify `report_enabled = false` produces the pre-change phase sequence, log lines, and commit message
+- [x] verify `loopai --report <plan>` prints the report from the feature branch before merge and from disk after
+- [x] verify the run record is removed after archival and reset when the review checkpoint is cleared
+- [x] run `make test`
+- [x] run `make lint` - all issues fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify coverage for the new files in `pkg/processor`, `pkg/git`, `pkg/plan`, and `cmd/loopai` meets the project standard (80%+)
 
 ### Task 10: [Final] Update documentation
 - [ ] `README.md`: document the completion report (location, sections, `report_enabled`, facts-only fallback, worktree archival path), the `--report` command in the close-out section, and the `loopai-merge` skill in the skills list
