@@ -2,7 +2,7 @@ package processor
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"path/filepath"
 	"slices"
 	"time"
@@ -27,7 +27,11 @@ func (r *Runner) loadReviewResume(ctx context.Context) reviewResume {
 		return reviewResume{}
 	}
 
-	branch, _ := r.git.CurrentBranch()
+	branch, err := r.git.CurrentBranch()
+	if err != nil {
+		r.log.Print("review checkpoint unreadable, starting reviews from scratch: resolve current branch: %v", err)
+		return reviewResume{}
+	}
 	head, err := r.git.HeadHash()
 	if err != nil {
 		r.log.Print("review checkpoint unreadable, starting reviews from scratch: %v", err)
@@ -62,10 +66,20 @@ func (r *Runner) saveReviewStage(_ context.Context, stage ReviewStage) {
 		r.log.Print("review checkpoint save skipped: %v", err)
 		return
 	}
-	branch, _ := r.git.CurrentBranch()
+	branch, err := r.git.CurrentBranch()
+	if err != nil {
+		r.log.Print("review checkpoint save skipped: resolve current branch: %v", err)
+		return
+	}
 	cp, found, err := r.checkpoints.Load()
 	switch {
-	case err != nil || !found:
+	case errors.Is(err, ErrReviewCheckpointCorrupt):
+		r.log.Print("review checkpoint is corrupt; replacing it")
+		cp = ReviewCheckpoint{}
+	case err != nil:
+		r.log.Print("review checkpoint save skipped: load existing checkpoint: %v", err)
+		return
+	case !found:
 		cp = ReviewCheckpoint{}
 	case cp.Version != reviewCheckpointVersion || cp.Mode != r.cfg.Mode || cp.Branch != branch ||
 		reviewPlanKey(cp.Plan) != reviewPlanKey(r.cfg.PlanFile):
@@ -208,7 +222,8 @@ func (r *Runner) onReviewerDone(ctx context.Context, done phase.ReviewerCompleti
 	}
 	keys := reviewerKeys(r.cfg)
 	if done.Index < 0 || done.Index >= len(keys) {
-		return fmt.Errorf("reviewer index %d is outside configured chain", done.Index)
+		r.log.Print("review checkpoint save skipped: reviewer index %d is outside configured chain", done.Index)
+		return nil
 	}
 	r.saveReviewStage(ctx, ReviewStage{
 		Stage: reviewStageExternal, Index: done.Index, Reviewer: keys[done.Index],

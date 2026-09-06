@@ -16,7 +16,7 @@ import (
 func TestReviewCheckpointStoreRoundTrip(t *testing.T) {
 	store := newReviewCheckpointStore(filepath.Join(t.TempDir(), "progress-plan.txt"))
 	want := processor.ReviewCheckpoint{
-		Mode: processor.ModeFull, Branch: "feature", Plan: "docs/plans/plan.md",
+		Version: 7, Mode: processor.ModeFull, Branch: "feature", Plan: "docs/plans/plan.md",
 		Reviewers: []string{"claude:opus:high"},
 		Stages: []processor.ReviewStage{{
 			Stage: "internal_review", Head: "abc123", CompletedAt: time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC),
@@ -27,8 +27,6 @@ func TestReviewCheckpointStoreRoundTrip(t *testing.T) {
 	got, found, err := store.Load()
 	require.NoError(t, err)
 	assert.True(t, found)
-	assert.Equal(t, reviewCheckpointStateVersion, got.Version)
-	want.Version = reviewCheckpointStateVersion
 	assert.Equal(t, want, got)
 
 	if runtime.GOOS != "windows" {
@@ -52,6 +50,7 @@ func TestReviewCheckpointStoreCorruptJSON(t *testing.T) {
 	_, found, err := store.Load()
 	assert.False(t, found)
 	require.ErrorContains(t, err, "parse review checkpoint")
+	assert.ErrorIs(t, err, processor.ErrReviewCheckpointCorrupt)
 }
 
 func TestReviewCheckpointStoreRemoveIsIdempotent(t *testing.T) {
@@ -120,6 +119,8 @@ func TestModeUsesReviewCheckpoints(t *testing.T) {
 func TestReviewCheckpointStoreForMode(t *testing.T) {
 	progressPath := filepath.Join(t.TempDir(), "progress-plan.txt")
 
+	storeForPlan := reviewCheckpointStoreForMode(processor.ModePlan, progressPath)
+	assert.Equal(t, processor.ReviewCheckpointStore(nil), storeForPlan, "must return a nil interface, not a typed nil pointer")
 	assert.NotNil(t, reviewCheckpointStoreForMode(processor.ModeTasksOnly, progressPath))
 	store, ok := reviewCheckpointStoreForMode(processor.ModeFull, progressPath).(*reviewCheckpointStore)
 	require.True(t, ok)

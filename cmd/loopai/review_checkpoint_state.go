@@ -10,8 +10,6 @@ import (
 	"github.com/umputun/ralphex/pkg/processor"
 )
 
-const reviewCheckpointStateVersion = 1
-
 type reviewCheckpointStore struct {
 	path string
 }
@@ -40,13 +38,12 @@ func (s *reviewCheckpointStore) Load() (processor.ReviewCheckpoint, bool, error)
 	}
 	var checkpoint processor.ReviewCheckpoint
 	if err := json.Unmarshal(data, &checkpoint); err != nil {
-		return processor.ReviewCheckpoint{}, false, fmt.Errorf("parse review checkpoint: %w", err)
+		return processor.ReviewCheckpoint{}, false, fmt.Errorf("%w: parse review checkpoint: %w", processor.ErrReviewCheckpointCorrupt, err)
 	}
 	return checkpoint, true, nil
 }
 
 func (s *reviewCheckpointStore) Save(checkpoint processor.ReviewCheckpoint) error {
-	checkpoint.Version = reviewCheckpointStateVersion
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create review checkpoint directory: %w", err)

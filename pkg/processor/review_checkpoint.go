@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -9,6 +10,9 @@ import (
 )
 
 const reviewCheckpointVersion = 1
+
+// ErrReviewCheckpointCorrupt identifies checkpoint data that cannot be decoded and may be replaced.
+var ErrReviewCheckpointCorrupt = errors.New("review checkpoint is corrupt")
 
 const (
 	reviewStageInternal   = "internal_review"
@@ -37,7 +41,7 @@ type ReviewStage struct {
 	CompletedAt time.Time `json:"completed_at"`
 }
 
-//go:generate moq -out mocks/review_checkpoint_store.go -pkg mocks -skip-ensure -fmt goimports . ReviewCheckpointStore
+//go:generate moq -out review_checkpoint_store_mock_test.go -pkg processor_test -skip-ensure -fmt goimports . ReviewCheckpointStore
 
 // ReviewCheckpointStore persists review progress outside an ephemeral worktree.
 type ReviewCheckpointStore interface {

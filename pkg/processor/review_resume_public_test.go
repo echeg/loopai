@@ -52,7 +52,7 @@ func TestRunnerReviewCheckpoints_CleanRealGitServiceSaves(t *testing.T) {
 
 	var mu sync.Mutex
 	var saved []processor.ReviewCheckpoint
-	store := &mocks.ReviewCheckpointStoreMock{
+	store := &ReviewCheckpointStoreMock{
 		LoadFunc: func() (processor.ReviewCheckpoint, bool, error) {
 			return processor.ReviewCheckpoint{}, false, nil
 		},

@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
+	"github.com/umputun/ralphex/pkg/processor/mocks"
 	"github.com/umputun/ralphex/pkg/processor/phase"
 	"github.com/umputun/ralphex/pkg/status"
 )
@@ -190,7 +192,7 @@ func TestRunnerReviewCheckpoint_TaskCommitInvalidates(t *testing.T) {
 	require.NoError(t, r.Run(t.Context()))
 	assert.Equal(t, 1, review.first, "reviews must restart after task commits")
 	assert.GreaterOrEqual(t, store.removes, 1)
-	assertLogContains(t, r.log.(*testLoggerMock), "review checkpoint: cleared")
+	assertLogContains(t, r.log.(*mocks.LoggerMock), "review checkpoint: cleared")
 }
 
 func TestRunnerReviewCheckpoint_TaskHeadErrorsInvalidate(t *testing.T) {
@@ -216,7 +218,7 @@ func TestRunnerReviewCheckpoint_TaskHeadErrorsInvalidate(t *testing.T) {
 			require.NoError(t, r.Run(t.Context()))
 			assert.Equal(t, 1, review.first, "an unverifiable task phase must not resume reviews")
 			assert.GreaterOrEqual(t, store.removes, 1)
-			assertLogContains(t, r.log.(*testLoggerMock), "review checkpoint: cleared")
+			assertLogContains(t, r.log.(*mocks.LoggerMock), "review checkpoint: cleared")
 		})
 	}
 }
@@ -278,7 +280,7 @@ func TestRunnerReviewCheckpoint_SaveGuardsAndErrors(t *testing.T) {
 		r, _, _, _ := newCheckpointRunner(Config{Mode: ModeReview}, store, git)
 		r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageInternal})
 		assert.Empty(t, store.saves)
-		assertLogContains(t, r.log.(*testLoggerMock), "review checkpoint skipped: uncommitted changes")
+		assertLogContains(t, r.log.(*mocks.LoggerMock), "review checkpoint skipped: uncommitted changes")
 	})
 
 	t.Run("dirty tree refuses resume", func(t *testing.T) {
@@ -298,7 +300,7 @@ func TestRunnerReviewCheckpoint_SaveGuardsAndErrors(t *testing.T) {
 
 				require.NoError(t, r.Run(t.Context()))
 				assert.Equal(t, 1, review.first)
-				assertLogContains(t, r.log.(*testLoggerMock), "uncommitted changes; starting reviews from scratch")
+				assertLogContains(t, r.log.(*mocks.LoggerMock), "uncommitted changes; starting reviews from scratch")
 			})
 		}
 	})
@@ -308,7 +310,7 @@ func TestRunnerReviewCheckpoint_SaveGuardsAndErrors(t *testing.T) {
 		git := &checkpointGit{head: "head", branch: "main", contains: true}
 		r, _, _, _ := newCheckpointRunner(Config{Mode: ModeReview}, store, git)
 		assert.Equal(t, reviewResume{}, r.loadReviewResume(t.Context()))
-		assertLogContains(t, r.log.(*testLoggerMock), "review checkpoint unreadable")
+		assertLogContains(t, r.log.(*mocks.LoggerMock), "review checkpoint unreadable")
 	})
 
 	t.Run("dirty check error refuses load and save", func(t *testing.T) {
@@ -319,7 +321,7 @@ func TestRunnerReviewCheckpoint_SaveGuardsAndErrors(t *testing.T) {
 		assert.Equal(t, reviewResume{}, r.loadReviewResume(t.Context()))
 		r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageInternal})
 		assert.Empty(t, store.saves)
-		assertLogContains(t, r.log.(*testLoggerMock), "review checkpoint save skipped")
+		assertLogContains(t, r.log.(*mocks.LoggerMock), "review checkpoint save skipped")
 	})
 
 	t.Run("save error is logged", func(t *testing.T) {
@@ -327,7 +329,7 @@ func TestRunnerReviewCheckpoint_SaveGuardsAndErrors(t *testing.T) {
 		git := &checkpointGit{head: "head", branch: "main"}
 		r, _, _, _ := newCheckpointRunner(Config{Mode: ModeReview}, store, git)
 		r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageInternal})
-		assertLogContains(t, r.log.(*testLoggerMock), "review checkpoint save failed")
+		assertLogContains(t, r.log.(*mocks.LoggerMock), "review checkpoint save failed")
 	})
 }
 
@@ -480,12 +482,28 @@ func TestRunnerReviewCheckpoint_SaveRepairsMissingStagePredecessors(t *testing.T
 	})
 }
 
-func TestRunnerReviewCheckpoint_CurrentBranchErrorUsesDetachedKey(t *testing.T) {
+func TestRunnerReviewCheckpoint_CurrentBranchErrorSkipsLoadAndSave(t *testing.T) {
 	store := &checkpointMemoryStore{found: true, cp: ReviewCheckpoint{
 		Version: reviewCheckpointVersion, Mode: ModeReview,
 		Stages: []ReviewStage{{Stage: reviewStageInternal, Head: "head"}},
 	}}
-	git := &checkpointGit{head: "head", branchErr: errors.New("detached"), contains: true}
+	git := &checkpointGit{head: "head", branchErr: errors.New("branch failed"), contains: true}
+	r, _, _, _ := newCheckpointRunner(Config{Mode: ModeReview}, store, git)
+
+	resume := r.loadReviewResume(t.Context())
+	assert.Equal(t, reviewResume{}, resume)
+	r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageInternal})
+	assert.Empty(t, store.saves)
+	assert.True(t, store.found)
+	assertLogContains(t, r.log.(*mocks.LoggerMock), "resolve current branch")
+}
+
+func TestRunnerReviewCheckpoint_DetachedHeadUsesEmptyBranchKey(t *testing.T) {
+	store := &checkpointMemoryStore{found: true, cp: ReviewCheckpoint{
+		Version: reviewCheckpointVersion, Mode: ModeReview,
+		Stages: []ReviewStage{{Stage: reviewStageInternal, Head: "head"}},
+	}}
+	git := &checkpointGit{head: "head", contains: true}
 	r, _, _, _ := newCheckpointRunner(Config{Mode: ModeReview}, store, git)
 
 	resume := r.loadReviewResume(t.Context())
@@ -493,6 +511,46 @@ func TestRunnerReviewCheckpoint_CurrentBranchErrorUsesDetachedKey(t *testing.T) 
 	r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageInternal})
 	require.NotEmpty(t, store.saves)
 	assert.Empty(t, store.saves[len(store.saves)-1].Branch)
+}
+
+func TestRunnerReviewCheckpoint_SaveLoadErrorPreservesCheckpoint(t *testing.T) {
+	want := ReviewCheckpoint{
+		Version: reviewCheckpointVersion, Mode: ModeReview, Branch: "feature",
+		Stages: []ReviewStage{{Stage: reviewStageInternal, Head: "old-head"}},
+	}
+	store := &checkpointMemoryStore{found: true, cp: want, loadErr: errors.New("temporary read failure")}
+	git := &checkpointGit{head: "new-head", branch: "feature"}
+	r, _, _, _ := newCheckpointRunner(Config{Mode: ModeReview}, store, git)
+
+	r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageInternal})
+
+	assert.Empty(t, store.saves)
+	assert.Equal(t, want, store.cp)
+	assertLogContains(t, r.log.(*mocks.LoggerMock), "load existing checkpoint")
+}
+
+func TestRunnerReviewCheckpoint_SaveReplacesCorruptCheckpoint(t *testing.T) {
+	store := &checkpointMemoryStore{loadErr: fmt.Errorf("decode failed: %w", ErrReviewCheckpointCorrupt)}
+	git := &checkpointGit{head: "new-head", branch: "feature"}
+	r, _, _, _ := newCheckpointRunner(Config{Mode: ModeReview}, store, git)
+
+	r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageInternal})
+
+	require.Len(t, store.saves, 1)
+	assert.Equal(t, reviewCheckpointVersion, store.saves[0].Version)
+	assert.Equal(t, "feature", store.saves[0].Branch)
+	require.Len(t, store.saves[0].Stages, 1)
+	assert.Equal(t, reviewStageInternal, store.saves[0].Stages[0].Stage)
+	assertLogContains(t, r.log.(*mocks.LoggerMock), "checkpoint is corrupt; replacing it")
+}
+
+func TestRunnerReviewCheckpoint_InvalidReviewerIndexDoesNotFailRun(t *testing.T) {
+	r, _, _, _ := newCheckpointRunner(Config{Mode: ModeCodexOnly}, &checkpointMemoryStore{}, &checkpointGit{})
+
+	err := r.onReviewerDone(t.Context(), phase.ReviewerCompletion{Index: 1, EndedBy: "done"})
+
+	require.NoError(t, err)
+	assertLogContains(t, r.log.(*mocks.LoggerMock), "review checkpoint save skipped")
 }
 
 func TestRunnerReviewCheckpoint_NewWithExecutorsWiresReviewerCallback(t *testing.T) {
