@@ -24,6 +24,7 @@ func TestRunRecordJSONRoundTrip(t *testing.T) {
 		StartedAt:      time.Date(2026, 9, 6, 1, 41, 47, 0, time.UTC),
 		FinishedAt:     time.Date(2026, 9, 6, 2, 4, 5, 0, time.UTC),
 		PhaseDurations: map[string]Duration{"task": Duration(3 * time.Second)},
+		Validation:     &ValidationRunRecord{Duration: Duration(1500 * time.Millisecond), Runs: 2},
 		Tasks:          TaskRunRecord{Iterations: 6, FailedRetries: 1},
 		InternalReview: InternalReviewRunRecord{FirstRan: true, LoopIterations: 2, EndedBy: "review_done"},
 		External: []ExternalReviewerRecord{
@@ -43,6 +44,7 @@ func TestRunRecordJSONRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(data), `"duration_ms":1830000`)
 	assert.Contains(t, string(data), `"task":3000`)
+	assert.Contains(t, string(data), `"validation":{"duration_ms":1500,"runs":2}`)
 
 	var decoded RunRecord
 	require.NoError(t, json.Unmarshal(data, &decoded))

@@ -1566,6 +1566,10 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	r.SetReviewCheckpoints(reviewCheckpointStoreForMode(req.Mode, runnerLog.Path()))
 	runRecordState := newRunRecordStore(runnerLog.Path())
 	r.SetRunRecordStore(runRecordState)
+	r.SetRunTimingsSource(func() (map[string]time.Duration, time.Duration, int) {
+		total, runs := validationTimer.Snapshot()
+		return sectionTimer.Snapshot(), total, runs
+	})
 
 	// listen for SIGQUIT (Ctrl+\) for manual break during task and review loops
 	if breakCh := startBreakSignal(); breakCh != nil {
@@ -4379,7 +4383,7 @@ func runReportCommand(ctx context.Context, gitSvc *git.Service, target closeoutT
 	paths := completionReportPaths(plansDir, planFile)
 	if branchErr == nil {
 		for _, path := range paths {
-			body, err := gitSvc.ShowFile(branch, path)
+			body, err := gitSvc.ShowFile("refs/heads/"+branch, path)
 			if err == nil {
 				return printCompletionReport(stdout, branch, body)
 			}

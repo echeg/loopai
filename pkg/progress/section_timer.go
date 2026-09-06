@@ -107,6 +107,25 @@ func (t *SectionTimer) FinishRun() {
 	t.Print("phase durations: %s", strings.Join(parts, ", "))
 }
 
+// Snapshot returns accumulated durations, including the active section, without
+// closing it or emitting log messages. The returned map belongs to the caller.
+func (t *SectionTimer) Snapshot() map[string]time.Duration {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	durations := make(map[string]time.Duration)
+	for i, value := range t.buckets {
+		if value.count > 0 {
+			durations[bucketNames[i]] = value.duration
+		}
+	}
+	if t.current != nil {
+		name := bucketNames[bucketForSection(t.current.Type)]
+		durations[name] += t.now().Sub(t.started)
+	}
+	return durations
+}
+
 func (t *SectionTimer) closeCurrent(now time.Time) {
 	if t.current == nil {
 		return

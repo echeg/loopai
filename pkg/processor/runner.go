@@ -128,21 +128,25 @@ type Executors struct {
 
 // Runner orchestrates the execution loop.
 type Runner struct {
-	cfg          Config
-	log          Logger
-	phaseHolder  *status.PhaseHolder
-	deps         *phase.Deps
-	git          GitChecker
-	checkpoints  ReviewCheckpointStore
-	recordStore  RunRecordStore
-	factsSource  RunFactsSource
-	record       RunRecord
-	loadedRecord *RunRecord
-	loadedTasks  TaskRunRecord
-	recorder     *runRecorder
-	resumeReady  bool
-	resume       reviewResume
-	phases       runnerPhases
+	cfg                 Config
+	log                 Logger
+	phaseHolder         *status.PhaseHolder
+	deps                *phase.Deps
+	git                 GitChecker
+	checkpoints         ReviewCheckpointStore
+	recordStore         RunRecordStore
+	factsSource         RunFactsSource
+	record              RunRecord
+	loadedRecord        bool
+	currentTasks        TaskRunRecord
+	invocationStarted   time.Time
+	timingsSource       func() (map[string]time.Duration, time.Duration, int)
+	priorPhaseDurations map[string]Duration
+	priorValidation     ValidationRunRecord
+	recorder            *runRecorder
+	resumeReady         bool
+	resume              reviewResume
+	phases              runnerPhases
 }
 
 type taskPhaseRunner interface {
@@ -517,13 +521,14 @@ func (r *Runner) runReport(ctx context.Context) error {
 	}
 
 	facts := r.collectRunFacts(ctx)
-	output, err := r.phases.report.Run(ctx, renderRunFacts(r.record, facts))
+	reportRecord := r.reportRunRecord()
+	output, err := r.phases.report.Run(ctx, renderRunFacts(reportRecord, facts))
 	if err != nil {
 		return fmt.Errorf("report phase: %w", err)
 	}
 	report, ok := extractReport(output)
 	if !ok {
-		report = factsOnlyReport(r.record, facts)
+		report = factsOnlyReport(reportRecord, facts)
 	}
 
 	if r.recorder == nil {

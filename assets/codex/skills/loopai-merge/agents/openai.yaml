@@ -1,0 +1,4 @@
+interface:
+  display_name: "loopai Merge"
+  short_description: "Review a report and close out a loopai plan"
+  default_prompt: "Use $loopai-merge to review this plan and choose its close-out action."

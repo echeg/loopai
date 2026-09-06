@@ -183,7 +183,7 @@ func renderRunFacts(record RunRecord, facts RunFacts) string {
 	b.WriteString("\n## Validation\n### Commands\n")
 	writeStringList(&b, facts.ValidationCommands, true)
 	b.WriteString("### Timings\n")
-	b.WriteString("- not recorded\n")
+	writeValidationTimings(&b, record.Validation)
 
 	b.WriteString("\n## External reviewers\n")
 	writeExternalReviewers(&b, record.External)
@@ -224,6 +224,14 @@ func writePhaseDurations(b *strings.Builder, durations map[string]Duration) {
 	for _, key := range keys {
 		fmt.Fprintf(b, "| %s | %d |\n", tableCell(key), time.Duration(durations[key]).Milliseconds())
 	}
+}
+
+func writeValidationTimings(b *strings.Builder, validation *ValidationRunRecord) {
+	if validation == nil {
+		b.WriteString("- not recorded\n")
+		return
+	}
+	fmt.Fprintf(b, "- duration_ms: %d\n- runs: %d\n", time.Duration(validation.Duration).Milliseconds(), validation.Runs)
 }
 
 func writeFilesTable(b *strings.Builder, files []gitpkg.FileChange) {

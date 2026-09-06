@@ -21,8 +21,10 @@ type runRecorder struct {
 
 func (r *runRecorder) TaskIteration(failed bool) {
 	r.update(func(record *RunRecord) {
+		r.runner.currentTasks.Iterations++
 		record.Tasks.Iterations++
 		if failed {
+			r.runner.currentTasks.FailedRetries++
 			record.Tasks.FailedRetries++
 		}
 	})
@@ -84,6 +86,7 @@ func (r *runRecorder) update(mutate func(*RunRecord)) {
 	}
 	r.mu.Lock()
 	mutate(&r.runner.record)
+	r.runner.snapshotRunTimings()
 	record := cloneRunRecord(r.runner.record)
 	r.mu.Unlock()
 	r.save(record)
@@ -106,6 +109,10 @@ func (r *runRecorder) save(record RunRecord) {
 
 func cloneRunRecord(record RunRecord) RunRecord {
 	cloned := record
+	if record.Validation != nil {
+		validation := *record.Validation
+		cloned.Validation = &validation
+	}
 	if record.PhaseDurations != nil {
 		cloned.PhaseDurations = make(map[string]Duration, len(record.PhaseDurations))
 		maps.Copy(cloned.PhaseDurations, record.PhaseDurations)
@@ -130,6 +137,11 @@ func (r *Runner) prepareReviewResume(ctx context.Context) {
 }
 
 func (r *Runner) startRunRecord() {
+	r.invocationStarted = time.Now().UTC()
+	r.currentTasks = TaskRunRecord{}
+	r.priorPhaseDurations = nil
+	r.priorValidation = ValidationRunRecord{}
+	r.loadedRecord = false
 	if r.recorder == nil {
 		r.recorder = &runRecorder{runner: r}
 		if r.deps != nil {
@@ -143,13 +155,15 @@ func (r *Runner) startRunRecord() {
 		case r.resumeReady && reviewResumeHasProgress(r.resume):
 			fresh = stored
 		case r.cfg.Mode == ModeFull:
-			candidate := cloneRunRecord(stored)
-			r.loadedRecord = &candidate
-			r.loadedTasks = stored.Tasks
+			r.loadedRecord = true
 			fresh = stored
 		}
 	}
 	r.record = fresh
+	r.priorPhaseDurations = maps.Clone(fresh.PhaseDurations)
+	if fresh.Validation != nil {
+		r.priorValidation = *fresh.Validation
+	}
 	r.fillRunRecordFields()
 	r.recorder.save(cloneRunRecord(r.record))
 }
@@ -179,6 +193,7 @@ func (r *Runner) finishRunRecord() {
 		return
 	}
 	r.recorder.mu.Lock()
+	r.snapshotRunTimings()
 	r.record.FinishedAt = time.Now().UTC()
 	record := cloneRunRecord(r.record)
 	r.recorder.mu.Unlock()
@@ -186,34 +201,32 @@ func (r *Runner) finishRunRecord() {
 }
 
 func (r *Runner) resetRunRecord() {
-	r.loadedRecord = nil
-	r.loadedTasks = TaskRunRecord{}
+	r.loadedRecord = false
+	r.priorPhaseDurations = nil
+	r.priorValidation = ValidationRunRecord{}
 	if r.recordStore != nil {
 		if err := r.recordStore.Remove(); err != nil {
 			r.log.Print("run record: removal failed: %v", err)
 		}
 	}
 	r.record = r.newRunRecord()
+	r.record.Tasks = r.currentTasks
 	r.fillRunRecordFields()
 }
 
 func (r *Runner) adoptLoadedRunRecord() {
-	if r.loadedRecord == nil {
+	if !r.loadedRecord {
 		return
 	}
 	if reviewResumeHasProgress(r.resume) {
-		r.loadedRecord = nil
-		r.loadedTasks = TaskRunRecord{}
+		r.loadedRecord = false
 		return
 	}
-	currentTasks := TaskRunRecord{
-		Iterations:    max(r.record.Tasks.Iterations-r.loadedTasks.Iterations, 0),
-		FailedRetries: max(r.record.Tasks.FailedRetries-r.loadedTasks.FailedRetries, 0),
-	}
 	r.record = r.newRunRecord()
-	r.record.Tasks = currentTasks
-	r.loadedRecord = nil
-	r.loadedTasks = TaskRunRecord{}
+	r.record.Tasks = r.currentTasks
+	r.loadedRecord = false
+	r.priorPhaseDurations = nil
+	r.priorValidation = ValidationRunRecord{}
 	r.fillRunRecordFields()
 	if r.recorder != nil {
 		r.recorder.save(cloneRunRecord(r.record))
@@ -222,6 +235,9 @@ func (r *Runner) adoptLoadedRunRecord() {
 
 func (r *Runner) newRunRecord() RunRecord {
 	record := RunRecord{Version: runRecordVersion, StartedAt: time.Now().UTC()}
+	if !r.invocationStarted.IsZero() {
+		record.StartedAt = r.invocationStarted
+	}
 	if branch, err := r.currentBranch(); err == nil {
 		record.Branch = branch
 	}

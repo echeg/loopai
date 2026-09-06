@@ -1,9 +1,13 @@
 package processor
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -155,4 +159,52 @@ func TestClearReviewCheckpointResetsAndRemovesRunRecord(t *testing.T) {
 	assert.False(t, store.found)
 	assert.Zero(t, runner.record.Tasks.Iterations)
 	assert.Equal(t, "feature", runner.record.Branch)
+}
+
+func TestFullRunReportPreservesCurrentTasksAfterNewCommits(t *testing.T) {
+	for _, stored := range []bool{false, true} {
+		t.Run(map[bool]string{false: "fresh run", true: "stale prior run"}[stored], func(t *testing.T) {
+			planFile := filepath.Join(t.TempDir(), "plan.md")
+			require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+			cfg := Config{Mode: ModeFull, PlanFile: planFile, ReportEnabled: true}
+			git := &checkpointGit{head: "before", branch: "feature", contains: true}
+			r, review, external, _ := newCheckpointRunner(cfg, &checkpointMemoryStore{}, git)
+			external.enabled = false
+			store := &runRecordMemoryStore{found: stored, record: RunRecord{
+				Version: runRecordVersion, Branch: "feature", StartedAt: time.Now().Add(-time.Hour),
+				Tasks: TaskRunRecord{Iterations: 8}, InternalReview: InternalReviewRunRecord{LoopIterations: 9},
+				PhaseDurations: map[string]Duration{"old": Duration(time.Hour)},
+				Validation:     &ValidationRunRecord{Duration: Duration(time.Hour), Runs: 99},
+			}}
+			r.SetRunRecordStore(store)
+			r.SetRunTimingsSource(func() (map[string]time.Duration, time.Duration, int) {
+				return map[string]time.Duration{"task": 2 * time.Second}, time.Second, 2
+			})
+			var started time.Time
+			r.phases.task.(*checkpointTask).onRun = func() {
+				started = r.invocationStarted
+				r.recorder.TaskIteration(true)
+				r.recorder.TaskIteration(false)
+				git.head = "after"
+			}
+			r.phases.report = testReportPhase{runFunc: func(_ context.Context, facts string) (string, error) {
+				assert.Contains(t, facts, "- task iterations: 2\n- task failed retries: 1")
+				assert.Contains(t, facts, "| task | 2000 |")
+				assert.Contains(t, facts, "- duration_ms: 1000\n- runs: 2")
+				assert.NotContains(t, facts, "finished: not recorded")
+				return "", nil
+			}}
+
+			require.NoError(t, r.Run(t.Context()))
+			assert.Equal(t, 1, review.first)
+			assert.Equal(t, started, store.record.StartedAt)
+			assert.Equal(t, TaskRunRecord{Iterations: 2, FailedRetries: 1}, store.record.Tasks)
+			assert.Zero(t, store.record.InternalReview.LoopIterations, "stale review facts must be discarded")
+			assert.Equal(t, map[string]Duration{"task": Duration(2 * time.Second)}, store.record.PhaseDurations)
+			assert.Equal(t, &ValidationRunRecord{Duration: Duration(time.Second), Runs: 2}, store.record.Validation)
+			assert.Contains(t, r.Report(), "| task | 2000 |")
+			assert.Contains(t, r.Report(), "- duration_ms: 1000\n- runs: 2")
+			assert.NotContains(t, r.Report(), "finished: not recorded")
+		})
+	}
 }

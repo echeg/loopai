@@ -77,10 +77,12 @@ Do not turn the fallback log into report facts. Explain that risk, migration, de
 
 ## Confirmation Gate
 
+Store the resolved base branch as `BASE` and verify it names a local branch with `git show-ref --verify "refs/heads/$BASE"`. If it is missing, is a commit rather than a local branch, or equals the feature branch, ask the user which local base branch to use before offering close-out. Pass that exact confirmed base with the attached `--merge=` or `--pr=` option; omitting it would auto-select main/master.
+
 Use AskUserQuestion with the exact question `Merge into <base>?`, replacing `<base>` with the resolved base branch, and these options:
 
-- `Merge` - run `loopai --merge "$PLAN_STEM"`
-- `Open PR` - run `loopai --pr "$PLAN_STEM"`
+- `Merge` - run `loopai --merge="$BASE" "$PLAN_STEM"`
+- `Open PR` - run `loopai --pr="$BASE" "$PLAN_STEM"`
 - `Cancel` - make no changes and stop
 
 Do not run either close-out command before the answer.
@@ -88,7 +90,7 @@ Do not run either close-out command before the answer.
 For Merge, run:
 
 ```bash
-loopai --merge "$PLAN_STEM"
+loopai --merge="$BASE" "$PLAN_STEM"
 ```
 
 Show loopai's output verbatim. If it reports a merge conflict, report that the merge stopped with conflicts and take no further action. Do not resolve conflicts, run `git merge` by hand, retry, or delete any branch.
@@ -96,7 +98,7 @@ Show loopai's output verbatim. If it reports a merge conflict, report that the m
 For Open PR, run:
 
 ```bash
-loopai --pr "$PLAN_STEM"
+loopai --pr="$BASE" "$PLAN_STEM"
 ```
 
 Show loopai's output verbatim. If the command fails, report the failure and stop without attempting an alternative close-out.

@@ -2065,7 +2065,7 @@ func (s *Service) MovePlanToCompletedWithReport(planFile string, report []byte) 
 		}
 	}
 
-	if err := os.WriteFile(reportPath, report, 0o644); err != nil { //nolint:gosec // repository documents are intentionally world-readable
+	if err := createCompletionReport(reportPath, report); err != nil {
 		return s.commitPlanMoveAfterReportFailure(sourceFile, destPath, err)
 	}
 	if err := s.repo.add(reportPath); err != nil {
@@ -2083,12 +2083,15 @@ func (s *Service) MovePlanToCompletedWithReport(planFile string, report []byte) 
 }
 
 func (s *Service) writeReportForArchivedPlan(reportPath, destPath string, report []byte) error {
-	if _, err := os.Stat(reportPath); err == nil {
+	if info, err := os.Lstat(reportPath); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: inspect sidecar: %s is not a regular file", ErrCompletionReportWrite, reportPath)
+		}
 		return nil
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("%w: inspect sidecar: %w", ErrCompletionReportWrite, err)
 	}
-	if err := os.WriteFile(reportPath, report, 0o644); err != nil { //nolint:gosec // repository documents are intentionally world-readable
+	if err := createCompletionReport(reportPath, report); err != nil {
 		return fmt.Errorf("%w: %w", ErrCompletionReportWrite, err)
 	}
 	if err := s.repo.add(reportPath); err != nil {
@@ -2100,6 +2103,22 @@ func (s *Service) writeReportForArchivedPlan(reportPath, destPath string, report
 		return fmt.Errorf("commit completion report: %w", err)
 	}
 	s.log.Printf("wrote completion report to %s\n", reportPath)
+	return nil
+}
+
+// createCompletionReport never follows or overwrites an existing sidecar, including
+// symlinks and hard links. O_EXCL also protects the gap after an absence check.
+func createCompletionReport(path string, report []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644) //nolint:gosec // repository documents are intentionally world-readable
+	if err != nil {
+		return fmt.Errorf("create sidecar: %w", err)
+	}
+	_, writeErr := f.Write(report)
+	closeErr := f.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("write sidecar: %w", err)
+	}
 	return nil
 }
 

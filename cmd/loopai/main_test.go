@@ -1647,6 +1647,39 @@ func TestRemoveRunRecordAfterArchivalWarnsOnFailure(t *testing.T) {
 	assert.Contains(t, stderr, "warning: failed to remove run record:")
 }
 
+func TestExecutePlanWiresLiveTimingsIntoCompletionReport(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := setupTestRepo(t)
+	t.Chdir(dir)
+	planPath := filepath.Join(dir, "docs", "plans", "timing.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath, []byte("# Timing\n\n### Task 1: Done\n- [x] complete\n"), 0o600))
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:REVIEW_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	err = executePlan(t.Context(), opts{Review: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeReview, GitSvc: gitSvc,
+		Config: &config.Config{ClaudeCommand: fakeClaude, ReportEnabled: true},
+		Colors: testColors(), BaseRef: "master", Outcome: &planExecutionOutcome{},
+	})
+	require.NoError(t, err)
+
+	records, err := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "*.run.json"))
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	record, found, err := (&runRecordStore{path: records[0]}).Load()
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Contains(t, record.PhaseDurations, "internal review")
+	assert.Contains(t, record.Report, "| internal review |", "the report must receive the snapshot before the timer is finalized")
+	assert.NotContains(t, record.Report, "finished: not recorded")
+}
+
 func TestSetOrcaCleanupStopsReporterOnForceExit(t *testing.T) {
 	var titleOut bytes.Buffer
 	titles := orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
@@ -2631,7 +2664,7 @@ func TestPlanFlagConflict(t *testing.T) {
 
 	t.Run("no_error_when_only_plan_flag_set", func(t *testing.T) {
 		// this test will fail at a later point (missing git repo etc), but not at validation
-		o := opts{PlanDescription: "add caching"}
+		o := opts{PlanDescription: "add caching", ConfigDir: t.TempDir()}
 		err := run(t.Context(), o)
 		// should fail at git repo check, not at validation
 		require.Error(t, err)
@@ -2640,7 +2673,7 @@ func TestPlanFlagConflict(t *testing.T) {
 
 	t.Run("no_error_when_only_planfile_set", func(t *testing.T) {
 		// this test will fail at a later point (file not found etc), but not at validation
-		o := opts{PlanFile: "nonexistent-plan.md"}
+		o := opts{PlanFile: "nonexistent-plan.md", ConfigDir: t.TempDir()}
 		err := run(t.Context(), o)
 		// should fail at git repo check, not at validation
 		require.Error(t, err)
@@ -11464,6 +11497,35 @@ func TestRunCloseoutCommandRoutesPositionalFeature(t *testing.T) {
 }
 
 func TestRunReportCommand(t *testing.T) {
+	t.Run("same-named tag cannot shadow feature report", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		completedDir := filepath.Join(dir, "docs", "plans", "completed")
+		require.NoError(t, os.MkdirAll(completedDir, 0o750))
+		planFile := filepath.Join(completedDir, "20260906-feature.md")
+		reportFile := filepath.Join(completedDir, "20260906-feature.report.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Feature\n"), 0o600))
+		require.NoError(t, os.WriteFile(reportFile, []byte("# Report: stale tag\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/completed")
+		runGit(t, dir, "commit", "-m", "old report")
+		runGit(t, dir, "tag", "feature")
+		runGit(t, dir, "checkout", "-b", "feature")
+		const report = "# Report: current branch\n"
+		require.NoError(t, os.WriteFile(reportFile, []byte(report), 0o600))
+		runGit(t, dir, "add", "docs/plans/completed/20260906-feature.report.md")
+		runGit(t, dir, "commit", "-m", "update feature report")
+		runGit(t, dir, "checkout", "master")
+		writeProgressRecord(t, dir, "progress-feature.txt", planFile, "feature", 1)
+
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		var out bytes.Buffer
+		err = runReportCommand(t.Context(), svc, closeoutTarget{
+			identifier: "feature", plansDir: filepath.Join(dir, "docs", "plans"),
+		}, &out)
+		require.NoError(t, err)
+		assert.Equal(t, "branch: feature\n\n"+report, out.String())
+	})
+
 	t.Run("reads feature branch selected by recorded branch override", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		plansDir := filepath.Join(dir, "docs", "plans")

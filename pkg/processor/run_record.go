@@ -46,11 +46,18 @@ type RunRecord struct {
 	StartedAt      time.Time                `json:"started_at"`
 	FinishedAt     time.Time                `json:"finished_at"`
 	PhaseDurations map[string]Duration      `json:"phase_durations"`
+	Validation     *ValidationRunRecord     `json:"validation,omitempty"`
 	Tasks          TaskRunRecord            `json:"tasks"`
 	InternalReview InternalReviewRunRecord  `json:"internal_review"`
 	External       []ExternalReviewerRecord `json:"external"`
 	PostReview     PostReviewRunRecord      `json:"post_review"`
 	Report         string                   `json:"report"`
+}
+
+// ValidationRunRecord summarizes measured validation commands across invocations.
+type ValidationRunRecord struct {
+	Duration Duration `json:"duration_ms"`
+	Runs     int      `json:"runs"`
 }
 
 // TaskRunRecord summarizes task-executor iterations.

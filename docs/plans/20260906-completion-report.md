@@ -305,6 +305,13 @@ archival (cmd/loopai):
 `resolveFeatureBranch(plan)` → `git show <branch>:<plans_dir>/completed/<stem>.report.md` →
 fallback to the working-tree file → error naming the plan. Output starts with `branch: <name>`.
 
+## Internal review corrections
+
+- ➕ Preserve current invocation task counts and start time while invalidating stale review state; report a timestamp captured before assessment generation and collect phase and validation timer snapshots.
+- ➕ Create report sidecars without clobbering existing files or following symlinks, preserve unusual Git filenames, and qualify live branch refs during report lookup.
+- ➕ Pass the confirmed base explicitly from merge skills and provide the Codex counterpart required by the merged skill inventory.
+- ➕ Refresh backlog consumer documentation, report phase/CLI inventories, and regression coverage.
+
 ## Post-Completion
 
 **Manual verification**:

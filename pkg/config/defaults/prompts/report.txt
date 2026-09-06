@@ -11,7 +11,7 @@ The report must use exactly these sections in this order:
 <one metadata line containing the plan, branch, base, mode, executor, task model, review model, start time, and finish time>
 
 ## Summary
-Summarize what was delivered.
+Summarize what was delivered and include the supplied phase durations. The finish timestamp and timing snapshot cover work through finalize, before report assessment and archival.
 
 ## Change scope
 Describe the changed files, commits, and diff size from the supplied facts.

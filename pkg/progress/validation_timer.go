@@ -49,6 +49,17 @@ func (t *ValidationTimer) FinishRun() {
 	t.logger.Print("validation: %s (%d runs)", formatSectionDuration(t.total), t.runs)
 }
 
+// Snapshot returns the cumulative duration and count of completed validation
+// commands without finalizing the timer or emitting log messages.
+func (t *ValidationTimer) Snapshot() (time.Duration, int) {
+	if t == nil {
+		return 0, 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.total, t.runs
+}
+
 func (t *ValidationTimer) record(command string, duration time.Duration) {
 	label, matched := validation.MatchCommand(command, t.commands)
 	if !matched {

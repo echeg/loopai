@@ -4321,3 +4321,110 @@ func TestService_resolveFilesystemCase(t *testing.T) {
 		assert.Equal(t, actual, svc.resolveFilesystemCase(input))
 	})
 }
+
+func TestService_ReportSidecarCollisions(t *testing.T) {
+	for _, archived := range []bool{false, true} {
+		for _, kind := range []string{"regular", "hardlink", "symlink", "dangling symlink"} {
+			name := kind
+			if archived {
+				name += " archived"
+			}
+			t.Run(name, func(t *testing.T) {
+				dir := setupExternalTestRepo(t)
+				svc, err := NewService(dir, noopServiceLogger())
+				require.NoError(t, err)
+				planFile := filepath.Join(dir, "docs", "plans", "feature.md")
+				completed := filepath.Join(filepath.Dir(planFile), "completed")
+				require.NoError(t, os.MkdirAll(completed, 0o750))
+				require.NoError(t, os.WriteFile(planFile, []byte("# Feature\n"), 0o600))
+				runGit(t, dir, "add", planFile)
+				runGit(t, dir, "commit", "-m", "add plan")
+				if archived {
+					require.NoError(t, svc.MovePlanToCompleted(planFile))
+				}
+				reportPath := filepath.Join(completed, "feature.report.md")
+				target := filepath.Join(t.TempDir(), "existing.md")
+				const original = "original contents\n"
+				if kind != "dangling symlink" {
+					require.NoError(t, os.WriteFile(target, []byte(original), 0o600))
+				}
+				switch kind {
+				case "regular":
+					require.NoError(t, os.WriteFile(reportPath, []byte(original), 0o600))
+				case "hardlink":
+					require.NoError(t, os.Link(target, reportPath))
+				default:
+					require.NoError(t, os.Symlink(target, reportPath))
+				}
+
+				err = svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: replacement\n"))
+				if archived && (kind == "regular" || kind == "hardlink") {
+					require.NoError(t, err)
+				} else {
+					require.ErrorIs(t, err, ErrCompletionReportWrite)
+				}
+				assert.NoFileExists(t, planFile)
+				assert.FileExists(t, filepath.Join(completed, "feature.md"))
+				assert.Equal(t, "# Feature\n", runGit(t, dir, "show", "HEAD:docs/plans/completed/feature.md"))
+				if kind == "dangling symlink" {
+					_, err = os.Lstat(target)
+					require.ErrorIs(t, err, os.ErrNotExist)
+				} else {
+					body, readErr := os.ReadFile(target) //nolint:gosec // test-owned temporary symlink target
+					require.NoError(t, readErr)
+					assert.Equal(t, original, string(body))
+					body, readErr = os.ReadFile(reportPath) //nolint:gosec // test-owned temporary sidecar
+					require.NoError(t, readErr)
+					assert.Equal(t, original, string(body))
+				}
+			})
+		}
+	}
+}
+
+func TestService_DiffNameStatusPreservesPaths(t *testing.T) {
+	const modifiedPath = "modified\tname.txt"
+	const copiedPath = "copy\tdestination.txt"
+	dir := setupExternalTestRepo(t)
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	baseFiles := map[string]string{
+		modifiedPath:        "before\n",
+		"deleted\nname.txt": "delete\n",
+		"old\trename.txt":   "unique renamed content\n",
+		"copy-source.txt":   strings.Repeat("copy source line\n", 20),
+	}
+	for path, body := range baseFiles {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, path), []byte(body), 0o600))
+		runGit(t, dir, "add", path)
+	}
+	runGit(t, dir, "commit", "-m", "base files")
+	require.NoError(t, svc.CreateBranch("path-facts"))
+	runGit(t, dir, "config", "diff.renames", "copies")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, modifiedPath), []byte("after\n"), 0o600))
+	runGit(t, dir, "rm", "deleted\nname.txt")
+	runGit(t, dir, "mv", "old\trename.txt", "renamed\nтест.txt")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, copiedPath), []byte(baseFiles["copy-source.txt"]), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "copy-source.txt"), []byte(baseFiles["copy-source.txt"]+"change\n"), 0o600))
+	added := []string{"тест.md", "tab\tname.md", "newline\nname.md", "trailing-whitespace \t\n"}
+	for _, path := range added {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, path), []byte("added "+path), 0o600))
+	}
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "change unusual paths")
+
+	changes, err := svc.DiffNameStatus("master")
+	require.NoError(t, err)
+	expected := make([]FileChange, 0, 5+len(added))
+	expected = append(expected,
+		FileChange{Status: "M", Path: modifiedPath},
+		FileChange{Status: "D", Path: "deleted\nname.txt"},
+		FileChange{Status: "R100", Path: "renamed\nтест.txt"},
+		FileChange{Status: "C100", Path: copiedPath},
+		FileChange{Status: "M", Path: "copy-source.txt"},
+	)
+	for _, path := range added {
+		expected = append(expected, FileChange{Status: "A", Path: path})
+	}
+	assert.ElementsMatch(t, expected, changes)
+}

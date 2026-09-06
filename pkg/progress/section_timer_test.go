@@ -2,6 +2,7 @@ package progress
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -171,4 +172,44 @@ func TestSectionTimer_ForwardsEmbeddedMethods(t *testing.T) {
 	timer.PrintAligned("delegated")
 
 	assert.Equal(t, []string{"aligned: delegated"}, inner.calls)
+}
+
+func TestSectionTimer_SnapshotIncludesActiveSectionWithoutFinalizing(t *testing.T) {
+	now := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC)
+	inner := &recordingSectionLogger{}
+	timer := NewSectionTimer(inner, func() time.Time { return now })
+	assert.Empty(t, timer.Snapshot())
+	timer.PrintSection(status.NewTaskIterationSection(1))
+	now = now.Add(2 * time.Second)
+	snapshot := timer.Snapshot()
+	assert.Equal(t, map[string]time.Duration{"tasks": 2 * time.Second}, snapshot)
+	assert.Equal(t, []string{"section: task iteration 1"}, inner.calls)
+	snapshot["tasks"] = time.Hour
+
+	now = now.Add(time.Second)
+	timer.PrintSection(status.Section{Type: status.SectionInternalReview, Label: "review"})
+	now = now.Add(4 * time.Second)
+	assert.Equal(t, map[string]time.Duration{"tasks": 3 * time.Second, "internal review": 4 * time.Second}, timer.Snapshot())
+	assert.Len(t, inner.calls, 3, "snapshot must not log or close a section")
+
+	now = now.Add(time.Second)
+	timer.FinishRun()
+	want := map[string]time.Duration{"tasks": 3 * time.Second, "internal review": 5 * time.Second}
+	assert.Equal(t, want, timer.Snapshot())
+	now = now.Add(time.Hour)
+	assert.Equal(t, want, timer.Snapshot(), "finished durations must remain fixed")
+}
+
+func TestSectionTimer_ConcurrentSnapshotsAndSections(t *testing.T) {
+	timer := NewSectionTimer(&recordingSectionLogger{}, nil)
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Go(func() {
+			timer.PrintSection(status.NewTaskIterationSection(i))
+			timer.Snapshot()
+		})
+	}
+	wg.Wait()
+	timer.FinishRun()
+	assert.Contains(t, timer.Snapshot(), "tasks")
 }

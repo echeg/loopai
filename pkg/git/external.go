@@ -1224,7 +1224,9 @@ func (e *externalBackend) commitsBetween(base, head string) ([]Commit, error) {
 }
 
 func (e *externalBackend) diffNameStatus(base string) ([]FileChange, error) {
-	out, err := e.run("diff", "--name-status", base+"...HEAD")
+	// The terminating NUL keeps run's trailing-whitespace trim from touching
+	// filenames, while -z disables Git's quoting of non-ASCII and control bytes.
+	out, err := e.run("diff", "--name-status", "-z", base+"...HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("diff name-status: %w", err)
 	}
@@ -1233,12 +1235,23 @@ func (e *externalBackend) diffNameStatus(base string) ([]FileChange, error) {
 	}
 
 	changes := make([]FileChange, 0)
-	for line := range strings.SplitSeq(out, "\n") {
-		parts := strings.Split(line, "\t")
-		if len(parts) < 2 || parts[0] == "" || parts[len(parts)-1] == "" {
-			return nil, fmt.Errorf("parse diff name-status line %q", line)
+	for out != "" {
+		status, rest, ok := strings.Cut(out, "\x00")
+		if !ok || status == "" {
+			return nil, fmt.Errorf("parse diff name-status status %q", out)
 		}
-		changes = append(changes, FileChange{Status: parts[0], Path: parts[len(parts)-1]})
+		path, rest, ok := strings.Cut(rest, "\x00")
+		if !ok || path == "" {
+			return nil, fmt.Errorf("parse diff name-status path for %q", status)
+		}
+		if status[0] == 'R' || status[0] == 'C' {
+			path, rest, ok = strings.Cut(rest, "\x00")
+			if !ok || path == "" {
+				return nil, fmt.Errorf("parse diff name-status destination for %q", status)
+			}
+		}
+		changes = append(changes, FileChange{Status: status, Path: path})
+		out = rest
 	}
 	return changes, nil
 }

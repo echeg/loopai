@@ -154,6 +154,8 @@ Then stop.
 
 ## Close-out (tell the user, do not run)
 
+Recommend `$loopai-merge <plan>` to narrate the completion report and choose merge, PR, or cancel before closing out.
+
 From the main checkout, `loopai --merge $PLAN` (or `--pr $PLAN`) finds the Orca branch through the progress record loopai wrote in the Orca worktree, merges it, and removes the git worktree. Orca still lists the card; `orca worktree rm --worktree "id:$WT_ID" --json` clears it. After the merge, the untracked plan copy left in `$ROOT/docs/plans/` is shadowed by the merged `completed/` copy and can be deleted.
 
 ## Pitfalls
