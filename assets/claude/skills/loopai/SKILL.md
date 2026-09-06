@@ -142,7 +142,7 @@ If user explicitly asks "check loopai", "loopai status", or "how is loopai doing
 - Show recent activity lines
 
 **If process exited (TaskOutput shows completion):**
-- Exit code 0 → success, report "loopai completed successfully"
+- Exit code 0 → success, report "loopai completed successfully" and tell the user to invoke `/loopai-merge <plan>` to review the completion report and choose merge, PR, or cancel
 - Exit code non-zero → failure, report "loopai failed"
 - Read final lines of progress file for summary
 
