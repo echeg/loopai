@@ -44,32 +44,7 @@ func (s *reviewCheckpointStore) Load() (processor.ReviewCheckpoint, bool, error)
 }
 
 func (s *reviewCheckpointStore) Save(checkpoint processor.ReviewCheckpoint) error {
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("create review checkpoint directory: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, ".review-checkpoint-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create review checkpoint: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) //nolint:errcheck // best-effort cleanup after atomic replacement
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("secure review checkpoint: %w", err)
-	}
-	encodeErr := json.NewEncoder(tmp).Encode(checkpoint)
-	closeErr := tmp.Close()
-	if encodeErr != nil {
-		return fmt.Errorf("write review checkpoint: %w", encodeErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close review checkpoint: %w", closeErr)
-	}
-	if err := os.Rename(tmpPath, s.path); err != nil {
-		return fmt.Errorf("replace review checkpoint: %w", err)
-	}
-	return nil
+	return saveJSONState(s.path, ".review-checkpoint-*.tmp", "review checkpoint", checkpoint)
 }
 
 func (s *reviewCheckpointStore) Remove() error {

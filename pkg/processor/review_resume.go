@@ -197,7 +197,13 @@ func (r *Runner) reviewResumeAfterTask(ctx context.Context, before string, befor
 	if r.invalidateReviewAfterTask(before, beforeErr, alreadyInvalidated) {
 		return reviewResume{}
 	}
-	return r.loadReviewResume(ctx)
+	if r.resumeReady {
+		return r.resume
+	}
+	r.resume = r.loadReviewResume(ctx)
+	r.resumeReady = true
+	r.adoptLoadedRunRecord()
+	return r.resume
 }
 
 func (r *Runner) invalidateReviewAfterTask(before string, beforeErr error, alreadyInvalidated bool) bool {
@@ -302,6 +308,9 @@ func (r *Runner) onReviewerDone(ctx context.Context, done phase.ReviewerCompleti
 }
 
 func (r *Runner) clearReviewCheckpoint(reason string) {
+	if reason != "" {
+		r.resetRunRecord()
+	}
 	if r.checkpoints == nil {
 		return
 	}

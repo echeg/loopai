@@ -17,6 +17,7 @@ type ReviewPhase struct {
 	policy         Policy
 	prompts        ReviewPrompts
 	git            *GitState
+	deps           *Deps
 	phaseHolder    *status.PhaseHolder
 	iterationDelay time.Duration
 }
@@ -29,6 +30,7 @@ type ReviewPhaseOpts struct {
 	Policy         Policy
 	Prompts        ReviewPrompts
 	Git            *GitState
+	Deps           *Deps
 	PhaseHolder    *status.PhaseHolder
 	IterationDelay time.Duration
 }
@@ -37,7 +39,7 @@ type ReviewPhaseOpts struct {
 func NewReviewPhase(opts ReviewPhaseOpts) *ReviewPhase {
 	return &ReviewPhase{
 		cfg: opts.Cfg, log: opts.Log, exec: opts.Exec, policy: opts.Policy,
-		prompts: opts.Prompts, git: opts.Git, phaseHolder: opts.PhaseHolder,
+		prompts: opts.Prompts, git: opts.Git, deps: opts.Deps, phaseHolder: opts.PhaseHolder,
 		iterationDelay: opts.IterationDelay,
 	}
 }
@@ -81,6 +83,7 @@ func (p *ReviewPhase) Loop(ctx context.Context, prefix string) error {
 
 		if IsReviewDone(result.Signal) {
 			p.log.Print("%s review complete - no more findings", execName)
+			p.recordLoopDone(prefix, i, "review_done")
 			return nil
 		}
 
@@ -95,6 +98,7 @@ func (p *ReviewPhase) Loop(ctx context.Context, prefix string) error {
 		if headBefore != "" {
 			if headAfter := p.headHash(); headAfter == headBefore {
 				p.log.Print("%s review complete - no changes detected", execName)
+				p.recordLoopDone(prefix, i, "no_changes")
 				return nil
 			}
 		}
@@ -106,7 +110,19 @@ func (p *ReviewPhase) Loop(ctx context.Context, prefix string) error {
 	}
 
 	p.log.Print("max %s review iterations reached, continuing...", execName)
+	p.recordLoopDone(prefix, maxReviewIterations, "max_iterations")
 	return nil
+}
+
+func (p *ReviewPhase) recordLoopDone(prefix string, iterations int, endedBy string) {
+	if p.deps == nil || p.deps.Recorder == nil {
+		return
+	}
+	if prefix != "" {
+		p.deps.Recorder.PostReviewDone(iterations)
+		return
+	}
+	p.deps.Recorder.InternalReviewDone(iterations, endedBy)
 }
 
 func (p *ReviewPhase) headHash() string {

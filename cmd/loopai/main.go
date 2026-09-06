@@ -1563,6 +1563,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// create and run the runner
 	r := createRunner(req, o, runnerLog, plr.holder, validationTimer.Handler())
 	r.SetReviewCheckpoints(reviewCheckpointStoreForMode(req.Mode, runnerLog.Path()))
+	r.SetRunRecordStore(newRunRecordStore(runnerLog.Path()))
 
 	// listen for SIGQUIT (Ctrl+\) for manual break during task and review loops
 	if breakCh := startBreakSignal(); breakCh != nil {

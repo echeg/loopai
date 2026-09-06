@@ -390,11 +390,11 @@ func newTestRunner(opts testRunnerOpts) *Runner {
 	})
 	reviewPhase := NewReviewPhase(ReviewPhaseOpts{
 		Cfg: opts.cfg, Log: opts.log, Exec: review, Policy: policy, Prompts: prompts,
-		Git: git, PhaseHolder: opts.holder, IterationDelay: iterDelay,
+		Git: git, Deps: deps, PhaseHolder: opts.holder, IterationDelay: iterDelay,
 	})
 	external := NewExternalReviewPhase(ExternalReviewPhaseOpts{
 		Cfg: opts.cfg, Log: opts.log, Reviewers: opts.execs.Externals, Review: review,
-		Policy: policy, Prompts: prompts, Breaks: breaks, Git: git, PhaseHolder: opts.holder, IterationDelay: iterDelay,
+		Policy: policy, Prompts: prompts, Breaks: breaks, Git: git, Deps: deps, PhaseHolder: opts.holder, IterationDelay: iterDelay,
 	})
 	finalize := NewFinalizePhase(FinalizePhaseOpts{Cfg: opts.cfg, Log: opts.log, Exec: review, Policy: policy, Prompts: prompts, PhaseHolder: opts.holder})
 	planCreation := NewPlanCreationPhase(PlanCreationPhaseOpts{

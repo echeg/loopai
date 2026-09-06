@@ -126,14 +126,20 @@ type Executors struct {
 
 // Runner orchestrates the execution loop.
 type Runner struct {
-	cfg         Config
-	log         Logger
-	phaseHolder *status.PhaseHolder
-	deps        *phase.Deps
-	git         GitChecker
-	checkpoints ReviewCheckpointStore
-	resume      reviewResume
-	phases      runnerPhases
+	cfg          Config
+	log          Logger
+	phaseHolder  *status.PhaseHolder
+	deps         *phase.Deps
+	git          GitChecker
+	checkpoints  ReviewCheckpointStore
+	recordStore  RunRecordStore
+	record       RunRecord
+	loadedRecord *RunRecord
+	loadedTasks  TaskRunRecord
+	recorder     *runRecorder
+	resumeReady  bool
+	resume       reviewResume
+	phases       runnerPhases
 }
 
 type taskPhaseRunner interface {
@@ -234,7 +240,7 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 	})
 	reviewPhase := phase.NewReviewPhase(phase.ReviewPhaseOpts{
 		Cfg: phaseCfg, Log: log, Exec: review, Policy: policy, Prompts: prompts,
-		Git: git, PhaseHolder: holder, IterationDelay: iterDelay,
+		Git: git, Deps: deps, PhaseHolder: holder, IterationDelay: iterDelay,
 	})
 	reviewers := make([]phase.ExternalReviewer, 0, len(execs.Externals))
 	for _, reviewer := range execs.Externals {
@@ -245,7 +251,7 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 	var runner *Runner
 	externalPhase := phase.NewExternalReviewPhase(phase.ExternalReviewPhaseOpts{
 		Cfg: phaseCfg, Log: log, Reviewers: reviewers, Review: review,
-		Policy: policy, Prompts: prompts, Breaks: breaks, Git: git, PhaseHolder: holder, IterationDelay: iterDelay,
+		Policy: policy, Prompts: prompts, Breaks: breaks, Git: git, Deps: deps, PhaseHolder: holder, IterationDelay: iterDelay,
 		OnReviewerDone: func(ctx context.Context, done phase.ReviewerCompletion) error {
 			return runner.onReviewerDone(ctx, done)
 		},
@@ -273,6 +279,8 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 		deps:        deps,
 		phases:      phases,
 	}
+	runner.recorder = &runRecorder{runner: runner}
+	deps.Recorder = runner.recorder
 	return runner
 }
 
@@ -298,6 +306,11 @@ func (r *Runner) SetReviewCheckpoints(store ReviewCheckpointStore) {
 	r.checkpoints = store
 }
 
+// SetRunRecordStore configures durable completion-report event storage.
+func (r *Runner) SetRunRecordStore(store RunRecordStore) {
+	r.recordStore = store
+}
+
 // SetBreakCh sets the break channel for manual termination of review and task loops.
 // each value sent on the channel triggers one break event (repeatable, not close-based).
 func (r *Runner) SetBreakCh(ch <-chan struct{}) {
@@ -319,6 +332,10 @@ func (r *Runner) SetPauseHandler(fn func(ctx context.Context) bool) {
 
 // Run executes the main loop based on configured mode.
 func (r *Runner) Run(ctx context.Context) error {
+	r.prepareReviewResume(ctx)
+	r.startRunRecord()
+	defer r.finishRunRecord()
+
 	switch r.cfg.Mode {
 	case ModeFull:
 		return r.runFull(ctx)
@@ -393,7 +410,6 @@ func (r *Runner) runFull(ctx context.Context) error {
 
 // runReviewOnly executes only the review pipeline: review → external review → review.
 func (r *Runner) runReviewOnly(ctx context.Context) error {
-	r.resume = r.loadReviewResume(ctx)
 	if err := r.runInternalReview(ctx); err != nil {
 		return err
 	}
@@ -409,7 +425,6 @@ func (r *Runner) runReviewOnly(ctx context.Context) error {
 
 // runCodexOnly executes only the external-review pipeline: external review → review → finalize.
 func (r *Runner) runCodexOnly(ctx context.Context) error {
-	r.resume = r.loadReviewResume(ctx)
 	if err := r.runExternalAndPostReview(ctx); err != nil {
 		return err
 	}

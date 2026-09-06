@@ -75,6 +75,9 @@ func (p *TaskPhase) Run(ctx context.Context) error {
 		execName := p.cfg.executorName()
 		execResult := p.policy.Run(loopCtx, p.exec.Run, prompt, execName)
 		result := execResult.Result
+		if p.deps != nil && p.deps.Recorder != nil {
+			p.deps.Recorder.TaskIteration(result.Signal == SignalFailed)
+		}
 
 		manualBreak := p.breaks.isBreak(loopCtx, ctx)
 		loopCancel()
