@@ -180,11 +180,11 @@ atomically written JSON checkpoint in the same directory).
 - [x] verify test coverage for `pkg/processor` and `cmd/loopai` new files meets the project standard (80%+)
 
 ### Task 7: [Final] Update documentation
-- [ ] `README.md`: in the worktree resume section (around line 783) and the execution pipeline section (around line 356), describe review checkpoints: where the file lives, which stages it records, the clean-tree rule, the ancestor rule, task-phase invalidation, removal on success, and that `--review`/`--external-only` reruns honor it too
-- [ ] `llms.txt`: extend the resume paragraph (line 183) with one sentence on review checkpoints
-- [ ] `CLAUDE.md`: add an architecture note under the worktree/chain paragraph naming `review_checkpoint.go`, `review_resume.go`, `review_checkpoint_state.go`, the stage keys, the clean-tree and ancestry rules, and why finalize is not checkpointed
-- [ ] `docs/backlog/`: file an entry proposing that a fresh `--worktree` run preserve its worktree on failure once review phases have begun, so uncommitted mid-reviewer fixes are not lost; note that the clean-tree gate is what keeps the checkpoint honest until then
-- [ ] confirm `make check-symlinks` and `make check-plugin` still pass (no skill changed, no manifest bump needed)
+- [x] `README.md`: in the worktree resume section (around line 783) and the execution pipeline section (around line 356), describe review checkpoints: where the file lives, which stages it records, the clean-tree rule, the ancestor rule, task-phase invalidation, removal on success, and that `--review`/`--external-only` reruns honor it too
+- [x] `llms.txt`: extend the resume paragraph (line 183) with one sentence on review checkpoints
+- [x] `CLAUDE.md`: add an architecture note under the worktree/chain paragraph naming `review_checkpoint.go`, `review_resume.go`, `review_checkpoint_state.go`, the stage keys, the clean-tree and ancestry rules, and why finalize is not checkpointed
+- [x] `docs/backlog/`: file an entry proposing that a fresh `--worktree` run preserve its worktree on failure once review phases have begun, so uncommitted mid-reviewer fixes are not lost; note that the clean-tree gate is what keeps the checkpoint honest until then
+- [x] confirm `make check-symlinks` and `make check-plugin` still pass (no skill changed, no manifest bump needed)
 
 ## Technical Details
 
