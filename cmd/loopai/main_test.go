@@ -7420,7 +7420,7 @@ func TestPrepareWorktreeRunAutoCommit(t *testing.T) {
 			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
 		}, "dangling-target")
 
-		require.ErrorContains(t, err, "resume worktree: worktree does not exist")
+		require.ErrorContains(t, err, "is a symlink, not a registered git worktree")
 		assert.Equal(t, headBefore, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")))
 		assert.Contains(t, gitOutput(t, dir, "status", "--porcelain"), "README.md")
 		assert.Empty(t, strings.TrimSpace(gitOutput(t, dir, "branch", "--list", "dangling-target")))
@@ -8064,7 +8064,13 @@ func TestRunWithWorktreeAutoResume(t *testing.T) {
 		assert.Equal(t, "Resume-Mixed-Case", currentBranch)
 	})
 
-	t.Run("rejects_unregistered_directory_without_removing_it", func(t *testing.T) {
+	// Superseded policy: an unregistered plain directory used to be refused and kept. It is
+	// now discarded, because the observed way to produce one is a process outliving the run
+	// and recreating loopai's own path after the worktree was removed, which left the plan
+	// branch intact but unreachable. The shapes that are not loopai's to delete - a symlink,
+	// a file, a directory carrying its own .git - are still refused, and those refusals are
+	// covered by the sibling subtests below.
+	t.Run("replaces_unregistered_directory_and_reuses_the_branch", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		origDir, err := os.Getwd()
 		require.NoError(t, err)
@@ -8079,17 +8085,24 @@ func TestRunWithWorktreeAutoResume(t *testing.T) {
 
 		wtPath := filepath.Join(dir, ".loopai", "worktrees", "resume-stale")
 		require.NoError(t, os.MkdirAll(wtPath, 0o750))
+		leftover := filepath.Join(wtPath, "Library", "cache.bin")
+		require.NoError(t, os.MkdirAll(filepath.Dir(leftover), 0o750))
+		require.NoError(t, os.WriteFile(leftover, []byte("stale\n"), 0o600))
 
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
-		err = runWithWorktree(t.Context(), opts{Worktree: true, NoColor: true}, executePlanRequest{
-			PlanFile: planPath, Mode: processor.ModeFull, GitSvc: gitSvc,
-			Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
-			DefaultBranch: "master", WtCleanup: &cleanupHolder{},
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not a registered git worktree")
-		assert.DirExists(t, wtPath, "invalid resume targets must never be removed")
+		wt, err := prepareWorktreeRun(opts{Worktree: true}, executePlanRequest{
+			PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{WorktreeEnabled: true},
+			Colors: testColors(), DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+		}, "resume-stale")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+
+		assert.False(t, wt.resumed)
+		assert.NoFileExists(t, leftover, "the leftover must not be carried into the new checkout")
+		registered, regErr := worktreePathRegistered(gitSvc, wt.path)
+		require.NoError(t, regErr)
+		assert.True(t, registered)
 	})
 
 	t.Run("rejects_foreign_repository_without_removing_it", func(t *testing.T) {
@@ -8532,9 +8545,12 @@ func TestRunWithWorktree_CreateWorktreeError(t *testing.T) {
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
 
-	// Pre-create an unregistered target to exercise auto-resume validation.
+	// Pre-create a dangling symlink at the target to force a setup failure. A plain
+	// unregistered directory is no longer a failure: loopai discards its own leftovers
+	// and recreates the worktree, so it would not exercise this path any more.
 	wtPath := filepath.Join(dir, ".loopai", "worktrees", "wt-fail")
-	require.NoError(t, os.MkdirAll(wtPath, 0o750))
+	require.NoError(t, os.MkdirAll(filepath.Dir(wtPath), 0o750))
+	require.NoError(t, os.Symlink(filepath.Join(dir, "missing-worktree"), wtPath))
 
 	colors := testColors()
 	cfg := &config.Config{WorktreeEnabled: true}
@@ -8639,8 +8655,11 @@ func TestRunWithWorktree_NotifiesSetupFailure(t *testing.T) {
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
 
-	// pre-create the worktree dir to force an "already exists" failure during setup
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "worktrees", "wt-notify"), 0o750))
+	// dangling symlink at the target forces a setup failure; a plain unregistered
+	// directory is discarded and recreated instead of failing.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "worktrees"), 0o750))
+	require.NoError(t, os.Symlink(filepath.Join(dir, "missing-worktree"),
+		filepath.Join(dir, ".loopai", "worktrees", "wt-notify")))
 	var titleOut bytes.Buffer
 	setupTitles := orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
 
@@ -12519,4 +12538,181 @@ func TestPrepareStaleCmuxStatusDefersForHandOff(t *testing.T) {
 			assert.Equal(t, "clear-status loopai\n", string(recorded))
 		})
 	}
+}
+
+func TestFormatByteSize(t *testing.T) {
+	tests := []struct {
+		name string
+		size int64
+		want string
+	}{
+		{"zero", 0, "0B"},
+		{"bytes below one kib", 999, "999B"},
+		{"exactly one kib", 1024, "1.0K"},
+		{"kibibytes", 630784, "616.0K"},
+		{"mebibytes", 5 * 1024 * 1024, "5.0M"},
+		{"gibibytes", 3 * 1024 * 1024 * 1024, "3.0G"},
+		{"tebibytes stay the largest unit", 2 * 1024 * 1024 * 1024 * 1024, "2.0T"},
+		{"beyond tebibytes does not overflow the unit table", 5 * 1024 * 1024 * 1024 * 1024 * 1024, "5120.0T"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, formatByteSize(tt.size))
+		})
+	}
+}
+
+func TestDirByteSize(t *testing.T) {
+	t.Run("sums regular files across subdirectories", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "nested", "deeper"), 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "top.bin"), make([]byte, 100), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "nested", "mid.bin"), make([]byte, 20), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "nested", "deeper", "low.bin"), make([]byte, 3), 0o600))
+		assert.Equal(t, int64(123), dirByteSize(dir))
+	})
+
+	t.Run("missing root reports zero instead of failing", func(t *testing.T) {
+		assert.Equal(t, int64(0), dirByteSize(filepath.Join(t.TempDir(), "absent")))
+	})
+
+	t.Run("symlinks are not followed into their target size", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(t.TempDir(), "big.bin")
+		require.NoError(t, os.WriteFile(target, make([]byte, 4096), 0o600))
+		require.NoError(t, os.Symlink(target, filepath.Join(dir, "link.bin")))
+		assert.Equal(t, int64(0), dirByteSize(dir), "a symlink is not a regular file")
+	})
+}
+
+func TestWorktreePathRegistered(t *testing.T) {
+	dir := setupTestRepo(t)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	linked := filepath.Join(t.TempDir(), "linked")
+	runGit(t, dir, "worktree", "add", "-b", "linked-branch", linked)
+	t.Cleanup(func() { _ = gitSvc.RemoveWorktree(linked) })
+
+	t.Run("registered linked worktree", func(t *testing.T) {
+		registered, regErr := worktreePathRegistered(gitSvc, linked)
+		require.NoError(t, regErr)
+		assert.True(t, registered)
+	})
+
+	t.Run("plain directory is not registered", func(t *testing.T) {
+		plain := filepath.Join(dir, ".loopai", "worktrees", "leftover")
+		require.NoError(t, os.MkdirAll(plain, 0o750))
+		registered, regErr := worktreePathRegistered(gitSvc, plain)
+		require.NoError(t, regErr)
+		assert.False(t, registered)
+	})
+
+	t.Run("source checkout itself is not a linked worktree", func(t *testing.T) {
+		registered, regErr := worktreePathRegistered(gitSvc, dir)
+		require.NoError(t, regErr)
+		assert.False(t, registered, "the source root must never be mistaken for a resumable worktree")
+	})
+}
+
+func TestDiscardLeftoverWorktreePath(t *testing.T) {
+	discard := func(t *testing.T, path string) error {
+		t.Helper()
+		info, statErr := os.Lstat(path)
+		require.NoError(t, statErr)
+		var buf bytes.Buffer
+		return discardLeftoverWorktreePath(path, info, testColors(), &buf)
+	}
+
+	t.Run("leftover directory is removed and reported", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "field-items-drop")
+		require.NoError(t, os.MkdirAll(filepath.Join(path, "Client", "Library", "BurstCache"), 0o750))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(path, "Client", "Library", "BurstCache", "manifest.cm"), make([]byte, 2048), 0o600))
+
+		info, statErr := os.Lstat(path)
+		require.NoError(t, statErr)
+		var buf bytes.Buffer
+		require.NoError(t, discardLeftoverWorktreePath(path, info, testColors(), &buf))
+
+		assert.NoDirExists(t, path)
+		assert.Contains(t, buf.String(), "is not a registered git worktree")
+		assert.Contains(t, buf.String(), "2.0K", "the warning must name what it deleted")
+	})
+
+	t.Run("symlink is refused", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "link")
+		target := t.TempDir()
+		require.NoError(t, os.Symlink(target, path))
+
+		require.ErrorContains(t, discard(t, path), "is a symlink")
+		assert.DirExists(t, target, "refusing must not delete through the link")
+		_, statErr := os.Lstat(path)
+		require.NoError(t, statErr, "the link itself must survive")
+	})
+
+	t.Run("regular file is refused", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "not-a-dir")
+		require.NoError(t, os.WriteFile(path, []byte("x"), 0o600))
+
+		require.ErrorContains(t, discard(t, path), "is a file")
+		assert.FileExists(t, path)
+	})
+
+	t.Run("directory holding a git checkout is refused", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "checkout")
+		require.NoError(t, os.MkdirAll(filepath.Join(path, ".git"), 0o750))
+
+		require.ErrorContains(t, discard(t, path), "holds a git checkout")
+		assert.DirExists(t, path)
+	})
+}
+
+// A worktree removed on failure can be recreated on disk by a process that outlives the
+// run - a Unity or Burst daemon writing its cache is the observed case. The path then
+// exists without being a registered worktree, and before this was classified as a resume
+// target the retry died in validation with the plan branch intact but unreachable.
+func TestPrepareWorktreeRunReplacesLeftoverPath(t *testing.T) {
+	dir := setupTestRepo(t)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	runGit(t, dir, "checkout", "-b", "field-items-drop")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "task-work.txt"), []byte("committed task\n"), 0o600))
+	runGit(t, dir, "add", "task-work.txt")
+	runGit(t, dir, "commit", "-m", "feat: work completed before the run failed")
+	branchHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+	runGit(t, dir, "checkout", "master")
+
+	planPath := filepath.Join(dir, "docs", "plans", "field-items-drop.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath, []byte("# Field items drop\n"), 0o600))
+	runGit(t, dir, "add", "docs/plans/field-items-drop.md")
+	runGit(t, dir, "commit", "-m", "add plan")
+
+	leftover := filepath.Join(dir, ".loopai", "worktrees", "field-items-drop")
+	burstCache := filepath.Join(leftover, "Client", "Library", "BurstCache", "manifest.cm")
+	require.NoError(t, os.MkdirAll(filepath.Dir(burstCache), 0o750))
+	require.NoError(t, os.WriteFile(burstCache, make([]byte, 1024), 0o600))
+
+	wt, err := prepareWorktreeRun(opts{Worktree: true}, executePlanRequest{
+		PlanFile: planPath, GitSvc: gitSvc, Config: &config.Config{}, Colors: testColors(),
+		DefaultBranch: "master", WtCleanup: &cleanupHolder{},
+	}, "field-items-drop")
+	require.NoError(t, err, "a leftover directory must not block recreating the worktree")
+	t.Cleanup(func() { _ = gitSvc.RemoveWorktree(wt.path) })
+
+	assert.False(t, wt.resumed, "an unregistered path is not a resumable worktree")
+	assert.NoFileExists(t, burstCache, "the leftover cache must be gone, not carried into the new checkout")
+
+	registered, regErr := worktreePathRegistered(gitSvc, wt.path)
+	require.NoError(t, regErr)
+	assert.True(t, registered, "the replacement must be a real registered worktree")
+
+	assert.Equal(t, "field-items-drop", strings.TrimSpace(gitOutput(t, wt.path, "branch", "--show-current")))
+	runGit(t, wt.path, "merge-base", "--is-ancestor", branchHead, "HEAD")
+	assert.FileExists(t, filepath.Join(wt.path, "task-work.txt"), "committed task work must survive the recreation")
+	assert.FileExists(t, filepath.Join(wt.path, "docs", "plans", "field-items-drop.md"))
 }

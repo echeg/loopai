@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -2138,26 +2139,116 @@ func prepareWorktreeTargetLocked(
 	ctx context.Context, o opts, req executePlanRequest, branch string,
 ) (wt worktreeRun, createdPath string, err error) {
 	wt.path = filepath.Join(req.GitSvc.Root(), ".loopai", "worktrees", branch)
-	_, statErr := os.Lstat(wt.path)
+	info, statErr := os.Lstat(wt.path)
 	switch {
 	case statErr == nil:
-		wt.resumed = true
-		if resumeErr := requireResumeWorktree(wt.path); resumeErr != nil {
-			return worktreeRun{}, "", resumeErr
+		// existence alone does not make this a worktree to resume. loopai removes a
+		// worktree on failure, and a process outliving the run - a Unity or Burst
+		// daemon writing its cache, for instance - can recreate the path afterwards,
+		// leaving a directory Git knows nothing about. resuming it fails validation,
+		// so classify by registration and treat unregistered debris as removable.
+		registered, regErr := worktreePathRegistered(req.GitSvc, wt.path)
+		if regErr != nil {
+			return worktreeRun{}, "", regErr
 		}
-		return wt, "", nil
+		if registered {
+			wt.resumed = true
+			if resumeErr := requireResumeWorktree(wt.path); resumeErr != nil {
+				return worktreeRun{}, "", resumeErr
+			}
+			return wt, "", nil
+		}
+		if discardErr := discardLeftoverWorktreePath(wt.path, info, req.Colors, os.Stdout); discardErr != nil {
+			return worktreeRun{}, "", discardErr
+		}
 	case os.IsNotExist(statErr), errors.Is(statErr, syscall.ENOTDIR):
-		// The marker makes this expected path ours to clean up even if the creation API reports an
-		// error without returning the path after Git has already materialized part of the checkout.
-		createdPath = wt.path
-		wt.path, wt.planNeedsCommit, err = prepareFreshWorktree(ctx, o, req, branch)
-		if err != nil {
-			return worktreeRun{}, createdPath, err
-		}
-		return wt, wt.path, nil
 	default:
 		return worktreeRun{}, "", fmt.Errorf("inspect plan worktree %s: %w", wt.path, statErr)
 	}
+	// The marker makes this expected path ours to clean up even if the creation API reports an
+	// error without returning the path after Git has already materialized part of the checkout.
+	createdPath = wt.path
+	wt.path, wt.planNeedsCommit, err = prepareFreshWorktree(ctx, o, req, branch)
+	if err != nil {
+		return worktreeRun{}, createdPath, err
+	}
+	return wt, wt.path, nil
+}
+
+// worktreePathRegistered reports whether path is currently registered as a linked
+// worktree of the source repository. The source checkout itself is skipped so a
+// repository whose own root somehow resolves to the plan path is never mistaken for
+// a linked worktree.
+func worktreePathRegistered(gitSvc *git.Service, path string) (bool, error) {
+	worktrees, err := gitSvc.Worktrees()
+	if err != nil {
+		return false, fmt.Errorf("list registered worktrees: %w", err)
+	}
+	for _, candidate := range worktrees {
+		if sameProgressRoot(candidate.Path, gitSvc.Root()) {
+			continue
+		}
+		if sameProgressRoot(candidate.Path, path) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// discardLeftoverWorktreePath removes a directory occupying loopai's own worktree
+// path that Git does not know as a worktree, so the caller can create a fresh
+// worktree from the existing branch instead of failing the run. loopai owns
+// .loopai/worktrees/<branch> outright and .loopai is gitignored, so an unregistered
+// directory there cannot hold tracked work. The three shapes that are not ours to
+// delete are refused instead: a symlink pointing somewhere else, a plain file, and a
+// directory carrying its own .git entry, which is a real checkout rather than debris.
+func discardLeftoverWorktreePath(path string, info os.FileInfo, colors *progress.Colors, w io.Writer) error {
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		return fmt.Errorf("plan worktree path %s is a symlink, not a registered git worktree; remove it manually", path)
+	case !info.IsDir():
+		return fmt.Errorf("plan worktree path %s is a file, not a registered git worktree; remove it manually", path)
+	}
+	if _, gitErr := os.Lstat(filepath.Join(path, ".git")); gitErr == nil {
+		return fmt.Errorf(
+			"plan worktree path %s holds a git checkout and is not a registered git worktree; remove it manually", path)
+	}
+	colors.Warn().Fprintf(w, "%s is not a registered git worktree; removing leftover directory (%s) and recreating it\n",
+		path, formatByteSize(dirByteSize(path)))
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove leftover worktree path %s: %w", path, err)
+	}
+	return nil
+}
+
+// dirByteSize sums the regular-file sizes under root. It is best-effort reporting for
+// the removal warning, so unreadable entries are skipped rather than failing the run.
+func dirByteSize(root string) int64 {
+	var total int64
+	_ = filepath.WalkDir(root, func(_ string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil //nolint:nilerr // best-effort size for a warning message
+		}
+		if info, infoErr := entry.Info(); infoErr == nil && info.Mode().IsRegular() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+// formatByteSize renders a byte count for human-facing warnings using binary units.
+func formatByteSize(size int64) string {
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%dB", size)
+	}
+	div, exp := int64(unit), 0
+	for n := size / unit; n >= unit && exp < 3; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%c", float64(size)/float64(div), "KMGT"[exp])
 }
 
 func openAndLockWorktreeRun(
