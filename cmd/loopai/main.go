@@ -437,6 +437,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 	}
 
 	mode := determineMode(o)
+	printWorktreeIgnoredWarning(os.Stderr, o, mode)
 	// Startup and setup happen before executePlan or runPlanMode can construct their reporters.
 	// Keep a title reporter alive across those boundaries so prompts and genuine preflight errors
 	// are visible. Standalone agent generation deliberately does not emit Orca titles.
@@ -2630,6 +2631,32 @@ func determineMode(o opts) processor.Mode {
 		return processor.ModeReview
 	default:
 		return processor.ModeFull
+	}
+}
+
+// worktreeIgnoredWarning explains why review-only modes do not create an isolated worktree.
+func worktreeIgnoredWarning(o opts, mode processor.Mode) string {
+	if !o.Worktree || (mode != processor.ModeReview && mode != processor.ModeCodexOnly) {
+		return ""
+	}
+
+	var flag string
+	switch {
+	case o.Review:
+		flag = "--review"
+	case o.ExternalOnly:
+		flag = "--external-only"
+	case o.CodexOnly:
+		flag = "--codex-only"
+	default:
+		return ""
+	}
+	return fmt.Sprintf("warning: --worktree is ignored by %s; review modes run in the current checkout and create no branch or worktree", flag)
+}
+
+func printWorktreeIgnoredWarning(w io.Writer, o opts, mode processor.Mode) {
+	if warning := worktreeIgnoredWarning(o, mode); warning != "" {
+		fmt.Fprintln(w, warning)
 	}
 }
 

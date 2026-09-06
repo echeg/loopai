@@ -2146,6 +2146,55 @@ func TestDetermineMode(t *testing.T) {
 	}
 }
 
+func TestWorktreeIgnoredWarning(t *testing.T) {
+	const warningPrefix = "warning: --worktree is ignored by "
+	tests := []struct {
+		name string
+		o    opts
+		mode processor.Mode
+		want string
+	}{
+		{
+			name: "review",
+			o:    opts{Worktree: true, Review: true},
+			mode: processor.ModeReview,
+			want: warningPrefix + "--review; review modes run in the current checkout and create no branch or worktree",
+		},
+		{
+			name: "external only",
+			o:    opts{Worktree: true, ExternalOnly: true},
+			mode: processor.ModeCodexOnly,
+			want: warningPrefix + "--external-only; review modes run in the current checkout and create no branch or worktree",
+		},
+		{
+			name: "codex only",
+			o:    opts{Worktree: true, CodexOnly: true},
+			mode: processor.ModeCodexOnly,
+			want: warningPrefix + "--codex-only; review modes run in the current checkout and create no branch or worktree",
+		},
+		{
+			name: "review flag takes naming precedence",
+			o:    opts{Worktree: true, Review: true, ExternalOnly: true, CodexOnly: true},
+			mode: processor.ModeCodexOnly,
+			want: warningPrefix + "--review; review modes run in the current checkout and create no branch or worktree",
+		},
+		{name: "full mode", o: opts{Worktree: true}, mode: processor.ModeFull},
+		{name: "tasks only", o: opts{Worktree: true, TasksOnly: true}, mode: processor.ModeTasksOnly},
+		{name: "plan", o: opts{Worktree: true, PlanDescription: "plan"}, mode: processor.ModePlan},
+		{name: "generate agents", o: opts{Worktree: true, GenAgents: true}, mode: processor.ModeGenAgents},
+		{name: "review without worktree", o: opts{Review: true}, mode: processor.ModeReview},
+		{name: "external only without worktree", o: opts{ExternalOnly: true}, mode: processor.ModeCodexOnly},
+		{name: "codex only without worktree", o: opts{CodexOnly: true}, mode: processor.ModeCodexOnly},
+		{name: "config worktree alone", o: opts{}, mode: processor.ModeReview},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, worktreeIgnoredWarning(tc.o, tc.mode))
+		})
+	}
+}
+
 func TestIsWatchOnlyMode(t *testing.T) {
 	tests := []struct {
 		name            string
