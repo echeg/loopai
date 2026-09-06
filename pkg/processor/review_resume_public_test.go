@@ -2,6 +2,9 @@ package processor_test
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -10,12 +13,40 @@ import (
 
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
+	gitservice "github.com/umputun/ralphex/pkg/git"
 	"github.com/umputun/ralphex/pkg/processor"
 	"github.com/umputun/ralphex/pkg/processor/mocks"
 	"github.com/umputun/ralphex/pkg/status"
 )
 
-func TestRunnerReviewCheckpoints_WithGeneratedMocks(t *testing.T) {
+type reviewGitLogger struct{}
+
+func (reviewGitLogger) Printf(string, ...any) (int, error) { return 0, nil }
+
+func newCleanReviewGitService(t *testing.T) *gitservice.Service {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test User"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		require.NoError(t, cmd.Run())
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("test\n"), 0o600))
+	for _, args := range [][]string{{"add", "README.md"}, {"commit", "-m", "initial"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		require.NoError(t, cmd.Run())
+	}
+	svc, err := gitservice.NewService(dir, reviewGitLogger{})
+	require.NoError(t, err)
+	return svc
+}
+
+func TestRunnerReviewCheckpoints_CleanRealGitServiceSaves(t *testing.T) {
 	appCfg, err := config.Load(t.TempDir())
 	require.NoError(t, err)
 
@@ -33,12 +64,7 @@ func TestRunnerReviewCheckpoints_WithGeneratedMocks(t *testing.T) {
 		},
 		RemoveFunc: func() error { return nil },
 	}
-	git := &mocks.GitCheckerMock{
-		HeadHashFunc:                func() (string, error) { return "head", nil },
-		DiffFingerprintFunc:         func() (string, error) { return "", nil },
-		ContainsRevisionContextFunc: func(context.Context, string) (bool, error) { return true, nil },
-		CurrentBranchFunc:           func() (string, error) { return "feature", nil },
-	}
+	git := newCleanReviewGitService(t)
 	review := &mocks.ExecutorMock{RunFunc: func(context.Context, string) executor.Result {
 		return executor.Result{Output: "done", Signal: status.ExternalReviewDone}
 	}}

@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -22,6 +23,9 @@ func (r *Runner) loadReviewResume(ctx context.Context) reviewResume {
 	if !found {
 		return reviewResume{}
 	}
+	if !r.reviewTreeIsClean("load") {
+		return reviewResume{}
+	}
 
 	branch, _ := r.git.CurrentBranch()
 	head, err := r.git.HeadHash()
@@ -30,7 +34,7 @@ func (r *Runner) loadReviewResume(ctx context.Context) reviewResume {
 		return reviewResume{}
 	}
 	resume, err := resolveReviewResume(cp, reviewResumeInput{
-		Mode: r.cfg.Mode, Branch: branch, Reviewers: reviewerKeys(r.cfg), Head: head,
+		Mode: r.cfg.Mode, Branch: branch, Plan: r.cfg.PlanFile, Reviewers: reviewerKeys(r.cfg), Head: head,
 	}, func(revision string) (bool, error) {
 		return r.git.ContainsRevisionContext(ctx, revision)
 	})
@@ -49,13 +53,7 @@ func (r *Runner) saveReviewStage(_ context.Context, stage ReviewStage) {
 		return
 	}
 
-	fingerprint, err := r.git.DiffFingerprint()
-	if err != nil {
-		r.log.Print("review checkpoint save skipped: %v", err)
-		return
-	}
-	if fingerprint != "" {
-		r.log.Print("review checkpoint skipped: uncommitted changes")
+	if !r.reviewTreeIsClean("save") {
 		return
 	}
 
@@ -69,7 +67,8 @@ func (r *Runner) saveReviewStage(_ context.Context, stage ReviewStage) {
 	switch {
 	case err != nil || !found:
 		cp = ReviewCheckpoint{}
-	case cp.Version != reviewCheckpointVersion || cp.Mode != r.cfg.Mode || cp.Branch != branch:
+	case cp.Version != reviewCheckpointVersion || cp.Mode != r.cfg.Mode || cp.Branch != branch ||
+		reviewPlanKey(cp.Plan) != reviewPlanKey(r.cfg.PlanFile):
 		cp = ReviewCheckpoint{}
 	case !slices.Equal(cp.Reviewers, reviewerKeys(r.cfg)):
 		internal := make([]ReviewStage, 0, 1)
@@ -93,7 +92,7 @@ func (r *Runner) saveReviewStage(_ context.Context, stage ReviewStage) {
 	replaced := false
 	for index := range cp.Stages {
 		if sameReviewStageKey(cp.Stages[index], stage) {
-			cp.Stages[index] = stage
+			cp.Stages = append(cp.Stages[:index], stage)
 			replaced = true
 			break
 		}
@@ -104,6 +103,61 @@ func (r *Runner) saveReviewStage(_ context.Context, stage ReviewStage) {
 	if err := r.checkpoints.Save(cp); err != nil {
 		r.log.Print("review checkpoint save failed: %v", err)
 	}
+}
+
+func (r *Runner) reviewTreeIsClean(action string) bool {
+	dirty, err := r.git.IsDirtyAll()
+	if err != nil {
+		if action == "load" {
+			r.log.Print("review checkpoint unreadable, starting reviews from scratch: %v", err)
+		} else {
+			r.log.Print("review checkpoint save skipped: %v", err)
+		}
+		return false
+	}
+	if dirty {
+		if action == "load" {
+			r.log.Print("review checkpoint: uncommitted changes; starting reviews from scratch")
+		} else {
+			r.log.Print("review checkpoint skipped: uncommitted changes")
+		}
+		return false
+	}
+	return true
+}
+
+func reviewPlanKey(plan string) string {
+	if plan == "" {
+		return ""
+	}
+	return filepath.Clean(plan)
+}
+
+func (r *Runner) reviewResumeAfterTask(ctx context.Context, before string, beforeErr error) reviewResume {
+	if r.invalidateReviewAfterTask(before, beforeErr) {
+		return reviewResume{}
+	}
+	return r.loadReviewResume(ctx)
+}
+
+func (r *Runner) invalidateReviewAfterTask(before string, beforeErr error) bool {
+	if r.git == nil {
+		return false
+	}
+	if beforeErr != nil {
+		r.clearReviewCheckpoint("task phase HEAD could not be verified")
+		return true
+	}
+	after, err := r.git.HeadHash()
+	if err != nil {
+		r.clearReviewCheckpoint("task phase HEAD could not be verified")
+		return true
+	}
+	if after != before {
+		r.clearReviewCheckpoint("task phase committed new work")
+		return true
+	}
+	return false
 }
 
 func sameReviewStageKey(left, right ReviewStage) bool {

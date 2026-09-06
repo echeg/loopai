@@ -2942,7 +2942,8 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 }
 
 func modeUsesReviewCheckpoints(mode processor.Mode) bool {
-	return mode == processor.ModeFull || mode == processor.ModeReview || mode == processor.ModeCodexOnly
+	return mode == processor.ModeFull || mode == processor.ModeTasksOnly ||
+		mode == processor.ModeReview || mode == processor.ModeCodexOnly
 }
 
 func detectClaudeSwapRecovery(o opts, cfg *config.Config, externalReview externalReviewSelection) limits.Recovery {

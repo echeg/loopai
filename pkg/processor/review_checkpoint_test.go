@@ -126,6 +126,19 @@ func TestResolveReviewResume(t *testing.T) {
 			want:       reviewResume{}, wantCalls: nil, noteContains: []string{"does not match"},
 		},
 		{
+			name: "plan mismatch",
+			checkpoint: func() ReviewCheckpoint {
+				cp := fullCheckpoint
+				cp.Plan = "docs/plans/first.md"
+				return cp
+			}(),
+			current:      reviewResumeInput{Mode: ModeFull, Branch: "feature", Plan: "docs/plans/second.md", Reviewers: reviewers, Head: oldHead},
+			contains:     func(string) (bool, error) { return true, nil },
+			want:         reviewResume{},
+			wantCalls:    nil,
+			noteContains: []string{"does not match"},
+		},
+		{
 			name: "non contiguous external indexes",
 			checkpoint: ReviewCheckpoint{
 				Version: reviewCheckpointVersion, Mode: ModeFull, Branch: "feature", Reviewers: reviewers,

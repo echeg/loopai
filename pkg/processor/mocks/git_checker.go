@@ -26,6 +26,9 @@ import (
 //			HeadHashFunc: func() (string, error) {
 //				panic("mock out the HeadHash method")
 //			},
+//			IsDirtyAllFunc: func() (bool, error) {
+//				panic("mock out the IsDirtyAll method")
+//			},
 //		}
 //
 //		// use mockedGitChecker in code that requires processor.GitChecker
@@ -45,6 +48,9 @@ type GitCheckerMock struct {
 	// HeadHashFunc mocks the HeadHash method.
 	HeadHashFunc func() (string, error)
 
+	// IsDirtyAllFunc mocks the IsDirtyAll method.
+	IsDirtyAllFunc func() (bool, error)
+
 	// calls tracks calls to the methods.
 	calls struct {
 		// ContainsRevisionContext holds details about calls to the ContainsRevisionContext method.
@@ -63,11 +69,15 @@ type GitCheckerMock struct {
 		// HeadHash holds details about calls to the HeadHash method.
 		HeadHash []struct {
 		}
+		// IsDirtyAll holds details about calls to the IsDirtyAll method.
+		IsDirtyAll []struct {
+		}
 	}
 	lockContainsRevisionContext sync.RWMutex
 	lockCurrentBranch           sync.RWMutex
 	lockDiffFingerprint         sync.RWMutex
 	lockHeadHash                sync.RWMutex
+	lockIsDirtyAll              sync.RWMutex
 }
 
 // ContainsRevisionContext calls ContainsRevisionContextFunc.
@@ -184,5 +194,32 @@ func (mock *GitCheckerMock) HeadHashCalls() []struct {
 	mock.lockHeadHash.RLock()
 	calls = mock.calls.HeadHash
 	mock.lockHeadHash.RUnlock()
+	return calls
+}
+
+// IsDirtyAll calls IsDirtyAllFunc.
+func (mock *GitCheckerMock) IsDirtyAll() (bool, error) {
+	if mock.IsDirtyAllFunc == nil {
+		panic("GitCheckerMock.IsDirtyAllFunc: method is nil but GitChecker.IsDirtyAll was just called")
+	}
+	callInfo := struct {
+	}{}
+	mock.lockIsDirtyAll.Lock()
+	mock.calls.IsDirtyAll = append(mock.calls.IsDirtyAll, callInfo)
+	mock.lockIsDirtyAll.Unlock()
+	return mock.IsDirtyAllFunc()
+}
+
+// IsDirtyAllCalls gets all the calls that were made to IsDirtyAll.
+// Check the length with:
+//
+//	len(mockedGitChecker.IsDirtyAllCalls())
+func (mock *GitCheckerMock) IsDirtyAllCalls() []struct {
+} {
+	var calls []struct {
+	}
+	mock.lockIsDirtyAll.RLock()
+	calls = mock.calls.IsDirtyAll
+	mock.lockIsDirtyAll.RUnlock()
 	return calls
 }

@@ -368,7 +368,8 @@ An optional finalize step can run after review. It is disabled by default and co
 After each completed review stage, loopai writes a review checkpoint beside the progress log as
 `.loopai/progress/<progress-log-stem>.review.json`. It records the internal review, each external
 reviewer in chain order, and post-review. A stage is recorded only after its fixes are committed and
-the working tree is clean; finalize is intentionally not checkpointed because it is cheap and
+the working tree is clean; a dirty working tree also forces reviews to restart rather than trusting
+the checkpoint. Finalize is intentionally not checkpointed because it is cheap and
 best-effort. After an interruption, rerunning the same command skips recorded stages while each
 stage's commit remains an ancestor of the current branch tip. A task-phase commit invalidates the
 checkpoint so changed code is reviewed again, and a successful run removes it. `--review`
@@ -803,11 +804,14 @@ removed and is now an unknown option; use `--worktree` for both creation and con
 If the original run used `--branch`, pass the same option when continuing it.
 
 Review progress survives worktree removal independently of task progress. The checkpoint lives in
-the main checkout's `.loopai/progress/` directory beside the run log and records completed internal,
+the invoking checkout's `.loopai/progress/` directory beside the run log and records completed
+internal,
 external-reviewer, and post-review stages only when their changes are committed and the tree is
-clean. On rerun, loopai accepts a recorded stage when its commit is still an ancestor of the branch
+clean. On rerun, loopai accepts a recorded stage only when the current tree is clean and its commit
+is still an ancestor of the branch
 tip, so later commits do not force completed reviews to repeat; rewritten or reset history does. If
-the resumed task phase creates a commit, all saved review stages are invalidated. The checkpoint is
+the resumed task phase or a separate `--tasks-only` run creates a commit, all saved review stages are
+invalidated. The checkpoint is
 removed after a successful run. The same rules apply when rerunning `--review` or
 `--external-only`, even though those modes do not create a worktree.
 

@@ -58,7 +58,11 @@ type checkpointGit struct {
 	diff        string
 	branch      string
 	headErr     error
+	headErrs    []error
 	diffErr     error
+	dirty       bool
+	dirtyErr    error
+	branchErr   error
 	contains    bool
 	containsErr error
 	mu          sync.Mutex
@@ -67,6 +71,13 @@ type checkpointGit struct {
 func (g *checkpointGit) HeadHash() (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if len(g.headErrs) > 0 {
+		err := g.headErrs[0]
+		g.headErrs = g.headErrs[1:]
+		if err != nil {
+			return "", err
+		}
+	}
 	if g.headErr != nil {
 		return "", g.headErr
 	}
@@ -78,14 +89,18 @@ func (g *checkpointGit) HeadHash() (string, error) {
 	return g.head, nil
 }
 func (g *checkpointGit) DiffFingerprint() (string, error) { return g.diff, g.diffErr }
+func (g *checkpointGit) IsDirtyAll() (bool, error)        { return g.dirty, g.dirtyErr }
 func (g *checkpointGit) ContainsRevisionContext(context.Context, string) (bool, error) {
 	return g.contains, g.containsErr
 }
-func (g *checkpointGit) CurrentBranch() (string, error) { return g.branch, nil }
+func (g *checkpointGit) CurrentBranch() (string, error) { return g.branch, g.branchErr }
 
-type checkpointTask struct{ runs int }
+type checkpointTask struct {
+	runs int
+	err  error
+}
 
-func (p *checkpointTask) Run(context.Context) error { p.runs++; return nil }
+func (p *checkpointTask) Run(context.Context) error { p.runs++; return p.err }
 func (*checkpointTask) ValidatePlanHasTasks() error { return nil }
 
 type checkpointReview struct {
@@ -178,6 +193,57 @@ func TestRunnerReviewCheckpoint_TaskCommitInvalidates(t *testing.T) {
 	assertLogContains(t, r.log.(*testLoggerMock), "review checkpoint: cleared")
 }
 
+func TestRunnerReviewCheckpoint_TaskHeadErrorsInvalidate(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		heads    []string
+		headErrs []error
+	}{
+		{name: "before task", headErrs: []error{errors.New("before failed")}},
+		{name: "after task", heads: []string{"old"}, headErrs: []error{nil, errors.New("after failed")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{Mode: ModeFull, PlanFile: "plan.md"}
+			store := &checkpointMemoryStore{found: true, cp: ReviewCheckpoint{
+				Version: reviewCheckpointVersion, Mode: ModeFull, Branch: "feature", Plan: "plan.md",
+				Stages: []ReviewStage{{Stage: reviewStageInternal, Head: "old"}},
+			}}
+			git := &checkpointGit{
+				head: "old", heads: tc.heads, headErrs: tc.headErrs, branch: "feature", contains: true,
+			}
+			r, review, external, _ := newCheckpointRunner(cfg, store, git)
+			external.enabled = false
+			require.NoError(t, r.Run(t.Context()))
+			assert.Equal(t, 1, review.first, "an unverifiable task phase must not resume reviews")
+			assert.GreaterOrEqual(t, store.removes, 1)
+			assertLogContains(t, r.log.(*testLoggerMock), "review checkpoint: cleared")
+		})
+	}
+}
+
+func TestRunnerReviewCheckpoint_TasksOnlyInvalidates(t *testing.T) {
+	t.Run("new commit", func(t *testing.T) {
+		store := &checkpointMemoryStore{found: true, cp: ReviewCheckpoint{Version: reviewCheckpointVersion}}
+		git := &checkpointGit{heads: []string{"old", "new"}, head: "new"}
+		r, _, _, _ := newCheckpointRunner(Config{Mode: ModeTasksOnly, PlanFile: "plan.md"}, store, git)
+
+		require.NoError(t, r.Run(t.Context()))
+		assert.Equal(t, 1, store.removes)
+		assert.False(t, store.found)
+	})
+
+	t.Run("failed task after commit", func(t *testing.T) {
+		store := &checkpointMemoryStore{found: true, cp: ReviewCheckpoint{Version: reviewCheckpointVersion}}
+		git := &checkpointGit{heads: []string{"old", "new"}, head: "new"}
+		r, _, _, _ := newCheckpointRunner(Config{Mode: ModeTasksOnly, PlanFile: "plan.md"}, store, git)
+		r.phases.task.(*checkpointTask).err = errors.New("task failed")
+
+		require.ErrorContains(t, r.Run(t.Context()), "task failed")
+		assert.Equal(t, 1, store.removes)
+		assert.False(t, store.found)
+	})
+}
+
 func TestRunnerReviewCheckpoint_ReviewModesAndPostReviewResume(t *testing.T) {
 	reviewers := []config.ReviewerSpec{{Provider: "codex", ModelSpec: "gpt:high"}}
 	for _, tc := range []struct {
@@ -208,11 +274,33 @@ func TestRunnerReviewCheckpoint_ReviewModesAndPostReviewResume(t *testing.T) {
 func TestRunnerReviewCheckpoint_SaveGuardsAndErrors(t *testing.T) {
 	t.Run("dirty tree", func(t *testing.T) {
 		store := &checkpointMemoryStore{}
-		git := &checkpointGit{head: "head", branch: "main", diff: "dirty"}
+		git := &checkpointGit{head: "head", branch: "main", dirty: true}
 		r, _, _, _ := newCheckpointRunner(Config{Mode: ModeReview}, store, git)
 		r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageInternal})
 		assert.Empty(t, store.saves)
 		assertLogContains(t, r.log.(*testLoggerMock), "review checkpoint skipped: uncommitted changes")
+	})
+
+	t.Run("dirty tree refuses resume", func(t *testing.T) {
+		for _, mode := range []Mode{ModeFull, ModeReview} {
+			t.Run(string(mode), func(t *testing.T) {
+				cfg := Config{Mode: mode}
+				if mode == ModeFull {
+					cfg.PlanFile = "plan.md"
+				}
+				store := &checkpointMemoryStore{found: true, cp: ReviewCheckpoint{
+					Version: reviewCheckpointVersion, Mode: mode, Branch: "main", Plan: cfg.PlanFile,
+					Stages: []ReviewStage{{Stage: reviewStageInternal, Head: "head"}},
+				}}
+				git := &checkpointGit{head: "head", branch: "main", contains: true, dirty: true}
+				r, review, external, _ := newCheckpointRunner(cfg, store, git)
+				external.enabled = false
+
+				require.NoError(t, r.Run(t.Context()))
+				assert.Equal(t, 1, review.first)
+				assertLogContains(t, r.log.(*testLoggerMock), "uncommitted changes; starting reviews from scratch")
+			})
+		}
 	})
 
 	t.Run("unreadable checkpoint starts fresh", func(t *testing.T) {
@@ -223,6 +311,17 @@ func TestRunnerReviewCheckpoint_SaveGuardsAndErrors(t *testing.T) {
 		assertLogContains(t, r.log.(*testLoggerMock), "review checkpoint unreadable")
 	})
 
+	t.Run("dirty check error refuses load and save", func(t *testing.T) {
+		store := &checkpointMemoryStore{found: true, cp: ReviewCheckpoint{Version: reviewCheckpointVersion}}
+		git := &checkpointGit{head: "head", branch: "main", dirtyErr: errors.New("status failed")}
+		r, _, _, _ := newCheckpointRunner(Config{Mode: ModeReview}, store, git)
+
+		assert.Equal(t, reviewResume{}, r.loadReviewResume(t.Context()))
+		r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageInternal})
+		assert.Empty(t, store.saves)
+		assertLogContains(t, r.log.(*testLoggerMock), "review checkpoint save skipped")
+	})
+
 	t.Run("save error is logged", func(t *testing.T) {
 		store := &checkpointMemoryStore{saveErr: errors.New("disk full")}
 		git := &checkpointGit{head: "head", branch: "main"}
@@ -230,6 +329,101 @@ func TestRunnerReviewCheckpoint_SaveGuardsAndErrors(t *testing.T) {
 		r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageInternal})
 		assertLogContains(t, r.log.(*testLoggerMock), "review checkpoint save failed")
 	})
+}
+
+func TestRunnerReviewCheckpoint_SaveMergesExistingCheckpoint(t *testing.T) {
+	const (
+		plan    = "docs/plans/plan.md"
+		oldHead = "old-head"
+		newHead = "new-head"
+	)
+	currentReviewers := []config.ReviewerSpec{{Provider: "codex", ModelSpec: "new:high"}}
+	newReviewerKey := "codex:new:high"
+	base := ReviewCheckpoint{
+		Version: reviewCheckpointVersion, Mode: ModeReview, Branch: "feature", Plan: plan,
+		Reviewers: []string{"codex:old:high"},
+		Stages: []ReviewStage{
+			{Stage: reviewStageInternal, Head: oldHead},
+			{Stage: reviewStageExternal, Index: 0, Reviewer: "codex:old:high", Head: oldHead},
+			{Stage: reviewStagePostReview, Head: oldHead},
+		},
+	}
+
+	t.Run("replacing an earlier stage drops downstream stages", func(t *testing.T) {
+		cp := base
+		cp.Reviewers = []string{newReviewerKey}
+		cp.Stages = []ReviewStage{
+			{Stage: reviewStageInternal, Head: oldHead},
+			{Stage: reviewStageExternal, Index: 0, Reviewer: newReviewerKey, Head: oldHead},
+			{Stage: reviewStagePostReview, Head: oldHead},
+		}
+		store := &checkpointMemoryStore{found: true, cp: cp}
+		git := &checkpointGit{head: newHead, branch: "feature"}
+		r, _, _, _ := newCheckpointRunner(Config{Mode: ModeReview, PlanFile: plan, ExternalReviewers: currentReviewers}, store, git)
+
+		r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageExternal, Index: 0, Reviewer: newReviewerKey, HadFindings: true})
+
+		require.Len(t, store.cp.Stages, 2)
+		assert.Equal(t, []string{reviewStageInternal, reviewStageExternal}, []string{store.cp.Stages[0].Stage, store.cp.Stages[1].Stage})
+		assert.Equal(t, newHead, store.cp.Stages[1].Head)
+		assert.True(t, store.cp.Stages[1].HadFindings)
+	})
+
+	t.Run("reviewer change preserves only internal before appending", func(t *testing.T) {
+		store := &checkpointMemoryStore{found: true, cp: base}
+		git := &checkpointGit{head: newHead, branch: "feature"}
+		r, _, _, _ := newCheckpointRunner(Config{Mode: ModeReview, PlanFile: plan, ExternalReviewers: currentReviewers}, store, git)
+
+		r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageExternal, Index: 0, Reviewer: newReviewerKey})
+
+		require.Len(t, store.cp.Stages, 2)
+		assert.Equal(t, reviewStageInternal, store.cp.Stages[0].Stage)
+		assert.Equal(t, newReviewerKey, store.cp.Stages[1].Reviewer)
+		assert.Equal(t, []string{newReviewerKey}, store.cp.Reviewers)
+	})
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ReviewCheckpoint)
+	}{
+		{name: "version", mutate: func(cp *ReviewCheckpoint) { cp.Version++ }},
+		{name: "mode", mutate: func(cp *ReviewCheckpoint) { cp.Mode = ModeFull }},
+		{name: "branch", mutate: func(cp *ReviewCheckpoint) { cp.Branch = "other" }},
+		{name: "plan", mutate: func(cp *ReviewCheckpoint) { cp.Plan = "docs/plans/other.md" }},
+	} {
+		t.Run(tc.name+" mismatch resets", func(t *testing.T) {
+			cp := base
+			tc.mutate(&cp)
+			store := &checkpointMemoryStore{found: true, cp: cp}
+			git := &checkpointGit{head: newHead, branch: "feature"}
+			r, _, _, _ := newCheckpointRunner(Config{Mode: ModeReview, PlanFile: plan, ExternalReviewers: currentReviewers}, store, git)
+
+			r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageInternal})
+
+			require.Len(t, store.cp.Stages, 1)
+			assert.Equal(t, reviewStageInternal, store.cp.Stages[0].Stage)
+			assert.Equal(t, newHead, store.cp.Stages[0].Head)
+			assert.Equal(t, reviewCheckpointVersion, store.cp.Version)
+			assert.Equal(t, ModeReview, store.cp.Mode)
+			assert.Equal(t, "feature", store.cp.Branch)
+			assert.Equal(t, plan, store.cp.Plan)
+		})
+	}
+}
+
+func TestRunnerReviewCheckpoint_CurrentBranchErrorUsesDetachedKey(t *testing.T) {
+	store := &checkpointMemoryStore{found: true, cp: ReviewCheckpoint{
+		Version: reviewCheckpointVersion, Mode: ModeReview,
+		Stages: []ReviewStage{{Stage: reviewStageInternal, Head: "head"}},
+	}}
+	git := &checkpointGit{head: "head", branchErr: errors.New("detached"), contains: true}
+	r, _, _, _ := newCheckpointRunner(Config{Mode: ModeReview}, store, git)
+
+	resume := r.loadReviewResume(t.Context())
+	assert.True(t, resume.skipInternal)
+	r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageInternal})
+	require.NotEmpty(t, store.saves)
+	assert.Empty(t, store.saves[len(store.saves)-1].Branch)
 }
 
 func TestRunnerReviewCheckpoint_NewWithExecutorsWiresReviewerCallback(t *testing.T) {

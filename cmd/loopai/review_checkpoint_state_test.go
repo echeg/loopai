@@ -110,9 +110,9 @@ func TestReviewCheckpointPath(t *testing.T) {
 
 func TestModeUsesReviewCheckpoints(t *testing.T) {
 	assert.True(t, modeUsesReviewCheckpoints(processor.ModeFull))
+	assert.True(t, modeUsesReviewCheckpoints(processor.ModeTasksOnly))
 	assert.True(t, modeUsesReviewCheckpoints(processor.ModeReview))
 	assert.True(t, modeUsesReviewCheckpoints(processor.ModeCodexOnly))
-	assert.False(t, modeUsesReviewCheckpoints(processor.ModeTasksOnly))
 	assert.False(t, modeUsesReviewCheckpoints(processor.ModePlan))
 	assert.False(t, modeUsesReviewCheckpoints(processor.ModeGenAgents))
 }
@@ -120,7 +120,7 @@ func TestModeUsesReviewCheckpoints(t *testing.T) {
 func TestReviewCheckpointStoreForMode(t *testing.T) {
 	progressPath := filepath.Join(t.TempDir(), "progress-plan.txt")
 
-	assert.Nil(t, reviewCheckpointStoreForMode(processor.ModeTasksOnly, progressPath))
+	assert.NotNil(t, reviewCheckpointStoreForMode(processor.ModeTasksOnly, progressPath))
 	store, ok := reviewCheckpointStoreForMode(processor.ModeFull, progressPath).(*reviewCheckpointStore)
 	require.True(t, ok)
 	assert.Equal(t, filepath.Join(filepath.Dir(progressPath), "progress-plan.review.json"), store.path)

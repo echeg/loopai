@@ -122,6 +122,8 @@ func (testGitChecker) HeadHash() (string, error) { return "head", nil }
 
 func (testGitChecker) DiffFingerprint() (string, error) { return "diff", nil }
 
+func (testGitChecker) IsDirtyAll() (bool, error) { return false, nil }
+
 func (testGitChecker) ContainsRevisionContext(context.Context, string) (bool, error) {
 	return true, nil
 }

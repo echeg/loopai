@@ -71,6 +71,7 @@ type reviewResume struct {
 type reviewResumeInput struct {
 	Mode      Mode
 	Branch    string
+	Plan      string
 	Reviewers []string
 	Head      string
 }
@@ -84,8 +85,9 @@ func resolveReviewResume(
 	if cp.Version == 0 && cp.Mode == "" && cp.Branch == "" && len(cp.Stages) == 0 {
 		return resume, nil
 	}
-	if cp.Version != reviewCheckpointVersion || cp.Mode != current.Mode || cp.Branch != current.Branch {
-		resume.notes = append(resume.notes, "checkpoint does not match the current version, mode, or branch; starting reviews from scratch")
+	if cp.Version != reviewCheckpointVersion || cp.Mode != current.Mode || cp.Branch != current.Branch ||
+		reviewPlanKey(cp.Plan) != reviewPlanKey(current.Plan) {
+		resume.notes = append(resume.notes, "checkpoint does not match the current version, mode, branch, or plan; starting reviews from scratch")
 		return resume, nil
 	}
 

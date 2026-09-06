@@ -9,7 +9,7 @@ of repeated work. Nothing in the review phases is durable today: `firstCompleted
 and stalemate state are locals in `ExternalReviewPhase.runLoop`, and the runner re-enters `runFull`
 unconditionally from the task phase even on a resumed worktree.
 
-This plan adds a review checkpoint: a small JSON file in the main checkout's `.loopai/progress/`
+This plan adds a review checkpoint: a small JSON file in the invoking checkout's `.loopai/progress/`
 directory, next to the run's progress log, written by the runner after each review stage completes on
 a clean tree, and read on the next run to skip the stages already done. The same command resumes: no
 new flag, no plan-file changes, no prompt changes. Stages are recorded with the branch HEAD they
@@ -26,7 +26,8 @@ atomically written JSON checkpoint in the same directory).
 
 - **Context**: reviews had to resume after a crash without new flags and with state that survives
   `--force` removal of the worktree.
-- **Chosen approach**: JSON checkpoint in `.loopai/progress/` of the main checkout, written by the
+- **Chosen approach**: JSON checkpoint beside the progress log in the checkout from which loopai was
+  launched, written by the
   runner through a small store interface implemented in `cmd/loopai`, mirroring the plan-chain
   checkpoint. Stages: `internal_review`, one `external_review` per reviewer in chain order,
   `post_review`. Finalize is not checkpointed: it is best-effort, runs once, and is cheap to repeat.
@@ -43,7 +44,8 @@ atomically written JSON checkpoint in the same directory).
   the current HEAD (manual commit, `--commit` start-commit merge), with a log warning naming both
   commits. Discard from the first stage whose commit is no longer contained. Exception: a commit made
   by the task phase of the *resuming* run invalidates the whole checkpoint.
-- **Clean-tree gate**: a stage is saved only when `DiffFingerprint()` reports no uncommitted changes.
+- **Clean-tree gate**: a stage is saved and an existing checkpoint is resumed only when
+  `IsDirtyAll()` reports no uncommitted changes.
   The final evaluation round commits accumulated fixes before `EXTERNAL_REVIEW_DONE`, and the internal
   review prompts commit their fixes, so a clean tree is the normal end state. A dirty tree at stage end
   logs `review checkpoint skipped: uncommitted changes` and leaves the stage unrecorded, so the next run
@@ -59,8 +61,8 @@ atomically written JSON checkpoint in the same directory).
   `runExternalAndPostReview` (`pkg/processor/runner.go:332-369`); post-review runs only when
   `outcome.HadFindings` is true (`runner.go:421`); `ExternalReviewPhase.Run` iterates `p.reviewers` in
   order and ORs `HadFindings` (`external_review.go:84-110`); `git.Service` already exposes
-  `HeadHash`, `DiffFingerprint`, and `ContainsRevisionContext` (`pkg/git/service.go:238-262`); the
-  progress logger path is resolved in the main checkout before loopai changes into a worktree, so
+  `HeadHash`, `DiffFingerprint`, `IsDirtyAll`, and `ContainsRevisionContext`; the progress logger path
+  is resolved in the invoking checkout before loopai changes into a worktree, so
   `filepath.Dir(log.Path())` is a worktree-independent anchor; `readProgressAssociations` scans only
   `*.txt`, so a `.json` sibling is invisible to close-out lookups.
 
@@ -130,13 +132,13 @@ atomically written JSON checkpoint in the same directory).
 - [x] create `pkg/processor/review_checkpoint.go` with `ReviewCheckpoint{Version, Mode, Branch, Plan, Reviewers []string, Stages []ReviewStage}` and `ReviewStage{Stage, Reviewer, Index, Head, HadFindings, EndedBy, CompletedAt}`; stage constants `reviewStageInternal = "internal_review"`, `reviewStageExternal = "external_review"`, `reviewStagePostReview = "post_review"`; `const reviewCheckpointVersion = 1`
 - [x] define `ReviewCheckpointStore` interface at the consumer: `Load() (ReviewCheckpoint, bool, error)`, `Save(ReviewCheckpoint) error`, `Remove() error`; add `//go:generate moq` line and generate `mocks/review_checkpoint_store.go`
 - [x] add `reviewerKeys(cfg Config) []string` returning `provider:modelspec` per `cfg.ExternalReviewers`, falling back to the legacy `ExternalReviewTool`/`Model`/`Effort` triple when the chain is empty and the tool is not `none`
-- [x] add `reviewResume{skipInternal bool, completedReviewers int, hadFindings bool, skipPostReview bool, notes []string}` and a pure `resolveReviewResume(cp ReviewCheckpoint, current reviewResumeInput, contains func(head string) (bool, error)) (reviewResume, error)` where `reviewResumeInput{Mode, Branch, Reviewers []string, Head string}`: reject version/mode/branch mismatch as no-resume with a note; on reviewer-key mismatch keep only `internal_review`; walk stages in order and stop at the first whose `Head` is not contained; require external stages to be contiguous from index 0 in chain order (an `external_review` for index 1 without index 0 is ignored from there on); `post_review` counts only when every reviewer in the chain is completed; collect a note when `Head != current.Head` for an honored stage naming both short SHAs
+- [x] add `reviewResume{skipInternal bool, completedReviewers int, hadFindings bool, skipPostReview bool, notes []string}` and a pure `resolveReviewResume(cp ReviewCheckpoint, current reviewResumeInput, contains func(head string) (bool, error)) (reviewResume, error)` where `reviewResumeInput{Mode, Branch, Plan, Reviewers []string, Head string}`: reject version/mode/branch/plan mismatch as no-resume with a note; on reviewer-key mismatch keep only `internal_review`; walk stages in order and stop at the first whose `Head` is not contained; require external stages to be contiguous from index 0 in chain order (an `external_review` for index 1 without index 0 is ignored from there on); `post_review` counts only when every reviewer in the chain is completed; collect a note when `Head != current.Head` for an honored stage naming both short SHAs
 - [x] write table-driven tests for `resolveReviewResume`: empty checkpoint, exact-HEAD match through every stage, ancestor match with note, non-ancestor drops from that stage, reviewer chain mismatch keeps internal only, mode/branch/version mismatch, non-contiguous external indexes, `post_review` without full chain, `contains` returning an error
 - [x] write tests for `reviewerKeys` (chain, legacy triple, none)
 - [x] run `go test ./pkg/processor/...` - must pass before task 2
 
 ### Task 2: Ancestry check on the runner's git checker
-- [x] extend `processor.GitChecker` with `ContainsRevisionContext(ctx context.Context, revision string) (bool, error)`; `git.Service` already implements it at `pkg/git/service.go:244`
+- [x] extend `processor.GitChecker` with `ContainsRevisionContext(ctx context.Context, revision string) (bool, error)` and `IsDirtyAll() (bool, error)`; `git.Service` implements both
 - [x] leave `phase.GitChecker` and `phase.Deps.Git` unchanged; store the checker on the runner in a new `git GitChecker` field set by `SetGitChecker` alongside the existing `deps.Git` assignment
 - [x] regenerate `pkg/processor/mocks/git_checker.go` with `go generate ./pkg/processor/...`; do not hand-edit
 - [x] update every hand-written `GitChecker` fake in `pkg/processor/*_test.go` and `cmd/loopai/*_test.go` that stops compiling
@@ -153,9 +155,9 @@ atomically written JSON checkpoint in the same directory).
 
 ### Task 4: Runner wiring: load, skip, save, invalidate, remove
 - [x] add `SetReviewCheckpoints(store ReviewCheckpointStore)` to `Runner` and pass `OnReviewerDone` into `phase.NewExternalReviewPhase` from `NewWithExecutors` through a runner method so the phase can call back into the runner
-- [x] create `pkg/processor/review_resume.go` with `loadReviewResume(ctx) reviewResume` (nil store or missing file → zero value; load/parse error → `Print("review checkpoint unreadable, starting reviews from scratch: %v")` and zero value; every note printed as `review checkpoint: ...`), `saveReviewStage(ctx, stage ReviewStage)` (no-op without store or git checker; skips with `review checkpoint skipped: uncommitted changes` when `DiffFingerprint()` is non-empty; records `HeadHash()`, `CompletedAt` UTC, merges into the loaded checkpoint replacing a stage with the same key, writes `Mode`, `Branch`, `Plan`, `Reviewers`; a save error is logged and never fails the run), and `clearReviewCheckpoint(reason string)`
+- [x] create `pkg/processor/review_resume.go` with `loadReviewResume(ctx) reviewResume` (nil store or missing file → zero value; load/parse error or dirty tree → zero value; every resolver note printed as `review checkpoint: ...`), `saveReviewStage(ctx, stage ReviewStage)` (no-op without store or git checker; skips with `review checkpoint skipped: uncommitted changes` when `IsDirtyAll()` is true; records `HeadHash()`, `CompletedAt` UTC, merges into the loaded checkpoint while truncating stale downstream stages, writes `Mode`, `Branch`, `Plan`, `Reviewers`; a save error is logged and never fails the run), and `clearReviewCheckpoint(reason string)`
 - [x] obtain `Branch` for the checkpoint through the git checker: extend `processor.GitChecker` with `CurrentBranch() (string, error)` (implemented by `git.Service` at `service.go:270`), regenerate the mock, and treat an error or detached HEAD as an empty branch that still resumes when the checkpoint's branch is also empty
-- [x] in `runFull`: capture `HeadHash()` before `task.Run`; after it, if the hash changed, call `clearReviewCheckpoint("task phase committed new work")` and skip resume; otherwise `loadReviewResume`
+- [x] in `runFull`: capture `HeadHash()` before `task.Run`; after it, if the hash changed, call `clearReviewCheckpoint("task phase committed new work")` and skip resume; if either hash cannot be read, invalidate conservatively; otherwise `loadReviewResume`
 - [x] in `runReviewOnly` and `runCodexOnly`: `loadReviewResume` at entry
 - [x] apply the resume: when `skipInternal`, print `review checkpoint: internal review completed in an earlier run, skipping` and skip `review.First` + `review.Loop`; otherwise run them and `saveReviewStage(internal_review)` after `Loop` returns nil; call `external.SetResume(completedReviewers, hadFindings)` before `external.Run`; when `skipPostReview`, skip the post-review `review.Loop(ctx, commitPrefix)` and go to finalize; otherwise run it and `saveReviewStage(post_review)` after it returns nil
 - [x] implement the `OnReviewerDone` callback as `saveReviewStage(external_review, Index, Reviewer key, HadFindings, EndedBy)`
@@ -165,7 +167,7 @@ atomically written JSON checkpoint in the same directory).
 
 ### Task 5: File-backed store in cmd/loopai and wiring
 - [x] create `cmd/loopai/review_checkpoint_state.go` with `reviewCheckpointStore{path string}`: path is `filepath.Join(filepath.Dir(progressLogPath), strings.TrimSuffix(filepath.Base(progressLogPath), ".txt") + ".review.json")`; `Load` returns `found=false` on `os.IsNotExist`, a wrapped error on other read/parse failures; `Save` writes temp file + `Chmod(0o600)` + `os.Rename` like `savePlanChainCheckpoint`, stamping `Version`; `Remove` ignores not-exist
-- [x] wire it in `executePlan` right after `createRunner`: `r.SetReviewCheckpoints(newReviewCheckpointStore(runnerLog.Path()))`, guarded so plan-creation and gen-agents modes (no review phases) skip it; the anchor is the progress log path, which is resolved in the main checkout before any worktree `chdir`, so the file survives worktree removal without consulting `MainGitSvc`
+- [x] wire it in `executePlan` right after `createRunner`: `r.SetReviewCheckpoints(newReviewCheckpointStore(runnerLog.Path()))`, including tasks-only mode so task commits can invalidate a shared full-mode checkpoint, while plan-creation and gen-agents modes skip it; the anchor is the progress log path, which is resolved in the invoking checkout before any worktree `chdir`, so the file survives worktree removal without consulting `MainGitSvc`
 - [x] make `progressRecordRoots`/`readProgressAssociations` behavior explicit in a test: a `*.review.json` file in `.loopai/progress/` is ignored by the close-out association scan
 - [x] write tests for the store with `t.TempDir()`: round-trip, missing file, corrupt JSON error, remove idempotent, temp file cleaned up, `0600` mode on Unix; and for the path derivation for `progress-<plan>.txt`, `progress-review.txt`, `progress-codex.txt`
 - [x] run `go test ./cmd/...` - must pass before task 6
@@ -190,7 +192,7 @@ atomically written JSON checkpoint in the same directory).
 
 ### Checkpoint file
 
-Path: `<main checkout>/.loopai/progress/<progress log stem>.review.json`, e.g.
+Path: `<invoking checkout>/.loopai/progress/<progress log stem>.review.json`, e.g.
 `progress-abilities-engine-v2.review.json`. Written with `0600` via temp file and rename. Only the
 runner writes it; only the runner removes it.
 
@@ -217,7 +219,7 @@ Inputs: loaded checkpoint, current `Mode`, `Branch`, reviewer keys, `HeadHash`, 
 `ContainsRevisionContext`. Output: `skipInternal`, `completedReviewers`, `hadFindings`,
 `skipPostReview`, notes.
 
-1. Version, mode, or branch mismatch → nothing resumes; one note.
+1. Version, mode, branch, or normalized plan mismatch → nothing resumes; one note.
 2. Reviewer keys differ → only `internal_review` is eligible; one note.
 3. Stages are walked in the fixed order `internal_review`, `external_review[0..n-1]`,
    `post_review`. A stage is honored when present and its `head` is contained in HEAD. The walk stops
@@ -230,7 +232,9 @@ Inputs: loaded checkpoint, current `Mode`, `Branch`, reviewer keys, `HeadHash`, 
 ```text
 task.Run
   HEAD changed?  → clear checkpoint, resume = none
+  HEAD unreadable? → clear checkpoint, resume = none
   else           → resume = load + resolve
+dirty tree? restart reviews without honoring the checkpoint
 skipInternal? skip First+Loop : run First, Loop, save(internal_review)
 external.SetResume(completedReviewers, hadFindings); external.Run
   per reviewer done on clean tree → save(external_review)
@@ -243,10 +247,10 @@ clear checkpoint
 
 ### Logging
 
-All checkpoint messages go through `Logger.Print` with the prefix `review checkpoint:` so they land in
-the progress log and the dashboard: `resuming after <stage>`, `branch moved from <sha7> to <sha7>
-since <stage>; resuming anyway`, `skipped: uncommitted changes`, `unreadable, starting reviews from
-scratch`, `cleared: task phase committed new work`.
+Checkpoint state notes go through `Logger.Print` and land in the progress log and dashboard. They
+include `branch moved from <sha7> to <sha7> since <stage>; resuming anyway`, dirty/unreadable
+fallbacks, per-stage internal and post-review skips, and task-phase invalidation. Resumed external
+reviewers appear as skipped review sections with their reviewer labels.
 
 ## Post-Completion
 
@@ -259,11 +263,11 @@ scratch`, `cleared: task phase committed new work`.
   resume.
 - Repeat with `git reset --hard` of the branch to an earlier commit and confirm reviews restart.
 
-**Follow-ups filed in `docs/backlog/`**:
-- Preserve a fresh `--worktree` run's worktree on failure once review phases have begun, so
+**Post-completion considerations**:
+- Filed in `docs/backlog/`: preserve a fresh `--worktree` run's worktree on failure once review phases have begun, so
   uncommitted mid-reviewer fixes survive for the resumed run. Today `defer cleanup(true)` removes it,
   which is why the clean-tree gate exists.
-- Consider a `--fresh-review` flag to ignore an existing checkpoint deliberately; omitted here because
+- Not filed: consider a `--fresh-review` flag to ignore an existing checkpoint deliberately; omitted here because
   deleting the `.review.json` file achieves the same and the user asked for no new flags.
 
 ## Validation Commands
