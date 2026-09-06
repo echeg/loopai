@@ -1193,6 +1193,77 @@ func TestService_MovePlanToCompleted(t *testing.T) {
 	})
 }
 
+func TestService_MovePlanToCompletedWithReport(t *testing.T) {
+	newPlan := func(t *testing.T, name string) (string, *Service, string) {
+		t.Helper()
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, name)
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		return dir, svc, planFile
+	}
+
+	t.Run("commits plan and sidecar together", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "feature.md")
+		before := strings.TrimSpace(runGit(t, dir, "rev-list", "--count", "HEAD"))
+
+		require.NoError(t, svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Feature\n")))
+
+		after := strings.TrimSpace(runGit(t, dir, "rev-list", "--count", "HEAD"))
+		assert.Equal(t, "2", before)
+		assert.Equal(t, "3", after)
+		assert.Equal(t, "move completed plan: feature.md (+ report)",
+			strings.TrimSpace(runGit(t, dir, "log", "-1", "--format=%s")))
+		completedDir := filepath.Join(dir, "docs", "plans", "completed")
+		assert.FileExists(t, filepath.Join(completedDir, "feature.md"))
+		reportPath := filepath.Join(completedDir, "feature.report.md")
+		report, err := os.ReadFile(reportPath) //nolint:gosec // test-owned path
+		require.NoError(t, err)
+		assert.Equal(t, "# Report: Feature\n", string(report))
+		info, err := os.Stat(reportPath)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
+		changed := runGit(t, dir, "show", "--format=", "--name-status", "HEAD")
+		assert.Contains(t, changed, "docs/plans/completed/feature.md")
+		assert.Contains(t, changed, "docs/plans/completed/feature.report.md")
+	})
+
+	t.Run("empty report preserves legacy commit", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "legacy.md")
+
+		require.NoError(t, svc.MovePlanToCompletedWithReport(planFile, nil))
+
+		assert.Equal(t, "move completed plan: legacy.md",
+			strings.TrimSpace(runGit(t, dir, "log", "-1", "--format=%s")))
+		assert.NoFileExists(t, filepath.Join(dir, "docs", "plans", "completed", "legacy.report.md"))
+	})
+
+	t.Run("adds missing report to an already archived plan once", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "archived.md")
+		require.NoError(t, svc.MovePlanToCompleted(planFile))
+		before := strings.TrimSpace(runGit(t, dir, "rev-list", "--count", "HEAD"))
+
+		require.NoError(t, svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Archived\n")))
+		afterFirst := strings.TrimSpace(runGit(t, dir, "rev-list", "--count", "HEAD"))
+		require.NoError(t, svc.MovePlanToCompletedWithReport(planFile, []byte("replacement")))
+		afterSecond := strings.TrimSpace(runGit(t, dir, "rev-list", "--count", "HEAD"))
+
+		assert.Equal(t, "3", before)
+		assert.Equal(t, "4", afterFirst)
+		assert.Equal(t, afterFirst, afterSecond)
+		assert.Equal(t, "add completion report: archived.md",
+			strings.TrimSpace(runGit(t, dir, "log", "-1", "--format=%s")))
+		report, err := os.ReadFile(filepath.Join(dir, "docs", "plans", "completed", "archived.report.md")) //nolint:gosec // test-owned path
+		require.NoError(t, err)
+		assert.Equal(t, "# Report: Archived\n", string(report))
+	})
+}
+
 func TestService_EnsureHasCommits(t *testing.T) {
 	t.Run("returns nil when repo has commits", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

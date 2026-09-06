@@ -81,6 +81,11 @@ type backend interface {
 // The repository is returned to its pre-merge state before this error is returned.
 var ErrMergeConflict = errors.New("merge conflict")
 
+// ErrCompletionReportWrite identifies a completion-report sidecar failure that
+// happened after the plan was already archived (or was found already archived).
+// Callers may warn and continue because the plan move itself succeeded.
+var ErrCompletionReportWrite = errors.New("completion report write failed")
+
 // errMergeTreeUnsupported indicates that the installed Git does not support the
 // merge-tree --write-tree form used for non-mutating conflict prediction.
 var errMergeTreeUnsupported = errors.New("git merge-tree --write-tree unsupported")
@@ -2013,6 +2018,85 @@ func (s *Service) MovePlanToCompleted(planFile string) error {
 
 	s.log.Printf("moved plan to %s\n", destPath)
 	return nil
+}
+
+// MovePlanToCompletedWithReport moves a plan into completed/ and writes its
+// completion-report sidecar in the same commit. An empty report preserves the
+// legacy MovePlanToCompleted behavior, including its commit message.
+//
+// If the plan is already archived, the missing sidecar is added in a standalone
+// commit. Sidecar preparation failures after the plan move are reported through
+// ErrCompletionReportWrite after committing the plan move without the report.
+func (s *Service) MovePlanToCompletedWithReport(planFile string, report []byte) error {
+	if len(report) == 0 {
+		return s.MovePlanToCompleted(planFile)
+	}
+
+	completedDir := filepath.Join(filepath.Dir(planFile), "completed")
+	if err := os.MkdirAll(completedDir, 0o750); err != nil {
+		return fmt.Errorf("create completed dir: %w", err)
+	}
+
+	sourceFile, destPath, done := s.resolvePlanMoveTargets(planFile, completedDir)
+	reportPath := strings.TrimSuffix(destPath, filepath.Ext(destPath)) + ".report.md"
+	if done {
+		return s.writeReportForArchivedPlan(reportPath, destPath, report)
+	}
+
+	if err := s.repo.moveFile(sourceFile, destPath); err != nil {
+		if renameErr := os.Rename(sourceFile, destPath); renameErr != nil {
+			return fmt.Errorf("move plan: %w", renameErr)
+		}
+		if addErr := s.repo.add(destPath); addErr != nil {
+			s.log.Printf("warning: failed to stage moved plan: %v\n", addErr)
+		}
+	}
+
+	if err := os.WriteFile(reportPath, report, 0o644); err != nil { //nolint:gosec // repository documents are intentionally world-readable
+		return s.commitPlanMoveAfterReportFailure(sourceFile, destPath, err)
+	}
+	if err := s.repo.add(reportPath); err != nil {
+		_ = os.Remove(reportPath)
+		return s.commitPlanMoveAfterReportFailure(sourceFile, destPath, fmt.Errorf("stage sidecar: %w", err))
+	}
+
+	commitMsg := "move completed plan: " + filepath.Base(sourceFile) + " (+ report)"
+	if err := s.repo.commit(s.appendTrailer(commitMsg)); err != nil {
+		return fmt.Errorf("commit plan move and report: %w", err)
+	}
+
+	s.log.Printf("moved plan to %s and wrote completion report to %s\n", destPath, reportPath)
+	return nil
+}
+
+func (s *Service) writeReportForArchivedPlan(reportPath, destPath string, report []byte) error {
+	if _, err := os.Stat(reportPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("%w: inspect sidecar: %w", ErrCompletionReportWrite, err)
+	}
+	if err := os.WriteFile(reportPath, report, 0o644); err != nil { //nolint:gosec // repository documents are intentionally world-readable
+		return fmt.Errorf("%w: %w", ErrCompletionReportWrite, err)
+	}
+	if err := s.repo.add(reportPath); err != nil {
+		_ = os.Remove(reportPath)
+		return fmt.Errorf("%w: stage sidecar: %w", ErrCompletionReportWrite, err)
+	}
+	commitMsg := "add completion report: " + filepath.Base(destPath)
+	if err := s.repo.commit(s.appendTrailer(commitMsg)); err != nil {
+		return fmt.Errorf("commit completion report: %w", err)
+	}
+	s.log.Printf("wrote completion report to %s\n", reportPath)
+	return nil
+}
+
+func (s *Service) commitPlanMoveAfterReportFailure(sourceFile, destPath string, reportErr error) error {
+	commitMsg := "move completed plan: " + filepath.Base(sourceFile)
+	if err := s.repo.commit(s.appendTrailer(commitMsg)); err != nil {
+		return fmt.Errorf("commit plan move after completion report failure: %w", err)
+	}
+	s.log.Printf("moved plan to %s\n", destPath)
+	return fmt.Errorf("%w: %w", ErrCompletionReportWrite, reportErr)
 }
 
 // ValidateFinalizingPlanWorktreeRemoval permits crash recovery to force-remove a generated

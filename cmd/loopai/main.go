@@ -1563,7 +1563,8 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// create and run the runner
 	r := createRunner(req, o, runnerLog, plr.holder, validationTimer.Handler())
 	r.SetReviewCheckpoints(reviewCheckpointStoreForMode(req.Mode, runnerLog.Path()))
-	r.SetRunRecordStore(newRunRecordStore(runnerLog.Path()))
+	runRecordState := newRunRecordStore(runnerLog.Path())
+	r.SetRunRecordStore(runRecordState)
 
 	// listen for SIGQUIT (Ctrl+\) for manual break during task and review loops
 	if breakCh := startBreakSignal(); breakCh != nil {
@@ -1604,13 +1605,14 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// inside each execution worktree so the source checkout stays untouched between plans and the
 	// final branch contains every completed-plan move.
 	// track actual success so the completion summary reflects where the plan really lives.
-	planMoved, moveErr := moveCompletedPlan(req)
+	planMoved, moveErr := moveCompletedPlan(req, r.Report())
 	if moveErr != nil {
 		plr.baseLog.SetFailed(moveErr)
 		sendNotification(req, branch, elapsed, stats, moveErr)
 		completeCmux(elapsed, moveErr)
 		return moveErr
 	}
+	removeRunRecordAfterArchival(runRecordState, planMoved)
 	sendNotification(req, branch, elapsed, stats, nil)
 
 	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved)
@@ -1639,13 +1641,22 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	return nil
 }
 
+func removeRunRecordAfterArchival(store *runRecordStore, planMoved bool) {
+	if !planMoved {
+		return
+	}
+	if err := store.Remove(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to remove run record: %v\n", err)
+	}
+}
+
 func stopCmuxUnlessRetained(rep *cmux.Reporter, retained bool) {
 	if !retained {
 		rep.Stop()
 	}
 }
 
-func moveCompletedPlan(req executePlanRequest) (bool, error) {
+func moveCompletedPlan(req executePlanRequest, report string) (bool, error) {
 	chainRun := len(req.ChainPlanFiles) > 1
 	if chainRun && req.PlanFile != "" && modeRequiresBranch(req.Mode) && req.ChainFinalizing != nil {
 		if err := req.ChainFinalizing(); err != nil {
@@ -1663,7 +1674,11 @@ func moveCompletedPlan(req executePlanRequest) (bool, error) {
 	if req.MainPlanFile != "" && !chainRun {
 		movePlanFile = req.MainPlanFile
 	}
-	if err := moveSvc.MovePlanToCompleted(movePlanFile); err != nil {
+	if err := moveSvc.MovePlanToCompletedWithReport(movePlanFile, []byte(report)); err != nil {
+		if errors.Is(err, git.ErrCompletionReportWrite) {
+			fmt.Fprintf(os.Stderr, "warning: failed to write completion report: %v\n", err)
+			return true, nil
+		}
 		if chainRun {
 			return false, fmt.Errorf("archive completed chain plan: %w", err)
 		}

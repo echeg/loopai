@@ -828,7 +828,7 @@ func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integratio
 			PlanFile: planFile, GitSvc: gitSvc, Mode: processor.ModeFull,
 			Config: &config.Config{MovePlanOnCompletion: true}, ChainPlanFiles: []string{planFile, "two.md"},
 			ChainFinalizing: func() error { finalizing = true; return nil },
-		})
+		}, "")
 		assert.False(t, moved)
 		assert.True(t, finalizing)
 		require.ErrorContains(t, err, "archive completed chain plan")
@@ -841,10 +841,89 @@ func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integratio
 			Config:          &config.Config{MovePlanOnCompletion: false},
 			ChainPlanFiles:  []string{"docs/plans/one.md", "docs/plans/two.md"},
 			ChainFinalizing: func() error { finalizing = true; return nil },
-		})
+		}, "")
 		require.NoError(t, err)
 		assert.False(t, moved)
 		assert.True(t, finalizing)
+	})
+
+	t.Run("chain_archival_includes_its_report", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "one.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/one.md")
+		runGit(t, dir, "commit", "-m", "add chain plan")
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		moved, err := moveCompletedPlan(executePlanRequest{
+			PlanFile: planFile, GitSvc: gitSvc, Mode: processor.ModeFull,
+			Config: &config.Config{MovePlanOnCompletion: true}, ChainPlanFiles: []string{planFile, "two.md"},
+		}, "# Report: One\n")
+
+		require.NoError(t, err)
+		assert.True(t, moved)
+		assert.FileExists(t, filepath.Join(plansDir, "completed", "one.report.md"))
+		assert.Equal(t, "move completed plan: one.md (+ report)",
+			strings.TrimSpace(gitOutput(t, dir, "log", "-1", "--format=%s")))
+	})
+
+	t.Run("worktree_mode_archives_report_through_main_service", func(t *testing.T) {
+		mainDir := setupTestRepo(t)
+		plansDir := filepath.Join(mainDir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "main.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		runGit(t, mainDir, "add", "docs/plans/main.md")
+		runGit(t, mainDir, "commit", "-m", "add main plan")
+		mainSvc, err := git.NewService(mainDir, noopLogger())
+		require.NoError(t, err)
+
+		executionDir := setupTestRepo(t)
+		executionSvc, err := git.NewService(executionDir, noopLogger())
+		require.NoError(t, err)
+		moved, err := moveCompletedPlan(executePlanRequest{
+			PlanFile: filepath.Join(executionDir, "docs", "plans", "main.md"), MainPlanFile: planFile,
+			GitSvc: executionSvc, MainGitSvc: mainSvc, Mode: processor.ModeFull,
+			Config: &config.Config{MovePlanOnCompletion: true},
+		}, "# Report: Main\n")
+
+		require.NoError(t, err)
+		assert.True(t, moved)
+		assert.FileExists(t, filepath.Join(plansDir, "completed", "main.md"))
+		assert.FileExists(t, filepath.Join(plansDir, "completed", "main.report.md"))
+		assert.NoFileExists(t, filepath.Join(executionDir, "docs", "plans", "completed", "main.report.md"))
+	})
+
+	t.Run("report_write_failure_warns_after_archiving_plan", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		completedDir := filepath.Join(plansDir, "completed")
+		require.NoError(t, os.MkdirAll(filepath.Join(completedDir, "failure.report.md"), 0o750))
+		planFile := filepath.Join(plansDir, "failure.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/failure.md")
+		runGit(t, dir, "commit", "-m", "add failure plan")
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		var moved bool
+		var moveErr error
+
+		stderr := captureStderr(t, func() {
+			moved, moveErr = moveCompletedPlan(executePlanRequest{
+				PlanFile: planFile, GitSvc: gitSvc, Mode: processor.ModeFull,
+				Config: &config.Config{MovePlanOnCompletion: true},
+			}, "# Report: Failure\n")
+		})
+
+		require.NoError(t, moveErr)
+		assert.True(t, moved)
+		assert.Contains(t, stderr, "warning: failed to write completion report:")
+		assert.FileExists(t, filepath.Join(completedDir, "failure.md"))
+		assert.Equal(t, "move completed plan: failure.md",
+			strings.TrimSpace(gitOutput(t, dir, "log", "-1", "--format=%s")))
 	})
 
 	t.Run("stops_on_abort_even_when_executor_returns_nil", func(t *testing.T) {
@@ -1510,6 +1589,49 @@ printf '%s\n' "$*" >> "$CMUX_TEST_LOG"
 	data, err = os.ReadFile(commandLog) //nolint:gosec // test-owned command log
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "clear-status loopai")
+}
+
+func TestExecutePlanRemovesRunRecordAfterArchival(t *testing.T) {
+	dir := setupTestRepo(t)
+	originalDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { require.NoError(t, os.Chdir(originalDir)) })
+
+	planPath := filepath.Join(dir, "docs", "plans", "record-cleanup.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath,
+		[]byte("# Plan\n\n### Task 1: Done\n\n- [x] already complete\n"), 0o600))
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	err = executePlan(t.Context(), opts{TasksOnly: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
+		Config: &config.Config{ClaudeCommand: fakeClaude, MovePlanOnCompletion: true},
+		Colors: testColors(), BaseRef: "master", Outcome: &planExecutionOutcome{},
+	})
+	require.NoError(t, err)
+
+	assert.FileExists(t, filepath.Join(dir, "docs", "plans", "completed", "record-cleanup.md"))
+	records, err := filepath.Glob(filepath.Join(dir, ".loopai", "progress", "*.run.json"))
+	require.NoError(t, err)
+	assert.Empty(t, records)
+}
+
+func TestRemoveRunRecordAfterArchivalWarnsOnFailure(t *testing.T) {
+	store := &runRecordStore{path: filepath.Join(t.TempDir(), "record.run.json")}
+	require.NoError(t, os.MkdirAll(store.path, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store.path, "keeps-directory-non-empty"), []byte("x"), 0o600))
+
+	stderr := captureStderr(t, func() { removeRunRecordAfterArchival(store, true) })
+
+	assert.Contains(t, stderr, "warning: failed to remove run record:")
 }
 
 func TestSetOrcaCleanupStopsReporterOnForceExit(t *testing.T) {
