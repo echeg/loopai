@@ -89,20 +89,62 @@ func (r *Runner) saveReviewStage(_ context.Context, stage ReviewStage) {
 	stage.Head = head
 	stage.CompletedAt = time.Now().UTC()
 
-	replaced := false
-	for index := range cp.Stages {
-		if sameReviewStageKey(cp.Stages[index], stage) {
-			cp.Stages = append(cp.Stages[:index], stage)
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		cp.Stages = append(cp.Stages, stage)
-	}
+	cp.Stages = mergeReviewStage(cp.Stages, stage, r.cfg.Mode, cp.Reviewers)
 	if err := r.checkpoints.Save(cp); err != nil {
 		r.log.Print("review checkpoint save failed: %v", err)
 	}
+}
+
+func mergeReviewStage(saved []ReviewStage, stage ReviewStage, mode Mode, reviewers []string) []ReviewStage {
+	target, ok := reviewStagePosition(stage, mode, reviewers)
+	if !ok {
+		return nil
+	}
+
+	merged := make([]ReviewStage, 0, target+1)
+	for position := range target {
+		if position >= len(saved) || !reviewStageAtPosition(saved[position], position, mode, reviewers) {
+			return merged
+		}
+		merged = append(merged, saved[position])
+	}
+	return append(merged, stage)
+}
+
+func reviewStagePosition(stage ReviewStage, mode Mode, reviewers []string) (int, bool) {
+	offset := 0
+	if mode != ModeCodexOnly {
+		if stage.Stage == reviewStageInternal {
+			return 0, true
+		}
+		offset = 1
+	}
+
+	switch stage.Stage {
+	case reviewStageExternal:
+		if stage.Index < 0 || stage.Index >= len(reviewers) || stage.Reviewer != reviewers[stage.Index] {
+			return 0, false
+		}
+		return offset + stage.Index, true
+	case reviewStagePostReview:
+		return offset + len(reviewers), true
+	default:
+		return 0, false
+	}
+}
+
+func reviewStageAtPosition(stage ReviewStage, position int, mode Mode, reviewers []string) bool {
+	offset := 0
+	if mode != ModeCodexOnly {
+		if position == 0 {
+			return stage.Stage == reviewStageInternal
+		}
+		offset = 1
+	}
+
+	index := position - offset
+	return index >= 0 && index < len(reviewers) && stage.Stage == reviewStageExternal &&
+		stage.Index == index && stage.Reviewer == reviewers[index]
 }
 
 func (r *Runner) reviewTreeIsClean(action string) bool {
@@ -158,16 +200,6 @@ func (r *Runner) invalidateReviewAfterTask(before string, beforeErr error) bool 
 		return true
 	}
 	return false
-}
-
-func sameReviewStageKey(left, right ReviewStage) bool {
-	if left.Stage != right.Stage {
-		return false
-	}
-	if left.Stage != reviewStageExternal {
-		return true
-	}
-	return left.Index == right.Index && left.Reviewer == right.Reviewer
 }
 
 func (r *Runner) onReviewerDone(ctx context.Context, done phase.ReviewerCompletion) error {

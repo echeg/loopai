@@ -411,6 +411,75 @@ func TestRunnerReviewCheckpoint_SaveMergesExistingCheckpoint(t *testing.T) {
 	}
 }
 
+func TestRunnerReviewCheckpoint_SaveRepairsMissingStagePredecessors(t *testing.T) {
+	const reviewer = "codex:gpt:high"
+	cfg := Config{
+		Mode: ModeReview, PlanFile: "plan.md",
+		ExternalReviewers: []config.ReviewerSpec{{Provider: "codex", ModelSpec: "gpt:high"}},
+	}
+	checkpoint := func(stages ...ReviewStage) *checkpointMemoryStore {
+		return &checkpointMemoryStore{found: true, cp: ReviewCheckpoint{
+			Version: reviewCheckpointVersion, Mode: ModeReview, Branch: "feature", Plan: "plan.md",
+			Reviewers: []string{reviewer}, Stages: stages,
+		}}
+	}
+	git := &checkpointGit{head: "new-head", branch: "feature"}
+
+	t.Run("saving internal drops later stages", func(t *testing.T) {
+		store := checkpoint(
+			ReviewStage{Stage: reviewStageExternal, Reviewer: reviewer, Head: "old-head"},
+			ReviewStage{Stage: reviewStagePostReview, Head: "old-head"},
+		)
+		r, _, _, _ := newCheckpointRunner(cfg, store, git)
+
+		r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageInternal})
+
+		require.Len(t, store.cp.Stages, 1)
+		assert.Equal(t, reviewStageInternal, store.cp.Stages[0].Stage)
+	})
+
+	t.Run("saving first external drops a later external", func(t *testing.T) {
+		store := checkpoint(
+			ReviewStage{Stage: reviewStageInternal, Head: "old-head"},
+			ReviewStage{Stage: reviewStageExternal, Index: 1, Reviewer: "codex:other:high", Head: "old-head"},
+		)
+		r, _, _, _ := newCheckpointRunner(cfg, store, git)
+
+		r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStageExternal, Index: 0, Reviewer: reviewer})
+
+		require.Len(t, store.cp.Stages, 2)
+		assert.Equal(t, reviewStageInternal, store.cp.Stages[0].Stage)
+		assert.Equal(t, reviewStageExternal, store.cp.Stages[1].Stage)
+		assert.Equal(t, 0, store.cp.Stages[1].Index)
+	})
+
+	t.Run("later external is not recorded without its predecessor", func(t *testing.T) {
+		cfg := cfg
+		cfg.ExternalReviewers = append(cfg.ExternalReviewers,
+			config.ReviewerSpec{Provider: "codex", ModelSpec: "other:high"})
+		store := checkpoint(ReviewStage{Stage: reviewStageInternal, Head: "old-head"})
+		store.cp.Reviewers = []string{reviewer, "codex:other:high"}
+		r, _, _, _ := newCheckpointRunner(cfg, store, git)
+
+		r.saveReviewStage(t.Context(), ReviewStage{
+			Stage: reviewStageExternal, Index: 1, Reviewer: "codex:other:high",
+		})
+
+		require.Len(t, store.cp.Stages, 1)
+		assert.Equal(t, reviewStageInternal, store.cp.Stages[0].Stage)
+	})
+
+	t.Run("post-review is not recorded without every reviewer", func(t *testing.T) {
+		store := checkpoint(ReviewStage{Stage: reviewStageInternal, Head: "old-head"})
+		r, _, _, _ := newCheckpointRunner(cfg, store, git)
+
+		r.saveReviewStage(t.Context(), ReviewStage{Stage: reviewStagePostReview})
+
+		require.Len(t, store.cp.Stages, 1)
+		assert.Equal(t, reviewStageInternal, store.cp.Stages[0].Stage)
+	})
+}
+
 func TestRunnerReviewCheckpoint_CurrentBranchErrorUsesDetachedKey(t *testing.T) {
 	store := &checkpointMemoryStore{found: true, cp: ReviewCheckpoint{
 		Version: reviewCheckpointVersion, Mode: ModeReview,
