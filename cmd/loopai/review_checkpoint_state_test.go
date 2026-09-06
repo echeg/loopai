@@ -17,7 +17,7 @@ func TestReviewCheckpointStoreRoundTrip(t *testing.T) {
 	store := newReviewCheckpointStore(filepath.Join(t.TempDir(), "progress-plan.txt"))
 	want := processor.ReviewCheckpoint{
 		Version: 7, Mode: processor.ModeFull, Branch: "feature", Plan: "docs/plans/plan.md",
-		Reviewers: []string{"claude:opus:high"},
+		Reviewers: []string{"claude:opus:high"}, TaskStartedAtHead: "task-head",
 		Stages: []processor.ReviewStage{{
 			Stage: "internal_review", Head: "abc123", CompletedAt: time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC),
 		}},

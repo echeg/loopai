@@ -413,8 +413,9 @@ model and resume resolution), `pkg/processor/review_resume.go` (runner load/save
 stage keys are `internal_review`, `external_review`, and `post_review`. A stage is saved only after
 its fixes are committed and the tree is clean, and it is resumed only when the current tree is clean,
 its plan identity matches, and its recorded HEAD is an ancestor of the current branch tip. New full
-or tasks-only task-phase commits invalidate the checkpoint, as do unverifiable task HEADs. Finalize is
-not checkpointed because it is best-effort, runs once, and is cheap to repeat.
+or tasks-only task-phase commits invalidate the checkpoint, as do unverifiable task HEADs. A durable
+pre-task HEAD marker makes that invalidation survive a process death inside task execution. Finalize
+is not checkpointed because it is best-effort, runs once, and is cheap to repeat.
 
 cmux reporting is best-effort and must never affect execution. The status key and notification title are `loopai`. All calls go through the public `cmux` CLI and failures are ignored. After a completed run, `Reporter.Finish` intentionally leaves the final success or failure pill in place: `Stop` still clears the spinner and progress, but does not clear that pill. Abort paths do not call `Finish`, so `Stop` performs the full cleanup. A later run overwrites the pill, while `--clear`, a successful `--merge`, or a successful `--pr` removes it explicitly.
 

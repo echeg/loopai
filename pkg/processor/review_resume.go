@@ -37,6 +37,10 @@ func (r *Runner) loadReviewResume(ctx context.Context) reviewResume {
 		r.log.Print("review checkpoint unreadable, starting reviews from scratch: %v", err)
 		return reviewResume{}
 	}
+	if cp.TaskStartedAtHead != "" && cp.TaskStartedAtHead != head {
+		r.clearReviewCheckpoint("interrupted task phase committed new work")
+		return reviewResume{}
+	}
 	resume, err := resolveReviewResume(cp, reviewResumeInput{
 		Mode: r.cfg.Mode, Branch: branch, Plan: r.cfg.PlanFile, Reviewers: reviewerKeys(r.cfg), Head: head,
 	}, func(revision string) (bool, error) {
@@ -189,16 +193,16 @@ func reviewPlanKey(plan string) string {
 	return filepath.Clean(plan)
 }
 
-func (r *Runner) reviewResumeAfterTask(ctx context.Context, before string, beforeErr error) reviewResume {
-	if r.invalidateReviewAfterTask(before, beforeErr) {
+func (r *Runner) reviewResumeAfterTask(ctx context.Context, before string, beforeErr error, alreadyInvalidated bool) reviewResume {
+	if r.invalidateReviewAfterTask(before, beforeErr, alreadyInvalidated) {
 		return reviewResume{}
 	}
 	return r.loadReviewResume(ctx)
 }
 
-func (r *Runner) invalidateReviewAfterTask(before string, beforeErr error) bool {
+func (r *Runner) invalidateReviewAfterTask(before string, beforeErr error, alreadyInvalidated bool) bool {
 	if r.git == nil {
-		return false
+		return alreadyInvalidated
 	}
 	if beforeErr != nil {
 		r.clearReviewCheckpoint("task phase HEAD could not be verified")
@@ -213,7 +217,72 @@ func (r *Runner) invalidateReviewAfterTask(before string, beforeErr error) bool 
 		r.clearReviewCheckpoint("task phase committed new work")
 		return true
 	}
+	if alreadyInvalidated {
+		return true
+	}
+	return !r.clearReviewTaskMarker(before)
+}
+
+// markReviewTaskStarted records the pre-task HEAD before task execution begins. If a previous
+// process died during the task phase, a changed HEAD proves that its task committed new work and
+// makes every saved review stage stale. The marker deliberately preserves the checkpoint's mode
+// and stages so tasks-only runs can guard a full-mode checkpoint stored at the same path.
+func (r *Runner) markReviewTaskStarted(head string, headErr error) bool {
+	if r.checkpoints == nil || r.git == nil {
+		return false
+	}
+	if headErr != nil {
+		r.clearReviewCheckpoint("task phase HEAD could not be verified")
+		return true
+	}
+
+	cp, found, err := r.checkpoints.Load()
+	if err != nil {
+		r.clearReviewCheckpoint("task phase checkpoint could not be read")
+		return true
+	}
+	if !found {
+		return false
+	}
+	if cp.TaskStartedAtHead != "" && cp.TaskStartedAtHead != head {
+		r.clearReviewCheckpoint("interrupted task phase committed new work")
+		return true
+	}
+
+	cp.TaskStartedAtHead = head
+	if err := r.checkpoints.Save(cp); err != nil {
+		r.log.Print("review checkpoint task marker save failed: %v", err)
+		r.clearReviewCheckpoint("task phase could not be guarded")
+		return true
+	}
 	return false
+}
+
+// clearReviewTaskMarker completes the durable task guard after a task invocation that did not
+// change HEAD. A failure invalidates resume for this run rather than risking stale review stages.
+func (r *Runner) clearReviewTaskMarker(startingHead string) bool {
+	if r.checkpoints == nil {
+		return true
+	}
+	cp, found, err := r.checkpoints.Load()
+	if err != nil {
+		r.clearReviewCheckpoint("task phase checkpoint could not be read")
+		return false
+	}
+	if !found || cp.TaskStartedAtHead == "" {
+		return true
+	}
+	if cp.TaskStartedAtHead != startingHead {
+		r.clearReviewCheckpoint("task phase guard did not match starting HEAD")
+		return false
+	}
+	cp.TaskStartedAtHead = ""
+	if err := r.checkpoints.Save(cp); err != nil {
+		r.log.Print("review checkpoint task marker clear failed: %v", err)
+		r.clearReviewCheckpoint("task phase guard could not be cleared")
+		return false
+	}
+	return true
 }
 
 func (r *Runner) onReviewerDone(ctx context.Context, done phase.ReviewerCompletion) error {

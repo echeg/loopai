@@ -43,7 +43,9 @@ atomically written JSON checkpoint in the same directory).
 - **HEAD advanced past the recorded SHA**: resume anyway when the recorded commit is an ancestor of
   the current HEAD (manual commit, `--commit` start-commit merge), with a log warning naming both
   commits. Discard from the first stage whose commit is no longer contained. Exception: a commit made
-  by the task phase of the *resuming* run invalidates the whole checkpoint.
+  by the task phase of the *resuming* run invalidates the whole checkpoint. The pre-task HEAD is
+  written into the checkpoint before execution and cleared after a no-commit return, so invalidation
+  also survives a process death after the task commits but before `task.Run` returns.
 - **Clean-tree gate**: a stage is saved and an existing checkpoint is resumed only when
   `IsDirtyAll()` reports no uncommitted changes.
   The final evaluation round commits accumulated fixes before `EXTERNAL_REVIEW_DONE`, and the internal
@@ -163,6 +165,7 @@ atomically written JSON checkpoint in the same directory).
 - [x] implement the `OnReviewerDone` callback as `saveReviewStage(external_review, Index, Reviewer key, HadFindings, EndedBy)`
 - [x] after `finalize.Run` returns in `runExternalAndPostReview` (all three callers), call `clearReviewCheckpoint("")` silently; a removal error is logged, not returned
 - [x] write runner tests with the generated store mock and a `GitChecker` mock: no store → identical phase sequence and executor call counts to `TestRunner_CodexAndPostReview_PipelineOrder`; full-mode crash simulation (first run saves `internal_review` and reviewer 0, second run with a fresh runner skips both, runs reviewer 1, saves it, runs post-review, saves, finalizes, removes); task-phase commit invalidates; dirty tree skips save; unreadable checkpoint starts from scratch; `--review` and `--external-only` modes honor the checkpoint; `skipPostReview` path; save error does not fail the run
+- [x] ➕ persist a pre-task HEAD marker before full or tasks-only execution, preserve existing review stages and checkpoint identity while it is active, and invalidate on the next invocation when an interrupted task advanced HEAD
 - [x] run `go test -race ./pkg/processor/...` - must pass before task 5
 
 ### Task 5: File-backed store in cmd/loopai and wiring
@@ -194,7 +197,10 @@ atomically written JSON checkpoint in the same directory).
 
 Path: `<invoking checkout>/.loopai/progress/<progress log stem>.review.json`, e.g.
 `progress-abilities-engine-v2.review.json`. Written with `0600` via temp file and rename. Only the
-runner writes it; only the runner removes it.
+runner writes it; only the runner removes it. While a full or tasks-only task invocation is active,
+the optional `task_started_at_head` field holds the pre-task HEAD and is removed after a no-commit
+return. A later invocation that finds the marker at a different HEAD discards the checkpoint before
+running more tasks.
 
 ```json
 {
@@ -231,9 +237,10 @@ Inputs: loaded checkpoint, current `Mode`, `Branch`, reviewer keys, `HeadHash`, 
 
 ```text
 task.Run
+  before entry     → persist pre-task HEAD in the checkpoint
   HEAD changed?  → clear checkpoint, resume = none
   HEAD unreadable? → clear checkpoint, resume = none
-  else           → resume = load + resolve
+  else           → clear task marker, then resume = load + resolve
 dirty tree? restart reviews without honoring the checkpoint
 skipInternal? skip First+Loop : run First, Loop, save(internal_review)
 external.SetResume(completedReviewers, hadFindings); external.Run

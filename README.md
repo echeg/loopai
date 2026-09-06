@@ -371,8 +371,9 @@ reviewer in chain order, and post-review. A stage is recorded only after its fix
 the working tree is clean; a dirty working tree also forces reviews to restart rather than trusting
 the checkpoint. Finalize is intentionally not checkpointed because it is cheap and
 best-effort. After an interruption, rerunning the same command skips recorded stages while each
-stage's commit remains an ancestor of the current branch tip. A task-phase commit invalidates the
-checkpoint so changed code is reviewed again, and a successful run removes it. `--review`
+stage's commit remains an ancestor of the current branch tip. Before task execution, the checkpoint
+records the current HEAD so a task-phase commit invalidates it even if the process dies before the
+task returns; changed code is therefore reviewed again. A successful run removes the checkpoint. `--review`
 and `--external-only` reruns use the same checkpoint behavior.
 
 Press Ctrl+\ during a task iteration to pause it, edit the plan, and retry the same task in a fresh session. During external review, Ctrl+\ terminates the entire reviewer chain and skips all remaining reviewers. This shortcut is not available on Windows.
@@ -811,7 +812,7 @@ clean. On rerun, loopai accepts a recorded stage only when the current tree is c
 is still an ancestor of the branch
 tip, so later commits do not force completed reviews to repeat; rewritten or reset history does. If
 the resumed task phase or a separate `--tasks-only` run creates a commit, all saved review stages are
-invalidated. The checkpoint is
+invalidated, including when the process dies before the task phase returns. The checkpoint is
 removed after a successful run. The same rules apply when rerunning `--review` or
 `--external-only`, even though those modes do not create a worktree.
 

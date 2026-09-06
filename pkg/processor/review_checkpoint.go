@@ -22,12 +22,13 @@ const (
 
 // ReviewCheckpoint is the durable record of completed review stages.
 type ReviewCheckpoint struct {
-	Version   int           `json:"version"`
-	Mode      Mode          `json:"mode"`
-	Branch    string        `json:"branch"`
-	Plan      string        `json:"plan"`
-	Reviewers []string      `json:"reviewers"`
-	Stages    []ReviewStage `json:"stages"`
+	Version           int           `json:"version"`
+	Mode              Mode          `json:"mode"`
+	Branch            string        `json:"branch"`
+	Plan              string        `json:"plan"`
+	Reviewers         []string      `json:"reviewers"`
+	Stages            []ReviewStage `json:"stages"`
+	TaskStartedAtHead string        `json:"task_started_at_head,omitempty"`
 }
 
 // ReviewStage describes one successfully completed review stage.

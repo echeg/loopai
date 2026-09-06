@@ -360,13 +360,14 @@ func (r *Runner) runFull(ctx context.Context) error {
 	if r.git != nil {
 		headBeforeTask, headBeforeTaskErr = r.git.HeadHash()
 	}
+	reviewInvalidated := r.markReviewTaskStarted(headBeforeTask, headBeforeTaskErr)
 
 	// phase 1: task execution
 	r.phaseHolder.Set(status.PhaseTask)
 	r.log.PrintRaw("starting task execution phase\n")
 
 	if err := r.phases.task.Run(ctx); err != nil {
-		r.invalidateReviewAfterTask(headBeforeTask, headBeforeTaskErr)
+		r.invalidateReviewAfterTask(headBeforeTask, headBeforeTaskErr, reviewInvalidated)
 		if errors.Is(err, ErrUserAborted) {
 			r.log.Print("task phase aborted by user")
 			return ErrUserAborted
@@ -374,7 +375,7 @@ func (r *Runner) runFull(ctx context.Context) error {
 		return fmt.Errorf("task phase: %w", err)
 	}
 
-	r.resume = r.reviewResumeAfterTask(ctx, headBeforeTask, headBeforeTaskErr)
+	r.resume = r.reviewResumeAfterTask(ctx, headBeforeTask, headBeforeTaskErr, reviewInvalidated)
 
 	// phase 2: first review pass - address ALL findings
 	if err := r.runInternalReview(ctx); err != nil {
@@ -513,16 +514,17 @@ func (r *Runner) runTasksOnly(ctx context.Context) error {
 	if r.git != nil {
 		headBeforeTask, headBeforeTaskErr = r.git.HeadHash()
 	}
+	reviewInvalidated := r.markReviewTaskStarted(headBeforeTask, headBeforeTaskErr)
 
 	if err := r.phases.task.Run(ctx); err != nil {
-		r.invalidateReviewAfterTask(headBeforeTask, headBeforeTaskErr)
+		r.invalidateReviewAfterTask(headBeforeTask, headBeforeTaskErr, reviewInvalidated)
 		if errors.Is(err, ErrUserAborted) {
 			r.log.Print("task phase aborted by user")
 			return ErrUserAborted
 		}
 		return fmt.Errorf("task phase: %w", err)
 	}
-	r.invalidateReviewAfterTask(headBeforeTask, headBeforeTaskErr)
+	r.invalidateReviewAfterTask(headBeforeTask, headBeforeTaskErr, reviewInvalidated)
 
 	r.log.Print("task execution completed successfully")
 	return nil

@@ -18,14 +18,15 @@ import (
 )
 
 type checkpointMemoryStore struct {
-	mu        sync.Mutex
-	cp        ReviewCheckpoint
-	found     bool
-	loadErr   error
-	saveErr   error
-	removeErr error
-	saves     []ReviewCheckpoint
-	removes   int
+	mu         sync.Mutex
+	cp         ReviewCheckpoint
+	found      bool
+	loadErr    error
+	saveErr    error
+	removeErr  error
+	removeErrs []error
+	saves      []ReviewCheckpoint
+	removes    int
 }
 
 func (s *checkpointMemoryStore) Load() (ReviewCheckpoint, bool, error) {
@@ -48,6 +49,13 @@ func (s *checkpointMemoryStore) Remove() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.removes++
+	if len(s.removeErrs) > 0 {
+		err := s.removeErrs[0]
+		s.removeErrs = s.removeErrs[1:]
+		if err != nil {
+			return err
+		}
+	}
 	if s.removeErr == nil {
 		s.cp, s.found = ReviewCheckpoint{}, false
 	}
@@ -98,11 +106,18 @@ func (g *checkpointGit) ContainsRevisionContext(context.Context, string) (bool, 
 func (g *checkpointGit) CurrentBranch() (string, error) { return g.branch, g.branchErr }
 
 type checkpointTask struct {
-	runs int
-	err  error
+	runs  int
+	err   error
+	onRun func()
 }
 
-func (p *checkpointTask) Run(context.Context) error { p.runs++; return p.err }
+func (p *checkpointTask) Run(context.Context) error {
+	p.runs++
+	if p.onRun != nil {
+		p.onRun()
+	}
+	return p.err
+}
 func (*checkpointTask) ValidatePlanHasTasks() error { return nil }
 
 type checkpointReview struct {
@@ -244,6 +259,121 @@ func TestRunnerReviewCheckpoint_TasksOnlyInvalidates(t *testing.T) {
 		assert.Equal(t, 1, store.removes)
 		assert.False(t, store.found)
 	})
+}
+
+func TestRunnerReviewCheckpoint_TaskMarkerSurvivesCrash(t *testing.T) {
+	checkpoint := ReviewCheckpoint{
+		Version: reviewCheckpointVersion, Mode: ModeFull, Branch: "feature", Plan: "plan.md",
+		Stages: []ReviewStage{{Stage: reviewStageInternal, Head: "old"}},
+	}
+
+	t.Run("marker exists before task and is cleared without commits", func(t *testing.T) {
+		store := &checkpointMemoryStore{found: true, cp: checkpoint}
+		git := &checkpointGit{head: "old"}
+		r, _, _, _ := newCheckpointRunner(Config{Mode: ModeTasksOnly, PlanFile: "plan.md"}, store, git)
+		r.phases.task.(*checkpointTask).onRun = func() {
+			assert.Equal(t, "old", store.cp.TaskStartedAtHead)
+			assert.Equal(t, checkpoint.Stages, store.cp.Stages)
+			assert.Equal(t, ModeFull, store.cp.Mode, "tasks-only must not rewrite checkpoint identity")
+		}
+
+		require.NoError(t, r.Run(t.Context()))
+		assert.True(t, store.found)
+		assert.Empty(t, store.cp.TaskStartedAtHead)
+		assert.Equal(t, checkpoint.Stages, store.cp.Stages)
+	})
+
+	for _, mode := range []Mode{ModeFull, ModeTasksOnly} {
+		t.Run(string(mode)+" detects prior interrupted commit", func(t *testing.T) {
+			cp := checkpoint
+			cp.TaskStartedAtHead = "old"
+			store := &checkpointMemoryStore{found: true, cp: cp}
+			git := &checkpointGit{head: "new", branch: "feature", contains: true}
+			cfg := Config{Mode: mode, PlanFile: "plan.md"}
+			r, review, external, _ := newCheckpointRunner(cfg, store, git)
+			external.enabled = false
+
+			require.NoError(t, r.Run(t.Context()))
+			assert.GreaterOrEqual(t, store.removes, 1)
+			assertLogContains(t, r.log.(*mocks.LoggerMock), "review checkpoint: cleared")
+			if mode == ModeFull {
+				assert.Equal(t, 1, review.first, "reviews predating the interrupted task must rerun")
+			}
+		})
+	}
+}
+
+func TestRunnerReviewCheckpoint_ReviewModesRejectInterruptedTaskCommit(t *testing.T) {
+	const reviewer = "codex:gpt:high"
+	for _, tc := range []struct {
+		name        string
+		mode        Mode
+		stages      []ReviewStage
+		expectFirst int
+	}{
+		{
+			name: "review", mode: ModeReview, expectFirst: 1,
+			stages: []ReviewStage{
+				{Stage: reviewStageInternal, Head: "old"},
+				{Stage: reviewStageExternal, Reviewer: reviewer, Head: "old"},
+			},
+		},
+		{
+			name: "external only", mode: ModeCodexOnly,
+			stages: []ReviewStage{{Stage: reviewStageExternal, Reviewer: reviewer, Head: "old"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &checkpointMemoryStore{found: true, cp: ReviewCheckpoint{
+				Version: reviewCheckpointVersion, Mode: tc.mode, Branch: "feature", Reviewers: []string{reviewer},
+				Stages: tc.stages, TaskStartedAtHead: "old",
+			}}
+			git := &checkpointGit{head: "new", branch: "feature", contains: true}
+			r, review, external, _ := newCheckpointRunner(Config{
+				Mode: tc.mode, ExternalReviewers: []config.ReviewerSpec{{Provider: "codex", ModelSpec: "gpt:high"}},
+			}, store, git)
+			external.run = func(context.Context) (phase.ExternalReviewOutcome, error) {
+				return phase.ExternalReviewOutcome{}, nil
+			}
+
+			require.NoError(t, r.Run(t.Context()))
+			assert.Equal(t, tc.expectFirst, review.first)
+			assert.Zero(t, external.completed, "stages predating the interrupted task must not resume")
+			assert.GreaterOrEqual(t, store.removes, 1)
+			assertLogContains(t, r.log.(*mocks.LoggerMock), "review checkpoint: cleared")
+		})
+	}
+}
+
+func TestRunnerReviewCheckpoint_RemovalFailureDoesNotClearInvalidatingMarker(t *testing.T) {
+	checkpoint := ReviewCheckpoint{
+		Version: reviewCheckpointVersion, Mode: ModeFull, Branch: "feature", Plan: "plan.md",
+		Stages: []ReviewStage{{Stage: reviewStageInternal, Head: "old"}}, TaskStartedAtHead: "old",
+	}
+	store := &checkpointMemoryStore{
+		found: true, cp: checkpoint, removeErrs: []error{errors.New("temporary removal failure")},
+	}
+	git := &checkpointGit{head: "new", branch: "feature", contains: true}
+	r, review, external, _ := newCheckpointRunner(Config{Mode: ModeFull, PlanFile: "plan.md"}, store, git)
+	external.enabled = false
+
+	require.NoError(t, r.Run(t.Context()))
+	assert.Equal(t, 1, review.first, "the failed removal must still invalidate resume for this run")
+	for _, saved := range store.saves {
+		assert.NotEmpty(t, saved.TaskStartedAtHead, "a marker from a different starting HEAD must not be cleared")
+	}
+	assertLogContains(t, r.log.(*mocks.LoggerMock), "review checkpoint removal failed")
+}
+
+func TestRunnerReviewCheckpoint_ClearTaskMarkerRequiresStartingHead(t *testing.T) {
+	store := &checkpointMemoryStore{found: true, removeErr: errors.New("removal failed"), cp: ReviewCheckpoint{
+		TaskStartedAtHead: "old",
+	}}
+	r, _, _, _ := newCheckpointRunner(Config{Mode: ModeTasksOnly}, store, &checkpointGit{})
+
+	assert.False(t, r.clearReviewTaskMarker("new"))
+	assert.Empty(t, store.saves)
+	assert.Equal(t, "old", store.cp.TaskStartedAtHead)
 }
 
 func TestRunnerReviewCheckpoint_ReviewModesAndPostReviewResume(t *testing.T) {
