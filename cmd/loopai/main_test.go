@@ -2195,6 +2195,88 @@ func TestWorktreeIgnoredWarning(t *testing.T) {
 	}
 }
 
+func TestCheckReviewDiffRange(t *testing.T) {
+	newService := func(t *testing.T, dir string) *git.Service {
+		t.Helper()
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		return gitSvc
+	}
+	commitFeature := func(t *testing.T, dir string) {
+		t.Helper()
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "feature")
+	}
+
+	t.Run("review on feature ahead of base passes", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		commitFeature(t, dir)
+		assert.NoError(t, checkReviewDiffRange(t.Context(), newService(t, dir), processor.ModeReview, "master"))
+	})
+
+	t.Run("review on base fails with useful message", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		err := checkReviewDiffRange(t.Context(), newService(t, dir), processor.ModeReview, "master")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "nothing to review")
+		assert.Contains(t, err.Error(), `base "master"`)
+		assert.Contains(t, err.Error(), "HEAD (master)")
+	})
+
+	t.Run("codex only on merged feature fails", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		commitFeature(t, dir)
+		runGit(t, dir, "checkout", "master")
+		runGit(t, dir, "merge", "--ff-only", "feature")
+		runGit(t, dir, "checkout", "feature")
+		err := checkReviewDiffRange(t.Context(), newService(t, dir), processor.ModeCodexOnly, "master")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "nothing to review")
+		assert.Contains(t, err.Error(), "HEAD (feature)")
+	})
+
+	t.Run("unknown base reports preflight lookup failure", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		err := checkReviewDiffRange(t.Context(), newService(t, dir), processor.ModeReview, "missing")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "review preflight")
+		assert.Contains(t, err.Error(), "base ref not found")
+	})
+
+	for _, mode := range []processor.Mode{processor.ModeFull, processor.ModeTasksOnly, processor.ModePlan} {
+		t.Run("non-review mode "+string(mode)+" passes", func(t *testing.T) {
+			dir := setupTestRepo(t)
+			assert.NoError(t, checkReviewDiffRange(t.Context(), newService(t, dir), mode, "master"))
+		})
+	}
+
+	t.Run("detached head uses short hash", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		hash := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		runGit(t, dir, "checkout", "--detach", hash)
+		err := checkReviewDiffRange(t.Context(), newService(t, dir), processor.ModeReview, "master")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "HEAD ("+hash[:7]+")")
+	})
+}
+
+func TestSelectAndExecutePlanRejectsEmptyReviewBeforeProgressSetup(t *testing.T) {
+	dir := setupTestRepo(t)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	selector := plan.NewSelector(filepath.Join(dir, "docs", "plans"), testColors())
+	req := executePlanRequest{
+		Mode: processor.ModeReview, GitSvc: gitSvc, Config: &config.Config{}, Colors: testColors(),
+		BaseRef: "master", OrcaStop: &cleanupHolder{},
+	}
+
+	err = selectAndExecutePlan(t.Context(), opts{Review: true}, req, selector)
+	require.ErrorContains(t, err, "nothing to review")
+	assert.NoDirExists(t, filepath.Join(dir, ".loopai", "progress"))
+}
+
 func TestIsWatchOnlyMode(t *testing.T) {
 	tests := []struct {
 		name            string

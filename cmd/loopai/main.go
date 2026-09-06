@@ -666,6 +666,9 @@ func selectAndExecutePlan(ctx context.Context, o opts, req executePlanRequest, s
 	}
 
 	req.PlanFile = planFile
+	if err := checkReviewDiffRange(ctx, req.GitSvc, req.Mode, req.BaseRef); err != nil {
+		return err
+	}
 
 	// worktree mode: create worktree, chdir into it, run execution from there.
 	if req.Config.WorktreeEnabled && planFile != "" && modeRequiresBranch(req.Mode) {
@@ -997,6 +1000,32 @@ func getCurrentBranch(gitSvc *git.Service) string {
 		return "unknown"
 	}
 	return branch
+}
+
+// checkReviewDiffRange rejects review-only runs that have no committed changes to inspect.
+func checkReviewDiffRange(ctx context.Context, gitSvc *git.Service, mode processor.Mode, baseRef string) error {
+	if mode != processor.ModeReview && mode != processor.ModeCodexOnly {
+		return nil
+	}
+
+	empty, err := gitSvc.DiffRangeEmptyContext(ctx, baseRef)
+	if err != nil {
+		return fmt.Errorf("review preflight: %w", err)
+	}
+	if !empty {
+		return nil
+	}
+
+	head := getCurrentBranch(gitSvc)
+	if head == "unknown" {
+		if hash, hashErr := gitSvc.HeadHash(); hashErr == nil {
+			head = hash
+			if len(head) > 7 {
+				head = head[:7]
+			}
+		}
+	}
+	return fmt.Errorf("nothing to review: HEAD (%s) is already contained in base %q, so git diff %s...HEAD is empty; check out the feature branch or pass --base-ref", head, baseRef, baseRef)
 }
 
 // tryAutoPlanMode attempts to switch to plan mode when no plans are found on the default branch.
