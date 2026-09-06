@@ -1585,6 +1585,91 @@ func TestService_DiffStats(t *testing.T) {
 	})
 }
 
+func TestService_DiffRangeEmptyContext(t *testing.T) {
+	newService := func(t *testing.T, dir string) *Service {
+		t.Helper()
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		return svc
+	}
+	commitFeature := func(t *testing.T, dir string) {
+		t.Helper()
+		runGit(t, dir, "checkout", "-b", "feature")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+		runGit(t, dir, "add", "feature.txt")
+		runGit(t, dir, "commit", "-m", "add feature")
+	}
+
+	t.Run("feature branch ahead of base is not empty", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		commitFeature(t, dir)
+
+		empty, err := newService(t, dir).DiffRangeEmptyContext(t.Context(), "master")
+		require.NoError(t, err)
+		assert.False(t, empty)
+	})
+
+	t.Run("head on base branch is empty", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+
+		empty, err := newService(t, dir).DiffRangeEmptyContext(t.Context(), "master")
+		require.NoError(t, err)
+		assert.True(t, empty)
+	})
+
+	t.Run("detached head at base tip is empty", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		baseTip := strings.TrimSpace(runGit(t, dir, "rev-parse", "master"))
+		runGit(t, dir, "checkout", "--detach", baseTip)
+
+		empty, err := newService(t, dir).DiffRangeEmptyContext(t.Context(), "master")
+		require.NoError(t, err)
+		assert.True(t, empty)
+	})
+
+	t.Run("merged feature branch is empty", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		commitFeature(t, dir)
+		runGit(t, dir, "checkout", "master")
+		runGit(t, dir, "merge", "--ff-only", "feature")
+		runGit(t, dir, "checkout", "feature")
+
+		empty, err := newService(t, dir).DiffRangeEmptyContext(t.Context(), "master")
+		require.NoError(t, err)
+		assert.True(t, empty)
+	})
+
+	t.Run("origin-prefixed base resolves to local branch", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		commitFeature(t, dir)
+		svc := newService(t, dir)
+
+		bareEmpty, err := svc.DiffRangeEmptyContext(t.Context(), "master")
+		require.NoError(t, err)
+		originEmpty, err := svc.DiffRangeEmptyContext(t.Context(), "origin/master")
+		require.NoError(t, err)
+		assert.Equal(t, bareEmpty, originEmpty)
+	})
+
+	t.Run("unknown base returns a specific error", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+
+		_, err := newService(t, dir).DiffRangeEmptyContext(t.Context(), "missing-base")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "base ref not found")
+	})
+
+	t.Run("canceled context returns an error", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		_, err := newService(t, dir).DiffRangeEmptyContext(ctx, "master")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+}
+
 func TestService_CreateWorktreeForPlan(t *testing.T) {
 	t.Run("creates worktree with new branch", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

@@ -67,6 +67,7 @@ type backend interface {
 	removeWorktree(path string) error
 	removeWorktreeSafe(path string) error
 	pruneWorktrees() error
+	resolveRef(branchName string) string
 	isAncestor(ctx context.Context, ancestor, descendant string) (bool, error)
 	mergeWouldConflict(ctx context.Context, base, branch string) (bool, error)
 	mergeWorkingTreeWouldConflict(ctx context.Context, base string) (bool, error)
@@ -246,6 +247,21 @@ func (s *Service) ContainsRevisionContext(ctx context.Context, revision string) 
 		return false, fmt.Errorf("check whether HEAD contains %q: %w", revision, err)
 	}
 	return contains, nil
+}
+
+// DiffRangeEmptyContext reports whether git diff base...HEAD contains no committed changes.
+// A three-dot diff is empty exactly when HEAD is an ancestor of base. Uncommitted changes are not
+// considered because the review's first-iteration diff compares commits.
+func (s *Service) DiffRangeEmptyContext(ctx context.Context, base string) (bool, error) {
+	resolved := s.repo.resolveRef(base)
+	if resolved == "" {
+		return false, fmt.Errorf("resolve diff base %q: base ref not found", base)
+	}
+	empty, err := s.repo.isAncestor(ctx, "HEAD", resolved)
+	if err != nil {
+		return false, fmt.Errorf("check diff range %s...HEAD: %w", base, err)
+	}
+	return empty, nil
 }
 
 // BranchContainsRevisionContext reports whether revision is an ancestor of a local branch tip.

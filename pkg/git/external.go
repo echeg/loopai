@@ -1249,12 +1249,16 @@ func (e *externalBackend) resolveRef(branchName string) string {
 		return remoteRef
 	}
 
-	// try as-is for "origin/" prefixed names
+	// try remote and then local forms for "origin/" prefixed names
 	if strings.HasPrefix(branchName, "origin/") {
 		remoteName := branchName[7:]
 		remoteRef = "refs/remotes/origin/" + remoteName
 		if e.refExists(remoteRef) {
 			return remoteRef
+		}
+		localRef = "refs/heads/" + remoteName
+		if e.refExists(localRef) {
+			return localRef
 		}
 	}
 
