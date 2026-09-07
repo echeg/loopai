@@ -50,6 +50,7 @@ type Config struct {
 	ExternalReviewEffort  string                      // resolved external provider effort
 	ExternalReviewers     []config.ReviewerSpec       // ordered resolved reviewer chain; empty uses the legacy fields above
 	FinalizeEnabled       bool                        // whether finalize step is enabled
+	ReportEnabled         bool                        // whether completion report generation is enabled
 	DefaultBranch         string                      // default branch name (detected from repo)
 	AppConfig             *config.Config              // full application config (for executors and prompts)
 	LimitRecovery         limits.Recovery             // optional provider-specific limit recovery
@@ -70,6 +71,7 @@ func toPhaseConfig(c Config) phase.Config {
 		MaxExternalIterations: c.MaxExternalIterations,
 		ReviewPatience:        c.ReviewPatience,
 		FinalizeEnabled:       c.FinalizeEnabled,
+		ReportEnabled:         c.ReportEnabled,
 		AppConfig:             c.AppConfig,
 	}
 }
@@ -126,14 +128,25 @@ type Executors struct {
 
 // Runner orchestrates the execution loop.
 type Runner struct {
-	cfg         Config
-	log         Logger
-	phaseHolder *status.PhaseHolder
-	deps        *phase.Deps
-	git         GitChecker
-	checkpoints ReviewCheckpointStore
-	resume      reviewResume
-	phases      runnerPhases
+	cfg                 Config
+	log                 Logger
+	phaseHolder         *status.PhaseHolder
+	deps                *phase.Deps
+	git                 GitChecker
+	checkpoints         ReviewCheckpointStore
+	recordStore         RunRecordStore
+	factsSource         RunFactsSource
+	record              RunRecord
+	loadedRecord        bool
+	currentTasks        TaskRunRecord
+	invocationStarted   time.Time
+	timingsSource       func() (map[string]time.Duration, time.Duration, int)
+	priorPhaseDurations map[string]Duration
+	priorValidation     ValidationRunRecord
+	recorder            *runRecorder
+	resumeReady         bool
+	resume              reviewResume
+	phases              runnerPhases
 }
 
 type taskPhaseRunner interface {
@@ -160,6 +173,10 @@ type finalizePhaseRunner interface {
 	Run(ctx context.Context) error
 }
 
+type reportPhaseRunner interface {
+	Run(ctx context.Context, facts string) (string, error)
+}
+
 type planCreationPhaseRunner interface {
 	Run(ctx context.Context) error
 }
@@ -174,6 +191,7 @@ type runnerPhases struct {
 	review        reviewPhaseRunner
 	external      externalReviewPhaseRunner
 	finalize      finalizePhaseRunner
+	report        reportPhaseRunner
 	planCreation  planCreationPhaseRunner
 	genAgents     genAgentsPhaseRunner
 }
@@ -234,7 +252,7 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 	})
 	reviewPhase := phase.NewReviewPhase(phase.ReviewPhaseOpts{
 		Cfg: phaseCfg, Log: log, Exec: review, Policy: policy, Prompts: prompts,
-		Git: git, PhaseHolder: holder, IterationDelay: iterDelay,
+		Git: git, Deps: deps, PhaseHolder: holder, IterationDelay: iterDelay,
 	})
 	reviewers := make([]phase.ExternalReviewer, 0, len(execs.Externals))
 	for _, reviewer := range execs.Externals {
@@ -245,12 +263,15 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 	var runner *Runner
 	externalPhase := phase.NewExternalReviewPhase(phase.ExternalReviewPhaseOpts{
 		Cfg: phaseCfg, Log: log, Reviewers: reviewers, Review: review,
-		Policy: policy, Prompts: prompts, Breaks: breaks, Git: git, PhaseHolder: holder, IterationDelay: iterDelay,
+		Policy: policy, Prompts: prompts, Breaks: breaks, Git: git, Deps: deps, PhaseHolder: holder, IterationDelay: iterDelay,
 		OnReviewerDone: func(ctx context.Context, done phase.ReviewerCompletion) error {
 			return runner.onReviewerDone(ctx, done)
 		},
 	})
 	finalizePhase := phase.NewFinalizePhase(phase.FinalizePhaseOpts{
+		Cfg: phaseCfg, Log: log, Exec: review, Policy: policy, Prompts: prompts, PhaseHolder: holder,
+	})
+	reportPhase := phase.NewReportPhase(phase.ReportPhaseOpts{
 		Cfg: phaseCfg, Log: log, Exec: review, Policy: policy, Prompts: prompts, PhaseHolder: holder,
 	})
 	planCreationPhase := phase.NewPlanCreationPhase(phase.PlanCreationPhaseOpts{
@@ -262,7 +283,7 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 	})
 	phases := runnerPhases{
 		task: taskPhase, taskValidator: taskPhase, review: reviewPhase,
-		external: externalPhase, finalize: finalizePhase, planCreation: planCreationPhase,
+		external: externalPhase, finalize: finalizePhase, report: reportPhase, planCreation: planCreationPhase,
 		genAgents: genAgentsPhase,
 	}
 
@@ -273,6 +294,8 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 		deps:        deps,
 		phases:      phases,
 	}
+	runner.recorder = &runRecorder{runner: runner}
+	deps.Recorder = runner.recorder
 	return runner
 }
 
@@ -298,6 +321,11 @@ func (r *Runner) SetReviewCheckpoints(store ReviewCheckpointStore) {
 	r.checkpoints = store
 }
 
+// SetRunRecordStore configures durable completion-report event storage.
+func (r *Runner) SetRunRecordStore(store RunRecordStore) {
+	r.recordStore = store
+}
+
 // SetBreakCh sets the break channel for manual termination of review and task loops.
 // each value sent on the channel triggers one break event (repeatable, not close-based).
 func (r *Runner) SetBreakCh(ch <-chan struct{}) {
@@ -319,6 +347,10 @@ func (r *Runner) SetPauseHandler(fn func(ctx context.Context) bool) {
 
 // Run executes the main loop based on configured mode.
 func (r *Runner) Run(ctx context.Context) error {
+	r.prepareReviewResume(ctx)
+	r.startRunRecord()
+	defer r.finishRunRecord()
+
 	switch r.cfg.Mode {
 	case ModeFull:
 		return r.runFull(ctx)
@@ -393,7 +425,6 @@ func (r *Runner) runFull(ctx context.Context) error {
 
 // runReviewOnly executes only the review pipeline: review → external review → review.
 func (r *Runner) runReviewOnly(ctx context.Context) error {
-	r.resume = r.loadReviewResume(ctx)
 	if err := r.runInternalReview(ctx); err != nil {
 		return err
 	}
@@ -409,7 +440,6 @@ func (r *Runner) runReviewOnly(ctx context.Context) error {
 
 // runCodexOnly executes only the external-review pipeline: external review → review → finalize.
 func (r *Runner) runCodexOnly(ctx context.Context) error {
-	r.resume = r.loadReviewResume(ctx)
 	if err := r.runExternalAndPostReview(ctx); err != nil {
 		return err
 	}
@@ -425,6 +455,9 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 		r.log.Print("external review disabled, skipping...")
 		if err := r.phases.finalize.Run(ctx); err != nil {
 			return fmt.Errorf("finalize phase: %w", err)
+		}
+		if err := r.runReport(ctx); err != nil {
+			return err
 		}
 		r.clearReviewCheckpoint("")
 		return nil
@@ -443,6 +476,9 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 		r.log.Print("external review found no issues, skipping post-%s %s review", label, r.primaryExecutorName())
 		if err := r.phases.finalize.Run(ctx); err != nil {
 			return fmt.Errorf("finalize phase: %w", err)
+		}
+		if err := r.runReport(ctx); err != nil {
+			return err
 		}
 		r.clearReviewCheckpoint("")
 		return nil
@@ -472,8 +508,50 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 	if err := r.phases.finalize.Run(ctx); err != nil {
 		return fmt.Errorf("finalize phase: %w", err)
 	}
+	if err := r.runReport(ctx); err != nil {
+		return err
+	}
 	r.clearReviewCheckpoint("")
 	return nil
+}
+
+func (r *Runner) runReport(ctx context.Context) error {
+	if !r.cfg.ReportEnabled {
+		return nil
+	}
+
+	facts := r.collectRunFacts(ctx)
+	reportRecord := r.reportRunRecord()
+	output, err := r.phases.report.Run(ctx, renderRunFacts(reportRecord, facts))
+	if err != nil {
+		return fmt.Errorf("report phase: %w", err)
+	}
+	report, ok := extractReport(output)
+	if !ok {
+		report = factsOnlyReport(reportRecord, facts)
+	}
+
+	if r.recorder == nil {
+		r.record.Report = report
+		return nil
+	}
+	r.recorder.mu.Lock()
+	r.record.Report = report
+	record := cloneRunRecord(r.record)
+	r.recorder.mu.Unlock()
+	r.recorder.save(record)
+	return nil
+}
+
+// Report returns the completion report generated by the latest run. It is empty
+// when report generation is disabled or the selected mode does not run reviews.
+func (r *Runner) Report() string {
+	if r.recorder == nil {
+		return r.record.Report
+	}
+	r.recorder.mu.Lock()
+	defer r.recorder.mu.Unlock()
+	return r.record.Report
 }
 
 func (r *Runner) runInternalReview(ctx context.Context) error {
@@ -498,7 +576,7 @@ func (r *Runner) primaryExecutorName() string {
 	return config.ExternalReviewToolClaude
 }
 
-// runTasksOnly executes only task phase, skipping all reviews.
+// runTasksOnly executes only task phase, skipping all reviews and report generation.
 func (r *Runner) runTasksOnly(ctx context.Context) error {
 	if r.cfg.PlanFile == "" {
 		return errors.New("plan file required for tasks-only mode")

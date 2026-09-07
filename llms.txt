@@ -35,7 +35,7 @@ claude plugin marketplace add echeg/loopai
 claude plugin install loopai@loopai
 ```
 
-The plugin provides `loopai:loopai`, `loopai:loopai-orca`, `loopai:loopai-plan`,
+The plugin provides `loopai:loopai`, `loopai:loopai-merge`, `loopai:loopai-orca`, `loopai:loopai-plan`,
 `loopai:loopai-brainstorm`, `loopai:loopai-adopt`, `loopai:loopai-update`, and
 `loopai:loopai-grill`. The CLI remains the execution
 engine. `loopai:loopai-orca` creates an Orca-managed worktree from the current
@@ -69,7 +69,7 @@ spec file or invoke `superpowers:writing-plans`.
 Codex reads skills from `${CODEX_HOME:-~/.codex}/skills` only, so `make
 install-codex-skills` copies them there (`--dry-run` previews, `--keep-legacy`
 skips pre-rename `ralphex-*` cleanup). It installs `$loopai`, `$loopai-plan`,
-`$loopai-adopt`, `$loopai-update`, `$loopai-brainstorm`, and `$loopai-orca`.
+`$loopai-adopt`, `$loopai-update`, `$loopai-brainstorm`, `$loopai-orca`, and `$loopai-merge`.
 `loopai-grill` stays Claude-only: its safety model is a read-only Claude tool
 pin that Codex cannot express. The Codex bodies live in `assets/codex/skills/`
 and are maintained by hand, because Codex has no `AskUserQuestion`, no `Task`
@@ -153,7 +153,9 @@ The full pipeline is:
 4. run the first internal multi-agent review
 5. run external findings review and primary-executor evaluation/fixes
 6. run a final critical/major review
-7. optionally finalize and move the plan to `docs/plans/completed/`
+7. optionally finalize, generate a completion report, and move the plan to `docs/plans/completed/`
+
+With `report_enabled = true` (default), review pipelines run a best-effort report phase after finalize; full runs that archive the plan also archive `docs/plans/completed/<stem>.report.md`, while tasks-only produces no report and review-only modes produce no sidecar. The report covers summary, change scope, risk, migrations and operational steps, plan deviation, backlog, external-review outcomes, and validation, with a deterministic facts-only fallback when model assessment is unavailable. `loopai --report [plan-or-branch]` prints the sidecar from a live feature branch or falls back to the working tree after merge. Run facts and reviewer/evaluator output are persisted atomically with mode `0600` in `.loopai/progress/<progress-log-stem>.run.json`; task-driven review-checkpoint invalidation resets both state files, successful checkpoint clearing keeps the run record for reporting, and successful plan archival removes it.
 
 Claude Code is primary by default. `--codex` makes Codex primary for planning, task execution, internal review, fixes, and finalize. `external_review_tool = auto` selects the other installed provider. Set it to `none` to disable the legacy review path when `external_reviewers` is unset.
 
@@ -182,7 +184,7 @@ Project config and runtime data:
 
 Local files override global files, which override embedded defaults. `LOOPAI_CONFIG_DIR` or `--config-dir` overrides the global location. Old `~/.config/ralphex/` and `.ralphex/` directories are intentionally ignored.
 
-`plans_dir` (default `docs/plans`) and `backlog_dir` (default `docs/backlog`) reach prompts as `{{PLANS_DIR}}` and `{{BACKLOG_DIR}}`. The backlog is a prompt convention with no Go consumer: when an agent finds a real issue outside the current plan's scope it does not fix it, it writes one markdown file per finding under `backlog_dir` — title, `found`/`plan`/`phase`, `severity`, `area`, then a description with file:line references — and commits it. The commit rule differs per path: task and internal review stage it and commit it in phase, so with a worktree it survives worktree removal and arrives through `--merge`; no capture path sweeps with `git add -A` — each stages only the files it created, modified, or deleted, and the evaluation prompts, which run as fresh sessions that authored none of the accumulated fixes, stage only the files this review loop produced across its iterations and leave any unattributable dirty path unstaged, because `--review`, `--external-only`, and `--codex-only` create no worktree and commit in your own checkout, and without `--worktree` loopai skips branch creation (and its clean-tree gate) when you are already on the plan's feature branch; external-review evaluation stages it and leaves it uncommitted until the final external-review commit, because after the first round the reviewer sees only the uncommitted diff; plan creation runs before the branch and worktree exist, so it commits that one file by pathspec in the source checkout on the currently checked-out branch, leaving anything already staged there alone. Filing is not a fix: it does not count as a confirmed issue in the completion-signal logic, though a round that writes an entry still resets `review_patience` stalemate detection. Entries are plain markdown, so `loopai-adopt docs/backlog/<entry>.md` converts one into a full plan.
+`plans_dir` (default `docs/plans`) and `backlog_dir` (default `docs/backlog`) reach prompts as `{{PLANS_DIR}}` and `{{BACKLOG_DIR}}`. Backlog capture is an agent-owned prompt convention; completion reporting reads added entries for their titles. When an agent finds a real issue outside the current plan's scope it does not fix it, it writes one markdown file per finding under `backlog_dir` — title, `found`/`plan`/`phase`, `severity`, `area`, then a description with file:line references — and commits it. The commit rule differs per path: task and internal review stage it and commit it in phase, so with a worktree it survives worktree removal and arrives through `--merge`; no capture path sweeps with `git add -A` — each stages only the files it created, modified, or deleted, and the evaluation prompts, which run as fresh sessions that authored none of the accumulated fixes, stage only the files this review loop produced across its iterations and leave any unattributable dirty path unstaged, because `--review`, `--external-only`, and `--codex-only` create no worktree and commit in your own checkout, and without `--worktree` loopai skips branch creation (and its clean-tree gate) when you are already on the plan's feature branch; external-review evaluation stages it and leaves it uncommitted until the final external-review commit, because after the first round the reviewer sees only the uncommitted diff; plan creation runs before the branch and worktree exist, so it commits that one file by pathspec in the source checkout on the currently checked-out branch, leaving anything already staged there alone. Filing is not a fix: it does not count as a confirmed issue in the completion-signal logic, though a round that writes an entry still resets `review_patience` stalemate detection. Entries are plain markdown, so `loopai-adopt docs/backlog/<entry>.md` converts one into a full plan.
 
 ## Review agents
 
@@ -224,6 +226,7 @@ Both close-out commands accept an optional positional argument naming the featur
 - `--orca` (emit Orca terminal-title status when stdout is a terminal)
 - `--merge[=base] [feature]`
 - `--pr[=base] [feature]`
+- `--report [feature]` (print the completion report without modifying the repository)
 - `--wait=duration` (default `10m`; `--wait 0` disables limit retries)
 - `--session-timeout=duration`
 - `--idle-timeout=duration`

@@ -146,7 +146,7 @@ func TestPhaseHolder_ConcurrentAccess(t *testing.T) {
 	h := &PhaseHolder{}
 	phases := []Phase{
 		PhaseTask, PhaseReview, PhaseExternalReview, PhaseExternalEval,
-		PhaseCodex, PhaseClaudeEval, PhaseFinalize,
+		PhaseCodex, PhaseClaudeEval, PhaseFinalize, PhaseReport,
 	}
 
 	var cbCount atomic.Int64

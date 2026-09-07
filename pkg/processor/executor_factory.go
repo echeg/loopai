@@ -55,7 +55,7 @@ func (f *executorFactory) buildExternalReviewers(cfg *Config, log Logger) []Exte
 	for _, spec := range specs {
 		reviewerExec, displayName := cfg.buildExternalReviewerExecutor(log, spec)
 		reviewers = append(reviewers, ExternalReviewer{
-			Tool: spec.Provider, DisplayName: displayName, Exec: reviewerExec,
+			Tool: spec.Provider, ModelSpec: spec.ModelSpec, DisplayName: displayName, Exec: reviewerExec,
 		})
 	}
 	return reviewers

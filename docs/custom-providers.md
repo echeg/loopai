@@ -95,6 +95,12 @@ loopai's `ClaudeExecutor` runs the configured command and passes the prompt via 
 
 The executor also recognizes `message_stop` events, but wrapper scripts don't need to emit these — they are internal to Claude Code. The minimum viable wrapper produces `content_block_delta` events for text and a `result` event at the end.
 
+The completion-report phase captures the model's Markdown from ordinary assistant text. A wrapper
+used for that phase must therefore forward the complete report through one of the recognized text
+fields above, such as `content_block_delta.delta.text` or `result`; writing the report to a file,
+stderr, or only a tool-use event leaves loopai with no report body and triggers the facts-only
+fallback.
+
 Tool events are optional. Wrappers that emit only text and result events, including the bundled
 compatibility wrappers, continue to work but cannot produce `validation:` timing lines.
 Background Bash uses and unmatched tool-use/tool-result pairs are intentionally not timed; foreground

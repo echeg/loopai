@@ -83,6 +83,7 @@ func TestValidationTimer_ConcurrentHandlerCalls(t *testing.T) {
 	for range runs {
 		wg.Go(func() {
 			handler("go test ./...", time.Second)
+			timer.Snapshot()
 		})
 	}
 	wg.Wait()
@@ -90,4 +91,28 @@ func TestValidationTimer_ConcurrentHandlerCalls(t *testing.T) {
 
 	require.Len(t, inner.calls, runs+1)
 	assert.Equal(t, "print: validation: 1m40s (100 runs)", inner.calls[runs])
+}
+
+func TestValidationTimer_SnapshotDoesNotFinalize(t *testing.T) {
+	inner := &recordingSectionLogger{}
+	timer := NewValidationTimer([]string{"make test"}, inner)
+	total, runs := timer.Snapshot()
+	assert.Zero(t, total)
+	assert.Zero(t, runs)
+	timer.Handler()("make test", 2*time.Second)
+	total, runs = timer.Snapshot()
+	assert.Equal(t, 2*time.Second, total)
+	assert.Equal(t, 1, runs)
+	assert.Len(t, inner.calls, 1)
+
+	timer.Handler()("make test", 3*time.Second)
+	timer.FinishRun()
+	total, runs = timer.Snapshot()
+	assert.Equal(t, 5*time.Second, total)
+	assert.Equal(t, 2, runs)
+	assert.Len(t, inner.calls, 3, "snapshot must not emit log messages")
+
+	total, runs = (*ValidationTimer)(nil).Snapshot()
+	assert.Zero(t, total)
+	assert.Zero(t, runs)
 }

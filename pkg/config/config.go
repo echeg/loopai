@@ -25,6 +25,7 @@ const (
 	makePlanPromptFile             = "make_plan.txt"
 	genAgentsPromptFile            = "gen_agents.txt"
 	finalizePromptFile             = "finalize.txt"
+	reportPromptFile               = "report.txt"
 	customReviewPromptFile         = "custom_review.txt"
 	customEvalPromptFile           = "custom_eval.txt"
 	codexReviewPromptFile          = "codex_review.txt"
@@ -147,6 +148,8 @@ type Config struct {
 
 	FinalizeEnabled    bool `json:"finalize_enabled"`
 	FinalizeEnabledSet bool `json:"-"` // tracks if finalize_enabled was explicitly set in config
+	ReportEnabled      bool `json:"report_enabled"`
+	ReportEnabledSet   bool `json:"-"` // tracks if report_enabled was explicitly set in config
 
 	PreserveAnthropicAPIKey bool `json:"preserve_anthropic_api_key"` // when true, ANTHROPIC_API_KEY is passed through to the claude child process
 
@@ -199,6 +202,7 @@ type Config struct {
 	MakePlanPrompt             string `json:"-"`
 	GenAgentsPrompt            string `json:"-"`
 	FinalizePrompt             string `json:"-"`
+	ReportPrompt               string `json:"-"`
 	CustomReviewPrompt         string `json:"-"`
 	CustomEvalPrompt           string `json:"-"`
 	CodexReviewPrompt          string `json:"-"`
@@ -397,6 +401,8 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		ReviewPatience:          values.ReviewPatience,
 		FinalizeEnabled:         values.FinalizeEnabled,
 		FinalizeEnabledSet:      values.FinalizeEnabledSet,
+		ReportEnabled:           values.ReportEnabled,
+		ReportEnabledSet:        values.ReportEnabledSet,
 		PreserveAnthropicAPIKey: values.PreserveAnthropicAPIKey,
 		Executor:                values.Executor,
 		PassClaudeMd:            values.PassClaudeMd,
@@ -450,6 +456,7 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		MakePlanPrompt:             prompts.MakePlan,
 		GenAgentsPrompt:            prompts.GenAgents,
 		FinalizePrompt:             prompts.Finalize,
+		ReportPrompt:               prompts.Report,
 		CustomReviewPrompt:         prompts.CustomReview,
 		CustomEvalPrompt:           prompts.CustomEval,
 		CodexReviewPrompt:          prompts.CodexReview,

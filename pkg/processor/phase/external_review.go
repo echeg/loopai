@@ -25,6 +25,7 @@ const (
 // ExternalReviewer pairs an external-review provider with its read-only executor.
 type ExternalReviewer struct {
 	Tool        string
+	ModelSpec   string
 	DisplayName string
 	Exec        Executor
 }
@@ -36,6 +37,7 @@ type ReviewerCompletion struct {
 	Label       string
 	HadFindings bool
 	EndedBy     string
+	Duration    time.Duration
 }
 
 // ExternalReviewPhase runs provider-aware external review loops.
@@ -48,6 +50,7 @@ type ExternalReviewPhase struct {
 	prompts         ExternalReviewPrompts
 	breaks          *BreakController
 	git             *GitState
+	deps            *Deps
 	phaseHolder     *status.PhaseHolder
 	iterationDelay  time.Duration
 	onReviewerDone  func(ctx context.Context, done ReviewerCompletion) error
@@ -65,6 +68,7 @@ type ExternalReviewPhaseOpts struct {
 	Prompts        ExternalReviewPrompts
 	Breaks         *BreakController
 	Git            *GitState
+	Deps           *Deps
 	PhaseHolder    *status.PhaseHolder
 	IterationDelay time.Duration
 	OnReviewerDone func(ctx context.Context, done ReviewerCompletion) error
@@ -75,7 +79,7 @@ func NewExternalReviewPhase(opts ExternalReviewPhaseOpts) *ExternalReviewPhase {
 	return &ExternalReviewPhase{
 		cfg: opts.Cfg, log: opts.Log, reviewers: opts.Reviewers,
 		review: opts.Review, policy: opts.Policy, prompts: opts.Prompts, breaks: opts.Breaks,
-		git: opts.Git, phaseHolder: opts.PhaseHolder, iterationDelay: opts.IterationDelay,
+		git: opts.Git, deps: opts.Deps, phaseHolder: opts.PhaseHolder, iterationDelay: opts.IterationDelay,
 		onReviewerDone: opts.OnReviewerDone,
 	}
 }
@@ -128,7 +132,9 @@ func (p *ExternalReviewPhase) Run(ctx context.Context) (ExternalReviewOutcome, e
 			return outcome, fmt.Errorf("%s review executor not configured", label)
 		}
 		p.log.PrintSection(status.NewGenericSection("external review (" + label + ")"))
+		started := time.Now()
 		reviewerOutcome, interrupted, endedBy, err := p.runLoop(ctx, reviewer, label)
+		duration := time.Since(started)
 		outcome.HadFindings = outcome.HadFindings || reviewerOutcome.HadFindings
 		if err != nil {
 			return outcome, err
@@ -136,11 +142,14 @@ func (p *ExternalReviewPhase) Run(ctx context.Context) (ExternalReviewOutcome, e
 		if interrupted {
 			return outcome, nil
 		}
+		done := ReviewerCompletion{
+			Index: index, Reviewer: reviewer, Label: label, Duration: duration,
+			HadFindings: reviewerOutcome.HadFindings, EndedBy: endedBy,
+		}
+		if p.deps != nil && p.deps.Recorder != nil {
+			p.deps.Recorder.ExternalDone(done)
+		}
 		if p.onReviewerDone != nil {
-			done := ReviewerCompletion{
-				Index: index, Reviewer: reviewer, Label: label,
-				HadFindings: reviewerOutcome.HadFindings, EndedBy: endedBy,
-			}
 			if err := p.onReviewerDone(ctx, done); err != nil {
 				return outcome, fmt.Errorf("external review completion hook for %s: %w", label, err)
 			}
@@ -191,6 +200,9 @@ func (p *ExternalReviewPhase) runLoop(ctx context.Context, reviewer ExternalRevi
 			firstCompleted:    firstCompleted,
 			evaluatorResponse: evaluatorResponse,
 		})
+		if p.deps != nil && p.deps.Recorder != nil && err == nil {
+			p.deps.Recorder.ExternalIteration(i, p.reviewerKey(reviewer), label, result.reviewerOutput, result.evaluatorResponse)
+		}
 		if err != nil {
 			if errors.Is(err, errExternalReviewBreak) {
 				return outcome, true, "", nil
@@ -251,6 +263,7 @@ type externalReviewIterationOpts struct {
 type externalReviewIterationResult struct {
 	action            externalReviewIterationAction
 	before            gitSnapshot
+	reviewerOutput    string
 	evaluatorResponse string
 	firstCompleted    bool
 	hadFindings       bool
@@ -278,7 +291,7 @@ func (p *ExternalReviewPhase) runIteration(ctx context.Context, opts externalRev
 
 	if reviewExecResult.TimedOut {
 		p.log.Print("%s review session timed out, retrying on next iteration...", opts.label)
-		return externalReviewIterationResult{action: externalReviewRetry}, nil
+		return externalReviewIterationResult{action: externalReviewRetry, reviewerOutput: reviewResult.Output}, nil
 	}
 
 	// Empty output is still evaluated: the evaluator prompt explicitly treats it
@@ -296,11 +309,17 @@ func (p *ExternalReviewPhase) runIteration(ctx context.Context, opts externalRev
 
 	if evalExecResult.TimedOut {
 		p.log.Print("%s eval session timed out, retrying %s iteration...", p.cfg.executorName(), opts.label)
-		return externalReviewIterationResult{action: externalReviewRetry}, nil
+		return externalReviewIterationResult{
+			action: externalReviewRetry, reviewerOutput: reviewResult.Output,
+			evaluatorResponse: evalExecResult.Result.Output,
+		}, nil
 	}
 
 	evalResult := evalExecResult.Result
-	result := externalReviewIterationResult{before: before, evaluatorResponse: evalResult.Output, firstCompleted: true}
+	result := externalReviewIterationResult{
+		before: before, reviewerOutput: reviewResult.Output,
+		evaluatorResponse: evalResult.Output, firstCompleted: true,
+	}
 	if IsExternalReviewDone(evalResult.Signal) {
 		p.log.Print("%s review complete - no more findings", opts.label)
 		result.action = externalReviewStop
@@ -309,6 +328,10 @@ func (p *ExternalReviewPhase) runIteration(ctx context.Context, opts externalRev
 
 	result.hadFindings = true
 	return result, nil
+}
+
+func (p *ExternalReviewPhase) reviewerKey(reviewer ExternalReviewer) string {
+	return reviewer.Tool + ":" + reviewer.ModelSpec
 }
 
 var errExternalReviewBreak = errors.New("external review interrupted by manual break")

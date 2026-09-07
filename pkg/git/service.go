@@ -39,6 +39,7 @@ type backend interface {
 	revParse(ref string) (string, error)
 	revisionExists(ctx context.Context, revision string) (bool, error)
 	fileExistsAt(ref, path string) (bool, error)
+	showFile(ref, path string) ([]byte, error)
 	createBranch(name string) error
 	checkoutBranch(name string) error
 	mergeBranch(ctx context.Context, name, expectedHead string) error
@@ -62,6 +63,8 @@ type backend interface {
 	commitFiles(msg string, paths ...string) error
 	autoCommitAll(msg string) (bool, error)
 	createInitialCommit(msg string) error
+	commitsBetween(base, head string) ([]Commit, error)
+	diffNameStatus(base string) ([]FileChange, error)
 	diffStats(baseBranch, headRef string) (DiffStats, error)
 	diffRangeEmpty(ctx context.Context, baseRef, headRef string) (bool, error)
 	addWorktree(ctx context.Context, path, branch string, createBranch bool, startRef string) error
@@ -79,6 +82,14 @@ type backend interface {
 // The repository is returned to its pre-merge state before this error is returned.
 var ErrMergeConflict = errors.New("merge conflict")
 
+// ErrCompletionReportWrite identifies a completion-report sidecar failure that
+// happened after the plan was already archived (or was found already archived).
+// Callers may warn and continue because the plan move itself succeeded.
+var ErrCompletionReportWrite = errors.New("completion report write failed")
+
+// ErrPathNotFound identifies a path that does not exist as a regular file at a Git revision.
+var ErrPathNotFound = errors.New("path not found")
+
 // errMergeTreeUnsupported indicates that the installed Git does not support the
 // merge-tree --write-tree form used for non-mutating conflict prediction.
 var errMergeTreeUnsupported = errors.New("git merge-tree --write-tree unsupported")
@@ -88,6 +99,18 @@ type DiffStats struct {
 	Files     int // number of files changed
 	Additions int // lines added
 	Deletions int // lines deleted
+}
+
+// Commit identifies a commit and its one-line subject.
+type Commit struct {
+	Hash    string `json:"hash"`
+	Subject string `json:"subject"`
+}
+
+// FileChange identifies a changed path and its Git name-status code.
+type FileChange struct {
+	Status string `json:"status"`
+	Path   string `json:"path"`
 }
 
 // Worktree describes one registered Git worktree and the local branch checked out there.
@@ -453,6 +476,15 @@ func (s *Service) PlanArchivedAtRevision(revision, planFile string) (bool, error
 		}
 	}
 	return false, nil
+}
+
+// ShowFile returns the contents of a regular file at ref without modifying the working tree.
+func (s *Service) ShowFile(ref, path string) ([]byte, error) {
+	content, err := s.repo.showFile(ref, path)
+	if err != nil {
+		return nil, fmt.Errorf("show %q at %q: %w", path, ref, err)
+	}
+	return content, nil
 }
 
 // ResolveBaseBranch validates an explicit local base branch or auto-detects main/master.
@@ -2001,16 +2033,137 @@ func (s *Service) MovePlanToCompleted(planFile string) error {
 	return nil
 }
 
+// MovePlanToCompletedWithReport moves a plan into completed/ and writes its
+// completion-report sidecar in the same commit. An empty report preserves the
+// legacy MovePlanToCompleted behavior, including its commit message.
+//
+// If the plan is already archived, the missing sidecar is added in a standalone
+// commit. Sidecar preparation failures after the plan move are reported through
+// ErrCompletionReportWrite after committing the plan move without the report.
+func (s *Service) MovePlanToCompletedWithReport(planFile string, report []byte) error {
+	if len(report) == 0 {
+		return s.MovePlanToCompleted(planFile)
+	}
+
+	completedDir := filepath.Join(filepath.Dir(planFile), "completed")
+	if err := os.MkdirAll(completedDir, 0o750); err != nil {
+		return fmt.Errorf("create completed dir: %w", err)
+	}
+
+	sourceFile, destPath, done := s.resolvePlanMoveTargets(planFile, completedDir)
+	reportPath := strings.TrimSuffix(destPath, filepath.Ext(destPath)) + ".report.md"
+	if done {
+		return s.writeReportForArchivedPlan(reportPath, destPath, report)
+	}
+
+	if err := s.repo.moveFile(sourceFile, destPath); err != nil {
+		if renameErr := os.Rename(sourceFile, destPath); renameErr != nil {
+			return fmt.Errorf("move plan: %w", renameErr)
+		}
+		if addErr := s.repo.add(destPath); addErr != nil {
+			s.log.Printf("warning: failed to stage moved plan: %v\n", addErr)
+		}
+	}
+
+	if err := createCompletionReport(reportPath, report); err != nil {
+		return s.commitPlanMoveAfterReportFailure(sourceFile, destPath, err)
+	}
+	if err := s.repo.add(reportPath); err != nil {
+		_ = os.Remove(reportPath)
+		return s.commitPlanMoveAfterReportFailure(sourceFile, destPath, fmt.Errorf("stage sidecar: %w", err))
+	}
+
+	commitMsg := "move completed plan: " + filepath.Base(sourceFile) + " (+ report)"
+	if err := s.commitReportPlanMove(commitMsg, sourceFile, destPath, reportPath); err != nil {
+		return fmt.Errorf("commit plan move and report: %w", err)
+	}
+
+	s.log.Printf("moved plan to %s and wrote completion report to %s\n", destPath, reportPath)
+	return nil
+}
+
+func (s *Service) writeReportForArchivedPlan(reportPath, destPath string, report []byte) error {
+	if info, err := os.Lstat(reportPath); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: inspect sidecar: %s is not a regular file", ErrCompletionReportWrite, reportPath)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("%w: inspect sidecar: %w", ErrCompletionReportWrite, err)
+	}
+	if err := createCompletionReport(reportPath, report); err != nil {
+		return fmt.Errorf("%w: %w", ErrCompletionReportWrite, err)
+	}
+	if err := s.repo.add(reportPath); err != nil {
+		_ = os.Remove(reportPath)
+		return fmt.Errorf("%w: stage sidecar: %w", ErrCompletionReportWrite, err)
+	}
+	commitMsg := "add completion report: " + filepath.Base(destPath)
+	if err := s.repo.commitFiles(s.appendTrailer(commitMsg), reportPath); err != nil {
+		return fmt.Errorf("commit completion report: %w", err)
+	}
+	s.log.Printf("wrote completion report to %s\n", reportPath)
+	return nil
+}
+
+// createCompletionReport never follows or overwrites an existing sidecar, including
+// symlinks and hard links. O_EXCL also protects the gap after an absence check.
+func createCompletionReport(path string, report []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644) //nolint:gosec // repository documents are intentionally world-readable
+	if err != nil {
+		return fmt.Errorf("create sidecar: %w", err)
+	}
+	_, writeErr := f.Write(report)
+	closeErr := f.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("write sidecar: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) commitPlanMoveAfterReportFailure(sourceFile, destPath string, reportErr error) error {
+	commitMsg := "move completed plan: " + filepath.Base(sourceFile)
+	if err := s.commitReportPlanMove(commitMsg, sourceFile, destPath); err != nil {
+		return fmt.Errorf("commit plan move after completion report failure: %w", err)
+	}
+	s.log.Printf("moved plan to %s\n", destPath)
+	return fmt.Errorf("%w: %w", ErrCompletionReportWrite, reportErr)
+}
+
+// commitReportPlanMove excludes unrelated staged files from report archival commits.
+func (s *Service) commitReportPlanMove(msg, sourceFile, destPath string, extraPaths ...string) error {
+	paths := append([]string{destPath}, extraPaths...)
+	// an untracked or newly staged source has no deletion to commit and no remaining pathspec.
+	sourceChanged, err := s.repo.fileHasChanges(sourceFile)
+	if err != nil {
+		return fmt.Errorf("inspect archived plan source: %w", err)
+	}
+	if sourceChanged {
+		paths = append(paths, sourceFile)
+	}
+	return s.repo.commitFiles(s.appendTrailer(msg), paths...)
+}
+
 // ValidateFinalizingPlanWorktreeRemoval permits crash recovery to force-remove a generated
 // worktree only when it is clean or its sole changes are the exact staged active-to-completed plan
-// move that MovePlanToCompleted performs before committing. This prevents recovery from discarding
-// unrelated edits made after the interrupted process released its run lock.
+// move, with or without a staged report, or a staged report alone after archival. This prevents recovery
+// from discarding unrelated edits made after the interrupted process released its run lock.
 func (s *Service) ValidateFinalizingPlanWorktreeRemoval(planFile string) error {
 	if resolvedDir, resolveErr := filepath.EvalSymlinks(filepath.Dir(planFile)); resolveErr == nil {
 		planFile = filepath.Join(resolvedDir, filepath.Base(planFile))
 	}
 	completedPath := filepath.Join(filepath.Dir(planFile), "completed", filepath.Base(planFile))
-	dirtyFiles, err := s.repo.hasChangesOtherThan(planFile, completedPath)
+	reportPath := strings.TrimSuffix(completedPath, filepath.Ext(completedPath)) + ".report.md"
+	reportChanged, err := s.validateFinalizingReport(reportPath)
+	if err != nil {
+		return err
+	}
+	allowedPaths := []string{planFile, completedPath}
+	if reportChanged {
+		allowedPaths = append(allowedPaths, reportPath)
+	}
+	dirtyFiles, err := s.repo.hasChangesOtherThan(allowedPaths...)
 	if err != nil {
 		return fmt.Errorf("inspect finalized worktree changes: %w", err)
 	}
@@ -2022,7 +2175,6 @@ func (s *Service) ValidateFinalizingPlanWorktreeRemoval(planFile string) error {
 		return fmt.Errorf("inspect finalized active plan: %w", err)
 	}
 	_, activeStatErr := os.Lstat(planFile)
-	activeExists := activeStatErr == nil
 	if activeStatErr != nil && !os.IsNotExist(activeStatErr) {
 		return fmt.Errorf("inspect finalized active plan path: %w", activeStatErr)
 	}
@@ -2030,9 +2182,6 @@ func (s *Service) ValidateFinalizingPlanWorktreeRemoval(planFile string) error {
 	completedExists := completedStatErr == nil
 	if completedStatErr != nil && !os.IsNotExist(completedStatErr) {
 		return fmt.Errorf("inspect finalized archived plan path: %w", completedStatErr)
-	}
-	if activeExists && !activeChanged && !completedExists {
-		return nil
 	}
 	activeState, err := s.repo.fileStateFingerprint(planFile)
 	if err != nil {
@@ -2062,6 +2211,33 @@ func (s *Service) ValidateFinalizingPlanWorktreeRemoval(planFile string) error {
 		"finalized worktree contains plan changes other than the interrupted archive move (active status %q, archived status %q)",
 		activeStatus, completedStatus,
 	)
+}
+
+// validateFinalizingReport accepts only a regular staged addition without subsequent
+// working-tree edits. Untracked sidecars cannot be attributed to the interrupted archive.
+func (s *Service) validateFinalizingReport(reportPath string) (bool, error) {
+	info, err := os.Lstat(reportPath)
+	if os.IsNotExist(err) {
+		return false, nil // any deletion remains subject to the unrelated-changes check
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect finalized report path: %w", err)
+	}
+	changed, err := s.repo.fileHasChanges(reportPath)
+	if err != nil {
+		return false, fmt.Errorf("inspect finalized report: %w", err)
+	}
+	if !changed {
+		return false, nil
+	}
+	state, err := s.repo.fileStateFingerprint(reportPath)
+	if err != nil {
+		return false, fmt.Errorf("inspect finalized report state: %w", err)
+	}
+	if !info.Mode().IsRegular() || !strings.HasPrefix(state, "A ") {
+		return false, fmt.Errorf("finalized worktree contains report changes other than the interrupted archive addition: %s", reportPath)
+	}
+	return true, nil
 }
 
 // resolvePlanMoveTargets determines the source and destination for MovePlanToCompleted,
@@ -2155,6 +2331,16 @@ func (s *Service) EnsureHasCommits(promptFn func() bool) error {
 // returns zero stats if baseBranch doesn't exist or HEAD equals baseBranch.
 func (s *Service) DiffStats(baseBranch string) (DiffStats, error) {
 	return s.repo.diffStats(baseBranch, "HEAD")
+}
+
+// CommitsBetween returns commits reachable from head but not base, newest first.
+func (s *Service) CommitsBetween(base, head string) ([]Commit, error) {
+	return s.repo.commitsBetween(base, head)
+}
+
+// DiffNameStatus returns the status and path of files changed between base and HEAD.
+func (s *Service) DiffNameStatus(base string) ([]FileChange, error) {
+	return s.repo.diffNameStatus(base)
 }
 
 // BranchDiffStats returns change statistics between baseBranch and a named branch, without

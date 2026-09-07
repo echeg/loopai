@@ -32,6 +32,7 @@ type Config struct {
 	MaxExternalIterations int
 	ReviewPatience        int
 	FinalizeEnabled       bool
+	ReportEnabled         bool
 	AppConfig             *config.Config
 }
 
@@ -94,6 +95,12 @@ type FinalizeLogger interface {
 	PrintSection(section status.Section)
 }
 
+// ReportLogger records completion report phase progress.
+type ReportLogger interface {
+	Logger
+	PrintSection(section status.Section)
+}
+
 // GenAgentsLogger records agent generation progress.
 type GenAgentsLogger interface {
 	Logger
@@ -122,12 +129,22 @@ type GitChecker interface {
 	DiffFingerprint() (string, error)
 }
 
+// RunRecorder captures phase events for the durable completion report record.
+type RunRecorder interface {
+	TaskIteration(failed bool)
+	InternalReviewDone(loopIterations int, endedBy string)
+	ExternalIteration(index int, key, label, reviewerOutput, evaluatorResponse string)
+	ExternalDone(done ReviewerCompletion)
+	PostReviewDone(iterations int)
+}
+
 // Deps holds late-bound dependencies shared by phase engines.
 type Deps struct {
 	Git            GitChecker
 	InputCollector InputCollector
 	BreakCh        <-chan struct{}
 	PauseHandler   func(ctx context.Context) bool
+	Recorder       RunRecorder
 }
 
 // ExecutionResult is the execution output plus phase-level timeout metadata.
@@ -173,6 +190,11 @@ type GenAgentsPrompts interface {
 // FinalizePrompts renders finalize prompts.
 type FinalizePrompts interface {
 	FinalizePrompt() string
+}
+
+// ReportPrompts renders the completion report prompt.
+type ReportPrompts interface {
+	ReportPrompt(facts string) string
 }
 
 // Locator resolves the current plan file path.

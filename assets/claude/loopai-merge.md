@@ -1,0 +1,1 @@
+./skills/loopai-merge/SKILL.md

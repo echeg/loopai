@@ -190,6 +190,7 @@ func TestValuesLoader_Load_InvalidConfig(t *testing.T) {
 		{name: "invalid codex_timeout_ms", config: "codex_timeout_ms = abc", errPart: "codex_timeout_ms"},
 		{name: "invalid codex_enabled", config: "codex_enabled = maybe", errPart: "codex_enabled"},
 		{name: "invalid finalize_enabled", config: "finalize_enabled = maybe", errPart: "finalize_enabled"},
+		{name: "invalid report_enabled", config: "report_enabled = maybe", errPart: "report_enabled"},
 		{name: "invalid move_plan_on_completion", config: "move_plan_on_completion = maybe", errPart: "move_plan_on_completion"},
 		{name: "negative task_retry_count", config: "task_retry_count = -1", errPart: "task_retry_count"},
 		{name: "negative codex_timeout_ms", config: "codex_timeout_ms = -100", errPart: "codex_timeout_ms"},
@@ -339,6 +340,22 @@ func TestValuesLoader_Load_LocalOverridesFinalizeEnabled(t *testing.T) {
 
 	assert.True(t, values.FinalizeEnabled)
 	assert.True(t, values.FinalizeEnabledSet)
+}
+
+func TestValuesLoader_Load_LocalOverridesReportEnabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	globalConfig := filepath.Join(tmpDir, "global")
+	localConfig := filepath.Join(tmpDir, "local")
+
+	require.NoError(t, os.WriteFile(globalConfig, []byte(`report_enabled = true`), 0o600))
+	require.NoError(t, os.WriteFile(localConfig, []byte(`report_enabled = false`), 0o600))
+
+	loader := newValuesLoader(defaultsFS)
+	values, err := loader.Load(localConfig, globalConfig)
+	require.NoError(t, err)
+
+	assert.False(t, values.ReportEnabled)
+	assert.True(t, values.ReportEnabledSet)
 }
 
 func TestValuesLoader_Load_WorktreeEnabled(t *testing.T) {

@@ -673,6 +673,7 @@ func TestStyleForPhase(t *testing.T) {
 			want:  phaseStyle{text: "evaluating findings", icon: "checkmark.seal", color: "#a855f7"},
 		},
 		{name: "finalize", phase: status.PhaseFinalize, want: phaseStyle{text: "finalize", icon: "flag.checkered", color: "#22c55e"}},
+		{name: "report", phase: status.PhaseReport, want: phaseStyle{text: "report", icon: "doc.text", color: "#22c55e"}},
 		{name: "plan", phase: status.PhasePlan, want: phaseStyle{text: "planning", icon: "list.bullet.clipboard", color: "#3b82f6"}},
 		{name: "limit wait", phase: status.PhaseLimitWait, want: phaseStyle{text: "rate limited", icon: "clock.arrow.circlepath", color: "#ef4444"}},
 		// legacy phases are only parsed from historical progress files, they fall back to the raw value

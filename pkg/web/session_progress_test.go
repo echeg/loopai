@@ -769,6 +769,7 @@ func TestPhaseFromSection(t *testing.T) {
 		expected status.Phase
 	}{
 		{"task section", "Task 1: implement feature", status.PhaseTask},
+		{"report step", "report step", status.PhaseReport},
 		{"codex iteration", "codex iteration 1", status.PhaseCodex},
 		{"codex external review", "codex external review", status.PhaseCodex},
 		{"new codex external review", "external review (codex)", status.PhaseExternalReview},

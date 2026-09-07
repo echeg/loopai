@@ -1193,6 +1193,198 @@ func TestService_MovePlanToCompleted(t *testing.T) {
 	})
 }
 
+func TestService_MovePlanToCompletedWithReport(t *testing.T) {
+	newPlan := func(t *testing.T, name string) (string, *Service, string) {
+		t.Helper()
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, name)
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		return dir, svc, planFile
+	}
+
+	t.Run("commits plan and sidecar together", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "feature.md")
+		before := strings.TrimSpace(runGit(t, dir, "rev-list", "--count", "HEAD"))
+
+		require.NoError(t, svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Feature\n")))
+
+		after := strings.TrimSpace(runGit(t, dir, "rev-list", "--count", "HEAD"))
+		assert.Equal(t, "2", before)
+		assert.Equal(t, "3", after)
+		assert.Equal(t, "move completed plan: feature.md (+ report)",
+			strings.TrimSpace(runGit(t, dir, "log", "-1", "--format=%s")))
+		completedDir := filepath.Join(dir, "docs", "plans", "completed")
+		assert.FileExists(t, filepath.Join(completedDir, "feature.md"))
+		reportPath := filepath.Join(completedDir, "feature.report.md")
+		report, err := os.ReadFile(reportPath) //nolint:gosec // test-owned path
+		require.NoError(t, err)
+		assert.Equal(t, "# Report: Feature\n", string(report))
+		info, err := os.Stat(reportPath)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
+		changed := runGit(t, dir, "show", "--format=", "--name-status", "HEAD")
+		assert.Contains(t, changed, "docs/plans/completed/feature.md")
+		assert.Contains(t, changed, "docs/plans/completed/feature.report.md")
+	})
+
+	t.Run("empty report preserves legacy commit", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "legacy.md")
+
+		require.NoError(t, svc.MovePlanToCompletedWithReport(planFile, nil))
+
+		assert.Equal(t, "move completed plan: legacy.md",
+			strings.TrimSpace(runGit(t, dir, "log", "-1", "--format=%s")))
+		assert.NoFileExists(t, filepath.Join(dir, "docs", "plans", "completed", "legacy.report.md"))
+	})
+
+	for _, sourceState := range []string{"tracked", "untracked", "newly staged"} {
+		for _, reportFails := range []bool{false, true} {
+			t.Run(fmt.Sprintf("isolates archive of %s plan with report failure %t", sourceState, reportFails), func(t *testing.T) {
+				dir, svc, planFile := newPlan(t, "isolated.md")
+				if sourceState != "tracked" {
+					runGit(t, dir, "rm", "--cached", "docs/plans/isolated.md")
+					runGit(t, dir, "commit", "-m", "leave plan untracked")
+					if sourceState == "newly staged" {
+						runGit(t, dir, "add", "docs/plans/isolated.md")
+					}
+				}
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("user work\n"), 0o600))
+				runGit(t, dir, "add", "unrelated.txt")
+				reportPath := filepath.Join(dir, "docs", "plans", "completed", "isolated.report.md")
+				if reportFails {
+					require.NoError(t, os.MkdirAll(reportPath, 0o750))
+				}
+
+				err := svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Isolated\n"))
+				if reportFails {
+					require.ErrorIs(t, err, ErrCompletionReportWrite)
+				} else {
+					require.NoError(t, err)
+				}
+
+				changed := strings.Fields(runGit(t, dir, "show", "--format=", "--name-only", "--no-renames", "HEAD"))
+				want := []string{"docs/plans/completed/isolated.md"}
+				if sourceState == "tracked" {
+					want = append(want, "docs/plans/isolated.md")
+				}
+				if !reportFails {
+					want = append(want, "docs/plans/completed/isolated.report.md")
+				}
+				assert.ElementsMatch(t, want, changed)
+				assert.Equal(t, "A  unrelated.txt", strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
+			})
+		}
+	}
+
+	t.Run("report write failure still commits the plan move", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "report-failure.md")
+		reportPath := filepath.Join(dir, "docs", "plans", "completed", "report-failure.report.md")
+		require.NoError(t, os.MkdirAll(reportPath, 0o750))
+
+		err := svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: unavailable\n"))
+
+		require.ErrorIs(t, err, ErrCompletionReportWrite)
+		assert.Equal(t, "move completed plan: report-failure.md",
+			strings.TrimSpace(runGit(t, dir, "log", "-1", "--format=%s")))
+		assert.FileExists(t, filepath.Join(dir, "docs", "plans", "completed", "report-failure.md"))
+		assert.DirExists(t, reportPath)
+	})
+
+	t.Run("untracked plan uses the rename fallback", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "untracked.md")
+		runGit(t, dir, "rm", "--cached", "docs/plans/untracked.md")
+		runGit(t, dir, "commit", "-m", "leave plan untracked")
+
+		require.NoError(t, svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Untracked\n")))
+
+		assert.NoFileExists(t, planFile)
+		assert.FileExists(t, filepath.Join(dir, "docs", "plans", "completed", "untracked.md"))
+		assert.FileExists(t, filepath.Join(dir, "docs", "plans", "completed", "untracked.report.md"))
+	})
+
+	t.Run("completed directory creation failure is returned", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "blocked-dir.md")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "docs", "plans", "completed"), []byte("blocked\n"), 0o600))
+
+		err := svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Blocked\n"))
+
+		require.ErrorContains(t, err, "create completed dir")
+		assert.FileExists(t, planFile)
+	})
+
+	t.Run("adds missing report to an already archived plan once", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "archived.md")
+		require.NoError(t, svc.MovePlanToCompleted(planFile))
+		before := strings.TrimSpace(runGit(t, dir, "rev-list", "--count", "HEAD"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("user work\n"), 0o600))
+		runGit(t, dir, "add", "unrelated.txt")
+
+		require.NoError(t, svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Archived\n")))
+		afterFirst := strings.TrimSpace(runGit(t, dir, "rev-list", "--count", "HEAD"))
+		require.NoError(t, svc.MovePlanToCompletedWithReport(planFile, []byte("replacement")))
+		afterSecond := strings.TrimSpace(runGit(t, dir, "rev-list", "--count", "HEAD"))
+
+		assert.Equal(t, "3", before)
+		assert.Equal(t, "4", afterFirst)
+		assert.Equal(t, afterFirst, afterSecond)
+		assert.Equal(t, "add completion report: archived.md",
+			strings.TrimSpace(runGit(t, dir, "log", "-1", "--format=%s")))
+		report, err := os.ReadFile(filepath.Join(dir, "docs", "plans", "completed", "archived.report.md")) //nolint:gosec // test-owned path
+		require.NoError(t, err)
+		assert.Equal(t, "# Report: Archived\n", string(report))
+		assert.Equal(t, "docs/plans/completed/archived.report.md",
+			strings.TrimSpace(runGit(t, dir, "show", "--format=", "--name-only", "HEAD")))
+		assert.Equal(t, "A  unrelated.txt", strings.TrimSpace(runGit(t, dir, "status", "--porcelain")))
+	})
+
+	t.Run("archived sidecar inspection failure is returned", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "inspect-failure.md")
+		require.NoError(t, svc.MovePlanToCompleted(planFile))
+		reportPath := filepath.Join(dir, "docs", "plans", "completed", "inspect-failure.report.md")
+		require.NoError(t, os.Symlink(reportPath, reportPath))
+
+		err := svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Inspect failure\n"))
+
+		require.ErrorIs(t, err, ErrCompletionReportWrite)
+		require.ErrorContains(t, err, "inspect sidecar")
+	})
+
+	t.Run("archived sidecar write failure is returned", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "archived-write-failure.md")
+		require.NoError(t, svc.MovePlanToCompleted(planFile))
+		reportPath := filepath.Join(dir, "docs", "plans", "completed", "archived-write-failure.report.md")
+		require.NoError(t, os.Symlink(filepath.Join(dir, "missing", "report.md"), reportPath))
+
+		err := svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Write failure\n"))
+
+		require.ErrorIs(t, err, ErrCompletionReportWrite)
+	})
+
+	t.Run("archived sidecar commit failure is returned", func(t *testing.T) {
+		dir, svc, planFile := newPlan(t, "archived-commit-failure.md")
+		require.NoError(t, svc.MovePlanToCompleted(planFile))
+		hook := filepath.Join(dir, ".git", "hooks", "pre-commit")
+		require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
+
+		err := svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Commit failure\n"))
+
+		require.ErrorContains(t, err, "commit completion report")
+		require.NoError(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "report-only staged addition is recoverable")
+		reportPath := filepath.Join(dir, "docs", "plans", "completed", "archived-commit-failure.report.md")
+		require.NoError(t, os.WriteFile(reportPath, []byte("user edit\n"), 0o600))
+		require.ErrorContains(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "report changes")
+		runGit(t, dir, "checkout", "--", reportPath)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("user work\n"), 0o600))
+		require.ErrorContains(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "unrelated changes")
+	})
+}
+
 func TestService_EnsureHasCommits(t *testing.T) {
 	t.Run("returns nil when repo has commits", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
@@ -1583,6 +1775,67 @@ func TestService_DiffStats(t *testing.T) {
 		assert.Equal(t, 3, stats.Additions)
 		assert.Equal(t, 0, stats.Deletions)
 	})
+}
+
+func TestService_CommitsBetweenAndDiffNameStatus(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "deleted.txt"), []byte("remove me\n"), 0o600))
+	runGit(t, dir, "add", "deleted.txt")
+	runGit(t, dir, "commit", "-m", "add base fixture")
+
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	require.NoError(t, svc.CreateBranch("feature-facts"))
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "added.txt"), []byte("new\n"), 0o600))
+	runGit(t, dir, "add", "README.md", "added.txt")
+	runGit(t, dir, "commit", "-m", "modify and add")
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "deleted.txt")))
+	runGit(t, dir, "add", "deleted.txt")
+	runGit(t, dir, "commit", "-m", "delete old file")
+
+	commits, err := svc.CommitsBetween("master", "HEAD")
+	require.NoError(t, err)
+	require.Len(t, commits, 2)
+	assert.Len(t, commits[0].Hash, 40)
+	assert.Equal(t, "delete old file", commits[0].Subject)
+	assert.Len(t, commits[1].Hash, 40)
+	assert.Equal(t, "modify and add", commits[1].Subject)
+
+	changes, err := svc.DiffNameStatus("master")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []FileChange{
+		{Status: "A", Path: "added.txt"},
+		{Status: "M", Path: "README.md"},
+		{Status: "D", Path: "deleted.txt"},
+	}, changes)
+}
+
+func TestService_ShowFile(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	reportPath := filepath.Join(dir, "docs", "plans", "completed", "feature.report.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(reportPath), 0o750))
+	const report = "# Report: Feature\n\nbody\n\n"
+	require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
+	runGit(t, dir, "add", "docs/plans/completed/feature.report.md")
+	runGit(t, dir, "commit", "-m", "add report")
+
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+
+	body, err := svc.ShowFile("HEAD", reportPath)
+	require.NoError(t, err)
+	assert.Equal(t, report, string(body), "ShowFile must preserve the report body exactly")
+
+	_, err = svc.ShowFile("HEAD", filepath.Join(dir, "docs", "plans", "completed", "missing.report.md"))
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrPathNotFound)
+
+	_, err = svc.ShowFile("missing-ref", reportPath)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrPathNotFound)
 }
 
 func TestService_DiffRangeEmptyContext(t *testing.T) {
@@ -3342,6 +3595,37 @@ func TestService_ValidateFinalizingPlanWorktreeRemoval(t *testing.T) {
 	})
 }
 
+func TestService_ValidateFinalizingPlanWorktreeRemovalWithReport(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	planFile := filepath.Join(dir, "docs", "plans", "plan.md")
+	reportPath := filepath.Join(dir, "docs", "plans", "completed", "plan.report.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+	require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+	runGit(t, dir, "add", "docs/plans/plan.md")
+	runGit(t, dir, "commit", "-m", "add plan")
+	hook := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755)) //nolint:gosec // executable test fixture
+
+	require.ErrorContains(t, svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: Plan\n")), "commit plan move and report")
+	require.NoError(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "staged report and plan move are recoverable")
+
+	require.NoError(t, os.WriteFile(reportPath, []byte("# User edit\n"), 0o600))
+	require.ErrorContains(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "report changes")
+	runGit(t, dir, "checkout", "--", reportPath)
+	require.NoError(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile))
+
+	runGit(t, dir, "reset", "HEAD", "--", reportPath)
+	require.ErrorContains(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "report changes", "preserve unattributed untracked sidecars")
+	require.NoError(t, os.Remove(reportPath))
+	require.NoError(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "interruption before report creation is recoverable")
+
+	require.NoError(t, os.Symlink("../plan.md", reportPath))
+	runGit(t, dir, "add", reportPath)
+	require.ErrorContains(t, svc.ValidateFinalizingPlanWorktreeRemoval(planFile), "report changes", "never accept a staged symlink as a generated report")
+}
+
 func TestService_CommitPlanFile(t *testing.T) {
 	t.Run("commits plan file in worktree", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
@@ -4118,4 +4402,111 @@ func TestService_resolveFilesystemCase(t *testing.T) {
 		input := filepath.Join(dir, "docs", "plans", "my-plan.md")
 		assert.Equal(t, actual, svc.resolveFilesystemCase(input))
 	})
+}
+
+func TestService_ReportSidecarCollisions(t *testing.T) {
+	for _, archived := range []bool{false, true} {
+		for _, kind := range []string{"regular", "hardlink", "symlink", "dangling symlink"} {
+			name := kind
+			if archived {
+				name += " archived"
+			}
+			t.Run(name, func(t *testing.T) {
+				dir := setupExternalTestRepo(t)
+				svc, err := NewService(dir, noopServiceLogger())
+				require.NoError(t, err)
+				planFile := filepath.Join(dir, "docs", "plans", "feature.md")
+				completed := filepath.Join(filepath.Dir(planFile), "completed")
+				require.NoError(t, os.MkdirAll(completed, 0o750))
+				require.NoError(t, os.WriteFile(planFile, []byte("# Feature\n"), 0o600))
+				runGit(t, dir, "add", planFile)
+				runGit(t, dir, "commit", "-m", "add plan")
+				if archived {
+					require.NoError(t, svc.MovePlanToCompleted(planFile))
+				}
+				reportPath := filepath.Join(completed, "feature.report.md")
+				target := filepath.Join(t.TempDir(), "existing.md")
+				const original = "original contents\n"
+				if kind != "dangling symlink" {
+					require.NoError(t, os.WriteFile(target, []byte(original), 0o600))
+				}
+				switch kind {
+				case "regular":
+					require.NoError(t, os.WriteFile(reportPath, []byte(original), 0o600))
+				case "hardlink":
+					require.NoError(t, os.Link(target, reportPath))
+				default:
+					require.NoError(t, os.Symlink(target, reportPath))
+				}
+
+				err = svc.MovePlanToCompletedWithReport(planFile, []byte("# Report: replacement\n"))
+				if archived && (kind == "regular" || kind == "hardlink") {
+					require.NoError(t, err)
+				} else {
+					require.ErrorIs(t, err, ErrCompletionReportWrite)
+				}
+				assert.NoFileExists(t, planFile)
+				assert.FileExists(t, filepath.Join(completed, "feature.md"))
+				assert.Equal(t, "# Feature\n", runGit(t, dir, "show", "HEAD:docs/plans/completed/feature.md"))
+				if kind == "dangling symlink" {
+					_, err = os.Lstat(target)
+					require.ErrorIs(t, err, os.ErrNotExist)
+				} else {
+					body, readErr := os.ReadFile(target) //nolint:gosec // test-owned temporary symlink target
+					require.NoError(t, readErr)
+					assert.Equal(t, original, string(body))
+					body, readErr = os.ReadFile(reportPath) //nolint:gosec // test-owned temporary sidecar
+					require.NoError(t, readErr)
+					assert.Equal(t, original, string(body))
+				}
+			})
+		}
+	}
+}
+
+func TestService_DiffNameStatusPreservesPaths(t *testing.T) {
+	const modifiedPath = "modified\tname.txt"
+	const copiedPath = "copy\tdestination.txt"
+	dir := setupExternalTestRepo(t)
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	baseFiles := map[string]string{
+		modifiedPath:        "before\n",
+		"deleted\nname.txt": "delete\n",
+		"old\trename.txt":   "unique renamed content\n",
+		"copy-source.txt":   strings.Repeat("copy source line\n", 20),
+	}
+	for path, body := range baseFiles {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, path), []byte(body), 0o600))
+		runGit(t, dir, "add", path)
+	}
+	runGit(t, dir, "commit", "-m", "base files")
+	require.NoError(t, svc.CreateBranch("path-facts"))
+	runGit(t, dir, "config", "diff.renames", "copies")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, modifiedPath), []byte("after\n"), 0o600))
+	runGit(t, dir, "rm", "deleted\nname.txt")
+	runGit(t, dir, "mv", "old\trename.txt", "renamed\nтест.txt")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, copiedPath), []byte(baseFiles["copy-source.txt"]), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "copy-source.txt"), []byte(baseFiles["copy-source.txt"]+"change\n"), 0o600))
+	added := []string{"тест.md", "tab\tname.md", "newline\nname.md", "trailing-whitespace \t\n"}
+	for _, path := range added {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, path), []byte("added "+path), 0o600))
+	}
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "change unusual paths")
+
+	changes, err := svc.DiffNameStatus("master")
+	require.NoError(t, err)
+	expected := make([]FileChange, 0, 5+len(added))
+	expected = append(expected,
+		FileChange{Status: "M", Path: modifiedPath},
+		FileChange{Status: "D", Path: "deleted\nname.txt"},
+		FileChange{Status: "R100", Path: "renamed\nтест.txt"},
+		FileChange{Status: "C100", Path: copiedPath},
+		FileChange{Status: "M", Path: "copy-source.txt"},
+	)
+	for _, path := range added {
+		expected = append(expected, FileChange{Status: "A", Path: path})
+	}
+	assert.ElementsMatch(t, expected, changes)
 }

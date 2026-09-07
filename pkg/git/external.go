@@ -265,6 +265,32 @@ func (e *externalBackend) fileExistsAt(ref, path string) (bool, error) {
 	return fields[1] == "blob" && (fields[0] == "100644" || fields[0] == "100755"), nil
 }
 
+func (e *externalBackend) showFile(ref, path string) ([]byte, error) {
+	rel, err := e.toRelative(path)
+	if err != nil {
+		return nil, err
+	}
+	exists, err := e.fileExistsAt(ref, rel)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrPathNotFound, filepath.ToSlash(rel))
+	}
+
+	cmd := exec.CommandContext(context.Background(), e.command, "show", ref+":"+filepath.ToSlash(rel))
+	cmd.Dir = e.path
+	content, err := cmd.Output()
+	if err == nil {
+		return content, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+		return nil, fmt.Errorf("git show: %s", strings.TrimSpace(string(exitErr.Stderr)))
+	}
+	return nil, fmt.Errorf("git show: %w", err)
+}
+
 // diffFingerprint returns a sha256 hash of the working tree state (tracked diffs + untracked file content).
 // includes untracked file content hashes so that edits to existing untracked files are detected,
 // not just new file creation.
@@ -1175,6 +1201,59 @@ func (e *externalBackend) createInitialCommit(msg string) error {
 		return errors.New("no files to commit")
 	}
 	return nil
+}
+
+func (e *externalBackend) commitsBetween(base, head string) ([]Commit, error) {
+	out, err := e.run("log", "--format=%H%x00%s", base+".."+head)
+	if err != nil {
+		return nil, fmt.Errorf("list commits between %s and %s: %w", base, head, err)
+	}
+	if out == "" {
+		return []Commit{}, nil
+	}
+
+	commits := make([]Commit, 0)
+	for line := range strings.SplitSeq(out, "\n") {
+		hash, subject, ok := strings.Cut(line, "\x00")
+		if !ok || hash == "" {
+			return nil, fmt.Errorf("parse commit log line %q", line)
+		}
+		commits = append(commits, Commit{Hash: hash, Subject: subject})
+	}
+	return commits, nil
+}
+
+func (e *externalBackend) diffNameStatus(base string) ([]FileChange, error) {
+	// The terminating NUL keeps run's trailing-whitespace trim from touching
+	// filenames, while -z disables Git's quoting of non-ASCII and control bytes.
+	out, err := e.run("diff", "--name-status", "-z", base+"...HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("diff name-status: %w", err)
+	}
+	if out == "" {
+		return []FileChange{}, nil
+	}
+
+	changes := make([]FileChange, 0)
+	for out != "" {
+		status, rest, ok := strings.Cut(out, "\x00")
+		if !ok || status == "" {
+			return nil, fmt.Errorf("parse diff name-status status %q", out)
+		}
+		path, rest, ok := strings.Cut(rest, "\x00")
+		if !ok || path == "" {
+			return nil, fmt.Errorf("parse diff name-status path for %q", status)
+		}
+		if status[0] == 'R' || status[0] == 'C' {
+			path, rest, ok = strings.Cut(rest, "\x00")
+			if !ok || path == "" {
+				return nil, fmt.Errorf("parse diff name-status destination for %q", status)
+			}
+		}
+		changes = append(changes, FileChange{Status: status, Path: path})
+		out = rest
+	}
+	return changes, nil
 }
 
 // diffStats returns change statistics between baseBranch and headRef, which must be a
