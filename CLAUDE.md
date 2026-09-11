@@ -52,6 +52,7 @@ go mod vendor
 ```text
 cmd/loopai/          main package, CLI parsing, startup wiring
 internal/validation/ shared validation-command matching without package cycles
+pkg/awake/           best-effort keep-awake sleep inhibitor renewed by run activity
 pkg/cmux/            best-effort cmux status integration
 pkg/config/          configuration loading and embedded defaults
 pkg/executor/        Claude-compatible and Codex process execution
@@ -492,6 +493,23 @@ its plan identity matches, and its recorded HEAD is an ancestor of the current b
 or tasks-only task-phase commits invalidate the checkpoint, as do unverifiable task HEADs. A durable
 pre-task HEAD marker makes that invalidation survive a process death inside task execution. Finalize
 is not checkpointed because it is best-effort, runs once, and is cheap to repeat.
+
+Keep-awake is best-effort in the same way and must never affect execution. `awake.New` returns
+nil when `keep_awake` is off or the platform has no inhibitor, and every `*awake.Holder` method is
+nil-safe. `run()` creates one holder after config loading and defers its `Stop`, so one hold spans
+a plan chain; it is carried in `executePlanRequest.KeepAwake`, wrapped into the logger chain by
+`buildRunnerLogger` between the orca wrapper and `SectionTimer`, and subscribed to each
+`status.PhaseHolder` beside the cmux and orca observers. Activity is executor output and section
+and phase changes; `LogQuestion`/`LogAnswer`/`LogDraftReview` deliberately do not renew, so a run
+waiting for a human expires like a hung one. The idle window is `awake.DefaultIdle` (one hour) and
+is deliberately not a config key. `PhaseLimitWait` pins the hold until the phase changes because a
+scheduled `wait_on_limit` sleep emits no output and can exceed the window. Both Unix inhibitors are
+bound to loopai's pid (`caffeinate -w`, `tail --pid` under `systemd-inhibit`) so process death
+releases them without cleanup; the Windows backend drives `SetThreadExecutionState` from one
+locked OS thread because the continuous flag is per thread. A failed `Acquire` disables the holder
+for the run instead of retrying on every output line. Watch-only mode, close-out, and the other
+standalone commands return before the holder is created. `cmd/loopai` tests replace
+`newAwakeHolder` in `TestMain` so `run()` never starts a real inhibitor.
 
 cmux reporting is best-effort and must never affect execution. The status key and notification title are `loopai`. All calls go through the public `cmux` CLI and failures are ignored. After a completed run, `Reporter.Finish` intentionally leaves the final success or failure pill in place: `Stop` still clears the spinner and progress, but does not clear that pill. Abort paths do not call `Finish`, so `Stop` performs the full cleanup. A later run overwrites the pill, while `--clear`, a successful `--merge`, or a successful `--pr` removes it explicitly.
 

@@ -23,6 +23,7 @@ import (
 
 	"github.com/jessevdk/go-flags"
 
+	"github.com/umputun/ralphex/pkg/awake"
 	"github.com/umputun/ralphex/pkg/claudeswap"
 	"github.com/umputun/ralphex/pkg/cmux"
 	"github.com/umputun/ralphex/pkg/config"
@@ -280,6 +281,7 @@ type executePlanRequest struct {
 	WtCleanup              *cleanupHolder        // worktree cleanup for interrupt handler; nil when not in worktree mode
 	CmuxStop               *cleanupHolder        // cmux sidebar reset for interrupt handler; nil when not wired
 	OrcaStop               *cleanupHolder        // terminal-title reset for interrupt handler; nil when not wired
+	KeepAwake              *awake.Holder         // process-wide sleep inhibitor renewed by activity; nil when disabled
 	CmuxHandoff            func()                // releases a quiesced predecessor after this reporter starts
 	CmuxPredecessorStop    func()                // clears a retained predecessor on force-exit before hand-off
 	CmuxRetain             func(retainedCmuxRun) // keeps a successful chain member busy until its successor starts
@@ -446,6 +448,11 @@ func run(ctx context.Context, o opts) (runErr error) {
 		return runWatchOnly(ctx, o, cfg, colors)
 	}
 
+	// keep the machine awake while this process executes. one holder covers every plan of a
+	// chain; it is released here rather than per plan, and its idle expiry covers a hung run.
+	keepAwake := newAwakeHolder(cfg.KeepAwake)
+	defer keepAwake.Stop()
+
 	mode := determineMode(o)
 	printWorktreeIgnoredWarning(os.Stderr, o, mode)
 	reviewPreflight := modeNeedsReviewPreflight(mode)
@@ -485,7 +492,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 	// branch, plan selection, or review pipeline. routed after the dependency check so a
 	// missing executor fails the same way it does for --plan.
 	if mode == processor.ModeGenAgents {
-		return runGenAgentsMode(ctx, o, cfg, colors, limitRecovery)
+		return runGenAgentsMode(ctx, o, cfg, colors, limitRecovery, keepAwake)
 	}
 
 	// create notification service (nil if no channels configured). notify.New validates the
@@ -552,6 +559,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 			WtCleanup:      wtCleanup,
 			CmuxStop:       cmuxStop,
 			OrcaStop:       orcaStop,
+			KeepAwake:      keepAwake,
 			SetupTitles:    setupTitles,
 			BranchOverride: o.Branch,
 			ExternalReview: externalReview,
@@ -571,6 +579,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 		WtCleanup:           wtCleanup,
 		CmuxStop:            cmuxStop,
 		OrcaStop:            orcaStop,
+		KeepAwake:           keepAwake,
 		SetupTitles:         setupTitles,
 		BranchOverride:      o.Branch,
 		ExternalReview:      externalReview,
@@ -1378,6 +1387,10 @@ func keepDashboardAlive(ctx context.Context, o opts, req executePlanRequest, clo
 
 var newOrcaReporter = orca.New
 
+// newAwakeHolder constructs the process-wide sleep inhibitor. Tests replace it so run() never
+// starts a real inhibitor.
+var newAwakeHolder = awake.New
+
 // orcaReporter constructs the stdout title reporter selected by configuration. ExecutorClaude is
 // the empty config value, so map it to the explicit agent name expected in terminal titles.
 func orcaReporter(cfg *config.Config, planFile string) *orca.Reporter {
@@ -1420,11 +1433,12 @@ func setOrcaCleanup(holder *cleanupHolder, titles *orca.Reporter) {
 	}
 }
 
-// buildRunnerLogger installs the orca title wrapper below cmux and above section timing. Keeping
-// cmux outermost preserves its optional rate-limit reporting methods.
-func buildRunnerLogger(rep *cmux.Reporter, titles *orca.Reporter, inner progress.SectionLogger) (processor.Logger, *progress.SectionTimer) {
+// buildRunnerLogger installs the orca title wrapper below cmux and above section timing, with the
+// keep-awake activity wrapper between orca and the timer. Keeping cmux outermost preserves its
+// optional rate-limit reporting methods.
+func buildRunnerLogger(rep *cmux.Reporter, titles *orca.Reporter, keep *awake.Holder, inner progress.SectionLogger) (processor.Logger, *progress.SectionTimer) {
 	timer := progress.NewSectionTimer(inner, nil)
-	return rep.WrapLogger(titles.WrapLogger(timer)), timer
+	return rep.WrapLogger(titles.WrapLogger(keep.WrapLogger(timer))), timer
 }
 
 // runWithSectionTiming guarantees the final section and aggregate summary are
@@ -1526,12 +1540,13 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 			return wrapped
 		}
 	}
-	runnerLog, sectionTimer := buildRunnerLogger(rep, titles, runnerLog)
+	runnerLog, sectionTimer := buildRunnerLogger(rep, titles, req.KeepAwake, runnerLog)
 	validationTimer := progress.NewValidationTimer(validationCommands, runnerLog)
 
 	// subscribe status reporters after the dashboard so all observers coexist
 	plr.holder.OnChange(rep.OnPhase)
 	plr.holder.OnChange(titles.OnPhase)
+	plr.holder.OnChange(req.KeepAwake.OnPhase)
 
 	// resolve effective codex model/effort for the banner so it reflects what
 	// the codex task and review executors actually receive (--task-model /
@@ -1921,6 +1936,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		NotifySvc:              req.NotifySvc,
 		CmuxStop:               req.CmuxStop,
 		OrcaStop:               req.OrcaStop,
+		KeepAwake:              req.KeepAwake,
 		CmuxHandoff:            req.CmuxHandoff,
 		CmuxPredecessorStop:    req.CmuxPredecessorStop,
 		CmuxRetain:             req.CmuxRetain,
@@ -3660,7 +3676,8 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	rep.Start(ctx)
 	holder.OnChange(rep.OnPhase)
 	holder.OnChange(titles.OnPhase)
-	planLog, sectionTimer := buildRunnerLogger(rep, titles, baseLog)
+	holder.OnChange(req.KeepAwake.OnPhase)
+	planLog, sectionTimer := buildRunnerLogger(rep, titles, req.KeepAwake, baseLog)
 
 	maxIter := resolveMaxIterations(o.MaxIterations, req.Config)
 
@@ -3794,6 +3811,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 			WtCleanup:      req.WtCleanup,
 			CmuxStop:       req.CmuxStop,
 			OrcaStop:       req.OrcaStop,
+			KeepAwake:      req.KeepAwake,
 			CmuxHandoff:    cmuxHandoff,
 			SetupTitles:    titles,
 			BranchOverride: req.BranchOverride,
@@ -3825,6 +3843,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		NotifySvc:      req.NotifySvc,
 		CmuxStop:       req.CmuxStop,
 		OrcaStop:       req.OrcaStop,
+		KeepAwake:      req.KeepAwake,
 		CmuxHandoff:    cmuxHandoff,
 		SetupTitles:    titles,
 		ExternalReview: req.ExternalReview,
@@ -3842,7 +3861,7 @@ var reservedAgentNames = []string{"quality", "implementation", "testing", "simpl
 // runGenAgentsMode runs one executor session that writes project-specific review
 // agents into .loopai/agents/, then reports what ended up on disk. No branch, no
 // worktree, no notifications: the session only produces files for the user to review.
-func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors, recovery limits.Recovery) error {
+func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors, recovery limits.Recovery, keep *awake.Holder) error {
 	// the session writes a progress log under .loopai/ and then asks the user to inspect
 	// git status, so ignore those artifacts the way every other mode does before starting.
 	gitSvc, err := openGitService(colors, cfg.VcsCommand)
@@ -3872,7 +3891,8 @@ func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *p
 		}
 	}()
 
-	genLog, sectionTimer := buildRunnerLogger(nil, nil, baseLog)
+	holder.OnChange(keep.OnPhase)
+	genLog, sectionTimer := buildRunnerLogger(nil, nil, keep, baseLog)
 
 	colors.Info().Printf("generating project-specific review agents\n")
 	colors.Info().Printf("progress log: %s\n", toRelPath(baseLog.Path()))

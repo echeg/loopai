@@ -1723,6 +1723,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		MovePlanOnCompletion:    true,
 		WorktreeEnabled:         true,
 		Orca:                    true,
+		KeepAwake:               true,
 		PlansDir:                "docs/plans",
 		BacklogDir:              "docs/backlog",
 		WatchDirs:               []string{"a", "b"},
@@ -1751,7 +1752,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		"codex_timeout_ms", "codex_sandbox", "external_review_tool", "external_review_model", "external_reviewers", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
 		"review_patience", "finalize_enabled", "report_enabled", "preserve_anthropic_api_key", "executor",
-		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "orca", "plans_dir", "backlog_dir",
+		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "orca", "keep_awake", "plans_dir", "backlog_dir",
 		"watch_dirs", "default_branch", "vcs_command", "commit_trailer",
 		"claude_error_patterns", "codex_error_patterns", "claude_limit_patterns",
 		"codex_limit_patterns", "claude_retry_patterns", "claude_swap_enabled", "wait_on_limit", "session_timeout", "idle_timeout",
@@ -1822,4 +1823,54 @@ func TestLoad_BacklogDir(t *testing.T) {
 			assert.Equal(t, tc.want, cfg.BacklogDir)
 		})
 	}
+}
+
+func TestLoad_KeepAwake(t *testing.T) {
+	t.Run("embedded default is true but unset", func(t *testing.T) {
+		configDir := filepath.Join(t.TempDir(), "loopai")
+		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "prompts"), 0o700))
+		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "agents"), 0o700))
+
+		cfg, err := Load(configDir)
+		require.NoError(t, err)
+		assert.True(t, cfg.KeepAwake)
+		assert.False(t, cfg.KeepAwakeSet)
+	})
+
+	t.Run("explicit false", func(t *testing.T) {
+		configDir := filepath.Join(t.TempDir(), "loopai")
+		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "prompts"), 0o700))
+		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "agents"), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte("keep_awake = false"), 0o600))
+
+		cfg, err := Load(configDir)
+		require.NoError(t, err)
+		assert.False(t, cfg.KeepAwake)
+		assert.True(t, cfg.KeepAwakeSet)
+	})
+
+	t.Run("invalid value", func(t *testing.T) {
+		configDir := filepath.Join(t.TempDir(), "loopai")
+		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "prompts"), 0o700))
+		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "agents"), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte("keep_awake = maybe"), 0o600))
+
+		_, err := Load(configDir)
+		require.ErrorContains(t, err, "invalid keep_awake")
+	})
+
+	t.Run("local false overrides global true", func(t *testing.T) {
+		globalDir := filepath.Join(t.TempDir(), "global")
+		require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
+		require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "agents"), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(globalDir, "config"), []byte("keep_awake = true"), 0o600))
+		localDir := filepath.Join(t.TempDir(), ".loopai")
+		require.NoError(t, os.MkdirAll(localDir, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(localDir, "config"), []byte("keep_awake = false"), 0o600))
+
+		cfg, err := loadWithLocal(globalDir, localDir)
+		require.NoError(t, err)
+		assert.False(t, cfg.KeepAwake)
+		assert.True(t, cfg.KeepAwakeSet)
+	})
 }

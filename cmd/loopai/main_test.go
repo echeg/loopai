@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/umputun/ralphex/pkg/awake"
 	"github.com/umputun/ralphex/pkg/cmux"
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/git"
@@ -93,6 +94,9 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "unset CMUX_WORKSPACE_ID: %v\n", err)
 		os.Exit(1)
 	}
+	// keep_awake defaults to on, and awake.New would otherwise start a real sleep inhibitor
+	// for every run() under test. wiring tests inject their own holder or override this.
+	newAwakeHolder = func(bool) *awake.Holder { return nil }
 	os.Exit(m.Run())
 }
 
@@ -112,7 +116,7 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 
 func TestBuildRunnerLoggerRecordsSectionsInOrder(t *testing.T) {
 	inner := &runnerLoggerRecorder{}
-	out, timer := buildRunnerLogger(nil, nil, inner)
+	out, timer := buildRunnerLogger(nil, nil, nil, inner)
 
 	out.PrintSection(status.NewTaskIterationSection(1))
 	out.PrintSection(status.NewInternalReviewSection(1, ""))
@@ -134,7 +138,7 @@ func TestBuildRunnerLoggerKeepsCmuxOutermost(t *testing.T) {
 	rep := cmux.New("plan.md", cmux.Models{})
 	require.NotNil(t, rep)
 
-	out, _ := buildRunnerLogger(rep, nil, &runnerLoggerRecorder{})
+	out, _ := buildRunnerLogger(rep, nil, nil, &runnerLoggerRecorder{})
 	_, ok := out.(interface {
 		LogLimitWait(pattern, tool, waitLabel string)
 	})
@@ -142,7 +146,7 @@ func TestBuildRunnerLoggerKeepsCmuxOutermost(t *testing.T) {
 }
 
 func TestBuildRunnerLoggerWithoutReporterReturnsTimer(t *testing.T) {
-	out, timer := buildRunnerLogger(nil, nil, &runnerLoggerRecorder{})
+	out, timer := buildRunnerLogger(nil, nil, nil, &runnerLoggerRecorder{})
 
 	assert.Same(t, timer, out)
 }
@@ -1697,7 +1701,7 @@ func TestBuildRunnerLoggerWithOrcaReporterWritesTitle(t *testing.T) {
 	titleRep := orca.NewWithOutput(true, "", config.ExecutorClaude, &titles, func() bool { return true })
 	require.NotNil(t, titleRep)
 
-	out, _ := buildRunnerLogger(nil, titleRep, &runnerLoggerRecorder{})
+	out, _ := buildRunnerLogger(nil, titleRep, nil, &runnerLoggerRecorder{})
 	out.PrintSection(status.NewTaskIterationSection(3))
 
 	assert.Equal(t, "\x1b]0;◐ loopai · task 3 · claude\a", titles.String())
@@ -10175,7 +10179,7 @@ func TestRunGenAgentsMode(t *testing.T) {
 			"printf '%s\\n' '---' 'description: review protocol signals' '---' 'body' > .loopai/agents/protocol.txt\n"
 		dir, promptLog, cfg := setup(t, script)
 
-		err := runGenAgentsMode(t.Context(), opts{NoColor: true}, cfg, testColors(), nil)
+		err := runGenAgentsMode(t.Context(), opts{NoColor: true}, cfg, testColors(), nil, nil)
 		require.NoError(t, err)
 
 		prompt, readErr := os.ReadFile(promptLog) //nolint:gosec // path built from t.TempDir
@@ -10203,7 +10207,7 @@ func TestRunGenAgentsMode(t *testing.T) {
 	t.Run("session failure propagates", func(t *testing.T) {
 		_, _, cfg := setup(t, "#!/bin/sh\ncat > \"$GEN_AGENTS_PROMPT_LOG\"\necho boom >&2\nexit 3\n")
 
-		err := runGenAgentsMode(t.Context(), opts{NoColor: true}, cfg, testColors(), nil)
+		err := runGenAgentsMode(t.Context(), opts{NoColor: true}, cfg, testColors(), nil, nil)
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "agent generation")
@@ -10221,7 +10225,7 @@ func TestRunGenAgentsMode(t *testing.T) {
 
 		var err error
 		out := captureStdout(t, func() {
-			err = runGenAgentsMode(t.Context(), opts{NoColor: true}, cfg, testColors(), nil)
+			err = runGenAgentsMode(t.Context(), opts{NoColor: true}, cfg, testColors(), nil, nil)
 		})
 
 		require.Error(t, err)
@@ -13273,4 +13277,116 @@ func TestResolveExternalReviewSelectionValidatesEfforts(t *testing.T) {
 		require.Len(t, selection.Reviewers, 2)
 		assert.Equal(t, "high", selection.Reviewers[0].Effort)
 	})
+}
+
+// awakeProbe counts sleep-inhibitor acquisitions so wiring tests can prove activity reached the
+// keep-awake holder without spawning a real inhibitor.
+type awakeProbe struct {
+	acquires atomic.Int32
+	releases atomic.Int32
+}
+
+func (p *awakeProbe) Acquire() error { p.acquires.Add(1); return nil }
+func (p *awakeProbe) Release()       { p.releases.Add(1) }
+
+func TestBuildRunnerLoggerRenewsKeepAwake(t *testing.T) {
+	probe := &awakeProbe{}
+	keep := awake.NewWithBackend(probe, time.Hour)
+	t.Cleanup(keep.Stop)
+	inner := &runnerLoggerRecorder{}
+
+	out, _ := buildRunnerLogger(nil, nil, keep, inner)
+	out.PrintAligned("executor output")
+
+	assert.Equal(t, int32(1), probe.acquires.Load())
+	assert.Equal(t, []string{"aligned: executor output"}, inner.calls)
+}
+
+func TestExecutePlanRenewsKeepAwake(t *testing.T) {
+	dir := setupTestRepo(t)
+	originalDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { require.NoError(t, os.Chdir(originalDir)) })
+	planPath := filepath.Join(dir, "docs", "plans", "awake.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath,
+		[]byte("# Plan\n\n### Task 1: Done\n\n- [x] already complete\n"), 0o600))
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	probe := &awakeProbe{}
+	keep := awake.NewWithBackend(probe, time.Hour)
+	t.Cleanup(keep.Stop)
+
+	err = executePlan(t.Context(), opts{TasksOnly: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: gitSvc,
+		Config: &config.Config{ClaudeCommand: fakeClaude}, Colors: testColors(), BaseRef: "master",
+		KeepAwake: keep, Outcome: &planExecutionOutcome{},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, int32(1), probe.acquires.Load(), "execution activity must renew the hold")
+	assert.Equal(t, int32(0), probe.releases.Load(), "the holder outlives one plan so a chain can reuse it")
+}
+
+func TestRunGenAgentsModeRenewsKeepAwake(t *testing.T) {
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "claude"), "#!/bin/sh\ncat >/dev/null\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg, err := config.LoadReadOnly(filepath.Join(t.TempDir(), "global"))
+	require.NoError(t, err)
+	probe := &awakeProbe{}
+	keep := awake.NewWithBackend(probe, time.Hour)
+	t.Cleanup(keep.Stop)
+
+	err = runGenAgentsMode(t.Context(), opts{NoColor: true}, cfg, testColors(), nil, keep)
+	require.NoError(t, err)
+
+	assert.Equal(t, int32(1), probe.acquires.Load())
+}
+
+func TestRunResolvesKeepAwakeFromConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		config string
+		want   bool
+	}{
+		{name: "default is enabled", config: "", want: true},
+		{name: "explicit false disables", config: "keep_awake = false\n", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := setupTestRepo(t)
+			origDir, err := os.Getwd()
+			require.NoError(t, err)
+			require.NoError(t, os.Chdir(dir))
+			t.Cleanup(func() { _ = os.Chdir(origDir) })
+			configDir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(
+				tc.config+"claude_command = missing-loopai-claude-command\n"), 0o600))
+
+			original := newAwakeHolder
+			t.Cleanup(func() { newAwakeHolder = original })
+			var enabledCalls []bool
+			newAwakeHolder = func(enabled bool) *awake.Holder {
+				enabledCalls = append(enabledCalls, enabled)
+				return nil
+			}
+
+			err = run(t.Context(), opts{Review: true, ConfigDir: configDir, NoColor: true})
+			require.ErrorContains(t, err, "nothing to review")
+			assert.Equal(t, []bool{tc.want}, enabledCalls)
+		})
+	}
 }

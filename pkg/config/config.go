@@ -162,6 +162,8 @@ type Config struct {
 	WorktreeEnabledSet bool `json:"-"` // tracks if use_worktree was explicitly set in config
 	Orca               bool `json:"orca"`
 	OrcaSet            bool `json:"-"` // tracks if orca was explicitly set in config
+	KeepAwake          bool `json:"keep_awake"`
+	KeepAwakeSet       bool `json:"-"` // tracks if keep_awake was explicitly set in config
 
 	PlansDir      string   `json:"plans_dir"`
 	BacklogDir    string   `json:"backlog_dir"`    // directory for out-of-scope finding entries, exposed to prompts as {{BACKLOG_DIR}}
@@ -411,6 +413,8 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		WorktreeEnabledSet:      values.WorktreeEnabledSet,
 		Orca:                    values.Orca,
 		OrcaSet:                 values.OrcaSet,
+		KeepAwake:               values.KeepAwake,
+		KeepAwakeSet:            values.KeepAwakeSet,
 		PlansDir:                values.PlansDir,
 		BacklogDir:              values.BacklogDir,
 		DefaultBranch:           values.DefaultBranch,
