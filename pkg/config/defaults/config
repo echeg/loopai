@@ -235,6 +235,15 @@ move_plan_on_completion = true
 # default: false
 # orca = false
 
+# keep_awake: keep the machine from sleeping while a run is active
+# uses caffeinate on macOS, systemd-inhibit on Linux, and
+# SetThreadExecutionState on Windows; silently inactive elsewhere
+# the hold is renewed by executor output and phase changes and released
+# after one hour without activity, so a hung run does not keep the machine
+# awake indefinitely; a provider-limit wait keeps the hold for its duration
+# default: true
+keep_awake = true
+
 # ------------------------------------------------------------------------------
 # timing
 # ------------------------------------------------------------------------------

@@ -75,7 +75,9 @@ type Values struct {
 	WorktreeEnabled            bool
 	WorktreeEnabledSet         bool // tracks if use_worktree was explicitly set
 	Orca                       bool
-	OrcaSet                    bool   // tracks if orca was explicitly set
+	OrcaSet                    bool // tracks if orca was explicitly set
+	KeepAwake                  bool
+	KeepAwakeSet               bool   // tracks if keep_awake was explicitly set
 	VcsCommand                 string // custom VCS command (default: "git")
 	CommitTrailer              string // trailer line to append to all commits (e.g., "Co-authored-by: ...")
 	PlansDir                   string
@@ -195,6 +197,7 @@ func (vl *valuesLoader) parseValuesFromEmbedded() (Values, error) {
 	values.ExternalReviewModelSet = false
 	values.ExternalReviewersSet = false
 	values.ReportEnabledSet = false
+	values.KeepAwakeSet = false
 	return values, nil
 }
 
@@ -422,6 +425,14 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 		}
 		values.Orca = val
 		values.OrcaSet = true
+	}
+	if key, err := section.GetKey("keep_awake"); err == nil {
+		val, boolErr := key.Bool()
+		if boolErr != nil {
+			return Values{}, fmt.Errorf("invalid keep_awake: %w", boolErr)
+		}
+		values.KeepAwake = val
+		values.KeepAwakeSet = true
 	}
 
 	// paths
@@ -652,6 +663,10 @@ func (dst *Values) mergeExtraFrom(src *Values) {
 	if src.OrcaSet {
 		dst.Orca = src.Orca
 		dst.OrcaSet = true
+	}
+	if src.KeepAwakeSet {
+		dst.KeepAwake = src.KeepAwake
+		dst.KeepAwakeSet = true
 	}
 	dst.mergePathsFrom(src)
 	if len(src.ClaudeErrorPatterns) > 0 {

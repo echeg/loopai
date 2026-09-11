@@ -1039,6 +1039,16 @@ redirected and piped output contains no escape sequences. Watch-only dashboard m
 `--gen-agents`, and standalone utility commands do not emit titles. The executor suffix is `codex`
 when Codex is primary and `claude` otherwise.
 
+With `keep_awake = true` (the default), loopai keeps the machine from sleeping while a run is
+active. It uses `caffeinate` on macOS, `systemd-inhibit` on Linux, and `SetThreadExecutionState`
+on Windows; where none is available the setting is silently inactive. The hold is renewed by
+executor output and phase changes and released after one hour without activity, so a hung run does
+not keep a laptop awake indefinitely; a provider-limit wait keeps the hold for its duration, and
+waiting for your answer at a prompt counts as inactivity. The inhibitor is bound to the loopai
+process, so a crash releases it. Closing a MacBook lid still sleeps the machine on battery. One hold
+covers a whole plan chain, and watch-only dashboard mode, the close-out commands, and the other
+standalone utility commands never take one. Set `keep_awake = false` to opt out.
+
 | loopai state | Terminal title | Orca status |
 |---|---|---|
 | Task phase | `◐ loopai · task 3/7 · claude` | Working |
