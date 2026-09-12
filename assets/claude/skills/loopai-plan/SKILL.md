@@ -281,6 +281,19 @@ Example (NOTICE: tests are separate checklist items):
 - Third-party service integrations to verify
 ```
 
+## Commit the Prepared Plan
+
+After writing the finished plan or applying agreed revisions, commit that plan on the current branch before offering execution or returning the final result. Do this even when execution is postponed, unless the user explicitly asked to leave it uncommitted. Commit once per finished preparation/revision round, not during drafting. This keeps other prepared plans from blocking loopai's clean-checkout checks.
+
+From the repository root, set `PLAN_PATH` to the exact repository-relative output path and inspect its diff (read the file too when it is new). If that path has no changes, skip the commit. Otherwise run:
+
+```bash
+git --literal-pathspecs add -- "$PLAN_PATH"
+git --literal-pathspecs commit --only -m "docs: save plan $(basename "$PLAN_PATH" .md)" -- "$PLAN_PATH"
+```
+
+The explicit file path and `--only` keep unrelated staged changes out of the commit. Never stage the whole plans directory, other plans, or source code; never push or stash as part of this step. Verify that this plan is clean afterward and report the commit hash with its path. If Git is unavailable, the destination is outside a repository, or the commit fails, keep the saved plan, explain why it remains uncommitted, and do not launch execution automatically. Do not bypass hooks or change Git configuration to force a commit.
+
 ## Step 3: Offer to Start
 
 After creating the file, detect Orca and build the launch line before speaking to the user:

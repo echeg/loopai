@@ -54,7 +54,9 @@ When `loopai --report` succeeds, preserve its facts and narrate them in the lang
 6. Backlog
 7. External review, one reviewer at a time, including each reported finding and outcome
 
-Use only information present in the report. Do not infer missing migrations, risks, findings, reviewer outcomes, validation results, branch names, or base branches. Keep Go-provided counts and measurements unchanged.
+Use only information present in the report. Do not infer missing migrations, risks, findings, reviewer outcomes, validation results, branch names, or base branches. Keep Go-provided facts unchanged, applying the duration display formatting below.
+
+For the narrated report, convert all elapsed durations (including `duration_ms` and phase/total timings) from milliseconds to hours, minutes, and seconds. Round to the nearest whole second before splitting into units; omit leading zero units, display zero as `0 s`, and positive values below one second as `<1 s`. Localize the units and use a readable heading such as `Duration` (`Длительность` in Russian), never `duration_ms`. For example, `3661000 ms` becomes `1 h 1 min 1 s`, and `854733 ms` becomes `14 min 15 s`. Preserve the underlying measurements; this is display formatting only. Other counts and measurements remain unchanged.
 
 Read the feature branch from the command's `branch:` line and the base branch from the report metadata line. If either is absent, state that it is absent instead of inventing it; use the read-only resolution described below before offering close-out.
 

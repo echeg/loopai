@@ -16,7 +16,7 @@ Supported source shapes:
 - **Free-form markdown**: prose brain dump with no fixed structure
 - **loopai backlog entry**: a single-finding markdown file under the project's `backlog_dir` (`docs/backlog/` by default) with `found`/`plan`/`phase`, `severity`, and `area` lines; convert it as free-form markdown and do not treat its small size as a scope ambiguity
 
-This is a single-skill conversion: discover, classify, ask focused questions when in doubt, draft, review, write. Do not modify code, do not run tests, do not commit. Output is the new plan file only.
+This is a single-skill conversion: discover, classify, ask focused questions when in doubt, draft, review, write. Do not modify code or run tests. Output is the new plan file and its own Git commit.
 
 ## Step 0: Optional CLI Check
 
@@ -307,7 +307,7 @@ rm -f <draft-path>
 
 Also run the same `rm -f <draft-path>` on any cancel path before exiting (Step 1, Step 3, Step 5 reject, Step 6 cancel) — always with the literal path substituted, never as `$DRAFT`.
 
-Report to the user:
+Follow **Commit the Prepared Plan** below, then report to the user:
 
 ```
 Adopted plan: docs/plans/<final-name>.md
@@ -317,6 +317,19 @@ Tasks: <N>
 
 Next: run `loopai docs/plans/<final-name>.md` to execute.
 ```
+
+## Commit the Prepared Plan
+
+After writing the finished plan or applying agreed revisions, commit that plan on the current branch before offering execution or returning the final result. Do this even when execution is postponed, unless the user explicitly asked to leave it uncommitted. Commit once per finished preparation/revision round, not during drafting. This keeps other prepared plans from blocking loopai's clean-checkout checks.
+
+From the repository root, set `PLAN_PATH` to the exact repository-relative output path and inspect its diff (read the file too when it is new). If that path has no changes, skip the commit. Otherwise run:
+
+```bash
+git --literal-pathspecs add -- "$PLAN_PATH"
+git --literal-pathspecs commit --only -m "docs: save plan $(basename "$PLAN_PATH" .md)" -- "$PLAN_PATH"
+```
+
+The explicit file path and `--only` keep unrelated staged changes out of the commit. Never stage the whole plans directory, other plans, or source code; never push or stash as part of this step. Verify that this plan is clean afterward and report the commit hash with its path. If Git is unavailable, the destination is outside a repository, or the commit fails, keep the saved plan, explain why it remains uncommitted, and do not launch execution automatically. Do not bypass hooks or change Git configuration to force a commit.
 
 ## Edge Cases
 
@@ -347,4 +360,4 @@ Next: run `loopai docs/plans/<final-name>.md` to execute.
 - Never embed placeholder markers (`???`, `TBD`, `[FIXME]`) in the output — AskUser before drafting instead.
 - Never assume the target project is a specific language. Test/run-test checkboxes must use generic phrasing such as "write tests" and "run project tests".
 - Never cite loopai internal source files (e.g., `pkg/...`) in the converted plan content.
-- Do not run tests, do not run linters, do not commit, do not push. The skill only produces a plan file.
+- Do not run tests or linters or push. Commit only the prepared output plan as described above.

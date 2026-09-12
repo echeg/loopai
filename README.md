@@ -509,6 +509,16 @@ default settings. Under `--codex` a single shared reviewer agent is used, so `mo
 
 Plans are Markdown files, normally stored in `docs/plans/`.
 
+The `loopai-plan` and `loopai-adopt` skills commit each finished plan on the current
+branch before offering execution, even when the run is postponed. `loopai-grill`
+commits a newly synthesized plan or the selected revisions after publishing them.
+Each commit includes only that output plan and preserves unrelated staged changes;
+explicit requests to leave a plan uncommitted take precedence. Commit failures keep
+the saved plan and are reported before any automatic launch. This lets several
+prepared plans wait in the same checkout without blocking each other's runs.
+Existing loose plans and edits made outside these skills still need to be committed
+separately. The CLI's clean-checkout requirements remain unchanged.
+
 - Task headings must be `### Task N:` or `### Iteration N:`.
 - Work items use `- [ ]`; loopai changes completed items to `- [x]`.
 - Put actionable checkboxes inside task sections.
