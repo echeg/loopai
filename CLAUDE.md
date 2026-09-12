@@ -91,7 +91,12 @@ default base is the remote-tracking ref, so `--base-branch` is always passed and
 Orca names the branch `<git-user>/<name>`), copies the plan and untracked
 `.loopai/` overrides into that checkout because a worktree carries committed
 files only, and launches `loopai --orca [flags] <plan>` without `--worktree` in an Orca
-terminal tab, where the OSC titles from `pkg/orca` give the card its status. It
+terminal tab, where the OSC titles from `pkg/orca` give the card its status. A bare
+`orca worktree create` opens a fallback shell in the card's first tab, because `--agent`
+accepts only Orca's built-in TUI agents; once loopai is confirmed running the skill closes
+that tab through `orca terminal close --tab`, but only an idle shell with a null
+`agentIdentity` and a prompt as its last screen line, since a configured default tab or a
+setup-hook terminal looks like an extra tab too and is not the skill's to remove. It
 forwards only `--codex`, `--task-model`, `--review-model`, and
 `--external-reviewers` from its own arguments and stops on any other token,
 because the flags are spliced into a shell command string and `--worktree` or
