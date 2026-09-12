@@ -80,6 +80,7 @@ orca worktree create \
 - From the JSON take `result.worktree.id` (`WT_ID`, the full `<repoId>::<path>` value) and `result.worktree.path` (`WT_PATH`). Every later selector is `id:$WT_ID` verbatim; a bare repo id or a `path:` selector does not reliably resolve a child worktree.
 - Orca names the branch itself, typically `<git-user>/<NAME>` (for example `echeg/feature`). Read it from `result.worktree.branch` and strip the `refs/heads/` prefix before showing it; do not assume it equals `NAME`.
 - Confirm the base: `git -C "$WT_PATH" rev-parse HEAD` must equal `git rev-parse "$BASE"`. On mismatch, remove the worktree (`orca worktree rm --worktree "id:$WT_ID" --json`), report both hashes, and stop — launching loopai on a stale base produces work against the wrong code.
+- Save `result.startupTerminal.handle` as `SHELL_HANDLE` when the response carries it: bare `worktree create` opens a fallback shell in the first tab, and Step 6 closes it once loopai is running.
 - Repo setup hooks and configured default tabs run per the repo's Orca settings and may open extra terminals; leave them alone.
 
 ## Step 4: Carry Over Untracked Inputs
@@ -112,7 +113,7 @@ orca terminal create \
 - Absolute binary path: the tab runs Orca's own login shell, whose `PATH` may lack `~/.local/bin`.
 - No `--worktree` flag on loopai: it would create a second, nested checkout under `.loopai/worktrees/` inside Orca's worktree. Because the tab is already on a non-default branch, loopai runs there directly.
 - No pipes or `tee`: `--orca` writes OSC titles only when stdout is a terminal, and the title is what Orca reads for card status.
-- Save `result.terminal.handle` as `HANDLE`. The bare `worktree create` in Step 3 may also have opened a fallback shell tab (find its handle with `orca terminal list --worktree "id:$WT_ID" --json` if needed); leave it alone unless `orca terminal show` confirms it is an idle shell nobody uses.
+- Save `result.terminal.handle` as `HANDLE`. The fallback shell tab from Step 3 is closed in Step 6, after loopai is confirmed running; do not close it here.
 
 ## Step 6: Confirm and Report
 
@@ -125,6 +126,20 @@ orca terminal read --terminal "$HANDLE" --screen --json                        #
 
 - If `wait` reports the terminal exited within 10s, loopai failed at startup: read the tail, report the error verbatim, and stop.
 - Otherwise the tail must show loopai's startup output (`Plan:` / `Branch:` header lines or a `--- task iteration 1 ---` section).
+
+Then close the fallback shell tab that the bare `worktree create` in Step 3 opened, so the card carries one tab:
+
+```bash
+orca terminal list --worktree "id:$WT_ID" --json                  # candidates = every handle except $HANDLE
+orca terminal show --terminal "$SHELL_HANDLE" --json              # result.terminal.agentIdentity must be null
+orca terminal read --terminal "$SHELL_HANDLE" --screen --json     # last non-empty result.terminal.tail line must be a shell prompt
+orca terminal close --terminal "$SHELL_HANDLE" --tab --json
+```
+
+- `SHELL_HANDLE` is `result.startupTerminal.handle` from Step 3 when the create response carried it; otherwise it is the single handle other than `$HANDLE` that `terminal list` returns for `id:$WT_ID`. Two or more other handles mean repo setup hooks or configured default tabs ran: close nothing and mention the extra tabs in the report.
+- Close only when both checks pass: `agentIdentity` is null (an agent tab carries `claude`, `codex`, or another id) and the screen ends in a shell prompt with no command running above it. A tab that fails either check belongs to the repo's Orca settings; leave it and mention it in the report.
+- Run this only after the startup check above passed. A failed launch leaves every tab in place for the user to inspect.
+- A `close` error is not a launch failure: report it in one line and continue to the report.
 
 Report:
 
@@ -177,4 +192,5 @@ From the main checkout, prefer `/loopai-merge $PLAN`: it reads and narrates the 
 | Skill stops on an unknown flag | only `--codex`, `--task-model`, `--review-model`, `--external-reviewers` pass through | Put other settings in `.loopai/config`; never forward the token |
 | Run uses default models/prompts unexpectedly | Untracked `.loopai/` overrides not carried over | Step 4 loop |
 | `ANTHROPIC_API_KEY` not picked up | Tab inherits the login shell, not this terminal | Export it in the shell profile |
-| Extra tabs appear on create | Repo setup hooks / default tabs ran per Orca settings | Expected; leave them alone |
+| Card shows "Terminal 1" beside the loopai tab | Fallback shell from bare `worktree create` was not closed | Step 6 close; only an idle shell with null `agentIdentity` qualifies |
+| Extra tabs appear on create | Repo setup hooks / default tabs ran per Orca settings | Expected; leave them alone and mention them |
