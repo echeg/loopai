@@ -95,8 +95,8 @@ claude plugin install loopai@loopai
 The plugin provides eight skills:
 
 - `loopai:loopai` launches loopai, monitors progress, and resumes active runs
-- `loopai:loopai-merge` reads and narrates a completion report, then asks before
-  merging the plan or opening a pull request
+- `loopai:loopai-merge` reads and narrates a completion report, previews merge
+  conflicts, and asks before merging the plan or opening a pull request
 - `loopai:loopai-orca` launches a plan inside an Orca-managed worktree and
   terminal tab with `--orca`, so the run appears as an Orca card with live status;
   it forwards `--codex`, `--task-model`, `--review-model`, and
@@ -111,8 +111,12 @@ The plugin provides eight skills:
   runs a plan-off that compares and synthesizes competing plans
 
 Use `/loopai:loopai-merge <plan>` after a successful run to have Claude narrate the report in the
-conversation language and ask whether to merge, open a pull request, or cancel. The skill delegates
-close-out to `loopai --merge` or `loopai --pr`; it never runs `git merge` directly.
+conversation language, predict merge conflicts read-only with `git merge-tree` and describe each
+conflicting file and what both sides changed, then ask whether to merge, open a pull request, or
+cancel. With conflicts the merge option becomes "resolve and merge": the skill merges the base into
+the plan branch inside that branch's checkout, resolves the conflicted files there, runs the plan's
+validation commands, commits, and only then delegates close-out to `loopai --merge`, which finds a
+clean merge and performs its usual cleanup. It never merges the plan branch into the base by hand.
 
 Use the namespaced plugin command to review the newest active plan, review a
 specific plan, or generate a competing-plan comparison:
