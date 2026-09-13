@@ -1172,6 +1172,33 @@ func TestCodexExecutor_Run_LimitPattern_StderrMatch(t *testing.T) {
 	assert.Empty(t, result.Output, "stderr-only match must not leak stderr content into Result.Output")
 }
 
+func TestCodexExecutor_Run_LimitPattern_SpendCap(t *testing.T) {
+	// observed 2026-09-13: a workspace spend cap ends the session with this stderr and no
+	// stdout. the line carries codex's ERROR: prefix, so the gate admits it, and the default
+	// codex_limit_patterns list must name it, otherwise the run fails instead of waiting.
+	exitErr := errors.New("exit status 1")
+	stderr := "hook: UserPromptSubmit Completed\nhook: UserPromptSubmit Completed\n" +
+		"ERROR: You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.\n" +
+		"ERROR: You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.\n"
+
+	mock := &mockCodexRunner{
+		runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+			return mockStreams(stderr, ""), mockWaitError(exitErr), nil
+		},
+	}
+	e := &CodexExecutor{
+		runner: mock,
+		LimitPatterns: []string{"Rate limit exceeded", "rate limit reached", "429 Too Many Requests", "quota exceeded",
+			"insufficient_quota", "You've hit your usage limit", "is at capacity", "You hit your spend cap"},
+	}
+
+	result := e.Run(context.Background(), "evaluate findings")
+
+	var limitErr *LimitPatternError
+	require.ErrorAs(t, result.Error, &limitErr, "spend cap must be a waitable limit, not a hard failure")
+	assert.Equal(t, "You hit your spend cap", limitErr.Pattern)
+}
+
 func TestCodexExecutor_Run_ErrorPattern_StderrMatch(t *testing.T) {
 	// error pattern that appears only in stderr (e.g., auth failures) must be detected
 	exitErr := errors.New("exit status 1")
