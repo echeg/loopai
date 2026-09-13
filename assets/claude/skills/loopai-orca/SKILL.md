@@ -178,7 +178,7 @@ After reporting, STOP.
 
 ## Close-out (tell the user, do not run)
 
-From the main checkout, prefer `/loopai-merge $PLAN`: it reads and narrates the completion report, then asks whether to merge, open a PR, or cancel. Its chosen `loopai --merge $PLAN` (or `--pr $PLAN`) command finds the Orca branch through the progress record loopai wrote in the Orca worktree; merge also removes the git worktree. Orca still lists the card afterwards; `orca worktree rm --worktree "id:$WT_ID" --json` clears it. Alternatively close out entirely through Orca's own merge and archive flow. After the merge, the untracked plan copy left in `$ROOT/docs/plans/` is shadowed by the merged `completed/` copy and can be deleted.
+From the main checkout, prefer `/loopai-merge $PLAN`: it reads and narrates the completion report, previews merge conflicts, then asks whether to merge (resolving predicted conflicts on the plan branch first), open a PR, or cancel. Its chosen `loopai --merge $PLAN` (or `--pr $PLAN`) command finds the Orca branch through the progress record loopai wrote in the Orca worktree; merge also removes the git worktree. Orca still lists the card afterwards; `orca worktree rm --worktree "id:$WT_ID" --json` clears it. Alternatively close out entirely through Orca's own merge and archive flow. After the merge, the untracked plan copy left in `$ROOT/docs/plans/` is shadowed by the merged `completed/` copy and can be deleted.
 
 ## Pitfalls
 
