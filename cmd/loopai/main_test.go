@@ -13492,3 +13492,88 @@ func TestRunResolvesKeepAwakeFromConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateModelProviders(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		o    opts
+		cfg  config.Config
+		want []string
+	}{
+		{name: "default claude review mismatch", cfg: config.Config{ReviewModel: "gpt-6-astra:high", ExecutorSource: config.ExecutorSourceDefault}, want: []string{"review_model", "gpt-6-astra:high", "codex model", "claude (default)"}},
+		{name: "config codex task mismatch", o: opts{TaskModel: "fable:high"}, cfg: config.Config{Executor: config.ExecutorCodex, ExecutorSource: "executor = codex in config"}, want: []string{"--task-model", "claude model", "executor = codex in config"}},
+		{name: "flag codex plan mismatch", cfg: config.Config{Executor: config.ExecutorCodex, ExecutorSource: config.ExecutorSourceFlag, PlanModel: "opus"}, want: []string{"plan_model", "--codex"}},
+		{name: "matching claude", cfg: config.Config{PlanModel: "opus", TaskModel: "fable:high", ReviewModel: "sonnet"}},
+		{name: "matching codex", cfg: config.Config{Executor: config.ExecutorCodex, PlanModel: "o3", TaskModel: "gpt-6-astra:medium", ReviewModel: "codex-mini"}},
+		{name: "unknown", cfg: config.Config{TaskModel: "my-alias"}},
+		{name: "claude wrapper", cfg: config.Config{ClaudeCommand: "pi-as-claude.sh", ReviewModel: "gpt-5"}},
+		{name: "codex wrapper", cfg: config.Config{Executor: config.ExecutorCodex, CodexCommand: "my-codex-wrapper", TaskModel: "fable"}},
+		{name: "effort only", cfg: config.Config{TaskModel: ":high"}},
+		{name: "cli overrides config", o: opts{PlanModel: "opus", TaskModel: "fable", ReviewModel: "sonnet"}, cfg: config.Config{PlanModel: "gpt-5", TaskModel: "gpt-5", ReviewModel: "gpt-5"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateModelProviders(tt.o, &tt.cfg)
+			if len(tt.want) == 0 {
+				require.NoError(t, err)
+				return
+			}
+			for _, want := range tt.want {
+				require.ErrorContains(t, err, want)
+			}
+		})
+	}
+}
+
+func TestValidateReviewerProviders(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		reviewers []resolvedReviewer
+		want      string
+	}{
+		{"codex mismatch", []resolvedReviewer{{Provider: "codex", Model: "fable", Effort: "high"}}, `external reviewer entry 1 (codex) names a claude model "fable:high"`},
+		{"claude mismatch later in chain", []resolvedReviewer{{Provider: "claude", Model: "opus"}, {Provider: "claude", Model: "gpt-6-astra"}}, `external reviewer entry 2 (claude) names a codex model "gpt-6-astra"`},
+		{"matching", []resolvedReviewer{{Provider: "claude", Model: "opus", Effort: "high"}, {Provider: "codex", Model: "gpt-6-astra", Effort: "high"}}, ""},
+		{"custom", []resolvedReviewer{{Provider: "custom", Model: "gpt-5"}}, ""},
+		{"unknown", []resolvedReviewer{{Provider: "codex", Model: "my-alias"}}, ""},
+		{"empty model", []resolvedReviewer{{Provider: "claude", Effort: "high"}}, ""},
+		{"empty selection", nil, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateReviewerProviders(externalReviewSelection{Reviewers: tt.reviewers})
+			if tt.want == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveExternalReviewSelectionValidatesProviders(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		cfg  config.Config
+	}{
+		{"chain", config.Config{ExternalReviewersSet: true, ExternalReviewers: "claude:gpt-6-astra:high"}},
+		{"legacy", config.Config{ExternalReviewTool: config.ExternalReviewToolClaude, ExternalReviewModel: "gpt-6-astra:high"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := resolveExternalReviewSelection(opts{}, &tt.cfg, processor.ModeFull)
+			require.ErrorContains(t, err, `external reviewer entry 1 (claude) names a codex model "gpt-6-astra:high"`)
+		})
+	}
+}
+
+func TestValidateStartupModels(t *testing.T) {
+	t.Run("syntax checked first", func(t *testing.T) {
+		err := validateStartupModels(opts{}, &config.Config{TaskModel: "gpt-5:hgih"})
+		require.ErrorContains(t, err, "unknown reasoning effort")
+	})
+	t.Run("provider checked after syntax", func(t *testing.T) {
+		err := validateStartupModels(opts{}, &config.Config{TaskModel: "gpt-5:high"})
+		require.ErrorContains(t, err, "codex model")
+	})
+	t.Run("matching provider passes", func(t *testing.T) {
+		require.NoError(t, validateStartupModels(opts{}, &config.Config{TaskModel: "fable:high"}))
+	})
+}

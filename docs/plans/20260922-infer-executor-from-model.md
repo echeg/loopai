@@ -175,7 +175,7 @@ recognizable model name is an error, never a silent override.
 
 ### Task 4: Reject provider mismatches at startup
 
-- [ ] write table-driven tests for a new `validateModelProviders(o opts, cfg *config.Config) error`
+- [x] write table-driven tests for a new `validateModelProviders(o opts, cfg *config.Config) error`
       in `cmd/loopai/main_test.go`: executor claude (default source) + `review_model = gpt-6-astra:high`
       → error containing `review_model`, `gpt-6-astra:high`, `codex model`, and the source text;
       executor codex from config + `--task-model fable:high` → error naming `--task-model`,
@@ -184,24 +184,25 @@ recognizable model name is an error, never a silent override.
       `claude_command = pi-as-claude.sh` + `review_model = gpt-5` → nil (wrapper skips the check);
       executor codex + `codex_command = my-codex-wrapper` + `task_model = fable` → nil; effort-only
       `:high` → nil; run and watch them fail
-- [ ] implement `validateModelProviders` beside `validateModelSpecs`: iterate the same three
+- [x] implement `validateModelProviders` beside `validateModelSpecs`: iterate the same three
       resolved specs (`plan`, `task`, `review`) with their `--flag / key` labels, skip when
       `ModelProvider` is `""` or equals `primaryProvider(cfg)`, skip entirely when the primary's
       binary is not the real one (`IsRealClaudeCommand` for claude, `IsRealCodexCommand` for codex),
       otherwise return an error of the form
       `--review-model / review_model %q is a codex model, but the executor is claude (%s)` where
       `%s` is `cfg.ExecutorSource`
-- [ ] wire it at `cmd/loopai/main.go:468` directly after `validateModelSpecs`, before
-      `resolveExternalReviewSelection`
-- [ ] write tests for `validateReviewerProviders(selection externalReviewSelection) error` beside
+- [x] wire it at `cmd/loopai/main.go:468` directly after `validateModelSpecs`, before
+      `resolveExternalReviewSelection`; group the two model checks in `validateStartupModels`
+      to keep `run` within the lint complexity limit, with tests for validation order
+- [x] write tests for `validateReviewerProviders(selection externalReviewSelection) error` beside
       the `validateReviewerEfforts` tests: `codex:fable:high` → error naming entry 1, `codex`, and
       `fable`; `claude:gpt-6-astra` → error; `claude:opus:high,codex:gpt-6-astra:high` → nil;
       `custom` entry → nil; unknown model → nil; empty model → nil; run and watch them fail
-- [ ] implement `validateReviewerProviders` and call it from `resolveExternalReviewSelection`
+- [x] implement `validateReviewerProviders` and call it from `resolveExternalReviewSelection`
       immediately after `validateReviewerEfforts`, so every branch of `resolveReviewerChain` is
       covered; the reviewer's `Provider` is explicit, so no binary guard is needed here beyond
       skipping `custom`
-- [ ] run `go test ./cmd/loopai/...` - must pass before task 5
+- [x] run `go test ./cmd/loopai/...` - must pass before task 5
 
 ### Task 5: Show the executor source in the startup banner
 

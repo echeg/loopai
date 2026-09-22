@@ -465,8 +465,8 @@ func run(ctx context.Context, o opts) (runErr error) {
 		setupTitles.Stop()
 	}()
 
-	if specErr := validateModelSpecs(o, cfg); specErr != nil {
-		return specErr
+	if modelErr := validateStartupModels(o, cfg); modelErr != nil {
+		return modelErr
 	}
 	externalReview, resolveErr := resolveExternalReviewSelection(o, cfg, mode)
 	if resolveErr != nil {
@@ -2700,6 +2700,9 @@ func resolveExternalReviewSelection(o opts, cfg *config.Config, mode processor.M
 	if effortErr := validateReviewerEfforts(selection); effortErr != nil {
 		return externalReviewSelection{}, effortErr
 	}
+	if providerErr := validateReviewerProviders(selection); providerErr != nil {
+		return externalReviewSelection{}, providerErr
+	}
 	return selection, nil
 }
 
@@ -2989,6 +2992,14 @@ func shouldMovePlan(req executePlanRequest) bool {
 // deliberate downgrade into a hard failure.
 var knownEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 
+// validateStartupModels checks syntax before provider consistency at startup.
+func validateStartupModels(o opts, cfg *config.Config) error {
+	if err := validateModelSpecs(o, cfg); err != nil {
+		return err
+	}
+	return validateModelProviders(o, cfg)
+}
+
 // validateModelSpecs rejects plan, task, review, and legacy external-review model specs
 // that the executor cannot accept. The specs are parsed by splitting at the first colon,
 // which makes an external_reviewers entry (provider:model:effort) syntactically valid
@@ -3006,6 +3017,28 @@ func validateModelSpecs(o opts, cfg *config.Config) error {
 	for _, spec := range specs {
 		if err := validateModelSpec(spec.flag, spec.value); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// validateModelProviders rejects recognizable models belonging to another provider.
+// Wrapper commands define their own model names and bypass this validation.
+func validateModelProviders(o opts, cfg *config.Config) error {
+	primary := primaryProvider(cfg)
+	if (primary == config.ExternalReviewToolClaude && !cfg.IsRealClaudeCommand()) ||
+		(primary == config.ExternalReviewToolCodex && !cfg.IsRealCodexCommand()) {
+		return nil
+	}
+	specs := []struct{ flag, value string }{
+		{"--plan-model / plan_model", resolveSpec(o.PlanModel, cfg.PlanModel)},
+		{"--task-model / task_model", resolveSpec(o.TaskModel, cfg.TaskModel)},
+		{"--review-model / review_model", resolveSpec(o.ReviewModel, cfg.ReviewModel)},
+	}
+	for _, spec := range specs {
+		if provider := config.ModelProvider(spec.value); provider != "" && provider != primary {
+			return fmt.Errorf("%s %q is a %s model, but the executor is %s (%s)",
+				spec.flag, spec.value, provider, primary, cfg.ExecutorSource)
 		}
 	}
 	return nil
@@ -3049,6 +3082,25 @@ func validateReviewerEfforts(selection externalReviewSelection) error {
 		label := fmt.Sprintf("external reviewer entry %d (%s)", i+1, reviewer.Provider)
 		if err := validateEffort(label, reviewer.Effort); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// validateReviewerProviders checks model names against each reviewer's explicit provider.
+// Custom reviewers define their own model names and are left alone.
+func validateReviewerProviders(selection externalReviewSelection) error {
+	for i, reviewer := range selection.Reviewers {
+		if reviewer.Provider == config.ExternalReviewToolCustom || reviewer.Provider == "" {
+			continue
+		}
+		if provider := config.ModelProvider(reviewer.Model); provider != "" && provider != reviewer.Provider {
+			spec := reviewer.Model
+			if reviewer.Effort != "" {
+				spec += ":" + reviewer.Effort
+			}
+			return fmt.Errorf("external reviewer entry %d (%s) names a %s model %q",
+				i+1, reviewer.Provider, provider, spec)
 		}
 	}
 	return nil
