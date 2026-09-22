@@ -5968,13 +5968,31 @@ func applyExternalReviewCLIOverrides(o opts, cfg *config.Config) error {
 	return nil
 }
 
-// applyCodexOverrides applies --codex / --pass-claude-md CLI flags after config
-// merging. The name is retained for compatibility with existing callers; external
-// review selection is now resolved separately and is valid for either primary.
+// applyCodexOverrides resolves the primary executor after config merging: --codex
+// wins over an explicit executor key, otherwise a recognizable task model infers
+// the executor when ClaudeCommand is the real binary. It records the source and
+// validates --pass-claude-md against the resolved executor. External review
+// selection is resolved separately and is valid for either primary.
 func applyCodexOverrides(o opts, cfg *config.Config, warnW io.Writer) error {
 	_ = warnW
-	if o.Codex {
+	switch {
+	case o.Codex:
 		cfg.Executor = config.ExecutorCodex
+		cfg.ExecutorSource = config.ExecutorSourceFlag
+	case cfg.ExecutorSet:
+		cfg.ExecutorSource = fmt.Sprintf(config.ExecutorSourceConfig, cfg.Executor)
+	default:
+		cfg.Executor = config.ExecutorClaude
+		cfg.ExecutorSource = config.ExecutorSourceDefault
+		if cfg.IsRealClaudeCommand() {
+			spec := resolveSpec(o.TaskModel, cfg.TaskModel)
+			if provider := config.ModelProvider(spec); provider != "" {
+				if provider == config.ExternalReviewToolCodex {
+					cfg.Executor = config.ExecutorCodex
+				}
+				cfg.ExecutorSource = fmt.Sprintf(config.ExecutorSourceInferred, spec)
+			}
+		}
 	}
 	if o.PassClaudeMd {
 		cfg.PassClaudeMd = true

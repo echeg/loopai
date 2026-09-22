@@ -4330,6 +4330,102 @@ func TestResumeWorktreeFlagIsRemoved(t *testing.T) {
 	assert.Contains(t, err.Error(), "unknown flag")
 }
 
+func TestApplyCodexOverrides_ExecutorInference(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       config.Config
+		opts      opts
+		executor  string
+		source    string
+		wantError bool
+	}{
+		{
+			name:     "flag wins over explicit Claude and model",
+			cfg:      config.Config{ExecutorSet: true, TaskModel: "fable"},
+			opts:     opts{Codex: true},
+			executor: config.ExecutorCodex, source: "--codex",
+		},
+		{
+			name:     "explicit codex wins over Claude model",
+			cfg:      config.Config{ExecutorSet: true, Executor: config.ExecutorCodex, TaskModel: "fable"},
+			executor: config.ExecutorCodex, source: "executor = codex in config",
+		},
+		{
+			name:   "explicit empty executor wins over codex model",
+			cfg:    config.Config{ExecutorSet: true, TaskModel: "gpt-6-astra"},
+			source: "executor =  in config",
+		},
+		{
+			name:     "CLI model overrides config model and infers codex",
+			cfg:      config.Config{TaskModel: "fable:high"},
+			opts:     opts{TaskModel: "gpt-6-astra:medium"},
+			executor: config.ExecutorCodex, source: `inferred from task_model "gpt-6-astra:medium"`,
+		},
+		{
+			name:   "config model infers Claude",
+			cfg:    config.Config{TaskModel: "fable:high"},
+			source: `inferred from task_model "fable:high"`,
+		},
+		{
+			name:   "unknown model uses default",
+			cfg:    config.Config{TaskModel: "my-alias"},
+			source: "default",
+		},
+		{
+			name:   "empty model uses default",
+			source: "default",
+		},
+		{
+			name:   "effort only uses default",
+			cfg:    config.Config{TaskModel: ":high"},
+			source: "default",
+		},
+		{
+			name:   "Claude wrapper blocks inference",
+			cfg:    config.Config{TaskModel: "gpt-5", ClaudeCommand: "pi-as-claude.sh"},
+			source: "default",
+		},
+		{
+			name:     "flag still wins with Claude wrapper",
+			cfg:      config.Config{TaskModel: "fable", ClaudeCommand: "pi-as-claude.sh"},
+			opts:     opts{Codex: true},
+			executor: config.ExecutorCodex, source: "--codex",
+		},
+		{
+			name:   "codex model setting alone does not infer executor",
+			cfg:    config.Config{CodexModel: "gpt-6-astra"},
+			source: "default",
+		},
+		{
+			name:     "inferred codex accepts pass Claude md",
+			cfg:      config.Config{TaskModel: "gpt-6-astra"},
+			opts:     opts{PassClaudeMd: true},
+			executor: config.ExecutorCodex, source: `inferred from task_model "gpt-6-astra"`,
+		},
+		{
+			name:   "inferred Claude rejects pass Claude md",
+			cfg:    config.Config{TaskModel: "fable"},
+			opts:   opts{PassClaudeMd: true},
+			source: `inferred from task_model "fable"`, wantError: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var warnings bytes.Buffer
+			err := applyCodexOverrides(tt.opts, &tt.cfg, &warnings)
+			if tt.wantError {
+				require.ErrorContains(t, err, "--pass-claude-md requires --codex")
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.executor, tt.cfg.Executor)
+			assert.Equal(t, tt.source, tt.cfg.ExecutorSource)
+			assert.Equal(t, tt.opts.PassClaudeMd, tt.cfg.PassClaudeMd)
+			assert.Empty(t, warnings.String())
+		})
+	}
+}
+
 func TestApplyCodexOverrides_AllowsSymmetricExternalReview(t *testing.T) {
 	t.Run("cli_codex_plus_external_only_allowed", func(t *testing.T) {
 		cfg := &config.Config{}
@@ -4340,14 +4436,14 @@ func TestApplyCodexOverrides_AllowsSymmetricExternalReview(t *testing.T) {
 	})
 
 	t.Run("config_executor_codex_plus_cli_external_only_allowed", func(t *testing.T) {
-		cfg := &config.Config{Executor: config.ExecutorCodex}
+		cfg := &config.Config{ExecutorSet: true, Executor: config.ExecutorCodex}
 		o := parseTestOpts(t, "--external-only")
 		var warnBuf bytes.Buffer
 		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
 	})
 
 	t.Run("config_executor_codex_plus_cli_codex_only_allowed", func(t *testing.T) {
-		cfg := &config.Config{Executor: config.ExecutorCodex}
+		cfg := &config.Config{ExecutorSet: true, Executor: config.ExecutorCodex}
 		o := parseTestOpts(t, "--codex-only")
 		var warnBuf bytes.Buffer
 		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
@@ -4368,7 +4464,7 @@ func TestApplyCodexOverrides_AllowsSymmetricExternalReview(t *testing.T) {
 	})
 
 	t.Run("config_executor_codex_plus_cli_external_review_tool_custom_allowed", func(t *testing.T) {
-		cfg := &config.Config{Executor: config.ExecutorCodex}
+		cfg := &config.Config{ExecutorSet: true, Executor: config.ExecutorCodex}
 		o := parseTestOpts(t, "--external-review-tool", "custom")
 		require.NoError(t, applyCLIOverrides(o, cfg))
 		assert.Equal(t, config.ExternalReviewToolCustom, cfg.ExternalReviewTool)
@@ -4382,7 +4478,7 @@ func TestApplyCodexOverrides_AllowsSymmetricExternalReview(t *testing.T) {
 	})
 
 	t.Run("config_executor_codex_plus_cli_external_review_tool_none_allowed", func(t *testing.T) {
-		cfg := &config.Config{Executor: config.ExecutorCodex}
+		cfg := &config.Config{ExecutorSet: true, Executor: config.ExecutorCodex}
 		o := parseTestOpts(t, "--external-review-tool", "none")
 		require.NoError(t, applyCLIOverrides(o, cfg))
 		assert.Equal(t, "none", cfg.ExternalReviewTool)
@@ -4447,7 +4543,7 @@ func TestCodexFlag_ApplyCLIOverrides(t *testing.T) {
 	})
 
 	t.Run("config_executor_codex_preserves_user_external_review_tool", func(t *testing.T) {
-		cfg := &config.Config{Executor: config.ExecutorCodex, ExternalReviewTool: "codex", ExternalReviewToolSet: true}
+		cfg := &config.Config{ExecutorSet: true, Executor: config.ExecutorCodex, ExternalReviewTool: "codex", ExternalReviewToolSet: true}
 		o := parseTestOpts(t)
 		var warnBuf bytes.Buffer
 
@@ -4460,7 +4556,7 @@ func TestCodexFlag_ApplyCLIOverrides(t *testing.T) {
 	t.Run("config_executor_codex_embedded_default_does_not_warn", func(t *testing.T) {
 		// user did NOT set external_review_tool — the value is just the embedded default.
 		// no warning should fire (this was the spurious-warning bug on vanilla --codex runs).
-		cfg := &config.Config{Executor: config.ExecutorCodex, ExternalReviewTool: "codex", ExternalReviewToolSet: false}
+		cfg := &config.Config{ExecutorSet: true, Executor: config.ExecutorCodex, ExternalReviewTool: "codex", ExternalReviewToolSet: false}
 		o := parseTestOpts(t)
 		var warnBuf bytes.Buffer
 
@@ -4471,7 +4567,7 @@ func TestCodexFlag_ApplyCLIOverrides(t *testing.T) {
 	})
 
 	t.Run("config_executor_codex_with_external_review_none_no_warning", func(t *testing.T) {
-		cfg := &config.Config{Executor: config.ExecutorCodex, ExternalReviewTool: "none", ExternalReviewToolSet: true}
+		cfg := &config.Config{ExecutorSet: true, Executor: config.ExecutorCodex, ExternalReviewTool: "none", ExternalReviewToolSet: true}
 		o := parseTestOpts(t)
 		var warnBuf bytes.Buffer
 
@@ -4486,7 +4582,7 @@ func TestCodexFlag_ApplyCLIOverrides(t *testing.T) {
 		// stage (see TestValidateFlags), so applyCodexOverrides runs after it. this guards
 		// the no-warning branch: a user explicitly setting the flag to "none" should not
 		// see the codex-override warning.
-		cfg := &config.Config{Executor: config.ExecutorCodex, ExternalReviewTool: "none"}
+		cfg := &config.Config{ExecutorSet: true, Executor: config.ExecutorCodex, ExternalReviewTool: "none"}
 		o := parseTestOpts(t, "--external-review-tool", "none")
 		var warnBuf bytes.Buffer
 
@@ -4499,7 +4595,7 @@ func TestCodexFlag_ApplyCLIOverrides(t *testing.T) {
 	t.Run("config_executor_codex_plus_cli_pass_claude_md_succeeds", func(t *testing.T) {
 		// post-merge gate: --pass-claude-md is acceptable when executor=codex
 		// comes from config file, even without --codex on the CLI.
-		cfg := &config.Config{Executor: config.ExecutorCodex, ExternalReviewTool: "none"}
+		cfg := &config.Config{ExecutorSet: true, Executor: config.ExecutorCodex, ExternalReviewTool: "none"}
 		o := parseTestOpts(t, "--pass-claude-md")
 		var warnBuf bytes.Buffer
 

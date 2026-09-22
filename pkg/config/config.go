@@ -95,6 +95,14 @@ const (
 	ExecutorCodex  = "codex"
 )
 
+// Executor source descriptions for the runtime-only Config.ExecutorSource field.
+const (
+	ExecutorSourceFlag     = "--codex"
+	ExecutorSourceConfig   = "executor = %s in config"
+	ExecutorSourceInferred = "inferred from task_model %q"
+	ExecutorSourceDefault  = "default"
+)
+
 // External review tool constants for Config.ExternalReviewTool.
 const (
 	ExternalReviewToolAuto   = "auto"
@@ -111,13 +119,14 @@ const (
 // Runtime-only exceptions, such as ClaudeArgsSet, are documented inline.
 // The inline field comments are the source of truth for which *Set sentinels exist.
 type Config struct {
-	ClaudeCommand string `json:"claude_command"`
-	ClaudeArgs    string `json:"claude_args"`
-	ClaudeArgsSet bool   `json:"-"`            // tracks runtime overrides, including an explicit empty --claude-args=
-	ExecutorSet   bool   `json:"-"`            // tracks an explicit executor config key, including an empty reset to Claude
-	PlanModel     string `json:"plan_model"`   // model[:effort] spec for plan creation (falls back to TaskModel)
-	TaskModel     string `json:"task_model"`   // model[:effort] spec for task execution (e.g., "opus", "opus:high", ":medium")
-	ReviewModel   string `json:"review_model"` // model[:effort] spec for review phases (falls back to TaskModel)
+	ExecutorSource string `json:"-"` // records how the primary executor was selected at runtime
+	ClaudeCommand  string `json:"claude_command"`
+	ClaudeArgs     string `json:"claude_args"`
+	ClaudeArgsSet  bool   `json:"-"`            // tracks runtime overrides, including an explicit empty --claude-args=
+	ExecutorSet    bool   `json:"-"`            // tracks an explicit executor config key, including an empty reset to Claude
+	PlanModel      string `json:"plan_model"`   // model[:effort] spec for plan creation (falls back to TaskModel)
+	TaskModel      string `json:"task_model"`   // model[:effort] spec for task execution (e.g., "opus", "opus:high", ":medium")
+	ReviewModel    string `json:"review_model"` // model[:effort] spec for review phases (falls back to TaskModel)
 
 	CodexEnabled         bool   `json:"codex_enabled"`
 	CodexEnabledSet      bool   `json:"-"` // tracks if codex_enabled was explicitly set in config

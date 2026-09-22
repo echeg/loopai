@@ -150,10 +150,10 @@ recognizable model name is an error, never a silent override.
 
 ### Task 3: Infer the executor from task_model in applyCodexOverrides
 
-- [ ] add `ExecutorSource string` to `Config` (runtime-only, `json:"-"`) and constants in
+- [x] add `ExecutorSource string` to `Config` (runtime-only, `json:"-"`) and constants in
       `pkg/config`: `ExecutorSourceFlag` ("--codex"), `ExecutorSourceConfig` ("executor = %s in config"),
       `ExecutorSourceInferred` ("inferred from task_model %q"), `ExecutorSourceDefault` ("default")
-- [ ] extend the `applyCodexOverrides` tests in `cmd/loopai/main_test.go` with a table: `--codex`
+- [x] extend the `applyCodexOverrides` tests in `cmd/loopai/main_test.go` with a table: `--codex`
       wins and source is flag; `ExecutorSet` with `Executor = codex` wins over `task_model = fable`
       (source config, no error here — task 4 rejects the conflict); `ExecutorSet` with empty
       `Executor` stays claude even for `task_model = gpt-6-astra`; unset executor +
@@ -162,16 +162,16 @@ recognizable model name is an error, never a silent override.
       `task_model = my-alias` → claude, source default; unset executor + `task_model = gpt-5` +
       `claude_command = pi-as-claude.sh` → claude, source default (wrapper blocks inference);
       run and watch them fail
-- [ ] implement the inference in `applyCodexOverrides`: after the `--codex` branch, when
+- [x] implement the inference in `applyCodexOverrides`: after the `--codex` branch, when
       `!o.Codex && !cfg.ExecutorSet && cfg.IsRealClaudeCommand()`, resolve the effective task spec
       with `resolveSpec(o.TaskModel, cfg.TaskModel)` and set `cfg.Executor` from
       `config.ModelProvider`; set `cfg.ExecutorSource` on every path. Update the function's godoc,
       which currently says it only applies `--codex` / `--pass-claude-md`
-- [ ] verify the existing `--pass-claude-md requires --codex` check still fires against the
+- [x] verify the existing `--pass-claude-md requires --codex` check still fires against the
       inferred value: add a case where `task_model = gpt-6-astra` infers codex and
       `--pass-claude-md` is accepted, and one where `task_model = fable` infers claude and it is
       rejected
-- [ ] run `go test ./cmd/loopai/...` - must pass before task 4
+- [x] run `go test ./cmd/loopai/...` - must pass before task 4
 
 ### Task 4: Reject provider mismatches at startup
 
