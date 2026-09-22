@@ -2602,6 +2602,8 @@ type resolvedReviewer struct {
 	Model      string
 	Effort     string
 	MaxDropped bool
+	// ModelFromCodexDefault preserves the source of an omitted chain model for diagnostics.
+	ModelFromCodexDefault bool
 }
 
 func (r resolvedReviewer) modelSpec() string {
@@ -2702,7 +2704,7 @@ func resolveExternalReviewSelection(o opts, cfg *config.Config, mode processor.M
 	if effortErr := validateReviewerEfforts(selection); effortErr != nil {
 		return externalReviewSelection{}, effortErr
 	}
-	if providerErr := validateReviewerProviders(selection); providerErr != nil {
+	if providerErr := validateReviewerProviders(selection, cfg); providerErr != nil {
 		return externalReviewSelection{}, providerErr
 	}
 	return selection, nil
@@ -2727,8 +2729,10 @@ func resolveReviewerChain(o opts, cfg *config.Config, mode processor.Mode) (exte
 		for _, spec := range specs {
 			model, effort, maxDropped := processor.ResolveExternalReviewerModelEffort(
 				spec.Provider, spec.ModelSpec, cfg.CodexModel, cfg.CodexReasoningEffort)
+			inputModel, _, _ := strings.Cut(spec.ModelSpec, ":")
 			selection.Reviewers = append(selection.Reviewers, resolvedReviewer{
 				Provider: spec.Provider, Model: model, Effort: effort, MaxDropped: maxDropped,
+				ModelFromCodexDefault: spec.Provider == config.ExternalReviewToolCodex && strings.TrimSpace(inputModel) == "",
 			})
 		}
 		return selection, nil
@@ -3090,20 +3094,35 @@ func validateReviewerEfforts(selection externalReviewSelection) error {
 }
 
 // validateReviewerProviders checks model names against each reviewer's explicit provider.
-// Custom reviewers define their own model names and are left alone.
-func validateReviewerProviders(selection externalReviewSelection) error {
+// Custom reviewers and wrapper commands define their own model names and are left alone.
+func validateReviewerProviders(selection externalReviewSelection, cfg *config.Config) error {
 	for i, reviewer := range selection.Reviewers {
 		if reviewer.Provider == config.ExternalReviewToolCustom || reviewer.Provider == "" {
 			continue
 		}
-		if provider := config.ModelProvider(reviewer.Model); provider != "" && provider != reviewer.Provider {
-			spec := reviewer.Model
-			if reviewer.Effort != "" {
-				spec += ":" + reviewer.Effort
-			}
-			return fmt.Errorf("external reviewer entry %d (%s) names a %s model %q",
-				i+1, reviewer.Provider, provider, spec)
+		if (reviewer.Provider == config.ExternalReviewToolClaude && !cfg.IsRealClaudeCommand()) ||
+			(reviewer.Provider == config.ExternalReviewToolCodex && !cfg.IsRealCodexCommand()) {
+			continue
 		}
+		provider := config.ModelProvider(reviewer.Model)
+		if provider == "" || provider == reviewer.Provider {
+			continue
+		}
+		spec := reviewer.Model
+		if reviewer.Effort != "" {
+			spec += ":" + reviewer.Effort
+		}
+		label := fmt.Sprintf("external reviewer entry %d (%s)", i+1, reviewer.Provider)
+		if !cfg.ExternalReviewersSet {
+			modelKey := "external_review_model"
+			if model, _, _ := strings.Cut(cfg.ExternalReviewModel, ":"); strings.TrimSpace(model) == "" && reviewer.Provider == config.ExternalReviewToolCodex {
+				modelKey = "codex_model"
+			}
+			label = fmt.Sprintf("external_review_tool (%s) / %s", reviewer.Provider, modelKey)
+		} else if reviewer.ModelFromCodexDefault {
+			label += " / codex_model"
+		}
+		return fmt.Errorf("%s names a %s model %q", label, provider, spec)
 	}
 	return nil
 }
@@ -6041,7 +6060,11 @@ func applyCodexOverrides(o opts, cfg *config.Config, warnW io.Writer) error {
 		cfg.Executor = config.ExecutorCodex
 		cfg.ExecutorSource = config.ExecutorSourceFlag
 	case cfg.ExecutorSet:
-		cfg.ExecutorSource = fmt.Sprintf(config.ExecutorSourceConfig, cfg.Executor)
+		executorValue := cfg.Executor
+		if executorValue == "" {
+			executorValue = "(empty)"
+		}
+		cfg.ExecutorSource = fmt.Sprintf(config.ExecutorSourceConfig, executorValue)
 	default:
 		cfg.Executor = config.ExecutorClaude
 		cfg.ExecutorSource = config.ExecutorSourceDefault

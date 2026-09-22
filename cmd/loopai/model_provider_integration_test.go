@@ -47,7 +47,7 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 			name:      "local empty executor overrides global codex and inference",
 			global:    "executor = codex\ntask_model = gpt-6-astra:medium\n",
 			local:     "executor =\n",
-			wantError: `--task-model / task_model "gpt-6-astra:medium" is a codex model, but the executor is claude (executor =  in config)`,
+			wantError: `--task-model / task_model "gpt-6-astra:medium" is a codex model, but the executor is claude (executor = (empty) in config)`,
 		},
 		{
 			name:        "explicit codex wrapper accepts Claude model names",

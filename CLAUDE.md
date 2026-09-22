@@ -357,7 +357,8 @@ validation checks the effective plan/task/review specs and skips the check when 
 primary uses a wrapper (`IsRealClaudeCommand`/`IsRealCodexCommand`).
 `resolveExternalReviewSelection` calls `validateReviewerProviders` immediately after
 `validateReviewerEfforts` on every resolved chain; explicit reviewer providers must match known
-models, with custom reviewers and unknown names skipped. `Config.ExecutorSource` records the
+models, with custom reviewers, wrapper commands, and unknown names skipped. Legacy reviewer
+errors name the tool/model config keys instead of a chain entry. `Config.ExecutorSource` records the
 selection source and flows into `startupInfo.ExecutorSource`: the banner appends it for Codex
 and prints a Claude executor line only for an inferred choice, preserving the default banner.
 

@@ -194,14 +194,14 @@ recognizable model name is an error, never a silent override.
 - [x] wire it at `cmd/loopai/main.go:468` directly after `validateModelSpecs`, before
       `resolveExternalReviewSelection`; group the two model checks in `validateStartupModels`
       to keep `run` within the lint complexity limit, with tests for validation order
-- [x] write tests for `validateReviewerProviders(selection externalReviewSelection) error` beside
+- [x] write tests for `validateReviewerProviders(selection externalReviewSelection, cfg *config.Config) error` beside
       the `validateReviewerEfforts` tests: `codex:fable:high` → error naming entry 1, `codex`, and
       `fable`; `claude:gpt-6-astra` → error; `claude:opus:high,codex:gpt-6-astra:high` → nil;
       `custom` entry → nil; unknown model → nil; empty model → nil; run and watch them fail
 - [x] implement `validateReviewerProviders` and call it from `resolveExternalReviewSelection`
       immediately after `validateReviewerEfforts`, so every branch of `resolveReviewerChain` is
-      covered; the reviewer's `Provider` is explicit, so no binary guard is needed here beyond
-      skipping `custom`
+      covered; skip `custom` and reviewers whose configured provider command is a wrapper,
+      and name the legacy tool/model keys when `ExternalReviewersSet` is false
 - [x] run `go test ./cmd/loopai/...` - must pass before task 5
 
 ### Task 5: Show the executor source in the startup banner
@@ -294,7 +294,12 @@ for each (label, spec) in plan/task/review:
 ```
 
 `validateReviewerProviders` applies `ModelProvider` to each `resolvedReviewer.Model` and rejects
-`Provider != ModelProvider(Model)` when both are non-empty and the provider is not `custom`.
+`Provider != ModelProvider(Model)` when both are non-empty, the provider is not `custom`,
+and its configured command is the real provider binary. Legacy diagnostics name
+`external_review_tool` and `external_review_model` (or `codex_model` when it supplies the
+default model), while explicit chains name the entry index and also name `codex_model`
+when an omitted chain model inherits that value. Empty executor resets are
+displayed as `executor = (empty) in config`.
 
 **Error text examples**:
 

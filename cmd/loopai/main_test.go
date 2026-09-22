@@ -3695,7 +3695,7 @@ func TestResolveExternalReviewerChain(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, got.Explicit)
 	assert.Equal(t, []resolvedReviewer{
-		{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "high"},
+		{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "high", ModelFromCodexDefault: true},
 		{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max"},
 		{Provider: config.ExternalReviewToolCustom},
 	}, got.Reviewers)
@@ -4353,7 +4353,7 @@ func TestApplyCodexOverrides_ExecutorInference(t *testing.T) {
 		{
 			name:   "explicit empty executor wins over codex model",
 			cfg:    config.Config{ExecutorSet: true, TaskModel: "gpt-6-astra"},
-			source: "executor =  in config",
+			source: "executor = (empty) in config",
 		},
 		{
 			name:     "CLI model overrides config model and infers codex",
@@ -5020,7 +5020,7 @@ func TestPrintStartupInfo_ExecutorSource(t *testing.T) {
 		{"codex without source", config.ExecutorCodex, "", "executor: codex"},
 		{"claude inferred", config.ExecutorClaude, `inferred from task_model "fable:high"`, `executor: claude (inferred from task_model "fable:high")`},
 		{"claude default", config.ExecutorClaude, config.ExecutorSourceDefault, ""},
-		{"claude explicit", config.ExecutorClaude, "executor =  in config", ""},
+		{"claude explicit", config.ExecutorClaude, "executor = (empty) in config", ""},
 		{"claude without source", config.ExecutorClaude, "", ""},
 	}
 	for _, tt := range tests {
@@ -13575,7 +13575,7 @@ func TestValidateReviewerProviders(t *testing.T) {
 		{"empty selection", nil, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateReviewerProviders(externalReviewSelection{Reviewers: tt.reviewers})
+			err := validateReviewerProviders(externalReviewSelection{Reviewers: tt.reviewers}, &config.Config{ExternalReviewersSet: true})
 			if tt.want == "" {
 				require.NoError(t, err)
 			} else {
@@ -13589,13 +13589,83 @@ func TestResolveExternalReviewSelectionValidatesProviders(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		cfg  config.Config
+		want string
 	}{
-		{"chain", config.Config{ExternalReviewersSet: true, ExternalReviewers: "claude:gpt-6-astra:high"}},
-		{"legacy", config.Config{ExternalReviewTool: config.ExternalReviewToolClaude, ExternalReviewModel: "gpt-6-astra:high"}},
+		{
+			name: "chain",
+			cfg:  config.Config{ExternalReviewersSet: true, ExternalReviewers: "claude:gpt-6-astra:high"},
+			want: `external reviewer entry 1 (claude) names a codex model "gpt-6-astra:high"`,
+		},
+		{
+			name: "chain codex default model",
+			cfg:  config.Config{ExternalReviewersSet: true, ExternalReviewers: "codex", CodexModel: "fable"},
+			want: `external reviewer entry 1 (codex) / codex_model names a claude model "fable"`,
+		},
+		{
+			name: "chain codex effort only uses default model",
+			cfg:  config.Config{ExternalReviewersSet: true, ExternalReviewers: "codex::high", CodexModel: "fable"},
+			want: `external reviewer entry 1 (codex) / codex_model names a claude model "fable:high"`,
+		},
+		{
+			name: "chain later codex uses default model",
+			cfg:  config.Config{ExternalReviewersSet: true, ExternalReviewers: "codex:gpt-5,claude,codex: :high", CodexModel: "fable"},
+			want: `external reviewer entry 3 (codex) / codex_model names a claude model "fable:high"`,
+		},
+		{
+			name: "chain explicit model matching default still names entry",
+			cfg:  config.Config{ExternalReviewersSet: true, ExternalReviewers: "codex:fable", CodexModel: "fable"},
+			want: `external reviewer entry 1 (codex) names a claude model "fable"`,
+		},
+		{
+			name: "legacy explicit",
+			cfg:  config.Config{ExternalReviewTool: config.ExternalReviewToolClaude, ExternalReviewModel: "gpt-6-astra:high"},
+			want: `external_review_tool (claude) / external_review_model names a codex model "gpt-6-astra:high"`,
+		},
+		{
+			name: "legacy auto after task model inference",
+			cfg:  config.Config{CodexEnabled: true, TaskModel: "gpt-6-astra", ExternalReviewModel: "gpt-6-astra:high"},
+			want: `external_review_tool (claude) / external_review_model names a codex model "gpt-6-astra:high"`,
+		},
+		{
+			name: "legacy codex default model",
+			cfg:  config.Config{ExternalReviewTool: config.ExternalReviewToolCodex, CodexModel: "fable", ExternalReviewModel: ":high"},
+			want: `external_review_tool (codex) / codex_model names a claude model "fable:high"`,
+		},
+		{
+			name: "claude wrapper chain",
+			cfg:  config.Config{ClaudeCommand: "scripts/codex-as-claude/codex-as-claude.sh", ExternalReviewersSet: true, ExternalReviewers: "claude:gpt-5"},
+		},
+		{
+			name: "codex wrapper chain",
+			cfg:  config.Config{CodexCommand: "my-codex-wrapper", ExternalReviewersSet: true, ExternalReviewers: "codex:fable:high"},
+		},
+		{
+			name: "claude wrapper legacy",
+			cfg:  config.Config{ClaudeCommand: "pi-as-claude.sh", ExternalReviewTool: config.ExternalReviewToolClaude, ExternalReviewModel: "gpt-5"},
+		},
+		{
+			name: "codex wrapper legacy auto",
+			cfg:  config.Config{CodexEnabled: true, CodexCommand: "my-codex-wrapper", ExternalReviewModel: "fable:high"},
+		},
+		{
+			name: "claude wrapper does not exempt real codex later in chain",
+			cfg:  config.Config{ClaudeCommand: "pi-as-claude.sh", ExternalReviewersSet: true, ExternalReviewers: "claude:gpt-5,codex:fable:high"},
+			want: `external reviewer entry 2 (codex) names a claude model "fable:high"`,
+		},
+		{
+			name: "codex wrapper does not exempt real claude later in chain",
+			cfg:  config.Config{CodexCommand: "my-codex-wrapper", ExternalReviewersSet: true, ExternalReviewers: "codex:fable,claude:gpt-5:high"},
+			want: `external reviewer entry 2 (claude) names a codex model "gpt-5:high"`,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, applyCodexOverrides(opts{}, &tt.cfg, nil))
 			_, err := resolveExternalReviewSelection(opts{}, &tt.cfg, processor.ModeFull)
-			require.ErrorContains(t, err, `external reviewer entry 1 (claude) names a codex model "gpt-6-astra:high"`)
+			if tt.want == "" {
+				require.NoError(t, err)
+			} else {
+				require.EqualError(t, err, tt.want)
+			}
 		})
 	}
 }
