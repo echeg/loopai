@@ -1653,6 +1653,35 @@ func TestClaudeExecutor_Run_LimitPattern(t *testing.T) {
 	}
 }
 
+func TestClaudeExecutor_Run_LimitPattern_OutOfUsageCredits(t *testing.T) {
+	// observed 2026-09-22: a claude account with exhausted usage credits prints this message and
+	// exits 1. the default claude_limit_patterns list must name it, otherwise the non-zero exit
+	// becomes a hard "claude exited with error" failure instead of a waitable limit, and neither
+	// wait_on_limit nor claude-swap account failover gets a chance to run.
+	output := "You're out of usage credits. Switch to another model, or manage usage credits at\n" +
+		"claude.ai/settings/usage?from=cc_cli_limit_message, to continue.\n"
+	exitErr := errors.New("exit status 1")
+
+	mock := &mocks.CommandRunnerMock{
+		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+			return strings.NewReader(output), func() error { return exitErr }, nil
+		},
+	}
+	e := &ClaudeExecutor{
+		cmdRunner: mock,
+		LimitPatterns: []string{"You've hit your limit", "You've hit your session limit",
+			"Your usage allocation has been disabled by your admin", "You've hit your org's monthly usage limit",
+			"You're out of usage credits"},
+	}
+
+	result := e.Run(context.Background(), "review the diff")
+
+	var limitErr *LimitPatternError
+	require.ErrorAs(t, result.Error, &limitErr, "exhausted usage credits must be a waitable limit, not a hard failure")
+	assert.Equal(t, "You're out of usage credits", limitErr.Pattern)
+	assert.Equal(t, "claude /usage", limitErr.HelpCmd)
+}
+
 func TestClaudeExecutor_Run_PatternFalsePositive_InAnalysisText(t *testing.T) {
 	// pattern appears in early output (analysis text) but is followed by many blocks of real work.
 	// should NOT trigger pattern match because the pattern falls outside the recent blocks window.
