@@ -1874,3 +1874,58 @@ func TestLoad_KeepAwake(t *testing.T) {
 		assert.True(t, cfg.KeepAwakeSet)
 	})
 }
+
+func TestLoad_ExecutorSet(t *testing.T) {
+	for _, tc := range []struct {
+		name, global, local, executor string
+		set                           bool
+	}{
+		{name: "explicit global", global: "executor = codex", executor: ExecutorCodex, set: true},
+		{name: "local reset", global: "executor = codex", local: "executor =", set: true},
+		{name: "unset"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Chdir(home)
+			globalDir := filepath.Join(home, ".config", "loopai")
+			localDir := filepath.Join(home, ".loopai")
+			for dir, body := range map[string]string{globalDir: tc.global, localDir: tc.local} {
+				require.NoError(t, os.MkdirAll(dir, 0o700))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "config"), []byte(body), 0o600))
+			}
+			cfg, err := Load("")
+			require.NoError(t, err)
+			assert.Equal(t, tc.executor, cfg.Executor)
+			assert.Equal(t, tc.set, cfg.ExecutorSet)
+		})
+	}
+}
+
+func TestConfig_IsRealCommand(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, command string
+				want          bool
+			}{
+				{name: "default", want: true},
+				{name: "bare", command: provider, want: true},
+				{name: "absolute", command: filepath.Join(string(filepath.Separator), "usr", "local", "bin", provider), want: true},
+				{name: "wrapper", command: "scripts/pi-as-claude/pi-as-claude.sh"},
+				{name: "suffix", command: provider + "-wrapper"},
+				{name: "whitespace", command: " \t" + provider + "\n", want: true},
+				{name: "blank", command: " \t", want: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					cfg := &Config{ClaudeCommand: tc.command, CodexCommand: tc.command}
+					if provider == "claude" {
+						assert.Equal(t, tc.want, cfg.IsRealClaudeCommand())
+					} else {
+						assert.Equal(t, tc.want, cfg.IsRealCodexCommand())
+					}
+				})
+			}
+		})
+	}
+}

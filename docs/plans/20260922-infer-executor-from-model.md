@@ -135,18 +135,18 @@ recognizable model name is an error, never a silent override.
 
 ### Task 2: Propagate the explicit-executor flag and share the real-binary check
 
-- [ ] add to `pkg/config/config_test.go` a table-driven `Load` test asserting `Config.ExecutorSet`:
+- [x] add to `pkg/config/config_test.go` a table-driven `Load` test asserting `Config.ExecutorSet`:
       `executor = codex` in global → true; `executor =` in local over codex global → true with
       empty `Executor`; neither file sets it → false; run it and watch it fail
-- [ ] add `ExecutorSet bool` to `Config` (runtime-tracking comment beside `ClaudeArgsSet`) and copy
+- [x] add `ExecutorSet bool` to `Config` (runtime-tracking comment beside `ClaudeArgsSet`) and copy
       `values.ExecutorSet` in the `Config` assembly at `pkg/config/config.go:373`
-- [ ] write tests for `Config.IsRealClaudeCommand()` and `Config.IsRealCodexCommand()`: empty →
+- [x] write tests for `Config.IsRealClaudeCommand()` and `Config.IsRealCodexCommand()`: empty →
       true, `claude`/`codex` → true, `/usr/local/bin/claude` → true, `scripts/pi-as-claude/pi-as-claude.sh`
       → false, surrounding whitespace → true; watch them fail
-- [ ] implement both methods in `pkg/config/config.go` (base-name check, empty means the default
+- [x] implement both methods in `pkg/config/config.go` (base-name check, empty means the default
       binary) and replace the inline check at `cmd/loopai/main.go:3350-3355` with
       `cfg.IsRealClaudeCommand()`; keep its comment about wrappers not sharing Claude Code auth
-- [ ] run `go test ./pkg/config/... ./cmd/loopai/...` - must pass before task 3
+- [x] run `go test ./pkg/config/... ./cmd/loopai/...` - must pass before task 3
 
 ### Task 3: Infer the executor from task_model in applyCodexOverrides
 

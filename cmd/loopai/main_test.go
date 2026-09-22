@@ -3920,6 +3920,7 @@ func TestWaitFlag(t *testing.T) {
 }
 
 func TestDetectClaudeSwapRecovery(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	binDir := t.TempDir()
 	t.Setenv("PATH", binDir)
 	cfg := &config.Config{ClaudeSwapEnabled: true, ClaudeCommand: "claude"}
@@ -3928,6 +3929,11 @@ func TestDetectClaudeSwapRecovery(t *testing.T) {
 		"missing claude-swap keeps the optional integration disabled")
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "claude-swap"), []byte("#!/bin/sh\n"), 0o755)) //nolint:gosec // executable fixture for LookPath
 	assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
+	for _, command := range []string{"", " \tclaude\n", filepath.Join(binDir, "claude")} {
+		cfg.ClaudeCommand = command
+		assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{}), command)
+	}
+	cfg.ClaudeCommand = "claude"
 	assert.Nil(t, detectClaudeSwapRecovery(opts{NoClaudeSwap: true}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
 
 	cfg.ClaudeSwapEnabled = false

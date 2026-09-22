@@ -114,6 +114,7 @@ type Config struct {
 	ClaudeCommand string `json:"claude_command"`
 	ClaudeArgs    string `json:"claude_args"`
 	ClaudeArgsSet bool   `json:"-"`            // tracks runtime overrides, including an explicit empty --claude-args=
+	ExecutorSet   bool   `json:"-"`            // tracks an explicit executor config key, including an empty reset to Claude
 	PlanModel     string `json:"plan_model"`   // model[:effort] spec for plan creation (falls back to TaskModel)
 	TaskModel     string `json:"task_model"`   // model[:effort] spec for task execution (e.g., "opus", "opus:high", ":medium")
 	ReviewModel   string `json:"review_model"` // model[:effort] spec for review phases (falls back to TaskModel)
@@ -407,6 +408,7 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		ReportEnabledSet:        values.ReportEnabledSet,
 		PreserveAnthropicAPIKey: values.PreserveAnthropicAPIKey,
 		Executor:                values.Executor,
+		ExecutorSet:             values.ExecutorSet,
 		PassClaudeMd:            values.PassClaudeMd,
 		MovePlanOnCompletion:    values.MovePlanOnCompletion,
 		WorktreeEnabled:         values.WorktreeEnabled,
@@ -498,6 +500,20 @@ func DefaultConfigDir() string {
 // returns empty string if no local config was used.
 func (c *Config) LocalDir() string {
 	return c.localDir
+}
+
+// IsRealClaudeCommand reports whether the command names the standard Claude Code
+// binary rather than a wrapper. An empty command uses the default binary.
+func (c *Config) IsRealClaudeCommand() bool {
+	command := strings.TrimSpace(c.ClaudeCommand)
+	return command == "" || filepath.Base(command) == "claude"
+}
+
+// IsRealCodexCommand reports whether the command names the standard Codex binary
+// rather than a wrapper. An empty command uses the default binary.
+func (c *Config) IsRealCodexCommand() bool {
+	command := strings.TrimSpace(c.CodexCommand)
+	return command == "" || filepath.Base(command) == "codex"
 }
 
 // CodexExecutorSandbox returns the sandbox mode to use when codex is the active

@@ -3347,11 +3347,7 @@ func detectClaudeSwapRecovery(o opts, cfg *config.Config, externalReview externa
 	if cfg == nil || o.NoClaudeSwap || !cfg.ClaudeSwapEnabled {
 		return nil
 	}
-	claudeCmd := strings.TrimSpace(cfg.ClaudeCommand)
-	if claudeCmd == "" {
-		claudeCmd = "claude"
-	}
-	if filepath.Base(claudeCmd) != "claude" {
+	if !cfg.IsRealClaudeCommand() {
 		return nil // custom stream-json compatible wrappers do not share Claude Code auth
 	}
 	usesClaude := cfg.Executor != config.ExecutorCodex
