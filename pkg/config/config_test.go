@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -1912,6 +1914,11 @@ func TestConfig_IsRealCommand(t *testing.T) {
 				{name: "default", want: true},
 				{name: "bare", command: provider, want: true},
 				{name: "absolute", command: filepath.Join(string(filepath.Separator), "usr", "local", "bin", provider), want: true},
+				{name: "exe", command: provider + ".exe", want: runtime.GOOS == "windows"},
+				{name: "uppercase", command: strings.ToUpper(provider), want: runtime.GOOS == "windows"},
+				{name: "absolute exe", command: filepath.Join(string(filepath.Separator), "tools", strings.ToUpper(provider)+".EXE"), want: runtime.GOOS == "windows"},
+				{name: "exe wrapper", command: provider + "-wrapper.exe"},
+				{name: "exe suffix", command: provider + ".exe-wrapper"},
 				{name: "wrapper", command: "scripts/pi-as-claude/pi-as-claude.sh"},
 				{name: "suffix", command: provider + "-wrapper"},
 				{name: "whitespace", command: " \t" + provider + "\n", want: true},

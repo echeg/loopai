@@ -258,6 +258,11 @@ that a custom `codex_command` does not disable task-model inference.
 
 ## Technical Details
 
+Internal review correction: standard Windows executable names (including `.exe` and
+case variations) must retain executor inference and provider validation. Command
+recognition now normalizes these forms on Windows, with platform-specific regression
+tests for inference and mismatch rejection; wrapper detection on Unix is unchanged.
+
 **Recognizer** — `pkg/config/model_provider.go`:
 
 ```go

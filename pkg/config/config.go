@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -514,15 +515,26 @@ func (c *Config) LocalDir() string {
 // IsRealClaudeCommand reports whether the command names the standard Claude Code
 // binary rather than a wrapper. An empty command uses the default binary.
 func (c *Config) IsRealClaudeCommand() bool {
-	command := strings.TrimSpace(c.ClaudeCommand)
-	return command == "" || filepath.Base(command) == "claude"
+	return isRealCommand(c.ClaudeCommand, "claude")
 }
 
 // IsRealCodexCommand reports whether the command names the standard Codex binary
 // rather than a wrapper. An empty command uses the default binary.
 func (c *Config) IsRealCodexCommand() bool {
-	command := strings.TrimSpace(c.CodexCommand)
-	return command == "" || filepath.Base(command) == "codex"
+	return isRealCommand(c.CodexCommand, "codex")
+}
+
+func isRealCommand(command, binary string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return true
+	}
+	name := filepath.Base(command)
+	if runtime.GOOS == "windows" {
+		// Native Windows executables can include .exe and use any casing.
+		name = strings.TrimSuffix(strings.ToLower(name), ".exe")
+	}
+	return name == binary
 }
 
 // CodexExecutorSandbox returns the sandbox mode to use when codex is the active
