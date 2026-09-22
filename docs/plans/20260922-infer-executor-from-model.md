@@ -120,18 +120,18 @@ recognizable model name is an error, never a silent override.
 
 ### Task 1: Add the model-name provider recognizer
 
-- [ ] write `pkg/config/model_provider_test.go`: table-driven test for `ModelProvider(spec string) string`
+- [x] write `pkg/config/model_provider_test.go`: table-driven test for `ModelProvider(spec string) string`
       covering claude prefixes (`claude-opus-5`, `opus`, `Opus:high`, `sonnet`, `haiku`, `fable:high`),
       codex prefixes (`gpt-6-astra:medium`, `GPT-5`, `codex-mini`, `o3`, `o4-mini`), the effort-only
       form `:high` → `""`, empty → `""`, unknown names (`my-alias`, `github-copilot/claude-opus-4.6`)
       → `""`, and surrounding whitespace; run it and confirm it fails to compile
-- [ ] create `pkg/config/model_provider.go` with `ModelProvider`: trim, cut at the first `:`,
+- [x] create `pkg/config/model_provider.go` with `ModelProvider`: trim, cut at the first `:`,
       lowercase, match against two constant prefix lists (`claudeModelPrefixes`,
       `codexModelPrefixes`); return `ExternalReviewToolClaude`, `ExternalReviewToolCodex`, or `""`.
       `o1`/`o3`/`o4` match only as the whole model or followed by `-` so a future `o`-prefixed
       Claude alias is not misread. Godoc says unknown names return `""` and that the lists are
       deliberately prefixes, not regexes
-- [ ] run `go test ./pkg/config/...` - must pass before task 2
+- [x] run `go test ./pkg/config/...` - must pass before task 2
 
 ### Task 2: Propagate the explicit-executor flag and share the real-binary check
 
