@@ -218,19 +218,21 @@ recognizable model name is an error, never a silent override.
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] verify the Overview scenarios end to end with a `t.TempDir()` config through the real
+- [x] verify the Overview scenarios end to end with a `t.TempDir()` config through the real
       `run()`/config path used in `main_test.go`: global `executor = codex` + `--task-model fable:high`
       fails at startup with the config source named; global `task_model = gpt-6-astra:medium` and no
       `executor` key runs codex; `--task-model fable:high --review-model fable:high
       --external-reviewers codex:gpt-6-astra:high` over that global runs claude with no error;
-      the same without `--review-model` fails naming `review_model`
-- [ ] verify edge cases: `executor =` local reset still forces claude with `task_model = gpt-…`
+      the same without `--review-model` fails naming `review_model`. Integration tests stop a
+      full-mode run after startup with a canceled context, then execute successful cases through
+      the task phase using local executable fixtures to assert the selected binary
+- [x] verify edge cases: `executor =` local reset still forces claude with `task_model = gpt-…`
       and then fails the mismatch check (explicit wins, conflict reported); `--codex` with a wrapper
       `codex_command` and `task_model = fable` passes
-- [ ] run `make test </dev/null` - the full suite (asset checks, race-enabled Go tests, wrapper
+- [x] run `make test </dev/null` - the full suite (asset checks, race-enabled Go tests, wrapper
       suites) must pass
-- [ ] run `make lint` - all issues must be fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...` (base-name checks use `filepath`)
+- [x] run `make lint` - all issues must be fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...` (base-name checks use `filepath`)
 
 ### Task 7: Update documentation
 
