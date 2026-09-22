@@ -206,15 +206,15 @@ recognizable model name is an error, never a silent override.
 
 ### Task 5: Show the executor source in the startup banner
 
-- [ ] locate where `startupInfo.Executor` is filled and the banner test(s) that assert on
+- [x] locate where `startupInfo.Executor` is filled and the banner test(s) that assert on
       `executor: codex`; add `ExecutorSource string` to `startupInfo` and extend the tests: codex
       via config prints `executor: codex (executor = codex in config)`, codex inferred prints
       `executor: codex (inferred from task_model "gpt-6-astra:medium")`, claude inferred prints
       `executor: claude (inferred from task_model "fable:high")`, claude by default prints no
       executor line (banner unchanged for existing users); run and watch them fail
-- [ ] implement: `printCodexExecutorInfo` appends ` (%s)` from `info.ExecutorSource`; the Claude
+- [x] implement: `printCodexExecutorInfo` appends ` (%s)` from `info.ExecutorSource`; the Claude
       branch prints `executor: claude (%s)` only when the source is the inferred one
-- [ ] run `go test ./cmd/loopai/...` - must pass before task 6
+- [x] run `go test ./cmd/loopai/...` - must pass before task 6
 
 ### Task 6: Verify acceptance criteria
 

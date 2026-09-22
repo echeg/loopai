@@ -246,6 +246,7 @@ type startupInfo struct {
 	MaxIterations           int
 	ProgressPath            string
 	Executor                string
+	ExecutorSource          string
 	PassClaudeMd            bool
 	PreserveAnthropicAPIKey bool   // when true, surfaced in the banner so users can spot wrong-context runs before claude bills the wrong account
 	CodexModel              string // resolved model for codex plan/task phase; "" means codex picks from ~/.codex/config.toml
@@ -1567,6 +1568,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		MaxIterations:           resolveMaxIterations(o.MaxIterations, req.Config),
 		ProgressPath:            plr.baseLog.Path(),
 		Executor:                req.Config.Executor,
+		ExecutorSource:          req.Config.ExecutorSource,
 		PassClaudeMd:            req.Config.PassClaudeMd,
 		PreserveAnthropicAPIKey: req.Config.PreserveAnthropicAPIKey,
 		CodexModel:              codex.taskModel,
@@ -3446,6 +3448,8 @@ func printStartupInfo(info startupInfo, colors *progress.Colors) {
 func printExecutorInfo(info startupInfo, colors *progress.Colors) {
 	if info.Executor == config.ExecutorCodex {
 		printCodexExecutorInfo(info, colors)
+	} else if strings.HasPrefix(info.ExecutorSource, strings.TrimSuffix(config.ExecutorSourceInferred, "%q")) {
+		colors.Info().Printf("executor: claude (%s)\n", info.ExecutorSource)
 	}
 	printExternalReviewInfo(info.ExternalReview, colors)
 }
@@ -3474,7 +3478,11 @@ func printExternalReviewInfo(selection externalReviewSelection, colors *progress
 }
 
 func printCodexExecutorInfo(info startupInfo, colors *progress.Colors) {
-	colors.Info().Printf("executor: codex\n")
+	if info.ExecutorSource != "" {
+		colors.Info().Printf("executor: codex (%s)\n", info.ExecutorSource)
+	} else {
+		colors.Info().Printf("executor: codex\n")
+	}
 	// codex effective config: skip lines we don't know (loopai did not
 	// override them, so codex picks from ~/.codex/config.toml). sandbox is
 	// always resolved via CodexExecutorSandbox so it's always present.
@@ -3745,6 +3753,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		MaxIterations:           maxIter,
 		ProgressPath:            baseLog.Path(),
 		Executor:                req.Config.Executor,
+		ExecutorSource:          req.Config.ExecutorSource,
 		PassClaudeMd:            req.Config.PassClaudeMd,
 		PreserveAnthropicAPIKey: req.Config.PreserveAnthropicAPIKey,
 		CodexModel:              codex.taskModel,
@@ -3944,7 +3953,7 @@ func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *p
 
 	colors.Info().Printf("generating project-specific review agents\n")
 	colors.Info().Printf("progress log: %s\n", toRelPath(baseLog.Path()))
-	printExecutorInfo(startupInfo{Executor: cfg.Executor, CodexSandbox: cfg.CodexExecutorSandbox()}, colors)
+	printExecutorInfo(startupInfo{Executor: cfg.Executor, ExecutorSource: cfg.ExecutorSource, CodexSandbox: cfg.CodexExecutorSandbox()}, colors)
 	colors.Info().Printf("\n")
 
 	if recovery != nil {

@@ -5002,6 +5002,37 @@ func TestCodexPlanBanner(t *testing.T) {
 	})
 }
 
+func TestPrintStartupInfo_ExecutorSource(t *testing.T) {
+	tests := []struct {
+		name     string
+		executor string
+		source   string
+		want     string
+	}{
+		{"codex config", config.ExecutorCodex, "executor = codex in config", "executor: codex (executor = codex in config)"},
+		{"codex inferred", config.ExecutorCodex, `inferred from task_model "gpt-6-astra:medium"`, `executor: codex (inferred from task_model "gpt-6-astra:medium")`},
+		{"codex flag", config.ExecutorCodex, config.ExecutorSourceFlag, "executor: codex (--codex)"},
+		{"codex without source", config.ExecutorCodex, "", "executor: codex"},
+		{"claude inferred", config.ExecutorClaude, `inferred from task_model "fable:high"`, `executor: claude (inferred from task_model "fable:high")`},
+		{"claude default", config.ExecutorClaude, config.ExecutorSourceDefault, ""},
+		{"claude explicit", config.ExecutorClaude, "executor =  in config", ""},
+		{"claude without source", config.ExecutorClaude, "", ""},
+	}
+	for _, tt := range tests {
+		for _, mode := range []processor.Mode{processor.ModeFull, processor.ModePlan} {
+			t.Run(tt.name+"/"+string(mode), func(t *testing.T) {
+				info := startupInfo{Mode: mode, ProgressPath: "progress.txt", Executor: tt.executor, ExecutorSource: tt.source}
+				out := captureStdout(t, func() { printStartupInfo(info, testColors()) })
+				if tt.want == "" {
+					assert.NotContains(t, out, "executor:")
+				} else {
+					assert.Contains(t, out, tt.want+"\n")
+				}
+			})
+		}
+	}
+}
+
 func TestPrintStartupInfo(t *testing.T) {
 	colors := testColors()
 
