@@ -236,20 +236,25 @@ recognizable model name is an error, never a silent override.
 
 ### Task 7: Update documentation
 
-- [ ] `pkg/config/defaults/config`: extend the `executor` comment — unset means inferred from
+- [x] `pkg/config/defaults/config`: extend the `executor` comment — unset means inferred from
       `task_model` when the name is recognizable (`gpt-*`, `codex*`, `o1`/`o3`/`o4` → codex;
       `claude*`, `opus`, `sonnet`, `haiku`, `fable` → claude), otherwise Claude Code; an explicit
       value always wins and a recognizable model of the other provider is a startup error;
-      inference and the check are skipped for a custom `claude_command`/`codex_command`
-- [ ] `README.md` (around line 717, "Claude Code is the default primary executor"): describe
+      a custom `claude_command` skips inference; a custom command for the selected primary
+      skips its provider check (`claude_command`/`codex_command`)
+- [x] `README.md` (around line 717, "Claude Code is the default primary executor"): describe
       inference, the mismatch error, and that `executor =` in a local config is the explicit
       override; add the `--task-model fable:high --external-reviewers codex:gpt-6-astra:high`
       example as the flag-free way to write with Claude and review with codex
-- [ ] `CLAUDE.md`: add a paragraph after the `validateModelSpecs` one describing
+- [x] `CLAUDE.md`: add a paragraph after the `validateModelSpecs` one describing
       `ModelProvider`, inference in `applyCodexOverrides` (explicit wins, wrapper guard, why
       `codex_model` is not consulted), `validateModelProviders`/`validateReviewerProviders`
       placement, and `ExecutorSource` in the banner
-- [ ] `llms.txt`: one line on executor inference if it lists executor selection
+- [x] `llms.txt`: one line on executor inference if it lists executor selection
+
+Validation: `make test </dev/null`, `make lint`, `go test ./pkg/config/... ./cmd/loopai/...`,
+and `GOOS=windows GOARCH=amd64 go build ./...` passed. Added a regression case confirming
+that a custom `codex_command` does not disable task-model inference.
 
 ## Technical Details
 

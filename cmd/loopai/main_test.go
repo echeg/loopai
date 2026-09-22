@@ -4386,6 +4386,11 @@ func TestApplyCodexOverrides_ExecutorInference(t *testing.T) {
 			source: "default",
 		},
 		{
+			name:     "codex wrapper does not block task model inference",
+			cfg:      config.Config{TaskModel: "gpt-6-astra:medium", CodexCommand: "my-codex-wrapper"},
+			executor: config.ExecutorCodex, source: `inferred from task_model "gpt-6-astra:medium"`,
+		},
+		{
 			name:     "flag still wins with Claude wrapper",
 			cfg:      config.Config{TaskModel: "fable", ClaudeCommand: "pi-as-claude.sh"},
 			opts:     opts{Codex: true},

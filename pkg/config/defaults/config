@@ -54,8 +54,14 @@ claude_swap_enabled = true
 # ------------------------------------------------------------------------------
 
 # executor: primary executor for plan creation, task, review, external-finding
-# evaluation, and finalize phases. empty/default uses Claude Code; "codex" runs
-# the primary pipeline through codex
+# evaluation, and finalize phases. when unset, infer from task_model: gpt*/codex*
+# and o1/o3/o4 (exact or followed by '-') select codex; claude*/opus*/sonnet*/
+# haiku*/fable* select Claude Code. unknown names fall back to Claude Code.
+# an explicit value wins: empty selects Claude Code; "codex" selects codex.
+# --codex overrides config. recognizable plan/task/review models from the other
+# provider fail at startup. a custom claude_command disables inference; a custom
+# command for the selected primary (claude_command/codex_command) skips its
+# provider check, allowing wrapper-defined model names.
 # executor =
 
 # pass_claude_md: when executor = codex, let codex read project CLAUDE.md via

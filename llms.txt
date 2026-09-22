@@ -19,7 +19,8 @@ Requirements:
 
 - Go 1.26+
 - Git
-- Claude Code CLI for the default executor, or Codex CLI 0.130.0+ with `--codex`
+- Claude Code CLI or Codex CLI 0.130.0+ for the selected primary executor
+- Executor selection: `--codex` wins over an explicit `executor` key (empty means Claude); otherwise a recognizable `task_model` infers Claude/Codex, falling back to Claude. Custom `claude_command` disables inference; a custom primary command skips provider checks. Known model/provider mismatches fail at startup.
 - Optional second provider for cross-provider external review
 - Optional fzf, cmux, and golangci-lint
 - Optional for `--pr`: authenticated GitHub CLI and a GitHub remote named `origin`

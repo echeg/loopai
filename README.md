@@ -714,7 +714,38 @@ removed, since with an explicit feature that directory is not the one you ran fr
 
 ## Executors and reviews
 
-Claude Code is the default primary executor. Pass `--codex`, or set `executor = codex`, to use Codex for plan creation, task execution, internal reviews, finding evaluation, and finalize.
+The primary executor handles plan creation, task execution, internal reviews, finding evaluation,
+and finalize. Without `--codex` or an explicit `executor` config key, loopai infers it from
+`--task-model` (or `task_model` in config): `gpt*`, `codex*`, and `o1`/`o3`/`o4` (exact or
+followed by `-`) select Codex; `claude*`, `opus*`, `sonnet*`, `haiku*`, and `fable*` select
+Claude Code. Matching ignores case and the optional `:effort` suffix. Unknown names fall back
+to Claude Code. The startup banner shows the source of an inferred choice.
+
+`--codex` wins over config, and an explicit `executor` key wins over model inference.
+Set `executor = codex` to force Codex, or `executor =` in a local `.loopai/config` to explicitly
+select Claude Code even when the global config selects Codex. A recognizable `plan_model`,
+`task_model`, or `review_model` from the other provider fails at startup, naming the model and
+executor source; explicit choices are never silently overridden. For example, global
+`executor = codex` plus `--task-model fable:high` reports:
+
+```text
+--task-model / task_model "fable:high" is a claude model, but the executor is codex (executor = codex in config)
+```
+
+With no explicit executor key, write with Claude and review with Codex without an executor flag:
+
+```bash
+loopai --task-model fable:high --external-reviewers codex:gpt-6-astra:high docs/plans/feature.md
+```
+
+If config also supplies a Codex `review_model`, add `--review-model fable:high` for the primary's
+internal reviews and finding evaluation. Remove a global `executor = codex` to enable inference,
+or override it with the local empty value above.
+
+A custom `claude_command` disables inference. Provider checks for primary models are skipped
+when the selected primary uses a custom `claude_command` or `codex_command`, allowing wrappers
+to define their own model names. Recognizable models in external reviewer entries must still
+match their explicit provider: `codex:fable` fails at startup. Unknown model names remain accepted.
 
 Codex invocations are composed by loopai and use additive `-c` overrides, so `~/.codex/config.toml`
 settings remain available. `--codex-args`, or the `codex_args` config key, appends extra arguments

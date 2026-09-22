@@ -346,6 +346,21 @@ separator count and the provider name but never the effort value, so a typo woul
 reach the reviewer process and fail there — after the task phase, and only for that one
 reviewer in the chain.
 
+`config.ModelProvider` recognizes case-insensitive model prefixes in `model[:effort]` specs,
+returning the Claude/Codex provider or an empty string for unknown names. `applyCodexOverrides`
+resolves the primary in order: `--codex`, an explicit `executor` key (`ExecutorSet`, including
+an empty local reset), then inference from the effective task model, otherwise Claude.
+Inference requires `IsRealClaudeCommand()`; `codex_model` is deliberately not consulted because
+it can configure an external reviewer under a Claude primary. `validateStartupModels` calls
+`validateModelSpecs` then `validateModelProviders`, before external-review resolution. Provider
+validation checks the effective plan/task/review specs and skips the check when the selected
+primary uses a wrapper (`IsRealClaudeCommand`/`IsRealCodexCommand`).
+`resolveExternalReviewSelection` calls `validateReviewerProviders` immediately after
+`validateReviewerEfforts` on every resolved chain; explicit reviewer providers must match known
+models, with custom reviewers and unknown names skipped. `Config.ExecutorSource` records the
+selection source and flows into `startupInfo.ExecutorSource`: the banner appends it for Codex
+and prints a Claude executor line only for an inferred choice, preserving the default banner.
+
 `external_reviewers` configures an ordered comma-separated reviewer chain using
 `provider[:model[:effort]]` entries. It takes precedence over the legacy
 `external_review_tool` and `external_review_model` keys. `custom` entries use
