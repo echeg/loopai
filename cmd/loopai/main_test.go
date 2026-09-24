@@ -13491,16 +13491,3 @@ func TestValidateStartupModels(t *testing.T) {
 		require.NoError(t, validateStartupModels(opts{}, &config.Config{TaskModel: "claude:fable:high"}))
 	})
 }
-
-func TestExecutorModelSpec(t *testing.T) {
-	for spec, want := range map[string]string{
-		"":                       "",
-		"claude":                 "",
-		"claude:opus":            "opus",
-		"codex:gpt-6-astra:high": "gpt-6-astra:high",
-		"codex::medium":          ":medium",
-		"opus:high":              "opus:high",
-	} {
-		assert.Equal(t, want, executorModelSpec(spec), spec)
-	}
-}

@@ -246,12 +246,15 @@ that sets any of the above must be hand-edited once.
 - [x] run `go test ./cmd/loopai/...` - must pass before next task
 
 ### Task 7: Executor factory builds task and review from their own providers
-- [ ] write tests in `pkg/processor/executor_factory_test.go` asserting that a codex task provider with a claude review provider yields a `CodexExecutor` in the Task slot and a `ClaudeExecutor` in the Review slot
-- [ ] write a test that a cross-provider review executor carries write-capable settings and is NOT built through `buildExternalCodexExecutor` — assert `ForceReadOnly` is false and the sandbox is not `read-only`
-- [ ] write a test that the Review slot stays nil when both provider and resolved model/effort match the task executor, preserving the existing single-executor optimisation
-- [ ] replace the single `cfg.isCodexExecutor()` branch in `Build` (`pkg/processor/executor_factory.go:19`) with per-phase construction
-- [ ] replace `parseModelEffort` (`:394`) uses with the shared `ParseProviderSpec`
-- [ ] run `go test ./pkg/processor/...` - must pass before next task
+- [x] write tests in `pkg/processor/executor_factory_test.go` asserting that a codex task provider with a claude review provider yields a `CodexExecutor` in the Task slot and a `ClaudeExecutor` in the Review slot
+- [x] write a test that a cross-provider review executor carries write-capable settings and is NOT built through `buildExternalCodexExecutor` — assert `ForceReadOnly` is false and the sandbox is not `read-only`
+- [x] write a test that the Review slot stays nil when both provider and resolved model/effort match the task executor, preserving the existing single-executor optimisation
+- [x] replace the single `cfg.isCodexExecutor()` branch in `Build` (`pkg/processor/executor_factory.go:19`) with per-phase construction
+- [x] replace `parseModelEffort` (`:394`) uses with the shared `ParseProviderSpec`
+  - ⚠️ the factory derives each phase's provider from its own spec (`Config.taskSpec()`/`reviewSpec()`: unset task → claude, unset review → task spec whole) rather than from `AppConfig.TaskProvider`/`ReviewProvider`, so processor `Config.TaskModel`/`ReviewModel` now carry full `provider[:model[:effort]]` specs and `executorModelSpec` is deleted. This also makes plan mode build its executor from the plan spec's provider. Tasks 8/9 should switch `isCodexExecutor` and the prompt/phase reads to the same `taskSpec()`/`reviewSpec()` so the processor has one provider source, then drop the `AppConfig.*Provider` reads from the processor
+  - ⚠️ `rejectMixedPhaseProviders` is kept (with its tests) until Task 9: executors are now per phase, but prompts and phase naming still read the task provider, and a mixed run would silently render the wrong agent syntax. Task 9 must delete it together with its tests and the integration case that asserts it
+  - ➕ `ResolveCodexModelEffort` became provider-aware `ResolveModelEffort(config.ProviderSpec)`, used by the factory and the startup banner; `ResolveExternalReviewerModelEffort` parses through `ParseProviderSpec`. Automatic external-reviewer selection keys off the task spec, the external codex reviewer inherits `idle_timeout` when codex runs either the task or the review phase, and the `--pass-claude-md` setup hint fires for a codex review phase too. The run record's task/review model fields now record the full provider spec
+- [x] run `go test ./pkg/processor/...` - must pass before next task
 
 ### Task 8: Prompt rendering follows the phase provider
 - [ ] write tests in `pkg/processor/prompts_test.go` asserting that with a codex task provider and a claude review provider, `FirstReviewPrompt` renders Task-tool agent prose and carries no codex review guidance, while `TaskPrompt` still carries the codex task guidance

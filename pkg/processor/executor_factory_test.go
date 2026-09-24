@@ -150,51 +150,57 @@ func TestRunner_New_CodexNotInstalled_NoneReviewStillWorks(t *testing.T) {
 	assert.NotNil(t, r, "runner should be created")
 }
 
-func TestParseModelSpec(t *testing.T) {
+func TestConfig_PhaseSpecs(t *testing.T) {
+	claude := config.ProviderSpec{Provider: config.ExternalReviewToolClaude}
 	tests := []struct {
-		name   string
-		input  string
-		model  string
-		effort string
+		name                   string
+		taskModel, reviewModel string
+		wantTask, wantReview   config.ProviderSpec
 	}{
-		{name: "empty", input: "", model: "", effort: ""},
-		{name: "model only", input: "opus", model: "opus", effort: ""},
-		{name: "model and effort", input: "opus:high", model: "opus", effort: "high"},
-		{name: "effort only", input: ":high", model: "", effort: "high"},
-		{name: "trailing colon", input: "opus:", model: "opus", effort: ""},
-		{name: "full model id with effort", input: "claude-sonnet-4-6:medium", model: "claude-sonnet-4-6", effort: "medium"},
-		{name: "multiple colons — split on first", input: "opus:high:extra", model: "opus", effort: "high:extra"},
+		{name: "unset task means claude defaults", wantTask: claude, wantReview: claude},
+		{name: "review inherits task whole", taskModel: "codex:gpt-6-astra:medium",
+			wantTask:   config.ProviderSpec{Provider: "codex", Model: "gpt-6-astra", Effort: "medium"},
+			wantReview: config.ProviderSpec{Provider: "codex", Model: "gpt-6-astra", Effort: "medium"}},
+		{name: "review keeps its own provider", taskModel: "codex:gpt-6-astra:medium", reviewModel: "claude:opus:high",
+			wantTask:   config.ProviderSpec{Provider: "codex", Model: "gpt-6-astra", Effort: "medium"},
+			wantReview: config.ProviderSpec{Provider: "claude", Model: "opus", Effort: "high"}},
+		{name: "review provider over unset task", reviewModel: "codex::low",
+			wantTask: claude, wantReview: config.ProviderSpec{Provider: "codex", Effort: "low"}},
+		{name: "invalid specs fall back", taskModel: "opus:high", reviewModel: "custom",
+			wantTask: claude, wantReview: claude},
 	}
-
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			model, effort := parseModelEffort(tc.input)
-			assert.Equal(t, tc.model, model)
-			assert.Equal(t, tc.effort, effort)
+			cfg := Config{TaskModel: tc.taskModel, ReviewModel: tc.reviewModel}
+			assert.Equal(t, tc.wantTask, cfg.taskSpec())
+			assert.Equal(t, tc.wantReview, cfg.reviewSpec())
 		})
 	}
 }
 
-func TestResolveCodexModelEffort(t *testing.T) {
+func TestResolveModelEffort(t *testing.T) {
 	tests := []struct {
 		name       string
-		spec       string
+		spec       config.ProviderSpec
 		wantModel  string
 		wantEffort string
 		wantMax    bool
 	}{
-		{name: "empty spec leaves codex defaults", spec: "", wantModel: "", wantEffort: ""},
-		{name: "model only", spec: "gpt-5.6", wantModel: "gpt-5.6", wantEffort: ""},
-		{name: "model and effort", spec: "gpt-5.6:high", wantModel: "gpt-5.6", wantEffort: "high"},
-		{name: "effort only", spec: ":low", wantModel: "", wantEffort: "low"},
-		{name: "trailing colon", spec: "gpt-5.6:", wantModel: "gpt-5.6", wantEffort: ""},
-		{name: "max effort dropped", spec: "gpt-5.6:max", wantModel: "gpt-5.6", wantEffort: "", wantMax: true},
-		{name: "max effort case-insensitive", spec: ":MAX", wantModel: "", wantEffort: "", wantMax: true},
+		{name: "empty codex spec leaves codex defaults", spec: config.ProviderSpec{Provider: "codex"}},
+		{name: "codex model and effort", spec: config.ProviderSpec{Provider: "codex", Model: "gpt-5.6", Effort: "high"},
+			wantModel: "gpt-5.6", wantEffort: "high"},
+		{name: "codex effort only", spec: config.ProviderSpec{Provider: "codex", Effort: "low"}, wantEffort: "low"},
+		{name: "codex max dropped", spec: config.ProviderSpec{Provider: "codex", Model: "gpt-5.6", Effort: "max"},
+			wantModel: "gpt-5.6", wantMax: true},
+		{name: "codex max case-insensitive", spec: config.ProviderSpec{Provider: "codex", Effort: "MAX"}, wantMax: true},
+		{name: "claude keeps max", spec: config.ProviderSpec{Provider: "claude", Model: "opus", Effort: "max"},
+			wantModel: "opus", wantEffort: "max"},
+		{name: "claude has no loopai-side default", spec: config.ProviderSpec{Provider: "claude"}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			model, effort, maxDropped := ResolveCodexModelEffort(tc.spec)
+			model, effort, maxDropped := ResolveModelEffort(tc.spec)
 			assert.Equal(t, tc.wantModel, model)
 			assert.Equal(t, tc.wantEffort, effort)
 			assert.Equal(t, tc.wantMax, maxDropped)
@@ -210,6 +216,7 @@ func TestResolveExternalReviewerModelEffort(t *testing.T) {
 	}{
 		{name: "claude defaults", provider: config.ExternalReviewToolClaude, wantModel: "opus", wantEffort: "xhigh"},
 		{name: "claude overrides", provider: config.ExternalReviewToolClaude, spec: "fable:max", wantModel: "fable", wantEffort: "max"},
+		{name: "claude effort only keeps default model", provider: config.ExternalReviewToolClaude, spec: ":high", wantModel: "opus", wantEffort: "high"},
 		{name: "codex leaves defaults to codex", provider: config.ExternalReviewToolCodex, wantModel: "", wantEffort: ""},
 		{name: "codex explicit", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6:high", wantModel: "gpt-5.6", wantEffort: "high"},
 		{name: "codex max dropped", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6:max", wantModel: "gpt-5.6", wantEffort: "", wantMax: true},
@@ -223,6 +230,115 @@ func TestResolveExternalReviewerModelEffort(t *testing.T) {
 			assert.Equal(t, tc.wantMax, maxDropped)
 		})
 	}
+}
+
+// phaseSpecFor returns the bare provider spec that selects executor as the task provider.
+func phaseSpecFor(executorName string) string {
+	if executorName == config.ExecutorCodex {
+		return config.ExternalReviewToolCodex
+	}
+	return config.ExternalReviewToolClaude
+}
+
+func TestExecutorFactory_PerPhaseProviders(t *testing.T) {
+	newAppCfg := func(t *testing.T) *config.Config {
+		appCfg := testAppConfig(t)
+		appCfg.IdleTimeout = 3 * time.Minute
+		appCfg.PassClaudeMd = true
+		appCfg.ClaudeCommand = "claude-wrapper"
+		return appCfg
+	}
+
+	t.Run("codex task with claude review", func(t *testing.T) {
+		setIsolatedHome(t)
+		cfg := Config{Mode: ModeFull, TaskModel: "codex:gpt-6-astra:medium", ReviewModel: "claude:opus:high", AppConfig: newAppCfg(t)}
+		_, execs := (&executorFactory{}).Build(cfg, newRunnerMockLogger(""))
+
+		taskExec, ok := execs.Task.(*executor.CodexExecutor)
+		require.True(t, ok, "task slot must hold a codex executor")
+		assert.Equal(t, [2]string{"gpt-6-astra", "medium"}, [2]string{taskExec.Model, taskExec.ReasoningEffort})
+		assert.Equal(t, "danger-full-access", taskExec.Sandbox)
+		assert.True(t, taskExec.MultiAgent)
+
+		reviewExec, ok := execs.Review.(*executor.ClaudeExecutor)
+		require.True(t, ok, "review slot must hold a claude executor")
+		assert.Equal(t, [2]string{"opus", "high"}, [2]string{reviewExec.Model, reviewExec.Effort})
+		assert.False(t, reviewExec.ExternalReview, "the review executor writes fixes and must not run under the external-review policy")
+		assert.Equal(t, "claude-wrapper", reviewExec.Command)
+		assert.Equal(t, 3*time.Minute, reviewExec.IdleTimeout)
+	})
+
+	t.Run("claude task with codex review is write-capable", func(t *testing.T) {
+		setIsolatedHome(t)
+		cfg := Config{Mode: ModeFull, TaskModel: "claude:opus:high", ReviewModel: "codex:gpt-6-astra:high", AppConfig: newAppCfg(t)}
+		_, execs := (&executorFactory{}).Build(cfg, newRunnerMockLogger(""))
+
+		taskExec, ok := execs.Task.(*executor.ClaudeExecutor)
+		require.True(t, ok, "task slot must hold a claude executor")
+		assert.Equal(t, [2]string{"opus", "high"}, [2]string{taskExec.Model, taskExec.Effort})
+
+		reviewExec, ok := execs.Review.(*executor.CodexExecutor)
+		require.True(t, ok, "review slot must hold a codex executor")
+		assert.Equal(t, [2]string{"gpt-6-astra", "high"}, [2]string{reviewExec.Model, reviewExec.ReasoningEffort})
+		assert.False(t, reviewExec.ForceReadOnly, "the review executor must not be the read-only external reviewer")
+		assert.NotEqual(t, "read-only", reviewExec.Sandbox)
+		assert.Equal(t, "danger-full-access", reviewExec.Sandbox)
+		assert.True(t, reviewExec.MultiAgent, "codex review must be able to spawn the review agents")
+		assert.True(t, reviewExec.PassClaudeMd)
+		assert.Equal(t, 3*time.Minute, reviewExec.IdleTimeout)
+	})
+
+	t.Run("codex review honors an explicit sandbox", func(t *testing.T) {
+		appCfg := newAppCfg(t)
+		appCfg.CodexSandbox = "workspace-write"
+		appCfg.CodexSandboxSet = true
+		cfg := Config{Mode: ModeFull, TaskModel: "claude", ReviewModel: "codex", AppConfig: appCfg}
+		_, execs := (&executorFactory{}).Build(cfg, newRunnerMockLogger(""))
+
+		reviewExec, ok := execs.Review.(*executor.CodexExecutor)
+		require.True(t, ok)
+		assert.Equal(t, "workspace-write", reviewExec.Sandbox)
+		assert.False(t, reviewExec.ForceReadOnly)
+	})
+
+	tests := []struct {
+		name, taskModel, reviewModel string
+		wantShared                   bool
+	}{
+		{name: "same codex spec shares the task executor", taskModel: "codex:gpt-6-astra:high", reviewModel: "codex:gpt-6-astra:high", wantShared: true},
+		{name: "same claude spec shares the task executor", taskModel: "claude:opus:high", reviewModel: "claude:opus:high", wantShared: true},
+		{name: "provider defaults on both sides still differ by provider", taskModel: "claude", reviewModel: "codex"},
+		{name: "same model name under another provider is a separate executor", taskModel: "claude:shared:high", reviewModel: "codex:shared:high"},
+		{name: "same provider, different effort", taskModel: "codex:gpt-6-astra:medium", reviewModel: "codex:gpt-6-astra:high"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{Mode: ModeFull, TaskModel: tc.taskModel, ReviewModel: tc.reviewModel, AppConfig: testAppConfig(t)}
+			_, execs := (&executorFactory{}).Build(cfg, newRunnerMockLogger(""))
+			if tc.wantShared {
+				assert.Nil(t, execs.Review, "review slot stays nil so the task executor handles review")
+				return
+			}
+			require.NotNil(t, execs.Review)
+			assert.NotSame(t, execs.Task, execs.Review)
+		})
+	}
+}
+
+func TestExecutorFactory_CodexReviewPhaseGivesExternalCodexIdleTimeout(t *testing.T) {
+	appCfg := testAppConfig(t)
+	appCfg.IdleTimeout = 3 * time.Minute
+	cfg := Config{
+		Mode: ModeReview, TaskModel: "claude", ReviewModel: "codex", AppConfig: appCfg,
+		ExternalReviewers: []config.ReviewerSpec{{Provider: config.ExternalReviewToolCodex}},
+	}
+
+	_, execs := (&executorFactory{}).Build(cfg, newRunnerMockLogger(""))
+
+	externalExec, ok := externalExecutor(t, execs).(*executor.CodexExecutor)
+	require.True(t, ok)
+	assert.Equal(t, 3*time.Minute, externalExec.IdleTimeout, "codex runs a first-class phase, so its idle guarantee covers the reviewer")
+	assert.True(t, externalExec.ForceReadOnly)
 }
 
 func effectiveReviewExecutor(execs Executors) Executor {
@@ -250,12 +366,12 @@ func TestRunner_New_ModelEffortWiring(t *testing.T) {
 		sameExecutor bool // true when review falls back to task executor
 	}{
 		{name: "empty specs", taskModel: "", reviewModel: "", wantTask: [2]string{"", ""}, wantReview: [2]string{"", ""}, sameExecutor: true},
-		{name: "task model only, review empty", taskModel: "opus", reviewModel: "", wantTask: [2]string{"opus", ""}, wantReview: [2]string{"opus", ""}, sameExecutor: true},
-		{name: "task model with effort, review empty", taskModel: "opus:high", reviewModel: "", wantTask: [2]string{"opus", "high"}, wantReview: [2]string{"opus", "high"}, sameExecutor: true},
-		{name: "effort only, review empty", taskModel: ":medium", reviewModel: "", wantTask: [2]string{"", "medium"}, wantReview: [2]string{"", "medium"}, sameExecutor: true},
-		{name: "trailing colon equivalent to plain model", taskModel: "opus", reviewModel: "opus:", wantTask: [2]string{"opus", ""}, wantReview: [2]string{"opus", ""}, sameExecutor: true},
-		{name: "same model different effort — separate executor", taskModel: "opus", reviewModel: "opus:high", wantTask: [2]string{"opus", ""}, wantReview: [2]string{"opus", "high"}, sameExecutor: false},
-		{name: "different model and effort — separate executor", taskModel: "opus:high", reviewModel: "sonnet:medium", wantTask: [2]string{"opus", "high"}, wantReview: [2]string{"sonnet", "medium"}, sameExecutor: false},
+		{name: "task model only, review empty", taskModel: "claude:opus", reviewModel: "", wantTask: [2]string{"opus", ""}, wantReview: [2]string{"opus", ""}, sameExecutor: true},
+		{name: "task model with effort, review empty", taskModel: "claude:opus:high", reviewModel: "", wantTask: [2]string{"opus", "high"}, wantReview: [2]string{"opus", "high"}, sameExecutor: true},
+		{name: "effort only, review empty", taskModel: "claude::medium", reviewModel: "", wantTask: [2]string{"", "medium"}, wantReview: [2]string{"", "medium"}, sameExecutor: true},
+		{name: "trailing colon equivalent to plain model", taskModel: "claude:opus", reviewModel: "claude:opus:", wantTask: [2]string{"opus", ""}, wantReview: [2]string{"opus", ""}, sameExecutor: true},
+		{name: "same model different effort — separate executor", taskModel: "claude:opus", reviewModel: "claude:opus:high", wantTask: [2]string{"opus", ""}, wantReview: [2]string{"opus", "high"}, sameExecutor: false},
+		{name: "different model and effort — separate executor", taskModel: "claude:opus:high", reviewModel: "claude:sonnet:medium", wantTask: [2]string{"opus", "high"}, wantReview: [2]string{"sonnet", "medium"}, sameExecutor: false},
 	}
 
 	for _, tc := range tests {
@@ -300,25 +416,24 @@ func TestRunner_New_CodexModelEffortWiring(t *testing.T) {
 		wantReview   [2]string
 		sameExecutor bool
 	}{
-		{name: "empty specs leave codex defaults", taskModel: "", reviewModel: "", wantTask: [2]string{"", ""}, wantReview: [2]string{"", ""}, sameExecutor: true},
-		{name: "task model only", taskModel: "gpt-5.6", reviewModel: "", wantTask: [2]string{"gpt-5.6", ""}, wantReview: [2]string{"gpt-5.6", ""}, sameExecutor: true},
-		{name: "task model with effort", taskModel: "gpt-5.6:high", reviewModel: "", wantTask: [2]string{"gpt-5.6", "high"}, wantReview: [2]string{"gpt-5.6", "high"}, sameExecutor: true},
-		{name: "effort only leaves model to codex", taskModel: ":low", reviewModel: "", wantTask: [2]string{"", "low"}, wantReview: [2]string{"", "low"}, sameExecutor: true},
-		{name: "review model differs in effort — separate executor", taskModel: "gpt-5.6", reviewModel: "gpt-5.6:low", wantTask: [2]string{"gpt-5.6", ""}, wantReview: [2]string{"gpt-5.6", "low"}, sameExecutor: false},
-		{name: "review model differs in model — separate executor", taskModel: "gpt-5.6:high", reviewModel: "gpt-5.5:low", wantTask: [2]string{"gpt-5.6", "high"}, wantReview: [2]string{"gpt-5.5", "low"}, sameExecutor: false},
-		{name: "review model only leaves task to codex", taskModel: "", reviewModel: "gpt-5.6:low", wantTask: [2]string{"", ""}, wantReview: [2]string{"gpt-5.6", "low"}, sameExecutor: false},
+		{name: "empty specs leave codex defaults", taskModel: "codex", reviewModel: "", wantTask: [2]string{"", ""}, wantReview: [2]string{"", ""}, sameExecutor: true},
+		{name: "task model only", taskModel: "codex:gpt-5.6", reviewModel: "", wantTask: [2]string{"gpt-5.6", ""}, wantReview: [2]string{"gpt-5.6", ""}, sameExecutor: true},
+		{name: "task model with effort", taskModel: "codex:gpt-5.6:high", reviewModel: "", wantTask: [2]string{"gpt-5.6", "high"}, wantReview: [2]string{"gpt-5.6", "high"}, sameExecutor: true},
+		{name: "effort only leaves model to codex", taskModel: "codex::low", reviewModel: "", wantTask: [2]string{"", "low"}, wantReview: [2]string{"", "low"}, sameExecutor: true},
+		{name: "review model differs in effort — separate executor", taskModel: "codex:gpt-5.6", reviewModel: "codex:gpt-5.6:low", wantTask: [2]string{"gpt-5.6", ""}, wantReview: [2]string{"gpt-5.6", "low"}, sameExecutor: false},
+		{name: "review model differs in model — separate executor", taskModel: "codex:gpt-5.6:high", reviewModel: "codex:gpt-5.5:low", wantTask: [2]string{"gpt-5.6", "high"}, wantReview: [2]string{"gpt-5.5", "low"}, sameExecutor: false},
+		{name: "review model only leaves task to codex", taskModel: "codex", reviewModel: "codex:gpt-5.6:low", wantTask: [2]string{"", ""}, wantReview: [2]string{"gpt-5.6", "low"}, sameExecutor: false},
+		{name: "dropped max resolves equal — shared executor", taskModel: "codex:gpt-5.6", reviewModel: "codex:gpt-5.6:max", wantTask: [2]string{"gpt-5.6", ""}, wantReview: [2]string{"gpt-5.6", ""}, sameExecutor: true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			appCfg := testAppConfig(t)
-			appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 			cfg := Config{
 				Mode:          ModeReview,
 				MaxIterations: 50,
 				TaskModel:     tc.taskModel,
 				ReviewModel:   tc.reviewModel,
-				AppConfig:     appCfg,
+				AppConfig:     testAppConfig(t),
 			}
 			_, execs := (&executorFactory{}).Build(cfg, log)
 
@@ -363,7 +478,6 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
-			appCfg.TaskProvider, appCfg.ReviewProvider = tc.primary, tc.primary
 			appCfg.CustomReviewScript = "/path/to/custom-review"
 			appCfg.ClaudeCommand = "claude-wrapper"
 			appCfg.ClaudeArgs = "--wrapper-arg --output-format stream-json"
@@ -379,6 +493,7 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 				MaxIterations:      50,
 				CodexEnabled:       tc.external != config.ExternalReviewToolNone,
 				ExternalReviewTool: tc.external,
+				TaskModel:          phaseSpecFor(tc.primary),
 				AppConfig:          appCfg,
 			}
 			_, execs := (&executorFactory{}).Build(cfg, log)
@@ -434,12 +549,11 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 		})
 	}
 
-	t.Run("Executor=codex respects explicit sandbox config", func(t *testing.T) {
+	t.Run("codex task provider respects explicit sandbox config", func(t *testing.T) {
 		appCfg := testAppConfig(t)
-		appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 		appCfg.CodexSandbox = "workspace-write"
 		appCfg.CodexSandboxSet = true
-		cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
+		cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, TaskModel: "codex", AppConfig: appCfg}
 		_, execs := (&executorFactory{}).Build(cfg, log)
 
 		taskExec, ok := execs.Task.(*executor.CodexExecutor)
@@ -453,12 +567,12 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 
 	t.Run("external codex stays read-only when primary sandbox is writable", func(t *testing.T) {
 		appCfg := testAppConfig(t)
-		appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 		appCfg.CodexSandbox = "workspace-write"
 		appCfg.CodexSandboxSet = true
 		cfg := Config{
 			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
 			ExternalReviewTool: config.ExternalReviewToolCodex,
+			TaskModel:          "codex",
 			AppConfig:          appCfg,
 		}
 		_, execs := (&executorFactory{}).Build(cfg, log)
@@ -484,10 +598,9 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 
 	t.Run("codex external override does not change claude primary", func(t *testing.T) {
 		appCfg := testAppConfig(t)
-		appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorClaude, config.ExecutorClaude
 		cfg := Config{
 			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
-			TaskModel: "sonnet:medium", ReviewModel: "opus:high",
+			TaskModel: "claude:sonnet:medium", ReviewModel: "claude:opus:high",
 			ExternalReviewTool:  config.ExternalReviewToolCodex,
 			ExternalReviewModel: "gpt-external", ExternalReviewEffort: "low", AppConfig: appCfg,
 		}
@@ -503,10 +616,9 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 
 	t.Run("claude external override does not change codex primary", func(t *testing.T) {
 		appCfg := testAppConfig(t)
-		appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 		cfg := Config{
 			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
-			TaskModel: "gpt-primary:high", ReviewModel: "gpt-review:medium",
+			TaskModel: "codex:gpt-primary:high", ReviewModel: "codex:gpt-review:medium",
 			ExternalReviewTool:  config.ExternalReviewToolClaude,
 			ExternalReviewModel: "sonnet", ExternalReviewEffort: "max", AppConfig: appCfg,
 		}
@@ -634,7 +746,6 @@ func TestExecutorFactory_LegacyExternalFallbackParity(t *testing.T) {
 
 func TestExecutorFactory_LegacyAutoMissingBinaryDowngrades(t *testing.T) {
 	appCfg := testAppConfig(t)
-	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorClaude, config.ExecutorClaude
 	appCfg.CodexCommand = "/nonexistent/path/to/codex"
 	cfg := Config{Mode: ModeReview, CodexEnabled: true, AppConfig: appCfg}
 	log := newRunnerMockLogger("progress.txt")
@@ -663,10 +774,9 @@ func TestRunner_New_AutoExternalRouting(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
-			appCfg.TaskProvider, appCfg.ReviewProvider = tc.primary, tc.primary
 			appCfg.CodexCommand = availableCommand
 			appCfg.ClaudeCommand = availableCommand
-			cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: true, AppConfig: appCfg}
+			cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: true, TaskModel: phaseSpecFor(tc.primary), AppConfig: appCfg}
 
 			_, execs := (&executorFactory{}).Build(cfg, newRunnerMockLogger("progress.txt"))
 			switch tc.wantExternal.(type) {
@@ -719,9 +829,8 @@ func TestRunner_New_PassClaudeMd_PropagatesToCodexExecutor(t *testing.T) {
 	log := newRunnerMockLogger("")
 
 	appCfg := testAppConfig(t)
-	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	appCfg.PassClaudeMd = true
-	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
+	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, TaskModel: "codex", AppConfig: appCfg}
 
 	_, execs := (&executorFactory{}).Build(cfg, log)
 	codexExec, ok := execs.Task.(*executor.CodexExecutor)
@@ -734,9 +843,8 @@ func TestRunner_New_PassClaudeMdFalse_DoesNotSetField(t *testing.T) {
 	log := newRunnerMockLogger("")
 
 	appCfg := testAppConfig(t)
-	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	appCfg.PassClaudeMd = false
-	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
+	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, TaskModel: "codex", AppConfig: appCfg}
 
 	_, execs := (&executorFactory{}).Build(cfg, log)
 	codexExec, ok := execs.Task.(*executor.CodexExecutor)
@@ -752,9 +860,7 @@ func TestRunner_New_CodexExecutor_TaskAndReviewShareInstance(t *testing.T) {
 	setIsolatedHome(t)
 	log := newRunnerMockLogger("")
 
-	appCfg := testAppConfig(t)
-	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
-	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
+	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, TaskModel: "codex", AppConfig: testAppConfig(t)}
 
 	_, execs := (&executorFactory{}).Build(cfg, log)
 
@@ -828,12 +934,28 @@ func TestRunner_ClaudeMdSetupHint_NotFiredWhenExecutorIsNotCodex(t *testing.T) {
 
 	// claude executor with PassClaudeMd=true should NOT fire hint (gated by Executor=codex)
 	appCfg := testAppConfig(t)
-	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorClaude, config.ExecutorClaude
 	appCfg.PassClaudeMd = true
-	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
+	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, TaskModel: "claude", AppConfig: appCfg}
 
 	_ = New(cfg, log, holder)
 	assert.Empty(t, captured, "hint must not fire when Executor is not codex")
+}
+
+func TestRunner_ClaudeMdSetupHint_FiredForCodexReviewPhase(t *testing.T) {
+	home := setIsolatedHome(t)
+
+	claudeDir := filepath.Join(home, ".claude")
+	require.NoError(t, os.MkdirAll(claudeDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), []byte("user CLAUDE.md\n"), 0o600))
+
+	var captured []string
+	appCfg := testAppConfig(t)
+	appCfg.PassClaudeMd = true
+	cfg := Config{Mode: ModeReview, TaskModel: "claude", ReviewModel: "codex", AppConfig: appCfg}
+
+	_ = New(cfg, newCapturingLogger(&captured), &status.PhaseHolder{})
+	require.Len(t, captured, 1, "a codex review phase reads AGENTS.md too")
+	assert.Contains(t, captured[0], "ln -s ~/.claude/CLAUDE.md ~/.codex/AGENTS.md")
 }
 
 func TestRunner_ClaudeMdSetupHint_NotFiredWhenPassClaudeMdFalse(t *testing.T) {
@@ -848,9 +970,8 @@ func TestRunner_ClaudeMdSetupHint_NotFiredWhenPassClaudeMdFalse(t *testing.T) {
 	holder := &status.PhaseHolder{}
 
 	appCfg := testAppConfig(t)
-	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	appCfg.PassClaudeMd = false
-	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
+	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, TaskModel: "codex", AppConfig: appCfg}
 
 	_ = New(cfg, log, holder)
 	assert.Empty(t, captured, "hint must not fire when PassClaudeMd is false")
@@ -868,9 +989,8 @@ func TestRunner_ClaudeMdSetupHint_FiredOnceAcrossMultipleRunnerConstructions(t *
 	holder := &status.PhaseHolder{}
 
 	appCfg := testAppConfig(t)
-	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	appCfg.PassClaudeMd = true
-	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
+	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, TaskModel: "codex", AppConfig: appCfg}
 
 	// build two runners back to back; hint should emit on the first only
 	_ = New(cfg, log, holder)
@@ -886,8 +1006,8 @@ func TestExecutorFactory_WiresCommandTimingHandlerToClaudeAndCodex(t *testing.T)
 	appCfg := testAppConfig(t)
 	cfg := Config{
 		AppConfig:            appCfg,
-		TaskModel:            "sonnet:high",
-		ReviewModel:          "opus:xhigh",
+		TaskModel:            "claude:sonnet:high",
+		ReviewModel:          "claude:opus:xhigh",
 		CommandTimingHandler: handler,
 		ExternalReviewers: []config.ReviewerSpec{
 			{Provider: config.ExternalReviewToolClaude},
@@ -902,7 +1022,7 @@ func TestExecutorFactory_WiresCommandTimingHandlerToClaudeAndCodex(t *testing.T)
 	execs.Externals[1].Exec.(*executor.CodexExecutor).CommandTimingHandler("external codex", time.Second)
 	assert.Equal(t, int32(4), calls.Load())
 
-	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
+	cfg.TaskModel, cfg.ReviewModel = "codex:gpt-5.6:high", "codex:gpt-5.6:xhigh"
 	_, execs = (&executorFactory{}).Build(cfg, newRunnerMockLogger("progress.txt"))
 	execs.Task.(*executor.CodexExecutor).CommandTimingHandler("codex task", time.Second)
 	execs.Review.(*executor.CodexExecutor).CommandTimingHandler("codex review", time.Second)
@@ -962,7 +1082,6 @@ func TestExecutorFactory_Build_CodexArgs(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
-			appCfg.TaskProvider, appCfg.ReviewProvider = tc.primary, tc.primary
 			appCfg.CodexArgs = tc.codexArgs
 
 			cfg := Config{
@@ -970,6 +1089,7 @@ func TestExecutorFactory_Build_CodexArgs(t *testing.T) {
 				MaxIterations:      50,
 				CodexEnabled:       true,
 				ExternalReviewTool: config.ExternalReviewToolCodex,
+				TaskModel:          phaseSpecFor(tc.primary),
 				AppConfig:          appCfg,
 			}
 			_, execs := (&executorFactory{}).Build(cfg, newMockLogger())

@@ -42,8 +42,8 @@ type Config struct {
 	NoColor               bool                        // disable color output
 	IterationDelayMs      int                         // delay between iterations in milliseconds
 	TaskRetryCount        int                         // number of times to retry failed tasks
-	TaskModel             string                      // model[:effort] spec for task execution; parsed by executor setup (empty = CLI defaults)
-	ReviewModel           string                      // model[:effort] spec for review phases; empty falls back to TaskModel
+	TaskModel             string                      // provider[:model[:effort]] spec for task execution (empty = claude with CLI defaults)
+	ReviewModel           string                      // provider[:model[:effort]] spec for the review block; empty inherits TaskModel whole
 	CodexEnabled          bool                        // backward-compatible gate for automatic external review
 	ExternalReviewTool    string                      // concrete resolved provider; never auto when supplied by the CLI layer
 	ExternalReviewModel   string                      // resolved external provider model
@@ -58,9 +58,10 @@ type Config struct {
 }
 
 // isCodexExecutor reports whether the task provider is codex. returns false when
-// AppConfig is nil or the provider is anything else (claude is the default). startup
-// still rejects a plan or review provider that differs from the task provider, so the
-// task provider stands for every phase until the executors are built per phase.
+// AppConfig is nil or the provider is anything else (claude is the default). the
+// executor factory already builds each phase from its own spec, but prompt rendering
+// and phase naming still read this, so startup keeps rejecting a plan or review
+// provider that differs from the task provider until they follow the phase provider.
 func (c Config) isCodexExecutor() bool {
 	return c.AppConfig != nil && c.AppConfig.TaskProvider == config.ExecutorCodex
 }

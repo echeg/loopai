@@ -3450,8 +3450,8 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		FinalizeEnabled:       req.Config.FinalizeEnabled,
 		ReportEnabled:         req.Config.ReportEnabled,
 		DefaultBranch:         req.BaseRef,
-		TaskModel:             executorModelSpec(resolveSpec(o.TaskModel, req.Config.TaskModel)),
-		ReviewModel:           executorModelSpec(resolveReviewSpec(o, req.Config)),
+		TaskModel:             resolveSpec(o.TaskModel, req.Config.TaskModel),
+		ReviewModel:           resolveReviewSpec(o, req.Config),
 		AppConfig:             req.Config,
 		LimitRecovery:         req.LimitRecovery,
 		CommandTimingHandler:  commandTimingHandler,
@@ -3560,17 +3560,15 @@ func (b phaseBanner) label() string {
 	return b.Provider + " " + modelEffortLabel("default", b.Model, b.Effort)
 }
 
-// resolvePhaseBanner resolves a phase spec the way the executors do: codex through
-// ResolveCodexModelEffort, which drops "max", and claude as written.
+// resolvePhaseBanner resolves a phase spec the way the executors do: through
+// processor.ResolveModelEffort, which drops "max" for codex and keeps claude as written.
 func resolvePhaseBanner(name, spec string) phaseBanner {
-	b := phaseBanner{Name: name, Provider: specProvider(spec)}
-	if b.Provider == config.ExecutorCodex {
-		b.Model, b.Effort, b.MaxDropped = processor.ResolveCodexModelEffort(executorModelSpec(spec))
-		return b
+	parsed := config.ProviderSpec{Provider: specProvider(spec)}
+	if valid, err := config.ParseProviderSpec(spec); err == nil {
+		parsed = valid
 	}
-	if parsed, err := config.ParseProviderSpec(spec); err == nil {
-		b.Model, b.Effort = parsed.Model, parsed.Effort
-	}
+	b := phaseBanner{Name: name, Provider: parsed.Provider}
+	b.Model, b.Effort, b.MaxDropped = processor.ResolveModelEffort(parsed)
 	return b
 }
 
@@ -3604,18 +3602,6 @@ func resolveSpec(cliVal, cfgVal string) string {
 		return cliVal
 	}
 	return cfgVal
-}
-
-// executorModelSpec strips the provider from a validated provider[:model[:effort]] spec,
-// returning the model[:effort] remainder the executors parse. The provider itself selects
-// the executor through resolvePhaseProviders. A spec that does not parse is returned as is;
-// startup validation has already rejected it on every path that reaches an executor.
-func executorModelSpec(spec string) string {
-	parsed, err := config.ParseProviderSpec(spec)
-	if err != nil {
-		return spec
-	}
-	return parsed.ModelSpec()
 }
 
 // runHeaderParams returns run parameters recorded in the progress file header
@@ -3806,7 +3792,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		NoColor:          o.NoColor,
 		IterationDelayMs: req.Config.IterationDelayMs,
 		DefaultBranch:    req.BaseRef,
-		TaskModel:        executorModelSpec(resolvePlanSpec(o, req.Config)),
+		TaskModel:        resolvePlanSpec(o, req.Config),
 		AppConfig:        req.Config,
 		LimitRecovery:    req.LimitRecovery,
 	}, planLog, holder)
@@ -3987,7 +3973,7 @@ func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *p
 		ProgressPath:  baseLog.Path(),
 		Debug:         o.Debug,
 		NoColor:       o.NoColor,
-		TaskModel:     executorModelSpec(resolveSpec(o.TaskModel, cfg.TaskModel)),
+		TaskModel:     resolveSpec(o.TaskModel, cfg.TaskModel),
 		AppConfig:     cfg,
 		LimitRecovery: recovery,
 	}, genLog, holder)
