@@ -81,8 +81,8 @@ func TestPromptBuilder_NilConfigDependencies(t *testing.T) {
 }
 
 func TestPromptBuilder_CodexTaskGuidance(t *testing.T) {
-	appCfg := &config.Config{TaskPrompt: "do work", TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex}
-	cfg := Config{AppConfig: appCfg}
+	appCfg := &config.Config{TaskPrompt: "do work"}
+	cfg := Config{TaskModel: "codex", AppConfig: appCfg}
 	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
 
 	prompt := builder.TaskPrompt()

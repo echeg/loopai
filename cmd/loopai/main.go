@@ -3063,8 +3063,9 @@ func specProvider(spec string) string {
 }
 
 // rejectMixedPhaseProviders rejects a plan or review spec whose provider differs from the
-// task provider. The executors are still built for one provider per run, so a mixed spec
-// would send one provider's model name to the other provider's CLI.
+// task provider. Executors and prompts already follow each phase's provider, but phase
+// naming, session timeouts, and the run record still read the task provider, so a mixed
+// run would label and time its review phases as the task provider's.
 func rejectMixedPhaseProviders(o opts, cfg *config.Config) error {
 	task := specProvider(resolveSpec(o.TaskModel, cfg.TaskModel))
 	for _, spec := range []phaseModelSpec{

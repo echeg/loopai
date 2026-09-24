@@ -33,16 +33,16 @@ func newPromptBuilder(opts promptBuilderOpts) *promptBuilder {
 }
 
 func (b *promptBuilder) TaskPrompt() string {
-	return b.prependCodexTaskGuidance(b.replacePromptVariables(b.cfg.AppConfig.TaskPrompt))
+	return b.prependCodexTaskGuidance(b.replacePromptVariables(b.cfg.AppConfig.TaskPrompt, b.cfg.taskProvider()))
 }
 
 func (b *promptBuilder) FirstReviewPrompt() string {
 	b.warnMissingDynamicCatalog(b.cfg.AppConfig.ReviewFirstPrompt)
-	return b.prependCodexReviewGuidance(b.replacePromptVariables(b.cfg.AppConfig.ReviewFirstPrompt))
+	return b.prependCodexReviewGuidance(b.replacePromptVariables(b.cfg.AppConfig.ReviewFirstPrompt, b.cfg.reviewProvider()))
 }
 
 func (b *promptBuilder) SecondReviewPrompt(prefix string) string {
-	return prefix + b.prependCodexReviewGuidance(b.replacePromptVariables(b.cfg.AppConfig.ReviewSecondPrompt))
+	return prefix + b.prependCodexReviewGuidance(b.replacePromptVariables(b.cfg.AppConfig.ReviewSecondPrompt, b.cfg.reviewProvider()))
 }
 
 // ExternalReviewPrompt renders the prompt for the selected external reviewer.
@@ -59,8 +59,9 @@ func (b *promptBuilder) ExternalReviewPrompt(reviewer string, isFirst bool, eval
 	return b.replaceExternalVariablesWithIteration(prompt, isFirst, reviewer, b.evaluatorName(), evaluatorResponse)
 }
 
+// evaluatorName names the provider that evaluates external findings: the review block's.
 func (b *promptBuilder) evaluatorName() string {
-	if b.cfg.isCodexExecutor() {
+	if b.cfg.reviewProvider() == config.ExecutorCodex {
 		return config.ExternalReviewToolCodex
 	}
 	return config.ExternalReviewToolClaude
@@ -78,7 +79,7 @@ func (b *promptBuilder) ExternalEvaluationPrompt(reviewer, findings string) stri
 	default:
 		prompt, outputVariable = b.cfg.AppConfig.CodexPrompt, "{{CODEX_OUTPUT}}"
 	}
-	prompt = b.replacePromptVariables(prompt)
+	prompt = b.replacePromptVariables(prompt, b.cfg.reviewProvider())
 	return strings.ReplaceAll(prompt, outputVariable, findings)
 }
 
@@ -97,7 +98,7 @@ func (b *promptBuilder) GenAgentsPrompt() string {
 }
 
 func (b *promptBuilder) FinalizePrompt() string {
-	return b.replacePromptVariables(b.cfg.AppConfig.FinalizePrompt)
+	return b.replacePromptVariables(b.cfg.AppConfig.FinalizePrompt, b.cfg.reviewProvider())
 }
 
 // ReportPrompt renders the completion report prompt with deterministic facts.

@@ -257,12 +257,13 @@ that sets any of the above must be hand-edited once.
 - [x] run `go test ./pkg/processor/...` - must pass before next task
 
 ### Task 8: Prompt rendering follows the phase provider
-- [ ] write tests in `pkg/processor/prompts_test.go` asserting that with a codex task provider and a claude review provider, `FirstReviewPrompt` renders Task-tool agent prose and carries no codex review guidance, while `TaskPrompt` still carries the codex task guidance
-- [ ] write the mirror test (claude task provider, codex review provider) asserting `spawn_agent` blocks appear in the review prompt only
-- [ ] write a test that `{{agents:dynamic}}` renders with the review phase's provider syntax
-- [ ] write a test that `ExternalEvaluationPrompt`'s evaluator name (`prompt_builder.go:63`) reports the review provider, not the task provider
-- [ ] thread a phase provider through `formatAgentExpansion` (`prompts.go:142`), `prependCodexReviewGuidance` (`:225`), `prependCodexTaskGuidance` (`:257`), and the two agent-catalog sites (`:313`, `:360`), replacing `b.cfg.isCodexExecutor()`
-- [ ] run `go test ./pkg/processor/...` - must pass before next task
+- [x] write tests in `pkg/processor/prompts_test.go` asserting that with a codex task provider and a claude review provider, `FirstReviewPrompt` renders Task-tool agent prose and carries no codex review guidance, while `TaskPrompt` still carries the codex task guidance
+- [x] write the mirror test (claude task provider, codex review provider) asserting `spawn_agent` blocks appear in the review prompt only
+- [x] write a test that `{{agents:dynamic}}` renders with the review phase's provider syntax
+- [x] write a test that `ExternalEvaluationPrompt`'s evaluator name (`prompt_builder.go:63`) reports the review provider, not the task provider
+- [x] thread a phase provider through `formatAgentExpansion` (`prompts.go:142`), `prependCodexReviewGuidance` (`:225`), `prependCodexTaskGuidance` (`:257`), and the two agent-catalog sites (`:313`, `:360`), replacing `b.cfg.isCodexExecutor()`
+  - ⚠️ prompts read the provider from the processor specs (`Config.taskProvider()`/`reviewProvider()` over `taskSpec()`/`reviewSpec()`), not from `AppConfig.TaskProvider`, so the prompt tests now select codex through `Config.TaskModel` or an explicit provider argument. `replacePromptVariables`, `expandAgentReferences`, and `expandDynamicAgentCatalog` take the provider of the phase running the prompt: the task prompt uses the task provider; review, evaluation, finalize, and a customized external-review prompt use the review provider. `isCodexExecutor` remains only for phase naming, session timeouts, and the primary-executor name, which Task 9 switches
+- [x] run `go test ./pkg/processor/...` - must pass before next task
 
 ### Task 9: Phase-level naming and status reporting
 - [ ] write tests that `executorName()` (`pkg/processor/phase/phase.go:43`) reports the review provider for the review, external-eval, finalize, and report phases and the task provider for the task phase

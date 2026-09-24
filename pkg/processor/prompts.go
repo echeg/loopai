@@ -110,8 +110,10 @@ func (b *promptBuilder) replaceExternalVariablesWithIteration(prompt string, isF
 	result := b.replaceBaseVariables(prompt)
 	result = strings.ReplaceAll(result, "{{DIFF_INSTRUCTION}}", b.getDiffInstruction(isFirstIteration))
 	inlined := agentRefNames(result)
-	result = b.expandAgentReferences(result) // expand agents before inserting external content
-	result = b.expandDynamicAgentCatalog(result, inlined)
+	// a customized external prompt renders agents in the review block's syntax, like the internal ones
+	provider := b.cfg.reviewProvider()
+	result = b.expandAgentReferences(result, provider) // expand agents before inserting external content
+	result = b.expandDynamicAgentCatalog(result, inlined, provider)
 	result = strings.ReplaceAll(result, "{{PREVIOUS_REVIEW_CONTEXT}}", b.buildExternalPreviousContext(reviewer, evaluator, evaluatorResponse))
 	if reviewer == config.ExternalReviewToolClaude {
 		return result
@@ -137,11 +139,12 @@ func (b *promptBuilder) reviewContextInstruction() string {
 }
 
 // formatAgentExpansion creates the agent invocation block for an agent, respecting frontmatter overrides.
-// claude executor produces a Task tool instruction; codex executor produces a spawn_agent block.
-// the review-context lead-in is prepended so the spawned agent knows which diff to review.
-func (b *promptBuilder) formatAgentExpansion(prompt string, opts config.Options) string {
+// provider is the one running the prompt the block lands in: claude gets a Task tool instruction, codex
+// a spawn_agent block. a mismatch degrades review silently, since neither provider can run the other's
+// syntax. the review-context lead-in is prepended so the spawned agent knows which diff to review.
+func (b *promptBuilder) formatAgentExpansion(prompt string, opts config.Options, provider string) string {
 	prompt = b.reviewContextInstruction() + prompt
-	if b.cfg.isCodexExecutor() {
+	if provider == config.ExecutorCodex {
 		return b.formatAgentExpansionCodex(prompt)
 	}
 	return b.formatAgentExpansionClaude(prompt, opts)
@@ -217,13 +220,13 @@ one re-spawn per dead agent.
 `
 
 // prependCodexReviewGuidance returns prompt with codexReviewGuidance prepended
-// when the codex executor is active; otherwise returns prompt unchanged. used
+// when codex runs the review block; otherwise returns prompt unchanged. used
 // to inject codex multi_agent orchestration directives into review prompts at
 // build time so the directives are present regardless of whether the user
 // kept the embedded review_first/review_second templates or replaced them with
 // hard-coded inline agent lists.
 func (b *promptBuilder) prependCodexReviewGuidance(prompt string) string {
-	if !b.cfg.isCodexExecutor() {
+	if b.cfg.reviewProvider() != config.ExecutorCodex {
 		return prompt
 	}
 	return codexReviewGuidance + prompt
@@ -251,11 +254,11 @@ etc.) remain available — use them normally.
 `
 
 // prependCodexTaskGuidance returns prompt with codexTaskGuidance prepended when
-// the codex executor is active; otherwise returns prompt unchanged. injected at
+// codex runs the task phase; otherwise returns prompt unchanged. injected at
 // build time so the directive applies whether the user kept the embedded task
 // prompt or replaced it with a customized one.
 func (b *promptBuilder) prependCodexTaskGuidance(prompt string) string {
-	if !b.cfg.isCodexExecutor() {
+	if b.cfg.taskProvider() != config.ExecutorCodex {
 		return prompt
 	}
 	return codexTaskGuidance + prompt
@@ -277,10 +280,11 @@ func (b *promptBuilder) escapeCodexSingleQuoted(s string) string {
 	return s
 }
 
-// expandAgentReferences replaces {{agent:name}} patterns with Task tool instructions.
+// expandAgentReferences replaces {{agent:name}} patterns with invocation blocks in the
+// syntax of provider, the one running the prompt.
 // returns prompt unchanged if AppConfig is nil or no agents are configured.
 // missing agents log a warning and leave the reference as-is for visibility.
-func (b *promptBuilder) expandAgentReferences(prompt string) string {
+func (b *promptBuilder) expandAgentReferences(prompt, provider string) string {
 	if b.cfg.AppConfig == nil {
 		return prompt
 	}
@@ -310,11 +314,11 @@ func (b *promptBuilder) expandAgentReferences(prompt string) string {
 		// under codex syntax, formatAgentExpansionCodex collapses every {{agent:name}} into
 		// the same spawn_agent(agent='reviewer', task=...) call — frontmatter Model/AgentType
 		// are intentionally discarded. warn so users do not silently lose per-agent overrides.
-		if b.cfg.isCodexExecutor() && (agent.Model != "" || agent.AgentType != "") {
+		if provider == config.ExecutorCodex && (agent.Model != "" || agent.AgentType != "") {
 			b.warnCodexFrontmatterDiscarded(name, agent.Options)
 		}
 
-		return b.formatAgentExpansion(b.agentBodyText(agent.Prompt), agent.Options)
+		return b.formatAgentExpansion(b.agentBodyText(agent.Prompt), agent.Options, provider)
 	})
 }
 
@@ -335,19 +339,20 @@ func agentRefNames(prompt string) map[string]bool {
 // ready-to-use invocation snippet {{agent:name}} would produce, so the primary
 // executor can pick relevant ones per diff without further lookups. renders
 // emptyDynamicCatalog when no dynamic agents are configured. inlined holds the
-// names the same prompt references directly and may be nil.
-func (b *promptBuilder) expandDynamicAgentCatalog(prompt string, inlined map[string]bool) string {
+// names the same prompt references directly and may be nil; provider selects the
+// snippet syntax as in expandAgentReferences.
+func (b *promptBuilder) expandDynamicAgentCatalog(prompt string, inlined map[string]bool, provider string) string {
 	if !strings.Contains(prompt, agentsCatalogPlaceholder) {
 		return prompt
 	}
-	return strings.ReplaceAll(prompt, agentsCatalogPlaceholder, b.buildDynamicAgentCatalog(inlined))
+	return strings.ReplaceAll(prompt, agentsCatalogPlaceholder, b.buildDynamicAgentCatalog(inlined, provider))
 }
 
 // buildDynamicAgentCatalog renders the dynamic agent catalog body, sorted by agent name.
 // agents already inlined through {{agent:name}} in the same prompt are skipped: a user
 // copy of a base agent that carries a description would otherwise be listed twice and
 // launched twice in the same review iteration.
-func (b *promptBuilder) buildDynamicAgentCatalog(inlined map[string]bool) string {
+func (b *promptBuilder) buildDynamicAgentCatalog(inlined map[string]bool, provider string) string {
 	dynamic := b.dynamicAgents(inlined)
 	if len(dynamic) == 0 {
 		return emptyDynamicCatalog
@@ -357,10 +362,10 @@ func (b *promptBuilder) buildDynamicAgentCatalog(inlined map[string]bool) string
 	sb.WriteString("### Available project-specific agents\n")
 	for _, agent := range dynamic {
 		b.log.Print("dynamic agent %q: %s", agent.Name, agent.Options)
-		if b.cfg.isCodexExecutor() && (agent.Model != "" || agent.AgentType != "") {
+		if provider == config.ExecutorCodex && (agent.Model != "" || agent.AgentType != "") {
 			b.warnCodexFrontmatterDiscarded(agent.Name, agent.Options)
 		}
-		snippet := b.formatAgentExpansion(b.agentBodyText(agent.Prompt), agent.Options)
+		snippet := b.formatAgentExpansion(b.agentBodyText(agent.Prompt), agent.Options, provider)
 		fmt.Fprintf(&sb, "\n- %s — %s\n%s\n", agent.Name, strings.TrimSpace(agent.Description), indentBlock(snippet, "  "))
 	}
 	return strings.TrimRight(sb.String(), "\n")
@@ -442,12 +447,13 @@ func (b *promptBuilder) warnCodexFrontmatterDiscarded(name string, opts config.O
 // replacePromptVariables replaces all template variables including agent references.
 // supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}}, {{BACKLOG_DIR}},
 // {{agent:name}}, {{agents:dynamic}}
+// agent tokens render in the syntax of provider, the provider of the phase running the prompt.
 // note: {{CODEX_OUTPUT}} and {{PLAN_DESCRIPTION}} are handled by specific build functions.
-func (b *promptBuilder) replacePromptVariables(prompt string) string {
+func (b *promptBuilder) replacePromptVariables(prompt, provider string) string {
 	result := b.replaceBaseVariables(prompt)
 	inlined := agentRefNames(result)
-	result = b.expandAgentReferences(result)
-	result = b.expandDynamicAgentCatalog(result, inlined)
+	result = b.expandAgentReferences(result, provider)
+	result = b.expandDynamicAgentCatalog(result, inlined, provider)
 	return b.appendCommitTrailerInstruction(result)
 }
 

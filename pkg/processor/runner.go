@@ -59,9 +59,9 @@ type Config struct {
 
 // isCodexExecutor reports whether the task provider is codex. returns false when
 // AppConfig is nil or the provider is anything else (claude is the default). the
-// executor factory already builds each phase from its own spec, but prompt rendering
-// and phase naming still read this, so startup keeps rejecting a plan or review
-// provider that differs from the task provider until they follow the phase provider.
+// executor factory and prompt rendering already follow each phase's own spec, but
+// phase naming and session timeouts still read this, so startup keeps rejecting a
+// plan or review provider that differs from the task provider until they do too.
 func (c Config) isCodexExecutor() bool {
 	return c.AppConfig != nil && c.AppConfig.TaskProvider == config.ExecutorCodex
 }

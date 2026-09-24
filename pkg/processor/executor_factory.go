@@ -40,6 +40,17 @@ func (c Config) reviewSpec() config.ProviderSpec {
 	return parsePhaseSpec(c.ReviewModel, c.taskSpec())
 }
 
+// taskProvider returns the provider that runs the task phase.
+func (c Config) taskProvider() string {
+	return c.taskSpec().Provider
+}
+
+// reviewProvider returns the provider that runs internal review, external-findings
+// evaluation, finalize, and report.
+func (c Config) reviewProvider() string {
+	return c.reviewSpec().Provider
+}
+
 // runsCodexPhase reports whether codex runs the task phase or the review block.
 func (c Config) runsCodexPhase() bool {
 	return c.taskSpec().Provider == config.ExternalReviewToolCodex ||
