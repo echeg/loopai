@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -341,6 +344,28 @@ func TestExecCustomRunner_Run(t *testing.T) {
 	// wait should complete successfully
 	err = wait()
 	require.NoError(t, err)
+}
+
+func TestExecCustomRunner_Run_StripsClaudeSessionEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell script")
+	}
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "parent-session")
+	t.Setenv("ANTHROPIC_API_KEY", "kept-for-custom-providers")
+
+	script := filepath.Join(t.TempDir(), "env.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nenv\n"), 0o700)) //nolint:gosec // script must be executable
+
+	stdout, wait, err := (&execCustomRunner{}).Run(context.Background(), script, "prompt.txt")
+	require.NoError(t, err)
+	data, readErr := io.ReadAll(stdout)
+	require.NoError(t, readErr)
+	require.NoError(t, wait())
+
+	assert.NotContains(t, string(data), "CLAUDECODE=")
+	assert.NotContains(t, string(data), "CLAUDE_CODE_SESSION_ID=")
+	assert.Contains(t, string(data), "ANTHROPIC_API_KEY=kept-for-custom-providers")
 }
 
 func TestExecCustomRunner_Run_CommandNotFound(t *testing.T) {

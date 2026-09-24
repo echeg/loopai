@@ -27,6 +27,10 @@ func (r *execCustomRunner) Run(ctx context.Context, script, promptFile string) (
 	// use exec.Command (not CommandContext) because we handle cancellation ourselves
 	// to ensure the entire process group is killed, not just the direct child
 	cmd := exec.Command(script, promptFile) //nolint:noctx // intentional: we handle context cancellation via process group kill
+	// strip the Claude Code session markers like the claude and codex spawn paths do: a review
+	// script that calls claude would otherwise attach to the parent session and hang. provider
+	// credentials such as ANTHROPIC_API_KEY stay, since custom scripts commonly need them.
+	cmd.Env = filterEnv(os.Environ(), sessionEnvVars...)
 
 	// create new process group so we can kill all descendants on cleanup
 	setupProcessGroup(cmd)
