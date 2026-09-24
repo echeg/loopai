@@ -1425,9 +1425,9 @@ func (s *Service) inspectWorktreePlanChanges(
 	// a single plan archives in this checkout at the end of the run and a chain restores its
 	// source plans here, so do not start while another Git operation owns its index. the dirty
 	// list cannot reveal one: resolved, staged conflicts look like ordinary staged work.
-	op, err := s.repo.operationInProgress()
-	if err != nil {
-		return false, nil, fmt.Errorf("check for unfinished git operation: %w", err)
+	op, opErr := s.repo.operationInProgress()
+	if opErr != nil {
+		return false, nil, fmt.Errorf("check for unfinished git operation: %w", opErr)
 	}
 	if op != "" {
 		return false, nil, fmt.Errorf("cannot create worktree: %s in progress in %s\n\n"+
