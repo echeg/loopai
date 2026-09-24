@@ -103,7 +103,7 @@ func (p *PlanCreationPhase) runIteration(ctx context.Context, lastRevisionFeedba
 		prompt = fmt.Sprintf("%s\n\n---\nPREVIOUS DRAFT FEEDBACK:\nUser requested revisions with this feedback:\n%s\n\nPlease revise the plan accordingly and present a new PLAN_DRAFT.", prompt, lastRevisionFeedback)
 	}
 
-	execName := p.cfg.executorName()
+	execName := p.cfg.taskExecutorName()
 	execResult := p.policy.Run(ctx, p.exec.Run, prompt, execName)
 	result := execResult.Result
 	if err := wrapExecutorError(p.policy, result.Error, execName); err != nil {

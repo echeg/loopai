@@ -211,6 +211,30 @@ func TestStartOrcaReporterPublishesWorkingTitle(t *testing.T) {
 	assert.Equal(t, "\x1b]0;◐ loopai · review · claude\a", out.String())
 }
 
+func TestStartOrcaReporterNamesEachPhaseProvider(t *testing.T) {
+	original := newOrcaReporter
+	t.Cleanup(func() { newOrcaReporter = original })
+	var out bytes.Buffer
+	newOrcaReporter = func(enabled bool, planFile, executor string) *orca.Reporter {
+		return orca.NewWithOutput(enabled, planFile, executor, &out, func() bool { return true })
+	}
+	cfg := &config.Config{Orca: true, PlanProvider: config.ExecutorClaude, TaskProvider: config.ExecutorCodex,
+		ReviewProvider: config.ExecutorClaude}
+
+	for _, tc := range []struct {
+		phase status.Phase
+		want  string
+	}{
+		{phase: status.PhaseTask, want: "\x1b]0;◐ loopai · task · codex\a"},
+		{phase: status.PhaseReview, want: "\x1b]0;◐ loopai · review · claude\a"},
+		{phase: status.PhasePlan, want: "\x1b]0;◐ loopai · plan · claude\a"},
+	} {
+		out.Reset()
+		require.NotNil(t, startOrcaReporter(cfg, "plan.md", tc.phase))
+		assert.Equal(t, tc.want, out.String(), "phase %s", tc.phase)
+	}
+}
+
 func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integration subtests intentionally share setup helpers
 	t.Run("runs_in_order_stacks_branches_and_commits_source_once", func(t *testing.T) {
 		dir := setupTestRepo(t)
@@ -4673,6 +4697,26 @@ func TestCmuxRunModels(t *testing.T) {
 			Plan:   "codex default:medium",
 			Task:   "codex default:medium",
 			Review: "claude default:high",
+		}, cmuxRunModels(opts{}, cfg, externalReviewSelection{}))
+	})
+
+	t.Run("cross-provider run names the provider of every phase", func(t *testing.T) {
+		cfg := &config.Config{TaskModel: "codex:gpt-6-astra:medium", ReviewModel: "claude:opus:high"}
+
+		assert.Equal(t, cmux.Models{
+			Plan:   "codex gpt-6-astra:medium",
+			Task:   "codex gpt-6-astra:medium",
+			Review: "claude opus:high",
+		}, cmuxRunModels(opts{}, cfg, externalReviewSelection{}))
+	})
+
+	t.Run("claude plan under a codex run names both providers", func(t *testing.T) {
+		cfg := &config.Config{PlanModel: "claude:opus", TaskModel: "codex:gpt-6-astra", ReviewModel: "codex:gpt-6-astra:high"}
+
+		assert.Equal(t, cmux.Models{
+			Plan:   "claude opus",
+			Task:   "codex gpt-6-astra",
+			Review: "codex gpt-6-astra:high",
 		}, cmuxRunModels(opts{}, cfg, externalReviewSelection{}))
 	})
 
@@ -13359,45 +13403,6 @@ func TestRunResolvesKeepAwakeFromConfig(t *testing.T) {
 	}
 }
 
-func TestRejectMixedPhaseProviders(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		o    opts
-		cfg  config.Config
-		want string
-	}{
-		{name: "all unset"},
-		{name: "same provider everywhere", cfg: config.Config{PlanModel: "codex:o3", TaskModel: "codex:gpt-6-astra:medium", ReviewModel: "codex::high"}},
-		{name: "inherited specs share the task provider", cfg: config.Config{TaskModel: "codex:gpt-6-astra"}},
-		{name: "claude review under the unset claude default", cfg: config.Config{ReviewModel: "claude:opus:xhigh"}},
-		{
-			name: "codex review under a claude task",
-			cfg:  config.Config{TaskModel: "claude:fable:high", ReviewModel: "codex:gpt-6-astra:high"},
-			want: `--review-model / review_model "codex:gpt-6-astra:high" uses the codex provider, but the task provider is claude`,
-		},
-		{
-			name: "claude plan under a codex task from cli",
-			o:    opts{TaskModel: "codex:gpt-6-astra"},
-			cfg:  config.Config{PlanModel: "claude:opus"},
-			want: `--plan-model / plan_model "claude:opus" uses the claude provider, but the task provider is codex`,
-		},
-		{
-			name: "codex review under the unset claude default",
-			cfg:  config.Config{ReviewModel: "codex:gpt-6-astra"},
-			want: "but the task provider is claude",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			err := rejectMixedPhaseProviders(tt.o, &tt.cfg)
-			if tt.want == "" {
-				require.NoError(t, err)
-				return
-			}
-			require.ErrorContains(t, err, tt.want)
-		})
-	}
-}
-
 func TestValidateReviewerProviders(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
@@ -13483,9 +13488,10 @@ func TestValidateStartupModels(t *testing.T) {
 		err := validateStartupModels(opts{}, &config.Config{TaskModel: "claude:gpt-5:high"})
 		require.ErrorContains(t, err, "names a codex model under the claude provider")
 	})
-	t.Run("mixed phase providers checked after syntax", func(t *testing.T) {
-		err := validateStartupModels(opts{}, &config.Config{TaskModel: "codex:gpt-5", ReviewModel: "claude:opus"})
-		require.ErrorContains(t, err, "per-phase providers are not supported yet")
+	t.Run("mixed phase providers pass", func(t *testing.T) {
+		require.NoError(t, validateStartupModels(opts{}, &config.Config{
+			PlanModel: "claude:opus", TaskModel: "codex:gpt-5", ReviewModel: "claude:opus:high"}))
+		require.NoError(t, validateStartupModels(opts{}, &config.Config{TaskModel: "claude:opus", ReviewModel: "codex:gpt-5"}))
 	})
 	t.Run("matching provider passes", func(t *testing.T) {
 		require.NoError(t, validateStartupModels(opts{}, &config.Config{TaskModel: "claude:fable:high"}))

@@ -47,7 +47,7 @@ func (p *FinalizePhase) Run(ctx context.Context) error {
 	}
 	p.log.PrintSection(status.NewGenericSection("finalize step"))
 
-	execName := p.cfg.executorName()
+	execName := p.cfg.reviewExecutorName()
 	execResult := p.policy.Run(ctx, p.exec.Run, p.prompts.FinalizePrompt(), execName)
 	result := execResult.Result
 

@@ -48,7 +48,7 @@ func (p *GenAgentsPhase) Run(ctx context.Context) error {
 	}
 	p.log.PrintSection(status.NewGenericSection("agent generation"))
 
-	execName := p.cfg.executorName()
+	execName := p.cfg.taskExecutorName()
 	execResult := p.policy.Run(ctx, p.exec.Run, p.prompts.GenAgentsPrompt(), execName)
 	result := execResult.Result
 	if err := wrapExecutorError(p.policy, result.Error, execName); err != nil {

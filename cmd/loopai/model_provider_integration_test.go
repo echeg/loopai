@@ -47,11 +47,11 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 			wantError: `--task-model / task_model "gpt-6-astra:medium" is missing a provider prefix; write "codex:gpt-6-astra:medium"`,
 		},
 		{
-			name:   "inherited review model conflicts with the Claude task provider",
-			global: inheritedModels,
-			args:   []string{"--task-model", "claude:fable:high", "--external-reviewers", "codex:gpt-6-astra:high"},
-			wantError: `--review-model / review_model "codex:gpt-6-astra:high" uses the codex provider, ` +
-				`but the task provider is claude; per-phase providers are not supported yet`,
+			name:        "claude task runs under an inherited codex review model",
+			global:      inheritedModels,
+			args:        []string{"--task-model", "claude:fable:high", "--external-reviewers", "codex:gpt-6-astra:high"},
+			wantCommand: "claude",
+			wantArgs:    "--model fable --effort high",
 		},
 		{
 			name:        "removed global executor key fails before any executor starts",

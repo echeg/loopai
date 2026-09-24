@@ -1391,13 +1391,16 @@ var newOrcaReporter = orca.New
 // starts a real inhibitor.
 var newAwakeHolder = awake.New
 
-// orcaReporter constructs the stdout title reporter selected by configuration. The title names
-// the task provider, which startup still requires every other phase to share.
+// orcaReporter constructs the stdout title reporter selected by configuration. Each title names
+// the provider of the phase it describes: the plan provider for plan creation, the review
+// provider for the review block, and the task provider otherwise.
 func orcaReporter(cfg *config.Config, planFile string) *orca.Reporter {
 	if cfg == nil || !cfg.Orca {
 		return nil
 	}
-	return newOrcaReporter(true, planFile, taskProvider(cfg))
+	titles := newOrcaReporter(true, planFile, taskProvider(cfg))
+	titles.SetPhaseExecutors(cfg.PlanProvider, cfg.ReviewProvider)
+	return titles
 }
 
 // startOrcaReporter publishes a working title immediately so setup prompts can restore a working
@@ -2978,10 +2981,7 @@ var knownEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 // external-review resolution, so a bad spec fails immediately instead of in the review
 // phase after a task phase that can run for hours.
 func validateStartupModels(o opts, cfg *config.Config) error {
-	if err := validateModelSpecs(o, cfg); err != nil {
-		return err
-	}
-	return rejectMixedPhaseProviders(o, cfg)
+	return validateModelSpecs(o, cfg)
 }
 
 // phaseModelSpec is one explicitly set plan, task, or review spec and the option names
@@ -3060,24 +3060,6 @@ func specProvider(spec string) string {
 		return config.ExternalReviewToolClaude
 	}
 	return parsed.Provider
-}
-
-// rejectMixedPhaseProviders rejects a plan or review spec whose provider differs from the
-// task provider. Executors and prompts already follow each phase's provider, but phase
-// naming, session timeouts, and the run record still read the task provider, so a mixed
-// run would label and time its review phases as the task provider's.
-func rejectMixedPhaseProviders(o opts, cfg *config.Config) error {
-	task := specProvider(resolveSpec(o.TaskModel, cfg.TaskModel))
-	for _, spec := range []phaseModelSpec{
-		{"--plan-model / plan_model", resolvePlanSpec(o, cfg)},
-		{"--review-model / review_model", resolveReviewSpec(o, cfg)},
-	} {
-		if provider := specProvider(spec.value); spec.value != "" && provider != task {
-			return fmt.Errorf("%s %q uses the %s provider, but the task provider is %s; "+
-				"per-phase providers are not supported yet", spec.flag, spec.value, provider, task)
-		}
-	}
-	return nil
 }
 
 // validateEffort rejects a reasoning effort loopai does not recognize. An empty effort
@@ -3669,10 +3651,19 @@ func cmuxRunModels(o opts, cfg *config.Config, externalReview externalReviewSele
 		return cmux.Models{}
 	}
 
-	label := func(b phaseBanner) string { return modelEffortLabel(b.Provider+" default", b.Model, b.Effort) }
-	planModel := label(resolvePhaseBanner("plan", resolvePlanSpec(o, cfg)))
-	taskModel := label(resolvePhaseBanner("task", resolveSpec(o.TaskModel, cfg.TaskModel)))
-	reviewModel := label(resolvePhaseBanner("review", resolveReviewSpec(o, cfg)))
+	planPhase := resolvePhaseBanner("plan", resolvePlanSpec(o, cfg))
+	task := resolvePhaseBanner("task", resolveSpec(o.TaskModel, cfg.TaskModel))
+	review := resolvePhaseBanner("review", resolveReviewSpec(o, cfg))
+	// a run whose phases share one provider keeps the bare model labels; once the phases
+	// disagree, every label names its provider so the pill shows which CLI is running
+	mixed := planPhase.Provider != task.Provider || task.Provider != review.Provider
+	label := func(b phaseBanner) string {
+		if mixed {
+			return b.Provider + " " + modelEffortLabel("default", b.Model, b.Effort)
+		}
+		return modelEffortLabel(b.Provider+" default", b.Model, b.Effort)
+	}
+	planModel, taskModel, reviewModel := label(planPhase), label(task), label(review)
 
 	externalReviewModel := externalReview.modelSpec()
 	if len(externalReview.Reviewers) > 1 {

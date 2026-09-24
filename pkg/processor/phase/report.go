@@ -49,7 +49,7 @@ func (p *ReportPhase) Run(ctx context.Context, facts string) (string, error) {
 	}
 	p.log.PrintSection(status.NewGenericSection("report step"))
 
-	execName := p.cfg.executorName()
+	execName := p.cfg.reviewExecutorName()
 	execResult := p.policy.Run(ctx, p.exec.Run, p.prompts.ReportPrompt(facts), execName)
 	result := execResult.Result
 

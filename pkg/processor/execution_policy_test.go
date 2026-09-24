@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
 	"github.com/umputun/ralphex/pkg/limits"
 	"github.com/umputun/ralphex/pkg/status"
@@ -374,19 +373,26 @@ func TestExecutionPolicy_SessionTimeoutIntegrationWithLimitRetry(t *testing.T) {
 	assert.True(t, result.TimedOut)
 }
 
-func TestExecutionPolicy_SessionTimeoutGatedByExecutorAndToolName(t *testing.T) {
+func TestExecutionPolicy_SessionTimeoutGatedByPhaseProvidersAndToolName(t *testing.T) {
 	tests := []struct {
 		name        string
-		executor    string
+		taskModel   string
+		reviewModel string
 		toolName    string
 		wantApplied bool
 	}{
-		{name: "default executor mode, claude tool", executor: config.ExecutorClaude, toolName: "claude", wantApplied: true},
-		{name: "default executor mode, codex external review", executor: config.ExecutorClaude, toolName: "codex", wantApplied: false},
-		{name: "default executor mode, custom external review", executor: config.ExecutorClaude, toolName: "custom", wantApplied: false},
-		{name: "codex mode, claude tool", executor: config.ExecutorCodex, toolName: "claude", wantApplied: true},
-		{name: "codex mode, codex tool", executor: config.ExecutorCodex, toolName: "codex", wantApplied: true},
-		{name: "codex mode, custom external review", executor: config.ExecutorCodex, toolName: "custom", wantApplied: true},
+		{name: "claude phases, claude tool", toolName: "claude", wantApplied: true},
+		{name: "claude phases, codex external review", toolName: "codex", wantApplied: false},
+		{name: "claude phases, custom external review", toolName: "custom", wantApplied: false},
+		{name: "codex phases, claude tool", taskModel: "codex:gpt-6-astra", toolName: "claude", wantApplied: true},
+		{name: "codex phases, codex tool", taskModel: "codex:gpt-6-astra", toolName: "codex", wantApplied: true},
+		{name: "codex phases, custom external review", taskModel: "codex:gpt-6-astra", toolName: "custom", wantApplied: true},
+		{name: "codex task with claude review, codex tool", taskModel: "codex:gpt-6-astra", reviewModel: "claude:opus",
+			toolName: "codex", wantApplied: true},
+		{name: "claude task with codex review, codex tool", taskModel: "claude:opus", reviewModel: "codex:gpt-6-astra",
+			toolName: "codex", wantApplied: true},
+		{name: "claude task with codex review, custom external review", taskModel: "claude:opus", reviewModel: "codex:gpt-6-astra",
+			toolName: "custom", wantApplied: true},
 	}
 
 	for _, tt := range tests {
@@ -394,8 +400,8 @@ func TestExecutionPolicy_SessionTimeoutGatedByExecutorAndToolName(t *testing.T) 
 			appCfg := testAppConfig(t)
 			appCfg.SessionTimeout = 50 * time.Millisecond
 			appCfg.SessionTimeoutSet = true
-			appCfg.TaskProvider, appCfg.ReviewProvider = tt.executor, tt.executor
-			policy := newRetryPolicy(retryPolicyOpts{cfg: Config{AppConfig: appCfg}, log: newMockLogger()})
+			cfg := Config{TaskModel: tt.taskModel, ReviewModel: tt.reviewModel, AppConfig: appCfg}
+			policy := newRetryPolicy(retryPolicyOpts{cfg: cfg, log: newMockLogger()})
 
 			var hasDeadline bool
 			run := func(ctx context.Context, _ string) executor.Result {
@@ -427,8 +433,7 @@ func TestExecutionPolicy_ExternalReviewBypassPreservesIdleTimeoutDiagnostic(t *t
 			appCfg := testAppConfig(t)
 			appCfg.SessionTimeout = 50 * time.Millisecond
 			appCfg.SessionTimeoutSet = true
-			appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorClaude, config.ExecutorClaude
-			policy := newRetryPolicy(retryPolicyOpts{cfg: Config{AppConfig: appCfg}, log: log})
+			policy := newRetryPolicy(retryPolicyOpts{cfg: Config{TaskModel: "claude:opus", AppConfig: appCfg}, log: log})
 
 			var hadDeadline bool
 			run := func(ctx context.Context, _ string) executor.Result {

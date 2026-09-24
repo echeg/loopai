@@ -266,11 +266,16 @@ that sets any of the above must be hand-edited once.
 - [x] run `go test ./pkg/processor/...` - must pass before next task
 
 ### Task 9: Phase-level naming and status reporting
-- [ ] write tests that `executorName()` (`pkg/processor/phase/phase.go:43`) reports the review provider for the review, external-eval, finalize, and report phases and the task provider for the task phase
-- [ ] write tests that the cmux reporter and startup banner show both providers when they differ
-- [ ] replace `phase.Config.isCodexExecutor()` with per-phase provider fields populated by `toPhaseConfig` (`pkg/processor/runner.go`)
-- [ ] update the section labels and `status` strings that name the executor
-- [ ] run `go test ./pkg/processor/... ./pkg/status/... ./pkg/cmux/... ./pkg/orca/...` - must pass before next task
+- [x] write tests that `executorName()` (`pkg/processor/phase/phase.go:43`) reports the review provider for the review, external-eval, finalize, and report phases and the task provider for the task phase
+- [x] write tests that the cmux reporter and startup banner show both providers when they differ
+- [x] replace `phase.Config.isCodexExecutor()` with per-phase provider fields populated by `toPhaseConfig` (`pkg/processor/runner.go`)
+- [x] update the section labels and `status` strings that name the executor
+- [x] run `go test ./pkg/processor/... ./pkg/status/... ./pkg/cmux/... ./pkg/orca/...` - must pass before next task
+  - ⚠️ `executorName()` split into `taskExecutorName()` (task, plan creation, `--gen-agents`: the task-slot executor) and `reviewExecutorName()` (review, external evaluation, finalize, report); `phase.Config` gained `TaskProvider`/`ReviewProvider`, filled by `toPhaseConfig` from `Config.taskProvider()`/`reviewProvider()`. The review section label and codex-timeout-is-an-error rule now follow the review provider. `pkg/status` constructors were already provider-parameterised and did not change
+  - ➕ processor `Config.isCodexExecutor()` deleted: the session-timeout gate now uses `runsCodexPhase()` (the same rule as the external codex reviewer's idle timeout), the post-external-review skip message names the review provider, and the run record's `executor` is `taskProvider()`. The processor no longer reads `AppConfig.PlanProvider`/`TaskProvider`/`ReviewProvider`
+  - ➕ `rejectMixedPhaseProviders`, its tests, and the "per-phase providers are not supported yet" acceptance case are deleted; that case now asserts a claude task runs under an inherited codex review model
+  - ➕ cmux labels prefix every phase with its provider once plan, task, and review providers differ (same-provider runs keep bare model labels); the startup banner already printed one provider per phase since Task 5
+  - ➕ the orca title reporter gained a nil-safe `SetPhaseExecutors(plan, review)`, so plan and review-block titles name their own provider instead of the task provider
 
 ### Task 10: Update Claude and Codex skills
 - [ ] write or update the assertions in `scripts/check-grill-skill_test.sh` and the skill-asset checks that cover the changed skill text

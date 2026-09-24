@@ -210,8 +210,9 @@ func (p *retryPolicy) Sleep(ctx context.Context, d time.Duration) error {
 func (p *retryPolicy) runWithSessionTimeout(ctx context.Context, run func(context.Context, string) executor.Result,
 	prompt string, toolName string) phase.ExecutionResult {
 	sessionTimeout := p.sessionTimeout()
-	codexMode := p.cfg.isCodexExecutor()
-	useTimeout := sessionTimeout > 0 && (codexMode || toolName == config.ExternalReviewToolClaude)
+	// claude sessions always get the timeout; any other tool gets it only when codex runs
+	// the task phase or the review block, matching the external codex reviewer's idle timeout
+	useTimeout := sessionTimeout > 0 && (p.cfg.runsCodexPhase() || toolName == config.ExternalReviewToolClaude)
 
 	if !useTimeout {
 		result := run(ctx, prompt)

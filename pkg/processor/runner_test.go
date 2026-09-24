@@ -274,9 +274,9 @@ func TestRunner_RunFull_CodexExecutor_ExplicitNoneSkipsExternalReview(t *testing
 	external := newMockExecutor(nil) // must never be called
 
 	appCfg := testAppConfig(t)
-	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 
 	cfg := Config{
+		TaskModel:          "codex:gpt-6-astra",
 		Mode:               ModeFull,
 		ExternalReviewTool: "none",
 		PlanFile:           planFile,
@@ -687,8 +687,8 @@ func TestRunner_CodexAndPostReview_ShortCircuitWhenCodexExecutorDisablesExternal
 	})
 
 	appCfg := testAppConfig(t)
-	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	cfg := Config{
+		TaskModel:          "codex:gpt-6-astra",
 		Mode:               ModeFull,
 		ExternalReviewTool: "none",
 		PlanFile:           planFile,
@@ -827,8 +827,8 @@ func TestRunner_Finalize_CodexExecutor_RunsAllPhasesThroughSharedInstance(t *tes
 	})
 
 	appCfg := testAppConfig(t)
-	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	cfg := Config{
+		TaskModel:          "codex:gpt-6-astra",
 		Mode:               ModeFull,
 		ExternalReviewTool: "none",
 		PlanFile:           planFile,
@@ -874,9 +874,9 @@ func TestRunner_CodexExternalOnly_ClaudeFindingsAreHandledByPrimaryCodex(t *test
 	}}
 
 	appCfg := testAppConfig(t)
-	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	cfg := Config{
-		Mode: ModeCodexOnly, MaxIterations: 50, IterationDelayMs: 1,
+		TaskModel: "codex:gpt-6-astra",
+		Mode:      ModeCodexOnly, MaxIterations: 50, IterationDelayMs: 1,
 		CodexEnabled: true, FinalizeEnabled: true,
 		ExternalReviewTool: config.ExternalReviewToolClaude, AppConfig: appCfg,
 	}
@@ -1573,7 +1573,6 @@ func TestRunner_ReviewPromptIsSharedAcrossExecutors(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
-			appCfg.TaskProvider, appCfg.ReviewProvider = tc.executor, tc.executor
 			appCfg.ReviewFirstPrompt = "FIRST_REVIEW_PROMPT"
 			appCfg.ReviewSecondPrompt = "SECOND_REVIEW_PROMPT"
 
@@ -1584,7 +1583,7 @@ func TestRunner_ReviewPromptIsSharedAcrossExecutors(t *testing.T) {
 				{Output: "done", Signal: status.CodexDone},         // claude eval (only hit in claude mode)
 			})
 			cfg := Config{
-				Mode: ModeReview, MaxIterations: 50, IterationDelayMs: 1,
+				Mode: ModeReview, MaxIterations: 50, IterationDelayMs: 1, TaskModel: tc.executor,
 				CodexEnabled: tc.executor == config.ExecutorClaude, AppConfig: appCfg,
 			}
 			r := NewWithExecutors(cfg, log, Executors{Task: task}, &status.PhaseHolder{})
@@ -1628,4 +1627,45 @@ func assertLogContains(t *testing.T, log *mocks.LoggerMock, text string) {
 		}
 	}
 	t.Fatalf("expected log containing %q, got %#v", text, log.PrintCalls())
+}
+
+func TestToPhaseConfig_CarriesEachPhaseProvider(t *testing.T) {
+	tests := []struct {
+		name        string
+		taskModel   string
+		reviewModel string
+		wantTask    string
+		wantReview  string
+	}{
+		{name: "unset specs default to claude", wantTask: "claude", wantReview: "claude"},
+		{name: "review inherits the task provider", taskModel: "codex:gpt-6-astra", wantTask: "codex", wantReview: "codex"},
+		{name: "codex task with claude review", taskModel: "codex:gpt-6-astra:medium", reviewModel: "claude:opus:high",
+			wantTask: "codex", wantReview: "claude"},
+		{name: "claude task with codex review", taskModel: "claude:opus", reviewModel: "codex::high",
+			wantTask: "claude", wantReview: "codex"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toPhaseConfig(Config{TaskModel: tt.taskModel, ReviewModel: tt.reviewModel})
+			assert.Equal(t, tt.wantTask, got.TaskProvider)
+			assert.Equal(t, tt.wantReview, got.ReviewProvider)
+		})
+	}
+}
+
+func TestRunner_PostReviewSkipNamesTheReviewProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		taskModel   string
+		reviewModel string
+		want        string
+	}{
+		{name: "claude review under a codex task", taskModel: "codex:gpt-6-astra", reviewModel: "claude:opus", want: "claude"},
+		{name: "codex review under a claude task", taskModel: "claude:opus", reviewModel: "codex:gpt-6-astra", want: "codex"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Runner{cfg: Config{TaskModel: tc.taskModel, ReviewModel: tc.reviewModel}}
+			assert.Equal(t, tc.want, r.reviewExecutorName())
+		})
+	}
 }

@@ -57,15 +57,6 @@ type Config struct {
 	CommandTimingHandler  func(string, time.Duration) // optional callback for completed shell commands
 }
 
-// isCodexExecutor reports whether the task provider is codex. returns false when
-// AppConfig is nil or the provider is anything else (claude is the default). the
-// executor factory and prompt rendering already follow each phase's own spec, but
-// phase naming and session timeouts still read this, so startup keeps rejecting a
-// plan or review provider that differs from the task provider until they do too.
-func (c Config) isCodexExecutor() bool {
-	return c.AppConfig != nil && c.AppConfig.TaskProvider == config.ExecutorCodex
-}
-
 func toPhaseConfig(c Config) phase.Config {
 	return phase.Config{
 		PlanDescription:       c.PlanDescription,
@@ -74,6 +65,8 @@ func toPhaseConfig(c Config) phase.Config {
 		ReviewPatience:        c.ReviewPatience,
 		FinalizeEnabled:       c.FinalizeEnabled,
 		ReportEnabled:         c.ReportEnabled,
+		TaskProvider:          c.taskProvider(),
+		ReviewProvider:        c.reviewProvider(),
 		AppConfig:             c.AppConfig,
 	}
 }
@@ -475,7 +468,7 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 	}
 
 	if !outcome.HadFindings {
-		r.log.Print("external review found no issues, skipping post-%s %s review", label, r.primaryExecutorName())
+		r.log.Print("external review found no issues, skipping post-%s %s review", label, r.reviewExecutorName())
 		if err := r.phases.finalize.Run(ctx); err != nil {
 			return fmt.Errorf("finalize phase: %w", err)
 		}
@@ -571,11 +564,10 @@ func (r *Runner) runInternalReview(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runner) primaryExecutorName() string {
-	if r.cfg.isCodexExecutor() {
-		return config.ExternalReviewToolCodex
-	}
-	return config.ExternalReviewToolClaude
+// reviewExecutorName names the provider running the review block, which also runs the
+// post-external review.
+func (r *Runner) reviewExecutorName() string {
+	return r.cfg.reviewProvider()
 }
 
 // runTasksOnly executes only task phase, skipping all reviews and report generation.

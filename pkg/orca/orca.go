@@ -51,7 +51,10 @@ type state struct {
 type Reporter struct {
 	writer   io.Writer
 	planFile string
-	executor string
+	executor string // task-slot provider; also every phase's until SetPhaseExecutors runs
+
+	planExecutor   string
+	reviewExecutor string
 
 	mu       sync.Mutex
 	stopOnce sync.Once
@@ -88,6 +91,35 @@ func newReporter(enabled bool, planFile, executor string, writer io.Writer, isTe
 		planFile: planFile,
 		executor: executorName(executor),
 	}
+}
+
+// SetPhaseExecutors names the providers of plan creation and of the review block (internal
+// review, external review, evaluation, finalize, report), so a run whose phases use different
+// providers titles each phase with its own. An empty provider means claude. It publishes nothing;
+// the next phase or section change carries the new name.
+func (r *Reporter) SetPhaseExecutors(planExecutor, reviewExecutor string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.planExecutor, r.reviewExecutor = executorName(planExecutor), executorName(reviewExecutor)
+}
+
+// executorForLocked returns the provider running the given phase.
+func (r *Reporter) executorForLocked(phase status.Phase) string {
+	switch phase {
+	case status.PhasePlan:
+		if r.planExecutor != "" {
+			return r.planExecutor
+		}
+	case status.PhaseReview, status.PhaseExternalReview, status.PhaseExternalEval, status.PhaseFinalize, status.PhaseReport:
+		if r.reviewExecutor != "" {
+			return r.reviewExecutor
+		}
+	default:
+	}
+	return r.executor
 }
 
 func executorName(executor string) string {
@@ -323,7 +355,7 @@ func (r *Reporter) Stop() {
 }
 
 func (r *Reporter) emitLocked() {
-	title := titleFor(r.current, r.executor)
+	title := titleFor(r.current, r.executorForLocked(r.current.phase))
 	if title != "" {
 		writeTitle(r.writer, title)
 	}

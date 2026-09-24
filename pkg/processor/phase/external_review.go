@@ -308,7 +308,7 @@ func (p *ExternalReviewPhase) runIteration(ctx context.Context, opts externalRev
 	}
 
 	if evalExecResult.TimedOut {
-		p.log.Print("%s eval session timed out, retrying %s iteration...", p.cfg.executorName(), opts.label)
+		p.log.Print("%s eval session timed out, retrying %s iteration...", p.cfg.reviewExecutorName(), opts.label)
 		return externalReviewIterationResult{
 			action: externalReviewRetry, reviewerOutput: reviewResult.Output,
 			evaluatorResponse: evalExecResult.Result.Output,
@@ -370,7 +370,7 @@ func (p *ExternalReviewPhase) snapshotBeforeEval() gitSnapshot {
 func (p *ExternalReviewPhase) runEvaluation(
 	loopCtx, parent context.Context, reviewer, reviewerLabel, output string,
 ) (ExecutionResult, error) {
-	evaluator := p.cfg.executorName()
+	evaluator := p.cfg.reviewExecutorName()
 	if p.phaseHolder != nil {
 		p.phaseHolder.Set(status.PhaseExternalEval)
 	}

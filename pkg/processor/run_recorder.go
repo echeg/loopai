@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/processor/phase"
 )
 
@@ -305,10 +304,7 @@ func (r *Runner) fillRunRecordFields() {
 	r.record.Plan = r.cfg.PlanFile
 	r.record.BaseRef = r.cfg.DefaultBranch
 	r.record.Mode = r.cfg.Mode
-	r.record.Executor = "claude"
-	if r.cfg.AppConfig != nil && r.cfg.AppConfig.TaskProvider != config.ExecutorClaude {
-		r.record.Executor = r.cfg.AppConfig.TaskProvider
-	}
+	r.record.Executor = r.cfg.taskProvider()
 	r.record.TaskModel = r.cfg.TaskModel
 	r.record.ReviewModel = r.cfg.ReviewModel
 	if r.record.ReviewModel == "" {

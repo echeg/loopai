@@ -48,6 +48,7 @@ func TestReporterNilReceiver(t *testing.T) {
 		{name: "finish", call: func() { r.Finish(true) }},
 		{name: "quiesce", call: func() { r.Quiesce() }},
 		{name: "stop", call: func() { r.Stop() }},
+		{name: "set phase executors", call: func() { r.SetPhaseExecutors("claude", "codex") }},
 	}
 
 	for _, tt := range tests {
@@ -87,6 +88,57 @@ func TestReporterOnPhaseAsObserver(t *testing.T) {
 			assert.Equal(t, tt.want, out.String(), "a repeated phase must not emit another title")
 		})
 	}
+}
+
+func TestReporterTitlesNameEachPhaseProvider(t *testing.T) {
+	tests := []struct {
+		name  string
+		phase status.Phase
+		want  string
+	}{
+		{name: "task runs on the task provider", phase: status.PhaseTask, want: "\x1b]0;◐ loopai · task · codex\a"},
+		{name: "plan runs on the plan provider", phase: status.PhasePlan, want: "\x1b]0;◐ loopai · plan · claude\a"},
+		{name: "review runs on the review provider", phase: status.PhaseReview, want: "\x1b]0;◐ loopai · review · claude\a"},
+		{name: "external review belongs to the review block", phase: status.PhaseExternalReview,
+			want: "\x1b]0;◐ loopai · external review · claude\a"},
+		{name: "evaluation runs on the review provider", phase: status.PhaseExternalEval, want: "\x1b]0;◐ loopai · external eval · claude\a"},
+		{name: "finalize runs on the review provider", phase: status.PhaseFinalize, want: "\x1b]0;◐ loopai · finalize · claude\a"},
+		{name: "report runs on the review provider", phase: status.PhaseReport, want: "\x1b]0;◐ loopai · report · claude\a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			r := requireReporter(t, &out, config.ExecutorCodex)
+			r.SetPhaseExecutors(config.ExternalReviewToolClaude, config.ExternalReviewToolClaude)
+			r.OnPhase("", tt.phase)
+			assert.Equal(t, tt.want, out.String())
+		})
+	}
+
+	t.Run("limit wait names the provider of the waiting phase", func(t *testing.T) {
+		var out bytes.Buffer
+		r := requireReporter(t, &out, config.ExecutorCodex)
+		r.SetPhaseExecutors("", config.ExternalReviewToolClaude)
+		r.OnPhase("", status.PhaseReview)
+		out.Reset()
+		r.OnPhase(status.PhaseReview, status.PhaseLimitWait)
+		assert.Equal(t, "\x1b]0;loopai · waiting for limit · claude\a", out.String())
+	})
+
+	t.Run("unset phase executors fall back to claude", func(t *testing.T) {
+		var out bytes.Buffer
+		r := requireReporter(t, &out, config.ExecutorCodex)
+		r.SetPhaseExecutors("", "")
+		r.OnPhase("", status.PhaseReview)
+		assert.Equal(t, "\x1b]0;◐ loopai · review · claude\a", out.String())
+	})
+
+	t.Run("without phase executors every phase names the constructor executor", func(t *testing.T) {
+		var out bytes.Buffer
+		r := requireReporter(t, &out, config.ExecutorCodex)
+		r.OnPhase("", status.PhaseReview)
+		assert.Equal(t, "\x1b]0;◐ loopai · review · codex\a", out.String())
+	})
 }
 
 func TestReporterRestoresDetailedTitleAfterLimitWait(t *testing.T) {

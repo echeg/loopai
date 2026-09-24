@@ -25,7 +25,10 @@ const (
 // a transient retry pattern, applied in the task and review retry loops.
 const retryBackoff = 5 * time.Second
 
-// Config contains the runner settings consumed by phase engines.
+// Config contains the runner settings consumed by phase engines. TaskProvider names the
+// provider of the task-slot executor (task, plan creation, agent generation); ReviewProvider
+// names the provider of the review block (internal review, external-findings evaluation,
+// finalize, report). An empty provider means claude.
 type Config struct {
 	PlanDescription       string
 	MaxIterations         int
@@ -33,15 +36,28 @@ type Config struct {
 	ReviewPatience        int
 	FinalizeEnabled       bool
 	ReportEnabled         bool
+	TaskProvider          string
+	ReviewProvider        string
 	AppConfig             *config.Config
 }
 
-func (c Config) isCodexExecutor() bool {
-	return c.AppConfig != nil && c.AppConfig.TaskProvider == config.ExecutorCodex
+// taskExecutorName names the provider running the task-slot executor.
+func (c Config) taskExecutorName() string {
+	return providerName(c.TaskProvider)
 }
 
-func (c Config) executorName() string {
-	if c.isCodexExecutor() {
+// reviewExecutorName names the provider running the review block.
+func (c Config) reviewExecutorName() string {
+	return providerName(c.ReviewProvider)
+}
+
+// reviewIsCodex reports whether codex runs the review block.
+func (c Config) reviewIsCodex() bool {
+	return c.reviewExecutorName() == config.ExternalReviewToolCodex
+}
+
+func providerName(provider string) string {
+	if provider == config.ExternalReviewToolCodex {
 		return config.ExternalReviewToolCodex
 	}
 	return config.ExternalReviewToolClaude

@@ -571,13 +571,32 @@ func TestExternalReviewPhaseRunCodexFindingsThenEmptyRequiresEvaluation(t *testi
 	assert.Len(t, review.RunCalls(), 2)
 }
 
+func TestExternalReviewPhaseEvaluatorFollowsReviewProvider(t *testing.T) {
+	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.ExternalReviewDone}})
+	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "issue in main.go:12"}})
+	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
+		cfg:  Config{MaxIterations: 50, TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorClaude},
+		tool: config.ExternalReviewToolCodex, review: review, external: external,
+	})
+	policy := newTestPolicy(phase.cfg, log)
+	phase.policy = policy
+
+	_, err := phase.Run(t.Context())
+
+	require.NoError(t, err)
+	labels := make([]string, 0, len(log.PrintSectionCalls()))
+	for _, call := range log.PrintSectionCalls() {
+		labels = append(labels, call.Section.Label)
+	}
+	assert.Contains(t, labels, "claude evaluating codex findings", "a claude review block evaluates under a codex task")
+	assert.Equal(t, []string{"codex", "claude"}, policy.toolNames, "reviewer runs as itself, evaluator as the review provider")
+}
+
 func TestExternalReviewPhaseRunClaudeFindingsEvaluatedByCodex(t *testing.T) {
 	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "dismissed finding"}, {Output: "done", Signal: status.ExternalReviewDone}})
 	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "issue in main.go:12"}, {Output: "NO ISSUES FOUND"}})
-	appCfg := testAppConfig(t)
-	appCfg.TaskProvider, appCfg.ReviewProvider = "codex", "codex"
 	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, AppConfig: appCfg}, tool: config.ExternalReviewToolClaude,
+		cfg: Config{MaxIterations: 50, TaskProvider: "claude", ReviewProvider: "codex"}, tool: config.ExternalReviewToolClaude,
 		review: review, external: external,
 	})
 
@@ -643,12 +662,11 @@ func TestExternalReviewPhaseRunCustomNoDuplicateOutput(t *testing.T) {
 
 func TestExternalReviewPhaseRunClaudeDoesNotDuplicateStreamedOutput(t *testing.T) {
 	log := newMockLogger("progress.txt")
-	appCfg := testAppConfig(t)
-	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{
-			MaxIterations: 50,
-			AppConfig:     appCfg,
+			MaxIterations:  50,
+			TaskProvider:   config.ExecutorCodex,
+			ReviewProvider: config.ExecutorCodex,
 		},
 		tool:     config.ExternalReviewToolClaude,
 		review:   newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.ExternalReviewDone}}),
