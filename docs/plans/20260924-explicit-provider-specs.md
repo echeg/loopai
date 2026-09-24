@@ -214,12 +214,15 @@ that sets any of the above must be hand-edited once.
 - [x] run `go test ./cmd/loopai/...` - must pass before next task
 
 ### Task 4: Strict validation of plan/task/review specs
-- [ ] write tests for a rewritten `validateModelSpecs` (`cmd/loopai/main.go:3016`): a bare `opus:high` errors naming `claude:opus:high`; a bare unknown model errors without a suggestion; `custom:...` is rejected for a phase spec; an unknown provider errors; an unknown effort still errors through `validateEffort`
-- [ ] write tests that `codex:opus` and `claude:gpt-6-astra` are rejected as provider/model mismatches, and that the check is skipped when the corresponding command is a wrapper (`IsRealClaudeCommand`/`IsRealCodexCommand`)
-- [ ] write a test that an unset spec is valid and that `review_model`/`plan_model` inherit `task_model` including its provider
-- [ ] rewrite `validateModelSpec` (`:3055`) over `ParseProviderSpec`, dropping the "looks like an external_reviewers entry" branch, which the unified grammar makes obsolete
-- [ ] fold `validateModelProviders` (`:3033`) into the same pass now that the provider is explicit rather than inferred
-- [ ] run `go test ./cmd/loopai/...` - must pass before next task
+- [x] write tests for a rewritten `validateModelSpecs` (`cmd/loopai/main.go:3016`): a bare `opus:high` errors naming `claude:opus:high`; a bare unknown model errors without a suggestion; `custom:...` is rejected for a phase spec; an unknown provider errors; an unknown effort still errors through `validateEffort`
+- [x] write tests that `codex:opus` and `claude:gpt-6-astra` are rejected as provider/model mismatches, and that the check is skipped when the corresponding command is a wrapper (`IsRealClaudeCommand`/`IsRealCodexCommand`)
+- [x] write a test that an unset spec is valid and that `review_model`/`plan_model` inherit `task_model` including its provider
+- [x] rewrite `validateModelSpec` (`:3055`) over `ParseProviderSpec`, dropping the "looks like an external_reviewers entry" branch, which the unified grammar makes obsolete
+- [x] fold `validateModelProviders` (`:3033`) into the same pass now that the provider is explicit rather than inferred
+  - ⚠️ `validateModelProviders` is gone; the mismatch check now compares each spec's model with its own provider and skips the provider whose command is a wrapper. Because the executors are still built for one provider per run until Tasks 5 and 7, `rejectMixedPhaseProviders` temporarily rejects a plan or review provider that differs from the task provider ("per-phase providers are not supported yet"); Task 5/7 must delete it together with its tests and the integration case that asserts it
+  - ➕ `executorModelSpec` strips the provider at the four processor `Config` sites and in `codexBannerForSpec`, because `parseModelEffort` still splits at the first colon; Task 7 must delete it when the factory takes `ParseProviderSpec` directly
+  - ➕ `applyCodexOverrides` now selects codex from the explicit `codex:` prefix instead of `ModelProvider`, and no longer skips selection under a claude wrapper command, so `codex:<model>` works with a wrapper in the interim; the `--plan-model`/`--task-model`/`--review-model` help text now documents `provider[:model[:effort]]`
+- [x] run `go test ./cmd/loopai/...` - must pass before next task
 
 ### Task 5: Per-phase provider resolution replaces applyCodexOverrides
 - [ ] write tests for a new `resolvePhaseProviders(o opts, cfg *config.Config) (phaseProviders, error)` covering: both phases codex, both claude, task codex with review claude, task claude with review codex, unset `task_model` defaulting to claude, `plan_model` following `task_model` when unset

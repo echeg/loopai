@@ -44,9 +44,9 @@ type opts struct {
 	MaxIterations           int           `short:"m" long:"max-iterations" description:"maximum task iterations (default: 50)"`
 	MaxExternalIterations   int           `long:"max-external-iterations" default:"0" description:"override external review iteration limit (0 = auto)"`
 	ReviewPatience          int           `long:"review-patience" default:"0" description:"terminate external review after N unchanged rounds (0 = disabled)"`
-	PlanModel               string        `long:"plan-model" description:"model for plan creation as model[:effort] (falls back to --task-model)"`
-	TaskModel               string        `long:"task-model" description:"model for task execution as model[:effort] (e.g., opus, opus:high, :medium)"`
-	ReviewModel             string        `long:"review-model" description:"model for review phases as model[:effort] (falls back to --task-model)"`
+	PlanModel               string        `long:"plan-model" description:"model for plan creation as provider[:model[:effort]] (falls back to --task-model)"`
+	TaskModel               string        `long:"task-model" description:"model for task execution as provider[:model[:effort]] (e.g., claude:opus:high, codex:gpt-6-astra, codex::medium)"`
+	ReviewModel             string        `long:"review-model" description:"model for review phases as provider[:model[:effort]] (falls back to --task-model)"`
 	ClaudeCommand           string        `long:"claude-command" description:"override claude-compatible command for this run"`
 	ClaudeArgs              string        `long:"claude-args" description:"override claude-compatible command args for this run"`
 	CodexArgs               string        `long:"codex-args" description:"extra arguments appended to every codex invocation (additive; explicit -c values override loopai's)"`
@@ -2944,71 +2944,109 @@ func shouldMovePlan(req executePlanRequest) bool {
 // deliberate downgrade into a hard failure.
 var knownEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 
-// validateStartupModels checks syntax before provider consistency at startup.
+// validateStartupModels checks every plan, task, and review spec at startup, before
+// external-review resolution, so a bad spec fails immediately instead of in the review
+// phase after a task phase that can run for hours.
 func validateStartupModels(o opts, cfg *config.Config) error {
 	if err := validateModelSpecs(o, cfg); err != nil {
 		return err
 	}
-	return validateModelProviders(o, cfg)
+	return rejectMixedPhaseProviders(o, cfg)
 }
 
-// validateModelSpecs rejects plan, task, and review model specs
-// that the executor cannot accept. The specs are parsed by splitting at the first colon,
-// which makes an external_reviewers entry (provider:model:effort) syntactically valid
-// input: "codex:gpt-6-astra:high" resolves to the model "codex" with the reasoning effort
-// "gpt-6-astra:high", and nothing downstream objects until the provider's API rejects the
-// model. That failure surfaces in the review phase, so a task phase can run for hours
-// first. Checking at startup turns it into an immediate, explanatory error.
-func validateModelSpecs(o opts, cfg *config.Config) error {
-	specs := []struct{ flag, value string }{
+// phaseModelSpec is one explicitly set plan, task, or review spec and the option names
+// an error reports it under.
+type phaseModelSpec struct{ flag, value string }
+
+// explicitPhaseSpecs returns the resolved plan, task, and review specs. Inherited values
+// are deliberately not listed: an unset plan_model or review_model takes task_model
+// whole, so a bad task_model is reported once, under its own name.
+func explicitPhaseSpecs(o opts, cfg *config.Config) []phaseModelSpec {
+	return []phaseModelSpec{
 		{"--plan-model / plan_model", resolveSpec(o.PlanModel, cfg.PlanModel)},
 		{"--task-model / task_model", resolveSpec(o.TaskModel, cfg.TaskModel)},
 		{"--review-model / review_model", resolveSpec(o.ReviewModel, cfg.ReviewModel)},
 	}
-	for _, spec := range specs {
-		if err := validateModelSpec(spec.flag, spec.value); err != nil {
+}
+
+// validateModelSpecs rejects plan, task, and review specs the executor cannot accept.
+// Validation runs on the resolved spec, so a CLI flag overriding a bad config value
+// passes exactly as the executors would see it.
+func validateModelSpecs(o opts, cfg *config.Config) error {
+	for _, spec := range explicitPhaseSpecs(o, cfg) {
+		if err := validateModelSpec(spec.flag, spec.value, cfg); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// validateModelProviders rejects recognizable models belonging to another provider.
-// Wrapper commands define their own model names and bypass this validation.
-func validateModelProviders(o opts, cfg *config.Config) error {
-	primary := primaryProvider(cfg)
-	if (primary == config.ExternalReviewToolClaude && !cfg.IsRealClaudeCommand()) ||
-		(primary == config.ExternalReviewToolCodex && !cfg.IsRealCodexCommand()) {
+// validateModelSpec checks one provider[:model[:effort]] value in a single pass: grammar,
+// provider, effort, and provider/model consistency. An empty spec means the defaults and
+// is left alone. A recognizable model belonging to the other provider (codex:opus) is
+// rejected unless that provider's command is a wrapper, which defines its own model names.
+func validateModelSpec(flag, spec string, cfg *config.Config) error {
+	if spec == "" {
 		return nil
 	}
-	specs := []struct{ flag, value string }{
-		{"--plan-model / plan_model", resolveSpec(o.PlanModel, cfg.PlanModel)},
-		{"--task-model / task_model", resolveSpec(o.TaskModel, cfg.TaskModel)},
-		{"--review-model / review_model", resolveSpec(o.ReviewModel, cfg.ReviewModel)},
+	parsed, err := config.ParseProviderSpec(spec)
+	if err != nil {
+		return fmt.Errorf("%s %w", flag, err)
 	}
-	for _, spec := range specs {
-		if provider := config.ModelProvider(spec.value); provider != "" && provider != primary {
-			return fmt.Errorf("%s %q is a %s model, but the executor is %s (%s)",
-				spec.flag, spec.value, provider, primary, cfg.ExecutorSource)
-		}
+	if parsed.Provider == config.ExternalReviewToolCustom {
+		return fmt.Errorf("%s %q names the custom provider, which is valid only in external_reviewers; "+
+			"expected claude or codex", flag, spec)
+	}
+	if err := validateEffort(fmt.Sprintf("%s value %q", flag, spec), parsed.Effort); err != nil {
+		return err
+	}
+	if !isRealProviderCommand(cfg, parsed.Provider) {
+		return nil
+	}
+	if model := config.ModelProvider(parsed.Model); model != "" && model != parsed.Provider {
+		return fmt.Errorf("%s %q names a %s model under the %s provider", flag, spec, model, parsed.Provider)
 	}
 	return nil
 }
 
-// validateModelSpec checks one model[:effort] value. An empty spec, a bare model, and a
-// model with an empty effort half all resolve to executor defaults and are left alone.
-func validateModelSpec(flag, spec string) error {
-	model, effort, hasEffort := strings.Cut(spec, ":")
-	if spec == "" || !hasEffort || effort == "" {
-		return nil
+// isRealProviderCommand reports whether the provider's configured command is the real
+// CLI rather than a wrapper, which maps model names of its own.
+func isRealProviderCommand(cfg *config.Config, provider string) bool {
+	switch provider {
+	case config.ExternalReviewToolClaude:
+		return cfg.IsRealClaudeCommand()
+	case config.ExternalReviewToolCodex:
+		return cfg.IsRealCodexCommand()
+	default:
+		return false
 	}
-	if strings.Contains(effort, ":") {
-		return fmt.Errorf(
-			"%s value %q looks like an external_reviewers entry (provider:model:effort); "+
-				"this option takes model[:effort], so %q would be sent as the model and %q as the reasoning effort",
-			flag, spec, model, effort)
+}
+
+// specProvider returns the provider of a valid spec, or claude for an unset one: an unset
+// task_model means claude by default, not by inference.
+func specProvider(spec string) string {
+	parsed, err := config.ParseProviderSpec(spec)
+	if err != nil {
+		return config.ExternalReviewToolClaude
 	}
-	return validateEffort(fmt.Sprintf("%s value %q", flag, spec), effort)
+	return parsed.Provider
+}
+
+// rejectMixedPhaseProviders rejects a plan or review spec whose provider differs from the
+// task provider. The executors are still built for one provider per run, so a mixed spec
+// would send one provider's model name to the other provider's CLI.
+func rejectMixedPhaseProviders(o opts, cfg *config.Config) error {
+	task := specProvider(resolveSpec(o.TaskModel, cfg.TaskModel))
+	for _, spec := range []phaseModelSpec{
+		{"--plan-model / plan_model", resolvePlanSpec(o, cfg)},
+		{"--review-model / review_model", resolveReviewSpec(o, cfg)},
+	} {
+		if provider := specProvider(spec.value); spec.value != "" && provider != task {
+			return fmt.Errorf("%s %q uses the %s provider, but the task provider is %s; "+
+				"per-phase providers are not supported yet", spec.flag, spec.value, provider, task)
+		}
+	}
+	return nil
 }
 
 // validateEffort rejects a reasoning effort loopai does not recognize. An empty effort
@@ -3045,8 +3083,7 @@ func validateReviewerProviders(selection externalReviewSelection, cfg *config.Co
 		if reviewer.Provider == config.ExternalReviewToolCustom || reviewer.Provider == "" {
 			continue
 		}
-		if (reviewer.Provider == config.ExternalReviewToolClaude && !cfg.IsRealClaudeCommand()) ||
-			(reviewer.Provider == config.ExternalReviewToolCodex && !cfg.IsRealCodexCommand()) {
+		if !isRealProviderCommand(cfg, reviewer.Provider) {
 			continue
 		}
 		provider := config.ModelProvider(reviewer.Model)
@@ -3383,8 +3420,8 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		FinalizeEnabled:       req.Config.FinalizeEnabled,
 		ReportEnabled:         req.Config.ReportEnabled,
 		DefaultBranch:         req.BaseRef,
-		TaskModel:             resolveSpec(o.TaskModel, req.Config.TaskModel),
-		ReviewModel:           resolveReviewSpec(o, req.Config),
+		TaskModel:             executorModelSpec(resolveSpec(o.TaskModel, req.Config.TaskModel)),
+		ReviewModel:           executorModelSpec(resolveReviewSpec(o, req.Config)),
 		AppConfig:             req.Config,
 		LimitRecovery:         req.LimitRecovery,
 		CommandTimingHandler:  commandTimingHandler,
@@ -3535,6 +3572,18 @@ func resolveSpec(cliVal, cfgVal string) string {
 	return cfgVal
 }
 
+// executorModelSpec strips the provider from a validated provider[:model[:effort]] spec,
+// returning the model[:effort] remainder the executors parse. The provider itself selects
+// the executor through applyCodexOverrides. A spec that does not parse is returned as is;
+// startup validation has already rejected it on every path that reaches an executor.
+func executorModelSpec(spec string) string {
+	parsed, err := config.ParseProviderSpec(spec)
+	if err != nil {
+		return spec
+	}
+	return parsed.ModelSpec()
+}
+
 // runHeaderParams returns run parameters recorded in the progress file header
 // and web dashboard. Primary model fields preserve the existing user-set-only
 // behavior; external fields record the effective provider and resolved model
@@ -3647,7 +3696,7 @@ func modelEffortLabel(fallback, model, effort string) string {
 }
 
 func codexBannerForSpec(spec string) codexBannerInfo {
-	model, effort, maxDropped := processor.ResolveCodexModelEffort(spec)
+	model, effort, maxDropped := processor.ResolveCodexModelEffort(executorModelSpec(spec))
 	return codexBannerInfo{
 		taskModel: model, taskEffort: effort,
 		reviewModel: model, reviewEffort: effort,
@@ -3789,7 +3838,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		NoColor:          o.NoColor,
 		IterationDelayMs: req.Config.IterationDelayMs,
 		DefaultBranch:    req.BaseRef,
-		TaskModel:        resolvePlanSpec(o, req.Config),
+		TaskModel:        executorModelSpec(resolvePlanSpec(o, req.Config)),
 		AppConfig:        req.Config,
 		LimitRecovery:    req.LimitRecovery,
 	}, planLog, holder)
@@ -3968,7 +4017,7 @@ func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *p
 		ProgressPath:  baseLog.Path(),
 		Debug:         o.Debug,
 		NoColor:       o.NoColor,
-		TaskModel:     resolveSpec(o.TaskModel, cfg.TaskModel),
+		TaskModel:     executorModelSpec(resolveSpec(o.TaskModel, cfg.TaskModel)),
 		AppConfig:     cfg,
 		LimitRecovery: recovery,
 	}, genLog, holder)
@@ -6015,23 +6064,21 @@ func enabledByCLI(configured, requested bool) bool {
 	return configured || requested
 }
 
-// applyCodexOverrides resolves the primary executor after config merging: a
-// recognizable task model infers the executor when ClaudeCommand is the real binary,
-// otherwise claude is the default. It records the source and validates
+// applyCodexOverrides resolves the primary executor after config merging: the provider
+// prefix of the task model selects the executor, and an unset or invalid task model
+// leaves the claude default (startup validation reports the invalid one). It records the source and validates
 // --pass-claude-md against the resolved executor. External review selection is
 // resolved separately and is valid for either primary.
 func applyCodexOverrides(o opts, cfg *config.Config, warnW io.Writer) error {
 	_ = warnW
 	cfg.Executor = config.ExecutorClaude
 	cfg.ExecutorSource = config.ExecutorSourceDefault
-	if cfg.IsRealClaudeCommand() {
-		spec := resolveSpec(o.TaskModel, cfg.TaskModel)
-		if provider := config.ModelProvider(spec); provider != "" {
-			if provider == config.ExternalReviewToolCodex {
-				cfg.Executor = config.ExecutorCodex
-			}
-			cfg.ExecutorSource = fmt.Sprintf(config.ExecutorSourceInferred, spec)
+	spec := resolveSpec(o.TaskModel, cfg.TaskModel)
+	if parsed, err := config.ParseProviderSpec(spec); err == nil {
+		if parsed.Provider == config.ExternalReviewToolCodex {
+			cfg.Executor = config.ExecutorCodex
 		}
+		cfg.ExecutorSource = fmt.Sprintf(config.ExecutorSourceInferred, spec)
 	}
 	if o.PassClaudeMd {
 		cfg.PassClaudeMd = true

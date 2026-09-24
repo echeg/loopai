@@ -4287,51 +4287,56 @@ func TestApplyCodexOverrides_ExecutorInference(t *testing.T) {
 		wantError bool
 	}{
 		{
-			name:     "CLI model overrides config model and infers codex",
-			cfg:      config.Config{TaskModel: "fable:high"},
-			opts:     opts{TaskModel: "gpt-6-astra:medium"},
-			executor: config.ExecutorCodex, source: `inferred from task_model "gpt-6-astra:medium"`,
+			name:     "CLI model overrides config model and selects codex",
+			cfg:      config.Config{TaskModel: "claude:fable:high"},
+			opts:     opts{TaskModel: "codex:gpt-6-astra:medium"},
+			executor: config.ExecutorCodex, source: `inferred from task_model "codex:gpt-6-astra:medium"`,
 		},
 		{
-			name:   "config model infers Claude",
-			cfg:    config.Config{TaskModel: "fable:high"},
-			source: `inferred from task_model "fable:high"`,
+			name:   "config model selects Claude",
+			cfg:    config.Config{TaskModel: "claude:fable:high"},
+			source: `inferred from task_model "claude:fable:high"`,
 		},
 		{
-			name:   "unknown model uses default",
-			cfg:    config.Config{TaskModel: "my-alias"},
-			source: "default",
+			name:     "provider prefix selects codex for an unknown model name",
+			cfg:      config.Config{TaskModel: "codex:my-alias"},
+			executor: config.ExecutorCodex, source: `inferred from task_model "codex:my-alias"`,
+		},
+		{
+			name:     "provider only selects codex",
+			cfg:      config.Config{TaskModel: "codex::high"},
+			executor: config.ExecutorCodex, source: `inferred from task_model "codex::high"`,
 		},
 		{
 			name:   "empty model uses default",
 			source: "default",
 		},
 		{
-			name:   "effort only uses default",
-			cfg:    config.Config{TaskModel: ":high"},
+			name:   "bare model is not inferred",
+			cfg:    config.Config{TaskModel: "gpt-6-astra:medium"},
 			source: "default",
 		},
 		{
-			name:   "Claude wrapper blocks inference",
-			cfg:    config.Config{TaskModel: "gpt-5", ClaudeCommand: "pi-as-claude.sh"},
-			source: "default",
+			name:     "Claude wrapper does not block an explicit codex provider",
+			cfg:      config.Config{TaskModel: "codex:gpt-5", ClaudeCommand: "pi-as-claude.sh"},
+			executor: config.ExecutorCodex, source: `inferred from task_model "codex:gpt-5"`,
 		},
 		{
-			name:     "codex wrapper does not block task model inference",
-			cfg:      config.Config{TaskModel: "gpt-6-astra:medium", CodexCommand: "my-codex-wrapper"},
-			executor: config.ExecutorCodex, source: `inferred from task_model "gpt-6-astra:medium"`,
+			name:     "codex wrapper does not block the codex provider",
+			cfg:      config.Config{TaskModel: "codex:gpt-6-astra:medium", CodexCommand: "my-codex-wrapper"},
+			executor: config.ExecutorCodex, source: `inferred from task_model "codex:gpt-6-astra:medium"`,
 		},
 		{
-			name:     "inferred codex accepts pass Claude md",
-			cfg:      config.Config{TaskModel: "gpt-6-astra"},
+			name:     "codex task model accepts pass Claude md",
+			cfg:      config.Config{TaskModel: "codex:gpt-6-astra"},
 			opts:     opts{PassClaudeMd: true},
-			executor: config.ExecutorCodex, source: `inferred from task_model "gpt-6-astra"`,
+			executor: config.ExecutorCodex, source: `inferred from task_model "codex:gpt-6-astra"`,
 		},
 		{
-			name:   "inferred Claude rejects pass Claude md",
-			cfg:    config.Config{TaskModel: "fable"},
+			name:   "Claude task model rejects pass Claude md",
+			cfg:    config.Config{TaskModel: "claude:fable"},
 			opts:   opts{PassClaudeMd: true},
-			source: `inferred from task_model "fable"`, wantError: true,
+			source: `inferred from task_model "claude:fable"`, wantError: true,
 		},
 	}
 	for _, tt := range tests {
@@ -4354,7 +4359,7 @@ func TestApplyCodexOverrides_ExecutorInference(t *testing.T) {
 func TestApplyCodexOverrides_AllowsSymmetricExternalReview(t *testing.T) {
 	t.Run("cli_codex_task_model_plus_external_only_allowed", func(t *testing.T) {
 		cfg := &config.Config{}
-		o := parseTestOpts(t, "--task-model", "gpt-6-astra", "--external-only")
+		o := parseTestOpts(t, "--task-model", "codex:gpt-6-astra", "--external-only")
 		var warnBuf bytes.Buffer
 		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
 		assert.Equal(t, config.ExecutorCodex, cfg.Executor)
@@ -4398,7 +4403,7 @@ func TestApplyCLIOverrides_CommitRequiresEffectiveWorktree(t *testing.T) {
 func TestCodexTaskModel_ApplyCLIOverrides(t *testing.T) {
 	t.Run("pass_claude_md_flag_sets_pass_claude_md", func(t *testing.T) {
 		cfg := &config.Config{}
-		o := parseTestOpts(t, "--task-model", "gpt-6-astra", "--pass-claude-md")
+		o := parseTestOpts(t, "--task-model", "codex:gpt-6-astra", "--pass-claude-md")
 
 		require.NoError(t, applyCLIOverrides(o, cfg))
 
@@ -4417,7 +4422,7 @@ func TestCodexTaskModel_ApplyCLIOverrides(t *testing.T) {
 	t.Run("config_codex_task_model_plus_cli_pass_claude_md_succeeds", func(t *testing.T) {
 		// post-merge gate: --pass-claude-md is acceptable when a codex task_model
 		// comes from config file rather than the CLI.
-		cfg := &config.Config{TaskModel: "gpt-6-astra"}
+		cfg := &config.Config{TaskModel: "codex:gpt-6-astra"}
 		o := parseTestOpts(t, "--pass-claude-md")
 		var warnBuf bytes.Buffer
 
@@ -13025,34 +13030,100 @@ func TestValidateModelSpec(t *testing.T) {
 	tests := []struct {
 		name    string
 		spec    string
+		cfg     config.Config
 		wantErr string
 	}{
 		{name: "empty spec uses executor defaults", spec: ""},
-		{name: "bare model", spec: "opus"},
-		{name: "model with effort", spec: "gpt-5.6-sol:high"},
-		{name: "effort only", spec: ":medium"},
-		{name: "trailing colon is no effort at all", spec: "opus:"},
-		{name: "effort matching is case-insensitive", spec: "opus:XHigh"},
-		{name: "claude-only max stays accepted so codex keeps warning and downgrading", spec: "opus:max"},
+		{name: "provider only", spec: "claude"},
+		{name: "claude model", spec: "claude:opus"},
+		{name: "codex model with effort", spec: "codex:gpt-6-astra:high"},
+		{name: "default model with explicit effort", spec: "codex::medium"},
+		{name: "trailing colon is no effort at all", spec: "claude:opus:"},
+		{name: "provider and effort matching is case-insensitive", spec: "Claude:opus:XHigh"},
+		{name: "claude-only max stays accepted so codex keeps warning and downgrading", spec: "codex:gpt-6-astra:max"},
+		{name: "unknown model name under a known provider", spec: "codex:my-alias:high"},
 		{
-			name:    "reviewer chain entry is named for what it is",
-			spec:    "codex:gpt-6-astra:high",
-			wantErr: `looks like an external_reviewers entry`,
+			name:    "bare claude model names the prefixed rewrite",
+			spec:    "opus:high",
+			wantErr: `"opus:high" is missing a provider prefix; write "claude:opus:high"`,
 		},
 		{
-			name:    "reviewer chain entry reports both halves it would have produced",
-			spec:    "codex:gpt-6-astra:high",
-			wantErr: `"codex" would be sent as the model and "gpt-6-astra:high" as the reasoning effort`,
+			name:    "bare codex model names the prefixed rewrite",
+			spec:    "gpt-6-astra:medium",
+			wantErr: `"gpt-6-astra:medium" is missing a provider prefix; write "codex:gpt-6-astra:medium"`,
+		},
+		{
+			name:    "bare unknown model gets no suggestion",
+			spec:    "my-alias",
+			wantErr: `names unknown provider "my-alias"; expected claude, codex, or custom`,
+		},
+		{
+			name:    "unknown provider",
+			spec:    "gemini:pro:high",
+			wantErr: `names unknown provider "gemini"`,
+		},
+		{
+			name:    "empty provider",
+			spec:    ":medium",
+			wantErr: "missing a provider prefix",
+		},
+		{
+			name:    "four segments",
+			spec:    "codex:gpt-6-astra:high:extra",
+			wantErr: "too many ':' separators",
+		},
+		{
+			name:    "custom is reviewer-only",
+			spec:    "custom:my-model",
+			wantErr: "valid only in external_reviewers",
 		},
 		{
 			name:    "misspelled effort",
-			spec:    "opus:hgih",
+			spec:    "claude:opus:hgih",
 			wantErr: `unknown reasoning effort "hgih" (valid: low, medium, high, xhigh, max)`,
+		},
+		{
+			name:    "codex provider naming a claude model",
+			spec:    "codex:opus",
+			wantErr: `"codex:opus" names a claude model under the codex provider`,
+		},
+		{
+			name:    "claude provider naming a codex model",
+			spec:    "claude:gpt-6-astra:high",
+			wantErr: `"claude:gpt-6-astra:high" names a codex model under the claude provider`,
+		},
+		{
+			name: "codex wrapper maps its own model names",
+			spec: "codex:opus",
+			cfg:  config.Config{CodexCommand: "my-codex-wrapper"},
+		},
+		{
+			name: "claude wrapper maps its own model names",
+			spec: "claude:gpt-6-astra:high",
+			cfg:  config.Config{ClaudeCommand: "scripts/pi-as-claude/pi-as-claude.sh"},
+		},
+		{
+			name:    "claude wrapper does not exempt the codex provider",
+			spec:    "codex:fable",
+			cfg:     config.Config{ClaudeCommand: "scripts/pi-as-claude/pi-as-claude.sh"},
+			wantErr: "names a claude model under the codex provider",
+		},
+		{
+			name:    "codex wrapper does not exempt the claude provider",
+			spec:    "claude:gpt-5",
+			cfg:     config.Config{CodexCommand: "my-codex-wrapper"},
+			wantErr: "names a codex model under the claude provider",
+		},
+		{
+			name:    "wrapper does not exempt the effort check",
+			spec:    "codex:opus:hgih",
+			cfg:     config.Config{CodexCommand: "my-codex-wrapper"},
+			wantErr: `unknown reasoning effort "hgih"`,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateModelSpec("--review-model / review_model", tt.spec)
+			err := validateModelSpec("--review-model / review_model", tt.spec, &tt.cfg)
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -13074,18 +13145,18 @@ func TestValidateModelSpecs(t *testing.T) {
 		}{
 			{
 				name: "plan model from cli",
-				o:    opts{PlanModel: "claude:opus:high"},
+				o:    opts{PlanModel: "opus:high"},
 				cfg:  &config.Config{},
-				want: "--plan-model / plan_model",
+				want: `--plan-model / plan_model "opus:high" is missing a provider prefix; write "claude:opus:high"`,
 			},
 			{
 				name: "task model from config",
-				cfg:  &config.Config{TaskModel: "opus:nope"},
-				want: "--task-model / task_model",
+				cfg:  &config.Config{TaskModel: "gpt-6-astra:medium"},
+				want: `--task-model / task_model "gpt-6-astra:medium" is missing a provider prefix; write "codex:gpt-6-astra:medium"`,
 			},
 			{
-				name: "review model from config, the reported failure",
-				cfg:  &config.Config{ReviewModel: "codex:gpt-6-astra:high"},
+				name: "review model from config",
+				cfg:  &config.Config{ReviewModel: "codex:opus"},
 				want: "--review-model / review_model",
 			},
 		}
@@ -13097,15 +13168,38 @@ func TestValidateModelSpecs(t *testing.T) {
 	})
 
 	t.Run("cli overrides a bad config value instead of tripping over it", func(t *testing.T) {
-		o := opts{ReviewModel: "gpt-5.6-sol:high"}
-		cfg := &config.Config{ReviewModel: "codex:gpt-6-astra:high"}
+		o := opts{ReviewModel: "codex:gpt-5.6-sol:high"}
+		cfg := &config.Config{ReviewModel: "gpt-6-astra:high"}
 		require.NoError(t, validateModelSpecs(o, cfg), "resolution order must match what the executors receive")
 	})
 
-	t.Run("the reported working configuration passes", func(t *testing.T) {
-		cfg := &config.Config{TaskModel: "gpt-5.6-sol:medium", ReviewModel: "gpt-5.6-sol:high"}
+	t.Run("unset specs are valid", func(t *testing.T) {
+		require.NoError(t, validateModelSpecs(opts{}, &config.Config{}))
+	})
+
+	t.Run("an inherited bad task model is reported once under its own name", func(t *testing.T) {
+		err := validateModelSpecs(opts{}, &config.Config{TaskModel: "opus"})
+		require.ErrorContains(t, err, "--task-model / task_model")
+		assert.NotContains(t, err.Error(), "plan_model")
+		assert.NotContains(t, err.Error(), "review_model")
+	})
+
+	t.Run("the migrated working configuration passes", func(t *testing.T) {
+		cfg := &config.Config{TaskModel: "codex:gpt-5.6-sol:medium", ReviewModel: "codex:gpt-5.6-sol:high"}
 		require.NoError(t, validateModelSpecs(opts{}, cfg))
 	})
+}
+
+func TestPhaseSpecsInheritTaskModel(t *testing.T) {
+	cfg := &config.Config{TaskModel: "codex:gpt-6-astra:high"}
+	assert.Equal(t, "codex:gpt-6-astra:high", resolvePlanSpec(opts{}, cfg), "plan_model inherits task_model whole")
+	assert.Equal(t, "codex:gpt-6-astra:high", resolveReviewSpec(opts{}, cfg), "review_model inherits task_model whole")
+	assert.Equal(t, config.ExternalReviewToolCodex, specProvider(resolveReviewSpec(opts{}, cfg)))
+	assert.Equal(t, config.ExternalReviewToolClaude, specProvider(""), "an unset task_model means claude")
+
+	o := opts{TaskModel: "claude:opus"}
+	assert.Equal(t, "claude:opus", resolvePlanSpec(o, cfg), "a cli task model is what the phases inherit")
+	assert.Equal(t, "claude:opus", resolveReviewSpec(o, cfg))
 }
 
 func TestValidateReviewerEfforts(t *testing.T) {
@@ -13288,33 +13382,41 @@ func TestRunResolvesKeepAwakeFromConfig(t *testing.T) {
 	}
 }
 
-func TestValidateModelProviders(t *testing.T) {
+func TestRejectMixedPhaseProviders(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		o    opts
 		cfg  config.Config
-		want []string
+		want string
 	}{
-		{name: "default claude review mismatch", cfg: config.Config{ReviewModel: "gpt-6-astra:high", ExecutorSource: config.ExecutorSourceDefault}, want: []string{"review_model", "gpt-6-astra:high", "codex model", "claude (default)"}},
-		{name: "inferred codex task mismatch", o: opts{TaskModel: "fable:high"}, cfg: config.Config{Executor: config.ExecutorCodex, ExecutorSource: `inferred from task_model "gpt-6-astra"`}, want: []string{"--task-model", "claude model", `(inferred from task_model "gpt-6-astra")`}},
-		{name: "inferred codex plan mismatch", cfg: config.Config{Executor: config.ExecutorCodex, ExecutorSource: `inferred from task_model "gpt-6-astra"`, PlanModel: "opus"}, want: []string{"plan_model", "inferred from task_model"}},
-		{name: "matching claude", cfg: config.Config{PlanModel: "opus", TaskModel: "fable:high", ReviewModel: "sonnet"}},
-		{name: "matching codex", cfg: config.Config{Executor: config.ExecutorCodex, PlanModel: "o3", TaskModel: "gpt-6-astra:medium", ReviewModel: "codex-mini"}},
-		{name: "unknown", cfg: config.Config{TaskModel: "my-alias"}},
-		{name: "claude wrapper", cfg: config.Config{ClaudeCommand: "pi-as-claude.sh", ReviewModel: "gpt-5"}},
-		{name: "codex wrapper", cfg: config.Config{Executor: config.ExecutorCodex, CodexCommand: "my-codex-wrapper", TaskModel: "fable"}},
-		{name: "effort only", cfg: config.Config{TaskModel: ":high"}},
-		{name: "cli overrides config", o: opts{PlanModel: "opus", TaskModel: "fable", ReviewModel: "sonnet"}, cfg: config.Config{PlanModel: "gpt-5", TaskModel: "gpt-5", ReviewModel: "gpt-5"}},
+		{name: "all unset"},
+		{name: "same provider everywhere", cfg: config.Config{PlanModel: "codex:o3", TaskModel: "codex:gpt-6-astra:medium", ReviewModel: "codex::high"}},
+		{name: "inherited specs share the task provider", cfg: config.Config{TaskModel: "codex:gpt-6-astra"}},
+		{name: "claude review under the unset claude default", cfg: config.Config{ReviewModel: "claude:opus:xhigh"}},
+		{
+			name: "codex review under a claude task",
+			cfg:  config.Config{TaskModel: "claude:fable:high", ReviewModel: "codex:gpt-6-astra:high"},
+			want: `--review-model / review_model "codex:gpt-6-astra:high" uses the codex provider, but the task provider is claude`,
+		},
+		{
+			name: "claude plan under a codex task from cli",
+			o:    opts{TaskModel: "codex:gpt-6-astra"},
+			cfg:  config.Config{PlanModel: "claude:opus"},
+			want: `--plan-model / plan_model "claude:opus" uses the claude provider, but the task provider is codex`,
+		},
+		{
+			name: "codex review under the unset claude default",
+			cfg:  config.Config{ReviewModel: "codex:gpt-6-astra"},
+			want: "but the task provider is claude",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateModelProviders(tt.o, &tt.cfg)
-			if len(tt.want) == 0 {
+			err := rejectMixedPhaseProviders(tt.o, &tt.cfg)
+			if tt.want == "" {
 				require.NoError(t, err)
 				return
 			}
-			for _, want := range tt.want {
-				require.ErrorContains(t, err, want)
-			}
+			require.ErrorContains(t, err, tt.want)
 		})
 	}
 }
@@ -13397,14 +13499,31 @@ func TestResolveExternalReviewSelectionValidatesProviders(t *testing.T) {
 
 func TestValidateStartupModels(t *testing.T) {
 	t.Run("syntax checked first", func(t *testing.T) {
-		err := validateStartupModels(opts{}, &config.Config{TaskModel: "gpt-5:hgih"})
+		err := validateStartupModels(opts{}, &config.Config{TaskModel: "codex:gpt-5:hgih", ReviewModel: "claude:opus"})
 		require.ErrorContains(t, err, "unknown reasoning effort")
 	})
-	t.Run("provider checked after syntax", func(t *testing.T) {
-		err := validateStartupModels(opts{}, &config.Config{TaskModel: "gpt-5:high"})
-		require.ErrorContains(t, err, "codex model")
+	t.Run("provider/model mismatch", func(t *testing.T) {
+		err := validateStartupModels(opts{}, &config.Config{TaskModel: "claude:gpt-5:high"})
+		require.ErrorContains(t, err, "names a codex model under the claude provider")
+	})
+	t.Run("mixed phase providers checked after syntax", func(t *testing.T) {
+		err := validateStartupModels(opts{}, &config.Config{TaskModel: "codex:gpt-5", ReviewModel: "claude:opus"})
+		require.ErrorContains(t, err, "per-phase providers are not supported yet")
 	})
 	t.Run("matching provider passes", func(t *testing.T) {
-		require.NoError(t, validateStartupModels(opts{}, &config.Config{TaskModel: "fable:high"}))
+		require.NoError(t, validateStartupModels(opts{}, &config.Config{TaskModel: "claude:fable:high"}))
 	})
+}
+
+func TestExecutorModelSpec(t *testing.T) {
+	for spec, want := range map[string]string{
+		"":                       "",
+		"claude":                 "",
+		"claude:opus":            "opus",
+		"codex:gpt-6-astra:high": "gpt-6-astra:high",
+		"codex::medium":          ":medium",
+		"opus:high":              "opus:high",
+	} {
+		assert.Equal(t, want, executorModelSpec(spec), spec)
+	}
 }

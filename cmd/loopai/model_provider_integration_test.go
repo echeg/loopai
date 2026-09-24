@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,41 +12,50 @@ import (
 )
 
 func TestRunModelProviderAcceptance(t *testing.T) {
-	const inheritedModels = "task_model = gpt-6-astra:medium\nreview_model = gpt-6-astra:high\n"
+	const inheritedModels = "task_model = codex:gpt-6-astra:medium\nreview_model = codex:gpt-6-astra:high\n"
 	tests := []struct {
 		name        string
 		global      string
 		local       string
 		args        []string
 		wantCommand string
+		wantArgs    string // substring of the logged executor arguments
 		wantError   string
 		wantErrPart string // substring match for errors carrying temporary paths
 	}{
 		{
 			name:      "removed codex flag names its replacement",
-			args:      []string{"--codex", "--task-model", "fable:high"},
+			args:      []string{"--codex", "--task-model", "claude:fable:high"},
 			wantError: "--codex was removed; set the provider in the model spec instead, e.g. --task-model codex:gpt-6-astra:medium",
 		},
 		{
-			name:        "global task model infers codex",
+			name:        "global task model provider selects codex and strips the provider",
 			global:      inheritedModels,
 			wantCommand: "codex",
+			wantArgs:    `model="gpt-6-astra"`,
 		},
 		{
 			name:        "CLI models switch to Claude with codex reviewer",
 			global:      inheritedModels,
-			args:        []string{"--task-model", "fable:high", "--review-model", "fable:high", "--external-reviewers", "codex:gpt-6-astra:high"},
+			args:        []string{"--task-model", "claude:fable:high", "--review-model", "claude:fable:high", "--external-reviewers", "codex:gpt-6-astra:high"},
 			wantCommand: "claude",
+			wantArgs:    "--model fable --effort high",
 		},
 		{
-			name:      "inherited review model conflicts with inferred Claude",
-			global:    inheritedModels,
-			args:      []string{"--task-model", "fable:high", "--external-reviewers", "codex:gpt-6-astra:high"},
-			wantError: `--review-model / review_model "gpt-6-astra:high" is a codex model, but the executor is claude (inferred from task_model "fable:high")`,
+			name:      "bare task model names the prefixed rewrite",
+			args:      []string{"--task-model", "gpt-6-astra:medium"},
+			wantError: `--task-model / task_model "gpt-6-astra:medium" is missing a provider prefix; write "codex:gpt-6-astra:medium"`,
+		},
+		{
+			name:   "inherited review model conflicts with the Claude task provider",
+			global: inheritedModels,
+			args:   []string{"--task-model", "claude:fable:high", "--external-reviewers", "codex:gpt-6-astra:high"},
+			wantError: `--review-model / review_model "codex:gpt-6-astra:high" uses the codex provider, ` +
+				`but the task provider is claude; per-phase providers are not supported yet`,
 		},
 		{
 			name:        "removed global executor key fails before any executor starts",
-			global:      "executor = codex\ntask_model = gpt-6-astra:medium\n",
+			global:      "executor = codex\ntask_model = codex:gpt-6-astra:medium\n",
 			wantErrPart: "parse global config",
 		},
 		{
@@ -55,9 +65,10 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 			wantErrPart: "parse local config",
 		},
 		{
-			name:        "codex wrapper runs an inferred codex task",
-			global:      "codex_command = codex-wrapper\ntask_model = gpt-6-astra:medium\n",
+			name:        "codex wrapper runs a codex task",
+			global:      "codex_command = codex-wrapper\ntask_model = codex:gpt-6-astra:medium\n",
 			wantCommand: "codex-wrapper",
+			wantArgs:    `model="gpt-6-astra"`,
 		},
 	}
 	for _, tt := range tests {
@@ -81,7 +92,7 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 					response = `{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}`
 				}
 				writeExecutable(t, filepath.Join(binDir, command), "#!/bin/sh\n"+
-					"printf '%s\\n' '"+command+"' >> \"$MODEL_PROVIDER_INVOCATIONS\"\n"+
+					"printf '%s %s\\n' '"+command+"' \"$*\" >> \"$MODEL_PROVIDER_INVOCATIONS\"\n"+
 					"printf '%s\\n' '# Acceptance' '' '### Task 1: Verify' '' '- [x] fixture task' > plan.md\n"+
 					"printf '%s\\n' '"+response+"'\n")
 			}
@@ -117,7 +128,10 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 			require.NoError(t, run(t.Context(), o))
 			invoked, readErr := os.ReadFile(invocationLog) //nolint:gosec // test-owned temporary path
 			require.NoError(t, readErr)
-			assert.Equal(t, tt.wantCommand+"\n", string(invoked))
+			command, args, _ := strings.Cut(strings.TrimSuffix(string(invoked), "\n"), " ")
+			assert.Equal(t, tt.wantCommand, command)
+			assert.NotContains(t, args, "\n", "exactly one executor invocation")
+			assert.Contains(t, args, tt.wantArgs, "the executor must receive the model without its provider")
 		})
 	}
 }
