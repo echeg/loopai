@@ -76,6 +76,29 @@ add_skill loopai-extra
 expect_failure "unexpected skill inventory"
 rm -rf "$fixture/assets/claude/skills/loopai-extra" "$fixture/assets/claude/loopai-extra.md"
 
+# a skill teaching a removed loopai flag or key would stop loopai at startup
+for spelling in 'loopai --codex docs/plans/x.md' \
+	'loopai --codex' \
+	'loopai --codex-only' \
+	'--external-review-tool codex' \
+	'--external-review-model opus' \
+	'external_review_tool = auto' \
+	'external_review_model = opus' \
+	'codex_model = gpt-5.5' \
+	'codex_reasoning_effort = xhigh' \
+	'set `executor` to codex' \
+	'executor = codex'; do
+	printf '%s\n' "$spelling" >>"$fixture/assets/claude/skills/loopai-orca/SKILL.md"
+	expect_failure "removed loopai flag or key in skill"
+	printf '%s\n' '---' 'name: loopai-orca' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai-orca/SKILL.md"
+done
+# the surviving codex flag, the per-phase spec grammar, and a migration hint stay allowed
+printf '%s\n' "loopai --codex-args='-c x=1' --task-model codex:gpt-6-astra:medium" 'the codex executor' \
+	'`--codex` was removed; write `--task-model codex:<model>`' \
+	>>"$fixture/assets/claude/skills/loopai-orca/SKILL.md"
+"$checker" "$fixture"
+printf '%s\n' '---' 'name: loopai-orca' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai-orca/SKILL.md"
+
 mkdir -p "$fixture/assets/claude/nested"
 ln -s ./missing.asset "$fixture/assets/claude/nested/broken.asset"
 expect_failure "broken symlink"

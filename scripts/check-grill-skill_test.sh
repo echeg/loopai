@@ -65,6 +65,7 @@ assert_contains "missing empty compare handling" 'If it is empty or whitespace, 
 # shellcheck disable=SC2016 # Backticks are literal skill text, not shell syntax.
 assert_contains "missing Codex wrapper requirement" 'call `claude -p` or `codex exec` directly'
 assert_contains "missing Claude wrapper requirement" 'Never launch a plan-consuming Agent with inherited repository permissions'
+assert_contains "missing loopai plan-mode substitution ban" 'or substitute `loopai --plan` under any `--plan-model`'
 assert_contains "missing bounded plan input" '64 MiB or more than 512 MiB total'
 assert_contains "missing ignored-file snapshot exclusion" 'tracked and non-ignored untracked single-link regular files'
 assert_contains "missing private-path case-alias exclusion" 'recovery paths, ignored files, links, and their case aliases'

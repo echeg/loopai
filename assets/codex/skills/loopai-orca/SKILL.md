@@ -1,6 +1,6 @@
 ---
 name: loopai-orca
-description: "Run an existing loopai plan inside an Orca-managed worktree and terminal tab (Orca desktop app, onorca.dev) so the run appears as an Orca card with live status, optionally with executor, model, or external-reviewer overrides. Triggers: loopai-orca, run plan in orca, launch loopai in orca worktree."
+description: "Run an existing loopai plan inside an Orca-managed worktree and terminal tab (Orca desktop app, onorca.dev) so the run appears as an Orca card with live status, optionally with per-phase provider/model or external-reviewer overrides. Triggers: loopai-orca, run plan in orca, launch loopai in orca worktree."
 metadata:
   short-description: Run a loopai plan in an Orca worktree
 ---
@@ -33,14 +33,14 @@ Split the request on whitespace. The first token that does not start with `--` i
 
 | Flag | Form | Value |
 |------|------|-------|
-| `--codex` | bare | none |
-| `--task-model` | `--task-model M` or `--task-model=M` | one token |
-| `--review-model` | `--review-model M` or `--review-model=M` | one token |
+| `--task-model` | `--task-model SPEC` or `=SPEC` | one token: `provider[:model[:effort]]` |
+| `--review-model` | `--review-model SPEC` or `=SPEC` | one token: `provider[:model[:effort]]` |
 | `--external-reviewers` | `--external-reviewers LIST` or `=LIST` | one token: comma-separated `provider[:model[:effort]]` |
 
+- `--task-model` and `--review-model` values must start with a provider: `claude` or `codex`, alone or followed by `:model[:effort]` (`codex:gpt-6-astra:medium`, `claude:opus:high`, `codex::medium` for the codex default model). loopai rejects a bare `opus:high` at startup, after the worktree and tab exist, so stop here and suggest the prefixed spelling.
 - Every value must match `^[A-Za-z0-9._:,+-]+$`. `FLAGS` is spliced into the `--command` string a shell executes in Step 5, so a value carrying whitespace, quotes, `$`, or `;` is rejected, not escaped.
-- Any token outside the table - `--worktree`, `--commit`, `--serve`, `--plan`, `--codex-args`, a second plan path - a flag given twice, or a value-taking flag without a value **stops the run**. Report the offending token verbatim and state that only the four flags above pass through. Never forward it: `--worktree` would nest a second checkout inside Orca's worktree and `--serve` would block the tab after the run.
-- Forwarded flags override the matching `.loopai/config` keys carried over in Step 4 (`executor`, `task_model`, `review_model`, `external_reviewers`); a flag not given leaves the config value in force.
+- Any token outside the table - `--worktree`, `--commit`, `--serve`, `--plan`, `--codex-args`, a second plan path - a flag given twice, or a value-taking flag without a value **stops the run**. Report the offending token verbatim and state that only the three flags above pass through. `--codex` was removed from loopai: for it, also say to write `--task-model codex:<model>[:effort]` instead. Never forward it: `--worktree` would nest a second checkout inside Orca's worktree and `--serve` would block the tab after the run.
+- Forwarded flags override the matching `.loopai/config` keys carried over in Step 4 (`task_model`, `review_model`, `external_reviewers`); a flag not given leaves the config value in force.
 
 ## Step 1: Choose the Plan
 
@@ -144,7 +144,7 @@ loopai started in Orca.
 Worktree: $WT_PATH  (id: $WT_ID)
 Branch:   <branch without refs/heads/>   cut from $BASE
 Plan:     $PLAN
-Flags:    $FLAGS  (empty = executor/models/reviewers from .loopai/config and defaults)
+Flags:    $FLAGS  (empty = providers/models/reviewers from .loopai/config and defaults)
 Terminal: $HANDLE  (tab "loopai $NAME")
 Progress: $WT_PATH/.loopai/progress/progress-$STEM.txt
 
@@ -182,7 +182,7 @@ From the main checkout, `loopai --merge $PLAN` (or `--pr $PLAN`) finds the Orca 
 | `selector_not_found` on a child worktree | `path:` or bare repo id used | Use `id:$WT_ID` verbatim |
 | Card stays "working" after loopai finished | Output piped, titles suppressed | Run without `tee` or pipes |
 | Two nested worktrees | `loopai --worktree` inside an Orca worktree | Drop the flag |
-| Stops on an unknown flag | Only the four flags pass through | Put other settings in `.loopai/config` |
+| Stops on an unknown flag | Only the three flags pass through; `--codex` was removed, use `--task-model codex:<model>` | Put other settings in `.loopai/config` |
 | Unexpected default models or prompts | Untracked `.loopai/` overrides not carried | Step 4 loop |
 | `ANTHROPIC_API_KEY` not picked up | Tab inherits the login shell, not this one | Export it in the shell profile |
 | Card shows "Terminal 1" beside the loopai tab | Fallback shell from bare `worktree create` was not closed | Step 6 close; only an idle shell with null `agentIdentity` qualifies |

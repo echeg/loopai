@@ -299,7 +299,7 @@ The explicit file path and `--only` keep unrelated staged changes out of the com
 After creating the file, detect Orca and build the launch line before speaking to the user:
 
 1. **Detect Orca.** `ORCA=${ORCA_CLI_COMMAND:-orca}`; on Linux outside an Orca terminal use `orca-ide` instead of bare `orca` (there `orca` is the GNOME screen reader). Orca is available when `command -v "$ORCA"` succeeds. Do not call `orca status`; the `loopai-orca` skill runs its own preflight.
-2. **Derive `FLAGS` from the effective loopai configuration.** For each key `executor`, `task_model`, `review_model`, `external_reviewers`, take the first uncommented `key = value` line from `<repo root>/.loopai/config`, falling back to `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/config`:
+2. **Derive `FLAGS` from the effective loopai configuration.** For each key `task_model`, `review_model`, `external_reviewers`, take the first uncommented `key = value` line from `<repo root>/.loopai/config`, falling back to `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/config`:
 
    ```bash
    cfgval() {
@@ -310,7 +310,7 @@ After creating the file, detect Orca and build the launch line before speaking t
    }
    ```
 
-   Map: `executor` equal to `codex` → `--codex`; `task_model` → `--task-model <value>`; `review_model` → `--review-model <value>`; `external_reviewers` → `--external-reviewers <value>`. Skip a key with no value. Skip a value that does not match `^[A-Za-z0-9._:,+-]+$` (the `loopai-orca` skill rejects it) and name the skipped key in the message. Join the results with single spaces into `FLAGS`.
+   Map: `task_model` → `--task-model <value>`; `review_model` → `--review-model <value>`; `external_reviewers` → `--external-reviewers <value>`. Skip a key with no value. Skip a value that does not match `^[A-Za-z0-9._:,+-]+$` (the `loopai-orca` skill rejects it) and name the skipped key in the message. Join the results with single spaces into `FLAGS`.
 
 **With Orca available**, tell the user:
 
@@ -319,10 +319,10 @@ After creating the file, detect Orca and build the launch line before speaking t
 Run in Orca:
 `/loopai:loopai-orca docs/plans/YYYYMMDD-<task-name>.md <FLAGS>`"
 
-When `FLAGS` is empty, add one line: "No `executor`/`task_model`/`review_model`/`external_reviewers` set in `.loopai/config`, so the run uses loopai defaults — append `--codex`, `--task-model`, `--review-model`, `--external-reviewers` to the line above or set those keys in `.loopai/config`."
+When `FLAGS` is empty, add one line: "No `task_model`/`review_model`/`external_reviewers` set in `.loopai/config`, so the run uses loopai defaults — append `--task-model`, `--review-model`, `--external-reviewers` to the line above or set those keys in `.loopai/config`."
 
 Then use AskUserQuestion — "How do you want to proceed?" — with these options:
-- "Run in Orca now (Recommended)": when `FLAGS` is non-empty, invoke the `loopai-orca` skill with exactly the plan path and `FLAGS` printed above. When `FLAGS` is empty, do not launch yet: ask a second AskUserQuestion — "Which loopai flags should the Orca run use? Choose Other and type them, e.g. `--codex --task-model gpt-5.6-sol:high --review-model gpt-5.6-sol:high --external-reviewers claude:opus:high,codex:gpt-6-astra:high,claude:fable:high`" — with the options "No flags (loopai defaults: Claude primary)" and "Cancel". Accept only `--codex`, `--task-model M`, `--review-model M`, `--external-reviewers LIST` with values matching `^[A-Za-z0-9._:,+-]+$`; on any other token repeat the question naming it verbatim. Then invoke `loopai-orca` with the plan path followed by the accepted string.
+- "Run in Orca now (Recommended)": when `FLAGS` is non-empty, invoke the `loopai-orca` skill with exactly the plan path and `FLAGS` printed above. When `FLAGS` is empty, do not launch yet: ask a second AskUserQuestion — "Which loopai flags should the Orca run use? Choose Other and type them, e.g. `--task-model codex:gpt-5.6-sol:high --review-model claude:opus:high --external-reviewers claude:opus:high,codex:gpt-6-astra:high,claude:fable:high`" — with the options "No flags (loopai defaults: Claude primary)" and "Cancel". Accept only `--task-model SPEC`, `--review-model SPEC`, `--external-reviewers LIST` with values matching `^[A-Za-z0-9._:,+-]+$`, where each `SPEC` starts with `claude` or `codex` (`provider[:model[:effort]]`); on any other token repeat the question naming it verbatim. Then invoke `loopai-orca` with the plan path followed by the accepted string.
 - "Start implementation here": begin with task 1
 - "Not now": stop
 

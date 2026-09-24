@@ -8,6 +8,23 @@ skills_dir="$claude_dir/skills"
 status=0
 expected_skills="$(printf '%s\n' loopai loopai-adopt loopai-brainstorm loopai-grill loopai-merge loopai-orca loopai-plan loopai-update | sort)"
 
+# Spellings loopai removed when the provider moved into every model spec
+# (provider[:model[:effort]]). A skill still teaching one would make loopai stop at
+# startup, and loopai-orca splices its flags into a command a new Orca tab runs,
+# so the failure would surface only after the worktree and tab already exist.
+# Extended regular expressions; the bare --codex pattern leaves --codex-args alone.
+# A line that itself says the spelling was removed is a migration hint, not a use.
+removed_spellings=(
+	'--codex([^-[:alnum:]_]|$)'
+	'--codex-only'
+	'--external-review-(tool|model)'
+	'external_review_(tool|model)'
+	'codex_model'
+	'codex_reasoning_effort'
+	'`executor`'
+	'executor[[:space:]]*='
+)
+
 fail() {
 	printf '%s\n' "$*" >&2
 	status=1
@@ -79,6 +96,12 @@ while IFS= read -r skill_name; do
 	if ! check_frontmatter "$skill_file" "$skill_name"; then
 		fail "invalid skill frontmatter: $skill_file (description is required and name must match the directory)"
 	fi
+
+	for spelling in "${removed_spellings[@]}"; do
+		if grep -E -- "$spelling" "$skill_file" | grep -Fv removed >/dev/null; then
+			fail "removed loopai flag or key in skill: $skill_file matches '$spelling'"
+		fi
+	done
 
 	if [[ ! -L "$link" ]]; then
 		fail "missing skill symlink: $link"

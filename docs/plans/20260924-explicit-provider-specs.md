@@ -278,12 +278,16 @@ that sets any of the above must be hand-edited once.
   - ➕ the orca title reporter gained a nil-safe `SetPhaseExecutors(plan, review)`, so plan and review-block titles name their own provider instead of the task provider
 
 ### Task 10: Update Claude and Codex skills
-- [ ] write or update the assertions in `scripts/check-grill-skill_test.sh` and the skill-asset checks that cover the changed skill text
-- [ ] remove `--codex` from the `loopai-orca` passthrough allowlist table and argument hint (`assets/claude/skills/loopai-orca/SKILL.md:4`, `:36`, `:42`, `:192` and the `assets/codex/skills/` mirror)
-- [ ] update the `FLAGS` derivation in `loopai-plan` (`assets/claude/skills/loopai-plan/SKILL.md:313`, `:322`, `:325` and the codex mirror at `:178`) to drop the `executor` key mapping
-- [ ] update `assets/claude/skills/loopai/SKILL.md:54` and the codex mirror
-- [ ] bump the version in `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` to the same value
-- [ ] run `make check-symlinks check-codex-skills check-plugin test-grill-skill` - must pass before next task
+- [x] write or update the assertions in `scripts/check-grill-skill_test.sh` and the skill-asset checks that cover the changed skill text
+  - ➕ `check-symlinks.sh` and `check-codex-skills.sh` now reject any skill body naming a removed flag or key (bare `--codex`, `--codex-only`, `--external-review-tool/-model`, `external_review_tool/_model`, `codex_model`, `codex_reasoning_effort`, the `executor` key); a line that itself says the spelling was removed is allowed as a migration hint, and `--codex-args` is untouched. Both `_test.sh` suites cover every spelling plus the allowed forms
+  - ➕ `loopai-grill` told the model never to substitute `loopai --codex --plan`; it now names `loopai --plan` under any `--plan-model`, asserted in `check-grill-skill_test.sh`
+- [x] remove `--codex` from the `loopai-orca` passthrough allowlist table and argument hint (`assets/claude/skills/loopai-orca/SKILL.md:4`, `:36`, `:42`, `:192` and the `assets/codex/skills/` mirror)
+  - ➕ both orca skills now require a `claude`/`codex` provider prefix on `--task-model`/`--review-model` before creating the worktree, and answer a `--codex` token with the `--task-model codex:<model>[:effort]` rewrite
+- [x] update the `FLAGS` derivation in `loopai-plan` (`assets/claude/skills/loopai-plan/SKILL.md:313`, `:322`, `:325` and the codex mirror at `:178`) to drop the `executor` key mapping
+- [x] update `assets/claude/skills/loopai/SKILL.md:54` and the codex mirror
+  - ⚠️ the Claude `loopai` skill carried no `--codex` or model-flag text (`:54` is plan selection); only the codex mirror's launch note changed
+- [x] bump the version in `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` to the same value
+- [x] run `make check-symlinks check-codex-skills check-plugin test-grill-skill` - must pass before next task
 
 ### Task 11: Update user and developer documentation
 - [ ] update `README.md` (14 `--codex` sites incl. `:37`, `:102`, `:321-330`, `:389`, `:509`, `:587`, `:718-724`, `:751-759`, `:794-814`)
