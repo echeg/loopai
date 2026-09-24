@@ -2757,14 +2757,14 @@ func printExternalReviewWarnings(selection externalReviewSelection, cfg *config.
 	if w == nil || cfg == nil {
 		return
 	}
-	warnedPrimaryMatch := make(map[string]bool)
+	warnedTaskMatch := make(map[string]bool)
 	maxDroppedWarned := false
 	for _, reviewer := range selection.Reviewers {
 		if selection.Explicit && reviewer.Provider == taskProvider(cfg) &&
 			(reviewer.Provider == config.ExternalReviewToolClaude || reviewer.Provider == config.ExternalReviewToolCodex) &&
-			!warnedPrimaryMatch[reviewer.Provider] {
-			fmt.Fprintf(w, "warning: external reviewer %q matches the primary executor; cross-model review signal will be weaker\n", reviewer.Provider)
-			warnedPrimaryMatch[reviewer.Provider] = true
+			!warnedTaskMatch[reviewer.Provider] {
+			fmt.Fprintf(w, "warning: external reviewer %q matches the task provider; cross-model review signal will be weaker\n", reviewer.Provider)
+			warnedTaskMatch[reviewer.Provider] = true
 		}
 		if reviewer.MaxDropped && !maxDroppedWarned {
 			fmt.Fprintln(w, "warning: codex does not support 'max' reasoning effort for external review; ignoring (valid: low, medium, high, xhigh)")

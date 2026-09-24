@@ -3633,7 +3633,7 @@ func TestExternalReviewWarnings(t *testing.T) {
 		require.NoError(t, err)
 		var buf bytes.Buffer
 		printExternalReviewWarnings(selection, cfg, &buf)
-		assert.Contains(t, buf.String(), "matches the primary executor")
+		assert.Contains(t, buf.String(), "matches the task provider")
 	})
 
 	t.Run("auto cross provider does not warn", func(t *testing.T) {
@@ -3654,7 +3654,7 @@ func TestExternalReviewWarnings(t *testing.T) {
 
 		var buf bytes.Buffer
 		printExternalReviewWarnings(selection, cfg, &buf)
-		assert.Equal(t, 1, strings.Count(buf.String(), "matches the primary executor"))
+		assert.Equal(t, 1, strings.Count(buf.String(), "matches the task provider"))
 		assert.Equal(t, 1, strings.Count(buf.String(), "does not support 'max' reasoning effort"))
 	})
 }

@@ -303,13 +303,15 @@ that sets any of the above must be hand-edited once.
   - ⚠️ remaining matches for removed spellings are deliberate migration hints (README/llms.txt/custom-providers tables, the embedded config removal note, CLAUDE.md), the skill checkers' pattern lists, the unrelated active plan `20260806-dynamic-review-agents.md`, and the backlog entry `review-only-modes-commit-user-edits.md`, which describe history or other work
 
 ### Task 12: Verify acceptance criteria
-- [ ] verify all four Overview requirements are implemented
-- [ ] verify each removed flag and key produces an error naming its replacement
-- [ ] verify a task-codex/review-claude run builds the right executors and renders the right agent syntax in both phases
-- [ ] run the full test suite with `make test` (closed stdin: `make test </dev/null`)
-- [ ] run `make lint` - all issues must be fixed
-- [ ] cross-compile with `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] verify test coverage meets the project standard (80%+)
+- [x] verify all four Overview requirements are implemented
+  - ➕ verified against a built binary under a scratch HOME: bare `opus:high`/`gpt-6-astra:medium` in flags and in `plan_model`/`review_model` config name the prefixed rewrite, `codex:opus` is a mismatch, `custom` is rejected for a phase, and a task-codex/review-claude config with stub binaries prints the Technical Details banner (`task: codex …`, `sandbox:` indented, `review: claude …`) and fails on a missing claude binary because the review phase needs it
+  - ➕ the explicit same-provider reviewer warning still said "matches the primary executor", a concept this branch removed; it now says "matches the task provider", which is what it compares against
+- [x] verify each removed flag and key produces an error naming its replacement (all four flags and all five keys, local and global config, through the binary)
+- [x] verify a task-codex/review-claude run builds the right executors and renders the right agent syntax in both phases (`TestExecutorFactory_PerPhaseProviders`, `TestPromptBuilder_CrossProviderRendering`, `TestPromptBuilder_DynamicCatalogFollowsReviewProvider`, and the stub-binary run whose task phase invoked `codex exec … -c model="gpt-6-astra"`)
+- [x] run the full test suite with `make test` (closed stdin: `make test </dev/null`)
+- [x] run `make lint` - all issues must be fixed
+- [x] cross-compile with `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify test coverage meets the project standard (80%+) (total 86.8%; every package this branch touches is above 80%, and the two below it, `pkg/git` 74.9% and `pkg/claudeswap` 72.7%, are unchanged by this branch)
 
 ### Task 13: [Final] Update project knowledge docs
 - [ ] fold the new provider model into the CLAUDE.md architecture section, replacing the executor-inference paragraph
