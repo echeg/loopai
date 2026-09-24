@@ -191,12 +191,15 @@ that sets any of the above must be hand-edited once.
 - [x] run `go test ./pkg/config/...` - must pass before next task
 
 ### Task 2: Removed config keys fail with actionable errors
-- [ ] write tests in `pkg/config/values_test.go` asserting a hard error for each of `executor`, `external_review_tool`, `external_review_model`, `codex_model`, `codex_reasoning_effort`, with the error naming the key and the replacement spelling
-- [ ] write a test that a config with none of those keys still loads unchanged
-- [ ] write a test that the error fires for a key present in the global config as well as the local one
-- [ ] replace the `executor` parse block (`pkg/config/values.go:382-388`) and the four other key parse sites with removal errors
-- [ ] delete the now-unreachable `Config.Executor`, `ExecutorSet`, `ExternalReviewTool*`, `ExternalReviewModel*`, `CodexModel*`, `CodexReasoningEffort*` fields and their `ExecutorSource*` constants (`pkg/config/config.go:94-104`, `:143-146`, `:167`)
-- [ ] run `go test ./pkg/config/...` - must pass before next task
+- [x] write tests in `pkg/config/values_test.go` asserting a hard error for each of `executor`, `external_review_tool`, `external_review_model`, `codex_model`, `codex_reasoning_effort`, with the error naming the key and the replacement spelling
+- [x] write a test that a config with none of those keys still loads unchanged
+- [x] write a test that the error fires for a key present in the global config as well as the local one
+- [x] replace the `executor` parse block (`pkg/config/values.go:382-388`) and the four other key parse sites with removal errors
+- [x] delete the now-unreachable `Config.Executor`, `ExecutorSet`, `ExternalReviewTool*`, `ExternalReviewModel*`, `CodexModel*`, `CodexReasoningEffort*` fields and their `ExecutorSource*` constants (`pkg/config/config.go:94-104`, `:143-146`, `:167`)
+  - ⚠️ deleted `ExecutorSet`, `ExternalReviewToolSet`, `ExternalReviewModelSet`, `CodexModel`, `CodexReasoningEffort`, and `ExecutorSourceConfig`, which only a config key could reach. `Executor`/`ExecutorSource` (written by `--codex` and inference) and `ExternalReviewTool`/`ExternalReviewModel` (written by the legacy flags and the resolved single reviewer) are still reachable from the CLI, so they became runtime-only `json:"-"` fields; their deletion moved to Tasks 3 and 5 alongside their writers
+  - ➕ removed the five keys from the embedded defaults (`codex_model = gpt-5.5`, `codex_reasoning_effort = xhigh`, `external_review_tool = auto`, `external_review_model =`) and guarded that with a test; a bare codex spec now uses the codex CLI's own default instead of gpt-5.5:xhigh, as the Grammar section specifies, and the automatic reviewer remains the implicit default when `external_reviewers` is unset
+  - ➕ `ResolveCodexModelEffort`/`ResolveExternalReviewerModelEffort` lost their codex-default parameters; `resolveExternalReviewSelection`/`resolveReviewerChain` lost their now-unused `opts` parameter
+- [x] run `go test ./pkg/config/...` - must pass before next task
 
 ### Task 3: Removed CLI flags fail with actionable errors
 - [ ] write tests in `cmd/loopai/main_test.go` asserting an error for `--codex`, `--codex-only`, `--external-review-tool`, `--external-review-model`, each naming the replacement (`--task-model codex:<model>`, `--external-only`, `--external-reviewers`)
@@ -204,6 +207,7 @@ that sets any of the above must be hand-edited once.
 - [ ] mark those four `opts` fields hidden (`cmd/loopai/main.go:53`, `:54`, `:59`, `:68`) instead of deleting them, so go-flags accepts and loopai explains
 - [ ] add a `rejectRemovedFlags(o opts) error` called early in the startup path
 - [ ] update the long-name list in `markFlagsSet` (`cmd/loopai/main.go:191-198`) and the mutual-exclusion lists that carry the literal flag strings (`:3181`, `:3239`, `:3263`, `:3278`, `:5903-5904`)
+- [ ] ➕ delete the runtime-only `Config.ExternalReviewTool`/`ExternalReviewModel` fields (kept by Task 2 because the legacy flags still wrote them) and the legacy single-reviewer branch of `resolveReviewerChain` that reads them, keeping the automatic reviewer for an unset `external_reviewers`
 - [ ] run `go test ./cmd/loopai/...` - must pass before next task
 
 ### Task 4: Strict validation of plan/task/review specs
@@ -220,6 +224,7 @@ that sets any of the above must be hand-edited once.
 - [ ] replace `applyCodexOverrides` (`cmd/loopai/main.go:6056`) with the new resolver and delete the inference branch
 - [ ] replace `primaryProvider` (`:2684`) with an accessor for the task provider and update its call sites
 - [ ] delete `ExecutorSourceFlag`/`ExecutorSourceConfig`/`ExecutorSourceInferred`/`ExecutorSourceDefault` usage from the startup banner and print the resolved provider per phase instead
+- [ ] ➕ delete the runtime-only `Config.Executor`/`ExecutorSource` fields and the remaining `ExecutorSource*` constants (kept by Task 2 because `--codex` and inference still wrote them)
 - [ ] run `go test ./cmd/loopai/...` - must pass before next task
 
 ### Task 6: Dependency checks cover every distinct provider

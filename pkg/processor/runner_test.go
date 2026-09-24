@@ -876,7 +876,6 @@ func TestRunner_CodexExternalOnly_ClaudeFindingsAreHandledByPrimaryCodex(t *test
 	appCfg := testAppConfig(t)
 	appCfg.Executor = config.ExecutorCodex
 	appCfg.ExternalReviewTool = config.ExternalReviewToolClaude
-	appCfg.ExternalReviewToolSet = true
 	cfg := Config{
 		Mode: ModeCodexOnly, MaxIterations: 50, IterationDelayMs: 1,
 		CodexEnabled: true, FinalizeEnabled: true,

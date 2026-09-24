@@ -19,12 +19,12 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 		args        []string
 		wantCommand string
 		wantError   string
+		wantErrPart string // substring match for errors carrying temporary paths
 	}{
 		{
-			name:      "explicit global codex rejects Claude task",
-			global:    "executor = codex\n",
-			args:      []string{"--task-model", "fable:high"},
-			wantError: `--task-model / task_model "fable:high" is a claude model, but the executor is codex (executor = codex in config)`,
+			name:      "codex flag rejects Claude task",
+			args:      []string{"--codex", "--task-model", "fable:high"},
+			wantError: `--task-model / task_model "fable:high" is a claude model, but the executor is codex (--codex)`,
 		},
 		{
 			name:        "global task model infers codex",
@@ -44,10 +44,15 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 			wantError: `--review-model / review_model "gpt-6-astra:high" is a codex model, but the executor is claude (inferred from task_model "fable:high")`,
 		},
 		{
-			name:      "local empty executor overrides global codex and inference",
-			global:    "executor = codex\ntask_model = gpt-6-astra:medium\n",
-			local:     "executor =\n",
-			wantError: `--task-model / task_model "gpt-6-astra:medium" is a codex model, but the executor is claude (executor = (empty) in config)`,
+			name:        "removed global executor key fails before any executor starts",
+			global:      "executor = codex\ntask_model = gpt-6-astra:medium\n",
+			wantErrPart: "parse global config",
+		},
+		{
+			name:        "removed local executor key fails before any executor starts",
+			global:      inheritedModels,
+			local:       "executor =\n",
+			wantErrPart: "parse local config",
 		},
 		{
 			name:        "explicit codex wrapper accepts Claude model names",
@@ -91,6 +96,12 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 			if tt.wantError != "" {
 				require.EqualError(t, err, tt.wantError)
 				assert.NoFileExists(t, invocationLog, "invalid models must fail before any executor starts")
+				return
+			}
+			if tt.wantErrPart != "" {
+				require.ErrorContains(t, err, tt.wantErrPart)
+				require.ErrorContains(t, err, "config key executor was removed; set the provider in the model spec instead")
+				assert.NoFileExists(t, invocationLog, "removed keys must fail before any executor starts")
 				return
 			}
 			require.ErrorIs(t, err, context.Canceled)

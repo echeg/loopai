@@ -120,11 +120,7 @@ func (f *executorFactory) externalBinaryMissing(appConfig *config.Config, provid
 }
 
 func (cfg Config) buildExternalReviewerExecutor(log Logger, spec config.ReviewerSpec) (Executor, string) {
-	var codexModel, codexEffort string
-	if cfg.AppConfig != nil {
-		codexModel, codexEffort = cfg.AppConfig.CodexModel, cfg.AppConfig.CodexReasoningEffort
-	}
-	model, effort, _ := ResolveExternalReviewerModelEffort(spec.Provider, spec.ModelSpec, codexModel, codexEffort)
+	model, effort, _ := ResolveExternalReviewerModelEffort(spec.Provider, spec.ModelSpec)
 	displayName := spec.Provider
 	if modelSpec := joinModelEffort(model, effort); modelSpec != "" {
 		displayName += " (" + modelSpec + ")"
@@ -150,13 +146,7 @@ func (cfg Config) externalReviewModelEffort(provider string) (model, effort stri
 	if spec == "" && cfg.ExternalReviewEffort == "" && cfg.AppConfig != nil {
 		spec = cfg.AppConfig.ExternalReviewModel
 	}
-
-	var defaultModel, defaultEffort string
-	if cfg.AppConfig != nil {
-		defaultModel = cfg.AppConfig.CodexModel
-		defaultEffort = cfg.AppConfig.CodexReasoningEffort
-	}
-	model, effort, _ = ResolveExternalReviewerModelEffort(provider, spec, defaultModel, defaultEffort)
+	model, effort, _ = ResolveExternalReviewerModelEffort(provider, spec)
 	if cfg.ExternalReviewEffort != "" {
 		effort = cfg.ExternalReviewEffort
 	}
@@ -165,8 +155,9 @@ func (cfg Config) externalReviewModelEffort(provider string) (model, effort stri
 
 // ResolveExternalReviewerModelEffort applies provider-specific defaults to an
 // external reviewer model specification. It is shared by CLI resolution and
-// executor construction so both paths produce identical settings.
-func ResolveExternalReviewerModelEffort(provider, spec, codexModel, codexEffort string) (model, effort string, maxDropped bool) {
+// executor construction so both paths produce identical settings. codex has no
+// loopai-side default: an empty model or effort leaves the codex CLI's own choice.
+func ResolveExternalReviewerModelEffort(provider, spec string) (model, effort string, maxDropped bool) {
 	switch provider {
 	case config.ExternalReviewToolClaude:
 		model, effort = "opus", "xhigh"
@@ -178,7 +169,7 @@ func ResolveExternalReviewerModelEffort(provider, spec, codexModel, codexEffort 
 			effort = resolvedEffort
 		}
 	case config.ExternalReviewToolCodex:
-		model, effort, maxDropped = ResolveCodexModelEffort(spec, codexModel, codexEffort)
+		model, effort, maxDropped = ResolveCodexModelEffort(spec)
 	}
 	return model, effort, maxDropped
 }
@@ -286,17 +277,13 @@ func (cfg Config) buildCodexExecutor(log Logger) *executor.CodexExecutor {
 // in first-class --codex mode. the review slot is non-nil only when the resolved
 // review model/effort differs from task — otherwise the task executor handles review
 // and finalize too. --task-model / --review-model (and their config equivalents) are
-// resolved against codex_model / codex_reasoning_effort: review_model falls back to
-// task_model when unset, and an unset spec inherits the codex config defaults.
+// resolved on their own: review_model falls back to task_model when unset, and an
+// empty model or effort leaves the codex CLI's own choice from ~/.codex/config.toml.
 func (cfg Config) buildCodexExecutors(log Logger) (*executor.CodexExecutor, Executor) {
-	var defModel, defEffort string
-	if cfg.AppConfig != nil {
-		defModel, defEffort = cfg.AppConfig.CodexModel, cfg.AppConfig.CodexReasoningEffort
-	}
-	taskModel, taskEffort, _ := ResolveCodexModelEffort(cfg.TaskModel, defModel, defEffort)
+	taskModel, taskEffort, _ := ResolveCodexModelEffort(cfg.TaskModel)
 	reviewModel, reviewEffort := taskModel, taskEffort
 	if cfg.ReviewModel != "" {
-		reviewModel, reviewEffort, _ = ResolveCodexModelEffort(cfg.ReviewModel, defModel, defEffort)
+		reviewModel, reviewEffort, _ = ResolveCodexModelEffort(cfg.ReviewModel)
 	}
 
 	taskExec := cfg.buildCodexExecutor(log)
@@ -330,8 +317,6 @@ func (cfg Config) newBaseCodexExecutor(log Logger) *executor.CodexExecutor {
 	// set here so both codex paths carry the extras: first-class --codex and the
 	// external codex reviewer under a claude primary
 	e.ExtraArgs = cfg.AppConfig.CodexArgs
-	e.Model = cfg.AppConfig.CodexModel
-	e.ReasoningEffort = cfg.AppConfig.CodexReasoningEffort
 	e.TimeoutMs = cfg.AppConfig.CodexTimeoutMs
 	e.ErrorPatterns = cfg.AppConfig.CodexErrorPatterns
 	e.LimitPatterns = cfg.AppConfig.CodexLimitPatterns
@@ -396,25 +381,14 @@ func parseModelEffort(s string) (model, effort string) {
 	return model, effort
 }
 
-// ResolveCodexModelEffort resolves a "model[:effort]" spec against codex default
-// model and effort. an empty spec returns the defaults unchanged. each populated
-// half of the spec overrides its default. the claude-only "max" effort is not valid
-// for codex: maxDropped reports that the spec requested it (the caller surfaces the
-// warning) and the default effort is kept.
-func ResolveCodexModelEffort(spec, defModel, defEffort string) (model, effort string, maxDropped bool) {
-	model, effort = defModel, defEffort
-	if spec == "" {
-		return model, effort, false
+// ResolveCodexModelEffort resolves a "model[:effort]" spec for codex. an empty
+// half leaves codex's own default from ~/.codex/config.toml. the claude-only "max"
+// effort is not valid for codex: maxDropped reports that the spec requested it (the
+// caller surfaces the warning) and the effort is left to codex.
+func ResolveCodexModelEffort(spec string) (model, effort string, maxDropped bool) {
+	model, effort = parseModelEffort(spec)
+	if strings.EqualFold(effort, "max") {
+		return model, "", true
 	}
-	m, e := parseModelEffort(spec)
-	if m != "" {
-		model = m
-	}
-	if e == "" {
-		return model, effort, false
-	}
-	if strings.EqualFold(e, "max") {
-		return model, effort, true
-	}
-	return model, e, false
+	return model, effort, false
 }

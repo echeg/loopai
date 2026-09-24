@@ -75,11 +75,10 @@ func ParseExternalReviewers(value string) ([]ReviewerSpec, error) {
 	return reviewers, nil
 }
 
-// Executor mode constants for the Config.Executor field.
-// ExecutorClaude is the default — the empty string is intentional so that an
-// unset `executor` field in config (or no flag on the CLI) resolves to the
-// claude pipeline without users having to spell it out. ExecutorCodex is the
-// opt-in first-class --codex path.
+// Executor mode constants for the runtime-only Config.Executor field.
+// ExecutorClaude is the default — the empty string is intentional so that no
+// flag on the CLI resolves to the claude pipeline without users having to spell
+// it out. ExecutorCodex is the opt-in first-class --codex path.
 const (
 	ExecutorClaude = ""
 	ExecutorCodex  = "codex"
@@ -88,7 +87,6 @@ const (
 // Executor source descriptions for the runtime-only Config.ExecutorSource field.
 const (
 	ExecutorSourceFlag     = "--codex"
-	ExecutorSourceConfig   = "executor = %s in config"
 	ExecutorSourceInferred = "inferred from task_model %q"
 	ExecutorSourceDefault  = "default"
 )
@@ -113,29 +111,24 @@ type Config struct {
 	ClaudeCommand  string `json:"claude_command"`
 	ClaudeArgs     string `json:"claude_args"`
 	ClaudeArgsSet  bool   `json:"-"`            // tracks runtime overrides, including an explicit empty --claude-args=
-	ExecutorSet    bool   `json:"-"`            // tracks an explicit executor config key, including an empty reset to Claude
 	PlanModel      string `json:"plan_model"`   // model[:effort] spec for plan creation (falls back to TaskModel)
 	TaskModel      string `json:"task_model"`   // model[:effort] spec for task execution (e.g., "opus", "opus:high", ":medium")
 	ReviewModel    string `json:"review_model"` // model[:effort] spec for review phases (falls back to TaskModel)
 
-	CodexEnabled         bool   `json:"codex_enabled"`
-	CodexEnabledSet      bool   `json:"-"` // tracks if codex_enabled was explicitly set in config
-	CodexCommand         string `json:"codex_command"`
-	CodexArgs            string `json:"codex_args"`
-	CodexModel           string `json:"codex_model"`
-	CodexReasoningEffort string `json:"codex_reasoning_effort"`
-	CodexTimeoutMs       int    `json:"codex_timeout_ms"`
-	CodexTimeoutMsSet    bool   `json:"-"` // tracks if codex_timeout_ms was explicitly set in config
-	CodexSandbox         string `json:"codex_sandbox"`
-	CodexSandboxSet      bool   `json:"-"` // tracks if codex_sandbox was explicitly set outside embedded defaults
+	CodexEnabled      bool   `json:"codex_enabled"`
+	CodexEnabledSet   bool   `json:"-"` // tracks if codex_enabled was explicitly set in config
+	CodexCommand      string `json:"codex_command"`
+	CodexArgs         string `json:"codex_args"`
+	CodexTimeoutMs    int    `json:"codex_timeout_ms"`
+	CodexTimeoutMsSet bool   `json:"-"` // tracks if codex_timeout_ms was explicitly set in config
+	CodexSandbox      string `json:"codex_sandbox"`
+	CodexSandboxSet   bool   `json:"-"` // tracks if codex_sandbox was explicitly set outside embedded defaults
 
-	ExternalReviewTool     string `json:"external_review_tool"`  // auto, claude, codex, custom, or none
-	ExternalReviewToolSet  bool   `json:"-"`                     // tracks if external_review_tool was explicitly set in user config (not embedded default)
-	ExternalReviewModel    string `json:"external_review_model"` // provider-specific model[:effort] spec; empty uses the selected provider's default
-	ExternalReviewModelSet bool   `json:"-"`                     // tracks if external_review_model was explicitly set in user config (not embedded default)
-	ExternalReviewers      string `json:"external_reviewers"`    // ordered provider[:model[:effort]] reviewer chain
-	ExternalReviewersSet   bool   `json:"-"`                     // tracks if external_reviewers was explicitly set in user config
-	CustomReviewScript     string `json:"custom_review_script"`  // path to custom review script
+	ExternalReviewTool   string `json:"-"`                    // runtime-only: legacy --external-review-tool value, then the resolved single reviewer
+	ExternalReviewModel  string `json:"-"`                    // runtime-only: legacy --external-review-model value, then the resolved single reviewer spec
+	ExternalReviewers    string `json:"external_reviewers"`   // ordered provider[:model[:effort]] reviewer chain
+	ExternalReviewersSet bool   `json:"-"`                    // tracks if external_reviewers was explicitly set in user config
+	CustomReviewScript   string `json:"custom_review_script"` // path to custom review script
 
 	IterationDelayMs      int  `json:"iteration_delay_ms"`
 	IterationDelayMsSet   bool `json:"-"` // tracks if iteration_delay_ms was explicitly set in config
@@ -153,7 +146,7 @@ type Config struct {
 
 	PreserveAnthropicAPIKey bool `json:"preserve_anthropic_api_key"` // when true, ANTHROPIC_API_KEY is passed through to the claude child process
 
-	Executor     string `json:"executor"`       // "" (= claude, default) or ExecutorCodex
+	Executor     string `json:"-"`              // runtime-only: "" (= claude, default) or ExecutorCodex
 	PassClaudeMd bool   `json:"pass_claude_md"` // when true, codex reads project CLAUDE.md via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is not auto-passed (a one-time setup hint is printed)
 
 	MovePlanOnCompletion bool `json:"move_plan_on_completion"`
@@ -380,16 +373,10 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		CodexEnabledSet:         values.CodexEnabledSet,
 		CodexCommand:            values.CodexCommand,
 		CodexArgs:               values.CodexArgs,
-		CodexModel:              values.CodexModel,
-		CodexReasoningEffort:    values.CodexReasoningEffort,
 		CodexTimeoutMs:          values.CodexTimeoutMs,
 		CodexTimeoutMsSet:       values.CodexTimeoutMsSet,
 		CodexSandbox:            values.CodexSandbox,
 		CodexSandboxSet:         values.CodexSandboxSet,
-		ExternalReviewTool:      values.ExternalReviewTool,
-		ExternalReviewToolSet:   values.ExternalReviewToolSet,
-		ExternalReviewModel:     values.ExternalReviewModel,
-		ExternalReviewModelSet:  values.ExternalReviewModelSet,
 		ExternalReviewers:       values.ExternalReviewers,
 		ExternalReviewersSet:    values.ExternalReviewersSet,
 		CustomReviewScript:      values.CustomReviewScript,
@@ -406,8 +393,6 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		ReportEnabled:           values.ReportEnabled,
 		ReportEnabledSet:        values.ReportEnabledSet,
 		PreserveAnthropicAPIKey: values.PreserveAnthropicAPIKey,
-		Executor:                values.Executor,
-		ExecutorSet:             values.ExecutorSet,
 		PassClaudeMd:            values.PassClaudeMd,
 		MovePlanOnCompletion:    values.MovePlanOnCompletion,
 		WorktreeEnabled:         values.WorktreeEnabled,

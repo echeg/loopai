@@ -57,17 +57,9 @@ func TestValuesLoader_Load_EmbeddedOnly(t *testing.T) {
 	assert.True(t, values.CodexEnabledSet)
 	assert.Equal(t, "codex", values.CodexCommand)
 	assert.Empty(t, values.CodexArgs, "codex_args stays commented out in embedded defaults")
-	assert.Equal(t, "gpt-5.5", values.CodexModel, "codex_model defaults to embedded gpt-5.5")
-	assert.False(t, values.CodexModelSet, "embedded default carries the value but not the explicit-set flag")
-	assert.Equal(t, "xhigh", values.CodexReasoningEffort, "codex_reasoning_effort defaults to embedded xhigh")
-	assert.False(t, values.CodexReasoningEffortSet, "embedded default carries the value but not the explicit-set flag")
 	assert.Equal(t, 3600000, values.CodexTimeoutMs)
 	assert.Equal(t, "read-only", values.CodexSandbox)
 	assert.False(t, values.CodexSandboxSet)
-	assert.Equal(t, ExternalReviewToolAuto, values.ExternalReviewTool)
-	assert.False(t, values.ExternalReviewToolSet, "ExternalReviewToolSet must be false for embedded defaults")
-	assert.Empty(t, values.ExternalReviewModel)
-	assert.False(t, values.ExternalReviewModelSet, "ExternalReviewModelSet must be false for embedded defaults")
 	assert.Empty(t, values.ExternalReviewers)
 	assert.False(t, values.ExternalReviewersSet, "ExternalReviewersSet must be false for embedded defaults")
 	assert.Empty(t, values.CustomReviewScript)
@@ -122,7 +114,6 @@ iteration_delay_ms = 5000
 	// values from embedded (not set in global)
 	assert.True(t, values.CodexEnabled)
 	assert.Equal(t, "codex", values.CodexCommand)
-	assert.Equal(t, "gpt-5.5", values.CodexModel, "codex_model defaults to embedded value when not in user config")
 	assert.Equal(t, "docs/plans", values.PlansDir)
 }
 
@@ -637,128 +628,14 @@ func TestValues_mergeFrom_PreserveAnthropicAPIKey(t *testing.T) {
 	})
 }
 
-func TestValues_mergeFrom_Executor(t *testing.T) {
-	t.Run("set flag merges", func(t *testing.T) {
-		dst := Values{Executor: "", ExecutorSet: false}
-		src := Values{Executor: "codex", ExecutorSet: true}
-		dst.mergeFrom(&src)
-		assert.Equal(t, "codex", dst.Executor)
-		assert.True(t, dst.ExecutorSet)
-	})
-
-	t.Run("unset flag preserves dst", func(t *testing.T) {
-		dst := Values{Executor: "codex", ExecutorSet: true}
-		src := Values{Executor: "", ExecutorSet: false}
-		dst.mergeFrom(&src)
-		assert.Equal(t, "codex", dst.Executor)
-		assert.True(t, dst.ExecutorSet)
-	})
-
-	t.Run("local explicit empty overrides global codex", func(t *testing.T) {
-		dst := Values{Executor: "codex", ExecutorSet: true}
-		src := Values{Executor: "", ExecutorSet: true}
-		dst.mergeFrom(&src)
-		assert.Empty(t, dst.Executor)
-		assert.True(t, dst.ExecutorSet)
-	})
-
-	t.Run("local file overrides global through Load", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		globalCfg := filepath.Join(tmpDir, "global")
-		localCfg := filepath.Join(tmpDir, "local")
-		require.NoError(t, os.WriteFile(globalCfg, []byte(`executor = codex`), 0o600))
-		require.NoError(t, os.WriteFile(localCfg, []byte(`executor =`), 0o600))
-
-		loader := newValuesLoader(defaultsFS)
-		values, err := loader.Load(localCfg, globalCfg)
-		require.NoError(t, err)
-		assert.Empty(t, values.Executor)
-		assert.True(t, values.ExecutorSet)
-	})
-
-	t.Run("local omitted preserves global codex", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		globalCfg := filepath.Join(tmpDir, "global")
-		localCfg := filepath.Join(tmpDir, "local")
-		require.NoError(t, os.WriteFile(globalCfg, []byte(`executor = codex`), 0o600))
-		require.NoError(t, os.WriteFile(localCfg, []byte(`# unrelated`), 0o600))
-
-		loader := newValuesLoader(defaultsFS)
-		values, err := loader.Load(localCfg, globalCfg)
-		require.NoError(t, err)
-		assert.Equal(t, "codex", values.Executor)
-		assert.True(t, values.ExecutorSet)
-	})
-
-	t.Run("neither set leaves default empty", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		globalCfg := filepath.Join(tmpDir, "global")
-		localCfg := filepath.Join(tmpDir, "local")
-		require.NoError(t, os.WriteFile(globalCfg, []byte(`# nothing`), 0o600))
-		require.NoError(t, os.WriteFile(localCfg, []byte(`# nothing`), 0o600))
-
-		loader := newValuesLoader(defaultsFS)
-		values, err := loader.Load(localCfg, globalCfg)
-		require.NoError(t, err)
-		assert.Empty(t, values.Executor)
-		assert.False(t, values.ExecutorSet)
-	})
-}
-
-func TestValues_mergeFrom_CodexModel(t *testing.T) {
-	t.Run("set flag merges", func(t *testing.T) {
-		dst := Values{CodexModel: "gpt-5.5", CodexReasoningEffort: "xhigh"}
-		src := Values{CodexModel: "gpt-5.3-codex", CodexModelSet: true, CodexReasoningEffort: "low", CodexReasoningEffortSet: true}
-		dst.mergeFrom(&src)
-		assert.Equal(t, "gpt-5.3-codex", dst.CodexModel)
-		assert.True(t, dst.CodexModelSet)
-		assert.Equal(t, "low", dst.CodexReasoningEffort)
-		assert.True(t, dst.CodexReasoningEffortSet)
-	})
-
-	t.Run("unset flag preserves dst", func(t *testing.T) {
-		dst := Values{CodexModel: "gpt-5.5", CodexReasoningEffort: "xhigh"}
-		src := Values{CodexModel: "", CodexReasoningEffort: ""}
-		dst.mergeFrom(&src)
-		assert.Equal(t, "gpt-5.5", dst.CodexModel)
-		assert.Equal(t, "xhigh", dst.CodexReasoningEffort)
-	})
-
-	t.Run("explicit empty overrides non-empty dst", func(t *testing.T) {
-		dst := Values{CodexModel: "gpt-5.5", CodexReasoningEffort: "xhigh"}
-		src := Values{CodexModel: "", CodexModelSet: true, CodexReasoningEffort: "", CodexReasoningEffortSet: true}
-		dst.mergeFrom(&src)
-		assert.Empty(t, dst.CodexModel)
-		assert.True(t, dst.CodexModelSet)
-		assert.Empty(t, dst.CodexReasoningEffort)
-		assert.True(t, dst.CodexReasoningEffortSet)
-	})
-
-	t.Run("explicit empty in user config clears embedded default", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		configPath := filepath.Join(tmpDir, "config")
-		require.NoError(t, os.WriteFile(configPath, []byte("codex_model =\ncodex_reasoning_effort ="), 0o600))
-
-		loader := newValuesLoader(defaultsFS)
-		values, err := loader.Load("", configPath)
-		require.NoError(t, err)
-		assert.Empty(t, values.CodexModel, "explicit empty clears embedded gpt-5.5 so codex inherits from ~/.codex/config.toml")
-		assert.True(t, values.CodexModelSet)
-		assert.Empty(t, values.CodexReasoningEffort)
-		assert.True(t, values.CodexReasoningEffortSet)
-	})
-
-	t.Run("omitted in user config keeps embedded default", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		configPath := filepath.Join(tmpDir, "config")
-		require.NoError(t, os.WriteFile(configPath, []byte(`# unrelated`), 0o600))
-
-		loader := newValuesLoader(defaultsFS)
-		values, err := loader.Load("", configPath)
-		require.NoError(t, err)
-		assert.Equal(t, "gpt-5.5", values.CodexModel)
-		assert.Equal(t, "xhigh", values.CodexReasoningEffort)
-	})
+func TestValuesLoader_EmbeddedDefaultsCarryNoRemovedKeys(t *testing.T) {
+	data, err := defaultsFS.ReadFile("defaults/config")
+	require.NoError(t, err)
+	cfg, err := ini.LoadSources(ini.LoadOptions{IgnoreInlineComment: true}, data)
+	require.NoError(t, err)
+	for _, k := range removedKeys {
+		assert.False(t, cfg.Section("").HasKey(k.name), "embedded defaults must not set removed key %s", k.name)
+	}
 }
 
 func TestValues_mergeFrom_PassClaudeMd(t *testing.T) {
@@ -913,8 +790,6 @@ claude_command = /custom/claude
 claude_args = --custom
 codex_enabled = false
 codex_command = /custom/codex
-codex_model = custom-model
-codex_reasoning_effort = low
 codex_timeout_ms = 1000
 codex_sandbox = none
 iteration_delay_ms = 500
@@ -933,10 +808,6 @@ plans_dir = my/plans
 	assert.False(t, values.CodexEnabled)
 	assert.True(t, values.CodexEnabledSet)
 	assert.Equal(t, "/custom/codex", values.CodexCommand)
-	assert.Equal(t, "custom-model", values.CodexModel)
-	assert.True(t, values.CodexModelSet)
-	assert.Equal(t, "low", values.CodexReasoningEffort)
-	assert.True(t, values.CodexReasoningEffortSet)
 	assert.Equal(t, 1000, values.CodexTimeoutMs)
 	assert.Equal(t, "none", values.CodexSandbox)
 	assert.True(t, values.CodexSandboxSet)
@@ -1049,8 +920,6 @@ claude_command = /custom/claude
 claude_args = --custom-arg
 codex_enabled = false
 codex_command = /custom/codex
-codex_model = gpt-5
-codex_reasoning_effort = high
 codex_timeout_ms = 7200000
 codex_sandbox = none
 iteration_delay_ms = 5000
@@ -1065,8 +934,6 @@ plans_dir = custom/plans
 		assert.False(t, values.CodexEnabled)
 		assert.True(t, values.CodexEnabledSet)
 		assert.Equal(t, "/custom/codex", values.CodexCommand)
-		assert.Equal(t, "gpt-5", values.CodexModel)
-		assert.Equal(t, "high", values.CodexReasoningEffort)
 		assert.Equal(t, 7200000, values.CodexTimeoutMs)
 		assert.Equal(t, "none", values.CodexSandbox)
 		assert.Equal(t, 5000, values.IterationDelayMs)
@@ -1268,7 +1135,6 @@ func TestValuesLoader_Load_AllCommentedConfigFallsBackToEmbedded(t *testing.T) {
 	assert.Equal(t, "--dangerously-skip-permissions --output-format stream-json --verbose", values.ClaudeArgs)
 	assert.True(t, values.CodexEnabled)
 	assert.Equal(t, "codex", values.CodexCommand)
-	assert.Equal(t, "gpt-5.5", values.CodexModel, "codex_model defaults to embedded gpt-5.5 (uncommented in embedded default)")
 	assert.Equal(t, "docs/plans", values.PlansDir)
 }
 
@@ -1348,58 +1214,77 @@ func TestValuesLoader_Load_BothAllCommentedFallsBackToEmbedded(t *testing.T) {
 	assert.True(t, values.CodexEnabled)
 }
 
-func TestValuesLoader_Load_ExternalReviewTool(t *testing.T) {
+func TestValuesLoader_Load_RemovedKeys(t *testing.T) {
 	tests := []struct {
-		name         string
-		config       string
-		expectedTool string
+		key         string
+		config      string
+		replacement string
 	}{
-		{name: "auto tool", config: "external_review_tool = auto", expectedTool: ExternalReviewToolAuto},
-		{name: "claude tool", config: "external_review_tool = claude", expectedTool: ExternalReviewToolClaude},
-		{name: "codex tool", config: "external_review_tool = codex", expectedTool: ExternalReviewToolCodex},
-		{name: "custom tool", config: "external_review_tool = custom", expectedTool: ExternalReviewToolCustom},
-		{name: "none tool", config: "external_review_tool = none", expectedTool: ExternalReviewToolNone},
+		{key: "executor", config: "executor = codex", replacement: "task_model = codex:<model>[:effort]"},
+		{key: "executor", config: "executor =", replacement: "task_model = codex:<model>[:effort]"},
+		{key: "external_review_tool", config: "external_review_tool = codex", replacement: "external_reviewers = <provider>[:model[:effort]]"},
+		{key: "external_review_model", config: "external_review_model = gpt-5.5:xhigh", replacement: "external_reviewers = <provider>:<model>[:effort]"},
+		{key: "codex_model", config: "codex_model = gpt-5.5", replacement: "codex:<model>[:effort]"},
+		{key: "codex_model", config: "codex_model =", replacement: "codex:<model>[:effort]"},
+		{key: "codex_reasoning_effort", config: "codex_reasoning_effort = xhigh", replacement: "codex:<model>:<effort>"},
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			tmpDir := t.TempDir()
-			configPath := filepath.Join(tmpDir, "config")
-			require.NoError(t, os.WriteFile(configPath, []byte(tc.config), 0o600))
+		t.Run(tc.config, func(t *testing.T) {
+			for _, scope := range []string{"global", "local"} {
+				t.Run(scope, func(t *testing.T) {
+					tmpDir := t.TempDir()
+					globalPath := filepath.Join(tmpDir, "global")
+					localPath := filepath.Join(tmpDir, "local")
+					other := "task_model = claude:opus"
+					globalContent, localContent := tc.config, other
+					if scope == "local" {
+						globalContent, localContent = other, tc.config
+					}
+					require.NoError(t, os.WriteFile(globalPath, []byte(globalContent), 0o600))
+					require.NoError(t, os.WriteFile(localPath, []byte(localContent), 0o600))
 
-			loader := newValuesLoader(defaultsFS)
-			values, err := loader.Load("", configPath)
-			require.NoError(t, err)
-
-			assert.Equal(t, tc.expectedTool, values.ExternalReviewTool)
-			assert.True(t, values.ExternalReviewToolSet)
+					_, err := newValuesLoader(defaultsFS).Load(localPath, globalPath)
+					require.Error(t, err)
+					assert.Contains(t, err.Error(), "parse "+scope+" config")
+					assert.Contains(t, err.Error(), filepath.Join(tmpDir, scope))
+					assert.Contains(t, err.Error(), "config key "+tc.key+" was removed")
+					assert.Contains(t, err.Error(), tc.replacement)
+				})
+			}
 		})
 	}
-}
 
-func TestValuesLoader_Load_ExternalReviewModel(t *testing.T) {
-	t.Run("explicit model", func(t *testing.T) {
+	t.Run("commented removed keys are ignored", func(t *testing.T) {
 		cfgPath := filepath.Join(t.TempDir(), "config")
-		require.NoError(t, os.WriteFile(cfgPath, []byte("external_review_model = opus:high"), 0o600))
+		content := "# executor = codex\n# codex_model = gpt-5.5\n# external_review_tool = auto\nplans_dir = plans\n"
+		require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o600))
 
 		values, err := newValuesLoader(defaultsFS).Load("", cfgPath)
 		require.NoError(t, err)
-		assert.Equal(t, "opus:high", values.ExternalReviewModel)
-		assert.True(t, values.ExternalReviewModelSet)
+		assert.Equal(t, "plans", values.PlansDir)
 	})
+}
 
-	t.Run("explicit empty overrides global", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		globalPath := filepath.Join(tmpDir, "global")
-		localPath := filepath.Join(tmpDir, "local")
-		require.NoError(t, os.WriteFile(globalPath, []byte("external_review_model = gpt-5.5:xhigh"), 0o600))
-		require.NoError(t, os.WriteFile(localPath, []byte("external_review_model ="), 0o600))
+func TestValuesLoader_Load_WithoutRemovedKeysUnchanged(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config")
+	content := `task_model = codex:gpt-6-astra:medium
+review_model = claude:opus:high
+external_reviewers = claude:opus:high
+codex_command = /opt/codex
+codex_sandbox = workspace-write
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(content), 0o600))
 
-		values, err := newValuesLoader(defaultsFS).Load(localPath, globalPath)
-		require.NoError(t, err)
-		assert.Empty(t, values.ExternalReviewModel)
-		assert.True(t, values.ExternalReviewModelSet)
-	})
+	values, err := newValuesLoader(defaultsFS).Load("", cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, "codex:gpt-6-astra:medium", values.TaskModel)
+	assert.Equal(t, "claude:opus:high", values.ReviewModel)
+	assert.Equal(t, "claude:opus:high", values.ExternalReviewers)
+	assert.True(t, values.ExternalReviewersSet)
+	assert.Equal(t, "/opt/codex", values.CodexCommand)
+	assert.Equal(t, "workspace-write", values.CodexSandbox)
+	assert.True(t, values.CodexSandboxSet)
 }
 
 func TestValuesLoader_Load_ExternalReviewers(t *testing.T) {
@@ -1445,7 +1330,7 @@ func TestValuesLoader_Load_CustomReviewScript(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "config")
 
 	configContent := `
-external_review_tool = custom
+external_reviewers = custom
 custom_review_script = /path/to/my-review.sh
 `
 	require.NoError(t, os.WriteFile(configPath, []byte(configContent), 0o600))
@@ -1454,7 +1339,7 @@ custom_review_script = /path/to/my-review.sh
 	values, err := loader.Load("", configPath)
 	require.NoError(t, err)
 
-	assert.Equal(t, "custom", values.ExternalReviewTool)
+	assert.Equal(t, "custom", values.ExternalReviewers)
 	assert.Equal(t, "/path/to/my-review.sh", values.CustomReviewScript)
 }
 
@@ -1829,21 +1714,6 @@ notify_telegram_chat = -100123
 	assert.Equal(t, "global-token", values.NotifyTelegramToken)
 }
 
-func TestValuesLoader_Load_LocalOverridesExternalReviewTool(t *testing.T) {
-	tmpDir := t.TempDir()
-	globalConfig := filepath.Join(tmpDir, "global")
-	localConfig := filepath.Join(tmpDir, "local")
-
-	require.NoError(t, os.WriteFile(globalConfig, []byte(`external_review_tool = codex`), 0o600))
-	require.NoError(t, os.WriteFile(localConfig, []byte(`external_review_tool = none`), 0o600))
-
-	loader := newValuesLoader(defaultsFS)
-	values, err := loader.Load(localConfig, globalConfig)
-	require.NoError(t, err)
-
-	assert.Equal(t, "none", values.ExternalReviewTool)
-}
-
 func TestValuesLoader_Load_DefaultBranch(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config")
@@ -1905,43 +1775,6 @@ func TestValues_mergeFrom_DefaultBranch(t *testing.T) {
 }
 
 func TestValues_mergeFrom_ExternalReviewFields(t *testing.T) {
-	t.Run("merge external review tool", func(t *testing.T) {
-		dst := Values{ExternalReviewTool: "codex"}
-		src := Values{ExternalReviewTool: "custom"}
-		dst.mergeFrom(&src)
-		assert.Equal(t, "custom", dst.ExternalReviewTool)
-	})
-
-	t.Run("empty source doesn't overwrite external review tool", func(t *testing.T) {
-		dst := Values{ExternalReviewTool: "codex"}
-		src := Values{ExternalReviewTool: ""}
-		dst.mergeFrom(&src)
-		assert.Equal(t, "codex", dst.ExternalReviewTool)
-	})
-
-	t.Run("explicit external model overrides destination", func(t *testing.T) {
-		dst := Values{ExternalReviewModel: "opus:xhigh"}
-		src := Values{ExternalReviewModel: "gpt-5.5:high", ExternalReviewModelSet: true}
-		dst.mergeFrom(&src)
-		assert.Equal(t, "gpt-5.5:high", dst.ExternalReviewModel)
-		assert.True(t, dst.ExternalReviewModelSet)
-	})
-
-	t.Run("explicit empty external model clears destination", func(t *testing.T) {
-		dst := Values{ExternalReviewModel: "opus:xhigh"}
-		src := Values{ExternalReviewModelSet: true}
-		dst.mergeFrom(&src)
-		assert.Empty(t, dst.ExternalReviewModel)
-		assert.True(t, dst.ExternalReviewModelSet)
-	})
-
-	t.Run("unset external model preserves destination", func(t *testing.T) {
-		dst := Values{ExternalReviewModel: "opus:xhigh"}
-		dst.mergeFrom(&Values{})
-		assert.Equal(t, "opus:xhigh", dst.ExternalReviewModel)
-		assert.False(t, dst.ExternalReviewModelSet)
-	})
-
 	t.Run("explicit external reviewers override destination", func(t *testing.T) {
 		dst := Values{ExternalReviewers: "codex"}
 		src := Values{ExternalReviewers: "claude:fable", ExternalReviewersSet: true}

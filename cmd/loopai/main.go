@@ -469,7 +469,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 	if modelErr := validateStartupModels(o, cfg); modelErr != nil {
 		return modelErr
 	}
-	externalReview, resolveErr := resolveExternalReviewSelection(o, cfg, mode)
+	externalReview, resolveErr := resolveExternalReviewSelection(cfg, mode)
 	if resolveErr != nil {
 		return resolveErr
 	}
@@ -1393,7 +1393,7 @@ var newOrcaReporter = orca.New
 var newAwakeHolder = awake.New
 
 // orcaReporter constructs the stdout title reporter selected by configuration. ExecutorClaude is
-// the empty config value, so map it to the explicit agent name expected in terminal titles.
+// the empty runtime value, so map it to the explicit agent name expected in terminal titles.
 func orcaReporter(cfg *config.Config, planFile string) *orca.Reporter {
 	if cfg == nil || !cfg.Orca {
 		return nil
@@ -2584,7 +2584,7 @@ func checkClaudeDep(cfg *config.Config) error {
 }
 
 // checkCodexDep checks that the codex command is available in PATH.
-// used when executor=codex (--codex) so codex absence is reported up-front
+// used when codex is the primary executor so codex absence is reported up-front
 // with a clean message rather than a cryptic exec error on the first task.
 func checkCodexDep(cfg *config.Config) error {
 	codexCmd := cfg.CodexCommand
@@ -2602,8 +2602,6 @@ type resolvedReviewer struct {
 	Model      string
 	Effort     string
 	MaxDropped bool
-	// ModelFromCodexDefault preserves the source of an omitted chain model for diagnostics.
-	ModelFromCodexDefault bool
 }
 
 func (r resolvedReviewer) modelSpec() string {
@@ -2696,8 +2694,8 @@ func primaryProvider(cfg *config.Config) string {
 // function returns from several branches - the chain, the legacy single reviewer, the
 // disabled modes - and an effort left unchecked on any of them reaches the reviewer
 // process and fails there, after the task phase has already run.
-func resolveExternalReviewSelection(o opts, cfg *config.Config, mode processor.Mode) (externalReviewSelection, error) {
-	selection, err := resolveReviewerChain(o, cfg, mode)
+func resolveExternalReviewSelection(cfg *config.Config, mode processor.Mode) (externalReviewSelection, error) {
+	selection, err := resolveReviewerChain(cfg, mode)
 	if err != nil {
 		return externalReviewSelection{}, err
 	}
@@ -2710,7 +2708,7 @@ func resolveExternalReviewSelection(o opts, cfg *config.Config, mode processor.M
 	return selection, nil
 }
 
-func resolveReviewerChain(o opts, cfg *config.Config, mode processor.Mode) (externalReviewSelection, error) {
+func resolveReviewerChain(cfg *config.Config, mode processor.Mode) (externalReviewSelection, error) {
 	if cfg == nil {
 		return externalReviewSelection{Resolved: true}, nil
 	}
@@ -2727,12 +2725,9 @@ func resolveReviewerChain(o opts, cfg *config.Config, mode processor.Mode) (exte
 		}
 		selection := externalReviewSelection{Resolved: true, Explicit: true, Reviewers: make([]resolvedReviewer, 0, len(specs))}
 		for _, spec := range specs {
-			model, effort, maxDropped := processor.ResolveExternalReviewerModelEffort(
-				spec.Provider, spec.ModelSpec, cfg.CodexModel, cfg.CodexReasoningEffort)
-			inputModel, _, _ := strings.Cut(spec.ModelSpec, ":")
+			model, effort, maxDropped := processor.ResolveExternalReviewerModelEffort(spec.Provider, spec.ModelSpec)
 			selection.Reviewers = append(selection.Reviewers, resolvedReviewer{
 				Provider: spec.Provider, Model: model, Effort: effort, MaxDropped: maxDropped,
-				ModelFromCodexDefault: spec.Provider == config.ExternalReviewToolCodex && strings.TrimSpace(inputModel) == "",
 			})
 		}
 		return selection, nil
@@ -2760,15 +2755,13 @@ func resolveReviewerChain(o opts, cfg *config.Config, mode processor.Mode) (exte
 		}
 	}
 
-	modelExplicit := o.externalReviewModelSet || cfg.ExternalReviewModelSet
-	if requested == config.ExternalReviewToolCustom && modelExplicit && cfg.ExternalReviewModel != "" {
-		return externalReviewSelection{}, errors.New("external_review_model cannot be used with external_review_tool=custom")
+	if requested == config.ExternalReviewToolCustom && cfg.ExternalReviewModel != "" {
+		return externalReviewSelection{}, errors.New("--external-review-model cannot be used with --external-review-tool=custom")
 	}
 
 	switch requested {
 	case config.ExternalReviewToolClaude, config.ExternalReviewToolCodex:
-		model, effort, maxDropped := processor.ResolveExternalReviewerModelEffort(
-			requested, cfg.ExternalReviewModel, cfg.CodexModel, cfg.CodexReasoningEffort)
+		model, effort, maxDropped := processor.ResolveExternalReviewerModelEffort(requested, cfg.ExternalReviewModel)
 		selection.Reviewers = []resolvedReviewer{{Provider: requested, Model: model, Effort: effort, MaxDropped: maxDropped}}
 	case config.ExternalReviewToolCustom:
 		selection.Reviewers = []resolvedReviewer{{Provider: requested}}
@@ -2784,13 +2777,8 @@ func printExternalReviewWarnings(o opts, selection externalReviewSelection, cfg 
 	if w == nil || cfg == nil {
 		return
 	}
-	if cfg.ExternalReviewersSet {
-		switch {
-		case o.externalReviewToolSet || o.externalReviewModelSet:
-			fmt.Fprintln(w, "warning: external_reviewers takes precedence; legacy external-review CLI flags are ignored (use --external-reviewers= to clear or disable the configured chain)")
-		case cfg.ExternalReviewToolSet || cfg.ExternalReviewModelSet:
-			fmt.Fprintln(w, "warning: external_reviewers takes precedence; legacy external_review_tool and external_review_model config keys are ignored (set external_reviewers = in the more-specific config file to clear or disable the inherited chain)")
-		}
+	if cfg.ExternalReviewersSet && (o.externalReviewToolSet || o.externalReviewModelSet) {
+		fmt.Fprintln(w, "warning: external_reviewers takes precedence; legacy external-review CLI flags are ignored (use --external-reviewers= to clear or disable the configured chain)")
 	}
 	warnedPrimaryMatch := make(map[string]bool)
 	maxDroppedWarned := false
@@ -3114,13 +3102,7 @@ func validateReviewerProviders(selection externalReviewSelection, cfg *config.Co
 		}
 		label := fmt.Sprintf("external reviewer entry %d (%s)", i+1, reviewer.Provider)
 		if !cfg.ExternalReviewersSet {
-			modelKey := "external_review_model"
-			if model, _, _ := strings.Cut(cfg.ExternalReviewModel, ":"); strings.TrimSpace(model) == "" && reviewer.Provider == config.ExternalReviewToolCodex {
-				modelKey = "codex_model"
-			}
-			label = fmt.Sprintf("external_review_tool (%s) / %s", reviewer.Provider, modelKey)
-		} else if reviewer.ModelFromCodexDefault {
-			label += " / codex_model"
+			label = fmt.Sprintf("--external-review-tool (%s) / --external-review-model", reviewer.Provider)
 		}
 		return fmt.Errorf("%s names a %s model %q", label, provider, spec)
 	}
@@ -3158,7 +3140,7 @@ func validateFlags(o opts) error {
 	}
 	// --codex / --pass-claude-md / --external-only / --codex-only / --external-review-tool
 	// mutual-exclusion checks are deferred to applyCodexOverrides, which runs after the
-	// config-file merge so that executor=codex coming from config is also enforced.
+	// config-file merge so that a codex primary inferred from config is also enforced.
 	return nil
 }
 
@@ -3661,8 +3643,8 @@ func modelEffortLabel(fallback, model, effort string) string {
 	return model
 }
 
-func codexBannerForSpec(spec string, cfg *config.Config) codexBannerInfo {
-	model, effort, maxDropped := processor.ResolveCodexModelEffort(spec, cfg.CodexModel, cfg.CodexReasoningEffort)
+func codexBannerForSpec(spec string) codexBannerInfo {
+	model, effort, maxDropped := processor.ResolveCodexModelEffort(spec)
 	return codexBannerInfo{
 		taskModel: model, taskEffort: effort,
 		reviewModel: model, reviewEffort: effort,
@@ -3672,16 +3654,16 @@ func codexBannerForSpec(spec string, cfg *config.Config) codexBannerInfo {
 
 // codexModelBanner resolves the codex task and review model/effort for the startup
 // banner from the task/review model specs (--task-model / --review-model CLI flag >
-// task_model / review_model config) against codex_model / codex_reasoning_effort. it
+// task_model / review_model config); an empty half leaves codex's own default. it
 // mirrors the resolution buildCodexExecutors performs so the banner shows what the
 // codex executors will actually receive. review fields equal the task fields unless a
 // distinct review spec is given.
 func codexModelBanner(o opts, cfg *config.Config) codexBannerInfo {
 	taskSpec := resolveSpec(o.TaskModel, cfg.TaskModel)
-	info := codexBannerForSpec(taskSpec, cfg)
+	info := codexBannerForSpec(taskSpec)
 	reviewSpec := resolveSpec(o.ReviewModel, cfg.ReviewModel)
 	if reviewSpec != "" {
-		reviewInfo := codexBannerForSpec(reviewSpec, cfg)
+		reviewInfo := codexBannerForSpec(reviewSpec)
 		info.reviewModel, info.reviewEffort = reviewInfo.taskModel, reviewInfo.taskEffort
 		info.maxDropped = info.maxDropped || reviewInfo.maxDropped
 	}
@@ -3689,9 +3671,9 @@ func codexModelBanner(o opts, cfg *config.Config) codexBannerInfo {
 }
 
 // codexPlanBanner resolves the codex model/effort for plan creation. plan_model
-// falls back to task_model, then to codex_model/codex_reasoning_effort defaults.
+// falls back to task_model, then to codex's own defaults.
 func codexPlanBanner(o opts, cfg *config.Config) codexBannerInfo {
-	return codexBannerForSpec(resolvePlanSpec(o, cfg), cfg)
+	return codexBannerForSpec(resolvePlanSpec(o, cfg))
 }
 
 // runPlanMode executes interactive plan creation mode.
@@ -6039,7 +6021,6 @@ func applyExternalReviewCLIOverrides(o opts, cfg *config.Config) error {
 	}
 	if o.externalReviewModelSet {
 		cfg.ExternalReviewModel = o.ExternalReviewModel
-		cfg.ExternalReviewModelSet = true
 	}
 	if o.externalReviewersSet {
 		cfg.ExternalReviewers = o.ExternalReviewers
@@ -6049,8 +6030,8 @@ func applyExternalReviewCLIOverrides(o opts, cfg *config.Config) error {
 }
 
 // applyCodexOverrides resolves the primary executor after config merging: --codex
-// wins over an explicit executor key, otherwise a recognizable task model infers
-// the executor when ClaudeCommand is the real binary. It records the source and
+// wins, otherwise a recognizable task model infers the executor when ClaudeCommand
+// is the real binary. It records the source and
 // validates --pass-claude-md against the resolved executor. External review
 // selection is resolved separately and is valid for either primary.
 func applyCodexOverrides(o opts, cfg *config.Config, warnW io.Writer) error {
@@ -6059,12 +6040,6 @@ func applyCodexOverrides(o opts, cfg *config.Config, warnW io.Writer) error {
 	case o.Codex:
 		cfg.Executor = config.ExecutorCodex
 		cfg.ExecutorSource = config.ExecutorSourceFlag
-	case cfg.ExecutorSet:
-		executorValue := cfg.Executor
-		if executorValue == "" {
-			executorValue = "(empty)"
-		}
-		cfg.ExecutorSource = fmt.Sprintf(config.ExecutorSourceConfig, executorValue)
 	default:
 		cfg.Executor = config.ExecutorClaude
 		cfg.ExecutorSource = config.ExecutorSourceDefault
@@ -6082,7 +6057,7 @@ func applyCodexOverrides(o opts, cfg *config.Config, warnW io.Writer) error {
 		cfg.PassClaudeMd = true
 	}
 	if cfg.PassClaudeMd && cfg.Executor != config.ExecutorCodex {
-		return errors.New("--pass-claude-md requires --codex (or executor = codex in config)")
+		return errors.New("--pass-claude-md requires --codex (or a codex task_model)")
 	}
 	return nil
 }

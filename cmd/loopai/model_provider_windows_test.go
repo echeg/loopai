@@ -19,14 +19,15 @@ func TestWindowsExecutableModelProviders(t *testing.T) {
 	})
 	for _, tt := range []struct {
 		provider string
+		opts     opts
 		cfg      config.Config
 	}{
-		{"claude", config.Config{ExecutorSet: true, ClaudeCommand: `C:\tools\claude.exe`, TaskModel: "gpt-6-astra"}},
-		{"codex", config.Config{ExecutorSet: true, Executor: config.ExecutorCodex, CodexCommand: `C:\tools\CODEX.EXE`, TaskModel: "fable"}},
+		{"claude", opts{}, config.Config{ClaudeCommand: `C:\tools\claude.exe`, TaskModel: "fable", PlanModel: "gpt-6-astra"}},
+		{"codex", opts{Codex: true}, config.Config{CodexCommand: `C:\tools\CODEX.EXE`, TaskModel: "fable"}},
 	} {
 		t.Run(tt.provider+" executable rejects mismatched model", func(t *testing.T) {
-			require.NoError(t, applyCodexOverrides(opts{}, &tt.cfg, io.Discard))
-			require.ErrorContains(t, validateStartupModels(opts{}, &tt.cfg), "but the executor is "+tt.provider)
+			require.NoError(t, applyCodexOverrides(tt.opts, &tt.cfg, io.Discard))
+			require.ErrorContains(t, validateStartupModels(tt.opts, &tt.cfg), "but the executor is "+tt.provider)
 		})
 	}
 }

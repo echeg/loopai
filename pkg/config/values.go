@@ -31,10 +31,6 @@ type Values struct {
 	CodexEnabled               bool
 	CodexEnabledSet            bool // tracks if codex_enabled was explicitly set
 	CodexCommand               string
-	CodexModel                 string
-	CodexModelSet              bool // tracks if codex_model was explicitly set outside embedded defaults
-	CodexReasoningEffort       string
-	CodexReasoningEffortSet    bool // tracks if codex_reasoning_effort was explicitly set outside embedded defaults
 	CodexTimeoutMs             int
 	CodexTimeoutMsSet          bool // tracks if codex_timeout_ms was explicitly set
 	CodexSandbox               string
@@ -45,13 +41,9 @@ type Values struct {
 	SessionTimeoutSet          bool          // tracks if session_timeout was explicitly set
 	IdleTimeout                time.Duration // kill session after no output for this duration
 	IdleTimeoutSet             bool          // tracks if idle_timeout was explicitly set
-	ExternalReviewTool         string        // auto, claude, codex, custom, or none
-	ExternalReviewToolSet      bool          // tracks if external_review_tool was explicitly set in user config (not embedded default)
-	ExternalReviewModel        string        // provider-specific model[:effort] spec; empty uses the selected provider's default
-	ExternalReviewModelSet     bool          // tracks if external_review_model was explicitly set in user config (not embedded default)
 	ExternalReviewers          string        // ordered provider[:model[:effort]] reviewer chain
 	ExternalReviewersSet       bool          // tracks if external_reviewers was explicitly set in user config
-	CustomReviewScript         string        // path to custom review script (when ExternalReviewTool = ExternalReviewToolCustom)
+	CustomReviewScript         string        // path to custom review script (for custom external_reviewers entries)
 	IterationDelayMs           int
 	IterationDelayMsSet        bool // tracks if iteration_delay_ms was explicitly set
 	TaskRetryCount             int
@@ -65,9 +57,7 @@ type Values struct {
 	ReportEnabled              bool
 	ReportEnabledSet           bool // tracks if report_enabled was explicitly set
 	PreserveAnthropicAPIKey    bool
-	PreserveAnthropicAPIKeySet bool   // tracks if preserve_anthropic_api_key was explicitly set
-	Executor                   string // "" (= claude, default) or "codex"
-	ExecutorSet                bool   // tracks if executor was explicitly set
+	PreserveAnthropicAPIKeySet bool // tracks if preserve_anthropic_api_key was explicitly set
 	PassClaudeMd               bool
 	PassClaudeMdSet            bool // tracks if pass_claude_md was explicitly set
 	MovePlanOnCompletion       bool
@@ -177,7 +167,11 @@ func (vl *valuesLoader) parseValuesFromFile(path string) (Values, error) {
 		return Values{}, nil
 	}
 
-	return vl.parseValuesFromBytes(data)
+	values, err := vl.parseValuesFromBytes(data)
+	if err != nil {
+		return Values{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return values, nil
 }
 
 // parseValuesFromEmbedded parses values from the embedded defaults/config file.
@@ -190,11 +184,7 @@ func (vl *valuesLoader) parseValuesFromEmbedded() (Values, error) {
 	if err != nil {
 		return Values{}, err
 	}
-	values.CodexModelSet = false
-	values.CodexReasoningEffortSet = false
 	values.CodexSandboxSet = false
-	values.ExternalReviewToolSet = false
-	values.ExternalReviewModelSet = false
 	values.ExternalReviewersSet = false
 	values.ReportEnabledSet = false
 	values.KeepAwakeSet = false
@@ -213,6 +203,9 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 
 	var values Values
 	section := cfg.Section("") // default section (no section header)
+	if err := checkRemovedKeys(section); err != nil {
+		return Values{}, err
+	}
 
 	// claude settings
 	if key, err := section.GetKey("claude_command"); err == nil {
@@ -254,14 +247,6 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 	if key, err := section.GetKey("codex_args"); err == nil {
 		values.CodexArgs = key.String()
 	}
-	if key, err := section.GetKey("codex_model"); err == nil {
-		values.CodexModel = key.String()
-		values.CodexModelSet = true
-	}
-	if key, err := section.GetKey("codex_reasoning_effort"); err == nil {
-		values.CodexReasoningEffort = key.String()
-		values.CodexReasoningEffortSet = true
-	}
 	if key, err := section.GetKey("codex_timeout_ms"); err == nil {
 		val, intErr := key.Int()
 		if intErr != nil {
@@ -279,14 +264,6 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 	}
 
 	// external review settings
-	if key, err := section.GetKey("external_review_tool"); err == nil {
-		values.ExternalReviewTool = key.String()
-		values.ExternalReviewToolSet = true
-	}
-	if key, err := section.GetKey("external_review_model"); err == nil {
-		values.ExternalReviewModel = key.String()
-		values.ExternalReviewModelSet = true
-	}
 	if key, err := section.GetKey("external_reviewers"); err == nil {
 		values.ExternalReviewers = key.String()
 		values.ExternalReviewersSet = true
@@ -376,16 +353,6 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 		}
 		values.PreserveAnthropicAPIKey = val
 		values.PreserveAnthropicAPIKeySet = true
-	}
-
-	// executor selection: "" (= claude, default) or "codex"
-	if key, err := section.GetKey("executor"); err == nil {
-		v := strings.TrimSpace(key.String())
-		if v != ExecutorClaude && v != ExecutorCodex {
-			return Values{}, fmt.Errorf("invalid executor %q: must be \"\" (claude) or \"codex\"", v)
-		}
-		values.Executor = v
-		values.ExecutorSet = true
 	}
 
 	// pass_claude_md: when true, codex enables project-level CLAUDE.md fallback
@@ -535,18 +502,6 @@ func (dst *Values) mergeFrom(src *Values) {
 		dst.ReviewModel = src.ReviewModel
 	}
 	dst.mergeCodexFrom(src)
-	if src.ExternalReviewToolSet {
-		dst.ExternalReviewTool = src.ExternalReviewTool
-		dst.ExternalReviewToolSet = true
-	} else if src.ExternalReviewTool != "" {
-		dst.ExternalReviewTool = src.ExternalReviewTool
-	}
-	if src.ExternalReviewModelSet {
-		dst.ExternalReviewModel = src.ExternalReviewModel
-		dst.ExternalReviewModelSet = true
-	} else if src.ExternalReviewModel != "" {
-		dst.ExternalReviewModel = src.ExternalReviewModel
-	}
 	dst.mergeExternalReviewersFrom(src)
 	if src.CustomReviewScript != "" {
 		dst.CustomReviewScript = src.CustomReviewScript
@@ -568,18 +523,6 @@ func (dst *Values) mergeCodexFrom(src *Values) {
 	}
 	if src.CodexArgs != "" {
 		dst.CodexArgs = src.CodexArgs
-	}
-	if src.CodexModelSet {
-		dst.CodexModel = src.CodexModel
-		dst.CodexModelSet = true
-	} else if src.CodexModel != "" {
-		dst.CodexModel = src.CodexModel
-	}
-	if src.CodexReasoningEffortSet {
-		dst.CodexReasoningEffort = src.CodexReasoningEffort
-		dst.CodexReasoningEffortSet = true
-	} else if src.CodexReasoningEffort != "" {
-		dst.CodexReasoningEffort = src.CodexReasoningEffort
 	}
 	if src.CodexTimeoutMsSet {
 		dst.CodexTimeoutMs = src.CodexTimeoutMs
@@ -643,10 +586,6 @@ func (dst *Values) mergeExtraFrom(src *Values) {
 	if src.PreserveAnthropicAPIKeySet {
 		dst.PreserveAnthropicAPIKey = src.PreserveAnthropicAPIKey
 		dst.PreserveAnthropicAPIKeySet = true
-	}
-	if src.ExecutorSet {
-		dst.Executor = src.Executor
-		dst.ExecutorSet = true
 	}
 	if src.PassClaudeMdSet {
 		dst.PassClaudeMd = src.PassClaudeMd
@@ -926,4 +865,32 @@ func expandTilde(path string) string {
 		return path
 	}
 	return home + path[1:] // replace ~ with home, keep the /
+}
+
+// removedKey describes a config key that loopai no longer reads, with the
+// spelling that replaces it.
+type removedKey struct {
+	name        string
+	replacement string
+}
+
+// removedKeys lists keys whose meaning moved into provider[:model[:effort]] specs.
+// a removed key is an error even when empty, because honoring or ignoring it
+// silently would change which provider or model a run uses.
+var removedKeys = []removedKey{
+	{name: "executor", replacement: "set the provider in the model spec instead, e.g. task_model = codex:<model>[:effort]"},
+	{name: "external_review_tool", replacement: "use external_reviewers = <provider>[:model[:effort]] (an empty value disables external review)"},
+	{name: "external_review_model", replacement: "put the model in the matching entry, e.g. external_reviewers = <provider>:<model>[:effort]"},
+	{name: "codex_model", replacement: "put the model in each codex spec, e.g. codex:<model>[:effort]"},
+	{name: "codex_reasoning_effort", replacement: "put the effort in each codex spec, e.g. codex:<model>:<effort>"},
+}
+
+// checkRemovedKeys returns an error naming the first removed key present in section.
+func checkRemovedKeys(section *ini.Section) error {
+	for _, k := range removedKeys {
+		if section.HasKey(k.name) {
+			return fmt.Errorf("config key %s was removed; %s", k.name, k.replacement)
+		}
+	}
+	return nil
 }

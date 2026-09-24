@@ -33,8 +33,8 @@ claude_swap_enabled = true
 # claude-sonnet-4-5-20250929) and effort is low/medium/high/xhigh/max.
 # either part is optional: "opus" sets model only, ":high" sets effort only,
 # "opus:high" sets both. falls back to task_model when empty.
-# under the codex executor (executor = codex) this selects the codex plan-creation
-# model/effort, resolved against codex_model/codex_reasoning_effort.
+# under the codex executor (--codex) this selects the codex plan-creation
+# model/effort; an empty part leaves codex's own default from ~/.codex/config.toml.
 # plan_model =
 
 # task_model: model to use for task execution
@@ -53,25 +53,26 @@ claude_swap_enabled = true
 # codex executor
 # ------------------------------------------------------------------------------
 
-# executor: primary executor for plan creation, task, review, external-finding
-# evaluation, and finalize phases. when unset, infer from task_model: gpt*/codex*
+# the primary executor for plan creation, task, review, external-finding
+# evaluation, and finalize phases is inferred from task_model: gpt*/codex*
 # and o1/o3/o4 (exact or followed by '-') select codex; claude*/opus*/sonnet*/
 # haiku*/fable* select Claude Code. unknown names fall back to Claude Code.
-# an explicit value wins: empty selects Claude Code; "codex" selects codex.
-# --codex overrides config. recognizable plan/task/review models from the other
+# --codex overrides inference. recognizable plan/task/review models from the other
 # provider fail at startup. a custom claude_command disables inference; a custom
 # command for the selected primary (claude_command/codex_command) skips its
 # provider check, allowing wrapper-defined model names.
-# executor =
+# the former executor, codex_model, and codex_reasoning_effort keys were removed
+# and are rejected at startup.
 
-# pass_claude_md: when executor = codex, let codex read project CLAUDE.md via
+# pass_claude_md: when codex is the primary executor, let codex read project CLAUDE.md via
 # project_doc_fallback_filenames. user-level ~/.claude/CLAUDE.md is not
 # auto-passed; loopai prints a one-time symlink hint instead.
 # default: false
 # pass_claude_md = false
 
 # codex_enabled: backward-compatible gate for automatically selected external review
-# set to false to disable external review when external_review_tool = auto
+# set to false to disable the automatically selected reviewer used when
+# external_reviewers is unset
 # default: true
 codex_enabled = true
 
@@ -80,7 +81,7 @@ codex_enabled = true
 codex_command = codex
 
 # codex_args: extra arguments appended to every codex invocation loopai spawns
-# (both executor = codex and external codex review under a claude primary).
+# (both the codex primary executor and external codex review under a claude primary).
 # unlike claude_args, which IS the claude command's argument list, these are
 # strictly additive: loopai composes the codex command and appends these last,
 # so an explicit -c value here overrides the matching override loopai sets.
@@ -99,7 +100,7 @@ codex_command = codex
 #
 # last-occurrence-wins covers -c key=value only. repeating any flag loopai
 # already passes, valued or bare, is a fatal codex parse error, not an override,
-# so use codex_sandbox rather than putting --sandbox here. executor = codex also
+# so use codex_sandbox rather than putting --sandbox here. the codex primary also
 # passes --dangerously-bypass-approvals-and-sandbox whenever the effective
 # sandbox is danger-full-access (its default), so repeating that one aborts
 # every phase too. extras land after the exec
@@ -114,20 +115,6 @@ codex_command = codex
 # default: empty (codex invocations are unchanged)
 # codex_args =
 
-# codex_model: model ID for codex
-# available models: gpt-5.5, gpt-5.3-codex, gpt-5.3-codex-mini
-# default: gpt-5.5
-# (set to an empty value, "codex_model =", to inherit from ~/.codex/config.toml instead;
-# commenting the line out keeps the gpt-5.5 default)
-codex_model = gpt-5.5
-
-# codex_reasoning_effort: reasoning effort level for codex
-# available: low, medium, high, xhigh
-# default: xhigh
-# (set to an empty value, "codex_reasoning_effort =", to inherit from ~/.codex/config.toml
-# instead; commenting the line out keeps the xhigh default)
-codex_reasoning_effort = xhigh
-
 # codex_timeout_ms: timeout for codex execution in milliseconds
 # default: 3600000 (1 hour)
 codex_timeout_ms = 3600000
@@ -136,47 +123,34 @@ codex_timeout_ms = 3600000
 # available: read-only, workspace-write, danger-full-access
 # read-only: codex can read files but not write (safest for external review)
 # danger-full-access: codex runs without filesystem sandboxing, matching autonomous claude mode
-# note: first-class executor = codex uses danger-full-access unless codex_sandbox is explicitly set in user config
-# default: read-only for external codex review, danger-full-access for executor = codex
+# note: the first-class codex primary uses danger-full-access unless codex_sandbox is explicitly set in user config
+# default: read-only for external codex review, danger-full-access for the codex primary
 codex_sandbox = read-only
 
 # ------------------------------------------------------------------------------
 # external review
 # ------------------------------------------------------------------------------
 
-# external_review_tool: which tool to use for external code review
-# available: auto, claude, codex, custom, none
-# auto: use Codex for a Claude primary executor and Claude for a Codex primary executor
-# claude: use Claude Code for external review
-# codex: use OpenAI Codex for external review
-# custom: use a custom script specified by custom_review_script
-# none: skip external review entirely
-# note: codex_enabled = false disables auto selection for backward compatibility
-# external-only mode still resolves auto because the external pipeline was explicitly requested
-# default: auto
-external_review_tool = auto
-
-# external_review_model: model[:effort] for the selected external provider
-# empty uses codex_model/codex_reasoning_effort for Codex or opus:xhigh for Claude
-# explicit values override the selected provider's dynamic default
-# must remain empty when external_review_tool = custom
-external_review_model =
-
 # external_reviewers: ordered comma-separated provider[:model[:effort]] chain
 # available providers: claude, codex, custom
 # example: external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max
-# when set, takes precedence over external_review_tool and external_review_model
+# when unset, the other provider than the primary reviews automatically (Codex for a
+# Claude primary, Claude for a Codex primary), skipped with a warning when not installed
+# and disabled by codex_enabled = false
 # an explicitly empty value clears an inherited chain and disables external review
 # reviewers run sequentially until clean, their per-reviewer iteration cap, or patience
-# bare claude defaults to opus:xhigh; bare codex uses the configured codex defaults
+# bare claude defaults to opus:xhigh; bare codex uses the codex CLI's own defaults
+# from ~/.codex/config.toml
 # max effort is Claude-only; Codex ignores it with a warning
 # providers may repeat; every entry creates a separate review loop
 # reviewers only report findings; the primary fixes them using review_model (or task_model)
 # custom entries must not specify a model and use custom_review_script
+# the former external_review_tool and external_review_model keys were removed and are
+# rejected at startup
 # external_reviewers =
 
 # custom_review_script: path to custom review script
-# required by external_review_tool = custom and custom entries in external_reviewers
+# required by custom entries in external_reviewers
 # script receives prompt file path as single argument
 # script should output findings to stdout; the primary evaluator emits
 # <<<RALPHEX:EXTERNAL_REVIEW_DONE>>> when the reviewer reports no issues

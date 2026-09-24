@@ -5,7 +5,7 @@
 # allowing a different model than the one used for task/review phases.
 #
 # config example (~/.config/loopai/config or .loopai/config):
-#   external_review_tool = custom
+#   external_reviewers = custom
 #   custom_review_script = /path/to/opencode-review.sh
 #
 # environment variables:

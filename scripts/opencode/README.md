@@ -32,7 +32,7 @@ Custom review script for loopai external review phase. Uses OpenCode CLI with a 
 **Configuration:**
 
 ```ini
-external_review_tool = custom
+external_reviewers = custom
 custom_review_script = /path/to/scripts/opencode/opencode-review.sh
 ```
 

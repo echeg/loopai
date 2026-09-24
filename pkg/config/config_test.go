@@ -22,9 +22,8 @@ func Test_defaultsFS(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "claude_command")
 	assert.Contains(t, string(data), "codex_enabled")
-	assert.Contains(t, string(data), "external_review_model")
 	assert.Contains(t, string(data), "# external_reviewers =")
-	assert.Contains(t, string(data), "takes precedence over external_review_tool and external_review_model")
+	assert.Contains(t, string(data), "external_review_tool and external_review_model keys were removed")
 	assert.Contains(t, string(data), "the primary fixes them using review_model (or task_model)")
 	assert.Contains(t, string(data), "custom entries in external_reviewers")
 	assert.Contains(t, string(data), "iteration_delay_ms")
@@ -343,8 +342,6 @@ func TestLoad_PartialConfig(t *testing.T) {
 	assert.Equal(t, "--dangerously-skip-permissions --output-format stream-json --verbose", cfg.ClaudeArgs)
 	assert.Equal(t, "codex", cfg.CodexCommand)
 	assert.Empty(t, cfg.CodexArgs, "codex_args stays empty unless the user sets it")
-	assert.Equal(t, "gpt-5.5", cfg.CodexModel, "codex_model defaults to embedded gpt-5.5")
-	assert.Equal(t, "xhigh", cfg.CodexReasoningEffort)
 	assert.Equal(t, "read-only", cfg.CodexSandbox)
 	assert.False(t, cfg.CodexSandboxSet)
 	assert.Equal(t, 2000, cfg.IterationDelayMs)
@@ -370,8 +367,6 @@ func TestLoad_EmptyConfig(t *testing.T) {
 	assert.Equal(t, "claude", cfg.ClaudeCommand)
 	assert.Equal(t, "--dangerously-skip-permissions --output-format stream-json --verbose", cfg.ClaudeArgs)
 	assert.Equal(t, "codex", cfg.CodexCommand)
-	assert.Equal(t, "gpt-5.5", cfg.CodexModel, "codex_model defaults to embedded gpt-5.5")
-	assert.Equal(t, "xhigh", cfg.CodexReasoningEffort)
 	assert.Equal(t, "read-only", cfg.CodexSandbox)
 	assert.False(t, cfg.CodexSandboxSet)
 	assert.Equal(t, "docs/plans", cfg.PlansDir)
@@ -611,59 +606,18 @@ func TestLoad_PreserveAnthropicAPIKey_InvalidValue(t *testing.T) {
 	assert.Contains(t, err.Error(), "preserve_anthropic_api_key")
 }
 
-func TestLoad_Executor(t *testing.T) {
-	testCases := []struct {
-		name       string
-		configBody string
-		want       string
-	}{
-		{name: "default not set yields empty", configBody: "", want: ""},
-		{name: "explicit codex yields codex", configBody: "executor = codex", want: "codex"},
-		{name: "explicit empty yields empty", configBody: "executor =", want: ""},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			tmpDir := t.TempDir()
-			configDir := filepath.Join(tmpDir, "ralphex")
+func TestLoad_RemovedKeysRejected(t *testing.T) {
+	for _, body := range []string{"executor = codex", "executor =", "codex_model = gpt-5.5", "codex_reasoning_effort = xhigh",
+		"external_review_tool = auto", "external_review_model ="} {
+		t.Run(body, func(t *testing.T) {
+			configDir := filepath.Join(t.TempDir(), "ralphex")
 			require.NoError(t, os.MkdirAll(configDir, 0o700))
-			require.NoError(t, os.MkdirAll(filepath.Join(configDir, "prompts"), 0o700))
-			require.NoError(t, os.MkdirAll(filepath.Join(configDir, "agents"), 0o700))
-
-			require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(tc.configBody), 0o600))
-
-			cfg, err := Load(configDir)
-			require.NoError(t, err)
-
-			assert.Equal(t, tc.want, cfg.Executor)
-		})
-	}
-}
-
-func TestLoad_Executor_RejectsInvalidValue(t *testing.T) {
-	// regression: config-file `executor = clyde` (typo) used to flow through silently
-	// and be treated as claude. validation now rejects unknown values explicitly so
-	// users get a clear error instead of mysterious "claude was selected" behavior.
-	tests := []struct {
-		name       string
-		configBody string
-	}{
-		{name: "typo", configBody: "executor = clyde"},
-		{name: "claude_spelled_out", configBody: "executor = claude"},
-		{name: "uppercase_codex", configBody: "executor = CODEX"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			tmpDir := t.TempDir()
-			configDir := filepath.Join(tmpDir, "ralphex")
-			require.NoError(t, os.MkdirAll(configDir, 0o700))
-			require.NoError(t, os.MkdirAll(filepath.Join(configDir, "prompts"), 0o700))
-			require.NoError(t, os.MkdirAll(filepath.Join(configDir, "agents"), 0o700))
-			require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(tc.configBody), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(body), 0o600))
 
 			_, err := Load(configDir)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "invalid executor")
+			key, _, _ := strings.Cut(body, " ")
+			assert.Contains(t, err.Error(), "config key "+key+" was removed")
 		})
 	}
 }
@@ -726,8 +680,6 @@ plan_model = opus:high
 codex_enabled = false
 codex_command = /custom/codex
 codex_args = -c service_tier="default"
-codex_model = custom-model
-codex_reasoning_effort = low
 codex_timeout_ms = 1000
 codex_sandbox = none
 iteration_delay_ms = 500
@@ -746,8 +698,6 @@ plans_dir = my/plans
 	assert.False(t, cfg.CodexEnabled)
 	assert.Equal(t, "/custom/codex", cfg.CodexCommand)
 	assert.Equal(t, `-c service_tier="default"`, cfg.CodexArgs)
-	assert.Equal(t, "custom-model", cfg.CodexModel)
-	assert.Equal(t, "low", cfg.CodexReasoningEffort)
 	assert.Equal(t, 1000, cfg.CodexTimeoutMs)
 	assert.Equal(t, "none", cfg.CodexSandbox)
 	assert.True(t, cfg.CodexSandboxSet)
@@ -1070,7 +1020,6 @@ color_task = #0000ff
 	// embedded defaults (not in global or local)
 	assert.Equal(t, "--dangerously-skip-permissions --output-format stream-json --verbose", cfg.ClaudeArgs)
 	assert.Equal(t, "codex", cfg.CodexCommand)
-	assert.Equal(t, "gpt-5.5", cfg.CodexModel, "codex_model defaults to embedded gpt-5.5")
 
 	// --- verify colors merge chain ---
 	// local override
@@ -1160,8 +1109,6 @@ func TestLoad_ExternalReviewToolConfig(t *testing.T) {
 
 	// set external review tool config values
 	configContent := `
-external_review_tool = custom
-external_review_model = review-model:high
 external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max
 custom_review_script = /path/to/my-review.sh
 `
@@ -1170,10 +1117,6 @@ custom_review_script = /path/to/my-review.sh
 	cfg, err := Load(configDir)
 	require.NoError(t, err)
 
-	assert.Equal(t, ExternalReviewToolCustom, cfg.ExternalReviewTool)
-	assert.True(t, cfg.ExternalReviewToolSet)
-	assert.Equal(t, "review-model:high", cfg.ExternalReviewModel)
-	assert.True(t, cfg.ExternalReviewModelSet)
 	assert.Equal(t, "codex:gpt-5.5:xhigh, claude:fable:max", cfg.ExternalReviewers)
 	assert.True(t, cfg.ExternalReviewersSet)
 	assert.Equal(t, "/path/to/my-review.sh", cfg.CustomReviewScript)
@@ -1192,10 +1135,8 @@ func TestLoad_ExternalReviewToolDefaults(t *testing.T) {
 	cfg, err := Load(configDir)
 	require.NoError(t, err)
 
-	assert.Equal(t, ExternalReviewToolAuto, cfg.ExternalReviewTool)
-	assert.False(t, cfg.ExternalReviewToolSet)
+	assert.Empty(t, cfg.ExternalReviewTool, "unset tool resolves to auto at startup")
 	assert.Empty(t, cfg.ExternalReviewModel)
-	assert.False(t, cfg.ExternalReviewModelSet)
 	assert.Empty(t, cfg.ExternalReviewers)
 	assert.False(t, cfg.ExternalReviewersSet)
 	assert.Empty(t, cfg.CustomReviewScript)
@@ -1263,33 +1204,6 @@ func TestLoad_ReviewPatience_DefaultZero(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 0, cfg.ReviewPatience)
-}
-
-func TestLocalConfig_LocalOverridesExternalReviewTool(t *testing.T) {
-	tmpDir := t.TempDir()
-	globalDir := filepath.Join(tmpDir, "global")
-	localDir := filepath.Join(tmpDir, ".loopai")
-
-	require.NoError(t, os.MkdirAll(globalDir, 0o700))
-	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "prompts"), 0o700))
-	require.NoError(t, os.MkdirAll(filepath.Join(globalDir, "agents"), 0o700))
-	require.NoError(t, os.MkdirAll(localDir, 0o700))
-
-	// global config with external_review_tool = codex
-	globalConfig := "external_review_tool = codex\nexternal_review_model = gpt-5.5:xhigh"
-	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "config"), []byte(globalConfig), 0o600))
-
-	// local config disables external review
-	localConfig := "external_review_tool = none\nexternal_review_model = opus:high"
-	require.NoError(t, os.WriteFile(filepath.Join(localDir, "config"), []byte(localConfig), 0o600))
-
-	cfg, err := loadWithLocal(globalDir, localDir)
-	require.NoError(t, err)
-
-	assert.Equal(t, ExternalReviewToolNone, cfg.ExternalReviewTool)
-	assert.True(t, cfg.ExternalReviewToolSet)
-	assert.Equal(t, "opus:high", cfg.ExternalReviewModel)
-	assert.True(t, cfg.ExternalReviewModelSet)
 }
 
 func TestLocalConfig_LocalOverridesExternalReviewers(t *testing.T) {
@@ -1710,8 +1624,6 @@ func TestConfig_JSONShape(t *testing.T) {
 		ReviewModel:             "sonnet:low",
 		CodexEnabled:            true,
 		CodexCommand:            "codex",
-		CodexModel:              "gpt-5.5",
-		CodexReasoningEffort:    "xhigh",
 		CodexTimeoutMs:          1000,
 		CodexSandbox:            "read-only",
 		ExternalReviewTool:      "codex",
@@ -1756,10 +1668,10 @@ func TestConfig_JSONShape(t *testing.T) {
 
 	wantKeys := []string{
 		"claude_command", "claude_args", "plan_model", "task_model", "review_model",
-		"codex_enabled", "codex_command", "codex_args", "codex_model", "codex_reasoning_effort",
-		"codex_timeout_ms", "codex_sandbox", "external_review_tool", "external_review_model", "external_reviewers", "custom_review_script",
+		"codex_enabled", "codex_command", "codex_args",
+		"codex_timeout_ms", "codex_sandbox", "external_reviewers", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
-		"review_patience", "finalize_enabled", "report_enabled", "preserve_anthropic_api_key", "executor",
+		"review_patience", "finalize_enabled", "report_enabled", "preserve_anthropic_api_key",
 		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "orca", "keep_awake", "plans_dir", "backlog_dir",
 		"watch_dirs", "default_branch", "vcs_command", "commit_trailer",
 		"claude_error_patterns", "codex_error_patterns", "claude_limit_patterns",
@@ -1777,11 +1689,11 @@ func TestConfig_JSONShape(t *testing.T) {
 	assert.JSONEq(t, `["l1"]`, string(got["claude_limit_patterns"]))
 	assert.JSONEq(t, `["l2"]`, string(got["codex_limit_patterns"]))
 	assert.JSONEq(t, `["r1"]`, string(got["claude_retry_patterns"]))
-	assert.JSONEq(t, `"gpt-5.5:high"`, string(got["external_review_model"]))
 	assert.JSONEq(t, `"codex:gpt-5.5:high,claude:fable:max"`, string(got["external_reviewers"]))
 
-	// the *Set sentinels and the loaded-from-files fields carry json:"-" and must be absent
-	for _, absent := range []string{"claude_args_set", "external_review_model_set", "external_reviewers_set", "wait_on_limit_set", "notify_params", "colors", "task_prompt"} {
+	// the *Set sentinels, the loaded-from-files fields, and the runtime-only executor and
+	// legacy reviewer fields carry json:"-" and must be absent
+	for _, absent := range []string{"claude_args_set", "executor", "external_review_tool", "external_review_model", "external_reviewers_set", "wait_on_limit_set", "notify_params", "colors", "task_prompt"} {
 		_, present := got[absent]
 		assert.False(t, present, "unexpected json key %q present", absent)
 	}
@@ -1883,14 +1795,12 @@ func TestLoad_KeepAwake(t *testing.T) {
 	})
 }
 
-func TestLoad_ExecutorSet(t *testing.T) {
+func TestLoad_RemovedKeyInGlobalOrLocal(t *testing.T) {
 	for _, tc := range []struct {
-		name, global, local, executor string
-		set                           bool
+		name, global, local, wantScope string
 	}{
-		{name: "explicit global", global: "executor = codex", executor: ExecutorCodex, set: true},
-		{name: "local reset", global: "executor = codex", local: "executor =", set: true},
-		{name: "unset"},
+		{name: "global", global: "executor = codex", local: "plans_dir = plans", wantScope: "parse global config"},
+		{name: "local", global: "plans_dir = plans", local: "executor =", wantScope: "parse local config"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
@@ -1902,10 +1812,11 @@ func TestLoad_ExecutorSet(t *testing.T) {
 				require.NoError(t, os.MkdirAll(dir, 0o700))
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "config"), []byte(body), 0o600))
 			}
-			cfg, err := Load("")
-			require.NoError(t, err)
-			assert.Equal(t, tc.executor, cfg.Executor)
-			assert.Equal(t, tc.set, cfg.ExecutorSet)
+			_, err := Load("")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantScope)
+			assert.Contains(t, err.Error(), "config key executor was removed")
+			assert.Contains(t, err.Error(), "task_model = codex:<model>[:effort]")
 		})
 	}
 }

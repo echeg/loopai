@@ -179,27 +179,22 @@ func TestResolveCodexModelEffort(t *testing.T) {
 	tests := []struct {
 		name       string
 		spec       string
-		defModel   string
-		defEffort  string
 		wantModel  string
 		wantEffort string
 		wantMax    bool
 	}{
-		{name: "empty spec keeps defaults", spec: "", defModel: "gpt-5.5", defEffort: "xhigh", wantModel: "gpt-5.5", wantEffort: "xhigh"},
-		{name: "model only", spec: "gpt-5.6", defModel: "gpt-5.5", defEffort: "xhigh", wantModel: "gpt-5.6", wantEffort: "xhigh"},
-		{name: "model and effort", spec: "gpt-5.6:high", defModel: "gpt-5.5", defEffort: "xhigh", wantModel: "gpt-5.6", wantEffort: "high"},
-		{name: "effort only keeps default model", spec: ":low", defModel: "gpt-5.5", defEffort: "xhigh", wantModel: "gpt-5.5", wantEffort: "low"},
-		{name: "trailing colon keeps default effort", spec: "gpt-5.6:", defModel: "gpt-5.5", defEffort: "xhigh", wantModel: "gpt-5.6", wantEffort: "xhigh"},
-		{name: "max effort dropped, default kept", spec: "gpt-5.6:max", defModel: "gpt-5.5", defEffort: "xhigh", wantModel: "gpt-5.6", wantEffort: "xhigh", wantMax: true},
-		{name: "max effort case-insensitive", spec: ":MAX", defModel: "gpt-5.5", defEffort: "xhigh", wantModel: "gpt-5.5", wantEffort: "xhigh", wantMax: true},
-		{name: "empty spec with empty defaults stays empty", spec: "", defModel: "", defEffort: "", wantModel: "", wantEffort: ""},
-		{name: "model-only spec with empty default effort", spec: "gpt-5.6", defModel: "", defEffort: "", wantModel: "gpt-5.6", wantEffort: ""},
-		{name: "effort-only spec with empty default model", spec: ":low", defModel: "", defEffort: "", wantModel: "", wantEffort: "low"},
+		{name: "empty spec leaves codex defaults", spec: "", wantModel: "", wantEffort: ""},
+		{name: "model only", spec: "gpt-5.6", wantModel: "gpt-5.6", wantEffort: ""},
+		{name: "model and effort", spec: "gpt-5.6:high", wantModel: "gpt-5.6", wantEffort: "high"},
+		{name: "effort only", spec: ":low", wantModel: "", wantEffort: "low"},
+		{name: "trailing colon", spec: "gpt-5.6:", wantModel: "gpt-5.6", wantEffort: ""},
+		{name: "max effort dropped", spec: "gpt-5.6:max", wantModel: "gpt-5.6", wantEffort: "", wantMax: true},
+		{name: "max effort case-insensitive", spec: ":MAX", wantModel: "", wantEffort: "", wantMax: true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			model, effort, maxDropped := ResolveCodexModelEffort(tc.spec, tc.defModel, tc.defEffort)
+			model, effort, maxDropped := ResolveCodexModelEffort(tc.spec)
 			assert.Equal(t, tc.wantModel, model)
 			assert.Equal(t, tc.wantEffort, effort)
 			assert.Equal(t, tc.wantMax, maxDropped)
@@ -209,19 +204,20 @@ func TestResolveCodexModelEffort(t *testing.T) {
 
 func TestResolveExternalReviewerModelEffort(t *testing.T) {
 	tests := []struct {
-		name, provider, spec, defaultModel, defaultEffort string
-		wantModel, wantEffort                             string
-		wantMax                                           bool
+		name, provider, spec  string
+		wantModel, wantEffort string
+		wantMax               bool
 	}{
 		{name: "claude defaults", provider: config.ExternalReviewToolClaude, wantModel: "opus", wantEffort: "xhigh"},
 		{name: "claude overrides", provider: config.ExternalReviewToolClaude, spec: "fable:max", wantModel: "fable", wantEffort: "max"},
-		{name: "codex defaults", provider: config.ExternalReviewToolCodex, defaultModel: "gpt-5.5", defaultEffort: "high", wantModel: "gpt-5.5", wantEffort: "high"},
-		{name: "codex max dropped", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6:max", defaultEffort: "medium", wantModel: "gpt-5.6", wantEffort: "medium", wantMax: true},
+		{name: "codex leaves defaults to codex", provider: config.ExternalReviewToolCodex, wantModel: "", wantEffort: ""},
+		{name: "codex explicit", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6:high", wantModel: "gpt-5.6", wantEffort: "high"},
+		{name: "codex max dropped", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6:max", wantModel: "gpt-5.6", wantEffort: "", wantMax: true},
 		{name: "custom has no model", provider: config.ExternalReviewToolCustom},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			model, effort, maxDropped := ResolveExternalReviewerModelEffort(tc.provider, tc.spec, tc.defaultModel, tc.defaultEffort)
+			model, effort, maxDropped := ResolveExternalReviewerModelEffort(tc.provider, tc.spec)
 			assert.Equal(t, tc.wantModel, model)
 			assert.Equal(t, tc.wantEffort, effort)
 			assert.Equal(t, tc.wantMax, maxDropped)
@@ -304,21 +300,19 @@ func TestRunner_New_CodexModelEffortWiring(t *testing.T) {
 		wantReview   [2]string
 		sameExecutor bool
 	}{
-		{name: "empty specs use codex config defaults", taskModel: "", reviewModel: "", wantTask: [2]string{"gpt-5.5", "xhigh"}, wantReview: [2]string{"gpt-5.5", "xhigh"}, sameExecutor: true},
-		{name: "task model only", taskModel: "gpt-5.6", reviewModel: "", wantTask: [2]string{"gpt-5.6", "xhigh"}, wantReview: [2]string{"gpt-5.6", "xhigh"}, sameExecutor: true},
+		{name: "empty specs leave codex defaults", taskModel: "", reviewModel: "", wantTask: [2]string{"", ""}, wantReview: [2]string{"", ""}, sameExecutor: true},
+		{name: "task model only", taskModel: "gpt-5.6", reviewModel: "", wantTask: [2]string{"gpt-5.6", ""}, wantReview: [2]string{"gpt-5.6", ""}, sameExecutor: true},
 		{name: "task model with effort", taskModel: "gpt-5.6:high", reviewModel: "", wantTask: [2]string{"gpt-5.6", "high"}, wantReview: [2]string{"gpt-5.6", "high"}, sameExecutor: true},
-		{name: "effort only keeps default model", taskModel: ":low", reviewModel: "", wantTask: [2]string{"gpt-5.5", "low"}, wantReview: [2]string{"gpt-5.5", "low"}, sameExecutor: true},
-		{name: "review model differs in effort — separate executor", taskModel: "gpt-5.6", reviewModel: "gpt-5.6:low", wantTask: [2]string{"gpt-5.6", "xhigh"}, wantReview: [2]string{"gpt-5.6", "low"}, sameExecutor: false},
+		{name: "effort only leaves model to codex", taskModel: ":low", reviewModel: "", wantTask: [2]string{"", "low"}, wantReview: [2]string{"", "low"}, sameExecutor: true},
+		{name: "review model differs in effort — separate executor", taskModel: "gpt-5.6", reviewModel: "gpt-5.6:low", wantTask: [2]string{"gpt-5.6", ""}, wantReview: [2]string{"gpt-5.6", "low"}, sameExecutor: false},
 		{name: "review model differs in model — separate executor", taskModel: "gpt-5.6:high", reviewModel: "gpt-5.5:low", wantTask: [2]string{"gpt-5.6", "high"}, wantReview: [2]string{"gpt-5.5", "low"}, sameExecutor: false},
-		{name: "review model only leaves task at default", taskModel: "", reviewModel: "gpt-5.6:low", wantTask: [2]string{"gpt-5.5", "xhigh"}, wantReview: [2]string{"gpt-5.6", "low"}, sameExecutor: false},
+		{name: "review model only leaves task to codex", taskModel: "", reviewModel: "gpt-5.6:low", wantTask: [2]string{"", ""}, wantReview: [2]string{"gpt-5.6", "low"}, sameExecutor: false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
 			appCfg.Executor = config.ExecutorCodex
-			appCfg.CodexModel = "gpt-5.5"
-			appCfg.CodexReasoningEffort = "xhigh"
 			cfg := Config{
 				Mode:          ModeReview,
 				MaxIterations: 50,
@@ -371,7 +365,6 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 			appCfg := testAppConfig(t)
 			appCfg.Executor = tc.primary
 			appCfg.ExternalReviewTool = tc.external
-			appCfg.ExternalReviewToolSet = true
 			appCfg.CustomReviewScript = "/path/to/custom-review"
 			appCfg.ClaudeCommand = "claude-wrapper"
 			appCfg.ClaudeArgs = "--wrapper-arg --output-format stream-json"
@@ -529,10 +522,8 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 		assert.Equal(t, [2]string{"sonnet", "max"}, [2]string{externalExec.Model, externalExec.Effort})
 	})
 
-	t.Run("codex external empty spec inherits codex config", func(t *testing.T) {
+	t.Run("codex external empty spec leaves codex defaults", func(t *testing.T) {
 		appCfg := testAppConfig(t)
-		appCfg.CodexModel = "gpt-config"
-		appCfg.CodexReasoningEffort = "xhigh"
 		cfg := Config{
 			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
 			ExternalReviewTool: config.ExternalReviewToolCodex,
@@ -541,7 +532,7 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 
 		_, execs := (&executorFactory{}).Build(cfg, log)
 		externalExec := externalExecutor(t, execs).(*executor.CodexExecutor)
-		assert.Equal(t, [2]string{"gpt-config", "xhigh"}, [2]string{externalExec.Model, externalExec.ReasoningEffort})
+		assert.Equal(t, [2]string{"", ""}, [2]string{externalExec.Model, externalExec.ReasoningEffort})
 	})
 }
 
@@ -550,8 +541,6 @@ func TestExecutorFactory_ExternalReviewerChain(t *testing.T) {
 
 	t.Run("two providers preserve order and settings", func(t *testing.T) {
 		appCfg := testAppConfig(t)
-		appCfg.CodexModel = "gpt-default"
-		appCfg.CodexReasoningEffort = "medium"
 		cfg := Config{
 			Mode: ModeReview, AppConfig: appCfg,
 			ExternalReviewers: []config.ReviewerSpec{
@@ -622,8 +611,6 @@ func TestExecutorFactory_ExternalReviewerChain(t *testing.T) {
 
 func TestExecutorFactory_LegacyExternalFallbackParity(t *testing.T) {
 	appCfg := testAppConfig(t)
-	appCfg.CodexModel = "gpt-default"
-	appCfg.CodexReasoningEffort = "medium"
 	legacy := Config{
 		Mode: ModeReview, CodexEnabled: true,
 		ExternalReviewTool:  config.ExternalReviewToolCodex,
@@ -982,7 +969,6 @@ func TestExecutorFactory_Build_CodexArgs(t *testing.T) {
 			appCfg := testAppConfig(t)
 			appCfg.Executor = tc.primary
 			appCfg.ExternalReviewTool = config.ExternalReviewToolCodex
-			appCfg.ExternalReviewToolSet = true
 			appCfg.CodexArgs = tc.codexArgs
 
 			cfg := Config{
