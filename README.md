@@ -1209,6 +1209,11 @@ Provider session and rate limits are retried every 10 minutes by default until t
 recovers or the run is canceled with `Ctrl+C`. During the wait, progress output is red and cmux
 shows `rate limited · retry in 10m`. Override the interval with `--wait <duration>` or disable
 limit retries for one run with `--wait 0`; the equivalent config key is `wait_on_limit`.
+Claude limit and error patterns match CLI diagnostics — structured error records, API-error
+messages, and non-JSON CLI lines — not the model's own prose, so a report that merely quotes a
+limit message cannot start a wait or an account switch. Recent surfaced output joins the check
+only when the process exits non-zero or the stream fails, which is how wrapper scripts that
+report failures as ordinary text are still classified.
 
 When the native `claude` command is in use and `claude-swap` is available in `PATH`, loopai also
 enables reactive account failover automatically. On a real Claude limit match it runs

@@ -40,22 +40,23 @@ type CodexRunner interface {
 // stripAnthropicKey scopes ANTHROPIC_API_KEY filtering to codex phase executors (a plan,
 // task, or review spec naming codex); the external codex reviewer keeps the host env intact so custom
 // codex wrappers proxying through Anthropic (e.g., scripts/codex-as-claude/codex-as-claude.sh) keep
-// authenticating. CLAUDECODE is always stripped regardless of mode to prevent
-// nested-session errors when codex is launched from inside a Claude Code session.
+// authenticating. the Claude Code session markers are always stripped regardless of mode
+// to prevent nested-session errors when codex is launched from inside a Claude Code session.
 type execCodexRunner struct {
 	stdin             io.Reader
 	stripAnthropicKey bool
 }
 
-// childEnv builds the codex child-process env. CLAUDECODE is always stripped to
-// prevent nested-session errors. ANTHROPIC_API_KEY is stripped only when the
-// caller requested it (a codex phase executor); the external codex reviewer passes
-// the key through so custom Anthropic-proxying wrappers keep working.
+// childEnv builds the codex child-process env. the Claude Code session markers (see
+// sessionEnvVars) are always stripped to prevent nested-session errors.
+// ANTHROPIC_API_KEY is stripped only when the caller requested it (a codex phase
+// executor); the external codex reviewer passes the key through so custom
+// Anthropic-proxying wrappers keep working.
 func (r *execCodexRunner) childEnv(env []string) []string {
 	if r.stripAnthropicKey {
-		return filterEnv(env, "ANTHROPIC_API_KEY", "CLAUDECODE")
+		return filterEnv(env, append([]string{"ANTHROPIC_API_KEY"}, sessionEnvVars...)...)
 	}
-	return filterEnv(env, "CLAUDECODE")
+	return filterEnv(env, sessionEnvVars...)
 }
 
 func (r *execCodexRunner) Run(ctx context.Context, name string, args ...string) (CodexStreams, func() error, error) {
@@ -174,9 +175,8 @@ func (e *CodexExecutor) sandboxMode() string {
 
 // codexFilterState tracks header separator count for filtering.
 type codexFilterState struct {
-	headerCount int             // tracks "--------" separators seen (show content between first two)
-	seen        map[string]bool // track all shown lines for deduplication
-	firstRun    bool            // when true, whitelist model/sandbox/effort lines from the header block so the user sees codex's resolved config once at the top of the run
+	headerCount int  // tracks "--------" separators seen (show config between first two)
+	firstRun    bool // when true, whitelist model/sandbox/effort lines from the header block so the user sees codex's resolved config once at the top of the run
 }
 
 // Run executes codex CLI with the given prompt and returns filtered output.
@@ -562,16 +562,20 @@ func (e *CodexExecutor) readStdout(r io.Reader) (string, error) {
 	return string(data), nil
 }
 
-// shouldDisplay implements a simple filter for codex stderr output.
-// shows: bold reasoning summaries codex emits as live progress; on the very
-// first codex invocation across this executor's lifetime (state.firstRun)
-// also shows codex's resolved model/sandbox/effort lines from the header
-// block so the user sees what codex actually picked from ~/.codex/config.toml.
-// per-iteration header repetition (workdir/provider/approval/session id) is
-// always suppressed to match ClaudeExecutor's empty-banner UX. session id
-// detection in processStderr is independent of display so the rollout tailer
-// still works whether the line is forwarded or not.
-// also deduplicates lines to avoid non-consecutive repeats.
+// shouldDisplay implements a simple filter for codex stderr output. it forwards
+// ONLY codex's resolved model/sandbox/effort lines, and only on the very first
+// codex invocation across this executor's lifetime (state.firstRun), so the user
+// sees what codex picked from ~/.codex/config.toml. everything else on stderr is
+// suppressed: per-iteration header repetition (workdir/provider/approval/session
+// id), exec-command output, hook lifecycle lines, and the live reasoning stream.
+//
+// reasoning is deliberately NOT taken from stderr. codex echoes loaded skill and
+// tool-call markdown verbatim onto the same stderr stream, and skill headers like
+// "**Detect stale base:**" are shape-identical to genuine reasoning titles, so no
+// text-shape filter can separate them. clean reasoning-summary titles come from
+// the rollout file's typed `reasoning` records instead (see formatParsedRolloutEvent),
+// which never contain that echo. session id detection in processStderr is
+// independent of display so the rollout tailer still works either way.
 func (e *CodexExecutor) shouldDisplay(line string, state *codexFilterState) (bool, string) {
 	s := strings.TrimSpace(line)
 	if s == "" {
@@ -595,21 +599,6 @@ func (e *CodexExecutor) shouldDisplay(line string, state *codexFilterState) (boo
 			show = true
 			filtered = s
 		}
-	case strings.HasPrefix(s, "**"):
-		// show bold summaries after header (progress indication)
-		show = true
-		filtered = e.stripBold(s)
-	}
-
-	// deduplicate displayed lines
-	if show {
-		if state.seen == nil {
-			state.seen = make(map[string]bool)
-		}
-		if state.seen[filtered] {
-			return false, "" // skip duplicate
-		}
-		state.seen[filtered] = true
 	}
 
 	return show, filtered
@@ -1000,11 +989,10 @@ type rolloutEvent struct {
 	Payload   json.RawMessage `json:"payload"`
 }
 
-// rolloutPayload covers the response_item payload shape we render: assistant
-// messages (payload.type=message, role=assistant). function_call records and
-// reasoning records are dropped by formatParsedRolloutEvent before any of those
-// fields would be read, so the struct only carries the subset we actually
-// consume.
+// rolloutPayload covers the response_item payload shapes we consume: assistant
+// messages (payload.type=message, role=assistant, text in Content), reasoning
+// summaries (payload.type=reasoning, titles in Summary), and the function_call /
+// custom tool records command timing reads (Name, Arguments, Input, CallID, Output).
 type rolloutPayload struct {
 	Type      string          `json:"type"`
 	Role      string          `json:"role"`
@@ -1017,6 +1005,10 @@ type rolloutPayload struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
+	Summary []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"summary"`
 }
 
 type codexCommandStart struct {
@@ -1108,7 +1100,7 @@ func (e *CodexExecutor) processRolloutLine(line []byte, state *codexTimingState,
 		e.trackRolloutCommandTiming(ev, payload, state, now)
 	}
 	if render && e.OutputHandler != nil {
-		if msg := formatParsedRolloutEvent(payload); msg != "" {
+		if msg := e.formatParsedRolloutEvent(payload); msg != "" {
 			e.emitOutput(msg)
 		}
 	}
@@ -2718,10 +2710,60 @@ func parseExitCode(output string) (int, bool) {
 	return code, err == nil
 }
 
-func formatParsedRolloutEvent(payload rolloutPayload) string {
-	if payload.Type != "message" || payload.Role != "assistant" {
+// formatParsedRolloutEvent turns one parsed rollout payload into a display string
+// for OutputHandler, or "" when the record has no user-visible substance. two
+// record types are forwarded:
+//
+//   - assistant messages (payload.type=message, role=assistant): the model's
+//     actual reply text, the codex equivalent of claude's stream-json text blocks.
+//   - reasoning summaries (payload.type=reasoning): the short bold "thinking"
+//     titles, stripped of their ** markers. these come from the rollout rather
+//     than the live stderr reasoning stream on purpose — stderr echoes loaded
+//     skill/tool markdown verbatim and skill headers ("**Detect stale base:**")
+//     are shape-indistinguishable from real titles, whereas the rollout's typed
+//     reasoning records never carry that echo.
+//
+// function_call and custom_tool_call_output records are dropped as
+// tool-machinery noise — the assistant text and reasoning titles already
+// narrate progress.
+func (e *CodexExecutor) formatParsedRolloutEvent(payload rolloutPayload) string {
+	switch {
+	case payload.Type == "reasoning":
+		return e.formatReasoningSummary(payload)
+	case payload.Type == "message" && payload.Role == "assistant":
+		return formatAssistantMessage(payload)
+	default:
 		return ""
 	}
+}
+
+// formatReasoningSummary joins a reasoning record's summary titles into a display
+// string, stripping the ** markers codex wraps each title in. only the first
+// non-empty line of each summary_text is forwarded: codex 0.144.6 emits a single
+// bold title, but other codex versions can append a full paragraph after it, and
+// forwarding the whole value would reintroduce the reasoning flood this filter
+// exists to prevent. returns "" when the record carries no summary text.
+func (e *CodexExecutor) formatReasoningSummary(payload rolloutPayload) string {
+	var sb strings.Builder
+	for _, s := range payload.Summary {
+		title := strings.TrimSpace(s.Text)
+		if i := strings.IndexByte(title, '\n'); i >= 0 {
+			title = strings.TrimSpace(title[:i])
+		}
+		if title == "" {
+			continue
+		}
+		if sb.Len() > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(e.stripBold(title))
+	}
+	return sb.String()
+}
+
+// formatAssistantMessage joins an assistant message's output_text blocks into a
+// display string.
+func formatAssistantMessage(payload rolloutPayload) string {
 	var sb strings.Builder
 	for _, c := range payload.Content {
 		if c.Type != "output_text" || c.Text == "" {

@@ -331,11 +331,17 @@ vcs_command = git
 # error pattern detection
 # ------------------------------------------------------------------------------
 
-# claude_error_patterns: patterns to detect in claude output indicating errors
+# Claude patterns match structured CLI diagnostics and non-JSON CLI lines, plus bounded
+# recent output when the process exits non-zero or the stream fails. Ordinary assistant
+# narration and successful result summaries are not pattern input on a clean run.
+# claude_error_patterns: patterns to detect Claude diagnostics or failed-run output indicating errors
 # comma-separated list of substrings (case-insensitive matching)
 # when detected, loopai exits gracefully with an informative message
-# default: You've hit your limit,You've hit your session limit,API Error:,cannot be launched inside another Claude Code session,Not logged in,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You're out of usage credits
-claude_error_patterns = You've hit your limit,You've hit your session limit,API Error:,cannot be launched inside another Claude Code session,Not logged in,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You're out of usage credits
+# API Error codes are enumerated rather than a bare "API Error:" so case-insensitive
+# matching stays specific in failed-run wrapper output; transient 529/502/503/504 live
+# in claude_retry_patterns
+# default: You've hit your limit,You've hit your session limit,You've hit your weekly limit,API Error: 400,API Error: 401,API Error: 403,API Error: 404,API Error: 413,API Error: 429,API Error: 500,cannot be launched inside another Claude Code session,Not logged in,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You're out of usage credits,You've hit your individual spend limit
+claude_error_patterns = You've hit your limit,You've hit your session limit,You've hit your weekly limit,API Error: 400,API Error: 401,API Error: 403,API Error: 404,API Error: 413,API Error: 429,API Error: 500,cannot be launched inside another Claude Code session,Not logged in,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You're out of usage credits,You've hit your individual spend limit
 
 # codex_error_patterns: patterns to detect in codex output indicating errors
 # comma-separated list of substrings (case-insensitive matching)
@@ -347,7 +353,7 @@ codex_error_patterns = Rate limit exceeded,rate limit reached,429 Too Many Reque
 # transient retry pattern detection
 # ------------------------------------------------------------------------------
 
-# claude_retry_patterns: transient claude/fya output markers to retry like timeouts
+# claude_retry_patterns: transient Claude/fya diagnostic or failed-run markers to retry like timeouts
 # comma-separated list of substrings (case-insensitive matching)
 # default: FYA_TRANSIENT_TIMEOUT,API Error: 529,API Error: 502,API Error: 503,API Error: 504
 claude_retry_patterns = FYA_TRANSIENT_TIMEOUT,API Error: 529,API Error: 502,API Error: 503,API Error: 504
@@ -356,14 +362,14 @@ claude_retry_patterns = FYA_TRANSIENT_TIMEOUT,API Error: 529,API Error: 502,API 
 # rate limit wait and retry
 # ------------------------------------------------------------------------------
 
-# claude_limit_patterns: patterns to detect rate limits in claude output
+# claude_limit_patterns: patterns to detect rate limits in Claude diagnostics or failed-run output
 # comma-separated list of substrings (case-insensitive matching)
 # when detected, loopai waits for wait_on_limit and retries until success or Ctrl+C
 # transient HTTP errors (529/502/503/504) live in claude_retry_patterns, not here
 # "You're out of usage credits" is the exhausted-credits message claude prints before exiting 1;
 # like the other entries it is waited on (and hands claude-swap its failover chance) rather than failed
-# default: You've hit your limit,You've hit your session limit,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You're out of usage credits
-claude_limit_patterns = You've hit your limit,You've hit your session limit,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You're out of usage credits
+# default: You've hit your limit,You've hit your session limit,You've hit your weekly limit,API Error: 429,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You're out of usage credits,You've hit your individual spend limit
+claude_limit_patterns = You've hit your limit,You've hit your session limit,You've hit your weekly limit,API Error: 429,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You're out of usage credits,You've hit your individual spend limit
 
 # codex_limit_patterns: patterns to detect rate limits in codex/external output
 # comma-separated list of substrings (case-insensitive matching)
