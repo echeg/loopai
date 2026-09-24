@@ -1337,8 +1337,11 @@ func externalReviewNotificationLabel(selection externalReviewSelection) string {
 // displayStats prints completion summary with optional diff statistics and paths.
 // mirrors the startup header format using displayMeta for plan/branch/progress.
 // reflects where the plan actually lives: completed/ only when the move actually
-// succeeded; original path when the move was skipped or failed.
-func displayStats(req executePlanRequest, baseLog *progress.Logger, stats git.DiffStats, elapsed, branch string, planMoved bool) {
+// succeeded; original path when the move was skipped or failed. a failed archive can
+// still have moved the file on disk, which is what the archiveIncomplete note points
+// at: it goes last because the warning at the failure site is well above this line.
+func displayStats(req executePlanRequest, baseLog *progress.Logger, stats git.DiffStats, elapsed, branch string,
+	planMoved bool, archiveIncomplete error) {
 	if stats.Files > 0 {
 		baseLog.LogDiffStats(stats.Files, stats.Additions, stats.Deletions)
 		req.Colors.Info().Printf("\ncompleted in %s (%d files, +%d/-%d lines)\n",
@@ -1361,6 +1364,9 @@ func displayStats(req executePlanRequest, baseLog *progress.Logger, stats git.Di
 		}
 	}
 	displayMeta(req.Colors, 2, planPath, branch, baseLog.Path())
+	if archiveIncomplete != nil {
+		req.Colors.Warn().Printf("  plan archive incomplete: %v (check git status, the move may be left staged)\n", archiveIncomplete)
+	}
 }
 
 // displayMeta prints plan (if set), branch, and progress log path with the given indent.
@@ -1631,7 +1637,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// inside each execution worktree so the source checkout stays untouched between plans and the
 	// final branch contains every completed-plan move.
 	// track actual success so the completion summary reflects where the plan really lives.
-	planMoved, moveErr := moveCompletedPlan(req, r.Report())
+	planMoved, archiveIncomplete, moveErr := moveCompletedPlan(req, r.Report(), plr.baseLog)
 	if moveErr != nil {
 		plr.baseLog.SetFailed(moveErr)
 		sendNotification(req, branch, elapsed, stats, moveErr)
@@ -1641,7 +1647,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	removeRunRecordAfterArchival(runRecordState, planMoved)
 	sendNotification(req, branch, elapsed, stats, nil)
 
-	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved)
+	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved, archiveIncomplete)
 	if outcomeErr := capturePlanOutcome(req); outcomeErr != nil {
 		return outcomeErr
 	}
@@ -1682,15 +1688,25 @@ func stopCmuxUnlessRetained(rep *cmux.Reporter, retained bool) {
 	}
 }
 
-func moveCompletedPlan(req executePlanRequest, report string) (bool, error) {
+// archiveWarner receives archive warnings so they land in the run's progress log; a bare stderr
+// write left no trace in the run's own record.
+type archiveWarner interface {
+	Warn(format string, args ...any)
+}
+
+// moveCompletedPlan archives the completed plan and its report. err is fatal and is returned only
+// for a chain, whose successors depend on the archived tip. incomplete reports a failed single-plan
+// archive: the run stays green, but displayStats repeats it last in the summary because the plan
+// move may be left staged, for example after a commit hook rejected the archive commit.
+func moveCompletedPlan(req executePlanRequest, report string, log archiveWarner) (moved bool, incomplete, err error) {
 	chainRun := len(req.ChainPlanFiles) > 1
 	if chainRun && req.PlanFile != "" && modeRequiresBranch(req.Mode) && req.ChainFinalizing != nil {
 		if err := req.ChainFinalizing(); err != nil {
-			return false, fmt.Errorf("checkpoint chain finalization: %w", err)
+			return false, nil, fmt.Errorf("checkpoint chain finalization: %w", err)
 		}
 	}
 	if !shouldMovePlan(req) {
-		return false, nil
+		return false, nil, nil
 	}
 	moveSvc := req.GitSvc
 	movePlanFile := req.PlanFile
@@ -1700,18 +1716,18 @@ func moveCompletedPlan(req executePlanRequest, report string) (bool, error) {
 	if req.MainPlanFile != "" && !chainRun {
 		movePlanFile = req.MainPlanFile
 	}
-	if err := moveSvc.MovePlanToCompletedWithReport(movePlanFile, []byte(report)); err != nil {
-		if errors.Is(err, git.ErrCompletionReportWrite) {
-			fmt.Fprintf(os.Stderr, "warning: failed to write completion report: %v\n", err)
-			return true, nil
+	if moveErr := moveSvc.MovePlanToCompletedWithReport(movePlanFile, []byte(report)); moveErr != nil {
+		if errors.Is(moveErr, git.ErrCompletionReportWrite) {
+			log.Warn("failed to write completion report: %v", moveErr)
+			return true, nil, nil
 		}
 		if chainRun {
-			return false, fmt.Errorf("archive completed chain plan: %w", err)
+			return false, nil, fmt.Errorf("archive completed chain plan: %w", moveErr)
 		}
-		fmt.Fprintf(os.Stderr, "warning: failed to move plan to completed: %v\n", err)
-		return false, nil
+		log.Warn("failed to move plan to completed: %v", moveErr)
+		return false, fmt.Errorf("move %s: %w", filepath.Base(movePlanFile), moveErr), nil
 	}
-	return true, nil
+	return true, nil, nil
 }
 
 func capturePlanOutcome(req executePlanRequest) error {
@@ -1846,14 +1862,21 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	// create progress logger BEFORE chdir so progress files land in main repo's .loopai/progress/.
 	// uses the branch name derived from the plan file above, since gitSvc still points at the main
 	// repo (on master). Its exclusive file lock also rejects a live run using the same progress path.
+	// the run ticks the plan copy inside the worktree, not req.PlanFile; record it so a watch-mode
+	// dashboard reads the file the run actually writes to while the worktree exists.
+	worktreePlanFile := ""
+	if wt.planFile != req.PlanFile {
+		worktreePlanFile = wt.planFile
+	}
 	holder := &status.PhaseHolder{}
 	baseLog, err := progress.NewLogger(progress.Config{
-		PlanFile:       req.PlanFile,
-		Mode:           string(req.Mode),
-		Branch:         branch,
-		BranchOverride: req.BranchOverride,
-		Params:         runHeaderParams(o, req.Config, req.Mode, req.ExternalReview),
-		NoColor:        o.NoColor,
+		PlanFile:         req.PlanFile,
+		WorktreePlanFile: worktreePlanFile,
+		Mode:             string(req.Mode),
+		Branch:           branch,
+		BranchOverride:   req.BranchOverride,
+		Params:           runHeaderParams(o, req.Config, req.Mode, req.ExternalReview),
+		NoColor:          o.NoColor,
 	}, req.Colors, holder)
 	if err != nil {
 		return fmt.Errorf("create progress logger: %w", err)

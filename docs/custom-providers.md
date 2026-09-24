@@ -168,6 +168,10 @@ A `custom` entry cannot include a model and requires `custom_review_script`; eve
 uses that script. Providers may repeat, and every entry creates a distinct review loop; repeated
 custom entries all use the same script. The script contract is unchanged: it receives the external-review prompt-file
 path as its only argument and writes findings to standard output.
+The script inherits loopai's environment minus the Claude Code session markers (`CLAUDECODE`,
+`CLAUDE_CODE_SESSION_ID`, and the rest of that family), so a script that calls `claude` starts
+a fresh session instead of hanging as a nested one. Provider credentials such as
+`ANTHROPIC_API_KEY` are passed through.
 
 ## Codex wrapper (included compatibility example)
 

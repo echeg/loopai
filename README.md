@@ -901,9 +901,14 @@ git checkout release/13
 loopai --worktree docs/plans/feature.md
 ```
 
-The source checkout must normally be clean. Pass `-c` or `--commit` to stage all changes
-with `git add -A` and commit them in the source checkout before creating a fresh worktree.
-This advances the checked-out branch when attached, or the detached `HEAD` otherwise:
+A single plan starts even when the source checkout has unrelated uncommitted files: the
+worktree checks out a commit, so they stay behind and loopai lists them in a warning. It
+refuses to start while a merge, cherry-pick, revert, rebase, am, or bisect is unfinished in
+the source checkout, because the completed plan is archived there at the end of the run. A
+plan chain still requires a clean checkout apart from its own plan files. To carry your
+uncommitted changes into the new branch instead, pass `-c` or `--commit`: it stages all
+changes with `git add -A` and commits them in the source checkout before creating a fresh
+worktree. This advances the checked-out branch when attached, or the detached `HEAD` otherwise:
 
 ```bash
 loopai --worktree -c docs/plans/hotfix.md
@@ -912,8 +917,8 @@ loopai --worktree -c docs/plans/hotfix.md
 Gitignored files remain uncommitted, and a clean checkout makes `--commit` a no-op. The
 flag requires `--worktree`. If the command resumes an existing worktree, loopai warns that
 `-c`/`--commit` is ignored and leaves the source checkout untouched.
-An uncommitted plan file may be the checkout's only change without `--commit`; loopai
-copies and commits it in the feature worktree. With `--commit`, the plan is included in
+Without `--commit`, an uncommitted plan file is copied and committed in the feature
+worktree. With `--commit`, the plan is included in
 the source-side all-files commit instead.
 
 Breaking CLI change: the deprecated `-c` alias for `--codex-only` was removed. Use
@@ -1035,6 +1040,12 @@ Progress logs are written to `.loopai/progress/`. Watch the active run with:
 ```bash
 tail -f .loopai/progress/progress-*.txt
 ```
+
+Rerunning the same plan or mode reuses its log. A log that ended with a `Completed:` footer is
+first archived under `.loopai/progress/history/<stem>/archive-<timestamp>-<token>.txt`, so a
+second `--review` no longer destroys the first run's transcript; the current log plus its nine
+newest archives are kept. A failed or interrupted run keeps appending to the same log after a
+restart separator. Archives are plain files and do not appear in the dashboard.
 
 Each section is followed by a wall-clock duration line such as `task iteration 1 took 3m38s`
 when the next section starts or the run ends. The end-of-run summary groups those durations by

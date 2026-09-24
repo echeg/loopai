@@ -54,6 +54,7 @@ type backend interface {
 	fileTracked(path string) (bool, error)
 	fileStateFingerprint(path string) (string, error)
 	hasChangesOtherThan(paths ...string) ([]string, error)
+	operationInProgress() (string, error)
 	gitCommonDir() (string, error)
 	gitDir(ctx context.Context) (string, error)
 	ensureRuntimeExcludes(patterns ...string) error
@@ -703,8 +704,13 @@ func (s *Service) prepareWorktreePlan(planFile, branchOverride string) (string, 
 		return "", false, err
 	}
 	if len(dirtyFiles) > 0 {
-		return "", false, fmt.Errorf("cannot create worktree: worktree has uncommitted changes other than the plan file\n\n"+
-			"uncommitted files:\n%s", s.formatDirtyFiles(dirtyFiles))
+		// git worktree add checks out a commit, so unrelated source-checkout changes never reach
+		// the worktree; an uncommitted selected plan is copied separately. the archive commit that
+		// later runs in this checkout is pathspec-restricted and refuses to overwrite an existing
+		// completed/ copy, so these files stay untouched.
+		s.log.Printf("warning: source checkout has uncommitted files not copied into the worktree\n"+
+			"an uncommitted selected plan is copied separately\n\n"+
+			"uncommitted files:\n%s\n", s.formatDirtyFiles(dirtyFiles))
 	}
 	return branchName, planHasChanges, nil
 }
@@ -1416,6 +1422,18 @@ func (s *Service) validatePreparedPlanChainBranch(
 func (s *Service) inspectWorktreePlanChanges(
 	planFile, branchOverride string, chainPlanFiles []string,
 ) (bool, []string, error) {
+	// a single plan archives in this checkout at the end of the run and a chain restores its
+	// source plans here, so do not start while another Git operation owns its index. the dirty
+	// list cannot reveal one: resolved, staged conflicts look like ordinary staged work.
+	op, opErr := s.repo.operationInProgress()
+	if opErr != nil {
+		return false, nil, fmt.Errorf("check for unfinished git operation: %w", opErr)
+	}
+	if op != "" {
+		return false, nil, fmt.Errorf("cannot create worktree: %s in progress in %s\n\n"+
+			"loopai archives the completed plan in this checkout at the end of the run; "+
+			"finish or abort the git operation first", op, s.repo.root())
+	}
 	if len(chainPlanFiles) == 0 {
 		_, changed, err := s.prepareWorktreePlan(planFile, branchOverride)
 		return changed, nil, err
@@ -1988,6 +2006,8 @@ func (s *Service) RemoveWorktree(path string) error {
 }
 
 // MovePlanToCompleted moves a plan file to the completed/ subdirectory and commits.
+// The commit is restricted to the plan paths, so unrelated staged changes in the
+// repository are left staged rather than swept into it.
 // Creates the completed/ directory if it doesn't exist.
 // Uses git mv if the file is tracked, falls back to os.Rename for untracked files.
 // If the source file doesn't exist but the destination does, logs a message and returns nil.
@@ -2011,9 +2031,23 @@ func (s *Service) MovePlanToCompleted(planFile string) error {
 		return nil
 	}
 
+	// paths come from the branch taken, never from re-testing the file. git mv stages the
+	// source deletion, so the source must be committed alongside the destination or the
+	// rename is only half recorded. The fallback carries no such guarantee - an untracked
+	// source reaches it, but so does a tracked one when the destination already exists -
+	// and naming a path git does not know fails the whole commit.
+	commitPaths := []string{destPath}
+
 	// use git mv
 	if err := s.repo.moveFile(sourceFile, destPath); err != nil {
-		// fallback to regular move for untracked files
+		// fallback for anything git mv refuses, an untracked source most commonly
+		// git mv refuses an existing destination but os.Rename replaces it without a word, and an
+		// uncommitted archive copy has no other copy anywhere. lstat so a symlink is the collision
+		// rather than whatever it points at.
+		if _, statErr := os.Lstat(destPath); statErr == nil {
+			return fmt.Errorf("move plan: %s already exists, refusing to overwrite it with %s "+
+				"- resolve by hand and re-run", destPath, sourceFile)
+		}
 		if renameErr := os.Rename(sourceFile, destPath); renameErr != nil {
 			return fmt.Errorf("move plan: %w", renameErr)
 		}
@@ -2021,11 +2055,15 @@ func (s *Service) MovePlanToCompleted(planFile string) error {
 		if addErr := s.repo.add(destPath); addErr != nil {
 			s.log.Printf("warning: failed to stage moved plan: %v\n", addErr)
 		}
+	} else {
+		commitPaths = append(commitPaths, sourceFile)
 	}
 
-	// commit the move
+	// commit the move, restricted to the plan paths. a bare commit would take the whole
+	// index, and in worktree mode this runs against the user's main checkout, where
+	// anything staged during the run would land under ralphex's message.
 	commitMsg := "move completed plan: " + filepath.Base(sourceFile)
-	if err := s.repo.commit(s.appendTrailer(commitMsg)); err != nil {
+	if err := s.repo.commitFiles(s.appendTrailer(commitMsg), commitPaths...); err != nil {
 		return fmt.Errorf("commit plan move: %w", err)
 	}
 
@@ -2057,6 +2095,13 @@ func (s *Service) MovePlanToCompletedWithReport(planFile string, report []byte) 
 	}
 
 	if err := s.repo.moveFile(sourceFile, destPath); err != nil {
+		// git mv refuses an existing destination but os.Rename replaces it without a word, and an
+		// uncommitted archive copy has no other copy anywhere. lstat so a symlink is the collision
+		// rather than whatever it points at.
+		if _, statErr := os.Lstat(destPath); statErr == nil {
+			return fmt.Errorf("move plan: %s already exists, refusing to overwrite it with %s "+
+				"- resolve by hand and re-run", destPath, sourceFile)
+		}
 		if renameErr := os.Rename(sourceFile, destPath); renameErr != nil {
 			return fmt.Errorf("move plan: %w", renameErr)
 		}
@@ -2242,10 +2287,11 @@ func (s *Service) validateFinalizingReport(reportPath string) (bool, error) {
 
 // resolvePlanMoveTargets determines the source and destination for MovePlanToCompleted,
 // accounting for files already moved to completed/ or renamed between the dashed
-// (YYYY-MM-DD) and compact (YYYYMMDD) date-prefix conventions. Returns done=true in
-// two cases: the file is already in completed/ (with either basename), or there is a
-// collision between an active in-place rename and a stale completed/<altBase> copy
-// that the move should not clobber.
+// (YYYY-MM-DD) and compact (YYYYMMDD) date-prefix conventions. done=true means the plan
+// is already archived - the source is gone and a completed/ copy is there under either
+// basename - and nothing more, because the caller reports a done move as archived. A
+// source that still exists returns done=false whatever sits in completed/, so a collision
+// reaches the move path and fails at its overwrite guard rather than passing for success.
 // Probe order mirrors resolvePlanFilePath in pkg/processor/prompts.go: the in-place
 // alternate source is checked before any completed/ probe so a current renamed file
 // wins over a stale completed/ copy left from a prior run.
@@ -2265,19 +2311,10 @@ func (s *Service) resolvePlanMoveTargets(planFile, completedDir string) (sourceF
 	if altBase != "" {
 		altSourcePath := filepath.Join(filepath.Dir(planFile), altBase)
 		if _, altSrcErr := os.Stat(altSourcePath); altSrcErr == nil {
-			altDestPath := filepath.Join(completedDir, altBase)
-			// collision: a stale completed/<altBase> exists alongside the active in-place
-			// renamed source (e.g. same slug ran twice on the same day). git mv would refuse
-			// because dest exists, and the os.Rename fallback would clobber the stale copy
-			// while leaving the source's deletion unstaged — repo ends up dirty or commit
-			// fails entirely. surface as already-completed instead and preserve both files
-			// for manual resolution.
-			if _, altDestErr := os.Stat(altDestPath); altDestErr == nil {
-				s.log.Printf("plan already in completed/ (renamed: %s); active copy at %s left in place for manual cleanup\n",
-					altBase, altSourcePath)
-				return altSourcePath, altDestPath, true
-			}
-			return altSourcePath, altDestPath, false
+			// a stale completed/<altBase> alongside the active source is a collision, not an
+			// archived plan. done=false so it reaches the move path and fails at its overwrite
+			// guard: the caller treats done=true as archived, and this plan is not.
+			return altSourcePath, filepath.Join(completedDir, altBase), false
 		}
 	}
 
