@@ -61,10 +61,13 @@ claude_swap_enabled = true
 # codex executor
 # ------------------------------------------------------------------------------
 
-# the former executor, codex_model, codex_reasoning_effort, external_review_tool, and
-# external_review_model keys and the --codex, --codex-only, --external-review-tool, and
-# --external-review-model flags were removed and are rejected at startup with the
-# replacement to write: name codex in plan_model/task_model/review_model instead.
+# the former keys and flags below were removed and are rejected at startup with the
+# replacement to write:
+#   executor, codex_model, codex_reasoning_effort, --codex: name codex in
+#     plan_model/task_model/review_model (codex:<model>[:effort])
+#   external_review_tool, external_review_model, --external-review-tool,
+#     --external-review-model: external_reviewers = <provider>[:model[:effort]]
+#   --codex-only: --external-only
 
 # pass_claude_md: when codex runs the task phase or the review block, let codex read project
 # CLAUDE.md via project_doc_fallback_filenames. user-level ~/.claude/CLAUDE.md is not
@@ -138,8 +141,9 @@ codex_sandbox = read-only
 # available providers: claude, codex, custom
 # example: external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max
 # when unset, the provider other than task_model's reviews automatically (codex for a
-# claude task phase, claude for a codex one), skipped with a warning when not installed
-# and disabled by codex_enabled = false
+# claude task phase, claude for a codex one; --review and --external-only run no task
+# phase and use the provider other than review_model's), skipped with a warning when
+# not installed and disabled by codex_enabled = false
 # an explicitly empty value clears an inherited chain and disables external review
 # reviewers run sequentially until clean, their per-reviewer iteration cap, or patience
 # bare claude defaults to opus:xhigh; bare codex uses the codex CLI's own defaults

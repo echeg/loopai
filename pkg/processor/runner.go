@@ -468,7 +468,7 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 	}
 
 	if !outcome.HadFindings {
-		r.log.Print("external review found no issues, skipping post-%s %s review", label, r.reviewExecutorName())
+		r.log.Print("external review found no issues, skipping post-%s %s review", label, r.cfg.reviewProvider())
 		if err := r.phases.finalize.Run(ctx); err != nil {
 			return fmt.Errorf("finalize phase: %w", err)
 		}
@@ -562,12 +562,6 @@ func (r *Runner) runInternalReview(ctx context.Context) error {
 	}
 	r.saveReviewStage(ctx, ReviewStage{Stage: reviewStageInternal})
 	return nil
-}
-
-// reviewExecutorName names the provider running the review block, which also runs the
-// post-external review.
-func (r *Runner) reviewExecutorName() string {
-	return r.cfg.reviewProvider()
 }
 
 // runTasksOnly executes only task phase, skipping all reviews and report generation.

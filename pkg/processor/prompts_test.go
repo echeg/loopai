@@ -1049,7 +1049,7 @@ func TestRunner_buildExternalClaudePrompts(t *testing.T) {
 
 	review := builder.ExternalReviewPrompt(config.ExternalReviewToolClaude, false, "dismissed finding")
 	assert.Contains(t, review, "git diff")
-	assert.Contains(t, review, "Codex (primary evaluator) responded to Claude's findings")
+	assert.Contains(t, review, "Codex (evaluator) responded to Claude's findings")
 	assert.Contains(t, review, "dismissed finding")
 	assert.Contains(t, review, "Do not edit")
 	assert.Contains(t, review, "side-effecting Bash")
@@ -2157,7 +2157,7 @@ func TestPromptBuilder_BacklogDirNoLiteralLeak(t *testing.T) {
 // TestPromptBuilder_BacklogCaptureInstructions covers the embedded capture convention: the
 // prompts on the four capture paths (task, internal review, external evaluation, planning)
 // carry the instruction with the configured directory expanded, while the prompts sent to the
-// read-only external reviewers deliberately do not - the primary evaluator is the only funnel.
+// read-only external reviewers deliberately do not - the evaluator is the only funnel.
 func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 	appCfg := testAppConfig(t)
 	appCfg.BacklogDir = "custom/backlog"
@@ -2403,6 +2403,9 @@ func crossProviderBuilder(taskModel, reviewModel string) *promptBuilder {
 		CodexPrompt:        "evaluate {{agent:scanner}}\n{{CODEX_OUTPUT}}",
 		CodexReviewPrompt:  "external {{agent:scanner}}\n{{PREVIOUS_REVIEW_CONTEXT}}",
 		FinalizePrompt:     "finalize {{agent:scanner}}",
+
+		ExternalClaudeReviewPrompt: "claude external {{agent:scanner}}\n{{PREVIOUS_REVIEW_CONTEXT}}",
+		CustomReviewPrompt:         "custom external {{agent:scanner}}\n{{PREVIOUS_REVIEW_CONTEXT}}",
 		CustomAgents: []config.CustomAgent{
 			{Name: "scanner", Prompt: "scan code"},
 			{Name: "sql-guard", Prompt: "check sql", Options: config.Options{Description: "reviews raw SQL"}},
@@ -2431,7 +2434,7 @@ func TestPromptBuilder_CrossProviderRendering(t *testing.T) {
 			"second review": b.SecondReviewPrompt(""),
 			"evaluation":    b.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "finding"),
 			"finalize":      b.FinalizePrompt(),
-			"external":      b.ExternalReviewPrompt(config.ExternalReviewToolCodex, false, "fixed it"),
+			"external":      b.ExternalReviewPrompt(config.ExternalReviewToolClaude, false, "fixed it"),
 		} {
 			assert.Contains(t, prompt, claudeAgentShape, name)
 			assert.NotContains(t, prompt, codexAgentShape, name)
@@ -2458,11 +2461,27 @@ func TestPromptBuilder_CrossProviderRendering(t *testing.T) {
 			"second review": second,
 			"evaluation":    b.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "finding"),
 			"finalize":      b.FinalizePrompt(),
+			"external":      b.ExternalReviewPrompt(config.ExternalReviewToolCodex, false, "fixed it"),
 		} {
 			assert.Contains(t, prompt, codexAgentShape, name)
 			assert.NotContains(t, prompt, claudeAgentShape, name)
 			assert.NotContains(t, prompt, "Codex task-execution directives", name)
 		}
+	})
+
+	// the external prompt is run by the reviewer, not the review block, so its agents follow
+	// the reviewer; a custom script has nothing to match and keeps the review block's syntax
+	t.Run("external prompt follows the reviewer", func(t *testing.T) {
+		codexReview := crossProviderBuilder("claude:opus:high", "codex:gpt-6-astra:high")
+		claudeExternal := codexReview.ExternalReviewPrompt(config.ExternalReviewToolClaude, false, "fixed it")
+		assert.Contains(t, claudeExternal, claudeAgentShape)
+		assert.NotContains(t, claudeExternal, codexAgentShape)
+		assert.Contains(t, codexReview.ExternalReviewPrompt(config.ExternalReviewToolCustom, false, "fixed it"), codexAgentShape)
+
+		claudeReview := crossProviderBuilder("codex:gpt-6-astra:medium", "claude:opus:high")
+		codexExternal := claudeReview.ExternalReviewPrompt(config.ExternalReviewToolCodex, false, "fixed it")
+		assert.Contains(t, codexExternal, codexAgentShape)
+		assert.NotContains(t, codexExternal, claudeAgentShape)
 	})
 
 	t.Run("review spec inherits the task provider when unset", func(t *testing.T) {
@@ -2500,11 +2519,11 @@ func TestPromptBuilder_EvaluatorNameFollowsReviewProvider(t *testing.T) {
 		want, notWant                          string
 	}{
 		{name: "codex task, claude review", taskModel: "codex:gpt-6-astra", reviewModel: "claude:opus",
-			reviewer: config.ExternalReviewToolCodex, want: "Claude (primary evaluator) responded to Codex's findings", notWant: "Codex (primary evaluator)"},
+			reviewer: config.ExternalReviewToolCodex, want: "Claude (evaluator) responded to Codex's findings", notWant: "Codex (evaluator)"},
 		{name: "claude task, codex review", taskModel: "claude:opus", reviewModel: "codex:gpt-6-astra",
-			reviewer: config.ExternalReviewToolCodex, want: "Codex (primary evaluator) responded to Codex's findings", notWant: "Claude (primary evaluator)"},
+			reviewer: config.ExternalReviewToolCodex, want: "Codex (evaluator) responded to Codex's findings", notWant: "Claude (evaluator)"},
 		{name: "unset specs default to claude", reviewer: config.ExternalReviewToolCodex,
-			want: "Claude (primary evaluator)", notWant: "Codex (primary evaluator)"},
+			want: "Claude (evaluator)", notWant: "Codex (evaluator)"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

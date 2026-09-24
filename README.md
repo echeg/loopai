@@ -13,7 +13,7 @@ workflows are distributed through this repository's plugin marketplace.
 - Executes Markdown plans one task at a time with automatic retries
 - Executes comma-separated plan chains sequentially on stacked branches
 - Creates plans interactively with `--plan`
-- Runs each phase on Claude Code or Codex, chosen per phase by a `provider:model[:effort]` spec
+- Runs each phase on Claude Code or Codex, chosen per phase by a `provider[:model[:effort]]` spec
 - Runs configurable internal and external review phases
 - Adds project-specific review agents, drafted for the repository by `--gen-agents`
 - Creates a branch automatically and optionally uses isolated Git worktrees
@@ -247,6 +247,11 @@ cp .ralphex/config .loopai/config
 # copy .ralphex/prompts/ and .ralphex/agents/ too, if customized
 cmux clear-status ralphex
 ```
+
+A copied config that still sets `executor`, `codex_model`, `codex_reasoning_effort`,
+`external_review_tool`, or `external_review_model`, or a `plan_model`/`task_model`/`review_model`
+without a provider prefix, stops loopai at startup; the error names the rewrite, and the
+removed-spellings table under [Executors and reviews](#executors-and-reviews) lists them all.
 
 The executable is now `loopai`. Replace `RALPHEX_CONFIG_DIR` with
 `LOOPAI_CONFIG_DIR` and `RALPHEX_WEB_HOST` with `LOOPAI_WEB_HOST`. Remove an old
@@ -752,13 +757,20 @@ review:          claude opus:high
 external review: claude opus:xhigh (auto-selected)
 ```
 
-The provider prefix is mandatory and nothing is inferred from a model name. A bare spec fails
-at startup with the rewrite to use, and so does a model that belongs to the other provider:
+The provider prefix is mandatory and nothing is inferred from a model name. A spec that starts
+with a recognizable model name or with an effort fails at startup with the rewrite to use, and so
+do an effort written where the model goes and a model that belongs to the other provider. Any
+other unprefixed value fails as an unknown provider:
 
 ```text
 error: --task-model / task_model "gpt-6-astra:medium" is missing a provider prefix; write "codex:gpt-6-astra:medium"
+error: --task-model / task_model ":high" is missing a provider prefix; write "claude::high" or "codex::high"
+error: --task-model / task_model value "codex:high" puts reasoning effort "high" in the model segment; write "codex::high" to keep the provider's default model
 error: --task-model / task_model "codex:opus" names a claude model under the codex provider
 ```
+
+With a wrapper `claude_command`, every unprefixed spec used to run through the wrapper whatever
+its model, so the rewrite keeps it there: `gpt-5:high` becomes `claude:gpt-5:high`.
 
 The mismatch check is skipped for a provider whose command is a custom wrapper
 (`claude_command` or `codex_command`), so wrappers can define their own model names. Recognizable
@@ -774,10 +786,15 @@ The former provider switches fail at startup naming their replacement:
 | `--codex` | `--task-model codex:<model>[:effort]` |
 | `executor = codex` | `task_model = codex:<model>[:effort]` |
 | `--codex-only` | `--external-only` |
-| `--external-review-tool X`, `external_review_tool = X` | `--external-reviewers X[:model[:effort]]`, `external_reviewers = ...` |
+| `--external-review-tool X`, `external_review_tool = X` | `--external-reviewers X[:model[:effort]]`, `external_reviewers = ...`; for `none` an empty `external_reviewers =`, for `auto` leave it unset |
 | `--external-review-model M`, `external_review_model = M` | the model segment of the matching `external_reviewers` entry |
 | `codex_model`, `codex_reasoning_effort` | the model and effort segments of each codex spec |
 | `task_model = gpt-6-astra:medium` | `task_model = codex:gpt-6-astra:medium` |
+
+Removing `codex_model` and `codex_reasoning_effort` also removed their embedded defaults
+(`gpt-5.5` at `xhigh`). A bare `codex` spec and the automatic Codex reviewer now use the codex
+CLI's own defaults from `~/.codex/config.toml`; set `external_reviewers = codex:gpt-5.5:xhigh` to
+keep the former reviewer.
 
 Codex invocations are composed by loopai and use additive `-c` overrides, so `~/.codex/config.toml`
 settings remain available. `--codex-args`, or the `codex_args` config key, appends extra arguments
@@ -850,6 +867,12 @@ When `external_reviewers` is unset, loopai selects the provider other than `task
 
 - Claude task phase → Codex external reviewer
 - Codex task phase → Claude external reviewer
+
+In a run with a task phase the choice ignores `review_model`, so with `task_model = codex:...` and
+`review_model = claude:...` Claude both reviews and evaluates; name `external_reviewers` explicitly
+when the review block's findings should get a cross-model check. `--review` and `--external-only`
+run no task phase, so they select the provider other than `review_model`'s instead, keeping the
+reviewer different from the model that evaluates its findings.
 
 If that automatically selected reviewer is unavailable, loopai warns and skips only that phase;
 `codex_enabled = false` disables it. A missing phase provider or explicitly listed reviewer is an
@@ -1080,7 +1103,7 @@ loopai --serve --port=3000
 loopai --serve --watch=/path/to/project-a --watch=/path/to/project-b
 ```
 
-When loopai runs inside cmux, it reports the phase and effective model, review iteration, task count, spinner, and completion notifications through the public cmux CLI. Started implementation and review runs retain the completion pill described above after success or non-abort execution failure; startup/preflight failures, plan-creation failures, and aborts do not. Outside cmux this integration is a no-op.
+When loopai runs inside cmux, it reports the phase and effective model (prefixed with its provider once the phases use different providers), review iteration, task count, spinner, and completion notifications through the public cmux CLI. Started implementation and review runs retain the completion pill described above after success or non-abort execution failure; startup/preflight failures, plan-creation failures, and aborts do not. Outside cmux this integration is a no-op.
 
 Pass `--orca`, set `orca = true` in the loopai configuration, or set `LOOPAI_ORCA=1` to report
 interactive plan creation and plan execution/review through OSC terminal titles. Orca needs no

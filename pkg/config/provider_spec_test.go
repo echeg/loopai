@@ -101,16 +101,18 @@ func TestParseProviderSpec_MissingProviderSuggestsRewrite(t *testing.T) {
 
 func TestProviderSpec_ModelSpec(t *testing.T) {
 	tests := []struct {
+		name string
 		spec ProviderSpec
 		want string
 	}{
-		{spec: ProviderSpec{Provider: ExternalReviewToolCodex}, want: ""},
-		{spec: ProviderSpec{Provider: ExternalReviewToolCodex, Model: "gpt-6-astra"}, want: "gpt-6-astra"},
-		{spec: ProviderSpec{Provider: ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "high"}, want: "gpt-6-astra:high"},
-		{spec: ProviderSpec{Provider: ExternalReviewToolCodex, Effort: "medium"}, want: ":medium"},
+		{name: "provider only", spec: ProviderSpec{Provider: ExternalReviewToolCodex}, want: ""},
+		{name: "model only", spec: ProviderSpec{Provider: ExternalReviewToolCodex, Model: "gpt-6-astra"}, want: "gpt-6-astra"},
+		{name: "model and effort", spec: ProviderSpec{Provider: ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "high"},
+			want: "gpt-6-astra:high"},
+		{name: "effort keeps its leading colon", spec: ProviderSpec{Provider: ExternalReviewToolCodex, Effort: "medium"}, want: ":medium"},
 	}
 	for _, tc := range tests {
-		t.Run(tc.want, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, tc.spec.ModelSpec())
 		})
 	}

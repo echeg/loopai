@@ -67,7 +67,7 @@ func (b *promptBuilder) evaluatorName() string {
 	return config.ExternalReviewToolClaude
 }
 
-// ExternalEvaluationPrompt renders the primary executor's evaluation prompt for
+// ExternalEvaluationPrompt renders the review provider's evaluation prompt for
 // findings from the selected reviewer.
 func (b *promptBuilder) ExternalEvaluationPrompt(reviewer, findings string) string {
 	var prompt, outputVariable string

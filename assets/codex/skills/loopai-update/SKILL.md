@@ -81,6 +81,7 @@ For each customized file:
 1. Read both versions - the new default and the user's file.
 2. Work out what each side changed: what the user added or rewrote, and what moved structurally in the default (new sections, new `{{VARIABLE}}` references, removed guidance).
 3. Propose a merged version that keeps the user's additions and tone, applies the default's structural changes, picks up new template variables, and flags any place both sides changed the same thing.
+   - In `config`, drop keys that were removed (`executor`, `codex_model`, `codex_reasoning_effort`, `external_review_tool`, `external_review_model`) instead of keeping them, and rewrite a `plan_model`, `task_model`, or `review_model` value without a provider prefix as `claude:<value>` or `codex:<value>`: loopai stops at startup on either. Take the provider from the model name (`opus`, `sonnet`, `haiku`, `fable` are claude; `gpt-*` and `o3`-style names are codex), ask when it is not obvious, and name every such change in the summary.
 4. Show a short summary of each side's changes plus the proposed result.
 5. Ask how to handle the file: accept the merge, keep the current version, or take the new default and discard the customization.
 6. Apply the answer.

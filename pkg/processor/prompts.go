@@ -92,7 +92,7 @@ func (b *promptBuilder) buildExternalPreviousContext(reviewer, evaluator, evalua
 	}
 	return fmt.Sprintf(`---
 PREVIOUS REVIEW CONTEXT:
-%s (primary evaluator) responded to %s's findings:
+%s (evaluator) responded to %s's findings:
 
 %s
 
@@ -110,8 +110,13 @@ func (b *promptBuilder) replaceExternalVariablesWithIteration(prompt string, isF
 	result := b.replaceBaseVariables(prompt)
 	result = strings.ReplaceAll(result, "{{DIFF_INSTRUCTION}}", b.getDiffInstruction(isFirstIteration))
 	inlined := agentRefNames(result)
-	// a customized external prompt renders agents in the review block's syntax, like the internal ones
-	provider := b.cfg.reviewProvider()
+	// a customized external prompt renders agents in the syntax of the reviewer that runs it: a
+	// claude reviewer keeps the Task tool. a custom script has no agent tooling to match, so it
+	// keeps the review block's syntax
+	provider := reviewer
+	if reviewer != config.ExternalReviewToolClaude && reviewer != config.ExternalReviewToolCodex {
+		provider = b.cfg.reviewProvider()
+	}
 	result = b.expandAgentReferences(result, provider) // expand agents before inserting external content
 	result = b.expandDynamicAgentCatalog(result, inlined, provider)
 	result = strings.ReplaceAll(result, "{{PREVIOUS_REVIEW_CONTEXT}}", b.buildExternalPreviousContext(reviewer, evaluator, evaluatorResponse))

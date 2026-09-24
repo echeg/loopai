@@ -155,7 +155,13 @@ func (cfg Config) externalReviewProvider() (provider string, autoSelected bool) 
 	if !cfg.CodexEnabled && cfg.Mode != ModeCodexOnly {
 		return config.ExternalReviewToolNone, autoSelected
 	}
-	if cfg.taskSpec().Provider == config.ExternalReviewToolCodex {
+	// the review-only modes run no task phase, so the provider evaluating the findings is
+	// the one to differ from, as the CLI's reviewerBaseProvider does
+	base := cfg.taskProvider()
+	if cfg.Mode == ModeReview || cfg.Mode == ModeCodexOnly {
+		base = cfg.reviewProvider()
+	}
+	if base == config.ExternalReviewToolCodex {
 		return config.ExternalReviewToolClaude, autoSelected
 	}
 	return config.ExternalReviewToolCodex, autoSelected

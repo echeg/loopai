@@ -114,6 +114,7 @@ write_codex_skill loopai-plan
 
 # a skill teaching a removed loopai flag or key would stop loopai at startup
 for spelling in 'loopai --codex docs/plans/x.md' \
+	'loopai --codex docs/plans/removed-endpoints.md' \
 	'loopai --codex' \
 	'loopai --codex-only' \
 	'--external-review-tool codex' \

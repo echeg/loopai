@@ -115,7 +115,7 @@ type CodexExecutor struct {
 	ErrorPatterns        []string                              // patterns to detect in output (e.g., rate limit messages)
 	LimitPatterns        []string                              // patterns to detect rate limits (checked before error patterns)
 	MultiAgent           bool                                  // enable codex multi_agent feature + reviewer agent registration; set by processor.buildCodexExecutor on every codex phase executor (plan, task, review), never on the external reviewer
-	PassClaudeMd         bool                                  // pass project-level CLAUDE.md to codex via project_doc_fallback_filenames (set by processor.New() only for a codex task provider)
+	PassClaudeMd         bool                                  // pass project-level CLAUDE.md to codex via project_doc_fallback_filenames (set by processor.buildCodexExecutor on every codex phase executor, never on the external reviewer)
 	ForceReadOnly        bool                                  // require the read-only sandbox even when the runtime disables its default sandbox; used by external review so it cannot modify the project. holds against loopai config (codex_sandbox) but not against ExtraArgs, which is trusted user input and can carry --dangerously-bypass-approvals-and-sandbox
 	ExtraArgs            string                                // user-supplied extras (codex_args / --codex-args), appended after loopai's own -c overrides so an explicit user value wins on key collision
 	IdleTimeout          time.Duration                         // kill session after this duration of no output, zero = disabled

@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1664,8 +1665,17 @@ func TestRunner_PostReviewSkipNamesTheReviewProvider(t *testing.T) {
 		{name: "codex review under a claude task", taskModel: "claude:opus", reviewModel: "codex:gpt-6-astra", want: "codex"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &Runner{cfg: Config{TaskModel: tc.taskModel, ReviewModel: tc.reviewModel}}
-			assert.Equal(t, tc.want, r.reviewExecutorName())
+			cfg := Config{Mode: ModeReview, PlanFile: "plan.md", TaskModel: tc.taskModel, ReviewModel: tc.reviewModel}
+			r, _, external, _ := newCheckpointRunner(cfg, &checkpointMemoryStore{}, &checkpointGit{head: "abc1234", branch: "feature", contains: true})
+			external.run = func(context.Context) (phase.ExternalReviewOutcome, error) { return phase.ExternalReviewOutcome{}, nil }
+
+			require.NoError(t, r.Run(t.Context()))
+			calls := r.log.(*mocks.LoggerMock).PrintCalls()
+			lines := make([]string, 0, len(calls))
+			for _, call := range calls {
+				lines = append(lines, fmt.Sprintf(call.Format, call.Args...))
+			}
+			assert.Contains(t, lines, "external review found no issues, skipping post-reviewers "+tc.want+" review")
 		})
 	}
 }

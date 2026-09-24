@@ -14,7 +14,7 @@ func TestWindowsExecutableModelProviders(t *testing.T) {
 		cfg := &config.Config{ClaudeCommand: `C:\tools\CLAUDE.EXE`, TaskModel: "codex:gpt-6-astra:medium"}
 		require.NoError(t, applyCLIOverrides(opts{}, cfg))
 		assert.Equal(t, config.ExecutorCodex, cfg.TaskProvider)
-		require.NoError(t, validateStartupModels(opts{}, cfg))
+		require.NoError(t, validateModelSpecs(opts{}, cfg))
 	})
 	for _, tt := range []struct {
 		provider string
@@ -26,7 +26,7 @@ func TestWindowsExecutableModelProviders(t *testing.T) {
 	} {
 		t.Run(tt.provider+" executable rejects mismatched model", func(t *testing.T) {
 			require.NoError(t, applyCLIOverrides(tt.opts, &tt.cfg))
-			require.ErrorContains(t, validateStartupModels(tt.opts, &tt.cfg), "model under the "+tt.provider+" provider")
+			require.ErrorContains(t, validateModelSpecs(tt.opts, &tt.cfg), "model under the "+tt.provider+" provider")
 		})
 	}
 }

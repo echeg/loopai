@@ -70,6 +70,13 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 			wantCommand: "codex-wrapper",
 			wantArgs:    `model="gpt-6-astra"`,
 		},
+		{
+			// the real codex binary would reject codex:fable as a claude model under codex
+			name:        "codex wrapper accepts a model name of its own",
+			global:      "codex_command = codex-wrapper\ntask_model = codex:fable:medium\n",
+			wantCommand: "codex-wrapper",
+			wantArgs:    `model="fable"`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

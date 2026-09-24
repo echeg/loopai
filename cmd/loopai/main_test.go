@@ -1708,6 +1708,50 @@ printf '%s\n' '{"type":"result","result":""}'
 	assert.NotContains(t, record.Report, "finished: not recorded")
 }
 
+// a review block on another provider than the task phase is the one misconfiguration that
+// raises no error, so this drives createRunner's spec wiring through a real review run
+func TestExecutePlanRunsReviewBlockOnReviewProvider(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := setupTestRepo(t)
+	t.Chdir(dir)
+	planPath := filepath.Join(dir, "docs", "plans", "split.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath, []byte("# Split\n\n### Task 1: Done\n- [x] complete\n"), 0o600))
+	logDir := t.TempDir()
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+printf '%s\n' "$*" >> '`+filepath.Join(logDir, "claude-args")+`'
+cat >> '`+filepath.Join(logDir, "claude-prompts")+`'
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:REVIEW_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+	fakeCodex := filepath.Join(t.TempDir(), "fake-codex")
+	writeExecutable(t, fakeCodex, "#!/bin/sh\ntouch '"+filepath.Join(logDir, "codex-ran")+"'\n")
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	err = executePlan(t.Context(), opts{Review: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeReview, GitSvc: gitSvc,
+		Config: &config.Config{
+			ClaudeCommand: fakeClaude, CodexCommand: fakeCodex,
+			TaskModel: "codex:gpt-6-astra:medium", ReviewModel: "claude:opus:high",
+			ReviewFirstPrompt: "first review {{agent:scanner}}",
+			CustomAgents:      []config.CustomAgent{{Name: "scanner", Prompt: "scan the diff"}},
+		},
+		Colors: testColors(), BaseRef: "master", Outcome: &planExecutionOutcome{},
+	})
+	require.NoError(t, err)
+
+	assert.NoFileExists(t, filepath.Join(logDir, "codex-ran"), "the codex task provider must not run the review block")
+	args, err := os.ReadFile(filepath.Join(logDir, "claude-args")) //nolint:gosec // test-owned temporary path
+	require.NoError(t, err)
+	assert.Contains(t, string(args), "--model opus --effort high")
+	prompts, err := os.ReadFile(filepath.Join(logDir, "claude-prompts")) //nolint:gosec // test-owned temporary path
+	require.NoError(t, err)
+	assert.Contains(t, string(prompts), "Use the Task tool to launch a general-purpose agent")
+	assert.NotContains(t, string(prompts), "spawn_agent(", "a claude review block must not receive codex agent syntax")
+}
+
 func TestSetOrcaCleanupStopsReporterOnForceExit(t *testing.T) {
 	var titleOut bytes.Buffer
 	titles := orca.NewWithOutput(true, "", config.ExecutorClaude, &titleOut, func() bool { return true })
@@ -2887,6 +2931,17 @@ func TestTryAutoPlanMode(t *testing.T) {
 		assert.Contains(t, err.Error(), "not available in this mode")
 	})
 
+	t.Run("missing_plan_provider_binary_refuses_before_prompting", func(t *testing.T) {
+		req, selector := newReq(t, "master")
+		// full mode checked the claude task and review binaries only; plan_model names codex
+		req.Config = &config.Config{ClaudeCommand: "sh", CodexCommand: "/nonexistent/codex",
+			PlanProvider: config.ExecutorCodex, TaskProvider: config.ExternalReviewToolClaude,
+			ReviewProvider: config.ExternalReviewToolClaude}
+		handled, err := tryAutoPlanMode(t.Context(), plan.ErrNoPlansFound, opts{}, req, selector)
+		assert.True(t, handled)
+		require.ErrorContains(t, err, "cannot offer interactive plan creation: /nonexistent/codex not found in PATH")
+	})
+
 	t.Run("unrelated_error_is_not_handled", func(t *testing.T) {
 		req, selector := newReq(t, "master")
 		handled, err := tryAutoPlanMode(t.Context(), errors.New("fzf not found"), opts{}, req, selector)
@@ -3545,6 +3600,18 @@ func TestResolveExternalReviewSelection(t *testing.T) {
 		{name: "claude primary auto selects codex with codex defaults", cfg: config.Config{CodexEnabled: true}, mode: processor.ModeFull, wantTool: "codex", wantAuto: true},
 		{name: "codex primary auto selects claude dynamic default", cfg: config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex, CodexEnabled: true}, mode: processor.ModeFull, wantTool: "claude", wantModel: "opus", wantEffort: "xhigh", wantAuto: true},
 		{name: "codex enabled false disables ordinary auto", cfg: config.Config{}, mode: processor.ModeFull, wantTool: "none", wantAuto: true},
+		// a run with a task phase picks the automatic reviewer against task_model's provider alone,
+		// whatever runs review
+		{name: "codex task with claude review auto selects claude", cfg: config.Config{TaskProvider: config.ExecutorCodex,
+			ReviewProvider: config.ExecutorClaude, CodexEnabled: true}, mode: processor.ModeFull, wantTool: "claude", wantModel: "opus", wantEffort: "xhigh", wantAuto: true},
+		{name: "claude task with codex review auto selects codex", cfg: config.Config{TaskProvider: config.ExecutorClaude,
+			ReviewProvider: config.ExecutorCodex, CodexEnabled: true}, mode: processor.ModeFull, wantTool: "codex", wantAuto: true},
+		// the review-only modes run no task phase, so the reviewer differs from the review provider
+		// that evaluates its findings
+		{name: "review mode codex task with claude review auto selects codex", cfg: config.Config{TaskProvider: config.ExecutorCodex,
+			ReviewProvider: config.ExecutorClaude, CodexEnabled: true}, mode: processor.ModeReview, wantTool: "codex", wantAuto: true},
+		{name: "external only claude task with codex review auto selects claude", cfg: config.Config{TaskProvider: config.ExecutorClaude,
+			ReviewProvider: config.ExecutorCodex}, mode: processor.ModeCodexOnly, wantTool: "claude", wantModel: "opus", wantEffort: "xhigh", wantAuto: true},
 		{name: "external only forces auto despite legacy gate", cfg: config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex}, mode: processor.ModeCodexOnly, wantTool: "claude", wantModel: "opus", wantEffort: "xhigh", wantAuto: true},
 		{name: "explicit chain ignores legacy gate", cfg: reviewerChainConfig("codex:gpt-5.5:xhigh"), mode: processor.ModeFull, wantTool: "codex", wantModel: "gpt-5.5", wantEffort: "xhigh"},
 		{name: "tasks only requires no external provider", cfg: reviewerChainConfig("claude:opus:xhigh"), mode: processor.ModeTasksOnly, wantTool: "none"},
@@ -3632,8 +3699,27 @@ func TestExternalReviewWarnings(t *testing.T) {
 		selection, err := resolveExternalReviewSelection(cfg, processor.ModeFull)
 		require.NoError(t, err)
 		var buf bytes.Buffer
-		printExternalReviewWarnings(selection, cfg, &buf)
+		printExternalReviewWarnings(selection, cfg, processor.ModeFull, &buf)
 		assert.Contains(t, buf.String(), "matches the task provider")
+	})
+
+	t.Run("review only mode compares against the review provider", func(t *testing.T) {
+		cfg := &config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorClaude,
+			ExternalReviewers: "claude", ExternalReviewersSet: true}
+		selection, err := resolveExternalReviewSelection(cfg, processor.ModeReview)
+		require.NoError(t, err)
+		var buf bytes.Buffer
+		printExternalReviewWarnings(selection, cfg, processor.ModeReview, &buf)
+		assert.Contains(t, buf.String(), `external reviewer "claude" matches the review provider`)
+
+		// codex is the reviewer that differs from the claude evaluator, so it must not warn
+		// just because the unused task spec names codex
+		cfg.ExternalReviewers = "codex"
+		selection, err = resolveExternalReviewSelection(cfg, processor.ModeReview)
+		require.NoError(t, err)
+		buf.Reset()
+		printExternalReviewWarnings(selection, cfg, processor.ModeReview, &buf)
+		assert.Empty(t, buf.String())
 	})
 
 	t.Run("auto cross provider does not warn", func(t *testing.T) {
@@ -3641,7 +3727,7 @@ func TestExternalReviewWarnings(t *testing.T) {
 		selection, err := resolveExternalReviewSelection(cfg, processor.ModeFull)
 		require.NoError(t, err)
 		var buf bytes.Buffer
-		printExternalReviewWarnings(selection, cfg, &buf)
+		printExternalReviewWarnings(selection, cfg, processor.ModeFull, &buf)
 		assert.Empty(t, buf.String())
 	})
 
@@ -3653,7 +3739,7 @@ func TestExternalReviewWarnings(t *testing.T) {
 		}}
 
 		var buf bytes.Buffer
-		printExternalReviewWarnings(selection, cfg, &buf)
+		printExternalReviewWarnings(selection, cfg, processor.ModeFull, &buf)
 		assert.Equal(t, 1, strings.Count(buf.String(), "matches the task provider"))
 		assert.Equal(t, 1, strings.Count(buf.String(), "does not support 'max' reasoning effort"))
 	})
@@ -3884,29 +3970,41 @@ func TestDetectClaudeSwapRecovery(t *testing.T) {
 	t.Setenv("PATH", binDir)
 	cfg := &config.Config{ClaudeSwapEnabled: true, ClaudeCommand: "claude"}
 
-	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}),
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, processor.ModeFull, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}),
 		"missing claude-swap keeps the optional integration disabled")
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "claude-swap"), []byte("#!/bin/sh\n"), 0o755)) //nolint:gosec // executable fixture for LookPath
-	assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
+	assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, processor.ModeFull, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
 	for _, command := range []string{"", " \tclaude\n", filepath.Join(binDir, "claude")} {
 		cfg.ClaudeCommand = command
-		assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{}), command)
+		assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, processor.ModeFull, externalReviewSelection{}), command)
 	}
 	cfg.ClaudeCommand = "claude"
-	assert.Nil(t, detectClaudeSwapRecovery(opts{NoClaudeSwap: true}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
+	assert.Nil(t, detectClaudeSwapRecovery(opts{NoClaudeSwap: true}, cfg, processor.ModeFull, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
 
 	cfg.ClaudeSwapEnabled = false
-	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, processor.ModeFull, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
 	cfg.ClaudeSwapEnabled = true
 	cfg.ClaudeCommand = "claude-wrapper"
-	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}),
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, processor.ModeFull, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}),
 		"custom stream-json wrappers must not mutate Claude Code credentials")
 
 	cfg.ClaudeCommand = "claude"
 	cfg.PlanProvider, cfg.TaskProvider, cfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex, config.ExecutorCodex
-	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
-	assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}, {Provider: config.ExternalReviewToolClaude}}}),
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, processor.ModeFull, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}))
+	assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, processor.ModeFull, externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}, {Provider: config.ExternalReviewToolClaude}}}),
 		"a native external Claude reviewer uses the same failover integration")
+	codexOnly := externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCodex}}}
+	cfg.TaskProvider, cfg.ReviewProvider = config.ExecutorCodex, config.ExternalReviewToolClaude
+	assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, processor.ModeFull, codexOnly),
+		"a claude review block under a codex task phase still runs claude")
+	cfg.PlanProvider, cfg.TaskProvider, cfg.ReviewProvider = config.ExternalReviewToolClaude, config.ExecutorCodex, config.ExecutorCodex
+	assert.NotNil(t, detectClaudeSwapRecovery(opts{}, cfg, processor.ModeFull, codexOnly),
+		"full mode can fall into interactive plan creation on the claude plan provider")
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, processor.ModeReview, codexOnly),
+		"review-only modes never run the plan or task provider")
+	cfg.PlanProvider, cfg.TaskProvider, cfg.ReviewProvider = config.ExecutorCodex, config.ExternalReviewToolClaude, config.ExecutorCodex
+	assert.Nil(t, detectClaudeSwapRecovery(opts{}, cfg, processor.ModeCodexOnly, codexOnly),
+		"external-only runs the codex review block and a codex reviewer only")
 }
 
 func TestSessionTimeoutFlag(t *testing.T) {
@@ -4505,6 +4603,15 @@ func TestResolvePhaseProviders_PassClaudeMd(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+
+	// a pre-migration config pairs a bare codex task_model with pass_claude_md; the bare spec
+	// resolves to claude and trips the gate, but the rewrite is the error the user needs
+	t.Run("bare codex task model reports the missing prefix, not the gate", func(t *testing.T) {
+		cfg := config.Config{TaskModel: "gpt-6-astra:high", PassClaudeMd: true}
+		_, err := resolvePhaseProviders(opts{}, &cfg)
+		require.ErrorIs(t, err, config.ErrMissingProvider)
+		require.ErrorContains(t, err, `write "codex:gpt-6-astra:high"`)
+	})
 }
 
 func TestApplyCLIOverrides_PhaseProviders(t *testing.T) {
@@ -4643,6 +4750,27 @@ func TestExternalReviewChainLabel(t *testing.T) {
 	}
 }
 
+func TestExternalReviewSelectionProcessorTool(t *testing.T) {
+	tests := []struct {
+		name      string
+		selection externalReviewSelection
+		want      string
+	}{
+		{name: "explicitly emptied chain", selection: externalReviewSelection{Resolved: true, Explicit: true},
+			want: config.ExternalReviewToolNone},
+		{name: "missing automatic reviewer", selection: externalReviewSelection{Resolved: true, AutoSelected: true, DisabledByMissing: true},
+			want: config.ExternalReviewToolNone},
+		{name: "first reviewer of a chain", selection: externalReviewSelection{Reviewers: []resolvedReviewer{
+			{Provider: config.ExternalReviewToolClaude}, {Provider: config.ExternalReviewToolCodex},
+		}}, want: config.ExternalReviewToolClaude},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.selection.processorTool())
+		})
+	}
+}
+
 func TestCmuxRunModels(t *testing.T) {
 	t.Run("nil config", func(t *testing.T) {
 		assert.Equal(t, cmux.Models{}, cmuxRunModels(opts{}, nil, externalReviewSelection{}))
@@ -4742,19 +4870,19 @@ func TestRunHeaderParams(t *testing.T) {
 	})
 
 	t.Run("cli task and review models", func(t *testing.T) {
-		got := runHeaderParams(parseTestOpts(t, "--task-model", "opus:high", "--review-model", "sonnet:low"), &config.Config{}, processor.ModeFull)
-		assert.Equal(t, progress.RunParams{TaskModel: "opus:high", ReviewModel: "sonnet:low"}, got)
+		got := runHeaderParams(parseTestOpts(t, "--task-model", "claude:opus:high", "--review-model", "claude:sonnet:low"), &config.Config{}, processor.ModeFull)
+		assert.Equal(t, progress.RunParams{TaskModel: "claude:opus:high", ReviewModel: "claude:sonnet:low"}, got)
 	})
 
 	t.Run("cli flags override config values", func(t *testing.T) {
-		cfg := &config.Config{TaskModel: "sonnet", ReviewModel: "haiku"}
-		got := runHeaderParams(parseTestOpts(t, "--task-model", "opus"), cfg, processor.ModeFull)
-		assert.Equal(t, progress.RunParams{TaskModel: "opus", ReviewModel: "haiku"}, got)
+		cfg := &config.Config{TaskModel: "claude:sonnet", ReviewModel: "claude:haiku"}
+		got := runHeaderParams(parseTestOpts(t, "--task-model", "claude:opus"), cfg, processor.ModeFull)
+		assert.Equal(t, progress.RunParams{TaskModel: "claude:opus", ReviewModel: "claude:haiku"}, got)
 	})
 
 	t.Run("review model fallback to task is not recorded", func(t *testing.T) {
-		got := runHeaderParams(parseTestOpts(t, "--task-model", "opus"), &config.Config{}, processor.ModeFull)
-		assert.Equal(t, progress.RunParams{TaskModel: "opus"}, got, "review inherits task implicitly, no separate header line")
+		got := runHeaderParams(parseTestOpts(t, "--task-model", "claude:opus"), &config.Config{}, processor.ModeFull)
+		assert.Equal(t, progress.RunParams{TaskModel: "claude:opus"}, got, "review inherits task implicitly, no separate header line")
 	})
 
 	t.Run("codex executor recorded", func(t *testing.T) {
@@ -4763,21 +4891,30 @@ func TestRunHeaderParams(t *testing.T) {
 		assert.Equal(t, progress.RunParams{Executor: "codex"}, got)
 	})
 
+	t.Run("executor follows the provider of the phase the mode runs first", func(t *testing.T) {
+		split := &config.Config{PlanProvider: config.ExecutorCodex, TaskProvider: config.ExternalReviewToolClaude,
+			ReviewProvider: config.ExecutorCodex}
+		assert.Empty(t, runHeaderParams(opts{}, split, processor.ModeFull).Executor, "full mode starts with the claude task phase")
+		assert.Equal(t, "codex", runHeaderParams(opts{}, split, processor.ModePlan).Executor, "plan mode runs the plan provider")
+		assert.Equal(t, "codex", runHeaderParams(opts{}, split, processor.ModeReview).Executor, "review mode runs only the review block")
+		assert.Equal(t, "codex", runHeaderParams(opts{}, split, processor.ModeCodexOnly).Executor)
+	})
+
 	t.Run("plan mode records effective plan model", func(t *testing.T) {
-		got := runHeaderParams(parseTestOpts(t, "--plan-model", "opus:high"), &config.Config{}, processor.ModePlan)
-		assert.Equal(t, progress.RunParams{PlanModel: "opus:high"}, got)
+		got := runHeaderParams(parseTestOpts(t, "--plan-model", "claude:opus:high"), &config.Config{}, processor.ModePlan)
+		assert.Equal(t, progress.RunParams{PlanModel: "claude:opus:high"}, got)
 	})
 
 	t.Run("plan mode falls back to task model", func(t *testing.T) {
-		got := runHeaderParams(parseTestOpts(t, "--task-model", "opus"), &config.Config{}, processor.ModePlan)
-		assert.Equal(t, progress.RunParams{PlanModel: "opus"}, got, "plan_model falls back to task_model by design")
+		got := runHeaderParams(parseTestOpts(t, "--task-model", "claude:opus"), &config.Config{}, processor.ModePlan)
+		assert.Equal(t, progress.RunParams{PlanModel: "claude:opus"}, got, "plan_model falls back to task_model by design")
 	})
 
-	t.Run("external model is distinct from primary review model", func(t *testing.T) {
+	t.Run("external model is distinct from the review block model", func(t *testing.T) {
 		external := externalReviewSelection{Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "xhigh"}}, AutoSelected: true}
-		got := runHeaderParams(parseTestOpts(t, "--review-model", "gpt-5.5:low"),
+		got := runHeaderParams(parseTestOpts(t, "--review-model", "codex:gpt-5.5:low"),
 			&config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex}, processor.ModeFull, external)
-		assert.Equal(t, "gpt-5.5:low", got.ReviewModel)
+		assert.Equal(t, "codex:gpt-5.5:low", got.ReviewModel)
 		assert.Equal(t, "claude (auto-selected)", got.ExternalReview)
 		assert.Equal(t, "opus:xhigh", got.ExternalReviewModel)
 	})
@@ -13084,9 +13221,37 @@ func TestValidateModelSpec(t *testing.T) {
 			wantErr: `names unknown provider "gemini"`,
 		},
 		{
-			name:    "empty provider",
+			name:    "effort-only spec names both provider rewrites",
 			spec:    ":medium",
-			wantErr: "missing a provider prefix",
+			wantErr: `":medium" is missing a provider prefix; write "claude::medium" or "codex::medium"`,
+		},
+		{
+			name:    "effort in the model segment",
+			spec:    "codex:high",
+			wantErr: `puts reasoning effort "high" in the model segment; write "codex::high"`,
+		},
+		{
+			name:    "effort in the model segment is matched case-insensitively",
+			spec:    "claude:MAX",
+			wantErr: `puts reasoning effort "MAX" in the model segment; write "claude::MAX"`,
+		},
+		{
+			name:    "wrapper claude command keeps a bare codex model on the wrapper",
+			spec:    "gpt-5:high",
+			cfg:     config.Config{ClaudeCommand: "pi-as-claude.sh"},
+			wantErr: `"gpt-5:high" is missing a provider prefix; write "claude:gpt-5:high" to keep running it through claude_command "pi-as-claude.sh"`,
+		},
+		{
+			name:    "wrapper claude command keeps a bare wrapper-only model on the wrapper",
+			spec:    "kimi-k2",
+			cfg:     config.Config{ClaudeCommand: "pi-as-claude.sh"},
+			wantErr: `write "claude:kimi-k2" to keep running it through claude_command`,
+		},
+		{
+			name:    "wrapper claude command gets no rewrite that would exceed three segments",
+			spec:    "gemini:pro:high",
+			cfg:     config.Config{ClaudeCommand: "pi-as-claude.sh"},
+			wantErr: `names unknown provider "gemini"`,
 		},
 		{
 			name:    "four segments",
@@ -13268,6 +13433,14 @@ func TestResolveExternalReviewSelectionValidatesEfforts(t *testing.T) {
 			processor.ModeFull,
 		)
 		require.ErrorContains(t, err, `external reviewer entry 1 (claude) has unknown reasoning effort "hgih"`)
+	})
+
+	t.Run("chain entry with an effort in the model segment is rejected", func(t *testing.T) {
+		_, err := resolveExternalReviewSelection(
+			&config.Config{ExternalReviewers: "claude:opus,codex:high", ExternalReviewersSet: true},
+			processor.ModeFull,
+		)
+		require.ErrorContains(t, err, `external reviewer entry 2 (codex) puts reasoning effort "high" in the model segment; write "codex::high"`)
 	})
 
 	t.Run("bad effort later in the chain is rejected with its position", func(t *testing.T) {
@@ -13479,21 +13652,21 @@ func TestResolveExternalReviewSelectionValidatesProviders(t *testing.T) {
 	}
 }
 
-func TestValidateStartupModels(t *testing.T) {
+func TestValidateModelSpecs_PhaseCombinations(t *testing.T) {
 	t.Run("syntax checked first", func(t *testing.T) {
-		err := validateStartupModels(opts{}, &config.Config{TaskModel: "codex:gpt-5:hgih", ReviewModel: "claude:opus"})
+		err := validateModelSpecs(opts{}, &config.Config{TaskModel: "codex:gpt-5:hgih", ReviewModel: "claude:opus"})
 		require.ErrorContains(t, err, "unknown reasoning effort")
 	})
 	t.Run("provider/model mismatch", func(t *testing.T) {
-		err := validateStartupModels(opts{}, &config.Config{TaskModel: "claude:gpt-5:high"})
+		err := validateModelSpecs(opts{}, &config.Config{TaskModel: "claude:gpt-5:high"})
 		require.ErrorContains(t, err, "names a codex model under the claude provider")
 	})
 	t.Run("mixed phase providers pass", func(t *testing.T) {
-		require.NoError(t, validateStartupModels(opts{}, &config.Config{
+		require.NoError(t, validateModelSpecs(opts{}, &config.Config{
 			PlanModel: "claude:opus", TaskModel: "codex:gpt-5", ReviewModel: "claude:opus:high"}))
-		require.NoError(t, validateStartupModels(opts{}, &config.Config{TaskModel: "claude:opus", ReviewModel: "codex:gpt-5"}))
+		require.NoError(t, validateModelSpecs(opts{}, &config.Config{TaskModel: "claude:opus", ReviewModel: "codex:gpt-5"}))
 	})
 	t.Run("matching provider passes", func(t *testing.T) {
-		require.NoError(t, validateStartupModels(opts{}, &config.Config{TaskModel: "claude:fable:high"}))
+		require.NoError(t, validateModelSpecs(opts{}, &config.Config{TaskModel: "claude:fable:high"}))
 	})
 }

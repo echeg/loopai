@@ -131,6 +131,7 @@ For each customized file that needs merging:
    - Updates template variable references (e.g., new `{{VARIABLE}}` usage)
    - Preserves user's tone and style choices
    - Flags direct conflicts where both changed the same thing
+   - In `config`, drops keys that were removed (`executor`, `codex_model`, `codex_reasoning_effort`, `external_review_tool`, `external_review_model`) instead of preserving them, and rewrites a `plan_model`, `task_model`, or `review_model` value without a provider prefix as `claude:<value>` or `codex:<value>`: loopai stops at startup on either. Take the provider from the model name (`opus`, `sonnet`, `haiku`, `fable` are claude; `gpt-*` and `o3`-style names are codex), ask when it is not obvious, and name every such change in the summary
 4. **Show the user**:
    - Brief summary of what changed in defaults
    - Brief summary of what user customized

@@ -81,7 +81,12 @@ The top-level `assets/claude/loopai*.md` files are symlinks to the matching
 `assets/claude/skills/loopai*/SKILL.md` sources. Keep the command name,
 directory name, and link target aligned; `make check-symlinks` rejects broken,
 missing, incorrect, and orphan links, requires skill descriptions, and verifies
-the exact skill inventory. The current set is `loopai`, `loopai-merge`,
+the exact skill inventory. It and `check-codex-skills.sh` also reject a skill body
+line naming a removed loopai spelling (`--codex`, `--codex-only`, the
+`--external-review-*` flags, the `executor`, `codex_model`, `codex_reasoning_effort`,
+and `external_review_*` keys) unless that line says it "was removed" or "were
+removed"; `--codex-args` does not match, and the two `removed_spellings` lists must
+stay identical. The current set is `loopai`, `loopai-merge`,
 `loopai-plan`, `loopai-brainstorm`, `loopai-adopt`, `loopai-update`,
 `loopai-grill`, and `loopai-orca`; every added skill needs the matching
 top-level symlink.
@@ -337,7 +342,11 @@ and report (the four consumers of the runner's review executor); `plan_model`'s 
 creation; the latter two inherit `task_model` whole, provider included, when unset.
 `resolvePhaseProviders` resolves the three providers into the runtime-only
 `Config.PlanProvider`/`TaskProvider`/`ReviewProvider` fields and rejects
-`--pass-claude-md` unless Codex runs the task or review phase. The processor does not read
+`--pass-claude-md` unless Codex runs the task or review phase. It runs inside
+`applyCLIOverrides`, before startup spec validation, and resolves an invalid spec to claude,
+so when that trips the gate it returns `validateModelSpecs`' error instead: an unmigrated
+`task_model = gpt-6-astra` beside `pass_claude_md` must get the prefixed rewrite. The
+processor does not read
 those fields: `processor.Config.taskSpec()`/`reviewSpec()` derive each phase's provider
 from its own spec, `executorFactory.Build` constructs the task and review executors from
 them separately (the review slot stays nil when provider, model, and effort all match the
@@ -346,13 +355,18 @@ Claude review block under a Codex task phase launches Task-tool agents while the
 prompt keeps its Codex guidance. A provider mismatch there degrades review silently rather
 than failing, which is why agent syntax follows the phase and not the run.
 
-`validateStartupModels` runs `validateModelSpecs` at startup, before external-review
+`run` calls `validateModelSpecs` at startup, before external-review
 resolution, on the resolved plan, task, and review specs, so a CLI flag overriding a bad
 config value passes exactly as the executors would see it. `validateModelSpec` checks
 grammar, provider, effort, and provider/model consistency in one pass. A spec without a
 provider segment reports the value and a rewrite whose provider comes from
-`config.ModelProvider` (`opus:high` → `claude:opus:high`), which is the function's surviving
-role besides the mismatch check: it recognizes case-insensitive model prefixes and rejects
+`config.ModelProvider` (`opus:high` → `claude:opus:high`); `missingProviderHint` rewords two
+cases where that rewrite would mislead: the old effort-only `:high` form gets both
+`claude::high` and `codex::high`, and under a wrapper `claude_command` any unprefixed spec of
+at most two segments gets `claude:<spec>`, since that wrapper ran every unprefixed spec before.
+`effortInModelSegment` rejects an effort written where the model goes (`codex:high` parses as
+model `high`), for phase specs and reviewer entries alike. The rewrite hint is
+`config.ModelProvider`'s surviving role besides the mismatch check: it recognizes case-insensitive model prefixes and rejects
 `codex:opus`, unless the named provider's command is a wrapper
 (`IsRealClaudeCommand`/`IsRealCodexCommand`) that defines its own model names. `custom` is
 rejected for a phase spec. An effort outside `low|medium|high|xhigh|max` is reported as
@@ -378,7 +392,12 @@ external-review flags fold into one ready `--external-reviewers=` entry. The con
 `codex_reasoning_effort` are rejected by `checkRemovedKeys` at every config layer, each
 error naming the replacement spelling. `checkExecutionDeps` checks every distinct provider
 of the phases the mode runs, each missing binary with its own error, then the reviewer chain
-under the existing explicit/automatic rules. The startup banner prints one
+under the existing explicit/automatic rules. Full mode does not check the plan provider, since
+most full runs never plan; `tryAutoPlanMode` checks it before prompting for a description
+instead. `modePhaseProviders` is also what makes the progress header's and run record's
+`executor` name the first phase the mode runs (the review provider under `--review` and
+`--external-only`) and what `detectClaudeSwapRecovery` counts, plus the plan provider in full
+mode. The startup banner prints one
 `<phase>: <provider> <model>[:effort]` line per phase the mode runs, with Codex-only
 settings indented under the first Codex phase; cmux labels prefix each phase with its
 provider once the phases' providers differ, and Orca plan and review-block titles name their
@@ -386,9 +405,16 @@ own provider.
 
 `external_reviewers` configures an ordered comma-separated reviewer chain using
 `provider[:model[:effort]]` entries. When it is unset, the provider other than
-`task_model`'s reviews automatically, gated by `codex_enabled`. `custom` entries use
+`task_model`'s reviews automatically, gated by `codex_enabled`. `--review` and
+`--external-only` run no task phase, so `reviewerBaseProvider` (and the processor's
+`externalReviewProvider` fallback) key them off `review_model`'s provider instead: keyed off
+an unused task spec, a split config would make the review provider both reviewer and
+evaluator. The explicit same-provider warning compares against that same provider. `custom` entries use
 `custom_review_script` and cannot specify a model. An explicitly empty value
-clears an inherited chain and disables external review.
+clears an inherited chain and disables external review. `createRunner` hands an empty
+selection to the processor as `none` through `externalReviewSelection.processorTool`: the
+processor reads an empty tool as auto and `--external-only` bypasses `codex_enabled`, so an
+empty tool there would build a reviewer for a chain the user explicitly emptied.
 
 `loopai --init` creates project-local commented defaults. `loopai --reset` restores global defaults interactively. `loopai --dump-defaults <dir>` extracts embedded defaults for inspection.
 
@@ -424,13 +450,17 @@ comment lists the variables that prompt actually uses, not every variable expand
 it, so adding the placeholder to a prompt and its header happen together.
 
 `pkg/processor/prompts.go` expands two agent placeholders with the same
-per-executor invocation snippet builder (Task tool for Claude, `spawn_agent` for
+per-provider invocation snippet builder (Task tool for Claude, `spawn_agent` for
 Codex): `{{agent:<name>}}` inlines one named agent, and `{{agents:dynamic}}`
 renders the dynamic-agent catalog sorted by name, or
 `(no project-specific agents configured)` when the project defines none. Only
 the embedded `review_first.txt` uses the catalog; `review_second.txt` and the
 embedded external-reviewer prompts do not, though both placeholders are expanded
-on the external path too so customized prompts behave alike. The catalog pass runs
+on the external path too so customized prompts behave alike. There they render in
+the syntax of the reviewer that runs the prompt, not the review block's: a Claude
+reviewer keeps the Task tool, while a Codex reviewer has no `spawn_agent` because
+`MultiAgent` stays off on the reviewer path, and a custom script keeps the review
+block's syntax. The catalog pass runs
 after agent-reference expansion, so `agentBodyText` strips `{{agents:dynamic}}`
 from inlined agent bodies — otherwise raw catalog text lands inside an
 already-escaped codex `task='...'` literal. The catalog also skips agents the same
@@ -506,7 +536,7 @@ Completion reporting is split between durable fact collection and model assessme
 
 `phase.ReportPhase` runs after finalize and before the successful review-checkpoint clear on every review pipeline when `report_enabled` is true. It receives rendered deterministic facts and returns ordinary assistant Markdown; the model must not write the repository file because a single-plan worktree run archives through `MainGitSvc` in the main checkout, outside the executor's worktree. `Runner.Report()` exposes the extracted report, or a nine-section facts-only fallback when model assessment is unavailable. `MovePlanToCompletedWithReport` writes `docs/plans/completed/<stem>.report.md` beside the archived plan in the same commit; tasks-only never generates a report, and review-only modes may populate `Runner.Report()` but do not archive a sidecar because `shouldMovePlan` is false. A non-empty review-checkpoint invalidation reason resets and removes stale run-record state together with the checkpoint. Current-invocation task counts and start time survive post-task invalidation so newly completed work remains in the report. The success clear intentionally removes only the checkpoint, preserving the record through report generation and archival; successful archival then removes the `.run.json` file.
 
-Claude runs every phase by default. `task_model = codex:<model>[:effort]` moves tasks to Codex, and with them planning and the review block unless `plan_model` or `review_model` names another provider. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. With the chain unset, the provider other than `task_model`'s is selected when installed. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
+Claude runs every phase by default. `task_model = codex:<model>[:effort]` moves tasks to Codex, and with them planning and the review block unless `plan_model` or `review_model` names another provider. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. With the chain unset, the provider other than `task_model`'s (`review_model`'s under `--review` and `--external-only`) is selected when installed. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
 
 Codex invocations use additive `-c` overrides so user `~/.codex/config.toml` settings remain available. loopai never writes to `~/.codex/`. `--pass-claude-md` lets Codex discover project `CLAUDE.md`; it does not install or link user-level files.
 

@@ -56,7 +56,8 @@ forbidden_tokens=(
 # startup, and $loopai-orca splices its flags into a command a new Orca tab runs,
 # so the failure would surface only after the worktree and tab already exist.
 # Extended regular expressions; the bare --codex pattern leaves --codex-args alone.
-# A line that itself says the spelling was removed is a migration hint, not a use.
+# A line that itself says the spelling "was removed" or "were removed" is a migration
+# hint, not a use; the bare word "removed" is not enough, since a plan path can carry it.
 removed_spellings=(
 	'--codex([^-[:alnum:]_]|$)'
 	'--codex-only'
@@ -173,7 +174,7 @@ while IFS= read -r skill_name; do
 	done
 
 	for spelling in "${removed_spellings[@]}"; do
-		if grep -E -- "$spelling" "$skill_file" | grep -Fv removed >/dev/null; then
+		if grep -E -- "$spelling" "$skill_file" | grep -Ev '(was|were) removed' >/dev/null; then
 			fail "removed loopai flag or key in codex skill: $skill_file matches '$spelling'"
 		fi
 	done

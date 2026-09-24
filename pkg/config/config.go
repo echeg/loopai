@@ -75,12 +75,13 @@ func ParseExternalReviewers(value string) ([]ReviewerSpec, error) {
 	return reviewers, nil
 }
 
-// Executor labels for the runtime-only per-phase provider fields. ExecutorClaude is
-// the empty zero value, so a Config built without provider resolution runs claude;
-// ExecutorCodex equals the codex provider name a spec's prefix resolves to.
+// Executor labels for the runtime-only per-phase provider fields, equal to the provider
+// names a spec's prefix resolves to. The empty zero value also means claude, so a Config
+// built without provider resolution runs claude: compare against ExecutorCodex, never
+// against ExecutorClaude.
 const (
-	ExecutorClaude = ""
-	ExecutorCodex  = "codex"
+	ExecutorClaude = ExternalReviewToolClaude
+	ExecutorCodex  = ExternalReviewToolCodex
 )
 
 // External reviewer provider names used in external_reviewers entries; auto and none
@@ -103,9 +104,9 @@ type Config struct {
 	ClaudeCommand string `json:"claude_command"`
 	ClaudeArgs    string `json:"claude_args"`
 	ClaudeArgsSet bool   `json:"-"`            // tracks runtime overrides, including an explicit empty --claude-args=
-	PlanModel     string `json:"plan_model"`   // model[:effort] spec for plan creation (falls back to TaskModel)
-	TaskModel     string `json:"task_model"`   // model[:effort] spec for task execution (e.g., "opus", "opus:high", ":medium")
-	ReviewModel   string `json:"review_model"` // model[:effort] spec for review phases (falls back to TaskModel)
+	PlanModel     string `json:"plan_model"`   // provider[:model[:effort]] spec for plan creation (inherits TaskModel whole)
+	TaskModel     string `json:"task_model"`   // provider[:model[:effort]] spec for task execution (e.g., "claude:opus:high", "codex::medium")
+	ReviewModel   string `json:"review_model"` // provider[:model[:effort]] spec for the review block (inherits TaskModel whole)
 
 	CodexEnabled      bool   `json:"codex_enabled"`
 	CodexEnabledSet   bool   `json:"-"` // tracks if codex_enabled was explicitly set in config

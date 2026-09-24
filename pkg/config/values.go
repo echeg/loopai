@@ -17,9 +17,9 @@ import (
 type Values struct {
 	ClaudeCommand              string
 	ClaudeArgs                 string
-	PlanModel                  string // model for plan creation (falls back to TaskModel if empty)
-	TaskModel                  string // model for task execution (e.g., "fable", "opus", "sonnet", "haiku")
-	ReviewModel                string // model for review phases (falls back to TaskModel if empty)
+	PlanModel                  string // provider[:model[:effort]] spec for plan creation (inherits TaskModel if empty)
+	TaskModel                  string // provider[:model[:effort]] spec for task execution (e.g., "claude:opus", "codex:gpt-6-astra")
+	ReviewModel                string // provider[:model[:effort]] spec for the review block (inherits TaskModel if empty)
 	ClaudeErrorPatterns        []string
 	CodexErrorPatterns         []string
 	ClaudeLimitPatterns        []string

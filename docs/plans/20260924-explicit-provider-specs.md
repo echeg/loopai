@@ -348,12 +348,12 @@ no model.
 
 ### Startup banner
 
-The banner prints one line per phase, provider first, so a cross-provider run is readable at a
-glance. This replaces the asymmetry where only the codex branch printed its models while a
-claude run printed none:
+The banner prints one line per phase the mode runs, provider first, so a cross-provider run is
+readable at a glance (as implemented, a full run omits the `plan:` line and plan mode prints only
+it). This replaces the asymmetry where only the codex branch printed its models while a claude
+run printed none:
 
 ```
-plan:            claude opus:high
 task:            claude opus:high
 review:          claude opus:xhigh
 external review: codex gpt-6-astra:high

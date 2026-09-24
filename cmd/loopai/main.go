@@ -66,7 +66,7 @@ type opts struct {
 	PreserveAnthropicAPIKey bool          `long:"preserve-anthropic-api-key" description:"pass ANTHROPIC_API_KEY through to claude (for users authenticating Claude Code via API key rather than OAuth/keychain)"`
 	NoClaudeSwap            bool          `long:"no-claude-swap" description:"disable automatic claude-swap account rotation for this run"`
 	Codex                   bool          `long:"codex" hidden:"true" description:"removed; set the provider in --task-model"`
-	PassClaudeMd            bool          `long:"pass-claude-md" description:"pass project CLAUDE.md to codex via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is NOT auto-passed but a one-time setup hint is shown (codex executor only)"`
+	PassClaudeMd            bool          `long:"pass-claude-md" description:"pass project CLAUDE.md to codex via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is NOT auto-passed but a one-time setup hint is shown (requires codex as the task or review provider)"`
 	Worktree                bool          `long:"worktree" description:"run in isolated git worktree"`
 	Commit                  bool          `short:"c" long:"commit" description:"auto-commit the dirty source checkout before creating the worktree (requires --worktree)"`
 	Branch                  string        `long:"branch" description:"override branch name for worktree/branch creation (default: derived from plan filename)"`
@@ -465,14 +465,16 @@ func run(ctx context.Context, o opts) (runErr error) {
 		setupTitles.Stop()
 	}()
 
-	if modelErr := validateStartupModels(o, cfg); modelErr != nil {
+	// check every plan, task, and review spec before external-review resolution, so a bad
+	// spec fails immediately instead of in the review phase after hours of task work
+	if modelErr := validateModelSpecs(o, cfg); modelErr != nil {
 		return modelErr
 	}
 	externalReview, resolveErr := resolveExternalReviewSelection(cfg, mode)
 	if resolveErr != nil {
 		return resolveErr
 	}
-	printExternalReviewWarnings(externalReview, cfg, os.Stderr)
+	printExternalReviewWarnings(externalReview, cfg, mode, os.Stderr)
 	externalReview, limitRecovery, err := resolveStartupExecutionDeps(
 		o, cfg, mode, reviewPreflight, externalReview, os.Stderr,
 	)
@@ -707,7 +709,7 @@ func resolveStartupExecutionDeps(
 	if err != nil {
 		return externalReviewSelection{}, nil, err
 	}
-	return resolved, detectClaudeSwapRecovery(o, cfg, resolved), nil
+	return resolved, detectClaudeSwapRecovery(o, cfg, mode, resolved), nil
 }
 
 func completeReviewStartup(
@@ -1170,6 +1172,14 @@ func tryAutoPlanMode(ctx context.Context, err error, o opts, req executePlanRequ
 			"interactive plan creation is only offered on the default branch %q (currently on %q); "+
 				"switch to %q, pass a plan file, or use --plan: %w",
 			defaultName, getCurrentBranch(req.GitSvc), defaultName, err)
+	}
+
+	// startup checked only the binaries full mode runs; plan creation runs on plan_model's
+	// provider, which may differ, so check it before asking for a description
+	if req.Config != nil {
+		if _, depErr := checkExecutionDeps(req.Config, processor.ModePlan, externalReviewSelection{}, io.Discard); depErr != nil {
+			return true, fmt.Errorf("cannot offer interactive plan creation: %w", depErr)
+		}
 	}
 
 	var description string
@@ -2663,6 +2673,17 @@ func (s externalReviewSelection) firstReviewer() (resolvedReviewer, bool) {
 	return s.Reviewers[0], true
 }
 
+// processorTool returns the provider processor.Config receives as ExternalReviewTool. An
+// empty selection is spelled none, not left empty: the processor reads an empty tool as auto
+// and re-selects a reviewer, which --external-only does even with codex_enabled off, so an
+// explicitly emptied chain would still run one.
+func (s externalReviewSelection) processorTool() string {
+	if reviewer, ok := s.firstReviewer(); ok {
+		return reviewer.Provider
+	}
+	return config.ExternalReviewToolNone
+}
+
 func (s externalReviewSelection) providerLabel() string {
 	if s.DisabledByCodexEnabled {
 		return config.ExternalReviewToolNone + " (auto disabled by codex_enabled=false)"
@@ -2682,12 +2703,27 @@ func (s externalReviewSelection) providerLabel() string {
 }
 
 // taskProvider returns the provider resolved for the task phase, claude when none was
-// resolved. The automatic reviewer and the matching-reviewer warning compare against it.
+// resolved.
 func taskProvider(cfg *config.Config) string {
 	if cfg != nil && cfg.TaskProvider == config.ExecutorCodex {
 		return config.ExternalReviewToolCodex
 	}
 	return config.ExternalReviewToolClaude
+}
+
+// reviewerBaseProvider returns the phase the automatic external reviewer is chosen against,
+// and that phase's provider: the task phase's, except in the review-only modes, which run no
+// task phase and whose review provider evaluates the findings. Keying those modes off the
+// task spec would pick the review provider as reviewer, so one model reviews and evaluates.
+// The matching-reviewer warning compares against the same provider.
+func reviewerBaseProvider(cfg *config.Config, mode processor.Mode) (phase, provider string) {
+	if mode != processor.ModeReview && mode != processor.ModeCodexOnly {
+		return "task", taskProvider(cfg)
+	}
+	if cfg != nil && cfg.ReviewProvider == config.ExecutorCodex {
+		return "review", config.ExternalReviewToolCodex
+	}
+	return "review", config.ExternalReviewToolClaude
 }
 
 // resolveExternalReviewSelection resolves the reviewer chain and validates it. The
@@ -2738,14 +2774,14 @@ func resolveReviewerChain(cfg *config.Config, mode processor.Mode) (externalRevi
 	}
 
 	// with no chain configured, the reviewer is picked automatically: the provider other
-	// than the primary, at its dynamic default model
+	// than reviewerBaseProvider's, at its dynamic default model
 	selection := externalReviewSelection{Resolved: true, AutoSelected: true}
 	if !cfg.CodexEnabled && mode != processor.ModeCodexOnly {
 		selection.DisabledByCodexEnabled = true
 		return selection, nil
 	}
 	provider := config.ExternalReviewToolCodex
-	if taskProvider(cfg) == config.ExternalReviewToolCodex {
+	if _, base := reviewerBaseProvider(cfg, mode); base == config.ExternalReviewToolCodex {
 		provider = config.ExternalReviewToolClaude
 	}
 	model, effort, maxDropped := processor.ResolveExternalReviewerModelEffort(provider, "")
@@ -2753,18 +2789,20 @@ func resolveReviewerChain(cfg *config.Config, mode processor.Mode) (externalRevi
 	return selection, nil
 }
 
-func printExternalReviewWarnings(selection externalReviewSelection, cfg *config.Config, w io.Writer) {
+func printExternalReviewWarnings(selection externalReviewSelection, cfg *config.Config, mode processor.Mode, w io.Writer) {
 	if w == nil || cfg == nil {
 		return
 	}
-	warnedTaskMatch := make(map[string]bool)
+	basePhase, baseProvider := reviewerBaseProvider(cfg, mode)
+	warnedBaseMatch := make(map[string]bool)
 	maxDroppedWarned := false
 	for _, reviewer := range selection.Reviewers {
-		if selection.Explicit && reviewer.Provider == taskProvider(cfg) &&
+		if selection.Explicit && reviewer.Provider == baseProvider &&
 			(reviewer.Provider == config.ExternalReviewToolClaude || reviewer.Provider == config.ExternalReviewToolCodex) &&
-			!warnedTaskMatch[reviewer.Provider] {
-			fmt.Fprintf(w, "warning: external reviewer %q matches the task provider; cross-model review signal will be weaker\n", reviewer.Provider)
-			warnedTaskMatch[reviewer.Provider] = true
+			!warnedBaseMatch[reviewer.Provider] {
+			fmt.Fprintf(w, "warning: external reviewer %q matches the %s provider; cross-model review signal will be weaker\n",
+				reviewer.Provider, basePhase)
+			warnedBaseMatch[reviewer.Provider] = true
 		}
 		if reviewer.MaxDropped && !maxDroppedWarned {
 			fmt.Fprintln(w, "warning: codex does not support 'max' reasoning effort for external review; ignoring (valid: low, medium, high, xhigh)")
@@ -2977,13 +3015,6 @@ func shouldMovePlan(req executePlanRequest) bool {
 // deliberate downgrade into a hard failure.
 var knownEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 
-// validateStartupModels checks every plan, task, and review spec at startup, before
-// external-review resolution, so a bad spec fails immediately instead of in the review
-// phase after a task phase that can run for hours.
-func validateStartupModels(o opts, cfg *config.Config) error {
-	return validateModelSpecs(o, cfg)
-}
-
 // phaseModelSpec is one explicitly set plan, task, or review spec and the option names
 // an error reports it under.
 type phaseModelSpec struct{ flag, value string }
@@ -3021,11 +3052,14 @@ func validateModelSpec(flag, spec string, cfg *config.Config) error {
 	}
 	parsed, err := config.ParseProviderSpec(spec)
 	if err != nil {
-		return fmt.Errorf("%s %w", flag, err)
+		return fmt.Errorf("%s %w", flag, missingProviderHint(spec, cfg, err))
 	}
 	if parsed.Provider == config.ExternalReviewToolCustom {
 		return fmt.Errorf("%s %q names the custom provider, which is valid only in external_reviewers; "+
 			"expected claude or codex", flag, spec)
+	}
+	if err := effortInModelSegment(fmt.Sprintf("%s value %q", flag, spec), parsed.Provider, parsed.Model); err != nil {
+		return err
 	}
 	if err := validateEffort(fmt.Sprintf("%s value %q", flag, spec), parsed.Effort); err != nil {
 		return err
@@ -3037,6 +3071,36 @@ func validateModelSpec(flag, spec string, cfg *config.Config) error {
 		return fmt.Errorf("%s %q names a %s model under the %s provider", flag, spec, model, parsed.Provider)
 	}
 	return nil
+}
+
+// missingProviderHint rewords a parse error whose suggested rewrite would mislead. An
+// effort-only spec (":high") has no model to take a provider from, and under a wrapper
+// claude_command every unprefixed spec used to run through that wrapper whatever its model,
+// so the rewrite inferred from the model name would move the phase off the wrapper.
+func missingProviderHint(spec string, cfg *config.Config, err error) error {
+	trimmed := strings.TrimSpace(spec)
+	switch {
+	case errors.Is(err, config.ErrMissingProvider) && strings.HasPrefix(trimmed, ":") && strings.Count(trimmed, ":") == 1:
+		// the old ":effort" form: an empty model segment keeps the provider's default model
+		return fmt.Errorf("%q is %w; write %q or %q", trimmed, config.ErrMissingProvider, "claude:"+trimmed, "codex:"+trimmed)
+	case (errors.Is(err, config.ErrMissingProvider) || errors.Is(err, config.ErrUnknownProvider)) &&
+		strings.Count(trimmed, ":") < 2 && !cfg.IsRealClaudeCommand():
+		return fmt.Errorf("%q is %w; write %q to keep running it through claude_command %q",
+			trimmed, config.ErrMissingProvider, "claude:"+trimmed, cfg.ClaudeCommand)
+	default:
+		return err
+	}
+}
+
+// effortInModelSegment rejects a reasoning effort written where the model goes: "codex:high"
+// parses as model "high", the likeliest slip when migrating the old effort-only ":high" form,
+// and it would otherwise reach the provider CLI as --model high after hours of setup.
+func effortInModelSegment(label, provider, model string) error {
+	if !isKnownEffort(model) {
+		return nil
+	}
+	return fmt.Errorf("%s puts reasoning effort %q in the model segment; write %q to keep the provider's default model",
+		label, model, provider+"::"+model)
 }
 
 // isRealProviderCommand reports whether the provider's configured command is the real
@@ -3068,20 +3132,28 @@ func validateEffort(label, effort string) error {
 	if effort == "" {
 		return nil
 	}
-	if !slices.ContainsFunc(knownEfforts, func(known string) bool { return strings.EqualFold(known, effort) }) {
+	if !isKnownEffort(effort) {
 		return fmt.Errorf("%s has unknown reasoning effort %q (valid: %s)",
 			label, effort, strings.Join(knownEfforts, ", "))
 	}
 	return nil
 }
 
+// isKnownEffort reports whether value names a reasoning effort, case-insensitively.
+func isKnownEffort(value string) bool {
+	return slices.ContainsFunc(knownEfforts, func(known string) bool { return strings.EqualFold(known, value) })
+}
+
 // validateReviewerEfforts rejects an unknown reasoning effort in a resolved external
-// reviewer. ParseExternalReviewers checks the separator count and the provider name but
+// reviewer, and an effort written in its model segment. ParseExternalReviewers checks the separator count and the provider name but
 // never the effort value, so a typo travels all the way to the reviewer process and fails
 // there - after the task phase, and only for that one reviewer in the chain.
 func validateReviewerEfforts(selection externalReviewSelection) error {
 	for i, reviewer := range selection.Reviewers {
 		label := fmt.Sprintf("external reviewer entry %d (%s)", i+1, reviewer.Provider)
+		if err := effortInModelSegment(label, reviewer.Provider, reviewer.Model); err != nil {
+			return err
+		}
 		if err := validateEffort(label, reviewer.Effort); err != nil {
 			return err
 		}
@@ -3426,7 +3498,7 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		IterationDelayMs:      req.Config.IterationDelayMs,
 		TaskRetryCount:        req.Config.TaskRetryCount,
 		CodexEnabled:          enabled,
-		ExternalReviewTool:    reviewer.Provider,
+		ExternalReviewTool:    externalReview.processorTool(),
 		ExternalReviewModel:   reviewer.Model,
 		ExternalReviewEffort:  reviewer.Effort,
 		ExternalReviewers:     reviewers,
@@ -3451,15 +3523,19 @@ func modeUsesReviewCheckpoints(mode processor.Mode) bool {
 		mode == processor.ModeReview || mode == processor.ModeCodexOnly
 }
 
-func detectClaudeSwapRecovery(o opts, cfg *config.Config, externalReview externalReviewSelection) limits.Recovery {
+func detectClaudeSwapRecovery(o opts, cfg *config.Config, mode processor.Mode, externalReview externalReviewSelection) limits.Recovery {
 	if cfg == nil || o.NoClaudeSwap || !cfg.ClaudeSwapEnabled {
 		return nil
 	}
 	if !cfg.IsRealClaudeCommand() {
 		return nil // custom stream-json compatible wrappers do not share Claude Code auth
 	}
-	usesClaude := slices.ContainsFunc([]string{cfg.PlanProvider, cfg.TaskProvider, cfg.ReviewProvider},
-		func(provider string) bool { return provider != config.ExecutorCodex })
+	// only the phases the mode runs count; full mode can fall into interactive plan creation
+	providers := modePhaseProviders(cfg, mode)
+	if mode == processor.ModeFull {
+		providers = append(providers, cfg.PlanProvider)
+	}
+	usesClaude := slices.ContainsFunc(providers, func(provider string) bool { return provider != config.ExecutorCodex })
 	for _, reviewer := range externalReview.Reviewers {
 		usesClaude = usesClaude || reviewer.Provider == config.ExternalReviewToolClaude
 	}
@@ -3546,9 +3622,9 @@ func (b phaseBanner) label() string {
 // resolvePhaseBanner resolves a phase spec the way the executors do: through
 // processor.ResolveModelEffort, which drops "max" for codex and keeps claude as written.
 func resolvePhaseBanner(name, spec string) phaseBanner {
-	parsed := config.ProviderSpec{Provider: specProvider(spec)}
-	if valid, err := config.ParseProviderSpec(spec); err == nil {
-		parsed = valid
+	parsed, err := config.ParseProviderSpec(spec)
+	if err != nil {
+		parsed = config.ProviderSpec{Provider: specProvider(spec)}
 	}
 	b := phaseBanner{Name: name, Provider: parsed.Provider}
 	b.Model, b.Effort, b.MaxDropped = processor.ResolveModelEffort(parsed)
@@ -3588,9 +3664,9 @@ func resolveSpec(cliVal, cfgVal string) string {
 }
 
 // runHeaderParams returns run parameters recorded in the progress file header
-// and web dashboard. Primary model fields preserve the existing user-set-only
+// and web dashboard. Phase model fields preserve the existing user-set-only
 // behavior; external fields record the effective provider and resolved model
-// separately so they cannot be mistaken for the primary review model.
+// separately so they cannot be mistaken for the review block's model.
 func runHeaderParams(o opts, cfg *config.Config, mode processor.Mode, external ...externalReviewSelection) progress.RunParams {
 	p := progress.RunParams{}
 	if cfg == nil {
@@ -3600,7 +3676,9 @@ func runHeaderParams(o opts, cfg *config.Config, mode processor.Mode, external .
 	if len(external) > 0 {
 		externalReview = external[0]
 	}
-	if cfg.TaskProvider == config.ExecutorCodex {
+	// the executor is the provider of the first phase the mode runs: plan creation, the review
+	// block for the review-only modes, the task phase otherwise
+	if modePhaseProviders(cfg, mode)[0] == config.ExecutorCodex {
 		p.Executor = config.ExecutorCodex
 	}
 	if reviewer, ok := externalReview.firstReviewer(); ok || externalReview.Resolved {
@@ -3659,7 +3737,7 @@ func cmuxRunModels(o opts, cfg *config.Config, externalReview externalReviewSele
 	mixed := planPhase.Provider != task.Provider || task.Provider != review.Provider
 	label := func(b phaseBanner) string {
 		if mixed {
-			return b.Provider + " " + modelEffortLabel("default", b.Model, b.Effort)
+			return b.label()
 		}
 		return modelEffortLabel(b.Provider+" default", b.Model, b.Effort)
 	}
@@ -6044,6 +6122,11 @@ func resolvePhaseProviders(o opts, cfg *config.Config) (phaseProviders, error) {
 	}
 	if (o.PassClaudeMd || cfg.PassClaudeMd) &&
 		providers.Task != config.ExecutorCodex && providers.Review != config.ExecutorCodex {
+		// an invalid spec resolved to claude above, so it is what tripped the gate: a config
+		// that still reads task_model = gpt-6-astra must get the prefixed rewrite, not this
+		if specErr := validateModelSpecs(o, cfg); specErr != nil {
+			return providers, specErr
+		}
 		return providers, errors.New("--pass-claude-md / pass_claude_md requires codex as the task or review provider, " +
 			"e.g. --task-model codex:<model>")
 	}
