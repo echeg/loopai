@@ -30,6 +30,11 @@ jobs:
           go test -race -timeout=100s -covermode=atomic -coverprofile=$GITHUB_WORKSPACE/profile.cov_tmp ./...
           grep -v -E "_mock.go|/mocks/" $GITHUB_WORKSPACE/profile.cov_tmp > $GITHUB_WORKSPACE/profile.cov
 
+      # e2e files carry //go:build e2e, so go test ./... skips them and a dependency bump can break
+      # the package unnoticed; compile-only, no browsers. the e2e run itself stays manual (e2e.yml).
+      - name: compile e2e package
+        run: go vet -tags=e2e ./e2e/...
+
       - name: validate retained assets and provider wrappers
         run: make check-symlinks test-symlinks check-plugin test-plugin test-grill-skill check-codex-skills test-codex-skills test-completions test-wrappers
 
