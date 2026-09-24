@@ -3661,7 +3661,7 @@ func TestCheckExecutionDeps(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var warnings bytes.Buffer
-			got, err := checkExecutionDeps(&tc.cfg, tc.selection, &warnings)
+			got, err := checkExecutionDeps(&tc.cfg, processor.ModeFull, tc.selection, &warnings)
 			if tc.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.wantErr)
@@ -3692,19 +3692,111 @@ func TestCheckExecutionDepsChain(t *testing.T) {
 			{Provider: config.ExternalReviewToolCodex},
 			{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.6"},
 		}}
-		_, err := checkExecutionDeps(cfg, selection, io.Discard)
+		_, err := checkExecutionDeps(cfg, processor.ModeFull, selection, io.Discard)
 		assert.ErrorContains(t, err, "install the codex CLI")
 	})
 
 	t.Run("custom reviewer requires script", func(t *testing.T) {
 		cfg := &config.Config{ClaudeCommand: fakeClaude}
 		selection := externalReviewSelection{Explicit: true, Reviewers: []resolvedReviewer{{Provider: config.ExternalReviewToolCustom}}}
-		_, err := checkExecutionDeps(cfg, selection, io.Discard)
+		_, err := checkExecutionDeps(cfg, processor.ModeFull, selection, io.Discard)
 		require.EqualError(t, err, "custom external reviewer requires custom_review_script")
 
 		cfg.CustomReviewScript = "/tmp/review.sh"
-		_, err = checkExecutionDeps(cfg, selection, io.Discard)
+		_, err = checkExecutionDeps(cfg, processor.ModeFull, selection, io.Discard)
 		require.NoError(t, err)
+	})
+}
+
+func TestCheckExecutionDepsPhaseProviders(t *testing.T) {
+	dir := t.TempDir()
+	fakeClaude := filepath.Join(dir, "claude-ok")
+	writeExecutable(t, fakeClaude, "#!/bin/sh\nexit 0\n")
+	fakeCodex := filepath.Join(dir, "codex-ok")
+	writeExecutable(t, fakeCodex, "#!/bin/sh\nexit 0\n")
+	missingClaude := filepath.Join(dir, "missing-claude")
+	missingCodex := filepath.Join(dir, "missing-codex")
+	const claudeMissing, codexMissing = "install Claude Code", "install the codex CLI"
+	split := config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorClaude}
+
+	tests := []struct {
+		name          string
+		cfg           config.Config
+		mode          processor.Mode
+		claude, codex string
+		wantErrs      []string
+		wantNotErrs   []string
+	}{
+		{name: "split run with both binaries passes", cfg: split, mode: processor.ModeFull,
+			claude: fakeClaude, codex: fakeCodex},
+		{name: "split run requires the codex task binary", cfg: split, mode: processor.ModeFull,
+			claude: fakeClaude, codex: missingCodex, wantErrs: []string{missingCodex, codexMissing}, wantNotErrs: []string{claudeMissing}},
+		{name: "split run requires the claude review binary", cfg: split, mode: processor.ModeFull,
+			claude: missingClaude, codex: fakeCodex, wantErrs: []string{missingClaude, claudeMissing}, wantNotErrs: []string{codexMissing}},
+		{name: "split run reports each missing binary", cfg: split, mode: processor.ModeFull,
+			claude: missingClaude, codex: missingCodex, wantErrs: []string{missingClaude, claudeMissing, missingCodex, codexMissing}},
+		{name: "review provider on codex requires codex", cfg: config.Config{ReviewProvider: config.ExecutorCodex}, mode: processor.ModeFull,
+			claude: fakeClaude, codex: missingCodex, wantErrs: []string{codexMissing}},
+		{name: "plan provider on codex requires codex in plan mode", cfg: config.Config{PlanProvider: config.ExecutorCodex}, mode: processor.ModePlan,
+			claude: fakeClaude, codex: missingCodex, wantErrs: []string{codexMissing}},
+		{name: "plan mode continues into a full run and needs the task binary", cfg: config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex}, mode: processor.ModePlan,
+			claude: fakeClaude, codex: missingCodex, wantErrs: []string{codexMissing}},
+		{name: "plan provider is not required outside plan mode", cfg: config.Config{PlanProvider: config.ExecutorCodex}, mode: processor.ModeFull,
+			claude: fakeClaude, codex: missingCodex},
+		{name: "tasks-only skips the review provider", cfg: split, mode: processor.ModeTasksOnly,
+			claude: missingClaude, codex: fakeCodex},
+		{name: "review-only skips the task provider", cfg: split, mode: processor.ModeReview,
+			claude: fakeClaude, codex: missingCodex},
+		{name: "external-only needs the review provider", cfg: split, mode: processor.ModeCodexOnly,
+			claude: missingClaude, codex: fakeCodex, wantErrs: []string{claudeMissing}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg
+			cfg.ClaudeCommand, cfg.CodexCommand = tc.claude, tc.codex
+			_, err := checkExecutionDeps(&cfg, tc.mode, externalReviewSelection{}, io.Discard)
+			if len(tc.wantErrs) == 0 {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			for _, want := range tc.wantErrs {
+				assert.Contains(t, err.Error(), want)
+			}
+			for _, notWant := range tc.wantNotErrs {
+				assert.NotContains(t, err.Error(), notWant)
+			}
+		})
+	}
+
+	t.Run("provider shared by several phases is checked once", func(t *testing.T) {
+		cfg := &config.Config{ClaudeCommand: missingClaude, CodexCommand: fakeCodex}
+		_, err := checkExecutionDeps(cfg, processor.ModePlan, externalReviewSelection{}, io.Discard)
+		require.Error(t, err)
+		assert.Equal(t, 1, strings.Count(err.Error(), claudeMissing))
+		assert.Equal(t, []string{config.ExternalReviewToolClaude}, modePhaseProviders(cfg, processor.ModePlan))
+
+		mixed := &config.Config{PlanProvider: config.ExecutorCodex, TaskProvider: config.ExecutorClaude, ReviewProvider: config.ExecutorCodex}
+		assert.Equal(t, []string{config.ExecutorCodex, config.ExternalReviewToolClaude}, modePhaseProviders(mixed, processor.ModePlan))
+	})
+
+	// the reviewer rules are independent of the phase providers: an automatically selected
+	// reviewer whose binary is missing still degrades, an explicit one still fails
+	t.Run("missing reviewer binary keeps its degradation rules", func(t *testing.T) {
+		cfg := &config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex,
+			ClaudeCommand: missingClaude, CodexCommand: fakeCodex}
+		reviewers := []resolvedReviewer{{Provider: config.ExternalReviewToolClaude}}
+
+		var warnings bytes.Buffer
+		got, err := checkExecutionDeps(cfg, processor.ModeFull, externalReviewSelection{Reviewers: reviewers, AutoSelected: true}, &warnings)
+		require.NoError(t, err)
+		assert.Empty(t, got.Reviewers)
+		assert.True(t, got.DisabledByMissing)
+		assert.Contains(t, warnings.String(), "disabling external review")
+
+		_, err = checkExecutionDeps(cfg, processor.ModeFull, externalReviewSelection{Reviewers: reviewers, Explicit: true}, io.Discard)
+		require.ErrorContains(t, err, claudeMissing)
 	})
 }
 

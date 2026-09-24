@@ -474,7 +474,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 	}
 	printExternalReviewWarnings(externalReview, cfg, os.Stderr)
 	externalReview, limitRecovery, err := resolveStartupExecutionDeps(
-		o, cfg, reviewPreflight, externalReview, os.Stderr,
+		o, cfg, mode, reviewPreflight, externalReview, os.Stderr,
 	)
 	if err != nil {
 		return err
@@ -695,6 +695,7 @@ func initialSetupReporter(
 func resolveStartupExecutionDeps(
 	o opts,
 	cfg *config.Config,
+	mode processor.Mode,
 	reviewPreflight bool,
 	externalReview externalReviewSelection,
 	warnings io.Writer,
@@ -702,7 +703,7 @@ func resolveStartupExecutionDeps(
 	if reviewPreflight {
 		return externalReview, nil, nil
 	}
-	resolved, err := checkExecutionDeps(cfg, externalReview, warnings)
+	resolved, err := checkExecutionDeps(cfg, mode, externalReview, warnings)
 	if err != nil {
 		return externalReviewSelection{}, nil, err
 	}
@@ -732,7 +733,7 @@ func completeReviewStartup(
 		return reviewStartup{}, rangeErr
 	}
 	resolved, recovery, err := resolveStartupExecutionDeps(
-		o, cfg, false, startup.externalReview, warnings,
+		o, cfg, mode, false, startup.externalReview, warnings,
 	)
 	if err != nil {
 		return reviewStartup{}, err
@@ -2561,7 +2562,7 @@ func checkClaudeDep(cfg *config.Config) error {
 }
 
 // checkCodexDep checks that the codex command is available in PATH.
-// used when codex is the primary executor so codex absence is reported up-front
+// used when codex runs a phase or an external review so codex absence is reported up-front
 // with a clean message rather than a cryptic exec error on the first task.
 func checkCodexDep(cfg *config.Config) error {
 	codexCmd := cfg.CodexCommand
@@ -2769,18 +2770,50 @@ func printExternalReviewWarnings(selection externalReviewSelection, cfg *config.
 	}
 }
 
-// checkExecutionDeps verifies the primary provider and then the selected
-// external provider. A missing auto-selected reviewer is the one startup case
-// that degrades to no external review; explicit selections remain hard errors.
-func checkExecutionDeps(cfg *config.Config, selection externalReviewSelection, warnW io.Writer) (externalReviewSelection, error) {
-	var primaryErr error
-	if taskProvider(cfg) == config.ExternalReviewToolCodex {
-		primaryErr = checkCodexDep(cfg)
-	} else {
-		primaryErr = checkClaudeDep(cfg)
+// modePhaseProviders returns the distinct providers of the phases the mode can run, in
+// plan, task, review order. Plan creation can continue into a full run, so it needs all
+// three; review covers external-findings evaluation, finalize, and report too.
+func modePhaseProviders(cfg *config.Config, mode processor.Mode) []string {
+	var providers []string
+	add := func(provider string) {
+		if provider != config.ExecutorCodex {
+			provider = config.ExternalReviewToolClaude
+		}
+		if !slices.Contains(providers, provider) {
+			providers = append(providers, provider)
+		}
 	}
-	if primaryErr != nil {
-		return selection, primaryErr
+	switch mode {
+	case processor.ModePlan:
+		add(cfg.PlanProvider)
+		add(cfg.TaskProvider)
+		add(cfg.ReviewProvider)
+	case processor.ModeTasksOnly, processor.ModeGenAgents:
+		add(cfg.TaskProvider)
+	case processor.ModeReview, processor.ModeCodexOnly:
+		add(cfg.ReviewProvider)
+	default:
+		add(cfg.TaskProvider)
+		add(cfg.ReviewProvider)
+	}
+	return providers
+}
+
+// checkExecutionDeps verifies the binary of every distinct phase provider the mode runs,
+// each once, and then the selected external providers. Every missing phase binary is
+// reported, not only the first. A missing auto-selected reviewer is the one startup case
+// that degrades to no external review; explicit selections remain hard errors.
+func checkExecutionDeps(cfg *config.Config, mode processor.Mode, selection externalReviewSelection, warnW io.Writer) (externalReviewSelection, error) {
+	var phaseErrs []error
+	for _, provider := range modePhaseProviders(cfg, mode) {
+		if provider == config.ExecutorCodex {
+			phaseErrs = append(phaseErrs, checkCodexDep(cfg))
+		} else {
+			phaseErrs = append(phaseErrs, checkClaudeDep(cfg))
+		}
+	}
+	if phaseErr := errors.Join(phaseErrs...); phaseErr != nil {
+		return selection, phaseErr
 	}
 
 	checked := make(map[string]bool)

@@ -240,10 +240,10 @@ that sets any of the above must be hand-edited once.
 - [x] run `go test ./cmd/loopai/...` - must pass before next task
 
 ### Task 6: Dependency checks cover every distinct provider
-- [ ] write tests for `checkExecutionDeps` (`cmd/loopai/main.go:2814`) asserting that a task-codex/review-claude run requires both binaries, that each missing binary produces its own named error, and that a provider appearing in several roles is checked once
-- [ ] write a test that a missing *reviewer* binary still degrades per the existing explicit/auto rules, unchanged by this task
-- [ ] rewrite the primary check as a deduplicated loop over the distinct providers of the plan, task, and review phases plus the reviewer chain
-- [ ] run `go test ./cmd/loopai/...` - must pass before next task
+- [x] write tests for `checkExecutionDeps` (`cmd/loopai/main.go:2814`) asserting that a task-codex/review-claude run requires both binaries, that each missing binary produces its own named error, and that a provider appearing in several roles is checked once
+- [x] write a test that a missing *reviewer* binary still degrades per the existing explicit/auto rules, unchanged by this task
+- [x] rewrite the primary check as a deduplicated loop over the distinct providers of the plan, task, and review phases plus the reviewer chain
+- [x] run `go test ./cmd/loopai/...` - must pass before next task
 
 ### Task 7: Executor factory builds task and review from their own providers
 - [ ] write tests in `pkg/processor/executor_factory_test.go` asserting that a codex task provider with a claude review provider yields a `CodexExecutor` in the Task slot and a `ClaudeExecutor` in the Review slot
