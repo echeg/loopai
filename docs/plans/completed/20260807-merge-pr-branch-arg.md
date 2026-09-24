@@ -2,7 +2,7 @@
 
 ## Overview
 
-Allow `--merge` and `--pr` to accept an optional positional argument naming the feature to close out, so both commands can run from the primary checkout (or anywhere in the repository) instead of requiring the feature worktree to be the current directory.
+Allow `--merge` and `--pr` to accept an optional positional argument naming the feature to close out, so both commands can run from the root of the primary checkout or any other registered worktree instead of requiring the feature worktree to be the current directory. A checkout root is still required; an arbitrary subdirectory is not accepted.
 
 Accepted argument forms:
 
@@ -73,49 +73,58 @@ This directly fixes the workflow gap where a finished worktree run cannot be clo
 
 ### Task 1: Add feature identifier resolver
 
-- [ ] write failing table-driven tests for `resolveFeatureBranch(gitSvc, plansDir, arg)` in `cmd/loopai`: existing branch name wins; plan path resolves via `plan.ExtractBranchName`; plan basename with and without `.md`; plan found in `plansDir/completed/`; branch match takes priority over plan match; unknown identifier returns error listing searched locations; plan resolving to a nonexistent branch returns "already merged?" error; resolved branch equal to base is rejected by callers (covered in later tasks)
-- [ ] implement `resolveFeatureBranch` in `cmd/loopai/main.go`: check local branch existence first, then plan file lookup in `plansDir` and `plansDir/completed/`, derive branch with `plan.ExtractBranchName`, verify derived branch exists
-- [ ] use `filepath` for all path handling; accept both relative and absolute plan paths
-- [ ] run `go test ./cmd/...` - must pass before task 2
+- [x] write failing table-driven tests for `resolveFeatureBranch(gitSvc, plansDir, arg)` in `cmd/loopai`: existing branch name wins; plan path resolves via `plan.ExtractBranchName`; plan basename with and without `.md`; plan found in `plansDir/completed/`; branch match takes priority over plan match; unknown identifier returns error listing searched locations; plan resolving to a nonexistent branch returns "already merged?" error; resolved branch equal to base is rejected by callers (covered in later tasks)
+- [x] implement `resolveFeatureBranch` in `cmd/loopai/main.go`: check local branch existence first, then plan file lookup in `plansDir` and `plansDir/completed/`, derive branch with `plan.ExtractBranchName`, verify derived branch exists
+- [x] use `filepath` for all path handling; accept both relative and absolute plan paths
+- [x] run `go test ./cmd/...` - must pass before task 2
 
 ### Task 2: Wire positional argument into standalone mode routing
 
-- [ ] write failing tests: `loopai --merge <arg>` and `loopai --pr <arg>` route the positional value into close-out handling instead of rejecting it; `--merge`/`--pr` without positional arg keep current behavior; positional arg without `--merge`/`--pr` still means plan file for a run
-- [ ] pass the positional `PlanFile` value into `runMergeCommand`/`runPRCommand` as the optional feature identifier when the standalone modes are active
-- [ ] update flag descriptions/usage text for `--merge` and `--pr` to document the optional feature argument
-- [ ] run `go test ./cmd/...` - must pass before task 3
+- [x] write failing tests: `loopai --merge <arg>` and `loopai --pr <arg>` route the positional value into close-out handling instead of rejecting it; `--merge`/`--pr` without positional arg keep current behavior; positional arg without `--merge`/`--pr` still means plan file for a run
+- [x] pass the positional `PlanFile` value into `runMergeCommand`/`runPRCommand` as the optional feature identifier when the standalone modes are active
+- [x] update flag descriptions/usage text for `--merge` and `--pr` to document the optional feature argument
+- [x] run `go test ./cmd/...` - must pass before task 3
 
 ### Task 3: Explicit feature support in runMergeCommand
 
-- [ ] write failing tests for `--merge <feature>` run from the primary checkout on the base branch: feature worktree registered and clean → merged, worktree removed, branch deleted; feature worktree missing → merged directly in base worktree, branch deleted, no worktree cleanup attempted; dirty feature worktree → clean-tree error; feature resolving to base → "already the base branch" error; unknown feature → resolver error propagated
-- [ ] refactor `runMergeCommand`: when an explicit feature is given, resolve it via `resolveFeatureBranch` instead of `CurrentBranch()`, and locate the feature worktree from `Worktrees()` instead of requiring the current checkout to be it
-- [ ] adjust `prepareMergeWorktrees` (or add a sibling path) to support: feature checked out in a registered worktree elsewhere, and feature not checked out anywhere (merge executes in the base worktree; skip worktree cleanup)
-- [ ] keep ancestry verification, conflict abort as `git.ErrMergeConflict`, branch deletion only after verified cleanup, and pill clearing unchanged
-- [ ] verify no-argument behavior is untouched (existing tests must pass unmodified)
-- [ ] run `go test ./cmd/... ./pkg/git/...` - must pass before task 4
+- [x] write failing tests for `--merge <feature>` run from the primary checkout on the base branch: feature worktree registered and clean → merged, worktree removed, branch deleted; feature worktree missing → merged directly in base worktree, branch deleted, no worktree cleanup attempted; dirty feature worktree → clean-tree error; feature resolving to base → "already the base branch" error; unknown feature → resolver error propagated
+- [x] refactor `runMergeCommand`: when an explicit feature is given, resolve it via `resolveFeatureBranch` instead of `CurrentBranch()`, and locate the feature worktree from `Worktrees()` instead of requiring the current checkout to be it
+- [x] adjust `prepareMergeWorktrees` (or add a sibling path) to support: feature checked out in a registered worktree elsewhere, and feature not checked out anywhere (merge executes in the base worktree; skip worktree cleanup)
+- [x] keep ancestry verification, conflict abort as `git.ErrMergeConflict`, branch deletion only after verified cleanup, and pill clearing unchanged
+- [x] verify no-argument behavior is untouched (existing tests must pass unmodified)
+- [x] run `go test ./cmd/... ./pkg/git/...` - must pass before task 4
+- ➕ added `git.Service.BranchHash` (plus backend `branchHash`) so the merge can read the feature head without the branch being checked out; covered by new `pkg/git` tests
+- ➕ `prepareMergeWorktrees` now returns a `mergeTargets` struct (merge worktree, optional feature worktree/path, primary path) instead of four values; feature-worktree cleanliness is validated before the merge, not only before cleanup
 
 ### Task 4: Explicit feature support in runPRCommand
 
-- [ ] write failing tests for `--pr <feature>` run from the primary checkout: named branch is pushed and PR created via `gh` stub with correct `--head`; plan metadata derived through existing `buildPRTitleBody` for the named branch; feature resolving to base → error; unknown feature → resolver error; no-argument behavior unchanged
-- [ ] refactor `runPRCommand`: with an explicit feature, skip the `CurrentBranch()` requirement, resolve the identifier, and use the resolved branch for diff stats, metadata, push, and `gh pr create --head`
-- [ ] keep origin validation, pill retention on failure, and branch/worktree preservation unchanged
-- [ ] run `go test ./cmd/...` - must pass before task 5
+- [x] write failing tests for `--pr <feature>` run from the primary checkout: named branch is pushed and PR created via `gh` stub with correct `--head`; plan metadata derived through existing `buildPRTitleBody` for the named branch; feature resolving to base → error; unknown feature → resolver error; no-argument behavior unchanged
+- [x] refactor `runPRCommand`: with an explicit feature, skip the `CurrentBranch()` requirement, resolve the identifier, and use the resolved branch for diff stats, metadata, push, and `gh pr create --head`
+- [x] keep origin validation, pill retention on failure, and branch/worktree preservation unchanged
+- [x] run `go test ./cmd/...` - must pass before task 5
+- ➕ `git.Service.DiffStats` was HEAD-only, so an explicit feature reported zero changes from the base checkout; the backend `diffStats` now takes an explicit head ref and `git.Service.BranchDiffStats(base, branch)` measures a branch tip without checking it out (covered by new `pkg/git` tests)
+- ➕ the "already the base branch" message now matches `--merge`: explicit features get "name a different feature" instead of "check out the feature branch first"
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview: all four argument forms work for both commands, explicit base combines with explicit feature, worktree-less merge works
-- [ ] verify edge cases: plan in `completed/` only, branch-over-plan priority, resolver errors are actionable, detached HEAD in primary checkout with explicit feature still works
-- [ ] run full test suite via `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...` (path handling in resolver)
-- [ ] verify test coverage of new code paths meets project standard
+- [x] verify all requirements from Overview: all four argument forms work for both commands, explicit base combines with explicit feature, worktree-less merge works
+- [x] verify edge cases: plan in `completed/` only, branch-over-plan priority, resolver errors are actionable, detached HEAD in primary checkout with explicit feature still works
+- [x] run full test suite via `make test`
+- [x] run `make lint` - all issues must be fixed
+- [x] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...` (path handling in resolver)
+- [x] verify test coverage of new code paths meets project standard
+- ➕ added two gap-filling tests: `--merge=release/13 feature` (explicit base combined with an explicit feature, asserting the default base stays untouched) and `--pr <plan path>` (plan-path argument form at the command level)
+- 📊 coverage of the new paths: `resolveFeatureBranch`/`findFeaturePlanFile`/`existingPlanFile` and `git.BranchHash`/`git.BranchDiffStats` at 100%, `runMergeCommand` 82.9%, `runPRCommand` 85.7%, `prepareMergeWorktrees` 80.6%; the remainder are git-command failure branches
 
 ### Task 6: Update documentation
 
-- [ ] update `llms.txt`: new argument forms for `--merge`/`--pr` with examples
-- [ ] update `CLAUDE.md` close-out section: explicit feature resolution, worktree-less merge behavior
-- [ ] update `README.md` user documentation for close-out commands
-- [ ] update `--help` texts if not already done in task 2
+- [x] update `llms.txt`: new argument forms for `--merge`/`--pr` with examples
+- [x] update `CLAUDE.md` close-out section: explicit feature resolution, worktree-less merge behavior
+- [x] update `README.md` user documentation for close-out commands
+- [x] update `--help` texts if not already done in task 2 (already covered: `--merge`/`--pr` descriptions and the `plan-file` positional description document the feature argument)
+- ➕ `CLAUDE.md` also records the `mergeTargets` refactor and the new `git.BranchHash`/`git.BranchDiffStats` helpers, since they are architectural notes future work needs
+- ➕ README's "cannot be combined with a plan file" sentence was corrected to except the feature argument
+- ➕ `progressRecordRoots` scans every registered worktree, not just the primary and the invoking checkout: a run started inside a third worktree records there, and missing that record falls back to the filename derivation the record exists to override
 
 ## Technical Details
 

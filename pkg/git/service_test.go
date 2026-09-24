@@ -921,6 +921,66 @@ func TestService_MovePlanToCompleted(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	t.Run("leaves unrelated staged changes out of the commit", func(t *testing.T) {
+		// pins #435: the archive commit swept unrelated work staged in the main checkout
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "feature.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+
+		unrelated := filepath.Join(dir, "unrelated.txt")
+		require.NoError(t, os.WriteFile(unrelated, []byte("wip"), 0o600))
+		require.NoError(t, svc.repo.add(unrelated))
+
+		err = svc.MovePlanToCompleted(planFile)
+		require.NoError(t, err)
+
+		files := runGit(t, dir, "show", "--name-status", "--format=", "HEAD")
+		assert.NotContains(t, files, "unrelated.txt", "unrelated staged file must stay out of the archive commit")
+		assert.Contains(t, files, filepath.Join("docs", "plans", "completed", "feature.md"))
+		assert.Contains(t, files, filepath.Join("docs", "plans", "feature.md"),
+			"git mv stages the source deletion, so the source must be committed too or the rename is half recorded")
+
+		tree := runGit(t, dir, "ls-tree", "-r", "--name-only", "HEAD", "docs/")
+		assert.NotContains(t, tree, filepath.Join("docs", "plans", "feature.md")+"\n",
+			"plan must not survive at its original path in HEAD")
+
+		assert.Equal(t, "A  unrelated.txt\n", runGit(t, dir, "status", "--porcelain", "--", unrelated),
+			"unrelated file must remain staged, not unstaged or discarded")
+	})
+
+	t.Run("leaves unrelated staged changes out of the commit for untracked plan", func(t *testing.T) {
+		// untracked plan takes the os.Rename fallback, which stages only the destination
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "untracked.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
+
+		unrelated := filepath.Join(dir, "unrelated.txt")
+		require.NoError(t, os.WriteFile(unrelated, []byte("wip"), 0o600))
+		require.NoError(t, svc.repo.add(unrelated))
+
+		err = svc.MovePlanToCompleted(planFile)
+		require.NoError(t, err)
+
+		files := runGit(t, dir, "show", "--name-status", "--format=", "HEAD")
+		assert.NotContains(t, files, "unrelated.txt", "unrelated staged file must stay out of the archive commit")
+		assert.Contains(t, files, filepath.Join("docs", "plans", "completed", "untracked.md"))
+
+		assert.Equal(t, "A  unrelated.txt\n", runGit(t, dir, "status", "--porcelain", "--", unrelated),
+			"unrelated file must remain staged, not unstaged or discarded")
+	})
+
 	t.Run("creates completed directory", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)
 		svc, err := NewService(dir, noopServiceLogger())
@@ -1167,8 +1227,11 @@ func TestService_MovePlanToCompleted(t *testing.T) {
 		_, err = os.Stat(planFile)
 		require.True(t, os.IsNotExist(err))
 
+		// a collision is not an archived plan: it must surface as an error rather than pass for
+		// success, and git mv refusing the existing destination must not fall through to a
+		// clobbering os.Rename
 		err = svc.MovePlanToCompleted(planFile)
-		require.NoError(t, err)
+		require.ErrorContains(t, err, "refusing to overwrite")
 
 		// active source must be preserved (NOT clobbered, NOT moved)
 		activeContent, err := os.ReadFile(renamedPath) //nolint:gosec // test file
@@ -1183,13 +1246,33 @@ func TestService_MovePlanToCompleted(t *testing.T) {
 		// repo must be clean — no dangling deletion of the active source
 		dirty, err := svc.repo.isDirty()
 		require.NoError(t, err)
-		assert.False(t, dirty, "repo must be clean after collision-skip")
+		assert.False(t, dirty, "repo must be clean after the refused move")
+	})
 
-		// should have logged that the move was skipped due to the collision
-		require.Len(t, log.logs, 1)
-		assert.Contains(t, log.logs[0], "already in completed")
-		assert.Contains(t, log.logs[0], "20260512-foo.md")
-		assert.Contains(t, log.logs[0], "manual cleanup")
+	t.Run("refuses to overwrite an uncommitted completed copy", func(t *testing.T) {
+		// git mv declines the existing destination; the os.Rename fallback used to replace it,
+		// and an uncommitted completed/ copy has no other copy anywhere
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		plansDir := filepath.Join(dir, "docs", "plans")
+		completedDir := filepath.Join(plansDir, "completed")
+		require.NoError(t, os.MkdirAll(completedDir, 0o750))
+		planFile := filepath.Join(plansDir, "feature.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan (active)"), 0o600))
+		require.NoError(t, svc.repo.add(planFile))
+		require.NoError(t, svc.repo.commit("add plan"))
+		existing := filepath.Join(completedDir, "feature.md")
+		require.NoError(t, os.WriteFile(existing, []byte("# Plan (uncommitted archive)"), 0o600))
+
+		err = svc.MovePlanToCompleted(planFile)
+		require.ErrorContains(t, err, "refusing to overwrite")
+
+		content, err := os.ReadFile(existing) //nolint:gosec // test file
+		require.NoError(t, err)
+		assert.Equal(t, "# Plan (uncommitted archive)", string(content))
+		assert.FileExists(t, planFile)
 	})
 }
 
@@ -2450,25 +2533,47 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, svc.RemoveWorktree(wtPath))
 	})
 
-	t.Run("fails with other uncommitted changes", func(t *testing.T) {
+	t.Run("warns but proceeds with other uncommitted changes", func(t *testing.T) {
+		// git worktree add checks out a commit, so an unrelated scratch file in the source
+		// checkout never reaches the worktree and must not block the run
 		dir := setupExternalTestRepo(t)
-		svc, err := NewService(dir, noopServiceLogger())
+		log := &mockLogger{}
+		svc, err := NewService(dir, log)
 		require.NoError(t, err)
 
-		// create plan file
 		plansDir := filepath.Join(dir, "docs", "plans")
 		require.NoError(t, os.MkdirAll(plansDir, 0o750))
 		planFile := filepath.Join(plansDir, "feature.md")
 		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
-
-		// create another uncommitted file
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "other.txt"), []byte("other"), 0o600))
 
+		wtPath, _, err := svc.CreateWorktreeForPlan(planFile, "")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = svc.RemoveWorktree(wtPath) })
+
+		assert.FileExists(t, filepath.Join(wtPath, "docs", "plans", "feature.md"), "the selected plan is copied")
+		assert.NoFileExists(t, filepath.Join(wtPath, "other.txt"), "unrelated dirty files stay in the source checkout")
+		assert.FileExists(t, filepath.Join(dir, "other.txt"), "the source checkout is left untouched")
+		assert.Contains(t, strings.Join(log.logs, "\n"), "other.txt")
+	})
+
+	t.Run("fails while a git operation is in progress", func(t *testing.T) {
+		// resolved, staged conflicts look like ordinary staged work, so only the marker reveals
+		// the merge; the archive commit at the end of the run would otherwise be refused
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "feature.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan"), 0o600))
+		head := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "MERGE_HEAD"), []byte(head+"\n"), 0o600))
+
 		_, _, err = svc.CreateWorktreeForPlan(planFile, "")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "cannot create worktree")
-		assert.Contains(t, err.Error(), "uncommitted changes")
-		assert.Contains(t, err.Error(), "other.txt")
+		require.ErrorContains(t, err, "merge in progress")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "feature"))
 	})
 
 	t.Run("fails when worktree already exists", func(t *testing.T) {
