@@ -1043,7 +1043,7 @@ func TestRunner_buildPreviousContext(t *testing.T) {
 
 func TestRunner_buildExternalClaudePrompts(t *testing.T) {
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	appCfg.CommitTrailer = "Signed-off-by: primary-codex"
 	r := &Runner{cfg: Config{PlanFile: "docs/plans/test.md", DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
 	builder := newPromptBuilderForTest(r)
@@ -1066,7 +1066,7 @@ func TestRunner_buildExternalClaudePrompts(t *testing.T) {
 
 func TestRunner_buildSameProviderExternalClaudePromptsAreRoleNeutral(t *testing.T) {
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorClaude
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorClaude, config.ExecutorClaude
 	r := &Runner{cfg: Config{PlanFile: "docs/plans/test.md", DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
 	builder := newPromptBuilderForTest(r)
 
@@ -1340,7 +1340,7 @@ func TestRunner_reviewContextInstruction(t *testing.T) {
 
 func TestRunner_formatAgentExpansion_CodexShape(t *testing.T) {
 	appCfg := &config.Config{
-		Executor:     config.ExecutorCodex,
+		TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex,
 		CustomAgents: []config.CustomAgent{{Name: "scanner", Prompt: "scan code"}},
 	}
 	r := &Runner{
@@ -1365,7 +1365,7 @@ func TestRunner_prependCodexReviewGuidance(t *testing.T) {
 	body := "Review the changes."
 
 	t.Run("codex executor prepends guidance", func(t *testing.T) {
-		r := &Runner{cfg: Config{AppConfig: &config.Config{Executor: config.ExecutorCodex}}, log: newMockLogger()}
+		r := &Runner{cfg: Config{AppConfig: &config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex}}, log: newMockLogger()}
 		result := newPromptBuilderForTest(r).prependCodexReviewGuidance(body)
 
 		assert.True(t, strings.HasPrefix(result, "=== Codex orchestration directives ==="), "guidance block must be at the top")
@@ -1376,7 +1376,7 @@ func TestRunner_prependCodexReviewGuidance(t *testing.T) {
 	})
 
 	t.Run("claude executor returns prompt unchanged", func(t *testing.T) {
-		r := &Runner{cfg: Config{AppConfig: &config.Config{Executor: "claude"}}, log: newMockLogger()}
+		r := &Runner{cfg: Config{AppConfig: &config.Config{TaskProvider: "claude", ReviewProvider: "claude"}}, log: newMockLogger()}
 		result := newPromptBuilderForTest(r).prependCodexReviewGuidance(body)
 
 		assert.Equal(t, body, result, "non-codex executor must not see codex-specific directives")
@@ -1394,7 +1394,7 @@ func TestRunner_prependCodexTaskGuidance(t *testing.T) {
 	body := "Execute the next task."
 
 	t.Run("codex executor prepends guidance", func(t *testing.T) {
-		r := &Runner{cfg: Config{AppConfig: &config.Config{Executor: config.ExecutorCodex}}, log: newMockLogger()}
+		r := &Runner{cfg: Config{AppConfig: &config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex}}, log: newMockLogger()}
 		result := newPromptBuilderForTest(r).prependCodexTaskGuidance(body)
 
 		assert.True(t, strings.HasPrefix(result, "=== Codex task-execution directives ==="), "guidance block must be at the top")
@@ -1405,7 +1405,7 @@ func TestRunner_prependCodexTaskGuidance(t *testing.T) {
 	})
 
 	t.Run("claude executor returns prompt unchanged", func(t *testing.T) {
-		r := &Runner{cfg: Config{AppConfig: &config.Config{Executor: "claude"}}, log: newMockLogger()}
+		r := &Runner{cfg: Config{AppConfig: &config.Config{TaskProvider: "claude", ReviewProvider: "claude"}}, log: newMockLogger()}
 		result := newPromptBuilderForTest(r).prependCodexTaskGuidance(body)
 
 		assert.Equal(t, body, result, "non-codex executor must not see codex-specific directives")
@@ -1449,7 +1449,7 @@ func TestRunner_formatAgentExpansion_AllFiveDefaultAgents(t *testing.T) {
 
 		t.Run("codex_"+name, func(t *testing.T) {
 			codexCfg := *appCfg
-			codexCfg.Executor = config.ExecutorCodex
+			codexCfg.TaskProvider, codexCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 			r := &Runner{
 				cfg: Config{AppConfig: &codexCfg},
 				log: newMockLogger(),
@@ -1475,7 +1475,7 @@ func TestRunner_formatAgentExpansion_CodexIgnoresFrontmatterOverrides(t *testing
 	// overrides on the agent file do not apply because the per-call behavior is
 	// carried in the inlined task argument, not in the agent registration.
 	appCfg := &config.Config{
-		Executor: config.ExecutorCodex,
+		TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex,
 		CustomAgents: []config.CustomAgent{{
 			Name:    "reviewer",
 			Prompt:  "do a review",
@@ -1520,7 +1520,7 @@ func TestRunner_formatAgentExpansion_CodexIgnoresFrontmatterOverrides(t *testing
 func TestRunner_expandAgentReferences_NoCodexWarnWhenFrontmatterEmpty(t *testing.T) {
 	// no Model/AgentType set → no warning should fire under codex mode
 	appCfg := &config.Config{
-		Executor: config.ExecutorCodex,
+		TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex,
 		CustomAgents: []config.CustomAgent{{
 			Name:   "reviewer",
 			Prompt: "do a review",
@@ -1541,11 +1541,11 @@ func TestRunner_expandAgentReferences_NoCodexWarnWhenFrontmatterEmpty(t *testing
 }
 
 func TestRunner_formatAgentExpansion_PicksShapeFromExecutor(t *testing.T) {
-	// formatAgentExpansion reads cfg.AppConfig.Executor directly (no cached agentSyntax
+	// formatAgentExpansion reads cfg.AppConfig.TaskProvider directly (no cached agentSyntax
 	// field). verifies the per-executor expansion shape choice.
 	t.Run("default executor produces claude shape", func(t *testing.T) {
 		appCfg := testAppConfig(t)
-		appCfg.Executor = config.ExecutorClaude
+		appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorClaude, config.ExecutorClaude
 		appCfg.CustomAgents = []config.CustomAgent{{Name: "scanner", Prompt: "scan"}}
 		r := &Runner{cfg: Config{AppConfig: appCfg}, log: newMockLogger()}
 		result := newPromptBuilderForTest(r).expandAgentReferences("{{agent:scanner}}")
@@ -1555,7 +1555,7 @@ func TestRunner_formatAgentExpansion_PicksShapeFromExecutor(t *testing.T) {
 
 	t.Run("codex executor produces codex shape", func(t *testing.T) {
 		appCfg := testAppConfig(t)
-		appCfg.Executor = config.ExecutorCodex
+		appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 		appCfg.CustomAgents = []config.CustomAgent{{Name: "scanner", Prompt: "scan"}}
 		r := &Runner{cfg: Config{AppConfig: appCfg}, log: newMockLogger()}
 		result := newPromptBuilderForTest(r).expandAgentReferences("{{agent:scanner}}")
@@ -1592,7 +1592,7 @@ func TestRunner_formatAgentExpansionCodex_EscapesSingleQuotedLiteral(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			r := &Runner{
 				cfg: Config{AppConfig: &config.Config{
-					Executor:     config.ExecutorCodex,
+					TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex,
 					CustomAgents: []config.CustomAgent{{Name: "x", Prompt: tc.input}},
 				}},
 				log: newMockLogger(),
@@ -1646,7 +1646,7 @@ func TestRunner_formatAgentExpansionCodex_MultiLineAgentBodyStaysSingleLine(t *t
 	multiLineBody := "first line\nsecond line\nthird line"
 	r := &Runner{
 		cfg: Config{AppConfig: &config.Config{
-			Executor:     config.ExecutorCodex,
+			TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex,
 			CustomAgents: []config.CustomAgent{{Name: "ml", Prompt: multiLineBody}},
 		}},
 		log: newMockLogger(),
@@ -1742,7 +1742,7 @@ func TestRunner_expandDynamicAgentCatalog(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			appCfg := &config.Config{Executor: tc.executor, CustomAgents: tc.agents}
+			appCfg := &config.Config{TaskProvider: tc.executor, ReviewProvider: tc.executor, CustomAgents: tc.agents}
 			r := &Runner{cfg: Config{DefaultBranch: "main", AppConfig: appCfg}, log: newMockLogger()}
 			result := newPromptBuilderForTest(r).expandDynamicAgentCatalog("Catalog:\n{{agents:dynamic}}\nEnd.", nil)
 
@@ -1935,7 +1935,7 @@ func TestRunner_agentRefNames(t *testing.T) {
 }
 
 func TestRunner_expandDynamicAgentCatalog_CodexWarnsFrontmatterDiscarded(t *testing.T) {
-	appCfg := &config.Config{Executor: config.ExecutorCodex, CustomAgents: []config.CustomAgent{
+	appCfg := &config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex, CustomAgents: []config.CustomAgent{
 		{Name: "dyn", Prompt: "body", Options: config.Options{Description: "desc", Model: "opus", AgentType: "code-reviewer"}},
 	}}
 	mockLog := newMockLogger()
@@ -1951,7 +1951,7 @@ func TestRunner_expandDynamicAgentCatalog_CodexWarnsFrontmatterDiscarded(t *test
 // it would be substituted after the body was already escaped into the codex task='...'
 // literal, whose quoting the raw catalog text breaks.
 func TestRunner_replacePromptVariables_CatalogPlaceholderInsideAgentBody(t *testing.T) {
-	appCfg := &config.Config{Executor: config.ExecutorCodex, CustomAgents: []config.CustomAgent{
+	appCfg := &config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex, CustomAgents: []config.CustomAgent{
 		{Name: "base", Prompt: "base body\n{{agents:dynamic}}\ntail"},
 		{Name: "dyn", Prompt: "dynamic body", Options: config.Options{Description: "won't be nested"}},
 	}}
@@ -2021,7 +2021,7 @@ func TestRunner_replacePromptVariables_EmbeddedReviewFirstDynamicCatalog(t *test
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
-			appCfg.Executor = tc.executor
+			appCfg.TaskProvider, appCfg.ReviewProvider = tc.executor, tc.executor
 			if tc.withDynamic {
 				appCfg.CustomAgents = append(appCfg.CustomAgents, config.CustomAgent{Name: "sql-guard",
 					Prompt: "check sql queries", Options: config.Options{Description: "reviews raw SQL"}})

@@ -249,15 +249,10 @@ type startupInfo struct {
 	Mode                    processor.Mode
 	MaxIterations           int
 	ProgressPath            string
-	Executor                string
-	ExecutorSource          string
+	Phases                  []phaseBanner // one line per phase the mode runs, provider first
 	PassClaudeMd            bool
 	PreserveAnthropicAPIKey bool   // when true, surfaced in the banner so users can spot wrong-context runs before claude bills the wrong account
-	CodexModel              string // resolved model for codex plan/task phase; "" means codex picks from ~/.codex/config.toml
-	CodexEffort             string // resolved reasoning effort for codex plan/task phase; "" means codex default
-	CodexReviewModel        string // resolved model for codex review phase; shown only when it differs from CodexModel
-	CodexReviewEffort       string // resolved reasoning effort for codex review phase; shown only when it differs from CodexEffort
-	CodexSandbox            string // resolved sandbox for codex executor; always non-empty when Executor == codex
+	CodexSandbox            string // sandbox of the first-class codex executors, printed under the first codex phase
 	ExternalReview          externalReviewSelection
 }
 
@@ -1395,17 +1390,13 @@ var newOrcaReporter = orca.New
 // starts a real inhibitor.
 var newAwakeHolder = awake.New
 
-// orcaReporter constructs the stdout title reporter selected by configuration. ExecutorClaude is
-// the empty runtime value, so map it to the explicit agent name expected in terminal titles.
+// orcaReporter constructs the stdout title reporter selected by configuration. The title names
+// the task provider, which startup still requires every other phase to share.
 func orcaReporter(cfg *config.Config, planFile string) *orca.Reporter {
 	if cfg == nil || !cfg.Orca {
 		return nil
 	}
-	executor := "claude"
-	if cfg.Executor == config.ExecutorCodex {
-		executor = "codex"
-	}
-	return newOrcaReporter(true, planFile, executor)
+	return newOrcaReporter(true, planFile, taskProvider(cfg))
 }
 
 // startOrcaReporter publishes a working title immediately so setup prompts can restore a working
@@ -1552,38 +1543,21 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	plr.holder.OnChange(titles.OnPhase)
 	plr.holder.OnChange(req.KeepAwake.OnPhase)
 
-	// resolve effective codex model/effort for the banner so it reflects what
-	// the codex task and review executors actually receive (--task-model /
-	// --review-model resolved against codex_model / codex_reasoning_effort).
-	// only under the codex executor — in claude mode the banner codex lines are
-	// not shown and the max-effort warning would be a false positive (max is a
-	// valid claude effort).
-	var codex codexBannerInfo
-	if req.Config.Executor == config.ExecutorCodex {
-		codex = codexModelBanner(o, req.Config)
-	}
-
 	// print startup info
+	phases := modePhaseBanners(o, req.Config, req.Mode)
 	printStartupInfo(startupInfo{
 		PlanFile:                req.PlanFile,
 		Branch:                  branch,
 		Mode:                    req.Mode,
 		MaxIterations:           resolveMaxIterations(o.MaxIterations, req.Config),
 		ProgressPath:            plr.baseLog.Path(),
-		Executor:                req.Config.Executor,
-		ExecutorSource:          req.Config.ExecutorSource,
+		Phases:                  phases,
 		PassClaudeMd:            req.Config.PassClaudeMd,
 		PreserveAnthropicAPIKey: req.Config.PreserveAnthropicAPIKey,
-		CodexModel:              codex.taskModel,
-		CodexEffort:             codex.taskEffort,
-		CodexReviewModel:        codex.reviewModel,
-		CodexReviewEffort:       codex.reviewEffort,
 		CodexSandbox:            req.Config.CodexExecutorSandbox(),
 		ExternalReview:          req.ExternalReview,
 	}, req.Colors)
-	if codex.maxDropped {
-		req.Colors.Warn().Printf("codex does not support 'max' reasoning effort; ignoring (valid: low, medium, high, xhigh)\n")
-	}
+	warnCodexMaxDropped(phases, req.Colors)
 
 	// create and run the runner
 	r := createRunner(req, o, runnerLog, plr.holder, validationTimer.Handler())
@@ -2657,6 +2631,27 @@ func (s externalReviewSelection) chainLabel() string {
 	return strings.Join(labels, " → ")
 }
 
+// bannerLabel renders the chain for the startup banner as "<provider> <model>[:effort]"
+// entries in run order, or the disabled selection's reason when no reviewer runs.
+func (s externalReviewSelection) bannerLabel() string {
+	if len(s.Reviewers) == 0 {
+		return s.providerLabel()
+	}
+	labels := make([]string, 0, len(s.Reviewers))
+	for _, reviewer := range s.Reviewers {
+		if reviewer.Provider == config.ExternalReviewToolCustom {
+			labels = append(labels, reviewer.Provider)
+			continue
+		}
+		labels = append(labels, reviewer.Provider+" "+modelEffortLabel("default", reviewer.Model, reviewer.Effort))
+	}
+	label := strings.Join(labels, ", ")
+	if s.AutoSelected {
+		label += " (auto-selected)"
+	}
+	return label
+}
+
 func (s externalReviewSelection) firstReviewer() (resolvedReviewer, bool) {
 	if len(s.Reviewers) == 0 {
 		return resolvedReviewer{}, false
@@ -2682,8 +2677,10 @@ func (s externalReviewSelection) providerLabel() string {
 	return label
 }
 
-func primaryProvider(cfg *config.Config) string {
-	if cfg != nil && cfg.Executor == config.ExecutorCodex {
+// taskProvider returns the provider resolved for the task phase, claude when none was
+// resolved. The automatic reviewer and the matching-reviewer warning compare against it.
+func taskProvider(cfg *config.Config) string {
+	if cfg != nil && cfg.TaskProvider == config.ExecutorCodex {
 		return config.ExternalReviewToolCodex
 	}
 	return config.ExternalReviewToolClaude
@@ -2744,7 +2741,7 @@ func resolveReviewerChain(cfg *config.Config, mode processor.Mode) (externalRevi
 		return selection, nil
 	}
 	provider := config.ExternalReviewToolCodex
-	if primaryProvider(cfg) == config.ExternalReviewToolCodex {
+	if taskProvider(cfg) == config.ExternalReviewToolCodex {
 		provider = config.ExternalReviewToolClaude
 	}
 	model, effort, maxDropped := processor.ResolveExternalReviewerModelEffort(provider, "")
@@ -2759,7 +2756,7 @@ func printExternalReviewWarnings(selection externalReviewSelection, cfg *config.
 	warnedPrimaryMatch := make(map[string]bool)
 	maxDroppedWarned := false
 	for _, reviewer := range selection.Reviewers {
-		if selection.Explicit && reviewer.Provider == primaryProvider(cfg) &&
+		if selection.Explicit && reviewer.Provider == taskProvider(cfg) &&
 			(reviewer.Provider == config.ExternalReviewToolClaude || reviewer.Provider == config.ExternalReviewToolCodex) &&
 			!warnedPrimaryMatch[reviewer.Provider] {
 			fmt.Fprintf(w, "warning: external reviewer %q matches the primary executor; cross-model review signal will be weaker\n", reviewer.Provider)
@@ -2777,7 +2774,7 @@ func printExternalReviewWarnings(selection externalReviewSelection, cfg *config.
 // that degrades to no external review; explicit selections remain hard errors.
 func checkExecutionDeps(cfg *config.Config, selection externalReviewSelection, warnW io.Writer) (externalReviewSelection, error) {
 	var primaryErr error
-	if primaryProvider(cfg) == config.ExternalReviewToolCodex {
+	if taskProvider(cfg) == config.ExternalReviewToolCodex {
 		primaryErr = checkCodexDep(cfg)
 	} else {
 		primaryErr = checkClaudeDep(cfg)
@@ -3131,8 +3128,8 @@ func validateFlags(o opts) error {
 	if o.IdleTimeout < 0 {
 		return fmt.Errorf("--idle-timeout must be non-negative, got %s", o.IdleTimeout)
 	}
-	// --pass-claude-md is checked by applyCodexOverrides, which runs after the config-file
-	// merge so that a codex primary inferred from config is also enforced.
+	// --pass-claude-md is checked by resolvePhaseProviders, which runs after the config-file
+	// merge so that a codex provider set in config is also honored.
 	return nil
 }
 
@@ -3445,7 +3442,8 @@ func detectClaudeSwapRecovery(o opts, cfg *config.Config, externalReview externa
 	if !cfg.IsRealClaudeCommand() {
 		return nil // custom stream-json compatible wrappers do not share Claude Code auth
 	}
-	usesClaude := cfg.Executor != config.ExecutorCodex
+	usesClaude := slices.ContainsFunc([]string{cfg.PlanProvider, cfg.TaskProvider, cfg.ReviewProvider},
+		func(provider string) bool { return provider != config.ExecutorCodex })
 	for _, reviewer := range externalReview.Reviewers {
 		usesClaude = usesClaude || reviewer.Provider == config.ExternalReviewToolClaude
 	}
@@ -3486,83 +3484,86 @@ func printStartupInfo(info startupInfo, colors *progress.Colors) {
 	colors.Info().Printf("\n")
 }
 
+// bannerLabelWidth aligns every phase value in the startup banner behind the widest label.
+const bannerLabelWidth = len("external review: ")
+
+// printExecutorInfo prints one line per phase, provider first, then the external review
+// chain. Codex-only settings are indented under the first codex phase, since every
+// first-class codex executor shares them.
 func printExecutorInfo(info startupInfo, colors *progress.Colors) {
-	if info.Executor == config.ExecutorCodex {
-		printCodexExecutorInfo(info, colors)
-	} else if strings.HasPrefix(info.ExecutorSource, strings.TrimSuffix(config.ExecutorSourceInferred, "%q")) {
-		colors.Info().Printf("executor: claude (%s)\n", info.ExecutorSource)
+	codexDetailsPrinted := false
+	for _, phase := range info.Phases {
+		colors.Info().Printf("%-*s%s\n", bannerLabelWidth, phase.Name+":", phase.label())
+		if phase.Provider != config.ExecutorCodex || codexDetailsPrinted {
+			continue
+		}
+		codexDetailsPrinted = true
+		if info.CodexSandbox != "" {
+			colors.Info().Printf("  %-*s%s\n", bannerLabelWidth-2, "sandbox:", info.CodexSandbox)
+		}
+		if info.PassClaudeMd {
+			colors.Info().Printf("  %-*s%s\n", bannerLabelWidth-2, "claude.md:", "project CLAUDE.md passthrough enabled")
+		}
 	}
 	printExternalReviewInfo(info.ExternalReview, colors)
 }
 
 func printExternalReviewInfo(selection externalReviewSelection, colors *progress.Colors) {
-	reviewer, enabled := selection.firstReviewer()
-	if !enabled && !selection.Resolved {
+	if len(selection.Reviewers) == 0 && !selection.Resolved {
 		return
 	}
-	if len(selection.Reviewers) > 1 {
-		colors.Info().Printf("external review: %s\n", selection.chainLabel())
-		return
-	}
+	colors.Info().Printf("%-*s%s\n", bannerLabelWidth, "external review:", selection.bannerLabel())
+}
 
-	colors.Info().Printf("external review: %s\n", selection.providerLabel())
-	if reviewer.Provider == config.ExternalReviewToolCodex && reviewer.Model == "" {
-		colors.Info().Printf("  model: %s\n", codexBannerValue(""))
-	} else if reviewer.Model != "" {
-		colors.Info().Printf("  model: %s\n", reviewer.Model)
+// phaseBanner is one phase's resolved provider and the model and effort its executor
+// receives; an empty model or effort leaves the provider CLI's own default.
+type phaseBanner struct {
+	Name, Provider, Model, Effort string
+	MaxDropped                    bool // a claude-only "max" effort was requested for codex and dropped
+}
+
+// label renders the phase as "<provider> <model>[:effort]".
+func (b phaseBanner) label() string {
+	return b.Provider + " " + modelEffortLabel("default", b.Model, b.Effort)
+}
+
+// resolvePhaseBanner resolves a phase spec the way the executors do: codex through
+// ResolveCodexModelEffort, which drops "max", and claude as written.
+func resolvePhaseBanner(name, spec string) phaseBanner {
+	b := phaseBanner{Name: name, Provider: specProvider(spec)}
+	if b.Provider == config.ExecutorCodex {
+		b.Model, b.Effort, b.MaxDropped = processor.ResolveCodexModelEffort(executorModelSpec(spec))
+		return b
 	}
-	if reviewer.Provider == config.ExternalReviewToolCodex && reviewer.Effort == "" {
-		colors.Info().Printf("  reasoning effort: %s\n", codexBannerValue(""))
-	} else if reviewer.Effort != "" {
-		colors.Info().Printf("  reasoning effort: %s\n", reviewer.Effort)
+	if parsed, err := config.ParseProviderSpec(spec); err == nil {
+		b.Model, b.Effort = parsed.Model, parsed.Effort
+	}
+	return b
+}
+
+// modePhaseBanners resolves the banner lines for the phases the mode runs. Review covers
+// external-findings evaluation, finalize, and report too, so the external-only mode
+// prints it. A phase inheriting task_model whole still gets its own resolved line.
+func modePhaseBanners(o opts, cfg *config.Config, mode processor.Mode) []phaseBanner {
+	task := resolvePhaseBanner("task", resolveSpec(o.TaskModel, cfg.TaskModel))
+	review := resolvePhaseBanner("review", resolveReviewSpec(o, cfg))
+	switch mode {
+	case processor.ModePlan:
+		return []phaseBanner{resolvePhaseBanner("plan", resolvePlanSpec(o, cfg))}
+	case processor.ModeTasksOnly, processor.ModeGenAgents:
+		return []phaseBanner{task}
+	case processor.ModeReview, processor.ModeCodexOnly:
+		return []phaseBanner{review}
+	default:
+		return []phaseBanner{task, review}
 	}
 }
 
-func printCodexExecutorInfo(info startupInfo, colors *progress.Colors) {
-	if info.ExecutorSource != "" {
-		colors.Info().Printf("executor: codex (%s)\n", info.ExecutorSource)
-	} else {
-		colors.Info().Printf("executor: codex\n")
+// warnCodexMaxDropped reports once that a codex phase ignored a claude-only "max" effort.
+func warnCodexMaxDropped(phases []phaseBanner, colors *progress.Colors) {
+	if slices.ContainsFunc(phases, func(b phaseBanner) bool { return b.MaxDropped }) {
+		colors.Warn().Printf("codex does not support 'max' reasoning effort; ignoring (valid: low, medium, high, xhigh)\n")
 	}
-	// codex effective config: skip lines we don't know (loopai did not
-	// override them, so codex picks from ~/.codex/config.toml). sandbox is
-	// always resolved via CodexExecutorSandbox so it's always present.
-	if info.CodexModel != "" {
-		colors.Info().Printf("  model: %s\n", info.CodexModel)
-	}
-	if info.CodexSandbox != "" {
-		colors.Info().Printf("  sandbox: %s\n", info.CodexSandbox)
-	}
-	if info.CodexEffort != "" {
-		colors.Info().Printf("  reasoning effort: %s\n", info.CodexEffort)
-	}
-	if info.CodexReviewModel != info.CodexModel {
-		colors.Info().Printf("  review model: %s\n", codexBannerValue(info.CodexReviewModel))
-	}
-	if info.CodexReviewEffort != info.CodexEffort {
-		colors.Info().Printf("  review reasoning effort: %s\n", codexBannerValue(info.CodexReviewEffort))
-	}
-	if info.PassClaudeMd {
-		colors.Info().Printf("claude.md: project CLAUDE.md passthrough enabled\n")
-	}
-}
-
-// codexBannerValue renders a resolved codex model/effort value for the startup
-// banner. an empty value means the codex executor inherits that field from the
-// user's ~/.codex/config.toml, so it is labeled explicitly rather than shown blank.
-func codexBannerValue(v string) string {
-	if v == "" {
-		return "(inherits ~/.codex/config.toml)"
-	}
-	return v
-}
-
-// codexBannerInfo holds the resolved codex primary/review model and effort for
-// the startup banner.
-type codexBannerInfo struct {
-	taskModel, taskEffort     string
-	reviewModel, reviewEffort string
-	maxDropped                bool // a claude-only "max" effort was requested and dropped
 }
 
 func resolveSpec(cliVal, cfgVal string) string {
@@ -3574,7 +3575,7 @@ func resolveSpec(cliVal, cfgVal string) string {
 
 // executorModelSpec strips the provider from a validated provider[:model[:effort]] spec,
 // returning the model[:effort] remainder the executors parse. The provider itself selects
-// the executor through applyCodexOverrides. A spec that does not parse is returned as is;
+// the executor through resolvePhaseProviders. A spec that does not parse is returned as is;
 // startup validation has already rejected it on every path that reaches an executor.
 func executorModelSpec(spec string) string {
 	parsed, err := config.ParseProviderSpec(spec)
@@ -3597,7 +3598,7 @@ func runHeaderParams(o opts, cfg *config.Config, mode processor.Mode, external .
 	if len(external) > 0 {
 		externalReview = external[0]
 	}
-	if cfg.Executor == config.ExecutorCodex {
+	if cfg.TaskProvider == config.ExecutorCodex {
 		p.Executor = config.ExecutorCodex
 	}
 	if reviewer, ok := externalReview.firstReviewer(); ok || externalReview.Resolved {
@@ -3640,26 +3641,18 @@ func resolveReviewSpec(o opts, cfg *config.Config) string {
 	return resolveSpec(o.TaskModel, cfg.TaskModel)
 }
 
-// cmuxRunModels resolves the model labels shown beside live cmux phases.
-// Codex values mirror executor resolution; Claude's empty spec is explicitly
-// labeled as the CLI default because loopai cannot know which model Claude selects.
+// cmuxRunModels resolves the model labels shown beside live cmux phases. Each phase is
+// resolved under its own provider, codex values mirroring executor resolution; an empty
+// model is labeled as the provider's default because loopai cannot know which one it picks.
 func cmuxRunModels(o opts, cfg *config.Config, externalReview externalReviewSelection) cmux.Models {
 	if cfg == nil {
 		return cmux.Models{}
 	}
 
-	var planModel, taskModel, reviewModel string
-	if cfg.Executor == config.ExecutorCodex {
-		planInfo := codexPlanBanner(o, cfg)
-		info := codexModelBanner(o, cfg)
-		planModel = modelEffortLabel("codex default", planInfo.taskModel, planInfo.taskEffort)
-		taskModel = modelEffortLabel("codex default", info.taskModel, info.taskEffort)
-		reviewModel = modelEffortLabel("codex default", info.reviewModel, info.reviewEffort)
-	} else {
-		planModel = configuredModelLabel("claude default", resolvePlanSpec(o, cfg))
-		taskModel = configuredModelLabel("claude default", resolveSpec(o.TaskModel, cfg.TaskModel))
-		reviewModel = configuredModelLabel("claude default", resolveReviewSpec(o, cfg))
-	}
+	label := func(b phaseBanner) string { return modelEffortLabel(b.Provider+" default", b.Model, b.Effort) }
+	planModel := label(resolvePhaseBanner("plan", resolvePlanSpec(o, cfg)))
+	taskModel := label(resolvePhaseBanner("task", resolveSpec(o.TaskModel, cfg.TaskModel)))
+	reviewModel := label(resolvePhaseBanner("review", resolveReviewSpec(o, cfg)))
 
 	externalReviewModel := externalReview.modelSpec()
 	if len(externalReview.Reviewers) > 1 {
@@ -3674,17 +3667,6 @@ func cmuxRunModels(o opts, cfg *config.Config, externalReview externalReviewSele
 	}
 }
 
-func configuredModelLabel(fallback, spec string) string {
-	switch {
-	case spec == "":
-		return fallback
-	case strings.HasPrefix(spec, ":"):
-		return fallback + spec
-	default:
-		return spec
-	}
-}
-
 func modelEffortLabel(fallback, model, effort string) string {
 	if model == "" {
 		model = fallback
@@ -3693,39 +3675,6 @@ func modelEffortLabel(fallback, model, effort string) string {
 		return model + ":" + effort
 	}
 	return model
-}
-
-func codexBannerForSpec(spec string) codexBannerInfo {
-	model, effort, maxDropped := processor.ResolveCodexModelEffort(executorModelSpec(spec))
-	return codexBannerInfo{
-		taskModel: model, taskEffort: effort,
-		reviewModel: model, reviewEffort: effort,
-		maxDropped: maxDropped,
-	}
-}
-
-// codexModelBanner resolves the codex task and review model/effort for the startup
-// banner from the task/review model specs (--task-model / --review-model CLI flag >
-// task_model / review_model config); an empty half leaves codex's own default. it
-// mirrors the resolution buildCodexExecutors performs so the banner shows what the
-// codex executors will actually receive. review fields equal the task fields unless a
-// distinct review spec is given.
-func codexModelBanner(o opts, cfg *config.Config) codexBannerInfo {
-	taskSpec := resolveSpec(o.TaskModel, cfg.TaskModel)
-	info := codexBannerForSpec(taskSpec)
-	reviewSpec := resolveSpec(o.ReviewModel, cfg.ReviewModel)
-	if reviewSpec != "" {
-		reviewInfo := codexBannerForSpec(reviewSpec)
-		info.reviewModel, info.reviewEffort = reviewInfo.taskModel, reviewInfo.taskEffort
-		info.maxDropped = info.maxDropped || reviewInfo.maxDropped
-	}
-	return info
-}
-
-// codexPlanBanner resolves the codex model/effort for plan creation. plan_model
-// falls back to task_model, then to codex's own defaults.
-func codexPlanBanner(o opts, cfg *config.Config) codexBannerInfo {
-	return codexBannerForSpec(resolvePlanSpec(o, cfg))
 }
 
 // runPlanMode executes interactive plan creation mode.
@@ -3790,35 +3739,21 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 
 	maxIter := resolveMaxIterations(o.MaxIterations, req.Config)
 
-	// resolve effective codex model/effort so the plan-mode banner reflects what
-	// the codex executor receives. codex executor only, so the max-effort warning
-	// is not a false positive in claude mode.
-	var codex codexBannerInfo
-	if req.Config.Executor == config.ExecutorCodex {
-		codex = codexPlanBanner(o, req.Config)
-	}
-
 	// print startup info for plan mode
+	phases := modePhaseBanners(o, req.Config, processor.ModePlan)
 	printStartupInfo(startupInfo{
 		PlanDescription:         o.PlanDescription,
 		Branch:                  branch,
 		Mode:                    processor.ModePlan,
 		MaxIterations:           maxIter,
 		ProgressPath:            baseLog.Path(),
-		Executor:                req.Config.Executor,
-		ExecutorSource:          req.Config.ExecutorSource,
+		Phases:                  phases,
 		PassClaudeMd:            req.Config.PassClaudeMd,
 		PreserveAnthropicAPIKey: req.Config.PreserveAnthropicAPIKey,
-		CodexModel:              codex.taskModel,
-		CodexEffort:             codex.taskEffort,
-		CodexReviewModel:        codex.reviewModel,
-		CodexReviewEffort:       codex.reviewEffort,
 		CodexSandbox:            req.Config.CodexExecutorSandbox(),
 		ExternalReview:          req.ExternalReview,
 	}, req.Colors)
-	if codex.maxDropped {
-		req.Colors.Warn().Printf("codex does not support 'max' reasoning effort; ignoring (valid: low, medium, high, xhigh)\n")
-	}
+	warnCodexMaxDropped(phases, req.Colors)
 
 	// create input collector
 	collector := input.NewTerminalCollector(o.NoColor)
@@ -4006,7 +3941,9 @@ func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *p
 
 	colors.Info().Printf("generating project-specific review agents\n")
 	colors.Info().Printf("progress log: %s\n", toRelPath(baseLog.Path()))
-	printExecutorInfo(startupInfo{Executor: cfg.Executor, ExecutorSource: cfg.ExecutorSource, CodexSandbox: cfg.CodexExecutorSandbox()}, colors)
+	phases := modePhaseBanners(o, cfg, processor.ModeGenAgents)
+	printExecutorInfo(startupInfo{Phases: phases, PassClaudeMd: cfg.PassClaudeMd, CodexSandbox: cfg.CodexExecutorSandbox()}, colors)
+	warnCodexMaxDropped(phases, colors)
 	colors.Info().Printf("\n")
 
 	if recovery != nil {
@@ -6057,36 +5994,49 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 	if o.customReviewScriptSet {
 		cfg.CustomReviewScript = o.CustomReviewScript
 	}
-	return applyCodexOverrides(o, cfg, os.Stderr)
+	return applyPhaseProviders(o, cfg)
+}
+
+// applyPhaseProviders merges --pass-claude-md and stores the provider resolved for every
+// phase in cfg, where the processor reads it.
+func applyPhaseProviders(o opts, cfg *config.Config) error {
+	if o.PassClaudeMd {
+		cfg.PassClaudeMd = true
+	}
+	providers, err := resolvePhaseProviders(o, cfg)
+	if err != nil {
+		return err
+	}
+	cfg.PlanProvider, cfg.TaskProvider, cfg.ReviewProvider = providers.Plan, providers.Task, providers.Review
+	return nil
 }
 
 func enabledByCLI(configured, requested bool) bool {
 	return configured || requested
 }
 
-// applyCodexOverrides resolves the primary executor after config merging: the provider
-// prefix of the task model selects the executor, and an unset or invalid task model
-// leaves the claude default (startup validation reports the invalid one). It records the source and validates
-// --pass-claude-md against the resolved executor. External review selection is
-// resolved separately and is valid for either primary.
-func applyCodexOverrides(o opts, cfg *config.Config, warnW io.Writer) error {
-	_ = warnW
-	cfg.Executor = config.ExecutorClaude
-	cfg.ExecutorSource = config.ExecutorSourceDefault
-	spec := resolveSpec(o.TaskModel, cfg.TaskModel)
-	if parsed, err := config.ParseProviderSpec(spec); err == nil {
-		if parsed.Provider == config.ExternalReviewToolCodex {
-			cfg.Executor = config.ExecutorCodex
-		}
-		cfg.ExecutorSource = fmt.Sprintf(config.ExecutorSourceInferred, spec)
+// phaseProviders is the provider each phase runs on, taken from its spec's prefix.
+type phaseProviders struct {
+	Plan, Task, Review string
+}
+
+// resolvePhaseProviders resolves the provider of every phase after config merging. An unset
+// task_model means claude by default, not by inference, and an unset plan_model or
+// review_model inherits task_model whole, provider included. An invalid spec resolves to
+// claude here; startup validation reports it. --pass-claude-md needs a codex executor to
+// read it, so it is rejected unless the task or the review phase runs on codex.
+func resolvePhaseProviders(o opts, cfg *config.Config) (phaseProviders, error) {
+	providers := phaseProviders{
+		Plan:   specProvider(resolvePlanSpec(o, cfg)),
+		Task:   specProvider(resolveSpec(o.TaskModel, cfg.TaskModel)),
+		Review: specProvider(resolveReviewSpec(o, cfg)),
 	}
-	if o.PassClaudeMd {
-		cfg.PassClaudeMd = true
+	if (o.PassClaudeMd || cfg.PassClaudeMd) &&
+		providers.Task != config.ExecutorCodex && providers.Review != config.ExecutorCodex {
+		return providers, errors.New("--pass-claude-md / pass_claude_md requires codex as the task or review provider, " +
+			"e.g. --task-model codex:<model>")
 	}
-	if cfg.PassClaudeMd && cfg.Executor != config.ExecutorCodex {
-		return errors.New("--pass-claude-md requires a codex task_model")
-	}
-	return nil
+	return providers, nil
 }
 
 // isFlagSet returns true if the named CLI flag was explicitly provided on the command line.

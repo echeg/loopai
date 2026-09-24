@@ -37,7 +37,7 @@ type Config struct {
 }
 
 func (c Config) isCodexExecutor() bool {
-	return c.AppConfig != nil && c.AppConfig.Executor == config.ExecutorCodex
+	return c.AppConfig != nil && c.AppConfig.TaskProvider == config.ExecutorCodex
 }
 
 func (c Config) executorName() string {

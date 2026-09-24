@@ -173,7 +173,7 @@ func TestRunnerRunRecordStartupBranchAndCheckpointRules(t *testing.T) {
 			cfg := Config{
 				Mode: ModeReview, PlanFile: "docs/plans/work.md", DefaultBranch: "main",
 				TaskModel: "task:high", ReviewModel: "review:xhigh",
-				AppConfig: &config.Config{Executor: config.ExecutorCodex},
+				AppConfig: &config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex},
 			}
 			checkpoint := &checkpointMemoryStore{found: tc.checkpointFound, cp: ReviewCheckpoint{
 				Version: reviewCheckpointVersion, Mode: ModeReview, Branch: "feature", Plan: cfg.PlanFile,

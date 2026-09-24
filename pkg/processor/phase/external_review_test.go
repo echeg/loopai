@@ -575,7 +575,7 @@ func TestExternalReviewPhaseRunClaudeFindingsEvaluatedByCodex(t *testing.T) {
 	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "dismissed finding"}, {Output: "done", Signal: status.ExternalReviewDone}})
 	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "issue in main.go:12"}, {Output: "NO ISSUES FOUND"}})
 	appCfg := testAppConfig(t)
-	appCfg.Executor = "codex"
+	appCfg.TaskProvider, appCfg.ReviewProvider = "codex", "codex"
 	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{MaxIterations: 50, AppConfig: appCfg}, tool: config.ExternalReviewToolClaude,
 		review: review, external: external,
@@ -644,7 +644,7 @@ func TestExternalReviewPhaseRunCustomNoDuplicateOutput(t *testing.T) {
 func TestExternalReviewPhaseRunClaudeDoesNotDuplicateStreamedOutput(t *testing.T) {
 	log := newMockLogger("progress.txt")
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{
 			MaxIterations: 50,

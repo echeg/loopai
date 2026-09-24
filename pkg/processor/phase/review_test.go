@@ -188,7 +188,7 @@ func TestReviewPhase_Loop_TimeoutContinues(t *testing.T) {
 func TestReviewPhase_First_CodexTimeoutSurfacesAsError(t *testing.T) {
 	exec := newTaskPhaseMockExecutor(nil)
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{cfg: Config{MaxIterations: 50, AppConfig: appCfg}, exec: exec})
 	phase.policy = newScriptedTestPolicy(newMockLogger(""), ExecutionResult{Result: executor.Result{Output: "partial output"}, TimedOut: true})
 

@@ -394,7 +394,7 @@ func TestExecutionPolicy_SessionTimeoutGatedByExecutorAndToolName(t *testing.T) 
 			appCfg := testAppConfig(t)
 			appCfg.SessionTimeout = 50 * time.Millisecond
 			appCfg.SessionTimeoutSet = true
-			appCfg.Executor = tt.executor
+			appCfg.TaskProvider, appCfg.ReviewProvider = tt.executor, tt.executor
 			policy := newRetryPolicy(retryPolicyOpts{cfg: Config{AppConfig: appCfg}, log: newMockLogger()})
 
 			var hasDeadline bool
@@ -427,7 +427,7 @@ func TestExecutionPolicy_ExternalReviewBypassPreservesIdleTimeoutDiagnostic(t *t
 			appCfg := testAppConfig(t)
 			appCfg.SessionTimeout = 50 * time.Millisecond
 			appCfg.SessionTimeoutSet = true
-			appCfg.Executor = config.ExecutorClaude
+			appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorClaude, config.ExecutorClaude
 			policy := newRetryPolicy(retryPolicyOpts{cfg: Config{AppConfig: appCfg}, log: log})
 
 			var hadDeadline bool

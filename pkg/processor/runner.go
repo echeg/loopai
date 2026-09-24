@@ -57,11 +57,12 @@ type Config struct {
 	CommandTimingHandler  func(string, time.Duration) // optional callback for completed shell commands
 }
 
-// isCodexExecutor reports whether the configured task/review executor is codex
-// (the --codex first-class mode). returns false when AppConfig is nil or the
-// executor is anything else (claude is the default).
+// isCodexExecutor reports whether the task provider is codex. returns false when
+// AppConfig is nil or the provider is anything else (claude is the default). startup
+// still rejects a plan or review provider that differs from the task provider, so the
+// task provider stands for every phase until the executors are built per phase.
 func (c Config) isCodexExecutor() bool {
-	return c.AppConfig != nil && c.AppConfig.Executor == config.ExecutorCodex
+	return c.AppConfig != nil && c.AppConfig.TaskProvider == config.ExecutorCodex
 }
 
 func toPhaseConfig(c Config) phase.Config {

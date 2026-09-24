@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,8 +12,8 @@ import (
 func TestWindowsExecutableModelProviders(t *testing.T) {
 	t.Run("Claude executable allows a codex provider", func(t *testing.T) {
 		cfg := &config.Config{ClaudeCommand: `C:\tools\CLAUDE.EXE`, TaskModel: "codex:gpt-6-astra:medium"}
-		require.NoError(t, applyCodexOverrides(opts{}, cfg, io.Discard))
-		assert.Equal(t, config.ExecutorCodex, cfg.Executor)
+		require.NoError(t, applyCLIOverrides(opts{}, cfg))
+		assert.Equal(t, config.ExecutorCodex, cfg.TaskProvider)
 		require.NoError(t, validateStartupModels(opts{}, cfg))
 	})
 	for _, tt := range []struct {
@@ -26,7 +25,7 @@ func TestWindowsExecutableModelProviders(t *testing.T) {
 		{"codex", opts{}, config.Config{CodexCommand: `C:\tools\CODEX.EXE`, TaskModel: "codex:gpt-6-astra", PlanModel: "codex:fable"}},
 	} {
 		t.Run(tt.provider+" executable rejects mismatched model", func(t *testing.T) {
-			require.NoError(t, applyCodexOverrides(tt.opts, &tt.cfg, io.Discard))
+			require.NoError(t, applyCLIOverrides(tt.opts, &tt.cfg))
 			require.ErrorContains(t, validateStartupModels(tt.opts, &tt.cfg), "model under the "+tt.provider+" provider")
 		})
 	}

@@ -274,7 +274,7 @@ func TestRunner_RunFull_CodexExecutor_ExplicitNoneSkipsExternalReview(t *testing
 	external := newMockExecutor(nil) // must never be called
 
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 
 	cfg := Config{
 		Mode:               ModeFull,
@@ -687,7 +687,7 @@ func TestRunner_CodexAndPostReview_ShortCircuitWhenCodexExecutorDisablesExternal
 	})
 
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	cfg := Config{
 		Mode:               ModeFull,
 		ExternalReviewTool: "none",
@@ -827,7 +827,7 @@ func TestRunner_Finalize_CodexExecutor_RunsAllPhasesThroughSharedInstance(t *tes
 	})
 
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	cfg := Config{
 		Mode:               ModeFull,
 		ExternalReviewTool: "none",
@@ -874,7 +874,7 @@ func TestRunner_CodexExternalOnly_ClaudeFindingsAreHandledByPrimaryCodex(t *test
 	}}
 
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	cfg := Config{
 		Mode: ModeCodexOnly, MaxIterations: 50, IterationDelayMs: 1,
 		CodexEnabled: true, FinalizeEnabled: true,
@@ -1573,7 +1573,7 @@ func TestRunner_ReviewPromptIsSharedAcrossExecutors(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
-			appCfg.Executor = tc.executor
+			appCfg.TaskProvider, appCfg.ReviewProvider = tc.executor, tc.executor
 			appCfg.ReviewFirstPrompt = "FIRST_REVIEW_PROMPT"
 			appCfg.ReviewSecondPrompt = "SECOND_REVIEW_PROMPT"
 

@@ -75,19 +75,12 @@ func ParseExternalReviewers(value string) ([]ReviewerSpec, error) {
 	return reviewers, nil
 }
 
-// Executor mode constants for the runtime-only Config.Executor field.
-// ExecutorClaude is the default — the empty string is intentional so that no
-// flag on the CLI resolves to the claude pipeline without users having to spell
-// it out. ExecutorCodex is the opt-in first-class --codex path.
+// Executor labels for the runtime-only per-phase provider fields. ExecutorClaude is
+// the empty zero value, so a Config built without provider resolution runs claude;
+// ExecutorCodex equals the codex provider name a spec's prefix resolves to.
 const (
 	ExecutorClaude = ""
 	ExecutorCodex  = "codex"
-)
-
-// Executor source descriptions for the runtime-only Config.ExecutorSource field.
-const (
-	ExecutorSourceInferred = "inferred from task_model %q"
-	ExecutorSourceDefault  = "default"
 )
 
 // External reviewer provider names used in external_reviewers entries; auto and none
@@ -107,13 +100,12 @@ const (
 // Runtime-only exceptions, such as ClaudeArgsSet, are documented inline.
 // The inline field comments are the source of truth for which *Set sentinels exist.
 type Config struct {
-	ExecutorSource string `json:"-"` // records how the primary executor was selected at runtime
-	ClaudeCommand  string `json:"claude_command"`
-	ClaudeArgs     string `json:"claude_args"`
-	ClaudeArgsSet  bool   `json:"-"`            // tracks runtime overrides, including an explicit empty --claude-args=
-	PlanModel      string `json:"plan_model"`   // model[:effort] spec for plan creation (falls back to TaskModel)
-	TaskModel      string `json:"task_model"`   // model[:effort] spec for task execution (e.g., "opus", "opus:high", ":medium")
-	ReviewModel    string `json:"review_model"` // model[:effort] spec for review phases (falls back to TaskModel)
+	ClaudeCommand string `json:"claude_command"`
+	ClaudeArgs    string `json:"claude_args"`
+	ClaudeArgsSet bool   `json:"-"`            // tracks runtime overrides, including an explicit empty --claude-args=
+	PlanModel     string `json:"plan_model"`   // model[:effort] spec for plan creation (falls back to TaskModel)
+	TaskModel     string `json:"task_model"`   // model[:effort] spec for task execution (e.g., "opus", "opus:high", ":medium")
+	ReviewModel   string `json:"review_model"` // model[:effort] spec for review phases (falls back to TaskModel)
 
 	CodexEnabled      bool   `json:"codex_enabled"`
 	CodexEnabledSet   bool   `json:"-"` // tracks if codex_enabled was explicitly set in config
@@ -144,8 +136,13 @@ type Config struct {
 
 	PreserveAnthropicAPIKey bool `json:"preserve_anthropic_api_key"` // when true, ANTHROPIC_API_KEY is passed through to the claude child process
 
-	Executor     string `json:"-"`              // runtime-only: "" (= claude, default) or ExecutorCodex
-	PassClaudeMd bool   `json:"pass_claude_md"` // when true, codex reads project CLAUDE.md via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is not auto-passed (a one-time setup hint is printed)
+	// runtime-only per-phase providers resolved from the provider prefix of plan_model,
+	// task_model, and review_model: "claude" or ExecutorCodex, with the empty value
+	// meaning claude. They are never read from a config file.
+	PlanProvider   string `json:"-"`
+	TaskProvider   string `json:"-"`
+	ReviewProvider string `json:"-"`
+	PassClaudeMd   bool   `json:"pass_claude_md"` // when true, codex reads project CLAUDE.md via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is not auto-passed (a one-time setup hint is printed)
 
 	MovePlanOnCompletion bool `json:"move_plan_on_completion"`
 

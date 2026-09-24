@@ -305,12 +305,9 @@ func (r *Runner) fillRunRecordFields() {
 	r.record.Plan = r.cfg.PlanFile
 	r.record.BaseRef = r.cfg.DefaultBranch
 	r.record.Mode = r.cfg.Mode
-	r.record.Executor = config.ExecutorClaude
-	if r.cfg.AppConfig != nil && r.cfg.AppConfig.Executor != config.ExecutorClaude {
-		r.record.Executor = r.cfg.AppConfig.Executor
-	}
-	if r.record.Executor == "" {
-		r.record.Executor = "claude"
+	r.record.Executor = "claude"
+	if r.cfg.AppConfig != nil && r.cfg.AppConfig.TaskProvider != config.ExecutorClaude {
+		r.record.Executor = r.cfg.AppConfig.TaskProvider
 	}
 	r.record.TaskModel = r.cfg.TaskModel
 	r.record.ReviewModel = r.cfg.ReviewModel

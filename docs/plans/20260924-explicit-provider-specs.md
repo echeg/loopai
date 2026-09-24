@@ -225,16 +225,19 @@ that sets any of the above must be hand-edited once.
 - [x] run `go test ./cmd/loopai/...` - must pass before next task
 
 ### Task 5: Per-phase provider resolution replaces applyCodexOverrides
-- [ ] write tests for a new `resolvePhaseProviders(o opts, cfg *config.Config) (phaseProviders, error)` covering: both phases codex, both claude, task codex with review claude, task claude with review codex, unset `task_model` defaulting to claude, `plan_model` following `task_model` when unset
-- [ ] write a test that `--pass-claude-md` is accepted when either the task or the review provider is codex and rejected when neither is
-- [ ] replace `applyCodexOverrides` (`cmd/loopai/main.go:6056`) with the new resolver and delete the inference branch
-- [ ] replace `primaryProvider` (`:2684`) with an accessor for the task provider and update its call sites
-- [ ] delete `ExecutorSourceFlag`/`ExecutorSourceConfig`/`ExecutorSourceInferred`/`ExecutorSourceDefault` usage from the startup banner and print the resolved provider per phase instead
-- [ ] ➕ delete the runtime-only `Config.Executor`/`ExecutorSource` fields and the remaining `ExecutorSource*` constants (kept by Task 2 because `--codex` and inference still wrote them)
-- [ ] write tests for the startup banner asserting one line per phase in the form `<phase>: <provider> <model>[:effort]` for plan, task, review, and external review, covering a same-provider run and a cross-provider one
-- [ ] write a test that a claude run prints its task and review models, which today only the codex branch does
-- [ ] merge `printExecutorInfo` and `printCodexExecutorInfo` (`cmd/loopai/main.go:3466`, `:3499`) into one provider-agnostic renderer, keeping codex-only fields (`sandbox`, CLAUDE.md passthrough) as indented lines under the phase that owns them
-- [ ] run `go test ./cmd/loopai/...` - must pass before next task
+- [x] write tests for a new `resolvePhaseProviders(o opts, cfg *config.Config) (phaseProviders, error)` covering: both phases codex, both claude, task codex with review claude, task claude with review codex, unset `task_model` defaulting to claude, `plan_model` following `task_model` when unset
+- [x] write a test that `--pass-claude-md` is accepted when either the task or the review provider is codex and rejected when neither is
+- [x] replace `applyCodexOverrides` (`cmd/loopai/main.go:6056`) with the new resolver and delete the inference branch
+- [x] replace `primaryProvider` (`:2684`) with an accessor for the task provider and update its call sites
+- [x] delete `ExecutorSourceFlag`/`ExecutorSourceConfig`/`ExecutorSourceInferred`/`ExecutorSourceDefault` usage from the startup banner and print the resolved provider per phase instead
+- [x] ➕ delete the runtime-only `Config.Executor`/`ExecutorSource` fields and the remaining `ExecutorSource*` constants (kept by Task 2 because `--codex` and inference still wrote them)
+- [x] write tests for the startup banner asserting one line per phase in the form `<phase>: <provider> <model>[:effort]` for plan, task, review, and external review, covering a same-provider run and a cross-provider one
+- [x] write a test that a claude run prints its task and review models, which today only the codex branch does
+- [x] merge `printExecutorInfo` and `printCodexExecutorInfo` (`cmd/loopai/main.go:3466`, `:3499`) into one provider-agnostic renderer, keeping codex-only fields (`sandbox`, CLAUDE.md passthrough) as indented lines under the phase that owns them
+  - ⚠️ `Config.Executor`/`ExecutorSource` became runtime-only `PlanProvider`/`TaskProvider`/`ReviewProvider` fields set by `applyPhaseProviders`; the processor (`isCodexExecutor`, `phase.Config.isCodexExecutor`, the run record) still reads `TaskProvider` for every phase, and `rejectMixedPhaseProviders` stays until Task 7 builds executors per phase. Processor tests set both `TaskProvider` and `ReviewProvider` so Tasks 7-9 can switch the review reads without re-editing them. `ExecutorClaude`/`ExecutorCodex` stay as executor labels for the orca title, progress header, and run record
+  - ⚠️ the banner prints the phases the mode runs rather than all four: full → task and review, tasks-only and `--gen-agents` → task, `--review`/`--external-only` → review, plan creation → plan. The external-review line now uses the same `<provider> <model>[:effort]` form, comma-joined, with `(auto-selected)` appended; an unset model renders as `default`
+  - ➕ `cmuxRunModels` resolves each phase label under its own provider through the same `resolvePhaseBanner`, which strips the provider prefix; `codexModelBanner`/`codexPlanBanner`/`codexBannerInfo`/`configuredModelLabel`/`codexBannerValue` were deleted with their tests. `detectClaudeSwapRecovery` now counts any claude plan, task, or review phase
+- [x] run `go test ./cmd/loopai/...` - must pass before next task
 
 ### Task 6: Dependency checks cover every distinct provider
 - [ ] write tests for `checkExecutionDeps` (`cmd/loopai/main.go:2814`) asserting that a task-codex/review-claude run requires both binaries, that each missing binary produces its own named error, and that a provider appearing in several roles is checked once

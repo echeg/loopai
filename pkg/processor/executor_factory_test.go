@@ -312,7 +312,7 @@ func TestRunner_New_CodexModelEffortWiring(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
-			appCfg.Executor = config.ExecutorCodex
+			appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 			cfg := Config{
 				Mode:          ModeReview,
 				MaxIterations: 50,
@@ -363,7 +363,7 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
-			appCfg.Executor = tc.primary
+			appCfg.TaskProvider, appCfg.ReviewProvider = tc.primary, tc.primary
 			appCfg.CustomReviewScript = "/path/to/custom-review"
 			appCfg.ClaudeCommand = "claude-wrapper"
 			appCfg.ClaudeArgs = "--wrapper-arg --output-format stream-json"
@@ -436,7 +436,7 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 
 	t.Run("Executor=codex respects explicit sandbox config", func(t *testing.T) {
 		appCfg := testAppConfig(t)
-		appCfg.Executor = config.ExecutorCodex
+		appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 		appCfg.CodexSandbox = "workspace-write"
 		appCfg.CodexSandboxSet = true
 		cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
@@ -453,7 +453,7 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 
 	t.Run("external codex stays read-only when primary sandbox is writable", func(t *testing.T) {
 		appCfg := testAppConfig(t)
-		appCfg.Executor = config.ExecutorCodex
+		appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 		appCfg.CodexSandbox = "workspace-write"
 		appCfg.CodexSandboxSet = true
 		cfg := Config{
@@ -484,7 +484,7 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 
 	t.Run("codex external override does not change claude primary", func(t *testing.T) {
 		appCfg := testAppConfig(t)
-		appCfg.Executor = config.ExecutorClaude
+		appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorClaude, config.ExecutorClaude
 		cfg := Config{
 			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
 			TaskModel: "sonnet:medium", ReviewModel: "opus:high",
@@ -503,7 +503,7 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 
 	t.Run("claude external override does not change codex primary", func(t *testing.T) {
 		appCfg := testAppConfig(t)
-		appCfg.Executor = config.ExecutorCodex
+		appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 		cfg := Config{
 			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
 			TaskModel: "gpt-primary:high", ReviewModel: "gpt-review:medium",
@@ -634,7 +634,7 @@ func TestExecutorFactory_LegacyExternalFallbackParity(t *testing.T) {
 
 func TestExecutorFactory_LegacyAutoMissingBinaryDowngrades(t *testing.T) {
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorClaude
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorClaude, config.ExecutorClaude
 	appCfg.CodexCommand = "/nonexistent/path/to/codex"
 	cfg := Config{Mode: ModeReview, CodexEnabled: true, AppConfig: appCfg}
 	log := newRunnerMockLogger("progress.txt")
@@ -663,7 +663,7 @@ func TestRunner_New_AutoExternalRouting(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
-			appCfg.Executor = tc.primary
+			appCfg.TaskProvider, appCfg.ReviewProvider = tc.primary, tc.primary
 			appCfg.CodexCommand = availableCommand
 			appCfg.ClaudeCommand = availableCommand
 			cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: true, AppConfig: appCfg}
@@ -719,7 +719,7 @@ func TestRunner_New_PassClaudeMd_PropagatesToCodexExecutor(t *testing.T) {
 	log := newRunnerMockLogger("")
 
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	appCfg.PassClaudeMd = true
 	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
 
@@ -734,7 +734,7 @@ func TestRunner_New_PassClaudeMdFalse_DoesNotSetField(t *testing.T) {
 	log := newRunnerMockLogger("")
 
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	appCfg.PassClaudeMd = false
 	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
 
@@ -753,7 +753,7 @@ func TestRunner_New_CodexExecutor_TaskAndReviewShareInstance(t *testing.T) {
 	log := newRunnerMockLogger("")
 
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
 
 	_, execs := (&executorFactory{}).Build(cfg, log)
@@ -828,7 +828,7 @@ func TestRunner_ClaudeMdSetupHint_NotFiredWhenExecutorIsNotCodex(t *testing.T) {
 
 	// claude executor with PassClaudeMd=true should NOT fire hint (gated by Executor=codex)
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorClaude
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorClaude, config.ExecutorClaude
 	appCfg.PassClaudeMd = true
 	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
 
@@ -848,7 +848,7 @@ func TestRunner_ClaudeMdSetupHint_NotFiredWhenPassClaudeMdFalse(t *testing.T) {
 	holder := &status.PhaseHolder{}
 
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	appCfg.PassClaudeMd = false
 	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
 
@@ -868,7 +868,7 @@ func TestRunner_ClaudeMdSetupHint_FiredOnceAcrossMultipleRunnerConstructions(t *
 	holder := &status.PhaseHolder{}
 
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	appCfg.PassClaudeMd = true
 	cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: false, AppConfig: appCfg}
 
@@ -902,7 +902,7 @@ func TestExecutorFactory_WiresCommandTimingHandlerToClaudeAndCodex(t *testing.T)
 	execs.Externals[1].Exec.(*executor.CodexExecutor).CommandTimingHandler("external codex", time.Second)
 	assert.Equal(t, int32(4), calls.Load())
 
-	appCfg.Executor = config.ExecutorCodex
+	appCfg.TaskProvider, appCfg.ReviewProvider = config.ExecutorCodex, config.ExecutorCodex
 	_, execs = (&executorFactory{}).Build(cfg, newRunnerMockLogger("progress.txt"))
 	execs.Task.(*executor.CodexExecutor).CommandTimingHandler("codex task", time.Second)
 	execs.Review.(*executor.CodexExecutor).CommandTimingHandler("codex review", time.Second)
@@ -962,7 +962,7 @@ func TestExecutorFactory_Build_CodexArgs(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
-			appCfg.Executor = tc.primary
+			appCfg.TaskProvider, appCfg.ReviewProvider = tc.primary, tc.primary
 			appCfg.CodexArgs = tc.codexArgs
 
 			cfg := Config{
