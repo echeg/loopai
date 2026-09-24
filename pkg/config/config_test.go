@@ -82,6 +82,12 @@ func TestParseExternalReviewers(t *testing.T) {
 		{name: "trailing comma", value: "codex,", wantErr: "entry 2 is empty"},
 		{name: "empty middle entry", value: "codex, ,claude", wantErr: "entry 2 is empty"},
 		{name: "too many segments", value: "codex:model:high:extra", wantErr: "too many ':' separators"},
+		{name: "custom with effort only", value: "custom::high", wantErr: "must not specify a model"},
+		{name: "provider is case-insensitive", value: "Codex:gpt-5.5",
+			want: []ReviewerSpec{{Provider: ExternalReviewToolCodex, ModelSpec: "gpt-5.5"}}},
+		{name: "bare model entry suggests prefixed rewrite", value: "codex, opus:high",
+			wantErr: `external reviewer entry 2: "opus:high" is missing a provider prefix; write "claude:opus:high"`},
+		{name: "empty provider", value: ":high", wantErr: "external reviewer entry 1: \":high\" is missing a provider prefix"},
 	}
 
 	for _, tc := range tests {

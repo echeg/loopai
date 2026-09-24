@@ -184,11 +184,11 @@ that sets any of the above must be hand-edited once.
 ## Implementation Steps
 
 ### Task 1: Shared provider spec parser in pkg/config
-- [ ] write table-driven tests for a new `ParseProviderSpec(string) (ProviderSpec, error)` in `pkg/config/provider_spec_test.go`: `codex:gpt-6-astra:high`, `claude:opus`, `codex` (provider only), `codex::medium` (default model, explicit effort), `custom`, leading/trailing spaces, empty string, four-segment input, unknown provider, empty provider (`:opus:high`)
-- [ ] write tests asserting the error for a spec with no provider segment names the value and the suggested rewrite derived from `ModelProvider`
-- [ ] add `ProviderSpec` struct (`Provider`, `Model`, `Effort`) and `ParseProviderSpec` in `pkg/config/provider_spec.go`
-- [ ] reuse it from `ParseExternalReviewers` (`pkg/config/config.go:46`) so both paths share one grammar, keeping the existing `custom` rule (no model allowed) and the existing per-entry error wording
-- [ ] run `go test ./pkg/config/...` - must pass before next task
+- [x] write table-driven tests for a new `ParseProviderSpec(string) (ProviderSpec, error)` in `pkg/config/provider_spec_test.go`: `codex:gpt-6-astra:high`, `claude:opus`, `codex` (provider only), `codex::medium` (default model, explicit effort), `custom`, leading/trailing spaces, empty string, four-segment input, unknown provider, empty provider (`:opus:high`)
+- [x] write tests asserting the error for a spec with no provider segment names the value and the suggested rewrite derived from `ModelProvider`
+- [x] add `ProviderSpec` struct (`Provider`, `Model`, `Effort`) and `ParseProviderSpec` in `pkg/config/provider_spec.go`
+- [x] reuse it from `ParseExternalReviewers` (`pkg/config/config.go:46`) so both paths share one grammar, keeping the existing `custom` rule (no model allowed) and the existing per-entry error wording
+- [x] run `go test ./pkg/config/...` - must pass before next task
 
 ### Task 2: Removed config keys fail with actionable errors
 - [ ] write tests in `pkg/config/values_test.go` asserting a hard error for each of `executor`, `external_review_tool`, `external_review_model`, `codex_model`, `codex_reasoning_effort`, with the error naming the key and the replacement spelling

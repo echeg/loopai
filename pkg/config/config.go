@@ -56,32 +56,21 @@ func ParseExternalReviewers(value string) ([]ReviewerSpec, error) {
 			return nil, fmt.Errorf("external reviewer entry %d is empty", i+1)
 		}
 
-		parts := strings.Split(entry, ":")
-		if len(parts) > 3 {
+		spec, err := ParseProviderSpec(entry)
+		switch {
+		case errors.Is(err, ErrTooManySpecSegments):
 			return nil, fmt.Errorf("external reviewer entry %d has too many ':' separators", i+1)
+		case errors.Is(err, ErrUnknownProvider):
+			provider, _, _ := strings.Cut(entry, ":")
+			return nil, fmt.Errorf("unknown external reviewer provider %q", strings.TrimSpace(provider))
+		case err != nil:
+			return nil, fmt.Errorf("external reviewer entry %d: %w", i+1, err)
 		}
-		provider := strings.TrimSpace(parts[0])
-		modelSpec := ""
-		if len(parts) > 1 {
-			modelSpec = strings.TrimSpace(parts[1])
-		}
-		if len(parts) == 3 {
-			effort := strings.TrimSpace(parts[2])
-			if effort != "" {
-				modelSpec += ":" + effort
-			}
-		}
-		switch provider {
-		case ExternalReviewToolClaude, ExternalReviewToolCodex:
-		case ExternalReviewToolCustom:
-			if modelSpec != "" {
-				return nil, errors.New("custom external reviewer must not specify a model")
-			}
-		default:
-			return nil, fmt.Errorf("unknown external reviewer provider %q", provider)
+		if spec.Provider == ExternalReviewToolCustom && spec.ModelSpec() != "" {
+			return nil, errors.New("custom external reviewer must not specify a model")
 		}
 
-		reviewers = append(reviewers, ReviewerSpec{Provider: provider, ModelSpec: modelSpec})
+		reviewers = append(reviewers, ReviewerSpec{Provider: spec.Provider, ModelSpec: spec.ModelSpec()})
 	}
 	return reviewers, nil
 }
