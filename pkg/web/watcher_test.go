@@ -190,6 +190,7 @@ func TestWatcher_StartAndClose(t *testing.T) {
 func TestWatcher_DetectsNewProgressFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	sm := NewSessionManager()
+	t.Cleanup(func() { sm.Close() })
 
 	w, err := NewWatcher([]string{tmpDir}, sm)
 	require.NoError(t, err)
@@ -250,6 +251,7 @@ func TestWatcher_IgnoresNewLegacyDataDirectory(t *testing.T) {
 func TestWatcher_IgnoresNonProgressFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	sm := NewSessionManager()
+	t.Cleanup(func() { sm.Close() })
 
 	w, err := NewWatcher([]string{tmpDir}, sm)
 	require.NoError(t, err)
@@ -282,6 +284,7 @@ func TestWatcher_WatchesSubdirectories(t *testing.T) {
 	require.NoError(t, os.Mkdir(subDir, 0o750))
 
 	sm := NewSessionManager()
+	t.Cleanup(func() { sm.Close() })
 
 	w, err := NewWatcher([]string{tmpDir}, sm)
 	require.NoError(t, err)
@@ -319,6 +322,7 @@ Started: 2026-01-22 10:00:00
 func TestWatcher_HandlesDeletedProgressFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	sm := NewSessionManager()
+	t.Cleanup(func() { sm.Close() })
 
 	// create a progress file before watcher starts
 	progressFile := filepath.Join(tmpDir, "progress-delete-test.txt")
@@ -383,6 +387,7 @@ func TestWatcher_SkipsKnownDirectories(t *testing.T) {
 			require.NoError(t, os.Mkdir(skippedDir, 0o750))
 
 			sm := NewSessionManager()
+			t.Cleanup(func() { sm.Close() })
 
 			w, err := NewWatcher([]string{tmpDir}, sm)
 			require.NoError(t, err)
@@ -425,6 +430,7 @@ func TestWatcher_WatchesUnknownHiddenDirectories(t *testing.T) {
 	require.NoError(t, os.Mkdir(dotDir, 0o750))
 
 	sm := NewSessionManager()
+	t.Cleanup(func() { sm.Close() })
 
 	w, err := NewWatcher([]string{tmpDir}, sm)
 	require.NoError(t, err)
@@ -463,6 +469,7 @@ Started: 2026-01-22 10:00:00
 func TestWatcher_StartTwiceIsIdempotent(t *testing.T) {
 	tmpDir := t.TempDir()
 	sm := NewSessionManager()
+	t.Cleanup(func() { sm.Close() })
 
 	w, err := NewWatcher([]string{tmpDir}, sm)
 	require.NoError(t, err)
@@ -485,6 +492,7 @@ func TestWatcher_StartTwiceIsIdempotent(t *testing.T) {
 func TestWatcher_WatchesNewlyCreatedDirectories(t *testing.T) {
 	tmpDir := t.TempDir()
 	sm := NewSessionManager()
+	t.Cleanup(func() { sm.Close() })
 
 	w, err := NewWatcher([]string{tmpDir}, sm)
 	require.NoError(t, err)
@@ -547,6 +555,7 @@ Started: 2026-01-22 10:00:00
 	require.NoError(t, os.WriteFile(progressFile, []byte(header), 0o600))
 
 	sm := NewSessionManager()
+	t.Cleanup(func() { sm.Close() })
 	w, err := NewWatcher([]string{tmpDir}, sm)
 	require.NoError(t, err)
 
@@ -666,6 +675,7 @@ Started: 2026-01-22 10:00:00
 	require.NoError(t, os.WriteFile(progressFile, []byte(initial), 0o600))
 
 	sm := NewSessionManager()
+	t.Cleanup(func() { sm.Close() })
 	w, err := NewWatcher([]string{tmpDir}, sm)
 	require.NoError(t, err)
 
@@ -742,6 +752,7 @@ Started: 2026-01-22 10:00:00
 	defer releaseLock()
 
 	sm := NewSessionManager()
+	t.Cleanup(func() { sm.Close() })
 	sessionID := sessionIDFromPath(progressFile)
 
 	// register an active session directly (simulate a session that is already
@@ -831,6 +842,7 @@ Started: 2026-01-22 10:00:00
 	require.NoError(t, os.WriteFile(fileB, []byte(contentB), 0o600))
 
 	sm := NewSessionManager()
+	t.Cleanup(func() { sm.Close() })
 	w, err := NewWatcher([]string{tmpDir}, sm)
 	require.NoError(t, err)
 
@@ -917,6 +929,7 @@ func TestWatcher_StartTailingIfNeededReactivatesWithStoredOffset(t *testing.T) {
 	//   - lastOffset > 0 (StopTailing captured the previous tailer's offset)
 	id := sessionIDFromPath(progressPath)
 	session := NewSession(id, progressPath)
+	t.Cleanup(session.Close)
 	session.SetState(SessionStateActive)
 	require.True(t, session.MarkLoadedIfNot())
 	session.setLastOffset(preRaceSize.Size())

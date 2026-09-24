@@ -159,6 +159,6 @@ If user explicitly asks "check loopai", "loopai status", or "how is loopai doing
 
 ## Nested Claude Code Sessions
 
-loopai automatically strips the `CLAUDECODE` env var from child processes, allowing it to run from inside Claude Code. If the nested session error is somehow encountered, loopai detects it via error pattern matching and exits gracefully instead of looping.
+loopai automatically strips the Claude Code session env vars (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, and the rest of that family) from child processes, allowing it to run from inside Claude Code. If the nested session error is somehow encountered, loopai detects it via error pattern matching and exits gracefully instead of looping.
 
 Running from a standalone terminal is still recommended for the best experience.
