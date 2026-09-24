@@ -290,14 +290,17 @@ that sets any of the above must be hand-edited once.
 - [x] run `make check-symlinks check-codex-skills check-plugin test-grill-skill` - must pass before next task
 
 ### Task 11: Update user and developer documentation
-- [ ] update `README.md` (14 `--codex` sites incl. `:37`, `:102`, `:321-330`, `:389`, `:509`, `:587`, `:718-724`, `:751-759`, `:794-814`)
-- [ ] update `llms.txt` (`:23`, `:45`, `:98-100`, `:161`, `:163`)
-- [ ] update `docs/custom-providers.md` (17 `--codex` and 6 `--pass-claude-md` sites, densest at `:5-25`, `:38-41`, `:65-81`)
-- [ ] update `CLAUDE.md` (`:100`, `:261`, `:283`, `:308`, `:351`, `:487-491`, `:686`)
-- [ ] update the embedded config comments (`pkg/config/defaults/config:56-81`, `:289`, `:299`) and the four prompts naming `--codex-only` (`codex.txt:74`, `custom_eval.txt:74`, `review_first.txt:114`, `review_second.txt:85`)
-- [ ] update `Makefile:125`
-- [ ] leave `CHANGELOG.md` and everything under `docs/plans/completed/` untouched - the archive is history
-- [ ] run `make test` - must pass before next task
+- [x] update `README.md` (14 `--codex` sites incl. `:37`, `:102`, `:321-330`, `:389`, `:509`, `:587`, `:718-724`, `:751-759`, `:794-814`)
+- [x] update `llms.txt` (`:23`, `:45`, `:98-100`, `:161`, `:163`)
+- [x] update `docs/custom-providers.md` (17 `--codex` and 6 `--pass-claude-md` sites, densest at `:5-25`, `:38-41`, `:65-81`)
+- [x] update `CLAUDE.md` (`:100`, `:261`, `:283`, `:308`, `:351`, `:487-491`, `:686`)
+- [x] update the embedded config comments (`pkg/config/defaults/config:56-81`, `:289`, `:299`) and the four prompts naming `--codex-only` (`codex.txt:74`, `custom_eval.txt:74`, `review_first.txt:114`, `review_second.txt:85`)
+- [x] update `Makefile:125`
+- [x] leave `CHANGELOG.md` and everything under `docs/plans/completed/` untouched - the archive is history
+- [x] run `make test` - must pass before next task
+  - ➕ the provider-model comments in `pkg/config/defaults/config` were rewritten for the new grammar: session/idle timeout, `codex_sandbox`, `codex_args`, automatic reviewer, and `pass_claude_md` now describe phase providers instead of a `--codex` primary; `Test_defaultsFS` asserts the new wording and that no live `--codex`/inference text remains
+  - ➕ CLAUDE.md's `validateModelSpecs` and `ModelProvider`/`applyCodexOverrides` paragraphs were replaced here by the per-phase provider model, validation, removed-spelling, dependency-check, and banner description, so Task 13 only re-checks the fold; `--session-timeout` help text, `scripts/opencode/README.md` (`claude:model:effort` through a wrapper), and the `e2e-codex` Makefile hint (`--task-model codex --external-only`) were updated too
+  - ⚠️ remaining matches for removed spellings are deliberate migration hints (README/llms.txt/custom-providers tables, the embedded config removal note, CLAUDE.md), the skill checkers' pattern lists, the unrelated active plan `20260806-dynamic-review-agents.md`, and the backlog entry `review-only-modes-commit-user-edits.md`, which describe history or other work
 
 ### Task 12: Verify acceptance criteria
 - [ ] verify all four Overview requirements are implemented

@@ -1,44 +1,49 @@
 # Custom Providers for Claude Phases
 
-loopai uses Claude Code as the primary agent for task execution and code reviews. The `claude_command` and `claude_args` configuration options allow replacing Claude Code with any CLI tool that produces compatible output — codex, Gemini CLI, local LLMs, or custom scripts. The same provider can also be selected per run with `--claude-command` and `--claude-args`.
+loopai runs each phase on the provider its model spec names: `claude` (Claude Code, the default when `task_model` is unset) or `codex` (the codex CLI). The `claude_command` and `claude_args` configuration options allow replacing Claude Code with any CLI tool that produces compatible output — codex, Gemini CLI, local LLMs, or custom scripts — for every phase whose spec names `claude`. The same provider can also be selected per run with `--claude-command` and `--claude-args`.
 
-**For codex specifically, use the first-class `--codex` flag** described in the next section when you want codex to be the primary executor. The `claude_command` wrapper path remains supported for backwards compatibility and for tools without first-class integration (Gemini, Copilot, OpenCode, local LLMs).
+**For codex specifically, name it in the model spec** (`task_model = codex:<model>[:effort]`), as described in the next section. The `claude_command` wrapper path remains supported for backwards compatibility and for tools without first-class integration (Gemini, Copilot, OpenCode, local LLMs).
 
-## Codex executor mode (`--codex`) — native codex path
+## Codex phases (`codex:` specs) — native codex path
 
-The `--codex` flag makes Codex the primary executor for planning, tasks, internal reviews, finding evaluation, and finalize. External review remains available: with the default `external_review_tool = auto`, loopai selects Claude so the review stays cross-provider. Set `external_review_tool = none` to disable the legacy review path when `external_reviewers` is unset.
+Every model spec is `provider[:model[:effort]]`. `task_model`'s provider runs tasks; `review_model`'s runs internal review, finding evaluation, finalize, and the report; `plan_model`'s runs plan creation. The last two fall back to `task_model` whole, provider included, so `task_model = codex:gpt-6-astra:medium` alone puts every phase on Codex, while adding `review_model = claude:opus:high` hands the review block to Claude. `codex` alone uses the codex CLI's own defaults from `~/.codex/config.toml`, and `codex::medium` keeps that default model with an explicit effort. External review remains available: with `external_reviewers` unset, loopai selects the provider other than `task_model`'s, so a Codex task phase is reviewed by Claude. Set `external_reviewers =` (empty) to disable it.
+
+The former `--codex` flag and `executor = codex` key were removed and fail at startup naming this replacement, as do `codex_model` and `codex_reasoning_effort`, whose values now belong in the model and effort segments of each codex spec.
 
 Why this path exists alongside `codex-as-claude.sh`:
 
 - loopai calls the codex CLI directly. No translation layer, no Claude stream-json emulation, no extra `jq` round-trips.
 - Multi-agent reviews are configured through additive `-c` flag overrides on the codex command line (`-c features.multi_agent=true`, `-c agents.reviewer.description=...`). The overrides layer on top of the user's `~/.codex/config.toml` rather than replacing it, so user customizations (model, sandbox, MCP servers) are preserved.
-- Review prompts (`review_first.txt`, `review_second.txt`) are shared between Claude and Codex. The `{{agent:<name>}}` and `{{agents:dynamic}}` expanders in `pkg/processor/prompts.go` read `cfg.AppConfig.Executor` and emit the executor-appropriate invocation: `Use the Task tool ...` for Claude, `spawn_agent(agent='reviewer', task='...')` for Codex. Under `--codex`, loopai additionally prepends a section-level orchestration directive block (the `=== Codex orchestration directives ===` preamble) covering the `spawn_agent` argument guard and `wait_agent` dead-agent retry, so customized review prompts inherit the current orchestration rules.
+- Review prompts (`review_first.txt`, `review_second.txt`) are shared between Claude and Codex. The `{{agent:<name>}}` and `{{agents:dynamic}}` expanders in `pkg/processor/prompts.go` take the provider of the phase running the prompt and emit the matching invocation: `Use the Task tool ...` for Claude, `spawn_agent(agent='reviewer', task='...')` for Codex. The task prompt follows `task_model`'s provider; review, evaluation, and finalize prompts follow `review_model`'s. When the review provider is Codex, loopai additionally prepends a section-level orchestration directive block (the `=== Codex orchestration directives ===` preamble) covering the `spawn_agent` argument guard and `wait_agent` dead-agent retry, so customized review prompts inherit the current orchestration rules.
 - `--pass-claude-md` adds `-c project_doc_fallback_filenames=["CLAUDE.md"]` so codex's native AGENTS.md walk picks up project-level `./CLAUDE.md`.
 
 ### Setup
 
 ```bash
 # one-off
-loopai --codex docs/plans/feature.md
+loopai --task-model codex:gpt-6-astra:medium docs/plans/feature.md
+
+# codex writes, claude reviews
+loopai --task-model codex:gpt-6-astra:medium --review-model claude:opus:high docs/plans/feature.md
 
 # with project CLAUDE.md passthrough
-loopai --codex --pass-claude-md docs/plans/feature.md
+loopai --task-model codex --pass-claude-md docs/plans/feature.md
 ```
 
 Or persist via config:
 
 ```ini
 # in ~/.config/loopai/config or .loopai/config
-executor       = codex
+task_model     = codex:gpt-6-astra:medium
 pass_claude_md = true
 ```
 
 ### Extra codex arguments
 
-`--codex-args`, or `codex_args` in config, appends extra arguments to every codex invocation loopai composes — both `--codex` phases and external codex review under a Claude primary. Unlike `claude_args`, which replaces the claude command's whole argument list, these are strictly additive and land after loopai's own `-c` overrides and sandbox flags, so an explicit `-c` value wins on key collision. An explicit `--codex-args=` clears a value inherited from configuration. The `codex-as-claude.sh` wrapper path below is unaffected; it uses `claude_args` and its own `CODEX_*` variables.
+`--codex-args`, or `codex_args` in config, appends extra arguments to every codex invocation loopai composes — every phase whose spec names codex and every external codex reviewer. Unlike `claude_args`, which replaces the claude command's whole argument list, these are strictly additive and land after loopai's own `-c` overrides and sandbox flags, so an explicit `-c` value wins on key collision. An explicit `--codex-args=` clears a value inherited from configuration. The `codex-as-claude.sh` wrapper path below is unaffected; it uses `claude_args` and its own `CODEX_*` variables.
 
 ```bash
-loopai --codex '--codex-args=-c service_tier="default"' docs/plans/feature.md
+loopai --task-model codex '--codex-args=-c service_tier="default"' docs/plans/feature.md
 ```
 
 ```ini
@@ -56,29 +61,29 @@ codex_args = -c project_doc_fallback_filenames=["CLAUDE.md"]
 codex_args = -c project_doc_fallback_filenames=[\"CLAUDE.md\"]
 ```
 
-Last-occurrence-wins covers `-c key=value` only. Repeating any flag loopai already passes — one that takes a value or a bare switch — is a fatal codex parse error rather than an override, so set `codex_sandbox` instead of putting `--sandbox` here. First-class `--codex` runs also pass `--dangerously-bypass-approvals-and-sandbox` whenever the effective sandbox is `danger-full-access` (the default for `--codex`), so repeating that one aborts every phase as well. Extras land after the `exec` subcommand, so an option that exists only on the top-level `codex` command (`--search`) is a fatal `unexpected argument` error rather than a pass-through; most global options (`-c`, `--model`, `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too. A bare positional token becomes `codex exec`'s prompt, and codex then appends the prompt loopai sends on stdin as a trailing `<stdin>` block, so the task instructions are demoted to an appendix of the stray token.
+Last-occurrence-wins covers `-c key=value` only. Repeating any flag loopai already passes — one that takes a value or a bare switch — is a fatal codex parse error rather than an override, so set `codex_sandbox` instead of putting `--sandbox` here. Codex plan, task, and review phases also pass `--dangerously-bypass-approvals-and-sandbox` whenever the effective sandbox is `danger-full-access` (their default), so repeating that one aborts every phase as well. Extras land after the `exec` subcommand, so an option that exists only on the top-level `codex` command (`--search`) is a fatal `unexpected argument` error rather than a pass-through; most global options (`-c`, `--model`, `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too. A bare positional token becomes `codex exec`'s prompt, and codex then appends the prompt loopai sends on stdin as a trailing `<stdin>` block, so the task instructions are demoted to an appendix of the stray token.
 
-Extras are trusted input, like `codex_command`. They also reach the external codex reviewer that loopai otherwise pins to a read-only sandbox so it can only report findings. loopai never emits `--dangerously-bypass-approvals-and-sandbox` on that path, so codex accepts it alongside the `--sandbox read-only` pin and putting it here gives the reviewer write access to the repository; a first-class `--codex` run rejects the same value as a duplicate flag only when its effective sandbox is `danger-full-access` (the `--codex` default), because that is when loopai emits the flag itself — with `codex_sandbox` set to anything else the primary executor accepts the bypass silently as well.
+Extras are trusted input, like `codex_command`. They also reach the external codex reviewer that loopai otherwise pins to a read-only sandbox so it can only report findings. loopai never emits `--dangerously-bypass-approvals-and-sandbox` on that path, so codex accepts it alongside the `--sandbox read-only` pin and putting it here gives the reviewer write access to the repository; a codex phase rejects the same value as a duplicate flag only when its effective sandbox is `danger-full-access` (the codex phase default), because that is when loopai emits the flag itself — with `codex_sandbox` set to anything else codex phases accept the bypass silently as well.
 
 ### Requirements
 
-`--codex` requires the codex CLI version 0.130.0 or newer. The mode relies on `[features] multi_agent`, `[agents.<name>]` agent registration, and (with `--pass-claude-md`) `project_doc_fallback_filenames` — all supported in 0.130.0. Older codex versions silently ignore unknown `-c` overrides, so a misconfigured run will not error visibly. There is no runtime version check; verify with `codex --version`.
+A codex phase requires the codex CLI version 0.130.0 or newer. It relies on `[features] multi_agent`, `[agents.<name>]` agent registration, and (with `--pass-claude-md`) `project_doc_fallback_filenames` — all supported in 0.130.0. Older codex versions silently ignore unknown `-c` overrides, so a misconfigured run will not error visibly. There is no runtime version check; verify with `codex --version`.
 
-### Executor and reviewer combinations
+### Provider and reviewer combinations
 
-`--codex` can be combined with `--external-only` (legacy alias `--codex-only`) and with any explicit external reviewer. `external_review_tool = auto` selects the other first-class provider: Claude for a Codex primary, Codex for a Claude primary. Explicit `claude`, `codex`, and `custom` selections are honored, including same-provider review when deliberately requested; `none` disables the phase. For multiple reviewers, use `external_reviewers` as described below. `--pass-claude-md` requires the Codex executor, enabled either by `--codex` or `executor = codex` in config.
+Any task and review provider pair works, including Codex tasks with a Claude review block and the reverse, and each combines with `--external-only` and any explicit external reviewer. With `external_reviewers` unset, the automatic reviewer is the provider other than `task_model`'s: Claude for a Codex task phase, Codex for a Claude one. Explicit `claude`, `codex`, and `custom` entries are honored, including same-provider review when deliberately requested; an empty `external_reviewers` disables the phase. For multiple reviewers, use `external_reviewers` as described below. `--pass-claude-md` requires Codex as the task or review provider. Every distinct provider the run's phases and reviewer chain name has its binary checked at startup.
 
 ### Prompt customization
 
-`review_first.txt` and `review_second.txt` are shared between Claude and Codex executors. A user's customized `~/.config/loopai/prompts/review_first.txt` applies under both `--codex` and default Claude. The `{{agent:<name>}}` and `{{agents:dynamic}}` expansions within those prompts switch syntax per executor (Task tool for Claude, `spawn_agent` for Codex), so the same prompt body works for both. A customized `review_first.txt` without `{{agents:dynamic}}` disables project-specific dynamic agents under both executors; the first review iteration logs a warning naming the dropped agents.
+`review_first.txt` and `review_second.txt` are shared between Claude and Codex. A user's customized `~/.config/loopai/prompts/review_first.txt` applies whichever provider `review_model` names. The `{{agent:<name>}}` and `{{agents:dynamic}}` expansions within those prompts switch syntax with the review provider (Task tool for Claude, `spawn_agent` for Codex), so the same prompt body works for both. A customized `review_first.txt` without `{{agents:dynamic}}` disables project-specific dynamic agents under both providers; the first review iteration logs a warning naming the dropped agents.
 
-Under Codex all agents collapse into the single registered `reviewer` agent, so per-agent `model:` and `agent:` frontmatter is discarded with a `codex mode ignores frontmatter overrides for agent ...` warning (once per agent name). The agent body and its `description` are still used, so dynamic agent selection works the same under both executors.
+Under Codex all agents collapse into the single registered `reviewer` agent, so per-agent `model:` and `agent:` frontmatter is discarded with a `codex mode ignores frontmatter overrides for agent ...` warning (once per agent name). The agent body and its `description` are still used, so dynamic agent selection works the same under both providers.
 
-Under `--codex` loopai automatically prepends a section-level orchestration directive block (covering `spawn_agent` fork_context guard and `wait_agent` dead-agent retry) at runtime — you do NOT need to put those directives in your customized prompt files. The block is generated by `prependCodexReviewGuidance` in `pkg/processor/prompts.go` and only fires when `cfg.isCodexExecutor()` is true.
+When the review provider is Codex, loopai automatically prepends a section-level orchestration directive block (covering `spawn_agent` fork_context guard and `wait_agent` dead-agent retry) at runtime — you do NOT need to put those directives in your customized prompt files. The block is generated by `prependCodexReviewGuidance` in `pkg/processor/prompts.go` and fires only for a Codex review provider; `prependCodexTaskGuidance` does the same for the task prompt under a Codex task provider.
 
 ### User-level CLAUDE.md
 
-`--pass-claude-md` enables project-level `./CLAUDE.md` discovery only. For user-level `~/.claude/CLAUDE.md`, loopai never writes to the user's `~/.codex/` directory. At first `--codex --pass-claude-md` run, if `~/.claude/CLAUDE.md` exists and `~/.codex/AGENTS.md` does not, loopai prints a one-time hint suggesting `ln -s ~/.claude/CLAUDE.md ~/.codex/AGENTS.md` and continues. The user opts in by running the command themselves.
+`--pass-claude-md` enables project-level `./CLAUDE.md` discovery only. For user-level `~/.claude/CLAUDE.md`, loopai never writes to the user's `~/.codex/` directory. At the first `--pass-claude-md` run with a Codex task or review phase, if `~/.claude/CLAUDE.md` exists and `~/.codex/AGENTS.md` does not, loopai prints a one-time hint suggesting `ln -s ~/.claude/CLAUDE.md ~/.codex/AGENTS.md` and continues. The user opts in by running the command themselves.
 
 ## How it works (`claude_command` wrapper path)
 
@@ -118,7 +123,7 @@ loopai prompts instruct the agent to emit phase-specific signals such as `<<<RAL
 <claude_command> <claude_args...> [--model <model>] [--effort <level>] --print
 ```
 
-`--model` and `--effort` are injected when the current phase's `plan_model`/`task_model`/`review_model` config provides them (via `model[:effort]` syntax). Either, both, or neither may be present. Any matching flag already in `claude_args` is stripped before injection to avoid duplicates. Wrappers that don't implement these flags will ignore them via the catch-all `*) shift ;;` pattern.
+`--model` and `--effort` are injected when the current phase's `plan_model`/`task_model`/`review_model` spec provides them (the model and effort segments of `claude:model[:effort]`). A wrapper's model names need no Claude spelling: loopai skips the provider/model mismatch check when `claude_command` is a custom command, so `task_model = claude:gpt-5:high` reaches a codex-backed wrapper as `--model gpt-5 --effort high`. Either, both, or neither may be present. Any matching flag already in `claude_args` is stripped before injection to avoid duplicates. Wrappers that don't implement these flags will ignore them via the catch-all `*) shift ;;` pattern.
 
 The prompt is passed via stdin (not as a CLI argument). This avoids the cmd.exe 8191-character command-line limit on Windows, where large prompts (e.g., after variable expansion) can exceed the limit.
 
@@ -131,14 +136,13 @@ When `claude_args` has a value (default: `--dangerously-skip-permissions --outpu
 Use CLI flags when you want to test or switch providers without editing `~/.config/loopai/config` or `.loopai/config`. These flags override config for the current invocation only:
 
 ```bash
-loopai --claude-command=/path/to/wrapper.sh --external-review-tool=custom --custom-review-script=/path/to/review.sh docs/plans/feature.md
+loopai --claude-command=/path/to/wrapper.sh --external-reviewers=custom --custom-review-script=/path/to/review.sh docs/plans/feature.md
 ```
 
-`--external-review-tool` accepts `auto`, `claude`, `codex`, `custom`, or `none`.
-`auto` selects the provider opposite the primary executor when it is available.
-Explicit `claude` and `codex` selections are honored, including same-provider
-review. When `custom` is selected, `--custom-review-script` points at the script
-that receives the external review prompt file path.
+When a `custom` entry is listed, `--custom-review-script` points at the script
+that receives the external review prompt file path. The former
+`--external-review-tool` and `--external-review-model` flags were removed and fail
+at startup with the equivalent `--external-reviewers=` entry.
 
 For an ordered chain, use a comma-separated list of `provider[:model[:effort]]`
 entries in config or on the command line:
@@ -155,14 +159,11 @@ loopai \
   docs/plans/feature.md
 ```
 
-`external_reviewers` takes precedence over the legacy `external_review_tool` and
-`external_review_model` config keys. The `--external-reviewers` flag cannot be combined with
-`--external-review-tool` or `--external-review-model` in the same invocation. A chain inherited
-from another config layer still wins over the legacy keys; use an empty local value or
+A chain inherited from another config layer applies unless cleared; use an empty local value or
 `--external-reviewers=` to clear and disable it. Reviewers run in list order, and each runs until
 it reports no findings, reaches its independent iteration cap, or triggers its independent
-stalemate threshold. Reviewers only find issues; the primary executor evaluates findings and owns
-all repository writes, using `review_model` and then `task_model` as its fallback.
+stalemate threshold. Reviewers only find issues; the `review_model` provider (falling back to `task_model`'s)
+evaluates findings and owns all repository writes.
 
 A `custom` entry cannot include a model and requires `custom_review_script`; every custom entry
 uses that script. Providers may repeat, and every entry creates a distinct review loop; repeated
@@ -665,7 +666,7 @@ echo '{"type":"result","result":""}'
 - Test with: `echo "test" | your-wrapper | jq .` (each line should parse)
 
 **Timeout / stuck:**
-- loopai supports an optional per-session timeout via `--session-timeout` flag or `session_timeout` config option (e.g., `30m`, `1h`). In default Claude executor mode it applies to Claude calls only; under `--codex` it applies to every executor call. External codex/custom review in Claude mode is not affected.
-- loopai also supports `--idle-timeout` flag or `idle_timeout` config option (e.g., `5m`). Unlike session timeout (fixed wall-clock limit), idle timeout resets on each output line and fires only when the session goes silent. It applies to the Claude executor in default mode and to every executor call under `--codex`; external codex review in default-claude mode is not affected. Custom review is not affected.
+- loopai supports an optional per-session timeout via `--session-timeout` flag or `session_timeout` config option (e.g., `30m`, `1h`). It always applies to Claude calls; when `task_model` or `review_model` names codex it applies to every executor call. Otherwise external codex/custom review is not affected.
+- loopai also supports `--idle-timeout` flag or `idle_timeout` config option (e.g., `5m`). Unlike session timeout (fixed wall-clock limit), idle timeout resets on each output line and fires only when the session goes silent. It applies to every Claude call and every codex phase; external codex review is affected only when `task_model` or `review_model` names codex. Custom review is not affected.
 - Check if the underlying tool has its own timeout settings
 - For codex: adjust `CODEX_SANDBOX` if the sandbox is blocking operations

@@ -70,8 +70,8 @@ Do NOT reject issues just because they existed before this branch - fix them any
   earlier iterations of this loop, not only this session's, since each evaluation runs as a fresh session -
   plus any backlog entry, with `git add <paths>`, then commit with message: "fix: address external review findings" -
   a bare `git commit -m` would commit only the already-staged backlog entry and silently drop every accumulated fix.
-  Leave unstaged any dirty path you cannot attribute to this loop. Do NOT `git add -A`: `--review`,
-  `--external-only`, and `--codex-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work
+  Leave unstaged any dirty path you cannot attribute to this loop. Do NOT `git add -A`: `--review` and
+  `--external-only` run in the user's own checkout with no worktree, so a sweep commits their unrelated work
 - Output exactly: <<<RALPHEX:EXTERNAL_REVIEW_DONE>>>
 
 The EXTERNAL_REVIEW_DONE signal is valid only after the external review tool reports no actionable issues. Never emit it after fixing or dismissing findings.

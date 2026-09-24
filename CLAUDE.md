@@ -97,13 +97,12 @@ accepts only Orca's built-in TUI agents; once loopai is confirmed running the sk
 that tab through `orca terminal close --tab`, but only an idle shell with a null
 `agentIdentity` and a prompt as its last screen line, since a configured default tab or a
 setup-hook terminal looks like an extra tab too and is not the skill's to remove. It
-forwards only `--codex`, `--task-model`, `--review-model`, and
-`--external-reviewers` from its own arguments and stops on any other token,
+forwards only `--task-model`, `--review-model`, and `--external-reviewers` from
+its own arguments, requires a `claude`/`codex` prefix on the two model flags, and stops on any other token,
 because the flags are spliced into a shell command string and `--worktree` or
 `--serve` would break the Orca flow. `loopai-plan` ends by printing that
 invocation when an `orca` binary is on `PATH`, deriving the flags from the
-effective `executor`, `task_model`, `review_model`, and `external_reviewers`
-config keys, and offers to launch it. When adding or removing a
+effective `task_model`, `review_model`, and `external_reviewers` config keys, and offers to launch it. When adding or removing a
 skill, update `expected_skills` in `scripts/check-symlinks.sh` and the valid
 fixture inventory in `scripts/check-symlinks_test.sh`, then bump both manifest
 versions.
@@ -214,7 +213,7 @@ whose worktrees are removed after a run, so an entry written there would be lost
 before `--merge`. Capture is instructed on the four paths that can write: task,
 internal review, external-review evaluation, and plan creation. The three external
 *review* prompts deliberately omit it, since external reviewers are read-only and
-their findings reach the backlog through the primary evaluator. Each path states its
+their findings reach the backlog through the review-provider evaluator. Each path states its
 own commit rule, and they are not interchangeable. Task and internal review commit the
 entry in phase, and all three prompts stage it with `git add` first, since it is untracked and
 no commit picks it up on its own. No capture path sweeps with `git add -A`, `task.txt` included:
@@ -257,8 +256,8 @@ internal-review prompts, on a `runFull` run without `--worktree` whose `prepareB
 so all three sites name that case too rather than resting on the three no-worktree modes alone. Do not restore a bare
 "stage and commit them" there.
 `review_first.txt` and `review_second.txt` deliberately do not sweep and say so
-inline: `ModeReview` and `ModeCodexOnly` create no branch and no worktree, so `--review`,
-`--external-only`, and `--codex-only` commit in the user's own checkout, where a dirty tree is
+inline: `ModeReview` and `ModeCodexOnly` create no branch and no worktree, so `--review`
+and `--external-only` commit in the user's own checkout, where a dirty tree is
 allowed and never gated, and a sweep there would commit their unrelated work in progress. Those
 two prompts stage the files the model itself created or modified, and their entry-only
 `docs: add backlog entry` commit uses the pathspec form
@@ -280,7 +279,7 @@ entry, and drop every accumulated fix right before `EXTERNAL_REVIEW_DONE`. Those
 enumerating the commit from the diff alone drops a new test or helper the model wrote while fixing
 findings, which under `--worktree` then dies with the worktree. That explicit stage is deliberately
 not `git add -A`, for the same reason the internal-review prompts avoid one: these prompts also
-run under `--review`, `--external-only`, and `--codex-only`, which create no worktree. Staging does not
+run under `--review` and `--external-only`, which create no worktree. Staging does not
 weaken the stalemate reset either, since `diffFingerprint` runs `git diff HEAD`. Plan creation runs in the source checkout before
 the branch and worktree exist, so it stages that one file and commits it through the
 pathspec form `git commit -m "docs: add backlog entry" -- <entry>`; an uncommitted
@@ -304,8 +303,8 @@ evaluation prompts additionally bound the category unconditionally: a defect in 
 itself wrote is never out of scope, whether or not `{{PLAN_FILE}}` names a plan. Filing is
 dismissal-equivalent for the signal, so without that bound "outside this plan's scope" is a new
 way to end a review green with a defect this branch introduced. The bound must not be written as
-a consequence of the no-plan fallback alone: under `--review`, `--external-only`, and
-`--codex-only` there is additionally no plan for any finding to be out of scope of, but the
+a consequence of the no-plan fallback alone: under `--review` and `--external-only` there is
+additionally no plan for any finding to be out of scope of, but the
 dangerous case is the ordinary one where a plan is present.
 
 Agent files may carry YAML frontmatter parsed into `config.Options` (`model`,
@@ -325,46 +324,69 @@ block or folded scalar parses fine but yields embedded newlines, and the catalog
 renders the description as one Markdown list item followed by an indented
 invocation snippet, so continuation lines would land unindented between the two.
 
-`validateModelSpecs` runs at startup, before external-review resolution, and rejects a
-`plan_model`, `task_model`, `review_model`, or legacy `external_review_model` value the
-executor cannot accept. `parseModelEffort` splits at the first colon, which makes an
-`external_reviewers` entry syntactically valid input for these keys: `codex:gpt-6-astra:high`
-resolves to the model `codex` with the reasoning effort `gpt-6-astra:high`, and nothing
-objects until the provider's API rejects the model — in the review phase, after a task phase
-that can run for hours. A second colon is therefore reported as the reviewer-entry confusion
-it almost always is, naming both halves the spec would have produced, and an effort outside
-`low|medium|high|xhigh|max` is reported as unknown. `max` stays accepted here for both
-executors: codex already drops it through a dedicated warning, and re-reporting it as unknown
-would turn a deliberate downgrade into a hard failure. Validation runs on the resolved spec,
-so a CLI flag overriding a bad config value passes exactly as the executors would see it.
-`resolveExternalReviewSelection` applies the same effort list to the chain it resolves: it
-wraps `resolveReviewerChain` and calls `validateReviewerEfforts` on the result, because
-that resolver returns from several branches — the chain, the legacy single reviewer, the
-modes that disable review — and a check placed inside one of them leaves the others
-unguarded. The wrapper matters because `config.ParseExternalReviewers` checks the
-separator count and the provider name but never the effort value, so a typo would otherwise
-reach the reviewer process and fail there — after the task phase, and only for that one
-reviewer in the chain.
+Every model-bearing setting shares one grammar, `provider[:model[:effort]]`, parsed by
+`config.ParseProviderSpec`: `plan_model`, `task_model`, `review_model`, and each
+`external_reviewers` entry (`ParseExternalReviewers` reuses the parser and keeps its own
+`custom`-carries-no-model rule). The provider prefix is mandatory; an empty model segment
+means the provider CLI's default, so `codex::medium` sets effort alone. There is no
+implicit provider selection: `--codex`, the `executor` key, and model-name inference are
+gone. The provider is a property of the phase, not the run. `task_model`'s provider runs
+the task phase and an unset `task_model` means Claude — a default, not an inference;
+`review_model`'s provider runs internal review, external-findings evaluation, finalize,
+and report (the four consumers of the runner's review executor); `plan_model`'s runs plan
+creation; the latter two inherit `task_model` whole, provider included, when unset.
+`resolvePhaseProviders` resolves the three providers into the runtime-only
+`Config.PlanProvider`/`TaskProvider`/`ReviewProvider` fields and rejects
+`--pass-claude-md` unless Codex runs the task or review phase. The processor does not read
+those fields: `processor.Config.taskSpec()`/`reviewSpec()` derive each phase's provider
+from its own spec, `executorFactory.Build` constructs the task and review executors from
+them separately (the review slot stays nil when provider, model, and effort all match the
+task), and prompt rendering takes the provider of the phase running the prompt, so a
+Claude review block under a Codex task phase launches Task-tool agents while the task
+prompt keeps its Codex guidance. A provider mismatch there degrades review silently rather
+than failing, which is why agent syntax follows the phase and not the run.
 
-`config.ModelProvider` recognizes case-insensitive model prefixes in `model[:effort]` specs,
-returning the Claude/Codex provider or an empty string for unknown names. `applyCodexOverrides`
-resolves the primary in order: `--codex`, an explicit `executor` key (`ExecutorSet`, including
-an empty local reset), then inference from the effective task model, otherwise Claude.
-Inference requires `IsRealClaudeCommand()`; `codex_model` is deliberately not consulted because
-it can configure an external reviewer under a Claude primary. `validateStartupModels` calls
-`validateModelSpecs` then `validateModelProviders`, before external-review resolution. Provider
-validation checks the effective plan/task/review specs and skips the check when the selected
-primary uses a wrapper (`IsRealClaudeCommand`/`IsRealCodexCommand`).
-`resolveExternalReviewSelection` calls `validateReviewerProviders` immediately after
-`validateReviewerEfforts` on every resolved chain; explicit reviewer providers must match known
-models, with custom reviewers, wrapper commands, and unknown names skipped. Legacy reviewer
-errors name the tool/model config keys instead of a chain entry. `Config.ExecutorSource` records the
-selection source and flows into `startupInfo.ExecutorSource`: the banner appends it for Codex
-and prints a Claude executor line only for an inferred choice, preserving the default banner.
+`validateStartupModels` runs `validateModelSpecs` at startup, before external-review
+resolution, on the resolved plan, task, and review specs, so a CLI flag overriding a bad
+config value passes exactly as the executors would see it. `validateModelSpec` checks
+grammar, provider, effort, and provider/model consistency in one pass. A spec without a
+provider segment reports the value and a rewrite whose provider comes from
+`config.ModelProvider` (`opus:high` → `claude:opus:high`), which is the function's surviving
+role besides the mismatch check: it recognizes case-insensitive model prefixes and rejects
+`codex:opus`, unless the named provider's command is a wrapper
+(`IsRealClaudeCommand`/`IsRealCodexCommand`) that defines its own model names. `custom` is
+rejected for a phase spec. An effort outside `low|medium|high|xhigh|max` is reported as
+unknown; `max` stays accepted for both providers, since codex already drops it through a
+dedicated warning and re-reporting it would turn a deliberate downgrade into a hard failure.
+`resolveExternalReviewSelection` applies the same effort list to the chain it resolves: it
+wraps `resolveReviewerChain` and calls `validateReviewerEfforts` and then
+`validateReviewerProviders` on the result, because that resolver returns from several
+branches — the chain, the automatic reviewer, the modes that disable review — and a check
+placed inside one of them leaves the others unguarded. `config.ParseExternalReviewers`
+checks the separator count and the provider name but never the effort value, so a typo would
+otherwise reach the reviewer process and fail there — after the task phase, and only for that
+one reviewer in the chain. Explicit reviewer providers must match known models, with custom
+reviewers, wrapper commands, and unknown names skipped.
+
+Removed spellings fail loudly rather than being ignored. `rejectRemovedFlags` runs through
+`validateFlags` before config loading and dependency checks, so a machine without the codex
+binary still gets the migration message; `--codex`, `--codex-only`,
+`--external-review-tool`, and `--external-review-model` stay declared as hidden `opts` fields
+because deleting them makes go-flags answer with a bare `unknown flag`, and the two
+external-review flags fold into one ready `--external-reviewers=` entry. The config keys
+`executor`, `external_review_tool`, `external_review_model`, `codex_model`, and
+`codex_reasoning_effort` are rejected by `checkRemovedKeys` at every config layer, each
+error naming the replacement spelling. `checkExecutionDeps` checks every distinct provider
+of the phases the mode runs, each missing binary with its own error, then the reviewer chain
+under the existing explicit/automatic rules. The startup banner prints one
+`<phase>: <provider> <model>[:effort]` line per phase the mode runs, with Codex-only
+settings indented under the first Codex phase; cmux labels prefix each phase with its
+provider once the phases' providers differ, and Orca plan and review-block titles name their
+own provider.
 
 `external_reviewers` configures an ordered comma-separated reviewer chain using
-`provider[:model[:effort]]` entries. It takes precedence over the legacy
-`external_review_tool` and `external_review_model` keys. `custom` entries use
+`provider[:model[:effort]]` entries. When it is unset, the provider other than
+`task_model`'s reviews automatically, gated by `codex_enabled`. `custom` entries use
 `custom_review_script` and cannot specify a model. An explicitly empty value
 clears an inherited chain and disables external review.
 
@@ -478,17 +500,17 @@ no notification, so a half-filled `notify_slack_*`/`notify_email_*` block must n
 be what stops it. Notification setup covers only the plan-executing paths — the
 close-out commands and watch-only mode return before it for the same reason.
 
-The primary executor owns all repository writes. External reviewers produce findings only; the primary evaluates and fixes them using `review_model`, falling back to `task_model`. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
+The task and review providers own all repository writes. External reviewers produce findings only; the `review_model` provider (falling back to `task_model`'s) evaluates and fixes them. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
 
 Completion reporting is split between durable fact collection and model assessment. `processor.RunRecord` is the persisted run-level model; `phase.RunRecorder`, supplied through `phase.Deps`, lets task, internal-review, external-review, and post-review phases record events without depending on the processor store. `Runner` owns the concrete recorder and saves `.loopai/progress/<progress-log-stem>.run.json` atomically with mode `0600` after each event. The record captures phase/task counts and timings plus bounded reviewer/evaluator text; repository facts such as commits, name-status, diff totals, backlog entries, validation commands, and plan drift are collected separately at report time. `Runner.SetRunTimingsSource` reads non-finalizing `SectionTimer` and `ValidationTimer` snapshots at recorded events and before reporting; resumed records add prior measurements once. The report uses a finish timestamp captured before model assessment, while the final persisted record timestamp includes the report phase. Sidecar creation uses exclusive creation so existing files and symlink targets are never overwritten.
 
 `phase.ReportPhase` runs after finalize and before the successful review-checkpoint clear on every review pipeline when `report_enabled` is true. It receives rendered deterministic facts and returns ordinary assistant Markdown; the model must not write the repository file because a single-plan worktree run archives through `MainGitSvc` in the main checkout, outside the executor's worktree. `Runner.Report()` exposes the extracted report, or a nine-section facts-only fallback when model assessment is unavailable. `MovePlanToCompletedWithReport` writes `docs/plans/completed/<stem>.report.md` beside the archived plan in the same commit; tasks-only never generates a report, and review-only modes may populate `Runner.Report()` but do not archive a sidecar because `shouldMovePlan` is false. A non-empty review-checkpoint invalidation reason resets and removes stale run-record state together with the checkpoint. Current-invocation task counts and start time survive post-task invalidation so newly completed work remains in the report. The success clear intentionally removes only the checkpoint, preserving the record through report generation and archival; successful archival then removes the `.run.json` file.
 
-Claude is the default primary. `--codex` switches planning, tasks, internal reviews, evaluation, and finalize to Codex. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. In the legacy path, `external_review_tool = auto` selects the other provider when installed. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
+Claude runs every phase by default. `task_model = codex:<model>[:effort]` moves tasks to Codex, and with them planning and the review block unless `plan_model` or `review_model` names another provider. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. With the chain unset, the provider other than `task_model`'s is selected when installed. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
 
 Codex invocations use additive `-c` overrides so user `~/.codex/config.toml` settings remain available. loopai never writes to `~/.codex/`. `--pass-claude-md` lets Codex discover project `CLAUDE.md`; it does not install or link user-level files.
 
-`--codex-args` and the `codex_args` config key extend that additive contract: their value is tokenized by the shared `splitArgs`, which separates tokens on any unquoted, unescaped ASCII whitespace rather than the space alone — a tab or newline surviving the ini loader would otherwise fold into the neighboring token and turn the remainder into the bare positional `codex exec` takes as its prompt. The set is deliberately ASCII and not `unicode.IsSpace`, since no shell splits on U+00A0 and a non-breaking or thin space pasted from rendered documentation into an unquoted value would otherwise produce that same stray positional — and applies POSIX-shell backslash rules (literal inside single quotes, escaping only `"` and `\` inside double quotes, escaping the next rune when unquoted) so literal backslashes in Windows paths survive while the documented `[\"CLAUDE.md\"]` quote-escaping recipe still works, and appended to every codex invocation loopai composes, at both construction sites in `pkg/processor/executor_factory.go` — first-class `--codex` phases and external codex review under a Claude primary, which share `newBaseCodexExecutor`. The extras go *after* loopai's own `-c` overrides and sandbox flags, because codex resolves repeated `-c` keys last-occurrence-wins (verified against codex-cli 0.147.0), so a user value deliberately overrides the matching loopai one. This is the intentional asymmetry with `claude_args`, which replaces the claude command's argument list rather than extending it: loopai owns the `codex exec` invocation shape. An explicit empty `--codex-args=` clears an inherited config value through the `o.codexArgsSet` guard in `applyCLIOverrides` alone; there is deliberately no `Config.CodexArgsSet` mirroring `ClaudeArgsSet`, because that flag exists only so an empty `claude_args` means "no arguments" instead of "use the defaults", and empty codex extras already append nothing — the invocation stays byte-identical to a build without the flag. Four consequences of appending rather than merging are documented for users and deliberately not policed in code, since extras are trusted input like `codex_command`: `splitArgs` consumes unescaped quotes, so a `-c` value whose TOML type depends on them must escape them or codex fails to load its config and every phase dies at startup; last-occurrence-wins covers `-c key=value` only, so repeating any flag loopai already emits, valued or bare, is a fatal codex parse error rather than an override — `--sandbox` on every path, and `--dangerously-bypass-approvals-and-sandbox` on the first-class `--codex` path, where `codex.go` emits it whenever the effective sandbox is `danger-full-access`, which is the `--codex` default; the extras land after the `exec` subcommand, so an option only the top-level `codex` command accepts (`--search`) is a fatal unexpected-argument error rather than a pass-through, while the global options that matter here (`-c`, `--model`, `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too; and a bare positional token becomes `codex exec`'s prompt, demoting the one loopai sends on stdin to the trailing `<stdin>` block codex appends when both are present. Because the extras are appended on the shared base, they also reach the external reviewer whose `ForceReadOnly` pin exists so it cannot write — that pin holds against `codex_sandbox` but not against `--dangerously-bypass-approvals-and-sandbox` in `codex_args`, which codex accepts alongside `--sandbox read-only` precisely because loopai emits no bypass flag on the reviewer path. The CLI spelling is `--codex-args=<value>`: the values that matter start with `-`, so the detached form is rejected by go-flags before the run starts, and the documented examples use the attached form.
+`--codex-args` and the `codex_args` config key extend that additive contract: their value is tokenized by the shared `splitArgs`, which separates tokens on any unquoted, unescaped ASCII whitespace rather than the space alone — a tab or newline surviving the ini loader would otherwise fold into the neighboring token and turn the remainder into the bare positional `codex exec` takes as its prompt. The set is deliberately ASCII and not `unicode.IsSpace`, since no shell splits on U+00A0 and a non-breaking or thin space pasted from rendered documentation into an unquoted value would otherwise produce that same stray positional — and applies POSIX-shell backslash rules (literal inside single quotes, escaping only `"` and `\` inside double quotes, escaping the next rune when unquoted) so literal backslashes in Windows paths survive while the documented `[\"CLAUDE.md\"]` quote-escaping recipe still works, and appended to every codex invocation loopai composes, at both construction sites in `pkg/processor/executor_factory.go` — codex plan/task/review phases and external codex reviewers, which share `newBaseCodexExecutor`. The extras go *after* loopai's own `-c` overrides and sandbox flags, because codex resolves repeated `-c` keys last-occurrence-wins (verified against codex-cli 0.147.0), so a user value deliberately overrides the matching loopai one. This is the intentional asymmetry with `claude_args`, which replaces the claude command's argument list rather than extending it: loopai owns the `codex exec` invocation shape. An explicit empty `--codex-args=` clears an inherited config value through the `o.codexArgsSet` guard in `applyCLIOverrides` alone; there is deliberately no `Config.CodexArgsSet` mirroring `ClaudeArgsSet`, because that flag exists only so an empty `claude_args` means "no arguments" instead of "use the defaults", and empty codex extras already append nothing — the invocation stays byte-identical to a build without the flag. Four consequences of appending rather than merging are documented for users and deliberately not policed in code, since extras are trusted input like `codex_command`: `splitArgs` consumes unescaped quotes, so a `-c` value whose TOML type depends on them must escape them or codex fails to load its config and every phase dies at startup; last-occurrence-wins covers `-c key=value` only, so repeating any flag loopai already emits, valued or bare, is a fatal codex parse error rather than an override — `--sandbox` on every path, and `--dangerously-bypass-approvals-and-sandbox` on codex plan/task/review phases, where `codex.go` emits it whenever the effective sandbox is `danger-full-access`, which is the codex phase default; the extras land after the `exec` subcommand, so an option only the top-level `codex` command accepts (`--search`) is a fatal unexpected-argument error rather than a pass-through, while the global options that matter here (`-c`, `--model`, `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too; and a bare positional token becomes `codex exec`'s prompt, demoting the one loopai sends on stdin to the trailing `<stdin>` block codex appends when both are present. Because the extras are appended on the shared base, they also reach the external reviewer whose `ForceReadOnly` pin exists so it cannot write — that pin holds against `codex_sandbox` but not against `--dangerously-bypass-approvals-and-sandbox` in `codex_args`, which codex accepts alongside `--sandbox read-only` precisely because loopai emits no bypass flag on the reviewer path. The CLI spelling is `--codex-args=<value>`: the values that matter start with `-`, so the detached form is rejected by go-flags before the run starts, and the documented examples use the attached form.
 
 Alternative Claude-compatible providers live under `scripts/`. `scripts/copilot-as-claude/copilot-as-claude.sh` wraps GitHub Copilot CLI and uses native autopilot mode; plan creation deliberately uses `--autopilot --allow-all` without `--no-ask-user`. `scripts/pi-as-claude/pi-as-claude.sh` translates pi JSONL output and maps loopai model/effort settings to pi provider options. Detailed setup and wrapper behavior live in `docs/custom-providers.md`.
 
@@ -683,7 +705,7 @@ Smoke-test Claude findings with Codex evaluation and fixes:
 ```bash
 make e2e-codex
 cd /tmp/loopai-review-test
-.bin/loopai --codex --external-only
+.bin/loopai --task-model codex --external-only
 tail -f .loopai/progress/progress-codex.txt
 ```
 
