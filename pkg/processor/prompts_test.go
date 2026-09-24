@@ -2180,8 +2180,8 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 		// dismissal-equivalent, so a defect in the branch's own work must never be filable.
 		// plan creation is the only exception: it writes no code and emits no such signal.
 		ownWorkBound bool
-		// review and evaluation additionally run with no plan at all under --review,
-		// --external-only, and --codex-only, so their bound must not rest on the plan's scope.
+		// review and evaluation additionally run with no plan at all under --review and
+		// --external-only, so their bound must not rest on the plan's scope.
 		noPlanBound bool
 		// the exact commit rule the path states; the paths are not interchangeable, so a bare
 		// "commit" substring would pass on unrelated prompt text.
@@ -2237,7 +2237,7 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 
 			// filing is dismissal-equivalent for the signal, so an unbounded out-of-scope category
 			// would be a new way to end a review green with a defect this branch introduced. the
-			// bound holds with or without a plan: under --review, --external-only, and --codex-only
+			// bound holds with or without a plan: under --review and --external-only
 			// there is no plan for a finding to be out of scope of at all.
 			if tc.ownWorkBound {
 				assert.Contains(t, tc.prompt, "never file a finding about code this branch changed",
@@ -2247,7 +2247,7 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 				assert.Contains(t, tc.prompt, "in scope whether or",
 					"the bound must not depend on the no-plan fallback")
 			}
-			// --review, --external-only, and --codex-only create no branch and no worktree, and the
+			// --review and --external-only create no branch and no worktree, and the
 			// task phase runs without one whenever CreateBranchForPlan short-circuits on an
 			// already-checked-out feature branch, which skips its dirty-tree gate entirely. a
 			// `git add -A` on any of those paths commits the user's unrelated work in progress.
@@ -2276,7 +2276,7 @@ func TestPromptBuilder_BacklogCaptureInstructions(t *testing.T) {
 				// with the index deliberately non-empty, a bare `git commit -m` no longer fails with
 				// "no changes added to commit" - it succeeds and commits only the staged entry, so the
 				// final commit has to stage the unstaged fixes explicitly. it must not do that with
-				// `git add -A`: --external-only and --codex-only create no worktree and run in the
+				// `git add -A`: --review and --external-only create no worktree and run in the
 				// user's own checkout, where a sweep commits their unrelated work in progress.
 				assert.Contains(t, strings.ToLower(tc.prompt), "stage only the paths this external",
 					"the final commit must stage the accumulated fixes, not just the staged entry")

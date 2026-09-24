@@ -71,7 +71,7 @@ func parsePhaseSpec(value string, fallback config.ProviderSpec) config.ProviderS
 // buildPhaseExecutors builds the task executor and, only when the review phase resolves
 // to a different provider, model, or effort, a separate review executor; otherwise the
 // Review slot stays nil and the task executor handles review too. Both come from the
-// first-class builders, never the external-review ones, because the review block fixes
+// phase builders, never the external-review ones, because the review block fixes
 // what it finds and must be able to write.
 func (cfg Config) buildPhaseExecutors(log Logger) (task, review Executor) {
 	taskSpec, reviewSpec := cfg.taskSpec(), cfg.reviewSpec()
@@ -306,13 +306,14 @@ func (cfg Config) buildCodexExecutor(log Logger) *executor.CodexExecutor {
 }
 
 // newBaseCodexExecutor returns a CodexExecutor populated with the fields shared
-// between the external-review and first-class --codex builders. Callers layer on
+// between the external-review and codex phase builders. Callers layer on
 // Sandbox, MultiAgent, PassClaudeMd, and IdleTimeout as appropriate for their
-// role — see buildCodexExecutor (first-class) and buildExternalCodexExecutor
-// (claude mode). IdleTimeout is intentionally NOT set here: applying it to the
+// role — see buildCodexExecutor (phase) and buildExternalCodexExecutor
+// (reviewer). IdleTimeout is intentionally NOT set here: applying it to the
 // external codex review path silently shortened previously-idle-tolerant
-// review sessions for default-claude users, so it is wired only by
-// buildCodexExecutor where the user opted into --codex.
+// review sessions when every phase runs on claude, so it is wired by
+// buildCodexExecutor, where a phase spec names codex, and by
+// buildExternalCodexExecutor only when some phase does.
 func (cfg Config) newBaseCodexExecutor(log Logger) *executor.CodexExecutor {
 	e := &executor.CodexExecutor{
 		OutputHandler:        func(text string) { log.PrintAligned(text) },
@@ -323,8 +324,8 @@ func (cfg Config) newBaseCodexExecutor(log Logger) *executor.CodexExecutor {
 		return e
 	}
 	e.Command = cfg.AppConfig.CodexCommand
-	// set here so both codex paths carry the extras: first-class --codex and the
-	// external codex reviewer under a claude primary
+	// set here so both codex paths carry the extras: codex phase executors and the
+	// external codex reviewer
 	e.ExtraArgs = cfg.AppConfig.CodexArgs
 	e.TimeoutMs = cfg.AppConfig.CodexTimeoutMs
 	e.ErrorPatterns = cfg.AppConfig.CodexErrorPatterns

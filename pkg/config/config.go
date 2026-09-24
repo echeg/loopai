@@ -506,11 +506,11 @@ func isRealCommand(command, binary string) bool {
 	return name == binary
 }
 
-// CodexExecutorSandbox returns the sandbox mode to use when codex is the active
-// executor (--codex mode). Defaults to "danger-full-access" because the codex
+// CodexExecutorSandbox returns the sandbox mode for a codex phase executor (a plan,
+// task, or review spec naming codex). Defaults to "danger-full-access" because the codex
 // executor needs to write git metadata and commit; an explicit codex_sandbox in
-// user config wins. Distinct from the raw CodexSandbox field, which is what the
-// external-review codex (claude mode) reads directly.
+// user config wins. The external codex reviewer never reads either: it is pinned to
+// the read-only sandbox.
 func (c *Config) CodexExecutorSandbox() string {
 	if c == nil || !c.CodexSandboxSet || c.CodexSandbox == "" {
 		return "danger-full-access"

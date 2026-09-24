@@ -252,7 +252,7 @@ type startupInfo struct {
 	Phases                  []phaseBanner // one line per phase the mode runs, provider first
 	PassClaudeMd            bool
 	PreserveAnthropicAPIKey bool   // when true, surfaced in the banner so users can spot wrong-context runs before claude bills the wrong account
-	CodexSandbox            string // sandbox of the first-class codex executors, printed under the first codex phase
+	CodexSandbox            string // sandbox of the codex phase executors, printed under the first codex phase
 	ExternalReview          externalReviewSelection
 }
 
@@ -3505,7 +3505,7 @@ const bannerLabelWidth = len("external review: ")
 
 // printExecutorInfo prints one line per phase, provider first, then the external review
 // chain. Codex-only settings are indented under the first codex phase, since every
-// first-class codex executor shares them.
+// codex phase executor shares them.
 func printExecutorInfo(info startupInfo, colors *progress.Colors) {
 	codexDetailsPrinted := false
 	for _, phase := range info.Phases {

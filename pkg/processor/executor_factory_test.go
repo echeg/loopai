@@ -853,7 +853,7 @@ func TestRunner_New_PassClaudeMdFalse_DoesNotSetField(t *testing.T) {
 }
 
 func TestRunner_New_CodexExecutor_TaskAndReviewShareInstance(t *testing.T) {
-	// under --codex, task and review use the SAME codex executor instance with
+	// with a codex task_model and no review_model, task and review use the SAME codex executor instance with
 	// MultiAgent=true. enabling multi_agent for every phase means any prompt
 	// (task, review, finalize) can use {{agent:...}} expansions if customized,
 	// without paying for two separate codex configurations.
@@ -1102,7 +1102,7 @@ func TestExecutorFactory_Build_CodexArgs(t *testing.T) {
 			if tc.primary == config.ExecutorCodex {
 				taskExec, ok := execs.Task.(*executor.CodexExecutor)
 				require.True(t, ok)
-				assert.Equal(t, tc.codexArgs, taskExec.ExtraArgs, "first-class --codex task executor carries the extras")
+				assert.Equal(t, tc.codexArgs, taskExec.ExtraArgs, "codex task executor carries the extras")
 			}
 		})
 	}

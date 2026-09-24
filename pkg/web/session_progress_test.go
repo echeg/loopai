@@ -796,7 +796,7 @@ func TestPhaseFromSection(t *testing.T) {
 // regression coverage for round-3 dashboard-routing fix: internal review section
 // labels MUST NOT contain the executor name (e.g. "codex") because phaseFromSection
 // matches "codex" before "review". the fix uses a fixed "review N: ..." label so
-// that under --codex, internal review sections still route to PhaseReview and not
+// that when codex runs the review phase, internal review sections still route to PhaseReview and not
 // PhaseCodex (which is reserved for the external review phase).
 func TestPhaseFromSection_InternalReviewLabelRoutesToReview(t *testing.T) {
 	tests := []struct {

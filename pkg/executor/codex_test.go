@@ -55,7 +55,7 @@ func TestExecCodexRunner_childEnv(t *testing.T) {
 		want              []string
 	}{
 		{
-			name:              "first-class --codex strips ANTHROPIC_API_KEY and CLAUDECODE",
+			name:              "codex phase executor strips ANTHROPIC_API_KEY and CLAUDECODE",
 			stripAnthropicKey: true,
 			env:               []string{"PATH=/usr/bin", "CLAUDECODE=1", "ANTHROPIC_API_KEY=secret", "HOME=/home/user"},
 			want:              []string{"PATH=/usr/bin", "HOME=/home/user"},
@@ -290,8 +290,8 @@ func TestCodexExecutor_Run_DefaultSettings(t *testing.T) {
 }
 
 func TestCodexExecutor_Run_DangerFullAccessBypassesSandbox(t *testing.T) {
-	t.Run("first-class --codex emits bypass flag", func(t *testing.T) {
-		// MultiAgent=true is the first-class --codex signal (set by buildCodexExecutor).
+	t.Run("codex phase executor emits bypass flag", func(t *testing.T) {
+		// MultiAgent=true is the codex phase executor signal (set by buildCodexExecutor).
 		// danger-full-access requires the bypass flag for unattended runs.
 		var capturedArgs []string
 		mock := &mockCodexRunner{

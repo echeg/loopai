@@ -314,8 +314,11 @@ that sets any of the above must be hand-edited once.
 - [x] verify test coverage meets the project standard (80%+) (total 86.8%; every package this branch touches is above 80%, and the two below it, `pkg/git` 74.9% and `pkg/claudeswap` 72.7%, are unchanged by this branch)
 
 ### Task 13: [Final] Update project knowledge docs
-- [ ] fold the new provider model into the CLAUDE.md architecture section, replacing the executor-inference paragraph
-- [ ] verify no remaining live reference to `--codex`, `--codex-only`, `--external-review-tool`, `--external-review-model`, `executor =`, `codex_model`, or `codex_reasoning_effort` outside `CHANGELOG.md` and `docs/plans/completed/`
+- [x] fold the new provider model into the CLAUDE.md architecture section, replacing the executor-inference paragraph
+  - ➕ the fold itself landed in Task 11; this pass re-checked it and corrected the close-out paragraph, which still listed `--codex-only` among the modes writing their own progress record (now `--external-only`)
+- [x] verify no remaining live reference to `--codex`, `--codex-only`, `--external-review-tool`, `--external-review-model`, `executor =`, `codex_model`, or `codex_reasoning_effort` outside `CHANGELOG.md` and `docs/plans/completed/`
+  - ➕ stale "first-class --codex" comments in `pkg/executor/codex.go`, `pkg/processor/executor_factory.go`, `pkg/config/config.go`, and `cmd/loopai/main.go`, plus test comments/names in `pkg/executor`, `pkg/processor`, `pkg/web`, and `pkg/cmux`, now speak of codex phase executors and `--review`/`--external-only`; the `CodexExecutorSandbox` comment no longer claims the external reviewer reads the raw `codex_sandbox` (it is pinned read-only); the backlog entry `review-only-modes-commit-user-edits.md` drops `--codex-only`
+  - ⚠️ remaining matches are deliberate: removal errors and hidden `opts` fields, their tests, migration tables (README, `docs/custom-providers.md`, embedded config note, CLAUDE.md), the skill checkers' pattern lists, the loopai-orca skills' "was removed" troubleshooting rows, the internal `ModeCodexOnly` identifier whose `codex-only` value progress records persist, the implemented 2026-08-04 design spec under `docs/superpowers/specs/`, and the unrelated active plan `20260806-dynamic-review-agents.md`
 
 *Note: loopai automatically moves completed plans to `docs/plans/completed/`*
 

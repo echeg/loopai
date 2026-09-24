@@ -809,7 +809,7 @@ func TestRunner_Finalize_RunsInCodexOnlyMode(t *testing.T) {
 }
 
 func TestRunner_Finalize_CodexExecutor_RunsAllPhasesThroughSharedInstance(t *testing.T) {
-	// under --codex, task / review / finalize all run through a single shared codex
+	// with a codex task_model and no review_model, task / review / finalize all run through a single shared codex
 	// executor with MultiAgent=true. pin the call sequence so a future split into
 	// distinct instances would regress visibly.
 	tmpDir := t.TempDir()
@@ -1276,7 +1276,7 @@ func TestRunner_CodexAndPostReview_CommitPendingPrefix(t *testing.T) {
 		assert.Contains(t, capturedPrompts[2], "IMPORTANT: Before starting the review, run `git status --porcelain`")
 		assert.Contains(t, capturedPrompts[2], "fix: address code review findings")
 		// the prefix is the seventh commit-instruction site and runs on the no-worktree
-		// --review/--external-only/--codex-only paths, so it must carry the same pathspec bound
+		// --review/--external-only paths, so it must carry the same pathspec bound
 		// as the six prompts and must not contradict review_second.txt, which forbids the sweep
 		assert.Contains(t, capturedPrompts[2], "`git add <paths>`")
 		assert.Contains(t, strings.ToLower(capturedPrompts[2]), "do not `git add -a`")

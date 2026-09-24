@@ -37,8 +37,8 @@ type CodexRunner interface {
 // codex outputs streaming progress to stderr, final response to stdout.
 // when stdin is non-nil, it is connected to the child process's stdin (used to pass
 // the prompt via pipe instead of a CLI argument to avoid Windows 8191-char cmd limit).
-// stripAnthropicKey scopes ANTHROPIC_API_KEY filtering to first-class --codex runs;
-// external codex review in default claude mode keeps the host env intact so custom
+// stripAnthropicKey scopes ANTHROPIC_API_KEY filtering to codex phase executors (a plan,
+// task, or review spec naming codex); the external codex reviewer keeps the host env intact so custom
 // codex wrappers proxying through Anthropic (e.g., scripts/codex-as-claude/codex-as-claude.sh) keep
 // authenticating. CLAUDECODE is always stripped regardless of mode to prevent
 // nested-session errors when codex is launched from inside a Claude Code session.
@@ -49,8 +49,8 @@ type execCodexRunner struct {
 
 // childEnv builds the codex child-process env. CLAUDECODE is always stripped to
 // prevent nested-session errors. ANTHROPIC_API_KEY is stripped only when the
-// caller requested it (first-class --codex mode); default-claude external codex
-// review passes the key through so custom Anthropic-proxying wrappers keep working.
+// caller requested it (a codex phase executor); the external codex reviewer passes
+// the key through so custom Anthropic-proxying wrappers keep working.
 func (r *execCodexRunner) childEnv(env []string) []string {
 	if r.stripAnthropicKey {
 		return filterEnv(env, "ANTHROPIC_API_KEY", "CLAUDECODE")
@@ -114,7 +114,7 @@ type CodexExecutor struct {
 	Debug                bool                                  // enable debug output
 	ErrorPatterns        []string                              // patterns to detect in output (e.g., rate limit messages)
 	LimitPatterns        []string                              // patterns to detect rate limits (checked before error patterns)
-	MultiAgent           bool                                  // enable codex multi_agent feature + reviewer agent registration; set to true on the review-phase codex instance built by processor.New() for first-class --codex mode
+	MultiAgent           bool                                  // enable codex multi_agent feature + reviewer agent registration; set by processor.buildCodexExecutor on every codex phase executor (plan, task, review), never on the external reviewer
 	PassClaudeMd         bool                                  // pass project-level CLAUDE.md to codex via project_doc_fallback_filenames (set by processor.New() only for a codex task provider)
 	ForceReadOnly        bool                                  // require the read-only sandbox even when the runtime disables its default sandbox; used by external review so it cannot modify the project. holds against loopai config (codex_sandbox) but not against ExtraArgs, which is trusted user input and can carry --dangerously-bypass-approvals-and-sandbox
 	ExtraArgs            string                                // user-supplied extras (codex_args / --codex-args), appended after loopai's own -c overrides so an explicit user value wins on key collision
@@ -197,11 +197,11 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 
 	args := []string{"exec"}
 	args = append(args, e.configOverrides()...)
-	// --dangerously-bypass-approvals-and-sandbox is required for unattended first-class
-	// --codex runs (which use danger-full-access by default). External codex review in
-	// claude mode worked on master without this flag and adding it would silently change
-	// approval semantics for default-claude users; gate the flag on MultiAgent which is
-	// true only in first-class --codex (set by processor.buildCodexExecutor).
+	// --dangerously-bypass-approvals-and-sandbox is required for unattended codex phase
+	// executors (which use danger-full-access by default). The external codex reviewer
+	// worked on master without this flag and adding it would silently change its approval
+	// semantics; gate the flag on MultiAgent, which is true only on codex phase executors
+	// (set by processor.buildCodexExecutor).
 	if sandbox == "danger-full-access" && e.MultiAgent {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
@@ -238,10 +238,10 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 
 	// pass prompt via stdin to avoid Windows 8191-char command-line limit;
 	// codex reads from stdin when no positional prompt argument is given.
-	// MultiAgent signals first-class --codex (set by processor.buildCodexExecutor only;
-	// external codex review built by buildExternalCodexExecutor leaves it false), so it
-	// also gates ANTHROPIC_API_KEY stripping — default-claude external codex review
-	// preserves the host env so wrappers proxying through Anthropic keep working.
+	// MultiAgent signals a codex phase executor (set by processor.buildCodexExecutor only;
+	// the external reviewer built by buildExternalCodexExecutor leaves it false), so it
+	// also gates ANTHROPIC_API_KEY stripping — the external codex reviewer preserves the
+	// host env so wrappers proxying through Anthropic keep working.
 	stdinReader := strings.NewReader(prompt)
 	runner := e.runner
 	if runner == nil {
