@@ -50,13 +50,13 @@ type opts struct {
 	ClaudeCommand           string        `long:"claude-command" description:"override claude-compatible command for this run"`
 	ClaudeArgs              string        `long:"claude-args" description:"override claude-compatible command args for this run"`
 	CodexArgs               string        `long:"codex-args" description:"extra arguments appended to every codex invocation (additive; explicit -c values override loopai's)"`
-	ExternalReviewTool      string        `long:"external-review-tool" choice:"auto" choice:"claude" choice:"codex" choice:"custom" choice:"none" description:"override external review tool for this run"`
-	ExternalReviewModel     string        `long:"external-review-model" description:"external review model as model[:effort]"`
+	ExternalReviewTool      string        `long:"external-review-tool" hidden:"true" description:"removed; use --external-reviewers"`
+	ExternalReviewModel     string        `long:"external-review-model" hidden:"true" description:"removed; use --external-reviewers"`
 	ExternalReviewers       string        `long:"external-reviewers" description:"ordered external reviewers as provider[:model[:effort]],..."`
 	CustomReviewScript      string        `long:"custom-review-script" description:"override custom external review script for this run"`
 	Review                  bool          `short:"r" long:"review" description:"skip task execution, run full review pipeline"`
 	ExternalOnly            bool          `short:"e" long:"external-only" description:"skip tasks and first review; run external review, conditional post-review, and finalize"`
-	CodexOnly               bool          `long:"codex-only" description:"alias for --external-only (deprecated)"`
+	CodexOnly               bool          `long:"codex-only" hidden:"true" description:"removed; use --external-only"`
 	TasksOnly               bool          `short:"t" long:"tasks-only" description:"run only task phase, skip all reviews"`
 	BaseRef                 string        `short:"b" long:"base-ref" description:"override the base for review diffs; a branch name also becomes the base for non-worktree branch creation (branch name or commit hash)"`
 	Wait                    time.Duration `long:"wait" description:"wait duration on rate limit before retry (default: 10m; 0 disables retries)"`
@@ -65,7 +65,7 @@ type opts struct {
 	SkipFinalize            bool          `long:"skip-finalize" description:"skip finalize step even if enabled in config"`
 	PreserveAnthropicAPIKey bool          `long:"preserve-anthropic-api-key" description:"pass ANTHROPIC_API_KEY through to claude (for users authenticating Claude Code via API key rather than OAuth/keychain)"`
 	NoClaudeSwap            bool          `long:"no-claude-swap" description:"disable automatic claude-swap account rotation for this run"`
-	Codex                   bool          `long:"codex" description:"use codex CLI as the executor for task, review, and finalize phases"`
+	Codex                   bool          `long:"codex" hidden:"true" description:"removed; set the provider in --task-model"`
 	PassClaudeMd            bool          `long:"pass-claude-md" description:"pass project CLAUDE.md to codex via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is NOT auto-passed but a one-time setup hint is shown (codex executor only)"`
 	Worktree                bool          `long:"worktree" description:"run in isolated git worktree"`
 	Commit                  bool          `short:"c" long:"commit" description:"auto-commit the dirty source checkout before creating the worktree (requires --worktree)"`
@@ -105,13 +105,17 @@ type opts struct {
 	prSet             bool
 	executionModeSet  bool
 
-	claudeCommandSet       bool
-	claudeArgsSet          bool
-	codexArgsSet           bool
+	claudeCommandSet      bool
+	claudeArgsSet         bool
+	codexArgsSet          bool
+	externalReviewersSet  bool
+	customReviewScriptSet bool
+
+	// removed flags are still parsed, as hidden options, so rejectRemovedFlags can name the
+	// replacement instead of go-flags answering with a bare "unknown flag". the string flags
+	// need a set marker because an explicit empty value is still a use of the removed flag.
 	externalReviewToolSet  bool
 	externalReviewModelSet bool
-	externalReviewersSet   bool
-	customReviewScriptSet  bool
 }
 
 const commandUsage = "[OPTIONS] [plan-file[,plan-file...]]"
@@ -191,10 +195,10 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 	for _, name := range []string{
 		"max-iterations", "max-external-iterations", "review-patience",
 		"plan-model", "task-model", "review-model", "claude-command", "claude-args", "codex-args",
-		"external-review-tool", "external-review-model", "external-reviewers", "custom-review-script",
-		"review", "external-only", "codex-only", "tasks-only", "base-ref", "wait",
+		"external-reviewers", "custom-review-script",
+		"review", "external-only", "tasks-only", "base-ref", "wait",
 		"session-timeout", "idle-timeout", "skip-finalize", "preserve-anthropic-api-key",
-		"no-claude-swap", "codex", "pass-claude-md", "worktree",
+		"no-claude-swap", "pass-claude-md", "worktree",
 		"branch", "plan", "gen-agents", "serve", "watch", "init", "reset", "dump-defaults",
 	} {
 		if isFlagSet(parser, name) {
@@ -473,7 +477,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 	if resolveErr != nil {
 		return resolveErr
 	}
-	printExternalReviewWarnings(o, externalReview, cfg, os.Stderr)
+	printExternalReviewWarnings(externalReview, cfg, os.Stderr)
 	externalReview, limitRecovery, err := resolveStartupExecutionDeps(
 		o, cfg, reviewPreflight, externalReview, os.Stderr,
 	)
@@ -707,7 +711,6 @@ func resolveStartupExecutionDeps(
 	if err != nil {
 		return externalReviewSelection{}, nil, err
 	}
-	applyEffectiveExternalReview(cfg, resolved)
 	return resolved, detectClaudeSwapRecovery(o, cfg, resolved), nil
 }
 
@@ -1149,7 +1152,7 @@ func tryAutoPlanMode(ctx context.Context, err error, o opts, req executePlanRequ
 	}
 
 	// interactive plan creation only runs in full execution mode; explain when another mode suppresses it.
-	if o.Review || o.ExternalOnly || o.CodexOnly || o.TasksOnly {
+	if o.Review || o.ExternalOnly || o.TasksOnly {
 		return true, fmt.Errorf("interactive plan creation is not available in this mode; provide an existing plan file: %w", err)
 	}
 
@@ -2686,13 +2689,10 @@ func primaryProvider(cfg *config.Config) string {
 	return config.ExternalReviewToolClaude
 }
 
-// resolveExternalReviewSelection applies tool and model defaults after CLI and
-// config merging. ModeCodexOnly deliberately bypasses the legacy codex_enabled
-// gate because the user explicitly requested the external-review pipeline.
 // resolveExternalReviewSelection resolves the reviewer chain and validates it. The
 // validation is a wrapper rather than a line inside resolveReviewerChain because that
-// function returns from several branches - the chain, the legacy single reviewer, the
-// disabled modes - and an effort left unchecked on any of them reaches the reviewer
+// function returns from several branches - the configured chain, the automatic reviewer,
+// the disabled modes - and an effort left unchecked on any of them reaches the reviewer
 // process and fails there, after the task phase has already run.
 func resolveExternalReviewSelection(cfg *config.Config, mode processor.Mode) (externalReviewSelection, error) {
 	selection, err := resolveReviewerChain(cfg, mode)
@@ -2708,6 +2708,9 @@ func resolveExternalReviewSelection(cfg *config.Config, mode processor.Mode) (ex
 	return selection, nil
 }
 
+// resolveReviewerChain applies reviewer defaults after CLI and config merging. ModeCodexOnly
+// deliberately bypasses the codex_enabled gate because the user explicitly requested the
+// external-review pipeline.
 func resolveReviewerChain(cfg *config.Config, mode processor.Mode) (externalReviewSelection, error) {
 	if cfg == nil {
 		return externalReviewSelection{Resolved: true}, nil
@@ -2733,52 +2736,25 @@ func resolveReviewerChain(cfg *config.Config, mode processor.Mode) (externalRevi
 		return selection, nil
 	}
 
-	requested := cfg.ExternalReviewTool
-	if requested == "" {
-		requested = config.ExternalReviewToolAuto
+	// with no chain configured, the reviewer is picked automatically: the provider other
+	// than the primary, at its dynamic default model
+	selection := externalReviewSelection{Resolved: true, AutoSelected: true}
+	if !cfg.CodexEnabled && mode != processor.ModeCodexOnly {
+		selection.DisabledByCodexEnabled = true
+		return selection, nil
 	}
-	selection := externalReviewSelection{
-		Resolved:     true,
-		AutoSelected: requested == config.ExternalReviewToolAuto,
-		Explicit:     requested != config.ExternalReviewToolAuto,
+	provider := config.ExternalReviewToolCodex
+	if primaryProvider(cfg) == config.ExternalReviewToolCodex {
+		provider = config.ExternalReviewToolClaude
 	}
-
-	if requested == config.ExternalReviewToolAuto {
-		if !cfg.CodexEnabled && mode != processor.ModeCodexOnly {
-			selection.DisabledByCodexEnabled = true
-			return selection, nil
-		}
-		if primaryProvider(cfg) == config.ExternalReviewToolCodex {
-			requested = config.ExternalReviewToolClaude
-		} else {
-			requested = config.ExternalReviewToolCodex
-		}
-	}
-
-	if requested == config.ExternalReviewToolCustom && cfg.ExternalReviewModel != "" {
-		return externalReviewSelection{}, errors.New("--external-review-model cannot be used with --external-review-tool=custom")
-	}
-
-	switch requested {
-	case config.ExternalReviewToolClaude, config.ExternalReviewToolCodex:
-		model, effort, maxDropped := processor.ResolveExternalReviewerModelEffort(requested, cfg.ExternalReviewModel)
-		selection.Reviewers = []resolvedReviewer{{Provider: requested, Model: model, Effort: effort, MaxDropped: maxDropped}}
-	case config.ExternalReviewToolCustom:
-		selection.Reviewers = []resolvedReviewer{{Provider: requested}}
-	case config.ExternalReviewToolNone:
-		// custom reviewers do not have a provider model; none disables the phase.
-	default:
-		return externalReviewSelection{}, fmt.Errorf("unsupported external review tool %q", requested)
-	}
+	model, effort, maxDropped := processor.ResolveExternalReviewerModelEffort(provider, "")
+	selection.Reviewers = []resolvedReviewer{{Provider: provider, Model: model, Effort: effort, MaxDropped: maxDropped}}
 	return selection, nil
 }
 
-func printExternalReviewWarnings(o opts, selection externalReviewSelection, cfg *config.Config, w io.Writer) {
+func printExternalReviewWarnings(selection externalReviewSelection, cfg *config.Config, w io.Writer) {
 	if w == nil || cfg == nil {
 		return
-	}
-	if cfg.ExternalReviewersSet && (o.externalReviewToolSet || o.externalReviewModelSet) {
-		fmt.Fprintln(w, "warning: external_reviewers takes precedence; legacy external-review CLI flags are ignored (use --external-reviewers= to clear or disable the configured chain)")
 	}
 	warnedPrimaryMatch := make(map[string]bool)
 	maxDroppedWarned := false
@@ -2843,20 +2819,6 @@ func checkExecutionDeps(cfg *config.Config, selection externalReviewSelection, w
 	return selection, nil
 }
 
-func applyEffectiveExternalReview(cfg *config.Config, selection externalReviewSelection) {
-	if cfg == nil {
-		return
-	}
-	reviewer, ok := selection.firstReviewer()
-	if !ok {
-		cfg.ExternalReviewTool = config.ExternalReviewToolNone
-		cfg.ExternalReviewModel = ""
-		return
-	}
-	cfg.ExternalReviewTool = reviewer.Provider
-	cfg.ExternalReviewModel = reviewer.modelSpec()
-}
-
 // isWatchOnlyMode returns true if running in watch-only mode.
 // watch-only mode runs the web dashboard without executing any plan.
 func isWatchOnlyMode(o opts, configWatchDirs []string) bool {
@@ -2892,7 +2854,7 @@ func determineMode(o opts) processor.Mode {
 		return processor.ModePlan
 	case o.TasksOnly:
 		return processor.ModeTasksOnly
-	case o.ExternalOnly || o.CodexOnly:
+	case o.ExternalOnly:
 		return processor.ModeCodexOnly
 	case o.Review:
 		return processor.ModeReview
@@ -2915,14 +2877,10 @@ func worktreeIgnoredWarning(o opts, mode processor.Mode) string {
 		}
 		flag = "--review"
 	case processor.ModeCodexOnly:
-		switch {
-		case o.ExternalOnly:
-			flag = "--external-only"
-		case o.CodexOnly:
-			flag = "--codex-only"
-		default:
+		if !o.ExternalOnly {
 			return ""
 		}
+		flag = "--external-only"
 	default:
 		return ""
 	}
@@ -2994,7 +2952,7 @@ func validateStartupModels(o opts, cfg *config.Config) error {
 	return validateModelProviders(o, cfg)
 }
 
-// validateModelSpecs rejects plan, task, review, and legacy external-review model specs
+// validateModelSpecs rejects plan, task, and review model specs
 // that the executor cannot accept. The specs are parsed by splitting at the first colon,
 // which makes an external_reviewers entry (provider:model:effort) syntactically valid
 // input: "codex:gpt-6-astra:high" resolves to the model "codex" with the reasoning effort
@@ -3006,7 +2964,6 @@ func validateModelSpecs(o opts, cfg *config.Config) error {
 		{"--plan-model / plan_model", resolveSpec(o.PlanModel, cfg.PlanModel)},
 		{"--task-model / task_model", resolveSpec(o.TaskModel, cfg.TaskModel)},
 		{"--review-model / review_model", resolveSpec(o.ReviewModel, cfg.ReviewModel)},
-		{"--external-review-model / external_review_model", resolveSpec(o.ExternalReviewModel, cfg.ExternalReviewModel)},
 	}
 	for _, spec := range specs {
 		if err := validateModelSpec(spec.flag, spec.value); err != nil {
@@ -3101,9 +3058,6 @@ func validateReviewerProviders(selection externalReviewSelection, cfg *config.Co
 			spec += ":" + reviewer.Effort
 		}
 		label := fmt.Sprintf("external reviewer entry %d (%s)", i+1, reviewer.Provider)
-		if !cfg.ExternalReviewersSet {
-			label = fmt.Sprintf("--external-review-tool (%s) / --external-review-model", reviewer.Provider)
-		}
 		return fmt.Errorf("%s names a %s model %q", label, provider, spec)
 	}
 	return nil
@@ -3111,6 +3065,11 @@ func validateReviewerProviders(selection externalReviewSelection, cfg *config.Co
 
 // validateFlags checks for conflicting CLI flags.
 func validateFlags(o opts) error {
+	// removed flags come first: combined with any other flag they would otherwise surface as
+	// an unrelated conflict, and the migration message is the one the user needs
+	if err := rejectRemovedFlags(o); err != nil {
+		return err
+	}
 	if err := validateCloseoutFlags(o); err != nil {
 		return err
 	}
@@ -3135,13 +3094,67 @@ func validateFlags(o opts) error {
 	if o.IdleTimeout < 0 {
 		return fmt.Errorf("--idle-timeout must be non-negative, got %s", o.IdleTimeout)
 	}
-	if err := validateExternalReviewFlags(o); err != nil {
-		return err
-	}
-	// --codex / --pass-claude-md / --external-only / --codex-only / --external-review-tool
-	// mutual-exclusion checks are deferred to applyCodexOverrides, which runs after the
-	// config-file merge so that a codex primary inferred from config is also enforced.
+	// --pass-claude-md is checked by applyCodexOverrides, which runs after the config-file
+	// merge so that a codex primary inferred from config is also enforced.
 	return nil
+}
+
+// rejectRemovedFlags turns every removed flag into an error naming what to write instead.
+// the flags are still declared, hidden, because go-flags would otherwise answer with a bare
+// "unknown flag"; run calls this through validateFlags, before config loading and dependency
+// checks, so a machine without the codex binary still receives the migration message.
+func rejectRemovedFlags(o opts) error {
+	var errs []error
+	if o.Codex {
+		errs = append(errs, errors.New("--codex was removed; set the provider in the model spec instead, "+
+			"e.g. --task-model codex:gpt-6-astra:medium"))
+	}
+	if o.CodexOnly {
+		errs = append(errs, errors.New("--codex-only was removed; use --external-only instead"))
+	}
+	if o.externalReviewToolSet || o.externalReviewModelSet {
+		errs = append(errs, removedExternalReviewFlagsError(o))
+	}
+	return errors.Join(errs...)
+}
+
+// removedExternalReviewFlagsError folds --external-review-tool and --external-review-model into
+// the single --external-reviewers entry they described, so the error carries a ready rewrite.
+func removedExternalReviewFlagsError(o opts) error {
+	var used []string
+	if o.externalReviewToolSet {
+		used = append(used, "--external-review-tool")
+	}
+	if o.externalReviewModelSet {
+		used = append(used, "--external-review-model")
+	}
+	removed := strings.Join(used, " and ") + " was removed"
+	if len(used) > 1 {
+		removed = strings.Join(used, " and ") + " were removed"
+	}
+
+	tool, model := strings.TrimSpace(o.ExternalReviewTool), strings.TrimSpace(o.ExternalReviewModel)
+	if !o.externalReviewToolSet || tool == config.ExternalReviewToolAuto {
+		tool = config.ModelProvider(model)
+	}
+	switch tool {
+	case config.ExternalReviewToolNone:
+		return fmt.Errorf("%s; disable external review with --external-reviewers=", removed)
+	case config.ExternalReviewToolCustom:
+		return fmt.Errorf("%s; use --external-reviewers=custom instead", removed)
+	case config.ExternalReviewToolClaude, config.ExternalReviewToolCodex:
+		entry := tool
+		if model != "" {
+			entry += ":" + model
+		}
+		return fmt.Errorf("%s; use --external-reviewers=%s instead", removed, entry)
+	}
+	if o.ExternalReviewTool == config.ExternalReviewToolAuto && model == "" {
+		return fmt.Errorf("%s; omit it to keep the automatic reviewer, "+
+			"or name reviewers with --external-reviewers=<provider>[:model[:effort]]", removed)
+	}
+	return fmt.Errorf("%s; use --external-reviewers=<provider>[:model[:effort]] instead, "+
+		"e.g. --external-reviewers=codex:gpt-6-astra:high", removed)
 }
 
 // validatePlanChain rejects chain-only incompatibilities and verifies every input before any
@@ -3160,7 +3173,6 @@ func validatePlanChain(o opts) error {
 		{"--plan", o.PlanDescription != ""},
 		{"--review", o.Review},
 		{"--external-only", o.ExternalOnly},
-		{"--codex-only", o.CodexOnly},
 	} {
 		if conflict.set {
 			return fmt.Errorf("%s cannot be combined with a plan chain", conflict.flag)
@@ -3218,7 +3230,6 @@ func validateGenAgentsFlags(o opts) error {
 		{"--plan", o.PlanDescription != ""},
 		{"--review", o.Review},
 		{"--external-only", o.ExternalOnly},
-		{"--codex-only", o.CodexOnly},
 		{"--tasks-only", o.TasksOnly},
 		{"--worktree", o.Worktree},
 		{"--commit", o.Commit},
@@ -3242,7 +3253,7 @@ func validateCommitFlags(o opts) error {
 	if !o.Commit {
 		return nil
 	}
-	if o.Review || o.ExternalOnly || o.CodexOnly {
+	if o.Review || o.ExternalOnly {
 		return errors.New("--commit is only supported for full, --tasks-only, or --plan worktree execution")
 	}
 	return nil
@@ -3255,12 +3266,12 @@ func hasExecutionMode(o opts) bool {
 	for _, set := range []bool{
 		o.PlanFile != "", o.MaxIterations != 0, o.MaxExternalIterations != 0,
 		o.ReviewPatience != 0, o.PlanModel != "", o.TaskModel != "", o.ReviewModel != "",
-		o.ClaudeCommand != "", o.ClaudeArgs != "", o.CodexArgs != "", o.ExternalReviewTool != "",
-		o.ExternalReviewModel != "", o.ExternalReviewers != "", o.CustomReviewScript != "",
-		o.PlanDescription != "", o.Review, o.ExternalOnly, o.CodexOnly, o.TasksOnly,
+		o.ClaudeCommand != "", o.ClaudeArgs != "", o.CodexArgs != "",
+		o.ExternalReviewers != "", o.CustomReviewScript != "",
+		o.PlanDescription != "", o.Review, o.ExternalOnly, o.TasksOnly,
 		o.BaseRef != "", o.waitSet || o.Wait != 0, o.sessionTimeoutSet || o.SessionTimeout != 0,
 		o.idleTimeoutSet || o.IdleTimeout != 0, o.SkipFinalize, o.PreserveAnthropicAPIKey,
-		o.NoClaudeSwap, o.Codex, o.PassClaudeMd, o.Worktree, o.Commit, o.Branch != "",
+		o.NoClaudeSwap, o.PassClaudeMd, o.Worktree, o.Commit, o.Branch != "",
 		o.Serve, len(o.Watch) != 0, o.Init, o.Reset, o.DumpDefaults != "", o.GenAgents,
 	} {
 		if set {
@@ -3330,17 +3341,9 @@ func validateCloseoutPositionals(o opts, merge, pr, report bool) error {
 		flag, len(o.extraArgs)+1, flag)
 }
 
-func validateExternalReviewFlags(o opts) error {
-	if o.externalReviewersSet && (o.externalReviewToolSet || o.externalReviewModelSet) {
-		return errors.New("--external-reviewers cannot be combined with --external-review-tool or --external-review-model")
-	}
-	return nil
-}
-
 // createRunner creates a processor.Runner with the given configuration.
 func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *status.PhaseHolder, commandTimingHandler func(string, time.Duration)) *processor.Runner {
 	externalReview := req.ExternalReview
-	applyEffectiveExternalReview(req.Config, externalReview)
 	reviewer, enabled := externalReview.firstReviewer()
 	reviewers := make([]config.ReviewerSpec, 0, len(externalReview.Reviewers))
 	for _, resolved := range externalReview.Reviewers {
@@ -5578,7 +5581,7 @@ type progressAssociation struct {
 }
 
 // recordedBranchIsFeature reports whether a record's mode means its Branch header names the
-// branch that run created. only task-executing modes create one; --review, --codex-only, and
+// branch that run created. only task-executing modes create one; --review, --external-only, and
 // plan creation all record whatever branch happened to be checked out, which is unrelated to the
 // plan and may be the base branch or "unknown" on detached HEAD. an unrecognized or absent mode
 // is accepted, since dropping a valid association falls back to deriving the branch from the plan
@@ -5883,7 +5886,6 @@ func isResetOnly(o opts) bool {
 	return o.PlanFile == "" &&
 		!o.Review &&
 		!o.ExternalOnly &&
-		!o.CodexOnly &&
 		!o.TasksOnly &&
 		!o.Serve &&
 		o.PlanDescription == "" &&
@@ -5999,8 +6001,9 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 		// unlike claude args there is nothing downstream that needs "set" vs "unset"
 		cfg.CodexArgs = o.CodexArgs
 	}
-	if err := applyExternalReviewCLIOverrides(o, cfg); err != nil {
-		return err
+	if o.externalReviewersSet {
+		cfg.ExternalReviewers = o.ExternalReviewers
+		cfg.ExternalReviewersSet = true
 	}
 	if o.customReviewScriptSet {
 		cfg.CustomReviewScript = o.CustomReviewScript
@@ -6012,52 +6015,29 @@ func enabledByCLI(configured, requested bool) bool {
 	return configured || requested
 }
 
-func applyExternalReviewCLIOverrides(o opts, cfg *config.Config) error {
-	if err := validateExternalReviewFlags(o); err != nil {
-		return err
-	}
-	if o.externalReviewToolSet {
-		cfg.ExternalReviewTool = o.ExternalReviewTool
-	}
-	if o.externalReviewModelSet {
-		cfg.ExternalReviewModel = o.ExternalReviewModel
-	}
-	if o.externalReviewersSet {
-		cfg.ExternalReviewers = o.ExternalReviewers
-		cfg.ExternalReviewersSet = true
-	}
-	return nil
-}
-
-// applyCodexOverrides resolves the primary executor after config merging: --codex
-// wins, otherwise a recognizable task model infers the executor when ClaudeCommand
-// is the real binary. It records the source and
-// validates --pass-claude-md against the resolved executor. External review
-// selection is resolved separately and is valid for either primary.
+// applyCodexOverrides resolves the primary executor after config merging: a
+// recognizable task model infers the executor when ClaudeCommand is the real binary,
+// otherwise claude is the default. It records the source and validates
+// --pass-claude-md against the resolved executor. External review selection is
+// resolved separately and is valid for either primary.
 func applyCodexOverrides(o opts, cfg *config.Config, warnW io.Writer) error {
 	_ = warnW
-	switch {
-	case o.Codex:
-		cfg.Executor = config.ExecutorCodex
-		cfg.ExecutorSource = config.ExecutorSourceFlag
-	default:
-		cfg.Executor = config.ExecutorClaude
-		cfg.ExecutorSource = config.ExecutorSourceDefault
-		if cfg.IsRealClaudeCommand() {
-			spec := resolveSpec(o.TaskModel, cfg.TaskModel)
-			if provider := config.ModelProvider(spec); provider != "" {
-				if provider == config.ExternalReviewToolCodex {
-					cfg.Executor = config.ExecutorCodex
-				}
-				cfg.ExecutorSource = fmt.Sprintf(config.ExecutorSourceInferred, spec)
+	cfg.Executor = config.ExecutorClaude
+	cfg.ExecutorSource = config.ExecutorSourceDefault
+	if cfg.IsRealClaudeCommand() {
+		spec := resolveSpec(o.TaskModel, cfg.TaskModel)
+		if provider := config.ModelProvider(spec); provider != "" {
+			if provider == config.ExternalReviewToolCodex {
+				cfg.Executor = config.ExecutorCodex
 			}
+			cfg.ExecutorSource = fmt.Sprintf(config.ExecutorSourceInferred, spec)
 		}
 	}
 	if o.PassClaudeMd {
 		cfg.PassClaudeMd = true
 	}
 	if cfg.PassClaudeMd && cfg.Executor != config.ExecutorCodex {
-		return errors.New("--pass-claude-md requires --codex (or a codex task_model)")
+		return errors.New("--pass-claude-md requires a codex task_model")
 	}
 	return nil
 }

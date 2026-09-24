@@ -1135,8 +1135,6 @@ func TestLoad_ExternalReviewToolDefaults(t *testing.T) {
 	cfg, err := Load(configDir)
 	require.NoError(t, err)
 
-	assert.Empty(t, cfg.ExternalReviewTool, "unset tool resolves to auto at startup")
-	assert.Empty(t, cfg.ExternalReviewModel)
 	assert.Empty(t, cfg.ExternalReviewers)
 	assert.False(t, cfg.ExternalReviewersSet)
 	assert.Empty(t, cfg.CustomReviewScript)
@@ -1626,8 +1624,6 @@ func TestConfig_JSONShape(t *testing.T) {
 		CodexCommand:            "codex",
 		CodexTimeoutMs:          1000,
 		CodexSandbox:            "read-only",
-		ExternalReviewTool:      "codex",
-		ExternalReviewModel:     "gpt-5.5:high",
 		ExternalReviewers:       "codex:gpt-5.5:high,claude:fable:max",
 		CustomReviewScript:      "/tmp/review.sh",
 		IterationDelayMs:        500,

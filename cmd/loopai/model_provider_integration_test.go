@@ -22,9 +22,9 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 		wantErrPart string // substring match for errors carrying temporary paths
 	}{
 		{
-			name:      "codex flag rejects Claude task",
+			name:      "removed codex flag names its replacement",
 			args:      []string{"--codex", "--task-model", "fable:high"},
-			wantError: `--task-model / task_model "fable:high" is a claude model, but the executor is codex (--codex)`,
+			wantError: "--codex was removed; set the provider in the model spec instead, e.g. --task-model codex:gpt-6-astra:medium",
 		},
 		{
 			name:        "global task model infers codex",
@@ -55,9 +55,8 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 			wantErrPart: "parse local config",
 		},
 		{
-			name:        "explicit codex wrapper accepts Claude model names",
-			global:      "codex_command = codex-wrapper\ntask_model = fable\n",
-			args:        []string{"--codex"},
+			name:        "codex wrapper runs an inferred codex task",
+			global:      "codex_command = codex-wrapper\ntask_model = gpt-6-astra:medium\n",
 			wantCommand: "codex-wrapper",
 		},
 	}

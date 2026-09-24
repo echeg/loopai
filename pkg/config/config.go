@@ -86,12 +86,12 @@ const (
 
 // Executor source descriptions for the runtime-only Config.ExecutorSource field.
 const (
-	ExecutorSourceFlag     = "--codex"
 	ExecutorSourceInferred = "inferred from task_model %q"
 	ExecutorSourceDefault  = "default"
 )
 
-// External review tool constants for Config.ExternalReviewTool.
+// External reviewer provider names used in external_reviewers entries; auto and none
+// label the automatic and the disabled selection.
 const (
 	ExternalReviewToolAuto   = "auto"
 	ExternalReviewToolClaude = "claude"
@@ -124,8 +124,6 @@ type Config struct {
 	CodexSandbox      string `json:"codex_sandbox"`
 	CodexSandboxSet   bool   `json:"-"` // tracks if codex_sandbox was explicitly set outside embedded defaults
 
-	ExternalReviewTool   string `json:"-"`                    // runtime-only: legacy --external-review-tool value, then the resolved single reviewer
-	ExternalReviewModel  string `json:"-"`                    // runtime-only: legacy --external-review-model value, then the resolved single reviewer spec
 	ExternalReviewers    string `json:"external_reviewers"`   // ordered provider[:model[:effort]] reviewer chain
 	ExternalReviewersSet bool   `json:"-"`                    // tracks if external_reviewers was explicitly set in user config
 	CustomReviewScript   string `json:"custom_review_script"` // path to custom review script

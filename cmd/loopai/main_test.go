@@ -2168,19 +2168,13 @@ func TestCommitFlagParsing(t *testing.T) {
 	t.Run("short flag sets commit", func(t *testing.T) {
 		o := parseTestOpts(t, "-c")
 		assert.True(t, o.Commit)
-		assert.False(t, o.CodexOnly)
+		assert.False(t, o.Codex)
 	})
 
 	t.Run("long flag sets commit", func(t *testing.T) {
 		o := parseTestOpts(t, "--commit")
 		assert.True(t, o.Commit)
-		assert.False(t, o.CodexOnly)
-	})
-
-	t.Run("codex only keeps long form", func(t *testing.T) {
-		o := parseTestOpts(t, "--codex-only")
-		assert.True(t, o.CodexOnly)
-		assert.False(t, o.Commit)
+		assert.False(t, o.Codex)
 	})
 }
 
@@ -2237,9 +2231,9 @@ func TestPRFlagParsing(t *testing.T) {
 	})
 
 	t.Run("bare flag does not swallow conflicting execution flag", func(t *testing.T) {
-		o := parseTestOpts(t, "--pr", "--codex")
+		o := parseTestOpts(t, "--pr", "--tasks-only")
 		assert.True(t, o.prSet)
-		assert.True(t, o.Codex)
+		assert.True(t, o.TasksOnly)
 		require.Error(t, validateFlags(o))
 	})
 
@@ -2337,18 +2331,13 @@ func TestDetermineMode(t *testing.T) {
 	}{
 		{name: "default_is_full", opts: opts{}, expected: processor.ModeFull},
 		{name: "review_flag", opts: opts{Review: true}, expected: processor.ModeReview},
-		{name: "codex_only_flag", opts: opts{CodexOnly: true}, expected: processor.ModeCodexOnly},
 		{name: "external_only_flag", opts: opts{ExternalOnly: true}, expected: processor.ModeCodexOnly},
-		{name: "both_external_and_codex_flags", opts: opts{ExternalOnly: true, CodexOnly: true}, expected: processor.ModeCodexOnly},
-		{name: "codex_only_takes_precedence_over_review", opts: opts{Review: true, CodexOnly: true}, expected: processor.ModeCodexOnly},
 		{name: "external_only_takes_precedence_over_review", opts: opts{Review: true, ExternalOnly: true}, expected: processor.ModeCodexOnly},
 		{name: "tasks_only_flag", opts: opts{TasksOnly: true}, expected: processor.ModeTasksOnly},
-		{name: "tasks_only_takes_precedence_over_codex", opts: opts{TasksOnly: true, CodexOnly: true}, expected: processor.ModeTasksOnly},
 		{name: "tasks_only_takes_precedence_over_external", opts: opts{TasksOnly: true, ExternalOnly: true}, expected: processor.ModeTasksOnly},
 		{name: "tasks_only_takes_precedence_over_review", opts: opts{TasksOnly: true, Review: true}, expected: processor.ModeTasksOnly},
 		{name: "plan_flag", opts: opts{PlanDescription: "add caching"}, expected: processor.ModePlan},
 		{name: "plan_takes_precedence_over_review", opts: opts{PlanDescription: "add caching", Review: true}, expected: processor.ModePlan},
-		{name: "plan_takes_precedence_over_codex", opts: opts{PlanDescription: "add caching", CodexOnly: true}, expected: processor.ModePlan},
 		{name: "plan_takes_precedence_over_external", opts: opts{PlanDescription: "add caching", ExternalOnly: true}, expected: processor.ModePlan},
 		{name: "plan_takes_precedence_over_tasks_only", opts: opts{PlanDescription: "add caching", TasksOnly: true}, expected: processor.ModePlan},
 	}
@@ -2382,22 +2371,10 @@ func TestWorktreeIgnoredWarning(t *testing.T) {
 			want: warningPrefix + "--external-only; review modes run in the current checkout and create no branch or worktree",
 		},
 		{
-			name: "codex only",
-			o:    opts{Worktree: true, CodexOnly: true},
-			mode: processor.ModeCodexOnly,
-			want: warningPrefix + "--codex-only; review modes run in the current checkout and create no branch or worktree",
-		},
-		{
 			name: "external only takes mode precedence over review",
-			o:    opts{Worktree: true, Review: true, ExternalOnly: true, CodexOnly: true},
+			o:    opts{Worktree: true, Review: true, ExternalOnly: true},
 			mode: processor.ModeCodexOnly,
 			want: warningPrefix + "--external-only; review modes run in the current checkout and create no branch or worktree",
-		},
-		{
-			name: "codex only takes mode precedence over review",
-			o:    opts{Worktree: true, Review: true, CodexOnly: true},
-			mode: processor.ModeCodexOnly,
-			want: warningPrefix + "--codex-only; review modes run in the current checkout and create no branch or worktree",
 		},
 		{name: "full mode", o: opts{Worktree: true}, mode: processor.ModeFull},
 		{name: "tasks only", o: opts{Worktree: true, TasksOnly: true}, mode: processor.ModeTasksOnly},
@@ -2405,7 +2382,6 @@ func TestWorktreeIgnoredWarning(t *testing.T) {
 		{name: "generate agents", o: opts{Worktree: true, GenAgents: true}, mode: processor.ModeGenAgents},
 		{name: "review without worktree", o: opts{Review: true}, mode: processor.ModeReview},
 		{name: "external only without worktree", o: opts{ExternalOnly: true}, mode: processor.ModeCodexOnly},
-		{name: "codex only without worktree", o: opts{CodexOnly: true}, mode: processor.ModeCodexOnly},
 		{name: "config worktree alone", o: opts{}, mode: processor.ModeReview},
 	}
 
@@ -2813,33 +2789,6 @@ func TestAutoPlanModeDetection(t *testing.T) {
 		// this verifies auto-plan-mode is skipped for --review flag
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, plan.ErrNoPlansFound, "review mode should skip auto-plan-mode")
-	})
-
-	t.Run("codex_only_mode_skips_auto_plan_mode", func(t *testing.T) {
-		// skip if configured claude command is not installed
-		skipIfClaudeNotAvailable(t)
-
-		dir := setupTestRepo(t)
-		origDir, err := os.Getwd()
-		require.NoError(t, err)
-		err = os.Chdir(dir)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = os.Chdir(origDir) })
-
-		// create empty plans dir
-		require.NoError(t, os.MkdirAll("docs/plans", 0o750))
-
-		// run in codex-only mode with canceled context - should not trigger auto-plan-mode
-		// plan is optional in codex-only mode, so it proceeds (then fails on canceled context)
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel() // cancel immediately to avoid actual execution
-
-		o := opts{CodexOnly: true, MaxIterations: 1, ConfigDir: t.TempDir()}
-		err = run(ctx, o)
-		// error should be from context cancellation or runner, not "no plans found"
-		// this verifies auto-plan-mode is skipped for --codex-only flag
-		require.Error(t, err)
-		assert.NotErrorIs(t, err, plan.ErrNoPlansFound, "codex-only mode should skip auto-plan-mode")
 	})
 
 	t.Run("external_only_mode_skips_auto_plan_mode", func(t *testing.T) {
@@ -3429,22 +3378,6 @@ func TestProviderOverrideFlags(t *testing.T) {
 		assert.True(t, cfg.ExternalReviewersSet)
 	})
 
-	t.Run("external_reviewers_conflicts_with_legacy_flags", func(t *testing.T) {
-		for _, legacy := range []string{"--external-review-tool=codex", "--external-review-model=gpt-5.6"} {
-			o := parseTestOpts(t, "--external-reviewers=codex", legacy)
-			require.ErrorContains(t, validateFlags(o), "cannot be combined")
-			require.ErrorContains(t, applyCLIOverrides(o, &config.Config{}), "cannot be combined")
-		}
-	})
-
-	t.Run("external_review_tool_accepts_auto_and_claude", func(t *testing.T) {
-		for _, tool := range []string{config.ExternalReviewToolAuto, config.ExternalReviewToolClaude} {
-			o := parseTestOpts(t, "--external-review-tool="+tool)
-			assert.Equal(t, tool, o.ExternalReviewTool)
-			assert.True(t, o.externalReviewToolSet)
-		}
-	})
-
 	t.Run("claude_command_overrides_config", func(t *testing.T) {
 		cfg := &config.Config{ClaudeCommand: "configured-claude"}
 		o := parseTestOpts(t, "--claude-command", "/tmp/run-claude")
@@ -3511,33 +3444,6 @@ func TestProviderOverrideFlags(t *testing.T) {
 		assert.Equal(t, `-c service_tier="default"`, cfg.CodexArgs)
 	})
 
-	t.Run("external_review_tool_overrides_config", func(t *testing.T) {
-		cfg := &config.Config{ExternalReviewTool: "codex"}
-		o := parseTestOpts(t, "--external-review-tool", "custom")
-
-		require.NoError(t, applyCLIOverrides(o, cfg))
-
-		assert.Equal(t, "custom", cfg.ExternalReviewTool)
-	})
-
-	t.Run("external_review_model_overrides_config", func(t *testing.T) {
-		cfg := &config.Config{ExternalReviewModel: "gpt-5.5:low"}
-		o := parseTestOpts(t, "--external-review-model", "opus:xhigh")
-
-		require.NoError(t, applyCLIOverrides(o, cfg))
-
-		assert.Equal(t, "opus:xhigh", cfg.ExternalReviewModel)
-	})
-
-	t.Run("empty_external_review_model_clears_config", func(t *testing.T) {
-		cfg := &config.Config{ExternalReviewModel: "gpt-5.5:low"}
-		o := parseTestOpts(t, "--external-review-model=")
-
-		require.NoError(t, applyCLIOverrides(o, cfg))
-
-		assert.Empty(t, cfg.ExternalReviewModel)
-	})
-
 	t.Run("custom_review_script_overrides_config", func(t *testing.T) {
 		cfg := &config.Config{CustomReviewScript: "/configured/review.sh"}
 		o := parseTestOpts(t, "--custom-review-script", "/tmp/review.sh")
@@ -3545,34 +3451,6 @@ func TestProviderOverrideFlags(t *testing.T) {
 		require.NoError(t, applyCLIOverrides(o, cfg))
 
 		assert.Equal(t, "/tmp/review.sh", cfg.CustomReviewScript)
-	})
-
-	t.Run("external_review_tool_cli_override_does_not_mutate_codex_enabled", func(t *testing.T) {
-		// Explicit providers bypass the legacy CodexEnabled auto-selection gate,
-		// so applyCLIOverrides does not need to flip CodexEnabled.
-		cfg := &config.Config{
-			CodexEnabled:       false,
-			CodexEnabledSet:    true,
-			ExternalReviewTool: "none",
-		}
-		o := parseTestOpts(t, "--external-review-tool", "custom")
-
-		require.NoError(t, applyCLIOverrides(o, cfg))
-
-		assert.Equal(t, "custom", cfg.ExternalReviewTool)
-		assert.False(t, cfg.CodexEnabled)
-		assert.True(t, cfg.CodexEnabledSet)
-	})
-
-	t.Run("external_review_tool_none_keeps_review_disabled", func(t *testing.T) {
-		cfg := &config.Config{CodexEnabled: false, CodexEnabledSet: true, ExternalReviewTool: "codex"}
-		o := parseTestOpts(t, "--external-review-tool", "none")
-
-		require.NoError(t, applyCLIOverrides(o, cfg))
-
-		assert.Equal(t, "none", cfg.ExternalReviewTool)
-		assert.False(t, cfg.CodexEnabled)
-		assert.True(t, cfg.CodexEnabledSet)
 	})
 }
 
@@ -3592,15 +3470,8 @@ func TestExternalReviewLegacyConfigKeysRejected(t *testing.T) {
 	require.ErrorContains(t, err, "config key external_review_tool was removed; use external_reviewers")
 
 	require.NoError(t, os.WriteFile(filepath.Join(localDir, "config"), []byte("plans_dir = plans\n"), 0o600))
-	cfg, err := config.LoadReadOnly(globalDir)
+	_, err = config.LoadReadOnly(globalDir)
 	require.NoError(t, err)
-	assert.Empty(t, cfg.ExternalReviewTool)
-	assert.Empty(t, cfg.ExternalReviewModel)
-
-	o := parseTestOpts(t, "--external-review-tool=codex", "--external-review-model=gpt-cli:xhigh")
-	require.NoError(t, applyCLIOverrides(o, cfg))
-	assert.Equal(t, config.ExternalReviewToolCodex, cfg.ExternalReviewTool, "legacy CLI flags still apply until removed")
-	assert.Equal(t, "gpt-cli:xhigh", cfg.ExternalReviewModel)
 }
 
 func TestExternalReviewersEmptyLocalValueDisablesGlobalChain(t *testing.T) {
@@ -3630,6 +3501,11 @@ func TestExternalReviewersEmptyLocalValueDisablesGlobalChain(t *testing.T) {
 	assert.Empty(t, selection.Reviewers)
 }
 
+// reviewerChainConfig returns a config whose external_reviewers chain is explicitly set.
+func reviewerChainConfig(chain string) config.Config {
+	return config.Config{ExternalReviewers: chain, ExternalReviewersSet: true}
+}
+
 func TestResolveExternalReviewSelection(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -3643,17 +3519,17 @@ func TestResolveExternalReviewSelection(t *testing.T) {
 		wantErr    string
 	}{
 		{name: "claude primary auto selects codex with codex defaults", cfg: config.Config{CodexEnabled: true}, mode: processor.ModeFull, wantTool: "codex", wantAuto: true},
-		{name: "codex primary auto selects claude dynamic default", cfg: config.Config{Executor: config.ExecutorCodex, CodexEnabled: true, ExternalReviewTool: "auto"}, mode: processor.ModeFull, wantTool: "claude", wantModel: "opus", wantEffort: "xhigh", wantAuto: true},
-		{name: "codex enabled false disables ordinary auto", cfg: config.Config{ExternalReviewTool: "auto"}, mode: processor.ModeFull, wantTool: "none", wantAuto: true},
-		{name: "external only forces auto despite legacy gate", cfg: config.Config{Executor: config.ExecutorCodex, ExternalReviewTool: "auto"}, mode: processor.ModeCodexOnly, wantTool: "claude", wantModel: "opus", wantEffort: "xhigh", wantAuto: true},
-		{name: "explicit provider ignores legacy gate", cfg: config.Config{ExternalReviewTool: "codex", ExternalReviewModel: "gpt-5.5:xhigh"}, mode: processor.ModeFull, wantTool: "codex", wantModel: "gpt-5.5", wantEffort: "xhigh"},
-		{name: "tasks only requires no external provider", cfg: config.Config{ExternalReviewTool: "claude", ExternalReviewModel: "opus:xhigh"}, mode: processor.ModeTasksOnly, wantTool: "none"},
-		{name: "explicit claude model overrides both defaults", cfg: config.Config{ExternalReviewTool: "claude", ExternalReviewModel: "sonnet:high"}, mode: processor.ModeFull, wantTool: "claude", wantModel: "sonnet", wantEffort: "high"},
-		{name: "claude effort-only keeps opus", cfg: config.Config{ExternalReviewTool: "claude", ExternalReviewModel: ":max"}, mode: processor.ModeFull, wantTool: "claude", wantModel: "opus", wantEffort: "max"},
-		{name: "codex explicit model and effort", cfg: config.Config{ExternalReviewTool: "codex", ExternalReviewModel: "gpt-5.6:low"}, mode: processor.ModeFull, wantTool: "codex", wantModel: "gpt-5.6", wantEffort: "low"},
-		{name: "codex max is dropped with warning signal", cfg: config.Config{ExternalReviewTool: "codex", ExternalReviewModel: "gpt-5.6:max"}, mode: processor.ModeFull, wantTool: "codex", wantModel: "gpt-5.6", wantEffort: "", wantMax: true},
-		{name: "explicit none", cfg: config.Config{ExternalReviewTool: "none"}, mode: processor.ModeFull, wantTool: "none"},
-		{name: "custom with model rejected", cfg: config.Config{ExternalReviewTool: "custom", ExternalReviewModel: "anything"}, mode: processor.ModeFull, wantErr: "cannot be used"},
+		{name: "codex primary auto selects claude dynamic default", cfg: config.Config{Executor: config.ExecutorCodex, CodexEnabled: true}, mode: processor.ModeFull, wantTool: "claude", wantModel: "opus", wantEffort: "xhigh", wantAuto: true},
+		{name: "codex enabled false disables ordinary auto", cfg: config.Config{}, mode: processor.ModeFull, wantTool: "none", wantAuto: true},
+		{name: "external only forces auto despite legacy gate", cfg: config.Config{Executor: config.ExecutorCodex}, mode: processor.ModeCodexOnly, wantTool: "claude", wantModel: "opus", wantEffort: "xhigh", wantAuto: true},
+		{name: "explicit chain ignores legacy gate", cfg: reviewerChainConfig("codex:gpt-5.5:xhigh"), mode: processor.ModeFull, wantTool: "codex", wantModel: "gpt-5.5", wantEffort: "xhigh"},
+		{name: "tasks only requires no external provider", cfg: reviewerChainConfig("claude:opus:xhigh"), mode: processor.ModeTasksOnly, wantTool: "none"},
+		{name: "explicit claude model overrides both defaults", cfg: reviewerChainConfig("claude:sonnet:high"), mode: processor.ModeFull, wantTool: "claude", wantModel: "sonnet", wantEffort: "high"},
+		{name: "claude effort-only keeps opus", cfg: reviewerChainConfig("claude::max"), mode: processor.ModeFull, wantTool: "claude", wantModel: "opus", wantEffort: "max"},
+		{name: "codex explicit model and effort", cfg: reviewerChainConfig("codex:gpt-5.6:low"), mode: processor.ModeFull, wantTool: "codex", wantModel: "gpt-5.6", wantEffort: "low"},
+		{name: "codex max is dropped with warning signal", cfg: reviewerChainConfig("codex:gpt-5.6:max"), mode: processor.ModeFull, wantTool: "codex", wantModel: "gpt-5.6", wantEffort: "", wantMax: true},
+		{name: "explicit empty chain disables review", cfg: reviewerChainConfig(""), mode: processor.ModeFull, wantTool: "none"},
+		{name: "custom with model rejected", cfg: reviewerChainConfig("custom:anything"), mode: processor.ModeFull, wantErr: "must not specify a model"},
 	}
 
 	for _, tc := range tests {
@@ -3728,34 +3604,21 @@ func TestResolveExternalReviewerChain(t *testing.T) {
 
 func TestExternalReviewWarnings(t *testing.T) {
 	t.Run("explicit same provider warns", func(t *testing.T) {
-		cfg := &config.Config{Executor: config.ExecutorCodex, ExternalReviewTool: config.ExternalReviewToolCodex}
+		cfg := &config.Config{Executor: config.ExecutorCodex, ExternalReviewers: "codex", ExternalReviewersSet: true}
 		selection, err := resolveExternalReviewSelection(cfg, processor.ModeFull)
 		require.NoError(t, err)
 		var buf bytes.Buffer
-		printExternalReviewWarnings(opts{}, selection, cfg, &buf)
+		printExternalReviewWarnings(selection, cfg, &buf)
 		assert.Contains(t, buf.String(), "matches the primary executor")
 	})
 
 	t.Run("auto cross provider does not warn", func(t *testing.T) {
-		cfg := &config.Config{Executor: config.ExecutorCodex, CodexEnabled: true, ExternalReviewTool: config.ExternalReviewToolAuto}
+		cfg := &config.Config{Executor: config.ExecutorCodex, CodexEnabled: true}
 		selection, err := resolveExternalReviewSelection(cfg, processor.ModeFull)
 		require.NoError(t, err)
 		var buf bytes.Buffer
-		printExternalReviewWarnings(opts{}, selection, cfg, &buf)
+		printExternalReviewWarnings(selection, cfg, &buf)
 		assert.Empty(t, buf.String())
-	})
-
-	t.Run("configured chain warns when legacy CLI flag is ignored", func(t *testing.T) {
-		cfg := &config.Config{ExternalReviewers: "codex", ExternalReviewersSet: true}
-		o := parseTestOpts(t, "--external-review-tool=none")
-		require.NoError(t, applyCLIOverrides(o, cfg))
-		selection, err := resolveExternalReviewSelection(cfg, processor.ModeFull)
-		require.NoError(t, err)
-
-		var buf bytes.Buffer
-		printExternalReviewWarnings(o, selection, cfg, &buf)
-		assert.Contains(t, buf.String(), "legacy external-review CLI flags are ignored")
-		assert.Contains(t, buf.String(), "--external-reviewers=")
 	})
 
 	t.Run("repeated providers emit each warning once", func(t *testing.T) {
@@ -3766,7 +3629,7 @@ func TestExternalReviewWarnings(t *testing.T) {
 		}}
 
 		var buf bytes.Buffer
-		printExternalReviewWarnings(opts{}, selection, cfg, &buf)
+		printExternalReviewWarnings(selection, cfg, &buf)
 		assert.Equal(t, 1, strings.Count(buf.String(), "matches the primary executor"))
 		assert.Equal(t, 1, strings.Count(buf.String(), "does not support 'max' reasoning effort"))
 	})
@@ -4065,7 +3928,6 @@ func TestValidateFlags(t *testing.T) {
 		{name: "merge_with_feature_argument_is_valid", opts: opts{mergeSet: true, PlanFile: "docs/plans/test.md"}, wantErr: false},
 		{name: "merge_with_review_conflicts", opts: opts{mergeSet: true, Review: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "merge_with_branch_conflicts", opts: opts{mergeSet: true, Branch: "feature"}, wantErr: true, errMsg: "other mode flags"},
-		{name: "merge_with_executor_option_conflicts", opts: opts{mergeSet: true, Codex: true}, wantErr: true, errMsg: "other mode flags"},
 		{name: "merge_with_clear_conflicts", opts: opts{mergeSet: true, Clear: true}, wantErr: true, errMsg: "--clear cannot be combined"},
 		{name: "pr_only_is_valid", opts: opts{prSet: true}, wantErr: false},
 		{name: "pr_with_explicit_base_is_valid", opts: opts{PR: "develop"}, wantErr: false},
@@ -4085,17 +3947,15 @@ func TestValidateFlags(t *testing.T) {
 		{name: "negative_idle_timeout_is_invalid", opts: opts{IdleTimeout: -5 * time.Minute}, wantErr: true, errMsg: "non-negative"},
 		{name: "positive_idle_timeout_is_valid", opts: opts{IdleTimeout: 5 * time.Minute}, wantErr: false},
 		{name: "zero_idle_timeout_is_valid", opts: opts{IdleTimeout: 0}, wantErr: false},
-		{name: "codex_alone_is_valid", opts: opts{Codex: true}, wantErr: false},
-		{name: "codex_with_pass_claude_md_is_valid", opts: opts{Codex: true, PassClaudeMd: true}, wantErr: false},
 		{name: "commit_with_worktree_is_valid", opts: opts{Commit: true, Worktree: true}, wantErr: false},
 		{name: "commit_without_worktree_is_deferred_until_config_merge", opts: opts{Commit: true}, wantErr: false},
 		{name: "commit_with_review_is_invalid", opts: opts{Commit: true, Worktree: true, Review: true}, wantErr: true, errMsg: "only supported for full"},
 		{name: "commit_with_external_only_is_invalid", opts: opts{Commit: true, Worktree: true, ExternalOnly: true}, wantErr: true, errMsg: "only supported for full"},
-		// the --codex / --external-only / --codex-only / --external-review-tool / --pass-claude-md
-		// mutex checks moved to applyCodexOverrides so a codex primary inferred from config is also enforced;
-		// validateFlags accepts those combos at CLI parse time and the post-merge gate rejects them.
-		{name: "codex_with_external_only_accepted_at_cli_stage", opts: opts{Codex: true, ExternalOnly: true}, wantErr: false},
-		{name: "codex_with_codex_only_accepted_at_cli_stage", opts: opts{Codex: true, CodexOnly: true}, wantErr: false},
+		// --pass-claude-md is checked by applyCodexOverrides after the config merge, so a codex
+		// primary inferred from config is also accepted; validateFlags lets it through at CLI parse time.
+		{name: "merge_with_executor_option_conflicts", opts: opts{mergeSet: true, PassClaudeMd: true}, wantErr: true, errMsg: "other mode flags"},
+		{name: "removed_codex_flag_is_rejected", opts: opts{Codex: true}, wantErr: true, errMsg: "--codex was removed"},
+		{name: "removed_flag_wins_over_closeout_conflict", opts: opts{mergeSet: true, Codex: true}, wantErr: true, errMsg: "--codex was removed"},
 		{name: "pass_claude_md_without_codex_is_valid_at_cli_stage", opts: opts{PassClaudeMd: true}, wantErr: false},
 	}
 
@@ -4310,6 +4170,113 @@ func TestResumeWorktreeFlagIsRemoved(t *testing.T) {
 	assert.Contains(t, err.Error(), "unknown flag")
 }
 
+func TestRejectRemovedFlags(t *testing.T) {
+	const codexMsg = "--codex was removed; set the provider in the model spec instead, e.g. --task-model codex:gpt-6-astra:medium"
+	const codexOnlyMsg = "--codex-only was removed; use --external-only instead"
+	const genericReviewers = "use --external-reviewers=<provider>[:model[:effort]] instead, e.g. --external-reviewers=codex:gpt-6-astra:high"
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "codex", args: []string{"--codex"}, want: codexMsg},
+		{name: "codex with a task model", args: []string{"--codex", "--task-model", "gpt-6-astra:medium"}, want: codexMsg},
+		{name: "codex only", args: []string{"--codex-only"}, want: codexOnlyMsg},
+		{name: "codex and codex only are both reported", args: []string{"--codex", "--codex-only"}, want: codexMsg + "\n" + codexOnlyMsg},
+		{
+			name: "tool alone",
+			args: []string{"--external-review-tool=codex"},
+			want: "--external-review-tool was removed; use --external-reviewers=codex instead",
+		},
+		{
+			name: "tool and model fold into one entry",
+			args: []string{"--external-review-tool=codex", "--external-review-model=gpt-5.6:high"},
+			want: "--external-review-tool and --external-review-model were removed; use --external-reviewers=codex:gpt-5.6:high instead",
+		},
+		{
+			name: "model alone takes its provider from the model name",
+			args: []string{"--external-review-model=fable:high"},
+			want: "--external-review-model was removed; use --external-reviewers=claude:fable:high instead",
+		},
+		{
+			name: "auto with a recognizable model names that provider",
+			args: []string{"--external-review-tool=auto", "--external-review-model=gpt-5.6"},
+			want: "--external-review-tool and --external-review-model were removed; use --external-reviewers=codex:gpt-5.6 instead",
+		},
+		{
+			name: "auto alone keeps the automatic reviewer",
+			args: []string{"--external-review-tool=auto"},
+			want: "--external-review-tool was removed; omit it to keep the automatic reviewer, or name reviewers with --external-reviewers=<provider>[:model[:effort]]",
+		},
+		{
+			name: "none disables through an empty chain",
+			args: []string{"--external-review-tool=none", "--external-review-model=opus"},
+			want: "--external-review-tool and --external-review-model were removed; disable external review with --external-reviewers=",
+		},
+		{
+			name: "custom carries no model",
+			args: []string{"--external-review-tool", "custom"},
+			want: "--external-review-tool was removed; use --external-reviewers=custom instead",
+		},
+		{name: "unknown model has no provider to suggest", args: []string{"--external-review-model", "my-alias"}, want: "--external-review-model was removed; " + genericReviewers},
+		{name: "explicit empty model is still a use", args: []string{"--external-review-model="}, want: "--external-review-model was removed; " + genericReviewers},
+		{name: "former invalid choice still gets the migration message", args: []string{"--external-review-tool=bogus"}, want: "--external-review-tool was removed; " + genericReviewers},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := parseTestOpts(t, tc.args...)
+			require.EqualError(t, rejectRemovedFlags(o), tc.want)
+			require.EqualError(t, validateFlags(o), tc.want, "validateFlags must surface the migration message first")
+		})
+	}
+
+	t.Run("no removed flag passes", func(t *testing.T) {
+		o := parseTestOpts(t, "--external-only", "--external-reviewers=codex:gpt-5.6:high", "--codex-args=-c x=1")
+		require.NoError(t, rejectRemovedFlags(o))
+	})
+}
+
+func TestRemovedFlagsAreHiddenFromHelp(t *testing.T) {
+	var o opts
+	parser := flags.NewParser(&o, flags.Default)
+	var help bytes.Buffer
+	parser.WriteHelp(&help)
+
+	assert.NotRegexp(t, `--codex\s`, help.String())
+	for _, removed := range []string{"--codex-only", "--external-review-tool", "--external-review-model"} {
+		assert.NotContains(t, help.String(), removed)
+	}
+	assert.Contains(t, help.String(), "--codex-args", "a live flag sharing the prefix must stay listed")
+	assert.Contains(t, help.String(), "--external-reviewers")
+}
+
+// the migration message must reach a user whose machine can no longer run the old setup: no
+// executor binary on PATH, and a config the loader would itself reject for a removed key.
+func TestRunRejectsRemovedFlagsBeforeConfigAndDependencies(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	t.Chdir(t.TempDir())
+	cfgDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "config"), []byte("executor = codex\n"), 0o600))
+
+	for _, args := range [][]string{
+		{"--codex"},
+		{"--codex-only"},
+		{"--external-review-tool=claude"},
+		{"--external-review-model=opus"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			o := parseTestOpts(t, append([]string{"--config-dir", cfgDir, "--no-color"}, args...)...)
+			err := run(t.Context(), o)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), " removed; ")
+			assert.NotContains(t, err.Error(), "config key executor", "config must not be loaded before the flag check")
+			assert.NotContains(t, err.Error(), "not found", "dependency checks must not run before the flag check")
+		})
+	}
+}
+
 func TestApplyCodexOverrides_ExecutorInference(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -4319,12 +4286,6 @@ func TestApplyCodexOverrides_ExecutorInference(t *testing.T) {
 		source    string
 		wantError bool
 	}{
-		{
-			name:     "flag wins over Claude model",
-			cfg:      config.Config{TaskModel: "fable"},
-			opts:     opts{Codex: true},
-			executor: config.ExecutorCodex, source: "--codex",
-		},
 		{
 			name:     "CLI model overrides config model and infers codex",
 			cfg:      config.Config{TaskModel: "fable:high"},
@@ -4361,12 +4322,6 @@ func TestApplyCodexOverrides_ExecutorInference(t *testing.T) {
 			executor: config.ExecutorCodex, source: `inferred from task_model "gpt-6-astra:medium"`,
 		},
 		{
-			name:     "flag still wins with Claude wrapper",
-			cfg:      config.Config{TaskModel: "fable", ClaudeCommand: "pi-as-claude.sh"},
-			opts:     opts{Codex: true},
-			executor: config.ExecutorCodex, source: "--codex",
-		},
-		{
 			name:     "inferred codex accepts pass Claude md",
 			cfg:      config.Config{TaskModel: "gpt-6-astra"},
 			opts:     opts{PassClaudeMd: true},
@@ -4384,7 +4339,7 @@ func TestApplyCodexOverrides_ExecutorInference(t *testing.T) {
 			var warnings bytes.Buffer
 			err := applyCodexOverrides(tt.opts, &tt.cfg, &warnings)
 			if tt.wantError {
-				require.ErrorContains(t, err, "--pass-claude-md requires --codex")
+				require.ErrorContains(t, err, "--pass-claude-md requires a codex task_model")
 			} else {
 				require.NoError(t, err)
 			}
@@ -4397,9 +4352,9 @@ func TestApplyCodexOverrides_ExecutorInference(t *testing.T) {
 }
 
 func TestApplyCodexOverrides_AllowsSymmetricExternalReview(t *testing.T) {
-	t.Run("cli_codex_plus_external_only_allowed", func(t *testing.T) {
+	t.Run("cli_codex_task_model_plus_external_only_allowed", func(t *testing.T) {
 		cfg := &config.Config{}
-		o := parseTestOpts(t, "--codex", "--external-only")
+		o := parseTestOpts(t, "--task-model", "gpt-6-astra", "--external-only")
 		var warnBuf bytes.Buffer
 		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
 		assert.Equal(t, config.ExecutorCodex, cfg.Executor)
@@ -4410,48 +4365,6 @@ func TestApplyCodexOverrides_AllowsSymmetricExternalReview(t *testing.T) {
 		o := parseTestOpts(t, "--external-only")
 		var warnBuf bytes.Buffer
 		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
-	})
-
-	t.Run("config_executor_codex_plus_cli_codex_only_allowed", func(t *testing.T) {
-		cfg := &config.Config{Executor: config.ExecutorCodex}
-		o := parseTestOpts(t, "--codex-only")
-		var warnBuf bytes.Buffer
-		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
-	})
-
-	t.Run("cli_codex_plus_external_review_tool_codex_allowed", func(t *testing.T) {
-		cfg := &config.Config{}
-		o := parseTestOpts(t, "--codex", "--external-review-tool", "codex")
-		require.NoError(t, applyCLIOverrides(o, cfg))
-		assert.Equal(t, config.ExternalReviewToolCodex, cfg.ExternalReviewTool)
-	})
-
-	t.Run("cli_codex_plus_external_review_tool_custom_allowed", func(t *testing.T) {
-		cfg := &config.Config{}
-		o := parseTestOpts(t, "--codex", "--external-review-tool", "custom")
-		require.NoError(t, applyCLIOverrides(o, cfg))
-		assert.Equal(t, config.ExternalReviewToolCustom, cfg.ExternalReviewTool)
-	})
-
-	t.Run("config_executor_codex_plus_cli_external_review_tool_custom_allowed", func(t *testing.T) {
-		cfg := &config.Config{Executor: config.ExecutorCodex}
-		o := parseTestOpts(t, "--external-review-tool", "custom")
-		require.NoError(t, applyCLIOverrides(o, cfg))
-		assert.Equal(t, config.ExternalReviewToolCustom, cfg.ExternalReviewTool)
-	})
-
-	t.Run("cli_codex_plus_external_review_tool_none_allowed", func(t *testing.T) {
-		cfg := &config.Config{}
-		o := parseTestOpts(t, "--codex", "--external-review-tool", "none")
-		require.NoError(t, applyCLIOverrides(o, cfg))
-		assert.Equal(t, "none", cfg.ExternalReviewTool)
-	})
-
-	t.Run("config_executor_codex_plus_cli_external_review_tool_none_allowed", func(t *testing.T) {
-		cfg := &config.Config{Executor: config.ExecutorCodex}
-		o := parseTestOpts(t, "--external-review-tool", "none")
-		require.NoError(t, applyCLIOverrides(o, cfg))
-		assert.Equal(t, "none", cfg.ExternalReviewTool)
 	})
 
 	t.Run("non_codex_executor_does_not_reject_external_only", func(t *testing.T) {
@@ -4482,77 +4395,29 @@ func TestApplyCLIOverrides_CommitRequiresEffectiveWorktree(t *testing.T) {
 	})
 }
 
-func TestCodexFlag_ApplyCLIOverrides(t *testing.T) {
-	t.Run("codex_flag_sets_executor_without_overriding_external_review", func(t *testing.T) {
-		cfg := &config.Config{ExternalReviewTool: "codex"}
-		o := parseTestOpts(t, "--codex")
-
-		require.NoError(t, applyCLIOverrides(o, cfg))
-
-		assert.Equal(t, config.ExecutorCodex, cfg.Executor)
-		assert.Equal(t, "codex", cfg.ExternalReviewTool)
-	})
-
+func TestCodexTaskModel_ApplyCLIOverrides(t *testing.T) {
 	t.Run("pass_claude_md_flag_sets_pass_claude_md", func(t *testing.T) {
 		cfg := &config.Config{}
-		o := parseTestOpts(t, "--codex", "--pass-claude-md")
+		o := parseTestOpts(t, "--task-model", "gpt-6-astra", "--pass-claude-md")
 
 		require.NoError(t, applyCLIOverrides(o, cfg))
 
 		assert.True(t, cfg.PassClaudeMd)
 	})
 
-	t.Run("absent_codex_flag_does_not_touch_executor", func(t *testing.T) {
-		cfg := &config.Config{Executor: "", ExternalReviewTool: "codex"}
+	t.Run("absent_codex_task_model_keeps_claude_executor", func(t *testing.T) {
+		cfg := &config.Config{Executor: ""}
 		o := parseTestOpts(t)
 
 		require.NoError(t, applyCLIOverrides(o, cfg))
 
 		assert.Empty(t, cfg.Executor)
-		assert.Equal(t, "codex", cfg.ExternalReviewTool)
-	})
-
-	t.Run("config_executor_codex_preserves_user_external_review_tool", func(t *testing.T) {
-		cfg := &config.Config{Executor: config.ExecutorCodex, ExternalReviewTool: "codex"}
-		o := parseTestOpts(t)
-		var warnBuf bytes.Buffer
-
-		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
-
-		assert.Equal(t, "codex", cfg.ExternalReviewTool)
-		assert.Empty(t, warnBuf.String())
-	})
-
-	t.Run("config_executor_codex_with_external_review_none_no_warning", func(t *testing.T) {
-		cfg := &config.Config{Executor: config.ExecutorCodex, ExternalReviewTool: "none"}
-		o := parseTestOpts(t)
-		var warnBuf bytes.Buffer
-
-		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
-
-		assert.Equal(t, "none", cfg.ExternalReviewTool)
-		assert.Empty(t, warnBuf.String())
-	})
-
-	t.Run("cli_external_review_tool_explicit_does_not_emit_warning", func(t *testing.T) {
-		// validateFlags now accepts --codex with --external-review-tool=none at the CLI
-		// stage (see TestValidateFlags), so applyCodexOverrides runs after it. this guards
-		// the no-warning branch: a user explicitly setting the flag to "none" should not
-		// see the codex-override warning.
-		cfg := &config.Config{Executor: config.ExecutorCodex, ExternalReviewTool: "none"}
-		o := parseTestOpts(t, "--external-review-tool", "none")
-		var warnBuf bytes.Buffer
-
-		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
-
-		assert.Equal(t, "none", cfg.ExternalReviewTool)
-		assert.Empty(t, warnBuf.String())
 	})
 
 	t.Run("config_codex_task_model_plus_cli_pass_claude_md_succeeds", func(t *testing.T) {
 		// post-merge gate: --pass-claude-md is acceptable when a codex task_model
-		// comes from config file, even without --codex on the CLI.
-		cfg := &config.Config{TaskModel: "gpt-6-astra", ExternalReviewTool: "none"}
+		// comes from config file rather than the CLI.
+		cfg := &config.Config{TaskModel: "gpt-6-astra"}
 		o := parseTestOpts(t, "--pass-claude-md")
 		var warnBuf bytes.Buffer
 
@@ -4566,26 +4431,13 @@ func TestCodexFlag_ApplyCLIOverrides(t *testing.T) {
 	t.Run("cli_pass_claude_md_without_any_codex_fails_post_merge", func(t *testing.T) {
 		// post-merge gate: --pass-claude-md without codex executor (neither CLI nor config)
 		// is rejected with a clear error message.
-		cfg := &config.Config{Executor: "", ExternalReviewTool: "none"}
+		cfg := &config.Config{Executor: ""}
 		o := parseTestOpts(t, "--pass-claude-md")
 		var warnBuf bytes.Buffer
 
 		err := applyCodexOverrides(o, cfg, &warnBuf)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--pass-claude-md requires --codex")
-		assert.Contains(t, err.Error(), "or a codex task_model")
-	})
-
-	t.Run("cli_codex_plus_pass_claude_md_succeeds_post_merge", func(t *testing.T) {
-		// redundant but valid: both flags on CLI.
-		cfg := &config.Config{Executor: "", ExternalReviewTool: "none"}
-		o := parseTestOpts(t, "--codex", "--pass-claude-md")
-		var warnBuf bytes.Buffer
-
-		require.NoError(t, applyCodexOverrides(o, cfg, &warnBuf))
-
-		assert.True(t, cfg.PassClaudeMd)
-		assert.Equal(t, config.ExecutorCodex, cfg.Executor)
+		assert.Contains(t, err.Error(), "--pass-claude-md requires a codex task_model")
 	})
 }
 
@@ -4751,7 +4603,7 @@ func TestRunHeaderParams(t *testing.T) {
 
 	t.Run("codex executor recorded", func(t *testing.T) {
 		cfg := &config.Config{Executor: config.ExecutorCodex}
-		got := runHeaderParams(parseTestOpts(t, "--codex"), cfg, processor.ModeFull)
+		got := runHeaderParams(parseTestOpts(t), cfg, processor.ModeFull)
 		assert.Equal(t, progress.RunParams{Executor: "codex"}, got)
 	})
 
@@ -4790,7 +4642,7 @@ func TestRunHeaderParams(t *testing.T) {
 	})
 
 	t.Run("resolved disabled review is recorded", func(t *testing.T) {
-		selection, err := resolveExternalReviewSelection(&config.Config{ExternalReviewTool: config.ExternalReviewToolNone}, processor.ModeFull)
+		selection, err := resolveExternalReviewSelection(&config.Config{ExternalReviewersSet: true}, processor.ModeFull)
 		require.NoError(t, err)
 
 		got := runHeaderParams(opts{}, &config.Config{}, processor.ModeFull, selection)
@@ -4799,7 +4651,8 @@ func TestRunHeaderParams(t *testing.T) {
 	})
 
 	t.Run("tasks only records disabled review", func(t *testing.T) {
-		selection, err := resolveExternalReviewSelection(&config.Config{ExternalReviewTool: config.ExternalReviewToolClaude}, processor.ModeTasksOnly)
+		cfg := reviewerChainConfig("claude")
+		selection, err := resolveExternalReviewSelection(&cfg, processor.ModeTasksOnly)
 		require.NoError(t, err)
 
 		got := runHeaderParams(opts{}, &config.Config{}, processor.ModeTasksOnly, selection)
@@ -4810,7 +4663,7 @@ func TestRunHeaderParams(t *testing.T) {
 func TestCodexModelBanner(t *testing.T) {
 	t.Run("task_model_sets_task_and_review", func(t *testing.T) {
 		cfg := &config.Config{}
-		got := codexModelBanner(parseTestOpts(t, "--codex", "--task-model", "gpt-5.6"), cfg)
+		got := codexModelBanner(parseTestOpts(t, "--task-model", "gpt-5.6"), cfg)
 
 		assert.Equal(t, "gpt-5.6", got.taskModel)
 		assert.Empty(t, got.taskEffort, "effort is left to codex when spec has no effort part")
@@ -4821,7 +4674,7 @@ func TestCodexModelBanner(t *testing.T) {
 
 	t.Run("task_model_with_effort", func(t *testing.T) {
 		cfg := &config.Config{}
-		got := codexModelBanner(parseTestOpts(t, "--codex", "--task-model", "gpt-5.6:high"), cfg)
+		got := codexModelBanner(parseTestOpts(t, "--task-model", "gpt-5.6:high"), cfg)
 
 		assert.Equal(t, "gpt-5.6", got.taskModel)
 		assert.Equal(t, "high", got.taskEffort)
@@ -4831,7 +4684,7 @@ func TestCodexModelBanner(t *testing.T) {
 
 	t.Run("effort_only_task_spec", func(t *testing.T) {
 		cfg := &config.Config{}
-		got := codexModelBanner(parseTestOpts(t, "--codex", "--task-model", ":medium"), cfg)
+		got := codexModelBanner(parseTestOpts(t, "--task-model", ":medium"), cfg)
 
 		assert.Empty(t, got.taskModel, "model is left to codex for effort-only spec")
 		assert.Equal(t, "medium", got.taskEffort)
@@ -4839,7 +4692,7 @@ func TestCodexModelBanner(t *testing.T) {
 
 	t.Run("separate_review_model_differs_from_task", func(t *testing.T) {
 		cfg := &config.Config{}
-		got := codexModelBanner(parseTestOpts(t, "--codex", "--task-model", "gpt-5.6:high", "--review-model", "gpt-5.5:low"), cfg)
+		got := codexModelBanner(parseTestOpts(t, "--task-model", "gpt-5.6:high", "--review-model", "gpt-5.5:low"), cfg)
 
 		assert.Equal(t, "gpt-5.6", got.taskModel)
 		assert.Equal(t, "high", got.taskEffort)
@@ -4849,7 +4702,7 @@ func TestCodexModelBanner(t *testing.T) {
 
 	t.Run("review_model_only_leaves_task_to_codex", func(t *testing.T) {
 		cfg := &config.Config{}
-		got := codexModelBanner(parseTestOpts(t, "--codex", "--review-model", "gpt-5.6:low"), cfg)
+		got := codexModelBanner(parseTestOpts(t, "--review-model", "gpt-5.6:low"), cfg)
 
 		assert.Empty(t, got.taskModel, "task untouched by --review-model")
 		assert.Empty(t, got.taskEffort)
@@ -4859,7 +4712,7 @@ func TestCodexModelBanner(t *testing.T) {
 
 	t.Run("max_effort_sets_max_dropped", func(t *testing.T) {
 		cfg := &config.Config{}
-		got := codexModelBanner(parseTestOpts(t, "--codex", "--task-model", "gpt-5.6:max"), cfg)
+		got := codexModelBanner(parseTestOpts(t, "--task-model", "gpt-5.6:max"), cfg)
 
 		assert.Equal(t, "gpt-5.6", got.taskModel, "model still applied")
 		assert.Empty(t, got.taskEffort, "max effort not applied")
@@ -4868,7 +4721,7 @@ func TestCodexModelBanner(t *testing.T) {
 
 	t.Run("max_in_review_model_sets_max_dropped", func(t *testing.T) {
 		cfg := &config.Config{}
-		got := codexModelBanner(parseTestOpts(t, "--codex", "--task-model", "gpt-5.6:high", "--review-model", ":max"), cfg)
+		got := codexModelBanner(parseTestOpts(t, "--task-model", "gpt-5.6:high", "--review-model", ":max"), cfg)
 
 		assert.Equal(t, "high", got.taskEffort)
 		assert.Empty(t, got.reviewEffort, "max effort not applied to review")
@@ -4877,7 +4730,7 @@ func TestCodexModelBanner(t *testing.T) {
 
 	t.Run("no_flags_leaves_codex_defaults", func(t *testing.T) {
 		cfg := &config.Config{}
-		got := codexModelBanner(parseTestOpts(t, "--codex"), cfg)
+		got := codexModelBanner(parseTestOpts(t), cfg)
 
 		assert.Empty(t, got.taskModel)
 		assert.Empty(t, got.taskEffort)
@@ -4888,7 +4741,7 @@ func TestCodexModelBanner(t *testing.T) {
 
 	t.Run("config_task_model_used_without_cli_flag", func(t *testing.T) {
 		cfg := &config.Config{TaskModel: "gpt-5.6:low"}
-		got := codexModelBanner(parseTestOpts(t, "--codex"), cfg)
+		got := codexModelBanner(parseTestOpts(t), cfg)
 
 		assert.Equal(t, "gpt-5.6", got.taskModel)
 		assert.Equal(t, "low", got.taskEffort)
@@ -4896,7 +4749,7 @@ func TestCodexModelBanner(t *testing.T) {
 
 	t.Run("config_review_model_used_without_cli_flag", func(t *testing.T) {
 		cfg := &config.Config{ReviewModel: "gpt-5.6:low"}
-		got := codexModelBanner(parseTestOpts(t, "--codex"), cfg)
+		got := codexModelBanner(parseTestOpts(t), cfg)
 
 		assert.Empty(t, got.taskModel, "task untouched by review_model")
 		assert.Equal(t, "gpt-5.6", got.reviewModel)
@@ -4905,7 +4758,7 @@ func TestCodexModelBanner(t *testing.T) {
 
 	t.Run("cli_task_model_overrides_config", func(t *testing.T) {
 		cfg := &config.Config{TaskModel: "gpt-5.6:low"}
-		got := codexModelBanner(parseTestOpts(t, "--codex", "--task-model", "gpt-5.7:high"), cfg)
+		got := codexModelBanner(parseTestOpts(t, "--task-model", "gpt-5.7:high"), cfg)
 
 		assert.Equal(t, "gpt-5.7", got.taskModel)
 		assert.Equal(t, "high", got.taskEffort)
@@ -4915,7 +4768,7 @@ func TestCodexModelBanner(t *testing.T) {
 func TestCodexPlanBanner(t *testing.T) {
 	t.Run("plan_model_sets_plan_executor", func(t *testing.T) {
 		cfg := &config.Config{PlanModel: "gpt-5.6:high", TaskModel: "gpt-5.5:low"}
-		got := codexPlanBanner(parseTestOpts(t, "--codex"), cfg)
+		got := codexPlanBanner(parseTestOpts(t), cfg)
 
 		assert.Equal(t, "gpt-5.6", got.taskModel)
 		assert.Equal(t, "high", got.taskEffort)
@@ -4926,7 +4779,7 @@ func TestCodexPlanBanner(t *testing.T) {
 
 	t.Run("plan_model_falls_back_to_task_model", func(t *testing.T) {
 		cfg := &config.Config{TaskModel: "gpt-5.6:low"}
-		got := codexPlanBanner(parseTestOpts(t, "--codex"), cfg)
+		got := codexPlanBanner(parseTestOpts(t), cfg)
 
 		assert.Equal(t, "gpt-5.6", got.taskModel)
 		assert.Equal(t, "low", got.taskEffort)
@@ -4934,7 +4787,7 @@ func TestCodexPlanBanner(t *testing.T) {
 
 	t.Run("plan_model_falls_back_to_cli_task_model", func(t *testing.T) {
 		cfg := &config.Config{}
-		got := codexPlanBanner(parseTestOpts(t, "--codex", "--task-model", "gpt-5.7:high"), cfg)
+		got := codexPlanBanner(parseTestOpts(t, "--task-model", "gpt-5.7:high"), cfg)
 
 		assert.Equal(t, "gpt-5.7", got.taskModel)
 		assert.Equal(t, "high", got.taskEffort)
@@ -4942,7 +4795,7 @@ func TestCodexPlanBanner(t *testing.T) {
 
 	t.Run("cli_plan_model_overrides_config_and_task_model", func(t *testing.T) {
 		cfg := &config.Config{PlanModel: "gpt-5.6:high", TaskModel: "gpt-5.5:low"}
-		got := codexPlanBanner(parseTestOpts(t, "--codex", "--plan-model", "gpt-5.7:medium"), cfg)
+		got := codexPlanBanner(parseTestOpts(t, "--plan-model", "gpt-5.7:medium"), cfg)
 
 		assert.Equal(t, "gpt-5.7", got.taskModel)
 		assert.Equal(t, "medium", got.taskEffort)
@@ -4950,7 +4803,7 @@ func TestCodexPlanBanner(t *testing.T) {
 
 	t.Run("max_effort_sets_max_dropped", func(t *testing.T) {
 		cfg := &config.Config{}
-		got := codexPlanBanner(parseTestOpts(t, "--codex", "--plan-model", "gpt-5.6:max"), cfg)
+		got := codexPlanBanner(parseTestOpts(t, "--plan-model", "gpt-5.6:max"), cfg)
 
 		assert.Equal(t, "gpt-5.6", got.taskModel)
 		assert.Empty(t, got.taskEffort)
@@ -4966,7 +4819,6 @@ func TestPrintStartupInfo_ExecutorSource(t *testing.T) {
 		want     string
 	}{
 		{"codex inferred", config.ExecutorCodex, `inferred from task_model "gpt-6-astra:medium"`, `executor: codex (inferred from task_model "gpt-6-astra:medium")`},
-		{"codex flag", config.ExecutorCodex, config.ExecutorSourceFlag, "executor: codex (--codex)"},
 		{"codex without source", config.ExecutorCodex, "", "executor: codex"},
 		{"claude inferred", config.ExecutorClaude, `inferred from task_model "fable:high"`, `executor: claude (inferred from task_model "fable:high")`},
 		{"claude default", config.ExecutorClaude, config.ExecutorSourceDefault, ""},
@@ -5494,39 +5346,6 @@ func TestTasksOnlyModeBranchCreation(t *testing.T) {
 		branch, err := gitSvc.CurrentBranch()
 		require.NoError(t, err)
 		assert.Equal(t, "master", branch, "review mode should not create branch")
-	})
-
-	t.Run("codex_only_mode_does_not_create_branch", func(t *testing.T) {
-		skipIfClaudeNotAvailable(t)
-		configDir := t.TempDir() // isolate from global config
-
-		dir := setupTestRepo(t)
-		origDir, err := os.Getwd()
-		require.NoError(t, err)
-		err = os.Chdir(dir)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = os.Chdir(origDir) })
-
-		// create plans dir and plan file, then commit them
-		require.NoError(t, os.MkdirAll("docs/plans", 0o750))
-		planPath := filepath.Join(dir, "docs", "plans", "codex-plan.md")
-		require.NoError(t, os.WriteFile(planPath, []byte("# Codex Plan\n"), 0o600))
-
-		runGit(t, dir, "add", "docs/plans/codex-plan.md")
-		runGit(t, dir, "commit", "-m", "add codex plan")
-
-		// run with codex-only mode, cancel immediately and wait for exit
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		o := opts{CodexOnly: true, PlanFile: planPath, MaxIterations: 1, ConfigDir: configDir}
-		_ = run(ctx, o)
-
-		// verify branch was NOT created (still on master) 24d70519 (fix: isolate TestTasksOnlyModeBranchCreation from global config)
-		gitSvc, err := git.NewService(dir, testColors().Info())
-		require.NoError(t, err)
-		branch, err := gitSvc.CurrentBranch()
-		require.NoError(t, err)
-		assert.Equal(t, "master", branch, "codex-only mode should not create branch")
 	})
 
 	t.Run("external_only_mode_does_not_create_branch", func(t *testing.T) {
@@ -10196,7 +10015,6 @@ func TestValidateGenAgentsFlags(t *testing.T) {
 		{"--plan", opts{PlanDescription: "add feature"}},
 		{"--review", opts{Review: true}},
 		{"--external-only", opts{ExternalOnly: true}},
-		{"--codex-only", opts{CodexOnly: true}},
 		{"--tasks-only", opts{TasksOnly: true}},
 		{"--worktree", opts{Worktree: true}},
 		{"--commit", opts{Commit: true}},
@@ -13270,11 +13088,6 @@ func TestValidateModelSpecs(t *testing.T) {
 				cfg:  &config.Config{ReviewModel: "codex:gpt-6-astra:high"},
 				want: "--review-model / review_model",
 			},
-			{
-				name: "legacy external review model",
-				cfg:  &config.Config{ExternalReviewModel: "opus:sky-high"},
-				want: "--external-review-model / external_review_model",
-			},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
@@ -13483,8 +13296,8 @@ func TestValidateModelProviders(t *testing.T) {
 		want []string
 	}{
 		{name: "default claude review mismatch", cfg: config.Config{ReviewModel: "gpt-6-astra:high", ExecutorSource: config.ExecutorSourceDefault}, want: []string{"review_model", "gpt-6-astra:high", "codex model", "claude (default)"}},
-		{name: "flag codex task mismatch", o: opts{TaskModel: "fable:high"}, cfg: config.Config{Executor: config.ExecutorCodex, ExecutorSource: config.ExecutorSourceFlag}, want: []string{"--task-model", "claude model", "(--codex)"}},
-		{name: "flag codex plan mismatch", cfg: config.Config{Executor: config.ExecutorCodex, ExecutorSource: config.ExecutorSourceFlag, PlanModel: "opus"}, want: []string{"plan_model", "--codex"}},
+		{name: "inferred codex task mismatch", o: opts{TaskModel: "fable:high"}, cfg: config.Config{Executor: config.ExecutorCodex, ExecutorSource: `inferred from task_model "gpt-6-astra"`}, want: []string{"--task-model", "claude model", `(inferred from task_model "gpt-6-astra")`}},
+		{name: "inferred codex plan mismatch", cfg: config.Config{Executor: config.ExecutorCodex, ExecutorSource: `inferred from task_model "gpt-6-astra"`, PlanModel: "opus"}, want: []string{"plan_model", "inferred from task_model"}},
 		{name: "matching claude", cfg: config.Config{PlanModel: "opus", TaskModel: "fable:high", ReviewModel: "sonnet"}},
 		{name: "matching codex", cfg: config.Config{Executor: config.ExecutorCodex, PlanModel: "o3", TaskModel: "gpt-6-astra:medium", ReviewModel: "codex-mini"}},
 		{name: "unknown", cfg: config.Config{TaskModel: "my-alias"}},
@@ -13552,30 +13365,12 @@ func TestResolveExternalReviewSelectionValidatesProviders(t *testing.T) {
 			want: `external reviewer entry 1 (codex) names a claude model "fable"`,
 		},
 		{
-			name: "legacy explicit",
-			cfg:  config.Config{ExternalReviewTool: config.ExternalReviewToolClaude, ExternalReviewModel: "gpt-6-astra:high"},
-			want: `--external-review-tool (claude) / --external-review-model names a codex model "gpt-6-astra:high"`,
-		},
-		{
-			name: "legacy auto after task model inference",
-			cfg:  config.Config{CodexEnabled: true, TaskModel: "gpt-6-astra", ExternalReviewModel: "gpt-6-astra:high"},
-			want: `--external-review-tool (claude) / --external-review-model names a codex model "gpt-6-astra:high"`,
-		},
-		{
 			name: "claude wrapper chain",
 			cfg:  config.Config{ClaudeCommand: "scripts/codex-as-claude/codex-as-claude.sh", ExternalReviewersSet: true, ExternalReviewers: "claude:gpt-5"},
 		},
 		{
 			name: "codex wrapper chain",
 			cfg:  config.Config{CodexCommand: "my-codex-wrapper", ExternalReviewersSet: true, ExternalReviewers: "codex:fable:high"},
-		},
-		{
-			name: "claude wrapper legacy",
-			cfg:  config.Config{ClaudeCommand: "pi-as-claude.sh", ExternalReviewTool: config.ExternalReviewToolClaude, ExternalReviewModel: "gpt-5"},
-		},
-		{
-			name: "codex wrapper legacy auto",
-			cfg:  config.Config{CodexEnabled: true, CodexCommand: "my-codex-wrapper", ExternalReviewModel: "fable:high"},
 		},
 		{
 			name: "claude wrapper does not exempt real codex later in chain",

@@ -202,13 +202,16 @@ that sets any of the above must be hand-edited once.
 - [x] run `go test ./pkg/config/...` - must pass before next task
 
 ### Task 3: Removed CLI flags fail with actionable errors
-- [ ] write tests in `cmd/loopai/main_test.go` asserting an error for `--codex`, `--codex-only`, `--external-review-tool`, `--external-review-model`, each naming the replacement (`--task-model codex:<model>`, `--external-only`, `--external-reviewers`)
-- [ ] write a test that the error arrives before config loading and before any dependency check, so a machine without the binary still gets the migration message
-- [ ] mark those four `opts` fields hidden (`cmd/loopai/main.go:53`, `:54`, `:59`, `:68`) instead of deleting them, so go-flags accepts and loopai explains
-- [ ] add a `rejectRemovedFlags(o opts) error` called early in the startup path
-- [ ] update the long-name list in `markFlagsSet` (`cmd/loopai/main.go:191-198`) and the mutual-exclusion lists that carry the literal flag strings (`:3181`, `:3239`, `:3263`, `:3278`, `:5903-5904`)
-- [ ] ➕ delete the runtime-only `Config.ExternalReviewTool`/`ExternalReviewModel` fields (kept by Task 2 because the legacy flags still wrote them) and the legacy single-reviewer branch of `resolveReviewerChain` that reads them, keeping the automatic reviewer for an unset `external_reviewers`
-- [ ] run `go test ./cmd/loopai/...` - must pass before next task
+- [x] write tests in `cmd/loopai/main_test.go` asserting an error for `--codex`, `--codex-only`, `--external-review-tool`, `--external-review-model`, each naming the replacement (`--task-model codex:<model>`, `--external-only`, `--external-reviewers`)
+- [x] write a test that the error arrives before config loading and before any dependency check, so a machine without the binary still gets the migration message
+- [x] mark those four `opts` fields hidden (`cmd/loopai/main.go:53`, `:54`, `:59`, `:68`) instead of deleting them, so go-flags accepts and loopai explains
+- [x] add a `rejectRemovedFlags(o opts) error` called early in the startup path
+- [x] update the long-name list in `markFlagsSet` (`cmd/loopai/main.go:191-198`) and the mutual-exclusion lists that carry the literal flag strings (`:3181`, `:3239`, `:3263`, `:3278`, `:5903-5904`)
+- [x] ➕ delete the runtime-only `Config.ExternalReviewTool`/`ExternalReviewModel` fields (kept by Task 2 because the legacy flags still wrote them) and the legacy single-reviewer branch of `resolveReviewerChain` that reads them, keeping the automatic reviewer for an unset `external_reviewers`
+  - ⚠️ `--codex` no longer reaches `applyCodexOverrides`, so the `ExecutorSourceFlag` constant and the `o.Codex` branch were deleted here; the primary is now chosen by task-model inference alone until Task 5 replaces it. A codex-wrapper primary with a claude-named model is unreachable in the interim and returns with Task 4/5's `codex:<model>` specs
+  - ➕ `validateExternalReviewFlags`, `applyExternalReviewCLIOverrides`, `applyEffectiveExternalReview`, and the legacy-flags warning in `printExternalReviewWarnings` were deleted with the legacy branch; the processor factory lost its `AppConfig.ExternalReviewTool/Model` fallbacks
+  - ➕ the rewrite hint folds `--external-review-tool`/`--external-review-model` into one ready `--external-reviewers=` entry (`none` → empty chain, `auto` → omit or name a chain, a bare model → provider from `ModelProvider`)
+- [x] run `go test ./cmd/loopai/...` - must pass before next task
 
 ### Task 4: Strict validation of plan/task/review specs
 - [ ] write tests for a rewritten `validateModelSpecs` (`cmd/loopai/main.go:3016`): a bare `opus:high` errors naming `claude:opus:high`; a bare unknown model errors without a suggestion; `custom:...` is rejected for a phase spec; an unknown provider errors; an unknown effort still errors through `validateEffort`
@@ -225,6 +228,9 @@ that sets any of the above must be hand-edited once.
 - [ ] replace `primaryProvider` (`:2684`) with an accessor for the task provider and update its call sites
 - [ ] delete `ExecutorSourceFlag`/`ExecutorSourceConfig`/`ExecutorSourceInferred`/`ExecutorSourceDefault` usage from the startup banner and print the resolved provider per phase instead
 - [ ] ➕ delete the runtime-only `Config.Executor`/`ExecutorSource` fields and the remaining `ExecutorSource*` constants (kept by Task 2 because `--codex` and inference still wrote them)
+- [ ] write tests for the startup banner asserting one line per phase in the form `<phase>: <provider> <model>[:effort]` for plan, task, review, and external review, covering a same-provider run and a cross-provider one
+- [ ] write a test that a claude run prints its task and review models, which today only the codex branch does
+- [ ] merge `printExecutorInfo` and `printCodexExecutorInfo` (`cmd/loopai/main.go:3466`, `:3499`) into one provider-agnostic renderer, keeping codex-only fields (`sandbox`, CLAUDE.md passthrough) as indented lines under the phase that owns them
 - [ ] run `go test ./cmd/loopai/...` - must pass before next task
 
 ### Task 6: Dependency checks cover every distinct provider
@@ -312,6 +318,29 @@ no model.
    report; unset means it inherits `task_model` whole, provider included.
 3. `plan_model` provider governs plan creation; unset means it inherits `task_model` whole.
 4. Each `external_reviewers` entry keeps its own provider, unchanged.
+
+### Startup banner
+
+The banner prints one line per phase, provider first, so a cross-provider run is readable at a
+glance. This replaces the asymmetry where only the codex branch printed its models while a
+claude run printed none:
+
+```
+plan:            claude opus:high
+task:            claude opus:high
+review:          claude opus:xhigh
+external review: codex gpt-6-astra:high
+```
+
+```
+task:            codex gpt-6-astra:medium
+  sandbox:       danger-full-access
+review:          claude opus:xhigh
+external review: claude opus:high, codex gpt-6-astra:high
+```
+
+Codex-only fields stay indented under the phase that owns them. A phase that inherits its spec
+whole from `task_model` still prints its own resolved line rather than being omitted.
 
 ### Migration mapping
 

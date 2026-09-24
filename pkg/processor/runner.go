@@ -490,7 +490,7 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 		"If there are uncommitted changes from previous review phases, stage them with " +
 		"`git add <paths>` over the files those phases created, modified, or deleted, " +
 		"and commit with message: `fix: address code review findings`. " +
-		"Do NOT `git add -A`: `--review`, `--external-only`, and `--codex-only` create no " +
+		"Do NOT `git add -A`: `--review` and `--external-only` create no " +
 		"worktree and run in the user's own checkout, where a dirty tree is allowed and never " +
 		"gated, and without --worktree a run resumed on its own feature branch skips branch " +
 		"creation and the clean-tree gate with it, so a sweep commits their unrelated work " +

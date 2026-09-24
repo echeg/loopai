@@ -275,14 +275,14 @@ func TestRunner_RunFull_CodexExecutor_ExplicitNoneSkipsExternalReview(t *testing
 
 	appCfg := testAppConfig(t)
 	appCfg.Executor = config.ExecutorCodex
-	appCfg.ExternalReviewTool = "none"
 
 	cfg := Config{
-		Mode:          ModeFull,
-		PlanFile:      planFile,
-		MaxIterations: 50,
-		CodexEnabled:  true, // explicit ExternalReviewTool="none" wins
-		AppConfig:     appCfg,
+		Mode:               ModeFull,
+		ExternalReviewTool: "none",
+		PlanFile:           planFile,
+		MaxIterations:      50,
+		CodexEnabled:       true, // explicit ExternalReviewTool="none" wins
+		AppConfig:          appCfg,
 	}
 	r := NewWithExecutors(cfg, log, Executors{Task: task, Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolNone, Exec: external}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
@@ -688,13 +688,13 @@ func TestRunner_CodexAndPostReview_ShortCircuitWhenCodexExecutorDisablesExternal
 
 	appCfg := testAppConfig(t)
 	appCfg.Executor = config.ExecutorCodex
-	appCfg.ExternalReviewTool = "none"
 	cfg := Config{
-		Mode:          ModeFull,
-		PlanFile:      planFile,
-		MaxIterations: 50,
-		CodexEnabled:  false,
-		AppConfig:     appCfg,
+		Mode:               ModeFull,
+		ExternalReviewTool: "none",
+		PlanFile:           planFile,
+		MaxIterations:      50,
+		CodexEnabled:       false,
+		AppConfig:          appCfg,
 	}
 	r := NewWithExecutors(cfg, log, Executors{Task: codexTask}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
@@ -828,13 +828,13 @@ func TestRunner_Finalize_CodexExecutor_RunsAllPhasesThroughSharedInstance(t *tes
 
 	appCfg := testAppConfig(t)
 	appCfg.Executor = config.ExecutorCodex
-	appCfg.ExternalReviewTool = "none" // this case explicitly disables external review
 	cfg := Config{
-		Mode:            ModeFull,
-		PlanFile:        planFile,
-		MaxIterations:   50,
-		FinalizeEnabled: true,
-		AppConfig:       appCfg,
+		Mode:               ModeFull,
+		ExternalReviewTool: "none",
+		PlanFile:           planFile,
+		MaxIterations:      50,
+		FinalizeEnabled:    true,
+		AppConfig:          appCfg,
 	}
 	r := NewWithExecutors(cfg, log,
 		Executors{Task: codexExec, Review: codexExec, Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolNone}}},
@@ -875,7 +875,6 @@ func TestRunner_CodexExternalOnly_ClaudeFindingsAreHandledByPrimaryCodex(t *test
 
 	appCfg := testAppConfig(t)
 	appCfg.Executor = config.ExecutorCodex
-	appCfg.ExternalReviewTool = config.ExternalReviewToolClaude
 	cfg := Config{
 		Mode: ModeCodexOnly, MaxIterations: 50, IterationDelayMs: 1,
 		CodexEnabled: true, FinalizeEnabled: true,

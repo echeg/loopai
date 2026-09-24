@@ -576,7 +576,6 @@ func TestExternalReviewPhaseRunClaudeFindingsEvaluatedByCodex(t *testing.T) {
 	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "issue in main.go:12"}, {Output: "NO ISSUES FOUND"}})
 	appCfg := testAppConfig(t)
 	appCfg.Executor = "codex"
-	appCfg.ExternalReviewTool = "claude"
 	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{MaxIterations: 50, AppConfig: appCfg}, tool: config.ExternalReviewToolClaude,
 		review: review, external: external,
@@ -605,7 +604,6 @@ func TestExternalReviewPhaseRunCustomSuccess(t *testing.T) {
 	custom := &executor.CustomExecutor{Script: "/path/to/script.sh"}
 	custom.SetRunner(&mockCustomRunnerImpl{results: []executor.Result{{Output: "found issue in foo.go:10"}}})
 	appCfg := testAppConfig(t)
-	appCfg.ExternalReviewTool = "custom"
 	appCfg.CustomReviewScript = custom.Script
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{MaxIterations: 50, AppConfig: appCfg}, review: review, custom: custom,
@@ -623,7 +621,6 @@ func TestExternalReviewPhaseRunCustomNoDuplicateOutput(t *testing.T) {
 	custom := &executor.CustomExecutor{Script: "/path/to/script.sh", OutputHandler: func(text string) { log.PrintAligned(text) }}
 	custom.SetRunner(&mockCustomRunnerImpl{results: []executor.Result{{Output: "issue in foo.go:10\n"}}})
 	appCfg := testAppConfig(t)
-	appCfg.ExternalReviewTool = "custom"
 	appCfg.CustomReviewScript = custom.Script
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg:    Config{MaxIterations: 50, AppConfig: appCfg},
@@ -648,7 +645,6 @@ func TestExternalReviewPhaseRunClaudeDoesNotDuplicateStreamedOutput(t *testing.T
 	log := newMockLogger("progress.txt")
 	appCfg := testAppConfig(t)
 	appCfg.Executor = config.ExecutorCodex
-	appCfg.ExternalReviewTool = config.ExternalReviewToolClaude
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{
 			MaxIterations: 50,
@@ -671,7 +667,6 @@ func TestExternalReviewPhaseRunClaudeDoesNotDuplicateStreamedOutput(t *testing.T
 
 func TestExternalReviewPhaseRunCustomNotConfigured(t *testing.T) {
 	appCfg := testAppConfig(t)
-	appCfg.ExternalReviewTool = "custom"
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{MaxIterations: 50, AppConfig: appCfg}, tool: config.ExternalReviewToolCustom,
 	})

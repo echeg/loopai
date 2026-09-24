@@ -39,9 +39,6 @@ func (f *executorFactory) buildExternalReviewers(cfg *Config, log Logger) []Exte
 			provider = config.ExternalReviewToolNone
 			cfg.CodexEnabled = false
 			cfg.ExternalReviewTool = config.ExternalReviewToolNone
-			if cfg.AppConfig != nil {
-				cfg.AppConfig.ExternalReviewTool = config.ExternalReviewToolNone
-			}
 		}
 		cfg.ExternalReviewTool = provider
 		if provider == config.ExternalReviewToolNone {
@@ -73,9 +70,6 @@ func joinModelEffort(model, effort string) string {
 // fallback here keeps direct processor.New callers executor-aware too.
 func (cfg Config) externalReviewProvider() (provider string, autoSelected bool) {
 	provider = cfg.ExternalReviewTool
-	if provider == "" && cfg.AppConfig != nil {
-		provider = cfg.AppConfig.ExternalReviewTool
-	}
 	if provider == "" {
 		provider = config.ExternalReviewToolAuto
 	}
@@ -142,11 +136,7 @@ func (cfg Config) buildExternalReviewerExecutor(log Logger, spec config.Reviewer
 }
 
 func (cfg Config) externalReviewModelEffort(provider string) (model, effort string) {
-	spec := cfg.ExternalReviewModel
-	if spec == "" && cfg.ExternalReviewEffort == "" && cfg.AppConfig != nil {
-		spec = cfg.AppConfig.ExternalReviewModel
-	}
-	model, effort, _ = ResolveExternalReviewerModelEffort(provider, spec)
+	model, effort, _ = ResolveExternalReviewerModelEffort(provider, cfg.ExternalReviewModel)
 	if cfg.ExternalReviewEffort != "" {
 		effort = cfg.ExternalReviewEffort
 	}

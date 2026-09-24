@@ -23,7 +23,7 @@ func TestWindowsExecutableModelProviders(t *testing.T) {
 		cfg      config.Config
 	}{
 		{"claude", opts{}, config.Config{ClaudeCommand: `C:\tools\claude.exe`, TaskModel: "fable", PlanModel: "gpt-6-astra"}},
-		{"codex", opts{Codex: true}, config.Config{CodexCommand: `C:\tools\CODEX.EXE`, TaskModel: "fable"}},
+		{"codex", opts{}, config.Config{CodexCommand: `C:\tools\CODEX.EXE`, TaskModel: "gpt-6-astra", PlanModel: "fable"}},
 	} {
 		t.Run(tt.provider+" executable rejects mismatched model", func(t *testing.T) {
 			require.NoError(t, applyCodexOverrides(tt.opts, &tt.cfg, io.Discard))

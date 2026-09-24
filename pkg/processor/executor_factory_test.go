@@ -92,14 +92,14 @@ func TestRunner_New_CodexNotInstalled_CustomReviewStillWorks(t *testing.T) {
 
 	appCfg := testAppConfig(t)
 	appCfg.CodexCommand = "/nonexistent/path/to/codex" // command that doesn't exist
-	appCfg.ExternalReviewTool = "custom"               // using custom, not codex
 	appCfg.CustomReviewScript = "/path/to/script.sh"
 
 	cfg := Config{
-		Mode:          ModeCodexOnly,
-		MaxIterations: 50,
-		CodexEnabled:  true,
-		AppConfig:     appCfg,
+		Mode:               ModeCodexOnly,
+		ExternalReviewTool: "custom",
+		MaxIterations:      50,
+		CodexEnabled:       true,
+		AppConfig:          appCfg,
 	}
 
 	// use New (not NewWithExecutors) to trigger LookPath check
@@ -124,13 +124,13 @@ func TestRunner_New_CodexNotInstalled_NoneReviewStillWorks(t *testing.T) {
 
 	appCfg := testAppConfig(t)
 	appCfg.CodexCommand = "/nonexistent/path/to/codex" // command that doesn't exist
-	appCfg.ExternalReviewTool = "none"                 // external review disabled
 
 	cfg := Config{
-		Mode:          ModeCodexOnly,
-		MaxIterations: 50,
-		CodexEnabled:  true,
-		AppConfig:     appCfg,
+		Mode:               ModeCodexOnly,
+		ExternalReviewTool: "none",
+		MaxIterations:      50,
+		CodexEnabled:       true,
+		AppConfig:          appCfg,
 	}
 
 	// use New (not NewWithExecutors) to trigger LookPath check
@@ -364,7 +364,6 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
 			appCfg.Executor = tc.primary
-			appCfg.ExternalReviewTool = tc.external
 			appCfg.CustomReviewScript = "/path/to/custom-review"
 			appCfg.ClaudeCommand = "claude-wrapper"
 			appCfg.ClaudeArgs = "--wrapper-arg --output-format stream-json"
@@ -455,7 +454,6 @@ func TestRunner_New_ExecutorRouting(t *testing.T) {
 	t.Run("external codex stays read-only when primary sandbox is writable", func(t *testing.T) {
 		appCfg := testAppConfig(t)
 		appCfg.Executor = config.ExecutorCodex
-		appCfg.ExternalReviewTool = config.ExternalReviewToolCodex
 		appCfg.CodexSandbox = "workspace-write"
 		appCfg.CodexSandboxSet = true
 		cfg := Config{
@@ -637,7 +635,6 @@ func TestExecutorFactory_LegacyExternalFallbackParity(t *testing.T) {
 func TestExecutorFactory_LegacyAutoMissingBinaryDowngrades(t *testing.T) {
 	appCfg := testAppConfig(t)
 	appCfg.Executor = config.ExecutorClaude
-	appCfg.ExternalReviewTool = config.ExternalReviewToolAuto
 	appCfg.CodexCommand = "/nonexistent/path/to/codex"
 	cfg := Config{Mode: ModeReview, CodexEnabled: true, AppConfig: appCfg}
 	log := newRunnerMockLogger("progress.txt")
@@ -647,7 +644,6 @@ func TestExecutorFactory_LegacyAutoMissingBinaryDowngrades(t *testing.T) {
 	assert.Empty(t, execs.Externals)
 	assert.False(t, resolved.CodexEnabled)
 	assert.Equal(t, config.ExternalReviewToolNone, resolved.ExternalReviewTool)
-	assert.Equal(t, config.ExternalReviewToolNone, appCfg.ExternalReviewTool)
 	assertLogContains(t, log, "codex not found")
 }
 
@@ -668,7 +664,6 @@ func TestRunner_New_AutoExternalRouting(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
 			appCfg.Executor = tc.primary
-			appCfg.ExternalReviewTool = config.ExternalReviewToolAuto
 			appCfg.CodexCommand = availableCommand
 			appCfg.ClaudeCommand = availableCommand
 			cfg := Config{Mode: ModeReview, MaxIterations: 50, CodexEnabled: true, AppConfig: appCfg}
@@ -968,7 +963,6 @@ func TestExecutorFactory_Build_CodexArgs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
 			appCfg.Executor = tc.primary
-			appCfg.ExternalReviewTool = config.ExternalReviewToolCodex
 			appCfg.CodexArgs = tc.codexArgs
 
 			cfg := Config{
