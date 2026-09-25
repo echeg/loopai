@@ -79,9 +79,56 @@ write_valid_manifests
 printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"../","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
 expect_failure "the marketplace source must be repository-local" "marketplace.json must describe"
 
+write_extra_plugin() {
+    version=${1:-0.3.0}
+    mkdir -p "$fixture/plugins/extra/.claude-plugin" "$fixture/plugins/extra/skills"
+    printf '{"name":"extra","version":"%s","skills":"./skills/"}\n' "$version" > "$fixture/plugins/extra/.claude-plugin/plugin.json"
+    printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"./","version":"0.1.2"},{"name":"extra","source":"./plugins/extra","description":"extra fixture","version":"0.3.0"}]}' > "$fixture/.claude-plugin/marketplace.json"
+}
+
 write_valid_manifests
-printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"./","version":"0.1.2"},{"name":"other","source":"./other","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
-expect_failure "multiple marketplace plugins are rejected" "marketplace.json must describe"
+write_extra_plugin
+expect_success "an extra plugin under plugins/<name> is accepted"
+
+write_valid_manifests
+write_extra_plugin
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"./","version":"0.1.2"},{"name":"other","source":"./other","description":"extra fixture","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
+expect_failure "an extra plugin outside plugins/<name> is rejected" "marketplace plugin 1 must use source ./plugins/<name>"
+
+write_valid_manifests
+write_extra_plugin
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"extra","source":"./plugins/extra","description":"extra fixture","version":"0.3.0"},{"name":"loopai","source":"./","version":"0.1.2"}]}' > "$fixture/.claude-plugin/marketplace.json"
+expect_failure "loopai must stay the first marketplace plugin" "marketplace.json must describe"
+
+write_valid_manifests
+write_extra_plugin
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"./","version":"0.1.2"},{"name":"extra","source":"./plugins/extra","version":"0.3.0"}]}' > "$fixture/.claude-plugin/marketplace.json"
+expect_failure "an extra plugin without a description is rejected" "marketplace plugin 1 must use"
+
+write_valid_manifests
+write_extra_plugin
+printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"./","version":"0.1.2"},{"name":"extra","source":"./plugins/extra","description":"extra fixture","version":"0.3.0"},{"name":"extra","source":"./plugins/extra","description":"extra fixture","version":"0.3.0"}]}' > "$fixture/.claude-plugin/marketplace.json"
+expect_failure "duplicate marketplace plugin names are rejected" "marketplace plugin names must be unique"
+
+write_valid_manifests
+write_extra_plugin
+rm "$fixture/plugins/extra/.claude-plugin/plugin.json"
+expect_failure "an extra plugin without a manifest is rejected" "missing plugins/extra/.claude-plugin/plugin.json"
+
+write_valid_manifests
+write_extra_plugin 0.9.9
+expect_failure "extra plugin version mismatches are rejected" "marketplace and plugins/extra versions must match"
+
+write_valid_manifests
+write_extra_plugin
+printf '%s\n' '{"name":"extra","version":"0.3.0","skills":"../../assets/"}' > "$fixture/plugins/extra/.claude-plugin/plugin.json"
+expect_failure "an extra plugin with a traversing skills path is rejected" "must name extra and use a local skills path"
+
+write_valid_manifests
+write_extra_plugin
+rm -rf "$fixture/plugins/extra/skills"
+expect_failure "an extra plugin without its skills directory is rejected" "skills directory does not exist: plugins/extra/./skills/"
+rm -rf "$fixture/plugins"
 
 write_valid_manifests
 printf '%s\n' '{"name":"loopai","description":"fixture marketplace","owner":{"name":"fixture owner"},"plugins":[{"name":"loopai","source":"./"}]}' > "$fixture/.claude-plugin/marketplace.json"

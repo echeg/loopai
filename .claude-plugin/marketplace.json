@@ -1,6 +1,6 @@
 {
   "name": "loopai",
-  "description": "Claude Code workflows for autonomous execution, planning, adversarial plan critique, and cross-model plan comparison",
+  "description": "Claude Code workflows for autonomous execution, planning, adversarial plan critique, cross-model plan comparison, and Codex image generation",
   "owner": {
     "name": "echeg"
   },
@@ -10,6 +10,15 @@
       "source": "./",
       "description": "Claude Code workflows for autonomous execution, planning, adversarial plan critique, and cross-model plan comparison",
       "version": "0.5.10",
+      "author": {
+        "name": "echeg"
+      }
+    },
+    {
+      "name": "codex-imagegen",
+      "source": "./plugins/codex-imagegen",
+      "description": "Raster image generation and editing for Claude Code through the local Codex CLI image_gen tool on the user's ChatGPT plan",
+      "version": "0.1.0",
       "author": {
         "name": "echeg"
       }

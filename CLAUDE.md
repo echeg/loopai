@@ -75,6 +75,7 @@ assets/claude/skills/ canonical Claude Code plugin skill sources
 assets/claude/loopai*.md legacy standalone-command compatibility symlinks
 assets/codex/skills/  hand-written Codex CLI skill sources
 .claude-plugin/      Claude Code plugin and marketplace manifests
+plugins/<name>/      further marketplace plugins (codex-imagegen), each with its own manifest
 docs/                focused operational documentation and plans
 ```
 
@@ -117,6 +118,14 @@ effective `task_model`, `review_model`, and `external_reviewers` config keys, an
 skill, update `expected_skills` in `scripts/check-symlinks.sh` and the valid
 fixture inventory in `scripts/check-symlinks_test.sh`, then bump both manifest
 versions.
+
+The marketplace lists `loopai` first, at source `./`; every further plugin lives
+in `plugins/<name>/` with its own `.claude-plugin/plugin.json`, a description,
+and a version equal to its marketplace entry. `make check-plugin` enforces this,
+so loopai's skill inventory checks never see those plugins. `codex-imagegen`
+is the only one today: its skill drives `codex exec` through
+`scripts/codex_image.py`, whose Python unit tests (`make test-codex-imagegen`,
+part of `make test`) replay a fake Codex CLI and never call a model.
 
 Standalone installation must copy the complete directories under
 `assets/claude/skills/`, not dereference only the top-level Markdown symlinks;

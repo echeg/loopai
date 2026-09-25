@@ -1,0 +1,11 @@
+{
+  "name": "codex-imagegen",
+  "version": "0.1.0",
+  "description": "Raster image generation and editing for Claude Code through the local Codex CLI image_gen tool on the user's ChatGPT plan",
+  "author": {
+    "name": "echeg"
+  },
+  "repository": "https://github.com/echeg/loopai",
+  "license": "MIT",
+  "skills": "./skills/"
+}

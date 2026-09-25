@@ -172,6 +172,26 @@ claude plugin uninstall loopai@loopai
 claude plugin marketplace remove loopai
 ```
 
+### Codex image generation plugin
+
+The same marketplace carries a second, independent plugin. It lets Claude Code
+generate and edit raster images through the local Codex CLI: Codex's built-in
+`image_gen` tool runs on your ChatGPT plan, so no image API key is needed.
+
+```bash
+claude plugin install codex-imagegen@loopai
+```
+
+It provides one skill, `codex-imagegen:generating-images-with-codex`, with
+`scripts/codex_image.py`. The script runs `codex exec` in a throwaway directory
+outside the repository, makes exactly one `image_gen` call with the prompt file
+verbatim, copies the result to `--out` without overwriting, and writes
+`<out>.json` with the prompt, references, and Codex session. It exits with code
+3 on the plan usage limit (HTTP 429). The skill lets Claude spend up to 10
+`image_gen` calls per batch without asking and tells it to follow a project's
+own image pipeline or art guide when one exists. It needs a signed-in Codex CLI
+(`codex login`) and Python 3.
+
 To install standalone skill copies instead:
 
 ```bash
