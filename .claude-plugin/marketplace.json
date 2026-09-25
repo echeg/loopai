@@ -18,7 +18,7 @@
       "name": "codex-imagegen",
       "source": "./plugins/codex-imagegen",
       "description": "Raster image generation and editing for Claude Code through the local Codex CLI image_gen tool on the user's ChatGPT plan",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "echeg"
       }

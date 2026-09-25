@@ -16,6 +16,10 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).parent))
+import codex_image  # noqa: E402
 
 SCRIPT = Path(__file__).with_name("codex_image.py")
 PNG = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a9f00000000049454e44ae426082")
@@ -56,6 +60,53 @@ FAKE = textwrap.dedent('''\
 ''')
 
 
+class CodexCommandTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def which(self, mapping):
+        return lambda name: mapping.get(name)
+
+    def test_missing_binary(self):
+        with mock.patch.object(codex_image.shutil, "which", self.which({})):
+            self.assertIsNone(codex_image.codex_command("codex"))
+
+    def test_plain_binary_uses_the_resolved_path(self):
+        with mock.patch.object(codex_image.shutil, "which", self.which({"codex": "/usr/local/bin/codex"})):
+            self.assertEqual(codex_image.codex_command("codex"), ["/usr/local/bin/codex"])
+
+    def test_windows_npm_shim_runs_the_node_entry_point(self):
+        shim = self.root / "codex.CMD"
+        shim.write_text("@echo off\n")
+        entry = self.root / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+        entry.parent.mkdir(parents=True)
+        entry.write_text("")
+        which = self.which({"codex": str(shim), "node": "C:/node/node.exe"})
+        with mock.patch.object(codex_image, "IS_WINDOWS", True), mock.patch.object(codex_image.shutil, "which", which):
+            self.assertEqual(codex_image.codex_command("codex"), ["C:/node/node.exe", str(entry)])
+
+    def test_windows_shim_without_entry_point_falls_back_to_the_shim(self):
+        shim = self.root / "codex.cmd"
+        shim.write_text("@echo off\n")
+        which = self.which({"codex": str(shim), "node": "C:/node/node.exe"})
+        with mock.patch.object(codex_image, "IS_WINDOWS", True), mock.patch.object(codex_image.shutil, "which", which):
+            self.assertEqual(codex_image.codex_command("codex"), [str(shim)])
+
+    def test_windows_shim_without_node_falls_back_to_the_shim(self):
+        shim = self.root / "codex.cmd"
+        shim.write_text("@echo off\n")
+        entry = self.root / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+        entry.parent.mkdir(parents=True)
+        entry.write_text("")
+        with mock.patch.object(codex_image, "IS_WINDOWS", True), mock.patch.object(codex_image.shutil, "which", self.which({"codex": str(shim)})):
+            self.assertEqual(codex_image.codex_command("codex"), [str(shim)])
+
+
+@unittest.skipIf(os.name == "nt", "the fake codex is a POSIX shell script; run these under WSL or on macOS/Linux")
 class CodexImageTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

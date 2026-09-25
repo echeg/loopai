@@ -22,6 +22,8 @@ import tempfile
 from pathlib import Path
 
 USAGE_LIMIT = re.compile(r"usage_limit_reached|usage limit|rate.?limit|\b429\b|too many requests", re.I)
+# npm installs Codex on Windows as a codex.cmd shim; see codex_command
+IS_WINDOWS = os.name == "nt"
 SANDBOX_FAILURE = re.compile(r"sandbox|operation not permitted|permission denied|read-only file system|EPERM|EACCES", re.I)
 
 INSTRUCTIONS = """You are a headless runner for one image generation. Call the built-in `image_gen` tool exactly once and do nothing else.
@@ -90,9 +92,27 @@ def succeeded(item):
     return item.get("status") == "completed" and item.get("savedPath") and not item.get("failure") and Path(item["savedPath"]).is_file()
 
 
-def run_codex(codex_bin, codex_home, work_dir, instructions, sandbox, timeout):
+def codex_command(codex_bin):
+    """Resolve --codex-bin into the argv prefix that starts Codex, or None when it is missing.
+
+    On Windows npm installs Codex as a `codex.cmd` shim. CreateProcess cannot start it by its
+    bare name, and going through cmd.exe would mangle the multi-line instructions (`%`, `^`,
+    `&`, newlines), so the shim's own node entry point runs directly instead.
+    """
+    path = shutil.which(codex_bin)
+    if not path:
+        return None
+    if IS_WINDOWS and path.lower().endswith((".cmd", ".bat")):
+        entry = Path(path).parent / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+        node = shutil.which("node")
+        if entry.is_file() and node:
+            return [node, str(entry)]
+    return [path]
+
+
+def run_codex(codex_cmd, codex_home, work_dir, instructions, sandbox, timeout):
     policy = ["--dangerously-bypass-approvals-and-sandbox"] if sandbox == "bypass" else ["-s", "workspace-write", "-c", 'approval_policy="never"']
-    args = [codex_bin, "exec", "-C", work_dir, "--skip-git-repo-check", "-c", "project_doc_max_bytes=0", "--json", *policy, instructions]
+    args = [*codex_cmd, "exec", "-C", work_dir, "--skip-git-repo-check", "-c", "project_doc_max_bytes=0", "--json", *policy, instructions]
     # stdin stays closed: `codex exec` appends piped stdin to the prompt and would wait for it.
     proc = subprocess.run(args, cwd=work_dir, env={**os.environ, "CODEX_HOME": codex_home},
                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
@@ -136,7 +156,8 @@ def main(argv=None):
         parser.error("reference images not found: " + ", ".join(missing))
     if args.edit and not references:
         parser.error("--edit needs the image to edit as the first --ref")
-    if not shutil.which(args.codex_bin):
+    codex_cmd = codex_command(args.codex_bin)
+    if not codex_cmd:
         print(f"Codex CLI not found ({args.codex_bin}). Install it and sign in with the ChatGPT account: codex login", file=sys.stderr)
         return 2
     codex_home = os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
@@ -146,13 +167,13 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix="codex-image-") as work_dir:
         sandbox = "workspace-write"
         try:
-            run = run_codex(args.codex_bin, codex_home, work_dir, instructions, sandbox, args.timeout)
+            run = run_codex(codex_cmd, codex_home, work_dir, instructions, sandbox, args.timeout)
             runs.append({**run, "sandbox": sandbox})
             blocked = not any(succeeded(i) for i in run["items"]) and any(SANDBOX_FAILURE.search(json.dumps(i.get("failure") or "")) for i in run["items"])
             if blocked and not run["limited"] and not args.no_bypass:
                 print("image_gen was blocked by the Codex sandbox; retrying once without it", file=sys.stderr)
                 sandbox = "bypass"
-                run = run_codex(args.codex_bin, codex_home, work_dir, instructions, sandbox, args.timeout)
+                run = run_codex(codex_cmd, codex_home, work_dir, instructions, sandbox, args.timeout)
                 runs.append({**run, "sandbox": sandbox})
         except subprocess.TimeoutExpired:
             print(f"Codex did not finish in {args.timeout} s", file=sys.stderr)
