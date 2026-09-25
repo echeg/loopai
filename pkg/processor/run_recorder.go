@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/processor/phase"
 )
 
@@ -305,12 +304,11 @@ func (r *Runner) fillRunRecordFields() {
 	r.record.Plan = r.cfg.PlanFile
 	r.record.BaseRef = r.cfg.DefaultBranch
 	r.record.Mode = r.cfg.Mode
-	r.record.Executor = config.ExecutorClaude
-	if r.cfg.AppConfig != nil && r.cfg.AppConfig.Executor != config.ExecutorClaude {
-		r.record.Executor = r.cfg.AppConfig.Executor
-	}
-	if r.record.Executor == "" {
-		r.record.Executor = "claude"
+	// the review-only modes run no task phase, so the review block's provider is the executor;
+	// plan mode needs no case of its own because its task slot carries the plan spec
+	r.record.Executor = r.cfg.taskProvider()
+	if r.cfg.Mode == ModeReview || r.cfg.Mode == ModeCodexOnly {
+		r.record.Executor = r.cfg.reviewProvider()
 	}
 	r.record.TaskModel = r.cfg.TaskModel
 	r.record.ReviewModel = r.cfg.ReviewModel

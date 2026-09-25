@@ -571,14 +571,32 @@ func TestExternalReviewPhaseRunCodexFindingsThenEmptyRequiresEvaluation(t *testi
 	assert.Len(t, review.RunCalls(), 2)
 }
 
+func TestExternalReviewPhaseEvaluatorFollowsReviewProvider(t *testing.T) {
+	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.ExternalReviewDone}})
+	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "issue in main.go:12"}})
+	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
+		cfg:  Config{MaxIterations: 50, TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorClaude},
+		tool: config.ExternalReviewToolCodex, review: review, external: external,
+	})
+	policy := newTestPolicy(phase.cfg, log)
+	phase.policy = policy
+
+	_, err := phase.Run(t.Context())
+
+	require.NoError(t, err)
+	labels := make([]string, 0, len(log.PrintSectionCalls()))
+	for _, call := range log.PrintSectionCalls() {
+		labels = append(labels, call.Section.Label)
+	}
+	assert.Contains(t, labels, "claude evaluating codex findings", "a claude review block evaluates under a codex task")
+	assert.Equal(t, []string{"codex", "claude"}, policy.toolNames, "reviewer runs as itself, evaluator as the review provider")
+}
+
 func TestExternalReviewPhaseRunClaudeFindingsEvaluatedByCodex(t *testing.T) {
 	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "dismissed finding"}, {Output: "done", Signal: status.ExternalReviewDone}})
 	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "issue in main.go:12"}, {Output: "NO ISSUES FOUND"}})
-	appCfg := testAppConfig(t)
-	appCfg.Executor = "codex"
-	appCfg.ExternalReviewTool = "claude"
 	phase, log := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
-		cfg: Config{MaxIterations: 50, AppConfig: appCfg}, tool: config.ExternalReviewToolClaude,
+		cfg: Config{MaxIterations: 50, TaskProvider: "claude", ReviewProvider: "codex"}, tool: config.ExternalReviewToolClaude,
 		review: review, external: external,
 	})
 
@@ -605,7 +623,6 @@ func TestExternalReviewPhaseRunCustomSuccess(t *testing.T) {
 	custom := &executor.CustomExecutor{Script: "/path/to/script.sh"}
 	custom.SetRunner(&mockCustomRunnerImpl{results: []executor.Result{{Output: "found issue in foo.go:10"}}})
 	appCfg := testAppConfig(t)
-	appCfg.ExternalReviewTool = "custom"
 	appCfg.CustomReviewScript = custom.Script
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{MaxIterations: 50, AppConfig: appCfg}, review: review, custom: custom,
@@ -623,7 +640,6 @@ func TestExternalReviewPhaseRunCustomNoDuplicateOutput(t *testing.T) {
 	custom := &executor.CustomExecutor{Script: "/path/to/script.sh", OutputHandler: func(text string) { log.PrintAligned(text) }}
 	custom.SetRunner(&mockCustomRunnerImpl{results: []executor.Result{{Output: "issue in foo.go:10\n"}}})
 	appCfg := testAppConfig(t)
-	appCfg.ExternalReviewTool = "custom"
 	appCfg.CustomReviewScript = custom.Script
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg:    Config{MaxIterations: 50, AppConfig: appCfg},
@@ -646,13 +662,11 @@ func TestExternalReviewPhaseRunCustomNoDuplicateOutput(t *testing.T) {
 
 func TestExternalReviewPhaseRunClaudeDoesNotDuplicateStreamedOutput(t *testing.T) {
 	log := newMockLogger("progress.txt")
-	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
-	appCfg.ExternalReviewTool = config.ExternalReviewToolClaude
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{
-			MaxIterations: 50,
-			AppConfig:     appCfg,
+			MaxIterations:  50,
+			TaskProvider:   config.ExecutorCodex,
+			ReviewProvider: config.ExecutorCodex,
 		},
 		tool:     config.ExternalReviewToolClaude,
 		review:   newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.ExternalReviewDone}}),
@@ -671,7 +685,6 @@ func TestExternalReviewPhaseRunClaudeDoesNotDuplicateStreamedOutput(t *testing.T
 
 func TestExternalReviewPhaseRunCustomNotConfigured(t *testing.T) {
 	appCfg := testAppConfig(t)
-	appCfg.ExternalReviewTool = "custom"
 	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{
 		cfg: Config{MaxIterations: 50, AppConfig: appCfg}, tool: config.ExternalReviewToolCustom,
 	})

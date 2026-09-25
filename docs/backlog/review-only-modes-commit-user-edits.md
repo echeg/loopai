@@ -4,7 +4,7 @@
 - severity: major
 - area: pkg/config/defaults/prompts, pkg/processor/runner.go
 
-`--review`, `--external-only`, and `--codex-only` map to `ModeReview` and `ModeCodexOnly`, which
+`--review` and `--external-only` map to `ModeReview` and `ModeCodexOnly`, which
 `modeRequiresBranch` (cmd/loopai/main.go:1937) excludes, so they create no branch and no worktree
 and run in the user's own checkout. A dirty tree there is allowed and never gated, by design.
 

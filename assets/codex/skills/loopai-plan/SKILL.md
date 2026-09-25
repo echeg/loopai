@@ -164,7 +164,7 @@ The explicit file path and `--only` keep unrelated staged changes out of the com
 
 Detect Orca before speaking: `ORCA=${ORCA_CLI_COMMAND:-orca}`, and on Linux outside an Orca terminal use `orca-ide` instead of bare `orca`, which is the GNOME screen reader there. Orca is available when `command -v "$ORCA"` succeeds. Do not call `orca status`; `$loopai-orca` runs its own preflight. T3 Code is available when `${T3CODE_HOME:-$HOME/.t3}/userdata/server-runtime.json` exists; do not contact the server, since `$loopai-t3` runs its own preflight.
 
-Derive `FLAGS` from the effective configuration - the first uncommented `key = value` for `executor`, `task_model`, `review_model`, and `external_reviewers`, taken from `<repo root>/.loopai/config` and falling back to `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/config`:
+Derive `FLAGS` from the effective configuration - the first uncommented `key = value` for `task_model`, `review_model`, and `external_reviewers`, taken from `<repo root>/.loopai/config` and falling back to `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/config`:
 
 ```bash
 cfgval() {
@@ -175,9 +175,9 @@ cfgval() {
 }
 ```
 
-Map `executor = codex` to `--codex`, and the other three keys to `--task-model <v>`, `--review-model <v>`, `--external-reviewers <v>`. Skip a key with no value, and skip a value that does not match `^[A-Za-z0-9._:,+-]+$` - `$loopai-orca` and `$loopai-t3` reject it - naming the skipped key. Join with single spaces.
+Map the three keys to `--task-model <v>`, `--review-model <v>`, `--external-reviewers <v>`. Skip a key with no value, and skip a value that does not match `^[A-Za-z0-9._:,+-]+$` - `$loopai-orca` and `$loopai-t3` reject it - naming the skipped key. Join with single spaces.
 
-With Orca available, report the plan path and the launch line `$loopai-orca <plan> <FLAGS>`; with T3 Code available, also the line `$loopai-t3 <plan> <FLAGS>`. When `FLAGS` came out empty, add one line saying no `executor`/`task_model`/`review_model`/`external_reviewers` is set, so the run would use loopai defaults.
+With Orca available, report the plan path and the launch line `$loopai-orca <plan> <FLAGS>`; with T3 Code available, also the line `$loopai-t3 <plan> <FLAGS>`. When `FLAGS` came out empty, add one line saying no `task_model`/`review_model`/`external_reviewers` is set, so the run would use loopai defaults.
 
 Then ask how to proceed: run it in Orca now, run it in T3 Code now (each only when available), start implementing here from task 1, or stop. Without Orca or T3 Code, offer the plain `loopai <plan>` run instead.
 

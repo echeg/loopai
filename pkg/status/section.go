@@ -26,7 +26,7 @@ const (
 	SectionInternalReview
 	// SectionExternalReviewIteration represents an external review iteration.
 	SectionExternalReviewIteration
-	// SectionExternalEvaluation represents the primary executor evaluating external findings.
+	// SectionExternalEvaluation represents the review provider evaluating external findings.
 	SectionExternalEvaluation
 	// SectionPlanIteration represents a plan creation iteration.
 	SectionPlanIteration

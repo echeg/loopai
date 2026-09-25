@@ -876,8 +876,9 @@ func TestDumpDefaults(t *testing.T) {
 		data, err := os.ReadFile(filepath.Join(tmpDir, "config")) //nolint:gosec // test
 		require.NoError(t, err)
 		assert.Contains(t, string(data), "claude_command")
-		assert.Contains(t, string(data), "external_review_tool = auto")
-		assert.Contains(t, string(data), "external_review_model =")
+		assert.Contains(t, string(data), "codex_sandbox = read-only")
+		assert.NotContains(t, string(data), "external_review_tool = auto")
+		assert.NotContains(t, string(data), "codex_model = gpt-5.5")
 		stripped := stripComments(string(data))
 		assert.NotEmpty(t, strings.TrimSpace(stripped), "config should have raw (uncommented) content")
 
@@ -1061,8 +1062,9 @@ func TestDefaultsInstaller_Install_WritesCommentedConfig(t *testing.T) {
 	// should contain expected settings (commented)
 	assert.Contains(t, content, "# claude_command")
 	assert.Contains(t, content, "# codex_enabled")
-	assert.Contains(t, content, "# external_review_tool = auto")
-	assert.Contains(t, content, "# external_review_model =")
+	assert.Contains(t, content, "# external_reviewers =")
+	assert.NotContains(t, content, "# external_review_tool = auto")
+	assert.NotContains(t, content, "# codex_model = gpt-5.5")
 }
 
 func TestDefaultsInstaller_Install_OverwritesCommentedConfig(t *testing.T) {

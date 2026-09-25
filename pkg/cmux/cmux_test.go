@@ -1681,7 +1681,7 @@ func TestSpawnWorkspace(t *testing.T) {
 func TestSpawnWorkspaceCommand(t *testing.T) {
 	t.Run("exact argv", func(t *testing.T) {
 		runner := &fakeRunner{}
-		require.NoError(t, spawnWorkspace(runner, spawnTimeout, "my-feature", "/work/repo", []string{"/bin/loopai", "docs/plans/a b.md", "--codex"}))
+		require.NoError(t, spawnWorkspace(runner, spawnTimeout, "my-feature", "/work/repo", []string{"/bin/loopai", "docs/plans/a b.md", "--review"}))
 
 		calls := runner.recorded()
 		require.Len(t, calls, 1)
@@ -1690,7 +1690,7 @@ func TestSpawnWorkspaceCommand(t *testing.T) {
 			"--name", "my-feature",
 			"--cwd", "/work/repo",
 			"--focus", "true",
-			"--command", `'/bin/loopai' 'docs/plans/a b.md' '--codex'`,
+			"--command", `'/bin/loopai' 'docs/plans/a b.md' '--review'`,
 		}, calls[0])
 	})
 

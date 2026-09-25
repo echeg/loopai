@@ -28,44 +28,57 @@ claude_args = --dangerously-skip-permissions --output-format stream-json --verbo
 # default: true
 claude_swap_enabled = true
 
-# plan_model: model to use for interactive plan creation
-# syntax: model[:effort] where model is fable/opus/sonnet/haiku (or a full model ID like
-# claude-sonnet-4-5-20250929) and effort is low/medium/high/xhigh/max.
-# either part is optional: "opus" sets model only, ":high" sets effort only,
-# "opus:high" sets both. falls back to task_model when empty.
-# under the codex executor (executor = codex) this selects the codex plan-creation
-# model/effort, resolved against codex_model/codex_reasoning_effort.
+# plan_model: provider and model for interactive plan creation
+# syntax: provider[:model[:effort]] where provider is claude or codex, model is a
+# model name for that provider (fable/opus/sonnet/haiku or a full claude model ID such as
+# claude-sonnet-4-5-20250929; gpt-6-astra or another codex model), and effort is
+# low/medium/high/xhigh/max. the provider prefix is mandatory: "claude:opus:high" sets all
+# three, "codex" uses the codex CLI's own defaults from ~/.codex/config.toml, and
+# "codex::medium" keeps codex's default model with an explicit effort.
+# falls back to task_model, provider included, when empty.
 # plan_model =
 
-# task_model: model to use for task execution
-# same model[:effort] syntax as plan_model. leave empty to use Claude CLI's defaults.
-# under the codex executor this selects the codex task-phase model/effort.
+# task_model: provider and model for task execution
+# same provider[:model[:effort]] syntax as plan_model. its provider runs the task phase.
+# leave empty to run tasks on claude with the Claude CLI's defaults.
 # task_model =
 
-# review_model: model to use for review phases (first review, fix loops, finalize)
-# same model[:effort] syntax as plan_model.
-# falls back to task_model if not set, then to Claude CLI's defaults.
-# use a cheaper/faster model (e.g., sonnet) or lower effort for reviews to reduce cost.
-# under the codex executor this selects the codex review-phase model/effort.
+# review_model: provider and model for the review block
+# same provider[:model[:effort]] syntax as plan_model. its provider runs internal review,
+# evaluation of external findings, finalize, and the completion report, so
+# task_model = codex:gpt-6-astra:medium with review_model = claude:opus:high writes code
+# with codex and reviews it with claude.
+# falls back to task_model, provider included, when empty.
+# use a cheaper/faster model (e.g., claude:sonnet) or lower effort to reduce review cost.
 # review_model =
+
+# a spec without a provider prefix is rejected at startup with the rewrite to use
+# (task_model = opus:high must become claude:opus:high). a model that belongs to the
+# other provider, such as codex:opus, is rejected too, unless that provider's command
+# (claude_command/codex_command) is a custom wrapper with its own model names.
 
 # ------------------------------------------------------------------------------
 # codex executor
 # ------------------------------------------------------------------------------
 
-# executor: primary executor for plan creation, task, review, external-finding
-# evaluation, and finalize phases. empty/default uses Claude Code; "codex" runs
-# the primary pipeline through codex
-# executor =
+# the former keys and flags below were removed and are rejected at startup with the
+# replacement to write:
+#   executor, codex_model, codex_reasoning_effort, --codex: name codex in
+#     plan_model/task_model/review_model (codex:<model>[:effort])
+#   external_review_tool, external_review_model, --external-review-tool,
+#     --external-review-model: external_reviewers = <provider>[:model[:effort]]
+#   --codex-only: --external-only
 
-# pass_claude_md: when executor = codex, let codex read project CLAUDE.md via
-# project_doc_fallback_filenames. user-level ~/.claude/CLAUDE.md is not
-# auto-passed; loopai prints a one-time symlink hint instead.
+# pass_claude_md: when codex runs the task phase or the review block, let codex read project
+# CLAUDE.md via project_doc_fallback_filenames. user-level ~/.claude/CLAUDE.md is not
+# auto-passed; loopai prints a one-time symlink hint instead. rejected at startup when
+# neither task_model nor review_model names codex.
 # default: false
 # pass_claude_md = false
 
 # codex_enabled: backward-compatible gate for automatically selected external review
-# set to false to disable external review when external_review_tool = auto
+# set to false to disable the automatically selected reviewer used when
+# external_reviewers is unset
 # default: true
 codex_enabled = true
 
@@ -74,7 +87,7 @@ codex_enabled = true
 codex_command = codex
 
 # codex_args: extra arguments appended to every codex invocation loopai spawns
-# (both executor = codex and external codex review under a claude primary).
+# (every phase whose spec names codex and every external codex reviewer).
 # unlike claude_args, which IS the claude command's argument list, these are
 # strictly additive: loopai composes the codex command and appends these last,
 # so an explicit -c value here overrides the matching override loopai sets.
@@ -93,7 +106,7 @@ codex_command = codex
 #
 # last-occurrence-wins covers -c key=value only. repeating any flag loopai
 # already passes, valued or bare, is a fatal codex parse error, not an override,
-# so use codex_sandbox rather than putting --sandbox here. executor = codex also
+# so use codex_sandbox rather than putting --sandbox here. a codex phase also
 # passes --dangerously-bypass-approvals-and-sandbox whenever the effective
 # sandbox is danger-full-access (its default), so repeating that one aborts
 # every phase too. extras land after the exec
@@ -108,20 +121,6 @@ codex_command = codex
 # default: empty (codex invocations are unchanged)
 # codex_args =
 
-# codex_model: model ID for codex
-# available models: gpt-5.5, gpt-5.3-codex, gpt-5.3-codex-mini
-# default: gpt-5.5
-# (set to an empty value, "codex_model =", to inherit from ~/.codex/config.toml instead;
-# commenting the line out keeps the gpt-5.5 default)
-codex_model = gpt-5.5
-
-# codex_reasoning_effort: reasoning effort level for codex
-# available: low, medium, high, xhigh
-# default: xhigh
-# (set to an empty value, "codex_reasoning_effort =", to inherit from ~/.codex/config.toml
-# instead; commenting the line out keeps the xhigh default)
-codex_reasoning_effort = xhigh
-
 # codex_timeout_ms: timeout for codex execution in milliseconds
 # default: 3600000 (1 hour)
 codex_timeout_ms = 3600000
@@ -130,49 +129,37 @@ codex_timeout_ms = 3600000
 # available: read-only, workspace-write, danger-full-access
 # read-only: codex can read files but not write (safest for external review)
 # danger-full-access: codex runs without filesystem sandboxing, matching autonomous claude mode
-# note: first-class executor = codex uses danger-full-access unless codex_sandbox is explicitly set in user config
-# default: read-only for external codex review, danger-full-access for executor = codex
+# note: a phase whose spec names codex uses danger-full-access unless codex_sandbox is explicitly set in user config
+# default: read-only for external codex review, danger-full-access for codex plan/task/review phases
 codex_sandbox = read-only
 
 # ------------------------------------------------------------------------------
 # external review
 # ------------------------------------------------------------------------------
 
-# external_review_tool: which tool to use for external code review
-# available: auto, claude, codex, custom, none
-# auto: use Codex for a Claude primary executor and Claude for a Codex primary executor
-# claude: use Claude Code for external review
-# codex: use OpenAI Codex for external review
-# custom: use a custom script specified by custom_review_script
-# none: skip external review entirely
-# note: codex_enabled = false disables auto selection for backward compatibility
-# external-only mode still resolves auto because the external pipeline was explicitly requested
-# default: auto
-external_review_tool = auto
-
-# external_review_model: model[:effort] for the selected external provider
-# empty uses codex_model/codex_reasoning_effort for Codex or opus:xhigh for Claude
-# explicit values override the selected provider's dynamic default
-# must remain empty when external_review_tool = custom
-external_review_model =
-
 # external_reviewers: ordered comma-separated provider[:model[:effort]] chain
 # available providers: claude, codex, custom
 # example: external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max
-# when set, takes precedence over external_review_tool and external_review_model
+# when unset, the provider other than task_model's reviews automatically (codex for a
+# claude task phase, claude for a codex one; --review and --external-only run no task
+# phase and use the provider other than review_model's), skipped with a warning when
+# not installed and disabled by codex_enabled = false
 # an explicitly empty value clears an inherited chain and disables external review
 # reviewers run sequentially until clean, their per-reviewer iteration cap, or patience
-# bare claude defaults to opus:xhigh; bare codex uses the configured codex defaults
+# bare claude defaults to opus:xhigh; bare codex uses the codex CLI's own defaults
+# from ~/.codex/config.toml
 # max effort is Claude-only; Codex ignores it with a warning
 # providers may repeat; every entry creates a separate review loop
-# reviewers only report findings; the primary fixes them using review_model (or task_model)
+# reviewers only report findings; review_model's provider (or task_model's) evaluates and fixes them
 # custom entries must not specify a model and use custom_review_script
+# the former external_review_tool and external_review_model keys were removed and are
+# rejected at startup
 # external_reviewers =
 
 # custom_review_script: path to custom review script
-# required by external_review_tool = custom and custom entries in external_reviewers
+# required by custom entries in external_reviewers
 # script receives prompt file path as single argument
-# script should output findings to stdout; the primary evaluator emits
+# script should output findings to stdout; the review_model evaluator emits
 # <<<RALPHEX:EXTERNAL_REVIEW_DONE>>> when the reviewer reports no issues
 # customized prompts using legacy <<<RALPHEX:CODEX_REVIEW_DONE>>> remain supported
 # example: custom_review_script = ~/.config/loopai/scripts/my-review.sh
@@ -276,7 +263,7 @@ task_retry_count = 1
 # max_external_iterations = 0
 
 # review_patience: terminate external review after N consecutive unchanged rounds
-# when the external reviewer and primary evaluator can't agree on findings, the loop
+# when the external reviewer and the review_model evaluator disagree on findings, the loop
 # runs until max_external_iterations. set review_patience to break early when
 # N consecutive rounds produce no commits or working-tree changes. patience resets
 # independently for each reviewer in a chain.
@@ -286,8 +273,8 @@ task_retry_count = 1
 
 # session_timeout: maximum duration for a single executor session
 # kills hanging sessions (e.g., agent started a blocking operation)
-# applies to claude in default executor mode; under --codex applies to every executor call;
-# external codex/custom review in Claude mode is not affected
+# applies to every claude session; when task_model or review_model names codex it applies
+# to every executor call; otherwise external codex/custom review is not affected
 # uses Go duration format (e.g., "30m", "1h", "1h30m")
 # omit or leave empty to disable (no timeout)
 # session_timeout =
@@ -295,8 +282,8 @@ task_retry_count = 1
 # idle_timeout: kill executor session after no output for this duration
 # unlike session_timeout (fixed wall-clock limit), idle timeout resets on each
 # output line and only fires when the session goes silent
-# applies to the claude executor in default mode and to every executor call
-# under --codex; external codex review in default-claude mode is NOT affected;
+# applies to every claude session and every codex phase; external codex review is
+# affected only when task_model or review_model names codex;
 # custom external review is not affected
 # uses Go duration format (e.g., "5m", "10m", "30m")
 # omit or leave empty to disable (no timeout)
@@ -350,11 +337,17 @@ vcs_command = git
 # error pattern detection
 # ------------------------------------------------------------------------------
 
-# claude_error_patterns: patterns to detect in claude output indicating errors
+# Claude patterns match structured CLI diagnostics and non-JSON CLI lines, plus bounded
+# recent output when the process exits non-zero or the stream fails. Ordinary assistant
+# narration and successful result summaries are not pattern input on a clean run.
+# claude_error_patterns: patterns to detect Claude diagnostics or failed-run output indicating errors
 # comma-separated list of substrings (case-insensitive matching)
 # when detected, loopai exits gracefully with an informative message
-# default: You've hit your limit,You've hit your session limit,API Error:,cannot be launched inside another Claude Code session,Not logged in,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit
-claude_error_patterns = You've hit your limit,You've hit your session limit,API Error:,cannot be launched inside another Claude Code session,Not logged in,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit
+# API Error codes are enumerated rather than a bare "API Error:" so case-insensitive
+# matching stays specific in failed-run wrapper output; transient 529/502/503/504 live
+# in claude_retry_patterns
+# default: You've hit your limit,You've hit your session limit,You've hit your weekly limit,API Error: 400,API Error: 401,API Error: 403,API Error: 404,API Error: 413,API Error: 429,API Error: 500,cannot be launched inside another Claude Code session,Not logged in,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You're out of usage credits,You've hit your individual spend limit
+claude_error_patterns = You've hit your limit,You've hit your session limit,You've hit your weekly limit,API Error: 400,API Error: 401,API Error: 403,API Error: 404,API Error: 413,API Error: 429,API Error: 500,cannot be launched inside another Claude Code session,Not logged in,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You're out of usage credits,You've hit your individual spend limit
 
 # codex_error_patterns: patterns to detect in codex output indicating errors
 # comma-separated list of substrings (case-insensitive matching)
@@ -366,7 +359,7 @@ codex_error_patterns = Rate limit exceeded,rate limit reached,429 Too Many Reque
 # transient retry pattern detection
 # ------------------------------------------------------------------------------
 
-# claude_retry_patterns: transient claude/fya output markers to retry like timeouts
+# claude_retry_patterns: transient Claude/fya diagnostic or failed-run markers to retry like timeouts
 # comma-separated list of substrings (case-insensitive matching)
 # default: FYA_TRANSIENT_TIMEOUT,API Error: 529,API Error: 502,API Error: 503,API Error: 504
 claude_retry_patterns = FYA_TRANSIENT_TIMEOUT,API Error: 529,API Error: 502,API Error: 503,API Error: 504
@@ -375,12 +368,14 @@ claude_retry_patterns = FYA_TRANSIENT_TIMEOUT,API Error: 529,API Error: 502,API 
 # rate limit wait and retry
 # ------------------------------------------------------------------------------
 
-# claude_limit_patterns: patterns to detect rate limits in claude output
+# claude_limit_patterns: patterns to detect rate limits in Claude diagnostics or failed-run output
 # comma-separated list of substrings (case-insensitive matching)
 # when detected, loopai waits for wait_on_limit and retries until success or Ctrl+C
 # transient HTTP errors (529/502/503/504) live in claude_retry_patterns, not here
-# default: You've hit your limit,You've hit your session limit,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit
-claude_limit_patterns = You've hit your limit,You've hit your session limit,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit
+# "You're out of usage credits" is the exhausted-credits message claude prints before exiting 1;
+# like the other entries it is waited on (and hands claude-swap its failover chance) rather than failed
+# default: You've hit your limit,You've hit your session limit,You've hit your weekly limit,API Error: 429,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You're out of usage credits,You've hit your individual spend limit
+claude_limit_patterns = You've hit your limit,You've hit your session limit,You've hit your weekly limit,API Error: 429,Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You're out of usage credits,You've hit your individual spend limit
 
 # codex_limit_patterns: patterns to detect rate limits in codex/external output
 # comma-separated list of substrings (case-insensitive matching)

@@ -82,12 +82,17 @@ The top-level `assets/claude/loopai*.md` files are symlinks to the matching
 `assets/claude/skills/loopai*/SKILL.md` sources. Keep the command name,
 directory name, and link target aligned; `make check-symlinks` rejects broken,
 missing, incorrect, and orphan links, requires skill descriptions, and verifies
-the exact skill inventory. The current set is `loopai`, `loopai-merge`,
+the exact skill inventory. It and `check-codex-skills.sh` also reject a skill body
+line naming a removed loopai spelling (`--codex`, `--codex-only`, the
+`--external-review-*` flags, the `executor`, `codex_model`, `codex_reasoning_effort`,
+and `external_review_*` keys) unless that line says it "was removed" or "were
+removed"; `--codex-args` does not match, and the two `removed_spellings` lists must
+stay identical. The current set is `loopai`, `loopai-merge`,
 `loopai-plan`, `loopai-brainstorm`, `loopai-adopt`, `loopai-update`,
 `loopai-grill`, `loopai-orca`, and `loopai-t3`; every added skill needs the matching
 top-level symlink.
 `loopai-t3` is the T3 Code counterpart of `loopai-orca` and does even less: it
-validates the same four pass-through flags and runs `loopai --t3-launch`, minting a
+validates the same three pass-through flags and runs `loopai --t3-launch`, minting a
 T3 Code token inline (`t3 auth session issue --token-only`) when `LOOPAI_T3_TOKEN`
 is unset so the token never reaches the transcript. Worktree creation, input
 copying, thread creation, and the terminal launch all live in Go (`pkg/t3/launch.go`).
@@ -103,13 +108,12 @@ accepts only Orca's built-in TUI agents; once loopai is confirmed running the sk
 that tab through `orca terminal close --tab`, but only an idle shell with a null
 `agentIdentity` and a prompt as its last screen line, since a configured default tab or a
 setup-hook terminal looks like an extra tab too and is not the skill's to remove. It
-forwards only `--codex`, `--task-model`, `--review-model`, and
-`--external-reviewers` from its own arguments and stops on any other token,
+forwards only `--task-model`, `--review-model`, and `--external-reviewers` from
+its own arguments, requires a `claude`/`codex` prefix on the two model flags, and stops on any other token,
 because the flags are spliced into a shell command string and `--worktree` or
 `--serve` would break the Orca flow. `loopai-plan` ends by printing that
 invocation when an `orca` binary is on `PATH`, deriving the flags from the
-effective `executor`, `task_model`, `review_model`, and `external_reviewers`
-config keys, and offers to launch it. When adding or removing a
+effective `task_model`, `review_model`, and `external_reviewers` config keys, and offers to launch it. When adding or removing a
 skill, update `expected_skills` in `scripts/check-symlinks.sh` and the valid
 fixture inventory in `scripts/check-symlinks_test.sh`, then bump both manifest
 versions.
@@ -220,7 +224,7 @@ whose worktrees are removed after a run, so an entry written there would be lost
 before `--merge`. Capture is instructed on the four paths that can write: task,
 internal review, external-review evaluation, and plan creation. The three external
 *review* prompts deliberately omit it, since external reviewers are read-only and
-their findings reach the backlog through the primary evaluator. Each path states its
+their findings reach the backlog through the review-provider evaluator. Each path states its
 own commit rule, and they are not interchangeable. Task and internal review commit the
 entry in phase, and all three prompts stage it with `git add` first, since it is untracked and
 no commit picks it up on its own. No capture path sweeps with `git add -A`, `task.txt` included:
@@ -263,8 +267,8 @@ internal-review prompts, on a `runFull` run without `--worktree` whose `prepareB
 so all three sites name that case too rather than resting on the three no-worktree modes alone. Do not restore a bare
 "stage and commit them" there.
 `review_first.txt` and `review_second.txt` deliberately do not sweep and say so
-inline: `ModeReview` and `ModeCodexOnly` create no branch and no worktree, so `--review`,
-`--external-only`, and `--codex-only` commit in the user's own checkout, where a dirty tree is
+inline: `ModeReview` and `ModeCodexOnly` create no branch and no worktree, so `--review`
+and `--external-only` commit in the user's own checkout, where a dirty tree is
 allowed and never gated, and a sweep there would commit their unrelated work in progress. Those
 two prompts stage the files the model itself created or modified, and their entry-only
 `docs: add backlog entry` commit uses the pathspec form
@@ -286,7 +290,7 @@ entry, and drop every accumulated fix right before `EXTERNAL_REVIEW_DONE`. Those
 enumerating the commit from the diff alone drops a new test or helper the model wrote while fixing
 findings, which under `--worktree` then dies with the worktree. That explicit stage is deliberately
 not `git add -A`, for the same reason the internal-review prompts avoid one: these prompts also
-run under `--review`, `--external-only`, and `--codex-only`, which create no worktree. Staging does not
+run under `--review` and `--external-only`, which create no worktree. Staging does not
 weaken the stalemate reset either, since `diffFingerprint` runs `git diff HEAD`. Plan creation runs in the source checkout before
 the branch and worktree exist, so it stages that one file and commits it through the
 pathspec form `git commit -m "docs: add backlog entry" -- <entry>`; an uncommitted
@@ -310,8 +314,8 @@ evaluation prompts additionally bound the category unconditionally: a defect in 
 itself wrote is never out of scope, whether or not `{{PLAN_FILE}}` names a plan. Filing is
 dismissal-equivalent for the signal, so without that bound "outside this plan's scope" is a new
 way to end a review green with a defect this branch introduced. The bound must not be written as
-a consequence of the no-plan fallback alone: under `--review`, `--external-only`, and
-`--codex-only` there is additionally no plan for any finding to be out of scope of, but the
+a consequence of the no-plan fallback alone: under `--review` and `--external-only` there is
+additionally no plan for any finding to be out of scope of, but the
 dangerous case is the ordinary one where a plan is present.
 
 Agent files may carry YAML frontmatter parsed into `config.Options` (`model`,
@@ -331,32 +335,92 @@ block or folded scalar parses fine but yields embedded newlines, and the catalog
 renders the description as one Markdown list item followed by an indented
 invocation snippet, so continuation lines would land unindented between the two.
 
-`validateModelSpecs` runs at startup, before external-review resolution, and rejects a
-`plan_model`, `task_model`, `review_model`, or legacy `external_review_model` value the
-executor cannot accept. `parseModelEffort` splits at the first colon, which makes an
-`external_reviewers` entry syntactically valid input for these keys: `codex:gpt-6-astra:high`
-resolves to the model `codex` with the reasoning effort `gpt-6-astra:high`, and nothing
-objects until the provider's API rejects the model — in the review phase, after a task phase
-that can run for hours. A second colon is therefore reported as the reviewer-entry confusion
-it almost always is, naming both halves the spec would have produced, and an effort outside
-`low|medium|high|xhigh|max` is reported as unknown. `max` stays accepted here for both
-executors: codex already drops it through a dedicated warning, and re-reporting it as unknown
-would turn a deliberate downgrade into a hard failure. Validation runs on the resolved spec,
-so a CLI flag overriding a bad config value passes exactly as the executors would see it.
+Every model-bearing setting shares one grammar, `provider[:model[:effort]]`, parsed by
+`config.ParseProviderSpec`: `plan_model`, `task_model`, `review_model`, and each
+`external_reviewers` entry (`ParseExternalReviewers` reuses the parser and keeps its own
+`custom`-carries-no-model rule). The provider prefix is mandatory; an empty model segment
+means the provider CLI's default, so `codex::medium` sets effort alone. There is no
+implicit provider selection: `--codex`, the `executor` key, and model-name inference are
+gone. The provider is a property of the phase, not the run. `task_model`'s provider runs
+the task phase and an unset `task_model` means Claude — a default, not an inference;
+`review_model`'s provider runs internal review, external-findings evaluation, finalize,
+and report (the four consumers of the runner's review executor); `plan_model`'s runs plan
+creation; the latter two inherit `task_model` whole, provider included, when unset.
+`resolvePhaseProviders` resolves the three providers into the runtime-only
+`Config.PlanProvider`/`TaskProvider`/`ReviewProvider` fields and rejects
+`--pass-claude-md` unless Codex runs the task or review phase. It runs inside
+`applyCLIOverrides`, before startup spec validation, and resolves an invalid spec to claude,
+so when that trips the gate it returns `validateModelSpecs`' error instead: an unmigrated
+`task_model = gpt-6-astra` beside `pass_claude_md` must get the prefixed rewrite. The
+processor does not read
+those fields: `processor.Config.taskSpec()`/`reviewSpec()` derive each phase's provider
+from its own spec, `executorFactory.Build` constructs the task and review executors from
+them separately (the review slot stays nil when provider, model, and effort all match the
+task), and prompt rendering takes the provider of the phase running the prompt, so a
+Claude review block under a Codex task phase launches Task-tool agents while the task
+prompt keeps its Codex guidance. A provider mismatch there degrades review silently rather
+than failing, which is why agent syntax follows the phase and not the run.
+
+`run` calls `validateModelSpecs` at startup, before external-review
+resolution, on the resolved plan, task, and review specs, so a CLI flag overriding a bad
+config value passes exactly as the executors would see it. `validateModelSpec` checks
+grammar, provider, effort, and provider/model consistency in one pass. A spec without a
+provider segment reports the value and a rewrite whose provider comes from
+`config.ModelProvider` (`opus:high` → `claude:opus:high`); `missingProviderHint` rewords two
+cases where that rewrite would mislead: the old effort-only `:high` form gets both
+`claude::high` and `codex::high`, and under a wrapper `claude_command` any unprefixed spec of
+at most two segments gets `claude:<spec>`, since that wrapper ran every unprefixed spec before.
+`effortInModelSegment` rejects an effort written where the model goes (`codex:high` parses as
+model `high`), for phase specs and reviewer entries alike. The rewrite hint is
+`config.ModelProvider`'s surviving role besides the mismatch check: it recognizes case-insensitive model prefixes and rejects
+`codex:opus`, unless the named provider's command is a wrapper
+(`IsRealClaudeCommand`/`IsRealCodexCommand`) that defines its own model names. `custom` is
+rejected for a phase spec. An effort outside `low|medium|high|xhigh|max` is reported as
+unknown; `max` stays accepted for both providers, since codex already drops it through a
+dedicated warning and re-reporting it would turn a deliberate downgrade into a hard failure.
 `resolveExternalReviewSelection` applies the same effort list to the chain it resolves: it
-wraps `resolveReviewerChain` and calls `validateReviewerEfforts` on the result, because
-that resolver returns from several branches — the chain, the legacy single reviewer, the
-modes that disable review — and a check placed inside one of them leaves the others
-unguarded. The wrapper matters because `config.ParseExternalReviewers` checks the
-separator count and the provider name but never the effort value, so a typo would otherwise
-reach the reviewer process and fail there — after the task phase, and only for that one
-reviewer in the chain.
+wraps `resolveReviewerChain` and calls `validateReviewerEfforts` and then
+`validateReviewerProviders` on the result, because that resolver returns from several
+branches — the chain, the automatic reviewer, the modes that disable review — and a check
+placed inside one of them leaves the others unguarded. `config.ParseExternalReviewers`
+checks the separator count and the provider name but never the effort value, so a typo would
+otherwise reach the reviewer process and fail there — after the task phase, and only for that
+one reviewer in the chain. Explicit reviewer providers must match known models, with custom
+reviewers, wrapper commands, and unknown names skipped.
+
+Removed spellings fail loudly rather than being ignored. `rejectRemovedFlags` runs through
+`validateFlags` before config loading and dependency checks, so a machine without the codex
+binary still gets the migration message; `--codex`, `--codex-only`,
+`--external-review-tool`, and `--external-review-model` stay declared as hidden `opts` fields
+because deleting them makes go-flags answer with a bare `unknown flag`, and the two
+external-review flags fold into one ready `--external-reviewers=` entry. The config keys
+`executor`, `external_review_tool`, `external_review_model`, `codex_model`, and
+`codex_reasoning_effort` are rejected by `checkRemovedKeys` at every config layer, each
+error naming the replacement spelling. `checkExecutionDeps` checks every distinct provider
+of the phases the mode runs, each missing binary with its own error, then the reviewer chain
+under the existing explicit/automatic rules. Full mode does not check the plan provider, since
+most full runs never plan; `tryAutoPlanMode` checks it before prompting for a description
+instead. `modePhaseProviders` is also what makes the progress header's and run record's
+`executor` name the first phase the mode runs (the review provider under `--review` and
+`--external-only`) and what `detectClaudeSwapRecovery` counts, plus the plan provider in full
+mode. The startup banner prints one
+`<phase>: <provider> <model>[:effort]` line per phase the mode runs, with Codex-only
+settings indented under the first Codex phase; cmux labels prefix each phase with its
+provider once the phases' providers differ, and Orca plan and review-block titles name their
+own provider.
 
 `external_reviewers` configures an ordered comma-separated reviewer chain using
-`provider[:model[:effort]]` entries. It takes precedence over the legacy
-`external_review_tool` and `external_review_model` keys. `custom` entries use
+`provider[:model[:effort]]` entries. When it is unset, the provider other than
+`task_model`'s reviews automatically, gated by `codex_enabled`. `--review` and
+`--external-only` run no task phase, so `reviewerBaseProvider` (and the processor's
+`externalReviewProvider` fallback) key them off `review_model`'s provider instead: keyed off
+an unused task spec, a split config would make the review provider both reviewer and
+evaluator. The explicit same-provider warning compares against that same provider. `custom` entries use
 `custom_review_script` and cannot specify a model. An explicitly empty value
-clears an inherited chain and disables external review.
+clears an inherited chain and disables external review. `createRunner` hands an empty
+selection to the processor as `none` through `externalReviewSelection.processorTool`: the
+processor reads an empty tool as auto and `--external-only` bypasses `codex_enabled`, so an
+empty tool there would build a reviewer for a chain the user explicitly emptied.
 
 `loopai --init` creates project-local commented defaults. `loopai --reset` restores global defaults interactively. `loopai --dump-defaults <dir>` extracts embedded defaults for inspection.
 
@@ -392,13 +456,17 @@ comment lists the variables that prompt actually uses, not every variable expand
 it, so adding the placeholder to a prompt and its header happen together.
 
 `pkg/processor/prompts.go` expands two agent placeholders with the same
-per-executor invocation snippet builder (Task tool for Claude, `spawn_agent` for
+per-provider invocation snippet builder (Task tool for Claude, `spawn_agent` for
 Codex): `{{agent:<name>}}` inlines one named agent, and `{{agents:dynamic}}`
 renders the dynamic-agent catalog sorted by name, or
 `(no project-specific agents configured)` when the project defines none. Only
 the embedded `review_first.txt` uses the catalog; `review_second.txt` and the
 embedded external-reviewer prompts do not, though both placeholders are expanded
-on the external path too so customized prompts behave alike. The catalog pass runs
+on the external path too so customized prompts behave alike. There they render in
+the syntax of the reviewer that runs the prompt, not the review block's: a Claude
+reviewer keeps the Task tool, while a Codex reviewer has no `spawn_agent` because
+`MultiAgent` stays off on the reviewer path, and a custom script keeps the review
+block's syntax. The catalog pass runs
 after agent-reference expansion, so `agentBodyText` strips `{{agents:dynamic}}`
 from inlined agent bodies — otherwise raw catalog text lands inside an
 already-escaped codex `task='...'` literal. The catalog also skips agents the same
@@ -468,17 +536,35 @@ no notification, so a half-filled `notify_slack_*`/`notify_email_*` block must n
 be what stops it. Notification setup covers only the plan-executing paths — the
 close-out commands and watch-only mode return before it for the same reason.
 
-The primary executor owns all repository writes. External reviewers produce findings only; the primary evaluates and fixes them using `review_model`, falling back to `task_model`. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
+The task and review providers own all repository writes. External reviewers produce findings only; the `review_model` provider (falling back to `task_model`'s) evaluates and fixes them. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
 
 Completion reporting is split between durable fact collection and model assessment. `processor.RunRecord` is the persisted run-level model; `phase.RunRecorder`, supplied through `phase.Deps`, lets task, internal-review, external-review, and post-review phases record events without depending on the processor store. `Runner` owns the concrete recorder and saves `.loopai/progress/<progress-log-stem>.run.json` atomically with mode `0600` after each event. The record captures phase/task counts and timings plus bounded reviewer/evaluator text; repository facts such as commits, name-status, diff totals, backlog entries, validation commands, and plan drift are collected separately at report time. `Runner.SetRunTimingsSource` reads non-finalizing `SectionTimer` and `ValidationTimer` snapshots at recorded events and before reporting; resumed records add prior measurements once. The report uses a finish timestamp captured before model assessment, while the final persisted record timestamp includes the report phase. Sidecar creation uses exclusive creation so existing files and symlink targets are never overwritten.
 
+Every plan-archive commit is pathspec-restricted: `MovePlanToCompleted` commits through
+`commitFiles` over the destination plus, when `git mv` staged it, the source deletion, and the
+report variant goes through `commitReportPlanMove`. Never use the bare `commit` there: a single-plan
+worktree run archives through `MainGitSvc` in the user's own checkout, so anything they staged during
+the run would otherwise land under the `move completed plan` message.
+A rejected single-plan archive (a `commit-msg` hook is the reported case) keeps the run green but is
+not silent: `moveCompletedPlan` warns through the progress logger and returns it as `incomplete`,
+which `displayStats` repeats last as `plan archive incomplete`, since the move may be left staged. A
+chain archive failure stays fatal.
+The archive's `os.Rename` fallback (reached when `git mv` refuses, an existing destination included)
+first `Lstat`s the destination and refuses to overwrite it, and `resolvePlanMoveTargets` returns
+`done=true` only when the source is gone and a `completed/` copy exists, so a collision reaches that
+guard instead of passing for an archived plan. This is what makes a dirty source checkout safe for a
+single-plan `--worktree` run: `prepareWorktreePlan` only warns about unrelated dirty files, while
+`inspectWorktreePlanChanges` refuses an unfinished Git operation through `operationInProgress`, the
+same marker scan `--commit`'s `validateAutoCommitState` uses. Worktree chains keep the strict
+dirty-tree check.
+
 `phase.ReportPhase` runs after finalize and before the successful review-checkpoint clear on every review pipeline when `report_enabled` is true. It receives rendered deterministic facts and returns ordinary assistant Markdown; the model must not write the repository file because a single-plan worktree run archives through `MainGitSvc` in the main checkout, outside the executor's worktree. `Runner.Report()` exposes the extracted report, or a nine-section facts-only fallback when model assessment is unavailable. `MovePlanToCompletedWithReport` writes `docs/plans/completed/<stem>.report.md` beside the archived plan in the same commit; tasks-only never generates a report, and review-only modes may populate `Runner.Report()` but do not archive a sidecar because `shouldMovePlan` is false. A non-empty review-checkpoint invalidation reason resets and removes stale run-record state together with the checkpoint. Current-invocation task counts and start time survive post-task invalidation so newly completed work remains in the report. The success clear intentionally removes only the checkpoint, preserving the record through report generation and archival; successful archival then removes the `.run.json` file.
 
-Claude is the default primary. `--codex` switches planning, tasks, internal reviews, evaluation, and finalize to Codex. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. In the legacy path, `external_review_tool = auto` selects the other provider when installed. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
+Claude runs every phase by default. `task_model = codex:<model>[:effort]` moves tasks to Codex, and with them planning and the review block unless `plan_model` or `review_model` names another provider. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. With the chain unset, the provider other than `task_model`'s (`review_model`'s under `--review` and `--external-only`) is selected when installed. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
 
 Codex invocations use additive `-c` overrides so user `~/.codex/config.toml` settings remain available. loopai never writes to `~/.codex/`. `--pass-claude-md` lets Codex discover project `CLAUDE.md`; it does not install or link user-level files.
 
-`--codex-args` and the `codex_args` config key extend that additive contract: their value is tokenized by the shared `splitArgs`, which separates tokens on any unquoted, unescaped ASCII whitespace rather than the space alone — a tab or newline surviving the ini loader would otherwise fold into the neighboring token and turn the remainder into the bare positional `codex exec` takes as its prompt. The set is deliberately ASCII and not `unicode.IsSpace`, since no shell splits on U+00A0 and a non-breaking or thin space pasted from rendered documentation into an unquoted value would otherwise produce that same stray positional — and applies POSIX-shell backslash rules (literal inside single quotes, escaping only `"` and `\` inside double quotes, escaping the next rune when unquoted) so literal backslashes in Windows paths survive while the documented `[\"CLAUDE.md\"]` quote-escaping recipe still works, and appended to every codex invocation loopai composes, at both construction sites in `pkg/processor/executor_factory.go` — first-class `--codex` phases and external codex review under a Claude primary, which share `newBaseCodexExecutor`. The extras go *after* loopai's own `-c` overrides and sandbox flags, because codex resolves repeated `-c` keys last-occurrence-wins (verified against codex-cli 0.147.0), so a user value deliberately overrides the matching loopai one. This is the intentional asymmetry with `claude_args`, which replaces the claude command's argument list rather than extending it: loopai owns the `codex exec` invocation shape. An explicit empty `--codex-args=` clears an inherited config value through the `o.codexArgsSet` guard in `applyCLIOverrides` alone; there is deliberately no `Config.CodexArgsSet` mirroring `ClaudeArgsSet`, because that flag exists only so an empty `claude_args` means "no arguments" instead of "use the defaults", and empty codex extras already append nothing — the invocation stays byte-identical to a build without the flag. Four consequences of appending rather than merging are documented for users and deliberately not policed in code, since extras are trusted input like `codex_command`: `splitArgs` consumes unescaped quotes, so a `-c` value whose TOML type depends on them must escape them or codex fails to load its config and every phase dies at startup; last-occurrence-wins covers `-c key=value` only, so repeating any flag loopai already emits, valued or bare, is a fatal codex parse error rather than an override — `--sandbox` on every path, and `--dangerously-bypass-approvals-and-sandbox` on the first-class `--codex` path, where `codex.go` emits it whenever the effective sandbox is `danger-full-access`, which is the `--codex` default; the extras land after the `exec` subcommand, so an option only the top-level `codex` command accepts (`--search`) is a fatal unexpected-argument error rather than a pass-through, while the global options that matter here (`-c`, `--model`, `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too; and a bare positional token becomes `codex exec`'s prompt, demoting the one loopai sends on stdin to the trailing `<stdin>` block codex appends when both are present. Because the extras are appended on the shared base, they also reach the external reviewer whose `ForceReadOnly` pin exists so it cannot write — that pin holds against `codex_sandbox` but not against `--dangerously-bypass-approvals-and-sandbox` in `codex_args`, which codex accepts alongside `--sandbox read-only` precisely because loopai emits no bypass flag on the reviewer path. The CLI spelling is `--codex-args=<value>`: the values that matter start with `-`, so the detached form is rejected by go-flags before the run starts, and the documented examples use the attached form.
+`--codex-args` and the `codex_args` config key extend that additive contract: their value is tokenized by the shared `splitArgs`, which separates tokens on any unquoted, unescaped ASCII whitespace rather than the space alone — a tab or newline surviving the ini loader would otherwise fold into the neighboring token and turn the remainder into the bare positional `codex exec` takes as its prompt. The set is deliberately ASCII and not `unicode.IsSpace`, since no shell splits on U+00A0 and a non-breaking or thin space pasted from rendered documentation into an unquoted value would otherwise produce that same stray positional — and applies POSIX-shell backslash rules (literal inside single quotes, escaping only `"` and `\` inside double quotes, escaping the next rune when unquoted) so literal backslashes in Windows paths survive while the documented `[\"CLAUDE.md\"]` quote-escaping recipe still works, and appended to every codex invocation loopai composes, at both construction sites in `pkg/processor/executor_factory.go` — codex plan/task/review phases and external codex reviewers, which share `newBaseCodexExecutor`. The extras go *after* loopai's own `-c` overrides and sandbox flags, because codex resolves repeated `-c` keys last-occurrence-wins (verified against codex-cli 0.147.0), so a user value deliberately overrides the matching loopai one. This is the intentional asymmetry with `claude_args`, which replaces the claude command's argument list rather than extending it: loopai owns the `codex exec` invocation shape. An explicit empty `--codex-args=` clears an inherited config value through the `o.codexArgsSet` guard in `applyCLIOverrides` alone; there is deliberately no `Config.CodexArgsSet` mirroring `ClaudeArgsSet`, because that flag exists only so an empty `claude_args` means "no arguments" instead of "use the defaults", and empty codex extras already append nothing — the invocation stays byte-identical to a build without the flag. Four consequences of appending rather than merging are documented for users and deliberately not policed in code, since extras are trusted input like `codex_command`: `splitArgs` consumes unescaped quotes, so a `-c` value whose TOML type depends on them must escape them or codex fails to load its config and every phase dies at startup; last-occurrence-wins covers `-c key=value` only, so repeating any flag loopai already emits, valued or bare, is a fatal codex parse error rather than an override — `--sandbox` on every path, and `--dangerously-bypass-approvals-and-sandbox` on codex plan/task/review phases, where `codex.go` emits it whenever the effective sandbox is `danger-full-access`, which is the codex phase default; the extras land after the `exec` subcommand, so an option only the top-level `codex` command accepts (`--search`) is a fatal unexpected-argument error rather than a pass-through, while the global options that matter here (`-c`, `--model`, `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too; and a bare positional token becomes `codex exec`'s prompt, demoting the one loopai sends on stdin to the trailing `<stdin>` block codex appends when both are present. Because the extras are appended on the shared base, they also reach the external reviewer whose `ForceReadOnly` pin exists so it cannot write — that pin holds against `codex_sandbox` but not against `--dangerously-bypass-approvals-and-sandbox` in `codex_args`, which codex accepts alongside `--sandbox read-only` precisely because loopai emits no bypass flag on the reviewer path. The CLI spelling is `--codex-args=<value>`: the values that matter start with `-`, so the detached form is rejected by go-flags before the run starts, and the documented examples use the attached form.
 
 Alternative Claude-compatible providers live under `scripts/`. `scripts/copilot-as-claude/copilot-as-claude.sh` wraps GitHub Copilot CLI and uses native autopilot mode; plan creation deliberately uses `--autopilot --allow-all` without `--no-ask-user`. `scripts/pi-as-claude/pi-as-claude.sh` translates pi JSONL output and maps loopai model/effort settings to pi provider options. Detailed setup and wrapper behavior live in `docs/custom-providers.md`.
 
@@ -494,6 +580,15 @@ loopai's own gitignored namespace, so an unregistered directory there cannot hol
 work; the three shapes that are not loopai's to delete are still refused with the source
 checkout unmutated, which is what keeps `--commit` from advancing before the failure: a
 symlink, a plain file, and a directory carrying its own `.git`. A held run lock produces a precise busy error before mutable resume validation; an acquired lock routes through existing-worktree validation and automatically resumes from the first incomplete task without source synchronization or auto-commit. Any supplied `-c`/`--commit` is ignored with a warning on this path. Teardown takes the same shared lock before releasing the run lock and removing the worktree, preventing another process from acquiring ownership in the Windows-required release-before-delete interval. The lock file is advisory: deleting its directory entry while held does not release the open file lock and can allow a replacement file to be locked independently, so users must not delete it manually. The former `--resume-worktree` flag was removed and is an unknown option. Shared lock waits and run-lock Git-directory lookup honor cancellation and the configured `vcs_command`. The progress logger is created before changing into a worktree, so logs and chain checkpoints remain in the invoking checkout at `.loopai/progress/`.
+
+Reusing a progress log whose last line is a `Completed:` footer archives it first: the locked
+canonical file is copied to `.loopai/progress/history/<stem>/archive-<YYYYMMDD-HHMMSS>-<token>.txt`,
+then truncated with a fresh header, then older archives are pruned to keep the live file plus nine.
+The timestamp comes from the archived footer. Archive names deliberately lack the `progress-`
+prefix: the dashboard's recursive discovery matches `progress-*.txt` and skips neither `.loopai` nor
+`history`, so a prefixed archive would replay as a session of its own. `readProgressAssociations`
+reads only the top level of each progress directory, so archives never supply a plan-to-branch
+association. Failed or unfinished logs keep appending after a restart separator.
 
 Review checkpoint architecture is split across `pkg/processor/review_checkpoint.go` (the versioned
 model and resume resolution), `pkg/processor/review_resume.go` (runner load/save/invalidation), and
@@ -528,9 +623,16 @@ Auto-mode status ownership begins only after a successful local `starting` reser
 
 `--cmux-workspace[=always|auto]` is part of that best-effort contract. The bare flag and `=always` retain unconditional hand-off. With `=auto` (the optional value must be attached with `=`), `cmux.WorkspaceBusy` runs `cmux list-status` and examines only the `loopai` pill: no pill, or pill text beginning with the final prefixes `done` or `failed`, means free; any other text means busy and triggers hand-off. The final prefixes are shared with `Reporter.Finish`, so producer and query cannot drift. A local auto run whose execution intent is known before config immediately uses `Reporter.Reserve` to install a non-final `starting` pill before config, dependency, or worktree setup; the run-level `cmuxStop` holder clears it on every startup failure and transfers cleanup ownership when the normal reporter starts. A missing cmux environment or binary and any list-status failure make auto mode continue locally without warning unless debug logging is enabled; reservation is attempted independently so a transient query failure does not reopen the startup window when status writes still work. Detection remains intentionally best-effort: a force-killed run can leave a stale phase pill and cause one extra workspace, while simultaneous auto starts can both observe free before either reservation lands. The output query stays separate from discard-only reporter commands, and its `cmd.Output` path must retain `WaitDelay` so a descendant inheriting stdout cannot hold the pipe past the query deadline. `cmux.SpawnWorkspace` is the one cmux call that propagates its error instead of swallowing it, because the caller has to choose between exiting after hand-off and running locally; it returns `cmux.ErrNotInCmux` when `CMUX_WORKSPACE_ID` is unset or the `cmux` binary is absent. `prepareRunBeforeConfig` routes `handOffToCmuxWorkspace` before taking a local reservation and before `handleEarlyFlags`, so hand-off happens before config loading and executor resolution while a combined `--reset` can reserve before blocking for input. It covers plan execution and interactive `--plan` creation alike, but never `isStandaloneCommand` invocations (`--clear`, close-out, `--init`, `--dump-defaults`, reset-only), which own no sidebar state; that predicate is shared with `clearStaleCmuxStatus`. The workspace name comes from `cmuxWorkspaceName`: a single-plan `--branch` override wins, then the first plan-derived name (for a chain), then `loopai`; every chain entry is validated before spawn and successor reporters reuse the same card. The relaunch argv comes from `cmuxHandOffArgv`: `os.Executable()` plus `stripCmuxWorkspaceArg(os.Args[1:])`, which removes the bare and `=value` forms and is the recursion guard, prefixed with `env` and the currently-set variables in `cmuxEnvOptions` when there are any. That prefix exists because the new workspace runs a shell of cmux's own, which inherits cmux's environment and not loopai's, so an option provided through the environment would silently revert to its default after hand-off; `env` is used instead of shell assignment prefixes because the target shell is unknown. `cmuxEnvOptions` must list every `env:` tag in `opts`, and `TestCmuxEnvOptionsCoversOptionTags` enforces that by reflection. Only those options cross; the rest of the environment does not, and `warnAPIKeyNotCarried` reports the one case where that silently changes the run's outcome rather than failing it: the pass-through request travels in argv or config while `ANTHROPIC_API_KEY` does not, so a key exported only in the originating terminal leaves the handed-off run falling back to OAuth or the keychain and billing an account the user did not pick. The key is deliberately not forwarded, because the command reaches the new workspace as text typed into its shell. The warning is emitted only after a successful spawn and only when the variable is actually set here, since otherwise there is nothing to preserve in this terminal either. That test comes first so the quiet case costs no config read, because `preserveAPIKeyRequested` answers the request from both of its sources: `--preserve-anthropic-api-key` and the `preserve_anthropic_api_key` config key, which `applyCLIOverrides` ORs together. Reading argv alone would stay silent for exactly the users who set it once and never type it again. Config is read through `config.LoadReadOnly` as in `handOffAllowedOutsideRepo`, and an unreadable config leaves the flag as the only answer since the child would fail to load it too. Every argv element is POSIX single-quote escaped into the `--command` string, since cmux sends it to the new workspace's shell as text. `cmux new-workspace` is bounded by `spawnTimeout` rather than the 2s `execTimeout`: it starts a terminal instead of updating a label, and a premature kill is ambiguous rather than cosmetic, because cmux may already have created the workspace while the caller reads the error as a failure and runs the plan locally too. That deadline is a mitigation, not a fix, so the ambiguity is also reported: `spawnWorkspace` wraps a `context.DeadlineExceeded` outcome in `cmux.ErrSpawnAmbiguous`, and `handOffSpawnFailure` maps it to a stop with an error. A positive auto busy verdict likewise makes every later refusal or spawn failure stop: falling back into a workspace known to be occupied would defeat isolation. Unconditional mode retains the local fallback for clean failures. Because that error is the one cmux failure a user sees, `SpawnWorkspace` uses `spawnRunner` instead of the output-discarding `execRunner`: it captures the child's stderr into a temp file and folds a bounded excerpt into the wrapped error, so a refusal arrives with cmux's own reason rather than a bare exit status. The spawn sets `CMUX_QUIET=1` in the child environment for that excerpt's sake, because `new-workspace` is a legacy alias for `cmux workspace create` and cmux prints a ~150-character deprecation hint ahead of everything else on every call, which on its own is most of `stderrDetailLimit` and would truncate the reason away; the variable silences advisory output only, so cmux's own `Error:` line still arrives, and the rest of the inherited environment is kept since the client needs it to find the socket. The capture is an `*os.File` and not an `io.Writer`, which is what keeps `execRunner`'s pipe-and-copy-goroutine hazard from applying — `os/exec` hands the descriptor to the child directly. Isolation is only achievable at the workspace boundary: `cmux set-progress` has no key and the pill key is the fixed constant `loopai`. In unconditional mode, any other failure, including an unresolvable working directory, prints a warning and continues the run in the current terminal. `executableHandOffRefusal` covers the relaunch binary itself: resolution failing is one half, but `os.Executable` also succeeds while naming a path the new workspace's shell cannot run, since Linux reads `/proc/self/exe` and keeps naming an unlinked binary with a ` (deleted)` suffix. Presence is all it can test, so a binary that disappears afterwards is out of reach: `go run` unlinks its temporary binary only once the successful hand-off has exited 0, so that invocation still hands off and fails in the new workspace, and the flag has to be smoke-tested from a built binary. A non-empty `o.PlanFile` the child could not read is refused before spawning, for the same reason: the child would otherwise be the first to notice, long after the workspace was created and focused, leaving this terminal claiming success with exit 0 and the user an orphan card to close by hand. `planFileRefusal` resolves the path against the same working directory `plan.Selector` does and goes past its bare existence test, because `os.Stat` also succeeds for a directory, so `--cmux-workspace docs/plans` with the filename forgotten would hand off and only fail in the child at `plan.ParsePlanFile`, in full mode after branch creation. A non-regular path and an unreadable file are both refused; neither can be read by the child either, so no hand-off that would have worked is refused, and a symlink to a readable regular file still passes. The regular-file test runs before the open because opening a fifo blocks until a writer appears. An empty plan file, as under `--plan` or `--review`, skips the whole check. A working directory that is not a repository root is refused before spawning for that same reason, since running from a subdirectory is the likelier mistake and the child's `must run from repository root` would arrive after the card exists. The guard is `fileExists(".git")`, the marker the run itself checks for, so hand-off stays config-independent wherever that marker exists; only its absence consults `config.LoadReadOnly`, through `handOffAllowedOutsideRepo`, to tell the two invocations that legitimately have no marker apart from a subdirectory: a non-git `vcs_command`, and a watch-only `--serve`, which never reaches the repository-root check and runs from any directory. That second case is decided by `isWatchOnlyMode` and not the config-free `mayBeWatchOnlyMode`, because a bare `--serve` with no `--watch` and no `watch_dirs` is a normal run that does reach the check; exempting it would create and focus the orphan card the guard exists to prevent. An unreadable config is neither, because the child would fail to load it too. A successful hand-off leaves the originating workspace's completion pill alone, since the run reports into another card: `prepareStaleCmuxStatus` defers the stale-pill clear for `--cmux-workspace` exactly as it does for a possibly-watch-only `--serve`, and `handOffSucceeded` derives the preserve verdict from `prepareRunBeforeConfig` stopping after a hand-off with no error. Under `--cmux-workspace` the other early flags reach an early exit only after a failed hand-off, and with an error except for the standalone commands whose clear is a no-op anyway.
 
+A worktree run's progress header records two plan paths: `Plan:` is the main-checkout path the run
+was launched with, and `Worktree plan:` is the copy the run actually ticks, taken from `wt.planFile`
+before the logger is built because the logger is created before the chdir. `handleSessionPlan`
+(`pkg/web/server.go`) serves the worktree copy while it exists and falls back to `Plan:` once the
+worktree is removed, so a watch-mode dashboard shows live checkbox state instead of the untouched
+main copy. The line is written only when the mapped path differs from `Plan:`.
+
 The immediate pre-config auto reservation described above has one exception: an invocation with `--serve` and no plan or description must wait for loaded `watch_dirs` to distinguish a watch-only dashboard from a normal execution run. It reserves after config only when execution will follow. Combined `--reset --serve` still reserves before its prompt, then releases that temporary ownership if config confirms watch-only mode. On successful worktree execution with `--serve`, finalization restores cwd and closes the progress log but leaves the worktree for the dashboard's `/api/plan`; the normal `runWithWorktree` defer removes it when the dashboard exits.
 
-Standalone close-out routing happens before executor and notification dependencies are constructed. `--clear` exits before config loading; `--merge`, `--pr`, and read-only `--report` load config for `vcs_command` and colors, then open Git directly. `--report` resolves the same optional feature identifier, prefers `ShowFile` on the live feature branch, and falls back to the working-tree sidecar with `branch: (merged)` after branch deletion; it never constructs executors or notifications. Base resolution for mutating close-out accepts an explicit local branch or local `main`/`master`. All three commands take an optional positional argument naming the feature, so they can run from the root of the primary checkout or any other registered worktree instead of the feature checkout; `runCloseoutCommand` still requires a checkout root, not an arbitrary subdirectory. Without the argument the feature is the current branch and behavior is unchanged, including the invoking checkout's own clean-tree requirement for mutating close-out; with it that top-level `IsDirtyAll` check is skipped and cleanliness is enforced per worktree inside `prepareMergeWorktrees`. `resolveFeatureBranch` resolves the identifier deterministically: an exact local branch first, then a plan file in the plans directory and its `completed/` subdirectory. For a located plan, the branch recorded for that plan under `.loopai/progress/` wins over the name derived from the filename, because a `--branch` override makes the filename imply a branch the run never created and an unrelated branch carrying that derived name would otherwise be merged and deleted; the newest record wins and an unrecorded plan falls back to derivation. Only records whose `Mode` creates a branch are consulted: `--review`, `--codex-only`, and plan creation write their own record for the same plan, under a distinct progress filename and with a later mtime, but their `Branch` header names whatever was checked out at the time, so `recordedBranchIsFeature` skips them rather than resolving the close-out to an unrelated branch. That check is a denylist, so an absent or future `Mode` still supplies the branch, since dropping a valid association silently falls back to the derivation it exists to override. `findRecordedPRPlan` keeps consulting every mode: its branch-to-plan direction is correct for review runs too. Either way the branch must exist locally. `readProgressAssociations` is the shared scan behind both this plan-to-branch lookup and `findRecordedPRPlan`'s branch-to-plan lookup. The plan-to-branch lookup scans every root `progressRecordRoots` returns, which is every registered worktree: the primary first, the invoking checkout second, then the rest, deduplicated through `sameProgressRoot`. The progress logger resolves `.loopai/progress` against the working directory before loopai changes into a worktree, so a run started from the primary records there even though it executed in a linked worktree, while a run started inside any linked worktree records in that worktree. Restricting the scan to the primary and the invoking checkout misses a run started in a third worktree, and a miss falls back to the filename derivation the record exists to override. The newest matching record across all roots wins. The branch-to-plan lookup behind PR metadata stays anchored at the invoking checkout, since its result feeds `readPRPlan`'s containment check and a record naming a plan in another worktree would turn a stats-only body into a hard failure. `recordedBranchForPlan` matches a record to a located plan by case-folded filename via `planAssociationKey`, not by absolute path, so the association survives a case-insensitive filesystem returning the caller's spelling, a record naming the `completed/` copy of a plan still present in the active directory, and a lookup running in a different worktree than the record. It matches the path the record names rather than that path's repo-contained resolution, so an out-of-tree `plans_dir` or a checkout moved since the run still supplies the branch; resolution inside the repository is required only by the PR-metadata consumer, which skips associations whose plan resolves nowhere. Missing the association is the dangerous direction, since it silently falls back to the filename derivation the record exists to override. `recordedPlanInRepo` re-anchors a recorded path at the root when it resolves inside the repository only through symlinks, which a purely lexical containment test rejects wherever the checkout sits behind one; it still refuses symlinked plans and paths genuinely outside the repository. Plan lookup, for both resolution and PR metadata, anchors `cfg.PlansDir` at the invoking checkout's root through `plansDirPath`, so a plan present only inside the unmerged feature worktree is invisible from the primary checkout. Filename derivation goes through `git.Service.EffectiveBranchName`, which resolves the plan's real on-disk filename case, so the derived name matches the one worktree creation produced on case-insensitive filesystems. A feature equal to the base is an error. So is a surplus positional: `main` records `args[1:]` through `applyPositionalArgs` and `validateCloseoutFlags` rejects them, because `--merge <base> <feature>` is the `--merge=<base> <feature>` form with the `=` forgotten, go-flags hands both tokens back as positionals, and silently taking the first would merge and delete the intended base branch. Merge uses the registered base worktree, falling back to the primary worktree when the base branch is checked out nowhere, requires clean feature and merge worktrees, overrides branch-level squash/no-commit defaults, verifies the feature commit became an ancestor of the base, never force-removes a close-out worktree, aborts conflicts as `git.ErrMergeConflict`, and deletes the feature branch only after verified cleanup. `prepareMergeWorktrees` returns a `mergeTargets` value covering three cases: the feature is the current checkout, it lives in another registered worktree, or it is checked out nowhere and the merge runs in the base worktree with worktree cleanup skipped entirely. A registered worktree whose directory was deleted by hand fails with prune guidance instead of a raw chdir error, since Git still treats its branch as checked out until `git worktree prune`. Feature-worktree cleanliness is validated before the merge, not only before cleanup, and `git.Service.BranchHash` reads the feature head without a checkout. Ignored files do not make a worktree dirty and are deleted when the linked worktree is removed, so callers must preserve any local-only ignored files before `--merge`. The success line names the removed worktree, resolved through `mergeTargets.removableWorktree`, because with an explicit feature the removal target comes from the worktree list rather than being the caller's own directory. PR creation requires every effective `origin` push URL to identify the same GitHub repository used by `gh`, pushes committed state, and derives metadata from an exact associated plan (including the active-plan fallback used by worktree runs). With an explicit feature it needs no checkout: `git.Service.BranchDiffStats` measures the branch tip against the base through `refs/heads/<branch>` so a same-named tag cannot shadow it, and `gh pr create --head <branch>` targets the resolved branch. Plan discovery never returns a path outside the repository root, so an out-of-tree `plans_dir` or recorded plan degrades to a stats-only PR body instead of failing `readPRPlan`'s containment check. Tests use local bare remotes, Git push stubs, and `PATH`-injected `gh` stubs.
+Standalone close-out routing happens before executor and notification dependencies are constructed. `--clear` exits before config loading; `--merge`, `--pr`, and read-only `--report` load config for `vcs_command` and colors, then open Git directly. `--report` resolves the same optional feature identifier, prefers `ShowFile` on the live feature branch, and falls back to the working-tree sidecar with `branch: (merged)` after branch deletion; it never constructs executors or notifications. Base resolution for mutating close-out accepts an explicit local branch or local `main`/`master`. All three commands take an optional positional argument naming the feature, so they can run from the root of the primary checkout or any other registered worktree instead of the feature checkout; `runCloseoutCommand` still requires a checkout root, not an arbitrary subdirectory. Without the argument the feature is the current branch and behavior is unchanged, including the invoking checkout's own clean-tree requirement for mutating close-out; with it that top-level `IsDirtyAll` check is skipped and cleanliness is enforced per worktree inside `prepareMergeWorktrees`. `resolveFeatureBranch` resolves the identifier deterministically: an exact local branch first, then a plan file in the plans directory and its `completed/` subdirectory. For a located plan, the branch recorded for that plan under `.loopai/progress/` wins over the name derived from the filename, because a `--branch` override makes the filename imply a branch the run never created and an unrelated branch carrying that derived name would otherwise be merged and deleted; the newest record wins and an unrecorded plan falls back to derivation. Only records whose `Mode` creates a branch are consulted: `--review`, `--external-only`, and plan creation write their own record for the same plan, under a distinct progress filename and with a later mtime, but their `Branch` header names whatever was checked out at the time, so `recordedBranchIsFeature` skips them rather than resolving the close-out to an unrelated branch. That check is a denylist, so an absent or future `Mode` still supplies the branch, since dropping a valid association silently falls back to the derivation it exists to override. `findRecordedPRPlan` keeps consulting every mode: its branch-to-plan direction is correct for review runs too. Either way the branch must exist locally. `readProgressAssociations` is the shared scan behind both this plan-to-branch lookup and `findRecordedPRPlan`'s branch-to-plan lookup. The plan-to-branch lookup scans every root `progressRecordRoots` returns, which is every registered worktree: the primary first, the invoking checkout second, then the rest, deduplicated through `sameProgressRoot`. The progress logger resolves `.loopai/progress` against the working directory before loopai changes into a worktree, so a run started from the primary records there even though it executed in a linked worktree, while a run started inside any linked worktree records in that worktree. Restricting the scan to the primary and the invoking checkout misses a run started in a third worktree, and a miss falls back to the filename derivation the record exists to override. The newest matching record across all roots wins. The branch-to-plan lookup behind PR metadata stays anchored at the invoking checkout, since its result feeds `readPRPlan`'s containment check and a record naming a plan in another worktree would turn a stats-only body into a hard failure. `recordedBranchForPlan` matches a record to a located plan by case-folded filename via `planAssociationKey`, not by absolute path, so the association survives a case-insensitive filesystem returning the caller's spelling, a record naming the `completed/` copy of a plan still present in the active directory, and a lookup running in a different worktree than the record. It matches the path the record names rather than that path's repo-contained resolution, so an out-of-tree `plans_dir` or a checkout moved since the run still supplies the branch; resolution inside the repository is required only by the PR-metadata consumer, which skips associations whose plan resolves nowhere. Missing the association is the dangerous direction, since it silently falls back to the filename derivation the record exists to override. `recordedPlanInRepo` re-anchors a recorded path at the root when it resolves inside the repository only through symlinks, which a purely lexical containment test rejects wherever the checkout sits behind one; it still refuses symlinked plans and paths genuinely outside the repository. Plan lookup, for both resolution and PR metadata, anchors `cfg.PlansDir` at the invoking checkout's root through `plansDirPath`, so a plan present only inside the unmerged feature worktree is invisible from the primary checkout. Filename derivation goes through `git.Service.EffectiveBranchName`, which resolves the plan's real on-disk filename case, so the derived name matches the one worktree creation produced on case-insensitive filesystems. A feature equal to the base is an error. So is a surplus positional: `main` records `args[1:]` through `applyPositionalArgs` and `validateCloseoutFlags` rejects them, because `--merge <base> <feature>` is the `--merge=<base> <feature>` form with the `=` forgotten, go-flags hands both tokens back as positionals, and silently taking the first would merge and delete the intended base branch. Merge uses the registered base worktree, falling back to the primary worktree when the base branch is checked out nowhere, requires clean feature and merge worktrees, overrides branch-level squash/no-commit defaults, verifies the feature commit became an ancestor of the base, never force-removes a close-out worktree, aborts conflicts as `git.ErrMergeConflict`, and deletes the feature branch only after verified cleanup. `prepareMergeWorktrees` returns a `mergeTargets` value covering three cases: the feature is the current checkout, it lives in another registered worktree, or it is checked out nowhere and the merge runs in the base worktree with worktree cleanup skipped entirely. A registered worktree whose directory was deleted by hand fails with prune guidance instead of a raw chdir error, since Git still treats its branch as checked out until `git worktree prune`. Feature-worktree cleanliness is validated before the merge, not only before cleanup, and `git.Service.BranchHash` reads the feature head without a checkout. Ignored files do not make a worktree dirty and are deleted when the linked worktree is removed, so callers must preserve any local-only ignored files before `--merge`. The success line names the removed worktree, resolved through `mergeTargets.removableWorktree`, because with an explicit feature the removal target comes from the worktree list rather than being the caller's own directory. PR creation requires every effective `origin` push URL to identify the same GitHub repository used by `gh`, pushes committed state, and derives metadata from an exact associated plan (including the active-plan fallback used by worktree runs). With an explicit feature it needs no checkout: `git.Service.BranchDiffStats` measures the branch tip against the base through `refs/heads/<branch>` so a same-named tag cannot shadow it, and `gh pr create --head <branch>` targets the resolved branch. Plan discovery never returns a path outside the repository root, so an out-of-tree `plans_dir` or recorded plan degrades to a stats-only PR body instead of failing `readPRPlan`'s containment check. Tests use local bare remotes, Git push stubs, and `PATH`-injected `gh` stubs.
 
 `cmd/loopai` resolves effective plan, task, review, and external-review models
 and passes them to `cmux.Reporter`. Phase labels come from `status.PhaseHolder`;
@@ -587,6 +689,28 @@ The main execution path then calls `ValidationTimer.FinishRun` before handling
 the run error. Do not defer either finish because dashboard shutdown can close
 the underlying log first. Plan-creation mode has no validation timer. A nil
 reporter must return the section timer unchanged.
+
+Executor display streams are filtered by provenance, not text shape. Codex stderr forwards only the
+first run's resolved `model:`/`sandbox:`/`reasoning effort:` header lines; reasoning titles come from
+the rollout file's typed `reasoning` records through `formatParsedRolloutEvent`, because codex 0.144+
+echoes loaded skill and tool markdown onto stderr and a skill header such as `**Detect stale base:**`
+is indistinguishable from a real bold reasoning title. Only the first line of each summary is shown.
+Claude Task subagents stream as `system/task_started` and `system/task_progress` events with no text
+block; `subagentLine` turns their `description` into an indented heartbeat sent to `OutputHandler`
+only, never into the output, recent text, or signal detection. Titles are unthrottled, per-step
+progress is limited to one line per `subagentProgressInterval` (10s).
+
+Claude pattern classification is by provenance. `parseStream` keeps three views: full surfaced
+`Output`, a bounded `RecentText` window, and a bounded `DiagnosticText` window filled by
+`extractDiagnostic` from self-authenticating error records (`is_error`, `terminal_reason:"api_error"`,
+non-zero `api_error_status`), assistant API-error messages, `system` error subtypes, `error` events,
+and non-JSON CLI lines. Ordinary assistant text, successful result summaries, `api_retry` telemetry,
+and subagent heartbeats never enter it. `resolveRunResult` always matches `DiagnosticText` and adds
+`RecentText` only on a non-zero exit or stream error; signal absence is deliberately not a promotion
+trigger, because a successful review path B emits no marker. This matters more here than upstream:
+`wait_on_limit` defaults to 10m and a limit match drives `claude-swap` failover, so a quoted limit
+phrase in narration would otherwise loop forever or rotate accounts for nothing. A non-JSON limit
+line with a non-zero exit, as `You're out of usage credits` arrives, still classifies.
 
 Claude command timing pairs foreground Bash `tool_use` and `tool_result` events
 by tool-use ID and measures their arrival times; background Bash calls are
@@ -694,7 +818,7 @@ Smoke-test Claude findings with Codex evaluation and fixes:
 ```bash
 make e2e-codex
 cd /tmp/loopai-review-test
-.bin/loopai --codex --external-only
+.bin/loopai --task-model codex --external-only
 tail -f .loopai/progress/progress-codex.txt
 ```
 

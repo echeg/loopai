@@ -172,8 +172,9 @@ func TestRunnerRunRecordStartupBranchAndCheckpointRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := Config{
 				Mode: ModeReview, PlanFile: "docs/plans/work.md", DefaultBranch: "main",
-				TaskModel: "task:high", ReviewModel: "review:xhigh",
-				AppConfig: &config.Config{Executor: config.ExecutorCodex},
+				// a claude task spec under review mode: the record names the review block's provider
+				TaskModel: "claude:task:high", ReviewModel: "codex:review:xhigh",
+				AppConfig: &config.Config{},
 			}
 			checkpoint := &checkpointMemoryStore{found: tc.checkpointFound, cp: ReviewCheckpoint{
 				Version: reviewCheckpointVersion, Mode: ModeReview, Branch: "feature", Plan: cfg.PlanFile,
@@ -194,8 +195,8 @@ func TestRunnerRunRecordStartupBranchAndCheckpointRules(t *testing.T) {
 			assert.Equal(t, "main", store.record.BaseRef)
 			assert.Equal(t, ModeReview, store.record.Mode)
 			assert.Equal(t, "codex", store.record.Executor)
-			assert.Equal(t, "task:high", store.record.TaskModel)
-			assert.Equal(t, "review:xhigh", store.record.ReviewModel)
+			assert.Equal(t, "claude:task:high", store.record.TaskModel)
+			assert.Equal(t, "codex:review:xhigh", store.record.ReviewModel)
 			assert.False(t, store.record.StartedAt.IsZero())
 			assert.False(t, store.record.FinishedAt.IsZero())
 		})

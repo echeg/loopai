@@ -187,15 +187,38 @@ func TestReviewPhase_Loop_TimeoutContinues(t *testing.T) {
 
 func TestReviewPhase_First_CodexTimeoutSurfacesAsError(t *testing.T) {
 	exec := newTaskPhaseMockExecutor(nil)
-	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
-	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{cfg: Config{MaxIterations: 50, AppConfig: appCfg}, exec: exec})
+	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{
+		cfg: Config{MaxIterations: 50, TaskProvider: config.ExecutorClaude, ReviewProvider: config.ExecutorCodex}, exec: exec})
 	phase.policy = newScriptedTestPolicy(newMockLogger(""), ExecutionResult{Result: executor.Result{Output: "partial output"}, TimedOut: true})
 
 	err := phase.First(t.Context())
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "first review pass timed out")
+}
+
+func TestReviewPhase_ClaudeReviewUnderCodexTaskUsesClaudeSemantics(t *testing.T) {
+	log := newMockLogger("progress.txt")
+	exec := newTaskPhaseMockExecutor(nil)
+	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{
+		cfg: Config{MaxIterations: 50, TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorClaude}, exec: exec, log: log})
+	phase.policy = newScriptedTestPolicy(log, ExecutionResult{Result: executor.Result{Output: "partial output"}, TimedOut: true})
+
+	require.NoError(t, phase.First(t.Context()), "a claude review timeout warns instead of failing")
+	assertLogContains(t, log, "did not complete cleanly (session timed out)")
+	require.NotEmpty(t, log.PrintSectionCalls())
+	assert.Equal(t, "claude review 0: all findings", log.PrintSectionCalls()[0].Section.Label)
+}
+
+func TestReviewPhase_CodexReviewUnderClaudeTaskUsesNeutralSection(t *testing.T) {
+	log := newMockLogger("progress.txt")
+	exec := newTaskPhaseMockExecutor([]executor.Result{{Signal: status.ReviewDone}})
+	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{
+		cfg: Config{MaxIterations: 50, TaskProvider: config.ExecutorClaude, ReviewProvider: config.ExecutorCodex}, exec: exec, log: log})
+
+	require.NoError(t, phase.Loop(t.Context(), ""))
+	require.NotEmpty(t, log.PrintSectionCalls())
+	assert.Equal(t, "review 1: critical/major", log.PrintSectionCalls()[0].Section.Label)
 }
 
 func TestReviewPhase_Loop_DoneSignalStopsBeforeTimeoutHandling(t *testing.T) {

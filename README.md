@@ -13,7 +13,7 @@ workflows are distributed through this repository's plugin marketplace.
 - Executes Markdown plans one task at a time with automatic retries
 - Executes comma-separated plan chains sequentially on stacked branches
 - Creates plans interactively with `--plan`
-- Supports Claude Code and Codex as primary executors
+- Runs each phase on Claude Code or Codex, chosen per phase by a `provider[:model[:effort]]` spec
 - Runs configurable internal and external review phases
 - Adds project-specific review agents, drafted for the repository by `--gen-agents`
 - Creates a branch automatically and optionally uses isolated Git worktrees
@@ -34,10 +34,10 @@ workflows are distributed through this repository's plugin marketplace.
 
 - Go 1.26 or newer to build loopai
 - Git, or a Git-compatible `vcs_command` wrapper
-- One primary executor:
-  - Claude Code CLI for the default mode
-  - Codex CLI 0.130.0 or newer for `--codex`
-- Optional: the other executor for automatic cross-provider review
+- The CLI of every provider your model specs name (each is checked at startup):
+  - Claude Code CLI for `claude:` specs and the default when `task_model` is unset
+  - Codex CLI 0.130.0 or newer for `codex:` specs
+- Optional: the other provider's CLI for automatic cross-provider review
 - Optional: `fzf` for interactive selection; a numbered fallback is built in
 - Optional for `--pr`: authenticated GitHub CLI (`gh auth login`) and a GitHub
   repository remote named `origin`
@@ -101,11 +101,11 @@ The plugin provides eight skills:
   conflicts, and asks before merging the plan or opening a pull request
 - `loopai:loopai-orca` launches a plan inside an Orca-managed worktree and
   terminal tab with `--orca`, so the run appears as an Orca card with live status;
-  it forwards `--codex`, `--task-model`, `--review-model`, and
-  `--external-reviewers` when given
+  it forwards `--task-model`, `--review-model`, and `--external-reviewers`
+  when given
 - `loopai:loopai-t3` launches a plan inside a T3 Code-managed worktree and thread
   with `--t3-launch`, so the run appears as a T3 Code thread whose title follows
-  the phase; it forwards the same four flags
+  the phase; it forwards the same three flags
 - `loopai:loopai-plan` creates an executable implementation plan
 - `loopai:loopai-brainstorm` designs a feature interactively, then hands the
   approved design to `loopai:loopai-plan`
@@ -253,6 +253,11 @@ cp .ralphex/config .loopai/config
 cmux clear-status ralphex
 ```
 
+A copied config that still sets `executor`, `codex_model`, `codex_reasoning_effort`,
+`external_review_tool`, or `external_review_model`, or a `plan_model`/`task_model`/`review_model`
+without a provider prefix, stops loopai at startup; the error names the rewrite, and the
+removed-spellings table under [Executors and reviews](#executors-and-reviews) lists them all.
+
 The executable is now `loopai`. Replace `RALPHEX_CONFIG_DIR` with
 `LOOPAI_CONFIG_DIR` and `RALPHEX_WEB_HOST` with `LOOPAI_WEB_HOST`. Remove an old
 `ralphex` binary separately after verifying the new installation. Legacy
@@ -322,17 +327,17 @@ loopai --review
 # begin at the external-review phase
 loopai --external-only
 
-# deprecated alias for --external-only
-loopai --codex-only
-
 # use Codex for planning, tasks, fixes, and internal reviews
-loopai --codex docs/plans/feature.md
+loopai --task-model codex:gpt-6-astra:medium docs/plans/feature.md
+
+# write code with Codex, review and fix with Claude
+loopai --task-model codex:gpt-6-astra:medium --review-model claude:opus:high docs/plans/feature.md
 
 # let Codex also discover project-level CLAUDE.md
-loopai --codex --pass-claude-md docs/plans/feature.md
+loopai --task-model codex --pass-claude-md docs/plans/feature.md
 
 # append extra arguments to every codex invocation
-loopai --codex '--codex-args=-c service_tier="default"' docs/plans/feature.md
+loopai --task-model codex '--codex-args=-c service_tier="default"' docs/plans/feature.md
 
 # execute in an isolated worktree
 loopai --worktree docs/plans/feature.md
@@ -391,8 +396,7 @@ Rerun the same comma-separated command after an interruption: a checkpoint under
 
 Entries are trimmed, so a quoted value may contain spaces around commas. Empty entries, aliases
 to the same file, and plans that derive the same branch name are rejected. `--branch`, `--serve`,
-interactive `--plan`, `--review`, `--external-only`, and `--codex-only` cannot be combined with a
-chain. Without `--commit`, uncommitted plan files may be the only source-checkout changes; they are
+interactive `--plan`, `--review`, and `--external-only` cannot be combined with a chain. Without `--commit`, uncommitted plan files may be the only source-checkout changes; they are
 captured together on the first chain branch. With `--worktree --commit`, the source-checkout
 auto-commit applies only to the first plan. After every worktree-chain member succeeds, unchanged
 dirty tracked inputs are restored to the source `HEAD` and unchanged untracked inputs are removed,
@@ -413,9 +417,9 @@ they do not need to be merged first because their commits are ancestors of the l
 
 The full pipeline has four phases:
 
-1. Task execution finds the first incomplete `### Task N:` or `### Iteration N:` section, runs the selected executor, validates the result, marks the task complete, and commits it.
-2. First review launches the review agents in parallel through the primary executor: five built-in agents plus any project-specific agents the executor selects (see [Review agents](#review-agents)).
-3. External review runs the configured reviewer or reviewer chain for findings. The primary executor evaluates findings and owns all fixes.
+1. Task execution finds the first incomplete `### Task N:` or `### Iteration N:` section, runs the `task_model` provider, validates the result, marks the task complete, and commits it.
+2. First review launches the review agents in parallel through the `review_model` provider: five built-in agents plus any project-specific agents the executor selects (see [Review agents](#review-agents)).
+3. External review runs the configured reviewer or reviewer chain for findings. The `review_model` provider evaluates findings and owns all fixes.
 4. Second review checks the final changes for critical or major regressions.
 
 An optional finalize step can run after review. It is disabled by default and controlled with `finalize_enabled`; `--skip-finalize` disables it for one invocation. When `report_enabled = true` (the default), a best-effort report phase runs immediately afterwards in full and review-only pipelines. Tasks-only runs skip it.
@@ -472,8 +476,8 @@ Review the changed migration files for:
 ```
 
 The `description` is what makes the agent active. `review_first.txt` expands the
-`{{agents:dynamic}}` variable into a catalog of every described agent, and the primary
-executor reads that catalog and launches the ones relevant to the current diff — typically
+`{{agents:dynamic}}` variable into a catalog of every described agent, and the
+`review_model` provider reads that catalog and launches the ones relevant to the current diff — typically
 none to three — in the same parallel message as the built-in five. Selection is the model's
 call based on your description, so write it as a precise statement of when the agent applies.
 An agent with no description is never offered in the catalog; it runs only where a prompt
@@ -511,7 +515,7 @@ Agent frontmatter also accepts `model` (`haiku`, `sonnet`, `opus`, or `fable` fo
 alone) and `agent` (a named subagent type instead of the default `general-purpose`). Both are
 optional. An unknown model value is reported as a warning and drops both execution overrides
 for that agent; the `description` is kept, so the agent still runs from the catalog with
-default settings. Under `--codex` a single shared reviewer agent is used, so `model` and
+default settings. When `review_model` names codex, a single shared reviewer agent is used, so `model` and
 `agent` are ignored there and logged as a warning — `description` still works.
 
 ## Plan format
@@ -562,7 +566,7 @@ implementation step, but it makes the plan read as unfinished work and costs ext
 ## Backlog capture
 
 Agents regularly notice real problems outside the current plan's scope. Instead of fixing them
-as scope creep or dropping them, the primary executor files each one as a separate Markdown
+as scope creep or dropping them, the running phase's provider files each one as a separate Markdown
 file under `backlog_dir` (`docs/backlog/` by default):
 
 ```markdown
@@ -589,7 +593,7 @@ rules are not interchangeable:
   shown only the uncommitted diff, so a mid-loop commit would hide the accumulated fixes. The
   final `fix: address ... review findings` commit picks the staged entry up.
 
-  `--review`, `--external-only`, and `--codex-only` create no branch and no worktree, so the review
+  `--review` and `--external-only` create no branch and no worktree, so the review
   and evaluation prompts commit in your own checkout. An explicit `--worktree` is ignored in these
   modes with a warning. No capture path sweeps with `git add -A`:
   each stages only the files it created, modified, or deleted — or, for the evaluation prompts,
@@ -617,7 +621,7 @@ and updates a matching entry rather than duplicating it.
 
 Capture is instructed on four paths: task execution, internal review consolidation, evaluation
 of external-review findings (external reviewers are read-only, so their out-of-scope findings are
-filed by the primary evaluator), and plan creation. Entries are plain Markdown, so
+filed by the `review_model` evaluator), and plan creation. Entries are plain Markdown, so
 `/loopai:loopai-adopt docs/backlog/<entry>.md` turns one into a full plan. Nothing prunes the
 directory, so delete or archive an entry once it has become a plan, or a later run may file it again.
 
@@ -719,18 +723,94 @@ removed, since with an explicit feature that directory is not the one you ran fr
 
 ## Executors and reviews
 
-Claude Code is the default primary executor. Pass `--codex`, or set `executor = codex`, to use Codex for plan creation, task execution, internal reviews, finding evaluation, and finalize.
+Every phase runs on the provider its model spec names. `plan_model`, `task_model`, and
+`review_model` (and `--plan-model`, `--task-model`, `--review-model`) take
+`provider[:model[:effort]]`, the same grammar as each `external_reviewers` entry:
+
+| Spec | Governs | Unset means |
+|---|---|---|
+| `task_model` | task execution | Claude Code with its CLI defaults |
+| `review_model` | internal review, external-findings evaluation, finalize, report | `task_model`, provider included |
+| `plan_model` | interactive plan creation | `task_model`, provider included |
+
+The provider is `claude` or `codex`. An empty model segment keeps the provider CLI's own
+default, so `codex` alone uses `~/.codex/config.toml`, and `codex::medium` keeps that model
+with an explicit effort. Efforts are `low`, `medium`, `high`, `xhigh`, and `max`; `max` is
+Claude-only and Codex downgrades it with a warning.
+
+Write with Codex and review with Claude:
+
+```bash
+loopai --task-model codex:gpt-6-astra:medium --review-model claude:opus:high docs/plans/feature.md
+```
+
+```ini
+task_model = codex:gpt-6-astra:medium
+review_model = claude:opus:high
+```
+
+The review provider reviews as a first-class writer, not as an external reviewer: it launches
+the review agents in its own syntax (Task tool agents for Claude, `spawn_agent` for Codex),
+evaluates external findings, and commits the fixes. The startup banner prints one line per
+phase the mode runs, provider first, with Codex-only settings indented under the first Codex
+phase:
+
+```text
+task:            codex gpt-6-astra:medium
+  sandbox:       danger-full-access
+review:          claude opus:high
+external review: claude opus:xhigh (auto-selected)
+```
+
+The provider prefix is mandatory and nothing is inferred from a model name. A spec that starts
+with a recognizable model name or with an effort fails at startup with the rewrite to use, and so
+do an effort written where the model goes and a model that belongs to the other provider. Any
+other unprefixed value fails as an unknown provider:
+
+```text
+error: --task-model / task_model "gpt-6-astra:medium" is missing a provider prefix; write "codex:gpt-6-astra:medium"
+error: --task-model / task_model ":high" is missing a provider prefix; write "claude::high" or "codex::high"
+error: --task-model / task_model value "codex:high" puts reasoning effort "high" in the model segment; write "codex::high" to keep the provider's default model
+error: --task-model / task_model "codex:opus" names a claude model under the codex provider
+```
+
+With a wrapper `claude_command`, every unprefixed spec used to run through the wrapper whatever
+its model, so the rewrite keeps it there: `gpt-5:high` becomes `claude:gpt-5:high`.
+
+The mismatch check is skipped for a provider whose command is a custom wrapper
+(`claude_command` or `codex_command`), so wrappers can define their own model names. Recognizable
+models in external reviewer entries must still match their explicit provider: `codex:fable`
+fails at startup. Unknown model names remain accepted. `custom` is valid only in
+`external_reviewers`. Every distinct provider named by the phases the mode runs and by the
+reviewer chain has its binary checked once at startup, each missing one with its own error.
+
+The former provider switches fail at startup naming their replacement:
+
+| Removed | Write instead |
+|---|---|
+| `--codex` | `--task-model codex:<model>[:effort]` |
+| `executor = codex` | `task_model = codex:<model>[:effort]` |
+| `--codex-only` | `--external-only` |
+| `--external-review-tool X`, `external_review_tool = X` | `--external-reviewers X[:model[:effort]]`, `external_reviewers = ...`; for `none` an empty `external_reviewers =`, for `auto` leave it unset |
+| `--external-review-model M`, `external_review_model = M` | the model segment of the matching `external_reviewers` entry |
+| `codex_model`, `codex_reasoning_effort` | the model and effort segments of each codex spec |
+| `task_model = gpt-6-astra:medium` | `task_model = codex:gpt-6-astra:medium` |
+
+Removing `codex_model` and `codex_reasoning_effort` also removed their embedded defaults
+(`gpt-5.5` at `xhigh`). A bare `codex` spec and the automatic Codex reviewer now use the codex
+CLI's own defaults from `~/.codex/config.toml`; set `external_reviewers = codex:gpt-5.5:xhigh` to
+keep the former reviewer.
 
 Codex invocations are composed by loopai and use additive `-c` overrides, so `~/.codex/config.toml`
 settings remain available. `--codex-args`, or the `codex_args` config key, appends extra arguments
-to every codex invocation loopai spawns — both first-class `--codex` phases and external codex
-review under a Claude primary. Unlike `claude_args`, which *is* the claude command's argument list,
+to every codex invocation loopai spawns — every phase whose spec names codex and every external
+codex reviewer. Unlike `claude_args`, which *is* the claude command's argument list,
 codex args are strictly additive and are appended last, so an explicit `-c` value there overrides
 the matching override loopai sets. The motivating recipe keeps long autonomous runs off the
 priority tier while interactive codex sessions keep `service_tier = "priority"`:
 
 ```bash
-loopai --codex '--codex-args=-c service_tier="default"' docs/plans/feature.md
+loopai --task-model codex '--codex-args=-c service_tier="default"' docs/plans/feature.md
 ```
 
 ```ini
@@ -767,9 +847,9 @@ Three more sharp edges, since loopai appends the extras rather than merging them
   one that takes a value or a bare switch — is a fatal codex parse error, not an override:
   `'--codex-args=--sandbox workspace-write'` aborts every codex session with `the argument
   '--sandbox <SANDBOX_MODE>' cannot be used multiple times`. Set `codex_sandbox` instead. Which
-  flags loopai emits depends on the path: first-class `--codex` runs also pass
+  flags loopai emits depends on the path: codex plan, task, and review phases also pass
   `--dangerously-bypass-approvals-and-sandbox` whenever the effective sandbox is
-  `danger-full-access` (the default for `--codex`), so repeating that one aborts every phase too.
+  `danger-full-access` (their default), so repeating that one aborts every phase too.
 - Extras land after the `exec` subcommand, so they must be options `codex exec` itself accepts.
   Options that exist only on the top-level `codex` command — `--search`, for example — are a fatal
   `unexpected argument` error rather than a pass-through. Most global options (`-c`, `--model`,
@@ -784,17 +864,24 @@ Extras are trusted input, like `codex_command`. They also reach the external cod
 loopai otherwise pins to a read-only sandbox so it can only report findings. loopai never emits
 `--dangerously-bypass-approvals-and-sandbox` on that path, so codex accepts it alongside the
 `--sandbox read-only` pin — putting it in `codex_args` gives the reviewer write access to the
-repository. A first-class `--codex` run rejects the duplicate outright only when its effective
-sandbox is `danger-full-access` (the `--codex` default), since that is when loopai emits the flag
-itself; setting `codex_sandbox` to anything else means the primary executor accepts the bypass
-silently too.
+repository. A codex phase rejects the duplicate outright only when its effective sandbox is
+`danger-full-access` (the codex phase default), since that is when loopai emits the flag itself;
+setting `codex_sandbox` to anything else means codex phases accept the bypass silently too.
 
-With `external_review_tool = auto`, loopai selects the other installed first-class provider:
+When `external_reviewers` is unset, loopai selects the provider other than `task_model`'s:
 
-- Claude primary → Codex external reviewer
-- Codex primary → Claude external reviewer
+- Claude task phase → Codex external reviewer
+- Codex task phase → Claude external reviewer
 
-If an automatically selected reviewer is unavailable, loopai warns and skips only that phase. A missing primary or explicitly selected reviewer is an error. Set `external_review_tool = none` to disable the legacy single-reviewer path when `external_reviewers` is unset.
+In a run with a task phase the choice ignores `review_model`, so with `task_model = codex:...` and
+`review_model = claude:...` Claude both reviews and evaluates; name `external_reviewers` explicitly
+when the review block's findings should get a cross-model check. `--review` and `--external-only`
+run no task phase, so they select the provider other than `review_model`'s instead, keeping the
+reviewer different from the model that evaluates its findings.
+
+If that automatically selected reviewer is unavailable, loopai warns and skips only that phase;
+`codex_enabled = false` disables it. A missing phase provider or explicitly listed reviewer is an
+error.
 
 For an ordered review chain, set `external_reviewers` to a comma-separated list of
 `provider[:model[:effort]]` entries. Providers are `claude`, `codex`, and `custom`:
@@ -805,57 +892,29 @@ external_reviewers = codex:gpt-5.5:xhigh, claude:fable:max
 
 Reviewers run in list order. Each reviewer loops until it reports no findings, reaches its own
 `max_external_iterations` cap, or triggers its own `review_patience` threshold; then the next
-reviewer starts. Reviewers remain read-only: the primary executor evaluates their findings and
-applies fixes with `review_model` (falling back to `task_model`). A bare `claude` entry defaults to
-`opus:xhigh`; a bare `codex` entry uses `codex_model` and `codex_reasoning_effort`. Codex ignores
-the Claude-only `max` effort with a warning. Use `provider::effort` to override only effort.
+reviewer starts. Reviewers remain read-only: the `review_model` provider (falling back to
+`task_model`'s) evaluates their findings and applies fixes. A bare `claude` entry defaults to
+`opus:xhigh`; a bare `codex` entry uses the codex CLI's own defaults from `~/.codex/config.toml`.
+Codex ignores the Claude-only `max` effort with a warning. Use `provider::effort` to override
+only effort.
 
-Providers may be repeated—each entry creates a separate review loop. An explicit
-`external_reviewers` value at any config layer takes precedence over `external_review_tool` and
-`external_review_model`; use an empty local value or `--external-reviewers=` to clear/disable an
-inherited chain. Unlike legacy `auto`, every non-empty chain entry is explicit, so a missing
-reviewer binary is an error.
+Providers may be repeated—each entry creates a separate review loop. Use an empty local value
+or `--external-reviewers=` to clear/disable an inherited chain. Every non-empty chain entry is
+explicit, so a missing reviewer binary is an error.
 
-The equivalent per-run flag is:
+The equivalent per-run flags are:
 
 ```bash
 loopai \
+  --task-model=claude:opus:high \
+  --review-model=claude:sonnet:medium \
   --external-reviewers=codex:gpt-5.5:xhigh,claude:fable:max \
   docs/plans/feature.md
 ```
 
-`--external-reviewers` cannot be combined with `--external-review-tool` or
-`--external-review-model`.
-
-Per-phase models can be selected with:
-
-```bash
-loopai \
-  --task-model=opus:high \
-  --review-model=sonnet:medium \
-  --external-review-model=:xhigh \
-  docs/plans/feature.md
-```
-
-The model syntax is `model[:effort]`; either half may be omitted. Provider-specific defaults still apply.
-
-These options take `model[:effort]`, not the `provider:model[:effort]` form
-`--external-reviewers` uses. Passing a reviewer entry here is rejected at startup:
-
-```
-error: --review-model / review_model value "codex:gpt-6-astra:high" looks like an
-external_reviewers entry (provider:model:effort); this option takes model[:effort],
-so "codex" would be sent as the model and "gpt-6-astra:high" as the reasoning effort
-```
-
-Without that check the spec parses — the model becomes `codex` and the reasoning
-effort `gpt-6-astra:high` — and the run fails only when the provider rejects the
-model during review, after the task phase has already finished. An effort outside
-`low`, `medium`, `high`, `xhigh`, `max` is rejected the same way. `max` is
-claude-only; codex downgrades it with a warning rather than failing.
-
-The same effort check applies to each `--external-reviewers` entry, which is
-otherwise validated only for its separator count and provider name.
+An effort outside `low`, `medium`, `high`, `xhigh`, `max` is rejected at startup, for the phase
+specs and for each `--external-reviewers` entry alike, rather than when the provider rejects it
+during review after the task phase has already finished.
 
 ## Worktree isolation
 
@@ -875,9 +934,14 @@ git checkout release/13
 loopai --worktree docs/plans/feature.md
 ```
 
-The source checkout must normally be clean. Pass `-c` or `--commit` to stage all changes
-with `git add -A` and commit them in the source checkout before creating a fresh worktree.
-This advances the checked-out branch when attached, or the detached `HEAD` otherwise:
+A single plan starts even when the source checkout has unrelated uncommitted files: the
+worktree checks out a commit, so they stay behind and loopai lists them in a warning. It
+refuses to start while a merge, cherry-pick, revert, rebase, am, or bisect is unfinished in
+the source checkout, because the completed plan is archived there at the end of the run. A
+plan chain still requires a clean checkout apart from its own plan files. To carry your
+uncommitted changes into the new branch instead, pass `-c` or `--commit`: it stages all
+changes with `git add -A` and commits them in the source checkout before creating a fresh
+worktree. This advances the checked-out branch when attached, or the detached `HEAD` otherwise:
 
 ```bash
 loopai --worktree -c docs/plans/hotfix.md
@@ -886,12 +950,12 @@ loopai --worktree -c docs/plans/hotfix.md
 Gitignored files remain uncommitted, and a clean checkout makes `--commit` a no-op. The
 flag requires `--worktree`. If the command resumes an existing worktree, loopai warns that
 `-c`/`--commit` is ignored and leaves the source checkout untouched.
-An uncommitted plan file may be the checkout's only change without `--commit`; loopai
-copies and commits it in the feature worktree. With `--commit`, the plan is included in
+Without `--commit`, an uncommitted plan file is copied and committed in the feature
+worktree. With `--commit`, the plan is included in
 the source-side all-files commit instead.
 
-Breaking CLI change: the deprecated `-c` alias for `--codex-only` was removed. Use
-`--codex-only` explicitly. `-c` now means `--commit` and requires `--worktree`.
+Breaking CLI change: the deprecated `-c` alias for the former `--codex-only` was removed. Use
+`--external-only`. `-c` now means `--commit` and requires `--worktree`.
 
 For the lifetime of each worktree run, loopai holds an OS advisory lock in the worktree's
 private Git directory. A second invocation targeting the same worktree exits immediately
@@ -1002,7 +1066,8 @@ custom_review_script = /absolute/path/to/reviewer.sh
 
 `custom` entries cannot specify a model and require `custom_review_script`. The same script is used
 for every custom entry. It receives a prompt-file path as its only argument and writes findings to
-standard output. The legacy `external_review_tool = custom` form remains supported.
+standard output. The former `external_review_tool = custom` form was removed and fails at
+startup; write `external_reviewers = custom`.
 
 ## Progress and dashboard
 
@@ -1011,6 +1076,12 @@ Progress logs are written to `.loopai/progress/`. Watch the active run with:
 ```bash
 tail -f .loopai/progress/progress-*.txt
 ```
+
+Rerunning the same plan or mode reuses its log. A log that ended with a `Completed:` footer is
+first archived under `.loopai/progress/history/<stem>/archive-<timestamp>-<token>.txt`, so a
+second `--review` no longer destroys the first run's transcript; the current log plus its nine
+newest archives are kept. A failed or interrupted run keeps appending to the same log after a
+restart separator. Archives are plain files and do not appear in the dashboard.
 
 Each section is followed by a wall-clock duration line such as `task iteration 1 took 3m38s`
 when the next section starts or the run ends. The end-of-run summary groups those durations by
@@ -1050,15 +1121,16 @@ loopai --serve --port=3000
 loopai --serve --watch=/path/to/project-a --watch=/path/to/project-b
 ```
 
-When loopai runs inside cmux, it reports the phase and effective model, review iteration, task count, spinner, and completion notifications through the public cmux CLI. Started implementation and review runs retain the completion pill described above after success or non-abort execution failure; startup/preflight failures, plan-creation failures, and aborts do not. Outside cmux this integration is a no-op.
+When loopai runs inside cmux, it reports the phase and effective model (prefixed with its provider once the phases use different providers), review iteration, task count, spinner, and completion notifications through the public cmux CLI. Started implementation and review runs retain the completion pill described above after success or non-abort execution failure; startup/preflight failures, plan-creation failures, and aborts do not. Outside cmux this integration is a no-op.
 
 Pass `--orca`, set `orca = true` in the loopai configuration, or set `LOOPAI_ORCA=1` to report
 interactive plan creation and plan execution/review through OSC terminal titles. Orca needs no
 configuration: it reads the terminal title to derive the tab name and whether the agent is working,
 waiting for permission, or idle. loopai emits titles only when standard output is a terminal, so
 redirected and piped output contains no escape sequences. Watch-only dashboard mode,
-`--gen-agents`, and standalone utility commands do not emit titles. The executor suffix is `codex`
-when Codex is primary and `claude` otherwise.
+`--gen-agents`, and standalone utility commands do not emit titles. The executor suffix names the
+provider of the running phase: plan creation uses `plan_model`'s, tasks `task_model`'s, and the
+review block `review_model`'s.
 
 With `keep_awake = true` (the default), loopai keeps the machine from sleeping while a run is
 active. It uses `caffeinate` on macOS, `systemd-inhibit` on Linux, and `SetThreadExecutionState`
@@ -1164,6 +1236,11 @@ Provider session and rate limits are retried every 10 minutes by default until t
 recovers or the run is canceled with `Ctrl+C`. During the wait, progress output is red and cmux
 shows `rate limited · retry in 10m`. Override the interval with `--wait <duration>` or disable
 limit retries for one run with `--wait 0`; the equivalent config key is `wait_on_limit`.
+Claude limit and error patterns match CLI diagnostics — structured error records, API-error
+messages, and non-JSON CLI lines — not the model's own prose, so a report that merely quotes a
+limit message cannot start a wait or an account switch. Recent surfaced output joins the check
+only when the process exits non-zero or the stream fails, which is how wrapper scripts that
+report failures as ordinary text are still classified.
 
 When the native `claude` command is in use and `claude-swap` is available in `PATH`, loopai also
 enables reactive account failover automatically. On a real Claude limit match it runs

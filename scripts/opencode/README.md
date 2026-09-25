@@ -23,7 +23,7 @@ claude_args =
 - `OPENCODE_REASONING` — alias for `OPENCODE_VARIANT` when `OPENCODE_VARIANT` and `OPENCODE_EFFORT` are unset
 - `OPENCODE_VERBOSE` — set to `1` to include tool execution events in output (default: `0`)
 
-The wrapper also honors Claude-compatible `--model` and `--effort` flags. loopai `--task-model=model:effort`, `--review-model=model:effort`, and `--plan-model=model:effort` are translated to OpenCode as `--model model --variant effort`.
+The wrapper also honors Claude-compatible `--model` and `--effort` flags. loopai `--task-model=claude:model:effort`, `--review-model=claude:model:effort`, and `--plan-model=claude:model:effort` are translated to OpenCode as `--model model --variant effort`; the `claude` prefix routes the phase through `claude_command`, and loopai skips its provider/model check for a wrapper command, so OpenCode model names are accepted.
 
 ### opencode-review.sh
 
@@ -32,7 +32,7 @@ Custom review script for loopai external review phase. Uses OpenCode CLI with a 
 **Configuration:**
 
 ```ini
-external_review_tool = custom
+external_reviewers = custom
 custom_review_script = /path/to/scripts/opencode/opencode-review.sh
 ```
 

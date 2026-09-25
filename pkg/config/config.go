@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -55,47 +56,36 @@ func ParseExternalReviewers(value string) ([]ReviewerSpec, error) {
 			return nil, fmt.Errorf("external reviewer entry %d is empty", i+1)
 		}
 
-		parts := strings.Split(entry, ":")
-		if len(parts) > 3 {
+		spec, err := ParseProviderSpec(entry)
+		switch {
+		case errors.Is(err, ErrTooManySpecSegments):
 			return nil, fmt.Errorf("external reviewer entry %d has too many ':' separators", i+1)
+		case errors.Is(err, ErrUnknownProvider):
+			provider, _, _ := strings.Cut(entry, ":")
+			return nil, fmt.Errorf("unknown external reviewer provider %q", strings.TrimSpace(provider))
+		case err != nil:
+			return nil, fmt.Errorf("external reviewer entry %d: %w", i+1, err)
 		}
-		provider := strings.TrimSpace(parts[0])
-		modelSpec := ""
-		if len(parts) > 1 {
-			modelSpec = strings.TrimSpace(parts[1])
-		}
-		if len(parts) == 3 {
-			effort := strings.TrimSpace(parts[2])
-			if effort != "" {
-				modelSpec += ":" + effort
-			}
-		}
-		switch provider {
-		case ExternalReviewToolClaude, ExternalReviewToolCodex:
-		case ExternalReviewToolCustom:
-			if modelSpec != "" {
-				return nil, errors.New("custom external reviewer must not specify a model")
-			}
-		default:
-			return nil, fmt.Errorf("unknown external reviewer provider %q", provider)
+		if spec.Provider == ExternalReviewToolCustom && spec.ModelSpec() != "" {
+			return nil, errors.New("custom external reviewer must not specify a model")
 		}
 
-		reviewers = append(reviewers, ReviewerSpec{Provider: provider, ModelSpec: modelSpec})
+		reviewers = append(reviewers, ReviewerSpec{Provider: spec.Provider, ModelSpec: spec.ModelSpec()})
 	}
 	return reviewers, nil
 }
 
-// Executor mode constants for the Config.Executor field.
-// ExecutorClaude is the default — the empty string is intentional so that an
-// unset `executor` field in config (or no flag on the CLI) resolves to the
-// claude pipeline without users having to spell it out. ExecutorCodex is the
-// opt-in first-class --codex path.
+// Executor labels for the runtime-only per-phase provider fields, equal to the provider
+// names a spec's prefix resolves to. The empty zero value also means claude, so a Config
+// built without provider resolution runs claude: compare against ExecutorCodex, never
+// against ExecutorClaude.
 const (
-	ExecutorClaude = ""
-	ExecutorCodex  = "codex"
+	ExecutorClaude = ExternalReviewToolClaude
+	ExecutorCodex  = ExternalReviewToolCodex
 )
 
-// External review tool constants for Config.ExternalReviewTool.
+// External reviewer provider names used in external_reviewers entries; auto and none
+// label the automatic and the disabled selection.
 const (
 	ExternalReviewToolAuto   = "auto"
 	ExternalReviewToolClaude = "claude"
@@ -114,28 +104,22 @@ type Config struct {
 	ClaudeCommand string `json:"claude_command"`
 	ClaudeArgs    string `json:"claude_args"`
 	ClaudeArgsSet bool   `json:"-"`            // tracks runtime overrides, including an explicit empty --claude-args=
-	PlanModel     string `json:"plan_model"`   // model[:effort] spec for plan creation (falls back to TaskModel)
-	TaskModel     string `json:"task_model"`   // model[:effort] spec for task execution (e.g., "opus", "opus:high", ":medium")
-	ReviewModel   string `json:"review_model"` // model[:effort] spec for review phases (falls back to TaskModel)
+	PlanModel     string `json:"plan_model"`   // provider[:model[:effort]] spec for plan creation (inherits TaskModel whole)
+	TaskModel     string `json:"task_model"`   // provider[:model[:effort]] spec for task execution (e.g., "claude:opus:high", "codex::medium")
+	ReviewModel   string `json:"review_model"` // provider[:model[:effort]] spec for the review block (inherits TaskModel whole)
 
-	CodexEnabled         bool   `json:"codex_enabled"`
-	CodexEnabledSet      bool   `json:"-"` // tracks if codex_enabled was explicitly set in config
-	CodexCommand         string `json:"codex_command"`
-	CodexArgs            string `json:"codex_args"`
-	CodexModel           string `json:"codex_model"`
-	CodexReasoningEffort string `json:"codex_reasoning_effort"`
-	CodexTimeoutMs       int    `json:"codex_timeout_ms"`
-	CodexTimeoutMsSet    bool   `json:"-"` // tracks if codex_timeout_ms was explicitly set in config
-	CodexSandbox         string `json:"codex_sandbox"`
-	CodexSandboxSet      bool   `json:"-"` // tracks if codex_sandbox was explicitly set outside embedded defaults
+	CodexEnabled      bool   `json:"codex_enabled"`
+	CodexEnabledSet   bool   `json:"-"` // tracks if codex_enabled was explicitly set in config
+	CodexCommand      string `json:"codex_command"`
+	CodexArgs         string `json:"codex_args"`
+	CodexTimeoutMs    int    `json:"codex_timeout_ms"`
+	CodexTimeoutMsSet bool   `json:"-"` // tracks if codex_timeout_ms was explicitly set in config
+	CodexSandbox      string `json:"codex_sandbox"`
+	CodexSandboxSet   bool   `json:"-"` // tracks if codex_sandbox was explicitly set outside embedded defaults
 
-	ExternalReviewTool     string `json:"external_review_tool"`  // auto, claude, codex, custom, or none
-	ExternalReviewToolSet  bool   `json:"-"`                     // tracks if external_review_tool was explicitly set in user config (not embedded default)
-	ExternalReviewModel    string `json:"external_review_model"` // provider-specific model[:effort] spec; empty uses the selected provider's default
-	ExternalReviewModelSet bool   `json:"-"`                     // tracks if external_review_model was explicitly set in user config (not embedded default)
-	ExternalReviewers      string `json:"external_reviewers"`    // ordered provider[:model[:effort]] reviewer chain
-	ExternalReviewersSet   bool   `json:"-"`                     // tracks if external_reviewers was explicitly set in user config
-	CustomReviewScript     string `json:"custom_review_script"`  // path to custom review script
+	ExternalReviewers    string `json:"external_reviewers"`   // ordered provider[:model[:effort]] reviewer chain
+	ExternalReviewersSet bool   `json:"-"`                    // tracks if external_reviewers was explicitly set in user config
+	CustomReviewScript   string `json:"custom_review_script"` // path to custom review script
 
 	IterationDelayMs      int  `json:"iteration_delay_ms"`
 	IterationDelayMsSet   bool `json:"-"` // tracks if iteration_delay_ms was explicitly set in config
@@ -153,8 +137,13 @@ type Config struct {
 
 	PreserveAnthropicAPIKey bool `json:"preserve_anthropic_api_key"` // when true, ANTHROPIC_API_KEY is passed through to the claude child process
 
-	Executor     string `json:"executor"`       // "" (= claude, default) or ExecutorCodex
-	PassClaudeMd bool   `json:"pass_claude_md"` // when true, codex reads project CLAUDE.md via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is not auto-passed (a one-time setup hint is printed)
+	// runtime-only per-phase providers resolved from the provider prefix of plan_model,
+	// task_model, and review_model: "claude" or ExecutorCodex, with the empty value
+	// meaning claude. They are never read from a config file.
+	PlanProvider   string `json:"-"`
+	TaskProvider   string `json:"-"`
+	ReviewProvider string `json:"-"`
+	PassClaudeMd   bool   `json:"pass_claude_md"` // when true, codex reads project CLAUDE.md via project_doc_fallback_filenames; user-level ~/.claude/CLAUDE.md is not auto-passed (a one-time setup hint is printed)
 
 	MovePlanOnCompletion bool `json:"move_plan_on_completion"`
 
@@ -382,16 +371,10 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		CodexEnabledSet:         values.CodexEnabledSet,
 		CodexCommand:            values.CodexCommand,
 		CodexArgs:               values.CodexArgs,
-		CodexModel:              values.CodexModel,
-		CodexReasoningEffort:    values.CodexReasoningEffort,
 		CodexTimeoutMs:          values.CodexTimeoutMs,
 		CodexTimeoutMsSet:       values.CodexTimeoutMsSet,
 		CodexSandbox:            values.CodexSandbox,
 		CodexSandboxSet:         values.CodexSandboxSet,
-		ExternalReviewTool:      values.ExternalReviewTool,
-		ExternalReviewToolSet:   values.ExternalReviewToolSet,
-		ExternalReviewModel:     values.ExternalReviewModel,
-		ExternalReviewModelSet:  values.ExternalReviewModelSet,
 		ExternalReviewers:       values.ExternalReviewers,
 		ExternalReviewersSet:    values.ExternalReviewersSet,
 		CustomReviewScript:      values.CustomReviewScript,
@@ -408,7 +391,6 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		ReportEnabled:           values.ReportEnabled,
 		ReportEnabledSet:        values.ReportEnabledSet,
 		PreserveAnthropicAPIKey: values.PreserveAnthropicAPIKey,
-		Executor:                values.Executor,
 		PassClaudeMd:            values.PassClaudeMd,
 		MovePlanOnCompletion:    values.MovePlanOnCompletion,
 		WorktreeEnabled:         values.WorktreeEnabled,
@@ -504,11 +486,36 @@ func (c *Config) LocalDir() string {
 	return c.localDir
 }
 
-// CodexExecutorSandbox returns the sandbox mode to use when codex is the active
-// executor (--codex mode). Defaults to "danger-full-access" because the codex
+// IsRealClaudeCommand reports whether the command names the standard Claude Code
+// binary rather than a wrapper. An empty command uses the default binary.
+func (c *Config) IsRealClaudeCommand() bool {
+	return isRealCommand(c.ClaudeCommand, "claude")
+}
+
+// IsRealCodexCommand reports whether the command names the standard Codex binary
+// rather than a wrapper. An empty command uses the default binary.
+func (c *Config) IsRealCodexCommand() bool {
+	return isRealCommand(c.CodexCommand, "codex")
+}
+
+func isRealCommand(command, binary string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return true
+	}
+	name := filepath.Base(command)
+	if runtime.GOOS == "windows" {
+		// Native Windows executables can include .exe and use any casing.
+		name = strings.TrimSuffix(strings.ToLower(name), ".exe")
+	}
+	return name == binary
+}
+
+// CodexExecutorSandbox returns the sandbox mode for a codex phase executor (a plan,
+// task, or review spec naming codex). Defaults to "danger-full-access" because the codex
 // executor needs to write git metadata and commit; an explicit codex_sandbox in
-// user config wins. Distinct from the raw CodexSandbox field, which is what the
-// external-review codex (claude mode) reads directly.
+// user config wins. The external codex reviewer never reads either: it is pinned to
+// the read-only sandbox.
 func (c *Config) CodexExecutorSandbox() string {
 	if c == nil || !c.CodexSandboxSet || c.CodexSandbox == "" {
 		return "danger-full-access"

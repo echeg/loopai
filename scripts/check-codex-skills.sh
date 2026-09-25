@@ -18,6 +18,7 @@
 #   - every skill carries agents/openai.yaml, which is what gives Codex the UI
 #     entry and default prompt;
 #   - no body reintroduces a Claude-only tool through copy-paste.
+#   - no body names a loopai flag or config key that was removed.
 
 set -euo pipefail
 
@@ -48,6 +49,24 @@ forbidden_tokens=(
 	run_in_background
 	'Task tool'
 	'/loopai:'
+)
+
+# Spellings loopai removed when the provider moved into every model spec
+# (provider[:model[:effort]]). A skill still teaching one would make loopai stop at
+# startup, and $loopai-orca splices its flags into a command a new Orca tab runs,
+# so the failure would surface only after the worktree and tab already exist.
+# Extended regular expressions; the bare --codex pattern leaves --codex-args alone.
+# A line that itself says the spelling "was removed" or "were removed" is a migration
+# hint, not a use; the bare word "removed" is not enough, since a plan path can carry it.
+removed_spellings=(
+	'--codex([^-[:alnum:]_]|$)'
+	'--codex-only'
+	'--external-review-(tool|model)'
+	'external_review_(tool|model)'
+	'codex_model'
+	'codex_reasoning_effort'
+	'`executor`'
+	'executor[[:space:]]*='
 )
 
 fail() {
@@ -151,6 +170,12 @@ while IFS= read -r skill_name; do
 	for token in "${forbidden_tokens[@]}"; do
 		if grep -Fq -- "$token" "$skill_file"; then
 			fail "claude-only construct in codex skill: $skill_file contains '$token'"
+		fi
+	done
+
+	for spelling in "${removed_spellings[@]}"; do
+		if grep -E -- "$spelling" "$skill_file" | grep -Ev '(was|were) removed' >/dev/null; then
+			fail "removed loopai flag or key in codex skill: $skill_file matches '$spelling'"
 		fi
 	done
 done <<<"$expected_skills"

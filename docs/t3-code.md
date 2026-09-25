@@ -54,7 +54,7 @@ launcher below sets it.
 ## Launching a plan in T3 Code: `--t3-launch`
 
 ```bash
-loopai --t3-launch [--codex] [--task-model M] [--review-model M] [--external-reviewers LIST] docs/plans/<plan>.md
+loopai --t3-launch [--task-model SPEC] [--review-model SPEC] [--external-reviewers LIST] docs/plans/<plan>.md
 ```
 
 Run from the repository root, `--t3-launch`:
@@ -70,8 +70,8 @@ Run from the repository root, `--t3-launch`:
 
 It then prints the thread id, worktree, and branch and exits; the run continues in the thread
 terminal, visible on every T3 Code client. loopai runs there without `--worktree`, so the worktree
-survives the run for review and close-out. Only the four flags above are forwarded; the rest comes
-from `.loopai/config`. If a step fails after the worktree exists, nothing is rolled back and the
+survives the run for review and close-out. Only the three flags above are forwarded, and the two model specs need a `claude` or `codex`
+prefix; the rest comes from `.loopai/config`. If a step fails after the worktree exists, nothing is rolled back and the
 error lists what was already created.
 
 The `loopai:loopai-t3` Claude Code skill and the `$loopai-t3` Codex skill wrap this command, mint a

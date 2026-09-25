@@ -38,7 +38,7 @@ func TestPromptBuilder_FinalPrompts(t *testing.T) {
 	assert.Contains(t, builder.ExternalReviewPrompt(config.ExternalReviewToolCustom, false, "fixed"), "PREVIOUS REVIEW CONTEXT")
 	assert.Equal(t, "eval findings implementation of plan at docs/plans/test.md", builder.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "findings"))
 	assert.Equal(t, "custom eval custom findings", builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "custom findings"))
-	assert.Contains(t, builder.ExternalReviewPrompt(config.ExternalReviewToolClaude, false, "fixed"), "Claude (primary evaluator)")
+	assert.Contains(t, builder.ExternalReviewPrompt(config.ExternalReviewToolClaude, false, "fixed"), "Claude (evaluator)")
 	assert.Equal(t, "codex eval claude findings", builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "claude findings"))
 	assert.Equal(t, "make add feature custom/plans", builder.PlanPrompt())
 	assert.Equal(t, "finalize implementation of plan at docs/plans/test.md", builder.FinalizePrompt())
@@ -81,8 +81,8 @@ func TestPromptBuilder_NilConfigDependencies(t *testing.T) {
 }
 
 func TestPromptBuilder_CodexTaskGuidance(t *testing.T) {
-	appCfg := &config.Config{TaskPrompt: "do work", Executor: config.ExecutorCodex}
-	cfg := Config{AppConfig: appCfg}
+	appCfg := &config.Config{TaskPrompt: "do work"}
+	cfg := Config{TaskModel: "codex", AppConfig: appCfg}
 	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
 
 	prompt := builder.TaskPrompt()

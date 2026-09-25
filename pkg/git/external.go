@@ -1151,33 +1151,47 @@ func (e *externalBackend) validateAutoCommitState() error {
 		return errors.New("refuse auto-commit with unmerged paths; finish or abort the current Git operation first")
 	}
 
+	op, err := e.operationInProgress()
+	if err != nil {
+		return fmt.Errorf("inspect Git operation state before auto-commit: %w", err)
+	}
+	if op != "" {
+		return fmt.Errorf("refuse auto-commit while a %s is in progress; finish or abort it first", op)
+	}
+	return nil
+}
+
+// operationMarkers maps Git state paths to the unfinished operations they signal.
+var operationMarkers = []struct{ path, name string }{
+	{path: "MERGE_HEAD", name: "merge"},
+	{path: "CHERRY_PICK_HEAD", name: "cherry-pick"},
+	{path: "REVERT_HEAD", name: "revert"},
+	{path: "rebase-merge", name: "rebase"},
+	{path: "rebase-apply", name: "rebase or am"},
+	{path: "sequencer", name: "sequenced Git operation"},
+	{path: "BISECT_START", name: "bisect"},
+}
+
+// operationInProgress returns the name of an unfinished Git operation in this checkout, or empty
+// when there is none. The marker paths are the only signal: once conflicts are resolved and staged,
+// an in-progress merge is indistinguishable from ordinary staged work in status output.
+func (e *externalBackend) operationInProgress() (string, error) {
 	gitDir, err := e.gitDir(context.Background())
 	if err != nil {
-		return fmt.Errorf("locate Git operation state before auto-commit: %w", err)
+		return "", fmt.Errorf("locate Git operation state: %w", err)
 	}
-	states := []struct {
-		path string
-		name string
-	}{
-		{path: "MERGE_HEAD", name: "merge"},
-		{path: "CHERRY_PICK_HEAD", name: "cherry-pick"},
-		{path: "REVERT_HEAD", name: "revert"},
-		{path: "rebase-merge", name: "rebase"},
-		{path: "rebase-apply", name: "rebase"},
-		{path: "sequencer", name: "sequenced Git operation"},
-	}
-	for _, state := range states {
-		_, statErr := os.Stat(filepath.Join(gitDir, state.path))
+	for _, marker := range operationMarkers {
+		_, statErr := os.Stat(filepath.Join(gitDir, marker.path))
 		switch {
 		case statErr == nil:
-			return fmt.Errorf("refuse auto-commit while a %s is in progress; finish or abort it first", state.name)
+			return marker.name, nil
 		case os.IsNotExist(statErr):
 			continue
 		default:
-			return fmt.Errorf("inspect %s state before auto-commit: %w", state.name, statErr)
+			return "", fmt.Errorf("inspect %s state: %w", marker.name, statErr)
 		}
 	}
-	return nil
+	return "", nil
 }
 
 func (e *externalBackend) gitDir(ctx context.Context) (string, error) {
@@ -1380,14 +1394,17 @@ func (e *externalBackend) refExists(ref string) bool {
 	return cmd.Run() == nil
 }
 
-// toRelative converts a path to be relative to the repository root.
+// toRelative converts a path to be relative to the repository root, always with forward slashes.
+// git speaks forward slashes on every platform, both in its own output (status --porcelain) and in
+// the paths it accepts as arguments, while filepath.Clean and filepath.Rel yield backslashes on
+// windows - an unconverted result would never match the paths git reports back.
 func (e *externalBackend) toRelative(path string) (string, error) {
 	if !filepath.IsAbs(path) {
 		cleaned := filepath.Clean(path)
 		if strings.HasPrefix(cleaned, "..") {
 			return "", fmt.Errorf("path %q escapes repository root", path)
 		}
-		return cleaned, nil
+		return filepath.ToSlash(cleaned), nil
 	}
 
 	// resolve symlinks for consistent comparison (macOS /var -> /private/var)
@@ -1405,7 +1422,7 @@ func (e *externalBackend) toRelative(path string) (string, error) {
 	if strings.HasPrefix(rel, "..") {
 		return "", fmt.Errorf("path %q is outside repository root %q", path, e.path)
 	}
-	return rel, nil
+	return filepath.ToSlash(rel), nil
 }
 
 // addWorktree creates a git worktree at the given path.

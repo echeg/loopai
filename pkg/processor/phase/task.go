@@ -72,7 +72,7 @@ func (p *TaskPhase) Run(ctx context.Context) error {
 
 		loopCtx, loopCancel := p.breaks.context(ctx)
 
-		execName := p.cfg.executorName()
+		execName := p.cfg.taskExecutorName()
 		execResult := p.policy.Run(loopCtx, p.exec.Run, prompt, execName)
 		result := execResult.Result
 		if p.deps != nil && p.deps.Recorder != nil {

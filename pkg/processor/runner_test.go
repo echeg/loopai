@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,15 +275,15 @@ func TestRunner_RunFull_CodexExecutor_ExplicitNoneSkipsExternalReview(t *testing
 	external := newMockExecutor(nil) // must never be called
 
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
-	appCfg.ExternalReviewTool = "none"
 
 	cfg := Config{
-		Mode:          ModeFull,
-		PlanFile:      planFile,
-		MaxIterations: 50,
-		CodexEnabled:  true, // explicit ExternalReviewTool="none" wins
-		AppConfig:     appCfg,
+		TaskModel:          "codex:gpt-6-astra",
+		Mode:               ModeFull,
+		ExternalReviewTool: "none",
+		PlanFile:           planFile,
+		MaxIterations:      50,
+		CodexEnabled:       true, // explicit ExternalReviewTool="none" wins
+		AppConfig:          appCfg,
 	}
 	r := NewWithExecutors(cfg, log, Executors{Task: task, Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolNone, Exec: external}}}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
@@ -687,14 +688,14 @@ func TestRunner_CodexAndPostReview_ShortCircuitWhenCodexExecutorDisablesExternal
 	})
 
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
-	appCfg.ExternalReviewTool = "none"
 	cfg := Config{
-		Mode:          ModeFull,
-		PlanFile:      planFile,
-		MaxIterations: 50,
-		CodexEnabled:  false,
-		AppConfig:     appCfg,
+		TaskModel:          "codex:gpt-6-astra",
+		Mode:               ModeFull,
+		ExternalReviewTool: "none",
+		PlanFile:           planFile,
+		MaxIterations:      50,
+		CodexEnabled:       false,
+		AppConfig:          appCfg,
 	}
 	r := NewWithExecutors(cfg, log, Executors{Task: codexTask}, &status.PhaseHolder{})
 	err := r.Run(t.Context())
@@ -809,7 +810,7 @@ func TestRunner_Finalize_RunsInCodexOnlyMode(t *testing.T) {
 }
 
 func TestRunner_Finalize_CodexExecutor_RunsAllPhasesThroughSharedInstance(t *testing.T) {
-	// under --codex, task / review / finalize all run through a single shared codex
+	// with a codex task_model and no review_model, task / review / finalize all run through a single shared codex
 	// executor with MultiAgent=true. pin the call sequence so a future split into
 	// distinct instances would regress visibly.
 	tmpDir := t.TempDir()
@@ -827,14 +828,14 @@ func TestRunner_Finalize_CodexExecutor_RunsAllPhasesThroughSharedInstance(t *tes
 	})
 
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
-	appCfg.ExternalReviewTool = "none" // this case explicitly disables external review
 	cfg := Config{
-		Mode:            ModeFull,
-		PlanFile:        planFile,
-		MaxIterations:   50,
-		FinalizeEnabled: true,
-		AppConfig:       appCfg,
+		TaskModel:          "codex:gpt-6-astra",
+		Mode:               ModeFull,
+		ExternalReviewTool: "none",
+		PlanFile:           planFile,
+		MaxIterations:      50,
+		FinalizeEnabled:    true,
+		AppConfig:          appCfg,
 	}
 	r := NewWithExecutors(cfg, log,
 		Executors{Task: codexExec, Review: codexExec, Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolNone}}},
@@ -874,11 +875,9 @@ func TestRunner_CodexExternalOnly_ClaudeFindingsAreHandledByPrimaryCodex(t *test
 	}}
 
 	appCfg := testAppConfig(t)
-	appCfg.Executor = config.ExecutorCodex
-	appCfg.ExternalReviewTool = config.ExternalReviewToolClaude
-	appCfg.ExternalReviewToolSet = true
 	cfg := Config{
-		Mode: ModeCodexOnly, MaxIterations: 50, IterationDelayMs: 1,
+		TaskModel: "codex:gpt-6-astra",
+		Mode:      ModeCodexOnly, MaxIterations: 50, IterationDelayMs: 1,
 		CodexEnabled: true, FinalizeEnabled: true,
 		ExternalReviewTool: config.ExternalReviewToolClaude, AppConfig: appCfg,
 	}
@@ -1278,7 +1277,7 @@ func TestRunner_CodexAndPostReview_CommitPendingPrefix(t *testing.T) {
 		assert.Contains(t, capturedPrompts[2], "IMPORTANT: Before starting the review, run `git status --porcelain`")
 		assert.Contains(t, capturedPrompts[2], "fix: address code review findings")
 		// the prefix is the seventh commit-instruction site and runs on the no-worktree
-		// --review/--external-only/--codex-only paths, so it must carry the same pathspec bound
+		// --review/--external-only paths, so it must carry the same pathspec bound
 		// as the six prompts and must not contradict review_second.txt, which forbids the sweep
 		assert.Contains(t, capturedPrompts[2], "`git add <paths>`")
 		assert.Contains(t, strings.ToLower(capturedPrompts[2]), "do not `git add -a`")
@@ -1575,7 +1574,6 @@ func TestRunner_ReviewPromptIsSharedAcrossExecutors(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			appCfg := testAppConfig(t)
-			appCfg.Executor = tc.executor
 			appCfg.ReviewFirstPrompt = "FIRST_REVIEW_PROMPT"
 			appCfg.ReviewSecondPrompt = "SECOND_REVIEW_PROMPT"
 
@@ -1586,7 +1584,7 @@ func TestRunner_ReviewPromptIsSharedAcrossExecutors(t *testing.T) {
 				{Output: "done", Signal: status.CodexDone},         // claude eval (only hit in claude mode)
 			})
 			cfg := Config{
-				Mode: ModeReview, MaxIterations: 50, IterationDelayMs: 1,
+				Mode: ModeReview, MaxIterations: 50, IterationDelayMs: 1, TaskModel: tc.executor,
 				CodexEnabled: tc.executor == config.ExecutorClaude, AppConfig: appCfg,
 			}
 			r := NewWithExecutors(cfg, log, Executors{Task: task}, &status.PhaseHolder{})
@@ -1630,4 +1628,54 @@ func assertLogContains(t *testing.T, log *mocks.LoggerMock, text string) {
 		}
 	}
 	t.Fatalf("expected log containing %q, got %#v", text, log.PrintCalls())
+}
+
+func TestToPhaseConfig_CarriesEachPhaseProvider(t *testing.T) {
+	tests := []struct {
+		name        string
+		taskModel   string
+		reviewModel string
+		wantTask    string
+		wantReview  string
+	}{
+		{name: "unset specs default to claude", wantTask: "claude", wantReview: "claude"},
+		{name: "review inherits the task provider", taskModel: "codex:gpt-6-astra", wantTask: "codex", wantReview: "codex"},
+		{name: "codex task with claude review", taskModel: "codex:gpt-6-astra:medium", reviewModel: "claude:opus:high",
+			wantTask: "codex", wantReview: "claude"},
+		{name: "claude task with codex review", taskModel: "claude:opus", reviewModel: "codex::high",
+			wantTask: "claude", wantReview: "codex"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toPhaseConfig(Config{TaskModel: tt.taskModel, ReviewModel: tt.reviewModel})
+			assert.Equal(t, tt.wantTask, got.TaskProvider)
+			assert.Equal(t, tt.wantReview, got.ReviewProvider)
+		})
+	}
+}
+
+func TestRunner_PostReviewSkipNamesTheReviewProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		taskModel   string
+		reviewModel string
+		want        string
+	}{
+		{name: "claude review under a codex task", taskModel: "codex:gpt-6-astra", reviewModel: "claude:opus", want: "claude"},
+		{name: "codex review under a claude task", taskModel: "claude:opus", reviewModel: "codex:gpt-6-astra", want: "codex"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{Mode: ModeReview, PlanFile: "plan.md", TaskModel: tc.taskModel, ReviewModel: tc.reviewModel}
+			r, _, external, _ := newCheckpointRunner(cfg, &checkpointMemoryStore{}, &checkpointGit{head: "abc1234", branch: "feature", contains: true})
+			external.run = func(context.Context) (phase.ExternalReviewOutcome, error) { return phase.ExternalReviewOutcome{}, nil }
+
+			require.NoError(t, r.Run(t.Context()))
+			calls := r.log.(*mocks.LoggerMock).PrintCalls()
+			lines := make([]string, 0, len(calls))
+			for _, call := range calls {
+				lines = append(lines, fmt.Sprintf(call.Format, call.Args...))
+			}
+			assert.Contains(t, lines, "external review found no issues, skipping post-reviewers "+tc.want+" review")
+		})
+	}
 }

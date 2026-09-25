@@ -60,7 +60,7 @@ func (p *ReviewPhase) Loop(ctx context.Context, prefix string) error {
 	}
 	maxReviewIterations := max(minReviewIterations, p.cfg.MaxIterations/reviewIterationDivisor)
 
-	execName := p.cfg.executorName()
+	execName := p.cfg.reviewExecutorName()
 	for i := 1; i <= maxReviewIterations; i++ {
 		select {
 		case <-ctx.Done():
@@ -130,14 +130,14 @@ func (p *ReviewPhase) headHash() string {
 }
 
 func (p *ReviewPhase) section(iteration int, suffix string) status.Section {
-	if p.cfg.isCodexExecutor() {
+	if p.cfg.reviewIsCodex() {
 		return status.NewInternalReviewSection(iteration, suffix)
 	}
 	return status.NewClaudeReviewSection(iteration, suffix)
 }
 
 func (p *ReviewPhase) run(ctx context.Context, prompt, phaseLabel string) error {
-	execName := p.cfg.executorName()
+	execName := p.cfg.reviewExecutorName()
 	execResult := p.policy.Run(ctx, p.exec.Run, prompt, execName)
 	result := execResult.Result
 	if err := wrapExecutorError(p.policy, result.Error, execName); err != nil {
@@ -149,7 +149,7 @@ func (p *ReviewPhase) run(ctx context.Context, prompt, phaseLabel string) error 
 	}
 
 	if execResult.TimedOut {
-		if p.cfg.isCodexExecutor() {
+		if p.cfg.reviewIsCodex() {
 			return fmt.Errorf("%s timed out", phaseLabel)
 		}
 		p.log.Print("warning: %s did not complete cleanly (session timed out), continuing...", phaseLabel)

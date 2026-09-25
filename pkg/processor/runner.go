@@ -42,8 +42,8 @@ type Config struct {
 	NoColor               bool                        // disable color output
 	IterationDelayMs      int                         // delay between iterations in milliseconds
 	TaskRetryCount        int                         // number of times to retry failed tasks
-	TaskModel             string                      // model[:effort] spec for task execution; parsed by executor setup (empty = CLI defaults)
-	ReviewModel           string                      // model[:effort] spec for review phases; empty falls back to TaskModel
+	TaskModel             string                      // provider[:model[:effort]] spec for task execution (empty = claude with CLI defaults)
+	ReviewModel           string                      // provider[:model[:effort]] spec for the review block; empty inherits TaskModel whole
 	CodexEnabled          bool                        // backward-compatible gate for automatic external review
 	ExternalReviewTool    string                      // concrete resolved provider; never auto when supplied by the CLI layer
 	ExternalReviewModel   string                      // resolved external provider model
@@ -57,13 +57,6 @@ type Config struct {
 	CommandTimingHandler  func(string, time.Duration) // optional callback for completed shell commands
 }
 
-// isCodexExecutor reports whether the configured task/review executor is codex
-// (the --codex first-class mode). returns false when AppConfig is nil or the
-// executor is anything else (claude is the default).
-func (c Config) isCodexExecutor() bool {
-	return c.AppConfig != nil && c.AppConfig.Executor == config.ExecutorCodex
-}
-
 func toPhaseConfig(c Config) phase.Config {
 	return phase.Config{
 		PlanDescription:       c.PlanDescription,
@@ -72,6 +65,8 @@ func toPhaseConfig(c Config) phase.Config {
 		ReviewPatience:        c.ReviewPatience,
 		FinalizeEnabled:       c.FinalizeEnabled,
 		ReportEnabled:         c.ReportEnabled,
+		TaskProvider:          c.taskProvider(),
+		ReviewProvider:        c.reviewProvider(),
 		AppConfig:             c.AppConfig,
 	}
 }
@@ -473,7 +468,7 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 	}
 
 	if !outcome.HadFindings {
-		r.log.Print("external review found no issues, skipping post-%s %s review", label, r.primaryExecutorName())
+		r.log.Print("external review found no issues, skipping post-%s %s review", label, r.cfg.reviewProvider())
 		if err := r.phases.finalize.Run(ctx); err != nil {
 			return fmt.Errorf("finalize phase: %w", err)
 		}
@@ -490,7 +485,7 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 		"If there are uncommitted changes from previous review phases, stage them with " +
 		"`git add <paths>` over the files those phases created, modified, or deleted, " +
 		"and commit with message: `fix: address code review findings`. " +
-		"Do NOT `git add -A`: `--review`, `--external-only`, and `--codex-only` create no " +
+		"Do NOT `git add -A`: `--review` and `--external-only` create no " +
 		"worktree and run in the user's own checkout, where a dirty tree is allowed and never " +
 		"gated, and without --worktree a run resumed on its own feature branch skips branch " +
 		"creation and the clean-tree gate with it, so a sweep commits their unrelated work " +
@@ -567,13 +562,6 @@ func (r *Runner) runInternalReview(ctx context.Context) error {
 	}
 	r.saveReviewStage(ctx, ReviewStage{Stage: reviewStageInternal})
 	return nil
-}
-
-func (r *Runner) primaryExecutorName() string {
-	if r.cfg.isCodexExecutor() {
-		return config.ExternalReviewToolCodex
-	}
-	return config.ExternalReviewToolClaude
 }
 
 // runTasksOnly executes only task phase, skipping all reviews and report generation.

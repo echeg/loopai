@@ -113,6 +113,31 @@ for token in AskUserQuestion TaskOutput TodoWrite subagent_type spawn_agent \
 done
 write_codex_skill loopai-plan
 
+# a skill teaching a removed loopai flag or key would stop loopai at startup
+for spelling in 'loopai --codex docs/plans/x.md' \
+	'loopai --codex docs/plans/removed-endpoints.md' \
+	'loopai --codex' \
+	'loopai --codex-only' \
+	'--external-review-tool codex' \
+	'--external-review-model opus' \
+	'external_review_tool = auto' \
+	'external_review_model = opus' \
+	'codex_model = gpt-5.5' \
+	'codex_reasoning_effort = xhigh' \
+	'set `executor` to codex' \
+	'executor = codex'; do
+	write_codex_skill loopai-orca
+	printf '%s\n' "$spelling" >>"$codex_skills/loopai-orca/SKILL.md"
+	expect_failure "removed loopai flag or key in codex skill"
+done
+# the surviving codex flag, the per-phase spec grammar, and a migration hint stay allowed
+write_codex_skill loopai-orca
+printf '%s\n' "loopai --codex-args='-c x=1' --task-model codex:gpt-6-astra:medium" 'the codex executor' \
+	'`--codex` was removed; write `--task-model codex:<model>`' \
+	>>"$codex_skills/loopai-orca/SKILL.md"
+"$checker" "$fixture"
+write_codex_skill loopai-orca
+
 # a symlink would reintroduce the coupling the split exists to avoid
 ln -s "../../claude/skills/loopai/SKILL.md" "$fixture/assets/codex/skills/loopai-orca/CLAUDE.md"
 expect_failure "symlink in codex skill tree"

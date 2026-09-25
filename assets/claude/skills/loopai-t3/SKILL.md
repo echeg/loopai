@@ -1,7 +1,7 @@
 ---
 name: loopai-t3
-description: "Use when the user wants to run an existing loopai plan inside a T3 Code-managed worktree and thread (T3 Code desktop, web, or mobile app, t3.codes), so the run shows up as a T3 Code thread whose title follows the loopai phase and whose terminal shows the live output, optionally with explicit executor, model, or external-reviewer overrides. Triggers: loopai-t3, run plan in t3, launch loopai in t3 code, запусти план в t3."
-argument-hint: '[plan file] [--codex] [--task-model M] [--review-model M] [--external-reviewers LIST]'
+description: "Use when the user wants to run an existing loopai plan inside a T3 Code-managed worktree and thread (T3 Code desktop, web, or mobile app, t3.codes), so the run shows up as a T3 Code thread whose title follows the loopai phase and whose terminal shows the live output, optionally with explicit per-phase model or external-reviewer overrides. Triggers: loopai-t3, run plan in t3, launch loopai in t3 code, запусти план в t3."
+argument-hint: '[plan file] [--task-model SPEC] [--review-model SPEC] [--external-reviewers LIST]'
 allowed-tools: [Bash, Read, Glob, AskUserQuestion]
 ---
 
@@ -31,13 +31,13 @@ Split `$ARGUMENTS` on whitespace. The first token that does not start with `--` 
 
 | Flag | Form | Value |
 |------|------|-------|
-| `--codex` | bare | none |
-| `--task-model` | `--task-model M` or `--task-model=M` | one token |
-| `--review-model` | `--review-model M` or `--review-model=M` | one token |
+| `--task-model` | `--task-model SPEC` or `--task-model=SPEC` | one token: `provider[:model[:effort]]` |
+| `--review-model` | `--review-model SPEC` or `--review-model=SPEC` | one token: `provider[:model[:effort]]` |
 | `--external-reviewers` | `--external-reviewers LIST` or `--external-reviewers=LIST` | one token: comma-separated `provider[:model[:effort]]` entries |
 
+- `--task-model` and `--review-model` values must start with a provider: `claude` or `codex`, alone or followed by `:model[:effort]` (`codex:gpt-6-astra:medium`, `claude:opus:high`, `codex::medium` for the codex default model). `--t3-launch` rejects a bare `opus:high`; stop here instead and suggest the prefixed spelling.
 - Every value must match `^[A-Za-z0-9._:,+-]+$`; `--t3-launch` rejects anything else too.
-- Any token not in the table — `--worktree`, `--commit`, `--serve`, `--plan`, `--branch`, a second plan path, anything else — a flag given twice, or a value-taking flag without a value **stops the run**. Report the offending token verbatim and state that only the four flags above are passed through.
+- Any token not in the table — `--worktree`, `--commit`, `--serve`, `--plan`, `--branch`, a second plan path, anything else — a flag given twice, or a value-taking flag without a value **stops the run**. Report the offending token verbatim and state that only the three flags above are passed through. `--codex` was removed from loopai: for it, also say to write `--task-model codex:<model>[:effort]` instead.
 
 ## Step 1: Choose the Plan
 
@@ -78,7 +78,7 @@ Thread:   <id>        (open T3 Code; the thread title follows the run)
 Worktree: <path>
 Branch:   <branch>
 Plan:     $PLAN
-Flags:    $FLAGS  (empty = executor/models/reviewers from .loopai/config and defaults)
+Flags:    $FLAGS  (empty = phase models and reviewers from .loopai/config and defaults)
 Progress: <worktree>/.loopai/progress/progress-<plan stem>.txt
 
 The thread title shows "<plan> · task N/M", "<plan> · review · iteration N",
@@ -102,4 +102,4 @@ From this checkout, prefer `/loopai-merge $PLAN`, or run the printed `loopai --m
 | `HTTP 401` | Token revoked, expired, or minted for another T3 home | Mint a new one with the same `T3CODE_HOME` the server uses |
 | Thread title never changes | Run started without `--t3` or the token expired mid-run | Relaunch; titles are best-effort and never stop the run |
 | loopai: plan file not found | Plan outside the repository | Move it under the repository |
-| Skill stops on an unknown flag | Only four flags pass through | Put other settings in `.loopai/config` |
+| Skill stops on an unknown flag | Only three flags pass through | Put other settings in `.loopai/config` |

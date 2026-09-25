@@ -120,9 +120,9 @@ e2e-codex: build
 	@./scripts/internal/prep-review-test.sh
 	@cp .bin/loopai /tmp/loopai-review-test/.bin/loopai
 	@echo ""
-	@echo "=== E2E Codex-Only Test Ready ==="
+	@echo "=== E2E External-Only Codex Test Ready ==="
 	@echo "cd /tmp/loopai-review-test"
-	@echo ".bin/loopai --codex --external-only"
+	@echo ".bin/loopai --task-model codex --external-only"
 	@echo ""
 	@echo "Monitor: tail -f /tmp/loopai-review-test/.loopai/progress/progress-codex.txt"
 

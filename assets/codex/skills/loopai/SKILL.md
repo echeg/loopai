@@ -51,7 +51,7 @@ Ask, defaulting to 50: `25` for short plans, `50` for most, `100` for large ones
 
 ## Step 4: Launch
 
-Do **not** add `--codex` or model flags on your own. The executor, models, and reviewer chain come from `.loopai/config` and the global config; hardcoding a flag here silently overrides the user's setup. Add a flag only when the user asked for it.
+Do **not** add model flags on your own. The per-phase providers, models, and reviewer chain come from `.loopai/config` and the global config; hardcoding a flag here silently overrides the user's setup. Add a flag only when the user asked for it.
 
 ```bash
 nohup loopai [--review|--external-only] [--max-iterations N] [plan-file] >/dev/null 2>&1 &

@@ -109,6 +109,29 @@ Started: 2026-01-22 10:30:00
 		assert.Equal(t, "docs/plans/my-plan.md", meta.PlanPath, "Plan model line must not shadow Plan line")
 	})
 
+	t.Run("parses worktree plan path", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "progress-test.txt")
+
+		content := `# Ralphex Progress Log
+Plan: /repo/docs/plans/my-plan.md
+Worktree plan: /repo/.ralphex/worktrees/my-plan/docs/plans/my-plan.md
+Branch: my-plan
+Mode: full
+Started: 2026-01-22 10:30:00
+------------------------------------------------------------
+`
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+		meta, complete, err := ParseProgressHeader(path)
+		require.NoError(t, err)
+		assert.True(t, complete)
+
+		assert.Equal(t, "/repo/docs/plans/my-plan.md", meta.PlanPath)
+		assert.Equal(t, "/repo/.ralphex/worktrees/my-plan/docs/plans/my-plan.md", meta.WorktreePlanPath)
+		assert.Equal(t, "my-plan", meta.Branch, "Worktree plan line must not consume the Branch line")
+	})
+
 	t.Run("handles review-only mode", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "progress-test.txt")
@@ -796,7 +819,7 @@ func TestPhaseFromSection(t *testing.T) {
 // regression coverage for round-3 dashboard-routing fix: internal review section
 // labels MUST NOT contain the executor name (e.g. "codex") because phaseFromSection
 // matches "codex" before "review". the fix uses a fixed "review N: ..." label so
-// that under --codex, internal review sections still route to PhaseReview and not
+// that when codex runs the review phase, internal review sections still route to PhaseReview and not
 // PhaseCodex (which is reserved for the external review phase).
 func TestPhaseFromSection_InternalReviewLabelRoutesToReview(t *testing.T) {
 	tests := []struct {

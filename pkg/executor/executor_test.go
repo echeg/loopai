@@ -2,11 +2,13 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -247,6 +249,152 @@ func TestClaudeExecutor_parseStream_withHandler(t *testing.T) {
 	assert.Equal(t, []string{"chunk1", "chunk2"}, chunks)
 }
 
+func TestClaudeExecutor_parseStream_tracksDiagnosticProvenance(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          string
+		wantDiagnostic string
+	}{
+		{
+			name:  "ordinary assistant narration",
+			input: `{"type":"assistant","message":{"content":[{"type":"text","text":"API Error: 500 is documentation"}]}}`,
+		},
+		{
+			name:  "ordinary assistant delta",
+			input: `{"type":"content_block_delta","delta":{"type":"text_delta","text":"You've hit your limit is documentation"}}`,
+		},
+		{
+			name:  "successful result summary",
+			input: `{"type":"result","subtype":"success","is_error":false,"result":"API Error: 500 is documentation"}`,
+		},
+		{
+			name:           "api error assistant",
+			input:          `{"type":"assistant","error":"api_error","is_api_error_message":true,"message":{"content":[{"type":"text","text":"API Error: 500 internal server error"}]}}`,
+			wantDiagnostic: "API Error: 500 internal server error",
+		},
+		{
+			name:           "metadata-only api error assistant",
+			input:          `{"type":"assistant","error":"rate_limit","api_error_status":429,"is_api_error_message":true}`,
+			wantDiagnostic: "API Error: 429 rate_limit",
+		},
+		{
+			name:           "api error assistant retains status with prose",
+			input:          `{"type":"assistant","api_error_status":429,"is_api_error_message":true,"message":{"content":[{"type":"text","text":"rate limited"}]}}`,
+			wantDiagnostic: "API Error: 429 rate limited",
+		},
+		{
+			name:           "string result error",
+			input:          `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: 529 overloaded"}`,
+			wantDiagnostic: "API Error: 529 overloaded",
+		},
+		{
+			name:           "object result error",
+			input:          `{"type":"result","is_error":true,"result":{"output":"Not logged in"}}`,
+			wantDiagnostic: "Not logged in",
+		},
+		{
+			name:           "metadata-only result error",
+			input:          `{"type":"result","is_error":true,"api_error_status":529,"error":"api_error"}`,
+			wantDiagnostic: "API Error: 529 api_error",
+		},
+		{
+			// api_retry reports an attempt, not an outcome. claude often recovers from
+			// one, so treating it as diagnostic would let a recovered retry rerun work.
+			name:  "system api retry is telemetry, not a diagnostic",
+			input: `{"type":"system","subtype":"api_retry","error_status":401,"error":"authentication_failed"}`,
+		},
+		{
+			name:           "system error subtype",
+			input:          `{"type":"system","subtype":"error","error_status":401,"error":"authentication_failed"}`,
+			wantDiagnostic: "API Error: 401 authentication_failed",
+		},
+		{
+			// error prose can arrive only in a string result. terminal_reason api_error
+			// authenticates it even when is_error is absent.
+			name:           "string result authenticated by terminal_reason",
+			input:          `{"type":"result","subtype":"success","terminal_reason":"api_error","result":"You have hit your session limit"}`,
+			wantDiagnostic: "You have hit your session limit",
+		},
+		{
+			name:           "string result authenticated by api_error_status",
+			input:          `{"type":"result","subtype":"success","api_error_status":429,"result":"rate limited"}`,
+			wantDiagnostic: "API Error: 429 rate limited",
+		},
+		{
+			// a successful result can carry a terminal_reason of its own, so a bare one
+			// must not authenticate the summary as a diagnostic.
+			name:  "successful result summary stays out even with a terminal_reason",
+			input: `{"type":"result","subtype":"success","is_error":false,"terminal_reason":"stop_sequence","result":"quoted You have hit your session limit"}`,
+		},
+		{
+			name:           "explicit error event",
+			input:          `{"type":"error","error":"Not logged in"}`,
+			wantDiagnostic: "Not logged in",
+		},
+		{
+			name:           "explicit error event result text",
+			input:          `{"type":"error","result":"API Error: 401 authentication failed"}`,
+			wantDiagnostic: "API Error: 401 authentication failed",
+		},
+		{
+			name:           "non-json stderr",
+			input:          "You've hit your session limit",
+			wantDiagnostic: "You've hit your session limit",
+		},
+		{
+			name:  "subagent progress",
+			input: `{"type":"system","subtype":"task_progress","description":"API Error: 500 review"}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &ClaudeExecutor{}
+			result := e.parseStream(context.Background(), strings.NewReader(tc.input), func() {})
+
+			if tc.wantDiagnostic == "" {
+				assert.Empty(t, result.DiagnosticText)
+				return
+			}
+			assert.Equal(t, tc.wantDiagnostic+"\n", result.DiagnosticText)
+		})
+	}
+}
+
+func TestClaudeExecutor_parseStream_boundsDiagnosticsChronologically(t *testing.T) {
+	lines := make([]string, 0, recentBlockCount+2)
+	for i := range recentBlockCount + 2 {
+		lines = append(lines, fmt.Sprintf("<diagnostic-%02d>", i))
+	}
+
+	result := (&ClaudeExecutor{}).parseStream(
+		context.Background(), strings.NewReader(strings.Join(lines, "\n")), func() {})
+
+	assert.NotContains(t, result.DiagnosticText, "<diagnostic-00>")
+	assert.NotContains(t, result.DiagnosticText, "<diagnostic-01>")
+	for i := 2; i < recentBlockCount+2; i++ {
+		assert.Contains(t, result.DiagnosticText, fmt.Sprintf("<diagnostic-%02d>", i))
+	}
+	assert.Less(t,
+		strings.Index(result.DiagnosticText, "<diagnostic-02>"),
+		strings.Index(result.DiagnosticText, "<diagnostic-11>"),
+		"retained diagnostics must remain chronological")
+}
+
+// api_retry telemetry never becomes pattern input, so a retry claude recovered from
+// internally cannot rerun completed work. the terminal diagnostic still counts.
+func TestClaudeExecutor_parseStream_excludesAPIRetryTelemetry(t *testing.T) {
+	stream := `{"type":"system","subtype":"api_retry","error_status":529,"error":"api_error"}
+{"type":"assistant","error":"api_error","is_api_error_message":true,"message":{"content":[{"type":"text","text":"API Error: 500 terminal diagnostic"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"done"}`
+
+	result := (&ClaudeExecutor{}).parseStream(
+		context.Background(), strings.NewReader(stream), func() {})
+
+	assert.NotContains(t, result.DiagnosticText, "API Error: 529")
+	assert.Contains(t, result.DiagnosticText, "API Error: 500 terminal diagnostic")
+}
+
 func TestClaudeExecutor_parseStream_commandTiming(t *testing.T) {
 	type timing struct {
 		command  string
@@ -367,6 +515,115 @@ func TestClaudeExecutor_parseStream_nonBashInputShapePreservesTextAndSignal(t *t
 			assert.Equal(t, status.Completed, result.Output)
 		})
 	}
+}
+
+func TestClaudeExecutor_subagentLine(t *testing.T) {
+	tests := []struct {
+		name         string
+		line         string
+		want         string
+		wantThrottle bool
+	}{
+		{
+			name:         "task_progress is a throttled step (no agent name, no tool name)",
+			line:         `{"type":"system","subtype":"task_progress","description":"Running Check file size","subagent_type":"general-purpose","last_tool_name":"Bash"}`,
+			want:         "  Running Check file size\n",
+			wantThrottle: true,
+		},
+		{
+			name: "task_started title is unthrottled",
+			line: `{"type":"system","subtype":"task_started","subagent_type":"qa-expert","description":"QA review of branch"}`,
+			want: "  QA review of branch\n",
+		},
+		{name: "task_started without description skipped", line: `{"type":"system","subtype":"task_started","subagent_type":"general-purpose"}`, want: ""},
+		{name: "task_progress empty description skipped", line: `{"type":"system","subtype":"task_progress"}`, want: ""},
+		{name: "task_updated completion not surfaced", line: `{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"completed"}}`, want: ""},
+		{name: "system init not surfaced", line: `{"type":"system","subtype":"init"}`, want: ""},
+		{name: "assistant event not a task line", line: `{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}`, want: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var event streamEvent
+			require.NoError(t, json.Unmarshal([]byte(tc.line), &event))
+			line, throttle := subagentLine(&event)
+			assert.Equal(t, tc.want, line)
+			assert.Equal(t, tc.wantThrottle, throttle)
+		})
+	}
+}
+
+func TestClaudeExecutor_parseStream_surfacesSubagentProgress(t *testing.T) {
+	// subagent system events carry no text block: they must reach OutputHandler as
+	// heartbeat lines (the description only — no agent name, no tool name) but must
+	// NOT pollute the accumulated output or recent-text.
+	input := `{"type":"assistant","message":{"content":[{"type":"text","text":"launching agents"}]}}
+{"type":"system","subtype":"task_started","subagent_type":"general-purpose","description":"QA review of branch"}
+{"type":"system","subtype":"task_progress","description":"Running tests","subagent_type":"general-purpose","last_tool_name":"Bash"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"finished reply"}]}}`
+
+	var chunks []string
+	base := time.Unix(1000, 0)
+	e := &ClaudeExecutor{
+		OutputHandler: func(text string) { chunks = append(chunks, text) },
+		now:           func() time.Time { return base },
+	}
+	result := e.parseStream(context.Background(), strings.NewReader(input), func() {})
+
+	// accumulated output holds only the model's own text, not the heartbeat lines
+	assert.Equal(t, "launchingagentsfinishedreply", strings.ReplaceAll(result.Output, " ", ""))
+	assert.NotContains(t, result.Output, "Running tests")
+	assert.NotContains(t, result.RecentText, "Running tests")
+	assert.Empty(t, result.DiagnosticText)
+	// heartbeats forwarded live for visibility: title and step, description only
+	assert.Contains(t, chunks, "  QA review of branch\n")
+	assert.Contains(t, chunks, "  Running tests\n")
+}
+
+func TestClaudeExecutor_parseStream_throttlesSubagentProgress(t *testing.T) {
+	// four subagent heartbeats: with the clock advancing 2s, 2s, then past the
+	// interval, only the first and the last (after the window reopens) are forwarded.
+	input := `{"type":"system","subtype":"task_progress","description":"step 1","subagent_type":"general-purpose"}
+{"type":"system","subtype":"task_progress","description":"step 2","subagent_type":"general-purpose"}
+{"type":"system","subtype":"task_progress","description":"step 3","subagent_type":"general-purpose"}
+{"type":"system","subtype":"task_progress","description":"step 4","subagent_type":"general-purpose"}`
+
+	base := time.Unix(2000, 0)
+	times := []time.Time{base, base.Add(2 * time.Second), base.Add(4 * time.Second), base.Add(subagentProgressInterval + time.Second)}
+	var i int
+	var chunks []string
+	e := &ClaudeExecutor{
+		OutputHandler: func(text string) { chunks = append(chunks, text) },
+		now:           func() time.Time { t := times[i%len(times)]; i++; return t },
+	}
+	e.parseStream(context.Background(), strings.NewReader(input), func() {})
+
+	assert.Equal(t, []string{"  step 1\n", "  step 4\n"}, chunks,
+		"only the first heartbeat and the one after the window reopens should pass")
+}
+
+func TestClaudeExecutor_parseStream_taskStartedNotThrottled(t *testing.T) {
+	// task_started titles (the subagent's task, no tool step) are always shown, even
+	// back-to-back within the throttle window; only per-tool-step task_progress is
+	// throttled. clock never advances so every task_progress after the first is
+	// throttled away, but both titles must still appear.
+	input := `{"type":"system","subtype":"task_started","subagent_type":"qa-expert","description":"QA review of branch"}
+{"type":"system","subtype":"task_progress","description":"step 1","subagent_type":"qa-expert","last_tool_name":"Bash"}
+{"type":"system","subtype":"task_started","subagent_type":"go-test-expert","description":"test review of branch"}
+{"type":"system","subtype":"task_progress","description":"step 2","subagent_type":"go-test-expert","last_tool_name":"Read"}`
+
+	base := time.Unix(3000, 0)
+	var chunks []string
+	e := &ClaudeExecutor{
+		OutputHandler: func(text string) { chunks = append(chunks, text) },
+		now:           func() time.Time { return base },
+	}
+	e.parseStream(context.Background(), strings.NewReader(input), func() {})
+
+	assert.Contains(t, chunks, "  QA review of branch\n", "task_started title always shown")
+	assert.Contains(t, chunks, "  test review of branch\n", "second title shown despite the throttle window")
+	assert.Contains(t, chunks, "  step 1\n", "first task_progress opens the window")
+	assert.NotContains(t, chunks, "  step 2\n", "later task_progress in the same window is throttled")
 }
 
 func TestClaudeExecutor_parseStream_withDebug(t *testing.T) {
@@ -921,6 +1178,48 @@ func TestClaudeChildEnv(t *testing.T) {
 			preserveAPIKey: true,
 			want:           []string{"ANTHROPIC_API_KEY_OLD=old", "ANTHROPIC_API_KEY=new"},
 		},
+		{
+			// names spelled out rather than derived from sessionEnvVars: dropping one from the
+			// production list must fail here, which a tautological loop over it would not catch
+			name: "strips every Claude Code session marker",
+			env: []string{
+				"PATH=/usr/bin", "CLAUDECODE=1", "CLAUDE_CODE_ENTRYPOINT=cli",
+				"CLAUDE_CODE_EXECPATH=/usr/bin/claude", "CLAUDE_CODE_SESSION_ID=abc",
+				"CLAUDE_CODE_CHILD_SESSION=1", "CLAUDE_CODE_BRIDGE_SESSION_ID=def",
+				"CLAUDE_CODE_MESSAGING_SOCKET=/tmp/sock", "CLAUDE_CODE_MESSAGING_TOKEN=tok",
+				"CLAUDE_PID=123", "CLAUDE_EFFORT=high", "CLAUDE_CODE=1",
+				"CLAUDE_CODE_PARENT_SESSION_ID=ghi", "CLAUDE_CODE_SSE_PORT=5000", "HOME=/home/user",
+			},
+			preserveAPIKey: false,
+			want:           []string{"PATH=/usr/bin", "HOME=/home/user"},
+		},
+		{
+			name: "preserve keeps api key but still strips every session marker",
+			env: []string{
+				"ANTHROPIC_API_KEY=secret", "CLAUDECODE=1", "CLAUDE_CODE_ENTRYPOINT=cli",
+				"CLAUDE_CODE_EXECPATH=/usr/bin/claude", "CLAUDE_CODE_SESSION_ID=abc",
+				"CLAUDE_CODE_CHILD_SESSION=1", "CLAUDE_CODE_BRIDGE_SESSION_ID=def",
+				"CLAUDE_CODE_MESSAGING_SOCKET=/tmp/sock", "CLAUDE_CODE_MESSAGING_TOKEN=tok",
+				"CLAUDE_PID=123", "CLAUDE_EFFORT=high", "PATH=/usr/bin",
+			},
+			preserveAPIKey: true,
+			want:           []string{"ANTHROPIC_API_KEY=secret", "PATH=/usr/bin"},
+		},
+		{
+			// a CLAUDE_CODE_* prefix strip would eat these; they configure the child and must survive
+			name: "keeps user-set CLAUDE_CODE_ config vars while stripping session markers",
+			env: []string{
+				"CLAUDE_CODE_USE_BEDROCK=1", "CLAUDE_CODE_USE_VERTEX=1",
+				"CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192", "CLAUDE_CODE_SUBAGENT_MODEL=haiku",
+				"CLAUDE_CONFIG_DIR=/custom/config", "CLAUDE_CODE_SESSION_ID=abc", "CLAUDECODE=1",
+			},
+			preserveAPIKey: false,
+			want: []string{
+				"CLAUDE_CODE_USE_BEDROCK=1", "CLAUDE_CODE_USE_VERTEX=1",
+				"CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192", "CLAUDE_CODE_SUBAGENT_MODEL=haiku",
+				"CLAUDE_CONFIG_DIR=/custom/config",
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -987,6 +1286,10 @@ func TestPatternMatchError_Error(t *testing.T) {
 	assert.Equal(t, `detected error pattern: "rate limit exceeded"`, err.Error())
 }
 
+// enumeratedAPIErrorCodes mirrors the API Error codes in the default claude_error_patterns (#419):
+// specific hard-error codes, not a bare "API Error:" substring that would match narrated "API error:" prose.
+var enumeratedAPIErrorCodes = []string{"API Error: 400", "API Error: 401", "API Error: 403", "API Error: 404", "API Error: 413", "API Error: 429", "API Error: 500"}
+
 func TestMatchPattern(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1008,6 +1311,22 @@ func TestMatchPattern(t *testing.T) {
 		{name: "multiline output", output: "line1\nYou've hit your limit\nline3", patterns: []string{"hit your limit"}, want: "hit your limit"},
 		{name: "api error 500", output: `API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}`, patterns: []string{"API Error:"}, want: "API Error:"},
 		{name: "not logged in", output: "Not logged in · Please run /login", patterns: []string{"Not logged in"}, want: "Not logged in"},
+		// #419: enumerated API Error codes must not match narrated "API error:" prose (case-insensitive)
+		{name: "narrated api error prose not matched by enumerated codes",
+			output:   `isExpectedAuthMessage matching ("API error: Unauthorized Error", "Unauthorized Error")`,
+			patterns: enumeratedAPIErrorCodes, want: ""},
+		{name: "genuine api error 500 matched by enumerated code",
+			output:   `API Error: 500 {"type":"error"}`,
+			patterns: enumeratedAPIErrorCodes, want: "API Error: 500"},
+		{name: "genuine api error 401 matched by enumerated code",
+			output: "API Error: 401 Unauthorized", patterns: enumeratedAPIErrorCodes, want: "API Error: 401"},
+		// #425: "individual spend" sits between "your" and "limit", so the older entries cannot cover this wording
+		{name: "individual spend limit missed by older limit patterns",
+			output:   "You've hit your individual spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage",
+			patterns: []string{"You've hit your limit", "You've hit your session limit"}, want: ""},
+		{name: "individual spend limit matched by its own pattern",
+			output:   "You've hit your individual spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage",
+			patterns: []string{"You've hit your individual spend limit"}, want: "You've hit your individual spend limit"},
 	}
 
 	for _, tc := range tests {
@@ -1044,7 +1363,7 @@ func TestClaudeExecutor_Run_ErrorPattern(t *testing.T) {
 		},
 		{
 			name:        "pattern matched",
-			output:      `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Error: You've hit your limit for today"}}`,
+			output:      `{"type":"assistant","error":"rate_limit","is_api_error_message":true,"message":{"content":[{"type":"text","text":"Error: You've hit your limit for today"}]}}`,
 			patterns:    []string{"hit your limit"},
 			wantError:   true,
 			wantPattern: "hit your limit",
@@ -1053,7 +1372,7 @@ func TestClaudeExecutor_Run_ErrorPattern(t *testing.T) {
 		},
 		{
 			name:        "case insensitive match",
-			output:      `{"type":"content_block_delta","delta":{"type":"text_delta","text":"RATE LIMIT EXCEEDED"}}`,
+			output:      `{"type":"assistant","error":"rate_limit","is_api_error_message":true,"message":{"content":[{"type":"text","text":"RATE LIMIT EXCEEDED"}]}}`,
 			patterns:    []string{"rate limit exceeded"},
 			wantError:   true,
 			wantPattern: "rate limit exceeded",
@@ -1062,7 +1381,7 @@ func TestClaudeExecutor_Run_ErrorPattern(t *testing.T) {
 		},
 		{
 			name:        "first matching pattern returned",
-			output:      `{"type":"content_block_delta","delta":{"type":"text_delta","text":"rate limit and quota exceeded"}}`,
+			output:      `{"type":"assistant","error":"rate_limit","is_api_error_message":true,"message":{"content":[{"type":"text","text":"rate limit and quota exceeded"}]}}`,
 			patterns:    []string{"rate limit", "quota exceeded"},
 			wantError:   true,
 			wantPattern: "rate limit",
@@ -1133,8 +1452,10 @@ func TestClaudeExecutor_Run_WaitError_WithOutputAndErrorPattern(t *testing.T) {
 	assert.Empty(t, result.Signal)
 }
 
-func TestClaudeExecutor_Run_WaitError_WithSignalAndErrorPattern(t *testing.T) {
-	// non-zero exit + output with signal + error pattern → PatternMatchError takes precedence (signal present skips exit error)
+func TestClaudeExecutor_Run_WaitErrorPromotesNarrationEvenWithSignal(t *testing.T) {
+	// a non-zero exit promotes surfaced output regardless of any signal: a successful
+	// run often emits no marker by design, so signal absence cannot stand in for
+	// failure. the process failed here, so wrapper-style narration is authoritative.
 	jsonStream := `{"type":"content_block_delta","delta":{"type":"text_delta","text":"You've hit your limit <<<RALPHEX:ALL_TASKS_DONE>>>"}}`
 
 	mock := &mocks.CommandRunnerMock{
@@ -1149,7 +1470,6 @@ func TestClaudeExecutor_Run_WaitError_WithSignalAndErrorPattern(t *testing.T) {
 
 	result := e.Run(context.Background(), "test prompt")
 
-	require.Error(t, result.Error)
 	var patternErr *PatternMatchError
 	require.ErrorAs(t, result.Error, &patternErr)
 	assert.Equal(t, "hit your limit", patternErr.Pattern)
@@ -1159,7 +1479,7 @@ func TestClaudeExecutor_Run_WaitError_WithSignalAndErrorPattern(t *testing.T) {
 
 func TestClaudeExecutor_Run_ErrorPattern_WithSignal(t *testing.T) {
 	// error pattern should still be detected even when output contains a signal
-	jsonStream := `{"type":"content_block_delta","delta":{"type":"text_delta","text":"You've hit your limit <<<RALPHEX:ALL_TASKS_DONE>>>"}}`
+	jsonStream := `{"type":"assistant","error":"rate_limit","is_api_error_message":true,"message":{"content":[{"type":"text","text":"You've hit your limit <<<RALPHEX:ALL_TASKS_DONE>>>"}]}}`
 
 	mock := &mocks.CommandRunnerMock{
 		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
@@ -1182,6 +1502,498 @@ func TestClaudeExecutor_Run_ErrorPattern_WithSignal(t *testing.T) {
 	// should preserve output and signal
 	assert.Contains(t, result.Output, "You've hit your limit")
 	assert.Equal(t, "<<<RALPHEX:ALL_TASKS_DONE>>>", result.Signal)
+}
+
+func TestClaudeExecutor_Run_AssistantNarrationDoesNotTriggerPattern(t *testing.T) {
+	tests := []struct {
+		name       string
+		fixture    string
+		wantOutput string
+		wantSignal string
+	}{
+		{
+			name:       "limit phrase",
+			fixture:    "narrated-limit.jsonl",
+			wantOutput: "You've hit your session limit",
+		},
+		{
+			name:       "error phrase after completion signal",
+			fixture:    "narrated-error-signal.jsonl",
+			wantOutput: "API Error: 500",
+			wantSignal: status.Completed,
+		},
+		{
+			name:       "retry phrase",
+			fixture:    "narrated-retry.jsonl",
+			wantOutput: "API Error: 529",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mocks.CommandRunnerMock{
+				RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+					return strings.NewReader(readClaudeFixture(t, tc.fixture)), func() error { return nil }, nil
+				},
+			}
+			e := &ClaudeExecutor{
+				cmdRunner:     mock,
+				LimitPatterns: []string{"You've hit your session limit"},
+				ErrorPatterns: []string{"You've hit your session limit", "API Error: 500"},
+				RetryPatterns: []string{"API Error: 529"},
+			}
+
+			result := e.Run(context.Background(), "test prompt")
+
+			assert.Contains(t, result.Output, tc.wantOutput)
+			assert.Equal(t, tc.wantSignal, result.Signal)
+			assert.Empty(t, result.DiagnosticText)
+			require.NoError(t, result.Error,
+				"ordinary assistant narration in a clean successful stream must not be pattern authority")
+		})
+	}
+}
+
+func TestClaudeExecutor_Run_WeeklyLimitWithStockPatterns(t *testing.T) {
+	stream := readClaudeFixture(t, "diagnostic-rate-limit.jsonl")
+	mock := &mocks.CommandRunnerMock{
+		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+			return strings.NewReader(stream), func() error { return nil }, nil
+		},
+	}
+	e := &ClaudeExecutor{
+		cmdRunner: mock,
+		LimitPatterns: strings.Split("You've hit your limit,You've hit your session limit,You've hit your weekly limit,API Error: 429,"+
+			"Your usage allocation has been disabled by your admin,You've hit your org's monthly usage limit,You've hit your individual spend limit", ","),
+		ErrorPatterns: strings.Split("You've hit your limit,You've hit your session limit,You've hit your weekly limit,"+
+			"API Error: 400,API Error: 401,API Error: 403,API Error: 404,API Error: 413,API Error: 429,API Error: 500,"+
+			"cannot be launched inside another Claude Code session,Not logged in,Your usage allocation has been disabled by your admin,"+
+			"You've hit your org's monthly usage limit,You've hit your individual spend limit", ","),
+	}
+
+	result := e.Run(t.Context(), "test prompt")
+
+	var limitErr *LimitPatternError
+	require.ErrorAs(t, result.Error, &limitErr)
+	assert.Equal(t, "You've hit your weekly limit", limitErr.Pattern)
+	assert.Contains(t, result.DiagnosticText, "API Error: 429")
+}
+
+func TestClaudeExecutor_Run_GenuineDiagnosticsMatchPatterns(t *testing.T) {
+	tests := []struct {
+		name           string
+		fixture        string
+		waitErr        error
+		limitPat       []string
+		errorPat       []string
+		retryPat       []string
+		wantPattern    string
+		wantKind       string
+		diagnosticOnly bool
+	}{
+		{
+			name:        "clean structured rate limit",
+			fixture:     "diagnostic-rate-limit.jsonl",
+			limitPat:    []string{"You've hit your weekly limit"},
+			wantPattern: "You've hit your weekly limit",
+			wantKind:    "limit",
+		},
+		{
+			name:        "clean structured api error",
+			fixture:     "diagnostic-api-error.jsonl",
+			errorPat:    []string{"API Error: 500"},
+			wantPattern: "API Error: 500",
+			wantKind:    "error",
+		},
+		{
+			name:        "clean structured authentication error",
+			fixture:     "diagnostic-authentication.jsonl",
+			errorPat:    []string{"API Error: 401"},
+			wantPattern: "API Error: 401",
+			wantKind:    "error",
+		},
+		{
+			name:        "clean structured retry error",
+			fixture:     "diagnostic-retry.jsonl",
+			retryPat:    []string{"API Error: 529"},
+			wantPattern: "API Error: 529",
+			wantKind:    "retry",
+		},
+		{
+			name:           "clean metadata-only assistant limit",
+			fixture:        `{"type":"assistant","error":"rate_limit","api_error_status":429,"is_api_error_message":true}`,
+			limitPat:       []string{"API Error: 429"},
+			wantPattern:    "API Error: 429",
+			wantKind:       "limit",
+			diagnosticOnly: true,
+		},
+		{
+			name:           "clean metadata-only result retry",
+			fixture:        `{"type":"result","is_error":true,"api_error_status":529,"error":"api_error"}`,
+			retryPat:       []string{"API Error: 529"},
+			wantPattern:    "API Error: 529",
+			wantKind:       "retry",
+			diagnosticOnly: true,
+		},
+		{
+			name:           "clean explicit error result text",
+			fixture:        `{"type":"error","result":"API Error: 401 authentication failed"}`,
+			errorPat:       []string{"API Error: 401"},
+			wantPattern:    "API Error: 401",
+			wantKind:       "error",
+			diagnosticOnly: true,
+		},
+		{
+			name:        "non-zero non-json limit stderr",
+			fixture:     "You've hit your session limit · resets 1pm\n",
+			waitErr:     errors.New("exit status 1"),
+			limitPat:    []string{"You've hit your session limit"},
+			wantPattern: "You've hit your session limit",
+			wantKind:    "limit",
+		},
+		{
+			name:        "non-zero non-json authentication stderr",
+			fixture:     "Not logged in · Please run /login\n",
+			waitErr:     errors.New("exit status 1"),
+			errorPat:    []string{"Not logged in"},
+			wantPattern: "Not logged in",
+			wantKind:    "error",
+		},
+		{
+			name:        "non-zero non-json wrapper timeout",
+			fixture:     "run turn: context deadline exceeded: FYA_TRANSIENT_TIMEOUT\n",
+			waitErr:     errors.New("exit status 1"),
+			retryPat:    []string{"FYA_TRANSIENT_TIMEOUT"},
+			wantPattern: "FYA_TRANSIENT_TIMEOUT",
+			wantKind:    "retry",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := tc.fixture
+			if strings.HasSuffix(tc.fixture, ".jsonl") {
+				stream = readClaudeFixture(t, tc.fixture)
+			}
+			mock := &mocks.CommandRunnerMock{
+				RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+					return strings.NewReader(stream), func() error { return tc.waitErr }, nil
+				},
+			}
+			e := &ClaudeExecutor{
+				cmdRunner:     mock,
+				LimitPatterns: tc.limitPat,
+				ErrorPatterns: tc.errorPat,
+				RetryPatterns: tc.retryPat,
+			}
+
+			result := e.Run(context.Background(), "test prompt")
+
+			switch tc.wantKind {
+			case "limit":
+				var patternErr *LimitPatternError
+				require.ErrorAs(t, result.Error, &patternErr)
+				assert.Equal(t, tc.wantPattern, patternErr.Pattern)
+			case "error":
+				var patternErr *PatternMatchError
+				require.ErrorAs(t, result.Error, &patternErr)
+				assert.Equal(t, tc.wantPattern, patternErr.Pattern)
+			case "retry":
+				var patternErr *RetryPatternError
+				require.ErrorAs(t, result.Error, &patternErr)
+				assert.Equal(t, tc.wantPattern, patternErr.Pattern)
+			default:
+				t.Fatalf("unknown error kind %q", tc.wantKind)
+			}
+			assert.Contains(t, result.DiagnosticText, tc.wantPattern)
+			if !tc.diagnosticOnly {
+				assert.Contains(t, result.Output, tc.wantPattern)
+			}
+		})
+	}
+}
+
+func TestClaudeExecutor_Run_RecoveredAPIRetryDoesNotTriggerPattern(t *testing.T) {
+	tests := []struct {
+		name       string
+		retryEvent string
+		finalText  string
+		wantSignal string
+		limitPat   []string
+		errorPat   []string
+		retryPat   []string
+	}{
+		{
+			name:       "transient retry followed by success",
+			retryEvent: `{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"error_status":529,"error":"api_error"}`,
+			finalText:  "completed after Claude recovered",
+			retryPat:   []string{"API Error: 529"},
+		},
+		{
+			name:       "rate-limit retry followed by completion signal",
+			retryEvent: `{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"error_status":429,"error":"rate_limit"}`,
+			finalText:  "completed after Claude recovered " + status.Completed,
+			wantSignal: status.Completed,
+			limitPat:   []string{"API Error: 429"},
+			errorPat:   []string{"API Error: 429"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := make([]string, 0, recentBlockCount+4)
+			lines = append(lines, tc.retryEvent)
+			for i := range recentBlockCount + 1 {
+				lines = append(lines, fmt.Sprintf(
+					`{"type":"content_block_delta","delta":{"type":"text_delta","text":"ordinary work %d"}}`, i))
+			}
+			lines = append(lines,
+				fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"text","text":%q}]}}`, tc.finalText),
+				fmt.Sprintf(`{"type":"result","subtype":"success","is_error":false,"result":%q}`, tc.finalText))
+
+			mock := &mocks.CommandRunnerMock{
+				RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+					return strings.NewReader(strings.Join(lines, "\n")), func() error { return nil }, nil
+				},
+			}
+			exec := &ClaudeExecutor{
+				cmdRunner:     mock,
+				LimitPatterns: tc.limitPat,
+				ErrorPatterns: tc.errorPat,
+				RetryPatterns: tc.retryPat,
+			}
+
+			result := exec.Run(context.Background(), "test prompt")
+
+			require.NoError(t, result.Error)
+			assert.Equal(t, tc.wantSignal, result.Signal)
+			assert.Empty(t, result.DiagnosticText)
+			assert.Contains(t, result.Output, tc.finalText)
+		})
+	}
+}
+
+func TestClaudeExecutor_Run_OutcomeProvenanceMatrix(t *testing.T) {
+	const (
+		limitPhrase = "LIMIT_DIAGNOSTIC"
+		errorPhrase = "ERROR_DIAGNOSTIC"
+		retryPhrase = "TRANSIENT_RETRY"
+	)
+
+	delta := func(text string) string {
+		return fmt.Sprintf(`{"type":"content_block_delta","delta":{"type":"text_delta","text":%q}}`, text)
+	}
+	diagnostic := func(text string) string {
+		return fmt.Sprintf(`{"type":"assistant","error":"api_error","is_api_error_message":true,`+
+			`"message":{"content":[{"type":"text","text":%q}]}}`, text)
+	}
+	withSignal := func(text string) string {
+		return text + " " + status.Completed
+	}
+
+	exitErr := errors.New("exit status 1")
+	tests := []struct {
+		name       string
+		stream     string
+		waitErr    error
+		idle       bool
+		wantKind   string
+		wantSignal string
+		wantIdle   bool
+	}{
+		{
+			name:   "clean ordinary matching narration ignored",
+			stream: delta("documentation quotes " + limitPhrase),
+		},
+		{
+			name:     "clean trusted diagnostic uses retry precedence",
+			stream:   diagnostic(retryPhrase + " " + limitPhrase + " " + errorPhrase),
+			wantKind: "retry",
+		},
+		{
+			name:       "clean signal protects neighboring ordinary narration",
+			stream:     delta(withSignal("done")) + "\n" + delta("documentation quotes "+errorPhrase),
+			wantSignal: status.Completed,
+		},
+		{
+			name:       "clean trusted diagnostic with signal skips retry then uses limit precedence",
+			stream:     diagnostic(withSignal(retryPhrase + " " + limitPhrase + " " + errorPhrase)),
+			wantKind:   "limit",
+			wantSignal: status.Completed,
+		},
+		{
+			name:     "failed ordinary output without match keeps process error",
+			stream:   delta("partial ordinary output"),
+			waitErr:  exitErr,
+			wantKind: "process",
+		},
+		{
+			name:     "failed matching output supports legacy wrappers",
+			stream:   delta("wrapper reported " + limitPhrase),
+			waitErr:  exitErr,
+			wantKind: "limit",
+		},
+		{
+			name:       "failed narration is authoritative even with a signal",
+			stream:     delta(withSignal("done")) + "\n" + delta("documentation quotes "+errorPhrase),
+			waitErr:    exitErr,
+			wantKind:   "error",
+			wantSignal: status.Completed,
+		},
+		{
+			name:       "failed trusted diagnostic overrides signal and process error",
+			stream:     delta(withSignal("done")) + "\n" + diagnostic(errorPhrase),
+			waitErr:    exitErr,
+			wantKind:   "error",
+			wantSignal: status.Completed,
+		},
+		{
+			name:     "failed structured diagnostic without surfaced output beats process error",
+			stream:   `{"type":"system","subtype":"error","error_status":529,"error":"TRANSIENT_RETRY"}`,
+			waitErr:  exitErr,
+			wantKind: "retry",
+		},
+		{
+			name:     "idle ordinary output without match is soft timeout",
+			stream:   delta("still working"),
+			idle:     true,
+			wantIdle: true,
+		},
+		{
+			name:     "idle matching output supports legacy wrappers",
+			stream:   delta("wrapper reported " + limitPhrase),
+			idle:     true,
+			wantKind: "limit",
+		},
+		{
+			name:       "idle narration is authoritative even with a signal",
+			stream:     delta(withSignal("done")) + "\n" + delta("documentation quotes "+limitPhrase),
+			idle:       true,
+			wantKind:   "limit",
+			wantSignal: status.Completed,
+		},
+		{
+			name:       "idle trusted diagnostic overrides signal",
+			stream:     delta(withSignal("done")) + "\n" + diagnostic(errorPhrase),
+			idle:       true,
+			wantKind:   "error",
+			wantSignal: status.Completed,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mocks.CommandRunnerMock{
+				RunFunc: func(ctx context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+					if !tc.idle {
+						return strings.NewReader(tc.stream), func() error { return tc.waitErr }, nil
+					}
+					pr, pw := io.Pipe()
+					go func() {
+						defer pw.Close()
+						fmt.Fprintln(pw, tc.stream)
+						<-ctx.Done()
+					}()
+					return pr, func() error {
+						<-ctx.Done()
+						return exitErr
+					}, nil
+				},
+			}
+			exec := &ClaudeExecutor{
+				cmdRunner:     mock,
+				LimitPatterns: []string{limitPhrase},
+				ErrorPatterns: []string{errorPhrase},
+				RetryPatterns: []string{retryPhrase},
+			}
+			if tc.idle {
+				exec.IdleTimeout = 100 * time.Millisecond
+			}
+
+			result := exec.Run(context.Background(), "test prompt")
+
+			assert.Equal(t, tc.wantSignal, result.Signal)
+			assert.Equal(t, tc.wantIdle, result.IdleTimedOut)
+			switch tc.wantKind {
+			case "":
+				require.NoError(t, result.Error)
+			case "process":
+				require.Error(t, result.Error)
+				assert.Contains(t, result.Error.Error(), "claude exited with error")
+			case "retry":
+				var patternErr *RetryPatternError
+				require.ErrorAs(t, result.Error, &patternErr)
+				assert.Equal(t, retryPhrase, patternErr.Pattern)
+			case "limit":
+				var patternErr *LimitPatternError
+				require.ErrorAs(t, result.Error, &patternErr)
+				assert.Equal(t, limitPhrase, patternErr.Pattern)
+				assert.Equal(t, "claude /usage", patternErr.HelpCmd)
+			case "error":
+				var patternErr *PatternMatchError
+				require.ErrorAs(t, result.Error, &patternErr)
+				assert.Equal(t, errorPhrase, patternErr.Pattern)
+				assert.Equal(t, "claude /usage", patternErr.HelpCmd)
+			default:
+				t.Fatalf("unknown error kind %q", tc.wantKind)
+			}
+		})
+	}
+}
+
+func TestClaudeExecutor_Run_ParentCancellationBeatsTrustedDiagnostic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := `{"type":"assistant","error":"rate_limit","is_api_error_message":true,` +
+		`"message":{"content":[{"type":"text","text":"LIMIT_DIAGNOSTIC"}]}}`
+	mock := &mocks.CommandRunnerMock{
+		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+			return strings.NewReader(stream), func() error {
+				cancel()
+				return context.Canceled
+			}, nil
+		},
+	}
+	exec := &ClaudeExecutor{cmdRunner: mock, LimitPatterns: []string{"LIMIT_DIAGNOSTIC"}}
+
+	result := exec.Run(ctx, "test prompt")
+
+	require.ErrorIs(t, result.Error, context.Canceled)
+	var limitErr *LimitPatternError
+	assert.NotErrorAs(t, result.Error, &limitErr)
+	assert.Contains(t, result.DiagnosticText, "LIMIT_DIAGNOSTIC")
+}
+
+func TestClaudeExecutor_Run_EvictsStaleTrustedDiagnostic(t *testing.T) {
+	const stalePattern = "STALE_LIMIT_DIAGNOSTIC"
+	diagnostic := func(text string) string {
+		return fmt.Sprintf(`{"type":"assistant","error":"api_error","is_api_error_message":true,`+
+			`"message":{"content":[{"type":"text","text":%q}]}}`, text)
+	}
+	lines := make([]string, 0, recentBlockCount+1)
+	lines = append(lines, diagnostic(stalePattern))
+	for i := range recentBlockCount {
+		lines = append(lines, diagnostic(fmt.Sprintf("newer diagnostic %d", i)))
+	}
+	mock := &mocks.CommandRunnerMock{
+		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+			return strings.NewReader(strings.Join(lines, "\n")), func() error { return nil }, nil
+		},
+	}
+	exec := &ClaudeExecutor{cmdRunner: mock, LimitPatterns: []string{stalePattern}}
+
+	result := exec.Run(context.Background(), "test prompt")
+
+	require.NoError(t, result.Error)
+	assert.Contains(t, result.Output, stalePattern, "full surfaced output remains available")
+	assert.NotContains(t, result.DiagnosticText, stalePattern, "stale trusted input must leave the bounded window")
+	assert.Contains(t, result.DiagnosticText, "newer diagnostic 9")
+}
+
+func readClaudeFixture(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "claude", name)) //nolint:gosec // name comes from test cases
+	require.NoError(t, err)
+	return string(data)
 }
 
 func TestLimitPatternError_Error(t *testing.T) {
@@ -1213,9 +2025,10 @@ func TestClaudeExecutor_Run_DetectsRetryPatternFromNonJSONLine(t *testing.T) {
 }
 
 func TestClaudeExecutor_Run_RetryPatternTakesPriorityOverLimitAndError(t *testing.T) {
-	// when recent text matches retry, limit, and error patterns at once, retry wins (highest priority)
-	jsonStream := `{"type":"content_block_delta","delta":{"type":"text_delta",` +
-		`"text":"FYA_TRANSIENT_TIMEOUT and You've hit your limit and API Error: 500"}}`
+	// when a trusted diagnostic matches retry, limit, and error patterns at once,
+	// retry wins (highest priority)
+	jsonStream := `{"type":"assistant","error":"api_error","is_api_error_message":true,"message":{"content":[{"type":"text",` +
+		`"text":"FYA_TRANSIENT_TIMEOUT and You've hit your limit and API Error: 500"}]}}`
 	mock := &mocks.CommandRunnerMock{
 		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
 			return strings.NewReader(jsonStream), func() error { return nil }, nil
@@ -1584,28 +2397,28 @@ func TestClaudeExecutor_Run_LimitPattern(t *testing.T) {
 	}{
 		{
 			name:      "no limit patterns",
-			output:    `{"type":"content_block_delta","delta":{"type":"text_delta","text":"You've hit your limit"}}`,
+			output:    `{"type":"assistant","error":"rate_limit","is_api_error_message":true,"message":{"content":[{"type":"text","text":"You've hit your limit"}]}}`,
 			limitPat:  nil,
 			errorPat:  []string{"hit your limit"},
 			wantLimit: false, wantError: true, wantPattern: "hit your limit",
 		},
 		{
 			name:      "limit pattern matched",
-			output:    `{"type":"content_block_delta","delta":{"type":"text_delta","text":"You've hit your limit"}}`,
+			output:    `{"type":"assistant","error":"rate_limit","is_api_error_message":true,"message":{"content":[{"type":"text","text":"You've hit your limit"}]}}`,
 			limitPat:  []string{"hit your limit"},
 			errorPat:  nil,
 			wantLimit: true, wantError: false, wantPattern: "hit your limit",
 		},
 		{
 			name:      "limit takes precedence over error when both match",
-			output:    `{"type":"content_block_delta","delta":{"type":"text_delta","text":"You've hit your limit"}}`,
+			output:    `{"type":"assistant","error":"rate_limit","is_api_error_message":true,"message":{"content":[{"type":"text","text":"You've hit your limit"}]}}`,
 			limitPat:  []string{"hit your limit"},
 			errorPat:  []string{"hit your limit"},
 			wantLimit: true, wantError: false, wantPattern: "hit your limit",
 		},
 		{
 			name:      "error pattern when limit does not match",
-			output:    `{"type":"content_block_delta","delta":{"type":"text_delta","text":"API Error: 500 internal"}}`,
+			output:    `{"type":"assistant","error":"api_error","is_api_error_message":true,"message":{"content":[{"type":"text","text":"API Error: 500 internal"}]}}`,
 			limitPat:  []string{"hit your limit"},
 			errorPat:  []string{"API Error:"},
 			wantLimit: false, wantError: true, wantPattern: "API Error:",
@@ -1653,6 +2466,35 @@ func TestClaudeExecutor_Run_LimitPattern(t *testing.T) {
 	}
 }
 
+func TestClaudeExecutor_Run_LimitPattern_OutOfUsageCredits(t *testing.T) {
+	// observed 2026-09-22: a claude account with exhausted usage credits prints this message and
+	// exits 1. the default claude_limit_patterns list must name it, otherwise the non-zero exit
+	// becomes a hard "claude exited with error" failure instead of a waitable limit, and neither
+	// wait_on_limit nor claude-swap account failover gets a chance to run.
+	output := "You're out of usage credits. Switch to another model, or manage usage credits at\n" +
+		"claude.ai/settings/usage?from=cc_cli_limit_message, to continue.\n"
+	exitErr := errors.New("exit status 1")
+
+	mock := &mocks.CommandRunnerMock{
+		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+			return strings.NewReader(output), func() error { return exitErr }, nil
+		},
+	}
+	e := &ClaudeExecutor{
+		cmdRunner: mock,
+		LimitPatterns: []string{"You've hit your limit", "You've hit your session limit",
+			"Your usage allocation has been disabled by your admin", "You've hit your org's monthly usage limit",
+			"You're out of usage credits"},
+	}
+
+	result := e.Run(context.Background(), "review the diff")
+
+	var limitErr *LimitPatternError
+	require.ErrorAs(t, result.Error, &limitErr, "exhausted usage credits must be a waitable limit, not a hard failure")
+	assert.Equal(t, "You're out of usage credits", limitErr.Pattern)
+	assert.Equal(t, "claude /usage", limitErr.HelpCmd)
+}
+
 func TestClaudeExecutor_Run_PatternFalsePositive_InAnalysisText(t *testing.T) {
 	// pattern appears in early output (analysis text) but is followed by many blocks of real work.
 	// should NOT trigger pattern match because the pattern falls outside the recent blocks window.
@@ -1680,9 +2522,9 @@ func TestClaudeExecutor_Run_PatternFalsePositive_InAnalysisText(t *testing.T) {
 }
 
 func TestClaudeExecutor_Run_PatternInRecentBlock(t *testing.T) {
-	// pattern in the last block (real rate limit) — should be detected
+	// trusted pattern in the last block (real rate limit) should be detected
 	jsonStream := `{"type":"content_block_delta","delta":{"type":"text_delta","text":"some work done"}}
-{"type":"content_block_delta","delta":{"type":"text_delta","text":"You've hit your limit · resets 5pm"}}`
+{"type":"assistant","error":"rate_limit","is_api_error_message":true,"message":{"content":[{"type":"text","text":"You've hit your limit · resets 5pm"}]}}`
 
 	mock := &mocks.CommandRunnerMock{
 		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
@@ -1700,8 +2542,9 @@ func TestClaudeExecutor_Run_PatternInRecentBlock(t *testing.T) {
 }
 
 func TestClaudeExecutor_Run_PatternInSecondToLastBlock(t *testing.T) {
-	// pattern in second-to-last block, one more short block after (e.g., reset info) — still in window
-	jsonStream := `{"type":"content_block_delta","delta":{"type":"text_delta","text":"You've hit your limit"}}
+	// trusted pattern in second-to-last block, one more short display block after
+	// (e.g., reset info), remains in the diagnostic window
+	jsonStream := `{"type":"assistant","error":"rate_limit","is_api_error_message":true,"message":{"content":[{"type":"text","text":"You've hit your limit"}]}}
 {"type":"content_block_delta","delta":{"type":"text_delta","text":"resets at 5pm (Europe/Vilnius)"}}`
 
 	mock := &mocks.CommandRunnerMock{

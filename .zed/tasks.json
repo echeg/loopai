@@ -49,7 +49,7 @@
     "allow_concurrent_runs": false
   },
   {
-    "label": "e2e: codex-only (prep)",
+    "label": "e2e: external-only codex (prep)",
     "command": "make e2e-codex",
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true,

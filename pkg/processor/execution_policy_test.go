@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
 	"github.com/umputun/ralphex/pkg/limits"
 	"github.com/umputun/ralphex/pkg/status"
@@ -179,6 +178,101 @@ func TestExecutionPolicy_RunMapsRetryPatternToTimedOut(t *testing.T) {
 	assert.True(t, result.TimedOut)
 	assert.Empty(t, result.Result.Signal, "signal must be cleared on retry-pattern mapping")
 	assertLogContains(t, log, "transient %s error detected")
+}
+
+func TestExecutionPolicy_RunUsesTypedDiagnosticsNotNarration(t *testing.T) {
+	const (
+		limitPhrase = "You've hit your session limit"
+		retryPhrase = "API Error: 529"
+	)
+
+	tests := []struct {
+		name         string
+		results      []executor.Result
+		wantCalls    int
+		wantTimedOut bool
+		wantSignal   string
+		wantOutput   string
+		wantLog      string
+		waitOnLimit  time.Duration
+	}{
+		{
+			name: "trusted limit diagnostic waits and retries",
+			results: []executor.Result{
+				{
+					DiagnosticText: limitPhrase,
+					Error:          &executor.LimitPatternError{Pattern: limitPhrase, HelpCmd: "claude /usage"},
+				},
+				{Output: "completed after waiting", Signal: status.Completed},
+			},
+			wantCalls:   2,
+			wantSignal:  status.Completed,
+			wantOutput:  "completed after waiting",
+			wantLog:     "rate limit detected",
+			waitOnLimit: time.Millisecond,
+		},
+		{
+			name: "quoted limit narration does not wait",
+			results: []executor.Result{{
+				Output: "documentation quotes " + limitPhrase,
+				Signal: status.Completed,
+			}},
+			wantCalls:   1,
+			wantSignal:  status.Completed,
+			wantOutput:  "documentation quotes " + limitPhrase,
+			waitOnLimit: time.Millisecond,
+		},
+		{
+			name: "trusted retry diagnostic maps to one phase retry",
+			results: []executor.Result{{
+				DiagnosticText: retryPhrase,
+				Signal:         status.Completed,
+				Error:          &executor.RetryPatternError{Pattern: retryPhrase},
+			}},
+			wantCalls:    1,
+			wantTimedOut: true,
+			wantLog:      "transient %s error detected",
+		},
+		{
+			name: "quoted retry narration does not request a phase retry",
+			results: []executor.Result{{
+				Output: "documentation quotes " + retryPhrase,
+				Signal: status.Completed,
+			}},
+			wantCalls:  1,
+			wantSignal: status.Completed,
+			wantOutput: "documentation quotes " + retryPhrase,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := newMockLogger()
+			policy := newRetryPolicy(retryPolicyOpts{log: log, waitOnLimit: tt.waitOnLimit})
+			calls := 0
+			run := func(_ context.Context, _ string) executor.Result {
+				result := tt.results[calls]
+				calls++
+				return result
+			}
+
+			result := policy.Run(t.Context(), run, "test prompt", "claude")
+
+			require.NoError(t, result.Result.Error)
+			assert.Equal(t, tt.wantCalls, calls)
+			assert.Equal(t, tt.wantTimedOut, result.TimedOut)
+			assert.Equal(t, tt.wantSignal, result.Result.Signal)
+			assert.Equal(t, tt.wantOutput, result.Result.Output)
+			if tt.wantLog != "" {
+				assertLogContains(t, log, tt.wantLog)
+			} else {
+				for _, call := range log.PrintCalls() {
+					assert.NotContains(t, call.Format, "rate limit detected")
+					assert.NotContains(t, call.Format, "transient %s error detected")
+				}
+			}
+		})
+	}
 }
 
 func TestExecutionPolicy_RunWithLimitRetryNoRetryWhenWaitZero(t *testing.T) {
@@ -374,19 +468,26 @@ func TestExecutionPolicy_SessionTimeoutIntegrationWithLimitRetry(t *testing.T) {
 	assert.True(t, result.TimedOut)
 }
 
-func TestExecutionPolicy_SessionTimeoutGatedByExecutorAndToolName(t *testing.T) {
+func TestExecutionPolicy_SessionTimeoutGatedByPhaseProvidersAndToolName(t *testing.T) {
 	tests := []struct {
 		name        string
-		executor    string
+		taskModel   string
+		reviewModel string
 		toolName    string
 		wantApplied bool
 	}{
-		{name: "default executor mode, claude tool", executor: config.ExecutorClaude, toolName: "claude", wantApplied: true},
-		{name: "default executor mode, codex external review", executor: config.ExecutorClaude, toolName: "codex", wantApplied: false},
-		{name: "default executor mode, custom external review", executor: config.ExecutorClaude, toolName: "custom", wantApplied: false},
-		{name: "codex mode, claude tool", executor: config.ExecutorCodex, toolName: "claude", wantApplied: true},
-		{name: "codex mode, codex tool", executor: config.ExecutorCodex, toolName: "codex", wantApplied: true},
-		{name: "codex mode, custom external review", executor: config.ExecutorCodex, toolName: "custom", wantApplied: true},
+		{name: "claude phases, claude tool", toolName: "claude", wantApplied: true},
+		{name: "claude phases, codex external review", toolName: "codex", wantApplied: false},
+		{name: "claude phases, custom external review", toolName: "custom", wantApplied: false},
+		{name: "codex phases, claude tool", taskModel: "codex:gpt-6-astra", toolName: "claude", wantApplied: true},
+		{name: "codex phases, codex tool", taskModel: "codex:gpt-6-astra", toolName: "codex", wantApplied: true},
+		{name: "codex phases, custom external review", taskModel: "codex:gpt-6-astra", toolName: "custom", wantApplied: true},
+		{name: "codex task with claude review, codex tool", taskModel: "codex:gpt-6-astra", reviewModel: "claude:opus",
+			toolName: "codex", wantApplied: true},
+		{name: "claude task with codex review, codex tool", taskModel: "claude:opus", reviewModel: "codex:gpt-6-astra",
+			toolName: "codex", wantApplied: true},
+		{name: "claude task with codex review, custom external review", taskModel: "claude:opus", reviewModel: "codex:gpt-6-astra",
+			toolName: "custom", wantApplied: true},
 	}
 
 	for _, tt := range tests {
@@ -394,8 +495,8 @@ func TestExecutionPolicy_SessionTimeoutGatedByExecutorAndToolName(t *testing.T) 
 			appCfg := testAppConfig(t)
 			appCfg.SessionTimeout = 50 * time.Millisecond
 			appCfg.SessionTimeoutSet = true
-			appCfg.Executor = tt.executor
-			policy := newRetryPolicy(retryPolicyOpts{cfg: Config{AppConfig: appCfg}, log: newMockLogger()})
+			cfg := Config{TaskModel: tt.taskModel, ReviewModel: tt.reviewModel, AppConfig: appCfg}
+			policy := newRetryPolicy(retryPolicyOpts{cfg: cfg, log: newMockLogger()})
 
 			var hasDeadline bool
 			run := func(ctx context.Context, _ string) executor.Result {
@@ -427,8 +528,7 @@ func TestExecutionPolicy_ExternalReviewBypassPreservesIdleTimeoutDiagnostic(t *t
 			appCfg := testAppConfig(t)
 			appCfg.SessionTimeout = 50 * time.Millisecond
 			appCfg.SessionTimeoutSet = true
-			appCfg.Executor = config.ExecutorClaude
-			policy := newRetryPolicy(retryPolicyOpts{cfg: Config{AppConfig: appCfg}, log: log})
+			policy := newRetryPolicy(retryPolicyOpts{cfg: Config{TaskModel: "claude:opus", AppConfig: appCfg}, log: log})
 
 			var hadDeadline bool
 			run := func(ctx context.Context, _ string) executor.Result {
