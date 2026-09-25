@@ -76,6 +76,8 @@ type Values struct {
 	WorktreeEnabledSet         bool // tracks if use_worktree was explicitly set
 	Orca                       bool
 	OrcaSet                    bool // tracks if orca was explicitly set
+	T3                         bool
+	T3Set                      bool // tracks if t3 was explicitly set
 	KeepAwake                  bool
 	KeepAwakeSet               bool   // tracks if keep_awake was explicitly set
 	VcsCommand                 string // custom VCS command (default: "git")
@@ -426,6 +428,14 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 		values.Orca = val
 		values.OrcaSet = true
 	}
+	if key, err := section.GetKey("t3"); err == nil {
+		val, boolErr := key.Bool()
+		if boolErr != nil {
+			return Values{}, fmt.Errorf("invalid t3: %w", boolErr)
+		}
+		values.T3 = val
+		values.T3Set = true
+	}
 	if key, err := section.GetKey("keep_awake"); err == nil {
 		val, boolErr := key.Bool()
 		if boolErr != nil {
@@ -663,6 +673,10 @@ func (dst *Values) mergeExtraFrom(src *Values) {
 	if src.OrcaSet {
 		dst.Orca = src.Orca
 		dst.OrcaSet = true
+	}
+	if src.T3Set {
+		dst.T3 = src.T3
+		dst.T3Set = true
 	}
 	if src.KeepAwakeSet {
 		dst.KeepAwake = src.KeepAwake

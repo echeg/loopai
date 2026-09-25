@@ -518,6 +518,80 @@ func TestValues_mergeFrom_Orca(t *testing.T) {
 	}
 }
 
+func TestValuesLoader_Load_T3(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  string
+		want    bool
+		wantSet bool
+		wantErr string
+	}{
+		{name: "parse true", config: "t3 = true", want: true, wantSet: true},
+		{name: "parse false", config: "t3 = false", want: false, wantSet: true},
+		{name: "absent", config: "", want: false, wantSet: false},
+		{name: "invalid", config: "t3 = maybe", wantErr: "invalid t3:"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			cfgPath := filepath.Join(tmpDir, "config")
+			require.NoError(t, os.WriteFile(cfgPath, []byte(tc.config), 0o600))
+
+			loader := newValuesLoader(defaultsFS)
+			values, err := loader.Load("", cfgPath)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, values.T3)
+			assert.Equal(t, tc.wantSet, values.T3Set)
+		})
+	}
+}
+
+func TestValues_mergeFrom_T3(t *testing.T) {
+	tests := []struct {
+		name    string
+		dst     Values
+		src     Values
+		want    bool
+		wantSet bool
+	}{
+		{
+			name:    "explicit true merges",
+			src:     Values{T3: true, T3Set: true},
+			want:    true,
+			wantSet: true,
+		},
+		{
+			name:    "unset source is ignored",
+			dst:     Values{T3: true, T3Set: true},
+			src:     Values{T3: false, T3Set: false},
+			want:    true,
+			wantSet: true,
+		},
+		{
+			name:    "explicit false merges",
+			dst:     Values{T3: true, T3Set: true},
+			src:     Values{T3: false, T3Set: true},
+			want:    false,
+			wantSet: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.dst.mergeFrom(&tc.src)
+			assert.Equal(t, tc.want, tc.dst.T3)
+			assert.Equal(t, tc.wantSet, tc.dst.T3Set)
+		})
+	}
+}
+
 func TestValuesLoader_Load_MovePlanOnCompletion(t *testing.T) {
 	tests := []struct {
 		name      string

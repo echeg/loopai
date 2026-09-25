@@ -145,145 +145,152 @@
 ## Implementation Steps
 
 ### Task 1: T3 runtime discovery and HTTP client in `pkg/t3`
-- [ ] add `pkg/t3/runtime.go`: `homeDir()` (`T3CODE_HOME` with trim and `~` expansion, else
+- [x] add `pkg/t3/runtime.go`: `homeDir()` (`T3CODE_HOME` with trim and `~` expansion, else
       `~/.t3`), `ReadRuntime(home)` parsing `userdata/server-runtime.json` (`version` must be 1);
       `LOOPAI_T3_URL` overrides the discovered origin; token only from `LOOPAI_T3_TOKEN`
-- [ ] add `pkg/t3/client.go`: `Client` with a 2s-timeout `http.Client`, Bearer header, `Dispatch(ctx,
+- [x] add `pkg/t3/client.go`: `Client` with a 2s-timeout `http.Client`, Bearer header, `Dispatch(ctx,
       cmd any) (sequence int64, err error)`, `Shell(ctx)` decoding only the fields loopai needs
       (projects `id`, `workspaceRoot`, `deletedAt`/archived state; threads `id`, `projectId`,
       `branch`, `worktreePath`, `title`, archived state), typed errors for auth (401/403) vs other
       failures; fresh client-generated `commandId` per dispatch
-- [ ] add command builders with exact wire shapes: `threadCreate`, `threadMetaUpdateTitle` (title
+- [x] add command builders with exact wire shapes: `threadCreate`, `threadMetaUpdateTitle` (title
       only), `threadPullRequestLink` (`source:"manual"`)
-- [ ] add `NormalizePath` mirroring `packages/shared/src/path.ts` (trim, strip trailing separators
+- [x] add `NormalizePath` mirroring `packages/shared/src/path.ts` (trim, strip trailing separators
       except a drive root, drive/UNC → backslashes and lowercase) and `FindProject(shell, root)`
-- [ ] write tests for runtime discovery (valid file, missing, bad version, `T3CODE_HOME`, URL
+- [x] write tests for runtime discovery (valid file, missing, bad version, `T3CODE_HOME`, URL
       override, missing token) using `t.TempDir()`
-- [ ] write tests for the client against `httptest.Server`: request JSON shapes, Bearer header,
+- [x] write tests for the client against `httptest.Server`: request JSON shapes, Bearer header,
       401/403/500 mapping, timeout, `NormalizePath` table (Windows drive, UNC, trailing slash, POSIX)
-- [ ] run `make test` - must pass before task 2
+- [x] run `make test` - must pass before task 2
+- ➕ on this Windows machine the full suite ran with `-race` (MinGW-w64 gcc) and was compared test-by-test with a `master` baseline: 91 Windows-only failures in 8 packages on both, none new, no data races
 
 ### Task 2: WebSocket RPC client in `pkg/t3`
-- [ ] promote `github.com/gorilla/websocket` to a direct dependency (`go.mod`, `vendor/modules.txt`
+- [x] promote `github.com/gorilla/websocket` to a direct dependency (`go.mod`, `vendor/modules.txt`
       via `go mod tidy && go mod vendor`); no other new module
-- [ ] add `pkg/t3/rpc.go`: dial `/ws` with the Bearer header (ticket flow only if the header is
+- [x] add `pkg/t3/rpc.go`: dial `/ws` with the Bearer header (ticket flow only if the header is
       rejected), send `{"_tag":"Request","id","tag","payload","headers":[]}`, wait for the matching
       `Exit`, answer `Ping` with `Pong`, ignore unrelated messages, context-bounded deadlines
-- [ ] add typed calls `CreateWorktree`, `OpenTerminal`, `WriteTerminal` using the payloads from
+- [x] add typed calls `CreateWorktree`, `OpenTerminal`, `WriteTerminal` using the payloads from
       `packages/contracts/src/{rpc,terminal}.ts`; surface `Failure` exits as errors with the server
       message
-- [ ] write tests with an `httptest` WebSocket fake: success exit, failure exit, ping handling,
+- [x] write tests with an `httptest` WebSocket fake: success exit, failure exit, ping handling,
       unrelated frames, auth header present, context cancellation
-- [ ] run `make test` - must pass before task 3
+- [x] run `make test` - must pass before task 3
 
 ### Task 3: thread status reporter `pkg/t3.Reporter`
-- [ ] add `pkg/t3/reporter.go` duplicating the small Orca state model (`phase`, task/total,
+- [x] add `pkg/t3/reporter.go` duplicating the small Orca state model (`phase`, task/total,
       iteration, waiting input/limit, final done/failed/stopped) with its own label function; title
       format `"<plan name> · <state>"` (for example `"t3-code-integration · task 2/5"`,
       `"… · review · iteration 1"`, `"… · waiting for input"`, `"… · done"`, `"… · failed"`)
-- [ ] nil-safe methods matching the Orca surface: `OnPhase`, `OnSection`, `WrapLogger`, `WrapInput`,
+- [x] nil-safe methods matching the Orca surface: `OnPhase`, `OnSection`, `WrapLogger`, `WrapInput`,
       `WithInputWait`, `Finish(success)`, `Quiesce`, `Stop`; dispatch `thread.meta.update` only
       when the rendered title changes, asynchronously through a single worker with a bounded queue
       that coalesces to the latest title, so executor output never blocks
-- [ ] thread binding at start: use `LOOPAI_T3_THREAD_ID` when set; otherwise find the project whose
+- [x] thread binding at start: use `LOOPAI_T3_THREAD_ID` when set; otherwise find the project whose
       normalized `workspaceRoot` equals the main checkout root and create a thread with `branch`
       set and `worktreePath` = the run directory, or `null` when loopai runs with `--worktree` (that
       directory is removed after success); no matching project → one warning, reporter disabled
-- [ ] `modelSelection` for `thread.create`: `{instanceId:"codex"|"claudeAgent", model:<effective
+- [x] `modelSelection` for `thread.create`: `{instanceId:"codex"|"claudeAgent", model:<effective
       task model or "default">}`, `runtimeMode:"full-access"`, `interactionMode:"default"`
-- [ ] any error disables the reporter for the rest of the run; `Stop` drains the queue with a short
+- [x] any error disables the reporter for the rest of the run; `Stop` drains the queue with a short
       deadline so the final title lands without delaying exit
-- [ ] write tests: title table for every state, change-only dispatch, coalescing under a burst,
+- [x] write tests: title table for every state, change-only dispatch, coalescing under a burst,
       nil receiver, disable-after-error, thread binding (env id, project match, `--worktree` null
       path, no project), final title on `Finish`/`Stop`
-- [ ] run `make test` - must pass before task 4
+- [x] run `make test` - must pass before task 4
+- ⚠️ `New(opts, getenv)` takes no `enabled` flag (callers construct it only when `t3` is set), and `WrapInput` was dropped: plan creation is not reported, so only the pause handler needs `WithInputWait`
 
 ### Task 4: `--t3` flag, `t3` config key, and run wiring
-- [ ] `pkg/config`: `T3 bool`/`T3Set` in `Config` and `Values`, parse `t3` with `invalid t3: %w`,
+- [x] `pkg/config`: `T3 bool`/`T3Set` in `Config` and `Values`, parse `t3` with `invalid t3: %w`,
       `mergeFrom`, commented default in `pkg/config/defaults/config` (`# t3 = false`, ignored unless
       a T3 Code server and `LOOPAI_T3_TOKEN` are available); update the JSON key list tests
-- [ ] `cmd/loopai`: `T3 bool \`long:"t3" env:"LOOPAI_T3"\``, `applyCLIOverrides` via
+- [x] `cmd/loopai`: `T3 bool \`long:"t3" env:"LOOPAI_T3"\``, `applyCLIOverrides` via
       `enabledByCLI`, add `LOOPAI_T3` to `cmuxEnvOptions`
-- [ ] construct the reporter next to Orca's in `executePlan` and plan-creation mode (seam
+- [x] construct the reporter next to Orca's in `executePlan` and plan-creation mode (seam
       `var newT3Reporter`), subscribe `OnPhase` to the phase holder, add it to `buildRunnerLogger`
       directly below the orca wrapper, wrap input collectors and the pause handler like Orca, call
       `Finish` where `finishCmuxCompletion` finishes Orca and `Stop` on abort and neutral stops
       (reuse `isNeutralOrcaStop` semantics)
-- [ ] standalone commands, watch-only mode, and `--gen-agents` never construct the reporter
-- [ ] write tests: config load/merge/default dump, flag and env parsing (invalid boolean),
+- [x] standalone commands, watch-only mode, and `--gen-agents` never construct the reporter
+- [x] write tests: config load/merge/default dump, flag and env parsing (invalid boolean),
       `TestCmuxEnvOptionsCoversOptionTags` still passes, logger chain order, reporter disabled when
       config off, finish/stop mapping for success, failure, and neutral stops
-- [ ] run `make test` - must pass before task 5
+- [x] run `make test` - must pass before task 5
+- ⚠️ the reporter is constructed in `executePlan` only, not in plan-creation mode or the setup phase: each would create a second thread for one run; shell completions list no flags, so they needed no change
 
 ### Task 5: link PRs created by `--pr` to T3 threads
-- [ ] in `runPRCommand`, after `gh pr create` returns the URL and when `t3` is enabled, parse
+- [x] in `runPRCommand`, after `gh pr create` returns the URL and when `t3` is enabled, parse
       `github.com/<owner>/<repo>/pull/<n>` and dispatch `thread.pull-request.link` for every
       non-archived thread of the matching project whose `branch` equals the feature branch;
       best-effort, a failure prints one warning and never changes the command's exit status
-- [ ] write tests: URL parsing (valid, non-GitHub, malformed), matching thread selection, dispatch
+- [x] write tests: URL parsing (valid, non-GitHub, malformed), matching thread selection, dispatch
       body, T3 unreachable leaves `--pr` successful, disabled config sends nothing
-- [ ] run `make test` - must pass before task 6
+- [x] run `make test` - must pass before task 6
+- ➕ linking lives in `t3.LinkPullRequest` and matches the project against every registered worktree root (`progressRecordRoots`), since `--pr` may run from a linked worktree
 
 ### Task 6: `--t3-launch` standalone mode
-- [ ] add `--t3-launch` (mode `ModeT3Launch` or an early standalone route, following `--gen-agents`
+- [x] add `--t3-launch` (mode `ModeT3Launch` or an early standalone route, following `--gen-agents`
       routing: before branch/worktree setup, notifications, external-review resolution; included in
       `isStandaloneCommand`); accepts a plan path plus only `--codex`, `--task-model`,
       `--review-model`, `--external-reviewers`; reject `--worktree`, `--serve`, `--watch`,
       `--cmux-workspace`, `--commit`, close-out flags
-- [ ] `pkg/t3/launch.go`: require a clean-enough source (plan file may be untracked/dirty, as in the
+- [x] `pkg/t3/launch.go`: require a clean-enough source (plan file may be untracked/dirty, as in the
       Orca skill), resolve the project by the main checkout root, create a T3 worktree via
       `vcs.createWorktree` with base = current branch (detached HEAD: current commit) and branch
       name derived by `git.Service.EffectiveBranchName`, verify its HEAD equals the source HEAD
-- [ ] copy the plan and untracked `.loopai/{config,prompts,agents}` into the new worktree
+- [x] copy the plan and untracked `.loopai/{config,prompts,agents}` into the new worktree
       (never overwrite tracked files), create the thread (`branch`, `worktreePath` = new worktree)
-- [ ] open a terminal in that thread (`cwd` = worktree, env `LOOPAI_T3=true`, `LOOPAI_T3_TOKEN`,
+- [x] open a terminal in that thread (`cwd` = worktree, env `LOOPAI_T3=true`, `LOOPAI_T3_TOKEN`,
       `LOOPAI_T3_THREAD_ID`) and write the `loopai --t3 [flags] <plan>` command with the absolute
       loopai path, quoted for the target shell (PowerShell `&` call form on Windows, POSIX single
       quotes elsewhere)
-- [ ] print the thread id, worktree path, and branch; a failure after worktree creation reports
+- [x] print the thread id, worktree path, and branch; a failure after worktree creation reports
       what was created instead of deleting it
-- [ ] write tests: flag validation matrix, shell quoting for both shells (paths with spaces,
+- [x] write tests: flag validation matrix, shell quoting for both shells (paths with spaces,
       quotes), copy of untracked overrides, request sequence against HTTP and WS fakes, partial
       failure reporting
-- [ ] run `make test` - must pass before task 7
+- [x] run `make test` - must pass before task 7
+- ➕ `--t3-launch` is routed with close-out through `runConfiguredStandaloneCommand` to keep `run()` under the gocyclo limit
 
 ### Task 7: `loopai-t3` skill (Claude and Codex) and the `loopai-plan` offer
-- [ ] add `assets/claude/skills/loopai-t3/SKILL.md` modeled on `loopai-orca`: preflight
+- [x] add `assets/claude/skills/loopai-t3/SKILL.md` modeled on `loopai-orca`: preflight
       (`loopai --help` lists `--t3-launch`, `server-runtime.json` present), token from
       `LOOPAI_T3_TOKEN` or minted with `t3 auth session issue --token-only --ttl 24h`
       (`npx --yes t3@latest` when `t3` is not on `PATH`, only after telling the user), plan
       selection, the same argument validation and value regex as `loopai-orca`, run
       `loopai --t3-launch`, report thread/worktree/branch and close-out hints (`loopai --merge`)
-- [ ] add the symlink `assets/claude/loopai-t3.md`, extend `expected_skills` in
+- [x] add the symlink `assets/claude/loopai-t3.md`, extend `expected_skills` in
       `scripts/check-symlinks.sh` and the fixture inventory in `scripts/check-symlinks_test.sh`
-- [ ] add `assets/codex/skills/loopai-t3/SKILL.md` and `agents/openai.yaml` (hand-written, no
+- [x] add `assets/codex/skills/loopai-t3/SKILL.md` and `agents/openai.yaml` (hand-written, no
       Claude-only constructs)
-- [ ] extend Step 3 of both `loopai-plan` skills: when a T3 runtime file exists, print the
+- [x] extend Step 3 of both `loopai-plan` skills: when a T3 runtime file exists, print the
       `/loopai:loopai-t3 <plan> <FLAGS>` (Codex: `$loopai-t3`) line and offer it alongside Orca
-- [ ] bump `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` to `0.5.8`
-- [ ] run `make check-symlinks test-symlinks check-codex-skills test-codex-skills check-plugin
+- [x] bump `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` to `0.5.8`
+- [x] run `make check-symlinks test-symlinks check-codex-skills test-codex-skills check-plugin
+- ➕ `check-plugin`/`test-plugin` pass on Windows; `check-symlinks_test.sh`, `check-codex-skills_test.sh`, and `check-grill-skill_test.sh` pass in WSL Ubuntu (Git Bash cannot run the first and last: MSYS `ln -s` drops the `./` target prefix and the grill path helper requires POSIX)
       test-plugin` - must pass before task 8
 
 ### Task 8: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify best-effort behavior: runs with `--t3` and no server, no token, stale runtime file, or
+- [x] verify all requirements from Overview are implemented
+- [x] verify best-effort behavior: runs with `--t3` and no server, no token, stale runtime file, or
       401 complete exactly like runs without `--t3`
-- [ ] verify no test reads the real `~/.t3` or `~/.config/loopai` (grep tests for `UserHomeDir`
+- [x] verify no test reads the real `~/.t3` or `~/.config/loopai` (grep tests for `UserHomeDir`
       without `HOME`/`T3CODE_HOME` redirection)
-- [ ] run `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` and `GOOS=linux go build ./...`
-- [ ] verify test coverage of `pkg/t3` is at least 80%
+- [x] run `make test`
+- [x] run `make lint` - all issues must be fixed
+- [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` and `GOOS=linux go build ./...`
+- [x] verify test coverage of `pkg/t3` is at least 80%
+- ⚠️ `make lint` with golangci-lint 2.14 reports 11 issues that `master` reports identically (newer `modernize` checks and Windows-only lock tests); the branch adds none.
 
 ### Task 9: [Final] Update documentation
-- [ ] add `docs/t3-code.md`: setup (token, `T3CODE_HOME`, `LOOPAI_T3_URL`), `--t3`, `--t3-launch`,
+- [x] add `docs/t3-code.md`: setup (token, `T3CODE_HOME`, `LOOPAI_T3_URL`), `--t3`, `--t3-launch`,
       the skill, PR linking and auto-settle, limitations (title-only status, no fork features),
       and `t3.json` examples: a "loopai review" action (`loopai --t3 --review`) and a "loopai
       dashboard" action (`loopai --serve --watch .` with `previewUrl: http://localhost:8080`,
       noting that T3 on Windows auto-detects only common ports)
-- [ ] update `README.md` (features, plugin skill list, configuration env list with `LOOPAI_T3`,
+- [x] update `README.md` (features, plugin skill list, configuration env list with `LOOPAI_T3`,
       progress/dashboard section) and `llms.txt`
-- [ ] update `CLAUDE.md`: `pkg/t3` in the project structure, the skill inventory (nine skills,
+- [x] update `CLAUDE.md`: `pkg/t3` in the project structure, the skill inventory (nine Claude skills,
       `loopai-t3` description), and the reporter's place in the logger chain
 
 ## Technical Details

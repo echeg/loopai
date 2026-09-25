@@ -235,6 +235,12 @@ move_plan_on_completion = true
 # default: false
 # orca = false
 
+# t3: report the run as a T3 Code thread whose title follows the loopai phase
+# needs a running T3 Code server and a token in LOOPAI_T3_TOKEN
+# (t3 auth session issue --token-only); failures never affect the run
+# default: false
+# t3 = false
+
 # keep_awake: keep the machine from sleeping while a run is active
 # uses caffeinate on macOS, systemd-inhibit on Linux, and
 # SetThreadExecutionState on Windows; silently inactive elsewhere

@@ -1,0 +1,1 @@
+./skills/loopai-t3/SKILL.md

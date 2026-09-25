@@ -1,0 +1,4 @@
+interface:
+  display_name: "loopai T3"
+  short_description: "Run a loopai plan in a T3 Code thread"
+  default_prompt: "Use $loopai-t3 to run this plan in a T3 Code thread."
