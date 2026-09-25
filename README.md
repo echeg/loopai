@@ -26,6 +26,8 @@ workflows are distributed through this repository's plugin marketplace.
 - Reports live and persistent completion status to the cmux sidebar when available
 - Optionally hands a run off to its own cmux workspace with `--cmux-workspace[=always|auto]`
 - Reports working, waiting, and completion state through Orca terminal titles with `--orca`
+- Reports runs as T3 Code threads with `--t3`, and launches a plan in a T3 Code worktree and
+  thread terminal with `--t3-launch` (see [docs/t3-code.md](docs/t3-code.md))
 - Sends optional Telegram, email, Slack, webhook, or custom-script notifications
 
 ## Requirements
@@ -101,6 +103,9 @@ The plugin provides eight skills:
   terminal tab with `--orca`, so the run appears as an Orca card with live status;
   it forwards `--codex`, `--task-model`, `--review-model`, and
   `--external-reviewers` when given
+- `loopai:loopai-t3` launches a plan inside a T3 Code-managed worktree and thread
+  with `--t3-launch`, so the run appears as a T3 Code thread whose title follows
+  the phase; it forwards the same four flags
 - `loopai:loopai-plan` creates an executable implementation plan
 - `loopai:loopai-brainstorm` designs a feature interactively, then hands the
   approved design to `loopai:loopai-plan`
@@ -189,8 +194,8 @@ marketplace to subscribe to and installation is a copy:
 make install-codex-skills          # add --dry-run first to see what changes
 ```
 
-Seven skills are installed: `loopai`, `loopai-plan`, `loopai-adopt`,
-`loopai-update`, `loopai-brainstorm`, `loopai-orca`, and `loopai-merge`. Invoke them as
+Eight skills are installed: `loopai`, `loopai-plan`, `loopai-adopt`,
+`loopai-update`, `loopai-brainstorm`, `loopai-orca`, `loopai-t3`, and `loopai-merge`. Invoke them as
 `$loopai-plan` and so on. Re-run the command after pulling a newer repository
 version; each skill directory is replaced wholesale, so a file dropped upstream
 does not linger.
@@ -964,6 +969,8 @@ Useful environment variables include:
 
 - `LOOPAI_CONFIG_DIR` — override the global configuration directory
 - `LOOPAI_ORCA` — enable Orca terminal-title status
+- `LOOPAI_T3` — enable T3 Code thread status; `LOOPAI_T3_TOKEN` holds its bearer token and
+  `LOOPAI_T3_URL` overrides the server origin
 - `LOOPAI_WEB_HOST` — dashboard listen address
 
 The embedded configuration documents every option. Extract it with:
@@ -1079,6 +1086,15 @@ standalone utility commands never take one. Set `keep_awake = false` to opt out.
 | Failure | `✳ loopai · failed` | Idle |
 | Stopped before completion | `✳ loopai` | Idle |
 
+Pass `--t3`, set `t3 = true`, or set `LOOPAI_T3=1` to report plan execution and review as a
+[T3 Code](https://t3.codes) thread whose title follows the same phases (`<plan> · task 3/7`,
+`<plan> · done`). It needs a running T3 Code server that has the repository as a project and a
+bearer token in `LOOPAI_T3_TOKEN`; without them loopai warns once and runs normally.
+`loopai --t3-launch <plan>` creates a T3 Code-managed worktree and thread and starts
+`loopai --t3 <plan>` in the thread's terminal, and `--pr` links the created pull request to the
+branch's threads. See [docs/t3-code.md](docs/t3-code.md) for setup, the launcher, and `t3.json`
+project actions.
+
 The cmux status pill and progress bar belong to the workspace, not to an individual run, so
 several runs started from one workspace overwrite each other's status. Bare `--cmux-workspace`
 and `--cmux-workspace=always` avoid that by unconditionally handing the run off: loopai validates
@@ -1135,7 +1151,7 @@ and is performed once, in the new workspace. With `--plan`, the interactive plan
 the new workspace's terminal.
 
 The new workspace starts a fresh shell, so it does not inherit the environment of the terminal the
-run was started from. `LOOPAI_CONFIG_DIR`, `LOOPAI_ORCA`, and `LOOPAI_WEB_HOST` are carried over
+run was started from. `LOOPAI_CONFIG_DIR`, `LOOPAI_ORCA`, `LOOPAI_T3`, and `LOOPAI_WEB_HOST` are carried over
 with the command; anything else the run needs, such as provider credentials, has to come from the
 shell profile.
 The `ANTHROPIC_API_KEY` pass-through travels with the command but the key does not, so loopai warns

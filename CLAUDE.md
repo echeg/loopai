@@ -65,6 +65,7 @@ pkg/processor/       pipeline coordinator, prompts, executor policy
 pkg/processor/phase/ task, review, external, finalize, report, and planning phases
 pkg/progress/        timestamped progress logging
 pkg/status/          shared phases, sections, and protocol signals
+pkg/t3/              best-effort T3 Code thread status, PR linking, and --t3-launch
 pkg/web/             dashboard, SSE, templates, static assets
 e2e/                 Playwright dashboard tests
 scripts/             provider wrappers and internal test helpers
@@ -83,8 +84,13 @@ directory name, and link target aligned; `make check-symlinks` rejects broken,
 missing, incorrect, and orphan links, requires skill descriptions, and verifies
 the exact skill inventory. The current set is `loopai`, `loopai-merge`,
 `loopai-plan`, `loopai-brainstorm`, `loopai-adopt`, `loopai-update`,
-`loopai-grill`, and `loopai-orca`; every added skill needs the matching
+`loopai-grill`, `loopai-orca`, and `loopai-t3`; every added skill needs the matching
 top-level symlink.
+`loopai-t3` is the T3 Code counterpart of `loopai-orca` and does even less: it
+validates the same four pass-through flags and runs `loopai --t3-launch`, minting a
+T3 Code token inline (`t3 auth session issue --token-only`) when `LOOPAI_T3_TOKEN`
+is unset so the token never reaches the transcript. Worktree creation, input
+copying, thread creation, and the terminal launch all live in Go (`pkg/t3/launch.go`).
 `loopai-orca` drives the Orca desktop app's `orca` CLI and executes nothing
 itself: it creates an Orca-managed worktree cut from the current branch (Orca's
 default base is the remote-tracking ref, so `--base-branch` is always passed and
@@ -544,9 +550,30 @@ changes come from `status.PhaseHolder`, task and iteration detail from `WrapLogg
 human waits from `WrapInput` or `WithInputWait`. `Finish` freezes a persistent done/failed
 title, while `Stop` emits the bare idle title for aborts, declined continuation, and other
 non-completions. OSC writes are best-effort single writes to stdout and never fail the run.
+T3 Code reporting (`pkg/t3`) follows the same best-effort contract and uses only T3 Code's
+public API: the origin comes from `${T3CODE_HOME:-~/.t3}/userdata/server-runtime.json` or
+`LOOPAI_T3_URL`, the bearer token only from `LOOPAI_T3_TOKEN` (read directly, not an `opts` tag, so a
+cmux hand-off never types it into another shell), and nothing is ever written below the T3 home.
+`startT3Reporter` in `executePlan` constructs it only when `cfg.T3` is set; plan creation, the
+setup phase, watch-only mode, and standalone commands never do. The reporter binds to
+`LOOPAI_T3_THREAD_ID` or creates a thread in the project whose normalized `workspaceRoot` equals
+the checkout root, recording `worktreePath` only when the directory outlives the run — a
+`--worktree` checkout is removed after success, so it registers the branch alone. All network work
+runs on one goroutine that coalesces to the latest title and sends only changed titles, because
+every `thread.meta.update` is a persisted T3 event; the first error disables it with one warning,
+and `Stop` waits at most `stopTimeout` for the final title. Title updates carry only `title`:
+`branch` or `worktreePath` in a meta update re-triggers T3's server-side PR lookup. `--t3-launch`
+is routed with close-out through `runConfiguredStandaloneCommand` and is part of
+`isStandaloneCommand`; it creates the worktree through the `vcs.createWorktree` WebSocket RPC so
+T3 Code owns it, never deletes anything on a partial failure, and types the command with
+PowerShell quoting on Windows (T3 Code's default shell there is pwsh or Windows PowerShell) and
+POSIX quoting elsewhere. Tests replace `newT3Reporter`, `newT3Dispatcher`, and `newT3Session` in
+`TestMain` so no test reaches a live server.
+
 Keep `cmux.Reporter.WrapLogger` in the logger chain after dashboard setup. The
-Orca title wrapper sits below the cmux wrapper and above `progress.SectionTimer`,
-which in turn sits above the dashboard broadcast logger. This preserves cmux's
+Orca title wrapper sits below the cmux wrapper, the T3 thread wrapper below Orca, and
+the keep-awake wrapper between T3 and `progress.SectionTimer`, which in turn sits above
+the dashboard broadcast logger. This preserves cmux's
 outermost rate-limit interfaces while timing structured sections. Orca's
 limit-wait title comes from its `status.PhaseHolder` observer, not from the logger
 chain. `progress.ValidationTimer` receives that wrapped runner

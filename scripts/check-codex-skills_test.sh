@@ -49,6 +49,7 @@ add_pair loopai-adopt
 add_pair loopai-brainstorm
 add_pair loopai-orca
 add_pair loopai-plan
+add_pair loopai-t3
 add_pair loopai-update
 # exempt: present on the claude side only
 add_claude_skill loopai-grill

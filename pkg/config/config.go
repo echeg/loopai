@@ -162,6 +162,8 @@ type Config struct {
 	WorktreeEnabledSet bool `json:"-"` // tracks if use_worktree was explicitly set in config
 	Orca               bool `json:"orca"`
 	OrcaSet            bool `json:"-"` // tracks if orca was explicitly set in config
+	T3                 bool `json:"t3"`
+	T3Set              bool `json:"-"` // tracks if t3 was explicitly set in config
 	KeepAwake          bool `json:"keep_awake"`
 	KeepAwakeSet       bool `json:"-"` // tracks if keep_awake was explicitly set in config
 
@@ -413,6 +415,8 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		WorktreeEnabledSet:      values.WorktreeEnabledSet,
 		Orca:                    values.Orca,
 		OrcaSet:                 values.OrcaSet,
+		T3:                      values.T3,
+		T3Set:                   values.T3Set,
 		KeepAwake:               values.KeepAwake,
 		KeepAwakeSet:            values.KeepAwakeSet,
 		PlansDir:                values.PlansDir,

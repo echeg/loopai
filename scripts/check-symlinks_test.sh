@@ -34,6 +34,7 @@ add_skill loopai-grill
 add_skill loopai-merge
 add_skill loopai-orca
 add_skill loopai-plan
+add_skill loopai-t3
 add_skill loopai-update
 "$checker" "$fixture"
 

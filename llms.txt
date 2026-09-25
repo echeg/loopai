@@ -35,7 +35,7 @@ claude plugin marketplace add echeg/loopai
 claude plugin install loopai@loopai
 ```
 
-The plugin provides `loopai:loopai`, `loopai:loopai-merge`, `loopai:loopai-orca`, `loopai:loopai-plan`,
+The plugin provides `loopai:loopai`, `loopai:loopai-merge`, `loopai:loopai-orca`, `loopai:loopai-t3`, `loopai:loopai-plan`,
 `loopai:loopai-brainstorm`, `loopai:loopai-adopt`, `loopai:loopai-update`, and
 `loopai:loopai-grill`. The CLI remains the execution
 engine. `loopai:loopai-orca` creates an Orca-managed worktree from the current
@@ -43,7 +43,10 @@ branch through the `orca` CLI, copies the plan and untracked `.loopai/` override
 into it, and launches `loopai --orca <plan>` in an Orca terminal tab, forwarding
 only `--codex`, `--task-model`, `--review-model`, and `--external-reviewers`;
 when `orca` is installed, `loopai:loopai-plan` prints that invocation with flags
-derived from the effective config and offers to run it. `loopai:loopai-grill` critiques an existing plan with Claude and Codex;
+derived from the effective config and offers to run it. `loopai:loopai-t3` runs
+`loopai --t3-launch <plan>` with the same four flags, minting a T3 Code token inline
+when `LOOPAI_T3_TOKEN` is unset; `loopai:loopai-plan` offers it when a T3 Code
+runtime file exists. `loopai:loopai-grill` critiques an existing plan with Claude and Codex;
 its `compare` mode generates, judges, and synthesizes competing plans.
 
 Invoke `/loopai:loopai-grill [docs/plans/X.md]` for an active-plan critique or
@@ -69,7 +72,7 @@ spec file or invoke `superpowers:writing-plans`.
 Codex reads skills from `${CODEX_HOME:-~/.codex}/skills` only, so `make
 install-codex-skills` copies them there (`--dry-run` previews, `--keep-legacy`
 skips pre-rename `ralphex-*` cleanup). It installs `$loopai`, `$loopai-plan`,
-`$loopai-adopt`, `$loopai-update`, `$loopai-brainstorm`, `$loopai-orca`, and `$loopai-merge`.
+`$loopai-adopt`, `$loopai-update`, `$loopai-brainstorm`, `$loopai-orca`, `$loopai-t3`, and `$loopai-merge`.
 `loopai-grill` stays Claude-only: its safety model is a read-only Claude tool
 pin that Codex cannot express. The Codex bodies live in `assets/codex/skills/`
 and are maintained by hand, because Codex has no `AskUserQuestion`, no `Task`
@@ -202,6 +205,8 @@ Inside cmux, a started implementation or review run leaves a green `done in <ela
 
 `--orca` emits OSC terminal titles during interactive plan creation and plan execution/review for the current phase, task or review iteration, input and provider-limit waits, and final success or failure. It can also be enabled with `orca = true` or `LOOPAI_ORCA=1`. Titles are emitted only when standard output is a terminal, so pipes and redirects remain free of escape sequences; Orca recognizes the titles without any Orca-side configuration. Watch-only dashboard mode, `--gen-agents`, and standalone utility commands do not emit titles.
 
+`--t3` (also `t3 = true` or `LOOPAI_T3=1`) reports plan execution and review as a T3 Code thread: loopai finds the server through `${T3CODE_HOME:-~/.t3}/userdata/server-runtime.json` (or `LOOPAI_T3_URL`), authenticates with `LOOPAI_T3_TOKEN` only, creates a thread in the project whose workspace root is the repository (or updates `LOOPAI_T3_THREAD_ID`), and sets its title on phase changes (`<plan> · task 3/7`, `<plan> · done`, `· failed`, `· stopped`). A `--worktree` run registers the branch without the checkout path, since that checkout is removed after success. Any T3 failure prints one warning and never affects the run. `--t3-launch <plan>` is standalone: it creates a T3-managed worktree and thread, copies the plan and missing `.loopai/{config,prompts,agents}` files, and types `loopai --t3 [flags] <plan>` into a thread terminal, forwarding only `--codex`, `--task-model`, `--review-model`, and `--external-reviewers`. With `t3` enabled, `--pr` links the created PR to the branch's threads. See `docs/t3-code.md`.
+
 `keep_awake = true` (default) keeps the machine awake while a run is active through `caffeinate` (macOS), `systemd-inhibit` (Linux), or `SetThreadExecutionState` (Windows), silently inactive elsewhere. The hold is renewed by executor output and phase changes, released after one hour of inactivity so a hung run does not hold a laptop awake, kept for the duration of a provider-limit wait, and bound to the process so a crash releases it. Waiting at a prompt is inactivity. One hold covers a plan chain; watch-only mode and standalone utility commands take none. `keep_awake = false` opts out.
 
 Bare `--cmux-workspace` and `--cmux-workspace=always` hand the run off to its own cmux workspace. `--cmux-workspace=auto` keeps the run in the current workspace unless `cmux list-status` contains a `loopai` pill whose text does not start with the final prefix `done` or `failed`; no pill is free. A local auto run whose execution intent is known before config immediately installs a non-final `starting` pill, which the normal reporter replaces after preflight, so later starts detect config, dependency, and worktree setup as busy too. A potentially watch-only `--serve` invocation with no plan or description waits until config resolves its mode, then reserves only if execution will follow; combined `--reset --serve` reserves before its prompt and releases the reservation if config confirms watch-only mode. The optional value must use the attached `=` form. This check is best-effort: query failures, including being outside cmux, quietly run locally (details appear with `--debug`); a stale pill after force-kill can cause one extra workspace, and simultaneous starts can both observe free. On hand-off, loopai creates a workspace named after the branch the run will use (`--branch` override, else the plan-derived name, else `loopai`), relaunches itself there without the flag, prints `handed off to cmux workspace <name>`, and exits. Because the pill key is fixed and the progress bar is per workspace, this is what makes parallel runs independent instead of overwriting each other's status. Unconditional workspace creation remains best-effort: outside cmux or on a refused creation, loopai warns and runs normally in the current terminal. After auto mode positively detects a busy workspace, any pre-spawn refusal or creation failure stops with an error instead of starting a conflicting local run. After a successful hand-off the originating workspace keeps its previous pill. A creation timeout also stops: cmux may already have started the run in the new workspace, so loopai does not duplicate it here. An invocation that could not run anyway is kept in the current terminal in unconditional mode so its error lands where it was typed rather than in a card that closes immediately: a named plan file that does not exist, and a working directory that is not the repository root (a non-git `vcs_command` and a watch-only `--serve`, which run without a `.git` marker, are unaffected). Standalone commands (`--clear`, `--merge`, `--pr`, `--init`, `--dump-defaults`, `--reset` on its own) are never handed off, while `--reset` in front of a plan is performed once in the new workspace; with `--plan` the interactive dialog happens there too. The new workspace runs a fresh shell that inherits nothing from the current terminal, so only `LOOPAI_CONFIG_DIR`, `LOOPAI_ORCA`, and `LOOPAI_WEB_HOST` travel with the command and everything else must come from the shell profile. An `ANTHROPIC_API_KEY` pass-through requested by either `--preserve-anthropic-api-key` or `preserve_anthropic_api_key` survives the hand-off while the key itself does not, so a key set only in the current terminal is warned about at hand-off.
@@ -226,6 +231,8 @@ Both close-out commands accept an optional positional argument naming the featur
 - `--clear`
 - `--cmux-workspace[=always|auto]` (bare/always always hands off; auto hands off only when the current cmux workspace has an active loopai pill)
 - `--orca` (emit Orca terminal-title status when stdout is a terminal)
+- `--t3` (report the run as a T3 Code thread; token in `LOOPAI_T3_TOKEN`)
+- `--t3-launch <plan>` (start the plan in a T3 Code worktree and thread terminal, then exit)
 - `--merge[=base] [feature]`
 - `--pr[=base] [feature]`
 - `--report [feature]` (print the completion report without modifying the repository)

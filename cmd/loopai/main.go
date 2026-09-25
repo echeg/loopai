@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -36,6 +38,7 @@ import (
 	"github.com/umputun/ralphex/pkg/processor"
 	"github.com/umputun/ralphex/pkg/progress"
 	"github.com/umputun/ralphex/pkg/status"
+	"github.com/umputun/ralphex/pkg/t3"
 	"github.com/umputun/ralphex/pkg/web"
 )
 
@@ -75,6 +78,8 @@ type opts struct {
 	Debug                   bool          `short:"d" long:"debug" description:"enable debug logging"`
 	NoColor                 bool          `long:"no-color" description:"disable color output"`
 	Orca                    bool          `long:"orca" env:"LOOPAI_ORCA" description:"emit terminal title status for orca"`
+	T3                      bool          `long:"t3" env:"LOOPAI_T3" description:"report the run as a T3 Code thread (token in LOOPAI_T3_TOKEN)"`
+	T3Launch                bool          `long:"t3-launch" description:"create a T3 Code worktree and thread for the plan, start loopai --t3 in the thread's terminal, and exit"`
 	Version                 bool          `short:"v" long:"version" description:"print version and exit"`
 	Serve                   bool          `short:"s" long:"serve" description:"start web dashboard for real-time streaming"`
 	Port                    int           `short:"p" long:"port" default:"8080" description:"web dashboard port"`
@@ -433,9 +438,9 @@ func run(ctx context.Context, o opts) (runErr error) {
 	// create colors from config (all colors guaranteed populated via fallback)
 	colors := progress.NewColors(cfg.Colors)
 
-	// standalone git close-out commands do not require executor or notification dependencies.
-	if closeoutRequested(o) {
-		return runCloseoutCommand(ctx, o, cfg, colors)
+	// close-out and the T3 launcher need config but no executor or notification dependencies.
+	if handled, standaloneErr := runConfiguredStandaloneCommand(ctx, o, cfg, colors); handled {
+		return standaloneErr
 	}
 	watchOnly := isWatchOnlyMode(o, cfg.WatchDirs)
 	resolveAutoWorkspaceReservationAfterConfig(
@@ -1387,6 +1392,10 @@ func keepDashboardAlive(ctx context.Context, o opts, req executePlanRequest, clo
 
 var newOrcaReporter = orca.New
 
+// newT3Reporter constructs the T3 Code thread reporter for a run with the t3 option enabled. Tests
+// replace it so no test contacts a real server or reads the real T3 home.
+var newT3Reporter = t3.New
+
 // newAwakeHolder constructs the process-wide sleep inhibitor. Tests replace it so run() never
 // starts a real inhibitor.
 var newAwakeHolder = awake.New
@@ -1427,6 +1436,55 @@ func initialOrcaPhase(mode processor.Mode) status.Phase {
 	}
 }
 
+// startT3Reporter binds the run to a T3 Code thread when the t3 option is enabled. The thread
+// records the worktree path only when the directory outlives the run: a --worktree checkout is
+// removed after success, so it registers the branch alone. An unavailable server produces one
+// warning and a nil, no-op reporter.
+func startT3Reporter(o opts, req executePlanRequest, branch string) *t3.Reporter {
+	if req.Config == nil || !req.Config.T3 || req.GitSvc == nil {
+		return nil
+	}
+	repoRoot, worktreePath := req.GitSvc.Root(), req.GitSvc.Root()
+	if req.MainGitSvc != nil {
+		repoRoot, worktreePath = req.MainGitSvc.Root(), ""
+	}
+	warn := func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
+	}
+	threads, err := newT3Reporter(t3.Options{
+		PlanFile:     req.PlanFile,
+		Executor:     req.Config.Executor,
+		Model:        t3TaskModel(o, req.Config),
+		RepoRoot:     repoRoot,
+		WorktreePath: worktreePath,
+		Branch:       branch,
+		Warn:         warn,
+	}, os.Getenv)
+	if err != nil {
+		warn("t3 status disabled: %v", err)
+		return nil
+	}
+	threads.OnPhase("", initialOrcaPhase(req.Mode))
+	return threads
+}
+
+// t3TaskModel is the task model recorded on a created T3 thread; empty selects "default".
+func t3TaskModel(o opts, cfg *config.Config) string {
+	if cfg.Executor == config.ExecutorCodex {
+		return codexModelBanner(o, cfg).taskModel
+	}
+	return resolveSpec(o.TaskModel, cfg.TaskModel)
+}
+
+// finishT3Failure publishes a failed thread title for genuine errors; user cancellations stay
+// neutral and end as stopped through Stop.
+func finishT3Failure(threads *t3.Reporter, runErr error) {
+	if runErr == nil || isNeutralOrcaStop(runErr) {
+		return
+	}
+	threads.Finish(false)
+}
+
 func setOrcaCleanup(holder *cleanupHolder, titles *orca.Reporter) {
 	if holder != nil {
 		holder.set(titles.Stop)
@@ -1434,11 +1492,17 @@ func setOrcaCleanup(holder *cleanupHolder, titles *orca.Reporter) {
 }
 
 // buildRunnerLogger installs the orca title wrapper below cmux and above section timing, with the
-// keep-awake activity wrapper between orca and the timer. Keeping cmux outermost preserves its
-// optional rate-limit reporting methods.
-func buildRunnerLogger(rep *cmux.Reporter, titles *orca.Reporter, keep *awake.Holder, inner progress.SectionLogger) (processor.Logger, *progress.SectionTimer) {
+// T3 thread wrapper below orca and the keep-awake activity wrapper between T3 and the timer.
+// Keeping cmux outermost preserves its optional rate-limit reporting methods.
+func buildRunnerLogger(
+	rep *cmux.Reporter,
+	titles *orca.Reporter,
+	threads *t3.Reporter,
+	keep *awake.Holder,
+	inner progress.SectionLogger,
+) (processor.Logger, *progress.SectionTimer) {
 	timer := progress.NewSectionTimer(inner, nil)
-	return rep.WrapLogger(titles.WrapLogger(keep.WrapLogger(timer))), timer
+	return rep.WrapLogger(titles.WrapLogger(threads.WrapLogger(keep.WrapLogger(timer)))), timer
 }
 
 // runWithSectionTiming guarantees the final section and aggregate summary are
@@ -1470,6 +1534,8 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	titles := startOrcaReporter(req.Config, req.PlanFile, initialOrcaPhase(req.Mode))
 	setOrcaCleanup(req.OrcaStop, titles)
 	req.SetupTitles.Quiesce()
+	threads := startT3Reporter(o, req, branch)
+	defer threads.Stop()
 	var cmuxCleanupOnce sync.Once
 	cmuxRetained := false
 	completeCmux := func(elapsed string, runErr error) {
@@ -1490,6 +1556,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		req.CmuxStop.set(func() {
 			rep.Stop()
 			titles.Stop()
+			threads.Stop()
 			if req.CmuxPredecessorStop != nil {
 				req.CmuxPredecessorStop()
 			}
@@ -1508,6 +1575,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 			plr.baseLog.SetFailed(wrapped)
 			notifyCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), wrapped)
 			finishOrcaFailure(titles, wrapped)
+			finishT3Failure(threads, wrapped)
 			return wrapped
 		}
 		validationCommands = parsedPlan.ValidationCommands
@@ -1537,15 +1605,17 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 			// transient artifact rather than leaving a persistent execution-failure pill.
 			notifyCmuxCompletion(rep, req.PlanFile, branch, plr.baseLog.Elapsed(), wrapped)
 			finishOrcaFailure(titles, wrapped)
+			finishT3Failure(threads, wrapped)
 			return wrapped
 		}
 	}
-	runnerLog, sectionTimer := buildRunnerLogger(rep, titles, req.KeepAwake, runnerLog)
+	runnerLog, sectionTimer := buildRunnerLogger(rep, titles, threads, req.KeepAwake, runnerLog)
 	validationTimer := progress.NewValidationTimer(validationCommands, runnerLog)
 
 	// subscribe status reporters after the dashboard so all observers coexist
 	plr.holder.OnChange(rep.OnPhase)
 	plr.holder.OnChange(titles.OnPhase)
+	plr.holder.OnChange(threads.OnPhase)
 	plr.holder.OnChange(req.KeepAwake.OnPhase)
 
 	// resolve effective codex model/effort for the banner so it reflects what
@@ -1593,7 +1663,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// listen for SIGQUIT (Ctrl+\) for manual break during task and review loops
 	if breakCh := startBreakSignal(); breakCh != nil {
 		r.SetBreakCh(breakCh)
-		r.SetPauseHandler(makePauseHandler(os.Stdin, os.Stdout, titles))
+		r.SetPauseHandler(makePauseHandler(os.Stdin, os.Stdout, titles, threads))
 	}
 
 	runErr := runWithSectionTiming(ctx, r.Run, sectionTimer)
@@ -1612,6 +1682,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		plr.baseLog.SetFailed(wrapped)
 		sendNotification(req, branch, plr.baseLog.Elapsed(), git.DiffStats{}, runErr)
 		completeCmux(plr.baseLog.Elapsed(), runErr)
+		finishT3Failure(threads, runErr)
 		return wrapped
 	}
 
@@ -1634,6 +1705,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		plr.baseLog.SetFailed(moveErr)
 		sendNotification(req, branch, elapsed, stats, moveErr)
 		completeCmux(elapsed, moveErr)
+		finishT3Failure(threads, moveErr)
 		return moveErr
 	}
 	removeRunRecordAfterArchival(runRecordState, planMoved)
@@ -1657,6 +1729,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// stays alive until Ctrl+C, and a spinner left spinning reports it as still working
 	stopCmuxUnlessRetained(rep, cmuxRetained)
 	titles.Stop()
+	threads.Finish(true)
 	keepDashboardAlive(ctx, o, req, plr.closeLog)
 	if req.Outcome != nil {
 		req.Outcome.succeeded = true
@@ -2954,9 +3027,9 @@ func modeCreatesBranch(mode processor.Mode) bool {
 // makePauseHandler returns a context-aware pause handler for task loop breaks.
 // on break, prints a message and waits for Enter to resume or context cancellation to abort.
 // stdin read runs in a goroutine so the handler responds to Ctrl+C (SIGINT) promptly.
-func makePauseHandler(stdin io.Reader, stdout io.Writer, titles *orca.Reporter) func(ctx context.Context) bool {
+func makePauseHandler(stdin io.Reader, stdout io.Writer, titles *orca.Reporter, threads *t3.Reporter) func(ctx context.Context) bool {
 	return func(ctx context.Context) bool {
-		return titles.WithInputWait(func() bool {
+		wait := func() bool {
 			fmt.Fprintln(stdout, "\nsession interrupted. press Enter to continue, Ctrl+C to abort")
 
 			resultCh := make(chan bool, 1)
@@ -2972,7 +3045,8 @@ func makePauseHandler(stdin io.Reader, stdout io.Writer, titles *orca.Reporter) 
 			case <-ctx.Done():
 				return false
 			}
-		})
+		}
+		return titles.WithInputWait(func() bool { return threads.WithInputWait(wait) })
 	}
 }
 
@@ -3066,6 +3140,9 @@ func validateFlags(o opts) error {
 		return errors.New("--plan flag conflicts with plan file argument; use one or the other")
 	}
 	if err := validateGenAgentsFlags(o); err != nil {
+		return err
+	}
+	if err := validateT3LaunchFlags(o); err != nil {
 		return err
 	}
 	if err := validateCommitFlags(o); err != nil {
@@ -3180,6 +3257,182 @@ func validateGenAgentsFlags(o opts) error {
 			return fmt.Errorf("--gen-agents cannot be combined with %s", conflict.flag)
 		}
 	}
+	return nil
+}
+
+// runConfiguredStandaloneCommand routes the standalone commands that need loaded config but no
+// executor or notification dependencies: git close-out, and the T3 launcher, which executes
+// nothing locally because the launched run checks its own dependencies.
+func runConfiguredStandaloneCommand(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors) (bool, error) {
+	switch {
+	case closeoutRequested(o):
+		return true, runCloseoutCommand(ctx, o, cfg, colors)
+	case o.T3Launch:
+		return true, runT3LaunchCommand(ctx, o, cfg, colors, os.Stdout)
+	default:
+		return false, nil
+	}
+}
+
+// t3LaunchValue is the value shape --t3-launch forwards, matching the loopai-t3 skill's check.
+var t3LaunchValue = regexp.MustCompile(`^[A-Za-z0-9._:,+-]+$`)
+
+// validateT3LaunchFlags keeps --t3-launch standalone. It forwards only the executor and model
+// selection to the launched run: anything that picks a mode, a worktree, a branch, or a dashboard
+// would contradict the T3-managed worktree the launcher creates.
+func validateT3LaunchFlags(o opts) error {
+	if !o.T3Launch {
+		return nil
+	}
+	if o.PlanFile == "" {
+		return errors.New("--t3-launch requires a plan file argument")
+	}
+	if len(o.PlanFiles) > 1 {
+		return errors.New("--t3-launch accepts exactly one plan file")
+	}
+	conflicts := []struct {
+		flag string
+		set  bool
+	}{
+		{"--plan", o.PlanDescription != ""},
+		{"--review", o.Review},
+		{"--external-only", o.ExternalOnly},
+		{"--codex-only", o.CodexOnly},
+		{"--tasks-only", o.TasksOnly},
+		{"--worktree", o.Worktree},
+		{"--commit", o.Commit},
+		{"--branch", o.Branch != ""},
+		{"--base-ref", o.BaseRef != ""},
+		{"--serve", o.Serve},
+		{"--watch", len(o.Watch) > 0},
+		{"--cmux-workspace", o.CmuxWorkspace != ""},
+		{"--gen-agents", o.GenAgents},
+		{"--init", o.Init},
+		{"--reset", o.Reset},
+		{"--dump-defaults", o.DumpDefaults != ""},
+		{"--clear", o.Clear},
+		{"--merge, --pr, or --report", closeoutRequested(o)},
+		{"--plan-model", o.PlanModel != ""},
+		{"--codex-args", o.CodexArgs != ""},
+		{"--external-review-tool", o.ExternalReviewTool != ""},
+		{"--external-review-model", o.ExternalReviewModel != ""},
+	}
+	for _, conflict := range conflicts {
+		if conflict.set {
+			return fmt.Errorf("--t3-launch cannot be combined with %s", conflict.flag)
+		}
+	}
+	for _, value := range []struct{ flag, value string }{
+		{"--task-model", o.TaskModel}, {"--review-model", o.ReviewModel}, {"--external-reviewers", o.ExternalReviewers},
+	} {
+		if value.value != "" && !t3LaunchValue.MatchString(value.value) {
+			return fmt.Errorf("--t3-launch: invalid %s value %q", value.flag, value.value)
+		}
+	}
+	return nil
+}
+
+// t3LaunchArgs is the flag list forwarded to the launched `loopai --t3` run.
+func t3LaunchArgs(o opts) []string {
+	var args []string
+	if o.Codex {
+		args = append(args, "--codex")
+	}
+	for _, value := range []struct{ flag, value string }{
+		{"--task-model", o.TaskModel}, {"--review-model", o.ReviewModel}, {"--external-reviewers", o.ExternalReviewers},
+	} {
+		if value.value != "" {
+			args = append(args, value.flag, value.value)
+		}
+	}
+	return args
+}
+
+// t3Session is the T3 Code API pair --t3-launch uses; close releases the WebSocket.
+type t3Session struct {
+	api   t3.Dispatcher
+	rpc   t3.RPC
+	close func()
+}
+
+// newT3Session connects to the T3 Code server. Tests replace it so no test contacts a real server.
+var newT3Session = func(ctx context.Context, ep t3.Endpoint) (t3Session, error) {
+	rpc, err := t3.DialRPC(ctx, ep)
+	if err != nil {
+		return t3Session{}, err //nolint:wrapcheck // t3 errors carry their own prefix
+	}
+	return t3Session{api: t3.NewClient(ep), rpc: rpc, close: func() { _ = rpc.Close() }}, nil
+}
+
+// runT3LaunchCommand creates a T3-managed worktree and thread for the plan and starts
+// `loopai --t3` in that thread's terminal. It runs in the source checkout and exits once the
+// command is typed; the run itself reports into the thread.
+func runT3LaunchCommand(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors, stdout io.Writer) error {
+	if err := requireRepoRoot(cfg); err != nil {
+		return err
+	}
+	ep, err := t3.ResolveEndpoint(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("--t3-launch: %w", err)
+	}
+	gitSvc, err := openGitService(colors, cfg.VcsCommand)
+	if err != nil {
+		return fmt.Errorf("open git repo: %w", err)
+	}
+	head, err := gitSvc.HeadHash()
+	if err != nil {
+		return fmt.Errorf("--t3-launch: read HEAD: %w", err)
+	}
+	baseRef := head
+	if branch, branchErr := gitSvc.CurrentBranch(); branchErr == nil && branch != "" && branch != "HEAD" {
+		baseRef = branch
+	}
+	program, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("--t3-launch: resolve loopai executable: %w", err)
+	}
+	shell := t3.ShellPOSIX
+	if runtime.GOOS == "windows" {
+		shell = t3.ShellPowerShell
+	}
+
+	session, err := newT3Session(ctx, ep)
+	if err != nil {
+		return fmt.Errorf("--t3-launch: %w", err)
+	}
+	defer session.close()
+
+	planFile, err := filepath.Abs(o.PlanFile)
+	if err != nil {
+		return fmt.Errorf("--t3-launch: resolve plan: %w", err)
+	}
+	res, err := t3.Launch(ctx, session.api, session.rpc, t3.LaunchRequest{
+		RepoRoot:   gitSvc.Root(),
+		PlanFile:   planFile,
+		Branch:     gitSvc.EffectiveBranchName(planFile, ""),
+		BaseRef:    baseRef,
+		SourceHead: head,
+		LoopaiPath: program,
+		Args:       t3LaunchArgs(o),
+		Executor:   cfg.Executor,
+		Model:      t3TaskModel(o, cfg),
+		Shell:      shell,
+		Endpoint:   ep,
+		HeadOf: func(dir string) (string, error) {
+			svc, svcErr := git.NewService(dir, colors.Info(), cfg.VcsCommand)
+			if svcErr != nil {
+				return "", fmt.Errorf("open worktree: %w", svcErr)
+			}
+			return svc.HeadHash()
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("--t3-launch: %w", err)
+	}
+	fmt.Fprintf(stdout, "started loopai in T3 Code thread %s\n", res.ThreadID)
+	fmt.Fprintf(stdout, "worktree: %s\n", res.WorktreePath)
+	fmt.Fprintf(stdout, "branch:   %s\n", res.Branch)
+	fmt.Fprintf(stdout, "close out from this checkout with: loopai --merge %s   (or --pr %s)\n", res.Branch, res.Branch)
 	return nil
 }
 
@@ -3677,7 +3930,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	holder.OnChange(rep.OnPhase)
 	holder.OnChange(titles.OnPhase)
 	holder.OnChange(req.KeepAwake.OnPhase)
-	planLog, sectionTimer := buildRunnerLogger(rep, titles, req.KeepAwake, baseLog)
+	planLog, sectionTimer := buildRunnerLogger(rep, titles, nil, req.KeepAwake, baseLog)
 
 	maxIter := resolveMaxIterations(o.MaxIterations, req.Config)
 
@@ -3892,7 +4145,7 @@ func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *p
 	}()
 
 	holder.OnChange(keep.OnPhase)
-	genLog, sectionTimer := buildRunnerLogger(nil, nil, keep, baseLog)
+	genLog, sectionTimer := buildRunnerLogger(nil, nil, nil, keep, baseLog)
 
 	colors.Info().Printf("generating project-specific review agents\n")
 	colors.Info().Printf("progress log: %s\n", toRelPath(baseLog.Path()))
@@ -4357,7 +4610,7 @@ func cmuxWorkspaceName(o opts) string {
 // the new workspace from a shell of its own, which inherits cmux's environment and not this
 // process's, so an option provided through the environment would silently revert to its default
 // after hand-off. TestCmuxEnvOptionsCoversOptionTags keeps the list in sync with the struct tags.
-var cmuxEnvOptions = []string{"LOOPAI_CONFIG_DIR", "LOOPAI_ORCA", "LOOPAI_WEB_HOST"}
+var cmuxEnvOptions = []string{"LOOPAI_CONFIG_DIR", "LOOPAI_ORCA", "LOOPAI_T3", "LOOPAI_WEB_HOST"}
 
 // cmuxHandOffArgv builds the command the new workspace runs: this executable, the arguments minus
 // the hand-off flag, and an env prefix carrying the environment-provided options across. env is
@@ -4403,7 +4656,8 @@ func clearStaleCmuxStatus(o opts) {
 // nor get handed over to a new cmux workspace. --gen-agents belongs here: it executes no plan
 // and never constructs a reporter.
 func isStandaloneCommand(o opts) bool {
-	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || o.GenAgents || (o.Reset && isResetOnly(o))
+	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || o.GenAgents || o.T3Launch ||
+		(o.Reset && isResetOnly(o))
 }
 
 // handOffSucceeded reports whether an early stop came from a successful cmux workspace hand-off,
@@ -4532,6 +4786,7 @@ func existingPlanFile(path string) string {
 type closeoutTarget struct {
 	identifier string
 	plansDir   string
+	linkT3     bool // --pr links the created pull request to the branch's T3 Code threads
 }
 
 // resolveCloseoutBranch determines the feature branch a close-out command operates on: the
@@ -5140,10 +5395,46 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 	if prURL != "" {
 		fmt.Fprintln(stdout, prURL)
 	}
+	if target.linkT3 && prURL != "" {
+		linkT3PullRequest(ctx, gitSvc, branch, prURL, os.Stderr)
+	}
 	if rep != nil {
 		rep.Clear()
 	}
 	return nil
+}
+
+// newT3Dispatcher opens the T3 Code orchestration API described by the environment. Tests replace
+// it so no test contacts a real server.
+var newT3Dispatcher = func(getenv func(string) string) (t3.Dispatcher, error) {
+	ep, err := t3.ResolveEndpoint(getenv)
+	if err != nil {
+		return nil, err //nolint:wrapcheck // t3 errors carry their own prefix
+	}
+	return t3.NewClient(ep), nil
+}
+
+// linkT3PullRequest attaches a freshly created pull request to the branch's T3 Code threads so
+// T3 settles them when the PR merges. It is best-effort: the PR already exists, so a failure is
+// reported on stderr and never changes the command's result.
+func linkT3PullRequest(ctx context.Context, gitSvc *git.Service, branch, prURL string, stderr io.Writer) {
+	api, err := newT3Dispatcher(os.Getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: t3 pull request link skipped: %v\n", err)
+		return
+	}
+	roots, err := progressRecordRoots(gitSvc)
+	if err != nil {
+		roots = []string{gitSvc.Root()}
+	}
+	linked, err := t3.LinkPullRequest(ctx, api, roots, branch, prURL)
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: t3 pull request link failed: %v\n", err)
+		return
+	}
+	if linked > 0 {
+		fmt.Fprintf(stderr, "linked pull request to %d T3 Code thread(s)\n", linked)
+	}
 }
 
 func validateGitHubOrigin(ctx context.Context, ghPath string, gitSvc *git.Service) (string, error) {
@@ -5226,7 +5517,7 @@ func runCloseoutCommand(ctx context.Context, o opts, cfg *config.Config, colors 
 	if err != nil {
 		return fmt.Errorf("open git repo: %w", err)
 	}
-	target := closeoutTarget{identifier: o.PlanFile, plansDir: cfg.PlansDir}
+	target := closeoutTarget{identifier: o.PlanFile, plansDir: cfg.PlansDir, linkT3: cfg.T3}
 	if reportRequested(o) {
 		return runReportCommand(ctx, gitSvc, target, os.Stdout)
 	}
@@ -5910,6 +6201,7 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 		cfg.PreserveAnthropicAPIKey = true
 	}
 	cfg.Orca = enabledByCLI(cfg.Orca, o.Orca)
+	cfg.T3 = enabledByCLI(cfg.T3, o.T3)
 	if o.Worktree {
 		cfg.WorktreeEnabled = true
 	}
