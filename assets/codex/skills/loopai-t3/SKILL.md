@@ -15,7 +15,7 @@ Run the checks separately so each failure is distinguishable. **Stop and report 
 
 ```bash
 command -v loopai                                              # missing -> stop: make build && install -m 0755 .bin/loopai ~/.local/bin/loopai
-loopai --help | grep -q -- '--t3-launch' || echo "MISSING_T3_FLAG"   # printed -> stop: fork too old
+loopai --help | grep -qE -- '(--|/)t3-launch' || echo "MISSING_T3_FLAG"   # printed -> stop: fork too old
 T3_HOME=${T3CODE_HOME:-$HOME/.t3}; cat "$T3_HOME/userdata/server-runtime.json"   # missing -> stop: T3 Code is not running
 git rev-parse --show-toplevel                                   # must equal the current directory
 git branch --show-current
