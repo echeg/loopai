@@ -100,19 +100,19 @@
 - [x] run `go test -race ./pkg/acp/...` - must pass before task 2
 
 ### Task 2: ACP session server (`pkg/acp/server.go`)
-- [ ] implement the agent side:
+- [x] implement the agent side:
   - `initialize` → `{protocolVersion:1, agentCapabilities:{loadSession:false}, authMethods:[{id:"cached_token"},{id:"xai.api_key"}], agentInfo:{name:"loopai", version}}`
   - `authenticate` → `{}` for any method id
   - `session/new` → a new session id, recording `cwd` and discarding `mcpServers`
   - `session/set_config_option`, `session/set_mode`, and `session/set_model` → `{}`
   - `session/load` → error
-- [ ] `session/prompt`:
+- [x] `session/prompt`:
   - take the first text block only and pass it with the session cwd to an injected `RunFunc(ctx, PromptRequest, Sink) (Result, error)` on its own goroutine with a per-prompt cancellable context
   - reject a second concurrent prompt with an error
   - map the outcome: success → `{stopReason:"end_turn"}`; cancel → `{stopReason:"cancelled"}`; a run failure → JSON-RPC error carrying the message
-- [ ] `session/cancel` cancels that session's running prompt; the request id of the prompt is answered exactly once
-- [ ] never log `mcpServers` contents; debug logging, if any, goes to stderr and redacts header values
-- [ ] write tests with a scripted client over pipes:
+- [x] `session/cancel` cancels that session's running prompt; the request id of the prompt is answered exactly once
+- [x] never log `mcpServers` contents; debug logging, if any, goes to stderr and redacts header values
+- [x] write tests with a scripted client over pipes:
   - full handshake
   - prompt success
   - prompt failure → error
@@ -121,7 +121,8 @@
   - runtime-instructions block ignored
   - `session/load` error
   - no credential text in captured stderr
-- [ ] run `go test -race ./pkg/acp/...` - must pass before task 3
+- [x] ➕ a minimal `Sink` (`Update`, `Message`) lives in `pkg/acp/sink.go` so `RunFunc` has its final type; Task 3 extends it
+- [x] run `go test -race ./pkg/acp/...` - must pass before task 3
 
 ### Task 3: ACP event sink (`pkg/acp/sink.go`)
 - [ ] implement a `Sink` that turns loopai events into `session/update` notifications:
