@@ -875,6 +875,9 @@ func detectSignal(text string) string {
 		status.ExternalReviewDone,
 		status.CodexDone,
 		status.PlanReady,
+		// blocked precedes done so output carrying both reads as the fail-safe outcome.
+		status.FinalizeBlocked,
+		status.FinalizeDone,
 	}
 	for _, sig := range knownSignals {
 		if strings.Contains(text, sig) {

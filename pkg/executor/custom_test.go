@@ -150,6 +150,8 @@ func TestCustomExecutor_Run_AllSignals(t *testing.T) {
 		{name: "REVIEW_DONE", output: "done\n<<<RALPHEX:REVIEW_DONE>>>", wantSignal: "<<<RALPHEX:REVIEW_DONE>>>"},
 		{name: "CODEX_REVIEW_DONE", output: "done\n<<<RALPHEX:CODEX_REVIEW_DONE>>>", wantSignal: "<<<RALPHEX:CODEX_REVIEW_DONE>>>"},
 		{name: "PLAN_READY", output: "done\n<<<RALPHEX:PLAN_READY>>>", wantSignal: "<<<RALPHEX:PLAN_READY>>>"},
+		{name: "FINALIZE_DONE", output: "done\n<<<RALPHEX:FINALIZE_DONE>>>", wantSignal: "<<<RALPHEX:FINALIZE_DONE>>>"},
+		{name: "FINALIZE_BLOCKED", output: "<<<RALPHEX:FINALIZE_BLOCKED>>>\nmake test failed", wantSignal: "<<<RALPHEX:FINALIZE_BLOCKED>>>"},
 		{name: "no signal", output: "just output\nno signal here", wantSignal: ""},
 	}
 

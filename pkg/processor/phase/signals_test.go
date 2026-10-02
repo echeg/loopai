@@ -1,6 +1,7 @@
 package phase
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -582,6 +583,58 @@ The project uses Go modules and a layered package layout.
 			result, err := ParsePlanDraftPayload(tc.output)
 			require.NoError(t, err)
 			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func Test_IsFinalizeSignals(t *testing.T) {
+	tests := []struct {
+		signal      string
+		wantDone    bool
+		wantBlocked bool
+	}{
+		{SignalFinalizeDone, true, false},
+		{SignalFinalizeBlocked, false, true},
+		{SignalCompleted, false, false},
+		{SignalFailed, false, false},
+		{SignalReviewDone, false, false},
+		{"", false, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.signal, func(t *testing.T) {
+			assert.Equal(t, tc.wantDone, IsFinalizeDone(tc.signal))
+			assert.Equal(t, tc.wantBlocked, IsFinalizeBlocked(tc.signal))
+		})
+	}
+}
+
+func Test_ParseFinalizeBlockedReason(t *testing.T) {
+	long := strings.Repeat("x", maxFinalizeReasonLen+10)
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{name: "no signal", output: "validation passed\n<<<RALPHEX:FINALIZE_DONE>>>", want: ""},
+		{name: "reason on next line", output: "ran tests\n<<<RALPHEX:FINALIZE_BLOCKED>>>\ngo test ./... failed in pkg/api\n",
+			want: "go test ./... failed in pkg/api"},
+		{name: "reason on same line after colon", output: "<<<RALPHEX:FINALIZE_BLOCKED>>>: conflict in config.go needs a decision",
+			want: "conflict in config.go needs a decision"},
+		{name: "blank lines skipped", output: "<<<RALPHEX:FINALIZE_BLOCKED>>>\n\n   \n- make lint failed\nmore text",
+			want: "make lint failed"},
+		{name: "signal without reason", output: "<<<RALPHEX:FINALIZE_BLOCKED>>>\n\n", want: ""},
+		{name: "another signal follows", output: "<<<RALPHEX:FINALIZE_BLOCKED>>>\n<<<RALPHEX:END>>>", want: ""},
+		{name: "last signal wins", output: "<<<RALPHEX:FINALIZE_BLOCKED>>>\nfirst\n<<<RALPHEX:FINALIZE_BLOCKED>>>\nsecond",
+			want: "second"},
+		{name: "crlf output", output: "<<<RALPHEX:FINALIZE_BLOCKED>>>\r\nmake test failed\r\n", want: "make test failed"},
+		{name: "long reason truncated", output: "<<<RALPHEX:FINALIZE_BLOCKED>>>\n" + long,
+			want: strings.Repeat("x", maxFinalizeReasonLen) + "..."},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ParseFinalizeBlockedReason(tc.output))
 		})
 	}
 }

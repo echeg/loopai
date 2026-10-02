@@ -203,9 +203,10 @@ type GenAgentsPrompts interface {
 	GenAgentsPrompt() string
 }
 
-// FinalizePrompts renders finalize prompts.
+// FinalizePrompts renders finalize prompts. conflicts lists the paths a base merge
+// left unmerged; it is empty when the merge was clean or the branch was up to date.
 type FinalizePrompts interface {
-	FinalizePrompt() string
+	FinalizePrompt(conflicts []string) string
 }
 
 // ReportPrompts renders the completion report prompt.

@@ -1,38 +1,48 @@
 # finalize prompt
-# this prompt runs once after successful reviews, best-effort (failures logged but don't block)
-# disabled by default (finalize_enabled = false)
+# this prompt runs once after successful reviews when finalize is sync, pr, or merge
+# (default finalize = none). loopai has already fetched origin/{{DEFAULT_BRANCH}} and merged it
+# into the plan branch before this session starts; it never rebases or force-pushes.
+# loopai accepts the result only when this session emits FINALIZE_DONE, the tree is clean, and
+# no path outside the conflicted set changed; otherwise it restores the pre-merge HEAD and
+# stops before opening a pull request.
 #
 # available variables:
-#   {{DEFAULT_BRANCH}} - default branch name (main, master, trunk, etc.)
+#   {{DEFAULT_BRANCH}} - base branch name (main, master, trunk, etc.)
+#   {{PLAN_FILE}} - path to the plan file
+#   {{FINALIZE_CONFLICTS}} - conflicted paths left by the merge, one "- path" per line, or a note that there are none
+#   {{VALIDATION_COMMANDS}} - the plan's validation commands, one "- command" per line, or a note that there are none
 
-Post-completion finalize step.
+Post-completion finalize step. Bring the plan branch up to date with origin/{{DEFAULT_BRANCH}}.
 
-Rebase your commits onto the latest {{DEFAULT_BRANCH}} and organize them for merge.
+loopai has already run `git fetch origin {{DEFAULT_BRANCH}}` and `git merge origin/{{DEFAULT_BRANCH}}` into the current branch. Do not fetch, rebase, reset, push, or start another merge yourself.
+
+Conflicted paths left by the merge:
+{{FINALIZE_CONFLICTS}}
+
+Validation commands from the plan:
+{{VALIDATION_COMMANDS}}
 
 Steps:
 
-1. Fetch latest changes: `git fetch origin`
+1. Resolve conflicts (only when paths are listed above):
+   - The merge is in progress and uncommitted. Edit only the listed paths; every other file is already merged and must stay exactly as it is.
+   - Keep the intent of both sides: the plan branch's change and the base branch's change. Read `git log --oneline -5 MERGE_HEAD` and the plan file at {{PLAN_FILE}} to understand each side.
+   - Resolve only conflicts that are clear-cut. A conflict whose resolution needs a product or design decision, discards either side's behavior, or requires changes outside the listed paths is not clear-cut: stop and report it as blocked (step 3) without committing.
+   - Remove every conflict marker, then stage the listed paths explicitly with `git add <path>` for each one. Never use `git add -A`, `git add .`, or `git commit -a`.
+   - Commit the merge with `git commit --no-edit`.
+   - When no paths are listed, the merge is already committed (or the branch was already up to date): do not edit or commit anything.
 
-2. Rebase onto {{DEFAULT_BRANCH}}:
-   - Run: `git rebase origin/{{DEFAULT_BRANCH}}`
-   - If conflicts occur, resolve them and continue rebase
-   - If rebase fails completely, abort with `git rebase --abort` and report the issue
+2. Validate:
+   - Run every validation command listed above, in order, from the repository root.
+   - When the plan lists none, run the project's standard test command if CLAUDE.md, AGENTS.md, or the plan names one; otherwise skip validation.
+   - Do not fix code to make a failing command pass. A failure caused by changes on {{DEFAULT_BRANCH}} needs a human decision: report it as blocked (step 3).
+   - Do not leave the working tree dirty: validation must not produce uncommitted changes.
 
-3. Review commit history:
-   - Run: `git log origin/{{DEFAULT_BRANCH}}..HEAD --oneline`
-   - If there are many small fix commits, consider squashing them
-   - Keep meaningful commit boundaries (feature commits separate from fix commits)
-
-4. Optional: Interactive rebase to clean up history:
-   - Only if there are 5+ commits that could be logically combined
-   - Run: `git rebase -i origin/{{DEFAULT_BRANCH}}`
-   - Squash related fix commits into their parent feature commits
-   - Reword commit messages if needed for clarity
-
-5. Verify the branch is ready:
-   - Run tests using the project's test command (check CLAUDE.md or plan file for the correct command)
-   - Run linter if applicable
-
-Report what was done. This step is best-effort - if rebase fails, explain why and the branch remains as-is.
+3. Report the outcome on the final lines of your answer:
+   - When conflicts (if any) are resolved and committed and every validation command passed, output exactly:
+     <<<RALPHEX:FINALIZE_DONE>>>
+   - Otherwise output exactly the line below, followed on the next line by a one-line reason naming the failing command or the conflict that needs a decision:
+     <<<RALPHEX:FINALIZE_BLOCKED>>>
+   - Never output both signals. loopai restores the branch to its pre-merge state on a blocked result, so do not try to undo the merge yourself.
 
 OUTPUT FORMAT: No markdown formatting (no **bold**, `code`, # headers). Plain text and - lists are fine.

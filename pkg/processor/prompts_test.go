@@ -2107,7 +2107,7 @@ func TestPromptBuilder_BacklogDirPlaceholder(t *testing.T) {
 			return b.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings")
 		}},
 		{"plan", func(b *promptBuilder) string { return b.PlanPrompt() }},
-		{"finalize", func(b *promptBuilder) string { return b.FinalizePrompt() }},
+		{"finalize", func(b *promptBuilder) string { return b.FinalizePrompt(nil) }},
 		{"gen agents", func(b *promptBuilder) string { return b.GenAgentsPrompt() }},
 	}
 
@@ -2157,7 +2157,7 @@ func TestPromptBuilder_BacklogDirNoLiteralLeak(t *testing.T) {
 		"eval claude":            builder.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "findings"),
 		"eval custom":            builder.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "findings"),
 		"plan":                   builder.PlanPrompt(),
-		"finalize":               builder.FinalizePrompt(),
+		"finalize":               builder.FinalizePrompt(nil),
 		"gen agents":             builder.GenAgentsPrompt(),
 	}
 	for name, prompt := range prompts {
@@ -2444,7 +2444,7 @@ func TestPromptBuilder_CrossProviderRendering(t *testing.T) {
 			"first review":  b.FirstReviewPrompt(),
 			"second review": b.SecondReviewPrompt(""),
 			"evaluation":    b.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "finding"),
-			"finalize":      b.FinalizePrompt(),
+			"finalize":      b.FinalizePrompt(nil),
 			"external":      b.ExternalReviewPrompt(config.ExternalReviewToolClaude, false, "fixed it"),
 		} {
 			assert.Contains(t, prompt, claudeAgentShape, name)
@@ -2471,7 +2471,7 @@ func TestPromptBuilder_CrossProviderRendering(t *testing.T) {
 			"first review":  first,
 			"second review": second,
 			"evaluation":    b.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "finding"),
-			"finalize":      b.FinalizePrompt(),
+			"finalize":      b.FinalizePrompt(nil),
 			"external":      b.ExternalReviewPrompt(config.ExternalReviewToolCodex, false, "fixed it"),
 		} {
 			assert.Contains(t, prompt, codexAgentShape, name)

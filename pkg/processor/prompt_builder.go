@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/umputun/ralphex/pkg/config"
+	"github.com/umputun/ralphex/pkg/plan"
 )
 
 type promptBuilder struct {
@@ -97,8 +98,50 @@ func (b *promptBuilder) GenAgentsPrompt() string {
 	return b.replaceBaseVariables(b.cfg.AppConfig.GenAgentsPrompt)
 }
 
-func (b *promptBuilder) FinalizePrompt() string {
-	return b.replacePromptVariables(b.cfg.AppConfig.FinalizePrompt, b.cfg.reviewProvider())
+// FinalizePrompt renders the base-sync prompt. conflicts lists the paths the merge left
+// unmerged; it is empty for a clean merge or an up-to-date branch. Conflict paths and
+// validation commands are inserted after template expansion so their contents are never
+// interpreted as template variables.
+func (b *promptBuilder) FinalizePrompt(conflicts []string) string {
+	prompt := b.replacePromptVariables(b.cfg.AppConfig.FinalizePrompt, b.cfg.reviewProvider())
+	if !strings.Contains(prompt, "{{FINALIZE_CONFLICTS}}") && !strings.Contains(prompt, "{{VALIDATION_COMMANDS}}") {
+		return prompt
+	}
+	prompt = strings.ReplaceAll(prompt, "{{FINALIZE_CONFLICTS}}",
+		formatPromptList(conflicts, "(none - the merge is already committed or the branch was up to date)"))
+	return strings.ReplaceAll(prompt, "{{VALIDATION_COMMANDS}}",
+		formatPromptList(b.validationCommands(), "(none listed in the plan)"))
+}
+
+// validationCommands returns the plan's ## Validation Commands entries. a missing
+// or unparsable plan yields none, which the finalize prompt reports as such.
+func (b *promptBuilder) validationCommands() []string {
+	path := b.locator.Path()
+	if path == "" {
+		return nil
+	}
+	parsed, err := plan.ParsePlanFile(path)
+	if err != nil {
+		if b.log != nil {
+			b.log.Print("[WARN] finalize: cannot read validation commands from %s: %v", path, err)
+		}
+		return nil
+	}
+	return parsed.ValidationCommands
+}
+
+// formatPromptList renders items as "- item" lines, or empty when there are none.
+func formatPromptList(items []string, empty string) string {
+	var lines []string
+	for _, item := range items {
+		if item = strings.TrimSpace(item); item != "" {
+			lines = append(lines, "- "+item)
+		}
+	}
+	if len(lines) == 0 {
+		return empty
+	}
+	return strings.Join(lines, "\n")
 }
 
 // ReportPrompt renders the completion report prompt with deterministic facts.

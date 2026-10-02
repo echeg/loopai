@@ -468,7 +468,8 @@ func (b *promptBuilder) warnCodexFrontmatterDiscarded(name string, opts config.O
 // supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}}, {{BACKLOG_DIR}},
 // {{agent:name}}, {{agents:dynamic}}
 // agent tokens render in the syntax of provider, the provider of the phase running the prompt.
-// note: {{CODEX_OUTPUT}} and {{PLAN_DESCRIPTION}} are handled by specific build functions.
+// note: {{CODEX_OUTPUT}}, {{PLAN_DESCRIPTION}}, {{FINALIZE_CONFLICTS}}, and {{VALIDATION_COMMANDS}}
+// are handled by specific build functions.
 func (b *promptBuilder) replacePromptVariables(prompt, provider string) string {
 	result := b.replaceBaseVariables(prompt)
 	inlined := agentRefNames(result)

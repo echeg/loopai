@@ -14,6 +14,10 @@ const (
 	Question  = "<<<RALPHEX:QUESTION>>>"
 	PlanReady = "<<<RALPHEX:PLAN_READY>>>"
 	PlanDraft = "<<<RALPHEX:PLAN_DRAFT>>>"
+	// FinalizeDone marks a base sync whose conflict resolution and validation succeeded.
+	FinalizeDone = "<<<RALPHEX:FINALIZE_DONE>>>"
+	// FinalizeBlocked marks a base sync the model could not accept; a one-line reason follows it.
+	FinalizeBlocked = "<<<RALPHEX:FINALIZE_BLOCKED>>>"
 )
 
 // Phase represents execution phase for color coding.

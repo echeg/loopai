@@ -20,6 +20,8 @@ const (
 	SignalQuestion           = status.Question
 	SignalPlanReady          = status.PlanReady
 	SignalPlanDraft          = status.PlanDraft
+	SignalFinalizeDone       = status.FinalizeDone
+	SignalFinalizeBlocked    = status.FinalizeBlocked
 )
 
 var questionSignalRe = regexp.MustCompile(`<<<RALPHEX:QUESTION>>>\s*([\s\S]*?)\s*<<<RALPHEX:END>>>`)
@@ -52,6 +54,46 @@ func IsCodexDone(signal string) bool {
 // IsPlanReady reports whether signal marks plan creation completion.
 func IsPlanReady(signal string) bool {
 	return signal == SignalPlanReady
+}
+
+// IsFinalizeDone reports whether signal marks an accepted base sync.
+func IsFinalizeDone(signal string) bool {
+	return signal == SignalFinalizeDone
+}
+
+// IsFinalizeBlocked reports whether signal marks a base sync the model refused or could not validate.
+func IsFinalizeBlocked(signal string) bool {
+	return signal == SignalFinalizeBlocked
+}
+
+// maxFinalizeReasonLen bounds the reason taken from model output, since it reaches
+// one-line status surfaces such as the summary, notifications, and terminal titles.
+const maxFinalizeReasonLen = 200
+
+// ParseFinalizeBlockedReason returns the one-line reason following the last
+// FINALIZE_BLOCKED signal in output, or an empty string when the signal is
+// absent or carries no reason. The text after the signal on the same line wins;
+// otherwise the first non-empty line below it is used.
+func ParseFinalizeBlockedReason(output string) string {
+	idx := strings.LastIndex(output, SignalFinalizeBlocked)
+	if idx < 0 {
+		return ""
+	}
+	for line := range strings.SplitSeq(output[idx+len(SignalFinalizeBlocked):], "\n") {
+		reason := strings.TrimSpace(line)
+		reason = strings.TrimSpace(strings.TrimLeft(reason, ":-–— \t"))
+		if strings.HasPrefix(reason, "<<<RALPHEX:") {
+			return ""
+		}
+		if reason == "" {
+			continue
+		}
+		if r := []rune(reason); len(r) > maxFinalizeReasonLen {
+			reason = string(r[:maxFinalizeReasonLen]) + "..."
+		}
+		return reason
+	}
+	return ""
 }
 
 // ErrNoQuestionSignal indicates no question signal was found in output.

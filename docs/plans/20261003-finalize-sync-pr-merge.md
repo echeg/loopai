@@ -109,11 +109,12 @@
 - [x] run `go test ./pkg/git/...` - must pass before task 3
 
 ### Task 3: Finalize signals and prompt
-- [ ] add `FinalizeDone = "<<<RALPHEX:FINALIZE_DONE>>>"` and `FinalizeBlocked = "<<<RALPHEX:FINALIZE_BLOCKED>>>"` to `pkg/status/status.go`, `knownSignals` in `pkg/executor/executor.go`, and helpers in `pkg/processor/phase/signals.go`
-- [ ] rewrite `pkg/config/defaults/prompts/finalize.txt`: Go has already merged `origin/{{DEFAULT_BRANCH}}`; if `{{FINALIZE_CONFLICTS}}` lists files, resolve only those (keep both sides' intent, no unrelated edits, no `git add -A`, stage the listed paths and commit the merge); run every command in `{{VALIDATION_COMMANDS}}`; emit `FINALIZE_DONE` only when all pass, otherwise `FINALIZE_BLOCKED` followed by a one-line reason; a conflict that needs a product or design decision is `FINALIZE_BLOCKED`
-- [ ] add `{{VALIDATION_COMMANDS}}` and `{{FINALIZE_CONFLICTS}}` expansion to the finalize prompt builder (`pkg/processor/prompt_builder.go`/`prompts.go`) and update the prompt header comment; update `report.txt`'s finalize mention
-- [ ] write tests: signal detection for both providers, prompt expansion with and without conflicts and with no validation commands
-- [ ] run `go test ./pkg/status/... ./pkg/executor/... ./pkg/processor/...` - must pass before task 4
+- [x] add `FinalizeDone = "<<<RALPHEX:FINALIZE_DONE>>>"` and `FinalizeBlocked = "<<<RALPHEX:FINALIZE_BLOCKED>>>"` to `pkg/status/status.go`, `knownSignals` in `pkg/executor/executor.go`, and helpers in `pkg/processor/phase/signals.go`
+- [x] rewrite `pkg/config/defaults/prompts/finalize.txt`: Go has already merged `origin/{{DEFAULT_BRANCH}}`; if `{{FINALIZE_CONFLICTS}}` lists files, resolve only those (keep both sides' intent, no unrelated edits, no `git add -A`, stage the listed paths and commit the merge); run every command in `{{VALIDATION_COMMANDS}}`; emit `FINALIZE_DONE` only when all pass, otherwise `FINALIZE_BLOCKED` followed by a one-line reason; a conflict that needs a product or design decision is `FINALIZE_BLOCKED`
+- [x] add `{{VALIDATION_COMMANDS}}` and `{{FINALIZE_CONFLICTS}}` expansion to the finalize prompt builder (`pkg/processor/prompt_builder.go`/`prompts.go`) and update the prompt header comment; update `report.txt`'s finalize mention
+- [x] write tests: signal detection for both providers, prompt expansion with and without conflicts and with no validation commands
+- [x] run `go test ./pkg/status/... ./pkg/executor/... ./pkg/processor/...` - must pass before task 4
+- ➕ [x] `phase.FinalizePrompts.FinalizePrompt(conflicts []string)` now takes the conflicted paths (the current phase passes nil until task 4); `phase.ParseFinalizeBlockedReason` extracts the bounded one-line reason after `FINALIZE_BLOCKED`; `detectSignal` checks `FINALIZE_BLOCKED` before `FINALIZE_DONE` so output carrying both reads as blocked
 
 ### Task 4: Rewrite the finalize phase as base sync
 - [ ] rewrite `pkg/processor/phase/finalize.go`: when `Finalize != none`, require a clean tree, record pre-merge HEAD, fetch and merge `origin/<base>`; up to date → validation session only; clean → commit the merge with a fixed message, then validation session; conflicted → snapshot, then resolution session

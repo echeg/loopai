@@ -332,7 +332,9 @@ func TestPromptLoader_loadPromptFromEmbedFS_FinalizeStripsMetaComments(t *testin
 	assert.True(t, strings.HasPrefix(content, "Post-completion finalize step."), "should start with actual prompt content")
 	// body content preserved
 	assert.Contains(t, content, "{{DEFAULT_BRANCH}}")
-	assert.Contains(t, content, "Rebase your commits")
+	assert.Contains(t, content, "{{FINALIZE_CONFLICTS}}")
+	assert.Contains(t, content, "{{VALIDATION_COMMANDS}}")
+	assert.NotContains(t, content, "git rebase", "finalize merges the base and never rebases")
 }
 
 func TestPromptLoader_loadPromptFromEmbedFS_NotFound(t *testing.T) {

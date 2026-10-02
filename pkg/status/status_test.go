@@ -14,3 +14,8 @@ func TestExternalReviewStatusValues(t *testing.T) {
 	assert.Equal(t, PhaseCodex, Phase("codex"))
 	assert.Equal(t, PhaseClaudeEval, Phase("claude-eval"))
 }
+
+func TestFinalizeStatusValues(t *testing.T) {
+	assert.Equal(t, "<<<RALPHEX:FINALIZE_DONE>>>", FinalizeDone)
+	assert.Equal(t, "<<<RALPHEX:FINALIZE_BLOCKED>>>", FinalizeBlocked)
+}

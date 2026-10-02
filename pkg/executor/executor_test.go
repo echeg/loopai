@@ -37,6 +37,33 @@ func TestClaudeExecutor_Run_Success(t *testing.T) {
 	assert.Equal(t, "<<<RALPHEX:ALL_TASKS_DONE>>>", result.Signal)
 }
 
+func TestClaudeExecutor_Run_FinalizeSignals(t *testing.T) {
+	tests := []struct {
+		name       string
+		text       string
+		wantSignal string
+	}{
+		{name: "done", text: `merge resolved, validation passed\n<<<RALPHEX:FINALIZE_DONE>>>`, wantSignal: status.FinalizeDone},
+		{name: "blocked", text: `<<<RALPHEX:FINALIZE_BLOCKED>>>\nmake test failed`, wantSignal: status.FinalizeBlocked},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			jsonStream := `{"type":"content_block_delta","delta":{"type":"text_delta","text":"` + tc.text + `"}}`
+			mock := &mocks.CommandRunnerMock{
+				RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+					return strings.NewReader(jsonStream), func() error { return nil }, nil
+				},
+			}
+			e := &ClaudeExecutor{cmdRunner: mock}
+
+			result := e.Run(context.Background(), "finalize prompt")
+
+			require.NoError(t, result.Error)
+			assert.Equal(t, tc.wantSignal, result.Signal)
+		})
+	}
+}
+
 func TestClaudeExecutor_Run_StartError(t *testing.T) {
 	mock := &mocks.CommandRunnerMock{
 		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
@@ -745,6 +772,9 @@ Note: a minor formatting preference was noted but not flagged.`, status.CodexDon
 		{`Plan file written to docs/plans/20260514-feature.md.
 
 <<<RALPHEX:PLAN_READY>>>`, status.PlanReady},
+		{"merged and validated " + status.FinalizeDone, status.FinalizeDone},
+		{status.FinalizeBlocked + "\ngo test failed", status.FinalizeBlocked},
+		{"quoted " + status.FinalizeDone + " but " + status.FinalizeBlocked + "\nreason", status.FinalizeBlocked},
 		{"no signal here", ""},
 	}
 

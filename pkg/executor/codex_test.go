@@ -138,6 +138,32 @@ func TestCodexExecutor_Run_Success(t *testing.T) {
 	assert.Equal(t, "<<<RALPHEX:CODEX_REVIEW_DONE>>>", result.Signal)
 }
 
+func TestCodexExecutor_Run_FinalizeSignals(t *testing.T) {
+	tests := []struct {
+		name       string
+		stdout     string
+		wantSignal string
+	}{
+		{name: "done", stdout: "merge resolved, validation passed\n<<<RALPHEX:FINALIZE_DONE>>>", wantSignal: "<<<RALPHEX:FINALIZE_DONE>>>"},
+		{name: "blocked", stdout: "<<<RALPHEX:FINALIZE_BLOCKED>>>\nmake test failed", wantSignal: "<<<RALPHEX:FINALIZE_BLOCKED>>>"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockCodexRunner{
+				runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+					return mockStreams("--------\nmodel: gpt-5\n--------\n", tc.stdout), mockWait(), nil
+				},
+			}
+			e := &CodexExecutor{runner: mock}
+
+			result := e.Run(context.Background(), "finalize prompt")
+
+			require.NoError(t, result.Error)
+			assert.Equal(t, tc.wantSignal, result.Signal)
+		})
+	}
+}
+
 func TestCodexExecutor_Run_StreamsStderr(t *testing.T) {
 	// header block (workdir/model/sandbox/session-id) is now suppressed to
 	// match the claude executor; only bold summaries flow through stderr.
