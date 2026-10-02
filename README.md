@@ -1180,7 +1180,7 @@ standalone utility commands never take one. Set `keep_awake = false` to opt out.
 
 Pass `--t3`, set `t3 = true`, or set `LOOPAI_T3=1` to report plan execution and review as a
 [T3 Code](https://t3.codes) thread whose title follows the same phases (`<plan> · task 3/7`,
-`<plan> · done`). It needs a running T3 Code server that has the repository as a project and a
+`<plan> · done`), pinned to the top of the sidebar while the run is active. It needs a running T3 Code server that has the repository as a project and a
 bearer token in `LOOPAI_T3_TOKEN`; without them loopai warns once and runs normally.
 `loopai --t3-launch <plan>` creates a T3 Code-managed worktree and thread and starts
 `loopai --t3 <plan>` in the thread's terminal, and `--pr` links the created pull request to the

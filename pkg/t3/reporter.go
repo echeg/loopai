@@ -310,11 +310,18 @@ func (r *Reporter) takePending() string {
 }
 
 // run owns every network call: it binds the thread once, then sends each changed title. Any
-// error disables reporting for the rest of the run.
+// title error disables reporting for the rest of the run. The thread is pinned for the duration
+// of the run so it stays at the top of the sidebar, and unpinned after the final title.
 func (r *Reporter) run() {
 	defer close(r.done)
 	threadID := ""
 	sent := ""
+	pinned := false
+	defer func() {
+		if pinned {
+			r.unpin(threadID)
+		}
+	}()
 	for {
 		select {
 		case <-r.wake:
@@ -325,7 +332,7 @@ func (r *Reporter) run() {
 		if title != "" && title != sent {
 			var err error
 			if threadID == "" {
-				threadID, err = r.bind(title)
+				threadID, pinned, err = r.bindAndPin(title)
 			} else {
 				err = r.send(threadID, title)
 			}
@@ -395,6 +402,43 @@ func (r *Reporter) send(threadID, title string) error {
 		return fmt.Errorf("t3 status disabled: %w", err)
 	}
 	return nil
+}
+
+// bindAndPin binds the thread with its first title, then takes the run's pin.
+func (r *Reporter) bindAndPin(title string) (threadID string, pinned bool, err error) {
+	threadID, err = r.bind(title)
+	if err != nil {
+		return "", false, err
+	}
+	return threadID, r.pin(threadID), nil
+}
+
+// pin pins the thread unless the user already pinned it, and reports whether loopai owns the pin.
+// Pinning is cosmetic: a failure, including a server that predates thread.pin, is ignored and
+// never disables title reporting.
+func (r *Reporter) pin(threadID string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*requestTimeout)
+	defer cancel()
+	if r.opts.ThreadID != "" {
+		shell, err := r.api.Shell(ctx)
+		if err != nil {
+			return false
+		}
+		for _, thread := range shell.Threads {
+			if thread.ID == threadID && thread.PinnedAt != nil {
+				return false
+			}
+		}
+	}
+	_, err := r.api.Dispatch(ctx, NewThreadPin(threadID))
+	return err == nil
+}
+
+// unpin releases the pin taken by pin. Like pin, it is best-effort.
+func (r *Reporter) unpin(threadID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	_, _ = r.api.Dispatch(ctx, NewThreadUnpin(threadID))
 }
 
 func (r *Reporter) warn(err error) {

@@ -48,6 +48,10 @@ records the branch; it also records the checkout path unless loopai runs with `-
 checkout is removed after a successful run. A thread created this way starts no agent session in
 T3 Code. Titles change only on phase and task transitions, never per output line.
 
+The thread is pinned while the run is active, so it stays at the top of the sidebar, and unpinned
+after the final title. A thread you pinned yourself keeps its pin. Pinning is cosmetic: a server
+that rejects it changes nothing else.
+
 `LOOPAI_T3_THREAD_ID` makes the run update an existing thread instead of creating one; the
 launcher below sets it.
 
@@ -113,8 +117,12 @@ development ports, so keep `previewUrl` explicit.
 
 ## Limitations
 
-- Status is title-only. Adding activity rows or messages to a thread, custom MCP tools, or reading
-  OSC titles from the terminal would need a T3 Code fork.
+- Status is the title and the pin. A thread without a provider session always reads as ready, never
+  as working: T3 Code derives "working" from a running provider session or from background work
+  that provider reports. Activity rows, assistant messages, and proposed plans are internal
+  orchestration commands the public dispatch endpoint does not accept, and T3 Code neither reads
+  OSC titles from the terminal nor accepts external MCP tools. Checked against the T3 Code build of
+  October 2026; settle, snooze, and pin are client commands, which is what the pin above uses.
 - `--pr` linking understands GitHub pull request URLs only, matching what `--pr` creates.
 - The token grants full access to the T3 Code server. It lives in the thread terminal's
   environment for the run; revoke it with `t3 auth session revoke` when no longer needed.

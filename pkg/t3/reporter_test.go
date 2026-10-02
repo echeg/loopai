@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ type fakeDispatcher struct {
 	shell     Shell
 	shellErr  error
 	dispErr   error
+	pinErr    error         // returned for thread.pin and thread.unpin only
 	gate      chan struct{} // when set, each Dispatch waits for one receive
 	entered   chan struct{} // when set, each Dispatch announces itself before waiting on gate
 	commands  []Command
@@ -40,6 +42,9 @@ func (f *fakeDispatcher) Dispatch(_ context.Context, cmd Command) (int64, error)
 	defer f.mu.Unlock()
 	if f.dispErr != nil {
 		return 0, f.dispErr
+	}
+	if _, ok := cmd.(*ThreadPinToggle); ok && f.pinErr != nil {
+		return 0, f.pinErr
 	}
 	f.commands = append(f.commands, cmd)
 	return int64(len(f.commands)), nil
@@ -62,6 +67,32 @@ func (f *fakeDispatcher) titles() []string {
 			out = append(out, "create:"+c.Title)
 		case *ThreadTitleUpdate:
 			out = append(out, c.Title)
+		}
+	}
+	return out
+}
+
+// pinOps lists the pin and unpin commands in dispatch order as "<type>:<thread id>".
+func (f *fakeDispatcher) pinOps() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, cmd := range f.commands {
+		if c, ok := cmd.(*ThreadPinToggle); ok {
+			out = append(out, c.Type+":"+c.ThreadID)
+		}
+	}
+	return out
+}
+
+// titleUpdates returns the title-only meta updates in dispatch order.
+func (f *fakeDispatcher) titleUpdates() []*ThreadTitleUpdate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []*ThreadTitleUpdate
+	for _, cmd := range f.commands {
+		if c, ok := cmd.(*ThreadTitleUpdate); ok {
+			out = append(out, c)
 		}
 	}
 	return out
@@ -139,11 +170,10 @@ func TestReporterCreatesThreadThenUpdatesTitles(t *testing.T) {
 	require.NotNil(t, create.Branch)
 	assert.Equal(t, "t3-demo", *create.Branch)
 	require.NotNil(t, create.WorktreePath)
-	for _, cmd := range api.commands[1:] {
-		update, ok := cmd.(*ThreadTitleUpdate)
-		require.True(t, ok)
+	for _, update := range api.titleUpdates() {
 		assert.Equal(t, create.ThreadID, update.ThreadID)
 	}
+	assert.Equal(t, []string{"thread.pin:" + create.ThreadID, "thread.unpin:" + create.ThreadID}, api.pinOps())
 }
 
 func TestReporterWorktreeRunRecordsNullPath(t *testing.T) {
@@ -166,16 +196,60 @@ func TestReporterExistingThread(t *testing.T) {
 	waitFor(t, api, 1)
 	r.Finish(false)
 	r.Stop()
-	assert.Equal(t, 0, api.shellHits)
+	assert.Equal(t, 1, api.shellHits, "only the pin check reads the shell for a bound thread")
 	assert.Equal(t, []string{"loopai · external eval", "loopai · failed"}, api.titles())
-	for _, cmd := range api.commands {
-		assert.Equal(t, "th-1", cmd.(*ThreadTitleUpdate).ThreadID)
+	for _, update := range api.titleUpdates() {
+		assert.Equal(t, "th-1", update.ThreadID)
+	}
+	assert.Equal(t, []string{"thread.pin:th-1", "thread.unpin:th-1"}, api.pinOps())
+}
+
+func TestReporterKeepsUserPin(t *testing.T) {
+	pinnedAt := "2026-10-01T00:00:00Z"
+	api := &fakeDispatcher{shell: Shell{Threads: []Thread{{ID: "th-1", PinnedAt: &pinnedAt}}}}
+	r := NewWithDispatcher(api, Options{ThreadID: "th-1"})
+	r.OnPhase("", status.PhaseTask)
+	waitFor(t, api, 1)
+	r.Finish(true)
+	r.Stop()
+	assert.Equal(t, []string{"loopai · task", "loopai · done"}, api.titles())
+	assert.Empty(t, api.pinOps(), "a pin the user set is neither re-sent nor released")
+}
+
+func TestReporterPinFailureKeepsTitles(t *testing.T) {
+	tests := []struct {
+		name string
+		api  *fakeDispatcher
+	}{
+		{"pin rejected", &fakeDispatcher{shell: projectShell("/r"), pinErr: &APIError{Status: 400}}},
+		{"shell unavailable for bound thread", &fakeDispatcher{shellErr: errors.New("refused")}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := Options{RepoRoot: "/r"}
+			if tc.api.shellErr != nil {
+				opts = Options{ThreadID: "th"}
+			}
+			var warned atomic.Bool
+			opts.Warn = func(string, ...any) { warned.Store(true) }
+			r := NewWithDispatcher(tc.api, opts)
+			r.OnPhase("", status.PhaseTask)
+			waitFor(t, tc.api, 1)
+			r.OnPhase(status.PhaseTask, status.PhaseReview)
+			waitFor(t, tc.api, 2)
+			r.Finish(true)
+			r.Stop()
+			assert.False(t, warned.Load())
+			assert.Len(t, tc.api.titles(), 3)
+			assert.Empty(t, tc.api.pinOps(), "no pin was taken, so none is released")
+		})
 	}
 }
 
 func TestReporterSkipsUnchangedAndCoalesces(t *testing.T) {
 	gate, entered := make(chan struct{}), make(chan struct{}, 4)
-	api := &fakeDispatcher{gate: gate, entered: entered}
+	pinnedAt := "2026-10-01T00:00:00Z" // already pinned, so only titles pass through the gate
+	api := &fakeDispatcher{gate: gate, entered: entered, shell: Shell{Threads: []Thread{{ID: "th", PinnedAt: &pinnedAt}}}}
 	r := NewWithDispatcher(api, Options{ThreadID: "th"})
 
 	r.OnPhase("", status.PhaseTask)
@@ -334,9 +408,7 @@ func TestPlanTaskTotalMissingFile(t *testing.T) {
 func waitFor(t *testing.T, api *fakeDispatcher, n int) {
 	t.Helper()
 	require.Eventually(t, func() bool {
-		api.mu.Lock()
-		defer api.mu.Unlock()
-		return len(api.commands) >= n
+		return len(api.titles()) >= n
 	}, 2*time.Second, 2*time.Millisecond)
 }
 

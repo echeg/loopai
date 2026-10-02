@@ -672,7 +672,9 @@ the checkout root, recording `worktreePath` only when the directory outlives the
 `--worktree` checkout is removed after success, so it registers the branch alone. All network work
 runs on one goroutine that coalesces to the latest title and sends only changed titles, because
 every `thread.meta.update` is a persisted T3 event; the first error disables it with one warning,
-and `Stop` waits at most `stopTimeout` for the final title. Title updates carry only `title`:
+and `Stop` waits at most `stopTimeout` for the final title. The worker pins the thread right after
+binding it and unpins it on exit, skipping a bound thread the user already pinned; pin failures are
+ignored rather than disabling titles, since `thread.pin` is cosmetic and absent on older servers. Title updates carry only `title`:
 `branch` or `worktreePath` in a meta update re-triggers T3's server-side PR lookup. `--t3-launch`
 is routed with close-out through `runConfiguredStandaloneCommand` and is part of
 `isStandaloneCommand`; it creates the worktree through the `vcs.createWorktree` WebSocket RPC so
