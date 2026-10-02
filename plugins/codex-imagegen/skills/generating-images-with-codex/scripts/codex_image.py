@@ -13,6 +13,7 @@ Exit codes: 0 image saved, 1 generation failed, 2 bad arguments or Codex missing
 import argparse
 import datetime
 import json
+import math
 import os
 import re
 import shutil
@@ -92,6 +93,65 @@ def succeeded(item):
     return item.get("status") == "completed" and item.get("savedPath") and not item.get("failure") and Path(item["savedPath"]).is_file()
 
 
+def load_settings(codex_home):
+    """Read optional runner settings from the same home used by Codex."""
+    path = Path(codex_home) / "codex-imagegen.json"
+    if not path.is_file():
+        return {}
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Cannot read image runner settings: {path}") from exc
+    if not isinstance(settings, dict):
+        raise ValueError(f"Image runner settings must be a JSON object: {path}")
+    return settings
+
+
+def select_profile(requested, codex_home, settings):
+    profile = requested
+    if profile is None:
+        profile = os.environ.get("CODEX_IMAGEGEN_PROFILE", settings.get("profile"))
+    if profile is None and (Path(codex_home) / "cliproxy-images.config.toml").is_file():
+        profile = "cliproxy-images"
+    if profile in (None, "", "-"):
+        return None
+    if not isinstance(profile, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", profile):
+        raise ValueError("Invalid Codex image profile name")
+    return profile
+
+
+def codex_environment(codex_home, profile, settings):
+    """Resolve an optional credential helper without changing the parent's environment."""
+    env = {**os.environ, "CODEX_HOME": codex_home}
+    credential = settings.get("credential")
+    if not credential or not profile or profile != settings.get("profile"):
+        return env
+    if not isinstance(credential, dict):
+        raise ValueError("Image runner credential must be an object")
+    name = credential.get("env", "")
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ValueError("Image runner credential.env must name an environment variable")
+    if env.get(name):
+        return env
+    command = credential.get("command")
+    timeout = credential.get("timeout", 10)
+    if not isinstance(command, list) or not command or not all(isinstance(arg, str) and arg for arg in command):
+        raise ValueError("Image runner credential.command must be an argument array")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Image runner credential.timeout must be a positive number")
+    try:
+        proc = subprocess.run(command, cwd=codex_home, env=env, stdin=subprocess.DEVNULL,
+                              capture_output=True, encoding="utf-8", timeout=timeout)
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
+        raise ValueError("Image runner credential helper failed; no generation started") from exc
+    token = proc.stdout.strip()
+    if proc.returncode or not token or "\n" in token or "\r" in token:
+        # Helper output can contain credentials, so never include it in an error.
+        raise ValueError("Image runner credential helper failed; no generation started")
+    env[name] = token
+    return env
+
+
 def codex_command(codex_bin):
     """Resolve --codex-bin into the argv prefix that starts Codex, or None when it is missing.
 
@@ -110,19 +170,22 @@ def codex_command(codex_bin):
     return [path]
 
 
-def run_codex(codex_cmd, codex_home, work_dir, instructions, sandbox, timeout):
+def run_codex(codex_cmd, codex_home, work_dir, instructions, sandbox, timeout, profile=None, env=None):
     policy = ["--dangerously-bypass-approvals-and-sandbox"] if sandbox == "bypass" else ["-s", "workspace-write", "-c", 'approval_policy="never"']
-    args = [*codex_cmd, "exec", "-C", work_dir, "--skip-git-repo-check", "-c", "project_doc_max_bytes=0", "--json", *policy, instructions]
+    profile_args = ["--profile", profile] if profile else []
+    args = [*codex_cmd, "exec", "-C", work_dir, "--skip-git-repo-check", "-c", "project_doc_max_bytes=0", "--json", *profile_args, *policy, instructions]
     # stdin stays closed: `codex exec` appends piped stdin to the prompt and would wait for it.
-    proc = subprocess.run(args, cwd=work_dir, env={**os.environ, "CODEX_HOME": codex_home},
-                          stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run(args, cwd=work_dir, env=env if env is not None else {**os.environ, "CODEX_HOME": codex_home},
+                          stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout)
     events = json_lines(proc.stdout)
     thread_id = next((e.get("thread_id") for e in events if e.get("type") == "thread.started"), None)
     log = find_session_log(codex_home, thread_id)
     items = generations(log.read_text(encoding="utf-8")) if log else []
     limited = usage_limited(events) or any(USAGE_LIMIT.search(json.dumps(i.get("failure") or "")) for i in items)
+    message = next((e["item"].get("text", "") for e in reversed(events)
+                    if isinstance(e.get("item"), dict) and e["item"].get("type") == "agent_message"), "")
     return {"threadId": thread_id, "items": items, "limited": limited, "code": proc.returncode,
-            "stderr": proc.stderr.strip()[-500:], "log": str(log) if log else None}
+            "stderr": proc.stderr.strip()[-500:], "message": message, "log": str(log) if log else None}
 
 
 def free_path(out):
@@ -136,6 +199,10 @@ def free_path(out):
 
 
 def main(argv=None):
+    # Codex emits UTF-8 JSONL even when Windows' active ANSI code page is cp1252.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(description="Generate or edit one image with the local Codex CLI (image_gen, ChatGPT plan).")
     parser.add_argument("--prompt-file", required=True, help="text file with the full image prompt, passed to image_gen verbatim")
     parser.add_argument("--out", required=True, help="where to save the image; an existing file is never overwritten")
@@ -145,6 +212,7 @@ def main(argv=None):
     parser.add_argument("--no-record", action="store_true", help="do not write <out>.json next to the image")
     parser.add_argument("--timeout", type=int, default=900, help="seconds to wait for Codex (default 900)")
     parser.add_argument("--codex-bin", default=os.environ.get("CODEX_BIN", "codex"))
+    parser.add_argument("--profile", help="Codex profile (or CODEX_IMAGEGEN_PROFILE); '-' uses the default provider")
     args = parser.parse_args(argv)
 
     prompt_file = Path(args.prompt_file).resolve()
@@ -160,36 +228,53 @@ def main(argv=None):
     if not codex_cmd:
         print(f"Codex CLI not found ({args.codex_bin}). Install it and sign in with the ChatGPT account: codex login", file=sys.stderr)
         return 2
-    codex_home = os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
+    codex_home = str(Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser().resolve())
+    try:
+        settings = load_settings(codex_home)
+        profile = select_profile(args.profile, codex_home, settings)
+        env = codex_environment(codex_home, profile, settings)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if profile:
+        print(f"Using Codex image profile: {profile}", file=sys.stderr)
 
     instructions = INSTRUCTIONS.format(prompt_file=prompt_file, references=references_text(references, args.edit))
     runs = []
     with tempfile.TemporaryDirectory(prefix="codex-image-") as work_dir:
         sandbox = "workspace-write"
         try:
-            run = run_codex(codex_cmd, codex_home, work_dir, instructions, sandbox, args.timeout)
+            run = run_codex(codex_cmd, codex_home, work_dir, instructions, sandbox, args.timeout, profile, env)
             runs.append({**run, "sandbox": sandbox})
             blocked = not any(succeeded(i) for i in run["items"]) and any(SANDBOX_FAILURE.search(json.dumps(i.get("failure") or "")) for i in run["items"])
             if blocked and not run["limited"] and not args.no_bypass:
                 print("image_gen was blocked by the Codex sandbox; retrying once without it", file=sys.stderr)
                 sandbox = "bypass"
-                run = run_codex(codex_cmd, codex_home, work_dir, instructions, sandbox, args.timeout)
+                run = run_codex(codex_cmd, codex_home, work_dir, instructions, sandbox, args.timeout, profile, env)
                 runs.append({**run, "sandbox": sandbox})
         except subprocess.TimeoutExpired:
             print(f"Codex did not finish in {args.timeout} s", file=sys.stderr)
             return 1
+        except OSError as exc:
+            print(f"Cannot run Codex or read its session: {exc}", file=sys.stderr)
+            return 1
+        # Native image output can live inside work_dir; copy before cleaning it up.
+        return save_result(runs, args, prompt_file, references, profile)
 
+
+def save_result(runs, args, prompt_file, references, profile):
     calls = sum(len(r["items"]) for r in runs)
     done = next((i for r in runs for i in r["items"] if succeeded(i)), None)
     if not done:
         if any(r["limited"] for r in runs):
-            print(f"ChatGPT plan usage limit (429): stop the batch and retry after the reset. image_gen calls made: {calls}", file=sys.stderr)
+            print(f"ChatGPT plan usage limit (429): stop the batch and retry after the reset. image_gen calls recorded: {calls}", file=sys.stderr)
             return 3
         last = runs[-1]
-        reason = next((json.dumps(i.get("failure")) for i in last["items"] if i.get("failure")), None) or last["stderr"] or "no image_gen generation in the session"
-        print(f"generation failed (image_gen calls made: {calls}, Codex session {last['threadId'] or '-'}): {reason}", file=sys.stderr)
+        reason = next((json.dumps(i.get("failure")) for i in last["items"] if i.get("failure")), None) or last["message"] or last["stderr"] or "no image_gen generation in the session"
+        print(f"generation failed (image_gen calls recorded: {calls}, Codex session {last['threadId'] or '-'}): {reason}", file=sys.stderr)
         return 1
 
+    sandbox = next(r["sandbox"] for r in runs if done in r["items"])
     out = free_path(Path(args.out).resolve())
     out.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(done["savedPath"], out)
@@ -201,11 +286,11 @@ def main(argv=None):
             "references": references,
             "edit": args.edit,
             "codex": {"threadId": next(r["threadId"] for r in runs if done in r["items"]), "sandbox": sandbox,
-                      "imageGenCalls": calls, "savedPath": done["savedPath"],
+                      "imageGenCalls": calls, "savedPath": done["savedPath"], "profile": profile,
                       "revisedPrompt": done.get("revisedPrompt"), "transparentBackground": done.get("transparentBackground")},
         }
         out.with_name(out.name + ".json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"saved {out} (image_gen calls made: {calls}, sandbox {sandbox})")
+    print(f"saved {out} (image_gen calls recorded: {calls}, sandbox {sandbox})")
     return 0
 
 

@@ -32,7 +32,7 @@ If the project defines its own image pipeline or art guide (AGENTS.md or CLAUDE.
    Add `--ref <image>` (repeatable, in order) for style or content references. Add `--edit --ref <source>` to change an existing image. A call takes 1–3 minutes, so run batches in the background.
 4. Open the result with Read before reporting. Check every requirement: framing, transparency, no stray text, no checkerboard. If one fails, sharpen the prompt and regenerate within the budget, or report the defect.
 5. Adjust locally when needed (resize, crop, trim) with `sips`, `magick` or Pillow. `image_gen` picks its own size, usually 1024 px or more.
-6. Report the path, the number of `image_gen` calls spent, and the record `<out>.json` (prompt, references, Codex session). When taste matters, make two or three variants and let the user choose.
+6. Report the path, the number of `image_gen` calls recorded, and the record `<out>.json` (prompt, references, Codex session and profile). The count comes from image events in the session log; text requests and billing are separate. When taste matters, make two or three variants and let the user choose.
 
 ## Script reference
 
@@ -46,6 +46,30 @@ If the project defines its own image pipeline or art guide (AGENTS.md or CLAUDE.
 - Codex runs in a throwaway directory outside the repository, with project docs disabled. It cannot touch project files; only the script copies the result.
 - If the Codex sandbox blocks `image_gen`, the script retries once outside the sandbox. That counts as a second call; `--no-bypass` disables the retry.
 - `--no-record` skips `<out>.json`. `--timeout` defaults to 900 s.
+- UTF-8 is explicit on Windows. The runner uses `CODEX_HOME` for both Codex and session lookup; if unset, it uses `~/.codex`. Orca can set a different home.
+- `--profile NAME` selects a Codex profile. Otherwise the runner checks `CODEX_IMAGEGEN_PROFILE`, then `profile` in `$CODEX_HOME/codex-imagegen.json`, then an existing `cliproxy-images.config.toml` in that home. `--profile -` keeps the ordinary Codex configuration and skips the configured credential helper.
+- A missing result is not evidence that a generation was billed, nor permission to repeat it. Check the reported thread's rollout before retrying. An `image_gen unavailable` response requires a compatible provider/profile; bypassing the sandbox does not enable that tool.
+
+## Proxy profile and credential helper
+
+When the normal provider hides `image_gen`, use a prepared native-image profile instead of changing the global provider or forcing a direct OpenAI launch. For Codex 0.160.0, profiles are adjacent files such as `$CODEX_HOME/cliproxy-images.config.toml`. A CLIProxyAPI profile can use `requires_openai_auth = true` and `env_key = "CLIPROXY_API_KEY"`; the same home must retain a ChatGPT login, and the provider's `base_url` must point to the proxy's `/v1` routes. The proxy selects the subscription for the image request.
+
+To supply an existing proxy key without putting it in a prompt, command line, or another plaintext config, create `$CODEX_HOME/codex-imagegen.json`:
+
+```json
+{
+  "profile": "cliproxy-images",
+  "credential": {
+    "env": "CLIPROXY_API_KEY",
+    "command": ["/absolute/path/to/get-proxy-key"],
+    "timeout": 10
+  }
+}
+```
+
+`command` is an executable and its arguments, run without a shell; it must print only the key to stdout. On Windows, use `powershell.exe` with `-NoProfile`, `-NonInteractive`, `-File`, and the absolute helper path as separate arguments. The helper runs only for the configured profile and only if its environment variable is empty. The key is passed to the Codex child environment, never printed or saved in the image record. Helper failure stops before launching Codex. With an exported key, omit `credential` entirely.
+
+The runner selects the profile automatically after this setup; the usual `--prompt-file` and `--out` invocation remains sufficient. Do not add `-c model_provider="openai"` to this route, since it overrides the profile and bypasses the proxy pool.
 
 ## Common mistakes
 
