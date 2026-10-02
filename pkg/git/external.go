@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -510,20 +511,12 @@ func (e *externalBackend) mergeRevision(ctx context.Context, revision, expectedH
 	if err != nil {
 		return fmt.Errorf("read current branch before merge: %w", err)
 	}
-	mergeArgs := []string{"merge", "--commit", "--no-squash", "--no-overwrite-ignore", revision}
-	if currentBranch != "" {
-		// Branch mergeOptions can select a strategy such as "ours", which creates a merge
-		// commit and passes the ancestry check while discarding the feature tree. Clear the
-		// option at command scope so close-out always uses Git's ordinary merge semantics. A
-		// temporary included config handles '=' in valid branch names without relying on the
-		// split-quoted GIT_CONFIG_PARAMETERS form, which requires Git 2.31 or newer.
-		configPath, configErr := writeMergeOptionsOverride(currentBranch)
-		if configErr != nil {
-			return configErr
-		}
-		defer os.Remove(configPath) //nolint:errcheck // best-effort cleanup of an isolated temporary file
-		mergeArgs = append([]string{"-c", "include.path=" + configPath}, mergeArgs...)
+	mergeArgs, cleanup, err := neutralizedMergeArgs(currentBranch,
+		"merge", "--commit", "--no-squash", "--no-overwrite-ignore", revision)
+	if err != nil {
+		return err
 	}
+	defer cleanup()
 	_, err = e.runContext(ctx, mergeArgs...)
 	if err == nil {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), mergeCleanupTimeout)
@@ -686,6 +679,300 @@ func (e *externalBackend) mergeWorkingTreeWouldConflict(ctx context.Context, bas
 		return false, fmt.Errorf("create source snapshot commit: %w", err)
 	}
 	return e.mergeWouldConflict(ctx, base, snapshot)
+}
+
+// neutralizedMergeArgs prefixes a merge command with a config include that clears the current
+// branch's mergeOptions. Branch mergeOptions can select a strategy such as "ours", which creates a
+// merge commit and passes an ancestry check while discarding the merged tree, or --ff-only and
+// --squash, which change what a merge produces. Clearing the option at command scope keeps Git's
+// ordinary merge semantics. A temporary included config handles '=' in valid branch names without
+// relying on the split-quoted GIT_CONFIG_PARAMETERS form, which requires Git 2.31 or newer. The
+// returned cleanup removes the temporary file and is safe to call when no file was written.
+func neutralizedMergeArgs(currentBranch string, args ...string) ([]string, func(), error) {
+	if currentBranch == "" {
+		return args, func() {}, nil
+	}
+	configPath, err := writeMergeOptionsOverride(currentBranch)
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := func() {
+		_ = os.Remove(configPath) // best-effort cleanup of an isolated temporary file
+	}
+	return append([]string{"-c", "include.path=" + configPath}, args...), cleanup, nil
+}
+
+// contextError prefers the context's cancellation over a killed command's exit status, so callers
+// can match context.Canceled and context.DeadlineExceeded with errors.Is.
+func contextError(ctx context.Context, op string, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("%s: %w", op, ctxErr)
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
+// fetchRemoteBranch fetches branch from remote into refs/remotes/<remote>/<branch> and returns the
+// fetched commit. The explicit refspec makes the result independent of the remote's configured
+// fetch refspecs, and the forced update follows a rewritten remote branch the way a default fetch
+// does. Terminal cancellation keeps credential prompts available, as push does.
+func (e *externalBackend) fetchRemoteBranch(ctx context.Context, remote, branch string) (string, error) {
+	if remote == "" || strings.HasPrefix(remote, "-") {
+		return "", fmt.Errorf("invalid remote name %q", remote)
+	}
+	if branch == "" {
+		return "", errors.New("fetch requires a branch name")
+	}
+	src := "refs/heads/" + branch
+	dst := "refs/remotes/" + remote + "/" + branch
+	for _, ref := range []string{src, dst} {
+		if _, err := e.runContext(ctx, "check-ref-format", ref); err != nil {
+			return "", contextError(ctx, "validate fetch ref "+ref, err)
+		}
+	}
+	if _, err := e.runContextWithTerminal(ctx, "fetch", "--no-tags", remote, "+"+src+":"+dst); err != nil {
+		return "", contextError(ctx, "fetch", err)
+	}
+	sha, err := e.runContext(ctx, "rev-parse", "--verify", dst+"^{commit}")
+	if err != nil {
+		return "", contextError(ctx, "resolve fetched "+dst, err)
+	}
+	return sha, nil
+}
+
+// mergeNoCommit starts a non-fast-forward merge of revision into the clean current checkout and
+// stops before committing. Unlike mergeRevision it never aborts a conflicted merge: the caller
+// decides whether to resolve or abort it. The revision is resolved once up front, and the merge is
+// abandoned unless Git recorded exactly that commit as MERGE_HEAD.
+func (e *externalBackend) mergeNoCommit(ctx context.Context, revision string) (MergeResult, error) {
+	target, err := e.prepareNoCommitMerge(ctx, revision)
+	if err != nil {
+		return MergeResult{}, err
+	}
+	upToDate, err := e.isAncestor(ctx, target, "HEAD")
+	if err != nil {
+		return MergeResult{}, fmt.Errorf("check whether HEAD contains %q: %w", revision, err)
+	}
+	if upToDate {
+		return MergeResult{State: MergeUpToDate, Target: target}, nil
+	}
+	preMergeHead, err := e.headHash()
+	if err != nil {
+		return MergeResult{}, fmt.Errorf("read pre-merge HEAD: %w", err)
+	}
+	currentBranch, err := e.currentBranchContext(ctx)
+	if err != nil {
+		return MergeResult{}, fmt.Errorf("read current branch before merge: %w", err)
+	}
+	mergeArgs, cleanup, err := neutralizedMergeArgs(currentBranch,
+		"merge", "--no-commit", "--no-ff", "--no-squash", "--no-overwrite-ignore", revision)
+	if err != nil {
+		return MergeResult{}, err
+	}
+	defer cleanup()
+	_, mergeErr := e.runContext(ctx, mergeArgs...)
+	return e.classifyNoCommitMerge(ctx, mergeErr, preMergeHead, target)
+}
+
+// prepareNoCommitMerge validates revision and the checkout before mergeNoCommit and returns the
+// commit revision resolves to.
+func (e *externalBackend) prepareNoCommitMerge(ctx context.Context, revision string) (string, error) {
+	if revision == "" || strings.HasPrefix(revision, "-") {
+		return "", fmt.Errorf("invalid merge revision %q", revision)
+	}
+	op, err := e.operationInProgress()
+	if err != nil {
+		return "", err
+	}
+	if op != "" {
+		return "", fmt.Errorf("refuse to merge while a %s is in progress", op)
+	}
+	dirty, err := e.isDirty()
+	if err != nil {
+		return "", err
+	}
+	if dirty {
+		// an abort resets the index, so a pre-existing staged change would be indistinguishable
+		// from merge output; requiring a clean tree keeps every later restore lossless
+		return "", errors.New("refuse to merge into a checkout with uncommitted changes")
+	}
+	target, err := e.runContext(ctx, "rev-parse", "--verify", revision+"^{commit}")
+	if err != nil {
+		return "", contextError(ctx, fmt.Sprintf("resolve merge revision %q", revision), err)
+	}
+	return target, nil
+}
+
+// classifyNoCommitMerge inspects the checkout after git merge --no-commit returned mergeErr. A
+// conflicted merge of target is kept; every other failure is aborted before it is returned.
+func (e *externalBackend) classifyNoCommitMerge(
+	ctx context.Context, mergeErr error, preMergeHead, target string,
+) (MergeResult, error) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), mergeCleanupTimeout)
+	defer cancel()
+	postMergeHead, err := e.runContext(cleanupCtx, "rev-parse", "HEAD")
+	if err != nil {
+		return MergeResult{}, fmt.Errorf("inspect HEAD after merge: %w", err)
+	}
+	if postMergeHead != preMergeHead {
+		// --no-commit --no-ff never moves HEAD; the tree was clean, so a hard reset loses nothing
+		return MergeResult{}, e.rollbackSuccessfulMerge(cleanupCtx, preMergeHead,
+			errors.New("merge moved HEAD despite --no-commit"))
+	}
+	mergeHead, mergeInProgress := e.mergeHead(cleanupCtx)
+	abandon := func(cause error) (MergeResult, error) {
+		if !mergeInProgress {
+			return MergeResult{}, cause
+		}
+		if _, abortErr := e.runContext(cleanupCtx, "merge", "--abort"); abortErr != nil {
+			return MergeResult{}, fmt.Errorf("%w (abort failed: %w)", cause, abortErr)
+		}
+		return MergeResult{}, cause
+	}
+	if ctx.Err() != nil {
+		return abandon(contextError(ctx, "merge", mergeErr))
+	}
+	if mergeInProgress && mergeHead != target {
+		return abandon(fmt.Errorf("merge recorded %s instead of %s", mergeHead, target))
+	}
+	if mergeErr == nil {
+		if !mergeInProgress {
+			return MergeResult{State: MergeUpToDate, Target: target}, nil
+		}
+		return MergeResult{State: MergeClean, Target: target}, nil
+	}
+	unmerged, err := e.unmergedPaths(cleanupCtx)
+	if err != nil {
+		return abandon(fmt.Errorf("merge: %w (inspect unmerged paths: %w)", mergeErr, err))
+	}
+	if !mergeInProgress || len(unmerged) == 0 {
+		return abandon(fmt.Errorf("merge: %w", mergeErr))
+	}
+	return MergeResult{State: MergeConflicted, Target: target, Conflicts: unmerged}, nil
+}
+
+// mergeHead returns MERGE_HEAD and whether a merge is in progress.
+func (e *externalBackend) mergeHead(ctx context.Context) (string, bool) {
+	out, err := e.runContext(ctx, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
+	if err != nil || out == "" {
+		return "", false
+	}
+	return out, true
+}
+
+// unmergedPaths lists the distinct paths with conflict stages in the index, sorted.
+func (e *externalBackend) unmergedPaths(ctx context.Context) ([]string, error) {
+	out, err := e.runContext(ctx, "ls-files", "-u", "-z")
+	if err != nil {
+		return nil, contextError(ctx, "list unmerged paths", err)
+	}
+	entries, err := parseIndexListing(out)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{})
+	var paths []string
+	for _, entry := range entries {
+		if _, ok := seen[entry.path]; ok {
+			continue
+		}
+		seen[entry.path] = struct{}{}
+		paths = append(paths, entry.path)
+	}
+	slices.Sort(paths)
+	return paths, nil
+}
+
+// indexListing is one record of git ls-files -s output.
+type indexListing struct {
+	path  string
+	stage string
+	entry treeEntry
+}
+
+// parseIndexListing parses NUL-terminated "<mode> <object> <stage>\t<path>" records.
+func parseIndexListing(out string) ([]indexListing, error) {
+	var result []indexListing
+	for record := range strings.SplitSeq(out, "\x00") {
+		if record == "" {
+			continue
+		}
+		meta, path, ok := strings.Cut(record, "\t")
+		fields := strings.Fields(meta)
+		if !ok || len(fields) != 3 || path == "" {
+			return nil, fmt.Errorf("parse index entry %q", record)
+		}
+		result = append(result, indexListing{
+			path: path, stage: fields[2], entry: treeEntry{mode: fields[0], object: fields[1]},
+		})
+	}
+	return result, nil
+}
+
+// indexEntries returns the index's stage-0 entries and the set of paths that carry conflict
+// stages. Paths are repository-relative with forward slashes.
+func (e *externalBackend) indexEntries() (map[string]treeEntry, map[string]struct{}, error) {
+	out, err := e.run("ls-files", "-s", "-z")
+	if err != nil {
+		return nil, nil, fmt.Errorf("list index entries: %w", err)
+	}
+	listing, err := parseIndexListing(out)
+	if err != nil {
+		return nil, nil, err
+	}
+	entries := make(map[string]treeEntry, len(listing))
+	unmerged := make(map[string]struct{})
+	for _, item := range listing {
+		if item.stage != "0" {
+			unmerged[item.path] = struct{}{}
+			continue
+		}
+		entries[item.path] = item.entry
+	}
+	return entries, unmerged, nil
+}
+
+// treeEntries returns every non-tree entry of commit's tree, keyed by repository-relative path.
+func (e *externalBackend) treeEntries(commit string) (map[string]treeEntry, error) {
+	if commit == "" || strings.HasPrefix(commit, "-") {
+		return nil, fmt.Errorf("invalid commit %q", commit)
+	}
+	out, err := e.run("ls-tree", "-r", "-z", "--full-tree", commit)
+	if err != nil {
+		return nil, fmt.Errorf("list tree of %q: %w", commit, err)
+	}
+	entries := make(map[string]treeEntry)
+	for record := range strings.SplitSeq(out, "\x00") {
+		if record == "" {
+			continue
+		}
+		meta, path, ok := strings.Cut(record, "\t")
+		fields := strings.Fields(meta)
+		if !ok || len(fields) != 3 || path == "" {
+			return nil, fmt.Errorf("parse tree entry %q", record)
+		}
+		entries[path] = treeEntry{mode: fields[0], object: fields[2]}
+	}
+	return entries, nil
+}
+
+// mergeAbort aborts the merge in progress.
+func (e *externalBackend) mergeAbort(ctx context.Context) error {
+	if _, err := e.runContext(ctx, "merge", "--abort"); err != nil {
+		return contextError(ctx, "abort merge", err)
+	}
+	return nil
+}
+
+// resetKeep moves the current branch to commit with git reset --keep, which keeps local changes
+// and refuses when a file with local changes differs between HEAD and commit.
+func (e *externalBackend) resetKeep(ctx context.Context, commit string) error {
+	if commit == "" || strings.HasPrefix(commit, "-") {
+		return fmt.Errorf("invalid commit %q", commit)
+	}
+	if _, err := e.runContext(ctx, "reset", "--keep", commit); err != nil {
+		return contextError(ctx, "reset --keep", err)
+	}
+	return nil
 }
 
 func writeMergeOptionsOverride(branch string) (string, error) {

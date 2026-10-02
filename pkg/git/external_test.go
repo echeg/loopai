@@ -1404,6 +1404,20 @@ func TestParsePorcelainV1Z(t *testing.T) {
 	require.ErrorContains(t, err, "missing its source path")
 }
 
+func TestParseIndexListing(t *testing.T) {
+	listing, err := parseIndexListing("100644 aaa 0\tplain.txt\x00100755 bbb 2\tdir/tab\tname\x00")
+	require.NoError(t, err)
+	assert.Equal(t, []indexListing{
+		{path: "plain.txt", stage: "0", entry: treeEntry{mode: "100644", object: "aaa"}},
+		{path: "dir/tab\tname", stage: "2", entry: treeEntry{mode: "100755", object: "bbb"}},
+	}, listing)
+
+	for _, malformed := range []string{"100644 aaa\tmissing-stage.txt\x00", "100644 aaa 0 no-tab\x00", "100644 aaa 0\t\x00"} {
+		_, err = parseIndexListing(malformed)
+		require.ErrorContains(t, err, "parse index entry", "record %q", malformed)
+	}
+}
+
 func TestExternalBackend_CustomCommand(t *testing.T) {
 	t.Run("uses custom command in run", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

@@ -4615,3 +4615,529 @@ func TestService_DiffNameStatusPreservesPaths(t *testing.T) {
 	}
 	assert.ElementsMatch(t, expected, changes)
 }
+
+// baseSyncRepo is a feature checkout with a bare origin and a second clone that advances the
+// origin's master branch.
+type baseSyncRepo struct {
+	dir      string // checkout on branch feature
+	upstream string // clone pushing to origin master
+	svc      *Service
+}
+
+func setupBaseSyncRepo(t *testing.T) baseSyncRepo {
+	t.Helper()
+	dir := setupExternalTestRepo(t)
+	commitTestFile(t, dir, "base.txt", "base\n", "add base file")
+	remote := t.TempDir()
+	runGit(t, remote, "init", "--bare")
+	runGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/master")
+	runGit(t, dir, "remote", "add", "origin", remote)
+	runGit(t, dir, "push", "origin", "master")
+	runGit(t, dir, "checkout", "-b", "feature")
+
+	upstream := t.TempDir()
+	runGit(t, upstream, "clone", remote, ".")
+	runGit(t, upstream, "config", "user.email", "test@test.com")
+	runGit(t, upstream, "config", "user.name", "test")
+	runGit(t, upstream, "config", "commit.gpgsign", "false")
+
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	return baseSyncRepo{dir: dir, upstream: upstream, svc: svc}
+}
+
+// advanceBase commits name in the upstream clone, pushes it to origin master, and returns the commit.
+func (r baseSyncRepo) advanceBase(t *testing.T, name, content string) string {
+	t.Helper()
+	commitTestFile(t, r.upstream, name, content, "base change to "+name)
+	runGit(t, r.upstream, "push", "origin", "master")
+	return gitOutput(t, r.upstream, "rev-parse", "HEAD")
+}
+
+// fetchAndMerge fetches origin master and starts the no-commit merge.
+func (r baseSyncRepo) fetchAndMerge(t *testing.T) MergeResult {
+	t.Helper()
+	_, err := r.svc.FetchContext(context.Background(), "origin", "master")
+	require.NoError(t, err)
+	result, err := r.svc.MergeRemoteNoCommitContext(context.Background(), "origin/master")
+	require.NoError(t, err)
+	return result
+}
+
+func commitTestFile(t *testing.T, dir, name, content, msg string) {
+	t.Helper()
+	path := filepath.Join(dir, filepath.FromSlash(name))
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	runGit(t, dir, "add", "--", name)
+	runGit(t, dir, "commit", "-m", msg)
+}
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	return strings.TrimSpace(runGit(t, dir, args...))
+}
+
+func mergeInProgress(t *testing.T, dir string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
+	cmd.Dir = dir
+	return cmd.Run() == nil
+}
+
+func readTestFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path) //nolint:gosec // test reads files it created under t.TempDir
+	require.NoError(t, err)
+	return string(data)
+}
+
+func writeTestFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600))
+}
+
+func TestService_FetchContext(t *testing.T) {
+	t.Run("fetches the advanced base into the remote-tracking ref", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		want := r.advanceBase(t, "base.txt", "moved\n")
+
+		sha, err := r.svc.FetchContext(context.Background(), "origin", "master")
+		require.NoError(t, err)
+		assert.Equal(t, want, sha)
+		assert.Equal(t, want, gitOutput(t, r.dir, "rev-parse", "refs/remotes/origin/master"))
+		assert.Equal(t, "feature", gitOutput(t, r.dir, "branch", "--show-current"))
+	})
+
+	t.Run("follows a rewritten remote branch", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		r.advanceBase(t, "base.txt", "first\n")
+		_, err := r.svc.FetchContext(context.Background(), "origin", "master")
+		require.NoError(t, err)
+		runGit(t, r.upstream, "reset", "--hard", "HEAD~1")
+		commitTestFile(t, r.upstream, "other.txt", "rewritten\n", "rewritten base")
+		runGit(t, r.upstream, "push", "--force", "origin", "master")
+		want := gitOutput(t, r.upstream, "rev-parse", "HEAD")
+
+		sha, err := r.svc.FetchContext(context.Background(), "origin", "master")
+		require.NoError(t, err)
+		assert.Equal(t, want, sha)
+	})
+
+	t.Run("missing remote", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		_, err := r.svc.FetchContext(context.Background(), "nosuch", "master")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "fetch nosuch/master")
+	})
+
+	t.Run("unknown ref", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		_, err := r.svc.FetchContext(context.Background(), "origin", "no-such-branch")
+		require.Error(t, err)
+		assert.False(t, r.svc.repo.(*externalBackend).refExists("refs/remotes/origin/no-such-branch"))
+	})
+
+	t.Run("invalid arguments", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		for _, tc := range []struct{ remote, branch string }{
+			{remote: "", branch: "master"},
+			{remote: "--upload-pack=x", branch: "master"},
+			{remote: "origin", branch: ""},
+			{remote: "origin", branch: "bad..name"},
+		} {
+			_, err := r.svc.FetchContext(context.Background(), tc.remote, tc.branch)
+			require.Error(t, err, "remote %q branch %q", tc.remote, tc.branch)
+		}
+	})
+
+	t.Run("canceled context", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := r.svc.FetchContext(ctx, "origin", "master")
+		require.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("honors the configured vcs command", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("shell wrapper requires a POSIX shell")
+		}
+		r := setupBaseSyncRepo(t)
+		want := r.advanceBase(t, "base.txt", "moved\n")
+		logPath := filepath.Join(t.TempDir(), "calls.log")
+		wrapper := filepath.Join(t.TempDir(), "vcs-wrapper")
+		script := "#!/bin/sh\necho \"$@\" >> '" + logPath + "'\nexec git \"$@\"\n"
+		require.NoError(t, os.WriteFile(wrapper, []byte(script), 0o700)) //nolint:gosec // test wrapper must be executable
+		svc, err := NewService(r.dir, noopServiceLogger(), wrapper)
+		require.NoError(t, err)
+
+		sha, err := svc.FetchContext(context.Background(), "origin", "master")
+		require.NoError(t, err)
+		assert.Equal(t, want, sha)
+		assert.Contains(t, readTestFile(t, logPath),
+			"fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master")
+	})
+}
+
+func TestService_MergeRemoteNoCommitContext(t *testing.T) {
+	t.Run("already up to date", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		commitTestFile(t, r.dir, "feature.txt", "feature\n", "feature work")
+		head := gitOutput(t, r.dir, "rev-parse", "HEAD")
+
+		result := r.fetchAndMerge(t)
+		assert.Equal(t, MergeUpToDate, result.State)
+		assert.Equal(t, gitOutput(t, r.dir, "rev-parse", "origin/master"), result.Target)
+		assert.Empty(t, result.Conflicts)
+		assert.False(t, mergeInProgress(t, r.dir))
+		assert.Equal(t, head, gitOutput(t, r.dir, "rev-parse", "HEAD"))
+	})
+
+	t.Run("clean merge is staged and left uncommitted", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		commitTestFile(t, r.dir, "feature.txt", "feature\n", "feature work")
+		head := gitOutput(t, r.dir, "rev-parse", "HEAD")
+		target := r.advanceBase(t, "base.txt", "moved\n")
+
+		result := r.fetchAndMerge(t)
+		assert.Equal(t, MergeClean, result.State)
+		assert.Equal(t, target, result.Target)
+		assert.Empty(t, result.Conflicts)
+		assert.True(t, mergeInProgress(t, r.dir))
+		assert.Equal(t, target, gitOutput(t, r.dir, "rev-parse", "MERGE_HEAD"))
+		assert.Equal(t, head, gitOutput(t, r.dir, "rev-parse", "HEAD"))
+		assert.Equal(t, "moved\n", readTestFile(t, filepath.Join(r.dir, "base.txt")))
+
+		runGit(t, r.dir, "commit", "--no-edit")
+		assert.Equal(t, head, gitOutput(t, r.dir, "rev-parse", "HEAD^1"))
+		assert.Equal(t, target, gitOutput(t, r.dir, "rev-parse", "HEAD^2"))
+		assert.Contains(t, gitOutput(t, r.dir, "log", "-1", "--format=%s"), "origin/master")
+	})
+
+	t.Run("fast-forwardable base still produces a merge", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		head := gitOutput(t, r.dir, "rev-parse", "HEAD")
+		r.advanceBase(t, "base.txt", "moved\n")
+
+		result := r.fetchAndMerge(t)
+		assert.Equal(t, MergeClean, result.State)
+		assert.True(t, mergeInProgress(t, r.dir))
+		assert.Equal(t, head, gitOutput(t, r.dir, "rev-parse", "HEAD"))
+	})
+
+	t.Run("conflicted merge stays in progress with its unmerged paths", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		commitTestFile(t, r.dir, "README.md", "# feature\n", "feature readme")
+		commitTestFile(t, r.dir, "base.txt", "feature side\n", "feature base")
+		commitTestFile(t, r.dir, "feature.txt", "feature\n", "feature work")
+		head := gitOutput(t, r.dir, "rev-parse", "HEAD")
+		commitTestFile(t, r.upstream, "README.md", "# upstream\n", "upstream readme")
+		commitTestFile(t, r.upstream, "clean.txt", "clean\n", "upstream clean")
+		target := r.advanceBase(t, "base.txt", "upstream side\n")
+
+		result := r.fetchAndMerge(t)
+		assert.Equal(t, MergeConflicted, result.State)
+		assert.Equal(t, target, result.Target)
+		assert.Equal(t, []string{"README.md", "base.txt"}, result.Conflicts)
+		assert.True(t, mergeInProgress(t, r.dir))
+		assert.Equal(t, head, gitOutput(t, r.dir, "rev-parse", "HEAD"))
+		assert.Equal(t, "clean\n", readTestFile(t, filepath.Join(r.dir, "clean.txt")))
+		assert.Contains(t, readTestFile(t, filepath.Join(r.dir, "base.txt")), "<<<<<<<")
+
+		_, err := r.svc.MergeRemoteNoCommitContext(context.Background(), "origin/master")
+		require.Error(t, err, "a second merge must not start while one is in progress")
+		assert.Contains(t, err.Error(), "merge is in progress")
+	})
+
+	t.Run("branch mergeOptions are neutralized", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		commitTestFile(t, r.dir, "feature.txt", "feature\n", "feature work")
+		runGit(t, r.dir, "config", "branch.feature.mergeOptions", "-s ours")
+		r.advanceBase(t, "base.txt", "moved\n")
+
+		result := r.fetchAndMerge(t)
+		assert.Equal(t, MergeClean, result.State)
+		assert.Equal(t, "moved", gitOutput(t, r.dir, "show", ":base.txt"),
+			"the ours strategy would have kept the feature side")
+	})
+
+	t.Run("refuses uncommitted tracked changes", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		r.advanceBase(t, "base.txt", "moved\n")
+		_, err := r.svc.FetchContext(context.Background(), "origin", "master")
+		require.NoError(t, err)
+		writeTestFile(t, r.dir, "README.md", "dirty\n")
+
+		_, err = r.svc.MergeRemoteNoCommitContext(context.Background(), "origin/master")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "uncommitted changes")
+		assert.False(t, mergeInProgress(t, r.dir))
+		assert.Equal(t, "dirty\n", readTestFile(t, filepath.Join(r.dir, "README.md")))
+	})
+
+	t.Run("failed merge is abandoned and keeps untracked files", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		commitTestFile(t, r.dir, "feature.txt", "feature\n", "feature work")
+		head := gitOutput(t, r.dir, "rev-parse", "HEAD")
+		r.advanceBase(t, "new.txt", "from base\n")
+		_, err := r.svc.FetchContext(context.Background(), "origin", "master")
+		require.NoError(t, err)
+		writeTestFile(t, r.dir, "new.txt", "local\n")
+
+		_, err = r.svc.MergeRemoteNoCommitContext(context.Background(), "origin/master")
+		require.Error(t, err)
+		assert.False(t, mergeInProgress(t, r.dir))
+		assert.Equal(t, head, gitOutput(t, r.dir, "rev-parse", "HEAD"))
+		assert.Equal(t, "local\n", readTestFile(t, filepath.Join(r.dir, "new.txt")))
+	})
+
+	t.Run("invalid and unknown revisions", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		for _, rev := range []string{"", "--abort", "origin/no-such-branch"} {
+			_, err := r.svc.MergeRemoteNoCommitContext(context.Background(), rev)
+			require.Error(t, err, "revision %q", rev)
+		}
+		assert.False(t, mergeInProgress(t, r.dir))
+	})
+
+	t.Run("canceled context", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		r.advanceBase(t, "base.txt", "moved\n")
+		_, err := r.svc.FetchContext(context.Background(), "origin", "master")
+		require.NoError(t, err)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err = r.svc.MergeRemoteNoCommitContext(ctx, "origin/master")
+		require.ErrorIs(t, err, context.Canceled)
+		assert.False(t, mergeInProgress(t, r.dir))
+	})
+}
+
+func TestService_StageZeroSnapshotAndChangedOutside(t *testing.T) {
+	// conflictedMerge starts a merge that conflicts on base.txt and cleanly brings clean.txt.
+	conflictedMerge := func(t *testing.T) (baseSyncRepo, MergeResult, MergeSnapshot) {
+		t.Helper()
+		r := setupBaseSyncRepo(t)
+		commitTestFile(t, r.dir, "base.txt", "feature side\n", "feature base")
+		commitTestFile(t, r.dir, "feature.txt", "feature\n", "feature work")
+		commitTestFile(t, r.upstream, "clean.txt", "clean\n", "upstream clean")
+		r.advanceBase(t, "base.txt", "upstream side\n")
+		result := r.fetchAndMerge(t)
+		require.Equal(t, MergeConflicted, result.State)
+		snapshot, err := r.svc.StageZeroSnapshot()
+		require.NoError(t, err)
+		return r, result, snapshot
+	}
+	resolve := func(t *testing.T, r baseSyncRepo) {
+		t.Helper()
+		writeTestFile(t, r.dir, "base.txt", "both sides\n")
+		runGit(t, r.dir, "add", "--", "base.txt")
+	}
+
+	t.Run("honest resolution changes only conflicted paths", func(t *testing.T) {
+		r, result, snapshot := conflictedMerge(t)
+		resolve(t, r)
+		runGit(t, r.dir, "commit", "--no-edit")
+
+		changed, err := r.svc.ChangedOutside(snapshot, result.Conflicts, "HEAD")
+		require.NoError(t, err)
+		assert.Empty(t, changed)
+	})
+
+	t.Run("tampered unrelated files are reported", func(t *testing.T) {
+		r, result, snapshot := conflictedMerge(t)
+		resolve(t, r)
+		writeTestFile(t, r.dir, "feature.txt", "tampered\n")
+		writeTestFile(t, r.dir, "clean.txt", "tampered\n")
+		writeTestFile(t, r.dir, "added.txt", "new\n")
+		runGit(t, r.dir, "add", "--", "feature.txt", "clean.txt", "added.txt")
+		runGit(t, r.dir, "rm", "-q", "--", "README.md")
+		runGit(t, r.dir, "commit", "--no-edit")
+
+		changed, err := r.svc.ChangedOutside(snapshot, result.Conflicts, "HEAD")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"README.md", "added.txt", "clean.txt", "feature.txt"}, changed)
+	})
+
+	t.Run("mode change is reported", func(t *testing.T) {
+		r, result, snapshot := conflictedMerge(t)
+		resolve(t, r)
+		runGit(t, r.dir, "update-index", "--chmod=+x", "--", "feature.txt")
+		runGit(t, r.dir, "commit", "--no-edit")
+
+		changed, err := r.svc.ChangedOutside(snapshot, result.Conflicts, "HEAD")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"feature.txt"}, changed)
+	})
+
+	t.Run("conflicted paths outside allowed are reported", func(t *testing.T) {
+		r, _, snapshot := conflictedMerge(t)
+		resolve(t, r)
+		runGit(t, r.dir, "commit", "--no-edit")
+
+		changed, err := r.svc.ChangedOutside(snapshot, nil, "HEAD")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"base.txt"}, changed)
+	})
+
+	t.Run("clean merge commit matches its snapshot", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		commitTestFile(t, r.dir, "feature.txt", "feature\n", "feature work")
+		r.advanceBase(t, "base.txt", "moved\n")
+		require.Equal(t, MergeClean, r.fetchAndMerge(t).State)
+		snapshot, err := r.svc.StageZeroSnapshot()
+		require.NoError(t, err)
+		runGit(t, r.dir, "commit", "--no-edit")
+
+		changed, err := r.svc.ChangedOutside(snapshot, nil, "HEAD")
+		require.NoError(t, err)
+		assert.Empty(t, changed)
+		changed, err = r.svc.ChangedOutside(snapshot, nil, "HEAD^1")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"base.txt"}, changed, "the pre-merge tree lacks the base change")
+	})
+
+	t.Run("errors", func(t *testing.T) {
+		r, result, snapshot := conflictedMerge(t)
+		_, err := r.svc.ChangedOutside(MergeSnapshot{}, result.Conflicts, "HEAD")
+		require.Error(t, err)
+		_, err = r.svc.ChangedOutside(snapshot, result.Conflicts, "--all")
+		require.Error(t, err)
+		_, err = r.svc.ChangedOutside(snapshot, result.Conflicts, "no-such-commit")
+		require.Error(t, err)
+	})
+}
+
+func TestService_MergeAbortContext(t *testing.T) {
+	conflictedMerge := func(t *testing.T) (baseSyncRepo, string, MergeSnapshot) {
+		t.Helper()
+		r := setupBaseSyncRepo(t)
+		commitTestFile(t, r.dir, "base.txt", "feature side\n", "feature base")
+		commitTestFile(t, r.dir, "feature.txt", "feature\n", "feature work")
+		head := gitOutput(t, r.dir, "rev-parse", "HEAD")
+		commitTestFile(t, r.upstream, "clean.txt", "clean\n", "upstream clean")
+		r.advanceBase(t, "base.txt", "upstream side\n")
+		require.Equal(t, MergeConflicted, r.fetchAndMerge(t).State)
+		snapshot, err := r.svc.StageZeroSnapshot()
+		require.NoError(t, err)
+		return r, head, snapshot
+	}
+
+	t.Run("aborts and keeps unrelated local changes", func(t *testing.T) {
+		r, head, snapshot := conflictedMerge(t)
+		writeTestFile(t, r.dir, "base.txt", "resolved\n")
+		runGit(t, r.dir, "add", "--", "base.txt")
+		writeTestFile(t, r.dir, "feature.txt", "unstaged edit\n")
+		writeTestFile(t, r.dir, "scratch.txt", "untracked\n")
+
+		require.NoError(t, r.svc.MergeAbortContext(context.Background(), snapshot))
+		assert.False(t, mergeInProgress(t, r.dir))
+		assert.Equal(t, head, gitOutput(t, r.dir, "rev-parse", "HEAD"))
+		assert.Equal(t, "feature side\n", readTestFile(t, filepath.Join(r.dir, "base.txt")))
+		assert.NoFileExists(t, filepath.Join(r.dir, "clean.txt"))
+		assert.Equal(t, "unstaged edit\n", readTestFile(t, filepath.Join(r.dir, "feature.txt")))
+		assert.Equal(t, "untracked\n", readTestFile(t, filepath.Join(r.dir, "scratch.txt")))
+	})
+
+	t.Run("refuses to discard staged changes outside the merge", func(t *testing.T) {
+		r, _, snapshot := conflictedMerge(t)
+		writeTestFile(t, r.dir, "feature.txt", "staged edit\n")
+		writeTestFile(t, r.dir, "added.txt", "staged add\n")
+		runGit(t, r.dir, "add", "--", "feature.txt", "added.txt")
+
+		err := r.svc.MergeAbortContext(context.Background(), snapshot)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "added.txt, feature.txt")
+		assert.True(t, mergeInProgress(t, r.dir))
+		assert.Equal(t, "staged edit\n", readTestFile(t, filepath.Join(r.dir, "feature.txt")))
+	})
+
+	t.Run("git refuses unstaged edits to a file the merge changed", func(t *testing.T) {
+		r, _, snapshot := conflictedMerge(t)
+		writeTestFile(t, r.dir, "clean.txt", "edited\n")
+
+		err := r.svc.MergeAbortContext(context.Background(), snapshot)
+		require.Error(t, err)
+		assert.Equal(t, "edited\n", readTestFile(t, filepath.Join(r.dir, "clean.txt")))
+	})
+
+	t.Run("requires a merge in progress and a snapshot", func(t *testing.T) {
+		r, _, snapshot := conflictedMerge(t)
+		require.Error(t, r.svc.MergeAbortContext(context.Background(), MergeSnapshot{}))
+		require.NoError(t, r.svc.MergeAbortContext(context.Background(), snapshot))
+		err := r.svc.MergeAbortContext(context.Background(), snapshot)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no merge in progress")
+	})
+}
+
+func TestService_RestoreHeadContext(t *testing.T) {
+	committedMerge := func(t *testing.T) (baseSyncRepo, string) {
+		t.Helper()
+		r := setupBaseSyncRepo(t)
+		commitTestFile(t, r.dir, "feature.txt", "feature\n", "feature work")
+		head := gitOutput(t, r.dir, "rev-parse", "HEAD")
+		r.advanceBase(t, "base.txt", "moved\n")
+		require.Equal(t, MergeClean, r.fetchAndMerge(t).State)
+		runGit(t, r.dir, "commit", "--no-edit")
+		return r, head
+	}
+
+	t.Run("restores the pre-merge head and keeps unrelated local changes", func(t *testing.T) {
+		r, head := committedMerge(t)
+		commitTestFile(t, r.dir, "fix.txt", "post-merge commit\n", "session commit")
+		writeTestFile(t, r.dir, "feature.txt", "local edit\n")
+
+		require.NoError(t, r.svc.RestoreHeadContext(context.Background(), head))
+		assert.Equal(t, head, gitOutput(t, r.dir, "rev-parse", "HEAD"))
+		assert.Equal(t, "feature", gitOutput(t, r.dir, "branch", "--show-current"))
+		assert.Equal(t, "base\n", readTestFile(t, filepath.Join(r.dir, "base.txt")))
+		assert.NoFileExists(t, filepath.Join(r.dir, "fix.txt"))
+		assert.Equal(t, "local edit\n", readTestFile(t, filepath.Join(r.dir, "feature.txt")))
+	})
+
+	t.Run("refuses to discard a local change to a file the merge changed", func(t *testing.T) {
+		r, head := committedMerge(t)
+		mergeCommit := gitOutput(t, r.dir, "rev-parse", "HEAD")
+		writeTestFile(t, r.dir, "base.txt", "local edit\n")
+
+		err := r.svc.RestoreHeadContext(context.Background(), head)
+		require.Error(t, err)
+		assert.Equal(t, mergeCommit, gitOutput(t, r.dir, "rev-parse", "HEAD"))
+		assert.Equal(t, "local edit\n", readTestFile(t, filepath.Join(r.dir, "base.txt")))
+	})
+
+	t.Run("refuses a commit that is not an ancestor", func(t *testing.T) {
+		r, _ := committedMerge(t)
+		runGit(t, r.dir, "branch", "side", "HEAD~1")
+		runGit(t, r.dir, "checkout", "-q", "side")
+		commitTestFile(t, r.dir, "side.txt", "side\n", "side work")
+		side := gitOutput(t, r.dir, "rev-parse", "HEAD")
+		runGit(t, r.dir, "checkout", "-q", "feature")
+
+		err := r.svc.RestoreHeadContext(context.Background(), side)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not an ancestor")
+	})
+
+	t.Run("refuses during an uncommitted merge", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		head := gitOutput(t, r.dir, "rev-parse", "HEAD")
+		r.advanceBase(t, "base.txt", "moved\n")
+		require.Equal(t, MergeClean, r.fetchAndMerge(t).State)
+
+		err := r.svc.RestoreHeadContext(context.Background(), head)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "merge is in progress")
+		assert.True(t, mergeInProgress(t, r.dir))
+	})
+
+	t.Run("invalid commit", func(t *testing.T) {
+		r, _ := committedMerge(t)
+		for _, sha := range []string{"", "--hard", "no-such-commit"} {
+			require.Error(t, r.svc.RestoreHeadContext(context.Background(), sha), "commit %q", sha)
+		}
+	})
+}

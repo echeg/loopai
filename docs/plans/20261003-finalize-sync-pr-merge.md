@@ -100,13 +100,13 @@
 - ➕ [x] fix pre-existing Linux test failures (case-sensitive skip in `TestRunWithWorktreeAutoResume`, platform-native path in `pkg/t3` `TestRunName`) and pre-existing lint findings
 
 ### Task 2: Git helpers for syncing with the remote base
-- [ ] add `Service.FetchContext(ctx, remote, ref)` honoring `vcs_command`
-- [ ] add `Service.MergeRemoteNoCommitContext(ctx, rev)` that runs `git merge --no-commit --no-ff` (branch merge options neutralized like `mergeRevision`), does NOT abort on conflict, and returns the merge state: already up to date, clean, or conflicted with the list of unmerged paths
-- [ ] add `Service.StageZeroSnapshot()` recording blob ids of all non-conflicted index entries right after the merge, and `Service.ChangedOutside(snapshot, allowed []string, commit)` reporting paths whose blob in `commit` differs from the snapshot outside the allowed set
-- [ ] add `Service.MergeAbortContext` and `Service.RestoreHeadContext(ctx, sha)` (`git reset --keep`) that refuse to discard changes not produced by the merge
-- [ ] write tests with a temporary repo and bare origin: fetch, up to date, clean merge, conflicted merge with unmerged path list, snapshot/ChangedOutside detecting a tampered unrelated file, abort and restore
-- [ ] write tests for error cases: missing remote, unknown ref, restore refusing a dirty unrelated path
-- [ ] run `go test ./pkg/git/...` - must pass before task 3
+- [x] add `Service.FetchContext(ctx, remote, ref)` honoring `vcs_command` (returns the fetched SHA; explicit `+refs/heads/<ref>:refs/remotes/<remote>/<ref>` refspec)
+- [x] add `Service.MergeRemoteNoCommitContext(ctx, rev)` that runs `git merge --no-commit --no-ff` (branch merge options neutralized like `mergeRevision`), does NOT abort on conflict, and returns the merge state: already up to date, clean, or conflicted with the list of unmerged paths
+- [x] add `Service.StageZeroSnapshot()` recording blob ids of all non-conflicted index entries right after the merge, and `Service.ChangedOutside(snapshot, allowed []string, commit)` reporting paths whose blob in `commit` differs from the snapshot outside the allowed set
+- [x] add `Service.MergeAbortContext` and `Service.RestoreHeadContext(ctx, sha)` (`git reset --keep`) that refuse to discard changes not produced by the merge (`MergeAbortContext(ctx, snapshot)` takes the post-merge `MergeSnapshot`, because `git merge --abort` silently drops staged changes whose worktree file matches the index; `RestoreHeadContext` also requires `sha` to be an ancestor of HEAD and no operation in progress)
+- [x] write tests with a temporary repo and bare origin: fetch, up to date, clean merge, conflicted merge with unmerged path list, snapshot/ChangedOutside detecting a tampered unrelated file, abort and restore
+- [x] write tests for error cases: missing remote, unknown ref, restore refusing a dirty unrelated path
+- [x] run `go test ./pkg/git/...` - must pass before task 3
 
 ### Task 3: Finalize signals and prompt
 - [ ] add `FinalizeDone = "<<<RALPHEX:FINALIZE_DONE>>>"` and `FinalizeBlocked = "<<<RALPHEX:FINALIZE_BLOCKED>>>"` to `pkg/status/status.go`, `knownSignals` in `pkg/executor/executor.go`, and helpers in `pkg/processor/phase/signals.go`

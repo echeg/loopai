@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/umputun/ralphex/pkg/plan"
@@ -77,6 +78,12 @@ type backend interface {
 	mergeWorkingTreeWouldConflict(ctx context.Context, base string) (bool, error)
 	restoreFile(path string) error
 	snapshotIndex() (indexSnapshot, error)
+	fetchRemoteBranch(ctx context.Context, remote, branch string) (string, error)
+	mergeNoCommit(ctx context.Context, revision string) (MergeResult, error)
+	indexEntries() (map[string]treeEntry, map[string]struct{}, error)
+	treeEntries(commit string) (map[string]treeEntry, error)
+	mergeAbort(ctx context.Context) error
+	resetKeep(ctx context.Context, commit string) error
 }
 
 // ErrMergeConflict identifies a merge that could not be completed because of conflicts.
@@ -543,6 +550,178 @@ func (s *Service) PushContext(ctx context.Context, branch string) error {
 		return fmt.Errorf("push branch %q: %w", branch, err)
 	}
 	return nil
+}
+
+// MergeState classifies the outcome of MergeRemoteNoCommitContext.
+type MergeState string
+
+// merge states reported by MergeRemoteNoCommitContext.
+const (
+	MergeUpToDate   MergeState = "up_to_date" // HEAD already contains the revision; nothing was started
+	MergeClean      MergeState = "clean"      // merge staged without conflicts and left uncommitted
+	MergeConflicted MergeState = "conflicted" // merge left in progress with unmerged paths
+)
+
+// MergeResult describes a merge started by MergeRemoteNoCommitContext.
+type MergeResult struct {
+	State     MergeState
+	Target    string   // commit the revision resolved to, recorded as MERGE_HEAD unless up to date
+	Conflicts []string // sorted repository-relative unmerged paths, only for MergeConflicted
+}
+
+// treeEntry identifies one file in a tree or the index by mode and object id.
+type treeEntry struct {
+	mode   string
+	object string
+}
+
+// MergeSnapshot records the index of an uncommitted merge: the stage-0 entry of every path the
+// merge resolved and the set of paths it left conflicted. The zero value is not a snapshot.
+type MergeSnapshot struct {
+	entries  map[string]treeEntry
+	unmerged map[string]struct{}
+}
+
+// FetchContext fetches branch from remote into refs/remotes/<remote>/<branch> through the
+// configured vcs command and returns the fetched commit.
+func (s *Service) FetchContext(ctx context.Context, remote, branch string) (string, error) {
+	sha, err := s.repo.fetchRemoteBranch(ctx, remote, branch)
+	if err != nil {
+		return "", fmt.Errorf("fetch %s/%s: %w", remote, branch, err)
+	}
+	return sha, nil
+}
+
+// MergeRemoteNoCommitContext merges rev into the current checkout with --no-commit --no-ff, with
+// the branch's mergeOptions neutralized. It requires a clean tracked tree and no Git operation in
+// progress. Unlike MergeBranchContext it leaves a conflicted merge in place and reports its
+// unmerged paths, so the caller can resolve or abort it; any other failure is aborted before the
+// error is returned.
+func (s *Service) MergeRemoteNoCommitContext(ctx context.Context, rev string) (MergeResult, error) {
+	result, err := s.repo.mergeNoCommit(ctx, rev)
+	if err != nil {
+		return MergeResult{}, fmt.Errorf("merge %q: %w", rev, err)
+	}
+	return result, nil
+}
+
+// StageZeroSnapshot records the index right after MergeRemoteNoCommitContext: the mode and object
+// of every non-conflicted entry, and which paths carry conflict stages.
+func (s *Service) StageZeroSnapshot() (MergeSnapshot, error) {
+	entries, unmerged, err := s.repo.indexEntries()
+	if err != nil {
+		return MergeSnapshot{}, fmt.Errorf("snapshot merge index: %w", err)
+	}
+	return MergeSnapshot{entries: entries, unmerged: unmerged}, nil
+}
+
+// ChangedOutside reports, sorted, every path outside allowed whose entry in commit's tree differs
+// from snapshot, including paths added or removed relative to it. allowed holds repository-relative
+// paths such as MergeResult.Conflicts. An empty result proves the commit changed nothing the merge
+// had already resolved.
+func (s *Service) ChangedOutside(snapshot MergeSnapshot, allowed []string, commit string) ([]string, error) {
+	if snapshot.entries == nil {
+		return nil, errors.New("compare merge result: empty merge snapshot")
+	}
+	entries, err := s.repo.treeEntries(commit)
+	if err != nil {
+		return nil, fmt.Errorf("compare merge result: %w", err)
+	}
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, path := range allowed {
+		allowedSet[filepath.ToSlash(path)] = struct{}{}
+	}
+	return differingEntries(snapshot.entries, entries, allowedSet), nil
+}
+
+// MergeAbortContext aborts the merge in progress after verifying that the abort discards only
+// merge output. git merge --abort resets the index, and it silently drops a staged change whose
+// working-tree file matches the index, so any stage-0 entry that differs from snapshot outside the
+// paths the merge left conflicted makes it refuse. Git itself refuses when a file the merge changed
+// carries unstaged edits; unstaged edits to other files and untracked files are kept.
+func (s *Service) MergeAbortContext(ctx context.Context, snapshot MergeSnapshot) error {
+	if snapshot.entries == nil {
+		return errors.New("abort merge: empty merge snapshot")
+	}
+	op, err := s.repo.operationInProgress()
+	if err != nil {
+		return fmt.Errorf("abort merge: %w", err)
+	}
+	if op != "merge" {
+		return errors.New("abort merge: no merge in progress")
+	}
+	entries, unmerged, err := s.repo.indexEntries()
+	if err != nil {
+		return fmt.Errorf("abort merge: %w", err)
+	}
+	changed := differingEntries(snapshot.entries, entries, snapshot.unmerged)
+	for path := range unmerged {
+		if _, ok := snapshot.unmerged[path]; !ok {
+			changed = append(changed, path)
+		}
+	}
+	if len(changed) > 0 {
+		slices.Sort(changed)
+		changed = slices.Compact(changed)
+		return fmt.Errorf("refuse to abort merge: staged changes not produced by the merge would be discarded: %s",
+			strings.Join(changed, ", "))
+	}
+	if err := s.repo.mergeAbort(ctx); err != nil {
+		return fmt.Errorf("abort merge: %w", err)
+	}
+	return nil
+}
+
+// RestoreHeadContext moves the current branch back to sha, an ancestor of HEAD, with
+// git reset --keep. It refuses while a Git operation is in progress (use MergeAbortContext for an
+// uncommitted merge), and Git refuses when a file with local changes differs between HEAD and sha,
+// so local changes are either kept or the restore fails; commits after sha are dropped.
+func (s *Service) RestoreHeadContext(ctx context.Context, sha string) error {
+	if sha == "" || strings.HasPrefix(sha, "-") {
+		return fmt.Errorf("restore HEAD: invalid commit %q", sha)
+	}
+	op, err := s.repo.operationInProgress()
+	if err != nil {
+		return fmt.Errorf("restore HEAD to %s: %w", sha, err)
+	}
+	if op != "" {
+		return fmt.Errorf("restore HEAD to %s: refuse while a %s is in progress", sha, op)
+	}
+	ancestor, err := s.repo.isAncestor(ctx, sha, "HEAD")
+	if err != nil {
+		return fmt.Errorf("restore HEAD to %s: %w", sha, err)
+	}
+	if !ancestor {
+		return fmt.Errorf("restore HEAD to %s: not an ancestor of HEAD", sha)
+	}
+	if err := s.repo.resetKeep(ctx, sha); err != nil {
+		return fmt.Errorf("restore HEAD to %s: %w", sha, err)
+	}
+	return nil
+}
+
+// differingEntries returns the paths outside allowed whose entry is present in only one of want
+// and got or differs between them, sorted.
+func differingEntries(want, got map[string]treeEntry, allowed map[string]struct{}) []string {
+	var changed []string
+	for path, entry := range want {
+		if _, ok := allowed[path]; ok {
+			continue
+		}
+		if other, ok := got[path]; !ok || other != entry {
+			changed = append(changed, path)
+		}
+	}
+	for path := range got {
+		if _, ok := allowed[path]; ok {
+			continue
+		}
+		if _, ok := want[path]; !ok {
+			changed = append(changed, path)
+		}
+	}
+	slices.Sort(changed)
+	return changed
 }
 
 // Worktrees returns every registered worktree. Git lists the primary worktree first.
