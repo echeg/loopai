@@ -80,7 +80,9 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 			t.Setenv("CODEX_HOME", t.TempDir())
 			dir := setupTestRepo(t)

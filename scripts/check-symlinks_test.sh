@@ -89,7 +89,8 @@ for spelling in 'loopai --codex docs/plans/x.md' \
 	'codex_model = gpt-5.5' \
 	'codex_reasoning_effort = xhigh' \
 	'set `executor` to codex' \
-	'executor = codex'; do
+	'executor = codex' \
+	'finalize_enabled = true'; do
 	printf '%s\n' "$spelling" >>"$fixture/assets/claude/skills/loopai-orca/SKILL.md"
 	expect_failure "removed loopai flag or key in skill"
 	printf '%s\n' '---' 'name: loopai-orca' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai-orca/SKILL.md"
@@ -97,6 +98,7 @@ done
 # the surviving codex flag, the per-phase spec grammar, and a migration hint stay allowed
 printf '%s\n' "loopai --codex-args='-c x=1' --task-model codex:gpt-6-astra:medium" 'the codex executor' \
 	'`--codex` was removed; write `--task-model codex:<model>`' \
+	'`finalize_enabled` was removed; write `finalize = sync|pr|merge`' 'finalize = pr' \
 	>>"$fixture/assets/claude/skills/loopai-orca/SKILL.md"
 "$checker" "$fixture"
 printf '%s\n' '---' 'name: loopai-orca' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai-orca/SKILL.md"

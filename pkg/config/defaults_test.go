@@ -697,6 +697,7 @@ func TestReset_EmptyConfigDirFallback(t *testing.T) {
 	// set HOME to temp dir so DefaultConfigDir() doesn't touch real config
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on windows
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
 
 	// install defaults so Reset has something to check

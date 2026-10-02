@@ -180,7 +180,11 @@ func TestValuesLoader_Load_InvalidConfig(t *testing.T) {
 		{name: "invalid iteration_delay_ms", config: "iteration_delay_ms = not_a_number", errPart: "iteration_delay_ms"},
 		{name: "invalid codex_timeout_ms", config: "codex_timeout_ms = abc", errPart: "codex_timeout_ms"},
 		{name: "invalid codex_enabled", config: "codex_enabled = maybe", errPart: "codex_enabled"},
-		{name: "invalid finalize_enabled", config: "finalize_enabled = maybe", errPart: "finalize_enabled"},
+		{name: "invalid finalize", config: "finalize = true", errPart: "invalid finalize: must be one of none, sync, pr, merge"},
+		{name: "invalid finalize_merge_method", config: "finalize_merge_method = fast-forward", errPart: "invalid finalize_merge_method"},
+		{name: "invalid finalize_checks_timeout", config: "finalize_checks_timeout = soon", errPart: "invalid finalize_checks_timeout"},
+		{name: "negative finalize_checks_timeout", config: "finalize_checks_timeout = -1m", errPart: "invalid finalize_checks_timeout"},
+		{name: "zero finalize_checks_timeout", config: "finalize_checks_timeout = 0s", errPart: "finalize_checks_timeout: must be positive"},
 		{name: "invalid report_enabled", config: "report_enabled = maybe", errPart: "report_enabled"},
 		{name: "invalid move_plan_on_completion", config: "move_plan_on_completion = maybe", errPart: "move_plan_on_completion"},
 		{name: "negative task_retry_count", config: "task_retry_count = -1", errPart: "task_retry_count"},
@@ -317,20 +321,49 @@ func TestValuesLoader_Load_LocalOverridesTaskRetryCount(t *testing.T) {
 	assert.True(t, values.TaskRetryCountSet)
 }
 
-func TestValuesLoader_Load_LocalOverridesFinalizeEnabled(t *testing.T) {
-	tmpDir := t.TempDir()
-	globalConfig := filepath.Join(tmpDir, "global")
-	localConfig := filepath.Join(tmpDir, "local")
+func TestValuesLoader_Load_FinalizeLayers(t *testing.T) {
+	tests := []struct {
+		name       string
+		global     string
+		local      string
+		mode       string
+		modeSet    bool
+		method     string
+		methodSet  bool
+		timeout    time.Duration
+		timeoutSet bool
+	}{
+		{name: "embedded defaults", mode: "none", method: "merge", timeout: 30 * time.Minute},
+		{name: "global only", global: "finalize = sync\nfinalize_merge_method = rebase\nfinalize_checks_timeout = 10m",
+			mode: "sync", modeSet: true, method: "rebase", methodSet: true, timeout: 10 * time.Minute, timeoutSet: true},
+		{name: "local overrides global", global: "finalize = merge\nfinalize_merge_method = rebase",
+			local: "finalize = none\nfinalize_merge_method = squash\nfinalize_checks_timeout = 2h",
+			mode:  "none", modeSet: true, method: "squash", methodSet: true, timeout: 2 * time.Hour, timeoutSet: true},
+		{name: "local leaves unset keys to global", global: "finalize = pr\nfinalize_checks_timeout = 5m", local: "finalize_merge_method = squash",
+			mode: "pr", modeSet: true, method: "squash", methodSet: true, timeout: 5 * time.Minute, timeoutSet: true},
+		{name: "empty local values fall back", global: "finalize = merge", local: "finalize =\nfinalize_merge_method =\nfinalize_checks_timeout =",
+			mode: "merge", modeSet: true, method: "merge", timeout: 30 * time.Minute},
+		{name: "values are case-insensitive and trimmed", local: "finalize =  Merge \nfinalize_merge_method = SQUASH",
+			mode: "merge", modeSet: true, method: "squash", methodSet: true, timeout: 30 * time.Minute},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			globalConfig := filepath.Join(tmpDir, "global")
+			localConfig := filepath.Join(tmpDir, "local")
+			require.NoError(t, os.WriteFile(globalConfig, []byte(tc.global), 0o600))
+			require.NoError(t, os.WriteFile(localConfig, []byte(tc.local), 0o600))
 
-	require.NoError(t, os.WriteFile(globalConfig, []byte(`finalize_enabled = false`), 0o600))
-	require.NoError(t, os.WriteFile(localConfig, []byte(`finalize_enabled = true`), 0o600))
-
-	loader := newValuesLoader(defaultsFS)
-	values, err := loader.Load(localConfig, globalConfig)
-	require.NoError(t, err)
-
-	assert.True(t, values.FinalizeEnabled)
-	assert.True(t, values.FinalizeEnabledSet)
+			values, err := newValuesLoader(defaultsFS).Load(localConfig, globalConfig)
+			require.NoError(t, err)
+			assert.Equal(t, tc.mode, values.Finalize)
+			assert.Equal(t, tc.modeSet, values.FinalizeSet)
+			assert.Equal(t, tc.method, values.FinalizeMergeMethod)
+			assert.Equal(t, tc.methodSet, values.FinalizeMergeMethodSet)
+			assert.Equal(t, tc.timeout, values.FinalizeChecksTimeout)
+			assert.Equal(t, tc.timeoutSet, values.FinalizeChecksTimeoutSet)
+		})
+	}
 }
 
 func TestValuesLoader_Load_LocalOverridesReportEnabled(t *testing.T) {
@@ -1301,6 +1334,8 @@ func TestValuesLoader_Load_RemovedKeys(t *testing.T) {
 		{key: "codex_model", config: "codex_model = gpt-5.5", replacement: "codex:<model>[:effort]"},
 		{key: "codex_model", config: "codex_model =", replacement: "codex:<model>[:effort]"},
 		{key: "codex_reasoning_effort", config: "codex_reasoning_effort = xhigh", replacement: "codex:<model>:<effort>"},
+		{key: "finalize_enabled", config: "finalize_enabled = true", replacement: "finalize = sync|pr|merge"},
+		{key: "finalize_enabled", config: "finalize_enabled =", replacement: "finalize = sync|pr|merge"},
 	}
 
 	for _, tc := range tests {

@@ -65,7 +65,8 @@ type opts struct {
 	Wait                    time.Duration `long:"wait" description:"wait duration on rate limit before retry (default: 10m; 0 disables retries)"`
 	SessionTimeout          time.Duration `long:"session-timeout" description:"per-session timeout (e.g. 30m, 1h); external codex/custom review excluded unless a task or review phase runs codex"`
 	IdleTimeout             time.Duration `long:"idle-timeout" description:"kill claude/codex executor session after no output for this duration (e.g. 5m, 10m)"`
-	SkipFinalize            bool          `long:"skip-finalize" description:"skip finalize step even if enabled in config"`
+	Finalize                string        `long:"finalize" choice:"none" choice:"sync" choice:"pr" choice:"merge" description:"close out the plan branch after a successful run: sync = merge origin/<base> and validate, pr = sync and open a pull request, merge = pr and merge it after its checks pass"`
+	SkipFinalize            bool          `long:"skip-finalize" description:"skip finalize for this run, overriding --finalize and the finalize config key"`
 	PreserveAnthropicAPIKey bool          `long:"preserve-anthropic-api-key" description:"pass ANTHROPIC_API_KEY through to claude (for users authenticating Claude Code via API key rather than OAuth/keychain)"`
 	NoClaudeSwap            bool          `long:"no-claude-swap" description:"disable automatic claude-swap account rotation for this run"`
 	Codex                   bool          `long:"codex" hidden:"true" description:"removed; set the provider in --task-model"`
@@ -202,7 +203,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 		"plan-model", "task-model", "review-model", "claude-command", "claude-args", "codex-args",
 		"external-reviewers", "custom-review-script",
 		"review", "external-only", "tasks-only", "base-ref", "wait",
-		"session-timeout", "idle-timeout", "skip-finalize", "preserve-anthropic-api-key",
+		"session-timeout", "idle-timeout", "finalize", "skip-finalize", "preserve-anthropic-api-key",
 		"no-claude-swap", "pass-claude-md", "worktree",
 		"branch", "plan", "gen-agents", "serve", "watch", "init", "reset", "dump-defaults",
 	} {
@@ -2402,8 +2403,7 @@ func openAndLockWorktreeRun(
 	release, lockErr := wtSvc.AcquireWorktreeRunLockContext(ctx)
 	if lockErr != nil {
 		if wt.resumed {
-			var busyErr *git.ErrWorktreeBusy
-			if errors.As(lockErr, &busyErr) {
+			if busyErr, ok := errors.AsType[*git.ErrWorktreeBusy](lockErr); ok {
 				return worktreeRun{}, busyErr
 			}
 			return worktreeRun{}, fmt.Errorf("resume worktree: acquire run lock: %w", lockErr)
@@ -3672,7 +3672,7 @@ func hasExecutionMode(o opts) bool {
 		o.ExternalReviewers != "", o.CustomReviewScript != "",
 		o.PlanDescription != "", o.Review, o.ExternalOnly, o.TasksOnly,
 		o.BaseRef != "", o.waitSet || o.Wait != 0, o.sessionTimeoutSet || o.SessionTimeout != 0,
-		o.idleTimeoutSet || o.IdleTimeout != 0, o.SkipFinalize, o.PreserveAnthropicAPIKey,
+		o.idleTimeoutSet || o.IdleTimeout != 0, o.Finalize != "", o.SkipFinalize, o.PreserveAnthropicAPIKey,
 		o.NoClaudeSwap, o.PassClaudeMd, o.Worktree, o.Commit, o.Branch != "",
 		o.Serve, len(o.Watch) != 0, o.Init, o.Reset, o.DumpDefaults != "", o.GenAgents,
 	} {
@@ -3782,7 +3782,7 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		ExternalReviewModel:   reviewer.Model,
 		ExternalReviewEffort:  reviewer.Effort,
 		ExternalReviewers:     reviewers,
-		FinalizeEnabled:       req.Config.FinalizeEnabled,
+		FinalizeEnabled:       req.Config.EffectiveFinalize() != config.FinalizeNone,
 		ReportEnabled:         req.Config.ReportEnabled,
 		DefaultBranch:         req.BaseRef,
 		TaskModel:             resolveSpec(o.TaskModel, req.Config.TaskModel),
@@ -6350,15 +6350,26 @@ func runCleanupBounded(cleanup func(), timeout time.Duration) {
 	}
 }
 
+// applyFinalizeOverride applies --finalize and then --skip-finalize, so skipping wins
+// over an explicit mode given in the same invocation.
+func applyFinalizeOverride(o opts, cfg *config.Config) {
+	if o.Finalize != "" {
+		cfg.Finalize = o.Finalize
+		cfg.FinalizeSet = true
+	}
+	if o.SkipFinalize {
+		cfg.Finalize = config.FinalizeNone
+		cfg.FinalizeSet = true
+	}
+}
+
 // applyCLIOverrides applies CLI flag overrides to config.
 // uses opts.*Set bools (populated by markFlagsSet) to detect explicitly-set zero values
 // so that e.g. --idle-timeout 0 can disable a non-zero config value.
 // returns an error if a post-merge validation fails (e.g. --pass-claude-md requires
 // codex executor, which may come from config file rather than CLI).
 func applyCLIOverrides(o opts, cfg *config.Config) error {
-	if o.SkipFinalize {
-		cfg.FinalizeEnabled = false
-	}
+	applyFinalizeOverride(o, cfg)
 	if o.PreserveAnthropicAPIKey {
 		cfg.PreserveAnthropicAPIKey = true
 	}

@@ -67,6 +67,7 @@ removed_spellings=(
 	'codex_reasoning_effort'
 	'`executor`'
 	'executor[[:space:]]*='
+	'finalize_enabled'
 )
 
 fail() {

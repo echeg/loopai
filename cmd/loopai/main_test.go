@@ -1712,7 +1712,9 @@ func TestRemoveRunRecordAfterArchivalWarnsOnFailure(t *testing.T) {
 }
 
 func TestExecutePlanWiresLiveTimingsIntoCompletionReport(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 	dir := setupTestRepo(t)
 	t.Chdir(dir)
 	planPath := filepath.Join(dir, "docs", "plans", "timing.md")
@@ -1747,7 +1749,9 @@ printf '%s\n' '{"type":"result","result":""}'
 // a review block on another provider than the task phase is the one misconfiguration that
 // raises no error, so this drives createRunner's spec wiring through a real review run
 func TestExecutePlanRunsReviewBlockOnReviewProvider(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 	dir := setupTestRepo(t)
 	t.Chdir(dir)
 	planPath := filepath.Join(dir, "docs", "plans", "split.md")
@@ -3394,42 +3398,60 @@ func TestResolveMaxIterations(t *testing.T) {
 	}
 }
 
-func TestSkipFinalizeFlag(t *testing.T) {
-	t.Run("skip_finalize_disables_in_runner", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		oldWd, wdErr := os.Getwd()
-		require.NoError(t, wdErr)
-		require.NoError(t, os.Chdir(tmpDir))
-		t.Cleanup(func() { _ = os.Chdir(oldWd) })
+func TestFinalizeFlags(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		cfg     config.Config
+		want    string
+		wantSet bool
+	}{
+		{name: "absent flags keep config", cfg: config.Config{Finalize: config.FinalizePR, FinalizeSet: true},
+			want: config.FinalizePR, wantSet: true},
+		{name: "absent flags keep embedded default", cfg: config.Config{Finalize: config.FinalizeNone},
+			want: config.FinalizeNone},
+		{name: "finalize overrides config", args: []string{"--finalize=merge"},
+			cfg: config.Config{Finalize: config.FinalizeSync, FinalizeSet: true}, want: config.FinalizeMerge, wantSet: true},
+		{name: "detached finalize value", args: []string{"--finalize", "sync"},
+			cfg: config.Config{Finalize: config.FinalizeNone}, want: config.FinalizeSync, wantSet: true},
+		{name: "finalize none disables config", args: []string{"--finalize=none"},
+			cfg: config.Config{Finalize: config.FinalizeMerge, FinalizeSet: true}, want: config.FinalizeNone, wantSet: true},
+		{name: "skip-finalize disables config", args: []string{"--skip-finalize"},
+			cfg: config.Config{Finalize: config.FinalizeMerge, FinalizeSet: true}, want: config.FinalizeNone, wantSet: true},
+		{name: "skip-finalize wins over finalize", args: []string{"--finalize=pr", "--skip-finalize"},
+			cfg: config.Config{Finalize: config.FinalizeNone}, want: config.FinalizeNone, wantSet: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg
+			o := parseTestOpts(t, tc.args...)
+			require.NoError(t, applyCLIOverrides(o, &cfg))
+			assert.Equal(t, tc.want, cfg.Finalize)
+			assert.Equal(t, tc.wantSet, cfg.FinalizeSet)
+			assert.Equal(t, len(tc.args) > 0, hasExecutionMode(o), "finalize flags select execution mode")
+		})
+	}
 
-		cfg := &config.Config{FinalizeEnabled: true}
-		o := opts{SkipFinalize: true, MaxIterations: 50}
-
-		// apply the same override as run() does
-		if o.SkipFinalize {
-			cfg.FinalizeEnabled = false
-		}
-
-		colors := testColors()
-		holder := &status.PhaseHolder{}
-		log, err := progress.NewLogger(progress.Config{Mode: "full", Branch: "test", NoColor: true}, colors, holder)
-		require.NoError(t, err)
-		defer log.Close()
-
-		// verify createRunner receives the overridden config
-		req := executePlanRequest{Mode: processor.ModeFull, Config: cfg, DefaultBranch: "main"}
-		runner := createRunner(req, o, log, holder, nil)
-		assert.NotNil(t, runner)
-		assert.False(t, cfg.FinalizeEnabled, "skip-finalize should override config")
+	t.Run("invalid finalize value is rejected by the parser", func(t *testing.T) {
+		var o opts
+		parser := flags.NewParser(&o, flags.Default&^flags.PrintErrors)
+		_, err := parser.ParseArgs([]string{"--finalize=true"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "none")
+		assert.Contains(t, err.Error(), "merge")
 	})
 
-	t.Run("no_skip_finalize_preserves_config", func(t *testing.T) {
-		cfg := &config.Config{FinalizeEnabled: true}
-		o := opts{SkipFinalize: false}
-		if o.SkipFinalize {
-			cfg.FinalizeEnabled = false
+	t.Run("createRunner accepts every finalize mode", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		holder := &status.PhaseHolder{}
+		log, err := progress.NewLogger(progress.Config{Mode: "full", Branch: "test", NoColor: true}, testColors(), holder)
+		require.NoError(t, err)
+		defer log.Close()
+		for _, mode := range config.FinalizeModes {
+			cfg := &config.Config{Finalize: mode}
+			req := executePlanRequest{Mode: processor.ModeFull, Config: cfg, DefaultBranch: "main"}
+			assert.NotNil(t, createRunner(req, opts{MaxIterations: 50}, log, holder, nil), mode)
 		}
-		assert.True(t, cfg.FinalizeEnabled, "config should be preserved when skip-finalize not set")
 	})
 }
 
@@ -4362,7 +4384,9 @@ func TestWaitFlag(t *testing.T) {
 }
 
 func TestDetectClaudeSwapRecovery(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 	binDir := t.TempDir()
 	t.Setenv("PATH", binDir)
 	cfg := &config.Config{ClaudeSwapEnabled: true, ClaudeCommand: "claude"}
@@ -4864,7 +4888,9 @@ func TestRemovedFlagsAreHiddenFromHelp(t *testing.T) {
 // the migration message must reach a user whose machine can no longer run the old setup: no
 // executor binary on PATH, and a config the loader would itself reject for a removed key.
 func TestRunRejectsRemovedFlagsBeforeConfigAndDependencies(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
 	t.Chdir(t.TempDir())
@@ -8700,6 +8726,9 @@ func TestRunWithWorktreeAutoResume(t *testing.T) {
 		runGit(t, dir, "commit", "-m", "add mixed-case resume plan")
 
 		requestedPlanPath := filepath.Join(plansDir, "resume-mixed-case.md")
+		if _, statErr := os.Stat(requestedPlanPath); statErr != nil {
+			t.Skip("case-sensitive filesystem: a case-mismatched plan path names no file")
+		}
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
 		wtPath, _, err := gitSvc.CreateWorktreeForPlan(requestedPlanPath, "")

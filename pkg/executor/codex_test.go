@@ -3187,6 +3187,7 @@ func TestCodexExecutor_findRolloutFile_UsesCodexHome(t *testing.T) {
 	home := t.TempDir()
 	codexHome := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 	t.Setenv("CODEX_HOME", codexHome)
 	sessionID := "019e3bbe-9788-79f1-b668-codexhome0001"
 	dir := filepath.Join(codexHome, "sessions", "2026", "08", "07")
@@ -3202,6 +3203,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 	// can resolve it via the same glob the real runtime uses.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-deadbeefcafe"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "05", "18")
@@ -3277,6 +3279,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 func TestCodexExecutor_tailRolloutFile_tracksCommandsWithoutOutputHandler(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-feedfacecafe"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
@@ -3311,6 +3314,7 @@ func TestCodexExecutor_tailRolloutFile_tracksCommandsWithoutOutputHandler(t *tes
 func TestCodexExecutor_tailRolloutFile_ProcessesUnterminatedFinalRecordOnCancel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-acde00000001"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
@@ -3343,6 +3347,7 @@ func TestCodexExecutor_tailRolloutFile_ProcessesUnterminatedFinalRecordOnCancel(
 func TestCodexExecutor_tailRolloutFile_TracksChildSessionCustomExec(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-acde00000002"
 	childID := "019e3bbe-9788-79f1-b668-acde00000003"
@@ -3506,6 +3511,7 @@ func TestRolloutParentThreadID_RejectsOversizedMetadataRecord(t *testing.T) {
 func TestCodexExecutor_tailRolloutFile_CancelDropsPendingCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-acde00000004"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
@@ -3530,6 +3536,7 @@ func TestCodexExecutor_tailRolloutFile_CancelDropsPendingCommand(t *testing.T) {
 func TestCodexExecutor_findRolloutFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 	t.Setenv("CODEX_HOME", "")
 	e := &CodexExecutor{}
 

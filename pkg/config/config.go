@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -94,6 +95,40 @@ const (
 	ExternalReviewToolNone   = "none"
 )
 
+// Finalize modes, each including the previous one: sync merges the remote base into the
+// plan branch and validates it, pr also pushes and opens a pull request, and merge also
+// waits for the PR checks and merges the PR on GitHub.
+const (
+	FinalizeNone  = "none"
+	FinalizeSync  = "sync"
+	FinalizePR    = "pr"
+	FinalizeMerge = "merge"
+)
+
+// FinalizeModes lists the accepted finalize values in escalating order.
+var FinalizeModes = []string{FinalizeNone, FinalizeSync, FinalizePR, FinalizeMerge}
+
+// FinalizeMergeMethods lists the accepted finalize_merge_method values, named after the
+// matching gh pr merge flags.
+var FinalizeMergeMethods = []string{"merge", "squash", "rebase"}
+
+// DefaultFinalizeMergeMethod and DefaultFinalizeChecksTimeout apply when a Config was
+// built without the embedded defaults.
+const (
+	DefaultFinalizeMergeMethod   = "merge"
+	DefaultFinalizeChecksTimeout = 30 * time.Minute
+)
+
+// IsValidFinalizeMode reports whether mode is one of FinalizeModes.
+func IsValidFinalizeMode(mode string) bool {
+	return slices.Contains(FinalizeModes, mode)
+}
+
+// IsValidFinalizeMergeMethod reports whether method is one of FinalizeMergeMethods.
+func IsValidFinalizeMergeMethod(method string) bool {
+	return slices.Contains(FinalizeMergeMethods, method)
+}
+
 // Config holds all configuration settings for loopai.
 // Fields ending in *Set mostly track whether that field was explicitly set in config.
 // This allows distinguishing explicit false/0 from "not set", enabling proper
@@ -130,10 +165,14 @@ type Config struct {
 	MaxExternalIterations int  `json:"max_external_iterations"`
 	ReviewPatience        int  `json:"review_patience"`
 
-	FinalizeEnabled    bool `json:"finalize_enabled"`
-	FinalizeEnabledSet bool `json:"-"` // tracks if finalize_enabled was explicitly set in config
-	ReportEnabled      bool `json:"report_enabled"`
-	ReportEnabledSet   bool `json:"-"` // tracks if report_enabled was explicitly set in config
+	Finalize                 string        `json:"finalize"`                // none, sync, pr, or merge; see EffectiveFinalize
+	FinalizeSet              bool          `json:"-"`                       // tracks if finalize was explicitly set in config
+	FinalizeMergeMethod      string        `json:"finalize_merge_method"`   // merge, squash, or rebase for finalize = merge
+	FinalizeMergeMethodSet   bool          `json:"-"`                       // tracks if finalize_merge_method was explicitly set in config
+	FinalizeChecksTimeout    time.Duration `json:"finalize_checks_timeout"` // bound on waiting for PR checks under finalize = merge
+	FinalizeChecksTimeoutSet bool          `json:"-"`                       // tracks if finalize_checks_timeout was explicitly set in config
+	ReportEnabled            bool          `json:"report_enabled"`
+	ReportEnabledSet         bool          `json:"-"` // tracks if report_enabled was explicitly set in config
 
 	PreserveAnthropicAPIKey bool `json:"preserve_anthropic_api_key"` // when true, ANTHROPIC_API_KEY is passed through to the claude child process
 
@@ -362,63 +401,67 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 
 	// assemble config
 	c := &Config{
-		ClaudeCommand:           values.ClaudeCommand,
-		ClaudeArgs:              values.ClaudeArgs,
-		PlanModel:               values.PlanModel,
-		TaskModel:               values.TaskModel,
-		ReviewModel:             values.ReviewModel,
-		CodexEnabled:            values.CodexEnabled,
-		CodexEnabledSet:         values.CodexEnabledSet,
-		CodexCommand:            values.CodexCommand,
-		CodexArgs:               values.CodexArgs,
-		CodexTimeoutMs:          values.CodexTimeoutMs,
-		CodexTimeoutMsSet:       values.CodexTimeoutMsSet,
-		CodexSandbox:            values.CodexSandbox,
-		CodexSandboxSet:         values.CodexSandboxSet,
-		ExternalReviewers:       values.ExternalReviewers,
-		ExternalReviewersSet:    values.ExternalReviewersSet,
-		CustomReviewScript:      values.CustomReviewScript,
-		IterationDelayMs:        values.IterationDelayMs,
-		IterationDelayMsSet:     values.IterationDelayMsSet,
-		TaskRetryCount:          values.TaskRetryCount,
-		TaskRetryCountSet:       values.TaskRetryCountSet,
-		MaxIterations:           values.MaxIterations,
-		MaxIterationsSet:        values.MaxIterationsSet,
-		MaxExternalIterations:   values.MaxExternalIterations,
-		ReviewPatience:          values.ReviewPatience,
-		FinalizeEnabled:         values.FinalizeEnabled,
-		FinalizeEnabledSet:      values.FinalizeEnabledSet,
-		ReportEnabled:           values.ReportEnabled,
-		ReportEnabledSet:        values.ReportEnabledSet,
-		PreserveAnthropicAPIKey: values.PreserveAnthropicAPIKey,
-		PassClaudeMd:            values.PassClaudeMd,
-		MovePlanOnCompletion:    values.MovePlanOnCompletion,
-		WorktreeEnabled:         values.WorktreeEnabled,
-		WorktreeEnabledSet:      values.WorktreeEnabledSet,
-		Orca:                    values.Orca,
-		OrcaSet:                 values.OrcaSet,
-		T3:                      values.T3,
-		T3Set:                   values.T3Set,
-		KeepAwake:               values.KeepAwake,
-		KeepAwakeSet:            values.KeepAwakeSet,
-		PlansDir:                values.PlansDir,
-		BacklogDir:              values.BacklogDir,
-		DefaultBranch:           values.DefaultBranch,
-		VcsCommand:              values.VcsCommand,
-		CommitTrailer:           values.CommitTrailer,
-		WatchDirs:               values.WatchDirs,
-		ClaudeErrorPatterns:     values.ClaudeErrorPatterns,
-		CodexErrorPatterns:      values.CodexErrorPatterns,
-		ClaudeLimitPatterns:     values.ClaudeLimitPatterns,
-		CodexLimitPatterns:      values.CodexLimitPatterns,
-		ClaudeRetryPatterns:     values.ClaudeRetryPatterns,
-		ClaudeSwapEnabled:       values.ClaudeSwapEnabled,
-		WaitOnLimit:             values.WaitOnLimit,
-		WaitOnLimitSet:          values.WaitOnLimitSet,
-		SessionTimeout:          values.SessionTimeout,
-		SessionTimeoutSet:       values.SessionTimeoutSet,
-		IdleTimeout:             values.IdleTimeout,
-		IdleTimeoutSet:          values.IdleTimeoutSet,
+		ClaudeCommand:            values.ClaudeCommand,
+		ClaudeArgs:               values.ClaudeArgs,
+		PlanModel:                values.PlanModel,
+		TaskModel:                values.TaskModel,
+		ReviewModel:              values.ReviewModel,
+		CodexEnabled:             values.CodexEnabled,
+		CodexEnabledSet:          values.CodexEnabledSet,
+		CodexCommand:             values.CodexCommand,
+		CodexArgs:                values.CodexArgs,
+		CodexTimeoutMs:           values.CodexTimeoutMs,
+		CodexTimeoutMsSet:        values.CodexTimeoutMsSet,
+		CodexSandbox:             values.CodexSandbox,
+		CodexSandboxSet:          values.CodexSandboxSet,
+		ExternalReviewers:        values.ExternalReviewers,
+		ExternalReviewersSet:     values.ExternalReviewersSet,
+		CustomReviewScript:       values.CustomReviewScript,
+		IterationDelayMs:         values.IterationDelayMs,
+		IterationDelayMsSet:      values.IterationDelayMsSet,
+		TaskRetryCount:           values.TaskRetryCount,
+		TaskRetryCountSet:        values.TaskRetryCountSet,
+		MaxIterations:            values.MaxIterations,
+		MaxIterationsSet:         values.MaxIterationsSet,
+		MaxExternalIterations:    values.MaxExternalIterations,
+		ReviewPatience:           values.ReviewPatience,
+		Finalize:                 values.Finalize,
+		FinalizeSet:              values.FinalizeSet,
+		FinalizeMergeMethod:      values.FinalizeMergeMethod,
+		FinalizeMergeMethodSet:   values.FinalizeMergeMethodSet,
+		FinalizeChecksTimeout:    values.FinalizeChecksTimeout,
+		FinalizeChecksTimeoutSet: values.FinalizeChecksTimeoutSet,
+		ReportEnabled:            values.ReportEnabled,
+		ReportEnabledSet:         values.ReportEnabledSet,
+		PreserveAnthropicAPIKey:  values.PreserveAnthropicAPIKey,
+		PassClaudeMd:             values.PassClaudeMd,
+		MovePlanOnCompletion:     values.MovePlanOnCompletion,
+		WorktreeEnabled:          values.WorktreeEnabled,
+		WorktreeEnabledSet:       values.WorktreeEnabledSet,
+		Orca:                     values.Orca,
+		OrcaSet:                  values.OrcaSet,
+		T3:                       values.T3,
+		T3Set:                    values.T3Set,
+		KeepAwake:                values.KeepAwake,
+		KeepAwakeSet:             values.KeepAwakeSet,
+		PlansDir:                 values.PlansDir,
+		BacklogDir:               values.BacklogDir,
+		DefaultBranch:            values.DefaultBranch,
+		VcsCommand:               values.VcsCommand,
+		CommitTrailer:            values.CommitTrailer,
+		WatchDirs:                values.WatchDirs,
+		ClaudeErrorPatterns:      values.ClaudeErrorPatterns,
+		CodexErrorPatterns:       values.CodexErrorPatterns,
+		ClaudeLimitPatterns:      values.ClaudeLimitPatterns,
+		CodexLimitPatterns:       values.CodexLimitPatterns,
+		ClaudeRetryPatterns:      values.ClaudeRetryPatterns,
+		ClaudeSwapEnabled:        values.ClaudeSwapEnabled,
+		WaitOnLimit:              values.WaitOnLimit,
+		WaitOnLimitSet:           values.WaitOnLimitSet,
+		SessionTimeout:           values.SessionTimeout,
+		SessionTimeoutSet:        values.SessionTimeoutSet,
+		IdleTimeout:              values.IdleTimeout,
+		IdleTimeoutSet:           values.IdleTimeoutSet,
 		NotifyParams: notify.Params{
 			Channels:      values.NotifyChannels,
 			OnError:       values.NotifyOnError,
@@ -509,6 +552,30 @@ func isRealCommand(command, binary string) bool {
 		name = strings.TrimSuffix(strings.ToLower(name), ".exe")
 	}
 	return name == binary
+}
+
+// EffectiveFinalize returns the finalize mode, treating an unset value as FinalizeNone.
+func (c *Config) EffectiveFinalize() string {
+	if c == nil || c.Finalize == "" {
+		return FinalizeNone
+	}
+	return c.Finalize
+}
+
+// EffectiveFinalizeMergeMethod returns the merge method, falling back to DefaultFinalizeMergeMethod.
+func (c *Config) EffectiveFinalizeMergeMethod() string {
+	if c == nil || c.FinalizeMergeMethod == "" {
+		return DefaultFinalizeMergeMethod
+	}
+	return c.FinalizeMergeMethod
+}
+
+// EffectiveFinalizeChecksTimeout returns the checks timeout, falling back to DefaultFinalizeChecksTimeout.
+func (c *Config) EffectiveFinalizeChecksTimeout() time.Duration {
+	if c == nil || c.FinalizeChecksTimeout <= 0 {
+		return DefaultFinalizeChecksTimeout
+	}
+	return c.FinalizeChecksTimeout
 }
 
 // CodexExecutorSandbox returns the sandbox mode for a codex phase executor (a plan,

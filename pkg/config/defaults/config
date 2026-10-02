@@ -166,13 +166,33 @@ codex_sandbox = read-only
 # custom_review_script =
 
 # ------------------------------------------------------------------------------
-# finalize step
+# finalize
 # ------------------------------------------------------------------------------
 
-# finalize_enabled: whether to run finalize step after successful review phases
-# runs once at the end, best-effort (failures logged but don't block success)
-# default: false
-# finalize_enabled = false
+# finalize: how a successful run closes out its plan branch, each mode including
+# the previous one:
+#   none  - do nothing
+#   sync  - fetch origin/<base>, merge it into the plan branch (never rebase,
+#           never force-push), let the review_model provider resolve clear-cut
+#           conflicts only, and run the plan's validation commands
+#   pr    - sync, then push the branch and open a pull request (needs gh)
+#   merge - pr, then wait for the PR checks and merge the PR on GitHub
+# a finalize stop never fails the run: the plan's work succeeded, and the reason
+# is reported as the last summary line. --review and --external-only run sync only.
+# --finalize=<mode> overrides it for one run and --skip-finalize forces none.
+# finalize_enabled was removed; use finalize = sync|pr|merge instead.
+# default: none
+finalize = none
+
+# finalize_merge_method: how finalize = merge merges the pull request on GitHub,
+# one of merge, squash, or rebase (the matching gh pr merge flag)
+# default: merge
+finalize_merge_method = merge
+
+# finalize_checks_timeout: how long finalize = merge waits for the pull request
+# checks before giving up without merging (Go duration, must be positive)
+# default: 30m
+finalize_checks_timeout = 30m
 
 # ------------------------------------------------------------------------------
 # completion report

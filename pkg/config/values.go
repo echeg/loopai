@@ -49,11 +49,15 @@ type Values struct {
 	TaskRetryCount             int
 	TaskRetryCountSet          bool // tracks if task_retry_count was explicitly set
 	MaxIterations              int
-	MaxIterationsSet           bool // tracks if max_iterations was explicitly set
-	MaxExternalIterations      int  // override external review iteration limit (0 = auto)
-	ReviewPatience             int  // terminate external review after N unchanged rounds (0 = disabled)
-	FinalizeEnabled            bool
-	FinalizeEnabledSet         bool // tracks if finalize_enabled was explicitly set
+	MaxIterationsSet           bool          // tracks if max_iterations was explicitly set
+	MaxExternalIterations      int           // override external review iteration limit (0 = auto)
+	ReviewPatience             int           // terminate external review after N unchanged rounds (0 = disabled)
+	Finalize                   string        // finalize mode: none, sync, pr, or merge
+	FinalizeSet                bool          // tracks if finalize was explicitly set
+	FinalizeMergeMethod        string        // GitHub merge method for finalize = merge: merge, squash, or rebase
+	FinalizeMergeMethodSet     bool          // tracks if finalize_merge_method was explicitly set
+	FinalizeChecksTimeout      time.Duration // how long finalize = merge waits for PR checks
+	FinalizeChecksTimeoutSet   bool          // tracks if finalize_checks_timeout was explicitly set
 	ReportEnabled              bool
 	ReportEnabledSet           bool // tracks if report_enabled was explicitly set
 	PreserveAnthropicAPIKey    bool
@@ -190,6 +194,9 @@ func (vl *valuesLoader) parseValuesFromEmbedded() (Values, error) {
 	values.ExternalReviewersSet = false
 	values.ReportEnabledSet = false
 	values.KeepAwakeSet = false
+	values.FinalizeSet = false
+	values.FinalizeMergeMethodSet = false
+	values.FinalizeChecksTimeoutSet = false
 	return values, nil
 }
 
@@ -330,13 +337,8 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 	}
 
 	// finalize settings
-	if key, err := section.GetKey("finalize_enabled"); err == nil {
-		val, boolErr := key.Bool()
-		if boolErr != nil {
-			return Values{}, fmt.Errorf("invalid finalize_enabled: %w", boolErr)
-		}
-		values.FinalizeEnabled = val
-		values.FinalizeEnabledSet = true
+	if err := vl.parseFinalizeValues(section, &values); err != nil {
+		return Values{}, err
 	}
 	if key, err := section.GetKey("report_enabled"); err == nil {
 		val, boolErr := key.Bool()
@@ -473,6 +475,42 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 	return values, nil
 }
 
+// parseFinalizeValues extracts the finalize mode, merge method, and checks timeout.
+// an empty value leaves the key unset, like the duration keys, so the embedded default applies.
+func (vl *valuesLoader) parseFinalizeValues(section *ini.Section, values *Values) error {
+	if key, err := section.GetKey("finalize"); err == nil {
+		if val := strings.ToLower(strings.TrimSpace(key.String())); val != "" {
+			if !IsValidFinalizeMode(val) {
+				return fmt.Errorf("invalid finalize: must be one of %s, got %q", strings.Join(FinalizeModes, ", "), key.String())
+			}
+			values.Finalize = val
+			values.FinalizeSet = true
+		}
+	}
+	if key, err := section.GetKey("finalize_merge_method"); err == nil {
+		if val := strings.ToLower(strings.TrimSpace(key.String())); val != "" {
+			if !IsValidFinalizeMergeMethod(val) {
+				return fmt.Errorf("invalid finalize_merge_method: must be one of %s, got %q",
+					strings.Join(FinalizeMergeMethods, ", "), key.String())
+			}
+			values.FinalizeMergeMethod = val
+			values.FinalizeMergeMethodSet = true
+		}
+	}
+	d, ok, err := vl.parseDurationKey(section, "finalize_checks_timeout")
+	if err != nil {
+		return err
+	}
+	if ok {
+		if d == 0 {
+			return fmt.Errorf("invalid finalize_checks_timeout: must be positive, got %s", section.Key("finalize_checks_timeout").String())
+		}
+		values.FinalizeChecksTimeout = d
+		values.FinalizeChecksTimeoutSet = true
+	}
+	return nil
+}
+
 // parseDurationKey parses a non-negative duration from the named INI key.
 // ok is false (with nil error) when the key is absent or empty, so the caller
 // leaves both the value and its *Set sentinel untouched.
@@ -585,10 +623,7 @@ func (dst *Values) mergeExecutionFrom(src *Values) {
 // mergeExtraFrom merges feature flags, paths, error/limit patterns, and wait settings from src into dst.
 // called from mergeFrom to manage cyclomatic complexity.
 func (dst *Values) mergeExtraFrom(src *Values) {
-	if src.FinalizeEnabledSet {
-		dst.FinalizeEnabled = src.FinalizeEnabled
-		dst.FinalizeEnabledSet = true
-	}
+	dst.mergeFinalizeFrom(src)
 	if src.ReportEnabledSet {
 		dst.ReportEnabled = src.ReportEnabled
 		dst.ReportEnabledSet = true
@@ -648,6 +683,23 @@ func (dst *Values) mergeExtraFrom(src *Values) {
 	if src.IdleTimeoutSet {
 		dst.IdleTimeout = src.IdleTimeout
 		dst.IdleTimeoutSet = true
+	}
+}
+
+// mergeFinalizeFrom merges the finalize settings from src into dst.
+// a value is never empty once set, and the embedded defaults carry values with cleared Set flags.
+func (dst *Values) mergeFinalizeFrom(src *Values) {
+	if src.Finalize != "" {
+		dst.Finalize = src.Finalize
+		dst.FinalizeSet = dst.FinalizeSet || src.FinalizeSet
+	}
+	if src.FinalizeMergeMethod != "" {
+		dst.FinalizeMergeMethod = src.FinalizeMergeMethod
+		dst.FinalizeMergeMethodSet = dst.FinalizeMergeMethodSet || src.FinalizeMergeMethodSet
+	}
+	if src.FinalizeChecksTimeout != 0 {
+		dst.FinalizeChecksTimeout = src.FinalizeChecksTimeout
+		dst.FinalizeChecksTimeoutSet = dst.FinalizeChecksTimeoutSet || src.FinalizeChecksTimeoutSet
 	}
 }
 
@@ -888,15 +940,17 @@ type removedKey struct {
 	replacement string
 }
 
-// removedKeys lists keys whose meaning moved into provider[:model[:effort]] specs.
-// a removed key is an error even when empty, because honoring or ignoring it
-// silently would change which provider or model a run uses.
+// removedKeys lists keys whose meaning moved into provider[:model[:effort]] specs,
+// plus finalize_enabled, whose boolean became the finalize mode. a removed key is an
+// error even when empty, because honoring or ignoring it silently would change which
+// provider or model a run uses, or whether the run closes out its branch.
 var removedKeys = []removedKey{
 	{name: "executor", replacement: "set the provider in the model spec instead, e.g. task_model = codex:<model>[:effort]"},
 	{name: "external_review_tool", replacement: "use external_reviewers = <provider>[:model[:effort]] (an empty value disables external review)"},
 	{name: "external_review_model", replacement: "put the model in the matching entry, e.g. external_reviewers = <provider>:<model>[:effort]"},
 	{name: "codex_model", replacement: "put the model in each codex spec, e.g. codex:<model>[:effort]"},
 	{name: "codex_reasoning_effort", replacement: "put the effort in each codex spec, e.g. codex:<model>:<effort>"},
+	{name: "finalize_enabled", replacement: "use finalize = sync|pr|merge (finalize = none disables it)"},
 }
 
 // checkRemovedKeys returns an error naming the first removed key present in section.

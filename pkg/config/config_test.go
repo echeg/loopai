@@ -201,6 +201,7 @@ func isolateHome(t *testing.T) string {
 	t.Helper()
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on windows
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
 	return tmpDir
 }
@@ -274,6 +275,7 @@ iteration_delay_ms = 9999
 func TestDefaultConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 
 	dir := DefaultConfigDir()
 	assert.Equal(t, filepath.Join(home, ".config", "loopai"), dir)
@@ -282,6 +284,7 @@ func TestDefaultConfigDir(t *testing.T) {
 func TestLoadReadOnly_IgnoresLegacyGlobalDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 
 	workDir := t.TempDir()
 	origDir, err := os.Getwd()
@@ -463,41 +466,85 @@ func TestLoad_ExplicitFalseCodexEnabled(t *testing.T) {
 	assert.True(t, cfg.CodexEnabledSet)
 }
 
-func TestLoad_ExplicitTrueFinalizeEnabled(t *testing.T) {
-	tmpDir := t.TempDir()
-	configDir := filepath.Join(tmpDir, "ralphex")
-	require.NoError(t, os.MkdirAll(configDir, 0o700))
-	require.NoError(t, os.MkdirAll(filepath.Join(configDir, "prompts"), 0o700))
-	require.NoError(t, os.MkdirAll(filepath.Join(configDir, "agents"), 0o700))
+func TestLoad_Finalize(t *testing.T) {
+	t.Run("embedded defaults are none, merge, and 30m but unset", func(t *testing.T) {
+		configDir := filepath.Join(t.TempDir(), "loopai")
+		require.NoError(t, os.MkdirAll(configDir, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(""), 0o600))
 
-	// explicitly set finalize_enabled to true
-	configContent := `finalize_enabled = true`
-	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(configContent), 0o600))
+		cfg, err := Load(configDir)
+		require.NoError(t, err)
+		assert.Equal(t, FinalizeNone, cfg.Finalize)
+		assert.False(t, cfg.FinalizeSet)
+		assert.Equal(t, "merge", cfg.FinalizeMergeMethod)
+		assert.False(t, cfg.FinalizeMergeMethodSet)
+		assert.Equal(t, 30*time.Minute, cfg.FinalizeChecksTimeout)
+		assert.False(t, cfg.FinalizeChecksTimeoutSet)
+	})
 
-	cfg, err := Load(configDir)
-	require.NoError(t, err)
+	t.Run("explicit values are loaded and marked set", func(t *testing.T) {
+		configDir := filepath.Join(t.TempDir(), "loopai")
+		require.NoError(t, os.MkdirAll(configDir, 0o700))
+		body := "finalize = PR\nfinalize_merge_method = squash\nfinalize_checks_timeout = 1h\n"
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(body), 0o600))
 
-	// explicit true should be preserved
-	assert.True(t, cfg.FinalizeEnabled)
-	assert.True(t, cfg.FinalizeEnabledSet)
+		cfg, err := Load(configDir)
+		require.NoError(t, err)
+		assert.Equal(t, FinalizePR, cfg.Finalize)
+		assert.True(t, cfg.FinalizeSet)
+		assert.Equal(t, "squash", cfg.FinalizeMergeMethod)
+		assert.True(t, cfg.FinalizeMergeMethodSet)
+		assert.Equal(t, time.Hour, cfg.FinalizeChecksTimeout)
+		assert.True(t, cfg.FinalizeChecksTimeoutSet)
+	})
+
+	t.Run("finalize_enabled is rejected with the replacement", func(t *testing.T) {
+		configDir := filepath.Join(t.TempDir(), "loopai")
+		require.NoError(t, os.MkdirAll(configDir, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte("finalize_enabled = true"), 0o600))
+
+		_, err := Load(configDir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "config key finalize_enabled was removed")
+		assert.Contains(t, err.Error(), "finalize = sync|pr|merge")
+	})
 }
 
-func TestLoad_FinalizeEnabledDefaultFalse(t *testing.T) {
-	tmpDir := t.TempDir()
-	configDir := filepath.Join(tmpDir, "ralphex")
-	require.NoError(t, os.MkdirAll(configDir, 0o700))
-	require.NoError(t, os.MkdirAll(filepath.Join(configDir, "prompts"), 0o700))
-	require.NoError(t, os.MkdirAll(filepath.Join(configDir, "agents"), 0o700))
+func TestConfig_EffectiveFinalize(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *Config
+		mode    string
+		method  string
+		timeout time.Duration
+	}{
+		{name: "nil config", cfg: nil, mode: FinalizeNone, method: "merge", timeout: 30 * time.Minute},
+		{name: "zero config", cfg: &Config{}, mode: FinalizeNone, method: "merge", timeout: 30 * time.Minute},
+		{name: "explicit values", cfg: &Config{Finalize: FinalizeMerge, FinalizeMergeMethod: "rebase",
+			FinalizeChecksTimeout: time.Minute}, mode: FinalizeMerge, method: "rebase", timeout: time.Minute},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.mode, tc.cfg.EffectiveFinalize())
+			assert.Equal(t, tc.method, tc.cfg.EffectiveFinalizeMergeMethod())
+			assert.Equal(t, tc.timeout, tc.cfg.EffectiveFinalizeChecksTimeout())
+		})
+	}
+}
 
-	// empty config - finalize_enabled should be false by default
-	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(""), 0o600))
-
-	cfg, err := Load(configDir)
-	require.NoError(t, err)
-
-	// finalize_enabled should default to false (disabled)
-	assert.False(t, cfg.FinalizeEnabled)
-	assert.False(t, cfg.FinalizeEnabledSet)
+func TestIsValidFinalizeValues(t *testing.T) {
+	for _, mode := range []string{"none", "sync", "pr", "merge"} {
+		assert.True(t, IsValidFinalizeMode(mode), mode)
+	}
+	for _, mode := range []string{"", "true", "rebase", "PR"} {
+		assert.False(t, IsValidFinalizeMode(mode), mode)
+	}
+	for _, method := range []string{"merge", "squash", "rebase"} {
+		assert.True(t, IsValidFinalizeMergeMethod(method), method)
+	}
+	for _, method := range []string{"", "auto", "fast-forward"} {
+		assert.False(t, IsValidFinalizeMergeMethod(method), method)
+	}
 }
 
 func TestLoad_ReportEnabled(t *testing.T) {
@@ -623,7 +670,7 @@ func TestLoad_PreserveAnthropicAPIKey_InvalidValue(t *testing.T) {
 
 func TestLoad_RemovedKeysRejected(t *testing.T) {
 	for _, body := range []string{"executor = codex", "executor =", "codex_model = gpt-5.5", "codex_reasoning_effort = xhigh",
-		"external_review_tool = auto", "external_review_model ="} {
+		"external_review_tool = auto", "external_review_model =", "finalize_enabled = true", "finalize_enabled = false"} {
 		t.Run(body, func(t *testing.T) {
 			configDir := filepath.Join(t.TempDir(), "ralphex")
 			require.NoError(t, os.MkdirAll(configDir, 0o700))
@@ -1659,7 +1706,9 @@ func TestConfig_JSONShape(t *testing.T) {
 		MaxIterations:           50,
 		MaxExternalIterations:   5,
 		ReviewPatience:          3,
-		FinalizeEnabled:         true,
+		Finalize:                FinalizeMerge,
+		FinalizeMergeMethod:     "squash",
+		FinalizeChecksTimeout:   time.Minute,
 		ReportEnabled:           true,
 		PreserveAnthropicAPIKey: true,
 		TaskProvider:            ExecutorCodex,
@@ -1697,7 +1746,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		"codex_enabled", "codex_command", "codex_args",
 		"codex_timeout_ms", "codex_sandbox", "external_reviewers", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
-		"review_patience", "finalize_enabled", "report_enabled", "preserve_anthropic_api_key",
+		"review_patience", "finalize", "finalize_merge_method", "finalize_checks_timeout", "report_enabled", "preserve_anthropic_api_key",
 		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "orca", "t3", "keep_awake", "plans_dir", "backlog_dir",
 		"watch_dirs", "default_branch", "vcs_command", "commit_trailer",
 		"claude_error_patterns", "codex_error_patterns", "claude_limit_patterns",
@@ -1831,6 +1880,7 @@ func TestLoad_RemovedKeyInGlobalOrLocal(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
 			t.Chdir(home)
 			globalDir := filepath.Join(home, ".config", "loopai")
 			localDir := filepath.Join(home, ".loopai")

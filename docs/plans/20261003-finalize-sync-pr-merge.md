@@ -89,13 +89,15 @@
 ## Implementation Steps
 
 ### Task 1: Replace the finalize configuration surface
-- [ ] in `pkg/config/values.go` and `pkg/config/config.go` replace `FinalizeEnabled`/`FinalizeEnabledSet` with `Finalize` (`none|sync|pr|merge`), `FinalizeMergeMethod` (`merge|squash|rebase`), `FinalizeChecksTimeout` (duration), each with its `...Set` merge handling and value validation errors naming the key
-- [ ] add `finalize_enabled` to `removedKeys` with replacement text pointing at `finalize = sync|pr|merge`
-- [ ] add `--finalize=<mode>` to `opts` in `cmd/loopai/main.go`, keep `--skip-finalize` forcing `none`, update the execution-flag lists (`main.go:205`, `:3675`), `applyCLIOverrides`, and `createRunner`
-- [ ] update `pkg/config/defaults/config` comments for the three keys and the removed one
-- [ ] add `finalize_enabled` to both `removed_spellings` lists (`scripts/check-symlinks.sh`, `scripts/check-codex-skills.sh`), keeping them identical
-- [ ] write tests: parsing and merging of the new keys across layers, invalid values, `finalize_enabled` rejected at every layer, `--finalize` and `--skip-finalize` precedence
-- [ ] run `go test ./pkg/config/... ./cmd/loopai/...` - must pass before task 2
+- [x] in `pkg/config/values.go` and `pkg/config/config.go` replace `FinalizeEnabled`/`FinalizeEnabledSet` with `Finalize` (`none|sync|pr|merge`), `FinalizeMergeMethod` (`merge|squash|rebase`), `FinalizeChecksTimeout` (duration), each with its `...Set` merge handling and value validation errors naming the key
+- [x] add `finalize_enabled` to `removedKeys` with replacement text pointing at `finalize = sync|pr|merge`
+- [x] add `--finalize=<mode>` to `opts` in `cmd/loopai/main.go`, keep `--skip-finalize` forcing `none`, update the execution-flag lists (`main.go:205`, `:3675`), `applyCLIOverrides`, and `createRunner`
+- [x] update `pkg/config/defaults/config` comments for the three keys and the removed one
+- [x] add `finalize_enabled` to both `removed_spellings` lists (`scripts/check-symlinks.sh`, `scripts/check-codex-skills.sh`), keeping them identical
+- [x] write tests: parsing and merging of the new keys across layers, invalid values, `finalize_enabled` rejected at every layer, `--finalize` and `--skip-finalize` precedence
+- [x] run `go test ./pkg/config/... ./cmd/loopai/...` - must pass before task 2
+- ➕ [x] pair every test `HOME` redirect with `USERPROFILE`: on Windows `os.UserHomeDir` reads only `USERPROFILE`, so `TestReset_EmptyConfigDirFallback` reset the real `~/.config/loopai`
+- ➕ [x] fix pre-existing Linux test failures (case-sensitive skip in `TestRunWithWorktreeAutoResume`, platform-native path in `pkg/t3` `TestRunName`) and pre-existing lint findings
 
 ### Task 2: Git helpers for syncing with the remote base
 - [ ] add `Service.FetchContext(ctx, remote, ref)` honoring `vcs_command`
