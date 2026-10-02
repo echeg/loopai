@@ -8700,6 +8700,9 @@ func TestRunWithWorktreeAutoResume(t *testing.T) {
 		runGit(t, dir, "commit", "-m", "add mixed-case resume plan")
 
 		requestedPlanPath := filepath.Join(plansDir, "resume-mixed-case.md")
+		if _, statErr := os.Stat(requestedPlanPath); statErr != nil {
+			t.Skip("case-sensitive filesystem")
+		}
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
 		wtPath, _, err := gitSvc.CreateWorktreeForPlan(requestedPlanPath, "")

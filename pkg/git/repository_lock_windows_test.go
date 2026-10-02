@@ -15,7 +15,7 @@ import (
 
 func TestRepositoryLockContendsWithLegacyByteZeroLock(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "lock")
-	holder, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	holder, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // test-owned temporary path
 	require.NoError(t, err)
 	legacyRange := new(windows.Overlapped)
 	require.NoError(t, windows.LockFileEx(windows.Handle(holder.Fd()),
@@ -25,7 +25,7 @@ func TestRepositoryLockContendsWithLegacyByteZeroLock(t *testing.T) {
 		require.NoError(t, holder.Close())
 	})
 
-	contender, err := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+	contender, err := os.OpenFile(lockPath, os.O_RDWR, 0o600) //nolint:gosec // test-owned temporary path
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, contender.Close()) })
 	acquired, err := tryLockRepositoryFile(contender)
@@ -35,7 +35,7 @@ func TestRepositoryLockContendsWithLegacyByteZeroLock(t *testing.T) {
 
 func TestWorktreeRunLockLeavesDiagnosticHeaderReadable(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "lock")
-	holder, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	holder, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // test-owned temporary path
 	require.NoError(t, err)
 	_, err = holder.WriteString("pid=123 started=2026-08-09T12:30:00Z\n")
 	require.NoError(t, err)
@@ -47,7 +47,7 @@ func TestWorktreeRunLockLeavesDiagnosticHeaderReadable(t *testing.T) {
 		require.NoError(t, holder.Close())
 	})
 
-	contender, err := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+	contender, err := os.OpenFile(lockPath, os.O_RDWR, 0o600) //nolint:gosec // test-owned temporary path
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, contender.Close()) })
 	contents, err := io.ReadAll(contender)

@@ -2402,8 +2402,7 @@ func openAndLockWorktreeRun(
 	release, lockErr := wtSvc.AcquireWorktreeRunLockContext(ctx)
 	if lockErr != nil {
 		if wt.resumed {
-			var busyErr *git.ErrWorktreeBusy
-			if errors.As(lockErr, &busyErr) {
+			if busyErr, ok := errors.AsType[*git.ErrWorktreeBusy](lockErr); ok {
 				return worktreeRun{}, busyErr
 			}
 			return worktreeRun{}, fmt.Errorf("resume worktree: acquire run lock: %w", lockErr)

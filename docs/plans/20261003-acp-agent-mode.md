@@ -89,15 +89,15 @@
 ## Implementation Steps
 
 ### Task 1: JSON-RPC stdio transport (`pkg/acp/transport.go`)
-- [ ] implement a newline-delimited JSON-RPC 2.0 connection over an `io.Reader`/`io.Writer`:
+- [x] implement a newline-delimited JSON-RPC 2.0 connection over an `io.Reader`/`io.Writer`:
   - read loop with a 16 MiB line cap
   - write mutex
   - ids kept as `json.RawMessage`, so values above 2^32 and strings round-trip unchanged
   - unknown fields (`traceId`, `spanId`) ignored
-- [ ] dispatch incoming requests and notifications to registered handlers; reply to unknown requests with `-32601`; ignore unknown notifications
-- [ ] provide `Notify(method, params)`, `Reply(id, result)`, and `ReplyError(id, code, message)`; a request handler may answer later from another goroutine
-- [ ] write tests: request/response round-trip, large numeric and string ids, notification dispatch, unknown method, malformed line skipped, concurrent writes stay line-atomic, EOF ends the loop
-- [ ] run `go test -race ./pkg/acp/...` - must pass before task 2
+- [x] dispatch incoming requests and notifications to registered handlers; reply to unknown requests with `-32601`; ignore unknown notifications
+- [x] provide `Notify(method, params)`, `Reply(id, result)`, and `ReplyError(id, code, message)`; a request handler may answer later from another goroutine
+- [x] write tests: request/response round-trip, large numeric and string ids, notification dispatch, unknown method, malformed line skipped, concurrent writes stay line-atomic, EOF ends the loop
+- [x] run `go test -race ./pkg/acp/...` - must pass before task 2
 
 ### Task 2: ACP session server (`pkg/acp/server.go`)
 - [ ] implement the agent side:
