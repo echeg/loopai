@@ -8,7 +8,8 @@ it only reads the server's runtime file and changes everything else through the 
 loopai as a provider session through its Grok driver.
 
 The integration is best-effort. When the server is not running, the token is missing or rejected,
-or a request times out, loopai prints one warning and the run continues exactly as without it.
+or a title-reporting request fails or times out, loopai prints one warning and disables reporting
+without affecting execution. Pinning and unpinning are best-effort; their failures are ignored silently.
 
 ## Setup
 

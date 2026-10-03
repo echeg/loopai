@@ -4,6 +4,7 @@ package executor
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os/exec"
 	"sync"
@@ -23,6 +24,7 @@ type processGroupCleanup struct {
 	once     sync.Once // guards cmd.Wait() idempotency
 	killOnce sync.Once // guards killProcessGroup() idempotency
 	err      error
+	pipes    []io.Closer
 }
 
 // setupProcessGroup configures command to run in its own session and process group.
@@ -35,13 +37,23 @@ func setupProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
 
+// startProcessGroup starts a command in its own process group and owns its cleanup.
+func startProcessGroup(cmd *exec.Cmd, cancelCh <-chan struct{}, pipes ...io.Closer) (*processGroupCleanup, error) {
+	setupProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start process: %w", err)
+	}
+	return newProcessGroupCleanup(cmd, cancelCh, pipes...), nil
+}
+
 // newProcessGroupCleanup creates a cleanup handler for the given command.
 // The command must already be started before calling this.
 // Caller must eventually call Wait() to ensure proper resource cleanup.
-func newProcessGroupCleanup(cmd *exec.Cmd, cancelCh <-chan struct{}) *processGroupCleanup {
+func newProcessGroupCleanup(cmd *exec.Cmd, cancelCh <-chan struct{}, pipes ...io.Closer) *processGroupCleanup {
 	pg := &processGroupCleanup{
-		cmd:  cmd,
-		done: make(chan struct{}),
+		cmd:   cmd,
+		pipes: pipes,
+		done:  make(chan struct{}),
 	}
 
 	// monitor for cancellation in background
@@ -65,6 +77,11 @@ func (pg *processGroupCleanup) watchForCancel(cancelCh <-chan struct{}) {
 // Early-returns when SIGTERM gets ESRCH (group already gone) to avoid the 100ms sleep
 // overhead on every normal-exit iteration.
 func (pg *processGroupCleanup) killProcessGroup() {
+	defer func() {
+		for _, pipe := range pg.pipes {
+			_ = pipe.Close()
+		}
+	}()
 	process := pg.cmd.Process
 	if process == nil {
 		return

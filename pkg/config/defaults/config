@@ -95,6 +95,14 @@ codex_command = codex
 # codex sessions keep service_tier = "priority" in ~/.codex/config.toml
 # example: codex_args = -c service_tier="default"
 #
+# on Windows, external codex reviewers add -c windows.sandbox="unelevated"
+# while keeping --sandbox read-only, avoiding the elevated sandbox setup.
+# to restore a working elevated setup, set:
+#   codex_args = -c windows.sandbox="elevated"
+# user extras come last and win; they still reach every codex invocation.
+# this default leaves codex phases and Linux/macOS invocations unchanged.
+# loopai never modifies ~/.codex/config.toml.
+#
 # the value is tokenized like a shell word list: quotes group whitespace but are
 # then removed, and backslashes follow shell rules (literal in single quotes,
 # escaping \" and \\ in double quotes, escaping the next character unquoted).
@@ -287,6 +295,16 @@ task_retry_count = 1
 # custom external review is not affected
 # uses Go duration format (e.g., "5m", "10m", "30m")
 # omit or leave empty to disable (no timeout)
+# independently of idle_timeout, every codex invocation gets a 60-second exit
+# grace period after loopai observes task_complete in its session rollout.
+# on expiry, loopai terminates the process tree and returns a successful result
+# using stdout if non-empty, otherwise the event's last_agent_message.
+# CLI limit/error diagnostics captured on stderr still return typed errors;
+# review text is not scanned for patterns on this path.
+# without an observed task_complete (e.g., a missing rollout), no grace kill
+# occurs; existing timeout settings still apply. parent cancellation remains
+# a context error. Windows tree termination uses a Job Object, with taskkill
+# /T /F as the fallback; output read pipes are closed to unblock the runner.
 # idle_timeout =
 
 # ------------------------------------------------------------------------------

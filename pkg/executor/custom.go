@@ -32,9 +32,6 @@ func (r *execCustomRunner) Run(ctx context.Context, script, promptFile string) (
 	// credentials such as ANTHROPIC_API_KEY stay, since custom scripts commonly need them.
 	cmd.Env = filterEnv(os.Environ(), sessionEnvVars...)
 
-	// create new process group so we can kill all descendants on cleanup
-	setupProcessGroup(cmd)
-
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, fmt.Errorf("stdout pipe: %w", err)
@@ -42,12 +39,10 @@ func (r *execCustomRunner) Run(ctx context.Context, script, promptFile string) (
 	// merge stderr into stdout
 	cmd.Stderr = cmd.Stdout
 
-	if err := cmd.Start(); err != nil {
+	cleanup, err := startProcessGroup(cmd, ctx.Done(), stdout)
+	if err != nil {
 		return nil, nil, fmt.Errorf("start command: %w", err)
 	}
-
-	// setup process group cleanup with graceful shutdown on context cancellation
-	cleanup := newProcessGroupCleanup(cmd, ctx.Done())
 
 	return stdout, cleanup.Wait, nil
 }

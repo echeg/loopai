@@ -134,21 +134,16 @@ func (r *execClaudeRunner) Run(ctx context.Context, name string, args ...string)
 		cmd.Stdin = r.stdin
 	}
 
-	// create new process group so we can kill all descendants on cleanup
-	setupProcessGroup(cmd)
-
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, fmt.Errorf("create stdout pipe: %w", err)
 	}
 	// merge stderr into stdout like python's stderr=subprocess.STDOUT
 	cmd.Stderr = cmd.Stdout
-	if err := cmd.Start(); err != nil {
+	cleanup, err := startProcessGroup(cmd, ctx.Done(), stdout)
+	if err != nil {
 		return nil, nil, fmt.Errorf("start command: %w", err)
 	}
-
-	// setup process group cleanup with graceful shutdown on context cancellation
-	cleanup := newProcessGroupCleanup(cmd, ctx.Done())
 
 	return stdout, cleanup.Wait, nil
 }

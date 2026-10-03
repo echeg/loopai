@@ -472,6 +472,7 @@ func TestAgentLoader_loadFileWithFallback_FallsBackToEmbedded(t *testing.T) {
 }
 
 func TestAgentLoader_loadFileWithFallback_PermissionDenied(t *testing.T) {
+	requirePOSIXPermissions(t)
 	tmpDir := t.TempDir()
 	agentFile := filepath.Join(tmpDir, "agent.txt")
 	require.NoError(t, os.WriteFile(agentFile, []byte("content"), 0o600))
