@@ -70,7 +70,8 @@ loopai --version
 ```
 
 For development, `make build` always refreshes `.bin/loopai` and `.bin/loopai-acp`, the launcher for
-the experimental T3 Code provider mode (on Windows also `.bin/loopai.exe` and `.bin/loopai-acp.exe`).
+the experimental T3 Code provider mode. On Windows the launcher is written only as
+`.bin/loopai-acp.exe`, and loopai also gets a `.bin/loopai.exe` copy.
 Install `loopai-acp` beside `loopai` only if you use that mode.
 
 ### Shell completions
@@ -1164,7 +1165,8 @@ not keep a laptop awake indefinitely; a provider-limit wait keeps the hold for i
 waiting for your answer at a prompt counts as inactivity. The inhibitor is bound to the loopai
 process, so a crash releases it. Closing a MacBook lid still sleeps the machine on battery. One hold
 covers a whole plan chain, and watch-only dashboard mode, the close-out commands, and the other
-standalone utility commands never take one. Set `keep_awake = false` to opt out.
+standalone utility commands never take one. Under the experimental T3 Code provider mode
+(`--acp`), each plan run takes its own hold. Set `keep_awake = false` to opt out.
 
 | loopai state | Terminal title | Orca status |
 |---|---|---|

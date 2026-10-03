@@ -101,14 +101,14 @@
 
 ### Task 2: ACP session server (`pkg/acp/server.go`)
 - [x] implement the agent side:
-  - `initialize` → `{protocolVersion:1, agentCapabilities:{loadSession:false}, authMethods:[{id:"cached_token"},{id:"xai.api_key"}], agentInfo:{name:"loopai", version}}`
+  - `initialize` → `{protocolVersion:1, agentCapabilities:{loadSession:true}, authMethods:[{id:"cached_token"},{id:"xai.api_key"}], agentInfo:{name:"loopai", version}}` (review: `loadSession` became true together with `session/load` support)
   - `authenticate` → `{}` for any method id
   - `session/new` → a new session id, recording `cwd` and discarding `mcpServers`
   - `session/set_config_option`, `session/set_mode`, and `session/set_model` → `{}`
-  - `session/load` → error
+  - `session/load` → `{}`, recording the saved session id with its `cwd` (review: T3 Code resumes a thread whose agent process is gone through `session/load`, with no capability check and no `session/new` fallback, so rejecting it broke every later message in that thread)
 - [x] `session/prompt`:
   - take the first text block only and pass it with the session cwd to an injected `RunFunc(ctx, PromptRequest, Sink) (Result, error)` on its own goroutine with a per-prompt cancellable context
-  - reject a second concurrent prompt with an error
+  - reject a second concurrent prompt with an error, except a prompt that follows its own session's `session/cancel`, which waits for the canceled run to end and then runs (review: T3 Code steers a message sent during a turn as cancel then prompt, and rejecting it failed the new turn after the cancel had already stopped the run)
   - map the outcome: success → `{stopReason:"end_turn"}`; cancel → `{stopReason:"cancelled"}`; a run failure → JSON-RPC error carrying the message
 - [x] `session/cancel` cancels that session's running prompt; the request id of the prompt is answered exactly once
 - [x] never log `mcpServers` contents; debug logging, if any, goes to stderr and redacts header values
@@ -117,9 +117,9 @@
   - prompt success
   - prompt failure → error
   - cancel → `cancelled`
-  - concurrent prompt rejected
+  - concurrent prompt rejected; a prompt following its session's cancel waits for the canceled run and then runs
   - runtime-instructions block ignored
-  - `session/load` error
+  - `session/load` of a saved session id, then a prompt on it
   - no credential text in captured stderr
 - [x] ➕ a minimal `Sink` (`Update`, `Message`) lives in `pkg/acp/sink.go` so `RunFunc` has its final type; Task 3 extends it
 - [x] run `go test -race ./pkg/acp/...` - must pass before task 3
@@ -187,7 +187,7 @@
 - [x] build both binaries in `make build` (`.bin/loopai`, `.bin/loopai-acp`)
 - [x] write tests: every probe command's output and exit code, binary resolution order, exec argv for both stdio shapes, unknown argv
 - [x] run `go test -race ./cmd/loopai-acp/...` - must pass before task 7
-- [x] ➕ on Windows `make build` also writes `.bin/loopai-acp.exe` and `.bin/loopai.exe`, because process creation cannot start an extensionless binary there and the launcher's sibling lookup expects `loopai.exe`
+- [x] ➕ on Windows `make build` writes the launcher only as `.bin/loopai-acp.exe` and adds a `.bin/loopai.exe` copy, because process creation cannot start an extensionless binary there and the launcher's sibling lookup expects `loopai.exe`
 
 ### Task 7: Verify acceptance criteria
 - [x] verify all requirements from Overview are implemented
@@ -215,7 +215,7 @@
   - `status.Section` → `plan` entries
   - `PrintAligned` → coalesced `agent_thought_chunk`
   - `Print` → ignored (already summarized by phases)
-  - completion report or failure text → `agent_message_chunk`
+  - completion report → final `agent_message_chunk`; a failure travels as the JSON-RPC error (a partial report is still sent first)
 - **Stop reasons**: `end_turn` on success, `cancelled` on `session/cancel`, JSON-RPC error on a failed run, so T3 records the turn as failed.
 - **Process model**: T3 spawns `loopai-acp ... agent stdio`, which spawns `loopai --acp`. One run at a time per process, and the cwd is changed per prompt and restored afterwards.
 - **stdout discipline**: in ACP mode stdout carries JSON-RPC only; every human-readable line goes to stderr or the progress log.

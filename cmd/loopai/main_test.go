@@ -14209,6 +14209,38 @@ printf '%s\n' '{"type":"result","result":""}'
 	assert.Contains(t, outcome.report, "| internal review |", "the outcome carries the completion report")
 }
 
+// TestStartRunReportersNonInteractive enables all three reporters the way a cmux terminal and
+// t3/orca config would, and checks that only NonInteractive keeps them off.
+func TestStartRunReportersNonInteractive(t *testing.T) {
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	original := newT3Reporter
+	t.Cleanup(func() { newT3Reporter = original })
+	t3Calls := 0
+	newT3Reporter = func(t3.Options, func(string) string) (*t3.Reporter, error) {
+		t3Calls++
+		return nil, errors.New("t3 reporting is disabled in tests")
+	}
+	dir := setupTestRepo(t)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	req := executePlanRequest{PlanFile: filepath.Join(dir, "plan.md"), Mode: processor.ModeFull, GitSvc: gitSvc,
+		Config: &config.Config{T3: true, Orca: true}, NonInteractive: true}
+
+	rep, titles, threads := startRunReporters(opts{}, req, "feature")
+	assert.Nil(t, rep, "no cmux reporter")
+	assert.Nil(t, titles, "no orca reporter")
+	assert.Nil(t, threads, "no t3 reporter")
+	assert.Zero(t, t3Calls, "the t3 reporter is never constructed")
+
+	req.NonInteractive = false
+	rep, _, _ = startRunReporters(opts{}, req, "feature")
+	assert.NotNil(t, rep, "an interactive run in the same environment builds a cmux reporter")
+	assert.Equal(t, 1, t3Calls, "an interactive run in the same environment builds a t3 reporter")
+}
+
 func TestExecutePlanRecordsFailureInOutcome(t *testing.T) {
 	dir := setupTestRepo(t)
 	t.Chdir(dir)

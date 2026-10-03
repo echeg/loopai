@@ -81,9 +81,10 @@ func (c *scriptedClient) request(method string, params any) float64 {
 	return float64(c.nextID)
 }
 
-func (c *scriptedClient) notify(method string, params any) {
+// cancel sends session/cancel as a notification, the way ACP defines it.
+func (c *scriptedClient) cancel(params any) {
 	c.t.Helper()
-	c.send(map[string]any{"method": method, "params": params})
+	c.send(map[string]any{"method": "session/cancel", "params": params})
 }
 
 func (c *scriptedClient) next() map[string]any {
@@ -190,7 +191,7 @@ func TestServerHandshake(t *testing.T) {
 	})
 	assert.Equal(t, map[string]any{
 		"protocolVersion":   float64(1),
-		"agentCapabilities": map[string]any{"loadSession": false},
+		"agentCapabilities": map[string]any{"loadSession": true},
 		"authMethods": []any{
 			map[string]any{"id": "cached_token", "name": "cached token"},
 			map[string]any{"id": "xai.api_key", "name": "API key"},
@@ -212,9 +213,46 @@ func TestServerHandshake(t *testing.T) {
 		assert.Equal(t, map[string]any{}, resp["result"], method)
 	}
 
-	resp = c.call("session/load", map[string]any{"sessionId": sid, "cwd": t.TempDir(), "mcpServers": []any{}})
-	assert.Contains(t, requireError(t, resp, CodeMethodNotFound), "session/load")
+	require.NoError(t, c.close())
+}
 
+// TestServerLoadSession covers the path T3 Code takes once a thread's earlier agent process is
+// gone: it sends session/load with the saved id instead of session/new, then prompts that id.
+func TestServerLoadSession(t *testing.T) {
+	var got PromptRequest
+	c := startServer(t, Options{Run: func(_ context.Context, req PromptRequest, _ *Sink) (Result, error) {
+		got = req
+		return Result{}, nil
+	}})
+	c.call("initialize", map[string]any{"protocolVersion": 1})
+
+	cwd := t.TempDir()
+	resp := c.call("session/load", map[string]any{"sessionId": "loopai-0123456789abcdef", "cwd": cwd,
+		"mcpServers": []any{}})
+	assert.Equal(t, map[string]any{}, resp["result"], "a saved session id is accepted without replaying history")
+
+	requireStopReason(t, c.call("session/prompt", textPrompt("loopai-0123456789abcdef", "plan.md")), stopEndTurn)
+	assert.Equal(t, PromptRequest{SessionID: "loopai-0123456789abcdef", Cwd: cwd, Text: "plan.md"}, got)
+
+	moved := t.TempDir()
+	c.call("session/load", map[string]any{"sessionId": "loopai-0123456789abcdef", "cwd": moved})
+	requireStopReason(t, c.call("session/prompt", textPrompt("loopai-0123456789abcdef", "plan.md")), stopEndTurn)
+	assert.Equal(t, moved, got.Cwd, "loading a known session again records its new cwd")
+
+	tests := []struct {
+		name   string
+		params any
+	}{
+		{name: "missing session id", params: map[string]any{"cwd": cwd}},
+		{name: "blank session id", params: map[string]any{"sessionId": "  ", "cwd": cwd}},
+		{name: "relative cwd", params: map[string]any{"sessionId": "loopai-1", "cwd": "relative/dir"}},
+		{name: "not an object", params: []any{1}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requireError(t, c.call("session/load", tt.params), CodeInvalidParams)
+		})
+	}
 	require.NoError(t, c.close())
 }
 
@@ -241,7 +279,7 @@ func TestServerPromptSuccess(t *testing.T) {
 	var got PromptRequest
 	c := startServer(t, Options{Run: func(ctx context.Context, req PromptRequest, sink *Sink) (Result, error) {
 		got = req
-		sink.Update(map[string]any{"sessionUpdate": "plan", "entries": []any{}})
+		sink.update(map[string]any{"sessionUpdate": "plan", "entries": []any{}})
 		return Result{Message: "# Report\nall done"}, nil
 	}})
 	c.call("initialize", map[string]any{"protocolVersion": 1})
@@ -333,7 +371,7 @@ func TestServerPromptPanicAndMissingRun(t *testing.T) {
 		c := startServer(t, Options{})
 		sid := c.newSession(t.TempDir())
 		msg := requireError(t, c.call("session/prompt", textPrompt(sid, "plan.md")), CodeInternalError)
-		assert.Contains(t, msg, "no run function")
+		assert.Contains(t, msg, "panicked", "a missing run function still answers the prompt")
 		require.NoError(t, c.close())
 	})
 }
@@ -402,13 +440,13 @@ func TestServerCancel(t *testing.T) {
 	waitStarted(t, started)
 
 	// a cancel for a different session or a malformed one leaves the run alone
-	c.notify("session/cancel", map[string]any{"sessionId": other})
-	c.notify("session/cancel", "garbage")
+	c.cancel(map[string]any{"sessionId": other})
+	c.cancel("garbage")
 	resp := c.call("session/set_mode", map[string]any{"sessionId": sid, "modeId": "x"})
 	assert.Equal(t, map[string]any{}, resp["result"])
 	assert.Empty(t, c.pending, "the prompt is still running")
 
-	c.notify("session/cancel", map[string]any{"sessionId": sid})
+	c.cancel(map[string]any{"sessionId": sid})
 	requireStopReason(t, c.response(id), stopCanceled)
 
 	// the prompt is answered exactly once
@@ -433,6 +471,34 @@ func TestServerCancelAsRequest(t *testing.T) {
 	require.NoError(t, c.close())
 }
 
+func TestServerCancelWinsOverLateSuccess(t *testing.T) {
+	started := make(chan PromptRequest, 1)
+	c := startServer(t, Options{Run: func(ctx context.Context, req PromptRequest, sink *Sink) (Result, error) {
+		sink.OnPhase("", status.PhaseTask)
+		started <- req
+		<-ctx.Done()
+		// the run finishes successfully anyway, as a run past its last cancellation point does
+		return Result{Message: "late report"}, nil
+	}})
+	sid := c.newSession(t.TempDir())
+
+	id := c.request("session/prompt", textPrompt(sid, "plan.md"))
+	waitStarted(t, started)
+	c.cancel(map[string]any{"sessionId": sid})
+	requireStopReason(t, c.response(id), stopCanceled)
+
+	updates := c.updates()
+	got := make([]string, 0, len(updates))
+	for _, u := range updates {
+		upd, _ := u["update"].(map[string]any)
+		st, _ := upd["status"].(string)
+		got = append(got, fmt.Sprintf("%v/%s", upd["sessionUpdate"], st))
+	}
+	assert.Contains(t, got, "tool_call_update/failed", "a canceled turn closes its open tool call as failed")
+	assert.NotContains(t, got, "agent_message_chunk/", "a canceled turn sends no final message")
+	require.NoError(t, c.close())
+}
+
 func TestServerRejectsConcurrentPrompt(t *testing.T) {
 	started := make(chan PromptRequest, 1)
 	release := make(chan struct{})
@@ -454,6 +520,95 @@ func TestServerRejectsConcurrentPrompt(t *testing.T) {
 	id = c.request("session/prompt", textPrompt(other, "fourth.md"))
 	assert.Equal(t, "fourth.md", waitStarted(t, started).Text)
 	requireStopReason(t, c.response(id), stopEndTurn)
+	require.NoError(t, c.close())
+}
+
+// steeringRun is blockingRun whose canceled run returns only once exit is closed, as a run
+// cleaning up after cancellation does. running counts runs in progress and overlap records any
+// moment two runs were in progress at once.
+func steeringRun(started chan<- PromptRequest, release, exit <-chan struct{}, running *atomic.Int32,
+	overlap *atomic.Bool) RunFunc {
+	return func(ctx context.Context, req PromptRequest, _ *Sink) (Result, error) {
+		if running.Add(1) > 1 {
+			overlap.Store(true)
+		}
+		defer running.Add(-1)
+		started <- req
+		select {
+		case <-ctx.Done():
+			<-exit
+			return Result{}, ctx.Err()
+		case <-release:
+			return Result{Message: "done"}, nil
+		}
+	}
+}
+
+// TestServerPromptAfterCancelWaitsForRun covers T3 Code's steering, which sends a message typed
+// while a turn runs as session/cancel followed at once by session/prompt: the new prompt starts
+// once the canceled run has ended instead of being rejected.
+func TestServerPromptAfterCancelWaitsForRun(t *testing.T) {
+	started := make(chan PromptRequest, 2)
+	release, exit := make(chan struct{}), make(chan struct{})
+	var running atomic.Int32
+	var overlap atomic.Bool
+	c := startServer(t, Options{Run: steeringRun(started, release, exit, &running, &overlap)})
+	sid := c.newSession(t.TempDir())
+	other := c.newSession(t.TempDir())
+
+	first := c.request("session/prompt", textPrompt(sid, "first.md"))
+	assert.Equal(t, "first.md", waitStarted(t, started).Text)
+	c.cancel(map[string]any{"sessionId": sid})
+	second := c.request("session/prompt", textPrompt(sid, "second.md"))
+
+	// another session still cannot start while the canceled run cleans up
+	msg := requireError(t, c.call("session/prompt", textPrompt(other, "third.md")), CodeInvalidRequest)
+	assert.Contains(t, msg, "already in progress")
+	select {
+	case req := <-started:
+		t.Fatalf("%s started before the canceled run ended", req.Text)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(exit)
+	requireStopReason(t, c.response(first), stopCanceled)
+	assert.Equal(t, "second.md", waitStarted(t, started).Text)
+	close(release)
+	requireStopReason(t, c.response(second), stopEndTurn)
+	assert.False(t, overlap.Load(), "two runs were in progress at once")
+	require.NoError(t, c.close())
+}
+
+// TestServerCancelWhileWaitingForCanceledRun cancels a steered prompt before its predecessor has
+// ended: it is answered as canceled without running.
+func TestServerCancelWhileWaitingForCanceledRun(t *testing.T) {
+	started := make(chan PromptRequest, 2)
+	exit := make(chan struct{})
+	var running atomic.Int32
+	var overlap atomic.Bool
+	c := startServer(t, Options{Run: steeringRun(started, make(chan struct{}), exit, &running, &overlap)})
+	sid := c.newSession(t.TempDir())
+
+	first := c.request("session/prompt", textPrompt(sid, "first.md"))
+	waitStarted(t, started)
+	c.cancel(map[string]any{"sessionId": sid})
+	second := c.request("session/prompt", textPrompt(sid, "second.md"))
+	c.cancel(map[string]any{"sessionId": sid})
+
+	close(exit)
+	requireStopReason(t, c.response(first), stopCanceled)
+	requireStopReason(t, c.response(second), stopCanceled)
+	select {
+	case req := <-started:
+		t.Fatalf("%s ran after being canceled", req.Text)
+	default:
+	}
+
+	// the server accepts a new prompt afterwards
+	third := c.request("session/prompt", textPrompt(sid, "third.md"))
+	assert.Equal(t, "third.md", waitStarted(t, started).Text)
+	c.cancel(map[string]any{"sessionId": sid})
+	requireStopReason(t, c.response(third), stopCanceled)
 	require.NoError(t, c.close())
 }
 

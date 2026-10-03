@@ -126,8 +126,8 @@ report as the final assistant message. This works on desktop, web, and mobile.
 
 T3 Code has no plugin API for custom providers. loopai reuses its Grok driver instead, which
 talks the Agent Client Protocol (ACP) to whatever binary a provider instance names. `make build`
-writes two binaries: `.bin/loopai` and the launcher `.bin/loopai-acp` (plus `.exe` copies on
-Windows). The launcher answers the Grok CLI's probe commands. For the session command,
+writes two binaries: `.bin/loopai` and the launcher `.bin/loopai-acp`. On Windows the launcher is
+written only as `.bin/loopai-acp.exe`, and loopai additionally as `.bin/loopai.exe`. The launcher answers the Grok CLI's probe commands. For the session command,
 `[--permission-mode MODE] agent [--always-approve] stdio`, it starts `loopai --acp` with its own
 stdin, stdout, and stderr. `loopai --acp` is a JSON-RPC server on stdin/stdout that runs one plan
 per prompt in-process. The launcher looks for the `loopai` binary in this order:
@@ -170,9 +170,12 @@ docs/plans/20261003-feature.md --task-model codex:gpt-5.5:high --external-review
 
 The grammar is `<plan> [--task-model SPEC] [--review-model SPEC] [--external-reviewers LIST]`.
 Flags take `--flag value` or `--flag=value`. The two model specs need a `claude` or `codex` prefix,
-and values follow the same rules as `--t3-launch`. The plan path is resolved against the thread's
-working directory; paths containing whitespace and comma-separated plan chains are not supported.
-Everything else comes from `.loopai/config` in that directory. Only the first text block of the
+and values follow the same rules as `--t3-launch`. Every flag needs a non-empty value, so a message
+cannot disable external review the way `--external-reviewers=` does; set `external_reviewers =`
+in config for that. The plan path is resolved against the thread's working directory; paths
+containing whitespace and comma-separated plan chains are not supported. Everything else comes
+from the normal config layers resolved in that directory: embedded defaults, the global config (or
+`LOOPAI_CONFIG_DIR` from the T3 Code server's environment), then `.loopai/config` there. Only the first text block of the
 message is read; the runtime instructions T3 Code appends are ignored. A malformed message fails
 the turn and shows the usage line.
 
@@ -192,11 +195,19 @@ available: review-only modes, plan creation, and interactive questions are out o
 | Phase change | An activity such as `task 2/5`, `review · iteration 1`, or `external review evaluation`, completed when the next one starts |
 | Executor output | Streamed reasoning, at most one update every 500 ms, with oversized chunks truncated |
 | Completion report | The final assistant message |
-| Failed run | A failed turn, with the report or failure text as the message |
+| Failed run | A failed turn carrying the failure as its error; a completion report, when one was produced, is sent as the final message first |
 
 The stop button cancels the run, and the turn ends as cancelled. The plan stays in place with the
-tasks completed so far. One run executes at a time per loopai process. A second message sent while
-a run is active fails without affecting the run.
+tasks completed so far. One run executes at a time per loopai process. A message that reaches loopai
+while a run is active steers it: the Grok driver cancels the running turn and sends the new message,
+so the current run stops as if canceled and the new message starts its own run once the canceled
+one has ended. Each run takes its own keep-awake hold when
+`keep_awake` is on, released when the run ends.
+
+A thread keeps working after its provider session stops, for example when T3 Code restarts or reaps
+an idle session. T3 Code then resumes the saved session with `session/load` rather than starting a
+new one. loopai accepts any saved session id and records the thread's working directory under it.
+There is no history to restore, because every message is a self-contained run.
 
 ### Watchdog and heartbeat
 
@@ -209,7 +220,8 @@ provider session reaper skips threads with an active turn, so a long run is not 
 ### Caveats and removal
 
 This mode relies on undocumented contracts of T3 Code's Grok driver: the probe commands and their
-output, the session argv, the ACP methods it sends, and the watchdog timings. These were checked
+output, the session argv, the ACP methods it sends (including `session/load` with no capability
+check or fallback), and the watchdog timings. These were checked
 against the T3 Code build of October 2026. A T3 Code update can break the mode without warning, so
 re-check a run after each update. The launcher does not implement Grok's `inspect` or `update`
 commands, so the instance offers no skills and cannot update itself.

@@ -18,7 +18,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/umputun/ralphex/pkg/acp"
+	"github.com/umputun/ralphex/pkg/awake"
 	"github.com/umputun/ralphex/pkg/config"
+	"github.com/umputun/ralphex/pkg/t3"
 )
 
 func TestACPRequested(t *testing.T) {
@@ -153,7 +155,6 @@ func TestACPRunResult(t *testing.T) {
 		{"run error keeps partial report", &planExecutionOutcome{report: "partial"}, failure, "partial", "task failed"},
 		{"abort returned nil", &planExecutionOutcome{failure: failure}, nil, "", "task failed"},
 		{"no success and no reason", &planExecutionOutcome{}, nil, "", "loopai run did not complete"},
-		{"nil outcome", nil, nil, "", "loopai run did not complete"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -208,16 +209,6 @@ func TestEnterDir(t *testing.T) {
 	_, err = enterDir(filepath.Join(target, "missing"), io.Discard)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "enter session directory")
-}
-
-func TestACPRunnerRejectsConcurrentRun(t *testing.T) {
-	r := &acpRunner{out: io.Discard}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	_, err := r.run(t.Context(), acp.PromptRequest{Text: "plan.md", Cwd: t.TempDir()}, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "already in progress")
 }
 
 // acpTestClient drives serveACP over pipes the way T3 Code does and keeps every raw line the
@@ -401,7 +392,7 @@ type acpFixture struct {
 const acpTwoTaskPlan = "# Two\n\n## Overview\nACP fixture.\n\n### Task 1: First\n- [ ] first item\n\n" +
 	"### Task 2: Second\n- [ ] second item\n"
 
-func newACPFixture(t *testing.T, claudeScript func(f acpFixture) string) acpFixture {
+func newACPFixture(t *testing.T, claudeScript func(f acpFixture) string, extraConfig ...string) acpFixture {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("USERPROFILE", t.TempDir())
@@ -416,7 +407,7 @@ func newACPFixture(t *testing.T, claudeScript func(f acpFixture) string) acpFixt
 	writeExecutable(t, fakeClaude, claudeScript(f))
 	require.NoError(t, os.WriteFile(filepath.Join(f.cfgDir, "config"), []byte("claude_command = "+fakeClaude+"\n"+
 		"claude_swap_enabled = false\ncodex_enabled = false\nfinalize_enabled = false\nreport_enabled = true\n"+
-		"iteration_delay_ms = 0\ntask_retry_count = 0\nkeep_awake = false\n"), 0o600))
+		"iteration_delay_ms = 0\ntask_retry_count = 0\nkeep_awake = false\n"+strings.Join(extraConfig, "")), 0o600))
 	t.Chdir(f.start)
 	return f
 }
@@ -454,7 +445,7 @@ func TestServeACPRunsPlanInProcess(t *testing.T) {
 	stdout := captureStdout(t, func() {
 		c = startACPServer(t.Context(), t, opts{ConfigDir: f.cfgDir, Debug: true}, stderr)
 		sid := c.handshake(f.repo)
-		resp = c.response(c.prompt(sid, "docs/plans/two.md --review-model claude:opus"))
+		resp = c.response(c.prompt(sid, "docs/plans/two.md --task-model=claude:sonnet --review-model claude:opus"))
 		c.close()
 	})
 
@@ -533,6 +524,8 @@ func TestServeACPRunsPlanInProcess(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, canonicalPlanPath(f.start), canonicalPlanPath(wd), "the working directory is restored")
 	assert.Contains(t, stderr.String(), "starting loopai loop", "human-readable output goes to stderr")
+	assert.Regexp(t, `(?m)^task:\s+claude sonnet$`, stderr.String(), "the prompt's --task-model reaches the run")
+	assert.Regexp(t, `(?m)^review:\s+claude opus$`, stderr.String(), "the prompt's --review-model reaches the run")
 	assert.Contains(t, stderr.String(), "Authorization=[redacted]")
 	assert.NotContains(t, stderr.String(), "acp-SECRET-token")
 }
@@ -551,17 +544,35 @@ printf '%s\n' '{"type":"result","result":""}'
 		wantErr  string
 		wantMsg  string
 		planKept bool
+		// sessionDir prepares and returns the session cwd; nil uses the repository
+		sessionDir func(t *testing.T, f acpFixture) string
 	}{
 		{name: "malformed prompt", prompt: "docs/plans/two.md --worktree", wantErr: `unsupported option "--worktree"`,
 			wantMsg: "usage: <plan-file>", planKept: true},
 		{name: "missing plan", prompt: "docs/plans/missing.md", wantErr: "plan file not found: docs/plans/missing.md", planKept: true},
 		{name: "run failure", prompt: "docs/plans/two.md", wantErr: "FAILED signal received", planKept: true},
+		{name: "invalid session config", prompt: "docs/plans/two.md", wantErr: "executor", planKept: true,
+			sessionDir: func(t *testing.T, f acpFixture) string {
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(f.repo, ".loopai"), 0o750))
+				require.NoError(t, os.WriteFile(filepath.Join(f.repo, ".loopai", "config"), []byte("executor = codex\n"), 0o600))
+				return f.repo
+			}},
+		{name: "session directory removed", prompt: "docs/plans/two.md", wantErr: "enter session directory", planKept: true,
+			sessionDir: func(t *testing.T, _ acpFixture) string {
+				t.Helper()
+				return filepath.Join(t.TempDir(), "removed")
+			}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newACPFixture(t, failingClaude)
+			cwd := f.repo
+			if tc.sessionDir != nil {
+				cwd = tc.sessionDir(t, f)
+			}
 			c := startACPServer(t.Context(), t, opts{ConfigDir: f.cfgDir}, io.Discard)
-			sid := c.handshake(f.repo)
+			sid := c.handshake(cwd)
 
 			msg := requireACPError(t, c.response(c.prompt(sid, tc.prompt)))
 			c.close()
@@ -580,6 +591,76 @@ printf '%s\n' '{"type":"result","result":""}'
 			assert.Equal(t, canonicalPlanPath(f.start), canonicalPlanPath(wd))
 		})
 	}
+}
+
+// TestServeACPForcesWorktreeT3AndOrcaOff runs a prompt in a project whose config enables a
+// worktree, T3 thread reporting, and Orca titles: T3 Code owns the thread's worktree and the
+// session reports through ACP, so the plan must run in place with none of them.
+func TestServeACPForcesWorktreeT3AndOrcaOff(t *testing.T) {
+	f := newACPFixture(t, acpTaskClaude, "use_worktree = true\nt3 = true\norca = true\nkeep_awake = true\n")
+	originalT3, originalAwake := newT3Reporter, newAwakeHolder
+	t.Cleanup(func() { newT3Reporter, newAwakeHolder = originalT3, originalAwake })
+	var mu sync.Mutex
+	t3Calls := 0
+	var awakeCalls []bool
+	newT3Reporter = func(t3.Options, func(string) string) (*t3.Reporter, error) {
+		mu.Lock()
+		t3Calls++
+		mu.Unlock()
+		return nil, errors.New("t3 reporting is disabled in tests")
+	}
+	newAwakeHolder = func(enabled bool) *awake.Holder {
+		mu.Lock()
+		awakeCalls = append(awakeCalls, enabled)
+		mu.Unlock()
+		return nil
+	}
+
+	c := startACPServer(t.Context(), t, opts{ConfigDir: f.cfgDir}, io.Discard)
+	sid := c.handshake(f.repo)
+	requireACPStopReason(t, c.response(c.prompt(sid, "docs/plans/two.md")), "end_turn")
+	c.close()
+
+	assert.Equal(t, "two", strings.TrimSpace(gitOutput(t, f.repo, "branch", "--show-current")),
+		"the plan branch is checked out in the session cwd, not in a loopai worktree")
+	assert.NoDirExists(t, filepath.Join(f.repo, ".loopai", "worktrees"))
+	assert.FileExists(t, filepath.Join(f.repo, "docs", "plans", "completed", "two.md"))
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Zero(t, t3Calls, "no T3 thread reporter is built for an ACP run")
+	assert.Equal(t, []bool{true}, awakeCalls, "each prompt takes a keep-awake hold honoring keep_awake")
+}
+
+// TestServeACPSecondPromptAfterFailedRun sends a second prompt on the same connection after a
+// real run failed, with a config directory given relative to the directory loopai started in.
+func TestServeACPSecondPromptAfterFailedRun(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "failed-once")
+	f := newACPFixture(t, func(f acpFixture) string {
+		return strings.Replace(acpTaskClaude(f), "prompt=$(cat)\n", "prompt=$(cat)\n"+
+			"if [ ! -e '"+marker+"' ]; then\n  touch '"+marker+"'\n"+
+			`  printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:TASK_FAILED>>>"}}'`+"\n"+
+			`  printf '%s\n' '{"type":"result","result":""}'`+"\n  exit 0\nfi\n", 1)
+	})
+	// start two levels below the fixture's start directory, so the relative path to the config
+	// directory resolves somewhere else from the session cwd
+	start := filepath.Join(f.start, "a", "b")
+	require.NoError(t, os.MkdirAll(start, 0o750))
+	t.Chdir(start)
+	relCfg, err := filepath.Rel(start, f.cfgDir)
+	require.NoError(t, err)
+
+	c := startACPServer(t.Context(), t, opts{ConfigDir: relCfg}, io.Discard)
+	sid := c.handshake(f.repo)
+	msg := requireACPError(t, c.response(c.prompt(sid, "docs/plans/two.md")))
+	assert.Contains(t, msg, "FAILED signal received", "the first run uses the configured fake claude and fails")
+	requireACPStopReason(t, c.response(c.prompt(sid, "docs/plans/two.md")), "end_turn")
+	c.close()
+
+	assert.FileExists(t, filepath.Join(f.repo, "docs", "plans", "completed", "two.md"))
+	assert.NoFileExists(t, filepath.Join(f.repo, relCfg, "config"), "no config is installed relative to the session cwd")
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+	assert.Equal(t, canonicalPlanPath(start), canonicalPlanPath(wd))
 }
 
 func TestServeACPCancelMidRun(t *testing.T) {

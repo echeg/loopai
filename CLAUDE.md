@@ -19,7 +19,7 @@ The fork does not contain upstream packaging/release infrastructure or the upstr
 ## Build commands
 
 ```bash
-make build      # build .bin/loopai and the .bin/loopai-acp launcher (plus .exe copies on Windows)
+make build      # build .bin/loopai and the .bin/loopai-acp launcher (on Windows the launcher is .bin/loopai-acp.exe only, plus .bin/loopai.exe)
 make test       # asset checks, race-enabled unit tests with coverage, provider-wrapper suites
 make check-symlinks # validate the eight Claude skill assets and links
 make test-symlinks  # regression tests for Claude skill asset validation
@@ -625,7 +625,9 @@ bound to loopai's pid (`caffeinate -w`, `tail --pid` under `systemd-inhibit`) so
 releases them without cleanup; the Windows backend drives `SetThreadExecutionState` from one
 locked OS thread because the continuous flag is per thread. A failed `Acquire` disables the holder
 for the run instead of retrying on every output line. Watch-only mode, close-out, and the other
-standalone commands return before the holder is created. `cmd/loopai` tests replace
+standalone commands return before the holder is created. `--acp` returns before it too, so
+`acpRunner.run` creates one holder per prompt from the session's loaded `keep_awake` and stops it when
+the run ends. `cmd/loopai` tests replace
 `newAwakeHolder` in `TestMain` so `run()` never starts a real inhibitor.
 
 cmux reporting is best-effort and must never affect execution. The status key and notification title are `loopai`. All calls go through the public `cmux` CLI and failures are ignored. After a completed run, `Reporter.Finish` intentionally leaves the final success or failure pill in place: `Stop` still clears the spinner and progress, but does not clear that pill. Abort paths do not call `Finish`, so `Stop` performs the full cleanup. A later run overwrites the pill, while `--clear`, a successful `--merge`, or a successful `--pr` removes it explicitly.
@@ -674,7 +676,7 @@ the checkout root, recording `worktreePath` only when the directory outlives the
 `--worktree` checkout is removed after success, so it registers the branch alone. All network work
 runs on one goroutine that coalesces to the latest title and sends only changed titles, because
 every `thread.meta.update` is a persisted T3 event; the first error disables it with one warning,
-and `Stop` waits at most `stopTimeout` for the final title. The worker pins the thread right after
+and `Stop` waits at most `stopTimeout`, sized for the final title plus the unpin. The worker pins the thread right after
 binding it and unpins it on exit, skipping a bound thread the user already pinned; pin failures are
 ignored rather than disabling titles, since `thread.pin` is cosmetic and absent on older servers. Title updates carry only `title`:
 `branch` or `worktreePath` in a meta update re-triggers T3's server-side PR lookup. `--t3-launch`
@@ -701,9 +703,15 @@ execution flags, but not `--t3`/`--orca`, which may come from the environment an
 per prompt instead. `pkg/acp` has three layers. `Conn` is newline-delimited JSON-RPC 2.0 with a
 16 MiB line cap and ids kept as `json.RawMessage`, because T3 sends ids above 2^32. `Server`
 implements `initialize`, `authenticate`, `session/new` (records `cwd`, discards `mcpServers`, whose
-headers carry T3's bearer credential and must never be logged), `session/prompt`, and
-`session/cancel`. It runs at most one prompt across all sessions, because a run changes the process
-cwd, and answers each prompt id exactly once: `end_turn`, `cancelled` when the client canceled
+headers carry T3's bearer credential and must never be logged), `session/load`, `session/prompt`,
+and `session/cancel`. `session/load` registers any saved session id with its `cwd` and replays
+nothing. It must succeed, because T3 resumes a thread whose agent process is gone through
+`session/load` with the saved id, without checking `loadSession` and with no `session/new` fallback.
+Rejecting it breaks every later message in that thread. It runs at most one prompt across all sessions, because a run changes the process
+cwd. A second prompt is rejected unless it follows its own session's `session/cancel`: T3 steers a
+message typed during a turn as cancel then prompt, so that prompt becomes the latest one, waits for
+the canceled run's answer, and then runs, or is answered `cancelled` unrun if canceled while waiting.
+Each prompt id is answered exactly once: `end_turn`, `cancelled` when the client canceled
 it, or a JSON-RPC error carrying the run's failure so T3 records a failed turn. Only the first text
 block is the user's message; T3 appends a runtime-instructions block that must be ignored. `Sink`
 maps events to `session/update`. Phases become `tool_call`s that close when the next opens. Sections
@@ -714,8 +722,10 @@ the open call. The heartbeat retitles the open tool call after 4 silent minutes,
 driver fails a turn after 10 minutes without progress and a `wait_on_limit` sleep emits nothing.
 `acpRunner.run` in `cmd/loopai/acp.go` parses the prompt with `validatePassThroughValues`, the rules
 `--t3-launch` uses. It enters the session cwd, loads config there, and forces `t3`, `orca`, and
-`use_worktree` off, because T3 owns the thread's worktree. It then builds the request through
-`prepareNonInteractiveRequest`, sets the sink as `LogDecorator` and `PhaseObserver`, and runs
+`use_worktree` off, because T3 owns the thread's worktree. `serveACP` makes a relative config
+directory absolute first, since each prompt loads config only after that chdir. The runner then
+builds the request through `prepareNonInteractiveRequest`, sets the sink as `LogDecorator` and
+`PhaseObserver`, and runs
 `selectAndExecutePlan`. `planExecutionOutcome` carries the report and failure reason back.
 `executePlanRequest.NonInteractive` is what keeps a run off the terminal: a missing plan or an
 empty repository is an error instead of a prompt, no pause handler or break signal is installed, and
@@ -725,7 +735,11 @@ before flag parsing. `redirectStdioForACP` keeps the real stdin/stdout for the p
 `os.Stdin` at the null device and `os.Stdout`/`color.Output` at stderr for the process lifetime.
 `executePlanRequest.Out` and `progress.Config.Stdout` route the banner, stats, worktree notices, and
 the logger's console copy to stderr. Any new code path a run can reach must write through those
-writers, never directly to `os.Stdout`. A canceled process context calls `acp.Server.Shutdown`,
+writers, never directly to `os.Stdout`. Both stdout and stderr are pipes owned by the client, so
+`runACPCommand` registers `catchSIGPIPE` for the serve's lifetime. Without a handler, Go kills the
+process on the first write after the client is gone, which skips cancellation and leaves the
+`Setsid` provider processes running. The handler uses `signal.Notify` rather than `signal.Ignore`,
+because an ignored disposition is inherited across exec. A canceled process context calls `acp.Server.Shutdown`,
 which cancels the running prompt and waits for its answer without waiting for stdin EOF. The mode
 relies on undocumented Grok driver contracts, documented in `docs/t3-code.md`, and must be
 re-verified after T3 Code updates.
@@ -733,7 +747,9 @@ re-verified after T3 Code updates.
 Keep `cmux.Reporter.WrapLogger` in the logger chain after dashboard setup. The
 Orca title wrapper sits below the cmux wrapper, the T3 thread wrapper below Orca, and
 the keep-awake wrapper between T3 and `progress.SectionTimer`, which in turn sits above
-the dashboard broadcast logger. This preserves cmux's
+the dashboard broadcast logger. `executePlanRequest.LogDecorator`, the ACP sink in agent mode,
+wraps the runner logger directly below `progress.SectionTimer`, so it sees sections and the timer's
+timing lines; `PhaseObserver` subscribes beside the cmux, orca, T3, and keep-awake observers. This preserves cmux's
 outermost rate-limit interfaces while timing structured sections. Orca's
 limit-wait title comes from its `status.PhaseHolder` observer, not from the logger
 chain. `progress.ValidationTimer` receives that wrapped runner

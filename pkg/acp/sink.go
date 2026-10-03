@@ -206,8 +206,8 @@ type sessionUpdateParams struct {
 	Update    any    `json:"update"`
 }
 
-// Update sends one session/update notification carrying the given update object.
-func (s *Sink) Update(update any) {
+// update sends one session/update notification carrying the given update object.
+func (s *Sink) update(update any) {
 	if s.disabled() {
 		return
 	}

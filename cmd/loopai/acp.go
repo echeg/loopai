@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
+	"syscall"
 
 	"github.com/fatih/color"
 
@@ -79,12 +80,24 @@ func validateACPFlags(o opts) error {
 // client closes stdin or ctx is canceled. Every human-readable line goes to stderr or the
 // progress log.
 func runACPCommand(ctx context.Context, o opts) error {
+	defer catchSIGPIPE()()
 	in, out, restore, err := redirectStdioForACP()
 	if err != nil {
 		return err
 	}
 	defer restore()
 	return serveACP(ctx, o, in, out, os.Stderr)
+}
+
+// catchSIGPIPE turns a write to a closed stdout or stderr pipe into an EPIPE error. Both are pipes
+// owned by the client, and without a handler Go kills the process on the first such write once
+// the client is gone, skipping the run's cancellation and leaving its providers, which run in their
+// own sessions, unsupervised. Notify rather than Ignore keeps the default disposition for child
+// processes, since an ignored signal survives exec. The returned function restores the default.
+func catchSIGPIPE() func() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGPIPE)
+	return func() { signal.Stop(ch) }
 }
 
 // redirectStdioForACP reserves the real stdin and stdout for the protocol and points os.Stdin at
@@ -107,7 +120,17 @@ func redirectStdioForACP() (in, out *os.File, restore func(), err error) {
 // serveACP runs the ACP server over in and out. A canceled ctx cancels the running prompt and
 // returns once it has been answered, without waiting for in to end.
 func serveACP(ctx context.Context, o opts, in io.Reader, out, stderr io.Writer) error {
-	runner := &acpRunner{base: opts{ConfigDir: o.ConfigDir, Debug: o.Debug, NoColor: o.NoColor}, out: stderr}
+	// every prompt loads config after entering its session cwd, so a relative config directory
+	// is pinned to the directory loopai was started in
+	configDir := o.ConfigDir
+	if configDir != "" {
+		abs, err := filepath.Abs(configDir)
+		if err != nil {
+			return fmt.Errorf("resolve config directory: %w", err)
+		}
+		configDir = abs
+	}
+	runner := &acpRunner{base: opts{ConfigDir: configDir, Debug: o.Debug, NoColor: o.NoColor}, out: stderr}
 	var debug io.Writer
 	if o.Debug {
 		debug = stderr
@@ -127,10 +150,9 @@ func serveACP(ctx context.Context, o opts, in io.Reader, out, stderr io.Writer) 
 	}
 }
 
-// acpRunner executes ACP prompts as plan runs, one at a time, because a run changes the process
-// working directory.
+// acpRunner executes ACP prompts as plan runs. The server runs one prompt at a time, which a run
+// relies on because it changes the process working directory.
 type acpRunner struct {
-	mu   sync.Mutex
 	base opts      // process-level options every prompt inherits
 	out  io.Writer // human-readable run output
 }
@@ -139,11 +161,6 @@ type acpRunner struct {
 // working directory, loads config there, and runs the plan in place through the normal execution
 // path with the sink observing sections, output, and phases.
 func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Sink) (acp.Result, error) {
-	if !a.mu.TryLock() {
-		return acp.Result{}, errors.New("a loopai run is already in progress")
-	}
-	defer a.mu.Unlock()
-
 	prompt, err := parseACPPrompt(req.Text)
 	if err != nil {
 		return acp.Result{Message: fmt.Sprintf("%v\n\n%s", err, acpPromptUsage)}, fmt.Errorf("malformed prompt: %w", err)
@@ -174,6 +191,10 @@ func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Si
 	if err != nil {
 		return acp.Result{}, err
 	}
+	// --acp is routed before run() creates its holder, so each prompt holds its own
+	keepAwake := newAwakeHolder(cfg.KeepAwake)
+	defer keepAwake.Stop()
+	execReq.KeepAwake = keepAwake
 	sink.SetPlan(absPath(req.Cwd, o.PlanFile), acpStages(cfg, execReq.ExternalReview)...)
 	execReq.LogDecorator = func(l processor.Logger) processor.Logger { return sink.WrapLogger(l) }
 	execReq.PhaseObserver = sink.OnPhase
@@ -280,9 +301,6 @@ func acpStages(cfg *config.Config, review externalReviewSelection) []acp.Stage {
 // acpRunResult turns an execution outcome into the prompt result. The completion report becomes
 // the final message; a run that returned nil without succeeding, such as an abort, still fails.
 func acpRunResult(planFile string, outcome *planExecutionOutcome, runErr error) (acp.Result, error) {
-	if outcome == nil {
-		outcome = &planExecutionOutcome{}
-	}
 	res := acp.Result{Message: outcome.report}
 	switch {
 	case runErr != nil:

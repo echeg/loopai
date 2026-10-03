@@ -209,7 +209,7 @@ func TestSinkNilIsNoop(t *testing.T) {
 	var s *Sink
 	inner := &recordingLogger{}
 	assert.NotPanics(t, func() {
-		s.Update(map[string]any{"sessionUpdate": "plan"})
+		s.update(map[string]any{"sessionUpdate": "plan"})
 		s.Message("text")
 		s.SetPlan("plan.md", StageReview)
 		s.OnPhase("", status.PhaseTask)

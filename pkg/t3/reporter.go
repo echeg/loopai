@@ -13,8 +13,9 @@ import (
 	"github.com/umputun/ralphex/pkg/status"
 )
 
-// stopTimeout bounds how long Stop waits for the final title to reach the server.
-const stopTimeout = 3 * time.Second
+// stopTimeout bounds how long Stop waits for the final title and then the unpin to reach the
+// server; each request has its own requestTimeout, so the bound covers both with a margin.
+const stopTimeout = 2*requestTimeout + time.Second
 
 type waitingKind uint8
 

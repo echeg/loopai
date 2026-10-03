@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -63,11 +62,12 @@ type Server struct {
 	active   *activePrompt
 }
 
-// activePrompt is the prompt currently running.
+// activePrompt is the latest accepted prompt, running or waiting for its canceled predecessor.
 type activePrompt struct {
 	sessionID       string
 	cancel          context.CancelFunc
-	cancelRequested bool // guarded by Server.mu
+	cancelRequested bool          // guarded by Server.mu
+	done            chan struct{} // closed once the prompt has been answered
 }
 
 // NewServer returns a server reading client messages from r and writing to w.
@@ -144,7 +144,7 @@ func (s *Server) handleInitialize(id, _ json.RawMessage) {
 	// both auth methods the Grok driver may request are accepted; loopai's providers use their own credentials
 	_ = s.conn.Reply(id, initializeResult{
 		ProtocolVersion:   protocolVersion,
-		AgentCapabilities: agentCapabilities{LoadSession: false},
+		AgentCapabilities: agentCapabilities{LoadSession: true},
 		AuthMethods:       []authMethod{{ID: "cached_token", Name: "cached token"}, {ID: "xai.api_key", Name: "API key"}},
 		AgentInfo:         agentInfo{Name: "loopai", Version: s.version},
 	})
@@ -168,6 +168,7 @@ type mcpServerNames struct {
 }
 
 type newSessionParams struct {
+	SessionID  string          `json:"sessionId"` // session/load only
 	Cwd        string          `json:"cwd"`
 	MCPServers json.RawMessage `json:"mcpServers"`
 }
@@ -177,13 +178,8 @@ type newSessionResult struct {
 }
 
 func (s *Server) handleNewSession(id, params json.RawMessage) {
-	var p newSessionParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		_ = s.conn.ReplyError(id, CodeInvalidParams, "session/new: invalid params")
-		return
-	}
-	if p.Cwd == "" || !filepath.IsAbs(p.Cwd) {
-		_ = s.conn.ReplyError(id, CodeInvalidParams, "session/new: cwd must be an absolute path")
+	p, ok := s.sessionParams("session/new", id, params)
+	if !ok {
 		return
 	}
 	sid, err := newSessionID()
@@ -227,9 +223,39 @@ func newSessionID() (string, error) {
 	return "loopai-" + hex.EncodeToString(b[:]), nil
 }
 
-func (s *Server) handleLoadSession(id, _ json.RawMessage) {
-	s.logf("session/load rejected")
-	_ = s.conn.ReplyError(id, CodeMethodNotFound, "session/load is not supported")
+// sessionParams decodes session/new and session/load parameters and requires an absolute cwd,
+// answering the request with an error when they are invalid.
+func (s *Server) sessionParams(method string, id, params json.RawMessage) (newSessionParams, bool) {
+	var p newSessionParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		_ = s.conn.ReplyError(id, CodeInvalidParams, method+": invalid params")
+		return newSessionParams{}, false
+	}
+	if p.Cwd == "" || !filepath.IsAbs(p.Cwd) {
+		_ = s.conn.ReplyError(id, CodeInvalidParams, method+": cwd must be an absolute path")
+		return newSessionParams{}, false
+	}
+	return p, true
+}
+
+// handleLoadSession resumes a session by id. A client that saved a session id, as T3 Code does for
+// each thread, sends session/load instead of session/new once the earlier agent process is gone,
+// and does not fall back to session/new when the load fails. Every prompt is self-contained, so
+// loading only records the session's cwd under the given id; there is no history to replay.
+func (s *Server) handleLoadSession(id, params json.RawMessage) {
+	p, ok := s.sessionParams("session/load", id, params)
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(p.SessionID) == "" {
+		_ = s.conn.ReplyError(id, CodeInvalidParams, "session/load: sessionId is required")
+		return
+	}
+	s.mu.Lock()
+	s.sessions[p.SessionID] = p.Cwd
+	s.mu.Unlock()
+	s.logf("session/load %s cwd=%s mcpServers=%s", p.SessionID, p.Cwd, describeMCPServers(p.MCPServers))
+	_ = s.conn.Reply(id, struct{}{})
 }
 
 type promptParams struct {
@@ -255,40 +281,54 @@ func (s *Server) handlePrompt(id, params json.RawMessage) {
 
 	s.mu.Lock()
 	cwd, ok := s.sessions[p.SessionID]
+	prev := s.active
 	switch {
 	case !ok:
 		s.mu.Unlock()
 		_ = s.conn.ReplyError(id, CodeInvalidParams, "session/prompt: unknown session "+p.SessionID)
 		return
-	case s.active != nil:
-		s.mu.Unlock()
-		_ = s.conn.ReplyError(id, CodeInvalidRequest, "session/prompt: a loopai run is already in progress")
-		return
 	case s.ctx.Err() != nil:
 		s.mu.Unlock()
 		_ = s.conn.ReplyError(id, CodeInternalError, "session/prompt: agent is shutting down")
 		return
+	case prev != nil && (!prev.cancelRequested || prev.sessionID != p.SessionID):
+		s.mu.Unlock()
+		_ = s.conn.ReplyError(id, CodeInvalidRequest, "session/prompt: a loopai run is already in progress")
+		return
 	}
+	// a message sent while a turn runs reaches the agent as session/cancel followed by
+	// session/prompt, so a prompt following its own session's cancel waits for that run to end
 	ctx, cancel := context.WithCancel(s.ctx)
-	active := &activePrompt{sessionID: p.SessionID, cancel: cancel}
+	active := &activePrompt{sessionID: p.SessionID, cancel: cancel, done: make(chan struct{})}
 	s.active = active
 	s.wg.Add(1)
 	s.mu.Unlock()
 
 	s.logf("session/prompt %s started", p.SessionID)
 	req := PromptRequest{SessionID: p.SessionID, Cwd: cwd, Text: p.Prompt[0].Text}
-	go s.runPrompt(ctx, id, req, active)
+	go s.runPrompt(ctx, id, req, active, prev)
 }
 
-// runPrompt executes one prompt and answers its request exactly once.
-func (s *Server) runPrompt(ctx context.Context, id json.RawMessage, req PromptRequest, active *activePrompt) {
+// runPrompt executes one prompt once its canceled predecessor, if any, has been answered, and
+// answers its own request exactly once.
+func (s *Server) runPrompt(ctx context.Context, id json.RawMessage, req PromptRequest, active, prev *activePrompt) {
 	defer s.wg.Done()
+	defer close(active.done)
+	if prev != nil {
+		<-prev.done // already canceled, so it ends promptly
+	}
 	sink := NewSink(s.conn, req.SessionID)
-	res, err := s.invokeRun(ctx, req, sink)
+	var res Result
+	err := ctx.Err() // canceled or shut down while waiting
+	if err == nil {
+		res, err = s.invokeRun(ctx, req, sink)
+	}
 
 	s.mu.Lock()
 	canceled := active.cancelRequested
-	s.active = nil
+	if s.active == active {
+		s.active = nil
+	}
 	s.mu.Unlock()
 	active.cancel()
 
@@ -308,12 +348,9 @@ func (s *Server) runPrompt(ctx context.Context, id json.RawMessage, req PromptRe
 	}
 }
 
-// invokeRun calls the run function, turning a missing function or a panic into an error so the
-// prompt is still answered.
+// invokeRun calls the run function, turning a panic, including a missing run function, into an
+// error so the prompt is still answered.
 func (s *Server) invokeRun(ctx context.Context, req PromptRequest, sink *Sink) (res Result, err error) {
-	if s.run == nil {
-		return Result{}, errors.New("no run function configured")
-	}
 	defer func() {
 		if r := recover(); r != nil {
 			res, err = Result{}, fmt.Errorf("loopai run panicked: %v", r)
@@ -331,6 +368,7 @@ func (s *Server) handleCancel(params json.RawMessage) {
 	if err := json.Unmarshal(params, &p); err != nil {
 		return
 	}
+	// only the latest prompt can be canceled; any predecessor it waits for was canceled already
 	s.mu.Lock()
 	active := s.active
 	if active == nil || active.sessionID != p.SessionID {

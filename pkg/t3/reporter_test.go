@@ -26,6 +26,7 @@ type fakeDispatcher struct {
 	shellErr  error
 	dispErr   error
 	pinErr    error         // returned for thread.pin and thread.unpin only
+	titleErr  error         // returned for thread.meta.update only
 	gate      chan struct{} // when set, each Dispatch waits for one receive
 	entered   chan struct{} // when set, each Dispatch announces itself before waiting on gate
 	commands  []Command
@@ -46,6 +47,9 @@ func (f *fakeDispatcher) Dispatch(_ context.Context, cmd Command) (int64, error)
 	}
 	if _, ok := cmd.(*ThreadPinToggle); ok && f.pinErr != nil {
 		return 0, f.pinErr
+	}
+	if _, ok := cmd.(*ThreadTitleUpdate); ok && f.titleErr != nil {
+		return 0, f.titleErr
 	}
 	f.commands = append(f.commands, cmd)
 	return int64(len(f.commands)), nil
@@ -215,6 +219,25 @@ func TestReporterKeepsUserPin(t *testing.T) {
 	r.Stop()
 	assert.Equal(t, []string{"loopai · task", "loopai · done"}, api.titles())
 	assert.Empty(t, api.pinOps(), "a pin the user set is neither re-sent nor released")
+}
+
+func TestReporterReleasesPinAfterTitleFailure(t *testing.T) {
+	api := &fakeDispatcher{}
+	var warned atomic.Bool
+	r := NewWithDispatcher(api, Options{ThreadID: "th", Warn: func(string, ...any) { warned.Store(true) }})
+	r.OnPhase("", status.PhaseTask)
+	require.Eventually(t, func() bool { return len(api.pinOps()) == 1 }, 2*time.Second, 2*time.Millisecond)
+
+	api.mu.Lock()
+	api.titleErr = errors.New("server gone")
+	api.mu.Unlock()
+	r.OnPhase(status.PhaseTask, status.PhaseReview)
+	require.Eventually(t, warned.Load, 2*time.Second, 2*time.Millisecond, "the failed title disables reporting")
+	r.Finish(true)
+	r.Stop()
+
+	assert.Equal(t, []string{"thread.pin:th", "thread.unpin:th"}, api.pinOps(),
+		"the pin is released even after title reporting was disabled")
 }
 
 func TestReporterPinFailureKeepsTitles(t *testing.T) {
