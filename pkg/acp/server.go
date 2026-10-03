@@ -282,6 +282,7 @@ func (s *Server) runPrompt(ctx context.Context, id json.RawMessage, req PromptRe
 	s.mu.Unlock()
 	active.cancel()
 
+	sink.Finish(err == nil && !canceled)
 	switch {
 	case canceled:
 		s.logf("session/prompt %s canceled", req.SessionID)

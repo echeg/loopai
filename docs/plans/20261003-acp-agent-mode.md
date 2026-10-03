@@ -125,15 +125,16 @@
 - [x] run `go test -race ./pkg/acp/...` - must pass before task 3
 
 ### Task 3: ACP event sink (`pkg/acp/sink.go`)
-- [ ] implement a `Sink` that turns loopai events into `session/update` notifications:
+- [x] implement a `Sink` that turns loopai events into `session/update` notifications:
   - phase change → `tool_call` (new id per phase, kind `other`, title like "task 2/5" or "review · iteration 1", status `in_progress`), closing the previous one with `tool_call_update` `completed`
   - section → refresh the `plan` entries: plan tasks from the parsed plan file plus review stages, with `pending`/`in_progress`/`completed`
   - executor output (`PrintAligned`) → `agent_thought_chunk`, coalesced into at most one notification per 500 ms and capped per chunk
   - final report → `agent_message_chunk`
-- [ ] add a heartbeat: when nothing was sent for 4 minutes (for example during a `wait_on_limit` sleep), send a `tool_call_update` whose title carries the elapsed wait, so the Grok 10-minute watchdog never fires; stop it with the run
-- [ ] expose the sink as a `WrapLogger` decorator (same `Logger` shape as `t3.Logger`) plus `OnPhase(old, cur status.Phase)`, both nil-safe, forwarding every call to the inner logger
-- [ ] write tests with a recording transport and a fake clock: phase transitions open/close tool calls, plan entries track sections, output coalescing and capping, heartbeat fires after idle and not while output flows, final message, nil sink no-ops
-- [ ] run `go test -race ./pkg/acp/...` - must pass before task 4
+- [x] add a heartbeat: when nothing was sent for 4 minutes (for example during a `wait_on_limit` sleep), send a `tool_call_update` whose title carries the elapsed wait, so the Grok 10-minute watchdog never fires; stop it with the run
+- [x] expose the sink as a `WrapLogger` decorator (same `Logger` shape as `t3.Logger`) plus `OnPhase(old, cur status.Phase)`, both nil-safe, forwarding every call to the inner logger
+- [x] write tests with a recording transport and a fake clock: phase transitions open/close tool calls, plan entries track sections, output coalescing and capping, heartbeat fires after idle and not while output flows, final message, nil sink no-ops
+- [x] ➕ the server calls `Sink.Finish` before the final message and reply, so pending output is flushed and the open tool call closes as completed or failed; `Sink.SetPlan(planFile, stages...)` lets the run function name the plan and expected stages (Task 5 calls it)
+- [x] run `go test -race ./pkg/acp/...` - must pass before task 4
 
 ### Task 4: Make plan execution safe to drive non-interactively in-process (`cmd/loopai`)
 - [ ] add an `Stdout io.Writer` option to `progress.Logger` (default `os.Stdout`) and thread a configurable output writer through the startup banner, stats, and worktree messages instead of writing to `os.Stdout` or `color.Output` directly

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"sync"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/umputun/ralphex/pkg/status"
 )
 
 const testTimeout = 5 * time.Second
@@ -274,6 +277,43 @@ func TestServerPromptFailure(t *testing.T) {
 	assert.Equal(t, "agent_message_chunk", updates[0]["update"].(map[string]any)["sessionUpdate"])
 
 	require.NoError(t, c.close())
+}
+
+func TestServerFinishesSinkBeforeReply(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want []string
+	}{
+		{"success", nil, []string{"tool_call/in_progress", "agent_thought_chunk/", "agent_thought_chunk/",
+			"tool_call_update/completed", "agent_message_chunk/"}},
+		{"failure", errors.New("boom"), []string{"tool_call/in_progress", "agent_thought_chunk/", "agent_thought_chunk/",
+			"tool_call_update/failed", "agent_message_chunk/"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := startServer(t, Options{Run: func(_ context.Context, _ PromptRequest, sink *Sink) (Result, error) {
+				sink.OnPhase("", status.PhaseFinalize)
+				sink.Output("first")
+				sink.Output("still pending when the run returns")
+				return Result{Message: "report"}, tt.err
+			}})
+			sid := c.newSession(t.TempDir())
+			c.call("session/prompt", textPrompt(sid, "plan.md"))
+
+			var got []string
+			for _, u := range c.updates() {
+				upd, _ := u["update"].(map[string]any)
+				if upd["sessionUpdate"] == "plan" {
+					continue
+				}
+				st, _ := upd["status"].(string)
+				got = append(got, fmt.Sprintf("%v/%s", upd["sessionUpdate"], st))
+			}
+			assert.Equal(t, tt.want, got, "pending output is flushed and the call closed before the final message and reply")
+			require.NoError(t, c.close())
+		})
+	}
 }
 
 func TestServerPromptPanicAndMissingRun(t *testing.T) {
