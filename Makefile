@@ -5,6 +5,8 @@ HASH=$(shell git rev-parse --short=7 HEAD 2>/dev/null)
 TIMESTAMP=$(shell git log -1 --format=%ct HEAD 2>/dev/null | xargs -I{} date -u -r {} +%Y%m%dT%H%M%S)
 GIT_REV=$(shell printf "%s-%s-%s" "$(BRANCH)" "$(HASH)" "$(TIMESTAMP)")
 REV=$(if $(filter --,$(GIT_REV)),latest,$(GIT_REV))
+# Windows cannot start an extensionless binary, so loopai-acp and the loopai it launches get .exe copies
+EXE=$(if $(filter Windows_NT,$(OS)),.exe,)
 
 WRAPPER_TESTS := \
 	scripts/agy-as-claude/agy-as-claude_test.sh \
@@ -22,6 +24,9 @@ all: test build
 build:
 	cd cmd/loopai && go build -ldflags "-X main.revision=$(REV) -s -w" -o ../../.bin/loopai.$(BRANCH)
 	cp .bin/loopai.$(BRANCH) .bin/loopai
+	cd cmd/loopai-acp && go build -ldflags "-X main.revision=$(REV) -s -w" -o ../../.bin/loopai-acp.$(BRANCH)
+	cp .bin/loopai-acp.$(BRANCH) .bin/loopai-acp$(EXE)
+	$(if $(EXE),cp .bin/loopai.$(BRANCH) .bin/loopai$(EXE))
 
 check-symlinks:
 	@./scripts/check-symlinks.sh

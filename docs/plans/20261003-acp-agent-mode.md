@@ -175,18 +175,19 @@
 - [x] ➕ `acp.Server.Shutdown` cancels a running prompt and waits for its answer without waiting for stdin EOF; `serveACP` calls it when the process context is canceled (SIGINT/SIGTERM)
 
 ### Task 6: `loopai-acp` launcher (`cmd/loopai-acp`)
-- [ ] answer the Grok CLI surface:
+- [x] answer the Grok CLI surface:
   - `--version` prints `loopai-acp <version>` and exits 0
   - `models` prints a bullet list with one `loopai` entry and never the words "logged in"
   - `inspect --json` and `update` exit non-zero without side effects
-- [ ] for argv containing `stdio` (`[--permission-mode m] agent [--always-approve] stdio`), start `loopai --acp` with inherited stdin, stdout, and stderr, forward its exit code, and propagate termination. The `loopai` binary is resolved in this order:
+- [x] for argv containing `stdio` (`[--permission-mode m] agent [--always-approve] stdio`), start `loopai --acp` with inherited stdin, stdout, and stderr, forward its exit code, and propagate termination. The `loopai` binary is resolved in this order:
   - `LOOPAI_ACP_LOOPAI`
   - a `loopai`/`loopai.exe` beside the launcher
   - `PATH`
-- [ ] any other argv prints usage to stderr and exits 2
-- [ ] build both binaries in `make build` (`.bin/loopai`, `.bin/loopai-acp`)
-- [ ] write tests: every probe command's output and exit code, binary resolution order, exec argv for both stdio shapes, unknown argv
-- [ ] run `go test -race ./cmd/loopai-acp/...` - must pass before task 7
+- [x] any other argv prints usage to stderr and exits 2
+- [x] build both binaries in `make build` (`.bin/loopai`, `.bin/loopai-acp`)
+- [x] write tests: every probe command's output and exit code, binary resolution order, exec argv for both stdio shapes, unknown argv
+- [x] run `go test -race ./cmd/loopai-acp/...` - must pass before task 7
+- [x] ➕ on Windows `make build` also writes `.bin/loopai-acp.exe` and `.bin/loopai.exe`, because process creation cannot start an extensionless binary there and the launcher's sibling lookup expects `loopai.exe`
 
 ### Task 7: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented
