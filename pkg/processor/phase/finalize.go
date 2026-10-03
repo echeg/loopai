@@ -40,6 +40,9 @@ type FinalizeOutcome struct {
 	Files   []string       `json:"files,omitempty"`
 	Base    string         `json:"base,omitempty"`     // remote-tracking base, such as origin/master
 	BaseSHA string         `json:"base_sha,omitempty"` // fetched base commit
+	// Unrestored marks a blocked sync whose rollback failed: the checkout may still hold the merge
+	// or sit on another branch, so nothing may commit to it until the user repairs it.
+	Unrestored bool `json:"unrestored,omitempty"`
 }
 
 // Summary renders the outcome as one line for progress logs and status surfaces.
@@ -68,6 +71,7 @@ func plural(n int, one, many string) string {
 // FinalizeGit performs the repository operations of the finalize base sync; *git.Service implements it.
 type FinalizeGit interface {
 	HeadHash() (string, error)
+	CurrentBranch() (string, error)
 	IsDirty() (bool, error)
 	OperationInProgress() (string, error)
 	FetchContext(ctx context.Context, remote, branch string) (string, error)
@@ -77,6 +81,7 @@ type FinalizeGit interface {
 	CommitParents(commit string) ([]string, error)
 	ChangedOutside(snapshot git.MergeSnapshot, allowed []string, commit string) ([]string, error)
 	MergeAbortContext(ctx context.Context, snapshot git.MergeSnapshot) error
+	AbortCleanMergeContext(ctx context.Context) error
 	RestoreHeadContext(ctx context.Context, sha string) error
 }
 
@@ -114,9 +119,11 @@ func NewFinalizePhase(opts FinalizePhaseOpts) *FinalizePhase {
 type finalizeSync struct {
 	git      FinalizeGit
 	base     string // remote-tracking ref, such as origin/master
+	branch   string // plan branch the sync started on; empty for a detached HEAD
 	preHead  string
 	merge    git.MergeResult
 	snapshot git.MergeSnapshot // zero when the branch was already up to date
+	snapped  bool              // snapshot was taken; without it only a just-started merge can be aborted
 }
 
 // Run merges origin/<base> into the plan branch and has the review provider resolve clear-cut
@@ -167,6 +174,14 @@ func (p *FinalizePhase) sync(ctx context.Context, branch string) (FinalizeOutcom
 	if dirty {
 		return blocked("working tree has uncommitted changes"), nil
 	}
+	current, err := g.CurrentBranch()
+	if err != nil {
+		return blocked("read current branch: %v", err), nil
+	}
+	if current == branch {
+		return blocked("the checkout is on the base branch %s", branch), nil
+	}
+	s.branch = current
 	if s.preHead, err = g.HeadHash(); err != nil {
 		return blocked("read HEAD: %v", err), nil
 	}
@@ -176,8 +191,9 @@ func (p *FinalizePhase) sync(ctx context.Context, branch string) (FinalizeOutcom
 		}
 		return blocked("fetch %s: %v", s.base, err), nil
 	}
-	// a failed merge is already aborted by the git layer, so nothing is left to restore
-	if s.merge, err = g.MergeRemoteNoCommitContext(ctx, s.base); err != nil {
+	// a failed merge is already aborted by the git layer, so nothing is left to restore. The full
+	// ref keeps a local branch or tag named origin/<base> from shadowing the fetched commit.
+	if s.merge, err = g.MergeRemoteNoCommitContext(ctx, "refs/remotes/"+s.base); err != nil {
 		if isContextErr(err) {
 			return FinalizeOutcome{}, fmt.Errorf("finalize merge: %w", err)
 		}
@@ -197,7 +213,7 @@ func (p *FinalizePhase) syncMerge(ctx context.Context, s *finalizeSync) (Finaliz
 		if err != nil {
 			return p.reject(ctx, s, FinalizeOutcome{}, fmt.Sprintf("snapshot merge index: %v", err)), nil
 		}
-		s.snapshot = snapshot
+		s.snapshot, s.snapped = snapshot, true
 	}
 	switch s.merge.State {
 	case git.MergeUpToDate:
@@ -248,7 +264,9 @@ func (p *FinalizePhase) runSession(ctx context.Context, conflicts []string) (str
 		}
 		return fmt.Sprintf("%s session failed: %v", execName, result.Error), nil
 	}
-	if IsFinalizeBlocked(result.Signal) {
+	// a later text block can overwrite an earlier signal, so a blocked signal anywhere in the
+	// output wins over a done signal
+	if IsFinalizeBlocked(result.Signal) || strings.Contains(result.Output, SignalFinalizeBlocked) {
 		if reason := ParseFinalizeBlockedReason(result.Output); reason != "" {
 			return reason, nil
 		}
@@ -281,6 +299,9 @@ func (p *FinalizePhase) verify(s *finalizeSync) string {
 	}
 	if dirty {
 		return "working tree has uncommitted changes after the session"
+	}
+	if reason := s.checkoutMoved(); reason != "" {
+		return reason
 	}
 	head, err := s.git.HeadHash()
 	if err != nil {
@@ -317,6 +338,12 @@ func (p *FinalizePhase) reject(ctx context.Context, s *finalizeSync, outcome Fin
 	if err := p.restore(ctx, s); err != nil {
 		p.log.Print("warning: finalize could not restore %s: %v", s.preHead, err)
 		outcome.Reason = fmt.Sprintf("%s; restore failed: %v", reason, err)
+		outcome.Unrestored = true
+		return outcome
+	}
+	// restore keeps local changes, so edits the session left uncommitted are still in the tree
+	if dirty, err := s.git.IsDirty(); err == nil && dirty {
+		outcome.Reason = reason + "; the session's uncommitted changes were left in the working tree"
 	}
 	return outcome
 }
@@ -340,12 +367,21 @@ func (p *FinalizePhase) restore(ctx context.Context, s *finalizeSync) error {
 		return fmt.Errorf("inspect repository state: %w", err)
 	}
 	switch {
+	case op == "merge" && s.merge.State != git.MergeUpToDate && !s.snapped:
+		// the snapshot failed right after the merge started on a clean tree, before any session ran
+		if abortErr := s.git.AbortCleanMergeContext(restoreCtx); abortErr != nil {
+			return fmt.Errorf("abort merge: %w", abortErr)
+		}
 	case op == "merge" && s.merge.State != git.MergeUpToDate:
 		if abortErr := s.git.MergeAbortContext(restoreCtx, s.snapshot); abortErr != nil {
 			return fmt.Errorf("abort merge: %w", abortErr)
 		}
 	case op != "":
 		return fmt.Errorf("a %s is in progress", op)
+	}
+	// resetting another branch would move it and still leave the plan branch as the session left it
+	if reason := s.checkoutMoved(); reason != "" {
+		return errors.New(reason)
 	}
 	head, err := s.git.HeadHash()
 	if err != nil {
@@ -358,6 +394,27 @@ func (p *FinalizePhase) restore(ctx context.Context, s *finalizeSync) error {
 		return fmt.Errorf("restore HEAD: %w", err)
 	}
 	return nil
+}
+
+// checkoutMoved returns a reason when the checkout is no longer on the plan branch the sync started
+// on. A merge commit with the right parents on another branch would otherwise pass verify, and the
+// pull request would then be opened from that branch.
+func (s *finalizeSync) checkoutMoved() string {
+	current, err := s.git.CurrentBranch()
+	if err != nil {
+		return fmt.Sprintf("read current branch: %v", err)
+	}
+	if current == s.branch {
+		return ""
+	}
+	return fmt.Sprintf("the checkout moved from %s to %s", branchLabel(s.branch), branchLabel(current))
+}
+
+func branchLabel(branch string) string {
+	if branch == "" {
+		return "a detached HEAD"
+	}
+	return branch
 }
 
 func blocked(format string, args ...any) FinalizeOutcome {

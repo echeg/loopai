@@ -144,8 +144,8 @@ If user explicitly asks "check loopai", "loopai status", or "how is loopai doing
 **If process exited (TaskOutput shows completion):**
 - Exit code 0 → success, report "loopai completed successfully", then report the finalize outcome from the last summary lines and tell the user the matching next step:
   - `PR merged` → finalize already merged the pull request on GitHub; nothing is left to close out
-  - `PR: <url>` without `PR merged` → finalize opened the pull request; it is reviewed and merged on GitHub
-  - `finalize incomplete: <reason>`, or no finalize lines at all (finalize is off by default) → tell the user to invoke `/loopai-merge <plan>` to review the completion report and choose merge, PR, or cancel
+  - `PR: <url>` without `PR merged` → finalize opened the pull request; it is reviewed and merged on GitHub. A `finalize incomplete: <reason>` line after it (checks failed or timed out, merge refused or only queued) means that pull request is still open: report the reason; it is fixed or merged on GitHub, not with `/loopai-merge`
+  - `finalize incomplete: <reason>` with no `PR:` line, a `finalize:` line with no `PR:` line (`finalize = sync` merged the base and validated), or no finalize lines at all (finalize is off by default) → tell the user to invoke `/loopai-merge <plan>` to review the completion report and choose merge, PR, or cancel
 - Exit code non-zero → failure, report "loopai failed"
 - Read final lines of progress file for summary
 

@@ -836,7 +836,9 @@ func (e *externalBackend) classifyNoCommitMerge(
 	}
 	if mergeErr == nil {
 		if !mergeInProgress {
-			return MergeResult{State: MergeUpToDate, Target: target}, nil
+			// target is not an ancestor of HEAD, so a --no-commit --no-ff merge must record MERGE_HEAD;
+			// reporting up to date here would let an unsynced branch pass as synced
+			return MergeResult{}, fmt.Errorf("merge of %s recorded no MERGE_HEAD", target)
 		}
 		return MergeResult{State: MergeClean, Target: target}, nil
 	}

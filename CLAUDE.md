@@ -436,7 +436,7 @@ empty tool there would build a reviewer for a chain the user explicitly emptied.
 
 This is a clean configuration break: never add automatic reads or migrations from `~/.config/ralphex/` or `.ralphex/`.
 
-Tests must redirect HOME or config paths to `t.TempDir()` and must never touch either real user configuration directory.
+Tests must redirect HOME or config paths to `t.TempDir()` and must never touch either real user configuration directory. Redirect `HOME` and `USERPROFILE` together: on Windows `os.UserHomeDir` reads only `USERPROFILE`, so a `HOME`-only redirect still resolves the real `~/.config/loopai`.
 
 ## Architecture and key patterns
 
@@ -557,7 +557,8 @@ worktree run archives through `MainGitSvc` in the user's own checkout, so anythi
 the run would otherwise land under the `move completed plan` message.
 A rejected single-plan archive (a `commit-msg` hook is the reported case) keeps the run green but is
 not silent: `moveCompletedPlan` warns through the progress logger and returns it as `incomplete`,
-which `displayStats` repeats last as `plan archive incomplete`, since the move may be left staged. A
+which `displayStats` repeats after the finalize summary lines and before any `finalize incomplete`
+line as `plan archive incomplete`, since the move may be left staged. A
 chain archive failure stays fatal.
 The archive's `os.Rename` fallback (reached when `git mv` refuses, an existing destination included)
 first `Lstat`s the destination and refuses to overwrite it, and `resolvePlanMoveTargets` returns
@@ -575,46 +576,69 @@ processor and `cmd/loopai`. The base sync is `phase.FinalizePhase`, run by
 `Runner.runFinalize` in the old finalize slot of `runExternalAndPostReview` — after post-review,
 before the report — through the review executor. It reaches Git only through the consumer
 interface `phase.FinalizeGit`, wired by `Runner.SetFinalizeGit(req.GitSvc)` (the worktree service
-in worktree mode). It requires a clean tree, records the pre-merge HEAD, runs
+in worktree mode). It requires a clean tree and refuses a checkout that is on the base branch itself
+(a `--review` of the base would otherwise merge `origin/<base>` into the user's local base), records
+the pre-merge HEAD, runs
 `FetchContext` with an explicit `+refs/heads/<base>:refs/remotes/origin/<base>` refspec and
-`MergeRemoteNoCommitContext`, which leaves a conflicted merge in place instead of aborting like
-`mergeRevision`. Up to date runs a validation session only; a clean merge is committed by Go
+`MergeRemoteNoCommitContext` on the full `refs/remotes/origin/<base>` (so a local branch or tag named `origin/<base>` cannot shadow the fetched commit), which leaves a conflicted merge in place instead of aborting like
+`mergeRevision`, and fails rather than reporting up to date when a merge of a non-ancestor
+records no `MERGE_HEAD`, since verify would otherwise accept the unchanged HEAD as synced. Up to date runs a validation session only; a clean merge is committed by Go
 through `CommitMergeContext` and then validated; a conflicted one is snapshotted with
-`StageZeroSnapshot` and handed to the resolution session. `finalize.txt` gets the conflicted paths
+`StageZeroSnapshot` and handed to the resolution session. `finalize.txt` names the base through
+`{{FINALIZE_BASE}}` (`Config.FinalizeBase`, not `{{DEFAULT_BRANCH}}`, which is the diff base and can
+be a commit hash or `origin/main`; `report.txt` uses it the same way), the conflicted paths
 through `{{FINALIZE_CONFLICTS}}` and the plan's `## Validation Commands` through
-`{{VALIDATION_COMMANDS}}`. Acceptance needs all of `<<<RALPHEX:FINALIZE_DONE>>>`, a clean tree with
-no operation in progress, an unchanged HEAD when up to date or otherwise HEAD's parents exactly
+`{{VALIDATION_COMMANDS}}`. `FinalizePrompt` warns once when the effective template lacks the
+`FINALIZE_DONE` signal, since a customized copy of the old rebase prompt otherwise blocks every sync
+without a trace. Acceptance needs all of `<<<RALPHEX:FINALIZE_DONE>>>`, a clean tree with
+no operation in progress, the checkout still on the branch the sync started on, an unchanged HEAD
+when up to date or otherwise HEAD's parents exactly
 `[pre-merge HEAD, fetched base]`, and an empty `ChangedOutside(snapshot, conflicts, HEAD)`. The
 signal check alone is not enough because the model owns the commit, and the snapshot comparison is
-what proves it edited only the conflicted paths. Everything else becomes
+what proves it edited only the conflicted paths; the branch check is what keeps a merge committed on
+another branch from passing and becoming the PR head. Everything else becomes
 `FinalizeOutcome{Status: blocked}` after `restore`: `MergeAbortContext(snapshot)` while the merge
 is uncommitted, because a bare `git merge --abort` silently drops staged changes whose worktree
 file matches the index, then `RestoreHeadContext` (`git reset --keep`, which requires the target to
-be an ancestor). Restore runs under `context.WithoutCancel` with a one-minute bound, so a canceled
-run, the one error the phase returns, never leaves a half-done merge for its resume.
-`FINALIZE_BLOCKED` is checked before `FINALIZE_DONE` in `detectSignal`, so output carrying both
-reads as blocked, and `ParseFinalizeBlockedReason` takes the bounded line after it. Both signals are
+be an ancestor). Restore refuses to reset at all once the checkout has left the plan branch, since
+it would move the wrong branch. Restore runs under `context.WithoutCancel` with a one-minute bound, so a canceled
+run, the one error the phase returns, never leaves a half-done merge for its resume. A failed
+`StageZeroSnapshot` leaves nothing to compare against, so that one case aborts through
+`AbortCleanMergeContext`, a plain `git merge --abort` that is lossless only because the merge just
+started on the required clean tree. `reset --keep` keeps local changes, so edits a rejected session
+left uncommitted stay in the tree; the blocked reason says so rather than discarding them. A failed
+restore sets `FinalizeOutcome.Unrestored`, and `archiveAfterFinalize` then leaves the plan in place as
+`plan archive incomplete`, since the archive commit would otherwise land inside the merge or on the
+branch the session switched to.
+`FINALIZE_BLOCKED` is checked before `FINALIZE_DONE` in `detectSignal`, and because a later Claude
+text block overwrites the stream's signal, `runSession` also treats `FINALIZE_BLOCKED` anywhere in the
+output as blocked, so output carrying both reads as blocked, and `ParseFinalizeBlockedReason` takes the bounded line after it. Both signals are
 in `knownSignals`, without which they are never detected. The outcome lands in `RunRecord.Finalize`
-and is exposed as `Runner.FinalizeOutcome()`; after a `merged` or `resolved` sync `factsBase` and
-`Runner.DiffBase()` measure against `origin/<base>`, so the report and the completion summary do
-not count merged-in base changes as the run's work.
+and is exposed as `Runner.FinalizeOutcome()`; after any successful sync (`up_to_date`, `merged`, or
+`resolved`), when the diff base names the same branch, `Runner.DiffBase()`
+measures against `origin/<base>` for both the report facts and the completion summary, so neither
+counts base changes already on the branch as the run's work; a commit-hash diff base is kept.
 
-The `cmd/loopai` side picks the base with `finalizeBaseBranch` (the local branch `--base-ref` names,
-else the configured or detected default branch, without `origin/`) and the mode with
+The `cmd/loopai` side picks the base with `finalizeBaseBranch` (the local branch `--base-ref` names, or its
+`origin/<branch>` remote-tracking ref when no local branch exists — a remote-only base must not
+fall back to merging the default branch — else the configured or detected default branch, without
+`origin/`) and the mode with
 `finalizeModeFor`: `pr|merge` degrade to `sync` under `--review` and `--external-only`, which
 review a branch they did not create, and everything to `none` under `--tasks-only` and for a chain
 member flagged `ChainNotLast`, since an earlier member's branch is the next one's start ref.
-`finalizeStartupWarning` reports either degradation. `executePlan` calls `runFinalizeCloseout` after
+`finalizeStartupWarning` reports the mode degradations; a `ChainNotLast` member degrades silently. `executePlan` calls `runFinalizeCloseout` after
 `moveCompletedPlan`, so a non-worktree run pushes its archive commit too, and before worktree
 cleanup, because it pushes from the run's own checkout. A PR opens only after a successful sync
 (`up_to_date|merged|resolved`), through `createPullRequest` — the body of `--pr`, factored out so
 `runPRCommand` keeps its own error wording and output; `closeoutTarget.statsBase` measures the
 body against `origin/<base>`. T3 linking stays with each caller. `merge` runs
 `gh pr checks <url> --watch --fail-fast` under `finalize_checks_timeout`, retrying a fresh PR's
-"no checks reported" for `finalizeNoChecksGrace` before treating it as having none, then
+"no checks reported" for `finalizeNoChecksGrace` before treating it as having none — the wait
+emits no output, so `awake.Holder.Pin` holds the keep-awake inhibitor through it — then
 `gh pr merge <url> --<finalize_merge_method> --match-head-commit <pushed HEAD>` so a PR head that
-moved is refused; no branch is deleted and the local base is never touched. Every failure — no
-`gh`, origin mismatch, rejected push, failed or timed-out checks, refused merge — becomes
+moved is refused, then `gh pr view <url> --json state` confirms `MERGED`, since gh exits 0 when a
+merge queue only enqueued the PR; no branch is deleted and the local base is never touched. Every failure — no
+`gh`, origin mismatch, rejected push, failed or timed-out checks, refused or merely queued merge — becomes
 `finalizeResult.incomplete` rather than a run error: the plan's work succeeded, so like a rejected
 plan archive it keeps the run green and is surfaced, printed last by `displayStats` as
 `finalize incomplete: <reason>`, in `notify.Result.Finalize`/`PRURL`, and through `SetFinishNote`
@@ -820,6 +844,9 @@ make lint
 ```
 
 The full suite is required because configuration and progress paths cross package boundaries.
+The Go suite assumes a POSIX host: many `cmd/loopai` tests use `/bin/sh` stubs and several packages test
+file permissions, so on Windows run `make test` in WSL. Git fixtures that assert exact file contents
+set `core.autocrlf=false` so a system-wide Git for Windows setting cannot change them.
 `make test` first validates Claude skill assets, plugin manifests, and the Codex
 skill tree, runs their regression suites and shell-completion checks, then runs
 the race-enabled Go suite with coverage and every retained provider-wrapper and wrapper-documentation

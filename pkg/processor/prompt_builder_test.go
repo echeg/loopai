@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/umputun/ralphex/pkg/config"
+	"github.com/umputun/ralphex/pkg/status"
 )
 
 func TestPromptBuilder_FinalPrompts(t *testing.T) {
@@ -154,24 +155,40 @@ func TestPromptBuilder_FinalizePrompt_UnreadablePlanWarns(t *testing.T) {
 func TestPromptBuilder_FinalizePrompt_WithoutPlaceholdersSkipsPlanRead(t *testing.T) {
 	planDir := filepath.Join(t.TempDir(), "plan.md")
 	require.NoError(t, os.Mkdir(planDir, 0o750))
-	cfg := Config{PlanFile: planDir, AppConfig: &config.Config{FinalizePrompt: "custom finalize for {{DEFAULT_BRANCH}}"}}
+	cfg := Config{PlanFile: planDir, AppConfig: &config.Config{FinalizePrompt: "custom finalize for {{DEFAULT_BRANCH}}, then " + status.FinalizeDone}}
 	log := newMockLogger()
 	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: log, locator: newPlanLocator(cfg)})
 
-	assert.Equal(t, "custom finalize for master", builder.FinalizePrompt([]string{"a.go"}))
+	assert.Equal(t, "custom finalize for master, then "+status.FinalizeDone, builder.FinalizePrompt([]string{"a.go"}))
 	assert.Empty(t, log.PrintCalls(), "a customized prompt without the placeholders must not read the plan")
+}
+
+func TestPromptBuilder_FinalizePrompt_WarnsOnceWithoutDoneSignal(t *testing.T) {
+	// a customized copy of the old rebase finalize prompt never asks for the signal
+	cfg := Config{AppConfig: &config.Config{FinalizePrompt: "Rebase onto origin/{{DEFAULT_BRANCH}}"}}
+	log := newMockLogger()
+	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: log, locator: newPlanLocator(cfg)})
+
+	assert.Equal(t, "Rebase onto origin/master", builder.FinalizePrompt(nil))
+	builder.FinalizePrompt(nil)
+
+	require.Len(t, log.PrintCalls(), 1, "the warning is printed once per run")
+	assertLogContains(t, log, "finalize prompt never asks for")
+	assert.Equal(t, []any{status.FinalizeDone}, log.PrintCalls()[0].Args)
 }
 
 func TestPromptBuilder_FinalizePrompt_Embedded(t *testing.T) {
 	planFile := filepath.Join(t.TempDir(), "plan.md")
 	require.NoError(t, os.WriteFile(planFile,
 		[]byte("# Plan\n\n## Validation Commands\n\n- make test\n\n### Task 1: Work\n\n- [x] done\n"), 0o600))
-	cfg := Config{PlanFile: planFile, DefaultBranch: "trunk", AppConfig: testAppConfig(t)}
+	// a commit diff base must not leak into the fetch and merge the prompt describes
+	cfg := Config{PlanFile: planFile, DefaultBranch: "abc123", FinalizeBase: "trunk", AppConfig: testAppConfig(t)}
 	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
 
 	prompt := builder.FinalizePrompt([]string{"pkg/conflicted.go"})
 
-	assert.Contains(t, prompt, "origin/trunk")
+	assert.Contains(t, prompt, "git merge origin/trunk")
+	assert.NotContains(t, prompt, "abc123")
 	assert.Contains(t, prompt, "- pkg/conflicted.go")
 	assert.Contains(t, prompt, "- make test")
 	assert.Contains(t, prompt, "<<<RALPHEX:FINALIZE_DONE>>>")

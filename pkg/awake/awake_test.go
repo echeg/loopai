@@ -122,6 +122,21 @@ func TestHolder_LimitWaitPinsHold(t *testing.T) {
 	require.Eventually(t, func() bool { return b.releases.Load() == 1 }, waitFor, tick)
 }
 
+func TestHolder_PinHoldsUntilUnpinned(t *testing.T) {
+	b := &fakeBackend{}
+	h := NewWithBackend(b, shortIdle)
+	t.Cleanup(h.Stop)
+
+	unpin := h.Pin()
+	time.Sleep(4 * shortIdle)
+	assert.Equal(t, int32(1), b.acquires.Load())
+	assert.Equal(t, int32(0), b.releases.Load(), "a pinned wait is not idleness")
+
+	unpin()
+	require.Eventually(t, func() bool { return b.releases.Load() == 1 }, waitFor, tick,
+		"the idle window restarts once unpinned")
+}
+
 func TestHolder_PhaseChangeTouches(t *testing.T) {
 	b := &fakeBackend{}
 	h := NewWithBackend(b, time.Hour)
@@ -194,6 +209,7 @@ func TestHolder_NilIsNoop(t *testing.T) {
 
 	h.Touch()
 	h.OnPhase("", status.PhaseTask)
+	h.Pin()()
 	h.Stop()
 	assert.Same(t, inner, h.WrapLogger(inner).(*recordingLogger))
 }

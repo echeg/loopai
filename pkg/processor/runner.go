@@ -151,9 +151,6 @@ type Runner struct {
 // FinalizeOutcome describes the finalize base sync; see phase.FinalizeOutcome.
 type FinalizeOutcome = phase.FinalizeOutcome
 
-// FinalizeStatus classifies a finalize base sync; see phase.FinalizeStatus.
-type FinalizeStatus = phase.FinalizeStatus
-
 // finalize statuses reported by Runner.FinalizeOutcome.
 const (
 	FinalizeSkipped  = phase.FinalizeSkipped

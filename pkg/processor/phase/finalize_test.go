@@ -3,6 +3,7 @@ package phase
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,6 +62,8 @@ func configureFinalizeGitUser(t *testing.T, dir string) {
 	finalizeGit(t, dir, "config", "user.email", "test@test.com")
 	finalizeGit(t, dir, "config", "user.name", "test")
 	finalizeGit(t, dir, "config", "commit.gpgsign", "false")
+	// exact-content assertions must not depend on a system-wide core.autocrlf
+	finalizeGit(t, dir, "config", "core.autocrlf", "false")
 }
 
 // advanceBase commits name in the upstream clone, pushes it to origin master, and returns the commit.
@@ -202,7 +205,7 @@ func TestFinalizePhase_UpToDate(t *testing.T) {
 	assert.Equal(t, [][]string{nil}, prompts.calls)
 	assert.Equal(t, status.PhaseFinalize, p.phaseHolder.Get())
 	assertFinalizeSectionPrinted(t, log)
-	assertLogContains(t, log, "finalize: %s")
+	assertFinalizeLogged(t, log, "finalize: up to date with origin/master")
 }
 
 func TestFinalizePhase_CleanMergeCommittedThenValidated(t *testing.T) {
@@ -255,7 +258,7 @@ func TestFinalizePhase_ConflictResolved(t *testing.T) {
 	assert.Equal(t, []string{head, base}, parents)
 	assert.Equal(t, "clean\n", r.read(t, "clean.txt"))
 	assert.Equal(t, "merged origin/master (1 file resolved)", outcome.Summary())
-	assertLogContains(t, log, "finalize: %s")
+	assertFinalizeLogged(t, log, "finalize: merged origin/master (1 file resolved)")
 }
 
 func TestFinalizePhase_RejectedResultsRestorePreMergeHead(t *testing.T) {
@@ -323,12 +326,31 @@ func TestFinalizePhase_RejectedResultsRestorePreMergeHead(t *testing.T) {
 			wantFiles:  []string{"base.txt"},
 		},
 		{
+			name: "clean merge amended with an unrelated edit", conflict: false,
+			session: func(t *testing.T, r finalizeRepo) executor.Result {
+				r.write(t, "feature.txt", "amended\n")
+				finalizeGit(t, r.dir, "add", "--", "feature.txt")
+				finalizeGit(t, r.dir, "commit", "--amend", "--no-edit")
+				return executor.Result{Signal: SignalFinalizeDone}
+			},
+			wantReason: "changed paths outside the conflicted set: feature.txt",
+		},
+		{
 			name: "dirty tree after the session", conflict: false,
 			session: func(t *testing.T, r finalizeRepo) executor.Result {
 				r.write(t, "work.txt", "uncommitted\n")
 				return executor.Result{Signal: SignalFinalizeDone}
 			},
-			wantReason: "working tree has uncommitted changes after the session",
+			wantReason: "working tree has uncommitted changes after the session; " +
+				"the session's uncommitted changes were left in the working tree",
+		},
+		{
+			name: "blocked signal in an earlier text block wins over a later done", conflict: false,
+			session: func(*testing.T, finalizeRepo) executor.Result {
+				return executor.Result{Output: SignalFinalizeBlocked + "\ngo vet failed\nretrying\n" + SignalFinalizeDone,
+					Signal: SignalFinalizeDone}
+			},
+			wantReason: "go vet failed",
 		},
 	}
 	for _, tc := range tests {
@@ -342,7 +364,7 @@ func TestFinalizePhase_RejectedResultsRestorePreMergeHead(t *testing.T) {
 				head = r.head(t)
 				r.advanceBase(t, "upstream.txt", "upstream\n")
 			}
-			p, _, _, _ := newFinalizeTestPhase(t, finalizeTestOpts{
+			p, log, _, _ := newFinalizeTestPhase(t, finalizeTestOpts{
 				cfg: Config{FinalizeEnabled: true}, git: r.svc,
 				exec: func(context.Context) executor.Result { return tc.session(t, r) },
 			})
@@ -353,11 +375,59 @@ func TestFinalizePhase_RejectedResultsRestorePreMergeHead(t *testing.T) {
 			assert.Equal(t, FinalizeBlocked, outcome.Status)
 			assert.Equal(t, tc.wantReason, outcome.Reason)
 			assert.Equal(t, tc.wantFiles, outcome.Files)
+			assertFinalizeLogged(t, log, "finalize blocked: "+tc.wantReason)
 			assert.Equal(t, head, r.head(t), "the pre-merge HEAD is restored")
 			assert.False(t, r.mergeInProgress())
 			assert.Equal(t, "feature\n", r.read(t, "feature.txt"))
 		})
 	}
+}
+
+// failingSnapshotGit fails the index snapshot taken right after the merge starts.
+type failingSnapshotGit struct{ FinalizeGit }
+
+func (failingSnapshotGit) StageZeroSnapshot() (git.MergeSnapshot, error) {
+	return git.MergeSnapshot{}, errors.New("index unreadable")
+}
+
+func TestFinalizePhase_FailuresAfterTheMergeStarts(t *testing.T) {
+	t.Run("snapshot failure aborts the fresh merge", func(t *testing.T) {
+		r, head, _ := conflictingFinalizeRepo(t)
+		p, _, _, mock := newFinalizeTestPhase(t, finalizeTestOpts{
+			cfg: Config{FinalizeEnabled: true}, git: failingSnapshotGit{r.svc},
+		})
+
+		outcome, err := p.Run(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, FinalizeBlocked, outcome.Status)
+		assert.Equal(t, "snapshot merge index: index unreadable", outcome.Reason)
+		assert.Empty(t, mock.RunCalls())
+		assert.False(t, r.mergeInProgress())
+		assert.Equal(t, head, r.head(t))
+		assert.Equal(t, "plan side\n", r.read(t, "base.txt"))
+	})
+
+	t.Run("a hook rejecting the merge commit aborts the merge", func(t *testing.T) {
+		r := setupFinalizeRepo(t)
+		head := r.head(t)
+		r.advanceBase(t, "upstream.txt", "upstream\n")
+		hook := filepath.Join(r.dir, ".git", "hooks", "commit-msg")
+		require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\necho rejected by hook >&2\nexit 1\n"), 0o700)) //nolint:gosec // executable test hook
+		p, _, _, mock := newFinalizeTestPhase(t, finalizeTestOpts{cfg: Config{FinalizeEnabled: true}, git: r.svc})
+
+		outcome, err := p.Run(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, FinalizeBlocked, outcome.Status)
+		assert.Contains(t, outcome.Reason, "commit merge:")
+		assert.NotContains(t, outcome.Reason, "restore failed")
+		assert.False(t, outcome.Unrestored)
+		assert.Empty(t, mock.RunCalls())
+		assert.False(t, r.mergeInProgress())
+		assert.Equal(t, head, r.head(t))
+		assert.NoFileExists(t, filepath.Join(r.dir, "upstream.txt"))
+	})
 }
 
 func TestFinalizePhase_UpToDateBranchMustStayUnchanged(t *testing.T) {
@@ -379,6 +449,50 @@ func TestFinalizePhase_UpToDateBranchMustStayUnchanged(t *testing.T) {
 	assert.Equal(t, head, r.head(t))
 }
 
+func TestFinalizePhase_SessionMustStayOnThePlanBranch(t *testing.T) {
+	t.Run("up-to-date branch left for another branch", func(t *testing.T) {
+		r := setupFinalizeRepo(t)
+		head := r.head(t)
+		p, _, _, _ := newFinalizeTestPhase(t, finalizeTestOpts{
+			cfg: Config{FinalizeEnabled: true}, git: r.svc,
+			exec: func(context.Context) executor.Result {
+				finalizeGit(t, r.dir, "checkout", "-b", "other")
+				return executor.Result{Signal: SignalFinalizeDone}
+			},
+		})
+
+		outcome, err := p.Run(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, FinalizeBlocked, outcome.Status)
+		assert.Equal(t, "the checkout moved from feature to other; restore failed: the checkout moved from feature to other",
+			outcome.Reason)
+		assert.Equal(t, head, r.rev(t, r.dir, "refs/heads/feature"))
+	})
+
+	t.Run("merge committed after switching branches is not reset on the wrong branch", func(t *testing.T) {
+		r, head, _ := conflictingFinalizeRepo(t)
+		p, log, _, _ := newFinalizeTestPhase(t, finalizeTestOpts{
+			cfg: Config{FinalizeEnabled: true}, git: r.svc,
+			exec: func(context.Context) executor.Result {
+				resolveConflict(t, r)
+				finalizeGit(t, r.dir, "checkout", "--detach")
+				return executor.Result{Signal: SignalFinalizeDone}
+			},
+		})
+
+		outcome, err := p.Run(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, FinalizeBlocked, outcome.Status)
+		assert.Equal(t, "the checkout moved from feature to a detached HEAD; "+
+			"restore failed: the checkout moved from feature to a detached HEAD", outcome.Reason)
+		assert.NotEqual(t, head, r.head(t), "the detached HEAD is not reset")
+		assert.True(t, outcome.Unrestored)
+		assertLogContains(t, log, "warning: finalize could not restore")
+	})
+}
+
 func TestFinalizePhase_RestoreFailureIsReported(t *testing.T) {
 	r := setupFinalizeRepo(t)
 	r.advanceBase(t, "feature.txt", "upstream rewrite\n")
@@ -397,7 +511,142 @@ func TestFinalizePhase_RestoreFailureIsReported(t *testing.T) {
 	assert.Equal(t, FinalizeBlocked, outcome.Status)
 	assert.Contains(t, outcome.Reason, "working tree has uncommitted changes after the session; restore failed:")
 	assert.Equal(t, "local edit\n", r.read(t, "feature.txt"))
+	assert.True(t, outcome.Unrestored)
 	assertLogContains(t, log, "warning: finalize could not restore")
+}
+
+func TestFinalizePhase_RestoreRefusesToDiscardWork(t *testing.T) {
+	t.Run("an unfinished cherry-pick is left for the user", func(t *testing.T) {
+		r := setupFinalizeRepo(t)
+		r.advanceBase(t, "upstream.txt", "upstream\n")
+		var sessionHead string
+		p, log, _, _ := newFinalizeTestPhase(t, finalizeTestOpts{
+			cfg: Config{FinalizeEnabled: true}, git: r.svc,
+			exec: func(context.Context) executor.Result {
+				finalizeGit(t, r.dir, "switch", "-c", "side", "master")
+				commitFinalizeFile(t, r.dir, "feature.txt", "side\n", "side edit")
+				side := r.head(t)
+				finalizeGit(t, r.dir, "switch", "feature")
+				commitFinalizeFile(t, r.dir, "feature.txt", "plan\n", "plan edit")
+				cmd := exec.Command("git", "cherry-pick", side)
+				cmd.Dir = r.dir
+				require.Error(t, cmd.Run(), "the cherry-pick must stop on a conflict")
+				sessionHead = r.head(t)
+				return executor.Result{Signal: SignalFinalizeDone}
+			},
+		})
+
+		outcome, err := p.Run(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, FinalizeBlocked, outcome.Status)
+		assert.Equal(t, "a cherry-pick is in progress; restore failed: a cherry-pick is in progress", outcome.Reason)
+		assert.Equal(t, sessionHead, r.head(t), "nothing is reset while the cherry-pick is unfinished")
+		assert.FileExists(t, filepath.Join(r.dir, ".git", "CHERRY_PICK_HEAD"))
+		assert.True(t, outcome.Unrestored)
+		assertLogContains(t, log, "warning: finalize could not restore")
+	})
+
+	t.Run("staged changes outside the merge keep the merge in place", func(t *testing.T) {
+		r, _, _ := conflictingFinalizeRepo(t)
+		p, log, _, _ := newFinalizeTestPhase(t, finalizeTestOpts{
+			cfg: Config{FinalizeEnabled: true}, git: r.svc,
+			exec: func(context.Context) executor.Result {
+				r.write(t, "work.txt", "staged extra\n")
+				finalizeGit(t, r.dir, "add", "--", "work.txt")
+				return executor.Result{Output: SignalFinalizeBlocked + " cannot resolve", Signal: SignalFinalizeBlocked}
+			},
+		})
+
+		outcome, err := p.Run(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, FinalizeBlocked, outcome.Status)
+		assert.Contains(t, outcome.Reason, "cannot resolve; restore failed: abort merge: refuse to abort merge")
+		assert.True(t, r.mergeInProgress(), "the merge is kept rather than discarding the staged work")
+		assert.Equal(t, "staged extra\n", r.read(t, "work.txt"))
+		assert.True(t, outcome.Unrestored)
+		assertLogContains(t, log, "warning: finalize could not restore")
+	})
+
+	t.Run("a merge the session started on an up-to-date branch is not aborted", func(t *testing.T) {
+		r := setupFinalizeRepo(t)
+		head := r.head(t)
+		p, log, _, _ := newFinalizeTestPhase(t, finalizeTestOpts{
+			cfg: Config{FinalizeEnabled: true}, git: r.svc,
+			exec: func(context.Context) executor.Result {
+				finalizeGit(t, r.dir, "switch", "-c", "side", "master")
+				commitFinalizeFile(t, r.dir, "side.txt", "side\n", "side edit")
+				finalizeGit(t, r.dir, "switch", "feature")
+				finalizeGit(t, r.dir, "merge", "--no-commit", "--no-ff", "side")
+				return executor.Result{Signal: SignalFinalizeDone}
+			},
+		})
+
+		outcome, err := p.Run(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, FinalizeBlocked, outcome.Status)
+		assert.Equal(t, "merge left uncommitted; restore failed: a merge is in progress", outcome.Reason)
+		assert.True(t, outcome.Unrestored)
+		assert.True(t, r.mergeInProgress(), "finalize aborts only a merge it started")
+		assert.Equal(t, head, r.head(t))
+		assertLogContains(t, log, "warning: finalize could not restore")
+	})
+}
+
+// cancelingGit cancels the run during one repository step of the sync and reports the cancellation.
+type cancelingGit struct {
+	FinalizeGit
+	step   string
+	cancel context.CancelFunc
+}
+
+func (g cancelingGit) FetchContext(ctx context.Context, remote, branch string) (string, error) {
+	if g.step == "fetch" {
+		g.cancel()
+		return "", context.Canceled
+	}
+	return g.FinalizeGit.FetchContext(ctx, remote, branch) //nolint:wrapcheck // test double
+}
+
+func (g cancelingGit) MergeRemoteNoCommitContext(ctx context.Context, rev string) (git.MergeResult, error) {
+	if g.step == "merge" {
+		g.cancel()
+		return git.MergeResult{}, context.Canceled
+	}
+	return g.FinalizeGit.MergeRemoteNoCommitContext(ctx, rev) //nolint:wrapcheck // test double
+}
+
+func (g cancelingGit) CommitMergeContext(ctx context.Context, message string) error {
+	if g.step == "commit" {
+		g.cancel()
+		return context.Canceled
+	}
+	return g.FinalizeGit.CommitMergeContext(ctx, message) //nolint:wrapcheck // test double
+}
+
+func TestFinalizePhase_CancellationDuringGitStepsPropagates(t *testing.T) {
+	for _, step := range []string{"fetch", "merge", "commit"} {
+		t.Run(step, func(t *testing.T) {
+			r := setupFinalizeRepo(t)
+			head := r.head(t)
+			r.advanceBase(t, "upstream.txt", "upstream\n")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			p, _, _, mock := newFinalizeTestPhase(t, finalizeTestOpts{
+				cfg: Config{FinalizeEnabled: true}, git: cancelingGit{FinalizeGit: r.svc, step: step, cancel: cancel},
+			})
+
+			_, err := p.Run(ctx)
+
+			require.ErrorIs(t, err, context.Canceled)
+			assert.Empty(t, mock.RunCalls())
+			assert.False(t, r.mergeInProgress(), "a canceled sync leaves no merge behind")
+			assert.Equal(t, head, r.head(t))
+			assert.NoFileExists(t, filepath.Join(r.dir, "upstream.txt"))
+		})
+	}
 }
 
 func TestFinalizePhase_SessionFailuresBlock(t *testing.T) {
@@ -473,6 +722,20 @@ func TestFinalizePhase_BlockedBeforeMerge(t *testing.T) {
 		assert.Empty(t, mock.RunCalls())
 	})
 
+	t.Run("checkout on the base branch", func(t *testing.T) {
+		r := setupFinalizeRepo(t)
+		finalizeGit(t, r.dir, "checkout", "master")
+		head := r.head(t)
+		r.advanceBase(t, "upstream.txt", "upstream\n")
+		p, _, _, mock := newFinalizeTestPhase(t, finalizeTestOpts{cfg: Config{FinalizeEnabled: true}, git: r.svc})
+		outcome, err := p.Run(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, FinalizeBlocked, outcome.Status)
+		assert.Equal(t, "the checkout is on the base branch master", outcome.Reason)
+		assert.Empty(t, mock.RunCalls())
+		assert.Equal(t, head, r.head(t), "the local base branch is never merged into")
+	})
+
 	t.Run("unknown base branch", func(t *testing.T) {
 		r := setupFinalizeRepo(t)
 		head := r.head(t)
@@ -525,4 +788,18 @@ func assertFinalizeSectionPrinted(t *testing.T, log *mockLogger) {
 		}
 	}
 	assert.Fail(t, "finalize section header was not printed")
+}
+
+// assertFinalizeLogged checks the rendered text of a progress line, not just its format string.
+func assertFinalizeLogged(t *testing.T, log *mockLogger, want string) {
+	t.Helper()
+	var got []string
+	for _, call := range log.PrintCalls() {
+		line := fmt.Sprintf(call.Format, call.Args...)
+		if line == want {
+			return
+		}
+		got = append(got, line)
+	}
+	assert.Failf(t, "missing log", "expected log line %q, got %q", want, got)
 }

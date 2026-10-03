@@ -92,6 +92,22 @@ func TestRunnerCollectRunFacts(t *testing.T) {
 		assert.Equal(t, "HEAD", source.head)
 	})
 
+	t.Run("measures against origin after finalize merged the base", func(t *testing.T) {
+		root := t.TempDir()
+		t.Chdir(root)
+		require.NoError(t, os.WriteFile("plan.md", []byte("# Feature\n"), 0o600))
+		source := &runFactsSourceStub{}
+		runner := &Runner{
+			cfg: Config{PlanFile: "plan.md", DefaultBranch: "main"},
+			log: newMockLogger(), factsSource: source,
+			finalizeOutcome: FinalizeOutcome{Status: FinalizeMerged, Base: "origin/main"},
+		}
+
+		runner.collectRunFacts(t.Context())
+
+		assert.Equal(t, []string{"origin/main", "origin/main", "origin/main"}, source.bases)
+	})
+
 	t.Run("keeps successful fields when individual sources fail", func(t *testing.T) {
 		root := t.TempDir()
 		t.Chdir(root)

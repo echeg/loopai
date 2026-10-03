@@ -116,6 +116,25 @@ func (h *Holder) OnPhase(_, cur status.Phase) {
 	h.touchLocked()
 }
 
+// Pin holds the inhibitor without expiring until the returned unpin is called, for a wait that
+// emits no output and can outlast the idle window. unpin restarts the idle window. A phase change
+// while pinned replaces the pin, as it does for a provider-limit wait.
+func (h *Holder) Pin() (unpin func()) {
+	if h == nil {
+		return func() {}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pinned = true
+	h.touchLocked()
+	return func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.pinned = false
+		h.touchLocked()
+	}
+}
+
 // Stop releases the inhibitor and ignores later activity. It is safe to call more than once.
 func (h *Holder) Stop() {
 	if h == nil {

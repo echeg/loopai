@@ -146,13 +146,17 @@ JSON schema piped to stdin:
   "external_review": "codex (gpt-5.5:xhigh) → claude (fable:max)",
   "files": 8,
   "additions": 142,
-  "deletions": 23
+  "deletions": 23,
+  "finalize": "merged origin/master; PR merged",
+  "pr_url": "https://github.com/owner/repo/pull/12"
 }
 ```
 
 The `external_review` field contains the effective reviewer or reviewer-chain label and is omitted
 only when review selection was not resolved. The `error` field is present only on failure (omitted
-on success).
+on success). `finalize` and `pr_url` are present only when finalize ran
+(`finalize = sync|pr|merge`): `finalize` is a one-line outcome, which ends in `incomplete: <reason>`
+after a finalize stop, and `pr_url` is the pull request finalize opened.
 
 Example script:
 
@@ -229,7 +233,11 @@ mode:     full
 external: codex (gpt-5.5:xhigh) → claude (fable:max)
 duration: 12m 34s
 changes:  8 files (+142/-23 lines)
+pr:       https://github.com/owner/repo/pull/12
+finalize: merged origin/master; PR merged
 ```
+
+The `pr:` and `finalize:` lines appear only when finalize ran.
 
 Failure:
 

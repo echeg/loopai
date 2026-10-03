@@ -675,6 +675,23 @@ func (s *Service) MergeAbortContext(ctx context.Context, snapshot MergeSnapshot)
 	return nil
 }
 
+// AbortCleanMergeContext aborts the merge in progress without a snapshot comparison. It is only
+// safe for a merge MergeRemoteNoCommitContext just started on its required clean tree, before
+// anything else touched the index, when StageZeroSnapshot could not record the merge's result.
+func (s *Service) AbortCleanMergeContext(ctx context.Context) error {
+	op, err := s.repo.operationInProgress()
+	if err != nil {
+		return fmt.Errorf("abort merge: %w", err)
+	}
+	if op != "merge" {
+		return errors.New("abort merge: no merge in progress")
+	}
+	if err := s.repo.mergeAbort(ctx); err != nil {
+		return fmt.Errorf("abort merge: %w", err)
+	}
+	return nil
+}
+
 // RestoreHeadContext moves the current branch back to sha, an ancestor of HEAD, with
 // git reset --keep. It refuses while a Git operation is in progress (use MergeAbortContext for an
 // uncommitted merge), and Git refuses when a file with local changes differs between HEAD and sha,

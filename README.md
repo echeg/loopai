@@ -40,7 +40,8 @@ workflows are distributed through this repository's plugin marketplace.
 - Optional: the other provider's CLI for automatic cross-provider review
 - Optional: `fzf` for interactive selection; a numbered fallback is built in
 - Optional for `--pr` and `finalize = pr|merge`: authenticated GitHub CLI
-  (`gh auth login`) and a GitHub repository remote named `origin`
+  (`gh auth login`) and a GitHub repository remote named `origin`; `finalize = sync` needs only a
+  fetchable `origin`
 - Development: Bash and `jq` for the full test suite, including plugin manifest
   validation and provider-wrapper tests
 - Optional for development: `golangci-lint`
@@ -186,8 +187,11 @@ It provides one skill, `codex-imagegen:generating-images-with-codex`, with
 `scripts/codex_image.py`. The script runs `codex exec` in a throwaway directory
 outside the repository, makes exactly one `image_gen` call with the prompt file
 verbatim, copies the result to `--out` without overwriting, and writes
-`<out>.json` with the prompt, references, and Codex session. It exits with code
-3 on the plan usage limit (HTTP 429). The skill lets Claude spend up to 10
+`<out>.json` with the prompt, references, Codex session, and profile. It exits with code
+3 on the plan usage limit (HTTP 429). When the default provider hides `image_gen`, it
+can run a Codex profile instead (`--profile`, `CODEX_IMAGEGEN_PROFILE`, or `profile` in
+`$CODEX_HOME/codex-imagegen.json`, which may also name a credential helper); the skill
+describes the setup. The skill lets Claude spend up to 10
 `image_gen` calls per batch without asking and tells it to follow a project's
 own image pipeline or art guide when one exists. It needs a signed-in Codex CLI
 (`codex login`) and Python 3.
@@ -462,41 +466,65 @@ branch. Each mode includes the previous one:
 | `merge` | `pr`, then wait for the PR checks and merge the PR on GitHub |
 
 `--skip-finalize` forces `none` for one run and wins over both `--finalize` and the config key.
-The former boolean `finalize_enabled` was removed and fails at startup; write
+An empty `finalize =` leaves the key unset, so an inherited global mode still applies; write
+`finalize = none` to turn it off for a project. The former boolean `finalize_enabled` was removed and fails at startup; write
 `finalize = sync|pr|merge` instead.
 
-The base is the local branch `--base-ref` names, otherwise `default_branch` or the detected
-`main`/`master`. The sync always merges, never rebases and never force-pushes, so review
+The base is the branch `--base-ref` names, as a local branch or an `origin/<branch>`
+remote-tracking branch, otherwise `default_branch` or the detected `main`/`master`; a commit-hash
+`--base-ref` is a diff base only. The sync always merges, never rebases and never force-pushes, so review
 checkpoints stay valid and a rerun is safe:
 
-1. loopai requires a clean tree, fetches `origin/<base>`, and runs `git merge --no-commit`.
+1. loopai requires a clean tree and a checkout that is not the base branch itself, fetches
+   `origin/<base>`, and runs `git merge --no-commit`.
 2. Already up to date: the `review_model` provider runs the plan's `## Validation Commands`.
-   A clean merge is committed by loopai first, then validated the same way.
+   A clean merge is committed by loopai first, then validated the same way. A plan without that
+   section falls back to the project's test command when CLAUDE.md, AGENTS.md, or the plan names
+   one, and is otherwise accepted unvalidated.
 3. Conflicts are left in place for the `review_model` provider, which resolves only the
    conflicted files, and only when the resolution is clear-cut, runs the validation commands, and
    commits the merge. A conflict that needs a product or design decision is a stop, not a guess.
-4. loopai accepts the result only when the session signals success, the tree is clean, HEAD is a
-   single merge commit of the pre-merge HEAD and the fetched base, and no file outside the conflicted
-   set differs from the merge's own result. Anything else, including validation failing after a
-   clean merge, aborts the merge or restores the pre-merge HEAD and stops before the pull request.
-   Finalize never tries to fix code that base changes broke.
+4. loopai accepts the result only when the session signals success, the tree is clean, the checkout
+   is still on the branch the sync started on, HEAD is a single merge commit of the pre-merge HEAD
+   and the fetched base, and no file outside the conflicted set differs from the merge's own result.
+   Anything else, including validation failing after a clean merge, aborts the merge or restores the
+   pre-merge HEAD and stops before the pull request. Restoring keeps any uncommitted edits the
+   session made, and the stop reason says so; under `--worktree` they are discarded when the
+   worktree is removed. When even the restore fails, for example because the session switched
+   branches, the stop reason ends in `restore failed: ...` and the plan is left in place
+   (`plan archive incomplete`) rather than committing its archive into that checkout. Finalize never
+   tries to fix code that base changes broke.
 
-Under `pr` and `merge`, the pull request is opened after the plan is archived, so the archive commit
-is part of it, using the same push, origin, and title/body rules as `--pr`. Its diff statistics are
-measured against `origin/<base>`, so merged-in base changes do not count as the run's work, and the
-completion report does the same. `merge` waits for the checks with `gh pr checks --watch` for at
+A `finalize.txt` customized in `.loopai/prompts/` or `~/.config/loopai/prompts/` before finalize
+modes existed still describes the old rebase step and never asks for
+`<<<RALPHEX:FINALIZE_DONE>>>`, so every sync stops as `finalize incomplete`; loopai warns once per
+run. Refresh it from `loopai --dump-defaults` or with `/loopai-update`.
+
+Under `pr` and `merge`, the pull request is opened after the plan is archived, using the same push,
+origin, and title/body rules as `--pr`. Without `--worktree`, including Orca- and T3 Code-managed
+checkouts and plan chains, the archive commit and report sidecar are on the plan branch and part of
+the PR. A single-plan `--worktree` run archives in the source checkout instead, so the PR carries the
+plan under `docs/plans/` with its ticked checkboxes and the archive commit stays local. Its diff statistics are
+measured against `origin/<base>`, so base changes on the branch do not count as the run's work. After
+any successful sync the completion summary and report do the same, unless `--base-ref` is a commit
+hash, which stays their diff base. `merge` waits for the checks with `gh pr checks --watch` for at
 most `finalize_checks_timeout` (default `30m`); a fresh PR that reports no checks is asked again for
 a minute and then treated as having none, leaving branch protection to the merge itself. It then
 runs `gh pr merge --<finalize_merge_method>` (`merge`, `squash`, or `rebase`; default `merge`)
-pinned to the pushed commit, so GitHub refuses the merge when the PR head moved. It deletes no branch
-and never touches the local base branch.
+pinned to the pushed commit, so GitHub refuses the merge when the PR head moved, and reads the PR
+state back: a base protected by a merge queue only enqueues the PR, which is reported as
+`finalize incomplete` rather than `PR merged`. It deletes no branch and never touches the local base
+branch.
 
 A finalize stop never fails the run, because the plan's work succeeded. The reason is printed as
 the last summary line (`finalize incomplete: <reason>`) and appears in the notification and in the
 cmux, Orca, and T3 Code final status (`done · finalize incomplete`); a successful finalize prints
 `finalize: merged origin/master (3 files resolved)`, `PR: <url>`, and `PR merged` instead, and the
-status reads `done · synced`, `done · PR opened`, or `done · PR merged`. Close out a stopped
-finalize by hand with `/loopai-merge` or `--merge`/`--pr`. A `--worktree` checkout is removed as on
+status reads `done · synced`, `done · PR opened`, or `done · PR merged`. After `sync`, or a finalize
+that stopped before a `PR: <url>` line, close out by hand with `/loopai-merge` or `--merge`/`--pr`.
+When a `PR: <url>` line precedes `finalize incomplete` (checks failed or timed out, or the merge was
+refused or only queued), the pull request stays open: fix or merge it on GitHub, since `--pr` cannot
+open a second one. A `--worktree` checkout is removed as on
 any successful run, after the pull request steps; a worktree loopai did not create, such as a T3
 Code-managed one, is never removed.
 
@@ -727,7 +755,8 @@ loopai --clear
 
 Outside cmux, `--clear` is a successful no-op. With `finalize = pr` or `merge` a successful run
 opens, and optionally merges, its own pull request (see [Finalize](#finalize)); the commands below
-remain the manual path, and the one to use when finalize stopped. After a feature run completes,
+remain the manual path, and the one to use when finalize stopped before opening a pull request.
+After a feature run completes,
 loopai can inspect its report or perform either standalone close-out action from the repository root:
 
 ```bash
@@ -1076,7 +1105,7 @@ removed after a successful run. The same rules apply when rerunning `--review` o
 `--external-only`, even though those modes do not create a worktree.
 
 Worktree creation does not use or record a base branch. `--base-ref` remains the base for
-review diffs and templates; without it, loopai uses `default_branch` configuration or its
+review diffs and templates, and a branch it names, local or `origin/<branch>`, is the base finalize merges from `origin`; without it, loopai uses `default_branch` configuration or its
 normal `main`/`master` detection. Review-only modes fail with `nothing to review` when that
 base-to-HEAD range contains no committed changes; use `--base-ref` to select a different comparison
 base when the default range is empty. Consequently, when a worktree was cut from a non-default
@@ -1220,7 +1249,8 @@ With `keep_awake = true` (the default), loopai keeps the machine from sleeping w
 active. It uses `caffeinate` on macOS, `systemd-inhibit` on Linux, and `SetThreadExecutionState`
 on Windows; where none is available the setting is silently inactive. The hold is renewed by
 executor output and phase changes and released after one hour without activity, so a hung run does
-not keep a laptop awake indefinitely; a provider-limit wait keeps the hold for its duration, and
+not keep a laptop awake indefinitely; a provider-limit wait and the `finalize = merge` wait for pull
+request checks keep the hold for their duration, and
 waiting for your answer at a prompt counts as inactivity. The inhibitor is bound to the loopai
 process, so a crash releases it. Closing a MacBook lid still sleeps the machine on battery. One hold
 covers a whole plan chain, and watch-only dashboard mode, the close-out commands, and the other

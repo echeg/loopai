@@ -1005,6 +1005,42 @@ func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integratio
 		assert.Contains(t, warner.msgs[0], "failed to move plan to completed:")
 	})
 
+	t.Run("unrestored_finalize_checkout_leaves_the_plan_in_place", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "unrestored.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/unrestored.md")
+		runGit(t, dir, "commit", "-m", "add unrestored plan")
+		head := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		req := executePlanRequest{
+			PlanFile: planFile, GitSvc: gitSvc, Mode: processor.ModeFull,
+			Config: &config.Config{MovePlanOnCompletion: true},
+		}
+		warner := &recordingWarner{}
+
+		moved, incomplete, moveErr := archiveAfterFinalize(req, processor.FinalizeOutcome{
+			Status: processor.FinalizeBlocked, Reason: "x; restore failed: a merge is in progress", Unrestored: true,
+		}, "", warner)
+
+		require.NoError(t, moveErr, "an unrestored finalize must not fail the run")
+		assert.False(t, moved)
+		require.EqualError(t, incomplete, "plan left in place: finalize could not restore the plan checkout")
+		require.Len(t, warner.msgs, 1)
+		assert.FileExists(t, planFile)
+		assert.Equal(t, head, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")), "no archive commit")
+
+		moved, incomplete, moveErr = archiveAfterFinalize(req,
+			processor.FinalizeOutcome{Status: processor.FinalizeBlocked, Reason: "conflict"}, "", warner)
+
+		require.NoError(t, moveErr)
+		require.NoError(t, incomplete)
+		assert.True(t, moved, "a restored blocked sync archives as usual")
+	})
+
 	t.Run("stops_on_abort_even_when_executor_returns_nil", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		gitSvc, err := git.NewService(dir, noopLogger())
@@ -3359,6 +3395,7 @@ func TestResolveFinalize(t *testing.T) {
 	runGit(t, dir, "branch", "release")
 	runGit(t, dir, "remote", "add", "origin", dir)
 	runGit(t, dir, "update-ref", "refs/remotes/origin/master", "HEAD")
+	runGit(t, dir, "update-ref", "refs/remotes/origin/release-remote", "HEAD")
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
 	hash, err := gitSvc.HeadHash()
@@ -3369,6 +3406,7 @@ func TestResolveFinalize(t *testing.T) {
 		finalize     string
 		configBase   string
 		baseRef      string
+		mode         processor.Mode
 		chainNotLast bool
 		wantEnabled  bool
 		wantBase     string
@@ -3379,16 +3417,25 @@ func TestResolveFinalize(t *testing.T) {
 			wantEnabled: true, wantBase: "release"},
 		{name: "remote-tracking base-ref resolves to its local branch", finalize: config.FinalizePR,
 			baseRef: "origin/master", wantEnabled: true, wantBase: "master"},
+		{name: "remote-only base-ref is not replaced by the default branch", finalize: config.FinalizeSync,
+			baseRef: "origin/release-remote", wantEnabled: true, wantBase: "release-remote"},
 		{name: "commit base-ref falls back to the default branch", finalize: config.FinalizeMerge, baseRef: hash,
 			wantEnabled: true, wantBase: "master"},
 		{name: "commit base-ref falls back to the configured default branch", finalize: config.FinalizeSync,
 			configBase: "origin/trunk", baseRef: hash, wantEnabled: true, wantBase: "trunk"},
 		{name: "non-last chain member skips", finalize: config.FinalizeSync, baseRef: "master", chainNotLast: true},
+		{name: "tasks-only skips", finalize: config.FinalizeSync, baseRef: "master", mode: processor.ModeTasksOnly},
+		{name: "review mode syncs", finalize: config.FinalizePR, baseRef: "master", mode: processor.ModeReview,
+			wantEnabled: true, wantBase: "master"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			mode := tc.mode
+			if mode == "" {
+				mode = processor.ModeFull
+			}
 			req := executePlanRequest{
-				GitSvc: gitSvc, BaseRef: tc.baseRef, ChainNotLast: tc.chainNotLast,
+				Mode: mode, GitSvc: gitSvc, BaseRef: tc.baseRef, ChainNotLast: tc.chainNotLast,
 				Config: &config.Config{Finalize: tc.finalize, DefaultBranch: tc.configBase},
 			}
 			enabled, base := resolveFinalize(req)
@@ -3397,12 +3444,12 @@ func TestResolveFinalize(t *testing.T) {
 		})
 	}
 
-	t.Run("without a git service the base-ref is used as is", func(t *testing.T) {
+	t.Run("without a git service the base stays unknown", func(t *testing.T) {
 		enabled, base := resolveFinalize(executePlanRequest{
-			BaseRef: "origin/main", Config: &config.Config{Finalize: config.FinalizeSync},
+			Mode: processor.ModeFull, BaseRef: "origin/main", Config: &config.Config{Finalize: config.FinalizeSync},
 		})
 		assert.True(t, enabled)
-		assert.Equal(t, "main", base)
+		assert.Empty(t, base)
 	})
 }
 
@@ -3493,19 +3540,6 @@ func TestFinalizeFlags(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "none")
 		assert.Contains(t, err.Error(), "merge")
-	})
-
-	t.Run("createRunner accepts every finalize mode", func(t *testing.T) {
-		t.Chdir(t.TempDir())
-		holder := &status.PhaseHolder{}
-		log, err := progress.NewLogger(progress.Config{Mode: "full", Branch: "test", NoColor: true}, testColors(), holder)
-		require.NoError(t, err)
-		defer log.Close()
-		for _, mode := range config.FinalizeModes {
-			cfg := &config.Config{Finalize: mode}
-			req := executePlanRequest{Mode: processor.ModeFull, Config: cfg, DefaultBranch: "main"}
-			assert.NotNil(t, createRunner(req, opts{MaxIterations: 50}, log, holder, nil), mode)
-		}
 	})
 }
 
@@ -14326,13 +14360,18 @@ func (l *recordingFinalizeLog) Warn(format string, args ...any) {
 }
 
 // finalizeGHStub answers gh the way finalize calls it. GH_CHECKS selects the checks behavior
-// (pass, fail, nochecks, late, hang) and GH_MERGE=refuse makes the merge fail; every call is
-// appended to GH_ARGS_LOG as one line.
+// (pass, fail, nochecks, late, hang, slow), GH_MERGE=refuse makes the merge fail, GH_MERGE=queue
+// leaves the PR open after a successful merge call as a merge queue does, and GH_PR_URL=none
+// makes pr create print no URL; the PR body is saved to GH_PR_BODY and every call is appended to
+// GH_ARGS_LOG as one line.
 const finalizeGHStub = `#!/bin/sh
 printf '%s\n' "$*" >> "$GH_ARGS_LOG"
 case "$1 $2" in
 "repo view") printf '%s\n' 'acme/repo'; exit 0 ;;
-"pr create") cat > /dev/null; printf '%s\n' 'https://github.com/acme/repo/pull/7'; exit 0 ;;
+"pr create")
+  cat > "$GH_PR_BODY"
+  if [ "$GH_PR_URL" != none ]; then printf '%s\n' 'https://github.com/acme/repo/pull/7'; fi
+  exit 0 ;;
 "pr checks")
   n=$(cat "$GH_CHECKS_COUNT" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$GH_CHECKS_COUNT"
   case "$GH_CHECKS" in
@@ -14341,17 +14380,46 @@ case "$1 $2" in
   nochecks) printf "no checks reported on the 'feature' branch\n" >&2; exit 1 ;;
   late) if [ "$n" -lt 2 ]; then printf "no checks reported on the 'feature' branch\n" >&2; exit 1; fi; exit 0 ;;
   hang) exec sleep 5 ;;
+  slow) sleep 0.3; exit 0 ;;
   esac ;;
 "pr merge")
   if [ "$GH_MERGE" = refuse ]; then printf 'X Pull request acme/repo#7 is not mergeable: the base branch policy prohibits the merge.\n' >&2; exit 1; fi
+  exit 0 ;;
+"pr view")
+  if [ "$GH_MERGE" = queue ]; then printf 'OPEN\n'; else printf 'MERGED\n'; fi
   exit 0 ;;
 esac
 exit 3
 `
 
 type finalizePRFixture struct {
-	dir, remote, argsLog string
-	svc                  *git.Service
+	dir, remote, argsLog, prBodyFile string
+	svc                              *git.Service
+}
+
+// prBody returns the body the last gh pr create received on stdin.
+func (f finalizePRFixture) prBody(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(f.prBodyFile)
+	require.NoError(t, err)
+	return string(data)
+}
+
+// advanceOriginBase commits name to origin's master through a separate clone, leaving the local
+// master and refs/remotes/origin/master behind, and returns origin's new master commit.
+func (f finalizePRFixture) advanceOriginBase(t *testing.T, name, content string) string {
+	t.Helper()
+	clone := filepath.Join(t.TempDir(), "upstream")
+	runGit(t, filepath.Dir(clone), "clone", "--branch", "master", f.remote, clone)
+	runGit(t, clone, "config", "user.email", "upstream@test.com")
+	runGit(t, clone, "config", "user.name", "upstream")
+	runGit(t, clone, "config", "commit.gpgsign", "false")
+	runGit(t, clone, "config", "core.autocrlf", "false")
+	require.NoError(t, os.WriteFile(filepath.Join(clone, name), []byte(content), 0o600))
+	runGit(t, clone, "add", name)
+	runGit(t, clone, "commit", "-m", "base moved")
+	runGit(t, clone, "push", "origin", "master")
+	return strings.TrimSpace(gitOutput(t, clone, "rev-parse", "HEAD"))
 }
 
 func (f finalizePRFixture) ghCalls(t *testing.T) []string {
@@ -14373,9 +14441,28 @@ func (f finalizePRFixture) request(finalize string) executePlanRequest {
 
 func setupFinalizePRFixture(t *testing.T) finalizePRFixture {
 	t.Helper()
+	return setupFinalizeFixture(t, nil)
+}
+
+// setupFinalizeFixture builds a feature branch one commit ahead of master, with baseFiles
+// committed on master first. origin is a GitHub URL, as PR creation requires; a git wrapper
+// redirects its fetches and pushes to a local bare repository that starts with master.
+func setupFinalizeFixture(t *testing.T, baseFiles map[string]string) finalizePRFixture {
+	t.Helper()
 	dir := setupTestRepo(t)
+	runGit(t, dir, "config", "core.autocrlf", "false")
+	if len(baseFiles) > 0 {
+		for name, content := range baseFiles {
+			path := filepath.Join(dir, filepath.FromSlash(name))
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+			require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+			runGit(t, dir, "add", name)
+		}
+		runGit(t, dir, "commit", "-m", "base files")
+	}
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	runGit(t, filepath.Dir(remote), "init", "--bare", remote)
+	runGit(t, dir, "push", remote, "master")
 	runGit(t, dir, "remote", "add", "origin", "https://github.com/acme/repo.git")
 	runGit(t, dir, "update-ref", "refs/remotes/origin/master", "master")
 	runGit(t, dir, "checkout", "-b", "feature")
@@ -14387,7 +14474,19 @@ func setupFinalizePRFixture(t *testing.T) finalizePRFixture {
 	t.Setenv("PR_TEST_REAL_GIT", realGit)
 	t.Setenv("PR_TEST_REMOTE", remote)
 	gitWrapper := filepath.Join(t.TempDir(), "git-wrapper")
-	writeExecutable(t, gitWrapper, "#!/bin/sh\nif [ \"$1\" = push ]; then\n  refspec=$4\n  \"$PR_TEST_REAL_GIT\" push \"$PR_TEST_REMOTE\" \"$refspec\" || exit $?\n  exit 0\nfi\nexec \"$PR_TEST_REAL_GIT\" \"$@\"\n")
+	// push runs as "push -u origin <refspec>", the finalize fetch as
+	// "fetch --no-tags origin <refspec>"
+	writeExecutable(t, gitWrapper, `#!/bin/sh
+if [ "$1" = push ]; then
+  refspec=$4
+  "$PR_TEST_REAL_GIT" push "$PR_TEST_REMOTE" "$refspec" || exit $?
+  exit 0
+fi
+if [ "$1" = fetch ] && [ "$3" = origin ]; then
+  exec "$PR_TEST_REAL_GIT" fetch "$2" "$PR_TEST_REMOTE" "$4"
+fi
+exec "$PR_TEST_REAL_GIT" "$@"
+`)
 	svc, err := git.NewService(dir, noopLogger(), gitWrapper)
 	require.NoError(t, err)
 
@@ -14395,11 +14494,14 @@ func setupFinalizePRFixture(t *testing.T) finalizePRFixture {
 	writeExecutable(t, filepath.Join(binDir, "gh"), finalizeGHStub)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	argsLog := filepath.Join(binDir, "gh-args.log")
+	prBodyFile := filepath.Join(binDir, "pr-body.md")
 	t.Setenv("GH_ARGS_LOG", argsLog)
+	t.Setenv("GH_PR_BODY", prBodyFile)
+	t.Setenv("GH_PR_URL", "")
 	t.Setenv("GH_CHECKS_COUNT", filepath.Join(binDir, "checks-count"))
 	t.Setenv("GH_CHECKS", "pass")
 	t.Setenv("GH_MERGE", "")
-	return finalizePRFixture{dir: dir, remote: remote, argsLog: argsLog, svc: svc}
+	return finalizePRFixture{dir: dir, remote: remote, argsLog: argsLog, prBodyFile: prBodyFile, svc: svc}
 }
 
 func shortenFinalizeChecksGrace(t *testing.T, grace time.Duration) {
@@ -14433,6 +14535,22 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		assert.Empty(t, log.warns)
 	})
 
+	t.Run("pr body stats exclude the base changes the sync merged in", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		f.advanceOriginBase(t, "base.txt", "one\ntwo\nthree\n")
+		runGit(t, f.dir, "fetch", f.remote, "+refs/heads/master:refs/remotes/origin/master")
+		runGit(t, f.dir, "merge", "--no-edit", "origin/master")
+		behind, err := f.svc.BranchDiffStats("master", "feature")
+		require.NoError(t, err)
+		require.Equal(t, git.DiffStats{Files: 2, Additions: 4}, behind,
+			"the local base must lag origin/master for this case to tell the two bases apart")
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, &recordingFinalizeLog{})
+
+		require.NoError(t, res.incomplete)
+		assert.Contains(t, f.prBody(t), "- Files changed: 1\n- Additions: 1\n- Deletions: 0")
+	})
+
 	t.Run("merge waits for green checks and merges with the configured method", func(t *testing.T) {
 		f := setupFinalizePRFixture(t)
 		log := &recordingFinalizeLog{}
@@ -14444,9 +14562,10 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		require.NoError(t, res.incomplete)
 		assert.True(t, res.merged)
 		calls := f.ghCalls(t)
-		require.Len(t, calls, 4)
+		require.Len(t, calls, 5)
 		assert.Equal(t, "pr checks "+prURL+" --watch --fail-fast", calls[2])
 		assert.Equal(t, "pr merge "+prURL+" --squash --match-head-commit "+head, calls[3])
+		assert.Equal(t, "pr view "+prURL+" --json state --jq .state", calls[4])
 		assert.Contains(t, log.prints, "finalize: merged pull request "+prURL)
 		assert.Equal(t, baseHead, strings.TrimSpace(gitOutput(t, f.dir, "rev-parse", "master")),
 			"the local base branch is never touched")
@@ -14498,6 +14617,23 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		assert.True(t, res.merged)
 	})
 
+	t.Run("checks deadline during the no-checks retry stops before the merge", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		t.Setenv("GH_CHECKS", "nochecks")
+		shortenFinalizeChecksGrace(t, time.Minute)
+		finalizeNoChecksRetry = time.Minute // the deadline must expire inside the retry sleep
+		req := f.request(config.FinalizeMerge)
+		req.Config.FinalizeChecksTimeout = 300 * time.Millisecond
+
+		start := time.Now()
+		res := runFinalizeCloseout(t.Context(), req, synced, &recordingFinalizeLog{})
+
+		require.Error(t, res.incomplete)
+		assert.Equal(t, "PR checks did not finish within 300ms", res.incomplete.Error())
+		assert.Less(t, time.Since(start), 4*time.Second)
+		assert.False(t, res.merged)
+	})
+
 	t.Run("checks registered late are waited for", func(t *testing.T) {
 		f := setupFinalizePRFixture(t)
 		t.Setenv("GH_CHECKS", "late")
@@ -14526,6 +14662,36 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		assert.Contains(t, res.incomplete.Error(), "merge pull request: X Pull request acme/repo#7 is not mergeable")
 		assert.True(t, res.prOpened)
 		assert.False(t, res.merged)
+	})
+
+	t.Run("checks wait keeps the keep-awake hold past its idle window", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		t.Setenv("GH_CHECKS", "slow")
+		probe := &awakeProbe{}
+		keep := awake.NewWithBackend(probe, 20*time.Millisecond)
+		t.Cleanup(keep.Stop)
+		req := f.request(config.FinalizeMerge)
+		req.KeepAwake = keep
+
+		res := runFinalizeCloseout(t.Context(), req, synced, &recordingFinalizeLog{})
+
+		require.NoError(t, res.incomplete)
+		assert.Equal(t, int32(1), probe.acquires.Load(),
+			"an expiry during the wait would release the hold and reacquire it afterwards")
+	})
+
+	t.Run("merge queued but not merged is incomplete", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		t.Setenv("GH_MERGE", "queue")
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, &recordingFinalizeLog{})
+
+		require.Error(t, res.incomplete)
+		assert.Equal(t, "gh pr merge left the pull request OPEN; a merge queue or auto-merge may still merge it",
+			res.incomplete.Error())
+		assert.True(t, res.prOpened)
+		assert.False(t, res.merged)
+		assert.Equal(t, "finalize incomplete", res.statusNote())
 	})
 
 	t.Run("blocked sync opens no pull request", func(t *testing.T) {
@@ -14629,6 +14795,248 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, "th", link.ThreadID)
 		assert.Equal(t, 7, link.Number)
+	})
+}
+
+func TestOpenFinalizePRStops(t *testing.T) {
+	synced := processor.FinalizeOutcome{Status: processor.FinalizeMerged, Base: "origin/master"}
+	tests := []struct {
+		name string
+		mode string
+		// setup prepares the fixture and returns the context runFinalizeCloseout runs under
+		setup        func(t *testing.T, f finalizePRFixture) context.Context
+		wantErr      string
+		wantCalls    []string // prefixes of the gh calls, in order
+		wantPROpened bool
+	}{
+		{name: "detached HEAD", mode: config.FinalizePR,
+			setup: func(t *testing.T, f finalizePRFixture) context.Context {
+				runGit(t, f.dir, "checkout", "--detach")
+				return t.Context()
+			},
+			wantErr: "the plan checkout is on a detached HEAD"},
+		{name: "checkout on the base branch", mode: config.FinalizeMerge,
+			setup: func(t *testing.T, f finalizePRFixture) context.Context {
+				runGit(t, f.dir, "checkout", "master")
+				return t.Context()
+			},
+			wantErr: `plan branch "master" is the base branch`},
+		{name: "merge without a PR URL", mode: config.FinalizeMerge,
+			setup: func(t *testing.T, _ finalizePRFixture) context.Context {
+				t.Setenv("GH_PR_URL", "none")
+				return t.Context()
+			},
+			wantErr:   "gh printed no pull request URL, so the PR was not merged",
+			wantCalls: []string{"repo view", "pr create"}, wantPROpened: true},
+		{name: "canceled while waiting for checks", mode: config.FinalizeMerge,
+			setup: func(t *testing.T, _ finalizePRFixture) context.Context {
+				t.Setenv("GH_CHECKS", "hang")
+				ctx, cancel := context.WithCancel(t.Context())
+				t.Cleanup(cancel)
+				// the stub records the checks call before it hangs
+				cancelWhenPathExists(cancel, os.Getenv("GH_CHECKS_COUNT"))
+				return ctx
+			},
+			wantErr:   "wait for PR checks: context canceled",
+			wantCalls: []string{"repo view", "pr create", "pr checks"}, wantPROpened: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setupFinalizePRFixture(t)
+			ctx := tc.setup(t, f)
+			log := &recordingFinalizeLog{}
+
+			start := time.Now()
+			res := runFinalizeCloseout(ctx, f.request(tc.mode), synced, log)
+
+			require.EqualError(t, res.incomplete, tc.wantErr)
+			assert.Less(t, time.Since(start), 4*time.Second, "a stop must not wait out a hanging gh call")
+			assert.Equal(t, tc.wantPROpened, res.prOpened)
+			assert.False(t, res.merged)
+			calls := f.ghCalls(t)
+			require.Len(t, calls, len(tc.wantCalls), "gh calls: %q", calls)
+			for i, prefix := range tc.wantCalls {
+				assert.True(t, strings.HasPrefix(calls[i], prefix), "gh call %d = %q, want prefix %q", i, calls[i], prefix)
+			}
+			assert.Equal(t, []string{"finalize incomplete: " + tc.wantErr}, log.warns)
+		})
+	}
+}
+
+// finalizeFakeClaude answers each session by its prompt: FINALIZE_DONE for the finalize prompt,
+// ALL_TASKS_DONE for the task prompt, and REVIEW_DONE for every review prompt. The session kind
+// is appended to the file named by the %SESSIONS% placeholder.
+const finalizeFakeClaude = `#!/bin/sh
+prompt=$(cat)
+case "$prompt" in
+*FINALIZE-PROMPT*) kind=finalize; signal='<<<RALPHEX:FINALIZE_DONE>>>' ;;
+*TASK-PROMPT*) kind=task; signal='<<<RALPHEX:ALL_TASKS_DONE>>>' ;;
+*) kind=review; signal='<<<RALPHEX:REVIEW_DONE>>>' ;;
+esac
+printf '%s\n' "$kind" >> '%SESSIONS%'
+printf '{"type":"content_block_delta","delta":{"type":"text_delta","text":"%s"}}\n' "$signal"
+printf '%s\n' '{"type":"result","result":""}'
+`
+
+// finalizePlanRun is a completed full-mode run of a finished plan with finalize enabled.
+type finalizePlanRun struct {
+	f          finalizePRFixture
+	preHead    string // feature HEAD before the run
+	originHead string // origin's master, ahead of the local master
+	output     string // captured stdout
+	sessions   []string
+	notified   string // completion notification JSON the custom notify script received
+}
+
+// runFinalizePlan executes a finished plan through executePlan on a feature branch whose origin
+// master moved ahead of the local master with an unrelated three-line file.
+func runFinalizePlan(t *testing.T, finalize string) finalizePlanRun {
+	t.Helper()
+	return runFinalizePlanIn(t, finalize, false)
+}
+
+// runFinalizePlanIn is runFinalizePlan with worktree selecting a single-plan --worktree run, which
+// cuts the "finalize" branch from the feature HEAD.
+func runFinalizePlanIn(t *testing.T, finalize string, worktree bool) finalizePlanRun {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
+	f := setupFinalizeFixture(t, map[string]string{
+		"docs/plans/finalize.md": "# Finalize\n\n### Task 1: Done\n- [x] complete\n",
+	})
+	originHead := f.advanceOriginBase(t, "base.txt", "one\ntwo\nthree\n")
+	preHead := strings.TrimSpace(gitOutput(t, f.dir, "rev-parse", "HEAD"))
+	t.Chdir(f.dir)
+	sessionsLog := filepath.Join(t.TempDir(), "sessions")
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, strings.ReplaceAll(finalizeFakeClaude, "%SESSIONS%", sessionsLog))
+	notifiedFile := filepath.Join(t.TempDir(), "notified.json")
+	notifyScript := filepath.Join(t.TempDir(), "notify.sh")
+	writeExecutable(t, notifyScript, "#!/bin/sh\ncat > '"+notifiedFile+"'\n")
+	notifySvc, err := notify.New(notify.Params{
+		Channels: []string{"custom"}, CustomScript: notifyScript, OnComplete: true, TimeoutMs: 10000,
+	}, stderrLog{})
+	require.NoError(t, err)
+
+	req := executePlanRequest{
+		PlanFile: filepath.Join(f.dir, "docs", "plans", "finalize.md"), Mode: processor.ModeFull, GitSvc: f.svc,
+		Config: &config.Config{
+			ClaudeCommand: fakeClaude, Finalize: finalize, MovePlanOnCompletion: true, WorktreeEnabled: worktree,
+			FinalizeMergeMethod: "squash", FinalizeChecksTimeout: time.Minute,
+			TaskPrompt: "TASK-PROMPT", ReviewFirstPrompt: "REVIEW-PROMPT", ReviewSecondPrompt: "REVIEW-PROMPT",
+			FinalizePrompt: "FINALIZE-PROMPT",
+		},
+		Colors: testColors(), BaseRef: "master", Outcome: &planExecutionOutcome{}, NotifySvc: notifySvc,
+	}
+	var runErr error
+	output := captureStdout(t, func() {
+		if worktree {
+			req.WtCleanup = &cleanupHolder{}
+			runErr = runWithWorktree(t.Context(), opts{MaxIterations: 1, NoColor: true}, req)
+			return
+		}
+		runErr = executePlan(t.Context(), opts{MaxIterations: 1, NoColor: true}, req)
+	})
+	require.NoError(t, runErr, output)
+	sessions, err := os.ReadFile(sessionsLog) //nolint:gosec // test-owned temporary path
+	require.NoError(t, err)
+	notified, err := os.ReadFile(notifiedFile) //nolint:gosec // test-owned temporary path
+	require.NoError(t, err)
+	return finalizePlanRun{f: f, preHead: preHead, originHead: originHead, output: output,
+		sessions: strings.Fields(string(sessions)), notified: string(notified)}
+}
+
+// assertFinalizeMergeBelowArchive checks that the branch tip is the plan-archive commit and that
+// its parent is the finalize merge of origin/master into the pre-run feature HEAD.
+func assertFinalizeMergeBelowArchive(t *testing.T, run finalizePlanRun) {
+	t.Helper()
+	dir := run.f.dir
+	assert.Equal(t, "feature", currentGitBranch(t, dir))
+	assert.Equal(t, "move completed plan: finalize.md",
+		strings.TrimSpace(gitOutput(t, dir, "log", "-1", "--format=%s", "HEAD")))
+	mergeCommit := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD^"))
+	assert.Equal(t, []string{mergeCommit, run.preHead, run.originHead},
+		strings.Fields(gitOutput(t, dir, "rev-list", "--parents", "-n", "1", mergeCommit)),
+		"finalize must merge origin/master into the pre-merge HEAD")
+	assert.Equal(t, "one\ntwo\nthree\n", gitOutput(t, dir, "show", "HEAD:base.txt"))
+	assert.NotEqual(t, run.originHead, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "master")),
+		"the local base branch is never touched")
+	assert.Equal(t, 1, strings.Count(strings.Join(run.sessions, " "), "finalize"),
+		"one finalize validation session, got %q", run.sessions)
+	// measured against origin/master: only feature.txt, not base.txt the sync merged in
+	assert.Contains(t, run.output, "(1 files, +1/-0 lines)")
+	assert.Contains(t, run.output, "\n  finalize: merged origin/master\n")
+	assert.NotContains(t, run.output, "finalize incomplete")
+}
+
+func TestExecutePlanFinalize(t *testing.T) {
+	t.Run("sync merges the moved origin base and keeps it out of the stats", func(t *testing.T) {
+		run := runFinalizePlan(t, config.FinalizeSync)
+
+		assertFinalizeMergeBelowArchive(t, run)
+		assert.Empty(t, run.f.ghCalls(t), "finalize = sync opens no pull request")
+		cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/feature")
+		cmd.Dir = run.f.remote
+		require.Error(t, cmd.Run(), "finalize = sync must not push the branch")
+	})
+
+	t.Run("pr pushes the archived plan and measures the body against origin", func(t *testing.T) {
+		run := runFinalizePlan(t, config.FinalizePR)
+
+		assertFinalizeMergeBelowArchive(t, run)
+		head := strings.TrimSpace(gitOutput(t, run.f.dir, "rev-parse", "HEAD"))
+		assert.Equal(t, head, strings.TrimSpace(gitOutput(t, run.f.remote, "rev-parse", "refs/heads/feature")),
+			"the pushed head must include the plan-archive commit")
+		runGit(t, run.f.remote, "cat-file", "-e", head+":docs/plans/completed/finalize.md")
+		calls := run.f.ghCalls(t)
+		require.Len(t, calls, 2)
+		assert.Contains(t, calls[1], "pr create --repo acme/repo --base master --head feature")
+		assert.Contains(t, run.output, "\n  PR: https://github.com/acme/repo/pull/7\n")
+		assert.Contains(t, run.notified, `"finalize":"merged origin/master; PR opened"`)
+		assert.Contains(t, run.notified, `"pr_url":"https://github.com/acme/repo/pull/7"`)
+
+		fromOrigin, err := run.f.svc.BranchDiffStats("origin/master", "feature")
+		require.NoError(t, err)
+		fromLocal, err := run.f.svc.BranchDiffStats("master", "feature")
+		require.NoError(t, err)
+		require.NotEqual(t, fromOrigin, fromLocal)
+		assert.Contains(t, run.f.prBody(t), fmt.Sprintf("- Files changed: %d\n- Additions: %d\n- Deletions: %d",
+			fromOrigin.Files, fromOrigin.Additions, fromOrigin.Deletions))
+	})
+
+	t.Run("merge waits for the checks and merges the pushed head", func(t *testing.T) {
+		run := runFinalizePlan(t, config.FinalizeMerge)
+
+		assertFinalizeMergeBelowArchive(t, run)
+		head := strings.TrimSpace(gitOutput(t, run.f.dir, "rev-parse", "HEAD"))
+		calls := run.f.ghCalls(t)
+		require.Len(t, calls, 5, "gh calls: %q", calls)
+		assert.True(t, strings.HasPrefix(calls[2], "pr checks https://github.com/acme/repo/pull/7 --watch"), calls[2])
+		assert.Equal(t, "pr merge https://github.com/acme/repo/pull/7 --squash --match-head-commit "+head, calls[3])
+		assert.Contains(t, run.output, "PR merged")
+	})
+
+	t.Run("worktree run syncs and pushes the worktree branch", func(t *testing.T) {
+		run := runFinalizePlanIn(t, config.FinalizePR, true)
+		dir := run.f.dir
+
+		tip := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "refs/heads/finalize"))
+		assert.Equal(t, []string{tip, run.preHead, run.originHead},
+			strings.Fields(gitOutput(t, dir, "rev-list", "--parents", "-n", "1", tip)),
+			"the sync merges origin/master into the worktree branch")
+		assert.Equal(t, tip, strings.TrimSpace(gitOutput(t, run.f.remote, "rev-parse", "refs/heads/finalize")),
+			"the PR head is the worktree branch tip, pushed before the worktree is removed")
+		assert.Equal(t, "feature", currentGitBranch(t, dir))
+		cmd := exec.Command("git", "merge-base", "--is-ancestor", run.originHead, "feature")
+		cmd.Dir = dir
+		require.Error(t, cmd.Run(), "the sync must not merge into the source checkout")
+		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "finalize"))
+		calls := run.f.ghCalls(t)
+		require.Len(t, calls, 2, "gh calls: %q", calls)
+		assert.Contains(t, calls[1], "pr create --repo acme/repo --base master --head finalize")
+		assert.Equal(t, 1, strings.Count(strings.Join(run.sessions, " "), "finalize"))
+		assert.NotContains(t, run.output, "finalize incomplete")
 	})
 }
 

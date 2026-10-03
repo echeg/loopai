@@ -161,7 +161,8 @@ Monitoring:
 The Orca card follows the tab title loopai emits: "◐ loopai · task N/M · <executor>"
 shows as working, "loopai · waiting for input · <executor>" and
 "loopai · waiting for limit · <executor>" show as needs-attention, and
-"✳ loopai · done" / "✳ loopai · failed" show as idle; a bare "✳ loopai"
+"✳ loopai · done" / "✳ loopai · failed" show as idle (with finalize on, "done" is
+followed by its outcome, such as "· PR merged"); a bare "✳ loopai"
 means the run was stopped or interrupted without finishing.
 Ask "check loopai" for a status update.
 ```
@@ -178,7 +179,9 @@ After reporting, STOP.
 
 ## Close-out (tell the user, do not run)
 
-From the main checkout, prefer `/loopai-merge $PLAN`: it reads and narrates the completion report, previews merge conflicts, then asks whether to merge (resolving predicted conflicts on the plan branch first), open a PR, or cancel. Its chosen `loopai --merge $PLAN` (or `--pr $PLAN`) command finds the Orca branch through the progress record loopai wrote in the Orca worktree; merge also removes the git worktree. Orca still lists the card afterwards; `orca worktree rm --worktree "id:$WT_ID" --json` clears it. Alternatively close out entirely through Orca's own merge and archive flow. After the merge, the untracked plan copy left in `$ROOT/docs/plans/` is shadowed by the merged `completed/` copy and can be deleted.
+With `finalize = pr` or `merge` in `.loopai/config` (the skill forwards only the model and reviewer flags), the run itself merges `origin/<base>` into the branch, opens the pull request, and under `merge` merges it once its checks pass; the title then ends in `done · PR opened` or `done · PR merged`. Close-out by hand is needed when finalize is off or `sync` (`done · synced`), or the title ends in `done · finalize incomplete` before a pull request opened; once the run printed `PR: <url>`, a stop leaves that pull request open to fix or merge on GitHub. Finalize never removes the Orca worktree, so `orca worktree rm --worktree "id:$WT_ID" --json` still clears the card.
+
+Otherwise, from the main checkout, prefer `/loopai-merge $PLAN`: it reads and narrates the completion report, previews merge conflicts, then asks whether to merge (resolving predicted conflicts on the plan branch first), open a PR, or cancel. Its chosen `loopai --merge $PLAN` (or `--pr $PLAN`) command finds the Orca branch through the progress record loopai wrote in the Orca worktree; merge also removes the git worktree. Orca still lists the card afterwards; `orca worktree rm --worktree "id:$WT_ID" --json` clears it. Alternatively close out entirely through Orca's own merge and archive flow. After the merge, the untracked plan copy left in `$ROOT/docs/plans/` is shadowed by the merged `completed/` copy and can be deleted.
 
 ## Pitfalls
 

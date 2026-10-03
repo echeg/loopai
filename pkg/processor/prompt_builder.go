@@ -5,6 +5,7 @@ import (
 
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/plan"
+	"github.com/umputun/ralphex/pkg/status"
 )
 
 type promptBuilder struct {
@@ -13,6 +14,7 @@ type promptBuilder struct {
 	locator                *planLocator
 	codexFrontmatterWarned map[string]bool
 	catalogMissingWarned   bool
+	finalizeSignalWarned   bool
 }
 
 type promptBuilderOpts struct {
@@ -103,6 +105,7 @@ func (b *promptBuilder) GenAgentsPrompt() string {
 // validation commands are inserted after template expansion so their contents are never
 // interpreted as template variables.
 func (b *promptBuilder) FinalizePrompt(conflicts []string) string {
+	b.warnMissingFinalizeSignal(b.cfg.AppConfig.FinalizePrompt)
 	prompt := b.replacePromptVariables(b.cfg.AppConfig.FinalizePrompt, b.cfg.reviewProvider())
 	if !strings.Contains(prompt, "{{FINALIZE_CONFLICTS}}") && !strings.Contains(prompt, "{{VALIDATION_COMMANDS}}") {
 		return prompt
@@ -111,6 +114,18 @@ func (b *promptBuilder) FinalizePrompt(conflicts []string) string {
 		formatPromptList(conflicts, "(none - the merge is already committed or the branch was up to date)"))
 	return strings.ReplaceAll(prompt, "{{VALIDATION_COMMANDS}}",
 		formatPromptList(b.validationCommands(), "(none listed in the plan)"))
+}
+
+// warnMissingFinalizeSignal warns once when the effective finalize prompt never asks for
+// FINALIZE_DONE. a customized copy of the old rebase prompt survives the switch from
+// finalize_enabled to the finalize modes, and without the signal every base sync is rejected.
+func (b *promptBuilder) warnMissingFinalizeSignal(prompt string) {
+	if b.finalizeSignalWarned || b.log == nil || strings.Contains(prompt, status.FinalizeDone) {
+		return
+	}
+	b.finalizeSignalWarned = true
+	b.log.Print("[WARN] finalize prompt never asks for %s, so every base sync will be reported as blocked: "+
+		"update your customized finalize.txt from the embedded default (loopai --dump-defaults)", status.FinalizeDone)
 }
 
 // validationCommands returns the plan's ## Validation Commands entries. a missing

@@ -136,6 +136,7 @@ func (p testFinalizePhase) Run(ctx context.Context) (phase.FinalizeOutcome, erro
 type upToDateFinalizeGit struct{}
 
 func (upToDateFinalizeGit) HeadHash() (string, error)            { return "head", nil }
+func (upToDateFinalizeGit) CurrentBranch() (string, error)       { return "feature", nil }
 func (upToDateFinalizeGit) IsDirty() (bool, error)               { return false, nil }
 func (upToDateFinalizeGit) OperationInProgress() (string, error) { return "", nil }
 func (upToDateFinalizeGit) FetchContext(context.Context, string, string) (string, error) {
@@ -154,6 +155,7 @@ func (upToDateFinalizeGit) ChangedOutside(gitpkg.MergeSnapshot, []string, string
 }
 func (upToDateFinalizeGit) MergeAbortContext(context.Context, gitpkg.MergeSnapshot) error { return nil }
 func (upToDateFinalizeGit) RestoreHeadContext(context.Context, string) error              { return nil }
+func (upToDateFinalizeGit) AbortCleanMergeContext(context.Context) error                  { return nil }
 
 type testReportPhase struct {
 	runFunc func(ctx context.Context, facts string) (string, error)
@@ -300,7 +302,7 @@ func TestRunner_FactsBaseFollowsFinalizeMerge(t *testing.T) {
 	}{
 		{name: "no finalize", defaultBranch: "master", want: "master"},
 		{name: "up to date", defaultBranch: "master",
-			outcome: FinalizeOutcome{Status: FinalizeUpToDate, Base: "origin/master"}, want: "master"},
+			outcome: FinalizeOutcome{Status: FinalizeUpToDate, Base: "origin/master"}, want: "origin/master"},
 		{name: "merged", defaultBranch: "master",
 			outcome: FinalizeOutcome{Status: FinalizeMerged, Base: "origin/master"}, want: "origin/master"},
 		{name: "resolved from remote-tracking default", defaultBranch: "origin/master",
@@ -313,8 +315,7 @@ func TestRunner_FactsBaseFollowsFinalizeMerge(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &Runner{cfg: Config{DefaultBranch: tc.defaultBranch}, finalizeOutcome: tc.outcome}
-			assert.Equal(t, tc.want, r.factsBase())
-			assert.Equal(t, tc.want, r.DiffBase(), "the completion summary measures against the same base")
+			assert.Equal(t, tc.want, r.DiffBase())
 		})
 	}
 }

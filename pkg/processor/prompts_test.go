@@ -256,6 +256,27 @@ func TestRunner_replacePromptVariables_DefaultBranch(t *testing.T) {
 	})
 }
 
+func TestRunner_replacePromptVariables_FinalizeBase(t *testing.T) {
+	tests := []struct {
+		name          string
+		defaultBranch string
+		finalizeBase  string
+		want          string
+	}{
+		{name: "finalize base wins over a commit diff base", defaultBranch: "abc123", finalizeBase: "main", want: "origin/main"},
+		{name: "remote-tracking finalize base is stripped once", defaultBranch: "main", finalizeBase: "origin/main", want: "origin/main"},
+		{name: "falls back to the diff base branch", defaultBranch: "origin/trunk", want: "origin/trunk"},
+		{name: "falls back to master", want: "origin/master"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Runner{cfg: Config{DefaultBranch: tc.defaultBranch, FinalizeBase: tc.finalizeBase}}
+			result := newPromptBuilderForTest(r).replacePromptVariables("origin/{{FINALIZE_BASE}}", config.ExecutorClaude)
+			assert.Equal(t, tc.want, result)
+		})
+	}
+}
+
 func TestRunner_getPlanFileRef(t *testing.T) {
 	t.Run("with plan file", func(t *testing.T) {
 		r := &Runner{cfg: Config{PlanFile: "docs/plans/test.md"}}

@@ -163,13 +163,15 @@ Ask "check loopai" for a status update.
 
 1. `orca terminal show --terminal "$HANDLE" --json` - the title carries the phase.
 2. `orca terminal read --terminal "$HANDLE" --screen --json` plus `tail -40` of the progress file.
-3. A tail ending in a shell prompt means loopai exited; the last title says how - `done`, `failed`, or a bare `loopai` for a run stopped without finishing.
+3. A tail ending in a shell prompt means loopai exited; the last title says how - `done` (followed by the finalize outcome, such as `· PR merged`, when finalize is on), `failed`, or a bare `loopai` for a run stopped without finishing.
 
 Then stop.
 
 ## Close-out (tell the user, do not run)
 
-Recommend `$loopai-merge <plan>` to narrate the completion report, preview merge conflicts, and choose merge (resolving predicted conflicts on the plan branch first), PR, or cancel before closing out.
+With `finalize = pr` or `merge` in `.loopai/config` (the skill forwards only the model and reviewer flags), the run itself merges `origin/<base>` into the branch, opens the pull request, and under `merge` merges it once its checks pass; the title then ends in `done · PR opened` or `done · PR merged`. Close-out by hand is needed when finalize is off or `sync` (`done · synced`), or the title ends in `done · finalize incomplete` before a pull request opened; once the run printed `PR: <url>`, a stop leaves that pull request open to fix or merge on GitHub. Finalize never removes the Orca worktree, so `orca worktree rm --worktree "id:$WT_ID" --json` still clears the card.
+
+Otherwise, recommend `$loopai-merge <plan>` to narrate the completion report, preview merge conflicts, and choose merge (resolving predicted conflicts on the plan branch first), PR, or cancel before closing out.
 
 From the main checkout, `loopai --merge $PLAN` (or `--pr $PLAN`) finds the Orca branch through the progress record loopai wrote in the Orca worktree, merges it, and removes the git worktree. Orca still lists the card; `orca worktree rm --worktree "id:$WT_ID" --json` clears it. After the merge, the untracked plan copy left in `$ROOT/docs/plans/` is shadowed by the merged `completed/` copy and can be deleted.
 

@@ -180,6 +180,7 @@ codex_sandbox = read-only
 # a finalize stop never fails the run: the plan's work succeeded, and the reason
 # is reported as the last summary line. --review and --external-only run sync only.
 # --finalize=<mode> overrides it for one run and --skip-finalize forces none.
+# an empty value inherits; finalize = none turns an inherited mode off.
 # finalize_enabled was removed; use finalize = sync|pr|merge instead.
 # default: none
 finalize = none
@@ -326,7 +327,8 @@ plans_dir = docs/plans
 # default: docs/backlog
 backlog_dir = docs/backlog
 
-# default_branch: override the auto-detected default branch used for code review
+# default_branch: override the auto-detected default branch used for code review diffs and,
+# unless --base-ref names a branch, as the base that finalize fetches from origin and merges
 # by default, loopai detects the default branch from origin/HEAD or fallbacks to main/master,
 # set this to override for projects using non-standard branch names or Git flow
 # default_branch = dev

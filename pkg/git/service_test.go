@@ -4627,6 +4627,8 @@ type baseSyncRepo struct {
 func setupBaseSyncRepo(t *testing.T) baseSyncRepo {
 	t.Helper()
 	dir := setupExternalTestRepo(t)
+	// exact-content assertions must not depend on a system-wide core.autocrlf
+	runGit(t, dir, "config", "core.autocrlf", "false")
 	commitTestFile(t, dir, "base.txt", "base\n", "add base file")
 	remote := t.TempDir()
 	runGit(t, remote, "init", "--bare")
@@ -4640,6 +4642,7 @@ func setupBaseSyncRepo(t *testing.T) baseSyncRepo {
 	runGit(t, upstream, "config", "user.email", "test@test.com")
 	runGit(t, upstream, "config", "user.name", "test")
 	runGit(t, upstream, "config", "commit.gpgsign", "false")
+	runGit(t, upstream, "config", "core.autocrlf", "false")
 
 	svc, err := NewService(dir, noopServiceLogger())
 	require.NoError(t, err)
@@ -5068,6 +5071,27 @@ func TestService_MergeAbortContext(t *testing.T) {
 		require.Error(t, r.svc.MergeAbortContext(context.Background(), MergeSnapshot{}))
 		require.NoError(t, r.svc.MergeAbortContext(context.Background(), snapshot))
 		err := r.svc.MergeAbortContext(context.Background(), snapshot)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no merge in progress")
+	})
+}
+
+func TestService_AbortCleanMergeContext(t *testing.T) {
+	t.Run("aborts a merge it just started", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		head := gitOutput(t, r.dir, "rev-parse", "HEAD")
+		r.advanceBase(t, "upstream.txt", "upstream\n")
+		require.Equal(t, MergeClean, r.fetchAndMerge(t).State)
+
+		require.NoError(t, r.svc.AbortCleanMergeContext(context.Background()))
+		assert.False(t, mergeInProgress(t, r.dir))
+		assert.Equal(t, head, gitOutput(t, r.dir, "rev-parse", "HEAD"))
+		assert.NoFileExists(t, filepath.Join(r.dir, "upstream.txt"))
+	})
+
+	t.Run("refuses without a merge in progress", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		err := r.svc.AbortCleanMergeContext(context.Background())
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no merge in progress")
 	})

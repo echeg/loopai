@@ -97,7 +97,7 @@ Only when the user explicitly asks ("check loopai", "loopai status"):
 
 While running, name the current phase from the log: `task iteration N` is task execution, `review pass 1/2` is internal review, `codex iteration N` is the external review chain. Show the recent lines.
 
-Once exited, read the final lines for the outcome and report success or failure. After a success, report the finalize outcome from the last summary lines too: `PR merged` means finalize already merged the pull request on GitHub and nothing is left to close out; `PR: <url>` alone means the pull request is open for review on GitHub; `finalize incomplete: <reason>`, or no finalize lines (finalize is off by default), means the plan still needs closing out with `$loopai-merge <plan>`. Then stop.
+Once exited, read the final lines for the outcome and report success or failure. After a success, report the finalize outcome from the last summary lines too: `PR merged` means finalize already merged the pull request on GitHub and nothing is left to close out; `PR: <url>` alone means the pull request is open for review on GitHub, and a `finalize incomplete: <reason>` after it (checks failed or timed out, merge refused or only queued) means that pull request is still open to fix or merge on GitHub; `finalize incomplete: <reason>` with no `PR:` line, a `finalize:` line with no `PR:` line (`finalize = sync` merged the base and validated), or no finalize lines (finalize is off by default) means the plan still needs closing out with `$loopai-merge <plan>`. Then stop.
 
 ## Constraints
 

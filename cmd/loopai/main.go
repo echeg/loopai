@@ -61,7 +61,7 @@ type opts struct {
 	ExternalOnly            bool          `short:"e" long:"external-only" description:"skip tasks and first review; run external review, conditional post-review, and finalize"`
 	CodexOnly               bool          `long:"codex-only" hidden:"true" description:"removed; use --external-only"`
 	TasksOnly               bool          `short:"t" long:"tasks-only" description:"run only task phase, skip all reviews"`
-	BaseRef                 string        `short:"b" long:"base-ref" description:"override the base for review diffs; a branch name also becomes the base for non-worktree branch creation (branch name or commit hash)"`
+	BaseRef                 string        `short:"b" long:"base-ref" description:"override the base for review diffs; a branch name also becomes the base for non-worktree branch creation and the base finalize merges from origin (branch name or commit hash)"`
 	Wait                    time.Duration `long:"wait" description:"wait duration on rate limit before retry (default: 10m; 0 disables retries)"`
 	SessionTimeout          time.Duration `long:"session-timeout" description:"per-session timeout (e.g. 30m, 1h); external codex/custom review excluded unless a task or review phase runs codex"`
 	IdleTimeout             time.Duration `long:"idle-timeout" description:"kill claude/codex executor session after no output for this duration (e.g. 5m, 10m)"`
@@ -1714,7 +1714,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	// inside each execution worktree so the source checkout stays untouched between plans and the
 	// final branch contains every completed-plan move.
 	// track actual success so the completion summary reflects where the plan really lives.
-	planMoved, archiveIncomplete, moveErr := moveCompletedPlan(req, r.Report(), plr.baseLog)
+	planMoved, archiveIncomplete, moveErr := archiveAfterFinalize(req, r.FinalizeOutcome(), r.Report(), plr.baseLog)
 	if moveErr != nil {
 		plr.baseLog.SetFailed(moveErr)
 		sendNotification(req, branch, elapsed, stats, moveErr)
@@ -1778,6 +1778,19 @@ func stopCmuxUnlessRetained(rep *cmux.Reporter, retained bool) {
 // write left no trace in the run's own record.
 type archiveWarner interface {
 	Warn(format string, args ...any)
+}
+
+// archiveAfterFinalize archives the completed plan unless finalize could not restore the plan
+// checkout: it may still hold the merge or sit on another branch, where the archive commit would
+// land inside the merge or on the wrong branch. The plan then stays in place, reported like any
+// other incomplete archive, and the run stays green.
+func archiveAfterFinalize(req executePlanRequest, synced processor.FinalizeOutcome, report string,
+	log archiveWarner) (moved bool, incomplete, err error) {
+	if synced.Unrestored && shouldMovePlan(req) {
+		log.Warn("plan left in place: finalize could not restore the plan checkout")
+		return false, errors.New("plan left in place: finalize could not restore the plan checkout"), nil
+	}
+	return moveCompletedPlan(req, report, log)
 }
 
 // moveCompletedPlan archives the completed plan and its report. err is fatal and is returned only
@@ -6591,23 +6604,31 @@ func localBranchRef(gitSvc *git.Service, ref string) string {
 }
 
 // resolveFinalize reports whether the finalize base sync runs for req and the base branch it merges.
-// A chain member's branch is the next member's start, so only the last member syncs with the base.
+// finalizeModeFor decides whether it runs; without a git service the base stays empty and the
+// phase reports itself blocked.
 func resolveFinalize(req executePlanRequest) (enabled bool, base string) {
-	if req.Config.EffectiveFinalize() == config.FinalizeNone || req.ChainNotLast {
+	if finalizeModeFor(req) == config.FinalizeNone {
 		return false, ""
 	}
-	return true, finalizeBaseBranch(req.GitSvc, req.BaseRef, req.Config.DefaultBranch)
+	if req.GitSvc != nil {
+		base = finalizeBaseBranch(req.GitSvc, req.BaseRef, req.Config.DefaultBranch)
+	}
+	return true, base
 }
 
 // finalizeBaseBranch returns the branch finalize merges from origin: the branch --base-ref names
-// when it is a local branch, otherwise the configured or auto-detected default branch, without
-// the origin/ prefix. A commit-hash --base-ref is a diff base only and has no remote counterpart.
+// when it is a local branch or an origin/ remote-tracking branch, otherwise the configured or
+// auto-detected default branch, without the origin/ prefix. A commit-hash --base-ref is a diff
+// base only and has no remote counterpart.
 func finalizeBaseBranch(gitSvc *git.Service, baseRef, configBranch string) string {
-	if gitSvc == nil {
-		return strings.TrimPrefix(baseRef, remoteBranchPrefix)
-	}
 	if local := localBranchRef(gitSvc, baseRef); local != "" {
 		return local
+	}
+	// a remote-only base such as origin/release must not fall back to merging the default branch
+	if name := strings.TrimPrefix(baseRef, remoteBranchPrefix); name != baseRef && name != "" {
+		if ok, err := gitSvc.RevisionExistsContext(context.Background(), "refs/remotes/"+baseRef); err == nil && ok {
+			return name
+		}
 	}
 	return strings.TrimPrefix(resolveDefaultBranch("", configBranch, gitSvc.GetDefaultBranch()), remoteBranchPrefix)
 }
@@ -6778,9 +6799,6 @@ func openFinalizePR(ctx context.Context, req executePlanRequest, res *finalizeRe
 		return errors.New("the plan checkout is on a detached HEAD")
 	}
 	base := strings.TrimPrefix(res.sync.Base, remoteBranchPrefix)
-	if base == "" {
-		_, base = resolveFinalize(req)
-	}
 	if branch == base {
 		return fmt.Errorf("plan branch %q is the base branch", branch)
 	}
@@ -6806,7 +6824,11 @@ func openFinalizePR(ctx context.Context, req executePlanRequest, res *finalizeRe
 	}
 	timeout := req.Config.EffectiveFinalizeChecksTimeout()
 	log.Print("finalize: waiting up to %s for pull request checks", timeout)
-	if err := waitForPRChecks(ctx, ghPath, gitSvc.Root(), prURL, timeout); err != nil {
+	// the checks wait emits no output and can outlast the keep-awake idle window
+	unpinAwake := req.KeepAwake.Pin()
+	err = waitForPRChecks(ctx, ghPath, gitSvc.Root(), prURL, timeout)
+	unpinAwake()
+	if err != nil {
 		return err
 	}
 	if err := mergePullRequest(ctx, ghPath, gitSvc.Root(), prURL, req.Config.EffectiveFinalizeMergeMethod(), head); err != nil {
@@ -6863,11 +6885,19 @@ func checksWaitError(parent, checksCtx context.Context, timeout time.Duration) e
 
 // mergePullRequest merges the PR on GitHub with the configured method. --match-head-commit makes
 // GitHub refuse the merge when the PR head moved past the commit loopai pushed. No branch is
-// deleted and the local base branch is never touched.
+// deleted and the local base branch is never touched. gh also exits 0 when a merge queue only
+// enqueued the PR, so the PR's state is read back before the merge is reported.
 func mergePullRequest(ctx context.Context, ghPath, dir, prURL, method, head string) error {
 	out, err := runGH(ctx, ghPath, dir, "pr", "merge", prURL, "--"+method, "--match-head-commit", head)
 	if err != nil {
 		return fmt.Errorf("merge pull request: %s", ghFailureDetail(out, err))
+	}
+	out, err = runGH(ctx, ghPath, dir, "pr", "view", prURL, "--json", "state", "--jq", ".state")
+	if err != nil {
+		return fmt.Errorf("confirm pull request merge: %s", ghFailureDetail(out, err))
+	}
+	if state := strings.TrimSpace(out); state != "MERGED" {
+		return fmt.Errorf("gh pr merge left the pull request %s; a merge queue or auto-merge may still merge it", state)
 	}
 	return nil
 }

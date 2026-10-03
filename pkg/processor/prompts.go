@@ -47,7 +47,8 @@ func (b *promptBuilder) getProgressFileRef() string {
 }
 
 // replaceBaseVariables replaces common template variables in prompts.
-// supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}}, {{BACKLOG_DIR}}
+// supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{FINALIZE_BASE}}, {{PLANS_DIR}},
+// {{BACKLOG_DIR}}
 // this is the core replacement function used by all prompt builders.
 // replaces common template variables shared across all prompt types.
 // does not append trailer instruction — callers are responsible for calling appendCommitTrailerInstruction
@@ -58,6 +59,7 @@ func (b *promptBuilder) replaceBaseVariables(prompt string) string {
 	result = strings.ReplaceAll(result, "{{PROGRESS_FILE}}", b.getProgressFileRef())
 	result = strings.ReplaceAll(result, "{{GOAL}}", b.getGoal())
 	result = strings.ReplaceAll(result, "{{DEFAULT_BRANCH}}", b.getDefaultBranch())
+	result = strings.ReplaceAll(result, "{{FINALIZE_BASE}}", b.getFinalizeBase())
 	result = strings.ReplaceAll(result, "{{PLANS_DIR}}", b.getPlansDir())
 	result = strings.ReplaceAll(result, "{{BACKLOG_DIR}}", b.getBacklogDir())
 	return result
@@ -484,6 +486,16 @@ func (b *promptBuilder) getDefaultBranch() string {
 		return "master"
 	}
 	return b.cfg.DefaultBranch
+}
+
+// getFinalizeBase returns the branch the finalize sync merges from origin, without the origin/
+// prefix. it differs from {{DEFAULT_BRANCH}}, the diff base, when --base-ref names a commit or a
+// remote-tracking ref; with finalize off it falls back to the diff base's branch name.
+func (b *promptBuilder) getFinalizeBase() string {
+	if b.cfg.FinalizeBase != "" {
+		return strings.TrimPrefix(b.cfg.FinalizeBase, "origin/")
+	}
+	return strings.TrimPrefix(b.getDefaultBranch(), "origin/")
 }
 
 // getPlansDir returns the plans directory or "docs/plans" as fallback.

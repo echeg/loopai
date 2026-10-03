@@ -1418,6 +1418,86 @@ func TestParseIndexListing(t *testing.T) {
 	}
 }
 
+func TestExternalBackend_ClassifyNoCommitMergeWithoutMergeHead(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	head := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+	backend, err := newExternalBackend(dir, "git")
+	require.NoError(t, err)
+
+	// a successful merge of a non-ancestor that left no MERGE_HEAD must not read as up to date
+	res, err := backend.classifyNoCommitMerge(t.Context(), nil, head, "0123456789abcdef0123456789abcdef01234567")
+
+	require.ErrorContains(t, err, "recorded no MERGE_HEAD")
+	assert.Equal(t, MergeResult{}, res)
+}
+
+func TestExternalBackend_ClassifyNoCommitMergeAbandonsUnwantedMerges(t *testing.T) {
+	// startMerge leaves an uncommitted merge of a new side commit in place and returns the
+	// pre-merge HEAD and the side commit
+	startMerge := func(t *testing.T, dir string) (head, side string) {
+		t.Helper()
+		head = strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+		runGit(t, dir, "checkout", "-b", "side")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "side.txt"), []byte("side\n"), 0o600))
+		runGit(t, dir, "add", "side.txt")
+		runGit(t, dir, "commit", "-m", "side")
+		side = strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+		runGit(t, dir, "checkout", "master")
+		runGit(t, dir, "merge", "--no-commit", "--no-ff", "side")
+		return head, side
+	}
+	mergeInProgress := func(dir string) bool {
+		_, err := os.Stat(filepath.Join(dir, ".git", "MERGE_HEAD"))
+		return err == nil
+	}
+
+	t.Run("canceled context aborts the merge", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		backend, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+		head, side := startMerge(t, dir)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		res, err := backend.classifyNoCommitMerge(ctx, nil, head, side)
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, MergeResult{}, res)
+		assert.False(t, mergeInProgress(dir), "a canceled merge must not be left for the resumed run")
+		assert.NoFileExists(t, filepath.Join(dir, "side.txt"))
+	})
+
+	t.Run("a different MERGE_HEAD aborts the merge", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		backend, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+		head, side := startMerge(t, dir)
+		const want = "0123456789abcdef0123456789abcdef01234567"
+
+		res, err := backend.classifyNoCommitMerge(t.Context(), nil, head, want)
+
+		require.ErrorContains(t, err, "merge recorded "+side+" instead of "+want)
+		assert.Equal(t, MergeResult{}, res)
+		assert.False(t, mergeInProgress(dir))
+	})
+
+	t.Run("a moved HEAD is rolled back", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		backend, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+		head := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "moved.txt"), []byte("moved\n"), 0o600))
+		runGit(t, dir, "add", "moved.txt")
+		runGit(t, dir, "commit", "-m", "moved")
+
+		res, err := backend.classifyNoCommitMerge(t.Context(), nil, head, head)
+
+		require.ErrorContains(t, err, "merge moved HEAD despite --no-commit")
+		assert.Equal(t, MergeResult{}, res)
+		assert.Equal(t, head, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD")))
+	})
+}
+
 func TestExternalBackend_CustomCommand(t *testing.T) {
 	t.Run("uses custom command in run", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

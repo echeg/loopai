@@ -1,20 +1,20 @@
 # finalize prompt
 # this prompt runs once after successful reviews when finalize is sync, pr, or merge
-# (default finalize = none). loopai has already fetched origin/{{DEFAULT_BRANCH}} and merged it
+# (default finalize = none). loopai has already fetched origin/{{FINALIZE_BASE}} and merged it
 # into the plan branch before this session starts; it never rebases or force-pushes.
 # loopai accepts the result only when this session emits FINALIZE_DONE, the tree is clean, and
 # no path outside the conflicted set changed; otherwise it restores the pre-merge HEAD and
 # stops before opening a pull request.
 #
 # available variables:
-#   {{DEFAULT_BRANCH}} - base branch name (main, master, trunk, etc.)
+#   {{FINALIZE_BASE}} - base branch finalize merged from origin (main, master, trunk, etc.)
 #   {{PLAN_FILE}} - path to the plan file
 #   {{FINALIZE_CONFLICTS}} - conflicted paths left by the merge, one "- path" per line, or a note that there are none
 #   {{VALIDATION_COMMANDS}} - the plan's validation commands, one "- command" per line, or a note that there are none
 
-Post-completion finalize step. Bring the plan branch up to date with origin/{{DEFAULT_BRANCH}}.
+Post-completion finalize step. Bring the plan branch up to date with origin/{{FINALIZE_BASE}}.
 
-loopai has already run `git fetch origin {{DEFAULT_BRANCH}}` and `git merge origin/{{DEFAULT_BRANCH}}` into the current branch. Do not fetch, rebase, reset, push, or start another merge yourself.
+loopai has already run `git fetch origin {{FINALIZE_BASE}}` and `git merge origin/{{FINALIZE_BASE}}` into the current branch. Do not fetch, rebase, reset, push, or start another merge yourself.
 
 Conflicted paths left by the merge:
 {{FINALIZE_CONFLICTS}}
@@ -35,7 +35,7 @@ Steps:
 2. Validate:
    - Run every validation command listed above, in order, from the repository root.
    - When the plan lists none, run the project's standard test command if CLAUDE.md, AGENTS.md, or the plan names one; otherwise skip validation.
-   - Do not fix code to make a failing command pass. A failure caused by changes on {{DEFAULT_BRANCH}} needs a human decision: report it as blocked (step 3).
+   - Do not fix code to make a failing command pass. A failure caused by changes on origin/{{FINALIZE_BASE}} needs a human decision: report it as blocked (step 3).
    - Do not leave the working tree dirty: validation must not produce uncommitted changes.
 
 3. Report the outcome on the final lines of your answer:

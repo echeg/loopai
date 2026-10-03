@@ -114,6 +114,7 @@
 - [x] add `{{VALIDATION_COMMANDS}}` and `{{FINALIZE_CONFLICTS}}` expansion to the finalize prompt builder (`pkg/processor/prompt_builder.go`/`prompts.go`) and update the prompt header comment; update `report.txt`'s finalize mention
 - [x] write tests: signal detection for both providers, prompt expansion with and without conflicts and with no validation commands
 - [x] run `go test ./pkg/status/... ./pkg/executor/... ./pkg/processor/...` - must pass before task 4
+- ➕ [x] the prompt and `report.txt` name the base through `{{FINALIZE_BASE}}` (`Config.FinalizeBase`, expanded in `replaceBaseVariables`), not `{{DEFAULT_BRANCH}}`, which is the diff base and can be a commit hash or `origin/main`; `FinalizePrompt` warns once when the effective template lacks `FINALIZE_DONE`
 - ➕ [x] `phase.FinalizePrompts.FinalizePrompt(conflicts []string)` now takes the conflicted paths (the current phase passes nil until task 4); `phase.ParseFinalizeBlockedReason` extracts the bounded one-line reason after `FINALIZE_BLOCKED`; `detectSignal` checks `FINALIZE_BLOCKED` before `FINALIZE_DONE` so output carrying both reads as blocked
 
 ### Task 4: Rewrite the finalize phase as base sync
@@ -125,9 +126,9 @@
 - [x] write tests with fake executors and a real temp repo: each outcome, signal missing, tampering rejected, validation failure after clean merge restoring HEAD, cancellation, chain non-last plan skipping
 - [x] run `go test ./pkg/processor/...` - must pass before task 5
 - ➕ [x] `pkg/git` gained `OperationInProgress`, `CommitMergeContext` (commits the in-progress merge with the commit trailer, refuses unresolved paths), and `CommitParents`; the phase reaches git through the consumer interface `phase.FinalizeGit`, wired by `Runner.SetFinalizeGit(req.GitSvc)` (the worktree service in worktree mode)
-- ➕ [x] the base is `resolveFinalize`/`finalizeBaseBranch` in `cmd/loopai`: the local branch `--base-ref` names, else the configured or auto-detected default branch, without `origin/`; the chain flag is `executePlanRequest.ChainNotLast`
+- ➕ [x] the base is `resolveFinalize`/`finalizeBaseBranch` in `cmd/loopai`: the local branch `--base-ref` names, or its `origin/<branch>` remote-tracking ref when no local branch exists, else the configured or auto-detected default branch, without `origin/`; the chain flag is `executePlanRequest.ChainNotLast`
 - ➕ [x] cancellation restores the pre-merge state under a detached one-minute context before returning the error, so a resumed run never meets a half-done merge; a failed restore is appended to the blocked reason
-- ➕ [x] after a `merged`/`resolved` sync, report facts measure commits and diffs against `origin/<base>` (`Runner.factsBase`) so merged-in base changes are not counted as the run's work; a stored finalize result is cleared at run start; the facts gain a `## Finalize` section and the facts-only fallback a `- finalize:` summary line
+- ➕ [x] after a `merged`/`resolved` sync, report facts measure commits and diffs against `origin/<base>` (`Runner.DiffBase()`) so merged-in base changes are not counted as the run's work; a stored finalize result is cleared at run start; the facts gain a `## Finalize` section and the facts-only fallback a `- finalize:` summary line
 
 ### Task 5: Push, open the PR, and optionally merge after archival
 - [x] refactor `runPRCommand` into a reusable `createPullRequest(ctx, gitSvc, base, target) (prURL string, err error)` used by both `--pr` and finalize; keep `--pr` output unchanged
@@ -140,6 +141,7 @@
 - ➕ [x] the post-archival step is `runFinalizeCloseout` returning a `finalizeResult` (sync outcome, PR URL, merged, `incomplete`); a PR opens only after a successful sync (`up_to_date|merged|resolved`), so a `blocked` or `skipped` sync reports `finalize incomplete` instead; `finalizeModeFor` degrades `pr|merge` to `sync` under `--review`/`--external-only` and to `none` under `--tasks-only`, with a startup warning from `finalizeStartupWarning`
 - ➕ [x] `merge` mode: `gh pr checks <url> --watch --fail-fast` bounded by `finalize_checks_timeout`; a fresh PR that reports "no checks reported" is retried for `finalizeNoChecksGrace` (1m) and then treated as having none; `gh pr merge <url> --<method> --match-head-commit <pushed HEAD>`, no branch deletion
 - ➕ [x] cmux/Orca/T3 reporters gained `SetFinishNote` (`synced`, `PR opened`, `PR merged`, `finalize incomplete`) appended to the done status; the completion summary's diff stats use `Runner.DiffBase()` so they agree with the report after a base merge
+- ➕ [x] review fixes: the sync refuses a checkout on the base branch itself; verify and restore reject a checkout that moved off the branch the sync started on; `FINALIZE_BLOCKED` anywhere in the output wins over a later done signal; restore keeps edits a rejected session left uncommitted and the blocked reason says so; a failed `StageZeroSnapshot` aborts through `AbortCleanMergeContext`; a merge of a non-ancestor that records no `MERGE_HEAD` is an error, not up to date; the PR-checks wait renews the keep-awake hold
 - ➕ [x] fixed task 4's worktree path dropping `ChainNotLast` (every worktree chain member would have synced); the request rebuilt inside the worktree is now `worktreeExecuteRequest`
 
 ### Task 6: Verify acceptance criteria
@@ -155,13 +157,14 @@
 - [x] update `assets/claude/skills/{loopai,loopai-merge,loopai-t3}/SKILL.md` and the Codex counterparts under `assets/codex/skills/` to describe `finalize = pr|merge` and when `/loopai-merge` is still needed (finalize blocked)
 - [x] bump both manifest versions in `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` to the same value
 - [x] run `make check-symlinks check-codex-skills check-plugin`
+- ➕ [x] the `loopai-orca` skills (Claude and Codex) and `docs/notifications.md` describe finalize too
 - ➕ [x] manifests bumped to 0.5.11; `/loopai-merge` gained a read-only `gh pr list --head` check that stops on an already merged PR and drops `Open PR` for an open one; the asset regression suites (`check-symlinks_test.sh`, `check-codex-skills_test.sh`, `check-plugin_test.sh`) pass in WSL, since the symlink fixtures cannot be created in Git Bash on Windows
 
 ## Technical Details
 - **Modes**: `none` (nothing), `sync` (fetch + merge base + validation), `pr` (sync + push + `gh pr create`), `merge` (pr + `gh pr checks --watch` + `gh pr merge --<method>`). Review-only modes (`--review`, `--external-only`) support `sync` only; `pr`/`merge` degrade to `sync` there with a startup warning.
-- **Base**: the resolved default branch (`GetDefaultBranch`, stripped of `origin/`), or the explicit `--base-ref` when it names a local branch.
+- **Base**: the resolved default branch (`GetDefaultBranch`, stripped of `origin/`), or the branch `--base-ref` names, as a local branch or an `origin/<branch>` remote-tracking ref.
 - **Acceptance check for conflict resolution**: after `git merge --no-commit` with conflicts, record stage-0 blob ids of every non-conflicted path; after the model's commit, every path outside the conflicted set must carry the recorded blob, and HEAD's parents must be the pre-merge HEAD and the fetched base SHA.
-- **Restore**: `git merge --abort` while the merge is uncommitted, otherwise `git reset --keep <pre-merge HEAD>`; both refuse to discard anything not produced by the merge.
+- **Restore**: `git merge --abort` while the merge is uncommitted, otherwise `git reset --keep <pre-merge HEAD>`; both refuse to discard anything not produced by the merge. When the post-merge snapshot itself fails, the just-started merge on the required clean tree is aborted with a plain `git merge --abort` (`AbortCleanMergeContext`).
 - **Order in `executePlan`**: `Runner.Run` (task, reviews, finalize sync, report) → archive plan → PR/merge → notification and stats → worktree cleanup.
 - **Outcome surfacing**: `finalize: merged origin/master (3 files resolved)`, `PR: <url>`, `PR merged`, or `finalize incomplete: <reason>` as the last summary line.
 

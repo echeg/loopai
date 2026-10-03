@@ -347,3 +347,17 @@ func TestCloneRunRecordCopiesFinalize(t *testing.T) {
 	assert.Equal(t, FinalizeResolved, record.Finalize.Status)
 	assert.Nil(t, cloneRunRecord(RunRecord{}).Finalize)
 }
+
+func TestRunnerDropsStoredFinalizeOnStart(t *testing.T) {
+	stored := RunRecord{Version: runRecordVersion, Branch: "feature", Tasks: TaskRunRecord{Iterations: 3},
+		Finalize: &FinalizeOutcome{Status: FinalizeBlocked, Reason: "earlier attempt"}}
+	store := &runRecordMemoryStore{found: true, record: stored}
+	runner := &Runner{
+		cfg: Config{Mode: ModeFull}, log: newMockLogger(), recordStore: store,
+		git: &checkpointGit{branch: "feature"},
+	}
+	runner.startRunRecord()
+	require.Len(t, store.saves, 1)
+	assert.Equal(t, 3, store.record.Tasks.Iterations, "the stored record is resumed")
+	assert.Nil(t, store.record.Finalize, "an earlier attempt's finalize result does not reach this run")
+}
