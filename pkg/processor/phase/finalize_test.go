@@ -390,6 +390,68 @@ func (failingSnapshotGit) StageZeroSnapshot() (git.MergeSnapshot, error) {
 	return git.MergeSnapshot{}, errors.New("index unreadable")
 }
 
+// leftMergeGit starts the real merge and then reports it as failed without aborting it, as the git
+// layer does when its post-merge inspection or its own abort fails.
+type leftMergeGit struct {
+	FinalizeGit
+	abortErr error
+}
+
+func (g leftMergeGit) MergeRemoteNoCommitContext(ctx context.Context, rev string) (git.MergeResult, error) {
+	if _, err := g.FinalizeGit.MergeRemoteNoCommitContext(ctx, rev); err != nil {
+		return git.MergeResult{}, err //nolint:wrapcheck // test double
+	}
+	return git.MergeResult{}, errors.New("inspect HEAD after merge: boom")
+}
+
+func (g leftMergeGit) AbortCleanMergeContext(ctx context.Context) error {
+	if g.abortErr != nil {
+		return g.abortErr
+	}
+	return g.FinalizeGit.AbortCleanMergeContext(ctx) //nolint:wrapcheck // test double
+}
+
+func TestFinalizePhase_FailedMergeCleanupIsVerified(t *testing.T) {
+	t.Run("a merge the git layer left in place is aborted", func(t *testing.T) {
+		r := setupFinalizeRepo(t)
+		head := r.head(t)
+		r.advanceBase(t, "upstream.txt", "upstream\n")
+		p, _, _, mock := newFinalizeTestPhase(t, finalizeTestOpts{
+			cfg: Config{FinalizeEnabled: true}, git: leftMergeGit{FinalizeGit: r.svc},
+		})
+
+		outcome, err := p.Run(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, FinalizeBlocked, outcome.Status)
+		assert.Equal(t, "merge origin/master: inspect HEAD after merge: boom", outcome.Reason)
+		assert.False(t, outcome.Unrestored)
+		assert.Empty(t, mock.RunCalls())
+		assert.False(t, r.mergeInProgress())
+		assert.Equal(t, head, r.head(t))
+		assert.NoFileExists(t, filepath.Join(r.dir, "upstream.txt"))
+	})
+
+	t.Run("a merge that cannot be aborted is reported unrestored", func(t *testing.T) {
+		r := setupFinalizeRepo(t)
+		r.advanceBase(t, "upstream.txt", "upstream\n")
+		p, log, _, mock := newFinalizeTestPhase(t, finalizeTestOpts{
+			cfg: Config{FinalizeEnabled: true}, git: leftMergeGit{FinalizeGit: r.svc, abortErr: errors.New("abort refused")},
+		})
+
+		outcome, err := p.Run(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, FinalizeBlocked, outcome.Status)
+		assert.Equal(t, "merge origin/master: inspect HEAD after merge: boom; restore failed: abort merge: abort refused",
+			outcome.Reason)
+		assert.True(t, outcome.Unrestored, "the plan archive must not be committed into the merge")
+		assert.Empty(t, mock.RunCalls())
+		assert.True(t, r.mergeInProgress())
+		assertLogContains(t, log, "warning: finalize could not restore")
+	})
+}
+
 func TestFinalizePhase_FailuresAfterTheMergeStarts(t *testing.T) {
 	t.Run("snapshot failure aborts the fresh merge", func(t *testing.T) {
 		r, head, _ := conflictingFinalizeRepo(t)
@@ -719,6 +781,7 @@ func TestFinalizePhase_BlockedBeforeMerge(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, FinalizeBlocked, outcome.Status)
 		assert.Equal(t, "working tree has uncommitted changes", outcome.Reason)
+		assert.False(t, outcome.Unrestored, "a dirty tree alone does not stop the pathspec archive commit")
 		assert.Empty(t, mock.RunCalls())
 	})
 
@@ -734,6 +797,57 @@ func TestFinalizePhase_BlockedBeforeMerge(t *testing.T) {
 		assert.Equal(t, "the checkout is on the base branch master", outcome.Reason)
 		assert.Empty(t, mock.RunCalls())
 		assert.Equal(t, head, r.head(t), "the local base branch is never merged into")
+	})
+
+	t.Run("pre-existing merge with a clean tree stays intact", func(t *testing.T) {
+		r := setupFinalizeRepo(t)
+		finalizeGit(t, r.dir, "checkout", "-b", "side", "master")
+		commitFinalizeFile(t, r.dir, "side.txt", "side\n", "side work")
+		finalizeGit(t, r.dir, "checkout", "feature")
+		// -s ours leaves MERGE_HEAD with an index that matches HEAD, so the dirty check passes
+		finalizeGit(t, r.dir, "merge", "--no-commit", "--no-ff", "-s", "ours", "side")
+		require.True(t, r.mergeInProgress())
+		mergeHead := r.rev(t, r.dir, "MERGE_HEAD")
+		head := r.head(t)
+		r.advanceBase(t, "upstream.txt", "upstream\n")
+		p, _, _, mock := newFinalizeTestPhase(t, finalizeTestOpts{cfg: Config{FinalizeEnabled: true}, git: r.svc})
+
+		outcome, err := p.Run(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, FinalizeBlocked, outcome.Status)
+		assert.Equal(t, "a merge is in progress", outcome.Reason)
+		assert.True(t, outcome.Unrestored, "the plan archive must not be staged into the user's merge")
+		assert.Empty(t, mock.RunCalls())
+		require.True(t, r.mergeInProgress(), "the user's merge must not be aborted")
+		assert.Equal(t, mergeHead, r.rev(t, r.dir, "MERGE_HEAD"))
+		assert.Equal(t, head, r.head(t))
+	})
+
+	t.Run("pre-existing merge with staged changes stays intact", func(t *testing.T) {
+		r := setupFinalizeRepo(t)
+		finalizeGit(t, r.dir, "checkout", "-b", "side", "master")
+		commitFinalizeFile(t, r.dir, "side.txt", "side\n", "side work")
+		finalizeGit(t, r.dir, "checkout", "feature")
+		// a plain no-commit merge stages side.txt, so the index differs from HEAD and the tree is dirty
+		finalizeGit(t, r.dir, "merge", "--no-commit", "--no-ff", "side")
+		require.True(t, r.mergeInProgress())
+		mergeHead := r.rev(t, r.dir, "MERGE_HEAD")
+		head := r.head(t)
+		r.advanceBase(t, "upstream.txt", "upstream\n")
+		p, _, _, mock := newFinalizeTestPhase(t, finalizeTestOpts{cfg: Config{FinalizeEnabled: true}, git: r.svc})
+
+		outcome, err := p.Run(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, FinalizeBlocked, outcome.Status)
+		assert.Equal(t, "a merge is in progress", outcome.Reason)
+		assert.True(t, outcome.Unrestored, "the plan archive must not be staged into the user's merge")
+		assert.Empty(t, mock.RunCalls())
+		require.True(t, r.mergeInProgress(), "the user's merge must not be aborted")
+		assert.Equal(t, mergeHead, r.rev(t, r.dir, "MERGE_HEAD"))
+		assert.Equal(t, head, r.head(t))
+		assert.FileExists(t, filepath.Join(r.dir, "side.txt"), "the staged merge result is kept")
 	})
 
 	t.Run("unknown base branch", func(t *testing.T) {

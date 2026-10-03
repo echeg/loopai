@@ -40,8 +40,10 @@ type FinalizeOutcome struct {
 	Files   []string       `json:"files,omitempty"`
 	Base    string         `json:"base,omitempty"`     // remote-tracking base, such as origin/master
 	BaseSHA string         `json:"base_sha,omitempty"` // fetched base commit
-	// Unrestored marks a blocked sync whose rollback failed: the checkout may still hold the merge
-	// or sit on another branch, so nothing may commit to it until the user repairs it.
+	// Unrestored marks a blocked sync that left the checkout unfit for a commit: its rollback failed,
+	// so the checkout may still hold the merge or sit on another branch, or a Git operation was
+	// already in progress before the sync and was preserved. Nothing may commit to it until the user
+	// finishes or repairs it.
 	Unrestored bool `json:"unrestored,omitempty"`
 }
 
@@ -167,6 +169,20 @@ func (p *FinalizePhase) sync(ctx context.Context, branch string) (FinalizeOutcom
 	}
 	s := &finalizeSync{git: g, base: finalizeRemote + "/" + branch}
 
+	// an operation already in progress is checked before the dirty tree, since a merge carrying
+	// staged changes is dirty too and the archive must be kept out of it either way. A merge whose
+	// index matches HEAD would pass the dirty check, and the cleanup of a failed merge below would
+	// abort it as if finalize had started it. The operation is left as found, so the outcome is
+	// unrestored: the plan archive would otherwise be staged into it.
+	op, err := g.OperationInProgress()
+	if err != nil {
+		return blocked("inspect repository state: %v", err), nil
+	}
+	if op != "" {
+		outcome := blocked("a %s is in progress", op)
+		outcome.Unrestored = true
+		return outcome, nil
+	}
 	dirty, err := g.IsDirty()
 	if err != nil {
 		return blocked("check working tree: %v", err), nil
@@ -191,13 +207,12 @@ func (p *FinalizePhase) sync(ctx context.Context, branch string) (FinalizeOutcom
 		}
 		return blocked("fetch %s: %v", s.base, err), nil
 	}
-	// a failed merge is already aborted by the git layer, so nothing is left to restore. The full
-	// ref keeps a local branch or tag named origin/<base> from shadowing the fetched commit.
+	// the full ref keeps a local branch or tag named origin/<base> from shadowing the fetched commit
 	if s.merge, err = g.MergeRemoteNoCommitContext(ctx, "refs/remotes/"+s.base); err != nil {
 		if isContextErr(err) {
-			return FinalizeOutcome{}, fmt.Errorf("finalize merge: %w", err)
+			return p.cancel(ctx, s, fmt.Errorf("merge: %w", err))
 		}
-		return blocked("merge %s: %v", s.base, err), nil
+		return p.rejectFailedMerge(ctx, s, fmt.Sprintf("merge %s: %v", s.base, err)), nil
 	}
 
 	outcome, err := p.syncMerge(ctx, s)
@@ -344,6 +359,28 @@ func (p *FinalizePhase) reject(ctx context.Context, s *finalizeSync, outcome Fin
 	// restore keeps local changes, so edits the session left uncommitted are still in the tree
 	if dirty, err := s.git.IsDirty(); err == nil && dirty {
 		outcome.Reason = reason + "; the session's uncommitted changes were left in the working tree"
+	}
+	return outcome
+}
+
+// rejectFailedMerge returns a blocked outcome for a merge the git layer reported as failed. That
+// layer aborts its own failures, but its inspection or abort can fail too and leave the merge in
+// place, so the checkout is restored and checked here. Anything left behind marks the outcome
+// unrestored, since the plan archive would otherwise be committed into the unfinished merge.
+func (p *FinalizePhase) rejectFailedMerge(ctx context.Context, s *finalizeSync, reason string) FinalizeOutcome {
+	outcome := FinalizeOutcome{Status: FinalizeBlocked, Reason: reason}
+	err := p.restore(ctx, s)
+	if err == nil {
+		// the merge started on a clean tree, so any change still in it is merge output
+		var dirty bool
+		if dirty, err = s.git.IsDirty(); err == nil && dirty {
+			err = errors.New("the merge left changes in the working tree")
+		}
+	}
+	if err != nil {
+		p.log.Print("warning: finalize could not restore %s: %v", s.preHead, err)
+		outcome.Reason = fmt.Sprintf("%s; restore failed: %v", reason, err)
+		outcome.Unrestored = true
 	}
 	return outcome
 }

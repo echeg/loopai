@@ -1028,7 +1028,7 @@ func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integratio
 
 		require.NoError(t, moveErr, "an unrestored finalize must not fail the run")
 		assert.False(t, moved)
-		require.EqualError(t, incomplete, "plan left in place: finalize could not restore the plan checkout")
+		require.EqualError(t, incomplete, "plan left in place: finalize blocked: x; restore failed: a merge is in progress")
 		require.Len(t, warner.msgs, 1)
 		assert.FileExists(t, planFile)
 		assert.Equal(t, head, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")), "no archive commit")
@@ -1039,6 +1039,48 @@ func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integratio
 		require.NoError(t, moveErr)
 		require.NoError(t, incomplete)
 		assert.True(t, moved, "a restored blocked sync archives as usual")
+	})
+
+	t.Run("merge_in_progress_before_finalize_leaves_plan_and_index_unchanged", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		plansDir := filepath.Join(dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(plansDir, 0o750))
+		planFile := filepath.Join(plansDir, "pending.md")
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/pending.md")
+		runGit(t, dir, "commit", "-m", "add pending plan")
+		runGit(t, dir, "checkout", "-b", "side")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "side.txt"), []byte("side\n"), 0o600))
+		runGit(t, dir, "add", "side.txt")
+		runGit(t, dir, "commit", "-m", "side work")
+		runGit(t, dir, "checkout", "master")
+		// -s ours leaves MERGE_HEAD with an index that matches HEAD, which finalize preserves
+		runGit(t, dir, "merge", "--no-commit", "--no-ff", "-s", "ours", "side")
+		head := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+		mergeHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "MERGE_HEAD"))
+		index := gitOutput(t, dir, "ls-files", "--stage")
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		req := executePlanRequest{
+			PlanFile: planFile, GitSvc: gitSvc, Mode: processor.ModeFull,
+			Config: &config.Config{MovePlanOnCompletion: true},
+		}
+		warner := &recordingWarner{}
+
+		moved, incomplete, moveErr := archiveAfterFinalize(req, processor.FinalizeOutcome{
+			Status: processor.FinalizeBlocked, Reason: "a merge is in progress", Unrestored: true,
+		}, "report", warner)
+
+		require.NoError(t, moveErr)
+		assert.False(t, moved)
+		require.EqualError(t, incomplete, "plan left in place: finalize blocked: a merge is in progress")
+		assert.FileExists(t, planFile)
+		assert.NoDirExists(t, filepath.Join(plansDir, "completed"))
+		assert.Equal(t, head, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD")), "no archive commit")
+		assert.Equal(t, mergeHead, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "MERGE_HEAD")),
+			"the user's merge is preserved")
+		assert.Equal(t, index, gitOutput(t, dir, "ls-files", "--stage"), "nothing is staged into the merge")
+		assert.Empty(t, gitOutput(t, dir, "status", "--porcelain"))
 	})
 
 	t.Run("stops_on_abort_even_when_executor_returns_nil", func(t *testing.T) {
@@ -3841,6 +3883,8 @@ func TestValidateT3LaunchFlags(t *testing.T) {
 		{name: "branch", o: valid(func(o *opts) { o.Branch = "x" }), wantErr: "--branch"},
 		{name: "cmux", o: valid(func(o *opts) { o.CmuxWorkspace = "auto" }), wantErr: "--cmux-workspace"},
 		{name: "closeout", o: valid(func(o *opts) { o.Report = true }), wantErr: "--merge, --pr, or --report"},
+		{name: "finalize", o: valid(func(o *opts) { o.Finalize = "none" }), wantErr: "cannot be combined with --finalize"},
+		{name: "skip finalize", o: valid(func(o *opts) { o.SkipFinalize = true }), wantErr: "cannot be combined with --skip-finalize"},
 		{name: "bad value", o: valid(func(o *opts) { o.TaskModel = "opus; rm -rf" }), wantErr: "invalid --task-model value"},
 		{name: "unprefixed model", o: valid(func(o *opts) { o.TaskModel = "opus:high" }), wantErr: "--task-model \"opus:high\" needs a claude or codex provider prefix"},
 		{name: "custom model", o: valid(func(o *opts) { o.ReviewModel = "custom" }), wantErr: "--review-model \"custom\" needs a claude or codex"},

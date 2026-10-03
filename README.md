@@ -475,8 +475,10 @@ remote-tracking branch, otherwise `default_branch` or the detected `main`/`maste
 `--base-ref` is a diff base only. The sync always merges, never rebases and never force-pushes, so review
 checkpoints stay valid and a rerun is safe:
 
-1. loopai requires a clean tree and a checkout that is not the base branch itself, fetches
-   `origin/<base>`, and runs `git merge --no-commit`.
+1. loopai requires a clean tree with no merge, rebase, or other Git operation in progress,
+   and a checkout that is not the base branch itself, fetches `origin/<base>`, and runs
+   `git merge --no-commit`. An operation already in progress is left as found, and the plan is
+   left in place (`plan archive incomplete`) so its archive is not staged into it.
 2. Already up to date: the `review_model` provider runs the plan's `## Validation Commands`.
    A clean merge is committed by loopai first, then validated the same way. A plan without that
    section falls back to the project's test command when CLAUDE.md, AGENTS.md, or the plan names

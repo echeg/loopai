@@ -1780,15 +1780,18 @@ type archiveWarner interface {
 	Warn(format string, args ...any)
 }
 
-// archiveAfterFinalize archives the completed plan unless finalize could not restore the plan
-// checkout: it may still hold the merge or sit on another branch, where the archive commit would
-// land inside the merge or on the wrong branch. The plan then stays in place, reported like any
-// other incomplete archive, and the run stays green.
+// archiveAfterFinalize archives the completed plan unless finalize left the plan checkout unfit for
+// a commit: a failed restore may leave the merge in place or the checkout on another branch, and a
+// merge or rebase already in progress before the sync is preserved as found. The archive would land
+// inside that operation or on the wrong branch, and a merge also rejects the pathspec commit after
+// the plan move is staged. The plan then stays in place, reported like any other incomplete
+// archive, and the run stays green.
 func archiveAfterFinalize(req executePlanRequest, synced processor.FinalizeOutcome, report string,
 	log archiveWarner) (moved bool, incomplete, err error) {
 	if synced.Unrestored && shouldMovePlan(req) {
-		log.Warn("plan left in place: finalize could not restore the plan checkout")
-		return false, errors.New("plan left in place: finalize could not restore the plan checkout"), nil
+		msg := "plan left in place: finalize " + synced.Summary()
+		log.Warn("%s", msg)
+		return false, errors.New(msg), nil
 	}
 	return moveCompletedPlan(req, report, log)
 }
@@ -3566,6 +3569,10 @@ func validateT3LaunchFlags(o opts) error {
 		{"--merge, --pr, or --report", closeoutRequested(o)},
 		{"--plan-model", o.PlanModel != ""},
 		{"--codex-args", o.CodexArgs != ""},
+		// the launched run reads finalize from config, so a dropped override would let a
+		// configured pr or merge push and merge a run the user asked to keep local
+		{"--finalize", o.Finalize != ""},
+		{"--skip-finalize", o.SkipFinalize},
 	}
 	for _, conflict := range conflicts {
 		if conflict.set {

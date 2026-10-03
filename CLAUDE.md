@@ -576,7 +576,7 @@ processor and `cmd/loopai`. The base sync is `phase.FinalizePhase`, run by
 `Runner.runFinalize` in the old finalize slot of `runExternalAndPostReview` — after post-review,
 before the report — through the review executor. It reaches Git only through the consumer
 interface `phase.FinalizeGit`, wired by `Runner.SetFinalizeGit(req.GitSvc)` (the worktree service
-in worktree mode). It requires a clean tree and refuses a checkout that is on the base branch itself
+in worktree mode). It requires a clean tree with no Git operation in progress (the operation is checked first, because a pending merge with staged changes is dirty too and one whose index matches HEAD passes the dirty check, where the failed-merge cleanup would otherwise abort it; either way the operation is left as found and the outcome is marked `Unrestored` so the plan archive is not staged into it, while a plain dirty tree is not, since the pathspec archive commit tolerates it) and refuses a checkout that is on the base branch itself
 (a `--review` of the base would otherwise merge `origin/<base>` into the user's local base), records
 the pre-merge HEAD, runs
 `FetchContext` with an explicit `+refs/heads/<base>:refs/remotes/origin/<base>` refspec and
@@ -607,7 +607,7 @@ run, the one error the phase returns, never leaves a half-done merge for its res
 `AbortCleanMergeContext`, a plain `git merge --abort` that is lossless only because the merge just
 started on the required clean tree. `reset --keep` keeps local changes, so edits a rejected session
 left uncommitted stay in the tree; the blocked reason says so rather than discarding them. A failed
-restore sets `FinalizeOutcome.Unrestored`, and `archiveAfterFinalize` then leaves the plan in place as
+restore, like a preserved pre-existing operation, sets `FinalizeOutcome.Unrestored`, and `archiveAfterFinalize` then leaves the plan in place as
 `plan archive incomplete`, since the archive commit would otherwise land inside the merge or on the
 branch the session switched to.
 `FINALIZE_BLOCKED` is checked before `FINALIZE_DONE` in `detectSignal`, and because a later Claude
