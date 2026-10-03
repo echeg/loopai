@@ -837,6 +837,20 @@ loopai --task-model codex '--codex-args=-c service_tier="default"' docs/plans/fe
 codex_args = -c service_tier="default"
 ```
 
+On Windows, external Codex reviewers default to the unelevated Windows sandbox:
+loopai adds `-c windows.sandbox="unelevated"` while keeping `--sandbox read-only`.
+This avoids requiring the elevated sandbox setup for the reviewer. To restore an existing
+working elevated setup, add this to your loopai config:
+
+```ini
+codex_args = -c windows.sandbox="elevated"
+```
+
+User extras come last, so this overrides the Windows reviewer default. The default applies
+only to external Codex reviewers on Windows; Codex phases and Linux/macOS invocations are
+unchanged. As with all `codex_args`, your explicit override reaches every Codex invocation.
+loopai does not modify `~/.codex/config.toml`.
+
 On the command line the value must be attached with `=`, as above: a value that starts with `-`
 is otherwise read as the next option, and loopai exits with `expected argument for flag
 '--codex-args'`. Quote the whole `--codex-args=...` token so the shell keeps it together.

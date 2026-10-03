@@ -139,8 +139,10 @@
 - Full validation required small pre-existing lint/test fixes: modernize the worktree-lock error type check, document trusted temporary lock paths for gosec, use native path separators in the T3 title test, and run the mixed-case worktree test only on a case-insensitive filesystem. Git Bash symlink normalization prevented the Unix-oriented shell fixtures from running natively, so the complete Makefile target ran under WSL instead.
 
 ### Task 5: [Final] Update documentation
-- [ ] document the Windows reviewer default and how to restore `elevated` through `codex_args` in `README.md`, `llms.txt`, and the `codex_args` comment in `pkg/config/defaults/config`
-- [ ] document the `task_complete` grace kill and real Windows tree termination in `CLAUDE.md` (executor section) and the `idle_timeout` comment where relevant
+- [x] document the Windows reviewer default and how to restore `elevated` through `codex_args` in `README.md`, `llms.txt`, and the `codex_args` comment in `pkg/config/defaults/config`
+- [x] document the `task_complete` grace kill and real Windows tree termination in `CLAUDE.md` (executor section) and the `idle_timeout` comment where relevant
+- Added a regression test that loads the documented elevated-sandbox config example. Native config validation also required fixing existing Windows test isolation (USERPROFILE as well as HOME) and skipping chmod permission simulations on Windows; those permission cases run under unprivileged Linux.
+- Validation passed: native `go test ./pkg/config/... ./pkg/executor/... ./pkg/processor/...`, `make lint`, `git diff --check`, and full `make test` (including race tests and wrapper suites) in an isolated WSL checkout with an unprivileged user and stdin closed.
 
 ## Technical Details
 - **Override**: `-c windows.sandbox="unelevated"`, emitted only for `ForceReadOnly` executors on Windows, positioned before user extras.

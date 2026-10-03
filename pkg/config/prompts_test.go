@@ -473,6 +473,7 @@ func Test_stripLeadingCommentLines(t *testing.T) {
 }
 
 func TestPromptLoader_loadPromptFile_PermissionDenied(t *testing.T) {
+	requirePOSIXPermissions(t)
 	tmpDir := t.TempDir()
 	promptFile := filepath.Join(tmpDir, "test.txt")
 	require.NoError(t, os.WriteFile(promptFile, []byte("content"), 0o600))
