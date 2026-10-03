@@ -128,12 +128,15 @@
 - Validation passed: `go test -race ./pkg/executor/...`, executor-scoped `golangci-lint`, and `git diff --check`. Regression tests cover pipe and wait hangs, preserved partial stdout, signal fallback, normal/failed exits, parent cancellation, idle timeout, nil handlers, duplicate completion records, and ignoring child-session completion. Grace tests inject the timer clock; production uses 60 seconds.
 
 ### Task 4: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify edge cases: user override to `elevated`, non-Windows invocation unchanged, reviewer with idle timeout configured, missing rollout file (no grace kill possible, existing behavior)
-- [ ] run `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`, `GOOS=linux GOARCH=amd64 go build ./...`, and `GOOS=darwin GOARCH=arm64 go build ./...`
-- [ ] verify test coverage of the changed executor code is 80%+
+- [x] verify all requirements from Overview are implemented
+- [x] verify edge cases: user override to `elevated`, non-Windows invocation unchanged, reviewer with idle timeout configured, missing rollout file (no grace kill possible, existing behavior)
+- [x] run `make test`
+- [x] run `make lint` - all issues must be fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`, `GOOS=linux GOARCH=amd64 go build ./...`, and `GOOS=darwin GOARCH=arm64 go build ./...`
+- [x] verify test coverage of the changed executor code is 80%+
+- Validation passed: full `make test` in an isolated Linux checkout under WSL as an unprivileged user with stdin closed; native Windows `make lint`, executor race tests, and targeted lock/path tests; all three requested cross-platform builds. Native executor coverage is 90.9%; changed source files are `codex.go` 89.1%, `executor.go` 98.3%, and `procgroup_windows.go` 86.2%, with 94.9% coverage of blocks overlapping changed executor lines. The additional native whole-repository test run was stopped after eight minutes and is not counted as a pass; the full suite was validated under WSL.
+- Added missing-rollout regressions for normal exit, idle timeout, and parent deadline, and exercised completion-grace scenarios as read-only reviewers. Existing argument tests verify override ordering and unchanged non-Windows invocations; factory tests verify reviewer idle-timeout wiring.
+- Full validation required small pre-existing lint/test fixes: modernize the worktree-lock error type check, document trusted temporary lock paths for gosec, use native path separators in the T3 title test, and run the mixed-case worktree test only on a case-insensitive filesystem. Git Bash symlink normalization prevented the Unix-oriented shell fixtures from running natively, so the complete Makefile target ran under WSL instead.
 
 ### Task 5: [Final] Update documentation
 - [ ] document the Windows reviewer default and how to restore `elevated` through `codex_args` in `README.md`, `llms.txt`, and the `codex_args` comment in `pkg/config/defaults/config`

@@ -3953,7 +3953,8 @@ func TestCodexExecutor_Run_TaskComplete(t *testing.T) {
 			var stopped atomic.Bool
 			var lines []string // only read after Run has joined all callbacks
 			e := &CodexExecutor{
-				runner: taskCompleteRunner(sessionID, tt.stdout, exit),
+				ForceReadOnly: true,
+				runner:        taskCompleteRunner(sessionID, tt.stdout, exit),
 				completionTimer: func(d time.Duration) (<-chan time.Time, func()) {
 					started <- d
 					return fire, func() { stopped.Store(true) }
@@ -4115,4 +4116,47 @@ func TestCodexExecutor_watchTaskComplete_ExitWinsExpiredTimer(t *testing.T) {
 	require.NoError(t, ctx.Err(), "an already exited process must not be grace-killed")
 	assert.True(t, stopped)
 	assert.Len(t, completed, 1, "duplicates must not restart the timer")
+}
+
+// A header can name a session whose rollout is unavailable (for example, a wrapper
+// uses a different CODEX_HOME). That must not invent completion or delay shutdown.
+func TestCodexExecutor_Run_MissingRollout(t *testing.T) {
+	for _, mode := range []string{"normal exit", "idle timeout", "parent deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("CODEX_HOME", home)
+			exit := make(chan error, 1)
+			var timerStarted atomic.Bool
+			e := &CodexExecutor{
+				ForceReadOnly: true,
+				runner:        taskCompleteRunner("019e3bbe-9788-79f1-b668-deadbeefcafe", "partial answer", exit),
+				completionTimer: func(time.Duration) (<-chan time.Time, func()) {
+					timerStarted.Store(true)
+					return make(chan time.Time), func() {}
+				},
+			}
+			deadline := 3 * time.Second
+			switch mode {
+			case "normal exit":
+				exit <- nil
+			case "idle timeout":
+				e.IdleTimeout = 100 * time.Millisecond
+			case "parent deadline":
+				deadline = 100 * time.Millisecond
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), deadline)
+			defer cancel()
+			result := e.Run(ctx, "review")
+			if mode == "parent deadline" {
+				require.ErrorIs(t, result.Error, context.DeadlineExceeded)
+			} else {
+				require.NoError(t, result.Error)
+			}
+			assert.Equal(t, "partial answer", result.Output)
+			assert.Equal(t, mode == "idle timeout", result.IdleTimedOut)
+			assert.False(t, timerStarted.Load(), "missing rollout cannot trigger grace completion")
+		})
+	}
 }

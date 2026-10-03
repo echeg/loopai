@@ -374,7 +374,7 @@ func TestReporterWrapLogger(t *testing.T) {
 func TestRunName(t *testing.T) {
 	assert.Equal(t, "loopai", runName(""))
 	assert.Equal(t, "t3-code-integration", runName("docs/plans/20260925-t3-code-integration.md"))
-	assert.Equal(t, "fix-bug", runName(`C:\plans\fix-bug.md`))
+	assert.Equal(t, "fix-bug", runName(filepath.FromSlash("C:/plans/fix-bug.md")))
 	assert.Equal(t, "2026", runName("2026.md"))
 }
 
