@@ -151,25 +151,28 @@
 - [x] run `go test -race ./cmd/loopai/... ./pkg/progress/...` - must pass before task 5
 
 ### Task 5: `loopai --acp` command
-- [ ] add the `--acp` flag to `opts` and route it from `runConfiguredStandaloneCommand`. In ACP mode:
+- [x] add the `--acp` flag to `opts` and route it from `runConfiguredStandaloneCommand`. In ACP mode:
   - skip the version banner on stdout
   - set `color.Output` to stderr
   - reject combination with plan files and other execution flags in `validateFlags`
-- [ ] implement `runACPCommand`: serve `pkg/acp` on stdin/stdout. Its `RunFunc`:
+- [x] implement `runACPCommand`: serve `pkg/acp` on stdin/stdout. Its `RunFunc`:
   - parses the prompt into a plan path plus the three pass-through flags, with the same validation rules as `validateT3LaunchFlags`; a malformed prompt fails with usage text
   - changes into the session cwd and loads config there
   - forces `t3` off
   - builds the request through the Task 4 function with the sink as decorator and observer
   - runs `executePlan`, restores the cwd, and returns the report and outcome
-- [ ] serialize runs (one prompt at a time per process) and make prompt cancellation cancel only the run's context
-- [ ] write an in-process integration test: fake executors, a temporary repository with a two-task plan, a scripted ACP client sending handshake + prompt. Assert:
+- [x] serialize runs (one prompt at a time per process) and make prompt cancellation cancel only the run's context
+- [x] write an in-process integration test: fake executors, a temporary repository with a two-task plan, a scripted ACP client sending handshake + prompt. Assert:
   - plan entries progress
   - tool calls open and close
   - the final message contains the report
   - `stopReason` is `end_turn`
   - the protocol writer received only valid JSON lines
-- [ ] write tests for errors: malformed prompt, missing plan, run failure → JSON-RPC error, cancel mid-run → `cancelled` and the plan left in place
-- [ ] run `go test -race ./cmd/loopai/...` - must pass before task 6
+- [x] write tests for errors: malformed prompt, missing plan, run failure → JSON-RPC error, cancel mid-run → `cancelled` and the plan left in place
+- [x] run `go test -race ./cmd/loopai/...` - must pass before task 6
+- [x] ➕ `runACPCommand` also reserves the real stdin/stdout for the protocol and points `os.Stdin` at the null device and `os.Stdout`/`color.Output` at stderr for the process lifetime, so a stray read or write cannot corrupt JSON-RPC traffic
+- [x] ➕ each prompt also forces `orca` and `use_worktree` off (the plan runs in place in the session cwd) and the process cwd is restored after every prompt
+- [x] ➕ `acp.Server.Shutdown` cancels a running prompt and waits for its answer without waiting for stdin EOF; `serveACP` calls it when the process context is canceled (SIGINT/SIGTERM)
 
 ### Task 6: `loopai-acp` launcher (`cmd/loopai-acp`)
 - [ ] answer the Grok CLI surface:

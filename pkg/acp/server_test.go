@@ -474,6 +474,73 @@ func TestServerShutdownCancelsRunningPrompt(t *testing.T) {
 	assert.True(t, finished.Load(), "Serve waits for the running prompt to finish")
 }
 
+func TestServerShutdownWithoutEOF(t *testing.T) {
+	clientToAgent, agentIn := io.Pipe()
+	agentOut, agentToClient := io.Pipe()
+	t.Cleanup(func() { _ = agentIn.Close(); _ = agentOut.Close() })
+	started := make(chan PromptRequest, 1)
+	var finished atomic.Bool
+	srv := NewServer(clientToAgent, agentToClient, Options{Run: func(ctx context.Context, req PromptRequest, sink *Sink) (Result, error) {
+		res, err := blockingRun(started, nil)(ctx, req, sink)
+		finished.Store(true)
+		return res, err
+	}})
+	go func() { _ = srv.Serve() }()
+	lines := make(chan map[string]any, 64)
+	go func() {
+		r := bufio.NewReader(agentOut)
+		for {
+			line, err := r.ReadBytes('\n')
+			if err != nil {
+				close(lines)
+				return
+			}
+			var m map[string]any
+			if json.Unmarshal(line, &m) == nil {
+				lines <- m
+			}
+		}
+	}()
+	send := func(id int, method string, params any) {
+		data, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+		require.NoError(t, err)
+		_, err = agentIn.Write(append(data, '\n'))
+		require.NoError(t, err)
+	}
+	await := func(id int) map[string]any {
+		for {
+			select {
+			case m, ok := <-lines:
+				require.True(t, ok, "agent output closed")
+				if m["id"] == float64(id) {
+					return m
+				}
+			case <-time.After(testTimeout):
+				t.Fatalf("timed out waiting for response %d", id)
+			}
+		}
+	}
+
+	send(1, "session/new", map[string]any{"cwd": t.TempDir()})
+	sid, _ := await(1)["result"].(map[string]any)["sessionId"].(string)
+	require.NotEmpty(t, sid)
+	send(2, "session/prompt", textPrompt(sid, "plan.md"))
+	waitStarted(t, started)
+
+	done := make(chan struct{})
+	go func() { srv.Shutdown(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(testTimeout):
+		t.Fatal("Shutdown did not return while input stays open")
+	}
+	assert.True(t, finished.Load(), "Shutdown waits for the running prompt")
+	requireError(t, await(2), CodeInternalError)
+
+	send(3, "session/prompt", textPrompt(sid, "again.md"))
+	assert.Contains(t, requireError(t, await(3), CodeInternalError), "shutting down")
+}
+
 // syncBuffer is a goroutine-safe buffer standing in for stderr.
 type syncBuffer struct {
 	mu  sync.Mutex

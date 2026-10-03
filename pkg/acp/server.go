@@ -108,6 +108,16 @@ func (s *Server) Serve() error {
 	return err
 }
 
+// Shutdown cancels any running prompt and waits until it has been answered. Prompts arriving
+// afterwards are rejected. It lets a caller stop the agent, for example on SIGTERM, while Serve
+// is still blocked reading input that may never end.
+func (s *Server) Shutdown() {
+	s.mu.Lock()
+	s.stop()
+	s.mu.Unlock()
+	s.wg.Wait()
+}
+
 type authMethod struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`

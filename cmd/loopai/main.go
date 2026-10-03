@@ -81,6 +81,7 @@ type opts struct {
 	Orca                    bool          `long:"orca" env:"LOOPAI_ORCA" description:"emit terminal title status for orca"`
 	T3                      bool          `long:"t3" env:"LOOPAI_T3" description:"report the run as a T3 Code thread (token in LOOPAI_T3_TOKEN)"`
 	T3Launch                bool          `long:"t3-launch" description:"create a T3 Code worktree and thread for the plan, start loopai --t3 in the thread's terminal, and exit"`
+	ACP                     bool          `long:"acp" description:"serve the Agent Client Protocol on stdin/stdout so T3 Code can host loopai as a provider session (started by loopai-acp)"`
 	Version                 bool          `short:"v" long:"version" description:"print version and exit"`
 	Serve                   bool          `short:"s" long:"serve" description:"start web dashboard for real-time streaming"`
 	Port                    int           `short:"p" long:"port" default:"8080" description:"web dashboard port"`
@@ -375,7 +376,8 @@ func (c *cleanupHolder) call() {
 
 func main() {
 	if os.Getenv("GO_FLAGS_COMPLETION") == "" {
-		fmt.Printf("loopai %s\n", resolveVersion())
+		// in ACP mode stdout carries JSON-RPC only, so the banner moves to stderr
+		fmt.Fprintf(versionBannerWriter(os.Args[1:]), "loopai %s\n", resolveVersion())
 	}
 
 	var o opts
@@ -3513,6 +3515,9 @@ func validateFlags(o opts) error {
 	if err := validateT3LaunchFlags(o); err != nil {
 		return err
 	}
+	if err := validateACPFlags(o); err != nil {
+		return err
+	}
 	if err := validateCommitFlags(o); err != nil {
 		return err
 	}
@@ -3681,21 +3686,25 @@ func validateGenAgentsFlags(o opts) error {
 }
 
 // runConfiguredStandaloneCommand routes the standalone commands that need loaded config but no
-// executor or notification dependencies: git close-out, and the T3 launcher, which executes
-// nothing locally because the launched run checks its own dependencies.
+// executor or notification dependencies: git close-out, the T3 launcher, which executes nothing
+// locally because the launched run checks its own dependencies, and the ACP agent, which loads
+// config and checks dependencies per prompt in the session's working directory.
 func runConfiguredStandaloneCommand(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors) (bool, error) {
 	switch {
 	case closeoutRequested(o):
 		return true, runCloseoutCommand(ctx, o, cfg, colors)
 	case o.T3Launch:
 		return true, runT3LaunchCommand(ctx, o, cfg, colors, os.Stdout)
+	case o.ACP:
+		return true, runACPCommand(ctx, o)
 	default:
 		return false, nil
 	}
 }
 
-// t3LaunchValue is the value shape --t3-launch forwards, matching the loopai-t3 skill's check.
-var t3LaunchValue = regexp.MustCompile(`^[A-Za-z0-9._:,+-]+$`)
+// passThroughValue is the value shape --t3-launch and an ACP prompt forward, matching the
+// loopai-t3 skill's check.
+var passThroughValue = regexp.MustCompile(`^[A-Za-z0-9._:,+-]+$`)
 
 // validateT3LaunchFlags keeps --t3-launch standalone. It forwards only the phase model specs and
 // the reviewer chain to the launched run: anything that picks a mode, a worktree, a branch, or a
@@ -3739,11 +3748,18 @@ func validateT3LaunchFlags(o opts) error {
 			return fmt.Errorf("--t3-launch cannot be combined with %s", conflict.flag)
 		}
 	}
+	return validatePassThroughValues("--t3-launch", o)
+}
+
+// validatePassThroughValues checks the three flags --t3-launch and an ACP prompt forward: every
+// value must match passThroughValue, and both model specs need a claude or codex provider prefix.
+// label prefixes each error.
+func validatePassThroughValues(label string, o opts) error {
 	for _, value := range []struct{ flag, value string }{
 		{"--task-model", o.TaskModel}, {"--review-model", o.ReviewModel}, {"--external-reviewers", o.ExternalReviewers},
 	} {
-		if value.value != "" && !t3LaunchValue.MatchString(value.value) {
-			return fmt.Errorf("--t3-launch: invalid %s value %q", value.flag, value.value)
+		if value.value != "" && !passThroughValue.MatchString(value.value) {
+			return fmt.Errorf("%s: invalid %s value %q", label, value.flag, value.value)
 		}
 	}
 	for _, value := range []struct{ flag, value string }{{"--task-model", o.TaskModel}, {"--review-model", o.ReviewModel}} {
@@ -3751,7 +3767,7 @@ func validateT3LaunchFlags(o opts) error {
 			continue
 		}
 		if spec, err := config.ParseProviderSpec(value.value); err != nil || spec.Provider == config.ExternalReviewToolCustom {
-			return fmt.Errorf("--t3-launch: %s %q needs a claude or codex provider prefix (provider[:model[:effort]])", value.flag, value.value)
+			return fmt.Errorf("%s: %s %q needs a claude or codex provider prefix (provider[:model[:effort]])", label, value.flag, value.value)
 		}
 	}
 	return nil
@@ -5032,7 +5048,7 @@ func clearStaleCmuxStatus(o opts) {
 // and never constructs a reporter.
 func isStandaloneCommand(o opts) bool {
 	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || o.GenAgents || o.T3Launch ||
-		(o.Reset && isResetOnly(o))
+		o.ACP || (o.Reset && isResetOnly(o))
 }
 
 // handOffSucceeded reports whether an early stop came from a successful cmux workspace hand-off,
