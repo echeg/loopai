@@ -205,6 +205,8 @@ type Reporter struct {
 	quiesced bool
 	stopped  bool
 	finished bool
+	// finishNote is a short run outcome, such as "PR merged", appended to the done pill
+	finishNote string
 
 	// last reported pair, touched by the poll goroutine only. -1 never matches a real count,
 	// so the first tick always reports.
@@ -456,6 +458,18 @@ func (r *Reporter) Notify(subtitle, body string) {
 	r.exec(args...)
 }
 
+// SetFinishNote records a short outcome, such as "PR merged", that a later successful Finish
+// appends to the done pill. The pill still starts with the done prefix, so WorkspaceBusy reads
+// it as free.
+func (r *Reporter) SetFinishNote(note string) {
+	if r == nil {
+		return
+	}
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	r.finishNote = strings.TrimSpace(note)
+}
+
 // Finish replaces the running phase pill with a persistent final outcome. Stop still removes
 // transient artifacts, but preserves this pill until the next run or an explicit clear command.
 func (r *Reporter) Finish(success bool, detail string) {
@@ -474,6 +488,9 @@ func (r *Reporter) Finish(success bool, detail string) {
 		text := finalDonePrefix
 		if detail != "" {
 			text += " in " + detail
+		}
+		if r.finishNote != "" {
+			text += " · " + r.finishNote
 		}
 		err = r.setStatusResult(text, "bolt", "#34c759")
 	} else {

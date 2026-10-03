@@ -314,6 +314,7 @@ func TestRunner_FactsBaseFollowsFinalizeMerge(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &Runner{cfg: Config{DefaultBranch: tc.defaultBranch}, finalizeOutcome: tc.outcome}
 			assert.Equal(t, tc.want, r.factsBase())
+			assert.Equal(t, tc.want, r.DiffBase(), "the completion summary measures against the same base")
 		})
 	}
 }

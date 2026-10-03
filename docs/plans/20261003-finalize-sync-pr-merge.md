@@ -130,12 +130,17 @@
 - ➕ [x] after a `merged`/`resolved` sync, report facts measure commits and diffs against `origin/<base>` (`Runner.factsBase`) so merged-in base changes are not counted as the run's work; a stored finalize result is cleared at run start; the facts gain a `## Finalize` section and the facts-only fallback a `- finalize:` summary line
 
 ### Task 5: Push, open the PR, and optionally merge after archival
-- [ ] refactor `runPRCommand` into a reusable `createPullRequest(ctx, gitSvc, base, target) (prURL string, err error)` used by both `--pr` and finalize; keep `--pr` output unchanged
-- [ ] in `executePlan` after `moveCompletedPlan` and before `BeforeCmuxFinish`, when `Finalize` is `pr|merge` and the outcome is not `blocked`: create the PR on the run's `GitSvc` (link to T3 when `cfg.T3`), then for `merge` run `gh pr checks --watch` under `finalize_checks_timeout` and `gh pr merge --<method>`
-- [ ] treat every failure (no `gh`, origin mismatch, push rejected, checks failed or timed out, merge refused) as non-fatal: collect it as `finalizeIncomplete` and keep the run green; never remove a worktree that loopai did not create
-- [ ] show the outcome in `displayStats` (PR URL, `merged`, or `finalize incomplete: <reason>` printed last), add `PRURL`/`Finalize` fields to `notify.Result` and `formatMessage`, and include the outcome in the cmux/Orca/T3 final status text
-- [ ] write tests with bare remotes and `PATH`-injected `gh` stubs: PR created, merge after green checks, checks failing, checks timeout, merge refused, blocked sync skipping the PR, T3 link invoked, `--pr` output unchanged
-- [ ] run `go test ./cmd/loopai/... ./pkg/notify/... ./pkg/cmux/... ./pkg/orca/... ./pkg/t3/...` - must pass before task 6
+- [x] refactor `runPRCommand` into a reusable `createPullRequest(ctx, gitSvc, base, target) (prURL string, err error)` used by both `--pr` and finalize; keep `--pr` output unchanged
+- [x] in `executePlan` after `moveCompletedPlan` and before `BeforeCmuxFinish`, when `Finalize` is `pr|merge` and the outcome is not `blocked`: create the PR on the run's `GitSvc` (link to T3 when `cfg.T3`), then for `merge` run `gh pr checks --watch` under `finalize_checks_timeout` and `gh pr merge --<method>`
+- [x] treat every failure (no `gh`, origin mismatch, push rejected, checks failed or timed out, merge refused) as non-fatal: collect it as `finalizeIncomplete` and keep the run green; never remove a worktree that loopai did not create
+- [x] show the outcome in `displayStats` (PR URL, `merged`, or `finalize incomplete: <reason>` printed last), add `PRURL`/`Finalize` fields to `notify.Result` and `formatMessage`, and include the outcome in the cmux/Orca/T3 final status text
+- [x] write tests with bare remotes and `PATH`-injected `gh` stubs: PR created, merge after green checks, checks failing, checks timeout, merge refused, blocked sync skipping the PR, T3 link invoked, `--pr` output unchanged
+- [x] run `go test ./cmd/loopai/... ./pkg/notify/... ./pkg/cmux/... ./pkg/orca/... ./pkg/t3/...` - must pass before task 6
+- ➕ [x] `createPullRequest(ctx, ghPath, gitSvc, branch, base, target)` takes the resolved `gh` path, branch, and base, so `--pr` keeps its own error wording and ordering; T3 linking stays with each caller; `closeoutTarget.statsBase` measures the finalize PR body against `origin/<base>`
+- ➕ [x] the post-archival step is `runFinalizeCloseout` returning a `finalizeResult` (sync outcome, PR URL, merged, `incomplete`); a PR opens only after a successful sync (`up_to_date|merged|resolved`), so a `blocked` or `skipped` sync reports `finalize incomplete` instead; `finalizeModeFor` degrades `pr|merge` to `sync` under `--review`/`--external-only` and to `none` under `--tasks-only`, with a startup warning from `finalizeStartupWarning`
+- ➕ [x] `merge` mode: `gh pr checks <url> --watch --fail-fast` bounded by `finalize_checks_timeout`; a fresh PR that reports "no checks reported" is retried for `finalizeNoChecksGrace` (1m) and then treated as having none; `gh pr merge <url> --<method> --match-head-commit <pushed HEAD>`, no branch deletion
+- ➕ [x] cmux/Orca/T3 reporters gained `SetFinishNote` (`synced`, `PR opened`, `PR merged`, `finalize incomplete`) appended to the done status; the completion summary's diff stats use `Runner.DiffBase()` so they agree with the report after a base merge
+- ➕ [x] fixed task 4's worktree path dropping `ChainNotLast` (every worktree chain member would have synced); the request rebuilt inside the worktree is now `worktreeExecuteRequest`
 
 ### Task 6: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented, including `sync`, `pr`, `merge` modes and `--skip-finalize`

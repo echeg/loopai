@@ -70,6 +70,8 @@ type Result struct {
 	Files          int    `json:"files"`
 	Additions      int    `json:"additions"`
 	Deletions      int    `json:"deletions"`
+	Finalize       string `json:"finalize,omitempty"` // one-line finalize outcome; a stop reads "incomplete: <reason>"
+	PRURL          string `json:"pr_url,omitempty"`   // pull request opened by finalize = pr|merge
 	Error          string `json:"error,omitempty"`
 }
 
@@ -223,6 +225,12 @@ func (s *Service) formatMessage(r Result) string {
 
 	if r.Status == "success" {
 		fmt.Fprintf(&b, "changes:  %d files (+%d/-%d lines)\n", r.Files, r.Additions, r.Deletions)
+	}
+	if r.PRURL != "" {
+		fmt.Fprintf(&b, "pr:       %s\n", r.PRURL)
+	}
+	if r.Finalize != "" {
+		fmt.Fprintf(&b, "finalize: %s\n", r.Finalize)
 	}
 
 	if r.Error != "" {

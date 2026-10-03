@@ -9586,7 +9586,7 @@ func TestDisplayStats(t *testing.T) {
 
 		req := executePlanRequest{PlanFile: "docs/plans/feature.md", Colors: colors}
 		stats := git.DiffStats{Files: 5, Additions: 200, Deletions: 50}
-		displayStats(req, baseLog, stats, "2m15s", "feature-branch", false, nil)
+		displayStats(req, baseLog, stats, "2m15s", "feature-branch", false, nil, finalizeResult{})
 	})
 
 	t.Run("without_diff_stats", func(t *testing.T) {
@@ -9601,7 +9601,7 @@ func TestDisplayStats(t *testing.T) {
 		defer func() { _ = baseLog.Close() }()
 
 		req := executePlanRequest{Colors: colors}
-		displayStats(req, baseLog, git.DiffStats{}, "30s", "main", false, nil)
+		displayStats(req, baseLog, git.DiffStats{}, "30s", "main", false, nil, finalizeResult{})
 	})
 
 	t.Run("with_main_plan_file", func(t *testing.T) {
@@ -9620,7 +9620,7 @@ func TestDisplayStats(t *testing.T) {
 			MainPlanFile: "docs/plans/feature.md",
 			Colors:       colors,
 		}
-		displayStats(req, baseLog, git.DiffStats{Files: 1, Additions: 10, Deletions: 5}, "10s", "feature-wt", false, nil)
+		displayStats(req, baseLog, git.DiffStats{Files: 1, Additions: 10, Deletions: 5}, "10s", "feature-wt", false, nil, finalizeResult{})
 	})
 
 	// plan-path display must reflect the actual location of the plan file:
@@ -9703,7 +9703,7 @@ func TestDisplayStats(t *testing.T) {
 				req.Colors = colors
 
 				output := captureStdout(t, func() {
-					displayStats(req, baseLog, git.DiffStats{}, "1s", "main", tc.planMoved, nil)
+					displayStats(req, baseLog, git.DiffStats{}, "1s", "main", tc.planMoved, nil, finalizeResult{})
 				})
 				assert.Contains(t, output, "  plan: "+tc.wantPath+"\n")
 			})
@@ -9721,7 +9721,7 @@ func TestDisplayStats(t *testing.T) {
 
 		req := executePlanRequest{PlanFile: "docs/plans/feature.md", Colors: colors}
 		output := captureStdout(t, func() {
-			displayStats(req, baseLog, git.DiffStats{}, "1s", "main", false, errors.New("move feature.md: hook rejected"))
+			displayStats(req, baseLog, git.DiffStats{}, "1s", "main", false, errors.New("move feature.md: hook rejected"), finalizeResult{})
 		})
 		assert.Contains(t, output, "plan archive incomplete: move feature.md: hook rejected")
 		assert.Greater(t, strings.Index(output, "plan archive incomplete"), strings.Index(output, "progress log:"),
@@ -14185,4 +14185,459 @@ func TestValidateModelSpecs_PhaseCombinations(t *testing.T) {
 	t.Run("matching provider passes", func(t *testing.T) {
 		require.NoError(t, validateModelSpecs(opts{}, &config.Config{TaskModel: "claude:fable:high"}))
 	})
+}
+
+func TestWorktreeExecuteRequestForwardsChainNotLast(t *testing.T) {
+	// a worktree chain member other than the last must not sync with the base: its branch is the
+	// next member's start, so the flag has to survive the request rebuilt inside the worktree
+	for _, notLast := range []bool{true, false} {
+		got := worktreeExecuteRequest(executePlanRequest{PlanFile: "main.md", ChainNotLast: notLast},
+			worktreeRun{planFile: "wt.md"}, nil, nil, nil)
+		assert.Equal(t, notLast, got.ChainNotLast)
+		assert.Equal(t, "wt.md", got.PlanFile)
+		assert.Equal(t, "main.md", got.MainPlanFile)
+	}
+}
+
+func TestFinalizeModeFor(t *testing.T) {
+	tests := []struct {
+		name         string
+		mode         processor.Mode
+		finalize     string
+		chainNotLast bool
+		want         string
+		wantWarning  string
+	}{
+		{name: "unset is none", mode: processor.ModeFull, want: config.FinalizeNone},
+		{name: "full keeps merge", mode: processor.ModeFull, finalize: config.FinalizeMerge, want: config.FinalizeMerge},
+		{name: "full keeps pr", mode: processor.ModeFull, finalize: config.FinalizePR, want: config.FinalizePR},
+		{name: "review degrades pr to sync", mode: processor.ModeReview, finalize: config.FinalizePR,
+			want: config.FinalizeSync, wantWarning: "--review and --external-only sync with the base only"},
+		{name: "external-only degrades merge to sync", mode: processor.ModeCodexOnly, finalize: config.FinalizeMerge,
+			want: config.FinalizeSync, wantWarning: "finalize = merge opens a pull request only for plan execution"},
+		{name: "review keeps sync", mode: processor.ModeReview, finalize: config.FinalizeSync, want: config.FinalizeSync},
+		{name: "tasks-only has no finalize", mode: processor.ModeTasksOnly, finalize: config.FinalizePR,
+			want: config.FinalizeNone, wantWarning: "finalize = pr has no effect under --tasks-only"},
+		{name: "tasks-only with none is silent", mode: processor.ModeTasksOnly, finalize: config.FinalizeNone,
+			want: config.FinalizeNone},
+		{name: "non-last chain member", mode: processor.ModeFull, finalize: config.FinalizeMerge, chainNotLast: true,
+			want: config.FinalizeNone},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := executePlanRequest{Mode: tc.mode, ChainNotLast: tc.chainNotLast, Config: &config.Config{Finalize: tc.finalize}}
+			assert.Equal(t, tc.want, finalizeModeFor(req))
+			warning := finalizeStartupWarning(req)
+			if tc.wantWarning == "" {
+				assert.Empty(t, warning)
+				return
+			}
+			assert.Contains(t, warning, tc.wantWarning)
+		})
+	}
+
+	t.Run("nil config", func(t *testing.T) {
+		assert.Equal(t, config.FinalizeNone, finalizeModeFor(executePlanRequest{Mode: processor.ModeFull}))
+		assert.Empty(t, finalizeStartupWarning(executePlanRequest{Mode: processor.ModeFull}))
+	})
+}
+
+func TestFinalizeResultRendering(t *testing.T) {
+	merged := processor.FinalizeOutcome{Status: processor.FinalizeResolved, Base: "origin/master", Files: []string{"a.go", "b.go"}}
+	tests := []struct {
+		name       string
+		res        finalizeResult
+		wantLines  []string
+		wantNote   string
+		wantNotify string
+	}{
+		{name: "nothing", res: finalizeResult{mode: config.FinalizeNone, sync: processor.FinalizeOutcome{Status: processor.FinalizeSkipped}}},
+		{name: "sync only", res: finalizeResult{mode: config.FinalizeSync, sync: merged},
+			wantLines: []string{"finalize: merged origin/master (2 files resolved)"}, wantNote: "synced",
+			wantNotify: "merged origin/master (2 files resolved)"},
+		{name: "PR opened", res: finalizeResult{mode: config.FinalizePR, sync: merged, prOpened: true,
+			prURL: "https://github.com/acme/repo/pull/7"},
+			wantLines:  []string{"finalize: merged origin/master (2 files resolved)", "PR: https://github.com/acme/repo/pull/7"},
+			wantNote:   "PR opened",
+			wantNotify: "merged origin/master (2 files resolved); PR opened"},
+		{name: "PR opened without URL", res: finalizeResult{mode: config.FinalizePR, sync: merged, prOpened: true},
+			wantLines: []string{"finalize: merged origin/master (2 files resolved)", "PR opened"}, wantNote: "PR opened",
+			wantNotify: "merged origin/master (2 files resolved); PR opened"},
+		{name: "PR merged", res: finalizeResult{mode: config.FinalizeMerge, sync: merged, prOpened: true, merged: true,
+			prURL: "https://github.com/acme/repo/pull/7"},
+			wantLines: []string{"finalize: merged origin/master (2 files resolved)", "PR: https://github.com/acme/repo/pull/7",
+				"PR merged"},
+			wantNote: "PR merged", wantNotify: "merged origin/master (2 files resolved); PR merged"},
+		{name: "checks failed", res: finalizeResult{mode: config.FinalizeMerge, sync: merged, prOpened: true,
+			prURL: "https://github.com/acme/repo/pull/7", incomplete: errors.New("PR checks failed: build fail")},
+			wantLines:  []string{"finalize: merged origin/master (2 files resolved)", "PR: https://github.com/acme/repo/pull/7"},
+			wantNote:   "finalize incomplete",
+			wantNotify: "merged origin/master (2 files resolved); PR opened; incomplete: PR checks failed: build fail"},
+		{name: "blocked sync", res: finalizeResult{mode: config.FinalizePR,
+			sync:       processor.FinalizeOutcome{Status: processor.FinalizeBlocked, Reason: "needs a decision"},
+			incomplete: errors.New("base sync blocked: needs a decision")},
+			wantNote: "finalize incomplete", wantNotify: "incomplete: base sync blocked: needs a decision"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.wantLines, tc.res.summaryLines())
+			assert.Equal(t, tc.wantNote, tc.res.statusNote())
+			assert.Equal(t, tc.wantNotify, tc.res.notifyText())
+			result := tc.res.annotate(notify.Result{Status: "success"})
+			assert.Equal(t, tc.wantNotify, result.Finalize)
+			assert.Equal(t, tc.res.prURL, result.PRURL)
+		})
+	}
+}
+
+func TestDisplayStatsFinalize(t *testing.T) {
+	chdirTemp(t)
+	colors := testColors()
+	baseLog, err := progress.NewLogger(progress.Config{
+		PlanFile: "x.md", Mode: "full", Branch: "main", NoColor: true,
+	}, colors, &status.PhaseHolder{})
+	require.NoError(t, err)
+	defer func() { _ = baseLog.Close() }()
+
+	fin := finalizeResult{mode: config.FinalizeMerge,
+		sync:     processor.FinalizeOutcome{Status: processor.FinalizeMerged, Base: "origin/master"},
+		prOpened: true, prURL: "https://github.com/acme/repo/pull/7",
+		incomplete: errors.New("PR checks failed: build fail")}
+	req := executePlanRequest{PlanFile: "docs/plans/feature.md", Colors: colors}
+	output := captureStdout(t, func() {
+		displayStats(req, baseLog, git.DiffStats{}, "1s", "main", false, errors.New("move feature.md: hook rejected"), fin)
+	})
+	assert.Contains(t, output, "  finalize: merged origin/master\n  PR: https://github.com/acme/repo/pull/7\n")
+	assert.True(t, strings.HasSuffix(output, "  finalize incomplete: PR checks failed: build fail\n"),
+		"the finalize stop must be the last summary line, got %q", output)
+	assert.Greater(t, strings.Index(output, "finalize incomplete"), strings.Index(output, "plan archive incomplete"))
+	assert.Greater(t, strings.Index(output, "finalize: merged"), strings.Index(output, "progress log:"))
+}
+
+// recordingFinalizeLog captures the progress lines runFinalizeCloseout writes.
+type recordingFinalizeLog struct{ prints, warns []string }
+
+func (l *recordingFinalizeLog) Print(format string, args ...any) {
+	l.prints = append(l.prints, fmt.Sprintf(format, args...))
+}
+
+func (l *recordingFinalizeLog) Warn(format string, args ...any) {
+	l.warns = append(l.warns, fmt.Sprintf(format, args...))
+}
+
+// finalizeGHStub answers gh the way finalize calls it. GH_CHECKS selects the checks behavior
+// (pass, fail, nochecks, late, hang) and GH_MERGE=refuse makes the merge fail; every call is
+// appended to GH_ARGS_LOG as one line.
+const finalizeGHStub = `#!/bin/sh
+printf '%s\n' "$*" >> "$GH_ARGS_LOG"
+case "$1 $2" in
+"repo view") printf '%s\n' 'acme/repo'; exit 0 ;;
+"pr create") cat > /dev/null; printf '%s\n' 'https://github.com/acme/repo/pull/7'; exit 0 ;;
+"pr checks")
+  n=$(cat "$GH_CHECKS_COUNT" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$GH_CHECKS_COUNT"
+  case "$GH_CHECKS" in
+  pass) printf 'build\tpass\t1m\thttps://ci.example/1\n'; exit 0 ;;
+  fail) printf 'lint\tpass\t1m\thttps://ci.example/2\nbuild\tfail\t1m\thttps://ci.example/1\n'; exit 1 ;;
+  nochecks) printf "no checks reported on the 'feature' branch\n" >&2; exit 1 ;;
+  late) if [ "$n" -lt 2 ]; then printf "no checks reported on the 'feature' branch\n" >&2; exit 1; fi; exit 0 ;;
+  hang) exec sleep 5 ;;
+  esac ;;
+"pr merge")
+  if [ "$GH_MERGE" = refuse ]; then printf 'X Pull request acme/repo#7 is not mergeable: the base branch policy prohibits the merge.\n' >&2; exit 1; fi
+  exit 0 ;;
+esac
+exit 3
+`
+
+type finalizePRFixture struct {
+	dir, remote, argsLog string
+	svc                  *git.Service
+}
+
+func (f finalizePRFixture) ghCalls(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile(f.argsLog)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	require.NoError(t, err)
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
+func (f finalizePRFixture) request(finalize string) executePlanRequest {
+	return executePlanRequest{
+		Mode: processor.ModeFull, GitSvc: f.svc, BaseRef: "master",
+		Config: &config.Config{Finalize: finalize, FinalizeMergeMethod: "squash", FinalizeChecksTimeout: time.Minute},
+	}
+}
+
+func setupFinalizePRFixture(t *testing.T) finalizePRFixture {
+	t.Helper()
+	dir := setupTestRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, filepath.Dir(remote), "init", "--bare", remote)
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/acme/repo.git")
+	runGit(t, dir, "update-ref", "refs/remotes/origin/master", "master")
+	runGit(t, dir, "checkout", "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+	runGit(t, dir, "add", "feature.txt")
+	runGit(t, dir, "commit", "-m", "feature")
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	t.Setenv("PR_TEST_REAL_GIT", realGit)
+	t.Setenv("PR_TEST_REMOTE", remote)
+	gitWrapper := filepath.Join(t.TempDir(), "git-wrapper")
+	writeExecutable(t, gitWrapper, "#!/bin/sh\nif [ \"$1\" = push ]; then\n  refspec=$4\n  \"$PR_TEST_REAL_GIT\" push \"$PR_TEST_REMOTE\" \"$refspec\" || exit $?\n  exit 0\nfi\nexec \"$PR_TEST_REAL_GIT\" \"$@\"\n")
+	svc, err := git.NewService(dir, noopLogger(), gitWrapper)
+	require.NoError(t, err)
+
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "gh"), finalizeGHStub)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	argsLog := filepath.Join(binDir, "gh-args.log")
+	t.Setenv("GH_ARGS_LOG", argsLog)
+	t.Setenv("GH_CHECKS_COUNT", filepath.Join(binDir, "checks-count"))
+	t.Setenv("GH_CHECKS", "pass")
+	t.Setenv("GH_MERGE", "")
+	return finalizePRFixture{dir: dir, remote: remote, argsLog: argsLog, svc: svc}
+}
+
+func shortenFinalizeChecksGrace(t *testing.T, grace time.Duration) {
+	t.Helper()
+	origGrace, origRetry := finalizeNoChecksGrace, finalizeNoChecksRetry
+	finalizeNoChecksGrace, finalizeNoChecksRetry = grace, 10*time.Millisecond
+	t.Cleanup(func() { finalizeNoChecksGrace, finalizeNoChecksRetry = origGrace, origRetry })
+}
+
+func TestRunFinalizeCloseout(t *testing.T) {
+	synced := processor.FinalizeOutcome{Status: processor.FinalizeMerged, Base: "origin/master"}
+	const prURL = "https://github.com/acme/repo/pull/7"
+
+	t.Run("pr opens the pull request against the synced base", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		log := &recordingFinalizeLog{}
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, log)
+
+		require.NoError(t, res.incomplete)
+		assert.True(t, res.prOpened)
+		assert.Equal(t, prURL, res.prURL)
+		assert.False(t, res.merged)
+		calls := f.ghCalls(t)
+		require.Len(t, calls, 2)
+		assert.Equal(t, "repo view acme/repo --json nameWithOwner --jq .nameWithOwner", calls[0])
+		assert.Contains(t, calls[1], "pr create --repo acme/repo --base master --head feature")
+		head := strings.TrimSpace(gitOutput(t, f.dir, "rev-parse", "feature"))
+		assert.Equal(t, head, strings.TrimSpace(gitOutput(t, f.remote, "rev-parse", "refs/heads/feature")))
+		assert.Equal(t, []string{"finalize: opened pull request " + prURL}, log.prints)
+		assert.Empty(t, log.warns)
+	})
+
+	t.Run("merge waits for green checks and merges with the configured method", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		log := &recordingFinalizeLog{}
+		head := strings.TrimSpace(gitOutput(t, f.dir, "rev-parse", "HEAD"))
+		baseHead := strings.TrimSpace(gitOutput(t, f.dir, "rev-parse", "master"))
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, log)
+
+		require.NoError(t, res.incomplete)
+		assert.True(t, res.merged)
+		calls := f.ghCalls(t)
+		require.Len(t, calls, 4)
+		assert.Equal(t, "pr checks "+prURL+" --watch --fail-fast", calls[2])
+		assert.Equal(t, "pr merge "+prURL+" --squash --match-head-commit "+head, calls[3])
+		assert.Contains(t, log.prints, "finalize: merged pull request "+prURL)
+		assert.Equal(t, baseHead, strings.TrimSpace(gitOutput(t, f.dir, "rev-parse", "master")),
+			"the local base branch is never touched")
+		assert.Equal(t, "feature", currentGitBranch(t, f.dir))
+	})
+
+	t.Run("failing checks stop before the merge", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		t.Setenv("GH_CHECKS", "fail")
+		log := &recordingFinalizeLog{}
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, log)
+
+		require.Error(t, res.incomplete)
+		assert.Contains(t, res.incomplete.Error(),
+			"PR checks failed: lint pass 1m https://ci.example/2; build fail 1m https://ci.example/1")
+		assert.True(t, res.prOpened)
+		assert.False(t, res.merged)
+		for _, call := range f.ghCalls(t) {
+			assert.NotContains(t, call, "pr merge")
+		}
+		require.Len(t, log.warns, 1)
+		assert.Contains(t, log.warns[0], "finalize incomplete: PR checks failed")
+	})
+
+	t.Run("checks timeout stops before the merge", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		t.Setenv("GH_CHECKS", "hang")
+		req := f.request(config.FinalizeMerge)
+		req.Config.FinalizeChecksTimeout = 300 * time.Millisecond
+
+		start := time.Now()
+		res := runFinalizeCloseout(t.Context(), req, synced, &recordingFinalizeLog{})
+
+		require.Error(t, res.incomplete)
+		assert.Equal(t, "PR checks did not finish within 300ms", res.incomplete.Error())
+		assert.Less(t, time.Since(start), 4*time.Second, "the timeout must stop gh pr checks --watch")
+		assert.False(t, res.merged)
+	})
+
+	t.Run("no checks after the grace period merges", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		t.Setenv("GH_CHECKS", "nochecks")
+		shortenFinalizeChecksGrace(t, 0)
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, &recordingFinalizeLog{})
+
+		require.NoError(t, res.incomplete)
+		assert.True(t, res.merged)
+	})
+
+	t.Run("checks registered late are waited for", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		t.Setenv("GH_CHECKS", "late")
+		shortenFinalizeChecksGrace(t, time.Minute)
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, &recordingFinalizeLog{})
+
+		require.NoError(t, res.incomplete)
+		assert.True(t, res.merged)
+		checks := 0
+		for _, call := range f.ghCalls(t) {
+			if strings.HasPrefix(call, "pr checks") {
+				checks++
+			}
+		}
+		assert.Equal(t, 2, checks)
+	})
+
+	t.Run("refused merge is incomplete", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		t.Setenv("GH_MERGE", "refuse")
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, &recordingFinalizeLog{})
+
+		require.Error(t, res.incomplete)
+		assert.Contains(t, res.incomplete.Error(), "merge pull request: X Pull request acme/repo#7 is not mergeable")
+		assert.True(t, res.prOpened)
+		assert.False(t, res.merged)
+	})
+
+	t.Run("blocked sync opens no pull request", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		blocked := processor.FinalizeOutcome{Status: processor.FinalizeBlocked, Reason: "conflict needs a product decision"}
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), blocked, &recordingFinalizeLog{})
+
+		require.Error(t, res.incomplete)
+		assert.Equal(t, "base sync blocked: conflict needs a product decision", res.incomplete.Error())
+		assert.Empty(t, f.ghCalls(t))
+		assert.False(t, res.prOpened)
+		cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/feature")
+		cmd.Dir = f.remote
+		require.Error(t, cmd.Run(), "a blocked sync must not push the branch")
+	})
+
+	t.Run("a sync that did not run opens no pull request", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR),
+			processor.FinalizeOutcome{Status: processor.FinalizeSkipped}, &recordingFinalizeLog{})
+
+		require.EqualError(t, res.incomplete, "base sync did not run")
+		assert.Empty(t, f.ghCalls(t))
+	})
+
+	t.Run("sync mode stops after the base sync", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeSync), synced, &recordingFinalizeLog{})
+
+		require.NoError(t, res.incomplete)
+		assert.Equal(t, "synced", res.statusNote())
+		assert.Empty(t, f.ghCalls(t))
+	})
+
+	t.Run("review-only modes never open a pull request", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		req := f.request(config.FinalizeMerge)
+		req.Mode = processor.ModeReview
+
+		res := runFinalizeCloseout(t.Context(), req, synced, &recordingFinalizeLog{})
+
+		require.NoError(t, res.incomplete)
+		assert.Equal(t, config.FinalizeSync, res.mode)
+		assert.Empty(t, f.ghCalls(t))
+	})
+
+	t.Run("finalize off does nothing", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeNone),
+			processor.FinalizeOutcome{Status: processor.FinalizeSkipped}, &recordingFinalizeLog{})
+
+		require.NoError(t, res.incomplete)
+		assert.Empty(t, res.statusNote())
+		assert.Empty(t, f.ghCalls(t))
+	})
+
+	t.Run("missing gh is incomplete", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		t.Setenv("PATH", t.TempDir())
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, &recordingFinalizeLog{})
+
+		require.Error(t, res.incomplete)
+		assert.Contains(t, res.incomplete.Error(), "finalize = pr requires GitHub CLI (gh) in PATH")
+		assert.False(t, res.prOpened)
+	})
+
+	t.Run("push rejection is incomplete", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		t.Setenv("PR_TEST_REMOTE", filepath.Join(t.TempDir(), "missing.git"))
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, &recordingFinalizeLog{})
+
+		require.Error(t, res.incomplete)
+		assert.Contains(t, res.incomplete.Error(), "open pull request: push PR branch")
+		assert.False(t, res.prOpened)
+	})
+
+	t.Run("T3 threads get the pull request linked", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		original := newT3Dispatcher
+		t.Cleanup(func() { newT3Dispatcher = original })
+		branch := "feature"
+		api := &t3ShellDispatcher{shell: t3.Shell{
+			Projects: []t3.Project{{ID: "p1", WorkspaceRoot: f.svc.Root()}},
+			Threads:  []t3.Thread{{ID: "th", ProjectID: "p1", Branch: &branch}},
+		}}
+		newT3Dispatcher = func(func(string) string) (t3.Dispatcher, error) { return api, nil }
+		req := f.request(config.FinalizePR)
+		req.Config.T3 = true
+
+		res := runFinalizeCloseout(t.Context(), req, synced, &recordingFinalizeLog{})
+
+		require.NoError(t, res.incomplete)
+		require.Len(t, api.commands, 1)
+		link, ok := api.commands[0].(*t3.ThreadPullRequestLink)
+		require.True(t, ok)
+		assert.Equal(t, "th", link.ThreadID)
+		assert.Equal(t, 7, link.Number)
+	})
+}
+
+func TestGHFailureDetail(t *testing.T) {
+	assert.Equal(t, "exit status 1", ghFailureDetail(" \n", errors.New("exit status 1")))
+	assert.Equal(t, "a b; c", ghFailureDetail("a\tb\n\n c \n", nil))
+	many := strings.Repeat("line\n", 10) + "last"
+	assert.Equal(t, "line; line; line; line; line; last", ghFailureDetail(many, nil))
+	long := ghFailureDetail(strings.Repeat("x", ghFailureDetailLimit+50), nil)
+	assert.Len(t, []rune(long), ghFailureDetailLimit+1)
+	assert.True(t, strings.HasPrefix(long, "…"))
 }

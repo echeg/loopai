@@ -1356,9 +1356,10 @@ func externalReviewNotificationLabel(selection externalReviewSelection) string {
 // reflects where the plan actually lives: completed/ only when the move actually
 // succeeded; original path when the move was skipped or failed. a failed archive can
 // still have moved the file on disk, which is what the archiveIncomplete note points
-// at: it goes last because the warning at the failure site is well above this line.
+// at: it goes last because the warning at the failure site is well above this line. A finalize
+// stop follows it for the same reason, after the finalize lines that did succeed.
 func displayStats(req executePlanRequest, baseLog *progress.Logger, stats git.DiffStats, elapsed, branch string,
-	planMoved bool, archiveIncomplete error) {
+	planMoved bool, archiveIncomplete error, fin finalizeResult) {
 	if stats.Files > 0 {
 		baseLog.LogDiffStats(stats.Files, stats.Additions, stats.Deletions)
 		req.Colors.Info().Printf("\ncompleted in %s (%d files, +%d/-%d lines)\n",
@@ -1381,8 +1382,14 @@ func displayStats(req executePlanRequest, baseLog *progress.Logger, stats git.Di
 		}
 	}
 	displayMeta(req.Colors, 2, planPath, branch, baseLog.Path())
+	for _, line := range fin.summaryLines() {
+		req.Colors.Info().Printf("  %s\n", line)
+	}
 	if archiveIncomplete != nil {
 		req.Colors.Warn().Printf("  plan archive incomplete: %v (check git status, the move may be left staged)\n", archiveIncomplete)
+	}
+	if fin.incomplete != nil {
+		req.Colors.Warn().Printf("  finalize incomplete: %v\n", fin.incomplete)
 	}
 }
 
@@ -1653,6 +1660,9 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		ExternalReview:          req.ExternalReview,
 	}, req.Colors)
 	warnCodexMaxDropped(phases, req.Colors)
+	if warning := finalizeStartupWarning(req); warning != "" {
+		req.Colors.Warn().Printf("%s\n", warning)
+	}
 
 	// create and run the runner
 	r := createRunner(req, o, runnerLog, plr.holder, validationTimer.Handler())
@@ -1694,7 +1704,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 
 	// get diff stats for completion message (optional - errors logged but don't block).
 	// use worktree GitSvc (has correct HEAD with committed changes).
-	stats, statsErr := req.GitSvc.DiffStats(req.BaseRef)
+	stats, statsErr := req.GitSvc.DiffStats(r.DiffBase())
 	if statsErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to get diff stats: %v\n", statsErr)
 	}
@@ -1713,12 +1723,19 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		return moveErr
 	}
 	removeRunRecordAfterArchival(runRecordState, planMoved)
-	sendNotification(req, branch, elapsed, stats, nil)
+	// the pull request follows archival so a non-worktree run pushes its archive commit too, and
+	// precedes worktree cleanup because it pushes from the run's own checkout
+	fin := runFinalizeCloseout(ctx, req, r.FinalizeOutcome(), plr.baseLog)
+	req.NotifySvc.Send(context.Background(), fin.annotate(buildNotifyResult(req, branch, elapsed, stats, nil)))
 
-	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved, archiveIncomplete)
+	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved, archiveIncomplete, fin)
 	if outcomeErr := capturePlanOutcome(req); outcomeErr != nil {
 		return outcomeErr
 	}
+	note := fin.statusNote()
+	rep.SetFinishNote(note)
+	titles.SetFinishNote(note)
+	threads.SetFinishNote(note)
 	if req.CmuxRetain != nil {
 		cmuxCleanupOnce.Do(func() {
 			retainCmuxAfterCleanup(req, plr, rep)
@@ -2017,7 +2034,14 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	// setup is done: executePlan creates its own reporter and owns every error from here on
 	handedOff = true
 
-	return executePlan(ctx, o, executePlanRequest{
+	return executePlan(ctx, o, worktreeExecuteRequest(req, wt, baseLog, holder, finishState.beforeCmuxFinish))
+}
+
+// worktreeExecuteRequest builds the request executePlan runs inside a prepared worktree: the
+// worktree's plan copy and Git service, with the main checkout's kept for plan archival.
+func worktreeExecuteRequest(req executePlanRequest, wt worktreeRun, baseLog *progress.Logger,
+	holder *status.PhaseHolder, beforeFinish func(bool)) executePlanRequest {
+	return executePlanRequest{
 		PlanFile:               wt.planFile,
 		MainPlanFile:           req.PlanFile, // original path in main repo for MovePlanToCompleted
 		Mode:                   req.Mode,
@@ -2035,7 +2059,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		CmuxPredecessorStop:    req.CmuxPredecessorStop,
 		CmuxRetain:             req.CmuxRetain,
 		SetupTitles:            req.SetupTitles,
-		BeforeCmuxFinish:       finishState.beforeCmuxFinish,
+		BeforeCmuxFinish:       beforeFinish,
 		Outcome:                req.Outcome,
 		ChainSuccessor:         req.ChainSuccessor,
 		ChainResume:            req.ChainResume,
@@ -2044,12 +2068,13 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		ChainPlanFiles:         req.ChainPlanFiles,
 		ChainPrepared:          req.ChainPrepared,
 		ChainFinalizing:        req.ChainFinalizing,
+		ChainNotLast:           req.ChainNotLast,
 		WorktreeStartRef:       req.WorktreeStartRef,
 		ProgressLog:            baseLog,
 		PhaseHolder:            holder,
 		ExternalReview:         req.ExternalReview,
 		LimitRecovery:          req.LimitRecovery,
-	})
+	}
 }
 
 // worktreeFinishState keeps repository cleanup keyed to execution completion rather than the
@@ -4956,6 +4981,10 @@ type closeoutTarget struct {
 	identifier string
 	plansDir   string
 	linkT3     bool // --pr links the created pull request to the branch's T3 Code threads
+	// statsBase is the ref the PR body's diff stats are measured against; empty means the PR
+	// base. Finalize sets origin/<base>, because the branch already merged it and a stale local
+	// base would count the merged-in base commits as the branch's own changes.
+	statsBase string
 }
 
 // resolveCloseoutBranch determines the feature branch a close-out command operates on: the
@@ -5527,25 +5556,51 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 		}
 		return fmt.Errorf("current branch %q is already the base branch; check out the feature branch first", base)
 	}
-	// measured against the branch tip, so an explicitly named feature need not be checked out
-	stats, err := gitSvc.BranchDiffStats(base, branch)
+	prURL, err := createPullRequest(ctx, ghPath, gitSvc, branch, base, target)
 	if err != nil {
-		return fmt.Errorf("calculate PR diff stats for %q against %q: %w", branch, base, err)
+		return err
+	}
+	if prURL != "" {
+		fmt.Fprintln(stdout, prURL)
+	}
+	if target.linkT3 && prURL != "" {
+		linkT3PullRequest(ctx, gitSvc, branch, prURL, os.Stderr)
+	}
+	if rep != nil {
+		rep.Clear()
+	}
+	return nil
+}
+
+// createPullRequest validates the PR metadata and the GitHub origin, pushes branch, and opens a
+// pull request against base through gh. It returns the URL gh printed, which may be empty. Both
+// --pr and finalize = pr|merge use it; callers resolve the branch and base and link T3 threads.
+// The PR body's diff stats are measured against target.statsBase when set, otherwise base.
+func createPullRequest(ctx context.Context, ghPath string, gitSvc *git.Service, branch, base string,
+	target closeoutTarget) (string, error) {
+	statsBase := base
+	if target.statsBase != "" {
+		statsBase = target.statsBase
+	}
+	// measured against the branch tip, so an explicitly named feature need not be checked out
+	stats, err := gitSvc.BranchDiffStats(statsBase, branch)
+	if err != nil {
+		return "", fmt.Errorf("calculate PR diff stats for %q against %q: %w", branch, statsBase, err)
 	}
 
 	title, body, err := buildPRTitleBody(gitSvc.Root(), target.plansDir, branch, stats)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if metadataErr := validatePRMetadata(title, body); metadataErr != nil {
-		return metadataErr
+		return "", metadataErr
 	}
 	repoSpec, err := validateGitHubOrigin(ctx, ghPath, gitSvc)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if pushErr := gitSvc.PushContext(ctx, branch); pushErr != nil {
-		return fmt.Errorf("push PR branch: %w", pushErr)
+		return "", fmt.Errorf("push PR branch: %w", pushErr)
 	}
 
 	cmd := exec.CommandContext(ctx, ghPath, "pr", "create", "--repo", repoSpec,
@@ -5558,19 +5613,9 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 	out, err := cmd.Output()
 	if err != nil {
 		details := strings.TrimSpace(stderr.String() + "\n" + string(out))
-		return fmt.Errorf("create GitHub PR: %w: %s", err, details)
+		return "", fmt.Errorf("create GitHub PR: %w: %s", err, details)
 	}
-	prURL := strings.TrimSpace(string(out))
-	if prURL != "" {
-		fmt.Fprintln(stdout, prURL)
-	}
-	if target.linkT3 && prURL != "" {
-		linkT3PullRequest(ctx, gitSvc, branch, prURL, os.Stderr)
-	}
-	if rep != nil {
-		rep.Clear()
-	}
-	return nil
+	return strings.TrimSpace(string(out)), nil
 }
 
 // newT3Dispatcher opens the T3 Code orchestration API described by the environment. Tests replace
@@ -6565,6 +6610,302 @@ func finalizeBaseBranch(gitSvc *git.Service, baseRef, configBranch string) strin
 		return local
 	}
 	return strings.TrimPrefix(resolveDefaultBranch("", configBranch, gitSvc.GetDefaultBranch()), remoteBranchPrefix)
+}
+
+// finalizeModeFor returns the finalize mode that applies to req: none when finalize is off, for a
+// chain member other than the last, and under --tasks-only, which never reaches the finalize
+// phase. Review-only modes review a branch they did not create, so pr and merge degrade to sync.
+func finalizeModeFor(req executePlanRequest) string {
+	if req.Config == nil || req.ChainNotLast {
+		return config.FinalizeNone
+	}
+	mode := req.Config.EffectiveFinalize()
+	switch req.Mode {
+	case processor.ModeFull:
+		return mode
+	case processor.ModeReview, processor.ModeCodexOnly:
+		if mode == config.FinalizePR || mode == config.FinalizeMerge {
+			return config.FinalizeSync
+		}
+		return mode
+	default:
+		return config.FinalizeNone
+	}
+}
+
+// finalizeStartupWarning explains a configured finalize mode the run cannot honor, or returns "".
+func finalizeStartupWarning(req executePlanRequest) string {
+	if req.Config == nil || req.ChainNotLast {
+		return ""
+	}
+	configured, effective := req.Config.EffectiveFinalize(), finalizeModeFor(req)
+	switch {
+	case configured == effective:
+		return ""
+	case effective == config.FinalizeNone:
+		return fmt.Sprintf("finalize = %s has no effect under --tasks-only, which runs no review pipeline", configured)
+	default:
+		return fmt.Sprintf("finalize = %s opens a pull request only for plan execution; "+
+			"--review and --external-only sync with the base only", configured)
+	}
+}
+
+// finalizeResult is the finalize outcome of a successful run: the base sync from the processor
+// and the pull request steps that follow plan archival. incomplete is a finalize stop: the plan's
+// work succeeded and the run stays green, so it is reported like an incomplete plan archive.
+type finalizeResult struct {
+	mode       string
+	sync       processor.FinalizeOutcome
+	prURL      string
+	prOpened   bool
+	merged     bool
+	incomplete error
+}
+
+func (f finalizeResult) syncSucceeded() bool {
+	switch f.sync.Status {
+	case processor.FinalizeUpToDate, processor.FinalizeMerged, processor.FinalizeResolved:
+		return true
+	default:
+		return false
+	}
+}
+
+// summaryLines returns the completion-summary lines of a finalize that got somewhere; the
+// incomplete reason is printed separately, last.
+func (f finalizeResult) summaryLines() []string {
+	var lines []string
+	if f.syncSucceeded() {
+		lines = append(lines, "finalize: "+f.sync.Summary())
+	}
+	switch {
+	case f.prURL != "":
+		lines = append(lines, "PR: "+f.prURL)
+	case f.prOpened:
+		lines = append(lines, "PR opened")
+	}
+	if f.merged {
+		lines = append(lines, "PR merged")
+	}
+	return lines
+}
+
+// statusNote is the short outcome appended to the cmux, Orca, and T3 done status.
+func (f finalizeResult) statusNote() string {
+	switch {
+	case f.incomplete != nil:
+		return "finalize incomplete"
+	case f.merged:
+		return "PR merged"
+	case f.prOpened:
+		return "PR opened"
+	case f.syncSucceeded():
+		return "synced"
+	default:
+		return ""
+	}
+}
+
+// notifyText renders the outcome as one notification line.
+func (f finalizeResult) notifyText() string {
+	var parts []string
+	if f.syncSucceeded() {
+		parts = append(parts, f.sync.Summary())
+	}
+	switch {
+	case f.merged:
+		parts = append(parts, "PR merged")
+	case f.prOpened:
+		parts = append(parts, "PR opened")
+	}
+	if f.incomplete != nil {
+		parts = append(parts, "incomplete: "+f.incomplete.Error())
+	}
+	return strings.Join(parts, "; ")
+}
+
+// annotate adds the finalize outcome to a completion notification.
+func (f finalizeResult) annotate(result notify.Result) notify.Result {
+	result.Finalize = f.notifyText()
+	result.PRURL = f.prURL
+	return result
+}
+
+// finalizeLogger receives finalize progress so it lands in the run's progress log.
+type finalizeLogger interface {
+	Print(format string, args ...any)
+	Warn(format string, args ...any)
+}
+
+// runFinalizeCloseout completes finalize after plan archival. For pr and merge it pushes the plan
+// branch and opens a pull request, and for merge it also waits for the PR checks and merges the
+// PR on GitHub. A blocked or missing base sync opens no PR. Every failure becomes the result's
+// incomplete reason rather than a run error. It never touches the local base branch and never
+// removes a worktree: loopai's own --worktree is removed by the caller as on any run.
+func runFinalizeCloseout(ctx context.Context, req executePlanRequest, synced processor.FinalizeOutcome,
+	log finalizeLogger) finalizeResult {
+	res := finalizeResult{mode: finalizeModeFor(req), sync: synced}
+	if res.mode == config.FinalizeNone {
+		return res
+	}
+	switch {
+	case synced.Status == processor.FinalizeBlocked:
+		res.incomplete = errors.New("base sync " + synced.Summary())
+	case !res.syncSucceeded():
+		res.incomplete = errors.New("base sync did not run")
+	case res.mode != config.FinalizeSync:
+		res.incomplete = openFinalizePR(ctx, req, &res, log)
+	}
+	if res.incomplete != nil {
+		log.Warn("finalize incomplete: %v", res.incomplete)
+	}
+	return res
+}
+
+// openFinalizePR pushes the plan branch, opens its pull request, and under finalize = merge waits
+// for the checks and merges it. It records progress in res and returns the reason it stopped.
+func openFinalizePR(ctx context.Context, req executePlanRequest, res *finalizeResult, log finalizeLogger) error {
+	ghPath, err := exec.LookPath("gh")
+	if err != nil {
+		return fmt.Errorf("finalize = %s requires GitHub CLI (gh) in PATH; install it from https://cli.github.com/", res.mode)
+	}
+	gitSvc := req.GitSvc
+	branch, err := gitSvc.CurrentBranch()
+	if err != nil {
+		return fmt.Errorf("read plan branch: %w", err)
+	}
+	if branch == "" {
+		return errors.New("the plan checkout is on a detached HEAD")
+	}
+	base := strings.TrimPrefix(res.sync.Base, remoteBranchPrefix)
+	if base == "" {
+		_, base = resolveFinalize(req)
+	}
+	if branch == base {
+		return fmt.Errorf("plan branch %q is the base branch", branch)
+	}
+	head, err := gitSvc.HeadHash()
+	if err != nil {
+		return fmt.Errorf("read plan branch head: %w", err)
+	}
+	target := closeoutTarget{plansDir: req.Config.PlansDir, statsBase: res.sync.Base}
+	prURL, err := createPullRequest(ctx, ghPath, gitSvc, branch, base, target)
+	if err != nil {
+		return fmt.Errorf("open pull request: %w", err)
+	}
+	res.prOpened, res.prURL = true, prURL
+	log.Print("finalize: opened pull request %s", prURL)
+	if req.Config.T3 && prURL != "" {
+		linkT3PullRequest(ctx, gitSvc, branch, prURL, os.Stderr)
+	}
+	if res.mode != config.FinalizeMerge {
+		return nil
+	}
+	if prURL == "" {
+		return errors.New("gh printed no pull request URL, so the PR was not merged")
+	}
+	timeout := req.Config.EffectiveFinalizeChecksTimeout()
+	log.Print("finalize: waiting up to %s for pull request checks", timeout)
+	if err := waitForPRChecks(ctx, ghPath, gitSvc.Root(), prURL, timeout); err != nil {
+		return err
+	}
+	if err := mergePullRequest(ctx, ghPath, gitSvc.Root(), prURL, req.Config.EffectiveFinalizeMergeMethod(), head); err != nil {
+		return err
+	}
+	res.merged = true
+	log.Print("finalize: merged pull request %s", prURL)
+	return nil
+}
+
+// finalizeNoChecksGrace bounds how long finalize = merge keeps asking a fresh PR for checks:
+// GitHub registers check suites asynchronously, so "no checks reported" right after creation
+// does not yet mean the repository runs none. Tests shorten both values.
+var (
+	finalizeNoChecksGrace = time.Minute
+	finalizeNoChecksRetry = 10 * time.Second
+)
+
+// waitForPRChecks waits for the PR checks through gh pr checks --watch, bounded by timeout. A PR
+// that still reports no checks once the grace period ends is treated as having none; branch
+// protection still applies to the merge that follows.
+func waitForPRChecks(ctx context.Context, ghPath, dir, prURL string, timeout time.Duration) error {
+	checksCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	graceEnd := time.Now().Add(finalizeNoChecksGrace)
+	for {
+		out, err := runGH(checksCtx, ghPath, dir, "pr", "checks", prURL, "--watch", "--fail-fast")
+		if err == nil {
+			return nil
+		}
+		if checksCtx.Err() != nil {
+			return checksWaitError(ctx, checksCtx, timeout)
+		}
+		if !strings.Contains(out, "no checks reported") {
+			return fmt.Errorf("PR checks failed: %s", ghFailureDetail(out, err))
+		}
+		if !time.Now().Before(graceEnd) {
+			return nil
+		}
+		select {
+		case <-checksCtx.Done():
+			return checksWaitError(ctx, checksCtx, timeout)
+		case <-time.After(finalizeNoChecksRetry):
+		}
+	}
+}
+
+func checksWaitError(parent, checksCtx context.Context, timeout time.Duration) error {
+	if parent.Err() == nil && errors.Is(checksCtx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("PR checks did not finish within %s", timeout)
+	}
+	return fmt.Errorf("wait for PR checks: %w", checksCtx.Err())
+}
+
+// mergePullRequest merges the PR on GitHub with the configured method. --match-head-commit makes
+// GitHub refuse the merge when the PR head moved past the commit loopai pushed. No branch is
+// deleted and the local base branch is never touched.
+func mergePullRequest(ctx context.Context, ghPath, dir, prURL, method, head string) error {
+	out, err := runGH(ctx, ghPath, dir, "pr", "merge", prURL, "--"+method, "--match-head-commit", head)
+	if err != nil {
+		return fmt.Errorf("merge pull request: %s", ghFailureDetail(out, err))
+	}
+	return nil
+}
+
+// runGH runs gh in dir and returns its combined output. WaitDelay keeps a descendant that
+// inherited the output pipe from holding the call past a canceled context.
+func runGH(ctx context.Context, ghPath, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, ghPath, args...)
+	cmd.Dir = dir
+	cmd.WaitDelay = time.Second
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// ghFailureDetailLimit bounds the gh output quoted in a finalize stop reason.
+const ghFailureDetailLimit = 400
+
+// ghFailureDetail condenses gh output into one bounded line for a finalize stop reason. It keeps
+// the tail, where gh pr checks --watch prints its last, failing table.
+func ghFailureDetail(out string, err error) string {
+	var lines []string
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		if line = strings.Join(strings.Fields(line), " "); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 {
+		return err.Error()
+	}
+	const keepLines = 6
+	if len(lines) > keepLines {
+		lines = lines[len(lines)-keepLines:]
+	}
+	detail := []rune(strings.Join(lines, "; "))
+	if len(detail) > ghFailureDetailLimit {
+		detail = append([]rune("…"), detail[len(detail)-ghFailureDetailLimit:]...)
+	}
+	return string(detail)
 }
 
 // resolveBranchBase decides which ref is the base for non-worktree branch creation.

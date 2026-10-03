@@ -352,3 +352,22 @@ func (l *recordingLogger) LogQuestion(string, []string)  { _ = l }
 func (l *recordingLogger) LogAnswer(string)              { _ = l }
 func (l *recordingLogger) LogDraftReview(string, string) { _ = l }
 func (l *recordingLogger) Path() string                  { return "" }
+
+func TestReporterFinishNote(t *testing.T) {
+	api := &fakeDispatcher{}
+	r := NewWithDispatcher(api, Options{ThreadID: "th"})
+	r.SetFinishNote("PR merged")
+	r.Finish(true)
+	r.Stop()
+	assert.Equal(t, []string{"loopai · done · PR merged"}, api.titles())
+
+	failed := &fakeDispatcher{}
+	r = NewWithDispatcher(failed, Options{ThreadID: "th"})
+	r.SetFinishNote("PR merged")
+	r.Finish(false)
+	r.Stop()
+	assert.Equal(t, []string{"loopai · failed"}, failed.titles())
+
+	var nilReporter *Reporter
+	assert.NotPanics(t, func() { nilReporter.SetFinishNote("PR merged") })
+}

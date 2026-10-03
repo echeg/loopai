@@ -1756,3 +1756,32 @@ func TestSpawnWorkspaceCommand(t *testing.T) {
 		assert.Greater(t, spawnTimeout, execTimeout)
 	})
 }
+
+func TestReporterFinishNote(t *testing.T) {
+	t.Run("success appends the note after the elapsed time", func(t *testing.T) {
+		runner := &fakeRunner{}
+		r := testReporter(t, runner)
+
+		r.SetFinishNote(" PR merged ")
+		r.Finish(true, "2h24m")
+
+		assert.Equal(t, [][]string{{"set-status", "loopai", "done in 2h24m · PR merged", "--icon", "bolt",
+			"--color", "#34c759", "--priority", "90"}}, runner.recorded())
+	})
+
+	t.Run("failure ignores the note", func(t *testing.T) {
+		runner := &fakeRunner{}
+		r := testReporter(t, runner)
+
+		r.SetFinishNote("PR merged")
+		r.Finish(false, "boom")
+
+		assert.Equal(t, [][]string{{"set-status", "loopai", "failed · boom", "--icon", "exclamationmark.triangle",
+			"--color", "#ff3b30", "--priority", "90"}}, runner.recorded())
+	})
+
+	t.Run("nil reporter", func(t *testing.T) {
+		var r *Reporter
+		assert.NotPanics(t, func() { r.SetFinishNote("PR merged") })
+	})
+}

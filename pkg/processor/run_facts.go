@@ -103,6 +103,13 @@ func (r *Runner) collectRepositoryFacts(facts *RunFacts) {
 	}
 }
 
+// DiffBase returns the revision the run's own changes are measured against: the configured
+// base, or origin/<base> after finalize merged it. The completion summary uses it so its diff
+// stats agree with the report's facts.
+func (r *Runner) DiffBase() string {
+	return r.factsBase()
+}
+
 // factsBase returns the revision repository facts are measured against. After finalize merged
 // origin/<base> into the branch, the local base may be behind it, and measuring against the local
 // base would count the merged-in base changes as the run's own work.

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/umputun/ralphex/pkg/config"
@@ -44,6 +45,7 @@ type state struct {
 	iteration int
 	waiting   waitingKind
 	final     finalKind
+	note      string // short outcome appended to the done title
 }
 
 // Reporter publishes execution state as terminal titles. The zero value is not usable; use New.
@@ -61,6 +63,8 @@ type Reporter struct {
 	current  state
 	stopped  bool
 	finished bool
+	// finishNote is a short run outcome, such as "PR merged", appended to the done title
+	finishNote string
 }
 
 // New returns a reporter when title reporting is enabled and stdout is a terminal. Otherwise it
@@ -298,6 +302,18 @@ func planTaskTotal(planFile string) int {
 	return len(parsed.Tasks)
 }
 
+// SetFinishNote records a short outcome, such as "PR merged", that a later successful Finish
+// appends to the done title.
+func (r *Reporter) SetFinishNote(note string) {
+	if r == nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.finishNote = strings.TrimSpace(note)
+}
+
 // Finish publishes the final idle outcome and freezes the reporter against later updates.
 func (r *Reporter) Finish(success bool) {
 	if r == nil {
@@ -310,7 +326,7 @@ func (r *Reporter) Finish(success bool) {
 		return
 	}
 	if success {
-		r.current = state{final: finalDone}
+		r.current = state{final: finalDone, note: r.finishNote}
 	} else {
 		r.current = state{final: finalFailed}
 	}
@@ -366,6 +382,9 @@ func (r *Reporter) emitLocked() {
 func titleFor(s state, executor string) string {
 	switch s.final {
 	case finalDone:
+		if s.note != "" {
+			return "✳ loopai · done · " + s.note
+		}
 		return "✳ loopai · done"
 	case finalFailed:
 		return "✳ loopai · failed"

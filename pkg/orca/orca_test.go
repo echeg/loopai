@@ -625,3 +625,30 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 	}
 	return w.Buffer.Write(p) //nolint:wrapcheck // test writer deliberately preserves the inner result
 }
+
+func TestReporterFinishNote(t *testing.T) {
+	t.Run("success appends the note", func(t *testing.T) {
+		var out bytes.Buffer
+		r := requireReporter(t, &out, config.ExecutorClaude)
+
+		r.SetFinishNote(" finalize incomplete ")
+		r.Finish(true)
+
+		assert.Equal(t, "\x1b]0;✳ loopai · done · finalize incomplete\a", out.String())
+	})
+
+	t.Run("failure ignores the note", func(t *testing.T) {
+		var out bytes.Buffer
+		r := requireReporter(t, &out, config.ExecutorClaude)
+
+		r.SetFinishNote("PR merged")
+		r.Finish(false)
+
+		assert.Equal(t, "\x1b]0;✳ loopai · failed\a", out.String())
+	})
+
+	t.Run("nil reporter", func(t *testing.T) {
+		var r *Reporter
+		assert.NotPanics(t, func() { r.SetFinishNote("PR merged") })
+	})
+}

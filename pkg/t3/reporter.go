@@ -42,6 +42,7 @@ type state struct {
 	iteration int
 	waiting   waitingKind
 	final     finalKind
+	note      string // short outcome appended to the done title
 }
 
 // Dispatcher is the orchestration API surface the reporter needs.
@@ -81,6 +82,8 @@ type Reporter struct {
 	stopped  bool
 	finished bool
 	pending  string
+	// finishNote is a short run outcome, such as "PR merged", appended to the done title
+	finishNote string
 
 	wake chan struct{}
 	quit chan struct{}
@@ -246,6 +249,17 @@ func (r *Reporter) beginInputWait() func() {
 	}
 }
 
+// SetFinishNote records a short outcome, such as "PR merged", that a later successful Finish
+// appends to the done title.
+func (r *Reporter) SetFinishNote(note string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.finishNote = strings.TrimSpace(note)
+}
+
 // Finish publishes the final outcome and freezes the reporter against later updates.
 func (r *Reporter) Finish(success bool) {
 	if r == nil {
@@ -257,7 +271,7 @@ func (r *Reporter) Finish(success bool) {
 		return
 	}
 	if success {
-		r.current = state{final: finalDone}
+		r.current = state{final: finalDone, note: r.finishNote}
 	} else {
 		r.current = state{final: finalFailed}
 	}
@@ -433,6 +447,9 @@ func planTaskTotal(planFile string) int {
 func (r *Reporter) titleFor(s state) string {
 	switch s.final {
 	case finalDone:
+		if s.note != "" {
+			return r.name + " · done · " + s.note
+		}
 		return r.name + " · done"
 	case finalFailed:
 		return r.name + " · failed"

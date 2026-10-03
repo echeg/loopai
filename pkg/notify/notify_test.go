@@ -446,6 +446,18 @@ func TestService_FormatMessage(t *testing.T) {
 		assert.NotContains(t, msg, "error:")
 	})
 
+	t.Run("finalize outcome and PR URL", func(t *testing.T) {
+		msg := svc.formatMessage(Result{
+			Status:   "success",
+			Branch:   "add-auth",
+			Files:    1,
+			PRURL:    "https://github.com/acme/repo/pull/42",
+			Finalize: "merged origin/master; PR opened; incomplete: PR checks failed: build fail",
+		})
+		assert.Contains(t, msg, "changes:  1 files (+0/-0 lines)\npr:       https://github.com/acme/repo/pull/42\n"+
+			"finalize: merged origin/master; PR opened; incomplete: PR checks failed: build fail\n")
+	})
+
 	t.Run("failure message", func(t *testing.T) {
 		msg := svc.formatMessage(Result{
 			Status:   "failure",
