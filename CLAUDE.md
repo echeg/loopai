@@ -19,7 +19,7 @@ The fork does not contain upstream packaging/release infrastructure or the upstr
 ## Build commands
 
 ```bash
-make build      # build .bin/loopai
+make build      # build .bin/loopai and the .bin/loopai-acp launcher (plus .exe copies on Windows)
 make test       # asset checks, race-enabled unit tests with coverage, provider-wrapper suites
 make check-symlinks # validate the eight Claude skill assets and links
 make test-symlinks  # regression tests for Claude skill asset validation
@@ -51,7 +51,9 @@ go mod vendor
 
 ```text
 cmd/loopai/          main package, CLI parsing, startup wiring
+cmd/loopai-acp/      launcher answering T3 Code's Grok CLI probes and starting `loopai --acp`
 internal/validation/ shared validation-command matching without package cycles
+pkg/acp/             ACP JSON-RPC stdio transport, session server, and session/update event sink
 pkg/awake/           best-effort keep-awake sleep inhibitor renewed by run activity
 pkg/cmux/            best-effort cmux status integration
 pkg/config/          configuration loading and embedded defaults
@@ -682,6 +684,51 @@ T3 Code owns it, never deletes anything on a partial failure, and types the comm
 PowerShell quoting on Windows (T3 Code's default shell there is pwsh or Windows PowerShell) and
 POSIX quoting elsewhere. Tests replace `newT3Reporter`, `newT3Dispatcher`, and `newT3Session` in
 `TestMain` so no test reaches a live server.
+
+ACP agent mode is the experimental way T3 Code hosts loopai as a real provider session, which
+`--t3` cannot do: T3 Code derives "working" only from a running provider session. T3 Code has no
+custom-provider API, so loopai rides its Grok driver, which speaks ACP to a configurable
+`binaryPath`. `cmd/loopai-acp` is the launcher that path points at. It answers the Grok CLI probes:
+`--version`, `models` (which must never print "logged in", since T3 reads that text as an auth
+verdict), and `inspect --json`/`update`, which fail. For
+`[--permission-mode M] agent [--always-approve] stdio` it runs `loopai --acp` with inherited stdio
+and forwards signals and the exit code. It resolves the binary from `LOOPAI_ACP_LOOPAI`, then a sibling
+`loopai` (`loopai.exe` only on Windows, which cannot start an extensionless file), then `PATH`.
+The launcher exists so the loopai CLI never grows Grok-shaped positionals such as `models` or
+`agent`. `--acp` is a standalone command routed from `runConfiguredStandaloneCommand` and listed in
+`isStandaloneCommand`; `validateACPFlags` rejects plan arguments, other standalone modes, and
+execution flags, but not `--t3`/`--orca`, which may come from the environment and are forced off
+per prompt instead. `pkg/acp` has three layers. `Conn` is newline-delimited JSON-RPC 2.0 with a
+16 MiB line cap and ids kept as `json.RawMessage`, because T3 sends ids above 2^32. `Server`
+implements `initialize`, `authenticate`, `session/new` (records `cwd`, discards `mcpServers`, whose
+headers carry T3's bearer credential and must never be logged), `session/prompt`, and
+`session/cancel`. It runs at most one prompt across all sessions, because a run changes the process
+cwd, and answers each prompt id exactly once: `end_turn`, `cancelled` when the client canceled
+it, or a JSON-RPC error carrying the run's failure so T3 records a failed turn. Only the first text
+block is the user's message; T3 appends a runtime-instructions block that must be ignored. `Sink`
+maps events to `session/update`. Phases become `tool_call`s that close when the next opens. Sections
+refresh `plan` entries built from the parsed plan file plus the review stages `acpStages` lists.
+`PrintAligned` becomes `agent_thought_chunk`, coalesced to one per 500 ms and capped per chunk. The
+report becomes the final `agent_message_chunk`, sent after `Sink.Finish` flushes reasoning and closes
+the open call. The heartbeat retitles the open tool call after 4 silent minutes, because the Grok
+driver fails a turn after 10 minutes without progress and a `wait_on_limit` sleep emits nothing.
+`acpRunner.run` in `cmd/loopai/acp.go` parses the prompt with `validatePassThroughValues`, the rules
+`--t3-launch` uses. It enters the session cwd, loads config there, and forces `t3`, `orca`, and
+`use_worktree` off, because T3 owns the thread's worktree. It then builds the request through
+`prepareNonInteractiveRequest`, sets the sink as `LogDecorator` and `PhaseObserver`, and runs
+`selectAndExecutePlan`. `planExecutionOutcome` carries the report and failure reason back.
+`executePlanRequest.NonInteractive` is what keeps a run off the terminal: a missing plan or an
+empty repository is an error instead of a prompt, no pause handler or break signal is installed, and
+no cmux, orca, or T3 reporter is built. ACP stdout discipline is absolute, since one stray byte
+corrupts the protocol. `main` prints the version banner to stderr when `acpRequested` sees `--acp`
+before flag parsing. `redirectStdioForACP` keeps the real stdin/stdout for the protocol and points
+`os.Stdin` at the null device and `os.Stdout`/`color.Output` at stderr for the process lifetime.
+`executePlanRequest.Out` and `progress.Config.Stdout` route the banner, stats, worktree notices, and
+the logger's console copy to stderr. Any new code path a run can reach must write through those
+writers, never directly to `os.Stdout`. A canceled process context calls `acp.Server.Shutdown`,
+which cancels the running prompt and waits for its answer without waiting for stdin EOF. The mode
+relies on undocumented Grok driver contracts, documented in `docs/t3-code.md`, and must be
+re-verified after T3 Code updates.
 
 Keep `cmux.Reporter.WrapLogger` in the logger chain after dashboard setup. The
 Orca title wrapper sits below the cmux wrapper, the T3 thread wrapper below Orca, and

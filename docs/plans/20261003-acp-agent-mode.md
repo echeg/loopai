@@ -198,14 +198,15 @@
 - [x] verify test coverage of `pkg/acp` and the launcher is 80%+ (pkg/acp 98.4%, cmd/loopai-acp 88.5%)
 
 ### Task 8: [Final] Update documentation
-- [ ] add an "Experimental: loopai as a T3 Code provider" section to `docs/t3-code.md`. It covers:
+- [x] add an "Experimental: loopai as a T3 Code provider" section to `docs/t3-code.md`. It covers:
   - the `providerInstances` entry (`driver: "grok"`, `displayName: "loopai"`, `config.binaryPath` → `loopai-acp`), added through T3 settings or `settings.json`
   - the prompt grammar
   - what the thread shows
   - the watchdog/heartbeat
   - the reliance on undocumented Grok driver contracts
   - how to remove the instance
-- [ ] update `README.md`, `llms.txt` (new flag and binary), and `CLAUDE.md` (project structure, ACP mode architecture, stdout discipline in ACP mode)
+- [x] update `README.md`, `llms.txt` (new flag and binary), and `CLAUDE.md` (project structure, ACP mode architecture, stdout discipline in ACP mode)
+- [x] ➕ widen the pre-existing `TestHolder_TouchDefersExpiry` timing margin (250 ms idle, 10 ms touches): its 30 ms window flaked under the loaded race-enabled `make test`
 
 ## Technical Details
 - **Prompt grammar**: `<plan path> [--task-model SPEC] [--review-model SPEC] [--external-reviewers LIST]`. Values match `^[A-Za-z0-9._:,+-]+$`, and model specs carry a `claude`/`codex` provider prefix. The plan path is resolved against the session cwd.

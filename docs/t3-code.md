@@ -3,7 +3,9 @@
 [T3 Code](https://t3.codes) is a control surface for coding agents with desktop, web, and mobile
 clients. loopai integrates with it through T3 Code's public, authenticated HTTP and WebSocket
 APIs. No T3 Code fork or plugin is involved, and loopai never writes below the T3 home directory:
-it only reads the server's runtime file and changes everything else through the API.
+it only reads the server's runtime file and changes everything else through the API. An
+[experimental provider mode](#experimental-loopai-as-a-t3-code-provider) instead lets T3 Code run
+loopai as a provider session through its Grok driver.
 
 The integration is best-effort. When the server is not running, the token is missing or rejected,
 or a request times out, loopai prints one warning and the run continues exactly as without it.
@@ -115,14 +117,116 @@ The dashboard action opens loopai's web dashboard in T3 Code's preview panel on 
 detects preview ports automatically on macOS and Linux; on Windows it checks only common
 development ports, so keep `previewUrl` explicit.
 
+## Experimental: loopai as a T3 Code provider
+
+`--t3` can only rename a thread. With the provider mode below, loopai instead runs as a T3 Code
+provider session, so the thread reads "Working" for the whole run. It also shows plan progress in
+the sidebar, phases as activities, executor output as streamed reasoning, and the completion
+report as the final assistant message. This works on desktop, web, and mobile.
+
+T3 Code has no plugin API for custom providers. loopai reuses its Grok driver instead, which
+talks the Agent Client Protocol (ACP) to whatever binary a provider instance names. `make build`
+writes two binaries: `.bin/loopai` and the launcher `.bin/loopai-acp` (plus `.exe` copies on
+Windows). The launcher answers the Grok CLI's probe commands. For the session command,
+`[--permission-mode MODE] agent [--always-approve] stdio`, it starts `loopai --acp` with its own
+stdin, stdout, and stderr. `loopai --acp` is a JSON-RPC server on stdin/stdout that runs one plan
+per prompt in-process. The launcher looks for the `loopai` binary in this order:
+`LOOPAI_ACP_LOOPAI`, then a `loopai` (`loopai.exe` on Windows) beside the launcher, then `PATH`.
+
+### Adding the provider instance
+
+Add an instance of the `grok` driver whose binary path is the launcher. Either use T3 Code's
+provider settings, or edit `<T3 home>/userdata/settings.json` while the server runs (T3 Code
+reloads `providerInstances` without a restart):
+
+```json
+{
+  "providerInstances": {
+    "loopai": {
+      "driver": "grok",
+      "displayName": "loopai",
+      "accentColor": "#7c3aed",
+      "enabled": true,
+      "config": { "enabled": true, "binaryPath": "/home/me/src/loopai/.bin/loopai-acp" }
+    }
+  }
+}
+```
+
+Keep the other keys of `settings.json`, and use an absolute `binaryPath`; on Windows, point it at
+`loopai-acp.exe`. The provider status should then show the instance as ready. Authentication
+reads "unknown" because loopai's own providers (Claude Code, Codex) use their own credentials, so
+`loopai-acp models` never claims a login. The bearer credential T3 Code sends for its MCP server
+is discarded and never logged.
+
+### Running a plan
+
+Start a thread with the `loopai` instance in the project or worktree that holds the plan, then send
+the plan path as the message:
+
+```text
+docs/plans/20261003-feature.md --task-model codex:gpt-5.5:high --external-reviewers claude:opus
+```
+
+The grammar is `<plan> [--task-model SPEC] [--review-model SPEC] [--external-reviewers LIST]`.
+Flags take `--flag value` or `--flag=value`. The two model specs need a `claude` or `codex` prefix,
+and values follow the same rules as `--t3-launch`. The plan path is resolved against the thread's
+working directory; paths containing whitespace and comma-separated plan chains are not supported.
+Everything else comes from `.loopai/config` in that directory. Only the first text block of the
+message is read; the runtime instructions T3 Code appends are ignored. A malformed message fails
+the turn and shows the usage line.
+
+The plan runs in place in the thread's working directory, without `--worktree`: T3 Code owns the
+thread's worktree, as with `--t3-launch`. On the default branch, loopai creates the plan branch in
+that checkout as an ordinary run does. `t3`, `orca`, and `use_worktree` are forced off for the run.
+A plan file that is missing is an error rather than an interactive selector. So are an empty
+repository and other conditions that would otherwise prompt. Only full plan execution is
+available: review-only modes, plan creation, and interactive questions are out of scope.
+
+### What the thread shows
+
+| loopai event | Thread |
+|---|---|
+| Run in progress | "Working" from the first event until the turn ends |
+| Plan tasks and post-task stages (review, external review, finalize, report) | Plan steps and sidebar progress, each `pending`, `in_progress`, or `completed` |
+| Phase change | An activity such as `task 2/5`, `review · iteration 1`, or `external review evaluation`, completed when the next one starts |
+| Executor output | Streamed reasoning, at most one update every 500 ms, with oversized chunks truncated |
+| Completion report | The final assistant message |
+| Failed run | A failed turn, with the report or failure text as the message |
+
+The stop button cancels the run, and the turn ends as cancelled. The plan stays in place with the
+tasks completed so far. One run executes at a time per loopai process. A second message sent while
+a run is active fails without affecting the run.
+
+### Watchdog and heartbeat
+
+The Grok driver fails a turn after 10 minutes without content or tool progress, or 30 minutes with
+an open activity. A provider-limit wait or a long silent executor step can exceed that. When
+nothing has been sent for 4 minutes, loopai updates the open activity's title with the elapsed wait,
+such as `task 3/7 · waiting 8m`, and repeats every 4 minutes until output resumes. T3 Code's
+provider session reaper skips threads with an active turn, so a long run is not idled out.
+
+### Caveats and removal
+
+This mode relies on undocumented contracts of T3 Code's Grok driver: the probe commands and their
+output, the session argv, the ACP methods it sends, and the watchdog timings. These were checked
+against the T3 Code build of October 2026. A T3 Code update can break the mode without warning, so
+re-check a run after each update. The launcher does not implement Grok's `inspect` or `update`
+commands, so the instance offers no skills and cannot update itself.
+
+To remove the provider, delete or disable the instance in T3 Code's provider settings. Otherwise,
+remove its entry from `providerInstances` in `settings.json`, or set `enabled` to `false`. Threads
+created with it remain as ordinary history.
+
 ## Limitations
 
-- Status is the title and the pin. A thread without a provider session always reads as ready, never
-  as working: T3 Code derives "working" from a running provider session or from background work
-  that provider reports. Activity rows, assistant messages, and proposed plans are internal
-  orchestration commands the public dispatch endpoint does not accept, and T3 Code neither reads
-  OSC titles from the terminal nor accepts external MCP tools. Checked against the T3 Code build of
-  October 2026; settle, snooze, and pin are client commands, which is what the pin above uses.
+- With `--t3`, status is the title and the pin. A thread without a provider session always reads as
+  ready, never as working: T3 Code derives "working" from a running provider session or from
+  background work that provider reports. Activity rows, assistant messages, and proposed plans are
+  internal orchestration commands the public dispatch endpoint does not accept, and T3 Code neither
+  reads OSC titles from the terminal nor accepts external MCP tools. Checked against the T3 Code
+  build of October 2026; settle, snooze, and pin are client commands, which is what the pin above
+  uses. The experimental provider mode above is the way to get a working thread.
 - `--pr` linking understands GitHub pull request URLs only, matching what `--pr` creates.
 - The token grants full access to the T3 Code server. It lives in the thread terminal's
   environment for the run; revoke it with `t3 auth session revoke` when no longer needed.

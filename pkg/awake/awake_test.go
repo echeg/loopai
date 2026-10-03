@@ -58,14 +58,17 @@ func TestHolder_IdleExpiryReleasesAndTouchReacquires(t *testing.T) {
 }
 
 func TestHolder_TouchDefersExpiry(t *testing.T) {
+	// the idle window is far wider than the touch interval, so a scheduler stall under a loaded
+	// race-enabled suite cannot outlast it and fake an expiry
+	const idle, interval = 250 * time.Millisecond, 10 * time.Millisecond
 	b := &fakeBackend{}
-	h := NewWithBackend(b, shortIdle)
+	h := NewWithBackend(b, idle)
 	t.Cleanup(h.Stop)
 
-	deadline := time.Now().Add(4 * shortIdle)
+	deadline := time.Now().Add(3 * idle)
 	for time.Now().Before(deadline) {
 		h.Touch()
-		time.Sleep(shortIdle / 5)
+		time.Sleep(interval)
 	}
 
 	assert.Equal(t, int32(1), b.acquires.Load())
