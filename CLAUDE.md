@@ -19,7 +19,7 @@ The fork does not contain upstream packaging/release infrastructure or the upstr
 ## Build commands
 
 ```bash
-make build      # build .bin/loopai
+make build      # build .bin/loopai and the .bin/loopai-acp launcher (on Windows the launcher is .bin/loopai-acp.exe only, plus .bin/loopai.exe)
 make test       # asset checks, race-enabled unit tests with coverage, provider-wrapper suites
 make check-symlinks # validate the eight Claude skill assets and links
 make test-symlinks  # regression tests for Claude skill asset validation
@@ -51,7 +51,9 @@ go mod vendor
 
 ```text
 cmd/loopai/          main package, CLI parsing, startup wiring
+cmd/loopai-acp/      launcher answering T3 Code's Grok CLI probes and starting `loopai --acp`
 internal/validation/ shared validation-command matching without package cycles
+pkg/acp/             ACP JSON-RPC stdio transport, session server, and session/update event sink
 pkg/awake/           best-effort keep-awake sleep inhibitor renewed by run activity
 pkg/cmux/            best-effort cmux status integration
 pkg/config/          configuration loading and embedded defaults
@@ -654,6 +656,35 @@ Codex invocations use additive `-c` overrides so user `~/.codex/config.toml` set
 
 `--codex-args` and the `codex_args` config key extend that additive contract: their value is tokenized by the shared `splitArgs`, which separates tokens on any unquoted, unescaped ASCII whitespace rather than the space alone — a tab or newline surviving the ini loader would otherwise fold into the neighboring token and turn the remainder into the bare positional `codex exec` takes as its prompt. The set is deliberately ASCII and not `unicode.IsSpace`, since no shell splits on U+00A0 and a non-breaking or thin space pasted from rendered documentation into an unquoted value would otherwise produce that same stray positional — and applies POSIX-shell backslash rules (literal inside single quotes, escaping only `"` and `\` inside double quotes, escaping the next rune when unquoted) so literal backslashes in Windows paths survive while the documented `[\"CLAUDE.md\"]` quote-escaping recipe still works, and appended to every codex invocation loopai composes, at both construction sites in `pkg/processor/executor_factory.go` — codex plan/task/review phases and external codex reviewers, which share `newBaseCodexExecutor`. The extras go *after* loopai's own `-c` overrides and sandbox flags, because codex resolves repeated `-c` keys last-occurrence-wins (verified against codex-cli 0.147.0), so a user value deliberately overrides the matching loopai one. This is the intentional asymmetry with `claude_args`, which replaces the claude command's argument list rather than extending it: loopai owns the `codex exec` invocation shape. An explicit empty `--codex-args=` clears an inherited config value through the `o.codexArgsSet` guard in `applyCLIOverrides` alone; there is deliberately no `Config.CodexArgsSet` mirroring `ClaudeArgsSet`, because that flag exists only so an empty `claude_args` means "no arguments" instead of "use the defaults", and empty codex extras already append nothing — the invocation stays byte-identical to a build without the flag. Four consequences of appending rather than merging are documented for users and deliberately not policed in code, since extras are trusted input like `codex_command`: `splitArgs` consumes unescaped quotes, so a `-c` value whose TOML type depends on them must escape them or codex fails to load its config and every phase dies at startup; last-occurrence-wins covers `-c key=value` only, so repeating any flag loopai already emits, valued or bare, is a fatal codex parse error rather than an override — `--sandbox` on every path, and `--dangerously-bypass-approvals-and-sandbox` on codex plan/task/review phases, where `codex.go` emits it whenever the effective sandbox is `danger-full-access`, which is the codex phase default; the extras land after the `exec` subcommand, so an option only the top-level `codex` command accepts (`--search`) is a fatal unexpected-argument error rather than a pass-through, while the global options that matter here (`-c`, `--model`, `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too; and a bare positional token becomes `codex exec`'s prompt, demoting the one loopai sends on stdin to the trailing `<stdin>` block codex appends when both are present. Because the extras are appended on the shared base, they also reach the external reviewer whose `ForceReadOnly` pin exists so it cannot write — that pin holds against `codex_sandbox` but not against `--dangerously-bypass-approvals-and-sandbox` in `codex_args`, which codex accepts alongside `--sandbox read-only` precisely because loopai emits no bypass flag on the reviewer path. The CLI spelling is `--codex-args=<value>`: the values that matter start with `-`, so the detached form is rejected by go-flags before the run starts, and the documented examples use the attached form.
 
+On Windows, `CodexExecutor.ForceReadOnly` adds `-c windows.sandbox="unelevated"`
+before user extras, retaining the external reviewer's `--sandbox read-only` pin without
+requiring elevated sandbox setup. `codex_args = -c windows.sandbox="elevated"` restores
+a working elevated setup. This default does not change Codex phases or Linux/macOS invocations.
+
+Every Codex invocation tails its main session rollout when the session ID is available,
+even with nil display handlers. The first `event_msg` whose payload type is `task_complete`
+starts a 60-second exit grace period; duplicate events do not extend it. If the process
+still has not exited, loopai logs `codex did not exit after task_complete; terminating`,
+terminates the process tree, and returns a successful `Result` unless the stderr scan
+captured a CLI limit/error diagnostic; those retain their typed errors for retry/error
+handling. Review text is not scanned for patterns on this path. Non-empty stdout supplies
+the result; otherwise `last_agent_message` does, with signals detected from the selected
+text. Normal exits retain their stdout result without an extra delay. Parent cancellation
+still returns the context error, and existing idle/session timeouts remain in force.
+Without an observed completion event (including a missing rollout file), there is no
+grace kill. This mechanism applies independently of whether reviewer idle timeout is enabled.
+
+Claude and Codex runners on Windows start the process suspended, assign it to a Job Object
+with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, then resume its initial thread. This prevents
+fast launcher descendants from escaping assignment. Cancellation, idle/session timeout, and Codex
+completion-grace expiry terminate the job, including launcher descendants such as
+`cmd.exe -> node -> codex.exe`. Job creation, assignment, or termination failure falls
+back to a bounded `taskkill /T /F /PID <pid>` invocation. An exit watcher closes the job handle
+as soon as the launcher exits, killing remaining descendants even while callers drain output.
+`Wait` joins that watcher after reaping the command. Cancellation also closes stdout
+and stderr read pipes so escaped descendants cannot keep the runner blocked on output.
+Unix runners retain process-group termination.
+
 Alternative Claude-compatible providers live under `scripts/`. `scripts/copilot-as-claude/copilot-as-claude.sh` wraps GitHub Copilot CLI and uses native autopilot mode; plan creation deliberately uses `--autopilot --allow-all` without `--no-ask-user`. `scripts/pi-as-claude/pi-as-claude.sh` translates pi JSONL output and maps loopai model/effort settings to pi provider options. Detailed setup and wrapper behavior live in `docs/custom-providers.md`.
 
 Worktrees live under `.loopai/worktrees/<branch>`. A new worktree branch is cut from the source checkout's current HEAD, including a non-default branch or detached HEAD. Plan-chain orchestration lives in `runSelectedPlans`/`runPlanChain` in `cmd/loopai/main.go`, around `selectAndExecutePlan`: `PlanFiles` holds every normalized input while `PlanFile` remains the current/first compatibility field. The coordinator recreates each plan's reporter and progress-log lifecycle, waits for cleanup and cwd restoration, and captures the completed branch SHA as the successor's immutable worktree start ref. Durable chain checkpoints in `.loopai/progress/` record the completed prefix, immutable tip, and initial source-plan state; before plan one's branch is prepared, retries require the saved source HEAD and plan inputs to remain unchanged, while later retries verify the completed/prepared branch tip and skip directly to the first pending plan. Recovery from a crash during archival removes a stale finalized worktree under the preparation and run locks only when it is clean or contains exactly the interrupted plan move; unrelated edits leave the checkpoint and worktree intact for manual recovery. `CreateWorktreeForPlanChainContext` in `pkg/git/service.go` carries initially dirty chain plans into plan one and preserves predecessor edits; resume validation requires the predecessor SHA to remain an ancestor. After a successful worktree chain, unchanged tracked source plans are restored to source `HEAD` and unchanged untracked plans are removed so close-out can merge cleanly; concurrent edits are never overwritten. Non-worktree chains force plan one onto its own branch even from a feature checkout, then create each successor from the captured predecessor tip after verifying a clean hand-off; failed post-checkout synchronization restores the predecessor branch. Only full and tasks-only modes accept chains; explicit `Outcome.succeeded` advances the loop because abort returns nil, and `--commit` is cleared after plan one. Successful intermediate cmux reporters quiesce without publishing a final/free pill, retaining busy ownership through successor setup until the next reporter starts; only chain completion publishes `done`. When an existing plan branch does not already contain its applicable start commit, loopai reuses the branch and automatically merges that start commit—not the current source state—into the fresh worktree. Git 2.38+ predicts conflicts during preflight before source mutation; older Git skips prediction, and prediction races remain possible, so the real merge is always the backstop and removes the fresh worktree on failure. `--base-ref` remains the review/template diff base and does not control worktree creation. With `-c`/`--commit`, loopai stages all non-ignored changes and commits them in the source checkout, advancing its branch or detached HEAD, before creating a fresh worktree; branch reuse merges that new source commit through the same synchronization path. Every worktree run holds a non-blocking OS advisory lock at `$(git -C <worktree> rev-parse --git-dir)/loopai-run.lock` for its lifetime. The lock, not its diagnostic pid and start time, is the liveness authority and the OS releases it on process death. Worktree preparation holds the shared repository lock while classifying or creating the expected path and acquiring its run lock. A durable per-target preparation marker in shared Git metadata distinguishes a crash during fresh initialization from an interrupted executable run; the next invocation removes and recreates a marked partial checkout instead of resuming it. Existence of the expected path
@@ -703,7 +734,9 @@ bound to loopai's pid (`caffeinate -w`, `tail --pid` under `systemd-inhibit`) so
 releases them without cleanup; the Windows backend drives `SetThreadExecutionState` from one
 locked OS thread because the continuous flag is per thread. A failed `Acquire` disables the holder
 for the run instead of retrying on every output line. Watch-only mode, close-out, and the other
-standalone commands return before the holder is created. `cmd/loopai` tests replace
+standalone commands return before the holder is created. `--acp` returns before it too, so
+`acpRunner.run` creates one holder per prompt from the session's loaded `keep_awake` and stops it when
+the run ends. `cmd/loopai` tests replace
 `newAwakeHolder` in `TestMain` so `run()` never starts a real inhibitor.
 
 cmux reporting is best-effort and must never affect execution. The status key and notification title are `loopai`. All calls go through the public `cmux` CLI and failures are ignored. After a completed run, `Reporter.Finish` intentionally leaves the final success or failure pill in place: `Stop` still clears the spinner and progress, but does not clear that pill. Abort paths do not call `Finish`, so `Stop` performs the full cleanup. A later run overwrites the pill, while `--clear`, a successful `--merge`, or a successful `--pr` removes it explicitly.
@@ -745,14 +778,20 @@ T3 Code reporting (`pkg/t3`) follows the same best-effort contract and uses only
 public API: the origin comes from `${T3CODE_HOME:-~/.t3}/userdata/server-runtime.json` or
 `LOOPAI_T3_URL`, the bearer token only from `LOOPAI_T3_TOKEN` (read directly, not an `opts` tag, so a
 cmux hand-off never types it into another shell), and nothing is ever written below the T3 home.
-`startT3Reporter` in `executePlan` constructs it only when `cfg.T3` is set; plan creation, the
-setup phase, watch-only mode, and standalone commands never do. The reporter binds to
+`startRunReporters`, called from `executePlan`, constructs it through `startT3Reporter` only when
+`cfg.T3` is set and the request is not `NonInteractive`; plan creation, the setup phase, watch-only
+mode, standalone commands, and ACP prompts never do. The reporter binds to
 `LOOPAI_T3_THREAD_ID` or creates a thread in the project whose normalized `workspaceRoot` equals
 the checkout root, recording `worktreePath` only when the directory outlives the run — a
 `--worktree` checkout is removed after success, so it registers the branch alone. All network work
 runs on one goroutine that coalesces to the latest title and sends only changed titles, because
 every `thread.meta.update` is a persisted T3 event; the first error disables it with one warning,
-and `Stop` waits at most `stopTimeout` for the final title. Title updates carry only `title`:
+and `Stop` waits at most `stopTimeout`, sized for a pin already in flight, the final title, and
+the unpin, because a missed unpin leaves a pin the next run bound to that thread reads as the
+user's and never releases. The worker pins the thread right after
+binding it and unpins it on exit, skipping a bound thread the user already pinned and any run that
+stopped while the bind was in flight, whose unpin would not fit the bound; pin failures are
+ignored rather than disabling titles, since `thread.pin` is cosmetic and absent on older servers. Title updates carry only `title`:
 `branch` or `worktreePath` in a meta update re-triggers T3's server-side PR lookup. `--t3-launch`
 is routed with close-out through `runConfiguredStandaloneCommand` and is part of
 `isStandaloneCommand`; it creates the worktree through the `vcs.createWorktree` WebSocket RPC so
@@ -761,10 +800,88 @@ PowerShell quoting on Windows (T3 Code's default shell there is pwsh or Windows 
 POSIX quoting elsewhere. Tests replace `newT3Reporter`, `newT3Dispatcher`, and `newT3Session` in
 `TestMain` so no test reaches a live server.
 
+ACP agent mode is the experimental way T3 Code hosts loopai as a real provider session, which
+`--t3` cannot do: T3 Code derives "working" only from a running provider session. T3 Code has no
+custom-provider API, so loopai rides its Grok driver, which speaks ACP to a configurable
+`binaryPath`. `cmd/loopai-acp` is the launcher that path points at. It answers the Grok CLI probes:
+`--version`, `models` (which must never print "logged in", since T3 reads that text as an auth
+verdict), and `inspect --json`/`update`, which fail. For
+`[--permission-mode M] agent [--always-approve] stdio` it runs `loopai --acp` with inherited stdio
+and forwards signals and the exit code. It resolves the binary from `LOOPAI_ACP_LOOPAI`, then a sibling
+`loopai` (`loopai.exe` only on Windows, which cannot start an extensionless file), then `PATH`.
+The launcher exists so the loopai CLI never grows Grok-shaped positionals such as `models` or
+`agent`. `--acp` is a standalone command listed in `isStandaloneCommand`. `run()` routes it right
+before `loadRunConfig`, because each prompt loads config in its own session cwd and a config error
+in the directory the client started loopai in must arrive as a failed turn carrying the message,
+not as a session that never answers `initialize`. `validateACPFlags` rejects plan arguments, other standalone modes, and
+execution flags, but not `--t3`/`--orca`, which may come from the environment and are forced off
+per prompt instead. `pkg/acp` has three layers. `Conn` is newline-delimited JSON-RPC 2.0 with a
+16 MiB line cap and ids kept as `json.RawMessage`, because T3 sends ids above 2^32. `Server`
+implements `initialize`, `authenticate`, `session/new` (records `cwd`, discards `mcpServers`, whose
+headers carry T3's bearer credential and must never be logged), `session/load`, `session/prompt`,
+and `session/cancel` (a notification, also answered when sent as a request), and replies `{}` to
+`session/set_config_option`, `session/set_mode`, and `session/set_model`. `session/load` registers any saved session id with its `cwd` and replays
+nothing. It must succeed, because T3 resumes a thread whose agent process is gone through
+`session/load` with the saved id, without checking `loadSession` and with no `session/new` fallback.
+Rejecting it breaks every later message in that thread. It runs at most one prompt across all sessions, because a run changes the process
+cwd. A second prompt is rejected unless it follows its own session's `session/cancel`: T3 steers a
+message typed during a turn as cancel then prompt, so that prompt becomes the latest one, waits for
+the canceled run's answer, and then runs, or is answered `cancelled` unrun if canceled while waiting.
+A prompt stays active until its final message and answer are sent, and the answer is written under
+the server lock, so a steered prompt never interleaves its updates with its predecessor's last ones
+while a prompt sent after the answer never finds the run still active.
+Each prompt id is answered exactly once: `end_turn`, `cancelled` when the client canceled
+it, or a JSON-RPC error carrying the run's failure so T3 records a failed turn. Only the first text
+block is the user's message; T3 appends a runtime-instructions block that must be ignored. `Sink`
+maps events to `session/update`. Phases become `tool_call`s that close when the next opens. Their ids
+carry a random per-sink prefix, because ACP requires a tool call id to be unique within a session, a
+session spans many prompts with one sink each, and `session/load` revives it in a new process. Sections
+refresh `plan` entries built from the parsed plan file plus the review stages `acpStages` lists. A
+completed stage never reopens, so the review that follows external-review findings stays under the
+external review stage instead of moving progress backwards. Entering a stage completes every stage
+earlier in the pipeline order (`stageOrder`), and a successful `Finish` completes them all, so a
+stage a resumed run skipped through its review checkpoint is never left pending. The
+plan is reread from its `completed/` copy once archived, and `Finish` returns an unfinished task or
+stage to `pending` on failure. `PrintAligned` becomes `agent_thought_chunk`, coalesced to one per
+500 ms and capped per chunk. The report becomes the final `agent_message_chunk`, sent after
+`Sink.Finish` flushes reasoning and closes the open call. The heartbeat retitles the open tool call
+after 4 silent minutes, opening one titled `loopai` when none is open, because the Grok driver fails a
+turn after 10 minutes without progress and a `wait_on_limit` sleep emits nothing. `acpRunner.run` in
+`cmd/loopai/acp.go` parses the prompt with `parseACPPrompt`, which applies `validatePassThroughValues`,
+the rules `--t3-launch` uses. It enters the session cwd, refuses an unreadable plan through
+`planFileRefusal`, and loads config there through `loadACPSessionConfig`, which forces `t3`, `orca`,
+and `use_worktree` off, because T3 owns the thread's worktree. `serveACP` makes a relative config
+directory absolute first, since each prompt loads config only after that chdir. The runner then
+builds the request through `prepareNonInteractiveRequest`, sets the sink as `LogDecorator` and
+`PhaseObserver`, and runs
+`selectAndExecutePlan`. `planExecutionOutcome` carries the report and failure reason back.
+`executePlanRequest.NonInteractive` is what keeps a run off the terminal: a missing plan is an error
+instead of the selector or auto-plan prompt, no pause handler or break signal is installed, and no
+cmux, orca, or T3 reporter is built. Repository setup is non-interactive separately:
+`prepareNonInteractiveRequest` hands `openExecutionRepository` an `executionIO` with a nil `stdin`,
+which is what makes an empty repository an error instead of the initial-commit prompt. ACP stdout discipline is absolute, since one stray byte
+corrupts the protocol. `main` prints the version banner to stderr when `acpRequested` sees `--acp`
+before flag parsing. `redirectStdioForACP` keeps the real stdin/stdout for the protocol and points
+`os.Stdin` at the null device and `os.Stdout`/`color.Output` at stderr until the serve returns.
+`executePlanRequest.Out` and `progress.Config.Stdout` route the banner, stats, worktree notices, and
+the logger's console copy to stderr. Any new code path a run can reach must write through those
+writers, never directly to `os.Stdout`. Both stdout and stderr are pipes owned by the client, so
+`runACPCommand` registers `catchSIGPIPE` for the serve's lifetime. Without a handler, Go kills the
+process on the first write after the client is gone, which skips cancellation and leaves the
+`Setsid` provider processes running. The handler uses `signal.Notify` rather than `signal.Ignore`,
+because an ignored disposition is inherited across exec. A canceled process context calls `acp.Server.Shutdown`,
+which cancels the running prompt and waits for its answer without waiting for stdin EOF. That wait is
+still bounded by the 5-second force exit of the `startInterruptWatcher` that `run()` installs before
+routing `--acp`, so a prompt whose cancellation outlasts it is never answered. The mode
+relies on undocumented Grok driver contracts, documented in `docs/t3-code.md`, and must be
+re-verified after T3 Code updates.
+
 Keep `cmux.Reporter.WrapLogger` in the logger chain after dashboard setup. The
 Orca title wrapper sits below the cmux wrapper, the T3 thread wrapper below Orca, and
 the keep-awake wrapper between T3 and `progress.SectionTimer`, which in turn sits above
-the dashboard broadcast logger. This preserves cmux's
+the dashboard broadcast logger. `executePlanRequest.LogDecorator`, the ACP sink in agent mode,
+wraps the runner logger directly below `progress.SectionTimer`, so it sees sections and the timer's
+timing lines; `PhaseObserver` subscribes beside the cmux, orca, T3, and keep-awake observers. This preserves cmux's
 outermost rate-limit interfaces while timing structured sections. Orca's
 limit-wait title comes from its `status.PhaseHolder` observer, not from the logger
 chain. `progress.ValidationTimer` receives that wrapped runner

@@ -201,9 +201,17 @@ func isolateHome(t *testing.T) string {
 	t.Helper()
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
-	t.Setenv("USERPROFILE", tmpDir) // os.UserHomeDir reads USERPROFILE on windows
+	t.Setenv("USERPROFILE", tmpDir)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
 	return tmpDir
+}
+
+// chmod cannot simulate POSIX permission failures on Windows.
+func requirePOSIXPermissions(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("requires POSIX file permissions")
+	}
 }
 
 func TestLoad_SetsConfigDir(t *testing.T) {
@@ -273,18 +281,14 @@ iteration_delay_ms = 9999
 }
 
 func TestDefaultConfigDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
+	home := isolateHome(t)
 
 	dir := DefaultConfigDir()
 	assert.Equal(t, filepath.Join(home, ".config", "loopai"), dir)
 }
 
 func TestLoadReadOnly_IgnoresLegacyGlobalDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
+	home := isolateHome(t)
 
 	workDir := t.TempDir()
 	origDir, err := os.Getwd()
@@ -725,6 +729,20 @@ func TestLoad_PassClaudeMd_InvalidValue(t *testing.T) {
 	_, err := Load(configDir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pass_claude_md")
+}
+
+// The documented Windows reviewer override must survive INI loading unchanged.
+func TestLoad_CodexWindowsSandboxExample(t *testing.T) {
+	isolateHome(t)
+	configDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"),
+		[]byte(`codex_args = -c windows.sandbox="elevated"`), 0o600))
+
+	cfg, err := loadWithLocal(configDir, "")
+	require.NoError(t, err)
+	assert.Equal(t, `-c windows.sandbox="elevated"`, cfg.CodexArgs)
+	assert.Equal(t, "read-only", cfg.CodexSandbox)
+	assert.False(t, cfg.CodexSandboxSet, "the Windows backend override does not change the phase sandbox")
 }
 
 func TestLoad_AllUserValues(t *testing.T) {
@@ -1878,9 +1896,7 @@ func TestLoad_RemovedKeyInGlobalOrLocal(t *testing.T) {
 		{name: "local", global: "plans_dir = plans", local: "executor =", wantScope: "parse local config"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
+			home := isolateHome(t)
 			t.Chdir(home)
 			globalDir := filepath.Join(home, ".config", "loopai")
 			localDir := filepath.Join(home, ".loopai")

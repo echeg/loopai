@@ -766,7 +766,9 @@ func TestExecutorFactory_LegacyExternalFallbackParity(t *testing.T) {
 // empty tool there is auto and would build a reviewer for a chain the user explicitly emptied
 func TestExecutorFactory_ExternalOnlyEmptyChain(t *testing.T) {
 	appCfg := testAppConfig(t)
-	appCfg.ClaudeCommand, appCfg.CodexCommand = "true", "true" // resolvable, so auto is not downgraded
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	appCfg.ClaudeCommand, appCfg.CodexCommand = exe, exe // resolvable on every platform, so auto is not downgraded
 
 	t.Run("none builds no reviewer", func(t *testing.T) {
 		cfg := Config{Mode: ModeCodexOnly, ExternalReviewTool: config.ExternalReviewToolNone, AppConfig: appCfg}

@@ -28,6 +28,8 @@ workflows are distributed through this repository's plugin marketplace.
 - Reports working, waiting, and completion state through Orca terminal titles with `--orca`
 - Reports runs as T3 Code threads with `--t3`, and launches a plan in a T3 Code worktree and
   thread terminal with `--t3-launch` (see [docs/t3-code.md](docs/t3-code.md))
+- Experimentally runs as a T3 Code provider session through `loopai-acp` and `--acp`, so a T3 Code
+  thread shows the run as working with plan progress and the final report
 - Sends optional Telegram, email, Slack, webhook, or custom-script notifications
 
 ## Requirements
@@ -68,7 +70,17 @@ Ensure `~/.local/bin` is in `PATH`, then verify:
 loopai --version
 ```
 
-For development, `make build` always refreshes `.bin/loopai`.
+For development, `make build` always refreshes `.bin/loopai` and `.bin/loopai-acp`, the launcher for
+the experimental T3 Code provider mode. On Windows the launcher is written only as
+`.bin/loopai-acp.exe`, and loopai also gets a `.bin/loopai.exe` copy.
+Install `loopai-acp` beside `loopai` only if you use that mode:
+
+```bash
+install -m 0755 .bin/loopai-acp ~/.local/bin/loopai-acp
+```
+
+The launcher prefers a `loopai` in its own directory (`loopai.exe` on Windows), then `PATH`;
+`LOOPAI_ACP_LOOPAI` overrides both. See [docs/t3-code.md](docs/t3-code.md).
 
 ### Shell completions
 
@@ -932,6 +944,20 @@ loopai --task-model codex '--codex-args=-c service_tier="default"' docs/plans/fe
 codex_args = -c service_tier="default"
 ```
 
+On Windows, external Codex reviewers default to the unelevated Windows sandbox:
+loopai adds `-c windows.sandbox="unelevated"` while keeping `--sandbox read-only`.
+This avoids requiring the elevated sandbox setup for the reviewer. To restore an existing
+working elevated setup, add this to your loopai config:
+
+```ini
+codex_args = -c windows.sandbox="elevated"
+```
+
+User extras come last, so this overrides the Windows reviewer default. The default applies
+only to external Codex reviewers on Windows; Codex phases and Linux/macOS invocations are
+unchanged. As with all `codex_args`, your explicit override reaches every Codex invocation.
+loopai does not modify `~/.codex/config.toml`.
+
 On the command line the value must be attached with `=`, as above: a value that starts with `-`
 is otherwise read as the next option, and loopai exits with `expected argument for flag
 '--codex-args'`. Quote the whole `--codex-args=...` token so the shell keeps it together.
@@ -1256,7 +1282,8 @@ request checks keep the hold for their duration, and
 waiting for your answer at a prompt counts as inactivity. The inhibitor is bound to the loopai
 process, so a crash releases it. Closing a MacBook lid still sleeps the machine on battery. One hold
 covers a whole plan chain, and watch-only dashboard mode, the close-out commands, and the other
-standalone utility commands never take one. Set `keep_awake = false` to opt out.
+standalone utility commands never take one. Under the experimental T3 Code provider mode
+(`--acp`), each plan run takes its own hold. Set `keep_awake = false` to opt out.
 
 | loopai state | Terminal title | Orca status |
 |---|---|---|
@@ -1276,12 +1303,21 @@ standalone utility commands never take one. Set `keep_awake = false` to opt out.
 
 Pass `--t3`, set `t3 = true`, or set `LOOPAI_T3=1` to report plan execution and review as a
 [T3 Code](https://t3.codes) thread whose title follows the same phases (`<plan> · task 3/7`,
-`<plan> · done`). It needs a running T3 Code server that has the repository as a project and a
+`<plan> · done`), pinned to the top of the sidebar while the run is active. It needs a running T3 Code server that has the repository as a project and a
 bearer token in `LOOPAI_T3_TOKEN`; without them loopai warns once and runs normally.
 `loopai --t3-launch <plan>` creates a T3 Code-managed worktree and thread and starts
 `loopai --t3 <plan>` in the thread's terminal, and `--pr` and `finalize = pr|merge` link the created
 pull request to the branch's threads. See [docs/t3-code.md](docs/t3-code.md) for setup, the launcher, and `t3.json`
 project actions.
+
+Experimental: T3 Code can also run loopai as a provider session, so the thread reads "Working"
+for the whole run and shows plan progress, phases as activities, executor output as reasoning, and
+the completion report as the final message. A T3 Code provider instance of the `grok` driver points
+at `loopai-acp`, which starts `loopai --acp`, a JSON-RPC server for the Agent Client Protocol on
+stdin/stdout. Each message names a plan and optionally `--task-model`, `--review-model`, and
+`--external-reviewers`; the plan runs in place in the thread's working directory. The mode relies on
+undocumented T3 Code Grok driver contracts. See
+[docs/t3-code.md](docs/t3-code.md#experimental-loopai-as-a-t3-code-provider).
 
 The cmux status pill and progress bar belong to the workspace, not to an individual run, so
 several runs started from one workspace overwrite each other's status. Bare `--cmux-workspace`

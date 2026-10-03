@@ -137,6 +137,13 @@ type ThreadPullRequestLink struct {
 	Source     string `json:"source"`
 }
 
+// ThreadPinToggle pins or unpins a thread in the sidebar. Both commands are idempotent on the
+// server, and pinning a settled thread also unsettles it.
+type ThreadPinToggle struct {
+	commandHeader
+	ThreadID string `json:"threadId"`
+}
+
 // NewThreadCreate builds a thread.create command. Empty branch or worktree path are sent as null.
 func NewThreadCreate(threadID, projectID, title string, model ModelSelection, branch, worktreePath string) *ThreadCreate {
 	return &ThreadCreate{
@@ -168,6 +175,16 @@ func NewThreadPullRequestLink(threadID string, pr PullRequest) *ThreadPullReques
 		URL:           pr.URL,
 		Source:        "manual",
 	}
+}
+
+// NewThreadPin builds a thread.pin command.
+func NewThreadPin(threadID string) *ThreadPinToggle {
+	return &ThreadPinToggle{commandHeader: commandHeader{Type: "thread.pin"}, ThreadID: threadID}
+}
+
+// NewThreadUnpin builds a thread.unpin command.
+func NewThreadUnpin(threadID string) *ThreadPinToggle {
+	return &ThreadPinToggle{commandHeader: commandHeader{Type: "thread.unpin"}, ThreadID: threadID}
 }
 
 func optionalString(s string) *string {
@@ -220,6 +237,7 @@ type Thread struct {
 	Branch       *string           `json:"branch"`
 	WorktreePath *string           `json:"worktreePath"`
 	ArchivedAt   *string           `json:"archivedAt"`
+	PinnedAt     *string           `json:"pinnedAt"`
 	PullRequests []PullRequestLink `json:"pullRequests"`
 }
 

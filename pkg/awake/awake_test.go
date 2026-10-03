@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -58,18 +59,24 @@ func TestHolder_IdleExpiryReleasesAndTouchReacquires(t *testing.T) {
 }
 
 func TestHolder_TouchDefersExpiry(t *testing.T) {
-	b := &fakeBackend{}
-	h := NewWithBackend(b, shortIdle)
-	t.Cleanup(h.Stop)
+	synctest.Test(t, func(t *testing.T) {
+		b := &fakeBackend{}
+		h := NewWithBackend(b, shortIdle)
+		t.Cleanup(h.Stop)
 
-	deadline := time.Now().Add(4 * shortIdle)
-	for time.Now().Before(deadline) {
-		h.Touch()
-		time.Sleep(shortIdle / 5)
-	}
+		deadline := time.Now().Add(4 * shortIdle)
+		for time.Now().Before(deadline) {
+			h.Touch()
+			time.Sleep(shortIdle / 5)
+		}
+		synctest.Wait()
 
-	assert.Equal(t, int32(1), b.acquires.Load())
-	assert.Equal(t, int32(0), b.releases.Load())
+		assert.Equal(t, int32(1), b.acquires.Load())
+		assert.Equal(t, int32(0), b.releases.Load())
+		time.Sleep(shortIdle)
+		synctest.Wait()
+		assert.Equal(t, int32(1), b.releases.Load(), "expiry resumes after activity stops")
+	})
 }
 
 func TestHolder_StopReleasesAndIgnoresLaterTouches(t *testing.T) {

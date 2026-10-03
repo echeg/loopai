@@ -115,6 +115,18 @@ func TestDispatchTitleUpdateAndPullRequestLink(t *testing.T) {
 	}, reqs()[1].body)
 }
 
+func TestDispatchPinToggle(t *testing.T) {
+	srv, reqs := newTestServer(t, okSequence)
+	c := testClient(srv.URL)
+	_, err := c.Dispatch(context.Background(), NewThreadPin("th-1"))
+	require.NoError(t, err)
+	_, err = c.Dispatch(context.Background(), NewThreadUnpin("th-1"))
+	require.NoError(t, err)
+	require.Len(t, reqs(), 2)
+	assert.Equal(t, map[string]any{"type": "thread.pin", "commandId": "cmd-1", "threadId": "th-1"}, reqs()[0].body)
+	assert.Equal(t, map[string]any{"type": "thread.unpin", "commandId": "cmd-1", "threadId": "th-1"}, reqs()[1].body)
+}
+
 func TestDispatchKeepsExplicitCommandID(t *testing.T) {
 	srv, reqs := newTestServer(t, okSequence)
 	cmd := NewThreadTitleUpdate("th-1", "x")
@@ -179,7 +191,7 @@ func TestShellAndFindProject(t *testing.T) {
 			{"id":"p1","title":"Other","workspaceRoot":"C:\\Other"},
 			{"id":"p2","title":"Loopai","workspaceRoot":"C:\\Projects\\AI\\loopai","scripts":[]}],
 			"threads":[{"id":"t1","projectId":"p2","title":"x","branch":"feat","worktreePath":null,
-			"archivedAt":null,"pullRequests":[{"host":"github.com","repository":"o/r","number":3}]}]}`))
+			"archivedAt":null,"pinnedAt":"2026-10-01T00:00:00Z","pullRequests":[{"host":"github.com","repository":"o/r","number":3}]}]}`))
 	})
 	shell, err := testClient(srv.URL).Shell(context.Background())
 	require.NoError(t, err)
@@ -197,6 +209,7 @@ func TestShellAndFindProject(t *testing.T) {
 	require.NotNil(t, thread.Branch)
 	assert.Equal(t, "feat", *thread.Branch)
 	assert.Nil(t, thread.WorktreePath)
+	require.NotNil(t, thread.PinnedAt)
 	assert.True(t, thread.HasPullRequest(PullRequest{Host: "GitHub.com", Repository: "O/R", Number: 3}))
 	assert.False(t, thread.HasPullRequest(PullRequest{Host: "github.com", Repository: "o/r", Number: 4}))
 }

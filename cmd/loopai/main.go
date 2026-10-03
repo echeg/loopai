@@ -23,6 +23,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/fatih/color"
 	"github.com/jessevdk/go-flags"
 
 	"github.com/umputun/ralphex/pkg/awake"
@@ -81,6 +82,7 @@ type opts struct {
 	Orca                    bool          `long:"orca" env:"LOOPAI_ORCA" description:"emit terminal title status for orca"`
 	T3                      bool          `long:"t3" env:"LOOPAI_T3" description:"report the run as a T3 Code thread (token in LOOPAI_T3_TOKEN)"`
 	T3Launch                bool          `long:"t3-launch" description:"create a T3 Code worktree and thread for the plan, start loopai --t3 in the thread's terminal, and exit"`
+	ACP                     bool          `long:"acp" description:"serve the Agent Client Protocol on stdin/stdout so T3 Code can host loopai as a provider session (started by loopai-acp)"`
 	Version                 bool          `short:"v" long:"version" description:"print version and exit"`
 	Serve                   bool          `short:"s" long:"serve" description:"start web dashboard for real-time streaming"`
 	Port                    int           `short:"p" long:"port" default:"8080" description:"web dashboard port"`
@@ -260,6 +262,7 @@ type startupInfo struct {
 	PreserveAnthropicAPIKey bool   // when true, surfaced in the banner so users can spot wrong-context runs before claude bills the wrong account
 	CodexSandbox            string // sandbox of the codex phase executors, printed under the first codex phase
 	ExternalReview          externalReviewSelection
+	Out                     io.Writer // banner destination; nil = color.Output
 }
 
 // executePlanRequest holds parameters for plan execution.
@@ -300,6 +303,27 @@ type executePlanRequest struct {
 	ExternalReview         externalReviewSelection
 	LimitRecovery          limits.Recovery
 	ReviewPreflightDone    bool // plan selection and empty-range check already completed in run
+
+	// Out receives the human-readable run output: startup banner, completion stats, worktree
+	// notices, and the progress logger's console copy. nil keeps stdout (color.Output).
+	Out io.Writer
+	// NonInteractive marks an in-process driver with no terminal: a missing plan is an error
+	// instead of the selector or auto-plan prompt, the pause handler and break signal are not
+	// installed, and the cmux, orca, and T3 reporters are not constructed.
+	NonInteractive bool
+	// LogDecorator wraps the runner logger at the dashboard's position, below section timing.
+	LogDecorator func(processor.Logger) processor.Logger
+	// PhaseObserver is subscribed to phase changes beside the status reporters.
+	PhaseObserver func(old, cur status.Phase)
+}
+
+// out returns the writer for human-readable run output, read at call time so a redirected
+// color.Output is honored.
+func (r executePlanRequest) out() io.Writer {
+	if r.Out != nil {
+		return r.Out
+	}
+	return color.Output
 }
 
 type retainedCmuxRun struct {
@@ -319,9 +343,13 @@ type reviewStartup struct {
 // planExecutionOutcome separates a completed plan from a nil command error. executePlan returns
 // nil when the user aborts, so chain callers must require this explicit success signal before
 // starting a dependent plan.
+// report and failure let an in-process caller read the completion report and the reason a run
+// did not succeed after executePlan returns.
 type planExecutionOutcome struct {
 	succeeded bool
 	branchTip string
+	report    string // runner completion report; empty when no report was produced
+	failure   error  // why execution did not succeed, including a user abort executePlan returns as nil
 }
 
 // cleanupHolder holds a cleanup function with mutex for safe cross-goroutine access.
@@ -350,7 +378,8 @@ func (c *cleanupHolder) call() {
 
 func main() {
 	if os.Getenv("GO_FLAGS_COMPLETION") == "" {
-		fmt.Printf("loopai %s\n", resolveVersion())
+		// in ACP mode stdout carries JSON-RPC only, so the banner moves to stderr
+		fmt.Fprintf(versionBannerWriter(os.Args[1:]), "loopai %s\n", resolveVersion())
 	}
 
 	var o opts
@@ -430,6 +459,12 @@ func run(ctx context.Context, o opts) (runErr error) {
 		resolveStaleCmuxStatus(preserveEarlyStatus)
 		return err
 	}
+	// the ACP agent loads config per prompt in each session's working directory. Loading it here,
+	// in whatever directory the client started the process in, would turn a config error into a
+	// failed session start instead of a failed turn carrying the message.
+	if o.ACP {
+		return runACPCommand(ctx, o)
+	}
 	// load config first to get custom command paths
 	cfg, err := loadRunConfig(o)
 	if err != nil {
@@ -472,29 +507,9 @@ func run(ctx context.Context, o opts) (runErr error) {
 		setupTitles.Stop()
 	}()
 
-	// check every plan, task, and review spec before external-review resolution, so a bad
-	// spec fails immediately instead of in the review phase after hours of task work
-	if modelErr := validateModelSpecs(o, cfg); modelErr != nil {
-		return modelErr
-	}
-	externalReview, resolveErr := resolveExternalReviewSelection(cfg, mode)
-	if resolveErr != nil {
-		return resolveErr
-	}
-	printExternalReviewWarnings(externalReview, cfg, mode, os.Stderr)
-	externalReview, limitRecovery, err := resolveStartupExecutionDeps(
-		o, cfg, mode, reviewPreflight, externalReview, os.Stderr,
-	)
+	externalReview, limitRecovery, err := resolveExecutionDeps(ctx, o, cfg, mode, reviewPreflight, os.Stderr)
 	if err != nil {
 		return err
-	}
-
-	if depErr := ctx.Err(); depErr != nil {
-		return fmt.Errorf("execution context: %w", depErr)
-	}
-
-	if repoErr := requireRepoRoot(cfg); repoErr != nil {
-		return repoErr
 	}
 
 	// agent generation is standalone: it needs the executor and the repository, but no
@@ -504,43 +519,14 @@ func run(ctx context.Context, o opts) (runErr error) {
 		return runGenAgentsMode(ctx, o, cfg, colors, limitRecovery, keepAwake)
 	}
 
-	// create notification service (nil if no channels configured). notify.New validates the
-	// configured channels and fails fast on a misconfigured one, so it runs only on the paths
-	// that actually notify: watch-only, the close-out commands, and --gen-agents send nothing,
-	// and a half-filled slack or email block must not be what stops them from running.
-	notifySvc, err := notify.New(cfg.NotifyParams, stderrLog{})
-	if err != nil {
-		return fmt.Errorf("create notification service: %w", err)
-	}
-
-	// open git repository via Service
-	gitSvc, err := openGitService(colors, cfg.VcsCommand)
-	if err != nil {
-		return fmt.Errorf("open git repo: %w", err)
-	}
-	gitSvc.SetCommitTrailer(cfg.CommitTrailer)
-
-	// Ensure the repository is executable and reject repository-dependent chain problems before
-	// resolving branches or creating any plan artifacts. A chain lock returned here is held until
-	// the complete lifecycle (including checkpoint removal and inter-plan transitions) finishes.
-	releaseChainLock, repoErr := validateExecutionRepository(
-		ctx, o, gitSvc, cfg.WorktreeEnabled, cfg.MovePlanOnCompletion, setupTitles,
-	)
-	if repoErr != nil {
-		return repoErr
-	}
-	defer func() { runErr = releasePlanChainExecutionLock(runErr, releaseChainLock) }()
-
-	// defaultBranch is for non-worktree branch creation, baseRef for review diffs and the
-	// {{DEFAULT_BRANCH}} template variable. In worktree mode --base-ref stays diff-only because
-	// the worktree branch is always cut from the current HEAD.
-	branchMode := modeCreatesBranch(mode)
-	creationMode := branchMode
-	defaultBranch, baseRef, err := resolveBaseRefs(gitSvc, o.BaseRef, cfg.DefaultBranch,
-		creationMode, cfg.WorktreeEnabled && creationMode)
+	repo, err := openExecutionRepository(ctx, o, cfg, colors, mode, executionIO{
+		stdin: os.Stdin, stdout: os.Stdout, setupTitles: setupTitles,
+	})
 	if err != nil {
 		return err
 	}
+	defer func() { runErr = releasePlanChainExecutionLock(runErr, repo.releaseChainLock) }()
+	gitSvc, notifySvc, defaultBranch, baseRef := repo.gitSvc, repo.notifySvc, repo.defaultBranch, repo.baseRef
 
 	// create plan selector for use by plan selection and plan mode
 	selector := plan.NewSelector(cfg.PlansDir, colors)
@@ -598,11 +584,176 @@ func run(ctx context.Context, o opts) (runErr error) {
 	return runSelectedPlans(ctx, o, req, selector, setupTitles, os.Stdout, selectAndExecutePlan)
 }
 
+// resolveExecutionDeps runs the post-config startup checks every execution shares: model specs,
+// the external-review chain, executor binaries, cancellation, and the repository-root guard.
+func resolveExecutionDeps(
+	ctx context.Context, o opts, cfg *config.Config, mode processor.Mode, reviewPreflight bool, warnings io.Writer,
+) (externalReviewSelection, limits.Recovery, error) {
+	// check every plan, task, and review spec before external-review resolution, so a bad
+	// spec fails immediately instead of in the review phase after hours of task work
+	if modelErr := validateModelSpecs(o, cfg); modelErr != nil {
+		return externalReviewSelection{}, nil, modelErr
+	}
+	externalReview, resolveErr := resolveExternalReviewSelection(cfg, mode)
+	if resolveErr != nil {
+		return externalReviewSelection{}, nil, resolveErr
+	}
+	printExternalReviewWarnings(externalReview, cfg, mode, warnings)
+	externalReview, limitRecovery, err := resolveStartupExecutionDeps(
+		o, cfg, mode, reviewPreflight, externalReview, warnings,
+	)
+	if err != nil {
+		return externalReviewSelection{}, nil, err
+	}
+
+	if depErr := ctx.Err(); depErr != nil {
+		return externalReviewSelection{}, nil, fmt.Errorf("execution context: %w", depErr)
+	}
+
+	if repoErr := requireRepoRoot(cfg); repoErr != nil {
+		return externalReviewSelection{}, nil, repoErr
+	}
+	return externalReview, limitRecovery, nil
+}
+
+// executionIO is the terminal surface of repository setup. A nil stdin makes it
+// non-interactive: an empty repository is an error instead of an initial-commit prompt.
+type executionIO struct {
+	stdin       io.Reader
+	stdout      io.Writer // prompt text and the initial-commit notice
+	out         io.Writer // git service output; nil keeps color.Output
+	setupTitles *orca.Reporter
+}
+
+// executionRepository is the repository state a plan execution request is built from.
+// releaseChainLock must be called once execution, including any chain lifecycle, has finished.
+type executionRepository struct {
+	gitSvc           *git.Service
+	notifySvc        *notify.Service
+	defaultBranch    string
+	baseRef          string
+	releaseChainLock func() error
+}
+
+// openExecutionRepository creates the notification service, opens the repository, ensures it is
+// executable, and resolves the branch-creation and review-diff bases.
+func openExecutionRepository(
+	ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors, mode processor.Mode, eio executionIO,
+) (executionRepository, error) {
+	// create notification service (nil if no channels configured). notify.New validates the
+	// configured channels and fails fast on a misconfigured one, so it runs only on the paths
+	// that actually notify: watch-only, the close-out commands, and --gen-agents send nothing,
+	// and a half-filled slack or email block must not be what stops them from running.
+	notifySvc, err := notify.New(cfg.NotifyParams, stderrLog{})
+	if err != nil {
+		return executionRepository{}, fmt.Errorf("create notification service: %w", err)
+	}
+
+	// open git repository via Service. without an explicit writer the color's own Printf target
+	// is kept, so a redirected color.Output is still honored.
+	var gitLog git.Logger = colors.Info()
+	if eio.out != nil {
+		gitLog = writerPrinter{color: colors.Info(), w: eio.out}
+	}
+	gitSvc, err := git.NewService(".", gitLog, cfg.VcsCommand)
+	if err != nil {
+		return executionRepository{}, fmt.Errorf("open git repo: new git service: %w", err)
+	}
+	gitSvc.SetCommitTrailer(cfg.CommitTrailer)
+
+	// Ensure the repository is executable and reject repository-dependent chain problems before
+	// resolving branches or creating any plan artifacts. A chain lock returned here is held until
+	// the complete lifecycle (including checkpoint removal and inter-plan transitions) finishes.
+	releaseChainLock, err := validateExecutionRepository(
+		ctx, o, gitSvc, cfg.WorktreeEnabled, cfg.MovePlanOnCompletion, eio,
+	)
+	if err != nil {
+		return executionRepository{}, err
+	}
+
+	// defaultBranch is for non-worktree branch creation, baseRef for review diffs and the
+	// {{DEFAULT_BRANCH}} template variable. In worktree mode --base-ref stays diff-only because
+	// the worktree branch is always cut from the current HEAD.
+	creationMode := modeCreatesBranch(mode)
+	defaultBranch, baseRef, err := resolveBaseRefs(gitSvc, o.BaseRef, cfg.DefaultBranch,
+		creationMode, cfg.WorktreeEnabled && creationMode)
+	if err != nil {
+		return executionRepository{}, releasePlanChainExecutionLock(err, releaseChainLock)
+	}
+	return executionRepository{
+		gitSvc: gitSvc, notifySvc: notifySvc, defaultBranch: defaultBranch, baseRef: baseRef,
+		releaseChainLock: releaseChainLock,
+	}, nil
+}
+
+// writerPrinter adapts a color to an explicit writer for services that log through Printf.
+type writerPrinter struct {
+	color *color.Color
+	w     io.Writer
+}
+
+func (p writerPrinter) Printf(format string, args ...any) (int, error) {
+	n, err := p.color.Fprintf(p.w, format, args...)
+	if err != nil {
+		return n, fmt.Errorf("write output: %w", err)
+	}
+	return n, nil
+}
+
+// prepareNonInteractiveRequest builds a full or tasks-only plan execution request from explicit
+// options and loaded config for an in-process driver. Nothing reads stdin, no terminal reporter
+// or interrupt watcher is created, and every human-readable line goes to out (stderr when nil,
+// never stdout). The caller sets the plan through o.PlanFile, may add LogDecorator and
+// PhaseObserver, runs selectAndExecutePlan, and must call the returned release afterwards.
+func prepareNonInteractiveRequest(
+	ctx context.Context, o opts, cfg *config.Config, out io.Writer,
+) (executePlanRequest, *plan.Selector, func() error, error) {
+	if out == nil {
+		out = os.Stderr
+	}
+	mode := determineMode(o)
+	if mode != processor.ModeFull && mode != processor.ModeTasksOnly {
+		return executePlanRequest{}, nil, nil,
+			fmt.Errorf("non-interactive execution supports full and tasks-only modes, not %s", mode)
+	}
+	if strings.TrimSpace(o.PlanFile) == "" {
+		return executePlanRequest{}, nil, nil, errNonInteractivePlanRequired
+	}
+	colors := progress.NewColors(cfg.Colors)
+	externalReview, limitRecovery, err := resolveExecutionDeps(ctx, o, cfg, mode, false, out)
+	if err != nil {
+		return executePlanRequest{}, nil, nil, err
+	}
+	repo, err := openExecutionRepository(ctx, o, cfg, colors, mode, executionIO{out: out})
+	if err != nil {
+		return executePlanRequest{}, nil, nil, err
+	}
+	return executePlanRequest{
+		Mode:           mode,
+		GitSvc:         repo.gitSvc,
+		Config:         cfg,
+		Colors:         colors,
+		DefaultBranch:  repo.defaultBranch,
+		BaseRef:        repo.baseRef,
+		NotifySvc:      repo.notifySvc,
+		WtCleanup:      &cleanupHolder{},
+		BranchOverride: o.Branch,
+		ExternalReview: externalReview,
+		LimitRecovery:  limitRecovery,
+		Outcome:        &planExecutionOutcome{},
+		Out:            out,
+		NonInteractive: true,
+	}, plan.NewSelector(cfg.PlansDir, colors), repo.releaseChainLock, nil
+}
+
+// errNonInteractivePlanRequired replaces the plan selector and the auto-plan prompt when no
+// terminal is available to answer them.
+var errNonInteractivePlanRequired = errors.New("plan file required: interactive plan selection is not available")
+
 func validateExecutionRepository(
-	ctx context.Context, o opts, gitSvc *git.Service, worktree, movePlanOnCompletion bool,
-	setupTitles *orca.Reporter,
+	ctx context.Context, o opts, gitSvc *git.Service, worktree, movePlanOnCompletion bool, eio executionIO,
 ) (func() error, error) {
-	if ensureErr := ensureRepoHasCommits(ctx, gitSvc, os.Stdin, os.Stdout, setupTitles); ensureErr != nil {
+	if ensureErr := ensureRepoHasCommits(ctx, gitSvc, eio.stdin, eio.stdout, eio.setupTitles); ensureErr != nil {
 		return nil, ensureErr
 	}
 	if len(o.PlanFiles) <= 1 {
@@ -767,22 +918,11 @@ func selectAndExecutePlan(ctx context.Context, o opts, req executePlanRequest, s
 
 	planFile := req.PlanFile
 	if !req.ReviewPreflightDone {
-		// plan is optional only for review modes (ModeReview, ModeCodexOnly)
-		planOptional := req.Mode == processor.ModeReview || req.Mode == processor.ModeCodexOnly
-		var err error
-		planFile, err = selector.Select(ctx, o.PlanFile, planOptional)
-		if err != nil {
-			// check for auto-plan-mode: no plans found on default branch
-			handled, autoPlanErr := tryAutoPlanMode(ctx, err, o, req, selector)
-			if handled {
-				return autoPlanErr
-			}
-			return fmt.Errorf("select plan: %w", err)
-		}
-
-		if err := checkReviewDiffRange(ctx, req.GitSvc, req.Mode, req.BaseRef); err != nil {
+		selected, handled, err := selectExecutionPlan(ctx, o, req, selector)
+		if handled || err != nil {
 			return err
 		}
+		planFile = selected
 	}
 	req.PlanFile = planFile
 
@@ -801,6 +941,35 @@ func selectAndExecutePlan(ctx context.Context, o opts, req executePlanRequest, s
 	}
 
 	return executePlan(ctx, o, req)
+}
+
+// selectExecutionPlan resolves the plan to execute and runs the empty-range check. handled is true
+// when auto-plan mode took over the invocation, in which case err is its final result.
+func selectExecutionPlan(
+	ctx context.Context, o opts, req executePlanRequest, selector *plan.Selector,
+) (planFile string, handled bool, err error) {
+	// plan is optional only for review modes (ModeReview, ModeCodexOnly)
+	planOptional := req.Mode == processor.ModeReview || req.Mode == processor.ModeCodexOnly
+	if req.NonInteractive && !planOptional && o.PlanFile == "" {
+		// the selector would fall back to fzf or a numbered prompt, and auto-plan mode would ask
+		// for a description: neither has anyone to answer it
+		return "", false, errNonInteractivePlanRequired
+	}
+	planFile, err = selector.Select(ctx, o.PlanFile, planOptional)
+	if err != nil {
+		// check for auto-plan-mode: no plans found on default branch
+		if !req.NonInteractive {
+			if handled, autoPlanErr := tryAutoPlanMode(ctx, err, o, req, selector); handled {
+				return "", true, autoPlanErr
+			}
+		}
+		return "", false, fmt.Errorf("select plan: %w", err)
+	}
+
+	if err := checkReviewDiffRange(ctx, req.GitSvc, req.Mode, req.BaseRef); err != nil {
+		return "", false, err
+	}
+	return planFile, false, nil
 }
 
 // prepareSelectedPlanBranch keeps the historical single-plan behavior while forcing every
@@ -1232,6 +1401,7 @@ func setupProgressLogger(o opts, req executePlanRequest, branch string) (progres
 			BranchOverride: req.BranchOverride,
 			Params:         runHeaderParams(o, req.Config, req.Mode, req.ExternalReview),
 			NoColor:        o.NoColor,
+			Stdout:         req.Out,
 		}, req.Colors, holder)
 		if err != nil {
 			return progressLogResult{}, fmt.Errorf("create progress logger: %w", err)
@@ -1360,12 +1530,13 @@ func externalReviewNotificationLabel(selection externalReviewSelection) string {
 // stop follows it for the same reason, after the finalize lines that did succeed.
 func displayStats(req executePlanRequest, baseLog *progress.Logger, stats git.DiffStats, elapsed, branch string,
 	planMoved bool, archiveIncomplete error, fin finalizeResult) {
+	out := req.out()
 	if stats.Files > 0 {
 		baseLog.LogDiffStats(stats.Files, stats.Additions, stats.Deletions)
-		req.Colors.Info().Printf("\ncompleted in %s (%d files, +%d/-%d lines)\n",
+		req.Colors.Info().Fprintf(out, "\ncompleted in %s (%d files, +%d/-%d lines)\n",
 			elapsed, stats.Files, stats.Additions, stats.Deletions)
 	} else {
-		req.Colors.Info().Printf("\ncompleted in %s\n", elapsed)
+		req.Colors.Info().Fprintf(out, "\ncompleted in %s\n", elapsed)
 	}
 
 	planPath := ""
@@ -1381,27 +1552,27 @@ func displayStats(req executePlanRequest, baseLog *progress.Logger, stats git.Di
 			planPath = filepath.Join(filepath.Dir(planFile), "completed", filepath.Base(planFile))
 		}
 	}
-	displayMeta(req.Colors, 2, planPath, branch, baseLog.Path())
+	displayMeta(out, req.Colors, 2, planPath, branch, baseLog.Path())
 	for _, line := range fin.summaryLines() {
-		req.Colors.Info().Printf("  %s\n", line)
+		req.Colors.Info().Fprintf(out, "  %s\n", line)
 	}
 	if archiveIncomplete != nil {
-		req.Colors.Warn().Printf("  plan archive incomplete: %v (check git status, the move may be left staged)\n", archiveIncomplete)
+		req.Colors.Warn().Fprintf(out, "  plan archive incomplete: %v (check git status, the move may be left staged)\n", archiveIncomplete)
 	}
 	if fin.incomplete != nil {
-		req.Colors.Warn().Printf("  finalize incomplete: %v\n", fin.incomplete)
+		req.Colors.Warn().Fprintf(out, "  finalize incomplete: %v\n", fin.incomplete)
 	}
 }
 
 // displayMeta prints plan (if set), branch, and progress log path with the given indent.
 // file paths are converted to relative for readability.
-func displayMeta(colors *progress.Colors, indent int, planFile, branch, progressPath string) {
+func displayMeta(w io.Writer, colors *progress.Colors, indent int, planFile, branch, progressPath string) {
 	pad := strings.Repeat(" ", indent)
 	if planFile != "" {
-		colors.Info().Printf("%splan: %s\n", pad, toRelPath(planFile))
+		colors.Info().Fprintf(w, "%splan: %s\n", pad, toRelPath(planFile))
 	}
-	colors.Info().Printf("%sbranch: %s\n", pad, branch)
-	colors.Info().Printf("%sprogress log: %s\n", pad, toRelPath(progressPath))
+	colors.Info().Fprintf(w, "%sbranch: %s\n", pad, branch)
+	colors.Info().Fprintf(w, "%sprogress log: %s\n", pad, toRelPath(progressPath))
 }
 
 // keepDashboardAlive keeps the web dashboard running after execution completes.
@@ -1411,7 +1582,7 @@ func keepDashboardAlive(ctx context.Context, o opts, req executePlanRequest, clo
 		return
 	}
 	closeLog()
-	req.Colors.Info().Printf("web dashboard still running at http://%s:%d (press Ctrl+C to exit)\n",
+	req.Colors.Info().Fprintf(req.out(), "web dashboard still running at http://%s:%d (press Ctrl+C to exit)\n",
 		web.ConnectHost(o.Host), o.Port)
 	<-ctx.Done()
 }
@@ -1520,14 +1691,19 @@ func setOrcaCleanup(holder *cleanupHolder, titles *orca.Reporter) {
 
 // buildRunnerLogger installs the orca title wrapper below cmux and above section timing, with the
 // T3 thread wrapper below orca and the keep-awake activity wrapper between T3 and the timer.
-// Keeping cmux outermost preserves its optional rate-limit reporting methods.
+// Keeping cmux outermost preserves its optional rate-limit reporting methods. A non-nil decorate
+// wraps inner at the dashboard's position, below section timing.
 func buildRunnerLogger(
 	rep *cmux.Reporter,
 	titles *orca.Reporter,
 	threads *t3.Reporter,
 	keep *awake.Holder,
 	inner progress.SectionLogger,
+	decorate func(processor.Logger) processor.Logger,
 ) (processor.Logger, *progress.SectionTimer) {
+	if decorate != nil {
+		inner = decorate(inner)
+	}
 	timer := progress.NewSectionTimer(inner, nil)
 	return rep.WrapLogger(titles.WrapLogger(threads.WrapLogger(keep.WrapLogger(timer)))), timer
 }
@@ -1544,7 +1720,8 @@ func runWithSectionTiming(ctx context.Context, run func(context.Context) error, 
 // handles progress logging, web dashboard, runner execution, and post-execution tasks.
 // when req.ProgressLog and req.PhaseHolder are pre-created (worktree mode), uses them directly.
 // when req.MainGitSvc is set, uses it for plan file operations (plan is in main repo).
-func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
+func executePlan(ctx context.Context, o opts, req executePlanRequest) (execErr error) {
+	defer func() { recordPlanFailure(req.Outcome, execErr) }()
 	branch := getCurrentBranch(req.GitSvc)
 
 	// set up progress logger and phase holder
@@ -1555,13 +1732,8 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 	defer plr.closeLog()
 
-	// cmux sidebar and orca terminal-title reporters. Both are nil-safe no-ops when disabled. Stop
-	// is also registered with the interrupt handler because defers are skipped on force exit.
-	rep := cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview))
-	titles := startOrcaReporter(req.Config, req.PlanFile, initialOrcaPhase(req.Mode))
-	setOrcaCleanup(req.OrcaStop, titles)
-	req.SetupTitles.Quiesce()
-	threads := startT3Reporter(o, req, branch)
+	// cmux sidebar, orca terminal-title, and T3 thread reporters, all nil-safe no-ops when disabled.
+	rep, titles, threads := startRunReporters(o, req, branch)
 	defer threads.Stop()
 	var cmuxCleanupOnce sync.Once
 	cmuxRetained := false
@@ -1636,7 +1808,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 			return wrapped
 		}
 	}
-	runnerLog, sectionTimer := buildRunnerLogger(rep, titles, threads, req.KeepAwake, runnerLog)
+	runnerLog, sectionTimer := buildRunnerLogger(rep, titles, threads, req.KeepAwake, runnerLog, req.LogDecorator)
 	validationTimer := progress.NewValidationTimer(validationCommands, runnerLog)
 
 	// subscribe status reporters after the dashboard so all observers coexist
@@ -1644,6 +1816,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	plr.holder.OnChange(titles.OnPhase)
 	plr.holder.OnChange(threads.OnPhase)
 	plr.holder.OnChange(req.KeepAwake.OnPhase)
+	plr.holder.OnChange(req.PhaseObserver)
 
 	// print startup info
 	phases := modePhaseBanners(o, req.Config, req.Mode)
@@ -1658,10 +1831,11 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		PreserveAnthropicAPIKey: req.Config.PreserveAnthropicAPIKey,
 		CodexSandbox:            req.Config.CodexExecutorSandbox(),
 		ExternalReview:          req.ExternalReview,
+		Out:                     req.Out,
 	}, req.Colors)
-	warnCodexMaxDropped(phases, req.Colors)
+	warnCodexMaxDropped(req.out(), phases, req.Colors)
 	if warning := finalizeStartupWarning(req); warning != "" {
-		req.Colors.Warn().Printf("%s\n", warning)
+		req.Colors.Warn().Fprintf(req.out(), "%s\n", warning)
 	}
 
 	// create and run the runner
@@ -1674,20 +1848,20 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 		return sectionTimer.Snapshot(), total, runs
 	})
 
-	// listen for SIGQUIT (Ctrl+\) for manual break during task and review loops
-	if breakCh := startBreakSignal(); breakCh != nil {
-		r.SetBreakCh(breakCh)
-		r.SetPauseHandler(makePauseHandler(os.Stdin, os.Stdout, titles, threads))
-	}
+	installBreakSignal(r, req, titles, threads)
 
 	runErr := runWithSectionTiming(ctx, r.Run, sectionTimer)
 	validationTimer.FinishRun()
+	if req.Outcome != nil {
+		req.Outcome.report = r.Report()
+	}
 	if runErr != nil {
 		// mark logger as failed so Close writes "Failed:" footer, preserving history
 		// for restart. Applies to ErrUserAborted too — user aborts are not completions.
 		// abort keeps the raw error in the footer (self-descriptive); real failures
 		// use the wrapped error so the footer matches what the caller sees.
 		if errors.Is(runErr, processor.ErrUserAborted) {
+			recordPlanFailure(req.Outcome, runErr)
 			plr.baseLog.SetFailed(runErr)
 			fmt.Fprintln(os.Stderr, "aborted by user, plan left in place")
 			return nil
@@ -1757,6 +1931,34 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) error {
 	}
 
 	return nil
+}
+
+// startRunReporters constructs the cmux, orca, and T3 reporters for an execution run and quiesces
+// the setup title reporter they replace. The orca Stop is also registered with the interrupt
+// handler because defers are skipped on force exit. A non-interactive run has no terminal of its
+// own, so it builds none of them and every returned reporter is a nil no-op.
+func startRunReporters(o opts, req executePlanRequest, branch string) (*cmux.Reporter, *orca.Reporter, *t3.Reporter) {
+	if req.NonInteractive {
+		req.SetupTitles.Quiesce()
+		return nil, nil, nil
+	}
+	rep := cmux.New(req.PlanFile, cmuxRunModels(o, req.Config, req.ExternalReview))
+	titles := startOrcaReporter(req.Config, req.PlanFile, initialOrcaPhase(req.Mode))
+	setOrcaCleanup(req.OrcaStop, titles)
+	req.SetupTitles.Quiesce()
+	return rep, titles, startT3Reporter(o, req, branch)
+}
+
+// installBreakSignal listens for SIGQUIT (Ctrl+\) for a manual break during task and review
+// loops. A non-interactive run has nobody to press Enter, so it installs neither half.
+func installBreakSignal(r *processor.Runner, req executePlanRequest, titles *orca.Reporter, threads *t3.Reporter) {
+	if req.NonInteractive {
+		return
+	}
+	if breakCh := startBreakSignal(); breakCh != nil {
+		r.SetBreakCh(breakCh)
+		r.SetPauseHandler(makePauseHandler(os.Stdin, os.Stdout, titles, threads))
+	}
 }
 
 func removeRunRecordAfterArchival(store *runRecordStore, planMoved bool) {
@@ -1830,6 +2032,15 @@ func moveCompletedPlan(req executePlanRequest, report string, log archiveWarner)
 		return false, fmt.Errorf("move %s: %w", filepath.Base(movePlanFile), moveErr), nil
 	}
 	return true, nil, nil
+}
+
+// recordPlanFailure keeps the first reason execution did not succeed. A user abort is recorded
+// before executePlan returns nil for it, so a caller can tell an abort from a completion.
+func recordPlanFailure(outcome *planExecutionOutcome, err error) {
+	if outcome == nil || err == nil || outcome.failure != nil {
+		return
+	}
+	outcome.failure = err
 }
 
 func capturePlanOutcome(req executePlanRequest) error {
@@ -1979,6 +2190,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		BranchOverride:   req.BranchOverride,
 		Params:           runHeaderParams(o, req.Config, req.Mode, req.ExternalReview),
 		NoColor:          o.NoColor,
+		Stdout:           req.Out,
 	}, req.Colors, holder)
 	if err != nil {
 		return fmt.Errorf("create progress logger: %w", err)
@@ -2090,6 +2302,10 @@ func worktreeExecuteRequest(req executePlanRequest, wt worktreeRun, baseLog *pro
 		PhaseHolder:            holder,
 		ExternalReview:         req.ExternalReview,
 		LimitRecovery:          req.LimitRecovery,
+		Out:                    req.Out,
+		NonInteractive:         req.NonInteractive,
+		LogDecorator:           req.LogDecorator,
+		PhaseObserver:          req.PhaseObserver,
 	}
 }
 
@@ -2216,9 +2432,9 @@ func prepareWorktreeRunContext(
 		return worktreeRun{}, validationErr
 	}
 	if o.Commit {
-		req.Colors.Warn().Printf("warning: -c/--commit is ignored when resuming interrupted worktree %s\n", wt.path)
+		req.Colors.Warn().Fprintf(req.out(), "warning: -c/--commit is ignored when resuming interrupted worktree %s\n", wt.path)
 	}
-	req.Colors.Info().Printf("resuming interrupted worktree %s\n", wt.path)
+	req.Colors.Info().Fprintf(req.out(), "resuming interrupted worktree %s\n", wt.path)
 	return wt, nil
 }
 
@@ -2333,7 +2549,7 @@ func prepareWorktreeTargetLocked(
 			}
 			return wt, "", nil
 		}
-		if discardErr := discardLeftoverWorktreePath(wt.path, info, req.Colors, os.Stdout); discardErr != nil {
+		if discardErr := discardLeftoverWorktreePath(wt.path, info, req.Colors, req.out()); discardErr != nil {
 			return worktreeRun{}, "", discardErr
 		}
 	case os.IsNotExist(statErr), errors.Is(statErr, syscall.ENOTDIR):
@@ -2478,10 +2694,10 @@ func prepareWorktreeSource(o opts, req executePlanRequest, branch string) (bool,
 		return false, fmt.Errorf("auto-commit working tree: %w", err)
 	}
 	if committed {
-		req.Colors.Info().Printf("auto-committed working tree before creating branch: %s\n", branch)
+		req.Colors.Info().Fprintf(req.out(), "auto-committed working tree before creating branch: %s\n", branch)
 		return true, nil
 	}
-	req.Colors.Info().Printf("working tree clean; no auto-commit needed before creating branch: %s\n", branch)
+	req.Colors.Info().Fprintf(req.out(), "working tree clean; no auto-commit needed before creating branch: %s\n", branch)
 	return false, nil
 }
 
@@ -3349,6 +3565,9 @@ func validateFlags(o opts) error {
 	if err := validateT3LaunchFlags(o); err != nil {
 		return err
 	}
+	if err := validateACPFlags(o); err != nil {
+		return err
+	}
 	if err := validateCommitFlags(o); err != nil {
 		return err
 	}
@@ -3517,7 +3736,7 @@ func validateGenAgentsFlags(o opts) error {
 }
 
 // runConfiguredStandaloneCommand routes the standalone commands that need loaded config but no
-// executor or notification dependencies: git close-out, and the T3 launcher, which executes
+// executor or notification dependencies: git close-out and the T3 launcher, which executes
 // nothing locally because the launched run checks its own dependencies.
 func runConfiguredStandaloneCommand(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors) (bool, error) {
 	switch {
@@ -3530,8 +3749,9 @@ func runConfiguredStandaloneCommand(ctx context.Context, o opts, cfg *config.Con
 	}
 }
 
-// t3LaunchValue is the value shape --t3-launch forwards, matching the loopai-t3 skill's check.
-var t3LaunchValue = regexp.MustCompile(`^[A-Za-z0-9._:,+-]+$`)
+// passThroughValue is the value shape --t3-launch and an ACP prompt forward, matching the
+// loopai-t3 skill's check.
+var passThroughValue = regexp.MustCompile(`^[A-Za-z0-9._:,+-]+$`)
 
 // validateT3LaunchFlags keeps --t3-launch standalone. It forwards only the phase model specs and
 // the reviewer chain to the launched run: anything that picks a mode, a worktree, a branch, or a
@@ -3579,11 +3799,18 @@ func validateT3LaunchFlags(o opts) error {
 			return fmt.Errorf("--t3-launch cannot be combined with %s", conflict.flag)
 		}
 	}
+	return validatePassThroughValues("--t3-launch", o)
+}
+
+// validatePassThroughValues checks the three flags --t3-launch and an ACP prompt forward: every
+// value must match passThroughValue, and both model specs need a claude or codex provider prefix.
+// label prefixes each error.
+func validatePassThroughValues(label string, o opts) error {
 	for _, value := range []struct{ flag, value string }{
 		{"--task-model", o.TaskModel}, {"--review-model", o.ReviewModel}, {"--external-reviewers", o.ExternalReviewers},
 	} {
-		if value.value != "" && !t3LaunchValue.MatchString(value.value) {
-			return fmt.Errorf("--t3-launch: invalid %s value %q", value.flag, value.value)
+		if value.value != "" && !passThroughValue.MatchString(value.value) {
+			return fmt.Errorf("%s: invalid %s value %q", label, value.flag, value.value)
 		}
 	}
 	for _, value := range []struct{ flag, value string }{{"--task-model", o.TaskModel}, {"--review-model", o.ReviewModel}} {
@@ -3591,7 +3818,7 @@ func validateT3LaunchFlags(o opts) error {
 			continue
 		}
 		if spec, err := config.ParseProviderSpec(value.value); err != nil || spec.Provider == config.ExternalReviewToolCustom {
-			return fmt.Errorf("--t3-launch: %s %q needs a claude or codex provider prefix (provider[:model[:effort]])", value.flag, value.value)
+			return fmt.Errorf("%s: %s %q needs a claude or codex provider prefix (provider[:model[:effort]])", label, value.flag, value.value)
 		}
 	}
 	return nil
@@ -3881,16 +4108,20 @@ func detectClaudeSwapRecovery(o opts, cfg *config.Config, mode processor.Mode, e
 }
 
 func printStartupInfo(info startupInfo, colors *progress.Colors) {
+	w := info.Out
+	if w == nil {
+		w = color.Output
+	}
 	if info.Mode == processor.ModePlan {
-		colors.Info().Printf("starting interactive plan creation\n")
-		colors.Info().Printf("request: %s\n", info.PlanDescription)
-		colors.Info().Printf("branch: %s (max %d iterations)\n", info.Branch, info.MaxIterations)
-		colors.Info().Printf("progress log: %s\n", toRelPath(info.ProgressPath))
-		printExecutorInfo(info, colors)
+		colors.Info().Fprintf(w, "starting interactive plan creation\n")
+		colors.Info().Fprintf(w, "request: %s\n", info.PlanDescription)
+		colors.Info().Fprintf(w, "branch: %s (max %d iterations)\n", info.Branch, info.MaxIterations)
+		colors.Info().Fprintf(w, "progress log: %s\n", toRelPath(info.ProgressPath))
+		printExecutorInfo(w, info, colors)
 		if info.PreserveAnthropicAPIKey {
-			colors.Warn().Printf("auth: ANTHROPIC_API_KEY passthrough enabled\n")
+			colors.Warn().Fprintf(w, "auth: ANTHROPIC_API_KEY passthrough enabled\n")
 		}
-		colors.Info().Printf("\n")
+		colors.Info().Fprintf(w, "\n")
 		return
 	}
 
@@ -3898,13 +4129,13 @@ func printStartupInfo(info startupInfo, colors *progress.Colors) {
 	if info.Mode != processor.ModeFull {
 		modeStr = fmt.Sprintf(" (%s mode)", info.Mode)
 	}
-	colors.Info().Printf("starting loopai loop (max %d iterations)%s\n", info.MaxIterations, modeStr)
-	displayMeta(colors, 0, info.PlanFile, info.Branch, info.ProgressPath)
-	printExecutorInfo(info, colors)
+	colors.Info().Fprintf(w, "starting loopai loop (max %d iterations)%s\n", info.MaxIterations, modeStr)
+	displayMeta(w, colors, 0, info.PlanFile, info.Branch, info.ProgressPath)
+	printExecutorInfo(w, info, colors)
 	if info.PreserveAnthropicAPIKey {
-		colors.Warn().Printf("auth: ANTHROPIC_API_KEY passthrough enabled\n")
+		colors.Warn().Fprintf(w, "auth: ANTHROPIC_API_KEY passthrough enabled\n")
 	}
-	colors.Info().Printf("\n")
+	colors.Info().Fprintf(w, "\n")
 }
 
 // bannerLabelWidth aligns every phase value in the startup banner behind the widest label.
@@ -3913,29 +4144,29 @@ const bannerLabelWidth = len("external review: ")
 // printExecutorInfo prints one line per phase, provider first, then the external review
 // chain. Codex-only settings are indented under the first codex phase, since every
 // codex phase executor shares them.
-func printExecutorInfo(info startupInfo, colors *progress.Colors) {
+func printExecutorInfo(w io.Writer, info startupInfo, colors *progress.Colors) {
 	codexDetailsPrinted := false
 	for _, phase := range info.Phases {
-		colors.Info().Printf("%-*s%s\n", bannerLabelWidth, phase.Name+":", phase.label())
+		colors.Info().Fprintf(w, "%-*s%s\n", bannerLabelWidth, phase.Name+":", phase.label())
 		if phase.Provider != config.ExecutorCodex || codexDetailsPrinted {
 			continue
 		}
 		codexDetailsPrinted = true
 		if info.CodexSandbox != "" {
-			colors.Info().Printf("  %-*s%s\n", bannerLabelWidth-2, "sandbox:", info.CodexSandbox)
+			colors.Info().Fprintf(w, "  %-*s%s\n", bannerLabelWidth-2, "sandbox:", info.CodexSandbox)
 		}
 		if info.PassClaudeMd {
-			colors.Info().Printf("  %-*s%s\n", bannerLabelWidth-2, "claude.md:", "project CLAUDE.md passthrough enabled")
+			colors.Info().Fprintf(w, "  %-*s%s\n", bannerLabelWidth-2, "claude.md:", "project CLAUDE.md passthrough enabled")
 		}
 	}
-	printExternalReviewInfo(info.ExternalReview, colors)
+	printExternalReviewInfo(w, info.ExternalReview, colors)
 }
 
-func printExternalReviewInfo(selection externalReviewSelection, colors *progress.Colors) {
+func printExternalReviewInfo(w io.Writer, selection externalReviewSelection, colors *progress.Colors) {
 	if len(selection.Reviewers) == 0 && !selection.Resolved {
 		return
 	}
-	colors.Info().Printf("%-*s%s\n", bannerLabelWidth, "external review:", selection.bannerLabel())
+	colors.Info().Fprintf(w, "%-*s%s\n", bannerLabelWidth, "external review:", selection.bannerLabel())
 }
 
 // phaseBanner is one phase's resolved provider and the model and effort its executor
@@ -3981,9 +4212,9 @@ func modePhaseBanners(o opts, cfg *config.Config, mode processor.Mode) []phaseBa
 }
 
 // warnCodexMaxDropped reports once that a codex phase ignored a claude-only "max" effort.
-func warnCodexMaxDropped(phases []phaseBanner, colors *progress.Colors) {
+func warnCodexMaxDropped(w io.Writer, phases []phaseBanner, colors *progress.Colors) {
 	if slices.ContainsFunc(phases, func(b phaseBanner) bool { return b.MaxDropped }) {
-		colors.Warn().Printf("codex does not support 'max' reasoning effort; ignoring (valid: low, medium, high, xhigh)\n")
+		colors.Warn().Fprintf(w, "codex does not support 'max' reasoning effort; ignoring (valid: low, medium, high, xhigh)\n")
 	}
 }
 
@@ -4155,7 +4386,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	holder.OnChange(rep.OnPhase)
 	holder.OnChange(titles.OnPhase)
 	holder.OnChange(req.KeepAwake.OnPhase)
-	planLog, sectionTimer := buildRunnerLogger(rep, titles, nil, req.KeepAwake, baseLog)
+	planLog, sectionTimer := buildRunnerLogger(rep, titles, nil, req.KeepAwake, baseLog, nil)
 
 	maxIter := resolveMaxIterations(o.MaxIterations, req.Config)
 
@@ -4172,8 +4403,9 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		PreserveAnthropicAPIKey: req.Config.PreserveAnthropicAPIKey,
 		CodexSandbox:            req.Config.CodexExecutorSandbox(),
 		ExternalReview:          req.ExternalReview,
+		Out:                     req.Out,
 	}, req.Colors)
-	warnCodexMaxDropped(phases, req.Colors)
+	warnCodexMaxDropped(req.out(), phases, req.Colors)
 
 	// create input collector
 	collector := input.NewTerminalCollector(o.NoColor)
@@ -4357,13 +4589,13 @@ func runGenAgentsMode(ctx context.Context, o opts, cfg *config.Config, colors *p
 	}()
 
 	holder.OnChange(keep.OnPhase)
-	genLog, sectionTimer := buildRunnerLogger(nil, nil, nil, keep, baseLog)
+	genLog, sectionTimer := buildRunnerLogger(nil, nil, nil, keep, baseLog, nil)
 
 	colors.Info().Printf("generating project-specific review agents\n")
 	colors.Info().Printf("progress log: %s\n", toRelPath(baseLog.Path()))
 	phases := modePhaseBanners(o, cfg, processor.ModeGenAgents)
-	printExecutorInfo(startupInfo{Phases: phases, PassClaudeMd: cfg.PassClaudeMd, CodexSandbox: cfg.CodexExecutorSandbox()}, colors)
-	warnCodexMaxDropped(phases, colors)
+	printExecutorInfo(color.Output, startupInfo{Phases: phases, PassClaudeMd: cfg.PassClaudeMd, CodexSandbox: cfg.CodexExecutorSandbox()}, colors)
+	warnCodexMaxDropped(color.Output, phases, colors)
 	colors.Info().Printf("\n")
 
 	if recovery != nil {
@@ -4871,7 +5103,7 @@ func clearStaleCmuxStatus(o opts) {
 // and never constructs a reporter.
 func isStandaloneCommand(o opts) bool {
 	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || o.GenAgents || o.T3Launch ||
-		(o.Reset && isResetOnly(o))
+		o.ACP || (o.Reset && isResetOnly(o))
 }
 
 // handOffSucceeded reports whether an early stop came from a successful cmux workspace hand-off,
@@ -6974,7 +7206,8 @@ func sameBranch(branch, ref string) bool {
 }
 
 // ensureRepoHasCommits checks that the repository has at least one commit.
-// If the repository is empty, prompts the user to create an initial commit.
+// If the repository is empty, prompts the user to create an initial commit. A nil stdin means no
+// one can answer, so an empty repository is an error instead of a prompt.
 func ensureRepoHasCommits(
 	ctx context.Context,
 	gitSvc *git.Service,
@@ -6982,6 +7215,15 @@ func ensureRepoHasCommits(
 	stdout io.Writer,
 	titles *orca.Reporter,
 ) error {
+	if stdin == nil {
+		if err := gitSvc.EnsureHasCommits(func() bool { return false }); err != nil {
+			if errors.Is(err, git.ErrInitialCommitDeclined) {
+				return errors.New("repository has no commits: create an initial commit first, loopai needs one to create feature branches")
+			}
+			return fmt.Errorf("ensure has commits: %w", err)
+		}
+		return nil
+	}
 	// track if we actually created a commit
 	createdCommit := false
 	promptFn := func() bool {

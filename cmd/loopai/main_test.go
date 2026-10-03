@@ -125,7 +125,7 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 
 func TestBuildRunnerLoggerRecordsSectionsInOrder(t *testing.T) {
 	inner := &runnerLoggerRecorder{}
-	out, timer := buildRunnerLogger(nil, nil, nil, nil, inner)
+	out, timer := buildRunnerLogger(nil, nil, nil, nil, inner, nil)
 
 	out.PrintSection(status.NewTaskIterationSection(1))
 	out.PrintSection(status.NewInternalReviewSection(1, ""))
@@ -147,7 +147,7 @@ func TestBuildRunnerLoggerKeepsCmuxOutermost(t *testing.T) {
 	rep := cmux.New("plan.md", cmux.Models{})
 	require.NotNil(t, rep)
 
-	out, _ := buildRunnerLogger(rep, nil, nil, nil, &runnerLoggerRecorder{})
+	out, _ := buildRunnerLogger(rep, nil, nil, nil, &runnerLoggerRecorder{}, nil)
 	_, ok := out.(interface {
 		LogLimitWait(pattern, tool, waitLabel string)
 	})
@@ -155,7 +155,7 @@ func TestBuildRunnerLoggerKeepsCmuxOutermost(t *testing.T) {
 }
 
 func TestBuildRunnerLoggerWithoutReporterReturnsTimer(t *testing.T) {
-	out, timer := buildRunnerLogger(nil, nil, nil, nil, &runnerLoggerRecorder{})
+	out, timer := buildRunnerLogger(nil, nil, nil, nil, &runnerLoggerRecorder{}, nil)
 
 	assert.Same(t, timer, out)
 }
@@ -1334,7 +1334,7 @@ func TestValidateExecutionRepositoryRejectsBusyChainBeforeCheckpointRecovery(t *
 
 	contender, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
-	returnedRelease, err := validateExecutionRepository(t.Context(), o, contender, false, false, nil)
+	returnedRelease, err := validateExecutionRepository(t.Context(), o, contender, false, false, executionIO{})
 	assert.Nil(t, returnedRelease)
 	var busyErr *git.ErrPlanChainBusy
 	require.ErrorAs(t, err, &busyErr)
@@ -1346,7 +1346,7 @@ func TestValidateExecutionRepositoryRejectsBusyChainBeforeCheckpointRecovery(t *
 
 	otherPlans := []string{filepath.Join(plansDir, "three.md"), filepath.Join(plansDir, "four.md")}
 	returnedRelease, err = validateExecutionRepository(t.Context(),
-		opts{PlanFile: otherPlans[0], PlanFiles: otherPlans}, contender, false, false, nil)
+		opts{PlanFile: otherPlans[0], PlanFiles: otherPlans}, contender, false, false, executionIO{})
 	assert.Nil(t, returnedRelease)
 	require.ErrorAs(t, err, &busyErr, "different plan lists must share the repository-wide chain lock")
 }
@@ -1365,7 +1365,7 @@ func TestValidateExecutionRepositoryReleasesChainLockAfterValidationFailure(t *t
 
 	svc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
-	release, err := validateExecutionRepository(t.Context(), o, svc, false, false, nil)
+	release, err := validateExecutionRepository(t.Context(), o, svc, false, false, executionIO{})
 	assert.Nil(t, release)
 	require.ErrorContains(t, err, "invalid plan branch")
 
@@ -1889,7 +1889,7 @@ func TestBuildRunnerLoggerWithOrcaReporterWritesTitle(t *testing.T) {
 	titleRep := orca.NewWithOutput(true, "", config.ExecutorClaude, &titles, func() bool { return true })
 	require.NotNil(t, titleRep)
 
-	out, _ := buildRunnerLogger(nil, titleRep, nil, nil, &runnerLoggerRecorder{})
+	out, _ := buildRunnerLogger(nil, titleRep, nil, nil, &runnerLoggerRecorder{}, nil)
 	out.PrintSection(status.NewTaskIterationSection(3))
 
 	assert.Equal(t, "\x1b]0;◐ loopai · task 3 · claude\a", titles.String())
@@ -2151,7 +2151,12 @@ func captureStderr(t *testing.T, fn func()) string {
 
 // testColors returns a Colors instance for testing.
 func testColors() *progress.Colors {
-	return progress.NewColors(config.ColorConfig{
+	return progress.NewColors(testColorConfig())
+}
+
+// testColorConfig is a fully populated color config, as config.Load guarantees for real runs.
+func testColorConfig() config.ColorConfig {
+	return config.ColorConfig{
 		Task:       "0,255,0",
 		Review:     "0,255,255",
 		Codex:      "255,0,255",
@@ -2161,7 +2166,7 @@ func testColors() *progress.Colors {
 		Signal:     "255,100,100",
 		Timestamp:  "138,138,138",
 		Info:       "180,180,180",
-	})
+	}
 }
 
 // skipIfClaudeNotAvailable loads config (read-only) and skips test if configured claude command is not in PATH.
@@ -3753,7 +3758,7 @@ func TestBuildRunnerLoggerWithT3ReporterUpdatesTitle(t *testing.T) {
 	api := &t3RecordingDispatcher{}
 	threads := t3.NewWithDispatcher(api, t3.Options{ThreadID: "th"})
 
-	out, _ := buildRunnerLogger(nil, nil, threads, nil, &runnerLoggerRecorder{})
+	out, _ := buildRunnerLogger(nil, nil, threads, nil, &runnerLoggerRecorder{}, nil)
 	out.PrintSection(status.NewTaskIterationSection(3))
 	require.Eventually(t, func() bool { return len(api.titles()) == 1 }, 2*time.Second, 5*time.Millisecond)
 	threads.Stop()
@@ -5592,13 +5597,15 @@ func TestModePhaseBanners(t *testing.T) {
 func TestWarnCodexMaxDropped(t *testing.T) {
 	t.Run("warns once when any phase dropped max", func(t *testing.T) {
 		out := captureStdout(t, func() {
-			warnCodexMaxDropped([]phaseBanner{{MaxDropped: true}, {MaxDropped: true}}, testColors())
+			warnCodexMaxDropped(color.Output, []phaseBanner{{MaxDropped: true}, {MaxDropped: true}}, testColors())
 		})
 		assert.Equal(t, 1, strings.Count(out, "codex does not support 'max' reasoning effort"))
 	})
 
 	t.Run("silent when nothing was dropped", func(t *testing.T) {
-		out := captureStdout(t, func() { warnCodexMaxDropped([]phaseBanner{{Provider: "claude", Effort: "max"}}, testColors()) })
+		out := captureStdout(t, func() {
+			warnCodexMaxDropped(color.Output, []phaseBanner{{Provider: "claude", Effort: "max"}}, testColors())
+		})
 		assert.Empty(t, out)
 	})
 }
@@ -8858,8 +8865,8 @@ func TestRunWithWorktreeAutoResume(t *testing.T) {
 		runGit(t, dir, "commit", "-m", "add mixed-case resume plan")
 
 		requestedPlanPath := filepath.Join(plansDir, "resume-mixed-case.md")
-		if _, statErr := os.Stat(requestedPlanPath); statErr != nil {
-			t.Skip("case-sensitive filesystem: a case-mismatched plan path names no file")
+		if _, statErr := os.Stat(requestedPlanPath); os.IsNotExist(statErr) {
+			t.Skip("case-mismatched input requires a case-insensitive filesystem")
 		}
 		gitSvc, err := git.NewService(dir, noopLogger())
 		require.NoError(t, err)
@@ -9837,11 +9844,8 @@ func TestDisplayMeta(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			colors := testColors()
 			var buf bytes.Buffer
-			origOutput := color.Output
-			color.Output = &buf
-			t.Cleanup(func() { color.Output = origOutput })
 
-			displayMeta(colors, tc.indent, tc.planFile, tc.branch, tc.progressPath)
+			displayMeta(&buf, colors, tc.indent, tc.planFile, tc.branch, tc.progressPath)
 
 			out := buf.String()
 			for _, want := range tc.wantContains {
@@ -14074,7 +14078,7 @@ func TestBuildRunnerLoggerRenewsKeepAwake(t *testing.T) {
 	t.Cleanup(keep.Stop)
 	inner := &runnerLoggerRecorder{}
 
-	out, _ := buildRunnerLogger(nil, nil, nil, keep, inner)
+	out, _ := buildRunnerLogger(nil, nil, nil, keep, inner, nil)
 	out.PrintAligned("executor output")
 
 	assert.Equal(t, int32(1), probe.acquires.Load())
@@ -15092,4 +15096,305 @@ func TestGHFailureDetail(t *testing.T) {
 	long := ghFailureDetail(strings.Repeat("x", ghFailureDetailLimit+50), nil)
 	assert.Len(t, []rune(long), ghFailureDetailLimit+1)
 	assert.True(t, strings.HasPrefix(long, "…"))
+}
+
+// sectionRecordingLogger is a concurrency-safe LogDecorator target: it forwards every call and
+// records section labels, since executor output can reach the logger from several goroutines.
+type sectionRecordingLogger struct {
+	processor.Logger
+	mu       sync.Mutex
+	sections []string
+}
+
+func (l *sectionRecordingLogger) PrintSection(section status.Section) {
+	l.Logger.PrintSection(section)
+	l.mu.Lock()
+	l.sections = append(l.sections, section.Label)
+	l.mu.Unlock()
+}
+
+func (l *sectionRecordingLogger) labels() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.sections)
+}
+
+func TestBuildRunnerLoggerAppliesDecoratorBelowSectionTimer(t *testing.T) {
+	inner := &runnerLoggerRecorder{}
+	var decorated *sectionRecordingLogger
+	out, timer := buildRunnerLogger(nil, nil, nil, nil, inner, func(l processor.Logger) processor.Logger {
+		decorated = &sectionRecordingLogger{Logger: l}
+		return decorated
+	})
+
+	out.PrintSection(status.NewTaskIterationSection(1))
+	timer.FinishRun()
+
+	require.NotNil(t, decorated)
+	assert.Equal(t, []string{"task iteration 1"}, decorated.labels())
+	assert.Same(t, timer, out, "the decorator sits below the timer, not above it")
+	require.Len(t, inner.calls, 3)
+	assert.Equal(t, "section: task iteration 1", inner.calls[0], "the decorator forwards to the inner logger")
+	assert.Regexp(t, `^print: task iteration 1 took .+$`, inner.calls[1],
+		"section timing lines pass through the decorator to the inner logger")
+}
+
+func TestExecutePlanNonInteractiveRoutesOutputAndHooks(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+	dir := setupTestRepo(t)
+	t.Chdir(dir)
+	planPath := filepath.Join(dir, "docs", "plans", "acp.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath, []byte("# ACP\n\n### Task 1: Done\n- [x] complete\n"), 0o600))
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:REVIEW_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+
+	var out bytes.Buffer
+	var decorated *sectionRecordingLogger
+	var phasesMu sync.Mutex
+	var phases []status.Phase
+	outcome := &planExecutionOutcome{}
+	stdout := captureStdout(t, func() {
+		err = executePlan(t.Context(), opts{Review: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
+			PlanFile: planPath, Mode: processor.ModeReview, GitSvc: gitSvc,
+			Config: &config.Config{ClaudeCommand: fakeClaude, ReportEnabled: true, Orca: true, T3: true},
+			Colors: testColors(), BaseRef: "master", Outcome: outcome,
+			Out: &out, NonInteractive: true,
+			LogDecorator: func(l processor.Logger) processor.Logger {
+				decorated = &sectionRecordingLogger{Logger: l}
+				return decorated
+			},
+			PhaseObserver: func(_, cur status.Phase) {
+				phasesMu.Lock()
+				phases = append(phases, cur)
+				phasesMu.Unlock()
+			},
+		})
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, stdout, "a non-interactive run must not write to stdout")
+	assert.Contains(t, out.String(), "starting loopai loop")
+	assert.Contains(t, out.String(), "completed in")
+	assert.Contains(t, out.String(), "REVIEW_DONE", "the progress logger's console copy goes to Out")
+	require.NotNil(t, decorated)
+	assert.True(t, slices.ContainsFunc(decorated.labels(), func(label string) bool {
+		return strings.Contains(label, "review")
+	}), "the decorator receives review sections: %v", decorated.labels())
+	phasesMu.Lock()
+	assert.Contains(t, phases, status.PhaseReview)
+	phasesMu.Unlock()
+	assert.True(t, outcome.succeeded)
+	require.NoError(t, outcome.failure)
+	assert.Contains(t, outcome.report, "| internal review |", "the outcome carries the completion report")
+}
+
+// TestStartRunReportersNonInteractive enables all three reporters the way a cmux terminal and
+// t3/orca config would, and checks that only NonInteractive keeps them off.
+func TestStartRunReportersNonInteractive(t *testing.T) {
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+	original := newT3Reporter
+	t.Cleanup(func() { newT3Reporter = original })
+	t3Calls := 0
+	newT3Reporter = func(t3.Options, func(string) string) (*t3.Reporter, error) {
+		t3Calls++
+		return nil, errors.New("t3 reporting is disabled in tests")
+	}
+	dir := setupTestRepo(t)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	req := executePlanRequest{PlanFile: filepath.Join(dir, "plan.md"), Mode: processor.ModeFull, GitSvc: gitSvc,
+		Config: &config.Config{T3: true, Orca: true}, NonInteractive: true}
+
+	rep, titles, threads := startRunReporters(opts{}, req, "feature")
+	assert.Nil(t, rep, "no cmux reporter")
+	assert.Nil(t, titles, "no orca reporter")
+	assert.Nil(t, threads, "no t3 reporter")
+	assert.Zero(t, t3Calls, "the t3 reporter is never constructed")
+
+	req.NonInteractive = false
+	rep, _, _ = startRunReporters(opts{}, req, "feature")
+	assert.NotNil(t, rep, "an interactive run in the same environment builds a cmux reporter")
+	assert.Equal(t, 1, t3Calls, "an interactive run in the same environment builds a t3 reporter")
+}
+
+func TestExecutePlanRecordsFailureInOutcome(t *testing.T) {
+	dir := setupTestRepo(t)
+	t.Chdir(dir)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	outcome := &planExecutionOutcome{}
+	var out bytes.Buffer
+
+	err = executePlan(t.Context(), opts{TasksOnly: true, NoColor: true}, executePlanRequest{
+		PlanFile: filepath.Join(dir, "docs", "plans", "missing.md"), Mode: processor.ModeTasksOnly,
+		GitSvc: gitSvc, Config: &config.Config{}, Colors: testColors(), BaseRef: "master",
+		Outcome: outcome, Out: &out, NonInteractive: true,
+	})
+
+	require.Error(t, err)
+	assert.False(t, outcome.succeeded)
+	require.Error(t, outcome.failure)
+	assert.Equal(t, err.Error(), outcome.failure.Error())
+}
+
+func TestInstallBreakSignalSkipsNonInteractive(t *testing.T) {
+	// a nil runner panics as soon as either half is installed, so this fails wherever the
+	// platform supports the break signal and the non-interactive guard is lost
+	assert.NotPanics(t, func() { installBreakSignal(nil, executePlanRequest{NonInteractive: true}, nil, nil) })
+}
+
+func TestRecordPlanFailure(t *testing.T) {
+	first, second := errors.New("first"), errors.New("second")
+	outcome := &planExecutionOutcome{}
+
+	recordPlanFailure(nil, first)
+	recordPlanFailure(outcome, nil)
+	require.NoError(t, outcome.failure)
+	recordPlanFailure(outcome, first)
+	recordPlanFailure(outcome, second)
+	assert.Same(t, first, outcome.failure, "the first reason wins, so a recorded abort is never replaced")
+}
+
+func TestSelectAndExecutePlanNonInteractiveRequiresPlan(t *testing.T) {
+	dir := setupTestRepo(t)
+	t.Chdir(dir)
+	plansDir := filepath.Join(dir, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(plansDir, "candidate.md"), []byte("# Plan\n"), 0o600))
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	selector := plan.NewSelector(plansDir, testColors())
+	selector.SetInputWait(func(func() bool) bool {
+		t.Error("a non-interactive run must not reach interactive plan selection")
+		return false
+	})
+
+	for _, o := range []opts{{}, {TasksOnly: true}} {
+		err = selectAndExecutePlan(t.Context(), o, executePlanRequest{
+			Mode: determineMode(o), GitSvc: gitSvc, Config: &config.Config{PlansDir: plansDir},
+			Colors: testColors(), NonInteractive: true,
+		}, selector)
+		require.ErrorIs(t, err, errNonInteractivePlanRequired)
+	}
+}
+
+func TestSelectAndExecutePlanNonInteractiveSkipsAutoPlanMode(t *testing.T) {
+	dir := setupTestRepo(t)
+	t.Chdir(dir)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	missing := filepath.Join(dir, "docs", "plans", "missing.md")
+
+	err = selectAndExecutePlan(t.Context(), opts{PlanFile: missing}, executePlanRequest{
+		Mode: processor.ModeFull, GitSvc: gitSvc, Config: &config.Config{}, Colors: testColors(),
+		DefaultBranch: "master", NonInteractive: true,
+	}, plan.NewSelector(filepath.Join(dir, "docs", "plans"), testColors()))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "select plan: plan file not found")
+}
+
+func TestEnsureRepoHasCommitsNonInteractive(t *testing.T) {
+	t.Run("empty repository fails without prompting", func(t *testing.T) {
+		dir := initEmptyRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		err = ensureRepoHasCommits(t.Context(), gitSvc, nil, nil, nil)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "repository has no commits")
+		assert.Contains(t, err.Error(), "create an initial commit first")
+		head, headErr := exec.Command("git", "-C", dir, "rev-parse", "--verify", "HEAD").CombinedOutput()
+		require.Error(t, headErr, "no commit may be created: %s", head)
+	})
+
+	t.Run("repository with commits passes", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, ensureRepoHasCommits(t.Context(), gitSvc, nil, nil, nil))
+	})
+}
+
+func TestPrepareNonInteractiveRequest(t *testing.T) {
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":""}'
+`)
+
+	t.Run("rejects modes other than full and tasks-only", func(t *testing.T) {
+		for _, o := range []opts{{Review: true, PlanFile: "p.md"}, {ExternalOnly: true, PlanFile: "p.md"}, {PlanDescription: "x"}} {
+			_, _, _, err := prepareNonInteractiveRequest(t.Context(), o, &config.Config{Colors: testColorConfig()}, io.Discard)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "non-interactive execution supports full and tasks-only modes")
+		}
+	})
+
+	t.Run("requires a plan file", func(t *testing.T) {
+		_, _, _, err := prepareNonInteractiveRequest(t.Context(), opts{}, &config.Config{Colors: testColorConfig()}, io.Discard)
+		require.ErrorIs(t, err, errNonInteractivePlanRequired)
+	})
+
+	t.Run("empty repository fails instead of prompting", func(t *testing.T) {
+		dir := initEmptyRepo(t)
+		t.Chdir(dir)
+		var out bytes.Buffer
+
+		_, _, _, err := prepareNonInteractiveRequest(t.Context(), opts{TasksOnly: true, PlanFile: "plan.md"},
+			&config.Config{ClaudeCommand: fakeClaude, Colors: testColorConfig()}, &out)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "repository has no commits")
+	})
+
+	t.Run("builds and executes a request without touching stdout", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("USERPROFILE", t.TempDir())
+		dir := setupTestRepo(t)
+		t.Chdir(dir)
+		planPath := filepath.Join(dir, "docs", "plans", "headless.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+		require.NoError(t, os.WriteFile(planPath, []byte("# Headless\n\n### Task 1: Done\n- [x] complete\n"), 0o600))
+		runGit(t, dir, "add", ".")
+		runGit(t, dir, "commit", "-m", "add plan")
+		cfg := &config.Config{ClaudeCommand: fakeClaude, PlansDir: filepath.Join(dir, "docs", "plans"), Colors: testColorConfig()}
+		o := opts{TasksOnly: true, PlanFile: planPath, MaxIterations: 1, NoColor: true}
+		var out bytes.Buffer
+		var succeeded bool
+
+		stdout := captureStdout(t, func() {
+			req, selector, release, err := prepareNonInteractiveRequest(t.Context(), o, cfg, &out)
+			require.NoError(t, err)
+			assert.True(t, req.NonInteractive)
+			assert.Same(t, &out, req.Out)
+			require.NotNil(t, req.Outcome)
+			assert.Equal(t, "master", req.DefaultBranch)
+			require.NoError(t, selectAndExecutePlan(t.Context(), o, req, selector))
+			require.NoError(t, release())
+			succeeded = req.Outcome.succeeded
+		})
+
+		assert.True(t, succeeded)
+		assert.Empty(t, stdout, "only the explicit writer may receive human-readable output")
+		assert.Contains(t, out.String(), "starting loopai loop")
+		assert.Contains(t, out.String(), "completed in")
+		branch, err := exec.Command("git", "-C", dir, "branch", "--show-current").Output()
+		require.NoError(t, err)
+		assert.Equal(t, "headless", strings.TrimSpace(string(branch)), "the plan branch is created in place")
+	})
 }

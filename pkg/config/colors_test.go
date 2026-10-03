@@ -326,6 +326,7 @@ func TestColorConfig_mergeFrom(t *testing.T) {
 }
 
 func TestColorLoader_parseColorsFromFile_PermissionDenied(t *testing.T) {
+	requirePOSIXPermissions(t)
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config")
 	require.NoError(t, os.WriteFile(configPath, []byte("color_task = #ff0000"), 0o600))
