@@ -299,6 +299,8 @@ task_retry_count = 1
 # grace period after loopai observes task_complete in its session rollout.
 # on expiry, loopai terminates the process tree and returns a successful result
 # using stdout if non-empty, otherwise the event's last_agent_message.
+# CLI limit/error diagnostics captured on stderr still return typed errors;
+# review text is not scanned for patterns on this path.
 # without an observed task_complete (e.g., a missing rollout), no grace kill
 # occurs; existing timeout settings still apply. parent cancellation remains
 # a context error. Windows tree termination uses a Job Object, with taskkill

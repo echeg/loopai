@@ -18,7 +18,7 @@
 - **Chosen approach**:
   - **Windows override scope:** only the external codex reviewer (`ForceReadOnly`) gets the override, and only when `runtime.GOOS == "windows"`. Phase executors default to `danger-full-access`, where no sandbox is created, and they are left untouched.
   - **Placement:** the override is emitted before `codex_args`, so codex's last-occurrence-wins rule lets `codex_args = -c windows.sandbox="elevated"` restore the elevated sandbox.
-  - **Grace kill:** the rollout tailer reports `task_complete` with its `last_agent_message`. A grace timer of 60 s starts there. If the process is still alive when it fires, loopai kills the tree and returns a successful result. The output is stdout when present, otherwise `last_agent_message`, and signals are detected on that text. This applies to every codex invocation (phases and reviewers), since a hang after completion is never useful.
+  - **Grace kill:** the rollout tailer reports `task_complete` with its `last_agent_message`. A grace timer of 60 s starts there. If the process is still alive when it fires, loopai kills the tree and returns a successful result unless the stderr scan captured a CLI limit/error diagnostic. Those diagnostics retain their typed errors; review text is not scanned for patterns on this path. The output is stdout when present, otherwise `last_agent_message`, and signals are detected on that text. This applies to every codex invocation (phases and reviewers), since a hang after completion is never useful.
   - **Rollout dependency:** the tailer must run whenever the rollout can be located, independent of whether display handlers are set, because the grace kill depends on it.
   - **Windows tree kill:** a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, using the already-vendored `golang.org/x/sys/windows`. The child starts suspended and is assigned before its initial thread resumes, so terminating the job kills every descendant. If assignment fails, fall back to `taskkill /T /F /PID <pid>`.
   - **No stuck pipe reads:** once the process is killed, stdout and stderr reads must return. Set `exec.Cmd.WaitDelay` or close the pipes after the kill.
@@ -113,7 +113,7 @@
 - [x] in `Run`, start a grace timer (default 60 s, unexported field for tests) when `task_complete` arrives. If the process has not exited when it fires:
   - log one line through `OutputHandler`: `codex did not exit after task_complete; terminating`
   - kill the process tree
-  - return a successful `Result` whose output is stdout when non-empty, otherwise `last_agent_message`, with the signal detected on that text
+  - return a successful `Result` unless stderr captured a CLI limit/error diagnostic (preserve its typed error); output is stdout when non-empty, otherwise `last_agent_message`, with the signal detected on that text
 - [x] keep current behavior when the process exits on its own: no extra delay, and the stdout result is unchanged
 - [x] make cancellation and idle-timeout paths unaffected: a parent cancel still returns the context error
 - [x] write tests with a fake runner and rollout fixtures:
@@ -147,7 +147,7 @@
 ## Technical Details
 - **Override**: `-c windows.sandbox="unelevated"`, emitted only for `ForceReadOnly` executors on Windows, positioned before user extras.
 - **Completion event**: rollout line `{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"..."}}`.
-- **Grace**: 60 s from `task_complete` to tree kill. The result is treated as success because the model already finished its turn.
+- **Grace**: 60 s from `task_complete` to tree kill. The result is treated as success unless stderr captured a CLI limit/error diagnostic, which retains its typed error for retry/error handling. Review text is not scanned for patterns on this path.
 - **Windows termination**: Job Object with kill-on-close, then `TerminateJobObject` on kill, with `taskkill /T /F` as the fallback.
 
 ## Internal review follow-up
@@ -156,6 +156,11 @@
 - [x] Add delayed-assignment and real Claude/Codex normal-exit regression tests, and clarify silent T3 pin/unpin failures in documentation.
 - [x] Fix the pre-existing `TestHolder_TouchDefersExpiry` scheduling flake exposed by full validation, using `testing/synctest` and verifying expiry after touches stop.
 - Validation passed: full `make test` in an isolated unprivileged WSL checkout, native Windows race tests for executor/config/processor/T3 and awake, `make lint`, all three requested platform builds, and `git diff --check`. Native executor coverage is 90.5%; Windows cleanup coverage is 82.5%.
+
+## External review evaluation follow-up
+- [x] Preserve prefix-gated stderr limit/error matches after a completion grace kill, with limits taking precedence and stdout/last_agent_message excluded from pattern matching.
+- [x] Add regressions for empty failed completions, limit/error precedence, preserved output, and review text or stderr chatter mentioning errors without a CLI diagnostic.
+- Validation passed: native Windows `go test -race ./pkg/executor/... ./pkg/processor/... ./pkg/config/...`, repository-wide `make lint` (0 issues), and `git diff --check`.
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*

@@ -584,7 +584,9 @@ Every Codex invocation tails its main session rollout when the session ID is ava
 even with nil display handlers. The first `event_msg` whose payload type is `task_complete`
 starts a 60-second exit grace period; duplicate events do not extend it. If the process
 still has not exited, loopai logs `codex did not exit after task_complete; terminating`,
-terminates the process tree, and returns a successful `Result`. Non-empty stdout supplies
+terminates the process tree, and returns a successful `Result` unless the stderr scan
+captured a CLI limit/error diagnostic; those retain their typed errors for retry/error
+handling. Review text is not scanned for patterns on this path. Non-empty stdout supplies
 the result; otherwise `last_agent_message` does, with signals detected from the selected
 text. Normal exits retain their stdout result without an extra delay. Parent cancellation
 still returns the context error, and existing idle/session timeouts remain in force.

@@ -4023,6 +4023,79 @@ func TestCodexExecutor_Run_TaskComplete(t *testing.T) {
 	}
 }
 
+func TestCodexExecutor_Run_TaskComplete_Stderr(t *testing.T) {
+	tests := []struct {
+		name       string
+		stderr     string
+		stdout     string
+		message    string
+		wantOutput string
+		wantError  string
+	}{
+		{name: "quota with empty completion", stderr: "ERROR: usage limit reached", wantError: "limit"},
+		{name: "API error with empty completion", stderr: "ERROR: API unavailable", wantError: "error"},
+		{
+			name:   "quota takes precedence over error and preserves stdout",
+			stderr: "ERROR: API unavailable\nERROR: usage limit reached", stdout: "partial review",
+			wantOutput: "partial review", wantError: "limit",
+		},
+		{
+			name: "error preserves completion fallback", stderr: "ERROR: API unavailable",
+			message: "partial review", wantOutput: "partial review", wantError: "error",
+		},
+		{
+			name: "stdout discussing errors is not a failure", stdout: "review usage limit and API unavailable handling",
+			wantOutput: "review usage limit and API unavailable handling",
+		},
+		{
+			name: "completion discussing errors is not a failure", message: "review usage limit and API unavailable handling",
+			wantOutput: "review usage limit and API unavailable handling",
+		},
+		{name: "stderr chatter is not a failure", stderr: "review usage limit and API unavailable handling"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := `{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":` + strconv.Quote(tt.message) + "}}\n"
+			sessionID, _ := taskCompleteFixture(t, event)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			fire := make(chan time.Time)
+			close(fire)
+			e := &CodexExecutor{
+				ForceReadOnly: true,
+				LimitPatterns: []string{"usage limit"},
+				ErrorPatterns: []string{"API unavailable"},
+				runner: &mockCodexRunner{runFunc: func(runCtx context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+					// Emit diagnostics before the session ID so the live scan has captured
+					// them before the rollout can trigger the injected grace timer.
+					return mockStreams(tt.stderr+"\nsession id: "+sessionID+"\n", tt.stdout), func() error {
+						<-runCtx.Done()
+						return errors.New("process killed")
+					}, nil
+				}},
+				completionTimer: func(time.Duration) (<-chan time.Time, func()) { return fire, func() {} },
+			}
+			result := e.Run(ctx, "review")
+			switch tt.wantError {
+			case "limit":
+				var limitErr *LimitPatternError
+				require.ErrorAs(t, result.Error, &limitErr)
+				assert.Equal(t, "usage limit", limitErr.Pattern)
+				assert.Equal(t, "codex /status", limitErr.HelpCmd)
+			case "error":
+				var patternErr *PatternMatchError
+				require.ErrorAs(t, result.Error, &patternErr)
+				assert.Equal(t, "API unavailable", patternErr.Pattern)
+				assert.Equal(t, "codex /status", patternErr.HelpCmd)
+			default:
+				require.NoError(t, result.Error)
+			}
+			assert.Equal(t, tt.wantOutput, result.Output)
+			assert.False(t, result.IdleTimedOut)
+		})
+	}
+}
+
 func TestCodexExecutor_Run_WithoutMainTaskComplete(t *testing.T) {
 	for _, child := range []bool{false, true} {
 		t.Run(fmt.Sprintf("child_completion_%t", child), func(t *testing.T) {

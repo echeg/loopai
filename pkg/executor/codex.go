@@ -330,7 +330,7 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	<-tailDone
 
 	if errors.Is(context.Cause(execCtx), errCodexTaskComplete) && ctx.Err() == nil {
-		return taskCompleteResult(stdoutContent, lastAgentMessage)
+		return taskCompleteResult(stdoutContent, lastAgentMessage, stderrRes)
 	}
 
 	// detect signal in stdout (the actual response)
@@ -396,11 +396,21 @@ func (e *CodexExecutor) watchTaskComplete(ctx context.Context, cancel context.Ca
 	return message
 }
 
-func taskCompleteResult(stdout, lastAgentMessage string) Result {
+func taskCompleteResult(stdout, lastAgentMessage string, stderr stderrResult) Result {
 	if stdout == "" {
 		stdout = lastAgentMessage
 	}
-	return Result{Output: stdout, Signal: detectSignal(stdout)}
+	result := Result{Output: stdout, Signal: detectSignal(stdout)}
+	// A completion event does not override CLI failure diagnostics. Only use the
+	// prefix-gated stderr matches: the completed review itself can discuss limits
+	// or errors without indicating a failed session.
+	switch {
+	case stderr.limitMatch != "":
+		result.Error = &LimitPatternError{Pattern: stderr.limitMatch, HelpCmd: "codex /status"}
+	case stderr.errorMatch != "":
+		result.Error = &PatternMatchError{Pattern: stderr.errorMatch, HelpCmd: "codex /status"}
+	}
+	return result
 }
 
 func (e *CodexExecutor) newTaskCompleteTimer() (<-chan time.Time, func()) {
