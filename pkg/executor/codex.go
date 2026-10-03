@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -122,6 +123,7 @@ type CodexExecutor struct {
 	IdleTimeout          time.Duration                         // kill session after this duration of no output, zero = disabled
 	headerEmitted        atomic.Bool                           // tracks first invocation across Run() calls; false until first task/review then suppressed permanently — used to emit codex's resolved model/sandbox/effort once at the top of the run
 	callbackMu           sync.Mutex                            // serializes output and timing handlers; runner loggers require serialized calls
+	targetOS             string                                // for testing; empty uses runtime.GOOS
 	runner               CodexRunner                           // for testing, nil uses default
 	now                  func() time.Time                      // arrival clock fallback for rollout events without timestamps; nil uses time.Now
 }
@@ -173,6 +175,19 @@ func (e *CodexExecutor) sandboxMode() string {
 	return e.Sandbox
 }
 
+// reviewerSandboxOverrides avoids elevated sandbox setup for Windows external reviews.
+// Phase executors keep the user's Windows sandbox configuration.
+func (e *CodexExecutor) reviewerSandboxOverrides() []string {
+	targetOS := e.targetOS
+	if targetOS == "" {
+		targetOS = runtime.GOOS
+	}
+	if e.ForceReadOnly && targetOS == "windows" {
+		return []string{"-c", `windows.sandbox="unelevated"`}
+	}
+	return nil
+}
+
 // codexFilterState tracks header separator count for filtering.
 type codexFilterState struct {
 	headerCount int  // tracks "--------" separators seen (show config between first two)
@@ -221,9 +236,12 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 		args = append(args, "-c", fmt.Sprintf("project_doc=%q", e.ProjectDoc))
 	}
 
+	args = append(args, e.reviewerSandboxOverrides()...)
+
 	// user extras go last on purpose: codex resolves repeated -c keys with the last
 	// occurrence winning (verified against codex-cli 0.147.0), so appending here lets
-	// codex_args / --codex-args override any key loopai set above. empty extras add
+	// codex_args / --codex-args override any key loopai set above, including the Windows
+	// reviewer sandbox override: -c windows.sandbox="elevated" restores elevated mode. empty extras add
 	// nothing, keeping the invocation byte-identical to a run without the option.
 	// three consequences are the user's to avoid, documented in README and the config
 	// comment rather than policed here, since extras are trusted input like CodexCommand:

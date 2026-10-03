@@ -86,14 +86,15 @@
 ## Implementation Steps
 
 ### Task 1: Default the Windows reviewer sandbox to unelevated
-- [ ] in `pkg/executor/codex.go`, when `ForceReadOnly` is set and the target OS is Windows, emit `-c windows.sandbox="unelevated"` after the loopai overrides and before `splitArgs(e.ExtraArgs)`; resolve the OS through an unexported field defaulting to `runtime.GOOS` so tests can inject it
-- [ ] update the argument-order comment in `Run` to name the new override and how `codex_args` can restore `elevated`
-- [ ] write tests:
+- [x] in `pkg/executor/codex.go`, when `ForceReadOnly` is set and the target OS is Windows, emit `-c windows.sandbox="unelevated"` after the loopai overrides and before `splitArgs(e.ExtraArgs)`; resolve the OS through an unexported field defaulting to `runtime.GOOS` so tests can inject it
+- [x] update the argument-order comment in `Run` to name the new override and how `codex_args` can restore `elevated`
+- [x] write tests:
   - Windows reviewer args contain the override before the extras
   - Linux/macOS reviewer args are unchanged
   - Windows phase executors (no `ForceReadOnly`) are unchanged
   - a user `codex_args` value `-c windows.sandbox="elevated"` appears after the override
-- [ ] run `go test ./pkg/executor/... ./pkg/processor/...` - must pass before task 2
+- [x] run `go test ./pkg/executor/... ./pkg/processor/...` - must pass before task 2
+- Validation also fixed existing Windows test portability failures: runner tests now use the test binary instead of Unix echo/cat, rollout fixtures isolate USERPROFILE as well as HOME, and the auto-selection test uses a cross-platform executable instead of true. Targeted executor/processor lint passed.
 
 ### Task 2: Real process-tree termination on Windows
 - [ ] in `pkg/executor/procgroup_windows.go`, create a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` when the cleanup handler is created, assign the started process, and make `killProcess` terminate the job; fall back to `taskkill /T /F /PID <pid>` when the job cannot be created or assigned; close the job handle after `Wait`

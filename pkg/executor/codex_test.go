@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -379,6 +380,73 @@ func TestCodexExecutor_Run_ForceReadOnly(t *testing.T) {
 	assert.NotContains(t, argsStr, "--dangerously-bypass-approvals-and-sandbox")
 }
 
+func TestCodexExecutor_Run_WindowsReviewerSandbox(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	tests := []struct {
+		name          string
+		targetOS      string
+		forceReadOnly bool
+		sandbox       string
+		extraArgs     string
+		wantOverride  bool
+		wantExtras    []string
+	}{
+		{name: "Windows reviewer", targetOS: "windows", forceReadOnly: true, wantOverride: true},
+		{name: "Linux reviewer unchanged", targetOS: "linux", forceReadOnly: true},
+		{name: "macOS reviewer unchanged", targetOS: "darwin", forceReadOnly: true},
+		{name: "Windows phase default unchanged", targetOS: "windows"},
+		{name: "Windows phase read-only unchanged", targetOS: "windows", sandbox: "read-only"},
+		{name: "Windows phase workspace-write unchanged", targetOS: "windows", sandbox: "workspace-write"},
+		{name: "Windows phase danger-full-access unchanged", targetOS: "windows", sandbox: "danger-full-access"},
+		{name: "default OS follows runtime", forceReadOnly: true, wantOverride: runtime.GOOS == "windows"},
+		{
+			name: "Windows reviewer user override wins", targetOS: "windows", forceReadOnly: true,
+			sandbox: "danger-full-access", extraArgs: `-c windows.sandbox="elevated" --color never`,
+			wantOverride: true, wantExtras: []string{"-c", "windows.sandbox=elevated", "--color", "never"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedArgs []string
+			e := &CodexExecutor{
+				targetOS: tt.targetOS, ForceReadOnly: tt.forceReadOnly, Sandbox: tt.sandbox,
+				MultiAgent: !tt.forceReadOnly, PassClaudeMd: !tt.forceReadOnly,
+				Model: "test-model", ReasoningEffort: "high", ProjectDoc: "DOC.md", ExtraArgs: tt.extraArgs,
+				runner: &mockCodexRunner{
+					runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
+						capturedArgs = args
+						return mockStreams("", "result"), mockWait(), nil
+					},
+				},
+			}
+			require.NoError(t, e.Run(context.Background(), "prompt").Error)
+
+			// Compare the complete invocation to pin unchanged platforms and phase modes,
+			// and require the Windows override after every loopai setting but before extras.
+			want := []string{"exec"}
+			if !tt.forceReadOnly {
+				want = append(want, "-c", "features.multi_agent=true",
+					"-c", `agents.reviewer.description="general code review specialist; behavior driven by the task argument"`,
+					"-c", `project_doc_fallback_filenames=["CLAUDE.md"]`)
+			}
+			sandbox := tt.sandbox
+			if tt.forceReadOnly || sandbox == "" {
+				sandbox = "read-only"
+			}
+			if sandbox == "danger-full-access" {
+				want = append(want, "--dangerously-bypass-approvals-and-sandbox")
+			}
+			want = append(want, "--sandbox", sandbox, "-c", `model="test-model"`,
+				"-c", "model_reasoning_effort=high", "-c", "stream_idle_timeout_ms=3600000", "-c", `project_doc="DOC.md"`)
+			if tt.wantOverride {
+				want = append(want, "-c", `windows.sandbox="unelevated"`)
+			}
+			want = append(want, tt.wantExtras...)
+			assert.Equal(t, want, capturedArgs)
+		})
+	}
+}
+
 func TestCodexExecutor_Run_CustomSettings(t *testing.T) {
 	var capturedCmd string
 	var capturedArgs []string
@@ -588,12 +656,24 @@ func TestCodexExecutor_processStderr_contextCancellation(t *testing.T) {
 	}
 }
 
+// TestRunnerOutputProcess is a subprocess fixture for the codex and custom runners.
+func TestRunnerOutputProcess(t *testing.T) {
+	if os.Getenv("LOOPAI_TEST_RUNNER_OUTPUT") != "1" {
+		return
+	}
+	fmt.Println("hello")
+	os.Exit(0)
+}
+
 func TestExecCodexRunner_Run(t *testing.T) {
 	// test the real runner with a simple command
 	runner := &execCodexRunner{}
 
-	// use echo which writes to stdout
-	streams, wait, err := runner.Run(context.Background(), "echo", "hello")
+	// use the test binary so no platform-specific shell executable is required.
+	t.Setenv("LOOPAI_TEST_RUNNER_OUTPUT", "1")
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	streams, wait, err := runner.Run(context.Background(), exe, "-test.run=^TestRunnerOutputProcess$")
 
 	require.NoError(t, err)
 	require.NotNil(t, streams.Stdout)
@@ -615,8 +695,11 @@ func TestExecCodexRunner_Run_Stdin(t *testing.T) {
 	prompt := "hello from stdin"
 	runner := &execCodexRunner{stdin: strings.NewReader(prompt)}
 
-	// use cat which reads stdin and writes to stdout
-	streams, wait, err := runner.Run(context.Background(), "cat")
+	// the helper echoes stdin without depending on a platform-specific cat command.
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	streams, wait, err := runner.Run(context.Background(), exe, "-test.run=^TestHelperProcess$")
 
 	require.NoError(t, err)
 	require.NotNil(t, streams.Stdout)
@@ -3187,6 +3270,7 @@ func TestCodexExecutor_findRolloutFile_UsesCodexHome(t *testing.T) {
 	home := t.TempDir()
 	codexHome := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("CODEX_HOME", codexHome)
 	sessionID := "019e3bbe-9788-79f1-b668-codexhome0001"
 	dir := filepath.Join(codexHome, "sessions", "2026", "08", "07")
@@ -3202,6 +3286,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 	// can resolve it via the same glob the real runtime uses.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-deadbeefcafe"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "05", "18")
@@ -3277,6 +3362,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 func TestCodexExecutor_tailRolloutFile_tracksCommandsWithoutOutputHandler(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-feedfacecafe"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
@@ -3311,6 +3397,7 @@ func TestCodexExecutor_tailRolloutFile_tracksCommandsWithoutOutputHandler(t *tes
 func TestCodexExecutor_tailRolloutFile_ProcessesUnterminatedFinalRecordOnCancel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-acde00000001"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
@@ -3343,6 +3430,7 @@ func TestCodexExecutor_tailRolloutFile_ProcessesUnterminatedFinalRecordOnCancel(
 func TestCodexExecutor_tailRolloutFile_TracksChildSessionCustomExec(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-acde00000002"
 	childID := "019e3bbe-9788-79f1-b668-acde00000003"
@@ -3506,6 +3594,7 @@ func TestRolloutParentThreadID_RejectsOversizedMetadataRecord(t *testing.T) {
 func TestCodexExecutor_tailRolloutFile_CancelDropsPendingCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("CODEX_HOME", "")
 	sessionID := "019e3bbe-9788-79f1-b668-acde00000004"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "08", "07")
@@ -3530,6 +3619,7 @@ func TestCodexExecutor_tailRolloutFile_CancelDropsPendingCommand(t *testing.T) {
 func TestCodexExecutor_findRolloutFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("CODEX_HOME", "")
 	e := &CodexExecutor{}
 
