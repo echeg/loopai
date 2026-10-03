@@ -173,6 +173,7 @@ type Config struct {
 	BranchOverride   string    // explicit branch name override (--branch flag); when set, used as filename stem instead of plan file
 	Params           RunParams // user-set run parameters recorded in the header
 	NoColor          bool      // disable color output (sets color.NoColor globally)
+	Stdout           io.Writer // destination of the console copy of each line; nil = os.Stdout
 }
 
 // RunParams holds executor/model parameters written to the progress file header.
@@ -264,9 +265,13 @@ func NewLogger(cfg Config, colors *Colors, holder *status.PhaseHolder) (*Logger,
 		restart, pruneWarn = !freshStart, warn
 	}
 
+	stdout := cfg.Stdout
+	if stdout == nil {
+		stdout = os.Stdout
+	}
 	l := &Logger{
 		file:      f,
-		stdout:    os.Stdout,
+		stdout:    stdout,
 		startTime: time.Now(),
 		holder:    holder,
 		colors:    colors,

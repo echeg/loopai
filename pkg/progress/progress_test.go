@@ -77,6 +77,32 @@ func TestNewLogger(t *testing.T) {
 	}
 }
 
+func TestNewLogger_StdoutOption(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	t.Run("explicit writer receives the console copy", func(t *testing.T) {
+		var buf bytes.Buffer
+		l, err := NewLogger(Config{PlanFile: "docs/plans/out.md", Mode: "full", Branch: "main", NoColor: true, Stdout: &buf},
+			testColors(), &status.PhaseHolder{})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = l.Close() })
+
+		l.Print("hello %s", "writer")
+
+		assert.Contains(t, buf.String(), "hello writer")
+		assert.Same(t, &buf, l.stdout)
+	})
+
+	t.Run("nil writer keeps os.Stdout", func(t *testing.T) {
+		l, err := NewLogger(Config{PlanFile: "docs/plans/default.md", Mode: "full", Branch: "main"},
+			testColors(), &status.PhaseHolder{})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = l.Close() })
+
+		assert.Equal(t, os.Stdout, l.stdout)
+	})
+}
+
 func TestNewLogger_HeaderRunParams(t *testing.T) {
 	colors := testColors()
 

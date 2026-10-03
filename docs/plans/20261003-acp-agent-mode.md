@@ -137,17 +137,18 @@
 - [x] run `go test -race ./pkg/acp/...` - must pass before task 4
 
 ### Task 4: Make plan execution safe to drive non-interactively in-process (`cmd/loopai`)
-- [ ] add an `Stdout io.Writer` option to `progress.Logger` (default `os.Stdout`) and thread a configurable output writer through the startup banner, stats, and worktree messages instead of writing to `os.Stdout` or `color.Output` directly
-- [ ] add a non-interactive execution flag to `executePlanRequest`. When set:
+- [x] add an `Stdout io.Writer` option to `progress.Logger` (default `os.Stdout`) and thread a configurable output writer through the startup banner, stats, and worktree messages instead of writing to `os.Stdout` or `color.Output` directly
+- [x] add a non-interactive execution flag to `executePlanRequest`. When set:
   - a missing plan is an error instead of the selector or the auto-plan prompt
   - `ensureRepoHasCommits` errors instead of prompting
   - `makePauseHandler` and `startBreakSignal` are skipped
   - the T3 title reporter, cmux, and orca reporters are not constructed
-- [ ] add an extra logger decorator and phase observer to `executePlanRequest`, applied in `buildRunnerLogger` at the dashboard's position (below the section timer) and beside the other `OnChange` subscriptions
-- [ ] extract the post-config setup of `run()` (mode, model specs, external-review selection, deps, repo root, git service, base refs) into a reusable function so a caller can build and execute one plan request from explicit options and config, without the interrupt watcher's force-exit
-- [ ] record the completion report and failure reason in `planExecutionOutcome` so a caller can read them after `executePlan`
-- [ ] write tests: the normal CLI path's stdout is unchanged (existing tests stay green), non-interactive mode fails fast instead of reading stdin for a missing plan and an empty repository, decorator and observer receive sections and phases, outcome carries the report
-- [ ] run `go test -race ./cmd/loopai/... ./pkg/progress/...` - must pass before task 5
+- [x] add an extra logger decorator and phase observer to `executePlanRequest`, applied in `buildRunnerLogger` at the dashboard's position (below the section timer) and beside the other `OnChange` subscriptions
+- [x] extract the post-config setup of `run()` (mode, model specs, external-review selection, deps, repo root, git service, base refs) into a reusable function so a caller can build and execute one plan request from explicit options and config, without the interrupt watcher's force-exit
+- [x] record the completion report and failure reason in `planExecutionOutcome` so a caller can read them after `executePlan`
+- [x] write tests: the normal CLI path's stdout is unchanged (existing tests stay green), non-interactive mode fails fast instead of reading stdin for a missing plan and an empty repository, decorator and observer receive sections and phases, outcome carries the report
+- [x] ➕ `prepareNonInteractiveRequest` (built on the extracted `resolveExecutionDeps` and `openExecutionRepository`) returns the request, a plan selector, and the chain-lock release; Task 5 sets `LogDecorator`/`PhaseObserver` and calls `selectAndExecutePlan`
+- [x] run `go test -race ./cmd/loopai/... ./pkg/progress/...` - must pass before task 5
 
 ### Task 5: `loopai --acp` command
 - [ ] add the `--acp` flag to `opts` and route it from `runConfiguredStandaloneCommand`. In ACP mode:
