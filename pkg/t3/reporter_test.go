@@ -240,6 +240,35 @@ func TestReporterReleasesPinAfterTitleFailure(t *testing.T) {
 		"the pin is released even after title reporting was disabled")
 }
 
+func TestReporterSkipsPinWhenStoppedDuringBind(t *testing.T) {
+	gate, entered := make(chan struct{}), make(chan struct{}, 4)
+	api := &fakeDispatcher{gate: gate, entered: entered}
+	r := NewWithDispatcher(api, Options{ThreadID: "th"})
+	r.OnPhase("", status.PhaseTask)
+	<-entered // the binding title is in flight
+
+	stopped := make(chan struct{})
+	go func() {
+		r.Stop()
+		close(stopped)
+	}()
+	require.Eventually(t, func() bool {
+		select {
+		case <-r.quit:
+			return true
+		default:
+			return false
+		}
+	}, 2*time.Second, 2*time.Millisecond)
+	gate <- struct{}{} // the binding title completes after Stop
+	<-entered          // the final title
+	gate <- struct{}{}
+	<-stopped
+
+	assert.Equal(t, []string{"loopai · task", "loopai · stopped"}, api.titles())
+	assert.Empty(t, api.pinOps(), "a run stopped during the bind takes no pin it may not have time to release")
+}
+
 func TestReporterPinFailureKeepsTitles(t *testing.T) {
 	tests := []struct {
 		name string

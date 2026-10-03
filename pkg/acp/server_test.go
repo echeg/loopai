@@ -279,7 +279,7 @@ func TestServerPromptSuccess(t *testing.T) {
 	var got PromptRequest
 	c := startServer(t, Options{Run: func(ctx context.Context, req PromptRequest, sink *Sink) (Result, error) {
 		got = req
-		sink.update(map[string]any{"sessionUpdate": "plan", "entries": []any{}})
+		sink.Message("progress")
 		return Result{Message: "# Report\nall done"}, nil
 	}})
 	c.call("initialize", map[string]any{"protocolVersion": 1})
@@ -293,7 +293,10 @@ func TestServerPromptSuccess(t *testing.T) {
 	updates := c.updates()
 	require.Len(t, updates, 2, "the run's update and the final message precede the reply")
 	assert.Equal(t, sid, updates[0]["sessionId"])
-	assert.Equal(t, map[string]any{"sessionUpdate": "plan", "entries": []any{}}, updates[0]["update"])
+	assert.Equal(t, map[string]any{
+		"sessionUpdate": "agent_message_chunk",
+		"content":       map[string]any{"type": "text", "text": "progress"},
+	}, updates[0]["update"])
 	assert.Equal(t, map[string]any{
 		"sessionUpdate": "agent_message_chunk",
 		"content":       map[string]any{"type": "text", "text": "# Report\nall done"},
@@ -594,6 +597,9 @@ func TestServerCancelWhileWaitingForCanceledRun(t *testing.T) {
 	c.cancel(map[string]any{"sessionId": sid})
 	second := c.request("session/prompt", textPrompt(sid, "second.md"))
 	c.cancel(map[string]any{"sessionId": sid})
+	// messages are dispatched in order, so this reply proves the cancel was handled before the
+	// predecessor ends; otherwise second.md would legitimately start
+	c.call("session/set_mode", map[string]any{"sessionId": sid, "modeId": "x"})
 
 	close(exit)
 	requireStopReason(t, c.response(first), stopCanceled)

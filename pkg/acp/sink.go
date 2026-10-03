@@ -3,9 +3,9 @@ package acp
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -124,7 +124,7 @@ type Sink struct {
 	planFile  string
 	tasks     []plan.Task
 	stages    []stageState
-	lastPlan  string
+	lastPlan  []planEntry
 	stageOpen int // index of the in-progress stage; -1 when none
 
 	// reasoning
@@ -159,17 +159,15 @@ func newSinkWithClock(conn *Conn, sessionID string, clk clock) *Sink {
 	now := clk.Now()
 	s := &Sink{conn: conn, sessionID: sessionID, clk: clk, callPrefix: "loopai", stageOpen: -1,
 		lastSent: now, lastActivity: now}
-	if conn != nil {
-		s.mu.Lock()
-		s.armHeartbeatLocked(heartbeatIdle)
-		s.mu.Unlock()
-	}
+	s.mu.Lock()
+	s.armHeartbeatLocked(heartbeatIdle)
+	s.mu.Unlock()
 	return s
 }
 
-// disabled reports a sink with nowhere to send, such as a nil sink; every method is then a no-op.
+// disabled reports a nil sink; every method is then a no-op.
 func (s *Sink) disabled() bool {
-	return s == nil || s.conn == nil || s.clk == nil
+	return s == nil
 }
 
 // textContent is an ACP text content block.
@@ -215,16 +213,6 @@ type planUpdate struct {
 type sessionUpdateParams struct {
 	SessionID string `json:"sessionId"`
 	Update    any    `json:"update"`
-}
-
-// update sends one session/update notification carrying the given update object.
-func (s *Sink) update(update any) {
-	if s.disabled() {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sendLocked(update)
 }
 
 // sendLocked writes one notification and records it as activity for the heartbeat.
@@ -492,12 +480,17 @@ func (s *Sink) closeCallLocked(callStatus string) {
 	s.callID, s.callTitle, s.callDetailed, s.heartbeatShow = "", "", false, false
 }
 
-// enterStageLocked marks a stage in progress and the previously running stage completed.
+// enterStageLocked marks a stage in progress and the previously running stage completed. A
+// completed stage never reopens: the review that follows external review findings runs under the
+// external review stage, so progress does not go backwards.
 func (s *Sink) enterStageLocked(st Stage) {
 	idx := s.stageIndexLocked(st)
 	if idx < 0 {
 		s.stages = append(s.stages, stageState{stage: st, status: entryPending})
 		idx = len(s.stages) - 1
+	}
+	if s.stages[idx].status == entryCompleted {
+		return
 	}
 	if s.stageOpen >= 0 && s.stageOpen != idx {
 		s.stages[s.stageOpen].status = entryCompleted
@@ -548,11 +541,10 @@ func (s *Sink) refreshPlanLocked() {
 	if len(entries) == 0 {
 		return
 	}
-	raw, err := json.Marshal(entries)
-	if err != nil || string(raw) == s.lastPlan {
+	if slices.Equal(entries, s.lastPlan) {
 		return
 	}
-	s.lastPlan = string(raw)
+	s.lastPlan = entries
 	s.sendLocked(planUpdate{SessionUpdate: "plan", Entries: entries})
 }
 
@@ -585,7 +577,10 @@ func (s *Sink) heartbeat(seq int) {
 	}
 	waited := now.Sub(s.lastActivity)
 	if s.callID == "" {
+		// the heartbeat's own call is not activity, or later beats would measure from it
+		last := s.lastActivity
 		s.openCallLocked("loopai", false)
+		s.lastActivity = last
 	}
 	title := s.callTitle + " · waiting " + formatWait(waited)
 	s.heartbeatShow = true

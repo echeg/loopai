@@ -14,10 +14,11 @@ import (
 )
 
 // stopTimeout bounds how long Stop waits for pending updates to reach the server. Each request has
-// its own requestTimeout, and Stop can arrive while a title is in flight, so the bound covers that
-// title, the final title, and the unpin with a margin. A missed unpin leaves the thread pinned, and
-// a later run bound to it reads that pin as the user's and never releases it.
-const stopTimeout = 3*requestTimeout + time.Second
+// its own requestTimeout, and bind and pin share 2*requestTimeout each. The longest chain after Stop
+// is a pin already in flight, the final title, and the unpin; a bind in flight when Stop arrives
+// skips the pin, so it is shorter. A missed unpin leaves the thread pinned, and a later run bound to
+// it reads that pin as the user's and never releases it.
+const stopTimeout = 4*requestTimeout + time.Second
 
 type waitingKind uint8
 
@@ -407,11 +408,17 @@ func (r *Reporter) send(threadID, title string) error {
 	return nil
 }
 
-// bindAndPin binds the thread with its first title, then takes the run's pin.
+// bindAndPin binds the thread with its first title, then takes the run's pin. A run that stopped
+// while the bind was in flight takes no pin, since its unpin might not fit within stopTimeout.
 func (r *Reporter) bindAndPin(title string) (threadID string, pinned bool, err error) {
 	threadID, err = r.bind(title)
 	if err != nil {
 		return "", false, err
+	}
+	select {
+	case <-r.quit:
+		return threadID, false, nil
+	default:
 	}
 	return threadID, r.pin(threadID), nil
 }

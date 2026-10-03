@@ -209,7 +209,6 @@ func TestSinkNilIsNoop(t *testing.T) {
 	var s *Sink
 	inner := &recordingLogger{}
 	assert.NotPanics(t, func() {
-		s.update(map[string]any{"sessionUpdate": "plan"})
 		s.Message("text")
 		s.SetPlan("plan.md", StageReview)
 		s.OnPhase("", status.PhaseTask)
@@ -218,11 +217,6 @@ func TestSinkNilIsNoop(t *testing.T) {
 		s.Finish(true)
 	})
 	assert.Same(t, inner, s.WrapLogger(inner), "a nil sink returns the logger unchanged")
-	assert.NotPanics(t, func() {
-		(&Sink{}).Message("text")
-		(&Sink{}).OnPhase("", status.PhaseTask)
-		(&Sink{}).Output("text")
-	})
 }
 
 func TestSinkIgnoresWriteErrors(t *testing.T) {
@@ -385,7 +379,10 @@ func TestSinkPlanEntries(t *testing.T) {
 	s.OnPhase(status.PhaseExternalReview, status.PhaseExternalEval)
 	assert.Empty(t, only(rec.take(t), "plan"), "evaluation belongs to the external review stage")
 
-	s.OnPhase(status.PhaseExternalEval, status.PhaseFinalize)
+	s.OnPhase(status.PhaseExternalEval, status.PhaseReview)
+	assert.Empty(t, only(rec.take(t), "plan"), "the review after external findings does not reopen the completed review stage")
+
+	s.OnPhase(status.PhaseReview, status.PhaseFinalize)
 	assert.Equal(t, []string{"Task 1: step 1=completed", "Task 2: step 2=completed", "Review=completed", "Finalize=in_progress",
 		"External review=completed"}, planStatuses(t, rec.take(t)))
 
@@ -587,6 +584,9 @@ func TestSinkHeartbeatWithoutOpenCall(t *testing.T) {
 		toolCallMsg("loopai-1", "loopai"),
 		toolUpdateMsg("loopai-1", "loopai · waiting 4m", ""),
 	}, rec.take(t))
+	clk.Advance(heartbeatIdle)
+	assert.Equal(t, []map[string]any{toolUpdateMsg("loopai-1", "loopai · waiting 8m", "")}, rec.take(t),
+		"the heartbeat's own call does not reset the elapsed wait")
 	s.Finish(true)
 }
 

@@ -182,6 +182,11 @@ the turn and shows the usage line.
 The plan runs in place in the thread's working directory, without `--worktree`: T3 Code owns the
 thread's worktree, as with `--t3-launch`. On the default branch, loopai creates the plan branch in
 that checkout as an ordinary run does. `t3`, `orca`, and `use_worktree` are forced off for the run.
+Unlike `--t3-launch`, agent mode copies nothing into the thread's directory, and a worktree T3
+Code creates holds committed files only. A new-worktree thread therefore sees neither an
+uncommitted plan, which fails as missing, nor untracked `.loopai/config`, `prompts/`, or `agents/`
+files from the main checkout, which are silently absent. Commit the plan first, and commit those
+overrides or move them to the global config when they must apply there.
 A plan file that is missing is an error rather than an interactive selector. So are an empty
 repository and other conditions that would otherwise prompt. Only full plan execution is
 available: review-only modes, plan creation, and interactive questions are out of scope.
@@ -224,10 +229,13 @@ directory. Human-readable output goes to the agent's stderr, never to stdout, wh
 protocol messages. Config is loaded per message in the thread's working directory, so an invalid
 config fails that turn with the error rather than stopping the provider from starting.
 
-To trace the ACP traffic, have the launcher start loopai with `--debug`. On Linux and macOS, point
-`LOOPAI_ACP_LOOPAI` in the T3 Code server's environment at an executable script that runs
-`exec /path/to/loopai --debug "$@"`. The trace goes to stderr, and MCP header values in it are
-redacted.
+To see which protocol requests loopai handled, have the launcher start loopai with `--debug`. On
+Linux and macOS, point `LOOPAI_ACP_LOOPAI` in the T3 Code server's environment at an executable
+script that runs `exec /path/to/loopai --debug "$@"`. Each `initialize`, `authenticate`,
+`session/new`, `session/load`, `session/set_*`, `session/cancel`, and `session/prompt` (started,
+completed, failed, or canceled) is written to stderr as one `acp:` line, with MCP header values
+redacted. Message payloads, the prompt text, and `session/update` notifications are not traced;
+a failure's message is in the turn's error and in the run's progress log under `.loopai/progress/`.
 
 ### Caveats and removal
 

@@ -677,10 +677,11 @@ the checkout root, recording `worktreePath` only when the directory outlives the
 `--worktree` checkout is removed after success, so it registers the branch alone. All network work
 runs on one goroutine that coalesces to the latest title and sends only changed titles, because
 every `thread.meta.update` is a persisted T3 event; the first error disables it with one warning,
-and `Stop` waits at most `stopTimeout`, sized for a title already in flight, the final title, and
+and `Stop` waits at most `stopTimeout`, sized for a pin already in flight, the final title, and
 the unpin, because a missed unpin leaves a pin the next run bound to that thread reads as the
 user's and never releases. The worker pins the thread right after
-binding it and unpins it on exit, skipping a bound thread the user already pinned; pin failures are
+binding it and unpins it on exit, skipping a bound thread the user already pinned and any run that
+stopped while the bind was in flight, whose unpin would not fit the bound; pin failures are
 ignored rather than disabling titles, since `thread.pin` is cosmetic and absent on older servers. Title updates carry only `title`:
 `branch` or `worktreePath` in a meta update re-triggers T3's server-side PR lookup. `--t3-launch`
 is routed with close-out through `runConfiguredStandaloneCommand` and is part of
@@ -723,7 +724,9 @@ block is the user's message; T3 appends a runtime-instructions block that must b
 maps events to `session/update`. Phases become `tool_call`s that close when the next opens. Their ids
 carry a random per-sink prefix, because ACP requires a tool call id to be unique within a session, a
 session spans many prompts with one sink each, and `session/load` revives it in a new process. Sections
-refresh `plan` entries built from the parsed plan file plus the review stages `acpStages` lists; the
+refresh `plan` entries built from the parsed plan file plus the review stages `acpStages` lists. A
+completed stage never reopens, so the review that follows external-review findings stays under the
+external review stage instead of moving progress backwards. The
 plan is reread from its `completed/` copy once archived, and `Finish` returns an unfinished task or
 stage to `pending` on failure. `PrintAligned` becomes `agent_thought_chunk`, coalesced to one per
 500 ms and capped per chunk. The report becomes the final `agent_message_chunk`, sent after

@@ -7,9 +7,12 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -260,6 +263,73 @@ func TestLoadACPSessionConfigForcesT3OrcaAndWorktreeOff(t *testing.T) {
 	_, err = loadACPSessionConfig(o)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "task_model = codex:")
+}
+
+// sigpipeHelperEnv makes the test binary act as TestCatchSIGPIPE's child process.
+const sigpipeHelperEnv = "LOOPAI_TEST_SIGPIPE_HELPER"
+
+// TestCatchSIGPIPE re-executes the test binary with stderr connected to a pipe whose reader is
+// closed: with the handler installed, the write must fail with EPIPE instead of killing the process.
+func TestCatchSIGPIPE(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGPIPE is POSIX-only")
+	}
+	const helperExit = 7
+	if os.Getenv(sigpipeHelperEnv) == "1" {
+		defer catchSIGPIPE()()
+		if _, err := os.Stderr.WriteString("x"); errors.Is(err, syscall.EPIPE) {
+			os.Exit(helperExit)
+		}
+		os.Exit(1)
+	}
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCatchSIGPIPE$")
+	cmd.Env = append(os.Environ(), sigpipeHelperEnv+"=1")
+	cmd.Stderr = w
+	runErr := cmd.Run()
+	require.NoError(t, w.Close())
+
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, runErr, &exitErr)
+	assert.Equal(t, helperExit, exitErr.ExitCode(), "the write to the closed pipe returns EPIPE: %v", runErr)
+}
+
+func TestAbsPath(t *testing.T) {
+	dir := t.TempDir()
+	abs := filepath.Join(t.TempDir(), "plan.md")
+	assert.Equal(t, filepath.Join(dir, "docs", "plans", "x.md"), absPath(dir, filepath.Join("docs", "plans", "x.md")),
+		"a relative plan resolves against the session directory")
+	assert.Equal(t, abs, absPath(dir, abs), "an absolute plan is kept as given")
+}
+
+func TestPromptFlagsOverrideSessionConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "config"),
+		[]byte("task_model = claude:haiku\nreview_model = claude:haiku\nexternal_reviewers = codex\n"), 0o600))
+	t.Chdir(dir)
+	base := opts{ConfigDir: t.TempDir()}
+
+	prompt, err := parseACPPrompt("docs/plans/x.md --task-model claude:sonnet --review-model claude:opus " +
+		"--external-reviewers claude:sonnet")
+	require.NoError(t, err)
+	o := promptOpts(base, prompt)
+	cfg, err := loadACPSessionConfig(o)
+	require.NoError(t, err)
+	assert.Equal(t, "claude:sonnet", resolveSpec(o.TaskModel, cfg.TaskModel))
+	assert.Equal(t, "claude:opus", resolveSpec(o.ReviewModel, cfg.ReviewModel))
+	assert.Equal(t, "claude:sonnet", cfg.ExternalReviewers, "the prompt's reviewer chain replaces the configured one")
+
+	prompt, err = parseACPPrompt("docs/plans/x.md")
+	require.NoError(t, err)
+	o = promptOpts(base, prompt)
+	cfg, err = loadACPSessionConfig(o)
+	require.NoError(t, err)
+	assert.Equal(t, "claude:haiku", resolveSpec(o.TaskModel, cfg.TaskModel), "a prompt without flags keeps the configured values")
+	assert.Equal(t, "codex", cfg.ExternalReviewers)
 }
 
 func TestEnterDir(t *testing.T) {
@@ -738,16 +808,19 @@ func TestServeACPSecondPromptAfterFailedRun(t *testing.T) {
 func TestServeACPCancelMidRun(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "started")
 	f := newACPFixture(t, func(acpFixture) string {
-		return "#!/bin/sh\ncat >/dev/null\ntouch '" + marker + "'\nexec sleep 30\n"
+		// outlives every wait below, so only a killed provider lets the prompt end in time
+		return "#!/bin/sh\ncat >/dev/null\ntouch '" + marker + "'\nexec sleep 300\n"
 	})
 	c := startACPServer(t.Context(), t, opts{ConfigDir: f.cfgDir}, io.Discard)
 	sid := c.handshake(f.repo)
 
 	id := c.prompt(sid, "docs/plans/two.md")
 	require.Eventually(t, func() bool { _, err := os.Stat(marker); return err == nil }, 30*time.Second, 10*time.Millisecond)
+	canceledAt := time.Now()
 	c.send(map[string]any{"method": "session/cancel", "params": map[string]any{"sessionId": sid}})
 
 	requireACPStopReason(t, c.response(id), "cancelled") //nolint:misspell // ACP wire value
+	assert.Less(t, time.Since(canceledAt), 20*time.Second, "cancellation kills the provider instead of waiting for it")
 	c.close()
 	data, err := os.ReadFile(f.planFile)
 	require.NoError(t, err)
@@ -758,7 +831,8 @@ func TestServeACPCancelMidRun(t *testing.T) {
 func TestServeACPContextCancelShutsDown(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "started")
 	f := newACPFixture(t, func(acpFixture) string {
-		return "#!/bin/sh\ncat >/dev/null\ntouch '" + marker + "'\nexec sleep 30\n"
+		// outlives every wait below, so only a killed provider lets the server return in time
+		return "#!/bin/sh\ncat >/dev/null\ntouch '" + marker + "'\nexec sleep 300\n"
 	})
 	ctx, cancel := context.WithCancel(t.Context())
 	c := startACPServer(ctx, t, opts{ConfigDir: f.cfgDir}, io.Discard)
@@ -766,12 +840,14 @@ func TestServeACPContextCancelShutsDown(t *testing.T) {
 
 	id := c.prompt(sid, "docs/plans/two.md")
 	require.Eventually(t, func() bool { _, err := os.Stat(marker); return err == nil }, 30*time.Second, 10*time.Millisecond)
+	canceledAt := time.Now()
 	cancel()
 
 	requireACPError(t, c.response(id))
 	select {
 	case err := <-c.served:
 		require.NoError(t, err, "serveACP returns once the running prompt is answered, while stdin stays open")
+		assert.Less(t, time.Since(canceledAt), 20*time.Second, "shutdown kills the provider instead of waiting for it")
 	case <-time.After(60 * time.Second):
 		t.Fatal("serveACP did not return after cancellation")
 	}

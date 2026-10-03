@@ -165,10 +165,7 @@ func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Si
 	if err != nil {
 		return acp.Result{Message: fmt.Sprintf("%v\n\n%s", err, acpPromptUsage)}, fmt.Errorf("malformed prompt: %w", err)
 	}
-	o := a.base
-	o.PlanFile, o.PlanFiles = prompt.PlanFile, prompt.PlanFiles
-	o.TaskModel, o.ReviewModel = prompt.TaskModel, prompt.ReviewModel
-	o.ExternalReviewers, o.externalReviewersSet = prompt.ExternalReviewers, prompt.externalReviewersSet
+	o := promptOpts(a.base, prompt)
 
 	leave, err := enterDir(req.Cwd, a.out)
 	if err != nil {
@@ -198,6 +195,15 @@ func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Si
 
 	runErr := errors.Join(selectAndExecutePlan(ctx, o, execReq, selector), release())
 	return acpRunResult(o.PlanFile, execReq.Outcome, runErr)
+}
+
+// promptOpts layers a parsed prompt's plan and pass-through flags over the process-level options.
+func promptOpts(base, prompt opts) opts {
+	o := base
+	o.PlanFile, o.PlanFiles = prompt.PlanFile, prompt.PlanFiles
+	o.TaskModel, o.ReviewModel = prompt.TaskModel, prompt.ReviewModel
+	o.ExternalReviewers, o.externalReviewersSet = prompt.ExternalReviewers, prompt.externalReviewersSet
+	return o
 }
 
 // loadACPSessionConfig loads config in the session's working directory. The session reports
