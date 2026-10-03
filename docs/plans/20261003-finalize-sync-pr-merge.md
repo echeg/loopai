@@ -143,12 +143,12 @@
 - ➕ [x] fixed task 4's worktree path dropping `ChainNotLast` (every worktree chain member would have synced); the request rebuilt inside the worktree is now `worktreeExecuteRequest`
 
 ### Task 6: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented, including `sync`, `pr`, `merge` modes and `--skip-finalize`
-- [ ] verify edge cases: already up to date, no validation commands, review-only modes (sync only, no PR), plan chain, `--worktree` and T3-managed worktree preservation
-- [ ] run `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] verify test coverage of the new code is 80%+
+- [x] verify all requirements from Overview are implemented, including `sync`, `pr`, `merge` modes and `--skip-finalize`
+- [x] verify edge cases: already up to date, no validation commands, review-only modes (sync only, no PR), plan chain, `--worktree` and T3-managed worktree preservation
+- [x] run `make test` (every component run separately: the Go suite on Linux in WSL passes in full; `-race` was run on Windows and reports no data race; the asset, manifest, grill, codex-skill, completion, imagegen, and wrapper suites pass. ⚠️ the Go suite is POSIX-only: on Windows it fails on shell-script stubs, chmod permission tests, and Git for Windows' default `core.autocrlf=true`, in pre-existing tests and the new ones alike, and the symlink regression suites need real symlinks)
+- [x] run `make lint` - all issues must be fixed (0 issues, also with `GOOS=linux`)
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...` (linux/amd64 and darwin/arm64 build too)
+- [x] verify test coverage of the new code is 80%+ (91.1% of the non-test Go statements this branch adds, 809/888; every file at or above 84.5%; overall 88.1%)
 
 ### Task 7: [Final] Update documentation and skills
 - [ ] update `README.md`, `llms.txt`, `docs/t3-code.md`, `docs/custom-providers.md`, and the finalize sections of `CLAUDE.md`
