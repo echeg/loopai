@@ -2695,14 +2695,7 @@ func TestProcessTreeHelper(t *testing.T) {
 func startProcessTreeChild(t *testing.T) {
 	t.Helper()
 
-	if gate := os.Getenv("LOOPAI_TREE_GATE"); gate != "" {
-		for {
-			if _, err := os.Stat(gate); err == nil {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
+	waitForProcessTreeGate(os.Getenv("LOOPAI_TREE_GATE"))
 	exe, err := os.Executable()
 	require.NoError(t, err)
 	child := osexec.Command(exe, "-test.run=^TestProcessTreeHelper$")
@@ -2711,10 +2704,23 @@ func startProcessTreeChild(t *testing.T) {
 	require.NoError(t, child.Start())
 	fmt.Printf("CHILD_PID:%d\n", child.Process.Pid)
 	if os.Getenv("LOOPAI_TREE_EXIT") == "1" {
+		waitForProcessTreeGate(os.Getenv("LOOPAI_TREE_EXIT_GATE"))
 		os.Exit(0)
 	}
 	if ready := os.Getenv("LOOPAI_TREE_READY"); ready != "" {
 		require.NoError(t, os.WriteFile(ready, nil, 0o600))
+	}
+}
+
+func waitForProcessTreeGate(gate string) {
+	if gate == "" {
+		return
+	}
+	for {
+		if _, err := os.Stat(gate); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

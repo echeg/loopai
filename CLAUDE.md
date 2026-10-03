@@ -591,12 +591,14 @@ still returns the context error, and existing idle/session timeouts remain in fo
 Without an observed completion event (including a missing rollout file), there is no
 grace kill. This mechanism applies independently of whether reviewer idle timeout is enabled.
 
-Claude and Codex runners on Windows assign the started process to a Job Object with
-`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Cancellation, idle/session timeout, and Codex
+Claude and Codex runners on Windows start the process suspended, assign it to a Job Object
+with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, then resume its initial thread. This prevents
+fast launcher descendants from escaping assignment. Cancellation, idle/session timeout, and Codex
 completion-grace expiry terminate the job, including launcher descendants such as
 `cmd.exe -> node -> codex.exe`. Job creation, assignment, or termination failure falls
-back to a bounded `taskkill /T /F /PID <pid>` invocation. `Wait` closes the job handle,
-killing remaining job descendants after normal exit too. Cancellation also closes stdout
+back to a bounded `taskkill /T /F /PID <pid>` invocation. An exit watcher closes the job handle
+as soon as the launcher exits, killing remaining descendants even while callers drain output.
+`Wait` joins that watcher after reaping the command. Cancellation also closes stdout
 and stderr read pipes so escaped descendants cannot keep the runner blocked on output.
 Unix runners retain process-group termination.
 

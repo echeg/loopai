@@ -77,9 +77,6 @@ func (r *execCodexRunner) Run(ctx context.Context, name string, args ...string) 
 		cmd.Stdin = r.stdin
 	}
 
-	// create new process group so we can kill all descendants on cleanup
-	setupProcessGroup(cmd)
-
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return CodexStreams{}, nil, fmt.Errorf("stderr pipe: %w", err)
@@ -90,12 +87,10 @@ func (r *execCodexRunner) Run(ctx context.Context, name string, args ...string) 
 		return CodexStreams{}, nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
-	if err := cmd.Start(); err != nil {
+	cleanup, err := startProcessGroup(cmd, ctx.Done(), stdout, stderr)
+	if err != nil {
 		return CodexStreams{}, nil, fmt.Errorf("start command: %w", err)
 	}
-
-	// setup process group cleanup with graceful shutdown on context cancellation
-	cleanup := newProcessGroupCleanup(cmd, ctx.Done(), stdout, stderr)
 
 	return CodexStreams{Stderr: stderr, Stdout: stdout}, cleanup.Wait, nil
 }
