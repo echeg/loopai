@@ -109,14 +109,14 @@
 - Validation passed on Windows: `go test -race ./pkg/executor/...`, `GOOS=windows GOARCH=amd64 go build ./...`, and executor-scoped `golangci-lint`; the Linux executor test binary also cross-compiled. Cancellation closes runner read pipes explicitly because these readers drain before `Wait`; Codex preserves the context error over resulting pipe-close errors. Tests cover job and taskkill tree termination, normal-exit orphan cleanup, handle closure, and bounded Claude/Codex cancellation.
 
 ### Task 3: Finish the session on `task_complete`
-- [ ] in the rollout tailer, recognize `event_msg` records with `payload.type == "task_complete"` and publish the event with `last_agent_message` to `Run`; start the tailer whenever a session id is available, even when display handlers are nil
-- [ ] in `Run`, start a grace timer (default 60 s, unexported field for tests) when `task_complete` arrives. If the process has not exited when it fires:
+- [x] in the rollout tailer, recognize `event_msg` records with `payload.type == "task_complete"` and publish the event with `last_agent_message` to `Run`; start the tailer whenever a session id is available, even when display handlers are nil
+- [x] in `Run`, start a grace timer (default 60 s, unexported field for tests) when `task_complete` arrives. If the process has not exited when it fires:
   - log one line through `OutputHandler`: `codex did not exit after task_complete; terminating`
   - kill the process tree
   - return a successful `Result` whose output is stdout when non-empty, otherwise `last_agent_message`, with the signal detected on that text
-- [ ] keep current behavior when the process exits on its own: no extra delay, and the stdout result is unchanged
-- [ ] make cancellation and idle-timeout paths unaffected: a parent cancel still returns the context error
-- [ ] write tests with a fake runner and rollout fixtures:
+- [x] keep current behavior when the process exits on its own: no extra delay, and the stdout result is unchanged
+- [x] make cancellation and idle-timeout paths unaffected: a parent cancel still returns the context error
+- [x] write tests with a fake runner and rollout fixtures:
   - clean exit after `task_complete`
   - hang after `task_complete` → grace kill → success with `last_agent_message`
   - hang with stdout already captured → stdout wins
@@ -124,7 +124,8 @@
   - no `task_complete` and no exit → existing timeouts still govern
   - parent cancel during grace → context error
   - tailer runs with nil display handlers
-- [ ] run `go test -race ./pkg/executor/...` - must pass before task 4
+- [x] run `go test -race ./pkg/executor/...` - must pass before task 4
+- Validation passed: `go test -race ./pkg/executor/...`, executor-scoped `golangci-lint`, and `git diff --check`. Regression tests cover pipe and wait hangs, preserved partial stdout, signal fallback, normal/failed exits, parent cancellation, idle timeout, nil handlers, duplicate completion records, and ignoring child-session completion. Grace tests inject the timer clock; production uses 60 seconds.
 
 ### Task 4: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented

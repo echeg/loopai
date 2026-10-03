@@ -126,6 +126,9 @@ type CodexExecutor struct {
 	targetOS             string                                // for testing; empty uses runtime.GOOS
 	runner               CodexRunner                           // for testing, nil uses default
 	now                  func() time.Time                      // arrival clock fallback for rollout events without timestamps; nil uses time.Now
+
+	completionGrace time.Duration                                  // zero uses the default 60-second task_complete grace period
+	completionTimer func(time.Duration) (<-chan time.Time, func()) // for testing; nil uses time.NewTimer
 }
 
 // CodexReviewerAgentName is the agent name registered with codex when
@@ -269,13 +272,11 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	// set up idle timeout: derive a cancellable context that fires when no output
 	// is received for IdleTimeout duration. the touch closure resets the timer on
 	// each stderr line and on each stdout read; mirrors the ClaudeExecutor pattern.
-	execCtx := ctx
+	execCtx, execCancel := context.WithCancelCause(ctx)
+	defer execCancel(nil)
 	idleTouch := func() {} // no-op by default
 	if e.IdleTimeout > 0 {
-		var idleCancel context.CancelFunc
-		execCtx, idleCancel = context.WithCancel(ctx)
-		defer idleCancel()
-		timer := time.AfterFunc(e.IdleTimeout, idleCancel)
+		timer := time.AfterFunc(e.IdleTimeout, func() { execCancel(context.DeadlineExceeded) })
 		defer timer.Stop()
 		idleTouch = func() { timer.Reset(e.IdleTimeout) }
 	}
@@ -302,7 +303,13 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 		})
 	}()
 
-	tailCancel, tailDone := e.startRolloutTail(execCtx, sessionIDCh, idleTouch)
+	completed := make(chan string, 1)
+	runDone := make(chan struct{})
+	completionDone := make(chan string, 1)
+	go func() {
+		completionDone <- e.watchTaskComplete(execCtx, execCancel, completed, runDone)
+	}()
+	tailCancel, tailDone := e.startRolloutTail(execCtx, sessionIDCh, idleTouch, completed)
 
 	// read stdout entirely as final response; wrap with touch-on-read so reads
 	// keep the idle timer alive even while stderr is quiet.
@@ -318,12 +325,18 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	// wait for command completion; once wait() returns the codex process has
 	// fully exited and flushed the last assistant message to its rollout file
 	waitErr := wait()
+	close(runDone)
+	lastAgentMessage := <-completionDone
 
 	// codex has exited; signal tailer to do its final drain and stop. done
 	// after wait() so the tailer keeps following until the rollout file is
 	// guaranteed complete and the final assistant line is not dropped.
 	tailCancel()
 	<-tailDone
+
+	if errors.Is(context.Cause(execCtx), errCodexTaskComplete) && ctx.Err() == nil {
+		return taskCompleteResult(stdoutContent, lastAgentMessage)
+	}
 
 	// detect signal in stdout (the actual response)
 	signal := detectSignal(stdoutContent)
@@ -349,6 +362,62 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 
 	// return stdout content as the result (the actual answer from codex)
 	return Result{Output: stdoutContent, Signal: signal, Error: finalErr}
+}
+
+// errCodexTaskComplete distinguishes a grace kill from parent cancellation or idle timeout.
+var errCodexTaskComplete = errors.New("codex task_complete grace expired")
+
+// watchTaskComplete waits for the main session's first completion event, then gives
+// the process time to exit normally. Canceling execCtx uses the runner's existing
+// process-tree cleanup and unblocks its output readers.
+func (e *CodexExecutor) watchTaskComplete(ctx context.Context, cancel context.CancelCauseFunc,
+	completed <-chan string, runDone <-chan struct{}) string {
+	var message string
+	select {
+	case <-ctx.Done():
+		return ""
+	case <-runDone:
+		return ""
+	case message = <-completed:
+	}
+	// Listen only for the first completion; duplicates cannot extend the grace.
+	timerCh, stop := e.newTaskCompleteTimer()
+	defer stop()
+	select {
+	case <-ctx.Done():
+	case <-runDone:
+	case <-timerCh:
+		// Prefer a completed run when exit and timer become ready together.
+		select {
+		case <-runDone:
+			return message
+		default:
+		}
+		cancel(errCodexTaskComplete)
+		if errors.Is(context.Cause(ctx), errCodexTaskComplete) {
+			e.emitOutput("codex did not exit after task_complete; terminating")
+		}
+	}
+	return message
+}
+
+func taskCompleteResult(stdout, lastAgentMessage string) Result {
+	if stdout == "" {
+		stdout = lastAgentMessage
+	}
+	return Result{Output: stdout, Signal: detectSignal(stdout)}
+}
+
+func (e *CodexExecutor) newTaskCompleteTimer() (<-chan time.Time, func()) {
+	grace := e.completionGrace
+	if grace <= 0 {
+		grace = 60 * time.Second
+	}
+	if e.completionTimer != nil {
+		return e.completionTimer(grace)
+	}
+	timer := time.NewTimer(grace)
+	return timer.C, func() { timer.Stop() }
 }
 
 // finalError reconciles stderr/stdout/wait errors into the single error returned
@@ -571,11 +640,12 @@ func isCodexErrorLine(line string) bool {
 		strings.HasPrefix(lower, "panic:")
 }
 
-// readStdout reads the entire stdout content as the final response.
+// readStdout reads the final response, retaining captured bytes when cancellation
+// closes the pipe so a grace kill can still prefer stdout over the rollout message.
 func (e *CodexExecutor) readStdout(r io.Reader) (string, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return "", fmt.Errorf("read stdout: %w", err)
+		return string(data), fmt.Errorf("read stdout: %w", err)
 	}
 	return string(data), nil
 }
@@ -672,9 +742,8 @@ func (e *CodexExecutor) extractSessionID(line string) string {
 // sessionIDCh, then follows codex's session rollout file until the returned
 // cancel is called. caller must invoke tailCancel and wait on tailDone before
 // returning so the tailer drains remaining file content and exits cleanly.
-// the goroutine is a no-op when both rollout handlers are nil — extracted
-// from Run() to keep its cyclomatic complexity in check.
-func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-chan string, idleTouch func()) (context.CancelFunc, <-chan struct{}) {
+// Completion monitoring also requires the tailer when both display handlers are nil.
+func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-chan string, idleTouch func(), completed chan<- string) (context.CancelFunc, <-chan struct{}) {
 	tailCtx, tailCancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	go func() {
@@ -683,7 +752,7 @@ func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-c
 		case <-tailCtx.Done():
 			return
 		case id := <-sessionIDCh:
-			e.tailRolloutFile(tailCtx, id, idleTouch)
+			e.tailRolloutFile(tailCtx, id, idleTouch, completed)
 		}
 	}()
 	return tailCancel, done
@@ -729,10 +798,7 @@ func (e *CodexExecutor) findRolloutFile(ctx context.Context, sessionID string) s
 // runs until ctx is canceled. on cancellation, drains any remaining buffered
 // lines before returning so late writes (e.g. codex flushing the final
 // assistant message just before exit) are not lost.
-func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, idleTouch func()) {
-	if e.OutputHandler == nil && e.CommandTimingHandler == nil {
-		return
-	}
+func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, idleTouch func(), completed chan<- string) {
 	path := e.findRolloutFile(ctx, sessionID)
 	if path == "" {
 		// suppress the diagnostic when the session was canceled — findRolloutFile
@@ -754,6 +820,7 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 		log.Printf("codex rollout file open failed (%s); assistant output streaming disabled for this session", path)
 		return
 	}
+	states[path].completed = completed // child rollouts never complete the main invocation
 	defer func() {
 		for _, state := range states {
 			_ = state.file.Close()
@@ -900,10 +967,11 @@ func (e *CodexExecutor) shouldDiscoverChildRollout(
 }
 
 type rolloutTailState struct {
-	file   *os.File
-	acc    []byte
-	timing *codexTimingState
-	render bool
+	completed chan<- string
+	file      *os.File
+	acc       []byte
+	timing    *codexTimingState
+	render    bool
 }
 
 func newRolloutTailState(path string, render bool) (*rolloutTailState, error) {
@@ -928,7 +996,7 @@ func (e *CodexExecutor) drainRolloutState(state *rolloutTailState, now func() ti
 				if i < 0 {
 					break
 				}
-				e.processRolloutLine(state.acc[:i], state.timing, now, state.render)
+				e.processRolloutLine(state.acc[:i], state.timing, now, state.render, state.completed)
 				state.acc = state.acc[i+1:]
 			}
 		}
@@ -941,7 +1009,7 @@ func (e *CodexExecutor) drainRolloutState(state *rolloutTailState, now func() ti
 	}
 	if final {
 		if line := bytes.TrimSpace(state.acc); len(line) > 0 {
-			e.processRolloutLine(line, state.timing, now, state.render)
+			e.processRolloutLine(line, state.timing, now, state.render, state.completed)
 		}
 		state.acc = nil
 	}
@@ -1011,15 +1079,17 @@ type rolloutEvent struct {
 // messages (payload.type=message, role=assistant, text in Content), reasoning
 // summaries (payload.type=reasoning, titles in Summary), and the function_call /
 // custom tool records command timing reads (Name, Arguments, Input, CallID, Output).
+// It also consumes event_msg task_complete records (LastAgentMessage).
 type rolloutPayload struct {
-	Type      string          `json:"type"`
-	Role      string          `json:"role"`
-	Name      string          `json:"name"`
-	Arguments string          `json:"arguments"`
-	Input     string          `json:"input"`
-	CallID    string          `json:"call_id"`
-	Output    json.RawMessage `json:"output"`
-	Content   []struct {
+	LastAgentMessage string          `json:"last_agent_message"`
+	Type             string          `json:"type"`
+	Role             string          `json:"role"`
+	Name             string          `json:"name"`
+	Arguments        string          `json:"arguments"`
+	Input            string          `json:"input"`
+	CallID           string          `json:"call_id"`
+	Output           json.RawMessage `json:"output"`
+	Content          []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
@@ -1099,7 +1169,7 @@ var (
 
 func parseRolloutRecord(line []byte) (rolloutEvent, rolloutPayload, bool) {
 	var ev rolloutEvent
-	if err := json.Unmarshal(line, &ev); err != nil || ev.Type != "response_item" {
+	if err := json.Unmarshal(line, &ev); err != nil || (ev.Type != "response_item" && ev.Type != "event_msg") {
 		return rolloutEvent{}, rolloutPayload{}, false
 	}
 	var payload rolloutPayload
@@ -1109,9 +1179,18 @@ func parseRolloutRecord(line []byte) (rolloutEvent, rolloutPayload, bool) {
 	return ev, payload, true
 }
 
-func (e *CodexExecutor) processRolloutLine(line []byte, state *codexTimingState, now func() time.Time, render bool) {
+func (e *CodexExecutor) processRolloutLine(line []byte, state *codexTimingState, now func() time.Time, render bool, completed chan<- string) {
 	ev, payload, ok := parseRolloutRecord(line)
 	if !ok {
+		return
+	}
+	if ev.Type == "event_msg" {
+		if payload.Type == "task_complete" && render && completed != nil {
+			select {
+			case completed <- payload.LastAgentMessage:
+			default:
+			}
+		}
 		return
 	}
 	if e.CommandTimingHandler != nil {

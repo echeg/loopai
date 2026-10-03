@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1969,7 +1970,7 @@ func TestCodexExecutor_processRolloutLine_Rendering(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var got string
 			e := &CodexExecutor{OutputHandler: func(output string) { got = output }}
-			e.processRolloutLine([]byte(tc.line), newCodexTimingState(), time.Now, tc.render)
+			e.processRolloutLine([]byte(tc.line), newCodexTimingState(), time.Now, tc.render, nil)
 			assert.Equal(t, tc.want, got)
 		})
 	}
@@ -3240,7 +3241,7 @@ func TestCodexExecutor_trackRolloutCommandTiming_nilHandlerPreservesRendering(t 
 	line := []byte(`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"unchanged"}]}}`)
 
 	assert.NotPanics(t, func() {
-		e.processRolloutLine(line, newCodexTimingState(), time.Now, true)
+		e.processRolloutLine(line, newCodexTimingState(), time.Now, true, nil)
 	})
 	assert.Equal(t, "unchanged", got)
 }
@@ -3343,7 +3344,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 	tailDone := make(chan struct{})
 	go func() {
 		defer close(tailDone)
-		e.tailRolloutFile(ctx, sessionID, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil)
 	}()
 
 	// wait briefly for initial drain (assistant text + reasoning title)
@@ -3394,7 +3395,7 @@ func TestCodexExecutor_tailRolloutFile_tracksCommandsWithoutOutputHandler(t *tes
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil)
 	}()
 
 	select {
@@ -3426,7 +3427,7 @@ func TestCodexExecutor_tailRolloutFile_ProcessesUnterminatedFinalRecordOnCancel(
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil)
 	}()
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -3466,7 +3467,7 @@ func TestCodexExecutor_tailRolloutFile_TracksChildSessionCustomExec(t *testing.T
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil)
 	}()
 
 	select {
@@ -3621,7 +3622,7 @@ func TestCodexExecutor_tailRolloutFile_CancelDropsPendingCommand(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil)
 	}()
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -3879,4 +3880,239 @@ type processTreeCodexRunner struct {
 
 func (r *processTreeCodexRunner) Run(ctx context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
 	return r.runner.Run(ctx, r.executable, "-test.run=^TestProcessTreeHelper$")
+}
+
+// taskCompleteFixture isolates rollout lookup from the user's real Codex sessions.
+func taskCompleteFixture(t *testing.T, events string) (sessionID, dir string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CODEX_HOME", home)
+	sessionID = "019e3bbe-9788-79f1-b668-deadbeefcafe"
+	dir = filepath.Join(home, "sessions", "2026", "10", "03")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "rollout-test-"+sessionID+".jsonl"), []byte(events), 0o600))
+	return sessionID, dir
+}
+
+// taskCompleteRunner keeps both pipes and Wait open until exit or cancellation.
+// Cancellation deliberately returns pipe errors, just like real tree cleanup.
+func taskCompleteRunner(sessionID, stdout string, exit <-chan error) *mockCodexRunner {
+	return &mockCodexRunner{runFunc: func(ctx context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+		stderrR, stderrW := io.Pipe()
+		stdoutR, stdoutW := io.Pipe()
+		waitDone := make(chan error, 1)
+		go func() {
+			_, _ = fmt.Fprintln(stderrW, "session id: "+sessionID)
+			_, _ = io.WriteString(stdoutW, stdout)
+			var waitErr, pipeErr error
+			select {
+			case waitErr = <-exit:
+			case <-ctx.Done():
+				waitErr, pipeErr = errors.New("process killed"), os.ErrClosed
+			}
+			_ = stdoutW.CloseWithError(pipeErr)
+			_ = stderrW.CloseWithError(pipeErr)
+			waitDone <- waitErr
+		}()
+		return CodexStreams{Stderr: stderrR, Stdout: stdoutR}, func() error { return <-waitDone }, nil
+	}}
+}
+
+func TestCodexExecutor_Run_TaskComplete(t *testing.T) {
+	const message = "rollout answer <<<RALPHEX:ALL_TASKS_DONE>>>"
+	tests := []struct {
+		name       string
+		waitOnly   bool
+		action     string
+		stdout     string
+		nilHandler bool
+		idle       bool
+	}{
+		{name: "clean exit preserves stdout", action: "exit", stdout: "stdout answer"},
+		{name: "clean exit preserves empty stdout", action: "exit"},
+		{name: "failed exit stays an error", action: "fail", stdout: "partial answer"},
+		{name: "hang falls back to completion and detects signal", action: "grace"},
+		{name: "hang preserves stdout despite closed pipe", action: "grace", stdout: "stdout answer"},
+		{name: "hang with nil display handlers", action: "grace", nilHandler: true},
+		{name: "hang in wait after pipes close", action: "grace", waitOnly: true},
+		{name: "parent cancel during grace", action: "cancel"},
+		{name: "idle timeout during grace", action: "idle", idle: true},
+		{name: "grace with idle timeout configured", action: "grace", idle: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := `{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":` + strconv.Quote(message) + "}}\n"
+			sessionID, _ := taskCompleteFixture(t, event)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			exit := make(chan error, 1)
+			started := make(chan time.Duration, 1)
+			fire := make(chan time.Time, 1)
+			var stopped atomic.Bool
+			var lines []string // only read after Run has joined all callbacks
+			e := &CodexExecutor{
+				runner: taskCompleteRunner(sessionID, tt.stdout, exit),
+				completionTimer: func(d time.Duration) (<-chan time.Time, func()) {
+					started <- d
+					return fire, func() { stopped.Store(true) }
+				},
+			}
+			if tt.waitOnly {
+				e.runner = &mockCodexRunner{runFunc: func(runCtx context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+					return mockStreams("session id: "+sessionID+"\n", ""), func() error {
+						<-runCtx.Done()
+						return errors.New("process killed")
+					}, nil
+				}}
+			}
+			if !tt.nilHandler {
+				e.OutputHandler = func(line string) { lines = append(lines, line) }
+			}
+			if tt.idle {
+				e.IdleTimeout = 500 * time.Millisecond
+			}
+			resultCh := make(chan Result, 1)
+			go func() { resultCh <- e.Run(ctx, "review") }()
+			select {
+			case duration := <-started:
+				assert.Equal(t, 60*time.Second, duration)
+			case <-ctx.Done():
+				t.Fatal("task_complete did not start the grace timer")
+			}
+			switch tt.action {
+			case "exit":
+				exit <- nil
+			case "fail":
+				exit <- errors.New("exit status 1")
+			case "cancel":
+				cancel()
+			case "grace":
+				fire <- time.Now()
+			}
+			var result Result
+			select {
+			case result = <-resultCh:
+			case <-time.After(3 * time.Second):
+				t.Fatal("Run did not return after process termination")
+			}
+			assert.True(t, stopped.Load(), "grace timer must be stopped on every exit path")
+			assert.Equal(t, tt.action == "idle", result.IdleTimedOut)
+			switch tt.action {
+			case "cancel":
+				require.ErrorIs(t, result.Error, context.Canceled)
+			case "fail":
+				require.ErrorContains(t, result.Error, "exit status 1")
+			default:
+				require.NoError(t, result.Error)
+			}
+			want := tt.stdout
+			if tt.action == "grace" && want == "" {
+				want = message
+			}
+			assert.Equal(t, want, result.Output)
+			assert.Equal(t, detectSignal(want), result.Signal)
+			if tt.action == "grace" && !tt.nilHandler {
+				assert.Equal(t, []string{"codex did not exit after task_complete; terminating"}, lines)
+			} else {
+				assert.Empty(t, lines)
+			}
+		})
+	}
+}
+
+func TestCodexExecutor_Run_WithoutMainTaskComplete(t *testing.T) {
+	for _, child := range []bool{false, true} {
+		t.Run(fmt.Sprintf("child_completion_%t", child), func(t *testing.T) {
+			sessionID, dir := taskCompleteFixture(t, "")
+			if child {
+				events := `{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"` + sessionID + `"}}}}}` + "\n" +
+					`{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"child done"}}` + "\n"
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "rollout-test-019e3bbe-9788-79f1-b668-deadbeef0001.jsonl"), []byte(events), 0o600))
+			}
+			var timerStarted atomic.Bool
+			e := &CodexExecutor{
+				runner:               taskCompleteRunner(sessionID, "", nil),
+				IdleTimeout:          100 * time.Millisecond,
+				CommandTimingHandler: func(string, time.Duration) {}, // enable child discovery
+				completionTimer: func(time.Duration) (<-chan time.Time, func()) {
+					timerStarted.Store(true)
+					fire := make(chan time.Time, 1)
+					fire <- time.Now()
+					return fire, func() {}
+				},
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			result := e.Run(ctx, "review")
+			require.NoError(t, result.Error)
+			assert.True(t, result.IdleTimedOut)
+			assert.False(t, timerStarted.Load(), "only main-session task_complete can start grace")
+		})
+	}
+}
+
+func TestCodexExecutor_processRolloutLine_TaskComplete(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, line   string
+		render, want bool
+	}{
+		{name: "main completion", line: `{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"done"}}`, render: true, want: true},
+		{name: "child completion", line: `{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"done"}}`},
+		{name: "wrong envelope", line: `{"type":"response_item","payload":{"type":"task_complete","last_agent_message":"done"}}`, render: true},
+		{name: "other event", line: `{"type":"event_msg","payload":{"type":"task_started"}}`, render: true},
+		{name: "malformed completion", line: `{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":1}}`, render: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			completed := make(chan string, 1)
+			e := &CodexExecutor{}
+			// A full or nil notification channel must never block rollout draining.
+			for range 2 {
+				e.processRolloutLine([]byte(tt.line), newCodexTimingState(), time.Now, tt.render, completed)
+			}
+			e.processRolloutLine([]byte(tt.line), newCodexTimingState(), time.Now, tt.render, nil)
+			if tt.want {
+				require.Len(t, completed, 1)
+				assert.Equal(t, "done", <-completed)
+			} else {
+				assert.Empty(t, completed)
+			}
+		})
+	}
+}
+
+func TestCodexExecutor_newTaskCompleteTimer(t *testing.T) {
+	t.Parallel()
+	e := &CodexExecutor{completionGrace: time.Millisecond}
+	fire, stop := e.newTaskCompleteTimer()
+	defer stop()
+	select {
+	case <-fire:
+	case <-time.After(time.Second):
+		t.Fatal("configured grace duration did not expire")
+	}
+}
+
+func TestCodexExecutor_watchTaskComplete_ExitWinsExpiredTimer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	completed := make(chan string, 2)
+	completed <- "first"
+	completed <- "duplicate"
+	runDone := make(chan struct{})
+	var stopped bool
+	e := &CodexExecutor{completionTimer: func(time.Duration) (<-chan time.Time, func()) {
+		fire := make(chan time.Time, 1)
+		fire <- time.Now()
+		close(runDone)
+		return fire, func() { stopped = true }
+	}}
+	assert.Equal(t, "first", e.watchTaskComplete(ctx, cancel, completed, runDone))
+	require.NoError(t, ctx.Err(), "an already exited process must not be grace-killed")
+	assert.True(t, stopped)
+	assert.Len(t, completed, 1, "duplicates must not restart the timer")
 }
