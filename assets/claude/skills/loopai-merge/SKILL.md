@@ -81,6 +81,20 @@ Do not turn the fallback log into report facts. Explain that risk, migration, de
 
 Store the resolved base branch as `BASE` and verify it names a local branch with `git show-ref --verify "refs/heads/$BASE"`. If it is missing, is a commit rather than a local branch, or equals the feature branch, ask the user which local base branch to use before continuing. Store the feature branch as `FEATURE` and verify it the same way; a `branch: (merged)` report has no live feature to merge, so report that and stop.
 
+## Finalize Outcome
+
+A run with `finalize = sync|pr|merge` may already have merged `origin/<base>` into the plan branch, opened a pull request, or merged it on GitHub. This skill is still the close-out when finalize was off or stopped (`finalize incomplete` at the end of the run, or a blocked base sync in the report's facts); then continue normally, and say that the conflict preview below shows what finalize stopped on.
+
+When `gh` is on `PATH`, check read-only for a pull request of the feature branch:
+
+```bash
+gh pr list --head "$FEATURE" --state all --json number,state,url --limit 1
+```
+
+- `MERGED`: the work already reached the base on GitHub. Report the URL and stop without offering a close-out: a local `loopai --merge` would merge it a second time, and after a squash or rebase merge it would re-apply the same changes as new commits. The local base is updated from `origin` instead.
+- `OPEN`: report the URL and drop the `Open PR` option from the confirmation gate, because `loopai --pr` cannot open a second pull request for the branch.
+- No result, a `CLOSED` pull request, or `gh` missing or failing: continue with every option.
+
 ## Predict Conflicts
 
 Before offering close-out, predict the merge read-only from the repository root. Nothing in this section changes the repository.
@@ -207,5 +221,6 @@ Show its output verbatim. If it still reports a conflict, the base moved between
 - Never run `git merge` directly, except `git merge --no-ff --no-commit "$BASE"` inside the plan branch checkout after the user chose `Resolve and merge`; only `loopai --merge` may merge the plan branch into the base.
 - Never resolve a conflict by discarding one side without saying so in the summary.
 - Never delete branches or worktrees directly, except a temporary worktree this invocation created, and only on an abort path.
-- Never invent a fact absent from the completion report or the git history.
+- Never invent a fact absent from the completion report, the git history, or the read-only pull request lookup.
+- Never offer a close-out for a branch whose pull request is already merged.
 - Never choose Merge, Resolve and merge, or Open PR on the user's behalf.

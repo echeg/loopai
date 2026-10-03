@@ -40,7 +40,7 @@ repository, named after the plan, and updates its title when the phase changes:
 | External evaluation | `<plan> · external eval` |
 | Finalize / report | `<plan> · finalize`, `<plan> · report` |
 | Waiting for input or a provider limit | `<plan> · waiting for input`, `<plan> · waiting for limit` |
-| Finished | `<plan> · done`, `<plan> · failed` |
+| Finished | `<plan> · done`, `<plan> · failed`; with finalize, `<plan> · done · PR merged` (also `synced`, `PR opened`, `finalize incomplete`) |
 | Stopped before completion | `<plan> · stopped` |
 
 `<plan>` is the plan filename without its date prefix, or `loopai` for review-only runs. The thread
@@ -84,6 +84,16 @@ With `t3` enabled and `LOOPAI_T3_TOKEN` set, `loopai --pr` links the created Git
 every non-archived thread of the repository's project whose branch is the feature branch. T3 Code
 then tracks the PR and settles the thread when it merges. A linking failure is a warning; the PR is
 already created.
+
+`finalize = pr` or `merge` (or `--finalize=pr|merge`) opens the pull request at the end of the run
+itself, after merging `origin/<base>` into the branch, and links it the same way; `merge` also waits
+for the PR checks and merges it on GitHub, so the thread settles without a separate close-out (see
+[Finalize](../README.md#finalize)). Put the key in `.loopai/config`, since `--t3-launch` forwards
+only the model and reviewer flags. A run started by `--t3-launch` uses the T3 Code-managed worktree
+without `--worktree`, and finalize never removes a worktree loopai did not create, so it stays until
+it is removed in T3 Code. When finalize stops, for example on a conflict that needs a decision, the
+title ends in `done · finalize incomplete` and the plan is closed out by hand with `/loopai-merge`
+or `--pr`.
 
 ## Project actions in `t3.json`
 

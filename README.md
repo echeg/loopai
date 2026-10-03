@@ -39,8 +39,8 @@ workflows are distributed through this repository's plugin marketplace.
   - Codex CLI 0.130.0 or newer for `codex:` specs
 - Optional: the other provider's CLI for automatic cross-provider review
 - Optional: `fzf` for interactive selection; a numbered fallback is built in
-- Optional for `--pr`: authenticated GitHub CLI (`gh auth login`) and a GitHub
-  repository remote named `origin`
+- Optional for `--pr` and `finalize = pr|merge`: authenticated GitHub CLI
+  (`gh auth login`) and a GitHub repository remote named `origin`
 - Development: Bash and `jq` for the full test suite, including plugin manifest
   validation and provider-wrapper tests
 - Optional for development: `golangci-lint`
@@ -274,7 +274,7 @@ cmux clear-status ralphex
 ```
 
 A copied config that still sets `executor`, `codex_model`, `codex_reasoning_effort`,
-`external_review_tool`, or `external_review_model`, or a `plan_model`/`task_model`/`review_model`
+`external_review_tool`, `external_review_model`, or `finalize_enabled`, or a `plan_model`/`task_model`/`review_model`
 without a provider prefix, stops loopai at startup; the error names the rewrite, and the
 removed-spellings table under [Executors and reviews](#executors-and-reviews) lists them all.
 
@@ -374,6 +374,9 @@ loopai --cmux-workspace=auto --worktree docs/plans/feature.md
 # commit local changes, then execute from a new isolated worktree
 loopai --worktree --commit docs/plans/feature.md
 
+# after review, merge origin/<base> into the branch, open a PR, and merge it once its checks pass
+loopai --worktree --finalize=merge docs/plans/feature.md
+
 # continue an interrupted isolated worktree by rerunning the same command
 loopai --worktree docs/plans/feature.md
 
@@ -442,7 +445,64 @@ The full pipeline has four phases:
 3. External review runs the configured reviewer or reviewer chain for findings. The `review_model` provider evaluates findings and owns all fixes.
 4. Second review checks the final changes for critical or major regressions.
 
-An optional finalize step can run after review. It is disabled by default and controlled with `finalize_enabled`; `--skip-finalize` disables it for one invocation. When `report_enabled = true` (the default), a best-effort report phase runs immediately afterwards in full and review-only pipelines. Tasks-only runs skip it.
+An optional finalize step closes out the plan branch after review (see [Finalize](#finalize)). It is
+off by default. When `report_enabled = true` (the default), a best-effort report phase runs
+immediately afterwards in full and review-only pipelines. Tasks-only runs skip both.
+
+### Finalize
+
+`finalize` (or `--finalize=<mode>` for one run) chooses how a successful run closes out its plan
+branch. Each mode includes the previous one:
+
+| Mode | What it does |
+|---|---|
+| `none` (default) | nothing |
+| `sync` | fetch `origin/<base>`, merge it into the plan branch, and run the plan's validation commands |
+| `pr` | `sync`, then push the branch and open a GitHub pull request, as `--pr` does |
+| `merge` | `pr`, then wait for the PR checks and merge the PR on GitHub |
+
+`--skip-finalize` forces `none` for one run and wins over both `--finalize` and the config key.
+The former boolean `finalize_enabled` was removed and fails at startup; write
+`finalize = sync|pr|merge` instead.
+
+The base is the local branch `--base-ref` names, otherwise `default_branch` or the detected
+`main`/`master`. The sync always merges, never rebases and never force-pushes, so review
+checkpoints stay valid and a rerun is safe:
+
+1. loopai requires a clean tree, fetches `origin/<base>`, and runs `git merge --no-commit`.
+2. Already up to date: the `review_model` provider runs the plan's `## Validation Commands`.
+   A clean merge is committed by loopai first, then validated the same way.
+3. Conflicts are left in place for the `review_model` provider, which resolves only the
+   conflicted files, and only when the resolution is clear-cut, runs the validation commands, and
+   commits the merge. A conflict that needs a product or design decision is a stop, not a guess.
+4. loopai accepts the result only when the session signals success, the tree is clean, HEAD is a
+   single merge commit of the pre-merge HEAD and the fetched base, and no file outside the conflicted
+   set differs from the merge's own result. Anything else, including validation failing after a
+   clean merge, aborts the merge or restores the pre-merge HEAD and stops before the pull request.
+   Finalize never tries to fix code that base changes broke.
+
+Under `pr` and `merge`, the pull request is opened after the plan is archived, so the archive commit
+is part of it, using the same push, origin, and title/body rules as `--pr`. Its diff statistics are
+measured against `origin/<base>`, so merged-in base changes do not count as the run's work, and the
+completion report does the same. `merge` waits for the checks with `gh pr checks --watch` for at
+most `finalize_checks_timeout` (default `30m`); a fresh PR that reports no checks is asked again for
+a minute and then treated as having none, leaving branch protection to the merge itself. It then
+runs `gh pr merge --<finalize_merge_method>` (`merge`, `squash`, or `rebase`; default `merge`)
+pinned to the pushed commit, so GitHub refuses the merge when the PR head moved. It deletes no branch
+and never touches the local base branch.
+
+A finalize stop never fails the run, because the plan's work succeeded. The reason is printed as
+the last summary line (`finalize incomplete: <reason>`) and appears in the notification and in the
+cmux, Orca, and T3 Code final status (`done · finalize incomplete`); a successful finalize prints
+`finalize: merged origin/master (3 files resolved)`, `PR: <url>`, and `PR merged` instead, and the
+status reads `done · synced`, `done · PR opened`, or `done · PR merged`. Close out a stopped
+finalize by hand with `/loopai-merge` or `--merge`/`--pr`. A `--worktree` checkout is removed as on
+any successful run, after the pull request steps; a worktree loopai did not create, such as a T3
+Code-managed one, is never removed.
+
+`--review` and `--external-only` review a branch they did not create, so `pr` and `merge` degrade to
+`sync` there with a startup warning; `--tasks-only` runs no finalize. In a plan chain only the last
+plan syncs and opens the pull request, since every earlier branch is the next plan's start.
 
 The report combines deterministic Go-collected facts with model assessments and uses these nine
 sections: `# Report: <plan title>`, `Summary`, `Change scope`, `Risk`, `Migrations and operational
@@ -463,8 +523,8 @@ After each completed review stage, loopai writes a review checkpoint beside the 
 `.loopai/progress/<progress-log-stem>.review.json`. It records the internal review, each external
 reviewer in chain order, and post-review. A stage is recorded only after its fixes are committed and
 the working tree is clean; a dirty working tree also forces reviews to restart rather than trusting
-the checkpoint. Finalize is intentionally not checkpointed because it is cheap and
-best-effort. After an interruption, rerunning the same command skips recorded stages while each
+the checkpoint. Finalize is intentionally not checkpointed: it runs once, and a rerun either merges
+the base again or finds the branch already up to date. After an interruption, rerunning the same command skips recorded stages while each
 stage's commit remains an ancestor of the current branch tip. Before task execution, the checkpoint
 records the current HEAD so a task-phase commit invalidates it even if the process dies before the
 task returns; changed code is therefore reviewed again. A successful run removes the checkpoint. `--review`
@@ -654,7 +714,8 @@ Capture cannot be switched off with configuration: an empty `backlog_dir` falls 
 ## Completion and close-out
 
 Inside cmux, an implementation or review run that reached execution leaves a persistent
-status pill in the workspace: a green bolt with `done in <elapsed>` after success, or a
+status pill in the workspace: a green bolt with `done in <elapsed>` after success (followed by
+the [finalize](#finalize) outcome, such as `· PR merged`, when finalize ran), or a
 red warning icon with `failed` after an execution error. Startup/preflight failures and
 plan-creation failures do not leave a pill. Canceling with `Ctrl+C` performs the usual
 cleanup and leaves no completion pill. The next loopai run replaces an existing pill;
@@ -664,8 +725,10 @@ it can also be removed explicitly:
 loopai --clear
 ```
 
-Outside cmux, `--clear` is a successful no-op. After a feature run completes, loopai
-can inspect its report or perform either standalone close-out action from the repository root:
+Outside cmux, `--clear` is a successful no-op. With `finalize = pr` or `merge` a successful run
+opens, and optionally merges, its own pull request (see [Finalize](#finalize)); the commands below
+remain the manual path, and the one to use when finalize stopped. After a feature run completes,
+loopai can inspect its report or perform either standalone close-out action from the repository root:
 
 ```bash
 # Merge the current feature branch into main (or master when main does not exist).
@@ -815,6 +878,7 @@ The former provider switches fail at startup naming their replacement:
 | `--external-review-model M`, `external_review_model = M` | the model segment of the matching `external_reviewers` entry |
 | `codex_model`, `codex_reasoning_effort` | the model and effort segments of each codex spec |
 | `task_model = gpt-6-astra:medium` | `task_model = codex:gpt-6-astra:medium` |
+| `finalize_enabled = true` | `finalize = sync`, `pr`, or `merge` (see [Finalize](#finalize)) |
 
 Removing `codex_model` and `codex_reasoning_effort` also removed their embedded defaults
 (`gpt-5.5` at `xhigh`). A bare `codex` spec and the automatic Codex reviewer now use the codex
@@ -1174,7 +1238,7 @@ standalone utility commands never take one. Set `keep_awake = false` to opt out.
 | Report | `◐ loopai · report · claude` | Working |
 | Waiting for user input | `loopai · waiting for input · claude` | Permission |
 | Provider limit wait | `loopai · waiting for limit · claude` | Permission |
-| Success | `✳ loopai · done` | Idle |
+| Success | `✳ loopai · done`, `✳ loopai · done · PR merged` | Idle |
 | Failure | `✳ loopai · failed` | Idle |
 | Stopped before completion | `✳ loopai` | Idle |
 
@@ -1183,8 +1247,8 @@ Pass `--t3`, set `t3 = true`, or set `LOOPAI_T3=1` to report plan execution and 
 `<plan> · done`). It needs a running T3 Code server that has the repository as a project and a
 bearer token in `LOOPAI_T3_TOKEN`; without them loopai warns once and runs normally.
 `loopai --t3-launch <plan>` creates a T3 Code-managed worktree and thread and starts
-`loopai --t3 <plan>` in the thread's terminal, and `--pr` links the created pull request to the
-branch's threads. See [docs/t3-code.md](docs/t3-code.md) for setup, the launcher, and `t3.json`
+`loopai --t3 <plan>` in the thread's terminal, and `--pr` and `finalize = pr|merge` link the created
+pull request to the branch's threads. See [docs/t3-code.md](docs/t3-code.md) for setup, the launcher, and `t3.json`
 project actions.
 
 The cmux status pill and progress bar belong to the workspace, not to an individual run, so

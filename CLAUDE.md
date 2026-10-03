@@ -86,7 +86,7 @@ missing, incorrect, and orphan links, requires skill descriptions, and verifies
 the exact skill inventory. It and `check-codex-skills.sh` also reject a skill body
 line naming a removed loopai spelling (`--codex`, `--codex-only`, the
 `--external-review-*` flags, the `executor`, `codex_model`, `codex_reasoning_effort`,
-and `external_review_*` keys) unless that line says it "was removed" or "were
+`external_review_*`, and `finalize_enabled` keys) unless that line says it "was removed" or "were
 removed"; `--codex-args` does not match, and the two `removed_spellings` lists must
 stay identical. The current set is `loopai`, `loopai-merge`,
 `loopai-plan`, `loopai-brainstorm`, `loopai-adopt`, `loopai-update`,
@@ -403,9 +403,10 @@ binary still gets the migration message; `--codex`, `--codex-only`,
 `--external-review-tool`, and `--external-review-model` stay declared as hidden `opts` fields
 because deleting them makes go-flags answer with a bare `unknown flag`, and the two
 external-review flags fold into one ready `--external-reviewers=` entry. The config keys
-`executor`, `external_review_tool`, `external_review_model`, `codex_model`, and
-`codex_reasoning_effort` are rejected by `checkRemovedKeys` at every config layer, each
-error naming the replacement spelling. `checkExecutionDeps` checks every distinct provider
+`executor`, `external_review_tool`, `external_review_model`, `codex_model`,
+`codex_reasoning_effort`, and `finalize_enabled` are rejected by `checkRemovedKeys` at every
+config layer, each error naming the replacement spelling; `finalize_enabled` was a boolean whose
+replacement is the `finalize` mode, so its error names `finalize = sync|pr|merge`. `checkExecutionDeps` checks every distinct provider
 of the phases the mode runs, each missing binary with its own error, then the reviewer chain
 under the existing explicit/automatic rules. Full mode does not check the plan provider, since
 most full runs never plan; `tryAutoPlanMode` checks it before prompting for a description
@@ -567,6 +568,60 @@ single-plan `--worktree` run: `prepareWorktreePlan` only warns about unrelated d
 same marker scan `--commit`'s `validateAutoCommitState` uses. Worktree chains keep the strict
 dirty-tree check.
 
+Finalize is a close-out of a successful run selected by `finalize = none|sync|pr|merge`
+(`config.Finalize*` constants, read through `EffectiveFinalize`); `--finalize` sets it and
+`applyFinalizeOverride` applies `--skip-finalize` afterwards so skipping wins. It is split across the
+processor and `cmd/loopai`. The base sync is `phase.FinalizePhase`, run by
+`Runner.runFinalize` in the old finalize slot of `runExternalAndPostReview` — after post-review,
+before the report — through the review executor. It reaches Git only through the consumer
+interface `phase.FinalizeGit`, wired by `Runner.SetFinalizeGit(req.GitSvc)` (the worktree service
+in worktree mode). It requires a clean tree, records the pre-merge HEAD, runs
+`FetchContext` with an explicit `+refs/heads/<base>:refs/remotes/origin/<base>` refspec and
+`MergeRemoteNoCommitContext`, which leaves a conflicted merge in place instead of aborting like
+`mergeRevision`. Up to date runs a validation session only; a clean merge is committed by Go
+through `CommitMergeContext` and then validated; a conflicted one is snapshotted with
+`StageZeroSnapshot` and handed to the resolution session. `finalize.txt` gets the conflicted paths
+through `{{FINALIZE_CONFLICTS}}` and the plan's `## Validation Commands` through
+`{{VALIDATION_COMMANDS}}`. Acceptance needs all of `<<<RALPHEX:FINALIZE_DONE>>>`, a clean tree with
+no operation in progress, an unchanged HEAD when up to date or otherwise HEAD's parents exactly
+`[pre-merge HEAD, fetched base]`, and an empty `ChangedOutside(snapshot, conflicts, HEAD)`. The
+signal check alone is not enough because the model owns the commit, and the snapshot comparison is
+what proves it edited only the conflicted paths. Everything else becomes
+`FinalizeOutcome{Status: blocked}` after `restore`: `MergeAbortContext(snapshot)` while the merge
+is uncommitted, because a bare `git merge --abort` silently drops staged changes whose worktree
+file matches the index, then `RestoreHeadContext` (`git reset --keep`, which requires the target to
+be an ancestor). Restore runs under `context.WithoutCancel` with a one-minute bound, so a canceled
+run, the one error the phase returns, never leaves a half-done merge for its resume.
+`FINALIZE_BLOCKED` is checked before `FINALIZE_DONE` in `detectSignal`, so output carrying both
+reads as blocked, and `ParseFinalizeBlockedReason` takes the bounded line after it. Both signals are
+in `knownSignals`, without which they are never detected. The outcome lands in `RunRecord.Finalize`
+and is exposed as `Runner.FinalizeOutcome()`; after a `merged` or `resolved` sync `factsBase` and
+`Runner.DiffBase()` measure against `origin/<base>`, so the report and the completion summary do
+not count merged-in base changes as the run's work.
+
+The `cmd/loopai` side picks the base with `finalizeBaseBranch` (the local branch `--base-ref` names,
+else the configured or detected default branch, without `origin/`) and the mode with
+`finalizeModeFor`: `pr|merge` degrade to `sync` under `--review` and `--external-only`, which
+review a branch they did not create, and everything to `none` under `--tasks-only` and for a chain
+member flagged `ChainNotLast`, since an earlier member's branch is the next one's start ref.
+`finalizeStartupWarning` reports either degradation. `executePlan` calls `runFinalizeCloseout` after
+`moveCompletedPlan`, so a non-worktree run pushes its archive commit too, and before worktree
+cleanup, because it pushes from the run's own checkout. A PR opens only after a successful sync
+(`up_to_date|merged|resolved`), through `createPullRequest` — the body of `--pr`, factored out so
+`runPRCommand` keeps its own error wording and output; `closeoutTarget.statsBase` measures the
+body against `origin/<base>`. T3 linking stays with each caller. `merge` runs
+`gh pr checks <url> --watch --fail-fast` under `finalize_checks_timeout`, retrying a fresh PR's
+"no checks reported" for `finalizeNoChecksGrace` before treating it as having none, then
+`gh pr merge <url> --<finalize_merge_method> --match-head-commit <pushed HEAD>` so a PR head that
+moved is refused; no branch is deleted and the local base is never touched. Every failure — no
+`gh`, origin mismatch, rejected push, failed or timed-out checks, refused merge — becomes
+`finalizeResult.incomplete` rather than a run error: the plan's work succeeded, so like a rejected
+plan archive it keeps the run green and is surfaced, printed last by `displayStats` as
+`finalize incomplete: <reason>`, in `notify.Result.Finalize`/`PRURL`, and through `SetFinishNote`
+on the cmux, Orca, and T3 reporters (`synced`, `PR opened`, `PR merged`, `finalize incomplete`).
+Finalize removes no worktree: loopai's own `--worktree` is removed by the usual teardown, and a
+T3 Code-managed checkout, which the run uses without `--worktree`, is never touched.
+
 `phase.ReportPhase` runs after finalize and before the successful review-checkpoint clear on every review pipeline when `report_enabled` is true. It receives rendered deterministic facts and returns ordinary assistant Markdown; the model must not write the repository file because a single-plan worktree run archives through `MainGitSvc` in the main checkout, outside the executor's worktree. `Runner.Report()` exposes the extracted report, or a nine-section facts-only fallback when model assessment is unavailable. `MovePlanToCompletedWithReport` writes `docs/plans/completed/<stem>.report.md` beside the archived plan in the same commit; tasks-only never generates a report, and review-only modes may populate `Runner.Report()` but do not archive a sidecar because `shouldMovePlan` is false. A non-empty review-checkpoint invalidation reason resets and removes stale run-record state together with the checkpoint. Current-invocation task counts and start time survive post-task invalidation so newly completed work remains in the report. The success clear intentionally removes only the checkpoint, preserving the record through report generation and archival; successful archival then removes the `.run.json` file.
 
 Claude runs every phase by default. `task_model = codex:<model>[:effort]` moves tasks to Codex, and with them planning and the review block unless `plan_model` or `review_model` names another provider. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. With the chain unset, the provider other than `task_model`'s (`review_model`'s under `--review` and `--external-only`) is selected when installed. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
@@ -607,7 +662,8 @@ its fixes are committed and the tree is clean, and it is resumed only when the c
 its plan identity matches, and its recorded HEAD is an ancestor of the current branch tip. New full
 or tasks-only task-phase commits invalidate the checkpoint, as do unverifiable task HEADs. A durable
 pre-task HEAD marker makes that invalidation survive a process death inside task execution. Finalize
-is not checkpointed because it is best-effort, runs once, and is cheap to repeat.
+is not checkpointed: it runs once, never fails the run, and a rerun either merges the base again or
+finds the branch up to date.
 
 Keep-awake is best-effort in the same way and must never affect execution. `awake.New` returns
 nil when `keep_awake` is off or the platform has no inhibitor, and every `*awake.Holder` method is

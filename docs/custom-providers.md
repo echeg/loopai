@@ -113,7 +113,7 @@ durations are measured between the paired events' arrival times.
 
 ### Signal detection
 
-loopai prompts instruct the agent to emit phase-specific signals such as `<<<RALPHEX:ALL_TASKS_DONE>>>` when task execution completes, `<<<RALPHEX:TASK_FAILED>>>` on an unrecoverable failure, or `<<<RALPHEX:REVIEW_DONE>>>` when a review finds no issues. These signals must appear in the text content of `content_block_delta` or `result` events. The wrapper doesn't need to handle signals — as long as the underlying tool follows the prompt instructions and the text passes through, signals will be detected automatically.
+loopai prompts instruct the agent to emit phase-specific signals such as `<<<RALPHEX:ALL_TASKS_DONE>>>` when task execution completes, `<<<RALPHEX:TASK_FAILED>>>` on an unrecoverable failure, `<<<RALPHEX:REVIEW_DONE>>>` when a review finds no issues, or `<<<RALPHEX:FINALIZE_DONE>>>` / `<<<RALPHEX:FINALIZE_BLOCKED>>>` (followed by a one-line reason) when the finalize session has validated, or refused, the merge of the base branch. These signals must appear in the text content of `content_block_delta` or `result` events. The wrapper doesn't need to handle signals — as long as the underlying tool follows the prompt instructions and the text passes through, signals will be detected automatically.
 
 ### Argument handling
 

@@ -83,7 +83,8 @@ Progress: <worktree>/.loopai/progress/progress-<plan stem>.txt
 
 The thread title shows "<plan> · task N/M", "<plan> · review · iteration N",
 "<plan> · waiting for input" or "· waiting for limit", and finally
-"<plan> · done", "· failed", or "· stopped". The thread's "loopai" terminal
+"<plan> · done" (followed by the finalize outcome, such as "· PR merged",
+when finalize is on), "· failed", or "· stopped". The thread's "loopai" terminal
 shows the live output on desktop, web, and mobile.
 ```
 
@@ -91,7 +92,7 @@ shows the live output on desktop, web, and mobile.
 
 ## Close-out (tell the user, do not run)
 
-From this checkout, prefer `$loopai-merge $PLAN`, or run the printed `loopai --merge <branch>` / `loopai --pr <branch>`. With `t3 = true` in `.loopai/config` (or `--t3` on the command) and `LOOPAI_T3_TOKEN` set, `--pr` links the new pull request to the thread, and T3 Code settles the thread once the PR merges. The T3-managed worktree stays until it is removed in T3 Code.
+With `finalize = pr` or `merge` in `.loopai/config` (`--t3-launch` forwards only the model and reviewer flags), the run itself merges `origin/<base>` into the branch, opens the pull request, links it to the thread, and under `merge` merges it once its checks pass; the thread title then ends in `done · PR opened` or `done · PR merged`, and T3 Code settles the thread after the merge. Close-out by hand is needed only when finalize is off or the title ends in `done · finalize incomplete`. Then, from this checkout, prefer `$loopai-merge $PLAN`, or run the printed `loopai --merge <branch>` / `loopai --pr <branch>`. With `t3 = true` in `.loopai/config` (or `--t3` on the command) and `LOOPAI_T3_TOKEN` set, `--pr` links the new pull request to the thread, and T3 Code settles the thread once the PR merges. The T3-managed worktree stays until it is removed in T3 Code; finalize never removes it.
 
 ## Pitfalls
 

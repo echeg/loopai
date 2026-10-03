@@ -29,6 +29,12 @@ If the command specifically says no completion report exists, explain that the r
 
 Keep the selected base as `BASE`. Verify it is a local branch with `git show-ref --verify "refs/heads/$BASE"`, and that it differs from the feature. If report metadata contains a commit, missing ref, or the feature itself, ask which local base branch to use. Keep the feature as `FEATURE` and verify it the same way. A `branch: (merged)` report has no live feature to merge; report that and stop.
 
+## Check the finalize outcome
+
+A run with `finalize = sync|pr|merge` may already have merged `origin/<base>` into the plan branch, opened a pull request, or merged it on GitHub. This skill is still the close-out when finalize was off or stopped (`finalize incomplete` at the end of the run, or a blocked base sync in the report's facts); then continue normally, and say that the conflict preview shows what finalize stopped on.
+
+When `gh` is on `PATH`, check read-only with `gh pr list --head "$FEATURE" --state all --json number,state,url --limit 1`. A `MERGED` pull request means the work already reached the base on GitHub: report the URL and stop without offering a close-out, because a local `loopai --merge` would merge it again and, after a squash or rebase merge, re-apply the same changes as new commits; the local base is updated from `origin` instead. An `OPEN` one: report the URL and leave out the open-a-PR choice, because `loopai --pr` cannot open a second pull request for the branch. No result, a `CLOSED` pull request, or `gh` missing or failing: continue with every choice.
+
 ## Predict conflicts
 
 Before offering close-out, predict the merge read-only from the repository root; nothing here changes the repository:
@@ -77,3 +83,4 @@ Only after the user chose it. The direction is fixed: `BASE` is merged into `FEA
 - Never run `git merge` directly except `git merge --no-ff --no-commit "$BASE"` inside the plan branch checkout after that choice; only `loopai --merge` merges the plan branch into the base.
 - Never resolve a conflict by discarding one side without saying so.
 - Never delete branches or worktrees directly, except a temporary worktree this invocation created and only on an abort path; never invent facts; never choose the close-out action on the user's behalf.
+- Never offer a close-out for a branch whose pull request is already merged.

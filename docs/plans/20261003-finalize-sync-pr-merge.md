@@ -151,10 +151,11 @@
 - [x] verify test coverage of the new code is 80%+ (91.1% of the non-test Go statements this branch adds, 809/888; every file at or above 84.5%; overall 88.1%)
 
 ### Task 7: [Final] Update documentation and skills
-- [ ] update `README.md`, `llms.txt`, `docs/t3-code.md`, `docs/custom-providers.md`, and the finalize sections of `CLAUDE.md`
-- [ ] update `assets/claude/skills/{loopai,loopai-merge,loopai-t3}/SKILL.md` and the Codex counterparts under `assets/codex/skills/` to describe `finalize = pr|merge` and when `/loopai-merge` is still needed (finalize blocked)
-- [ ] bump both manifest versions in `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` to the same value
-- [ ] run `make check-symlinks check-codex-skills check-plugin`
+- [x] update `README.md`, `llms.txt`, `docs/t3-code.md`, `docs/custom-providers.md`, and the finalize sections of `CLAUDE.md`
+- [x] update `assets/claude/skills/{loopai,loopai-merge,loopai-t3}/SKILL.md` and the Codex counterparts under `assets/codex/skills/` to describe `finalize = pr|merge` and when `/loopai-merge` is still needed (finalize blocked)
+- [x] bump both manifest versions in `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` to the same value
+- [x] run `make check-symlinks check-codex-skills check-plugin`
+- ➕ [x] manifests bumped to 0.5.11; `/loopai-merge` gained a read-only `gh pr list --head` check that stops on an already merged PR and drops `Open PR` for an open one; the asset regression suites (`check-symlinks_test.sh`, `check-codex-skills_test.sh`, `check-plugin_test.sh`) pass in WSL, since the symlink fixtures cannot be created in Git Bash on Windows
 
 ## Technical Details
 - **Modes**: `none` (nothing), `sync` (fetch + merge base + validation), `pr` (sync + push + `gh pr create`), `merge` (pr + `gh pr checks --watch` + `gh pr merge --<method>`). Review-only modes (`--review`, `--external-only`) support `sync` only; `pr`/`merge` degrade to `sync` there with a startup warning.
