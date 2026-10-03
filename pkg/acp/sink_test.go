@@ -429,6 +429,40 @@ func TestSinkFailedRunLeavesOpenStagePending(t *testing.T) {
 		"a failed run does not leave its stage in progress")
 }
 
+func TestSinkCompletesCheckpointSkippedStages(t *testing.T) {
+	dir := t.TempDir()
+	planFile := filepath.Join(dir, "plan.md")
+	writePlan(t, planFile, true)
+
+	t.Run("a later stage completes the skipped ones", func(t *testing.T) {
+		s, rec, _ := newTestSink(t)
+		s.SetPlan(planFile, StageReview, StageExternalReview, StageFinalize)
+		rec.take(t)
+
+		s.OnPhase("", status.PhaseExternalReview)
+		assert.Equal(t, []string{"Task 1: step 1=completed", "Review=completed", "External review=in_progress", "Finalize=pending"},
+			planStatuses(t, rec.take(t)), "a resumed run skipping internal review completes it")
+
+		s.OnPhase(status.PhaseExternalEval, status.PhaseReview)
+		assert.Empty(t, only(rec.take(t), "plan"), "the review after external findings does not reopen the skipped stage")
+
+		s.Finish(true)
+		assert.Equal(t, []string{"Task 1: step 1=completed", "Review=completed", "External review=completed", "Finalize=completed"},
+			planStatuses(t, rec.take(t)))
+	})
+
+	t.Run("a successful run with every stage skipped completes them all", func(t *testing.T) {
+		s, rec, _ := newTestSink(t)
+		s.SetPlan(planFile, StageReview, StageExternalReview)
+		rec.take(t)
+
+		s.OnPhase("", status.PhaseTask)
+		s.Finish(true)
+		assert.Equal(t, []string{"Task 1: step 1=completed", "Review=completed", "External review=completed"},
+			planStatuses(t, rec.take(t)))
+	})
+}
+
 func TestNewSinkCallIDsUniqueAcrossPrompts(t *testing.T) {
 	firstCall := func() string {
 		var out bytes.Buffer

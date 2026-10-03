@@ -326,24 +326,30 @@ func (s *Server) runPrompt(ctx context.Context, id json.RawMessage, req PromptRe
 
 	s.mu.Lock()
 	canceled := active.cancelRequested
-	if s.active == active {
-		s.active = nil
-	}
 	s.mu.Unlock()
 	active.cancel()
 
+	// the prompt stays active until it is answered, so a prompt following a late cancel waits for
+	// this one's final updates instead of interleaving its own with them
 	sink.Finish(err == nil && !canceled)
+	if !canceled {
+		sink.Message(res.Message)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active == active {
+		s.active = nil
+	}
+	// replying under the lock means a prompt sent once this answer arrives never finds the run active
 	switch {
 	case canceled:
 		s.logf("session/prompt %s canceled", req.SessionID)
 		_ = s.conn.Reply(id, promptResult{StopReason: stopCanceled})
 	case err != nil:
 		s.logf("session/prompt %s failed", req.SessionID)
-		sink.Message(res.Message)
 		_ = s.conn.ReplyError(id, CodeInternalError, err.Error())
 	default:
 		s.logf("session/prompt %s completed", req.SessionID)
-		sink.Message(res.Message)
 		_ = s.conn.Reply(id, promptResult{StopReason: stopEndTurn})
 	}
 }

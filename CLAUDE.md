@@ -718,6 +718,9 @@ Rejecting it breaks every later message in that thread. It runs at most one prom
 cwd. A second prompt is rejected unless it follows its own session's `session/cancel`: T3 steers a
 message typed during a turn as cancel then prompt, so that prompt becomes the latest one, waits for
 the canceled run's answer, and then runs, or is answered `cancelled` unrun if canceled while waiting.
+A prompt stays active until its final message and answer are sent, and the answer is written under
+the server lock, so a steered prompt never interleaves its updates with its predecessor's last ones
+while a prompt sent after the answer never finds the run still active.
 Each prompt id is answered exactly once: `end_turn`, `cancelled` when the client canceled
 it, or a JSON-RPC error carrying the run's failure so T3 records a failed turn. Only the first text
 block is the user's message; T3 appends a runtime-instructions block that must be ignored. `Sink`
@@ -726,7 +729,9 @@ carry a random per-sink prefix, because ACP requires a tool call id to be unique
 session spans many prompts with one sink each, and `session/load` revives it in a new process. Sections
 refresh `plan` entries built from the parsed plan file plus the review stages `acpStages` lists. A
 completed stage never reopens, so the review that follows external-review findings stays under the
-external review stage instead of moving progress backwards. The
+external review stage instead of moving progress backwards. Entering a stage completes every stage
+earlier in the pipeline order (`stageOrder`), and a successful `Finish` completes them all, so a
+stage a resumed run skipped through its review checkpoint is never left pending. The
 plan is reread from its `completed/` copy once archived, and `Finish` returns an unfinished task or
 stage to `pending` on failure. `PrintAligned` becomes `agent_thought_chunk`, coalesced to one per
 500 ms and capped per chunk. The report becomes the final `agent_message_chunk`, sent after

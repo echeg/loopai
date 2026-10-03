@@ -35,9 +35,15 @@ type scriptedClient struct {
 
 func startServer(t *testing.T, opts Options) *scriptedClient {
 	t.Helper()
+	return startServerWithWriter(t, opts, func(w io.Writer) io.Writer { return w })
+}
+
+// startServerWithWriter is startServer with the agent's output writer wrapped by wrap.
+func startServerWithWriter(t *testing.T, opts Options, wrap func(io.Writer) io.Writer) *scriptedClient {
+	t.Helper()
 	clientToAgent, agentIn := io.Pipe()
 	agentOut, agentToClient := io.Pipe()
-	srv := NewServer(clientToAgent, agentToClient, opts)
+	srv := NewServer(clientToAgent, wrap(agentToClient), opts)
 	c := &scriptedClient{t: t, in: agentIn, lines: make(chan map[string]any, 64), served: make(chan error, 1), nextID: 1 << 40}
 	go func() {
 		c.served <- srv.Serve()
@@ -579,6 +585,61 @@ func TestServerPromptAfterCancelWaitsForRun(t *testing.T) {
 	close(release)
 	requireStopReason(t, c.response(second), stopEndTurn)
 	assert.False(t, overlap.Load(), "two runs were in progress at once")
+	require.NoError(t, c.close())
+}
+
+// gatedWriter holds the first write containing marker until gate is closed, signaling reached
+// when it gets there.
+type gatedWriter struct {
+	w       io.Writer
+	marker  []byte
+	once    sync.Once
+	reached chan struct{}
+	gate    chan struct{}
+}
+
+func (g *gatedWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, g.marker) {
+		g.once.Do(func() {
+			close(g.reached)
+			<-g.gate
+		})
+	}
+	return g.w.Write(p) //nolint:wrapcheck // test writer passes the pipe error through
+}
+
+// TestServerPromptStaysActiveUntilAnswered steers a turn whose run has already returned while its
+// final message is still being sent: the steered prompt waits for that answer instead of starting
+// and interleaving its updates with the predecessor's.
+func TestServerPromptStaysActiveUntilAnswered(t *testing.T) {
+	started := make(chan PromptRequest, 2)
+	gw := &gatedWriter{marker: []byte("first report"), reached: make(chan struct{}), gate: make(chan struct{})}
+	c := startServerWithWriter(t, Options{Run: func(_ context.Context, req PromptRequest, _ *Sink) (Result, error) {
+		started <- req
+		return Result{Message: "first report"}, nil
+	}}, func(w io.Writer) io.Writer { gw.w = w; return gw })
+	sid := c.newSession(t.TempDir())
+
+	first := c.request("session/prompt", textPrompt(sid, "first.md"))
+	assert.Equal(t, "first.md", waitStarted(t, started).Text)
+	select {
+	case <-gw.reached:
+	case <-time.After(testTimeout):
+		t.Fatal("the final message was not sent")
+	}
+
+	c.cancel(map[string]any{"sessionId": sid})
+	second := c.request("session/prompt", textPrompt(sid, "second.md"))
+	select {
+	case req := <-started:
+		t.Fatalf("%s started before its predecessor was answered", req.Text)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(gw.gate)
+	requireStopReason(t, c.response(first), stopEndTurn)
+	assert.Equal(t, "second.md", waitStarted(t, started).Text)
+	requireStopReason(t, c.response(second), stopEndTurn)
 	require.NoError(t, c.close())
 }
 

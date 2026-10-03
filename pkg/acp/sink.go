@@ -68,6 +68,23 @@ func stageForPhase(p status.Phase) (Stage, bool) {
 	}
 }
 
+// stageOrder is a stage's position in the pipeline. Stages run in this order, though an undeclared
+// stage is appended to the plan entries when reached.
+func stageOrder(st Stage) int {
+	switch st {
+	case StageReview:
+		return 1
+	case StageExternalReview:
+		return 2
+	case StageFinalize:
+		return 3
+	case StageReport:
+		return 4
+	default:
+		return 0
+	}
+}
+
 // clock abstracts time so tests can drive coalescing and the heartbeat deterministically.
 type clock interface {
 	Now() time.Time
@@ -440,13 +457,16 @@ func (s *Sink) Finish(success bool) {
 		callStatus = toolCompleted
 	}
 	s.closeCallLocked(callStatus)
-	// an unfinished stage drops back to pending, as an unfinished task does once cur is cleared
+	// an unfinished stage drops back to pending, as an unfinished task does once cur is cleared;
+	// a successful run has passed every stage, including any a review checkpoint let it skip
 	if s.stageOpen >= 0 {
 		s.stages[s.stageOpen].status = entryPending
-		if success {
-			s.stages[s.stageOpen].status = entryCompleted
-		}
 		s.stageOpen = -1
+	}
+	if success {
+		for i := range s.stages {
+			s.stages[i].status = entryCompleted
+		}
 	}
 	s.cur = activity{}
 	s.reparseLocked()
@@ -480,9 +500,10 @@ func (s *Sink) closeCallLocked(callStatus string) {
 	s.callID, s.callTitle, s.callDetailed, s.heartbeatShow = "", "", false, false
 }
 
-// enterStageLocked marks a stage in progress and the previously running stage completed. A
-// completed stage never reopens: the review that follows external review findings runs under the
-// external review stage, so progress does not go backwards.
+// enterStageLocked marks a stage in progress and every stage earlier in the pipeline completed,
+// which covers both the previously running stage and any a resumed run skipped through its review
+// checkpoint. A completed stage never reopens: the review that follows external review findings
+// runs under the external review stage, so progress does not go backwards.
 func (s *Sink) enterStageLocked(st Stage) {
 	idx := s.stageIndexLocked(st)
 	if idx < 0 {
@@ -494,6 +515,11 @@ func (s *Sink) enterStageLocked(st Stage) {
 	}
 	if s.stageOpen >= 0 && s.stageOpen != idx {
 		s.stages[s.stageOpen].status = entryCompleted
+	}
+	for i := range s.stages {
+		if stageOrder(s.stages[i].stage) < stageOrder(st) {
+			s.stages[i].status = entryCompleted
+		}
 	}
 	s.stages[idx].status = entryInProgress
 	s.stageOpen = idx
