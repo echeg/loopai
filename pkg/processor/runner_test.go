@@ -15,6 +15,7 @@ import (
 
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/executor"
+	gitpkg "github.com/umputun/ralphex/pkg/git"
 	"github.com/umputun/ralphex/pkg/processor/mocks"
 	"github.com/umputun/ralphex/pkg/processor/phase"
 	"github.com/umputun/ralphex/pkg/status"
@@ -116,14 +117,43 @@ func (p testExternalReviewPhase) Run(ctx context.Context) (phase.ExternalReviewO
 
 type testFinalizePhase struct {
 	runFunc func(ctx context.Context) error
+	outcome phase.FinalizeOutcome
 }
 
-func (p testFinalizePhase) Run(ctx context.Context) error {
-	if p.runFunc == nil {
-		return nil
+func (p testFinalizePhase) Run(ctx context.Context) (phase.FinalizeOutcome, error) {
+	outcome := p.outcome
+	if outcome.Status == "" {
+		outcome.Status = phase.FinalizeSkipped
 	}
-	return p.runFunc(ctx)
+	if p.runFunc == nil {
+		return outcome, nil
+	}
+	return outcome, p.runFunc(ctx)
 }
+
+// upToDateFinalizeGit is a FinalizeGit whose branch already contains the base, so the finalize
+// phase runs only its validation session and leaves the repository untouched.
+type upToDateFinalizeGit struct{}
+
+func (upToDateFinalizeGit) HeadHash() (string, error)            { return "head", nil }
+func (upToDateFinalizeGit) IsDirty() (bool, error)               { return false, nil }
+func (upToDateFinalizeGit) OperationInProgress() (string, error) { return "", nil }
+func (upToDateFinalizeGit) FetchContext(context.Context, string, string) (string, error) {
+	return "base", nil
+}
+func (upToDateFinalizeGit) MergeRemoteNoCommitContext(context.Context, string) (gitpkg.MergeResult, error) {
+	return gitpkg.MergeResult{State: gitpkg.MergeUpToDate, Target: "base"}, nil
+}
+func (upToDateFinalizeGit) StageZeroSnapshot() (gitpkg.MergeSnapshot, error) {
+	return gitpkg.MergeSnapshot{}, nil
+}
+func (upToDateFinalizeGit) CommitMergeContext(context.Context, string) error { return nil }
+func (upToDateFinalizeGit) CommitParents(string) ([]string, error)           { return nil, nil }
+func (upToDateFinalizeGit) ChangedOutside(gitpkg.MergeSnapshot, []string, string) ([]string, error) {
+	return nil, nil
+}
+func (upToDateFinalizeGit) MergeAbortContext(context.Context, gitpkg.MergeSnapshot) error { return nil }
+func (upToDateFinalizeGit) RestoreHeadContext(context.Context, string) error              { return nil }
 
 type testReportPhase struct {
 	runFunc func(ctx context.Context, facts string) (string, error)
@@ -211,7 +241,7 @@ func TestRunner_RunFull_Success(t *testing.T) {
 		{Output: "fixed issues"},                               // codex eval iter 1 — findings fixed
 		{Output: "done", Signal: status.CodexDone},             // codex eval iter 2 — no more findings
 		{Output: "review done", Signal: status.ReviewDone},     // post-codex review loop
-		{Output: "finalize done"},                              // finalize step
+		{Output: "finalize done", Signal: status.FinalizeDone}, // finalize step
 		{Output: "# Report: full run\n\n## Summary\ncomplete"}, // report step
 	})
 	codex := newMockExecutor([]executor.Result{
@@ -221,19 +251,71 @@ func TestRunner_RunFull_Success(t *testing.T) {
 
 	cfg := Config{
 		Mode: ModeFull, PlanFile: planFile, MaxIterations: 50,
-		IterationDelayMs: 1, CodexEnabled: true, FinalizeEnabled: true, ReportEnabled: true,
+		IterationDelayMs: 1, CodexEnabled: true, FinalizeEnabled: true, FinalizeBase: "master", ReportEnabled: true,
 		AppConfig: testAppConfig(t),
 	}
 	var phases []status.Phase
 	holder := &status.PhaseHolder{}
 	holder.OnChange(func(_, next status.Phase) { phases = append(phases, next) })
 	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolCodex, Exec: codex}}}, holder)
+	r.SetFinalizeGit(upToDateFinalizeGit{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
 	assert.Len(t, codex.RunCalls(), 2)
 	assert.Equal(t, status.PhaseReport, phases[len(phases)-1])
 	assert.Contains(t, r.Report(), "# Report: full run")
+	assert.Equal(t, FinalizeOutcome{Status: FinalizeUpToDate, Base: "origin/master", BaseSHA: "base"}, r.FinalizeOutcome())
+}
+
+func TestRunner_RunFinalizeRecordsOutcome(t *testing.T) {
+	blocked := phase.FinalizeOutcome{Status: phase.FinalizeBlocked, Reason: "tests failed", Files: []string{"a.go"},
+		Base: "origin/master", BaseSHA: "abc"}
+	r := NewWithExecutors(Config{Mode: ModeCodexOnly}, newRunnerMockLogger(""), Executors{Task: newMockExecutor(nil)}, nil)
+	assert.Equal(t, FinalizeSkipped, r.FinalizeOutcome().Status, "no finalize before a run")
+
+	r.phases.finalize = testFinalizePhase{outcome: blocked}
+	require.NoError(t, r.Run(t.Context()))
+	assert.Equal(t, blocked, r.FinalizeOutcome())
+	require.NotNil(t, r.record.Finalize)
+	assert.Equal(t, blocked, *r.record.Finalize)
+
+	r.phases.finalize = testFinalizePhase{}
+	require.NoError(t, r.Run(t.Context()))
+	assert.Equal(t, FinalizeSkipped, r.FinalizeOutcome().Status)
+	assert.Nil(t, r.record.Finalize, "a skipped finalize leaves no record and clears the previous run's")
+
+	r.phases.finalize = testFinalizePhase{runFunc: func(context.Context) error { return context.Canceled }}
+	err := r.Run(t.Context())
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, err.Error(), "finalize phase")
+}
+
+func TestRunner_FactsBaseFollowsFinalizeMerge(t *testing.T) {
+	tests := []struct {
+		name          string
+		defaultBranch string
+		outcome       FinalizeOutcome
+		want          string
+	}{
+		{name: "no finalize", defaultBranch: "master", want: "master"},
+		{name: "up to date", defaultBranch: "master",
+			outcome: FinalizeOutcome{Status: FinalizeUpToDate, Base: "origin/master"}, want: "master"},
+		{name: "merged", defaultBranch: "master",
+			outcome: FinalizeOutcome{Status: FinalizeMerged, Base: "origin/master"}, want: "origin/master"},
+		{name: "resolved from remote-tracking default", defaultBranch: "origin/master",
+			outcome: FinalizeOutcome{Status: FinalizeResolved, Base: "origin/master"}, want: "origin/master"},
+		{name: "blocked", defaultBranch: "master",
+			outcome: FinalizeOutcome{Status: FinalizeBlocked, Base: "origin/master"}, want: "master"},
+		{name: "commit diff base", defaultBranch: "abc123",
+			outcome: FinalizeOutcome{Status: FinalizeMerged, Base: "origin/master"}, want: "abc123"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Runner{cfg: Config{DefaultBranch: tc.defaultBranch}, finalizeOutcome: tc.outcome}
+			assert.Equal(t, tc.want, r.factsBase())
+		})
+	}
 }
 
 func TestRunner_RunFull_NoCodexFindings(t *testing.T) {
@@ -776,9 +858,11 @@ func TestRunner_Finalize_RunsInReviewOnlyMode(t *testing.T) {
 		MaxIterations:   50,
 		CodexEnabled:    false,
 		FinalizeEnabled: true,
+		FinalizeBase:    "master",
 		AppConfig:       testAppConfig(t),
 	}
 	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolNone, Exec: codex}}}, &status.PhaseHolder{})
+	r.SetFinalizeGit(upToDateFinalizeGit{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -799,9 +883,11 @@ func TestRunner_Finalize_RunsInCodexOnlyMode(t *testing.T) {
 		MaxIterations:   50,
 		CodexEnabled:    false,
 		FinalizeEnabled: true,
+		FinalizeBase:    "master",
 		AppConfig:       testAppConfig(t),
 	}
 	r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolNone, Exec: codex}}}, &status.PhaseHolder{})
+	r.SetFinalizeGit(upToDateFinalizeGit{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -835,11 +921,13 @@ func TestRunner_Finalize_CodexExecutor_RunsAllPhasesThroughSharedInstance(t *tes
 		PlanFile:           planFile,
 		MaxIterations:      50,
 		FinalizeEnabled:    true,
+		FinalizeBase:       "master",
 		AppConfig:          appCfg,
 	}
 	r := NewWithExecutors(cfg, log,
 		Executors{Task: codexExec, Review: codexExec, Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolNone}}},
 		&status.PhaseHolder{})
+	r.SetFinalizeGit(upToDateFinalizeGit{})
 	err := r.Run(t.Context())
 
 	require.NoError(t, err)
@@ -878,7 +966,7 @@ func TestRunner_CodexExternalOnly_ClaudeFindingsAreHandledByPrimaryCodex(t *test
 	cfg := Config{
 		TaskModel: "codex:gpt-6-astra",
 		Mode:      ModeCodexOnly, MaxIterations: 50, IterationDelayMs: 1,
-		CodexEnabled: true, FinalizeEnabled: true,
+		CodexEnabled: true, FinalizeEnabled: true, FinalizeBase: "master",
 		ExternalReviewTool: config.ExternalReviewToolClaude, AppConfig: appCfg,
 	}
 	r := NewWithExecutors(cfg, newRunnerMockLogger("progress.txt"), Executors{
@@ -886,6 +974,7 @@ func TestRunner_CodexExternalOnly_ClaudeFindingsAreHandledByPrimaryCodex(t *test
 		Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolClaude, Exec: externalClaude}},
 	}, &status.PhaseHolder{})
 
+	r.SetFinalizeGit(upToDateFinalizeGit{})
 	require.NoError(t, r.Run(t.Context()))
 	assert.Equal(t, []string{
 		"external-claude", "primary-codex",
@@ -986,10 +1075,12 @@ func TestRunner_CodexAndPostReview_PipelineOrder(t *testing.T) {
 				IterationDelayMs: 1,
 				CodexEnabled:     true,
 				FinalizeEnabled:  true,
+				FinalizeBase:     "master",
 				ReportEnabled:    true,
 				AppConfig:        testAppConfig(t),
 			}
 			r := NewWithExecutors(cfg, log, Executors{Task: claude, Externals: []ExternalReviewer{{Tool: config.ExternalReviewToolCodex, Exec: codex}}}, holder)
+			r.SetFinalizeGit(upToDateFinalizeGit{})
 			err := r.Run(t.Context())
 
 			require.NoError(t, err)

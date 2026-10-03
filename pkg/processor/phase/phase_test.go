@@ -44,7 +44,7 @@ func TestPhasesRunUnderTheirOwnProvider(t *testing.T) {
 		{name: "claude task with codex review", task: "claude", review: "codex", wantTask: "claude", wantReview: "codex"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := Config{MaxIterations: 10, FinalizeEnabled: true, ReportEnabled: true, PlanDescription: "add a feature",
+			cfg := Config{MaxIterations: 10, FinalizeEnabled: true, FinalizeBase: "master", ReportEnabled: true, PlanDescription: "add a feature",
 				TaskProvider: tc.task, ReviewProvider: tc.review, AppConfig: testAppConfig(t)}
 			log := newMockLogger("progress.txt")
 			run := func(signal string) *executorMock {
@@ -81,11 +81,13 @@ func TestPhasesRunUnderTheirOwnProvider(t *testing.T) {
 			finalize, ok := r.phases.finalize.(*finalizePhase)
 			require.True(t, ok)
 			finalize.policy = finalizePolicy
-			require.NoError(t, finalize.Run(t.Context()))
+			finalize.deps = &Deps{FinalizeGit: setupFinalizeRepo(t).svc}
+			_, err := finalize.Run(t.Context())
+			require.NoError(t, err)
 
 			reportPolicy := newTestPolicy(cfg, log)
 			report := NewReportPhase(ReportPhaseOpts{Cfg: cfg, Log: log, Exec: run(""), Policy: reportPolicy, Prompts: testPrompts{}})
-			_, err := report.Run(t.Context(), "facts")
+			_, err = report.Run(t.Context(), "facts")
 			require.NoError(t, err)
 
 			assertToolNames(t, tc.wantTask, taskPolicy, "task")

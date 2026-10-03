@@ -5141,3 +5141,74 @@ func TestService_RestoreHeadContext(t *testing.T) {
 		}
 	})
 }
+
+func TestService_OperationInProgress(t *testing.T) {
+	r := setupBaseSyncRepo(t)
+	op, err := r.svc.OperationInProgress()
+	require.NoError(t, err)
+	assert.Empty(t, op)
+
+	r.advanceBase(t, "base.txt", "moved\n")
+	require.Equal(t, MergeClean, r.fetchAndMerge(t).State)
+	op, err = r.svc.OperationInProgress()
+	require.NoError(t, err)
+	assert.Equal(t, "merge", op)
+}
+
+func TestService_CommitMergeContext(t *testing.T) {
+	t.Run("commits a clean merge with the trailer", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		commitTestFile(t, r.dir, "feature.txt", "feature\n", "feature work")
+		head := gitOutput(t, r.dir, "rev-parse", "HEAD")
+		base := r.advanceBase(t, "base.txt", "moved\n")
+		require.Equal(t, MergeClean, r.fetchAndMerge(t).State)
+		r.svc.SetCommitTrailer("Co-authored-by: test <test@example.com>")
+
+		require.NoError(t, r.svc.CommitMergeContext(context.Background(), "Merge origin/master"))
+		assert.False(t, mergeInProgress(t, r.dir))
+		parents, err := r.svc.CommitParents("HEAD")
+		require.NoError(t, err)
+		assert.Equal(t, []string{head, base}, parents)
+		msg := gitOutput(t, r.dir, "log", "-1", "--format=%B")
+		assert.Equal(t, "Merge origin/master\n\nCo-authored-by: test <test@example.com>", msg)
+	})
+
+	t.Run("refuses unresolved conflicts", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		commitTestFile(t, r.dir, "base.txt", "feature side\n", "feature base")
+		head := gitOutput(t, r.dir, "rev-parse", "HEAD")
+		r.advanceBase(t, "base.txt", "upstream side\n")
+		require.Equal(t, MergeConflicted, r.fetchAndMerge(t).State)
+
+		err := r.svc.CommitMergeContext(context.Background(), "Merge origin/master")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unresolved paths: base.txt")
+		assert.True(t, mergeInProgress(t, r.dir))
+		assert.Equal(t, head, gitOutput(t, r.dir, "rev-parse", "HEAD"))
+	})
+
+	t.Run("refuses without a merge in progress", func(t *testing.T) {
+		r := setupBaseSyncRepo(t)
+		err := r.svc.CommitMergeContext(context.Background(), "Merge origin/master")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no merge in progress")
+	})
+}
+
+func TestService_CommitParents(t *testing.T) {
+	r := setupBaseSyncRepo(t)
+	first := gitOutput(t, r.dir, "rev-parse", "HEAD~1")
+	parents, err := r.svc.CommitParents("HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, []string{first}, parents)
+
+	root := gitOutput(t, r.dir, "rev-list", "--max-parents=0", "HEAD")
+	parents, err = r.svc.CommitParents(root)
+	require.NoError(t, err)
+	assert.Empty(t, parents)
+
+	for _, commit := range []string{"", "--all", "no-such-commit"} {
+		_, err := r.svc.CommitParents(commit)
+		require.Error(t, err, "commit %q", commit)
+	}
+}

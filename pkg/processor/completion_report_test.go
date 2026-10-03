@@ -64,9 +64,28 @@ func TestRenderRunFacts_EmptyRecord(t *testing.T) {
 ### Timings
 - not recorded
 
+## Finalize
+- not run
+
 ## External reviewers
 - none`
 	assert.Equal(t, want, got)
+}
+
+func TestRenderRunFacts_Finalize(t *testing.T) {
+	record := RunRecord{Finalize: &FinalizeOutcome{
+		Status: FinalizeResolved, Base: "origin/main", BaseSHA: "abc123", Files: []string{"pkg/a.go", "b`c.md"},
+	}}
+	got := renderRunFacts(record, RunFacts{})
+	assert.Contains(t, got, "## Finalize\n- status: resolved\n- base: origin/main\n- base commit: abc123\n"+
+		"- result: merged origin/main (2 files resolved)\n- conflicted files:\n  - `pkg/a.go`\n  - `b\\`c.md`\n")
+
+	record.Finalize = &FinalizeOutcome{Status: FinalizeBlocked, Reason: "go test failed", Base: "origin/main"}
+	got = renderRunFacts(record, RunFacts{})
+	assert.Contains(t, got, "- status: blocked\n- base: origin/main\n- base commit: none\n- result: blocked: go test failed\n")
+	assert.NotContains(t, got, "conflicted files")
+	assert.Contains(t, factsOnlyReport(record, RunFacts{}), "- finalize: blocked: go test failed\n")
+	assert.NotContains(t, factsOnlyReport(RunRecord{}, RunFacts{}), "- finalize:")
 }
 
 func TestRenderRunFacts_TablesAndTwoReviewers(t *testing.T) {

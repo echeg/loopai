@@ -117,13 +117,17 @@
 - ➕ [x] `phase.FinalizePrompts.FinalizePrompt(conflicts []string)` now takes the conflicted paths (the current phase passes nil until task 4); `phase.ParseFinalizeBlockedReason` extracts the bounded one-line reason after `FINALIZE_BLOCKED`; `detectSignal` checks `FINALIZE_BLOCKED` before `FINALIZE_DONE` so output carrying both reads as blocked
 
 ### Task 4: Rewrite the finalize phase as base sync
-- [ ] rewrite `pkg/processor/phase/finalize.go`: when `Finalize != none`, require a clean tree, record pre-merge HEAD, fetch and merge `origin/<base>`; up to date → validation session only; clean → commit the merge with a fixed message, then validation session; conflicted → snapshot, then resolution session
-- [ ] accept only when the session signals `FINALIZE_DONE`, the tree is clean, HEAD is a merge commit whose second parent is the fetched base (for conflict and clean cases), and `ChangedOutside` reports nothing; otherwise abort/restore to pre-merge HEAD and record a `FinalizeOutcome{Status: blocked, Reason, Files}`
-- [ ] return a `FinalizeOutcome` (`skipped|up_to_date|merged|resolved|blocked`, reason, conflicted files, base SHA) through the runner; expose it as `Runner.FinalizeOutcome()`; context cancellation still propagates as an error, every other failure becomes `blocked`
-- [ ] in a plan chain run finalize only for the last plan (pass a processor config flag from `runPlanChain`)
-- [ ] record the outcome in `RunRecord` so the report's facts mention the sync result
-- [ ] write tests with fake executors and a real temp repo: each outcome, signal missing, tampering rejected, validation failure after clean merge restoring HEAD, cancellation, chain non-last plan skipping
-- [ ] run `go test ./pkg/processor/...` - must pass before task 5
+- [x] rewrite `pkg/processor/phase/finalize.go`: when `Finalize != none`, require a clean tree, record pre-merge HEAD, fetch and merge `origin/<base>`; up to date → validation session only; clean → commit the merge with a fixed message, then validation session; conflicted → snapshot, then resolution session
+- [x] accept only when the session signals `FINALIZE_DONE`, the tree is clean, HEAD is a merge commit whose second parent is the fetched base (for conflict and clean cases), and `ChangedOutside` reports nothing; otherwise abort/restore to pre-merge HEAD and record a `FinalizeOutcome{Status: blocked, Reason, Files}`
+- [x] return a `FinalizeOutcome` (`skipped|up_to_date|merged|resolved|blocked`, reason, conflicted files, base SHA) through the runner; expose it as `Runner.FinalizeOutcome()`; context cancellation still propagates as an error, every other failure becomes `blocked`
+- [x] in a plan chain run finalize only for the last plan (pass a processor config flag from `runPlanChain`)
+- [x] record the outcome in `RunRecord` so the report's facts mention the sync result
+- [x] write tests with fake executors and a real temp repo: each outcome, signal missing, tampering rejected, validation failure after clean merge restoring HEAD, cancellation, chain non-last plan skipping
+- [x] run `go test ./pkg/processor/...` - must pass before task 5
+- ➕ [x] `pkg/git` gained `OperationInProgress`, `CommitMergeContext` (commits the in-progress merge with the commit trailer, refuses unresolved paths), and `CommitParents`; the phase reaches git through the consumer interface `phase.FinalizeGit`, wired by `Runner.SetFinalizeGit(req.GitSvc)` (the worktree service in worktree mode)
+- ➕ [x] the base is `resolveFinalize`/`finalizeBaseBranch` in `cmd/loopai`: the local branch `--base-ref` names, else the configured or auto-detected default branch, without `origin/`; the chain flag is `executePlanRequest.ChainNotLast`
+- ➕ [x] cancellation restores the pre-merge state under a detached one-minute context before returning the error, so a resumed run never meets a half-done merge; a failed restore is appended to the blocked reason
+- ➕ [x] after a `merged`/`resolved` sync, report facts measure commits and diffs against `origin/<base>` (`Runner.factsBase`) so merged-in base changes are not counted as the run's work; a stored finalize result is cleared at run start; the facts gain a `## Finalize` section and the facts-only fallback a `- finalize:` summary line
 
 ### Task 5: Push, open the PR, and optionally merge after archival
 - [ ] refactor `runPRCommand` into a reusable `createPullRequest(ctx, gitSvc, base, target) (prURL string, err error)` used by both `--pr` and finalize; keep `--pr` output unchanged

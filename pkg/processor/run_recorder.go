@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -122,6 +123,11 @@ func cloneRunRecord(record RunRecord) RunRecord {
 		cloned.External[i] = record.External[i]
 		cloned.External[i].Iterations = append([]ExternalIterationRecord(nil), record.External[i].Iterations...)
 	}
+	if record.Finalize != nil {
+		finalize := *record.Finalize
+		finalize.Files = slices.Clone(record.Finalize.Files)
+		cloned.Finalize = &finalize
+	}
 	return cloned
 }
 
@@ -161,6 +167,9 @@ func (r *Runner) startRunRecord() {
 		}
 	}
 	r.record = fresh
+	// every invocation that reaches finalize syncs again, so a stored result describes an
+	// earlier attempt and must not reach this run's report
+	r.record.Finalize = nil
 	boundExternalReviewText(r.record.External)
 	r.priorPhaseDurations = maps.Clone(fresh.PhaseDurations)
 	if fresh.Validation != nil {

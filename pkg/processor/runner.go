@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/umputun/ralphex/pkg/config"
@@ -49,7 +50,8 @@ type Config struct {
 	ExternalReviewModel   string                      // resolved external provider model
 	ExternalReviewEffort  string                      // resolved external provider effort
 	ExternalReviewers     []config.ReviewerSpec       // ordered resolved reviewer chain; empty uses the legacy fields above
-	FinalizeEnabled       bool                        // whether finalize step is enabled
+	FinalizeEnabled       bool                        // whether the finalize base sync runs (finalize != none, and the last plan of a chain)
+	FinalizeBase          string                      // base branch the finalize sync merges from origin
 	ReportEnabled         bool                        // whether completion report generation is enabled
 	DefaultBranch         string                      // default branch name (detected from repo)
 	AppConfig             *config.Config              // full application config (for executors and prompts)
@@ -64,6 +66,7 @@ func toPhaseConfig(c Config) phase.Config {
 		MaxExternalIterations: c.MaxExternalIterations,
 		ReviewPatience:        c.ReviewPatience,
 		FinalizeEnabled:       c.FinalizeEnabled,
+		FinalizeBase:          c.FinalizeBase,
 		ReportEnabled:         c.ReportEnabled,
 		TaskProvider:          c.taskProvider(),
 		ReviewProvider:        c.reviewProvider(),
@@ -142,7 +145,26 @@ type Runner struct {
 	resumeReady         bool
 	resume              reviewResume
 	phases              runnerPhases
+	finalizeOutcome     FinalizeOutcome
 }
+
+// FinalizeOutcome describes the finalize base sync; see phase.FinalizeOutcome.
+type FinalizeOutcome = phase.FinalizeOutcome
+
+// FinalizeStatus classifies a finalize base sync; see phase.FinalizeStatus.
+type FinalizeStatus = phase.FinalizeStatus
+
+// finalize statuses reported by Runner.FinalizeOutcome.
+const (
+	FinalizeSkipped  = phase.FinalizeSkipped
+	FinalizeUpToDate = phase.FinalizeUpToDate
+	FinalizeMerged   = phase.FinalizeMerged
+	FinalizeResolved = phase.FinalizeResolved
+	FinalizeBlocked  = phase.FinalizeBlocked
+)
+
+// FinalizeGit performs the repository operations of the finalize base sync; see phase.FinalizeGit.
+type FinalizeGit = phase.FinalizeGit
 
 type taskPhaseRunner interface {
 	Run(ctx context.Context) error
@@ -165,7 +187,7 @@ type externalReviewPhaseRunner interface {
 }
 
 type finalizePhaseRunner interface {
-	Run(ctx context.Context) error
+	Run(ctx context.Context) (phase.FinalizeOutcome, error)
 }
 
 type reportPhaseRunner interface {
@@ -264,7 +286,7 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 		},
 	})
 	finalizePhase := phase.NewFinalizePhase(phase.FinalizePhaseOpts{
-		Cfg: phaseCfg, Log: log, Exec: review, Policy: policy, Prompts: prompts, PhaseHolder: holder,
+		Cfg: phaseCfg, Log: log, Exec: review, Policy: policy, Prompts: prompts, Deps: deps, PhaseHolder: holder,
 	})
 	reportPhase := phase.NewReportPhase(phase.ReportPhaseOpts{
 		Cfg: phaseCfg, Log: log, Exec: review, Policy: policy, Prompts: prompts, PhaseHolder: holder,
@@ -311,6 +333,14 @@ func (r *Runner) SetGitChecker(g GitChecker) {
 	r.deps.Git = g
 }
 
+// SetFinalizeGit sets the repository the finalize base sync merges into: the run's own checkout.
+func (r *Runner) SetFinalizeGit(g FinalizeGit) {
+	if r.deps == nil {
+		r.deps = &phase.Deps{}
+	}
+	r.deps.FinalizeGit = g
+}
+
 // SetReviewCheckpoints configures durable review-stage checkpoint storage.
 func (r *Runner) SetReviewCheckpoints(store ReviewCheckpointStore) {
 	r.checkpoints = store
@@ -342,6 +372,7 @@ func (r *Runner) SetPauseHandler(fn func(ctx context.Context) bool) {
 
 // Run executes the main loop based on configured mode.
 func (r *Runner) Run(ctx context.Context) error {
+	r.finalizeOutcome = FinalizeOutcome{}
 	r.prepareReviewResume(ctx)
 	r.startRunRecord()
 	defer r.finishRunRecord()
@@ -448,8 +479,8 @@ func (r *Runner) runCodexOnly(ctx context.Context) error {
 func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 	if !r.phases.external.Enabled() {
 		r.log.Print("external review disabled, skipping...")
-		if err := r.phases.finalize.Run(ctx); err != nil {
-			return fmt.Errorf("finalize phase: %w", err)
+		if err := r.runFinalize(ctx); err != nil {
+			return err
 		}
 		if err := r.runReport(ctx); err != nil {
 			return err
@@ -469,8 +500,8 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 
 	if !outcome.HadFindings {
 		r.log.Print("external review found no issues, skipping post-%s %s review", label, r.cfg.reviewProvider())
-		if err := r.phases.finalize.Run(ctx); err != nil {
-			return fmt.Errorf("finalize phase: %w", err)
+		if err := r.runFinalize(ctx); err != nil {
+			return err
 		}
 		if err := r.runReport(ctx); err != nil {
 			return err
@@ -500,14 +531,48 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 		r.saveReviewStage(ctx, ReviewStage{Stage: reviewStagePostReview})
 	}
 
-	if err := r.phases.finalize.Run(ctx); err != nil {
-		return fmt.Errorf("finalize phase: %w", err)
+	if err := r.runFinalize(ctx); err != nil {
+		return err
 	}
 	if err := r.runReport(ctx); err != nil {
 		return err
 	}
 	r.clearReviewCheckpoint("")
 	return nil
+}
+
+// runFinalize runs the finalize base sync and records its outcome. Only context cancellation
+// fails the run; a rejected sync is a blocked outcome the caller reports.
+func (r *Runner) runFinalize(ctx context.Context) error {
+	outcome, err := r.phases.finalize.Run(ctx)
+	if err != nil {
+		return fmt.Errorf("finalize phase: %w", err)
+	}
+	r.finalizeOutcome = outcome
+	if outcome.Status == FinalizeSkipped {
+		return nil
+	}
+	record := func(rec *RunRecord) {
+		recorded := outcome
+		recorded.Files = slices.Clone(outcome.Files)
+		rec.Finalize = &recorded
+	}
+	if r.recorder == nil {
+		record(&r.record)
+		return nil
+	}
+	r.recorder.update(record)
+	return nil
+}
+
+// FinalizeOutcome returns the finalize base sync result of the latest run. Its status is
+// FinalizeSkipped when finalize is off, the mode has no review pipeline, or the run stopped
+// before finalize.
+func (r *Runner) FinalizeOutcome() FinalizeOutcome {
+	if r.finalizeOutcome.Status == "" {
+		return FinalizeOutcome{Status: FinalizeSkipped}
+	}
+	return r.finalizeOutcome
 }
 
 func (r *Runner) runReport(ctx context.Context) error {

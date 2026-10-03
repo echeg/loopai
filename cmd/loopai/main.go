@@ -282,6 +282,7 @@ type executePlanRequest struct {
 	ChainPlanFiles         []string           // all chain inputs; non-empty only for multi-plan execution
 	ChainPrepared          func(string) error // persists the prepared branch tip before execution begins
 	ChainFinalizing        func() error       // persists that successful post-processing began before archival
+	ChainNotLast           bool               // a chain member other than the last; finalize runs only for the last
 	NotifySvc              *notify.Service
 	BranchOverride         string                // branch name override (--branch flag); empty = derive from plan filename
 	WtCleanup              *cleanupHolder        // worktree cleanup for interrupt handler; nil when not in worktree mode
@@ -1079,6 +1080,7 @@ func executePlanChainMember(
 	planReq.ChainResumePreparedTip = state.ResumePreparedTip
 	planReq.ChainInitialTip = state.InitialTip
 	planReq.ChainPlanFiles = o.PlanFiles
+	planReq.ChainNotLast = index < len(o.PlanFiles)-1
 	planReq.WorktreeStartRef = previousTip
 	planReq.ChainPrepared = func(tip string) error {
 		state.ActiveStartTip = tip
@@ -3763,6 +3765,8 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		reviewPatience = o.ReviewPatience
 	}
 
+	finalizeEnabled, finalizeBase := resolveFinalize(req)
+
 	if req.LimitRecovery != nil {
 		log.Print("claude-swap detected: automatic Claude account failover enabled")
 	}
@@ -3782,7 +3786,8 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		ExternalReviewModel:   reviewer.Model,
 		ExternalReviewEffort:  reviewer.Effort,
 		ExternalReviewers:     reviewers,
-		FinalizeEnabled:       req.Config.EffectiveFinalize() != config.FinalizeNone,
+		FinalizeEnabled:       finalizeEnabled,
+		FinalizeBase:          finalizeBase,
 		ReportEnabled:         req.Config.ReportEnabled,
 		DefaultBranch:         req.BaseRef,
 		TaskModel:             resolveSpec(o.TaskModel, req.Config.TaskModel),
@@ -3793,6 +3798,7 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 	}, log, holder)
 	if req.GitSvc != nil {
 		r.SetGitChecker(req.GitSvc)
+		r.SetFinalizeGit(req.GitSvc)
 		r.SetRunFactsSource(req.GitSvc)
 	}
 	return r
@@ -6537,6 +6543,28 @@ func localBranchRef(gitSvc *git.Service, ref string) string {
 		return local
 	}
 	return ""
+}
+
+// resolveFinalize reports whether the finalize base sync runs for req and the base branch it merges.
+// A chain member's branch is the next member's start, so only the last member syncs with the base.
+func resolveFinalize(req executePlanRequest) (enabled bool, base string) {
+	if req.Config.EffectiveFinalize() == config.FinalizeNone || req.ChainNotLast {
+		return false, ""
+	}
+	return true, finalizeBaseBranch(req.GitSvc, req.BaseRef, req.Config.DefaultBranch)
+}
+
+// finalizeBaseBranch returns the branch finalize merges from origin: the branch --base-ref names
+// when it is a local branch, otherwise the configured or auto-detected default branch, without
+// the origin/ prefix. A commit-hash --base-ref is a diff base only and has no remote counterpart.
+func finalizeBaseBranch(gitSvc *git.Service, baseRef, configBranch string) string {
+	if gitSvc == nil {
+		return strings.TrimPrefix(baseRef, remoteBranchPrefix)
+	}
+	if local := localBranchRef(gitSvc, baseRef); local != "" {
+		return local
+	}
+	return strings.TrimPrefix(resolveDefaultBranch("", configBranch, gitSvc.GetDefaultBranch()), remoteBranchPrefix)
 }
 
 // resolveBranchBase decides which ref is the base for non-worktree branch creation.

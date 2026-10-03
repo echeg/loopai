@@ -82,24 +82,39 @@ func (r *Runner) collectRepositoryFacts(facts *RunFacts) {
 	if r.factsSource == nil {
 		return
 	}
-	commits, err := r.factsSource.CommitsBetween(r.cfg.DefaultBranch, "HEAD")
+	base := r.factsBase()
+	commits, err := r.factsSource.CommitsBetween(base, "HEAD")
 	if err != nil {
 		r.logRunFactsError("commits", err)
 	} else {
 		facts.Commits = commits
 	}
-	files, err := r.factsSource.DiffNameStatus(r.cfg.DefaultBranch)
+	files, err := r.factsSource.DiffNameStatus(base)
 	if err != nil {
 		r.logRunFactsError("files", err)
 	} else {
 		facts.Files = files
 	}
-	stats, err := r.factsSource.DiffStats(r.cfg.DefaultBranch)
+	stats, err := r.factsSource.DiffStats(base)
 	if err != nil {
 		r.logRunFactsError("diff stats", err)
 	} else {
 		facts.DiffStats = stats
 	}
+}
+
+// factsBase returns the revision repository facts are measured against. After finalize merged
+// origin/<base> into the branch, the local base may be behind it, and measuring against the local
+// base would count the merged-in base changes as the run's own work.
+func (r *Runner) factsBase() string {
+	outcome := r.finalizeOutcome
+	if outcome.Status != FinalizeMerged && outcome.Status != FinalizeResolved {
+		return r.cfg.DefaultBranch
+	}
+	if strings.TrimPrefix(r.cfg.DefaultBranch, "origin/") != strings.TrimPrefix(outcome.Base, "origin/") {
+		return r.cfg.DefaultBranch
+	}
+	return outcome.Base
 }
 
 func (r *Runner) backlogDir() string {
@@ -186,6 +201,9 @@ func renderRunFacts(record RunRecord, facts RunFacts) string {
 	b.WriteString("### Timings\n")
 	writeValidationTimings(&b, record.Validation)
 
+	b.WriteString("\n## Finalize\n")
+	writeFinalize(&b, record.Finalize)
+
 	b.WriteString("\n## External reviewers\n")
 	writeExternalReviewers(&b, record.External)
 	return strings.TrimSpace(b.String())
@@ -233,6 +251,22 @@ func writeValidationTimings(b *strings.Builder, validation *ValidationRunRecord)
 		return
 	}
 	fmt.Fprintf(b, "- duration_ms: %d\n- runs: %d\n", time.Duration(validation.Duration).Milliseconds(), validation.Runs)
+}
+
+// writeFinalize renders the finalize base sync. An absent record means finalize did not run.
+func writeFinalize(b *strings.Builder, finalize *FinalizeOutcome) {
+	if finalize == nil {
+		b.WriteString("- not run\n")
+		return
+	}
+	fmt.Fprintf(b, "- status: %s\n- base: %s\n- base commit: %s\n- result: %s\n",
+		finalize.Status, valueOrNone(finalize.Base), valueOrNone(finalize.BaseSHA), finalize.Summary())
+	if len(finalize.Files) > 0 {
+		b.WriteString("- conflicted files:\n")
+		for _, file := range finalize.Files {
+			fmt.Fprintf(b, "  - `%s`\n", inlineCode(file))
+		}
+	}
 }
 
 func writeFilesTable(b *strings.Builder, files []gitpkg.FileChange) {

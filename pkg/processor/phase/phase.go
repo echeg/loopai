@@ -35,6 +35,7 @@ type Config struct {
 	MaxExternalIterations int
 	ReviewPatience        int
 	FinalizeEnabled       bool
+	FinalizeBase          string // base branch finalize merges from origin; an origin/ prefix is stripped
 	ReportEnabled         bool
 	TaskProvider          string
 	ReviewProvider        string
@@ -161,6 +162,7 @@ type Deps struct {
 	BreakCh        <-chan struct{}
 	PauseHandler   func(ctx context.Context) bool
 	Recorder       RunRecorder
+	FinalizeGit    FinalizeGit
 }
 
 // ExecutionResult is the execution output plus phase-level timeout metadata.

@@ -262,13 +262,14 @@ func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integratio
 
 		var order, startRefs []string
 		var commits []bool
-		var successors []bool
+		var successors, notLast []bool
 		var out bytes.Buffer
 		execute := func(_ context.Context, gotOpts opts, gotReq executePlanRequest, _ *plan.Selector) error {
 			order = append(order, gotOpts.PlanFile)
 			startRefs = append(startRefs, gotReq.WorktreeStartRef)
 			commits = append(commits, gotOpts.Commit)
 			successors = append(successors, gotReq.ChainSuccessor)
+			notLast = append(notLast, gotReq.ChainNotLast)
 			require.NotNil(t, gotReq.Outcome)
 			gotReq.Outcome.succeeded = true
 			return nil
@@ -280,6 +281,7 @@ func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integratio
 		assert.Equal(t, plans, order)
 		assert.Equal(t, []bool{true, false, false}, commits)
 		assert.Equal(t, []bool{false, true, true}, successors)
+		assert.Equal(t, []bool{true, true, false}, notLast, "only the last chain member runs finalize")
 		assert.Equal(t, []string{
 			"",
 			head,
@@ -3350,6 +3352,58 @@ func TestLocalBranchRef(t *testing.T) {
 			assert.Equal(t, tc.expected, localBranchRef(gitSvc, tc.ref))
 		})
 	}
+}
+
+func TestResolveFinalize(t *testing.T) {
+	dir := setupTestRepo(t)
+	runGit(t, dir, "branch", "release")
+	runGit(t, dir, "remote", "add", "origin", dir)
+	runGit(t, dir, "update-ref", "refs/remotes/origin/master", "HEAD")
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	hash, err := gitSvc.HeadHash()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name         string
+		finalize     string
+		configBase   string
+		baseRef      string
+		chainNotLast bool
+		wantEnabled  bool
+		wantBase     string
+	}{
+		{name: "unset is none", finalize: "", baseRef: "master"},
+		{name: "none", finalize: config.FinalizeNone, baseRef: "master"},
+		{name: "sync uses the local base-ref branch", finalize: config.FinalizeSync, baseRef: "release",
+			wantEnabled: true, wantBase: "release"},
+		{name: "remote-tracking base-ref resolves to its local branch", finalize: config.FinalizePR,
+			baseRef: "origin/master", wantEnabled: true, wantBase: "master"},
+		{name: "commit base-ref falls back to the default branch", finalize: config.FinalizeMerge, baseRef: hash,
+			wantEnabled: true, wantBase: "master"},
+		{name: "commit base-ref falls back to the configured default branch", finalize: config.FinalizeSync,
+			configBase: "origin/trunk", baseRef: hash, wantEnabled: true, wantBase: "trunk"},
+		{name: "non-last chain member skips", finalize: config.FinalizeSync, baseRef: "master", chainNotLast: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := executePlanRequest{
+				GitSvc: gitSvc, BaseRef: tc.baseRef, ChainNotLast: tc.chainNotLast,
+				Config: &config.Config{Finalize: tc.finalize, DefaultBranch: tc.configBase},
+			}
+			enabled, base := resolveFinalize(req)
+			assert.Equal(t, tc.wantEnabled, enabled)
+			assert.Equal(t, tc.wantBase, base)
+		})
+	}
+
+	t.Run("without a git service the base-ref is used as is", func(t *testing.T) {
+		enabled, base := resolveFinalize(executePlanRequest{
+			BaseRef: "origin/main", Config: &config.Config{Finalize: config.FinalizeSync},
+		})
+		assert.True(t, enabled)
+		assert.Equal(t, "main", base)
+	})
 }
 
 func TestForceExitCleanup(t *testing.T) {

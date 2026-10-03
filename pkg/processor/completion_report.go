@@ -47,6 +47,9 @@ func factsOnlyReport(record RunRecord, facts RunFacts) string {
 	b.WriteString("\n## Summary\n")
 	fmt.Fprintf(&b, "- task iterations: %d\n- failed retries: %d\n- external reviewers: %d\n- post-review iterations: %d\n",
 		record.Tasks.Iterations, record.Tasks.FailedRetries, len(record.External), record.PostReview.Iterations)
+	if record.Finalize != nil {
+		fmt.Fprintf(&b, "- finalize: %s\n", record.Finalize.Summary())
+	}
 	writePhaseDurations(&b, record.PhaseDurations)
 
 	b.WriteString("\n## Change scope\n")

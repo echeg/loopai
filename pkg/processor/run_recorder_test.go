@@ -336,3 +336,14 @@ func TestRunRecordPartialCheckpointRecovery(t *testing.T) {
 		}
 	}
 }
+
+func TestCloneRunRecordCopiesFinalize(t *testing.T) {
+	record := RunRecord{Finalize: &FinalizeOutcome{Status: FinalizeResolved, Files: []string{"a.go"}}}
+	cloned := cloneRunRecord(record)
+	require.NotNil(t, cloned.Finalize)
+	cloned.Finalize.Files[0] = "changed.go"
+	cloned.Finalize.Status = FinalizeBlocked
+	assert.Equal(t, "a.go", record.Finalize.Files[0])
+	assert.Equal(t, FinalizeResolved, record.Finalize.Status)
+	assert.Nil(t, cloneRunRecord(RunRecord{}).Finalize)
+}

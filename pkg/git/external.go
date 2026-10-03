@@ -975,6 +975,30 @@ func (e *externalBackend) resetKeep(ctx context.Context, commit string) error {
 	return nil
 }
 
+// commitMerge records the merge in progress as a commit with msg. Hooks run as for any commit.
+func (e *externalBackend) commitMerge(ctx context.Context, msg string) error {
+	if _, err := e.runContext(ctx, "commit", "--no-edit", "-m", msg); err != nil {
+		return contextError(ctx, "commit merge", err)
+	}
+	return nil
+}
+
+// commitParents lists the parents of commit in order.
+func (e *externalBackend) commitParents(commit string) ([]string, error) {
+	if commit == "" || strings.HasPrefix(commit, "-") {
+		return nil, fmt.Errorf("invalid commit %q", commit)
+	}
+	out, err := e.run("rev-list", "--parents", "-n", "1", commit+"^{commit}", "--")
+	if err != nil {
+		return nil, fmt.Errorf("list parents of %q: %w", commit, err)
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("list parents of %q: empty output", commit)
+	}
+	return fields[1:], nil
+}
+
 func writeMergeOptionsOverride(branch string) (string, error) {
 	file, err := os.CreateTemp("", "ralphex-merge-config-*")
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -84,6 +85,8 @@ type backend interface {
 	treeEntries(commit string) (map[string]treeEntry, error)
 	mergeAbort(ctx context.Context) error
 	resetKeep(ctx context.Context, commit string) error
+	commitMerge(ctx context.Context, msg string) error
+	commitParents(commit string) ([]string, error)
 }
 
 // ErrMergeConflict identifies a merge that could not be completed because of conflicts.
@@ -698,6 +701,49 @@ func (s *Service) RestoreHeadContext(ctx context.Context, sha string) error {
 		return fmt.Errorf("restore HEAD to %s: %w", sha, err)
 	}
 	return nil
+}
+
+// OperationInProgress names the unfinished Git operation in this checkout, such as "merge" while
+// MERGE_HEAD exists, or returns an empty string when there is none.
+func (s *Service) OperationInProgress() (string, error) {
+	op, err := s.repo.operationInProgress()
+	if err != nil {
+		return "", fmt.Errorf("operation in progress: %w", err)
+	}
+	return op, nil
+}
+
+// CommitMergeContext commits the merge in progress with message and the configured trailer. It
+// refuses when no merge is in progress or the index still carries conflict stages, so it can only
+// record a merge whose every path is resolved.
+func (s *Service) CommitMergeContext(ctx context.Context, message string) error {
+	op, err := s.repo.operationInProgress()
+	if err != nil {
+		return fmt.Errorf("commit merge: %w", err)
+	}
+	if op != "merge" {
+		return errors.New("commit merge: no merge in progress")
+	}
+	_, unmerged, err := s.repo.indexEntries()
+	if err != nil {
+		return fmt.Errorf("commit merge: %w", err)
+	}
+	if len(unmerged) > 0 {
+		return fmt.Errorf("commit merge: unresolved paths: %s", strings.Join(slices.Sorted(maps.Keys(unmerged)), ", "))
+	}
+	if err := s.repo.commitMerge(ctx, s.appendTrailer(message)); err != nil {
+		return fmt.Errorf("commit merge: %w", err)
+	}
+	return nil
+}
+
+// CommitParents returns the parents of commit in order: the first parent, then any merged ones.
+func (s *Service) CommitParents(commit string) ([]string, error) {
+	parents, err := s.repo.commitParents(commit)
+	if err != nil {
+		return nil, fmt.Errorf("commit parents: %w", err)
+	}
+	return parents, nil
 }
 
 // differingEntries returns the paths outside allowed whose entry is present in only one of want

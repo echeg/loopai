@@ -53,6 +53,7 @@ type RunRecord struct {
 	InternalReview InternalReviewRunRecord  `json:"internal_review"`
 	External       []ExternalReviewerRecord `json:"external"`
 	PostReview     PostReviewRunRecord      `json:"post_review"`
+	Finalize       *FinalizeOutcome         `json:"finalize,omitempty"`
 	Report         string                   `json:"report"`
 }
 

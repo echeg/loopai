@@ -149,7 +149,10 @@ func (p *checkpointExternal) Run(ctx context.Context) (phase.ExternalReviewOutco
 
 type checkpointFinalize struct{ runs int }
 
-func (p *checkpointFinalize) Run(context.Context) error { p.runs++; return nil }
+func (p *checkpointFinalize) Run(context.Context) (FinalizeOutcome, error) {
+	p.runs++
+	return FinalizeOutcome{Status: FinalizeSkipped}, nil
+}
 
 func newCheckpointRunner(cfg Config, store ReviewCheckpointStore, git GitChecker) (*Runner, *checkpointReview, *checkpointExternal, *checkpointFinalize) {
 	log := newMockLogger()
