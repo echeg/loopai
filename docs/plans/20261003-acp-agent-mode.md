@@ -190,12 +190,12 @@
 - [x] ➕ on Windows `make build` also writes `.bin/loopai-acp.exe` and `.bin/loopai.exe`, because process creation cannot start an extensionless binary there and the launcher's sibling lookup expects `loopai.exe`
 
 ### Task 7: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify edge cases: second prompt while running, cancel, malformed prompt, plan on the default branch (branch creation in place), credential redaction
-- [ ] run `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...` and `GOOS=linux GOARCH=amd64 go build ./...`
-- [ ] verify test coverage of `pkg/acp` and the launcher is 80%+
+- [x] verify all requirements from Overview are implemented
+- [x] verify edge cases: second prompt while running, cancel, malformed prompt, plan on the default branch (branch creation in place), credential redaction
+- [x] run `make test` (run in WSL Ubuntu per the Windows test-safety rule; the wrapper suites need non-tty stdin there, since `wsl.exe` attaches a pty that `codex-as-claude`'s missing-prompt case blocks on)
+- [x] run `make lint` - all issues must be fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...` and `GOOS=linux GOARCH=amd64 go build ./...`
+- [x] verify test coverage of `pkg/acp` and the launcher is 80%+ (pkg/acp 98.4%, cmd/loopai-acp 88.5%)
 
 ### Task 8: [Final] Update documentation
 - [ ] add an "Experimental: loopai as a T3 Code provider" section to `docs/t3-code.md`. It covers:
