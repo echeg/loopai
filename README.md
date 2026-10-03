@@ -72,7 +72,14 @@ loopai --version
 For development, `make build` always refreshes `.bin/loopai` and `.bin/loopai-acp`, the launcher for
 the experimental T3 Code provider mode. On Windows the launcher is written only as
 `.bin/loopai-acp.exe`, and loopai also gets a `.bin/loopai.exe` copy.
-Install `loopai-acp` beside `loopai` only if you use that mode.
+Install `loopai-acp` beside `loopai` only if you use that mode:
+
+```bash
+install -m 0755 .bin/loopai-acp ~/.local/bin/loopai-acp
+```
+
+The launcher prefers a `loopai` in its own directory (`loopai.exe` on Windows), then `PATH`;
+`LOOPAI_ACP_LOOPAI` overrides both. See [docs/t3-code.md](docs/t3-code.md).
 
 ### Shell completions
 

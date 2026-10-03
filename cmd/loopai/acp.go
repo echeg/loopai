@@ -179,13 +179,10 @@ func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Si
 	if reason := planFileRefusal(o.PlanFile); reason != "" {
 		return acp.Result{}, errors.New(reason)
 	}
-	cfg, err := loadRunConfig(o)
+	cfg, err := loadACPSessionConfig(o)
 	if err != nil {
 		return acp.Result{}, err
 	}
-	// the session reports through ACP rather than the T3 thread API or terminal titles, and the
-	// plan runs in place: T3 Code owns the thread's worktree
-	cfg.T3, cfg.Orca, cfg.WorktreeEnabled = false, false, false
 
 	execReq, selector, release, err := prepareNonInteractiveRequest(ctx, o, cfg, a.out)
 	if err != nil {
@@ -201,6 +198,18 @@ func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Si
 
 	runErr := errors.Join(selectAndExecutePlan(ctx, o, execReq, selector), release())
 	return acpRunResult(o.PlanFile, execReq.Outcome, runErr)
+}
+
+// loadACPSessionConfig loads config in the session's working directory. The session reports
+// through ACP rather than the T3 thread API or terminal titles, and the plan runs in place because
+// T3 Code owns the thread's worktree, so t3, orca, and use_worktree are forced off.
+func loadACPSessionConfig(o opts) (*config.Config, error) {
+	cfg, err := loadRunConfig(o)
+	if err != nil {
+		return nil, err
+	}
+	cfg.T3, cfg.Orca, cfg.WorktreeEnabled = false, false, false
+	return cfg, nil
 }
 
 // parseACPPrompt parses a prompt's first text block: one plan file plus --task-model,

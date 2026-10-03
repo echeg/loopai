@@ -13,9 +13,11 @@ import (
 	"github.com/umputun/ralphex/pkg/status"
 )
 
-// stopTimeout bounds how long Stop waits for the final title and then the unpin to reach the
-// server; each request has its own requestTimeout, so the bound covers both with a margin.
-const stopTimeout = 2*requestTimeout + time.Second
+// stopTimeout bounds how long Stop waits for pending updates to reach the server. Each request has
+// its own requestTimeout, and Stop can arrive while a title is in flight, so the bound covers that
+// title, the final title, and the unpin with a margin. A missed unpin leaves the thread pinned, and
+// a later run bound to it reads that pin as the user's and never releases it.
+const stopTimeout = 3*requestTimeout + time.Second
 
 type waitingKind uint8
 

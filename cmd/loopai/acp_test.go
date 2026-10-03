@@ -65,6 +65,10 @@ func TestValidateACPFlags(t *testing.T) {
 		{"task model", opts{ACP: true, TaskModel: "claude:opus"}, "--acp cannot be combined with execution flags"},
 		{"worktree", opts{ACP: true, Worktree: true}, "--acp cannot be combined with execution flags"},
 		{"serve", opts{ACP: true, Serve: true}, "--acp cannot be combined with execution flags"},
+		{"init", opts{ACP: true, Init: true}, "--acp cannot be combined with execution flags"},
+		{"reset", opts{ACP: true, Reset: true}, "--acp cannot be combined with execution flags"},
+		{"dump defaults", opts{ACP: true, DumpDefaults: "/tmp/d"}, "--acp cannot be combined with execution flags"},
+		{"gen agents", opts{ACP: true, GenAgents: true}, "--acp cannot be combined with execution flags"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -188,6 +192,74 @@ func TestRedirectStdioForACP(t *testing.T) {
 	assert.Same(t, origIn, os.Stdin)
 	assert.Same(t, origOut, os.Stdout)
 	assert.Equal(t, origColor, color.Output)
+}
+
+// TestRunACPServesBeforeLoadingConfig drives --acp through run() on swapped process stdio. Config
+// is loaded per prompt in the session cwd, so an invalid config in the directory the client started
+// loopai in must not keep the agent from answering initialize, and nothing but protocol lines may
+// reach stdout.
+func TestRunACPServesBeforeLoadingConfig(t *testing.T) {
+	start := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(start, ".loopai"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(start, ".loopai", "config"), []byte("executor = codex\n"), 0o600))
+	t.Chdir(start)
+
+	inR, inW, err := os.Pipe()
+	require.NoError(t, err)
+	_, err = inW.WriteString(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}` + "\n")
+	require.NoError(t, err)
+	require.NoError(t, inW.Close())
+	outFile, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
+	require.NoError(t, err)
+	origIn, origOut := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = inR, outFile
+	t.Cleanup(func() {
+		os.Stdin, os.Stdout = origIn, origOut
+		_ = inR.Close()
+		_ = outFile.Close()
+	})
+
+	require.NoError(t, run(t.Context(), opts{ACP: true, ConfigDir: t.TempDir()}))
+	assert.Same(t, inR, os.Stdin, "the process stdin is restored after serving")
+	assert.Same(t, outFile, os.Stdout, "the process stdout is restored after serving")
+
+	data, err := os.ReadFile(outFile.Name())
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.Len(t, lines, 1, "stdout carries only the initialize response: %q", data)
+	var resp struct {
+		ID     int             `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &resp))
+	assert.Equal(t, 1, resp.ID)
+	assert.Contains(t, string(resp.Result), `"protocolVersion":1`)
+	assert.Empty(t, resp.Error)
+}
+
+func TestLoadACPSessionConfigForcesT3OrcaAndWorktreeOff(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "config"),
+		[]byte("use_worktree = true\nt3 = true\norca = true\n"), 0o600))
+	t.Chdir(dir)
+	o := opts{ConfigDir: t.TempDir()}
+
+	plain, err := loadRunConfig(o)
+	require.NoError(t, err)
+	require.True(t, plain.T3 && plain.Orca && plain.WorktreeEnabled, "the fixture enables all three")
+
+	cfg, err := loadACPSessionConfig(o)
+	require.NoError(t, err)
+	assert.False(t, cfg.T3, "the session reports through ACP, not the T3 thread API")
+	assert.False(t, cfg.Orca, "the session has no terminal for titles")
+	assert.False(t, cfg.WorktreeEnabled, "T3 Code owns the thread's worktree")
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "config"), []byte("executor = codex\n"), 0o600))
+	_, err = loadACPSessionConfig(o)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "task_model = codex:")
 }
 
 func TestEnterDir(t *testing.T) {
@@ -551,7 +623,7 @@ printf '%s\n' '{"type":"result","result":""}'
 			wantMsg: "usage: <plan-file>", planKept: true},
 		{name: "missing plan", prompt: "docs/plans/missing.md", wantErr: "plan file not found: docs/plans/missing.md", planKept: true},
 		{name: "run failure", prompt: "docs/plans/two.md", wantErr: "FAILED signal received", planKept: true},
-		{name: "invalid session config", prompt: "docs/plans/two.md", wantErr: "executor", planKept: true,
+		{name: "invalid session config", prompt: "docs/plans/two.md", wantErr: "task_model = codex:", planKept: true,
 			sessionDir: func(t *testing.T, f acpFixture) string {
 				t.Helper()
 				require.NoError(t, os.MkdirAll(filepath.Join(f.repo, ".loopai"), 0o750))

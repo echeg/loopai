@@ -151,7 +151,7 @@
 - [x] run `go test -race ./cmd/loopai/... ./pkg/progress/...` - must pass before task 5
 
 ### Task 5: `loopai --acp` command
-- [x] add the `--acp` flag to `opts` and route it from `runConfiguredStandaloneCommand`. In ACP mode:
+- [x] add the `--acp` flag to `opts` and route it from `runConfiguredStandaloneCommand` (review: `run()` now routes it right before `loadRunConfig`, since loading config in the directory the client started loopai in turned a config error into a session that never answered `initialize` instead of a failed turn). In ACP mode:
   - skip the version banner on stdout
   - set `color.Output` to stderr
   - reject combination with plan files and other execution flags in `validateFlags`
@@ -160,7 +160,7 @@
   - changes into the session cwd and loads config there
   - forces `t3` off
   - builds the request through the Task 4 function with the sink as decorator and observer
-  - runs `executePlan`, restores the cwd, and returns the report and outcome
+  - runs `executePlan` (through `selectAndExecutePlan`), restores the cwd, and returns the report and outcome
 - [x] serialize runs (one prompt at a time per process) and make prompt cancellation cancel only the run's context
 - [x] write an in-process integration test: fake executors, a temporary repository with a two-task plan, a scripted ACP client sending handshake + prompt. Assert:
   - plan entries progress

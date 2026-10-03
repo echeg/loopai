@@ -14261,6 +14261,12 @@ func TestExecutePlanRecordsFailureInOutcome(t *testing.T) {
 	assert.Equal(t, err.Error(), outcome.failure.Error())
 }
 
+func TestInstallBreakSignalSkipsNonInteractive(t *testing.T) {
+	// a nil runner panics as soon as either half is installed, so this fails wherever the
+	// platform supports the break signal and the non-interactive guard is lost
+	assert.NotPanics(t, func() { installBreakSignal(nil, executePlanRequest{NonInteractive: true}, nil, nil) })
+}
+
 func TestRecordPlanFailure(t *testing.T) {
 	first, second := errors.New("first"), errors.New("second")
 	outcome := &planExecutionOutcome{}

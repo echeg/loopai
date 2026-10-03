@@ -416,6 +416,44 @@ func TestSinkPlanEntriesKeepLastParse(t *testing.T) {
 		"a failed run leaves the unfinished task pending")
 }
 
+func TestSinkFailedRunLeavesOpenStagePending(t *testing.T) {
+	dir := t.TempDir()
+	planFile := filepath.Join(dir, "plan.md")
+	writePlan(t, planFile, true)
+	s, rec, _ := newTestSink(t)
+	s.SetPlan(planFile, StageReview, StageFinalize)
+	rec.take(t)
+
+	s.OnPhase("", status.PhaseReview)
+	assert.Equal(t, []string{"Task 1: step 1=completed", "Review=in_progress", "Finalize=pending"}, planStatuses(t, rec.take(t)))
+
+	s.Finish(false)
+	assert.Equal(t, []string{"Task 1: step 1=completed", "Review=pending", "Finalize=pending"}, planStatuses(t, rec.take(t)),
+		"a failed run does not leave its stage in progress")
+}
+
+func TestNewSinkCallIDsUniqueAcrossPrompts(t *testing.T) {
+	firstCall := func() string {
+		var out bytes.Buffer
+		s := NewSink(NewConn(strings.NewReader(""), &out), "loopai-1")
+		s.OnPhase("", status.PhaseTask)
+		s.Finish(true)
+		var msg struct {
+			Params struct {
+				Update struct {
+					ToolCallID string `json:"toolCallId"`
+				} `json:"update"`
+			} `json:"params"`
+		}
+		line, _, _ := strings.Cut(out.String(), "\n")
+		require.NoError(t, json.Unmarshal([]byte(line), &msg))
+		return msg.Params.Update.ToolCallID
+	}
+	first, second := firstCall(), firstCall()
+	assert.Regexp(t, `^loopai-[0-9a-f]{8}-1$`, first)
+	assert.NotEqual(t, first, second, "two prompts of one session never share a tool call id")
+}
+
 func TestSinkWithoutPlanSendsNoPlanEntries(t *testing.T) {
 	s, rec, _ := newTestSink(t)
 	s.OnPhase("", status.PhaseTask)

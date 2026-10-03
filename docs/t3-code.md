@@ -217,6 +217,18 @@ nothing has been sent for 4 minutes, loopai updates the open activity's title wi
 such as `task 3/7 · waiting 8m`, and repeats every 4 minutes until output resumes. T3 Code's
 provider session reaper skips threads with an active turn, so a long run is not idled out.
 
+### Troubleshooting
+
+Each run writes its full log to `.loopai/progress/progress-<plan>.txt` in the thread's working
+directory. Human-readable output goes to the agent's stderr, never to stdout, which carries only
+protocol messages. Config is loaded per message in the thread's working directory, so an invalid
+config fails that turn with the error rather than stopping the provider from starting.
+
+To trace the ACP traffic, have the launcher start loopai with `--debug`. On Linux and macOS, point
+`LOOPAI_ACP_LOOPAI` in the T3 Code server's environment at an executable script that runs
+`exec /path/to/loopai --debug "$@"`. The trace goes to stderr, and MCP header values in it are
+redacted.
+
 ### Caveats and removal
 
 This mode relies on undocumented contracts of T3 Code's Grok driver: the probe commands and their

@@ -1,6 +1,8 @@
 package acp
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -109,6 +111,7 @@ type Sink struct {
 	finished bool
 
 	// tool calls
+	callPrefix    string // keeps ids unique across the prompts of one session
 	callSeq       int
 	callID        string // open tool call; empty when none
 	callTitle     string
@@ -140,14 +143,22 @@ type Sink struct {
 }
 
 // NewSink returns a sink publishing updates for the given session on conn. Its heartbeat starts
-// immediately; Finish stops it.
+// immediately; Finish stops it. Tool call ids carry a random prefix: ACP requires them to be unique
+// within a session, and one session spans many prompts, each with its own sink, and survives a
+// process restart through session/load.
 func NewSink(conn *Conn, sessionID string) *Sink {
-	return newSinkWithClock(conn, sessionID, realClock{})
+	s := newSinkWithClock(conn, sessionID, realClock{})
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		s.callPrefix = "loopai-" + hex.EncodeToString(b[:])
+	}
+	return s
 }
 
 func newSinkWithClock(conn *Conn, sessionID string, clk clock) *Sink {
 	now := clk.Now()
-	s := &Sink{conn: conn, sessionID: sessionID, clk: clk, stageOpen: -1, lastSent: now, lastActivity: now}
+	s := &Sink{conn: conn, sessionID: sessionID, clk: clk, callPrefix: "loopai", stageOpen: -1,
+		lastSent: now, lastActivity: now}
 	if conn != nil {
 		s.mu.Lock()
 		s.armHeartbeatLocked(heartbeatIdle)
@@ -441,8 +452,12 @@ func (s *Sink) Finish(success bool) {
 		callStatus = toolCompleted
 	}
 	s.closeCallLocked(callStatus)
-	if success && s.stageOpen >= 0 {
-		s.stages[s.stageOpen].status = entryCompleted
+	// an unfinished stage drops back to pending, as an unfinished task does once cur is cleared
+	if s.stageOpen >= 0 {
+		s.stages[s.stageOpen].status = entryPending
+		if success {
+			s.stages[s.stageOpen].status = entryCompleted
+		}
 		s.stageOpen = -1
 	}
 	s.cur = activity{}
@@ -460,7 +475,7 @@ func (s *Sink) Finish(success bool) {
 func (s *Sink) openCallLocked(title string, detailed bool) {
 	s.closeCallLocked(toolCompleted)
 	s.callSeq++
-	s.callID = fmt.Sprintf("loopai-%d", s.callSeq)
+	s.callID = fmt.Sprintf("%s-%d", s.callPrefix, s.callSeq)
 	s.callTitle, s.callDetailed, s.heartbeatShow = title, detailed, false
 	s.sendLocked(toolCall{SessionUpdate: "tool_call", ToolCallID: s.callID, Title: title, Kind: "other", Status: toolInProgress})
 }

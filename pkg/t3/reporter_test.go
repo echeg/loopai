@@ -25,7 +25,7 @@ type fakeDispatcher struct {
 	shell     Shell
 	shellErr  error
 	dispErr   error
-	pinErr    error         // returned for thread.pin and thread.unpin only
+	pinErr    error         // returned for thread.pin only, so a wrongly sent unpin is still recorded
 	titleErr  error         // returned for thread.meta.update only
 	gate      chan struct{} // when set, each Dispatch waits for one receive
 	entered   chan struct{} // when set, each Dispatch announces itself before waiting on gate
@@ -45,7 +45,7 @@ func (f *fakeDispatcher) Dispatch(_ context.Context, cmd Command) (int64, error)
 	if f.dispErr != nil {
 		return 0, f.dispErr
 	}
-	if _, ok := cmd.(*ThreadPinToggle); ok && f.pinErr != nil {
+	if pin, ok := cmd.(*ThreadPinToggle); ok && pin.Type == "thread.pin" && f.pinErr != nil {
 		return 0, f.pinErr
 	}
 	if _, ok := cmd.(*ThreadTitleUpdate); ok && f.titleErr != nil {

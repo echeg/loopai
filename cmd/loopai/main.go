@@ -457,6 +457,12 @@ func run(ctx context.Context, o opts) (runErr error) {
 		resolveStaleCmuxStatus(preserveEarlyStatus)
 		return err
 	}
+	// the ACP agent loads config per prompt in each session's working directory. Loading it here,
+	// in whatever directory the client started the process in, would turn a config error into a
+	// failed session start instead of a failed turn carrying the message.
+	if o.ACP {
+		return runACPCommand(ctx, o)
+	}
 	// load config first to get custom command paths
 	cfg, err := loadRunConfig(o)
 	if err != nil {
@@ -3686,17 +3692,14 @@ func validateGenAgentsFlags(o opts) error {
 }
 
 // runConfiguredStandaloneCommand routes the standalone commands that need loaded config but no
-// executor or notification dependencies: git close-out, the T3 launcher, which executes nothing
-// locally because the launched run checks its own dependencies, and the ACP agent, which loads
-// config and checks dependencies per prompt in the session's working directory.
+// executor or notification dependencies: git close-out and the T3 launcher, which executes
+// nothing locally because the launched run checks its own dependencies.
 func runConfiguredStandaloneCommand(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors) (bool, error) {
 	switch {
 	case closeoutRequested(o):
 		return true, runCloseoutCommand(ctx, o, cfg, colors)
 	case o.T3Launch:
 		return true, runT3LaunchCommand(ctx, o, cfg, colors, os.Stdout)
-	case o.ACP:
-		return true, runACPCommand(ctx, o)
 	default:
 		return false, nil
 	}

@@ -4,30 +4,61 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // helperEnv makes the test binary act as a fake loopai: it records its argv to the named file and
-// exits with the code in helperExitEnv.
+// exits with the code in helperExitEnv. Two non-numeric values change what it does after recording:
+// helperAwaitTerm waits for SIGTERM and exits with helperTermCode, and helperSelfKill kills itself.
 const (
-	helperEnv     = "LOOPAI_ACP_TEST_HELPER_ARGS"
-	helperExitEnv = "LOOPAI_ACP_TEST_HELPER_EXIT"
+	helperEnv       = "LOOPAI_ACP_TEST_HELPER_ARGS"
+	helperExitEnv   = "LOOPAI_ACP_TEST_HELPER_EXIT"
+	helperAwaitTerm = "await-term"
+	helperSelfKill  = "self-kill"
+	helperTermCode  = 42
 )
 
 func TestMain(m *testing.M) {
 	if out := os.Getenv(helperEnv); out != "" {
-		_ = os.WriteFile(out, []byte(strings.Join(os.Args[1:], "\n")), 0o600)
-		code, _ := strconv.Atoi(os.Getenv(helperExitEnv))
-		os.Exit(code)
+		os.Exit(runHelper(out, os.Getenv(helperExitEnv)))
 	}
 	os.Exit(m.Run())
+}
+
+func runHelper(out, mode string) int {
+	switch mode {
+	case helperAwaitTerm:
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, syscall.SIGTERM)
+		// the args file doubles as the ready marker, so it is written once the handler is in place
+		_ = os.WriteFile(out, []byte(strings.Join(os.Args[1:], "\n")), 0o600)
+		select {
+		case <-sigs:
+			return helperTermCode
+		case <-time.After(30 * time.Second):
+			return 0
+		}
+	case helperSelfKill:
+		_ = os.WriteFile(out, []byte(strings.Join(os.Args[1:], "\n")), 0o600)
+		if p, err := os.FindProcess(os.Getpid()); err == nil {
+			_ = p.Kill()
+		}
+		time.Sleep(30 * time.Second)
+		return 0
+	}
+	_ = os.WriteFile(out, []byte(strings.Join(os.Args[1:], "\n")), 0o600)
+	code, _ := strconv.Atoi(mode)
+	return code
 }
 
 type launchCall struct {
@@ -64,6 +95,7 @@ func TestRunProbeCommands(t *testing.T) {
 		wantStderr string
 	}{
 		{name: "version", args: []string{"--version"}, wantCode: 0, wantStdout: "loopai-acp "},
+		{name: "version short alias", args: []string{"-v"}, wantCode: 0, wantStdout: "loopai-acp "},
 		{name: "models", args: []string{"models"}, wantCode: 0, wantStdout: "* loopai (default)"},
 		{name: "inspect", args: []string{"inspect", "--json"}, wantCode: 1, wantStderr: "inspect is not supported"},
 		{name: "update", args: []string{"update"}, wantCode: 1, wantStderr: "update is not supported"},
@@ -235,6 +267,50 @@ func TestLaunchInherited(t *testing.T) {
 			assert.Equal(t, "--acp", string(got))
 		})
 	}
+}
+
+func TestLaunchInheritedSignalTermination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("signals cannot be forwarded to a child process on Windows")
+	}
+	self, err := os.Executable()
+	require.NoError(t, err)
+
+	t.Run("SIGTERM is forwarded to the child", func(t *testing.T) {
+		argsFile := filepath.Join(t.TempDir(), "args")
+		t.Setenv(helperEnv, argsFile)
+		t.Setenv(helperExitEnv, helperAwaitTerm)
+		type result struct {
+			code int
+			err  error
+		}
+		done := make(chan result, 1)
+		go func() {
+			code, err := launchInherited(self, []string{"--acp"})
+			done <- result{code, err}
+		}()
+		require.Eventually(t, func() bool { _, err := os.Stat(argsFile); return err == nil },
+			10*time.Second, 10*time.Millisecond, "the child never became ready")
+		p, err := os.FindProcess(os.Getpid())
+		require.NoError(t, err)
+		// the launcher has SIGTERM registered while the child runs, so this process survives it
+		require.NoError(t, p.Signal(syscall.SIGTERM))
+		select {
+		case res := <-done:
+			require.NoError(t, res.err)
+			assert.Equal(t, helperTermCode, res.code, "the child received the forwarded SIGTERM")
+		case <-time.After(20 * time.Second):
+			t.Fatal("the launcher did not forward SIGTERM")
+		}
+	})
+
+	t.Run("a signal-killed child exits 1", func(t *testing.T) {
+		t.Setenv(helperEnv, filepath.Join(t.TempDir(), "args"))
+		t.Setenv(helperExitEnv, helperSelfKill)
+		code, err := launchInherited(self, []string{"--acp"})
+		require.NoError(t, err)
+		assert.Equal(t, 1, code)
+	})
 }
 
 func TestLaunchInheritedStartError(t *testing.T) {
