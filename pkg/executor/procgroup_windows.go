@@ -3,73 +3,130 @@
 package executor
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os/exec"
+	"strconv"
 	"sync"
+	"syscall"
+	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
-// processGroupCleanup manages process lifecycle for graceful shutdown on Windows.
-// Note: Windows doesn't support Unix process groups, so this only kills the direct process.
+// processGroupCleanup owns a Windows Job Object so cancellation and normal
+// cleanup terminate descendants too. If job setup fails, cancellation uses taskkill.
 type processGroupCleanup struct {
 	cmd      *exec.Cmd
 	done     chan struct{}
-	once     sync.Once // guards cmd.Wait() idempotency
-	killOnce sync.Once // guards killProcess() idempotency
+	once     sync.Once
+	killOnce sync.Once
 	err      error
+	pipes    []io.Closer
+	mu       sync.Mutex // serializes termination and job handle closure
+	job      windows.Handle
+	finished bool
 }
 
-// setupProcessGroup is a no-op on Windows since process groups work differently.
-func setupProcessGroup(_ *exec.Cmd) {
-	// windows doesn't support unix session/process group APIs, handled differently
+// setupProcessGroup is a no-op: Windows assigns the started process to a job.
+func setupProcessGroup(_ *exec.Cmd) {}
+
+// newProcessGroupCleanup assigns the already-started command to a kill-on-close
+// job and watches for cancellation. Callers must eventually call Wait.
+func newProcessGroupCleanup(cmd *exec.Cmd, cancelCh <-chan struct{}, pipes ...io.Closer) *processGroupCleanup {
+	return newProcessGroupCleanupWithAssign(cmd, cancelCh, windows.AssignProcessToJobObject, pipes...)
 }
 
-// newProcessGroupCleanup creates a cleanup handler for the given command.
-// The command must already be started before calling this.
-// Caller must eventually call Wait() to ensure proper resource cleanup.
-func newProcessGroupCleanup(cmd *exec.Cmd, cancelCh <-chan struct{}) *processGroupCleanup {
-	pg := &processGroupCleanup{
-		cmd:  cmd,
-		done: make(chan struct{}),
-	}
-
-	// monitor for cancellation in background
+func newProcessGroupCleanupWithAssign(cmd *exec.Cmd, cancelCh <-chan struct{},
+	assign func(windows.Handle, windows.Handle) error, pipes ...io.Closer) *processGroupCleanup {
+	pg := &processGroupCleanup{cmd: cmd, done: make(chan struct{}), pipes: pipes}
+	// An unavailable job is not fatal: taskkill still provides tree cancellation.
+	pg.job, _ = createProcessJob(cmd.Process.Pid, assign)
 	go pg.watchForCancel(cancelCh)
-
 	return pg
 }
 
-// watchForCancel monitors the cancel channel and kills the process if triggered.
+// createProcessJob closes every acquired handle on failure; on success the caller
+// owns the job. The short-lived process handle is needed only for assignment.
+func createProcessJob(pid int, assign func(windows.Handle, windows.Handle) error) (windows.Handle, error) {
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return 0, fmt.Errorf("create job: %w", err)
+	}
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	if _, err = windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil { //nolint:gosec // Windows API requires a pointer to this fixed-size structure
+		_ = windows.CloseHandle(job)
+		return 0, fmt.Errorf("configure job: %w", err)
+	}
+	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(pid))
+	if err != nil {
+		_ = windows.CloseHandle(job)
+		return 0, fmt.Errorf("open process for job: %w", err)
+	}
+	defer windows.CloseHandle(process)
+	if err = assign(job, process); err != nil {
+		_ = windows.CloseHandle(job)
+		return 0, fmt.Errorf("assign process to job: %w", err)
+	}
+	return job, nil
+}
+
+// watchForCancel terminates the tree and releases blocked output readers.
 func (pg *processGroupCleanup) watchForCancel(cancelCh <-chan struct{}) {
 	select {
 	case <-cancelCh:
 		pg.killOnce.Do(pg.killProcess)
 	case <-pg.done:
-		// process completed normally, goroutine exits
 	}
 }
 
-// killProcess kills the direct process on Windows.
-// Note: this won't kill child processes spawned by the command.
+// killProcess terminates the job, falling back to a bounded taskkill invocation.
+// Closing the read ends also unblocks callers if a process escaped containment.
 func (pg *processGroupCleanup) killProcess() {
-	process := pg.cmd.Process
-	if process == nil {
+	pg.mu.Lock()
+	defer pg.mu.Unlock()
+	if pg.finished {
 		return
 	}
-
-	// on Windows, just kill the process directly
-	_ = process.Kill()
+	defer func() {
+		for _, pipe := range pg.pipes {
+			_ = pipe.Close()
+		}
+	}()
+	if pg.job != 0 && windows.TerminateJobObject(pg.job, 1) == nil {
+		return
+	}
+	process := pg.cmd.Process
+	if process == nil || process.Pid <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "taskkill", "/T", "/F", "/PID", strconv.Itoa(process.Pid))
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if cmd.Run() != nil {
+		_ = process.Kill()
+	}
 }
 
-// Wait waits for the command to complete and cleans up resources.
-// It is safe to call multiple times - subsequent calls return the cached result.
-// Callers must eventually call Wait to avoid leaking resources.
-// Note: unlike Unix, Windows Wait() does not attempt post-exit orphan cleanup because
-// cmd.Wait() only returns after the direct process exits, making a subsequent kill a no-op.
-// true orphan cleanup on Windows would require Job Objects (not implemented).
+// Wait reaps the command and closes the job, killing any remaining descendants.
+// It is safe to call repeatedly. Closing is serialized with cancellation so a
+// closed job handle is never used by a concurrent cancellation.
 func (pg *processGroupCleanup) Wait() error {
 	pg.once.Do(func() {
 		pg.err = pg.cmd.Wait()
 		close(pg.done)
+		pg.mu.Lock()
+		pg.finished = true
+		if pg.job != 0 {
+			_ = windows.CloseHandle(pg.job)
+			pg.job = 0
+		}
+		pg.mu.Unlock()
 		if pg.err != nil {
 			pg.err = fmt.Errorf("command wait: %w", pg.err)
 		}

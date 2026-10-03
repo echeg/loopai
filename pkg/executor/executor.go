@@ -148,7 +148,7 @@ func (r *execClaudeRunner) Run(ctx context.Context, name string, args ...string)
 	}
 
 	// setup process group cleanup with graceful shutdown on context cancellation
-	cleanup := newProcessGroupCleanup(cmd, ctx.Done())
+	cleanup := newProcessGroupCleanup(cmd, ctx.Done(), stdout)
 
 	return stdout, cleanup.Wait, nil
 }

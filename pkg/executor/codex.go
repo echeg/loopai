@@ -95,7 +95,7 @@ func (r *execCodexRunner) Run(ctx context.Context, name string, args ...string) 
 	}
 
 	// setup process group cleanup with graceful shutdown on context cancellation
-	cleanup := newProcessGroupCleanup(cmd, ctx.Done())
+	cleanup := newProcessGroupCleanup(cmd, ctx.Done(), stdout, stderr)
 
 	return CodexStreams{Stderr: stderr, Stdout: stdout}, cleanup.Wait, nil
 }
@@ -358,14 +358,14 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 // readable diagnostic that includes the last few stderr lines.
 func (e *CodexExecutor) finalError(ctx context.Context, stderrRes stderrResult, stdoutErr, waitErr error) error {
 	switch {
+	case ctx.Err() != nil:
+		// Cancellation closes the output pipes, so their read errors are secondary.
+		return fmt.Errorf("context error: %w", ctx.Err())
 	case stderrRes.err != nil && !errors.Is(stderrRes.err, context.Canceled):
 		return stderrRes.err
 	case stdoutErr != nil:
 		return stdoutErr
 	case waitErr != nil:
-		if ctx.Err() != nil {
-			return fmt.Errorf("context error: %w", ctx.Err())
-		}
 		if len(stderrRes.lastLines) > 0 {
 			return fmt.Errorf("codex exited with error: %w\nstderr: %s",
 				waitErr, strings.Join(stderrRes.lastLines, "\n"))

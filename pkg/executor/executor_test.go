@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -2676,4 +2677,73 @@ func TestClaudeExecutor_Run_EffortFlag(t *testing.T) {
 		assert.NotContains(t, capturedArgs, "--effort=low", "equals form should be stripped")
 		assert.Equal(t, 1, countFlag(capturedArgs, "--effort"), "should have exactly one --effort flag")
 	})
+}
+
+// TestProcessTreeHelper supplies real processes that retain both output pipes.
+func TestProcessTreeHelper(t *testing.T) {
+	role := os.Getenv("LOOPAI_TREE_ROLE")
+	if role == "" {
+		return
+	}
+	if role == "parent" {
+		startProcessTreeChild(t)
+	}
+	time.Sleep(time.Minute)
+	os.Exit(0)
+}
+
+func startProcessTreeChild(t *testing.T) {
+	t.Helper()
+
+	if gate := os.Getenv("LOOPAI_TREE_GATE"); gate != "" {
+		for {
+			if _, err := os.Stat(gate); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	child := osexec.Command(exe, "-test.run=^TestProcessTreeHelper$")
+	child.Env = append(filterEnv(os.Environ(), "LOOPAI_TREE_ROLE"), "LOOPAI_TREE_ROLE=child")
+	child.Stdout, child.Stderr = os.Stdout, os.Stderr
+	require.NoError(t, child.Start())
+	fmt.Printf("CHILD_PID:%d\n", child.Process.Pid)
+	if os.Getenv("LOOPAI_TREE_EXIT") == "1" {
+		os.Exit(0)
+	}
+	if ready := os.Getenv("LOOPAI_TREE_READY"); ready != "" {
+		require.NoError(t, os.WriteFile(ready, nil, 0o600))
+	}
+}
+
+func TestClaudeExecutor_Run_CancelProcessTree(t *testing.T) {
+	t.Setenv("LOOPAI_TREE_ROLE", "parent")
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ready := make(chan struct{}, 1)
+	e := &ClaudeExecutor{Command: exe, Args: "-test.run=^TestProcessTreeHelper$", ArgsSet: true,
+		OutputHandler: func(text string) {
+			if strings.Contains(text, "CHILD_PID:") {
+				ready <- struct{}{}
+			}
+		},
+	}
+	done := make(chan Result, 1)
+	go func() { done <- e.Run(ctx, "") }()
+	select {
+	case <-ready:
+	case <-time.After(10 * time.Second):
+		t.Fatal("process tree did not start")
+	}
+	cancel()
+	select {
+	case result := <-done:
+		require.ErrorIs(t, result.Error, context.Canceled)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run blocked after process tree cancellation")
+	}
 }

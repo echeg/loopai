@@ -829,6 +829,19 @@ func TestCodexExecutor_finalError(t *testing.T) {
 	}{
 		{name: "all nil", ctx: context.Background(), wantNil: true},
 		{
+			name:      "cancellation wins over closed stdout",
+			ctx:       canceledCtx,
+			stdoutErr: os.ErrClosed,
+			waitErr:   errors.New("killed"),
+			wantSubs:  []string{"context canceled"},
+		},
+		{
+			name:      "cancellation wins over closed stderr",
+			ctx:       canceledCtx,
+			stderrRes: stderrResult{err: os.ErrClosed},
+			wantSubs:  []string{"context canceled"},
+		},
+		{
 			name:      "stderr error wins over stdout and wait",
 			ctx:       context.Background(),
 			stderrRes: stderrResult{err: errors.New("stderr boom")},
@@ -3832,4 +3845,38 @@ func TestCodexExecutor_Run_ExtraArgs(t *testing.T) {
 			assert.Equal(t, append(without, tt.expect...), withExtras)
 		})
 	}
+}
+
+func TestCodexExecutor_Run_CancelProcessTree(t *testing.T) {
+	t.Setenv("LOOPAI_TREE_ROLE", "parent")
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ready := filepath.Join(t.TempDir(), "ready")
+	t.Setenv("LOOPAI_TREE_READY", ready)
+	runner := &execCodexRunner{}
+	e := &CodexExecutor{
+		runner: &processTreeCodexRunner{runner: runner, executable: exe},
+	}
+	done := make(chan Result, 1)
+	go func() { done <- e.Run(ctx, "") }()
+	require.Eventually(t, func() bool { _, err := os.Stat(ready); return err == nil },
+		10*time.Second, 10*time.Millisecond, "process tree did not start")
+	cancel()
+	select {
+	case result := <-done:
+		require.ErrorIs(t, result.Error, context.Canceled)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run blocked on stdout or stderr after process tree cancellation")
+	}
+}
+
+type processTreeCodexRunner struct {
+	runner     *execCodexRunner
+	executable string
+}
+
+func (r *processTreeCodexRunner) Run(ctx context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+	return r.runner.Run(ctx, r.executable, "-test.run=^TestProcessTreeHelper$")
 }

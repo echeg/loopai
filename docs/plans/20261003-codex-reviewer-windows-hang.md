@@ -97,15 +97,16 @@
 - Validation also fixed existing Windows test portability failures: runner tests now use the test binary instead of Unix echo/cat, rollout fixtures isolate USERPROFILE as well as HOME, and the auto-selection test uses a cross-platform executable instead of true. Targeted executor/processor lint passed.
 
 ### Task 2: Real process-tree termination on Windows
-- [ ] in `pkg/executor/procgroup_windows.go`, create a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` when the cleanup handler is created, assign the started process, and make `killProcess` terminate the job; fall back to `taskkill /T /F /PID <pid>` when the job cannot be created or assigned; close the job handle after `Wait`
-- [ ] make sure stdout/stderr reads return after a kill: set `exec.Cmd.WaitDelay` on the codex and claude commands, or close the read ends after the kill, so `Run` cannot block on a pipe a dead tree left open
-- [ ] update the outdated doc comments about orphan cleanup on Windows
-- [ ] write Windows-only tests:
+- [x] in `pkg/executor/procgroup_windows.go`, create a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` when the cleanup handler is created, assign the started process, and make `killProcess` terminate the job; fall back to `taskkill /T /F /PID <pid>` when the job cannot be created or assigned; close the job handle after `Wait`
+- [x] make sure stdout/stderr reads return after a kill: set `exec.Cmd.WaitDelay` on the codex and claude commands, or close the read ends after the kill, so `Run` cannot block on a pipe a dead tree left open
+- [x] update the outdated doc comments about orphan cleanup on Windows
+- [x] write Windows-only tests:
   - killing a `cmd /c` launcher terminates its grandchild
   - a normally exiting command leaves no handle leak
   - the fallback path is used when job assignment is forced to fail
-- [ ] write a cross-platform test that a killed runner's `Run` returns within a bound, instead of blocking on stdout
-- [ ] run `go test -race ./pkg/executor/...` and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 3
+- [x] write a cross-platform test that a killed runner's `Run` returns within a bound, instead of blocking on stdout
+- [x] run `go test -race ./pkg/executor/...` and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 3
+- Validation passed on Windows: `go test -race ./pkg/executor/...`, `GOOS=windows GOARCH=amd64 go build ./...`, and executor-scoped `golangci-lint`; the Linux executor test binary also cross-compiled. Cancellation closes runner read pipes explicitly because these readers drain before `Wait`; Codex preserves the context error over resulting pipe-close errors. Tests cover job and taskkill tree termination, normal-exit orphan cleanup, handle closure, and bounded Claude/Codex cancellation.
 
 ### Task 3: Finish the session on `task_complete`
 - [ ] in the rollout tailer, recognize `event_msg` records with `payload.type == "task_complete"` and publish the event with `last_agent_message` to `Run`; start the tailer whenever a session id is available, even when display handlers are nil
