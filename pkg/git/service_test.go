@@ -2143,19 +2143,31 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, svc.repo.checkoutBranch("master"))
 
 		command := filepath.Join(t.TempDir(), "slow-git")
-		script := "#!/bin/sh\nif [ \"$1\" = worktree ] && [ \"$2\" = add ]; then git \"$@\" || exit $?; sleep 30; exit 0; fi\nexec git \"$@\"\n"
+		script := "#!/bin/sh\nif [ \"$1\" = worktree ] && [ \"$2\" = add ]; then git \"$@\" || exit $?; : > \"$0.ready\"; sleep 30; exit 0; fi\nexec git \"$@\"\n"
 		require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
 		svc, err = NewService(dir, noopServiceLogger(), command)
 		require.NoError(t, err)
-		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
+		result := make(chan error, 1)
+		go func() {
+			_, _, createErr := svc.CreateWorktreeForPlanContext(ctx, planFile, "")
+			result <- createErr
+		}()
 
-		started := time.Now()
-		_, _, err = svc.CreateWorktreeForPlanContext(ctx, planFile, "")
-
-		require.ErrorIs(t, err, context.DeadlineExceeded)
-		assert.Less(t, time.Since(started), 8*time.Second,
-			"cancellation must stop well before the command's 30-second fixture delay")
+		// Cancel during the fixture delay, after Git has finished registering the worktree.
+		// A fixed deadline can instead interrupt Git midway through its on-disk setup.
+		require.Eventually(t, func() bool {
+			_, statErr := os.Stat(command + ".ready")
+			return statErr == nil
+		}, 8*time.Second, 10*time.Millisecond, "worktree fixture must reach its delay")
+		cancel()
+		select {
+		case err = <-result:
+			require.ErrorIs(t, err, context.Canceled)
+		case <-time.After(8 * time.Second):
+			t.Fatal("cancellation must stop well before the command's 30-second fixture delay")
+		}
 		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "cancel-add"))
 	})
 
