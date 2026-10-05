@@ -178,23 +178,31 @@ checkout of HEAD plus the task changes; make lint on Windows reported zero issue
 
 ### Task 2: Parse report sections and render the PR body
 
-- [ ] create `cmd/loopai/pr_body.go` with `splitReportSections(report string) []reportSection`
+- [x] create `cmd/loopai/pr_body.go` with `splitReportSections(report string) []reportSection`
       (`heading`, `body`), splitting on `## ` lines only, treating `### ` lines as body, and
       ignoring everything before the first `## ` heading
-- [ ] add `reportPRBody(report string, stats git.DiffStats) (string, bool)`: returns `false` when
+- [x] add `reportPRBody(report string, stats git.DiffStats) (full, trimmed string, ok bool)`: returns `false` when
       the report has no `## Summary` section; otherwise emits Summary body first (no heading), then
       `## Evidence`, `## Merge danger`, `## Risk`, `## Migrations and operational steps`,
       `## Plan deviation` in that order, omitting absent sections; then `External review` and
       `Validation` each as `<details><summary>…</summary>` blocks with a blank line after the
       opening tag so Markdown renders inside; then the existing `## Changes` stats block
-- [ ] add `fitPRBody(full, trimmed, legacy string) string`: returns the first candidate within
+- [x] add `fitPRBody(full, trimmed, legacy string) string`: returns the first candidate within
       `maxPRBodyRunes`; `reportPRBody` exposes both the full body and the body without the
       `<details>` blocks so the caller can degrade in that order
-- [ ] create `cmd/loopai/pr_body_test.go` with table-driven tests: full eleven-section report,
+- [x] create `cmd/loopai/pr_body_test.go` with table-driven tests: full eleven-section report,
       report predating the new sections, report missing `## Summary`, `### reviewer` subsections
       staying inside External review, an oversized External review degrading to the trimmed body,
       and an oversized Summary degrading to the legacy body
-- [ ] run `go test ./cmd/loopai/ -run 'PRBody|ReportSections'` - must pass before task 3
+- [x] run `go test ./cmd/loopai/ -run 'PRBody|ReportSections'` - must pass before task 3
+
+Implementation adjustment for Task 2: reportPRBody returns both full and trimmed bodies
+plus its success flag. This reconciles the originally listed two-value signature with
+the requirement to expose both candidates to fitPRBody and the Task 3 caller.
+
+Validation passed: go test ./cmd/loopai/ -run 'PRBody|ReportSections', make test
+in a non-root Linux Docker checkout of HEAD plus the Task 2 files, and make lint
+on Windows (zero issues).
 
 ### Task 3: Locate the report and feed it into PR creation
 
