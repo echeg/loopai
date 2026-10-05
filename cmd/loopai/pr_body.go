@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"unicode/utf8"
 
@@ -86,4 +88,30 @@ func fitPRBody(full, trimmed, legacy string) string {
 	}
 	// Preserve legacy metadata validation when even the plan overview exceeds the limit.
 	return legacy
+}
+
+// buildReportPRTitleBody enriches legacy metadata with the optional completion report.
+// Lookup failures are warnings so reports can never prevent opening a pull request.
+func buildReportPRTitleBody(gitSvc *git.Service, target closeoutTarget, branch string, stats git.DiffStats,
+	stderr io.Writer) (title, body string, err error) {
+	title, legacy, err := buildPRTitleBody(gitSvc.Root(), target.plansDir, branch, stats)
+	if err != nil {
+		return "", "", err
+	}
+	report := target.report
+	if report == "" {
+		planPath, lookupErr := findPRPlan(gitSvc.Root(), target.plansDir, branch)
+		if lookupErr == nil {
+			var content []byte
+			content, _, lookupErr = locateCompletionReport(gitSvc, target.plansDir, planPath, branch)
+			report = string(content)
+		}
+		if lookupErr != nil && !errors.Is(lookupErr, errCompletionReportNotFound) {
+			fmt.Fprintf(stderr, "warning: completion report unavailable for PR body: %v\n", lookupErr)
+		}
+	}
+	if full, trimmed, ok := reportPRBody(report, stats); ok {
+		return title, fitPRBody(full, trimmed, legacy), nil
+	}
+	return title, legacy, nil
 }

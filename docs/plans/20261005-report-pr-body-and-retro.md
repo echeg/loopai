@@ -206,29 +206,34 @@ on Windows (zero issues).
 
 ### Task 3: Locate the report and feed it into PR creation
 
-- [ ] extract the lookup from `runReportCommand` into
+- [x] extract the lookup from `runReportCommand` into
       `locateCompletionReport(gitSvc, plansDir, planFile, branch string) (body []byte, source string, err error)`
       that tries `ShowFile("refs/heads/"+branch, path)` for each `completionReportPaths` candidate,
       then the working tree through `readPRPlan`, and returns a sentinel not-found error; make
       `runReportCommand` call it so `--report` output is unchanged
-- [ ] add `report string` to `closeoutTarget`; in `buildPRTitleBody` (or a wrapper it calls),
+- [x] add `report string` to `closeoutTarget`; in `buildPRTitleBody` (or a wrapper it calls),
       prefer `target.report`, else call `locateCompletionReport` with the plan `findPRPlan`
       resolved and the branch; on not-found keep the legacy body; on any other lookup error warn
       on stderr and keep the legacy body rather than failing the PR
-- [ ] cap a report read from `ShowFile` at `maxPRPlanSize` like the working-tree path
-- [ ] thread the report through finalize: add a `report string` parameter to `runFinalizeCloseout`,
+- [x] cap a report read from `ShowFile` at `maxPRPlanSize` like the working-tree path
+- [x] thread the report through finalize: add a `report string` parameter to `runFinalizeCloseout`,
       pass `r.Report()` at the `executePlan` call site, and set `closeoutTarget.report` in
       `openFinalizePR`
-- [ ] update `TestBuildPRTitleBody` for the report-backed body and add cases: committed sidecar on
+- [x] update `TestBuildPRTitleBody` for the report-backed body and add cases: committed sidecar on
       the branch only (not in the working tree), sidecar only in the working tree, no sidecar, and
       an in-memory report winning over an on-disk one
-- [ ] extend `TestRunPRCommand`/`TestRunPRCommandExplicitFeature` with a committed sidecar fixture
+- [x] extend `TestRunPRCommand`/`TestRunPRCommandExplicitFeature` with a committed sidecar fixture
       and assert `$GH_BODY_LOG` contains `## Merge danger` and the `<details>` blocks; extend
       `TestRunFinalizeCloseout` with a report passed in memory and no sidecar on the branch,
       asserting the body
-- [ ] add a `TestRunReportCommand` case proving the extracted helper preserves the `(merged)`
+- [x] add a `TestRunReportCommand` case proving the extracted helper preserves the `(merged)`
       fallback
-- [ ] run `go test ./cmd/loopai/...` - must pass before task 4
+- [x] run `go test ./cmd/loopai/...` - must pass before task 4
+
+Validation passed: go test ./cmd/loopai/... and full make test in a non-root
+Linux Docker checkout of HEAD plus the Task 3 changes; make lint on Windows
+reported zero issues. The report-aware wrapper retains the legacy title/body builder
+and applies report selection and size fallbacks before PR metadata validation.
 
 ### Task 4: Narrate the new sections in loopai-merge
 
