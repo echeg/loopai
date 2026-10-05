@@ -670,7 +670,9 @@ the report title, so older reports and customized prompts remain supported.
 
 `buildReportPRTitleBody` preserves the plan-derived title and legacy body, then prefers
 `closeoutTarget.report`; otherwise `locateCompletionReport` searches the associated sidecar
-on `refs/heads/<branch>` via `ShowFile`, then the working tree through `readPRPlan`. Both
+on `refs/heads/<branch>` via `ShowFile`, then the working tree through `readPRPlan`.
+`findReportPlanForBranch` resolves report identity from progress records across registered
+worktrees, including custom branch names. Both
 reads are capped at `maxPRPlanSize`; the helper is shared with `--report`. Not-found keeps
 the legacy body, and other lookup errors warn on stderr without failing PR creation.
 `reportPRBody` requires Summary, emits its body without a heading, then Evidence, Merge danger,
@@ -679,6 +681,7 @@ review and Validation go in collapsed `<details>` blocks before `## Changes` sta
 `fitPRBody` checks `maxPRBodyRunes` (65,536): use the full body, then drop both `<details>`
 blocks, then fall back to the legacy plan-overview and diff-statistics body. Missing Summary
 also uses the legacy body; existing PR metadata validation still applies to that fallback.
+Section parsing preserves headings inside backtick or tilde code fences as section content.
 
 Claude runs every phase by default. `task_model = codex:<model>[:effort]` moves tasks to Codex, and with them planning and the review block unless `plan_model` or `review_model` names another provider. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. With the chain unset, the provider other than `task_model`'s (`review_model`'s under `--review` and `--external-only`) is selected when installed. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
 

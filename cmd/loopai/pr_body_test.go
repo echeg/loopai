@@ -141,3 +141,45 @@ func TestFitPRBody(t *testing.T) {
 		require.ErrorContains(t, validatePRMetadata("Feature", body), "GitHub limit")
 	})
 }
+
+func TestReportPRBodyPreservesFencedSections(t *testing.T) {
+	for _, tc := range []struct {
+		name, block string
+	}{
+		{name: "backticks", block: "```markdown\n## Risk\nQuoted risk.\n## Custom\nExample.\n```"},
+		{name: "tildes", block: "~~~markdown\n## Validation\nQuoted validation.\n~~~"},
+		{name: "longer outer fence", block: "````\n```markdown\n## Risk\nExample.\n```\n## Validation\nStill quoted.\n````"},
+		{name: "indented fence and longer closer", block: "   ~~~markdown\n## Risk\nExample.\n   ~~~~  "},
+		{name: "mismatched fence", block: "```\n~~~\n## Validation\nQuoted.\n```"},
+		{name: "info string does not close", block: "```\n```markdown\n## Validation\nQuoted.\n```"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.block = "Example:\n" + tc.block + "\nEnd example."
+			report := "# Report: Feature\n## Summary\nDelivered.\n## Evidence\n" + tc.block +
+				"\n## Risk\nActual risk.\n## External review\n" + tc.block + "\n## Validation\nActual validation."
+			full, trimmed, ok := reportPRBody(report, git.DiffStats{})
+			require.True(t, ok)
+			assert.Contains(t, full, "## Evidence\n\n"+tc.block)
+			assert.Contains(t, full, "## Risk\n\nActual risk.")
+			assert.Contains(t, full, "<details><summary>External review</summary>\n\n"+tc.block+"\n\n</details>")
+			assert.Contains(t, full, "<details><summary>Validation</summary>\n\nActual validation.\n\n</details>")
+			assert.Contains(t, trimmed, "## Evidence\n\n"+tc.block)
+			assert.Contains(t, trimmed, "## Risk\n\nActual risk.")
+		})
+	}
+}
+
+func TestSplitReportSectionsFenceBoundaries(t *testing.T) {
+	t.Run("fenced preamble is not a summary", func(t *testing.T) {
+		assert.Equal(t, []reportSection{{heading: "Risk", body: "Actual."}},
+			splitReportSections("```\n## Summary\nExample.\n```\n## Risk\nActual."))
+	})
+	t.Run("unclosed fence consumes remaining headings", func(t *testing.T) {
+		assert.Equal(t, []reportSection{{heading: "Evidence", body: "~~~\n## Risk\nQuoted."}},
+			splitReportSections("## Evidence\n~~~\n## Risk\nQuoted."))
+	})
+	t.Run("backtick in info string is not a fence", func(t *testing.T) {
+		assert.Equal(t, []reportSection{{heading: "Summary", body: "Actual."}},
+			splitReportSections("```not`a-fence\n## Summary\nActual."))
+	})
+}

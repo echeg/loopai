@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -15,12 +16,27 @@ type reportSection struct {
 	body    string
 }
 
+var reportFencePattern = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
+
 // splitReportSections ignores the report preamble and keeps nested headings in their section body.
 func splitReportSections(report string) []reportSection {
 	var sections []reportSection
 	var body strings.Builder
+	var fence string
 	for line := range strings.SplitSeq(strings.ReplaceAll(report, "\r\n", "\n"), "\n") {
-		if heading, ok := strings.CutPrefix(line, "## "); ok {
+		if match := reportFencePattern.FindStringSubmatch(line); match != nil {
+			marker, rest := match[1], match[2]
+			switch {
+			case fence == "":
+				// Backtick fence info strings cannot contain backticks.
+				if marker[0] != '`' || !strings.ContainsRune(rest, '`') {
+					fence = marker
+				}
+			case marker[0] == fence[0] && len(marker) >= len(fence) && strings.Trim(rest, " \t") == "":
+				fence = ""
+			}
+		}
+		if heading, ok := strings.CutPrefix(line, "## "); ok && fence == "" {
 			if len(sections) > 0 {
 				sections[len(sections)-1].body = strings.TrimSpace(body.String())
 				body.Reset()
@@ -100,7 +116,7 @@ func buildReportPRTitleBody(gitSvc *git.Service, target closeoutTarget, branch s
 	}
 	report := target.report
 	if report == "" {
-		planPath, lookupErr := findPRPlan(gitSvc.Root(), target.plansDir, branch)
+		planPath, lookupErr := findReportPlanForBranch(gitSvc, target.plansDir, branch)
 		if lookupErr == nil {
 			var content []byte
 			content, _, lookupErr = locateCompletionReport(gitSvc, target.plansDir, planPath, branch)

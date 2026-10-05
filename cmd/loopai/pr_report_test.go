@@ -190,3 +190,43 @@ func TestBuildReportPRTitleBodyPlanError(t *testing.T) {
 	require.ErrorContains(t, err, "read PR plan")
 	assert.FileExists(t, path)
 }
+
+func TestBuildReportPRTitleBodyAcrossWorktrees(t *testing.T) {
+	for _, recordInThirdWorktree := range []bool{false, true} {
+		name := "primary progress record"
+		if recordInThirdWorktree {
+			name = "third worktree progress record"
+		}
+		t.Run(name, func(t *testing.T) {
+			repo := setupTestRepo(t)
+			const branch = "custom/report-branch"
+			linked := filepath.Join(t.TempDir(), "feature")
+			runGit(t, repo, "worktree", "add", "-b", branch, linked)
+			planFile := writePRReport(t, linked, "20261005-feature.md", "# Feature title\n## Overview\nLegacy overview.")
+			writePRReport(t, linked, "20261005-feature.report.md", prReportFixture)
+			runGit(t, linked, "add", "docs/plans/completed")
+			runGit(t, linked, "commit", "-m", "archive with report")
+			recordRoot := repo
+			if recordInThirdWorktree {
+				recordRoot = filepath.Join(t.TempDir(), "source")
+				runGit(t, repo, "worktree", "add", "-b", "source", recordRoot)
+			}
+			writeProgressRecord(t, recordRoot, "progress-feature.txt", planFile, branch, 1)
+			svc, err := git.NewService(linked, noopLogger())
+			require.NoError(t, err)
+			var output, warnings bytes.Buffer
+			require.NoError(t, runReportCommand(t.Context(), svc, closeoutTarget{identifier: branch}, &output))
+			assert.Contains(t, output.String(), prReportFixture)
+			stats := git.DiffStats{Files: 2, Additions: 3, Deletions: 1}
+			legacyTitle, _, err := buildPRTitleBody(linked, "", branch, stats)
+			require.NoError(t, err)
+			title, body, err := buildReportPRTitleBody(svc, closeoutTarget{}, branch, stats, &warnings)
+			require.NoError(t, err)
+			assert.Equal(t, legacyTitle, title)
+			assert.Contains(t, body, "Delivered report-backed PRs.")
+			assert.Contains(t, body, "## Merge danger")
+			assert.Contains(t, body, "<details><summary>Validation</summary>")
+			assert.Empty(t, warnings.String())
+		})
+	}
+}
