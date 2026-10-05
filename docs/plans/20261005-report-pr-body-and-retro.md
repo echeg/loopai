@@ -319,17 +319,25 @@ its inventory and installer targets remain for Task 6.
 
 ### Task 6: Create the loopai-retro Codex skill and bump the manifests
 
-- [ ] create `assets/codex/skills/loopai-retro/SKILL.md` as a hand-written port: same inputs,
+- [x] create `assets/codex/skills/loopai-retro/SKILL.md` as a hand-written port: same inputs,
       bounded reading, categories, output, and constraints, with the selection asked in prose and
       no Claude-only tokens (`AskUserQuestion`, `allowed-tools`, `/loopai:`, `Task tool`); say the
       skill runs only on an explicit `$loopai-retro` request
-- [ ] create `assets/codex/skills/loopai-retro/agents/openai.yaml` with `display_name`,
+- [x] create `assets/codex/skills/loopai-retro/agents/openai.yaml` with `display_name`,
       `short_description`, and `default_prompt`
-- [ ] add `add_pair loopai-retro` to the fixture in `scripts/check-codex-skills_test.sh`
-- [ ] bump `.claude-plugin/plugin.json` and the loopai entry in `.claude-plugin/marketplace.json`
+- [x] add `add_pair loopai-retro` to the fixture in `scripts/check-codex-skills_test.sh`
+- [x] bump `.claude-plugin/plugin.json` and the loopai entry in `.claude-plugin/marketplace.json`
       from `0.5.12` to `0.6.0`
-- [ ] run `make check-codex-skills test-codex-skills check-plugin test-plugin test-wrappers` -
+- [x] extend `scripts/check-retro-skill_test.sh` to validate both ports, execute both bounded
+      log-reading examples, and check Codex explicit invocation and selection-only writes
+- [x] run `make check-codex-skills test-codex-skills check-plugin test-plugin test-wrappers` -
       must pass before task 7
+
+Validation passed: Codex inventory and installer checks, plugin manifest checks,
+the shared retro regression suite, and full make test (including Go race/coverage
+and all wrapper suites) in a non-root Linux Docker checkout with init enabled.
+make lint on Windows reported zero issues. Codex invocation policy also disables
+implicit invocation, matching the skill's explicit-request rule.
 
 ### Task 7: Verify acceptance criteria
 
