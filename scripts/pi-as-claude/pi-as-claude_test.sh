@@ -704,7 +704,7 @@ fi
 
 # the unterminated final delta must be flushed by the __eof__ sentinel, not dropped:
 # assert the buffered "partial" text actually surfaces as a content_block_delta.
-if echo "$output" | jq -e 'select(.type == "content_block_delta") | .delta.text == "partial\n"' >/dev/null 2>&1; then
+if echo "$output" | jq -es 'any(.[]; .type == "content_block_delta" and .delta.text == "partial\n")' >/dev/null 2>&1; then
     pass "unterminated final line flushed on eof"
 else
     fail "buffered partial line dropped on eof" "got: $output"

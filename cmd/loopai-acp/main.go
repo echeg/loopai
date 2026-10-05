@@ -17,6 +17,8 @@ import (
 	"runtime/debug"
 	"strings"
 	"syscall"
+
+	"github.com/umputun/ralphex/pkg/t3"
 )
 
 // loopaiEnv names an explicit loopai binary, taking precedence over a sibling and PATH.
@@ -70,7 +72,7 @@ func run(args []string, e env) int {
 	case len(args) == 1 && args[0] == "models":
 		// no login line: T3 Code reads "logged in" text as an auth verdict, and loopai's
 		// providers authenticate on their own
-		_, _ = fmt.Fprint(e.stdout, "Available models:\n  * loopai (default)\n")
+		_, _ = fmt.Fprintf(e.stdout, "Available models:\n  * %s (default)\n", t3.LoopaiModel)
 		return 0
 	case len(args) == 2 && args[0] == "inspect" && args[1] == "--json":
 		_, _ = fmt.Fprintln(e.stderr, "loopai-acp: inspect is not supported")

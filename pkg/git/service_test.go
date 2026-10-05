@@ -2142,18 +2142,30 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		require.NoError(t, svc.CreateBranch("cancel-add"))
 		require.NoError(t, svc.repo.checkoutBranch("master"))
 
+		ready := filepath.Join(t.TempDir(), "worktree-ready")
+		t.Setenv("LOOPAI_TEST_WORKTREE_READY", ready)
 		command := filepath.Join(t.TempDir(), "slow-git")
-		script := "#!/bin/sh\nif [ \"$1\" = worktree ] && [ \"$2\" = add ]; then git \"$@\" || exit $?; sleep 30; exit 0; fi\nexec git \"$@\"\n"
+		script := "#!/bin/sh\nif [ \"$1\" = worktree ] && [ \"$2\" = add ]; then git \"$@\" || exit $?; touch \"$LOOPAI_TEST_WORKTREE_READY\"; sleep 30; exit 0; fi\nexec git \"$@\"\n"
 		require.NoError(t, os.WriteFile(command, []byte(script), 0o755)) //nolint:gosec // executable test fixture
 		svc, err = NewService(dir, noopServiceLogger(), command)
 		require.NoError(t, err)
-		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 		defer cancel()
-
+		finished := make(chan error, 1)
+		go func() {
+			_, _, createErr := svc.CreateWorktreeForPlanContext(ctx, planFile, "")
+			finished <- createErr
+		}()
+		// Cancel after Git has registered the worktree, rather than racing a fixed timeout.
+		require.Eventually(t, func() bool {
+			_, statErr := os.Stat(ready)
+			return statErr == nil
+		}, 5*time.Second, 10*time.Millisecond)
 		started := time.Now()
-		_, _, err = svc.CreateWorktreeForPlanContext(ctx, planFile, "")
+		cancel()
+		err = <-finished
 
-		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.ErrorIs(t, err, context.Canceled)
 		assert.Less(t, time.Since(started), 8*time.Second,
 			"cancellation must stop well before the command's 30-second fixture delay")
 		assert.NoDirExists(t, filepath.Join(dir, ".loopai", "worktrees", "cancel-add"))
@@ -2678,7 +2690,8 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		secondPath := filepath.Join(dir, ".loopai", "worktrees", "branch-conflict-2")
 		err = svc.repo.addWorktree(t.Context(), secondPath, "branch-conflict", false, "")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "already used by worktree")
+		assert.Regexp(t, `already (used by worktree|checked out at)`, err.Error())
+		assert.Contains(t, filepath.ToSlash(err.Error()), filepath.ToSlash(wtPath))
 	})
 
 	t.Run("strips date prefix from branch name", func(t *testing.T) {

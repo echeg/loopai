@@ -135,18 +135,22 @@ terminal launch is unchanged.
 
 ### Task 1: Discover the loopai provider instance from T3 Code settings
 
-- [ ] add `pkg/t3/settings.go` with `ProviderInstance{ID, Driver, Enabled, BinaryPath string}` and
+- [x] add `pkg/t3/settings.go` with `ProviderInstance{ID, Driver, BinaryPath string; Enabled bool}` and
       `FindLoopaiInstance(getenv func(string) string) (ProviderInstance, bool, error)`: resolve
       `HomeDir(getenv)`, read `userdata/settings.json` with a size cap, decode only
       `providerInstances` (unknown keys ignored), and return the first usable instance in sorted
       key order per the Decisions rule; a missing file or missing `providerInstances` is
       `(_, false, nil)`, malformed JSON is an error
-- [ ] export `LoopaiModel = "loopai"` in `pkg/t3` and make `cmd/loopai-acp`'s `models` output
+- [x] export `LoopaiModel = "loopai"` in `pkg/t3` and make `cmd/loopai-acp`'s `models` output
       reference the same value so the two cannot drift
-- [ ] write `pkg/t3/settings_test.go`: missing file, no instances, disabled instance, other driver,
+- [x] write `pkg/t3/settings_test.go`: missing file, no instances, disabled instance, other driver,
       binary that is not `loopai-acp`, `loopai-acp.exe`, two usable instances (sorted first wins),
       `config.enabled: false`, malformed JSON, oversized file, `T3CODE_HOME` override
-- [ ] run `go test ./pkg/t3/...` - must pass before task 2
+- [x] repair validation portability: accept both Git worktree conflict messages and explicitly
+      advance the directory timestamp in the rollout-cache refresh test; synchronize the
+      worktree cancellation test with completed Git registration instead of a fixed timeout;
+      make the Pi EOF assertion check the complete JSON stream across jq versions
+- [x] run `go test ./pkg/t3/...` - must pass before task 2
 
 ### Task 2: Add the thread.turn.start command
 

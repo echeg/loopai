@@ -3578,6 +3578,9 @@ func TestCodexExecutor_discoverRolloutStates_RefreshesDirectoryCacheForNewChild(
 	assert.NotContains(t, states, childPath)
 
 	require.NoError(t, os.WriteFile(childPath, []byte(`{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"`+rootID+`"}}}}}`+"\n"), 0o600))
+	// Advance the directory timestamp explicitly: rapid writes can share a filesystem clock tick.
+	updated := discovery.directories[dir].stamp.modTime.Add(time.Second)
+	require.NoError(t, os.Chtimes(dir, updated, updated))
 	e.discoverRolloutStates(rootPath, states, knownParents, discovery)
 
 	assert.Contains(t, states, childPath)

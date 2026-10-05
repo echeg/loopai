@@ -15,6 +15,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/umputun/ralphex/pkg/t3"
 )
 
 // helperEnv makes the test binary act as a fake loopai: it records its argv to the named file and
@@ -129,6 +131,7 @@ func TestRunProbeCommands(t *testing.T) {
 func TestRunModelsHasNoLoginVerdict(t *testing.T) {
 	e, stdout, _, _ := testEnv(0)
 	require.Equal(t, 0, run([]string{"models"}, e))
+	assert.Equal(t, "Available models:\n  * "+t3.LoopaiModel+" (default)\n", stdout.String())
 	assert.NotContains(t, strings.ToLower(stdout.String()), "logged in")
 	assert.NotContains(t, strings.ToLower(stdout.String()), "not authenticated")
 }
