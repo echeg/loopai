@@ -5293,20 +5293,31 @@ func runReportCommand(ctx context.Context, gitSvc *git.Service, target closeoutT
 		}
 	}
 
-	reportBranch := branch
-	if branchErr != nil {
-		reportBranch = ""
-	}
-	body, _, err := locateCompletionReport(gitSvc, plansDir, planFile, reportBranch)
-	if err == nil {
-		label := branch
-		if branchErr != nil {
-			label = "(merged)"
+	paths := completionReportPaths(plansDir, planFile)
+	if branchErr == nil {
+		for _, path := range paths {
+			body, err := gitSvc.ShowFile("refs/heads/"+branch, path)
+			if err == nil {
+				return printCompletionReport(stdout, branch, body)
+			}
+			if !errors.Is(err, git.ErrPathNotFound) {
+				return fmt.Errorf("read completion report from branch %q: %w", branch, err)
+			}
 		}
-		return printCompletionReport(stdout, label, body)
 	}
-	if !errors.Is(err, errCompletionReportNotFound) {
-		return err
+
+	for _, path := range paths {
+		body, err := os.ReadFile(path) //nolint:gosec // path is derived from the configured plans directory and resolved plan basename
+		if err == nil {
+			label := branch
+			if branchErr != nil {
+				label = "(merged)"
+			}
+			return printCompletionReport(stdout, label, body)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read completion report %q: %w", path, err)
+		}
 	}
 
 	name := identifier
@@ -5324,7 +5335,8 @@ func runReportCommand(ctx context.Context, gitSvc *git.Service, target closeoutT
 
 var errCompletionReportNotFound = errors.New("completion report not found")
 
-// locateCompletionReport prefers committed sidecars, then bounded regular files in the checkout.
+// locateCompletionReport is the PR-only lookup: committed sidecars, then bounded regular files.
+// runReportCommand preserves unrestricted reads for configured external or symlinked plans directories.
 // An empty branch skips Git lookup for features whose branch was removed after merge.
 // source identifies the branch revision/path or the working-tree path that supplied the body.
 func locateCompletionReport(gitSvc *git.Service, plansDir, planFile, branch string) (body []byte, source string, err error) {

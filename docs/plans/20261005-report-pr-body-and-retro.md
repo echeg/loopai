@@ -446,6 +446,18 @@ make lint on Windows reported zero issues.
   iteration cap, or a finding repeated across runs; minor otherwise. Evidence is mandatory: a
   candidate without a `path:line` is dropped.
 
+## External review adjustments
+
+- Preserve the original unrestricted `--report` reads; the bounded, no-symlink
+  report lookup is used only for PR bodies. Cover external plans directories,
+  symlinked directories/files, and reports above the PR read limit.
+- Treat the deterministic facts-only Summary as unavailable for PR narration,
+  preserving the plan overview. Exercise actual report fallback through finalize
+  and both in-memory and sidecar PR lookup.
+- Run the merge-skill, retro-skill, and report-doc suites in CI.
+- Resolve configured plans and backlog directories in both retro skill ports,
+  including duplicate lookup and selected-entry filing.
+
 ## Post-Completion
 
 **Manual verification**:

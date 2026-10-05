@@ -230,3 +230,42 @@ func TestBuildReportPRTitleBodyAcrossWorktrees(t *testing.T) {
 		})
 	}
 }
+
+func TestRunReportCommandUnrestrictedFallback(t *testing.T) {
+	for _, kind := range []string{"external plans directory", "symlinked plans directory", "symlinked report", "oversized report"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := setupTestRepo(t)
+			plansDir := filepath.Join(dir, "docs", "plans")
+			switch kind {
+			case "external plans directory":
+				plansDir = t.TempDir()
+			case "symlinked plans directory":
+				require.NoError(t, os.MkdirAll(filepath.Dir(plansDir), 0o750))
+				require.NoError(t, os.Symlink(t.TempDir(), plansDir))
+			}
+			completed := filepath.Join(plansDir, "completed")
+			require.NoError(t, os.MkdirAll(completed, 0o750))
+			planPath := filepath.Join(completed, "feature.md")
+			require.NoError(t, os.WriteFile(planPath, []byte("# Feature\n"), 0o600))
+			reportPath := filepath.Join(completed, "feature.report.md")
+			report := prReportFixture
+			if kind == "oversized report" {
+				report += strings.Repeat("x", int(maxPRPlanSize)) + "\n"
+			}
+			if kind == "symlinked report" {
+				outside := filepath.Join(t.TempDir(), "report.md")
+				require.NoError(t, os.WriteFile(outside, []byte(report), 0o600))
+				require.NoError(t, os.Symlink(outside, reportPath))
+			} else {
+				require.NoError(t, os.WriteFile(reportPath, []byte(report), 0o600))
+			}
+			runGit(t, dir, "branch", "feature")
+			runGit(t, dir, "branch", "-d", "feature")
+			svc, err := git.NewService(dir, noopLogger())
+			require.NoError(t, err)
+			var output bytes.Buffer
+			require.NoError(t, runReportCommand(t.Context(), svc, closeoutTarget{identifier: "feature", plansDir: plansDir}, &output))
+			assert.Equal(t, "branch: (merged)\n\n"+report, output.String())
+		})
+	}
+}

@@ -163,3 +163,27 @@ case "$prompt" in
   exit 0 ;;
 esac`, 1)
 }
+
+func TestFinalizeFactsOnlyReportKeepsPlanOverview(t *testing.T) {
+	prompt, err := os.ReadFile("../../pkg/config/defaults/prompts/report.txt")
+	require.NoError(t, err)
+	run := runFinalizePlanWithReport(t, config.FinalizePR, true, string(prompt), "No report heading; use deterministic facts.")
+	report, err := os.ReadFile(filepath.Join(run.f.dir, "docs", "plans", "completed", "finalize.report.md"))
+	require.NoError(t, err)
+	require.Contains(t, string(report), "## Summary\n- task iterations:")
+	require.Contains(t, string(report), "_assessment unavailable_")
+	assert.NotContains(t, run.f.prBody(t), "task iterations:")
+	assert.NotContains(t, run.f.prBody(t), "_assessment unavailable_")
+
+	// Feed the actual factsOnlyReport output back through both PR sources, using a
+	// plan with an overview to verify it survives instead of just the diff stats.
+	planPath := filepath.Join(run.f.dir, "docs", "plans", "completed", "finalize.md")
+	require.NoError(t, os.WriteFile(planPath, []byte("# Finalize\n\n## Overview\n\nPreserve the plan overview.\n"), 0o600))
+	for _, memory := range []string{string(report), ""} {
+		var warnings bytes.Buffer
+		_, body, err := buildReportPRTitleBody(run.f.svc, closeoutTarget{report: memory}, "finalize", git.DiffStats{}, &warnings)
+		require.NoError(t, err)
+		assert.Equal(t, "Preserve the plan overview.\n\n## Changes\n\n- Files changed: 0\n- Additions: 0\n- Deletions: 0", body)
+		assert.Empty(t, warnings.String())
+	}
+}

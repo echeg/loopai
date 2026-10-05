@@ -16,6 +16,10 @@ type reportSection struct {
 	body    string
 }
 
+// factsOnlySummaryPattern identifies the deterministic counters used when report assessment fails.
+var factsOnlySummaryPattern = regexp.MustCompile(`^- task iterations: [0-9]+\n- failed retries: [0-9]+\n` +
+	`- external reviewers: [0-9]+\n- post-review iterations: [0-9]+(?:\n|$)`)
+
 var reportFencePattern = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
 
 // splitReportSections ignores the report preamble and keeps nested headings in their section body.
@@ -56,7 +60,7 @@ func splitReportSections(report string) []reportSection {
 }
 
 // reportPRBody renders selected report sections, with and without the optional details blocks.
-// A report without Summary cannot replace the legacy plan overview.
+// A report without an assessed Summary cannot replace the legacy plan overview.
 func reportPRBody(report string, stats git.DiffStats) (full, trimmed string, ok bool) {
 	sections := make(map[string]string)
 	for _, section := range splitReportSections(report) {
@@ -65,7 +69,8 @@ func reportPRBody(report string, stats git.DiffStats) (full, trimmed string, ok 
 		}
 	}
 	summary, ok := sections["Summary"]
-	if !ok {
+	if !ok || (factsOnlySummaryPattern.MatchString(summary) && sections["Risk"] == "_assessment unavailable_" &&
+		sections["Migrations and operational steps"] == "_assessment unavailable_") {
 		return "", "", false
 	}
 

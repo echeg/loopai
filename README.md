@@ -836,7 +836,7 @@ in that order, omitting missing sections. External review and Validation appear 
 `<details>` blocks; the existing `## Changes` diff statistics close the body. `--pr` looks for
 the associated plan's `.report.md` sidecar on `refs/heads/<branch>` first, then in the working
 tree. Finalize prefers its in-memory report before that lookup. A missing or unreadable report,
-or one without Summary, keeps the legacy plan-overview and diff-statistics body; lookup errors
+or one without Summary or with a facts-only Summary, keeps the legacy plan-overview and diff-statistics body; lookup errors
 are warnings. If the body exceeds GitHub's 65,536-rune limit, loopai drops both `<details>`
 blocks, then falls back to the legacy body if still oversized. Older reports and customized
 `report.txt` prompts remain supported: absent sections are simply omitted.

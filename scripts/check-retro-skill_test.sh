@@ -53,6 +53,9 @@ def check_skill(host):
     for rule in ("that log alone", "positive integer N, default 5", "top-level", "by modification time", "Do not recurse", "Missing `.run.json` is normal", "With no selected run artifact"):
         assert rule in inputs, f"missing selection boundary: {rule}"
 
+    for rule in ("Resolve `plans_dir` and `backlog_dir`", "project `.loopai/config` overrides", "LOOPAI_CONFIG_DIR", "Resolve relative directory values from the repository root", "preserve absolute paths", "<plans_dir>/completed/<stem>.report.md", "<backlog_dir>/*.md"):
+        assert rule in inputs, f"missing configured directory handling: {rule}"
+
     bounded = section("Read Bounded Evidence")
     for rule in ("Never read a progress log whole", "80 lines per window", "1,500 log lines total", "coverage limit", "Report sidecars and backlog entries may be read whole", "actual file line numbers"):
         assert rule in bounded, f"missing reading boundary: {rule}"
@@ -96,6 +99,8 @@ def check_skill(host):
     filing = section("File Only Selected Backlog Entries")
     for requirement in ("before writing", "nothing is selected writes nothing", "list existing files", "missing directory as empty", "Update a similar entry", "phase: retro", "severity: minor|major", "area:"):
         assert requirement in filing, f"missing filing requirement: {requirement}"
+    assert "resolved `backlog_dir`" in filing
+    assert "<backlog_dir>/<kebab-slug>.md" in filing
     if host == "claude":
         assert "AskUserQuestion" in filing and "multiSelect: true" in filing
     else:
