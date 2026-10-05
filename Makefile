@@ -47,6 +47,7 @@ check-codex-skills:
 	@./scripts/check-codex-skills.sh
 
 test-codex-skills:
+	@bash ./scripts/check-loopai-t3-skill_test.sh
 	@./scripts/check-codex-skills_test.sh
 	@./scripts/install-codex-skills_test.sh
 

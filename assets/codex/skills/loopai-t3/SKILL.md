@@ -1,13 +1,13 @@
 ---
 name: loopai-t3
-description: "Run an existing loopai plan inside a T3 Code-managed worktree and thread (T3 Code desktop, web, or mobile app, t3.codes) so the run appears as a T3 Code thread whose title follows the loopai phase and whose terminal shows the live output, optionally with per-phase model or external-reviewer overrides. Triggers: loopai-t3, run plan in t3, launch loopai in t3 code."
+description: "Run an existing loopai plan inside a T3 Code-managed worktree and thread (T3 Code desktop, web, or mobile app, t3.codes) so the run appears as a T3 Code thread that runs loopai as a provider session when configured, or shows live output in a terminal otherwise, optionally with per-phase model or external-reviewer overrides. Triggers: loopai-t3, run plan in t3, launch loopai in t3 code."
 metadata:
   short-description: Run a loopai plan in a T3 Code thread
 ---
 
 # loopai-t3 - Run a Plan in a T3 Code Thread
 
-**SCOPE**: run `loopai --t3-launch`, which asks the running T3 Code server to create a worktree and a thread for the plan and starts `loopai --t3` in that thread's terminal, then report how to follow it. Do not edit code, commit, or merge. T3 Code owns the worktree and the thread; loopai runs inside them as an ordinary process.
+**SCOPE**: run `loopai --t3-launch`, which asks the running T3 Code server to create a worktree and a thread for the plan and starts a loopai provider session when a usable instance is configured, or `loopai --t3` in that thread's terminal otherwise, then report how to follow it. Do not edit code, commit, or merge. T3 Code owns the worktree and the thread; loopai runs inside them as a provider session or an ordinary terminal process.
 
 ## Step 0: Preflight
 
@@ -54,7 +54,7 @@ loopai reads the T3 Code bearer token only from `LOOPAI_T3_TOKEN` and never mint
 - If `LOOPAI_T3_TOKEN` is already set, use it.
 - Otherwise the token is minted inline in Step 3 with the `t3` CLI, so it never appears in the conversation. When `t3` is not on `PATH` (the desktop app does not install it), tell the user the launch will run `npx --yes t3@latest` once to issue the token, and continue only after they agree.
 
-The token lives in the thread terminal's environment for the whole run; `--ttl 7d` keeps it valid for long plans.
+In agent mode the token is used only for the launcher's dispatches; no token or environment is placed in the thread. In terminal mode the token lives in the thread terminal's environment for the whole run; `--ttl 7d` keeps it valid for long plans.
 
 ## Step 3: Launch
 
@@ -64,23 +64,42 @@ LOOPAI_T3_TOKEN=${LOOPAI_T3_TOKEN:-$($T3_CLI auth session issue --token-only --t
   loopai --t3-launch $FLAGS "$PLAN"
 ```
 
-- Run it from the repository root. `--t3-launch` exits after typing the command into the thread terminal; it does not wait for the run.
+- Run it from the repository root. The bare `--t3-launch` uses `auto`: it reads `<T3 home>/userdata/settings.json` and selects agent mode when `providerInstances` contains an enabled `grok` instance whose `config.binaryPath` names `loopai-acp` or `loopai-acp.exe` (and `config.enabled` is not false). Otherwise it selects terminal mode; unreadable settings produce a warning and a terminal fallback. See `docs/t3-code.md` for setup.
+- Agent mode submits the plan and flags as a user turn to the provider session and opens no terminal. Terminal mode types `loopai --t3` into the thread terminal. The launcher exits after submitting the turn or typing the command; it does not wait for the run.
+- Agent mode rejects whitespace in the plan's relative path before creating a worktree; use terminal mode for such paths.
 - Never echo, log, or print the token.
-- Success prints `started loopai in T3 Code thread <id>`, then `worktree:`, `branch:`, and the close-out line. Keep them for the report.
+- Success prints `started loopai in T3 Code thread <id>`, then `mode: agent (...)` or `mode: terminal`, `worktree:`, `branch:`, and the close-out line. Read the effective mode from this output and keep all of these lines for the report.
 - A failure after the worktree was created ends with `already created: worktree <path> (branch <name>)[, thread <id>]`. Nothing is rolled back; relay the line verbatim.
 
 ## Step 4: Report
 
+Use the `mode:` line from Step 3 to select the report below. Do not infer the mode from local settings.
+
 ```
 loopai started in T3 Code.
 
-Thread:   <id>        (open T3 Code; the thread title follows the run)
+Thread:   <id>        (open T3 Code)
+Mode:     <agent or terminal, from command output>
 Worktree: <path>
 Branch:   <branch>
 Plan:     $PLAN
 Flags:    $FLAGS  (empty = phase models and reviewers from .loopai/config and defaults)
 Progress: <worktree>/.loopai/progress/progress-<plan stem>.txt
 
+```
+
+For `mode: agent`, append:
+
+```
+The thread runs loopai as a provider session. It shows the Working state, plan
+steps, streamed reasoning, and the completion report as a final message on
+desktop, web, and mobile. The stop button cancels the run. T3 Code controls the
+thread title; loopai does not update it during the run.
+```
+
+For `mode: terminal`, append:
+
+```
 The thread title shows "<plan> · task N/M", "<plan> · review · iteration N",
 "<plan> · waiting for input" or "· waiting for limit", and finally
 "<plan> · done" (followed by the finalize outcome, such as "· PR merged",
@@ -92,6 +111,8 @@ shows the live output on desktop, web, and mobile.
 
 ## Close-out (tell the user, do not run)
 
+In agent mode, use the completion report to find the finalize outcome and any pull request URL. The ACP run disables loopai's T3 reporting, so phase/finalize titles, pull request linking, and thread settlement described below apply only to terminal mode. The T3-managed worktree remains in either mode.
+
 With `finalize = pr` or `merge` in `.loopai/config` (`--t3-launch` forwards only the model and reviewer flags), the run itself merges `origin/<base>` into the branch, opens the pull request, links it to the thread, and under `merge` merges it once its checks pass; the thread title then ends in `done · PR opened` or `done · PR merged`, and T3 Code settles the thread after the merge. Close-out by hand is needed when finalize is off or `sync` (`done · synced`), or the title ends in `done · finalize incomplete` before a pull request opened; once the run printed `PR: <url>`, a stop leaves that pull request open to fix or merge on GitHub. Then, from this checkout, prefer `$loopai-merge $PLAN`, or run the printed `loopai --merge <branch>` / `loopai --pr <branch>`. With `t3 = true` in `.loopai/config` (or `--t3` on the command) and `LOOPAI_T3_TOKEN` set, `--pr` links the new pull request to the thread, and T3 Code settles the thread once the PR merges. The T3-managed worktree stays until it is removed in T3 Code; finalize never removes it.
 
 ## Pitfalls
@@ -101,5 +122,6 @@ With `finalize = pr` or `merge` in `.loopai/config` (`--t3-launch` forwards only
 | `no T3 Code project for <root>` | Repository not added to T3 Code | Add it in the T3 Code sidebar, then rerun |
 | `LOOPAI_T3_TOKEN is not set` | Token step skipped | Step 2/3 inline mint |
 | `HTTP 401` | Token revoked, expired, or minted for another T3 home | Mint a new one with the same `T3CODE_HOME` the server uses |
-| Thread title never changes | Run started without `--t3` or the token expired mid-run | Relaunch; titles are best-effort and never stop the run |
+| Need terminal output or a plan path with whitespace | Agent mode opens no terminal and rejects whitespace paths | Run the Step 3 command with `--t3-launch=terminal` instead of the bare flag; it ignores provider settings |
+| Thread title never changes in terminal mode | Run started without `--t3` or the token expired mid-run | Relaunch; titles are best-effort and never stop the run |
 | Skill stops on an unknown flag | Only three flags pass through | Put other settings in `.loopai/config` |

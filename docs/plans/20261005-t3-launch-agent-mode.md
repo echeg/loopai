@@ -211,15 +211,17 @@ terminal launch is unchanged.
 
 ### Task 5: Update the loopai-t3 skills
 
-- [ ] `assets/claude/skills/loopai-t3/SKILL.md`: SCOPE and Step 3 describe both modes; Step 4's
+- [x] `assets/claude/skills/loopai-t3/SKILL.md`: SCOPE and Step 3 describe both modes; Step 4's
       report reads the mode from the command output and, in agent mode, replaces the terminal
       sentence with the provider-session behavior (working state, plan steps, report as final
       message, stop button cancels) and drops the token-in-terminal note; add an `--t3-launch=terminal`
       escape hatch to Pitfalls for runs that need the terminal
-- [ ] mirror the changes in `assets/codex/skills/loopai-t3/SKILL.md`
-- [ ] bump `.claude-plugin/plugin.json` and the loopai entry in `.claude-plugin/marketplace.json`
+- [x] mirror the changes in `assets/codex/skills/loopai-t3/SKILL.md`
+- [x] bump `.claude-plugin/plugin.json` and the loopai entry in `.claude-plugin/marketplace.json`
       by one patch level over their current value
-- [ ] run `make check-symlinks check-codex-skills check-plugin test-symlinks test-codex-skills test-plugin`
+- [x] add mode/report regression checks for both skills in `scripts/check-loopai-t3-skill_test.sh`,
+      wired into `make test-codex-skills`
+- [x] run `make check-symlinks check-codex-skills check-plugin test-symlinks test-codex-skills test-plugin`
       - must pass before task 6
 
 ### Task 6: Verify acceptance criteria
