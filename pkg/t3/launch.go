@@ -202,7 +202,12 @@ func resolveLaunchMode(req LaunchRequest) (LaunchMode, error) {
 }
 
 func agentPrompt(rel string, args []string) string {
-	return strings.Join(append([]string{filepath.ToSlash(rel)}, args...), " ")
+	rel = filepath.ToSlash(rel)
+	// The ACP parser treats tokens beginning with a hyphen as options.
+	if strings.HasPrefix(rel, "-") {
+		rel = "./" + rel
+	}
+	return strings.Join(append([]string{rel}, args...), " ")
 }
 
 func planRelPath(root, planFile string) (string, error) {

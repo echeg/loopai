@@ -399,6 +399,8 @@ func TestLaunchTurnPartialFailure(t *testing.T) {
 func TestAgentPrompt(t *testing.T) {
 	rel := filepath.Join("docs", "plans", "demo.md")
 	assert.Equal(t, "docs/plans/demo.md", agentPrompt(rel, nil))
+	assert.Equal(t, "./-demo.md", agentPrompt("-demo.md", nil))
+	assert.Equal(t, "./-plans/demo.md", agentPrompt(filepath.Join("-plans", "demo.md"), nil))
 	args := []string{"--task-model", "codex:gpt-5:high"}
 	assert.Equal(t, "docs/plans/demo.md --task-model codex:gpt-5:high", agentPrompt(rel, args))
 	assert.Equal(t, []string{"--task-model", "codex:gpt-5:high"}, args)

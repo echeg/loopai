@@ -4069,6 +4069,7 @@ func TestRunT3LaunchCommand(t *testing.T) {
 		name     string
 		flag     string
 		settings string
+		planPath string
 		agent    bool
 		warning  bool
 	}{
@@ -4076,6 +4077,8 @@ func TestRunT3LaunchCommand(t *testing.T) {
 		{name: "explicit auto without settings", flag: "--t3-launch=auto"},
 		{name: "bare agent", flag: "--t3-launch", settings: settings, agent: true},
 		{name: "auto agent", flag: "--t3-launch=auto", settings: settings, agent: true},
+		{name: "agent hyphen-prefixed file", flag: "--t3-launch=agent", settings: settings, agent: true, planPath: "./-demo.md"},
+		{name: "agent hyphen-prefixed directory", flag: "--t3-launch", settings: settings, agent: true, planPath: "./-plans/20260925-demo.md"},
 		{name: "explicit agent", flag: "--t3-launch=agent", settings: settings, agent: true},
 		{name: "terminal ignores instance", flag: "--t3-launch=terminal", settings: settings},
 		{name: "terminal ignores malformed settings", flag: "--t3-launch=terminal", settings: "{"},
@@ -4083,8 +4086,12 @@ func TestRunT3LaunchCommand(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := setupTestRepo(t)
-			planRel := filepath.Join("docs", "plans", "20260925-demo.md")
-			require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+			planPath := tc.planPath
+			if planPath == "" {
+				planPath = "docs/plans/20260925-demo.md"
+			}
+			planRel := filepath.FromSlash(planPath)
+			require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(dir, planRel)), 0o750))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, planRel), []byte("# Demo\n"), 0o600))
 			t.Chdir(dir)
 			t.Setenv("LOOPAI_T3_TOKEN", "tok")
@@ -4136,7 +4143,11 @@ func TestRunT3LaunchCommand(t *testing.T) {
 				turn, ok := api.commands[1].(*t3.ThreadTurnStart)
 				require.True(t, ok)
 				assert.Equal(t, create.ThreadID, turn.ThreadID)
-				assert.Equal(t, "docs/plans/20260925-demo.md --task-model codex:gpt-5:high", turn.Message.Text)
+				assert.Equal(t, planPath+" --task-model codex:gpt-5:high", turn.Message.Text)
+				parsed, parseErr := parseACPPrompt(turn.Message.Text)
+				require.NoError(t, parseErr)
+				assert.Equal(t, filepath.Clean(planRel), filepath.Clean(parsed.PlanFile))
+				assert.Equal(t, "codex:gpt-5:high", parsed.TaskModel)
 				assert.Contains(t, stdout.String(), "mode: agent (loopai provider session, instance loopai-custom;")
 				assert.Contains(t, stdout.String(), "the stop button cancels the run")
 			} else {
