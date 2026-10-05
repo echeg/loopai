@@ -47,6 +47,16 @@ func TestFindLoopaiInstance(t *testing.T) {
 			want:    ProviderInstance{ID: "win", Driver: "grok", Enabled: true, BinaryPath: `C:\tools\loopai-acp.exe`},
 		},
 		{
+			name:    "uppercase Windows extension",
+			content: `{"providerInstances":{"win":{"driver":"grok","config":{"binaryPath":"C:\\tools\\loopai-acp.EXE"}}}}`,
+			want:    ProviderInstance{ID: "win", Driver: "grok", Enabled: true, BinaryPath: `C:\tools\loopai-acp.EXE`},
+		},
+		{
+			name:    "mixed case basename",
+			content: `{"providerInstances":{"custom":{"driver":"grok","config":{"binaryPath":"LoopAI-ACP"}}}}`,
+			want:    ProviderInstance{ID: "custom", Driver: "grok", Enabled: true, BinaryPath: "LoopAI-ACP"},
+		},
+		{
 			name:    "sorted first wins skipping disabled",
 			content: `{"providerInstances":{"z-last":{"driver":"grok","config":{"binaryPath":"loopai-acp.exe"}},"a-disabled":{"driver":"grok","enabled":false,"config":{"binaryPath":"loopai-acp"}},"b-first":{"driver":"grok","config":{"binaryPath":"loopai-acp"}}}}`,
 			want:    ProviderInstance{ID: "b-first", Driver: "grok", Enabled: true, BinaryPath: "loopai-acp"},

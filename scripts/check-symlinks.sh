@@ -111,7 +111,8 @@ while IFS= read -r skill_name; do
 	fi
 
 	actual_target="$(readlink "$link")"
-	if [[ "$actual_target" != "$expected_target" ]]; then
+	# Windows native symlinks omit the optional leading ./ from relative targets.
+	if [[ "${actual_target#./}" != "${expected_target#./}" ]]; then
 		fail "incorrect skill symlink: $link -> $actual_target (expected $expected_target)"
 	fi
 

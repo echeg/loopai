@@ -72,8 +72,8 @@ mode otherwise.
 The launcher reads `providerInstances` from `<T3 home>/userdata/settings.json`, where the home is
 `T3CODE_HOME` or `~/.t3`. A usable instance has `driver: "grok"`, neither `enabled` nor
 `config.enabled` set to false, and a `config.binaryPath` whose basename is `loopai-acp` or
-`loopai-acp.exe`. Missing enabled fields count as enabled. If several match, the first settings key
-in sorted order wins; the output names the selected instance. See
+`loopai-acp.exe` (case-insensitive). Missing enabled fields count as enabled. If several match,
+the first settings key in sorted order wins; the output names the selected instance. See
 [Adding the provider instance](#adding-the-provider-instance) for setup.
 
 - `--t3-launch` or `--t3-launch=auto` selects agent mode when an instance matches. Missing settings
@@ -97,8 +97,9 @@ Agent mode then dispatches `thread.turn.start` with the selected instance, model
 The thread reads "Working", shows plan steps and streamed reasoning, and receives the completion
 report as the final message. The stop button cancels the run. Agent mode opens no terminal and
 places no token or environment in the thread: the bearer token is used only for the launcher's
-own API requests. The initial title is `<plan> · starting`; the turn supplies the run name as
-`titleSeed` for T3 Code's title generation. loopai does not update the title during the ACP run.
+own API requests. The initial title is the plain run name, matching the turn's `titleSeed` so
+T3 Code can replace it with a generated title. If generation does not replace it, the run name
+remains. loopai does not update the title during the ACP run.
 
 Terminal mode opens a terminal named `loopai` in the thread and types `loopai --t3 [flags] <plan>`
 there, with `LOOPAI_T3_TOKEN`, `LOOPAI_T3_URL`, and `LOOPAI_T3_THREAD_ID` in its environment. The

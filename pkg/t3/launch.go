@@ -146,12 +146,16 @@ func Launch(ctx context.Context, api Dispatcher, rpc RPC, req LaunchRequest) (La
 		return fail(err)
 	}
 
+	name := runName(req.PlanFile)
+	title := name + " · starting"
 	selection := modelSelection(req.Executor, req.Model)
 	if mode == LaunchAgent {
+		// T3 can replace the initial title only when it matches the turn title seed.
+		title = name
 		selection = ModelSelection{InstanceID: req.Instance.ID, Model: LoopaiModel}
 	}
 	threadID := NewID()
-	create := NewThreadCreate(threadID, project.ID, runName(req.PlanFile)+" · starting",
+	create := NewThreadCreate(threadID, project.ID, title,
 		selection, req.Branch, wt.Path)
 	if _, err := api.Dispatch(ctx, create); err != nil {
 		return fail(err)
@@ -159,7 +163,7 @@ func Launch(ctx context.Context, api Dispatcher, rpc RPC, req LaunchRequest) (La
 	result.ThreadID = threadID
 
 	if mode == LaunchAgent {
-		turn := NewThreadTurnStart(threadID, agentPrompt(rel, req.Args), runName(req.PlanFile), selection)
+		turn := NewThreadTurnStart(threadID, agentPrompt(rel, req.Args), name, selection)
 		if _, err := api.Dispatch(ctx, turn); err != nil {
 			return fail(err)
 		}

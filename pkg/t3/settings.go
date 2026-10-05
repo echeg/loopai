@@ -76,7 +76,7 @@ func FindLoopaiInstance(getenv func(string) string) (ProviderInstance, bool, err
 		}
 		// Recognize both path separators, including Windows settings read on another platform.
 		base := filepath.Base(strings.ReplaceAll(instance.Config.BinaryPath, `\`, "/"))
-		if base != "loopai-acp" && base != "loopai-acp.exe" {
+		if !strings.EqualFold(base, "loopai-acp") && !strings.EqualFold(base, "loopai-acp.exe") {
 			continue
 		}
 		return ProviderInstance{

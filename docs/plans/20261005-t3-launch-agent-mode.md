@@ -35,9 +35,10 @@ terminal launch is unchanged.
 - **Instance discovery**: `pkg/t3` reads `providerInstances` from `<T3 home>/userdata/settings.json`
   read-only, the file `docs/t3-code.md` already tells users to edit; loopai never writes below the
   T3 home. A usable instance has `driver == "grok"`, `enabled != false`, `config.enabled != false`,
-  and a `config.binaryPath` whose basename is `loopai-acp` or `loopai-acp.exe`. The map key is the
-  `instanceId` T3 Code expects in `modelSelection` (the schema decodes `instanceId` falling back to
-  `provider`; built-in instances use ids such as `claudeAgent`, custom ones their settings key). The
+  and a `config.binaryPath` whose basename is `loopai-acp` or `loopai-acp.exe` (case-insensitive).
+  The map key is the `instanceId` T3 Code expects in `modelSelection` (the schema decodes
+  `instanceId` falling back to `provider`; built-in instances use ids such as `claudeAgent`,
+  custom ones their settings key). The
   model is `loopai`, the single model `loopai-acp models` advertises. With several usable instances
   the first key in sorted order wins and the launcher says which.
 - **Message text**: `<plan relative path, forward slashes> [--task-model SPEC] [--review-model SPEC] [--external-reviewers LIST]`
@@ -46,9 +47,9 @@ terminal launch is unchanged.
   terminal mode keeps accepting it.
 - **No token in the thread**: agent mode opens no terminal and places no environment in the
   thread. The bearer token is used only for the launcher's own dispatches. The ACP run forces `t3`
-  off, so the thread's title is not updated by loopai; `thread.create` still sets
-  `<plan> · starting`, and the turn carries `titleSeed` with the run name so a T3-generated title
-  stays recognizable.
+  off, so the thread's title is not updated by loopai; in agent mode `thread.create` sets
+  the plain run name, matching the turn's `titleSeed` so T3 can replace it with a generated title.
+  If generation does not replace it, the run name remains. Terminal mode keeps `<plan> · starting`.
 - **Partial failure**: a failed `thread.turn.start` is a `PartialLaunchError` listing the worktree
   and thread, as today; nothing is rolled back.
 - **Verified facts** (T3 Code build of October 2026, `server.asar`): the dispatch payload union
@@ -252,7 +253,7 @@ terminal launch is unchanged.
 - **Flag**: `--t3-launch[=auto|agent|terminal]`; the value must be attached with `=`, as with
   `--cmux-workspace`, because the plan path follows as a positional.
 - **Dispatch sequence (agent mode)**: `vcs.createWorktree` → HEAD check → `carryInputs` →
-  `thread.create{modelSelection:{instanceId, model:"loopai"}, branch, worktreePath, title:"<run> · starting"}`
+  `thread.create{modelSelection:{instanceId, model:"loopai"}, branch, worktreePath, title:"<run>"}`
   → `thread.turn.start{threadId, message:{messageId, role:"user", text, attachments:[]},
   modelSelection:{instanceId, model:"loopai"}, titleSeed:"<run>", runtimeMode:"full-access",
   interactionMode:"default", createdAt}`.
@@ -289,8 +290,9 @@ terminal launch is unchanged.
 - With the `loopai` provider instance enabled, run `/loopai:loopai-t3 <plan>` and confirm the
   thread reads "Working", shows plan steps, streams reasoning, and ends with the report as a
   message; confirm the plan and uncommitted `.loopai/` overrides reached the worktree.
-- Confirm the thread title after T3's title generation; if `titleSeed` is ignored, note it in
-  `docs/t3-code.md` rather than adding a title update from the run.
+- The installed server's `canReplaceThreadTitle` requires the initial title to match `titleSeed`
+  (or be `New thread`); agent mode now uses the run name for both. Confirm live title generation
+  after launch; if unavailable, the plain run name remains without a stale status suffix.
 - Re-verify the `thread.turn.start` schema after the next T3 Code update, as `docs/t3-code.md`
   already requires for every Grok-driver contract.
 

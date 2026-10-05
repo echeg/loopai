@@ -38,6 +38,11 @@ add_skill loopai-t3
 add_skill loopai-update
 "$checker" "$fixture"
 
+# Equivalent relative targets work with and without the optional ./ prefix.
+rm "$fixture/assets/claude/loopai.md"
+ln -s "skills/loopai/SKILL.md" "$fixture/assets/claude/loopai.md"
+"$checker" "$fixture"
+
 rm "$fixture/assets/claude/skills/loopai-plan/SKILL.md" "$fixture/assets/claude/loopai-plan.md"
 expect_failure "missing skill file"
 add_skill loopai-plan
