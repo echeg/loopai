@@ -93,6 +93,78 @@ func TestDispatchThreadCreate(t *testing.T) {
 	}, req.body)
 }
 
+func TestDispatchThreadTurnStart(t *testing.T) {
+	srv, reqs := newTestServer(t, okSequence)
+	c := testClient(srv.URL)
+	cmd := NewThreadTurnStart("th-1", "docs/plans/demo.md --task-model codex:gpt-5:high", "demo",
+		ModelSelection{InstanceID: "custom-loopai", Model: LoopaiModel})
+	assert.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, cmd.Message.MessageID)
+	assert.NotEqual(t, cmd.Message.MessageID,
+		NewThreadTurnStart("th-1", "x", "demo", cmd.ModelSelection).Message.MessageID)
+
+	seq, err := c.Dispatch(context.Background(), cmd)
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), seq)
+	require.Len(t, reqs(), 1)
+	req := reqs()[0]
+	assert.Equal(t, http.MethodPost, req.method)
+	assert.Equal(t, "/api/orchestration/dispatch", req.path)
+	assert.Equal(t, "Bearer secret", req.auth)
+	assert.Equal(t, map[string]any{
+		"type":      "thread.turn.start",
+		"commandId": "cmd-1",
+		"threadId":  "th-1",
+		"message": map[string]any{
+			"messageId":   cmd.Message.MessageID,
+			"role":        "user",
+			"text":        "docs/plans/demo.md --task-model codex:gpt-5:high",
+			"attachments": []any{},
+		},
+		"modelSelection":  map[string]any{"instanceId": "custom-loopai", "model": LoopaiModel},
+		"titleSeed":       "demo",
+		"runtimeMode":     "full-access",
+		"interactionMode": "default",
+		"createdAt":       "2026-09-25T10:00:00Z",
+	}, req.body)
+}
+
+func TestDispatchCreatedAt(t *testing.T) {
+	for _, timestamp := range []string{"", "2026-09-24T08:00:00Z"} {
+		for _, cmd := range []Command{
+			NewThreadCreate("th-1", "pr-1", "demo", ModelSelection{}, "", ""),
+			NewThreadTurnStart("th-1", "docs/plans/demo.md", "demo", ModelSelection{}),
+		} {
+			t.Run(cmd.header().Type+"/"+timestamp, func(t *testing.T) {
+				srv, reqs := newTestServer(t, okSequence)
+				cmd.(interface{ stampCreatedAt(string) }).stampCreatedAt(timestamp)
+				c := testClient(srv.URL)
+				c.now = func() time.Time {
+					return time.Date(2026, 9, 25, 12, 0, 0, 123, time.FixedZone("UTC+2", 2*60*60))
+				}
+				_, err := c.Dispatch(context.Background(), cmd)
+				require.NoError(t, err)
+				want := timestamp
+				if want == "" {
+					want = "2026-09-25T10:00:00.000000123Z"
+				}
+				assert.Equal(t, want, reqs()[0].body["createdAt"])
+			})
+		}
+	}
+}
+
+func TestDispatchThreadTurnStartError(t *testing.T) {
+	srv, _ := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"reason":"thread_not_found"}`))
+	})
+	seq, err := testClient(srv.URL).Dispatch(context.Background(),
+		NewThreadTurnStart("missing", "docs/plans/demo.md", "demo", ModelSelection{}))
+	require.ErrorContains(t, err, "dispatch thread.turn.start")
+	require.ErrorContains(t, err, "thread_not_found")
+	assert.Zero(t, seq)
+}
+
 func TestDispatchTitleUpdateAndPullRequestLink(t *testing.T) {
 	srv, reqs := newTestServer(t, okSequence)
 	c := testClient(srv.URL)
@@ -105,6 +177,7 @@ func TestDispatchTitleUpdateAndPullRequestLink(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, reqs(), 2)
+	assert.NotContains(t, reqs()[0].body, "createdAt")
 	assert.Equal(t, map[string]any{
 		"type": "thread.meta.update", "commandId": "cmd-1", "threadId": "th-1", "title": "plan · done",
 	}, reqs()[0].body)

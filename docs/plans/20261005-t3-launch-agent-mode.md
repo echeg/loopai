@@ -154,17 +154,17 @@ terminal launch is unchanged.
 
 ### Task 2: Add the thread.turn.start command
 
-- [ ] in `pkg/t3/client.go`, add `ThreadTurnStart` with `threadId`, `message{messageId, role,
+- [x] in `pkg/t3/client.go`, add `ThreadTurnStart` with `threadId`, `message{messageId, role,
       text, attachments: []}` (attachments serialized as an empty array, never null),
       `modelSelection`, `titleSeed`, `runtimeMode: "full-access"`, `interactionMode: "default"`,
       `createdAt`, and `NewThreadTurnStart(threadID, text, titleSeed string, model ModelSelection)`
       using `NewID()` for the message id
-- [ ] generalize the `createdAt` fill in `Client.Dispatch` to an unexported `stampCreatedAt(string)`
+- [x] generalize the `createdAt` fill in `Client.Dispatch` to an unexported `stampCreatedAt(string)`
       interface implemented by `ThreadCreate` and `ThreadTurnStart`
-- [ ] extend `pkg/t3/client_test.go`: JSON shape of the new command (field names, empty
+- [x] extend `pkg/t3/client_test.go`: JSON shape of the new command (field names, empty
       `attachments` array, `createdAt` stamped, `modelSelection` present), and that
       `ThreadTitleUpdate` is still not stamped
-- [ ] run `go test ./pkg/t3/...` - must pass before task 3
+- [x] run `go test ./pkg/t3/...` - must pass before task 3
 
 ### Task 3: Agent-mode launch in pkg/t3
 

@@ -118,6 +118,38 @@ type ThreadCreate struct {
 	CreatedAt       string         `json:"createdAt"`
 }
 
+func (c *ThreadCreate) stampCreatedAt(timestamp string) {
+	if c.CreatedAt == "" {
+		c.CreatedAt = timestamp
+	}
+}
+
+// ThreadTurnStart submits a user message and starts a provider session.
+type ThreadTurnStart struct {
+	commandHeader
+	ThreadID        string            `json:"threadId"`
+	Message         threadTurnMessage `json:"message"`
+	ModelSelection  ModelSelection    `json:"modelSelection"`
+	TitleSeed       string            `json:"titleSeed"`
+	RuntimeMode     string            `json:"runtimeMode"`
+	InteractionMode string            `json:"interactionMode"`
+	CreatedAt       string            `json:"createdAt"`
+}
+
+type threadTurnMessage struct {
+	MessageID string `json:"messageId"`
+	Role      string `json:"role"`
+	Text      string `json:"text"`
+	// Launch messages have no attachments; a fixed empty array can never encode as null.
+	Attachments [0]struct{} `json:"attachments"`
+}
+
+func (c *ThreadTurnStart) stampCreatedAt(timestamp string) {
+	if c.CreatedAt == "" {
+		c.CreatedAt = timestamp
+	}
+}
+
 // ThreadTitleUpdate changes only a thread's title. Branch and worktree changes are deliberately
 // not expressible here because they re-trigger a server-side pull-request lookup.
 type ThreadTitleUpdate struct {
@@ -156,6 +188,23 @@ func NewThreadCreate(threadID, projectID, title string, model ModelSelection, br
 		InteractionMode: "default",
 		Branch:          optionalString(branch),
 		WorktreePath:    optionalString(worktreePath),
+	}
+}
+
+// NewThreadTurnStart builds a thread.turn.start command with a fresh user message id.
+func NewThreadTurnStart(threadID, text, titleSeed string, model ModelSelection) *ThreadTurnStart {
+	return &ThreadTurnStart{
+		commandHeader: commandHeader{Type: "thread.turn.start"},
+		ThreadID:      threadID,
+		Message: threadTurnMessage{
+			MessageID: NewID(),
+			Role:      "user",
+			Text:      text,
+		},
+		ModelSelection:  model,
+		TitleSeed:       titleSeed,
+		RuntimeMode:     "full-access",
+		InteractionMode: "default",
 	}
 }
 
@@ -200,8 +249,8 @@ func (c *Client) Dispatch(ctx context.Context, cmd Command) (int64, error) {
 	if h.CommandID == "" {
 		h.CommandID = c.newID()
 	}
-	if create, ok := cmd.(*ThreadCreate); ok && create.CreatedAt == "" {
-		create.CreatedAt = c.now().UTC().Format(time.RFC3339Nano)
+	if stamped, ok := cmd.(interface{ stampCreatedAt(string) }); ok {
+		stamped.stampCreatedAt(c.now().UTC().Format(time.RFC3339Nano))
 	}
 	body, err := json.Marshal(cmd)
 	if err != nil {
