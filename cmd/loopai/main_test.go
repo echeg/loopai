@@ -15009,6 +15009,12 @@ func runFinalizePlan(t *testing.T, finalize string) finalizePlanRun {
 // cuts the "finalize" branch from the feature HEAD.
 func runFinalizePlanIn(t *testing.T, finalize string, worktree bool) finalizePlanRun {
 	t.Helper()
+	return runFinalizePlanWithReport(t, finalize, worktree, "", "")
+}
+
+// runFinalizePlanWithReport also enables the report phase when a prompt is supplied.
+func runFinalizePlanWithReport(t *testing.T, finalize string, worktree bool, reportPrompt, report string) finalizePlanRun {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
@@ -15020,7 +15026,11 @@ func runFinalizePlanIn(t *testing.T, finalize string, worktree bool) finalizePla
 	t.Chdir(f.dir)
 	sessionsLog := filepath.Join(t.TempDir(), "sessions")
 	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
-	writeExecutable(t, fakeClaude, strings.ReplaceAll(finalizeFakeClaude, "%SESSIONS%", sessionsLog))
+	script := strings.ReplaceAll(finalizeFakeClaude, "%SESSIONS%", sessionsLog)
+	if reportPrompt != "" {
+		script = strings.ReplaceAll(withFinalizeReport(t, script, reportPrompt, report), "%SESSIONS%", sessionsLog)
+	}
+	writeExecutable(t, fakeClaude, script)
 	notifiedFile := filepath.Join(t.TempDir(), "notified.json")
 	notifyScript := filepath.Join(t.TempDir(), "notify.sh")
 	writeExecutable(t, notifyScript, "#!/bin/sh\ncat > '"+notifiedFile+"'\n")
@@ -15035,7 +15045,7 @@ func runFinalizePlanIn(t *testing.T, finalize string, worktree bool) finalizePla
 			ClaudeCommand: fakeClaude, Finalize: finalize, MovePlanOnCompletion: true, WorktreeEnabled: worktree,
 			FinalizeMergeMethod: "squash", FinalizeChecksTimeout: time.Minute,
 			TaskPrompt: "TASK-PROMPT", ReviewFirstPrompt: "REVIEW-PROMPT", ReviewSecondPrompt: "REVIEW-PROMPT",
-			FinalizePrompt: "FINALIZE-PROMPT",
+			FinalizePrompt: "FINALIZE-PROMPT", ReportEnabled: reportPrompt != "", ReportPrompt: reportPrompt,
 		},
 		Colors: testColors(), BaseRef: "master", Outcome: &planExecutionOutcome{}, NotifySvc: notifySvc,
 	}

@@ -341,13 +341,25 @@ implicit invocation, matching the skill's explicit-request rule.
 
 ### Task 7: Verify acceptance criteria
 
-- [ ] verify a `--pr` from a checkout whose branch carries the committed sidecar produces the
+- [x] verify a `--pr` from a checkout whose branch carries the committed sidecar produces the
       report-backed body, and a repository with no report produces the legacy body
-- [ ] verify a finalize PR under `--worktree` carries the in-memory report
-- [ ] verify a report produced from an unmodified pre-change `report.txt` copy still yields a body
-- [ ] run `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify a finalize PR under `--worktree` carries the in-memory report
+- [x] verify a report produced from an unmodified pre-change `report.txt` copy still yields a body
+- [x] run `make test`
+- [x] run `make lint` - all issues must be fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
+
+Acceptance coverage added in cmd/loopai/pr_acceptance_test.go: committed-sidecar
+and no-report PR creation, plus full single-plan worktree execution with report generation,
+archival in the source checkout, and an in-memory PR body while the pushed branch has no
+sidecar. The compatibility case uses testdata/report-pre-evidence.txt, a byte-for-byte
+copy of the report prompt at 36e57f8^, and a deterministic executor response in the old
+nine-section format; it verifies the actual rendered prompt and resulting PR body.
+
+Validation passed: focused acceptance and existing finalize tests, full make test
+(including Go race/coverage and all wrapper suites) in a non-root Linux Docker
+checkout with init enabled, make lint on Windows (zero issues), and
+GOOS=windows GOARCH=amd64 go build ./....
 
 ### Task 8: [Final] Update documentation
 
