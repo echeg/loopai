@@ -259,23 +259,23 @@ checkout of HEAD plus the Task 4 changes; make lint on Windows reported zero iss
 
 ### Task 5: Create the loopai-retro Claude skill
 
-- [ ] create `assets/claude/skills/loopai-retro/SKILL.md` with frontmatter `name: loopai-retro`,
+- [x] create `assets/claude/skills/loopai-retro/SKILL.md` with frontmatter `name: loopai-retro`,
       a description with triggers (`loopai-retro`, `retro`, `retrospective`, `ретро`),
       `argument-hint: '[plan stem | progress log path | --last N]'`,
       `allowed-tools: [Bash, Read, Glob, Grep, AskUserQuestion]`, and
       `disable-model-invocation: true`
-- [ ] write the input-selection section: with a plan stem, use its progress log, `history/`
+- [x] write the input-selection section: with a plan stem, use its progress log, `history/`
       archives, `.run.json` if present, and `docs/plans/completed/<stem>.report.md`; with a log
       path, that log alone; with `--last N` or no argument, the N (default 5) newest top-level
       `progress-*.txt` logs by mtime; always add `docs/backlog/*.md` and the steering files
       `CLAUDE.md`, `AGENTS.md`, `.loopai/config`, `.loopai/prompts/`, `.loopai/agents/`, plus the
       repository's check commands (`Makefile`, CI workflows, pre-commit config)
-- [ ] write the bounded-reading rule: never read a progress log whole; first `grep -n` the
+- [x] write the bounded-reading rule: never read a progress log whole; first `grep -n` the
       structural lines (`--- … ---` section headers, `validation:`, `Completed:`, `Failed:`,
       `QUESTION:`, `DRAFT REVIEW:`, `TASK_FAILED`, `stalemate`, `limit`, `retry`, `warning:`),
       then read bounded windows around the hits; report sidecars and backlog entries may be read
       whole
-- [ ] write the candidate categories with their "use when" trigger: navigation pointers;
+- [x] write the candidate categories with their "use when" trigger: navigation pointers;
       automated checks (an unwired or absent guardrail is itself a finding); coding standards
       (a mechanical violation becomes a lint rule or check, a judgement call becomes a dynamic
       review agent in `.loopai/agents/` or a `CLAUDE.md` line); bloated steering files; no-op
@@ -284,19 +284,38 @@ checkout of HEAD plus the Task 4 changes; make lint on Windows reported zero iss
       rather than clean, task iterations that failed and retried, validation commands whose
       measured time dominates the run or that ran many times, and human waits (`QUESTION:` lines)
       a config key or plan detail would have avoided
-- [ ] write the output section: candidates ranked by severity, each with the category, the
+- [x] write the output section: candidates ranked by severity, each with the category, the
       evidence as `path:line` into the log or report, the proposed change, and where it belongs
       (lint rule, Makefile/CI, `.loopai/agents/<name>.txt`, `CLAUDE.md` pointer, `.loopai/config`
       key, plan template); then `AskUserQuestion` with `multiSelect` offering to file selected
       candidates as `docs/backlog/<kebab-slug>.md` entries in the format `loopai-plan` uses, each
       committed through `git add <entry>` and `git commit -m "docs: add backlog entry" -- <entry>`
-- [ ] write the constraints: read-only except the selected backlog entries; never edit prompts,
+- [x] write the constraints: read-only except the selected backlog entries; never edit prompts,
       agents, config, steering files, plans, or reports; never run loopai; never present a
       candidate without evidence; a round where nothing is selected writes nothing
-- [ ] add the symlink `assets/claude/loopai-retro.md -> ./skills/loopai-retro/SKILL.md`, add
+- [x] add the symlink `assets/claude/loopai-retro.md -> ./skills/loopai-retro/SKILL.md`, add
       `loopai-retro` to `expected_skills` in `scripts/check-symlinks.sh`, and add
       `add_skill loopai-retro` to the valid fixture in `scripts/check-symlinks_test.sh`
-- [ ] run `make check-symlinks test-symlinks` - must pass before task 6
+- [x] add `scripts/check-retro-skill_test.sh` and the `make test-retro-skill` target,
+      included in `make test`, covering input boundaries, manual invocation, evidence-backed
+      candidates, selection-only writes, and executing the bounded log-reading examples
+- [x] run `make check-symlinks test-symlinks` - must pass before task 6
+
+Validation adjustment for Task 5: adding the Claude skill makes the existing Codex
+inventory check require its counterpart, which is explicitly assigned to Task 6.
+Run `make test` to confirm that this is its only failure, then
+`make -o check-codex-skills -o test-codex-skills test` plus the standalone
+`scripts/check-codex-skills_test.sh` for the remaining full suite. The installer
+regression tests also run the inventory check and share this dependency. Do not exempt
+`loopai-retro` or implement Task 6 here; Task 6 must pass the unchanged inventory
+check, and Task 7 runs the unmodified full suite.
+
+Validation passed: make check-symlinks test-symlinks test-retro-skill, the
+standalone Codex inventory regression tests, and the remaining make test targets
+(including Go race/coverage and wrapper suites) in a non-root Linux Docker
+checkout of HEAD plus the Task 5 changes. make lint on Windows reported zero
+issues. The full suite confirms only the scheduled Codex counterpart dependency;
+its inventory and installer targets remain for Task 6.
 
 ### Task 6: Create the loopai-retro Codex skill and bump the manifests
 

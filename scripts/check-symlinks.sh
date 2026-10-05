@@ -6,7 +6,7 @@ repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 claude_dir="$repo_root/assets/claude"
 skills_dir="$claude_dir/skills"
 status=0
-expected_skills="$(printf '%s\n' loopai loopai-adopt loopai-brainstorm loopai-grill loopai-merge loopai-orca loopai-plan loopai-t3 loopai-update | sort)"
+expected_skills="$(printf '%s\n' loopai loopai-adopt loopai-brainstorm loopai-grill loopai-merge loopai-orca loopai-plan loopai-retro loopai-t3 loopai-update | sort)"
 
 # Spellings loopai removed when the provider moved into every model spec
 # (provider[:model[:effort]]). A skill still teaching one would make loopai stop at
