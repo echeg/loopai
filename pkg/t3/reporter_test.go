@@ -199,6 +199,9 @@ func TestReporterExistingThread(t *testing.T) {
 	r := NewWithDispatcher(api, Options{ThreadID: "th-1"})
 	r.OnPhase("", status.PhaseExternalEval)
 	waitFor(t, api, 1)
+	// Binding publishes the title before checking the pin. Wait for that check so Stop
+	// cannot intentionally skip it while the worker is still completing the bind.
+	require.Eventually(t, func() bool { return len(api.pinOps()) == 1 }, 2*time.Second, 2*time.Millisecond)
 	r.Finish(false)
 	r.Stop()
 	assert.Equal(t, 1, api.shellHits, "only the pin check reads the shell for a bound thread")

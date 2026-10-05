@@ -3968,23 +3968,29 @@ func TestRunConfiguredStandaloneCommandT3Launch(t *testing.T) {
 
 // t3LaunchRPC is a t3.RPC fake that creates a real git worktree so the launcher's HEAD check runs.
 type t3LaunchRPC struct {
-	t      *testing.T
-	path   string
-	opened []t3.TerminalOpenInput
-	writes []string
+	t       *testing.T
+	path    string
+	created []t3.CreateWorktreeInput
+	opened  []t3.TerminalOpenInput
+	writes  []string
+	calls   []string
 }
 
 func (r *t3LaunchRPC) CreateWorktree(_ context.Context, in t3.CreateWorktreeInput) (t3.Worktree, error) {
+	r.created = append(r.created, in)
+	r.calls = append(r.calls, "vcs.createWorktree")
 	runGit(r.t, in.Cwd, "worktree", "add", "-b", in.NewRefName, r.path, in.RefName)
 	return t3.Worktree{Path: r.path, RefName: in.NewRefName}, nil
 }
 
 func (r *t3LaunchRPC) OpenTerminal(_ context.Context, in t3.TerminalOpenInput) error {
+	r.calls = append(r.calls, "terminal.open")
 	r.opened = append(r.opened, in)
 	return nil
 }
 
 func (r *t3LaunchRPC) WriteTerminal(_ context.Context, _, _, data string) error {
+	r.calls = append(r.calls, "terminal.write")
 	r.writes = append(r.writes, data)
 	return nil
 }
@@ -4047,17 +4053,19 @@ func TestRunT3LaunchCommand(t *testing.T) {
 	const settings = `{"providerInstances":{"loopai-custom":{"driver":"grok","config":{"binaryPath":"/bin/loopai-acp"}}}}`
 	for _, tc := range []struct {
 		name     string
-		mode     string
+		flag     string
 		settings string
 		agent    bool
 		warning  bool
 	}{
-		{name: "terminal without settings", mode: "auto"},
-		{name: "auto agent", mode: "auto", settings: settings, agent: true},
-		{name: "explicit agent", mode: "agent", settings: settings, agent: true},
-		{name: "terminal ignores instance", mode: "terminal", settings: settings},
-		{name: "terminal ignores malformed settings", mode: "terminal", settings: "{"},
-		{name: "auto malformed settings falls back", mode: "auto", settings: "{", warning: true},
+		{name: "bare terminal without settings", flag: "--t3-launch"},
+		{name: "explicit auto without settings", flag: "--t3-launch=auto"},
+		{name: "bare agent", flag: "--t3-launch", settings: settings, agent: true},
+		{name: "auto agent", flag: "--t3-launch=auto", settings: settings, agent: true},
+		{name: "explicit agent", flag: "--t3-launch=agent", settings: settings, agent: true},
+		{name: "terminal ignores instance", flag: "--t3-launch=terminal", settings: settings},
+		{name: "terminal ignores malformed settings", flag: "--t3-launch=terminal", settings: "{"},
+		{name: "auto malformed settings falls back", flag: "--t3-launch=auto", settings: "{", warning: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := setupTestRepo(t)
@@ -4084,9 +4092,12 @@ func TestRunT3LaunchCommand(t *testing.T) {
 			}
 
 			var stdout bytes.Buffer
-			o := opts{T3Launch: tc.mode, PlanFile: planRel, TaskModel: "codex:gpt-5:high"}
+			o := parseTestOpts(t, tc.flag, "--task-model", "codex:gpt-5:high", planRel)
+			require.NoError(t, validateT3LaunchFlags(o))
+			cfg := &config.Config{}
+			require.NoError(t, applyCLIOverrides(o, cfg))
 			stderr := captureStderr(t, func() {
-				require.NoError(t, runT3LaunchCommand(t.Context(), o, &config.Config{}, testColors(), &stdout))
+				require.NoError(t, runT3LaunchCommand(t.Context(), o, cfg, testColors(), &stdout))
 			})
 			if tc.warning {
 				assert.Contains(t, stderr, "warning: --t3-launch: t3: parse settings file:")
@@ -4097,7 +4108,11 @@ func TestRunT3LaunchCommand(t *testing.T) {
 			assert.True(t, closed)
 			assert.Equal(t, t3.Endpoint{BaseURL: "http://127.0.0.1:1", Token: "tok"}, gotEndpoint)
 			assert.FileExists(t, filepath.Join(rpc.path, planRel))
+			branch, err := gitSvc.CurrentBranch()
+			require.NoError(t, err)
+			assert.Equal(t, []t3.CreateWorktreeInput{{Cwd: gitSvc.Root(), RefName: branch, NewRefName: "demo"}}, rpc.created)
 			if tc.agent {
+				assert.Equal(t, []string{"vcs.createWorktree"}, rpc.calls)
 				assert.Empty(t, rpc.opened)
 				assert.Empty(t, rpc.writes)
 				require.Len(t, api.commands, 2)
@@ -4111,9 +4126,19 @@ func TestRunT3LaunchCommand(t *testing.T) {
 				assert.Contains(t, stdout.String(), "mode: agent (loopai provider session, instance loopai-custom;")
 				assert.Contains(t, stdout.String(), "the stop button cancels the run")
 			} else {
+				assert.Equal(t, []string{"vcs.createWorktree", "terminal.open", "terminal.write"}, rpc.calls)
 				require.Len(t, api.commands, 1)
+				create, ok := api.commands[0].(*t3.ThreadCreate)
+				require.True(t, ok)
+				assert.Equal(t, t3.ModelSelection{InstanceID: t3.InstanceCodex, Model: "gpt-5"}, create.ModelSelection)
 				require.Len(t, rpc.opened, 1)
-				assert.Equal(t, "tok", rpc.opened[0].Env["LOOPAI_T3_TOKEN"])
+				assert.Equal(t, t3.TerminalOpenInput{
+					ThreadID: create.ThreadID, TerminalID: "loopai", Cwd: rpc.path, WorktreePath: rpc.path,
+					Env: map[string]string{
+						"LOOPAI_T3": "true", "LOOPAI_T3_TOKEN": "tok",
+						"LOOPAI_T3_URL": "http://127.0.0.1:1", "LOOPAI_T3_THREAD_ID": create.ThreadID,
+					},
+				}, rpc.opened[0])
 				require.Len(t, rpc.writes, 1)
 				program, err := os.Executable()
 				require.NoError(t, err)
@@ -4123,7 +4148,7 @@ func TestRunT3LaunchCommand(t *testing.T) {
 				}
 				assert.Equal(t, t3.LaunchCommand(shell, program, []string{"--t3", "--task-model", "codex:gpt-5:high", planRel})+"\r", rpc.writes[0])
 				assert.Contains(t, stdout.String(), "mode: terminal")
-				if tc.mode == "auto" {
+				if o.T3Launch == "auto" {
 					assert.Contains(t, stdout.String(), "providerInstances")
 					assert.Contains(t, stdout.String(), "docs/t3-code.md")
 				} else {

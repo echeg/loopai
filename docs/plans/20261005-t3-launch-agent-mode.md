@@ -226,13 +226,16 @@ terminal launch is unchanged.
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] verify the bare `--t3-launch` with no settings file reproduces today's terminal launch
+- [x] verify the bare `--t3-launch` with no settings file reproduces today's terminal launch
       exactly (same RPC calls, same typed command)
-- [ ] verify `--t3-launch` with a usable instance opens no terminal and dispatches the turn
-- [ ] verify `--t3-launch=terminal` ignores a configured instance
-- [ ] run `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify `--t3-launch` with a usable instance opens no terminal and dispatches the turn
+- [x] verify `--t3-launch=terminal` ignores a configured instance
+- [x] ➕ synchronize `TestReporterExistingThread` with the completed pin operation before
+      stopping the reporter, fixing the intermittent full-suite failure found during acceptance
+      validation; verify the test with 100 race-enabled repetitions
+- [x] run `make test`
+- [x] run `make lint` - all issues must be fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 7: [Final] Update documentation
 
