@@ -237,17 +237,25 @@ and applies report selection and size fallbacks before PR metadata validation.
 
 ### Task 4: Narrate the new sections in loopai-merge
 
-- [ ] in `assets/claude/skills/loopai-merge/SKILL.md`, extend the fixed topic list to Summary,
+- [x] in `assets/claude/skills/loopai-merge/SKILL.md`, extend the fixed topic list to Summary,
       Change scope, Evidence, Risk, Merge danger, Migrations and operational steps, Plan deviation,
       Backlog, External review; state that an older report lacks Evidence and Merge danger and
       that they are then reported as absent, not inferred
-- [ ] in the confirmation gate, restate `Door` and `Blast radius` in one line above the
+- [x] in the confirmation gate, restate `Door` and `Blast radius` in one line above the
       `Merge into <base>?` question when present; add to the `Open PR` option that the pull request
       body is built from the report
-- [ ] mirror both changes in `assets/codex/skills/loopai-merge/SKILL.md` (prose, no
+- [x] mirror both changes in `assets/codex/skills/loopai-merge/SKILL.md` (prose, no
       `AskUserQuestion`)
-- [ ] run `make check-symlinks check-codex-skills test-symlinks test-codex-skills` - must pass
+- [x] run `make check-symlinks check-codex-skills test-symlinks test-codex-skills` - must pass
       before task 5
+
+Added scripts/check-merge-skill_test.sh and the make test-merge-skill target,
+also included in make test, to pin the narration order, older-report absence rule,
+confirmation reminder, partial/missing danger handling, and both PR choices.
+
+Validation passed: make check-symlinks check-codex-skills test-symlinks
+test-codex-skills test-merge-skill and full make test in a non-root Linux Docker
+checkout of HEAD plus the Task 4 changes; make lint on Windows reported zero issues.
 
 ### Task 5: Create the loopai-retro Claude skill
 
