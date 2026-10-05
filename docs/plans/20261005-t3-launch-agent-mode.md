@@ -168,26 +168,26 @@ terminal launch is unchanged.
 
 ### Task 3: Agent-mode launch in pkg/t3
 
-- [ ] add `LaunchMode` (`LaunchAuto`, `LaunchAgent`, `LaunchTerminal`) and `Mode LaunchMode` plus
+- [x] add `LaunchMode` (`LaunchAuto`, `LaunchAgent`, `LaunchTerminal`) and `Mode LaunchMode` plus
       `Instance ProviderInstance` (set by the caller when found) to `LaunchRequest`; add
       `Mode LaunchMode` to `LaunchResult` reporting the effective mode
-- [ ] in `Launch`, resolve the effective mode first: `auto` → agent when `req.Instance` is set, else
+- [x] in `Launch`, resolve the effective mode first: `auto` → agent when `req.Instance` is set, else
       terminal; `agent` with no instance → error before any RPC; agent mode with whitespace in the
       plan's relative path → error before any RPC
-- [ ] in agent mode, after `carryInputs`, create the thread with
+- [x] in agent mode, after `carryInputs`, create the thread with
       `ModelSelection{InstanceID: instance.ID, Model: LoopaiModel}`, then dispatch
       `NewThreadTurnStart(threadID, agentPrompt(rel, req.Args), runName(req.PlanFile), sameSelection)`
       where `agentPrompt` joins `filepath.ToSlash(rel)` and the args with single spaces; skip
       `OpenTerminal` and `WriteTerminal` entirely
-- [ ] keep terminal mode byte-identical to today, including `modelSelection(req.Executor, req.Model)`
+- [x] keep terminal mode byte-identical to today, including `modelSelection(req.Executor, req.Model)`
       on the thread
-- [ ] extend `pkg/t3/launch_test.go`: agent mode dispatches `thread.create` with the instance
+- [x] extend `pkg/t3/launch_test.go`: agent mode dispatches `thread.create` with the instance
       selection then `thread.turn.start` with the expected text and title seed and makes no RPC
       terminal calls; auto with and without an instance; `agent` without instance fails before
       `CreateWorktree`; whitespace plan path fails before `CreateWorktree` in agent mode and
       succeeds in terminal mode; a failed turn dispatch yields `PartialLaunchError` naming worktree
       and thread; `LaunchResult.Mode` is set in every success case
-- [ ] run `go test ./pkg/t3/...` - must pass before task 4
+- [x] run `go test ./pkg/t3/...` - must pass before task 4
 
 ### Task 4: Wire the mode through the CLI
 

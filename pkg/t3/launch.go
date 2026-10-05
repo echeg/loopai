@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // worktreeTimeout bounds `git worktree add` on the server; checkouts of large repositories are slow.
@@ -26,6 +27,18 @@ const (
 	ShellPOSIX ShellKind = iota
 	// ShellPowerShell quotes for pwsh and Windows PowerShell, the T3 Code default on Windows.
 	ShellPowerShell
+)
+
+// LaunchMode selects whether a launch starts a provider session or a thread terminal.
+type LaunchMode string
+
+const (
+	// LaunchAuto uses a provider session when a loopai instance is supplied.
+	LaunchAuto LaunchMode = "auto"
+	// LaunchAgent requires a loopai provider instance and starts a provider session.
+	LaunchAgent LaunchMode = "agent"
+	// LaunchTerminal starts loopai in a thread terminal.
+	LaunchTerminal LaunchMode = "terminal"
 )
 
 // RPC is the WebSocket surface the launcher needs.
@@ -48,6 +61,8 @@ type LaunchRequest struct {
 	Model      string
 	Shell      ShellKind
 	Endpoint   Endpoint
+	Mode       LaunchMode
+	Instance   ProviderInstance // discovered by the caller; an empty ID means no instance
 	// HeadOf reports the commit checked out in a directory.
 	HeadOf func(dir string) (string, error)
 }
@@ -57,6 +72,7 @@ type LaunchResult struct {
 	ThreadID     string
 	WorktreePath string
 	Branch       string
+	Mode         LaunchMode
 }
 
 // PartialLaunchError reports a launch that failed after the worktree was created. The worktree is
@@ -84,11 +100,18 @@ func (e *PartialLaunchError) Unwrap() error { return e.Err }
 var overrideDirs = []string{"config", "prompts", "agents"}
 
 // Launch creates a T3-managed worktree and a thread bound to it, carries the plan and local
-// .loopai overrides over, and starts `loopai --t3` in the thread's terminal.
+// .loopai overrides over, and starts loopai as a provider session or in the thread's terminal.
 func Launch(ctx context.Context, api Dispatcher, rpc RPC, req LaunchRequest) (LaunchResult, error) {
+	mode, err := resolveLaunchMode(req)
+	if err != nil {
+		return LaunchResult{}, err
+	}
 	rel, err := planRelPath(req.RepoRoot, req.PlanFile)
 	if err != nil {
 		return LaunchResult{}, err
+	}
+	if mode == LaunchAgent && strings.ContainsFunc(rel, unicode.IsSpace) {
+		return LaunchResult{}, errors.New("t3: agent mode requires a plan path without whitespace; use --t3-launch=terminal")
 	}
 	shell, err := api.Shell(ctx)
 	if err != nil {
@@ -105,7 +128,7 @@ func Launch(ctx context.Context, api Dispatcher, rpc RPC, req LaunchRequest) (La
 	if err != nil {
 		return LaunchResult{}, err //nolint:wrapcheck // RPC errors name the failing method
 	}
-	result := LaunchResult{WorktreePath: wt.Path, Branch: req.Branch}
+	result := LaunchResult{WorktreePath: wt.Path, Branch: req.Branch, Mode: mode}
 	fail := func(err error) (LaunchResult, error) {
 		return result, &PartialLaunchError{Result: result, Err: err}
 	}
@@ -123,13 +146,25 @@ func Launch(ctx context.Context, api Dispatcher, rpc RPC, req LaunchRequest) (La
 		return fail(err)
 	}
 
+	selection := modelSelection(req.Executor, req.Model)
+	if mode == LaunchAgent {
+		selection = ModelSelection{InstanceID: req.Instance.ID, Model: LoopaiModel}
+	}
 	threadID := NewID()
 	create := NewThreadCreate(threadID, project.ID, runName(req.PlanFile)+" · starting",
-		modelSelection(req.Executor, req.Model), req.Branch, wt.Path)
+		selection, req.Branch, wt.Path)
 	if _, err := api.Dispatch(ctx, create); err != nil {
 		return fail(err)
 	}
 	result.ThreadID = threadID
+
+	if mode == LaunchAgent {
+		turn := NewThreadTurnStart(threadID, agentPrompt(rel, req.Args), runName(req.PlanFile), selection)
+		if _, err := api.Dispatch(ctx, turn); err != nil {
+			return fail(err)
+		}
+		return result, nil
+	}
 
 	env := map[string]string{
 		"LOOPAI_T3": "true",
@@ -146,6 +181,28 @@ func Launch(ctx context.Context, api Dispatcher, rpc RPC, req LaunchRequest) (La
 		return fail(err)
 	}
 	return result, nil
+}
+
+func resolveLaunchMode(req LaunchRequest) (LaunchMode, error) {
+	mode := req.Mode
+	switch mode {
+	case "", LaunchAuto:
+		mode = LaunchTerminal
+		if req.Instance.ID != "" {
+			mode = LaunchAgent
+		}
+	case LaunchAgent, LaunchTerminal:
+	default:
+		return "", fmt.Errorf("t3: unknown launch mode %q", mode)
+	}
+	if mode == LaunchAgent && req.Instance.ID == "" {
+		return "", errors.New("t3: agent mode requires a loopai provider instance; see docs/t3-code.md")
+	}
+	return mode, nil
+}
+
+func agentPrompt(rel string, args []string) string {
+	return strings.Join(append([]string{filepath.ToSlash(rel)}, args...), " ")
 }
 
 func planRelPath(root, planFile string) (string, error) {
