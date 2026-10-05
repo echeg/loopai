@@ -98,7 +98,10 @@ top-level symlink.
 validates the same three pass-through flags and runs `loopai --t3-launch`, minting a
 T3 Code token inline (`t3 auth session issue --token-only`) when `LOOPAI_T3_TOKEN`
 is unset so the token never reaches the transcript. Worktree creation, input
-copying, thread creation, and the terminal launch all live in Go (`pkg/t3/launch.go`).
+copying, thread creation, and provider-session or terminal launch all live in Go (`pkg/t3/launch.go`).
+The bare flag uses `auto`: `providerInstances` in `<T3 home>/userdata/settings.json` selects a usable
+loopai instance for agent mode; otherwise it falls back to terminal mode. Agent mode places no
+token in the thread; terminal mode passes it in the terminal environment.
 `loopai-orca` drives the Orca desktop app's `orca` CLI and executes nothing
 itself: it creates an Orca-managed worktree cut from the current branch (Orca's
 default base is the remote-tracking ref, so `--base-branch` is always passed and
@@ -795,10 +798,23 @@ ignored rather than disabling titles, since `thread.pin` is cosmetic and absent 
 `branch` or `worktreePath` in a meta update re-triggers T3's server-side PR lookup. `--t3-launch`
 is routed with close-out through `runConfiguredStandaloneCommand` and is part of
 `isStandaloneCommand`; it creates the worktree through the `vcs.createWorktree` WebSocket RPC so
-T3 Code owns it, never deletes anything on a partial failure, and types the command with
-PowerShell quoting on Windows (T3 Code's default shell there is pwsh or Windows PowerShell) and
-POSIX quoting elsewhere. Tests replace `newT3Reporter`, `newT3Dispatcher`, and `newT3Session` in
-`TestMain` so no test reaches a live server.
+T3 Code owns it and never deletes anything on a partial failure. The optional mode is
+`--t3-launch[=auto|agent|terminal]` (attach with `=`); bare/auto reads `providerInstances` from
+`${T3CODE_HOME:-~/.t3}/userdata/settings.json` through `FindLoopaiInstance`. A usable instance has
+`driver == "grok"`, neither `enabled` nor `config.enabled` false, and a `config.binaryPath` basename
+of `loopai-acp` or `loopai-acp.exe`; the first key in sorted order wins. Auto warns and falls back
+to terminal on settings errors or uses terminal when no instance matches; explicit agent fails
+on settings errors or no instance, and explicit terminal skips the lookup. Agent mode selects
+`{instanceId: <settings key>, model: "loopai"}` for both `thread.create` and `thread.turn.start`,
+sending the forward-slash relative plan path and flags as a user message with empty attachments
+and a run-name `titleSeed`. It refuses whitespace in the plan path before creating anything,
+opens no terminal, and places no token or environment in the thread: the token authenticates only
+launcher requests. The provider session shows Working state, plan steps, reasoning, and the final
+report message; its stop button cancels the run. ACP forces `t3` off, so loopai does not update
+phase titles or link PRs in that run. Terminal mode types `loopai --t3` with PowerShell quoting on
+Windows (T3 Code's default shell there is pwsh or Windows PowerShell) and POSIX quoting elsewhere,
+passing the token in the terminal environment. Tests replace `newT3Reporter`, `newT3Dispatcher`,
+and `newT3Session` in `TestMain` so no test reaches a live server.
 
 ACP agent mode is the experimental way T3 Code hosts loopai as a real provider session, which
 `--t3` cannot do: T3 Code derives "working" only from a running provider session. T3 Code has no

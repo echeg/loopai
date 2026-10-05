@@ -239,13 +239,13 @@ terminal launch is unchanged.
 
 ### Task 7: [Final] Update documentation
 
-- [ ] `docs/t3-code.md`: rewrite "Launching a plan in T3 Code" for the two modes and the auto
+- [x] `docs/t3-code.md`: rewrite "Launching a plan in T3 Code" for the two modes and the auto
       rule, point "Running a plan" at `--t3-launch` as the normal way to start a provider-session
       thread, and update "Limitations" to say which thread shape each mode produces
-- [ ] `README.md:1308-1320`, `llms.txt:48,216,244`, and the `--t3-launch` paragraphs in
+- [x] `README.md:1308-1320`, `llms.txt:48,216,244`, and the `--t3-launch` paragraphs in
       `CLAUDE.md` (line 98 and near 795): describe the mode value, the settings lookup, and that
       agent mode places no token in the thread
-- [ ] update the `--t3-launch` flag description string in `opts`
+- [x] update the `--t3-launch` flag description string in `opts`
 
 ## Technical Details
 
@@ -268,14 +268,19 @@ terminal launch is unchanged.
 - **Mode output lines**:
 
   ```text
-  started loopai in T3 Code thread <id> (provider session)
+  started loopai in T3 Code thread <id>
+  mode: agent (loopai provider session, instance <id>; the stop button cancels the run)
   worktree: ...
   branch:   ...
   close out from this checkout with: ...
   ```
 
-  or, in terminal mode under `auto`: `mode: terminal (add a loopai provider instance for a working
-  thread, see docs/t3-code.md)`.
+  or, in terminal mode under `auto`:
+
+  ```text
+  mode: terminal
+  add a loopai provider instance in providerInstances for agent mode; see docs/t3-code.md
+  ```
 
 ## Post-Completion
 

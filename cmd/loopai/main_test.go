@@ -3862,6 +3862,20 @@ func TestLinkT3PullRequest(t *testing.T) {
 	})
 }
 
+func TestT3LaunchHelp(t *testing.T) {
+	var o opts
+	parser := flags.NewParser(&o, flags.HelpFlag)
+	var help bytes.Buffer
+	parser.WriteHelp(&help)
+
+	// Normalize wrapping so the assertions hold at any help output width.
+	text := strings.Join(strings.Fields(help.String()), " ")
+	assert.Regexp(t, `(?:--|/)t3-launch[=:]\[auto\|agent\|terminal\]`, text)
+	assert.Contains(t, text, "bare/auto = configured loopai provider session or terminal")
+	assert.Contains(t, text, "agent = require provider instance")
+	assert.Contains(t, text, "terminal = skip provider settings")
+}
+
 func TestT3LaunchFlagParsing(t *testing.T) {
 	for _, tc := range []struct {
 		name string

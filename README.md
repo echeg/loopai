@@ -27,7 +27,7 @@ workflows are distributed through this repository's plugin marketplace.
 - Optionally hands a run off to its own cmux workspace with `--cmux-workspace[=always|auto]`
 - Reports working, waiting, and completion state through Orca terminal titles with `--orca`
 - Reports runs as T3 Code threads with `--t3`, and launches a plan in a T3 Code worktree and
-  thread terminal with `--t3-launch` (see [docs/t3-code.md](docs/t3-code.md))
+  provider session or thread terminal with `--t3-launch[=auto|agent|terminal]` (see [docs/t3-code.md](docs/t3-code.md))
 - Experimentally runs as a T3 Code provider session through `loopai-acp` and `--acp`, so a T3 Code
   thread shows the run as working with plan progress and the final report
 - Sends optional Telegram, email, Slack, webhook, or custom-script notifications
@@ -117,8 +117,9 @@ The plugin provides eight skills:
   it forwards `--task-model`, `--review-model`, and `--external-reviewers`
   when given
 - `loopai:loopai-t3` launches a plan inside a T3 Code-managed worktree and thread
-  with `--t3-launch`, so the run appears as a T3 Code thread whose title follows
-  the phase; it forwards the same three flags
+  with `--t3-launch`: a configured loopai provider instance gives it Working state, plan steps,
+  and a final report message; otherwise it uses a terminal with phase titles. It forwards the same
+  three flags
 - `loopai:loopai-plan` creates an executable implementation plan
 - `loopai:loopai-brainstorm` designs a feature interactively, then hands the
   approved design to `loopai:loopai-plan`
@@ -1305,14 +1306,20 @@ Pass `--t3`, set `t3 = true`, or set `LOOPAI_T3=1` to report plan execution and 
 [T3 Code](https://t3.codes) thread whose title follows the same phases (`<plan> · task 3/7`,
 `<plan> · done`), pinned to the top of the sidebar while the run is active. It needs a running T3 Code server that has the repository as a project and a
 bearer token in `LOOPAI_T3_TOKEN`; without them loopai warns once and runs normally.
-`loopai --t3-launch <plan>` creates a T3 Code-managed worktree and thread and starts
-`loopai --t3 <plan>` in the thread's terminal, and `--pr` and `finalize = pr|merge` link the created
-pull request to the branch's threads. See [docs/t3-code.md](docs/t3-code.md) for setup, the launcher, and `t3.json`
-project actions.
+`loopai --t3-launch[=auto|agent|terminal] <plan>` creates a T3 Code-managed worktree and thread,
+carrying the plan and missing local `.loopai/` overrides over. The bare flag uses `auto`: it reads
+`providerInstances` from `${T3CODE_HOME:-~/.t3}/userdata/settings.json` and starts a provider session
+when an enabled `grok` instance points at `loopai-acp` or `loopai-acp.exe`; otherwise it starts
+`loopai --t3 <plan>` in the thread's terminal. Attach the mode with `=`. `agent` requires a matching
+instance; `terminal` skips the lookup. Agent mode opens no terminal and places no token in the
+thread; terminal mode passes the token in the terminal environment. With `t3` enabled, `--pr` and
+`finalize = pr|merge` link the created pull request to the branch's threads. Agent runs force `t3`
+off. See [docs/t3-code.md](docs/t3-code.md) for setup, mode selection, and `t3.json` project actions.
 
 Experimental: T3 Code can also run loopai as a provider session, so the thread reads "Working"
 for the whole run and shows plan progress, phases as activities, executor output as reasoning, and
-the completion report as the final message. A T3 Code provider instance of the `grok` driver points
+the completion report as the final message. `--t3-launch` starts this session automatically when
+configured, and the stop button cancels the run. A T3 Code provider instance of the `grok` driver points
 at `loopai-acp`, which starts `loopai --acp`, a JSON-RPC server for the Agent Client Protocol on
 stdin/stdout. Each message names a plan and optionally `--task-model`, `--review-model`, and
 `--external-reviewers`; the plan runs in place in the thread's working directory. The mode relies on

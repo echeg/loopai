@@ -81,7 +81,7 @@ type opts struct {
 	NoColor                 bool          `long:"no-color" description:"disable color output"`
 	Orca                    bool          `long:"orca" env:"LOOPAI_ORCA" description:"emit terminal title status for orca"`
 	T3                      bool          `long:"t3" env:"LOOPAI_T3" description:"report the run as a T3 Code thread (token in LOOPAI_T3_TOKEN)"`
-	T3Launch                string        `long:"t3-launch" optional:"true" optional-value:"auto" choice:"auto" choice:"agent" choice:"terminal" description:"create a T3 Code worktree and thread for the plan, start loopai --t3 in the thread's terminal, and exit"`
+	T3Launch                string        `long:"t3-launch" optional:"true" optional-value:"auto" choice:"auto" choice:"agent" choice:"terminal" description:"launch in a T3 Code worktree and exit: bare/auto = configured loopai provider session or terminal, agent = require provider instance, terminal = skip provider settings"`
 	ACP                     bool          `long:"acp" description:"serve the Agent Client Protocol on stdin/stdout so T3 Code can host loopai as a provider session (started by loopai-acp)"`
 	Version                 bool          `short:"v" long:"version" description:"print version and exit"`
 	Serve                   bool          `short:"s" long:"serve" description:"start web dashboard for real-time streaming"`

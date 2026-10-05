@@ -3,7 +3,7 @@
 [T3 Code](https://t3.codes) is a control surface for coding agents with desktop, web, and mobile
 clients. loopai integrates with it through T3 Code's public, authenticated HTTP and WebSocket
 APIs. No T3 Code fork or plugin is involved, and loopai never writes below the T3 home directory:
-it only reads the server's runtime file and changes everything else through the API. An
+it only reads the server's runtime and settings files and changes everything else through the API. An
 [experimental provider mode](#experimental-loopai-as-a-t3-code-provider) instead lets T3 Code run
 loopai as a provider session through its Grok driver.
 
@@ -64,26 +64,56 @@ launcher below sets it.
 loopai --t3-launch [--task-model SPEC] [--review-model SPEC] [--external-reviewers LIST] docs/plans/<plan>.md
 ```
 
-Run from the repository root, `--t3-launch`:
+`--t3-launch[=auto|agent|terminal]` starts a plan in a T3 Code-managed worktree and thread.
+Attach a mode with `=`, since the plan path follows as a positional argument. The bare flag uses
+`auto`: it selects agent mode when a usable loopai provider instance is configured, and terminal
+mode otherwise.
+
+The launcher reads `providerInstances` from `<T3 home>/userdata/settings.json`, where the home is
+`T3CODE_HOME` or `~/.t3`. A usable instance has `driver: "grok"`, neither `enabled` nor
+`config.enabled` set to false, and a `config.binaryPath` whose basename is `loopai-acp` or
+`loopai-acp.exe`. Missing enabled fields count as enabled. If several match, the first settings key
+in sorted order wins; the output names the selected instance. See
+[Adding the provider instance](#adding-the-provider-instance) for setup.
+
+- `--t3-launch` or `--t3-launch=auto` selects agent mode when an instance matches. Missing settings
+  or no match selects terminal mode; a settings read or parse error prints a warning and falls
+  back to terminal mode.
+- `--t3-launch=agent` requires a matching instance. Missing instances or invalid settings fail
+  before creating a worktree or thread.
+- `--t3-launch=terminal` skips the settings lookup and always starts the terminal run.
+
+Run from the repository root, either mode:
 
 1. asks T3 Code to create a worktree it manages (in `~/.t3/worktrees` by default) on a new branch
    named after the plan, cut from the current branch or, on a detached HEAD, the current commit,
    and verifies that the new worktree checks out the same commit;
 2. copies the plan (so uncommitted edits carry over) and any `.loopai/config`, `prompts/`, and
    `agents/` files the worktree lacks;
-3. creates a thread bound to that worktree and branch;
-4. opens a terminal named `loopai` in the thread and types `loopai --t3 [flags] <plan>` there, with
-   `LOOPAI_T3_TOKEN`, `LOOPAI_T3_URL`, and `LOOPAI_T3_THREAD_ID` in the terminal environment.
+3. creates a thread bound to that worktree and branch.
 
-It then prints the thread id, worktree, and branch and exits; the run continues in the thread
-terminal, visible on every T3 Code client. loopai runs there without `--worktree`, so the worktree
-survives the run for review and close-out. Only the three flags above are forwarded, and the two model specs need a `claude` or `codex`
-prefix; the rest comes from `.loopai/config`. If a step fails after the worktree exists, nothing is rolled back and the
-error lists what was already created.
+Agent mode then dispatches `thread.turn.start` with the selected instance, model `loopai`, and
+`<plan relative path> [flags]` as the user message. T3 Code starts `loopai-acp` in the worktree.
+The thread reads "Working", shows plan steps and streamed reasoning, and receives the completion
+report as the final message. The stop button cancels the run. Agent mode opens no terminal and
+places no token or environment in the thread: the bearer token is used only for the launcher's
+own API requests. The initial title is `<plan> · starting`; the turn supplies the run name as
+`titleSeed` for T3 Code's title generation. loopai does not update the title during the ACP run.
 
-The `loopai:loopai-t3` Claude Code skill and the `$loopai-t3` Codex skill wrap this command, mint a
-token inline when `LOOPAI_T3_TOKEN` is unset, and report the result. `loopai-plan` offers the launch
-when a T3 Code runtime file exists.
+Terminal mode opens a terminal named `loopai` in the thread and types `loopai --t3 [flags] <plan>`
+there, with `LOOPAI_T3_TOKEN`, `LOOPAI_T3_URL`, and `LOOPAI_T3_THREAD_ID` in its environment. The
+thread title follows phases and the live output is in the terminal; there is no provider session.
+
+The launcher prints the thread id, effective `mode:`, worktree, and branch and exits without
+waiting for the run. The worktree survives for review and close-out in both modes. Only the three
+flags above are forwarded, and the two model specs need a `claude` or `codex` prefix; the rest comes
+from `.loopai/config`. Agent mode uses forward slashes in the plan path and refuses paths containing
+whitespace before creating anything; use `--t3-launch=terminal` for those paths. If a step fails
+after the worktree exists, nothing is rolled back and the error lists what was already created.
+
+The `loopai:loopai-t3` Claude Code skill and the `$loopai-t3` Codex skill wrap the bare flag, mint a
+token inline when `LOOPAI_T3_TOKEN` is unset, and report the effective mode. `loopai-plan` offers
+the launch when a T3 Code runtime file exists.
 
 ## Pull requests
 
@@ -96,11 +126,13 @@ already created.
 itself, after merging `origin/<base>` into the branch, and links it the same way; `merge` also waits
 for the PR checks and merges it on GitHub, so the thread settles without a separate close-out (see
 [Finalize](../README.md#finalize)). Put the key in `.loopai/config`, since `--t3-launch` forwards
-only the model and reviewer flags and rejects `--finalize` and `--skip-finalize`. A run started by `--t3-launch` uses the T3 Code-managed worktree
-without `--worktree`, and finalize never removes a worktree loopai did not create, so it stays until
-it is removed in T3 Code. When finalize stops, for example on a conflict that needs a decision, the
-title ends in `done · finalize incomplete` and the plan is closed out by hand with `/loopai-merge`
-or `--pr`.
+only the model and reviewer flags and rejects `--finalize` and `--skip-finalize`. A run started by
+`--t3-launch` uses the T3 Code-managed worktree without `--worktree`, and finalize never removes a
+worktree loopai did not create, so it stays until it is removed in T3 Code. Terminal mode enables
+`t3` reporting and PR linking; agent mode forces `t3` off and passes no launcher token into the run,
+so it does not perform that linking. When finalize stops, for example on a conflict that needs a
+decision, terminal mode's title ends in `done · finalize incomplete`; agent mode reports the outcome
+in its final message. Close out the plan by hand with `/loopai-merge` or `--pr`.
 
 ## Project actions in `t3.json`
 
@@ -172,8 +204,13 @@ is discarded and never logged.
 
 ### Running a plan
 
-Start a thread with the `loopai` instance in the project or worktree that holds the plan, then send
-the plan path as the message:
+With the provider instance configured, the normal way to start a provider-session thread is to
+run `loopai --t3-launch docs/plans/<plan>.md` from the repository root, or use the `loopai-t3` skill.
+The launcher creates the worktree and thread, carries the plan and local overrides over, and sends
+the first turn. Use `--t3-launch=agent` to require a provider session instead of allowing fallback.
+
+You can also start a thread manually with the `loopai` instance in a project or worktree that
+already holds the plan, then send the plan path as the message:
 
 ```text
 docs/plans/20261003-feature.md --task-model codex:gpt-5.5:high --external-reviewers claude:opus
@@ -193,11 +230,11 @@ the turn and shows the usage line.
 The plan runs in place in the thread's working directory, without `--worktree`: T3 Code owns the
 thread's worktree, as with `--t3-launch`. On the default branch, loopai creates the plan branch in
 that checkout as an ordinary run does. `t3`, `orca`, and `use_worktree` are forced off for the run.
-Unlike `--t3-launch`, agent mode copies nothing into the thread's directory, and a worktree T3
-Code creates holds committed files only. A new-worktree thread therefore sees neither an
-uncommitted plan, which fails as missing, nor untracked `.loopai/config`, `prompts/`, or `agents/`
-files from the main checkout, which are silently absent. Commit the plan first, and commit those
-overrides or move them to the global config when they must apply there.
+A manually created thread copies nothing into its directory, and a new worktree T3 Code creates
+holds committed files only. For manual starts, commit the plan first, and commit `.loopai/config`,
+`prompts/`, and `agents/` overrides or move them to the global config when they must apply there.
+An agent-mode `--t3-launch` carries those inputs over before sending the turn, so uncommitted plans
+and missing local overrides are available without committing them first.
 A plan file that is missing is an error rather than an interactive selector. So are an empty
 repository and other conditions that would otherwise prompt. Only full plan execution is
 available: review-only modes, plan creation, and interactive questions are out of scope.
@@ -253,9 +290,10 @@ a failure's message is in the turn's error and in the run's progress log under `
 This mode relies on undocumented contracts of T3 Code's Grok driver: the probe commands and their
 output, the session argv, the ACP methods it sends (including `session/load` with no capability
 check or fallback), and the watchdog timings. These were checked
-against the T3 Code build of October 2026. A T3 Code update can break the mode without warning, so
-re-check a run after each update. The launcher does not implement Grok's `inspect` or `update`
-commands, so the instance offers no skills and cannot update itself.
+against the T3 Code build of October 2026. Agent launch also relies on the public dispatch
+endpoint accepting the current `thread.turn.start` payload. A T3 Code update can break the mode
+without warning, so re-check a launch and provider run after each update. The launcher does not
+implement Grok's `inspect` or `update` commands, so the instance offers no skills and cannot update itself.
 
 To remove the provider, delete or disable the instance in T3 Code's provider settings. Otherwise,
 remove its entry from `providerInstances` in `settings.json`, or set `enabled` to `false`. Threads
@@ -263,13 +301,16 @@ created with it remain as ordinary history.
 
 ## Limitations
 
-- With `--t3`, status is the title and the pin. A thread without a provider session always reads as
-  ready, never as working: T3 Code derives "working" from a running provider session or from
-  background work that provider reports. Activity rows, assistant messages, and proposed plans are
-  internal orchestration commands the public dispatch endpoint does not accept, and T3 Code neither
-  reads OSC titles from the terminal nor accepts external MCP tools. Checked against the T3 Code
-  build of October 2026; settle, snooze, and pin are client commands, which is what the pin above
-  uses. The experimental provider mode above is the way to get a working thread.
+- `--t3` and terminal-mode `--t3-launch` produce a thread with title and pin status and, for the
+  launcher, a live terminal. Without a provider session the thread reads as ready rather than
+  working. T3 Code does not read OSC titles from the terminal.
+- Agent-mode `--t3-launch` produces a provider-session thread with Working state, plan progress,
+  streamed reasoning, and the final report as a message. It uses the experimental Grok-driver
+  integration above; loopai forces `t3` reporting off, so it does not update phase titles or link
+  PRs during that run.
+- Agent mode does not support plan paths containing whitespace. Use `--t3-launch=terminal` for
+  those paths.
 - `--pr` linking understands GitHub pull request URLs only, matching what `--pr` creates.
-- The token grants full access to the T3 Code server. It lives in the thread terminal's
-  environment for the run; revoke it with `t3 auth session revoke` when no longer needed.
+- The token grants full access to the T3 Code server. In terminal mode it lives in the thread
+  terminal's environment for the run. Agent mode uses it only for launcher requests and places no
+  token in the thread. Revoke it with `t3 auth session revoke` when no longer needed.
