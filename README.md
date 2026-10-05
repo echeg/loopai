@@ -107,7 +107,7 @@ claude plugin marketplace add echeg/loopai
 claude plugin install loopai@loopai
 ```
 
-The plugin provides eight skills:
+The plugin provides ten skills:
 
 - `loopai:loopai` launches loopai, monitors progress, and resumes active runs
 - `loopai:loopai-merge` reads and narrates a completion report, previews merge
@@ -127,6 +127,8 @@ The plugin provides eight skills:
   customizations
 - `loopai:loopai-grill` critiques an existing plan with Claude and Codex, or
   runs a plan-off that compares and synthesizes competing plans
+- `loopai:loopai-retro` reviews run artifacts and ranks evidence-backed improvements;
+  it files only backlog entries you select
 
 Use `/loopai:loopai-merge <plan>` after a successful run to have Claude narrate the report in the
 conversation language, predict merge conflicts read-only with `git merge-tree` and describe each
@@ -135,6 +137,12 @@ cancel. With conflicts the merge option becomes "resolve and merge": the skill m
 the plan branch inside that branch's checkout, resolves the conflicted files there, runs the plan's
 validation commands, commits, and only then delegates close-out to `loopai --merge`, which finds a
 clean merge and performs its usual cleanup. It never merges the plan branch into the base by hand.
+
+Invoke `/loopai:loopai-retro [plan stem | progress log path | --last N]` manually for a
+retrospective (default: the five newest progress logs). It reads bounded log excerpts,
+completion reports, backlog entries, and repository steering and check definitions, then ranks
+improvements with `path:line` evidence. Analysis is read-only; selected `docs/backlog/` entries
+are its only writes. It never applies the proposed prompt, agent, config, or steering changes.
 
 Use the namespaced plugin command to review the newest active plan, review a
 specific plan, or generate a competing-plan comparison:
@@ -230,11 +238,13 @@ marketplace to subscribe to and installation is a copy:
 make install-codex-skills          # add --dry-run first to see what changes
 ```
 
-Eight skills are installed: `loopai`, `loopai-plan`, `loopai-adopt`,
-`loopai-update`, `loopai-brainstorm`, `loopai-orca`, `loopai-t3`, and `loopai-merge`. Invoke them as
+Nine skills are installed: `loopai`, `loopai-plan`, `loopai-adopt`,
+`loopai-update`, `loopai-brainstorm`, `loopai-orca`, `loopai-t3`, `loopai-merge`, and
+`loopai-retro`. Invoke them as
 `$loopai-plan` and so on. Re-run the command after pulling a newer repository
 version; each skill directory is replaced wholesale, so a file dropped upstream
-does not linger.
+does not linger. Invoke `$loopai-retro [plan stem | progress log path | --last N]`
+explicitly for the same read-only retrospective and selected-backlog filing workflow.
 
 The installer also removes pre-rename `ralphex-plan`, `ralphex-run`,
 `ralphex-adopt`, and `ralphex-update` skills, but only when they still have the
@@ -518,7 +528,9 @@ Under `pr` and `merge`, the pull request is opened after the plan is archived, u
 origin, and title/body rules as `--pr`. Without `--worktree`, including Orca- and T3 Code-managed
 checkouts and plan chains, the archive commit and report sidecar are on the plan branch and part of
 the PR. A single-plan `--worktree` run archives in the source checkout instead, so the PR carries the
-plan under `docs/plans/` with its ticked checkboxes and the archive commit stays local. Its diff statistics are
+plan under `docs/plans/` with its ticked checkboxes and the archive commit stays local. Finalize
+passes the completion report in memory to build the PR body even when its sidecar is absent
+from the pushed branch; it uses the report-backed layout described under [Completion and close-out](#completion-and-close-out). Its diff statistics are
 measured against `origin/<base>`, so base changes on the branch do not count as the run's work. After
 any successful sync the completion summary and report do the same, unless `--base-ref` is a commit
 hash, which stays their diff base. `merge` waits for the checks with `gh pr checks --watch` for at
@@ -546,9 +558,12 @@ Code-managed one, is never removed.
 `sync` there with a startup warning; `--tasks-only` runs no finalize. In a plan chain only the last
 plan syncs and opens the pull request, since every earlier branch is the next plan's start.
 
-The report combines deterministic Go-collected facts with model assessments and uses these nine
-sections: `# Report: <plan title>`, `Summary`, `Change scope`, `Risk`, `Migrations and operational
-steps`, `Plan deviation`, `Backlog`, `External review`, and `Validation`. If the report model fails,
+The report combines deterministic Go-collected facts with model assessments and uses these eleven
+sections (the title and ten level-two headings): `# Report: <plan title>`, `Summary`, `Change scope`,
+`Evidence`, `Risk`, `Merge danger`, `Migrations and operational steps`, `Plan deviation`, `Backlog`,
+`External review`, and `Validation`. `Evidence` gives before/after proof from validation facts
+and the diff, or `none` when unavailable. `Merge danger` states `Door: one-way | two-way` with
+reasoning about whether a plain revert restores the previous state, and a one-word `Blast radius`. If the report model fails,
 times out, returns a failed signal, or omits the report heading, loopai writes the same section
 structure from deterministic facts and marks model-owned assessments as unavailable. The report
 snapshots phase durations, measured validation totals, and its finish timestamp before model
@@ -810,10 +825,21 @@ branch. The worktree removal also deletes ignored files in that worktree, such a
 output or a local `.env`; preserve any local-only ignored files before running `--merge`.
 `--pr` requires authenticated `gh` and a GitHub remote named `origin`; every effective
 origin push URL must identify that same GitHub repository. It pushes committed branch
-state, builds the title and body from the associated plan and diff
-statistics, and keeps the feature branch and worktree. Commit intended changes before
+state, derives the title from the associated plan, builds a report-backed body when available,
+and keeps the feature branch and worktree. Commit intended changes before
 running `--pr`. Each command clears the completion pill only after it succeeds, so a
 failed close-out remains visible.
+
+For `--pr` and `finalize = pr|merge`, the report Summary replaces the plan overview. The body
+then includes Evidence, Merge danger, Risk, Migrations and operational steps, and Plan deviation
+in that order, omitting missing sections. External review and Validation appear in collapsed
+`<details>` blocks; the existing `## Changes` diff statistics close the body. `--pr` looks for
+the associated plan's `.report.md` sidecar on `refs/heads/<branch>` first, then in the working
+tree. Finalize prefers its in-memory report before that lookup. A missing or unreadable report,
+or one without Summary, keeps the legacy plan-overview and diff-statistics body; lookup errors
+are warnings. If the body exceeds GitHub's 65,536-rune limit, loopai drops both `<details>`
+blocks, then falls back to the legacy body if still oversized. Older reports and customized
+`report.txt` prompts remain supported: absent sections are simply omitted.
 
 Without an argument all three commands target the current branch; the mutating close-out commands
 must run from the feature worktree or checkout. The optional positional argument names the feature
@@ -839,8 +865,8 @@ is checked out in the primary checkout while the base is checked out in a linked
 the merge would have to run in the primary and cannot, so switch the primary off the feature
 branch first. `--pr <feature>`
 pushes and opens the pull request for a branch that is not checked out anywhere; its title
-and body still come from the plan as seen from the invoking checkout, falling back to a
-stats-only body when that plan is not present there. Naming the base branch as the feature
+comes from the plan as seen from the invoking checkout, and its body uses the report lookup
+and fallback above. When no plan is present there, the legacy fallback is a stats-only body. Naming the base branch as the feature
 is an error, and so is a second positional argument: `--merge release/13 dynamic-review-agents`
 is `--merge=release/13 dynamic-review-agents` with the `=` forgotten, which would otherwise
 close out `release/13` itself. Apart from this argument, the close-out commands cannot be

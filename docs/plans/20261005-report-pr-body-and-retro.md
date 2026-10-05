@@ -363,18 +363,31 @@ GOOS=windows GOARCH=amd64 go build ./....
 
 ### Task 8: [Final] Update documentation
 
-- [ ] `README.md`: list `loopai:loopai-retro` in the plugin skills and fix the "eight skills"
+- [x] `README.md`: list `loopai:loopai-retro` in the plugin skills and fix the "eight skills"
       count, add `loopai-retro` to the Codex install list and its count, describe the report-backed
       PR body under `--pr` and finalize, and replace the nine-section report description with the
       eleven sections
-- [ ] `llms.txt`: add `loopai:loopai-retro` and `$loopai-retro` to the skill lists and update the
+- [x] `llms.txt`: add `loopai:loopai-retro` and `$loopai-retro` to the skill lists and update the
       report section summary and the PR body note
-- [ ] `CLAUDE.md`: add `loopai-retro` to the current skill set, describe the skill in one short
+- [x] `CLAUDE.md`: add `loopai-retro` to the current skill set, describe the skill in one short
       paragraph (read-only, manual invocation, backlog entries are its only write), replace
       "nine-section" with "eleven-section", and document `closeoutTarget.report`, the in-memory
       report under finalize, and the `<details>` → legacy degradation order
-- [ ] `docs/t3-code.md` or `docs/notifications.md` only if they mention the PR body (grep first;
+- [x] `docs/t3-code.md` or `docs/notifications.md` only if they mention the PR body (grep first;
       otherwise no change)
+- [x] add `scripts/check-report-docs_test.sh` and `make test-report-docs`, included in
+      `make test`, to compare documented skill inventories and report section order with
+      their canonical sources and exercise stale-documentation rejection cases
+
+The T3 and notification guides were searched and contain no PR-body descriptions,
+so neither requires changes. The documentation regression suite checks all three
+skill inventories against the asset trees, report heading order against the prompt,
+manual retro invocation and write boundaries, PR lookup and size fallbacks, and
+rejection of stale counts, missing skills, and reordered report sections.
+
+Validation passed: full make test (including documentation checks, Go race/coverage,
+and all wrapper suites) in a non-root Linux Docker checkout with init enabled;
+make lint on Windows reported zero issues.
 
 ## Technical Details
 
