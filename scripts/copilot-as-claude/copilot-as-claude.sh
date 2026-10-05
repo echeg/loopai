@@ -476,7 +476,7 @@ last_plan_draft_from_progress_file() {
 
     awk '
         function strip_prefix(line) {
-            sub(/^\[[0-9]{2}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\] /, "", line)
+            sub(/^\[[0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]\] /, "", line)
             return line
         }
         {

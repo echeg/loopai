@@ -146,23 +146,35 @@ Three related improvements, inspired by the `/pr` and `/retro` skills in mattpoc
 
 ### Task 1: Add Evidence and Merge danger to the report contract
 
-- [ ] in `pkg/config/defaults/prompts/report.txt`, insert `## Evidence` after `## Change scope`:
+- [x] in `pkg/config/defaults/prompts/report.txt`, insert `## Evidence` after `## Change scope`:
       show before/after proof of the delivered change — the specific test, command output, or
       behavior that failed before and passes now, drawn from the supplied validation facts and the
       diff; write the literal `none` when the facts carry no such evidence; never invent a test run
-- [ ] in the same file, insert `## Merge danger` after `## Risk` with the fixed shape
+- [x] in the same file, insert `## Merge danger` after `## Risk` with the fixed shape
       `**Door:** one-way | two-way` plus one line of reasoning (a change is two-way when a plain
       revert restores the previous state; destructive data changes, published APIs, released
       config formats, and anything consumers already depend on are one-way) and
       `**Blast radius:** <one word>` plus an optional line of ramifications; update the "exactly
       these sections" wording and the header comment
-- [ ] in `factsOnlyReport` (`pkg/processor/completion_report.go`), write `## Evidence` and
+- [x] in `factsOnlyReport` (`pkg/processor/completion_report.go`), write `## Evidence` and
       `## Merge danger` as `_assessment unavailable_` at the same positions, keeping the order
       identical to the prompt
-- [ ] update `pkg/processor/completion_report_test.go`: add both headings to the pinned list, raise
+- [x] update `pkg/processor/completion_report_test.go`: add both headings to the pinned list, raise
       the `## ` count from 8 to 10, and assert the order of all eleven sections
-- [ ] add a test that `extractReport` returns a report containing the new sections unchanged
-- [ ] run `go test ./pkg/processor/...` - must pass before task 2
+- [x] add a test that `extractReport` returns a report containing the new sections unchanged
+- [x] run `go test ./pkg/processor/...` - must pass before task 2
+
+Validation adjustment for Task 1: the full suite exposed pre-existing portability
+assumptions. The rollout directory-cache test now sets a distinct initial directory timestamp,
+and the branch-conflict test accepts both supported Git error messages while checking the
+conflicting worktree path. The Copilot wrapper timestamp pattern now works with awk versions
+without interval expressions; its existing accepted-draft regression cases cover the fix.
+The Pi wrapper EOF assertion now checks all JSON events, avoiding jq 1.6 exit-status
+sensitivity to the trailing result event. Full Linux validation runs as a non-root user
+for permission tests.
+
+Validation passed: go test ./pkg/processor/... and make test in a non-root Linux Docker
+checkout of HEAD plus the task changes; make lint on Windows reported zero issues.
 
 ### Task 2: Parse report sections and render the PR body
 

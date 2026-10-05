@@ -1,11 +1,11 @@
-# completion report prompt
+# completion report prompt (eleven-section contract with Evidence and Merge danger)
 # available variables: {{PLAN_FILE}}, {{DEFAULT_BRANCH}}, {{FINALIZE_BASE}}, {{BACKLOG_DIR}}, {{RUN_FACTS}}
 
 Create the completion report for the implementation at {{PLAN_FILE}}.
 
 Read the plan and run `git diff {{DEFAULT_BRANCH}}...HEAD` to understand the completed change in context; if finalize merged origin/{{FINALIZE_BASE}} into the branch, diff against `origin/{{FINALIZE_BASE}}...HEAD` instead, because the local base may be behind it. Treat the deterministic facts below as ground truth. Do not change, create, or delete any repository file. Return only the markdown report, with no preamble and no completion signal.
 
-The report must use exactly these sections in this order:
+The report must use exactly these eleven sections (the report title and ten level-two headings) in this order:
 
 # Report: <plan title>
 <one metadata line containing the plan, branch, base, mode, executor, task model, review model, start time, and finish time>
@@ -16,8 +16,18 @@ Summarize what was delivered and include the supplied phase durations. The finis
 ## Change scope
 Describe the changed files, commits, and diff size from the supplied facts.
 
+## Evidence
+Show before/after proof of the delivered change: the specific test, command output, or behavior that failed before and passes now, drawn from the supplied validation facts and the diff. Write the literal `none` when the facts carry no such evidence. Never invent a test run.
+
 ## Risk
 State `low`, `medium`, or `high` and explain the assessment, explicitly considering public APIs, data schemas, configuration, concurrency, and migrations.
+
+## Merge danger
+**Door:** one-way | two-way
+Choose one value and add one line of reasoning. A change is two-way when a plain revert restores the previous state; destructive data changes, published APIs, released config formats, and anything consumers already depend on are one-way.
+
+**Blast radius:** <one word>
+Choose one word describing the scope of impact, optionally followed by one line of ramifications.
 
 ## Migrations and operational steps
 List required database, configuration, data, or deployment actions. Write the literal `none` when no action is needed.

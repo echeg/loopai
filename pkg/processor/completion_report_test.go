@@ -150,6 +150,9 @@ func TestRenderRunFacts_BoundsLegacyReviewText(t *testing.T) {
 }
 
 func TestExtractReport(t *testing.T) {
+	const reportWithEvidence = "# Report: feature\n\n## Summary\nDone\n\n## Change scope\nOne file\n\n" +
+		"## Evidence\nBefore: regression test failed. After: regression test passes.\n\n## Risk\nlow\n\n" +
+		"## Merge danger\n**Door:** two-way\nA revert restores the previous behavior.\n\n**Blast radius:** small"
 	tests := []struct {
 		name   string
 		output string
@@ -157,6 +160,7 @@ func TestExtractReport(t *testing.T) {
 		ok     bool
 	}{
 		{name: "preamble", output: "I inspected the diff.\n# Report: feature\n\n## Summary\nDone", want: "# Report: feature\n\n## Summary\nDone", ok: true},
+		{name: "new sections unchanged", output: reportWithEvidence, want: reportWithEvidence, ok: true},
 		{name: "missing heading", output: "## Summary\nDone", ok: false},
 		{name: "trailing signal", output: "# Report: feature\nbody\n" + status.Completed + "\n" + status.ReviewDone, want: "# Report: feature\nbody", ok: true},
 	}
@@ -169,7 +173,7 @@ func TestExtractReport(t *testing.T) {
 	}
 }
 
-func TestFactsOnlyReport_ContainsAllNineHeadings(t *testing.T) {
+func TestFactsOnlyReport_ContainsAllElevenHeadings(t *testing.T) {
 	record := RunRecord{
 		Plan: "docs/plans/20260906-completion-report.md", Branch: "completion-report", BaseRef: "main", Mode: ModeFull,
 		External: []ExternalReviewerRecord{{Key: "codex:gpt-5.5", Iterations: []ExternalIterationRecord{{Index: 1}}}},
@@ -183,13 +187,23 @@ func TestFactsOnlyReport_ContainsAllNineHeadings(t *testing.T) {
 	report := factsOnlyReport(record, facts)
 
 	headings := []string{
-		"# Report:", "## Summary", "## Change scope", "## Risk", "## Migrations and operational steps",
+		"# Report:", "## Summary", "## Change scope", "## Evidence", "## Risk", "## Merge danger",
+		"## Migrations and operational steps",
 		"## Plan deviation", "## Backlog", "## External review", "## Validation",
 	}
-	for _, heading := range headings {
-		assert.Contains(t, report, heading)
+	var gotHeadings []string
+	for line := range strings.SplitSeq(report, "\n") {
+		switch {
+		case strings.HasPrefix(line, "# Report:"):
+			gotHeadings = append(gotHeadings, "# Report:")
+		case strings.HasPrefix(line, "## "):
+			gotHeadings = append(gotHeadings, line)
+		}
 	}
-	assert.Equal(t, 8, strings.Count(report, "\n## "))
+	assert.Equal(t, headings, gotHeadings, "all eleven sections must appear in contract order")
+	assert.Equal(t, 10, strings.Count(report, "\n## "))
+	assert.Contains(t, report, "## Evidence\n_assessment unavailable_\n")
+	assert.Contains(t, report, "## Merge danger\n_assessment unavailable_\n")
 	assert.Contains(t, report, "_assessment unavailable_")
 	assert.Contains(t, report, "### codex:gpt-5.5")
 	assert.Contains(t, report, "docs/backlog/item.md")
