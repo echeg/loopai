@@ -191,23 +191,23 @@ terminal launch is unchanged.
 
 ### Task 4: Wire the mode through the CLI
 
-- [ ] change `opts.T3Launch` to `string` with `long:"t3-launch" optional:"true" optional-value:"auto"
+- [x] change `opts.T3Launch` to `string` with `long:"t3-launch" optional:"true" optional-value:"auto"
       choice:"auto" choice:"agent" choice:"terminal"`, mirroring `--cmux-workspace`; update every
       `o.T3Launch` boolean use (`validateT3LaunchFlags`, `isStandaloneCommand`, the
       `runConfiguredStandaloneCommand` case, `acp.go:63`)
-- [ ] in `runT3LaunchCommand`, call `t3.FindLoopaiInstance(os.Getenv)` unless the mode is
+- [x] in `runT3LaunchCommand`, call `t3.FindLoopaiInstance(os.Getenv)` unless the mode is
       `terminal`; a settings read error is fatal for `agent` and a warning that falls back to
       terminal for `auto`; pass `Mode` and `Instance` in the `LaunchRequest`
-- [ ] print the mode after the thread line: agent mode says the thread runs loopai as a provider
+- [x] print the mode after the thread line: agent mode says the thread runs loopai as a provider
       session and the stop button cancels the run; terminal mode on `auto` adds one line naming
       the `providerInstances` setup in `docs/t3-code.md` that enables agent mode
-- [ ] update `cmd/loopai/main_test.go`: `TestValidateT3LaunchFlags` for the three values and a
+- [x] update `cmd/loopai/main_test.go`: `TestValidateT3LaunchFlags` for the three values and a
       rejected fourth, `TestIsStandaloneCommandT3Launch`, `TestRunT3LaunchCommand` split into
       terminal (no settings file under a temporary `T3CODE_HOME`) and agent (settings file with a
       usable instance; assert no terminal opened, the dispatched turn text contains the forward-slash
       plan path and `--task-model codex:gpt-5:high`, and the output names agent mode), plus
       `agent` with no instance and `auto` with malformed settings in `TestRunT3LaunchCommandErrors`
-- [ ] run `go test ./cmd/loopai/ -run 'T3Launch'` - must pass before task 5
+- [x] run `go test ./cmd/loopai/ -run 'T3Launch'` - must pass before task 5
 
 ### Task 5: Update the loopai-t3 skills
 

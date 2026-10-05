@@ -3862,9 +3862,35 @@ func TestLinkT3PullRequest(t *testing.T) {
 	})
 }
 
+func TestT3LaunchFlagParsing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		flag string
+		want string
+	}{
+		{name: "bare", flag: "--t3-launch", want: "auto"},
+		{name: "auto", flag: "--t3-launch=auto", want: "auto"},
+		{name: "agent", flag: "--t3-launch=agent", want: "agent"},
+		{name: "terminal", flag: "--t3-launch=terminal", want: "terminal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := parseTestOpts(t, tc.flag, "docs/plans/x.md")
+			assert.Equal(t, tc.want, o.T3Launch)
+			assert.Equal(t, "docs/plans/x.md", o.PlanFile)
+			require.NoError(t, validateT3LaunchFlags(o))
+		})
+	}
+	t.Run("invalid mode", func(t *testing.T) {
+		var o opts
+		parser := flags.NewParser(&o, flags.Default&^flags.PrintErrors)
+		_, err := parser.ParseArgs([]string{"--t3-launch=other", "docs/plans/x.md"})
+		require.ErrorContains(t, err, "other")
+	})
+}
+
 func TestValidateT3LaunchFlags(t *testing.T) {
 	valid := func(mut func(*opts)) opts {
-		o := opts{T3Launch: true, PlanFile: "docs/plans/x.md"}
+		o := opts{T3Launch: "auto", PlanFile: "docs/plans/x.md"}
 		if mut != nil {
 			mut(&o)
 		}
@@ -3877,10 +3903,12 @@ func TestValidateT3LaunchFlags(t *testing.T) {
 	}{
 		{name: "not requested", o: opts{Worktree: true}},
 		{name: "plan only", o: valid(nil)},
+		{name: "agent", o: valid(func(o *opts) { o.T3Launch = "agent" })},
+		{name: "terminal", o: valid(func(o *opts) { o.T3Launch = "terminal" })},
 		{name: "forwarded flags", o: valid(func(o *opts) {
 			o.TaskModel, o.ReviewModel, o.ExternalReviewers = "codex:gpt-5:high", "claude:opus", "claude:opus:high,codex"
 		})},
-		{name: "missing plan", o: opts{T3Launch: true}, wantErr: "requires a plan file"},
+		{name: "missing plan", o: opts{T3Launch: "auto"}, wantErr: "requires a plan file"},
 		{name: "chain", o: valid(func(o *opts) { o.PlanFiles = []string{"a.md", "b.md"} }), wantErr: "exactly one plan"},
 		{name: "worktree", o: valid(func(o *opts) { o.Worktree = true }), wantErr: "cannot be combined with --worktree"},
 		{name: "serve", o: valid(func(o *opts) { o.Serve = true }), wantErr: "--serve"},
@@ -3913,7 +3941,29 @@ func TestT3LaunchArgs(t *testing.T) {
 }
 
 func TestIsStandaloneCommandT3Launch(t *testing.T) {
-	assert.True(t, isStandaloneCommand(opts{T3Launch: true}))
+	assert.False(t, isStandaloneCommand(opts{}))
+	for _, mode := range []string{"auto", "agent", "terminal"} {
+		assert.True(t, isStandaloneCommand(opts{T3Launch: mode}), mode)
+	}
+}
+
+func TestRunConfiguredStandaloneCommandT3Launch(t *testing.T) {
+	dir := setupTestRepo(t)
+	t.Chdir(dir)
+	t.Setenv("LOOPAI_T3_TOKEN", "")
+	writeT3LaunchSettings(t, "")
+	for _, mode := range []string{"auto", "agent", "terminal"} {
+		handled, err := runConfiguredStandaloneCommand(t.Context(), opts{T3Launch: mode, PlanFile: "x.md"}, &config.Config{}, testColors())
+		assert.True(t, handled, mode)
+		if mode == "agent" {
+			require.ErrorContains(t, err, "requires a loopai provider instance")
+		} else {
+			require.ErrorIs(t, err, t3.ErrNoToken)
+		}
+	}
+	handled, err := runConfiguredStandaloneCommand(t.Context(), opts{}, &config.Config{}, testColors())
+	assert.False(t, handled)
+	require.NoError(t, err)
 }
 
 // t3LaunchRPC is a t3.RPC fake that creates a real git worktree so the launcher's HEAD check runs.
@@ -3939,54 +3989,162 @@ func (r *t3LaunchRPC) WriteTerminal(_ context.Context, _, _, data string) error 
 	return nil
 }
 
-func TestRunT3LaunchCommand(t *testing.T) {
-	dir := setupTestRepo(t)
-	planRel := filepath.Join("docs", "plans", "20260925-demo.md")
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, planRel), []byte("# Demo\n"), 0o600))
-	t.Chdir(dir)
-	t.Setenv("LOOPAI_T3_TOKEN", "tok")
-	t.Setenv("LOOPAI_T3_URL", "http://127.0.0.1:1")
-
-	gitSvc, err := git.NewService(dir, noopLogger())
-	require.NoError(t, err)
-	api := &t3ShellDispatcher{shell: t3.Shell{Projects: []t3.Project{{ID: "p1", WorkspaceRoot: gitSvc.Root()}}}}
-	rpc := &t3LaunchRPC{t: t, path: filepath.Join(t.TempDir(), "wt")}
-
-	original := newT3Session
-	t.Cleanup(func() { newT3Session = original })
-	var gotEndpoint t3.Endpoint
-	closed := false
-	newT3Session = func(_ context.Context, ep t3.Endpoint) (t3Session, error) {
-		gotEndpoint = ep
-		return t3Session{api: api, rpc: rpc, close: func() { closed = true }}, nil
+// writeT3LaunchSettings isolates discovery from the user's T3 Code settings.
+func writeT3LaunchSettings(t *testing.T, contents string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("T3CODE_HOME", home)
+	if contents == "" {
+		return
 	}
+	require.NoError(t, os.MkdirAll(filepath.Join(home, "userdata"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(home, "userdata", "settings.json"), []byte(contents), 0o600))
+}
 
-	var stdout bytes.Buffer
-	o := opts{T3Launch: true, PlanFile: planRel, TaskModel: "codex:gpt-5:high"}
-	require.NoError(t, runT3LaunchCommand(t.Context(), o, &config.Config{}, testColors(), &stdout))
+func TestT3LaunchInstance(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     t3.LaunchMode
+		settings string
+		wantID   string
+		wantErr  string
+		warning  bool
+	}{
+		{name: "auto without settings", mode: t3.LaunchAuto},
+		{name: "agent without settings", mode: t3.LaunchAgent, wantErr: "requires a loopai provider instance"},
+		{name: "auto malformed settings", mode: t3.LaunchAuto, settings: "{", warning: true},
+		{name: "agent malformed settings", mode: t3.LaunchAgent, settings: "{", wantErr: "parse settings file"},
+		{name: "auto configured", mode: t3.LaunchAuto, settings: `{"providerInstances":{"custom":{"driver":"grok","config":{"binaryPath":"loopai-acp.exe"}}}}`, wantID: "custom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeT3LaunchSettings(t, tc.settings)
+			var stderr bytes.Buffer
+			instance, err := t3LaunchInstance(tc.mode, os.Getenv, &stderr)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.wantID, instance.ID)
+			if tc.warning {
+				assert.Contains(t, stderr.String(), "falling back to terminal mode")
+			} else {
+				assert.Empty(t, stderr.String())
+			}
+		})
+	}
+	t.Run("terminal skips discovery", func(t *testing.T) {
+		instance, err := t3LaunchInstance(t3.LaunchTerminal, func(string) string {
+			t.Fatal("terminal mode must not read settings")
+			return ""
+		}, io.Discard)
+		require.NoError(t, err)
+		assert.Empty(t, instance.ID)
+	})
+}
 
-	assert.True(t, closed)
-	assert.Equal(t, t3.Endpoint{BaseURL: "http://127.0.0.1:1", Token: "tok"}, gotEndpoint)
-	assert.FileExists(t, filepath.Join(rpc.path, planRel))
-	require.Len(t, rpc.opened, 1)
-	assert.Equal(t, "tok", rpc.opened[0].Env["LOOPAI_T3_TOKEN"])
-	require.Len(t, rpc.writes, 1)
-	assert.Contains(t, rpc.writes[0], "--t3")
-	assert.Contains(t, rpc.writes[0], "codex:gpt-5:high")
-	assert.True(t, strings.HasSuffix(rpc.writes[0], "\r"))
-	assert.Contains(t, stdout.String(), "started loopai in T3 Code thread ")
-	assert.Contains(t, stdout.String(), "branch:   demo")
-	assert.Contains(t, stdout.String(), "loopai --merge demo")
+func TestRunT3LaunchCommand(t *testing.T) {
+	const settings = `{"providerInstances":{"loopai-custom":{"driver":"grok","config":{"binaryPath":"/bin/loopai-acp"}}}}`
+	for _, tc := range []struct {
+		name     string
+		mode     string
+		settings string
+		agent    bool
+		warning  bool
+	}{
+		{name: "terminal without settings", mode: "auto"},
+		{name: "auto agent", mode: "auto", settings: settings, agent: true},
+		{name: "explicit agent", mode: "agent", settings: settings, agent: true},
+		{name: "terminal ignores instance", mode: "terminal", settings: settings},
+		{name: "terminal ignores malformed settings", mode: "terminal", settings: "{"},
+		{name: "auto malformed settings falls back", mode: "auto", settings: "{", warning: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := setupTestRepo(t)
+			planRel := filepath.Join("docs", "plans", "20260925-demo.md")
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, planRel), []byte("# Demo\n"), 0o600))
+			t.Chdir(dir)
+			t.Setenv("LOOPAI_T3_TOKEN", "tok")
+			t.Setenv("LOOPAI_T3_URL", "http://127.0.0.1:1")
+			writeT3LaunchSettings(t, tc.settings)
+
+			gitSvc, err := git.NewService(dir, noopLogger())
+			require.NoError(t, err)
+			api := &t3ShellDispatcher{shell: t3.Shell{Projects: []t3.Project{{ID: "p1", WorkspaceRoot: gitSvc.Root()}}}}
+			rpc := &t3LaunchRPC{t: t, path: filepath.Join(t.TempDir(), "wt")}
+
+			original := newT3Session
+			t.Cleanup(func() { newT3Session = original })
+			var gotEndpoint t3.Endpoint
+			closed := false
+			newT3Session = func(_ context.Context, ep t3.Endpoint) (t3Session, error) {
+				gotEndpoint = ep
+				return t3Session{api: api, rpc: rpc, close: func() { closed = true }}, nil
+			}
+
+			var stdout bytes.Buffer
+			o := opts{T3Launch: tc.mode, PlanFile: planRel, TaskModel: "codex:gpt-5:high"}
+			stderr := captureStderr(t, func() {
+				require.NoError(t, runT3LaunchCommand(t.Context(), o, &config.Config{}, testColors(), &stdout))
+			})
+			if tc.warning {
+				assert.Contains(t, stderr, "warning: --t3-launch: t3: parse settings file:")
+				assert.Contains(t, stderr, "falling back to terminal mode")
+			} else {
+				assert.Empty(t, stderr)
+			}
+			assert.True(t, closed)
+			assert.Equal(t, t3.Endpoint{BaseURL: "http://127.0.0.1:1", Token: "tok"}, gotEndpoint)
+			assert.FileExists(t, filepath.Join(rpc.path, planRel))
+			if tc.agent {
+				assert.Empty(t, rpc.opened)
+				assert.Empty(t, rpc.writes)
+				require.Len(t, api.commands, 2)
+				create, ok := api.commands[0].(*t3.ThreadCreate)
+				require.True(t, ok)
+				assert.Equal(t, t3.ModelSelection{InstanceID: "loopai-custom", Model: t3.LoopaiModel}, create.ModelSelection)
+				turn, ok := api.commands[1].(*t3.ThreadTurnStart)
+				require.True(t, ok)
+				assert.Equal(t, create.ThreadID, turn.ThreadID)
+				assert.Equal(t, "docs/plans/20260925-demo.md --task-model codex:gpt-5:high", turn.Message.Text)
+				assert.Contains(t, stdout.String(), "mode: agent (loopai provider session, instance loopai-custom;")
+				assert.Contains(t, stdout.String(), "the stop button cancels the run")
+			} else {
+				require.Len(t, api.commands, 1)
+				require.Len(t, rpc.opened, 1)
+				assert.Equal(t, "tok", rpc.opened[0].Env["LOOPAI_T3_TOKEN"])
+				require.Len(t, rpc.writes, 1)
+				program, err := os.Executable()
+				require.NoError(t, err)
+				shell := t3.ShellPOSIX
+				if runtime.GOOS == "windows" {
+					shell = t3.ShellPowerShell
+				}
+				assert.Equal(t, t3.LaunchCommand(shell, program, []string{"--t3", "--task-model", "codex:gpt-5:high", planRel})+"\r", rpc.writes[0])
+				assert.Contains(t, stdout.String(), "mode: terminal")
+				if tc.mode == "auto" {
+					assert.Contains(t, stdout.String(), "providerInstances")
+					assert.Contains(t, stdout.String(), "docs/t3-code.md")
+				} else {
+					assert.NotContains(t, stdout.String(), "providerInstances")
+				}
+			}
+			assert.Contains(t, stdout.String(), "started loopai in T3 Code thread ")
+			assert.Contains(t, stdout.String(), "branch:   demo")
+			assert.Contains(t, stdout.String(), "loopai --merge demo")
+		})
+	}
 }
 
 func TestRunT3LaunchCommandErrors(t *testing.T) {
 	dir := setupTestRepo(t)
 	t.Chdir(dir)
+	writeT3LaunchSettings(t, "")
 
 	t.Run("missing token", func(t *testing.T) {
 		t.Setenv("LOOPAI_T3_TOKEN", "")
-		err := runT3LaunchCommand(t.Context(), opts{T3Launch: true, PlanFile: "x.md"}, &config.Config{}, testColors(), io.Discard)
+		err := runT3LaunchCommand(t.Context(), opts{T3Launch: "auto", PlanFile: "x.md"}, &config.Config{}, testColors(), io.Discard)
 		require.ErrorIs(t, err, t3.ErrNoToken)
 	})
 	t.Run("connection failure", func(t *testing.T) {
@@ -3997,9 +4155,29 @@ func TestRunT3LaunchCommandErrors(t *testing.T) {
 		newT3Session = func(context.Context, t3.Endpoint) (t3Session, error) {
 			return t3Session{}, errors.New("refused")
 		}
-		err := runT3LaunchCommand(t.Context(), opts{T3Launch: true, PlanFile: "x.md"}, &config.Config{}, testColors(), io.Discard)
+		err := runT3LaunchCommand(t.Context(), opts{T3Launch: "auto", PlanFile: "x.md"}, &config.Config{}, testColors(), io.Discard)
 		require.ErrorContains(t, err, "--t3-launch: refused")
 	})
+	for _, tc := range []struct {
+		name     string
+		settings string
+		wantErr  string
+	}{
+		{name: "agent without instance", wantErr: "agent mode requires a loopai provider instance; see docs/t3-code.md"},
+		{name: "agent malformed settings", settings: "{", wantErr: "parse settings file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeT3LaunchSettings(t, tc.settings)
+			original := newT3Session
+			t.Cleanup(func() { newT3Session = original })
+			newT3Session = func(context.Context, t3.Endpoint) (t3Session, error) {
+				t.Fatal("invalid agent settings must fail before connecting")
+				return t3Session{}, errors.New("unexpected connection")
+			}
+			err := runT3LaunchCommand(t.Context(), opts{T3Launch: "agent", PlanFile: "x.md"}, &config.Config{}, testColors(), io.Discard)
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
 }
 
 func TestProviderOverrideFlags(t *testing.T) {

@@ -60,7 +60,7 @@ func validateACPFlags(o opts) error {
 		flag string
 		set  bool
 	}{
-		{"--t3-launch", o.T3Launch},
+		{"--t3-launch", o.T3Launch != ""},
 		{"--cmux-workspace", o.CmuxWorkspace != ""},
 		{"--clear", o.Clear},
 		{"--merge, --pr, or --report", closeoutRequested(o)},

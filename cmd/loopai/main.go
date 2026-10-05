@@ -81,7 +81,7 @@ type opts struct {
 	NoColor                 bool          `long:"no-color" description:"disable color output"`
 	Orca                    bool          `long:"orca" env:"LOOPAI_ORCA" description:"emit terminal title status for orca"`
 	T3                      bool          `long:"t3" env:"LOOPAI_T3" description:"report the run as a T3 Code thread (token in LOOPAI_T3_TOKEN)"`
-	T3Launch                bool          `long:"t3-launch" description:"create a T3 Code worktree and thread for the plan, start loopai --t3 in the thread's terminal, and exit"`
+	T3Launch                string        `long:"t3-launch" optional:"true" optional-value:"auto" choice:"auto" choice:"agent" choice:"terminal" description:"create a T3 Code worktree and thread for the plan, start loopai --t3 in the thread's terminal, and exit"`
 	ACP                     bool          `long:"acp" description:"serve the Agent Client Protocol on stdin/stdout so T3 Code can host loopai as a provider session (started by loopai-acp)"`
 	Version                 bool          `short:"v" long:"version" description:"print version and exit"`
 	Serve                   bool          `short:"s" long:"serve" description:"start web dashboard for real-time streaming"`
@@ -3742,7 +3742,7 @@ func runConfiguredStandaloneCommand(ctx context.Context, o opts, cfg *config.Con
 	switch {
 	case closeoutRequested(o):
 		return true, runCloseoutCommand(ctx, o, cfg, colors)
-	case o.T3Launch:
+	case o.T3Launch != "":
 		return true, runT3LaunchCommand(ctx, o, cfg, colors, os.Stdout)
 	default:
 		return false, nil
@@ -3757,7 +3757,7 @@ var passThroughValue = regexp.MustCompile(`^[A-Za-z0-9._:,+-]+$`)
 // the reviewer chain to the launched run: anything that picks a mode, a worktree, a branch, or a
 // dashboard would contradict the T3-managed worktree the launcher creates.
 func validateT3LaunchFlags(o opts) error {
-	if !o.T3Launch {
+	if o.T3Launch == "" {
 		return nil
 	}
 	if o.PlanFile == "" {
@@ -3824,7 +3824,7 @@ func validatePassThroughValues(label string, o opts) error {
 	return nil
 }
 
-// t3LaunchArgs is the flag list forwarded to the launched `loopai --t3` run.
+// t3LaunchArgs is the flag list forwarded to the launched run in either mode.
 func t3LaunchArgs(o opts) []string {
 	var args []string
 	for _, value := range []struct{ flag, value string }{
@@ -3853,11 +3853,39 @@ var newT3Session = func(ctx context.Context, ep t3.Endpoint) (t3Session, error) 
 	return t3Session{api: t3.NewClient(ep), rpc: rpc, close: func() { _ = rpc.Close() }}, nil
 }
 
+// t3LaunchInstance discovers the provider unless terminal mode was explicitly requested.
+// Auto mode warns on unreadable settings and continues without an instance.
+func t3LaunchInstance(mode t3.LaunchMode, getenv func(string) string, stderr io.Writer) (t3.ProviderInstance, error) {
+	if mode == t3.LaunchTerminal {
+		return t3.ProviderInstance{}, nil
+	}
+	instance, ok, err := t3.FindLoopaiInstance(getenv)
+	if err != nil {
+		if mode == t3.LaunchAgent {
+			return t3.ProviderInstance{}, fmt.Errorf("--t3-launch: %w", err)
+		}
+		fmt.Fprintf(stderr, "warning: --t3-launch: %v; falling back to terminal mode\n", err)
+		return t3.ProviderInstance{}, nil
+	}
+	if mode == t3.LaunchAgent && !ok {
+		return t3.ProviderInstance{}, errors.New("--t3-launch: agent mode requires a loopai provider instance; see docs/t3-code.md")
+	}
+	return instance, nil
+}
+
 // runT3LaunchCommand creates a T3-managed worktree and thread for the plan and starts
-// `loopai --t3` in that thread's terminal. It runs in the source checkout and exits once the
-// command is typed; the run itself reports into the thread.
+// a provider session or `loopai --t3` in that thread's terminal. It runs in the source checkout
+// and exits once the run is started; the run itself reports into the thread.
 func runT3LaunchCommand(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors, stdout io.Writer) error {
 	if err := requireRepoRoot(cfg); err != nil {
+		return err
+	}
+	mode := t3.LaunchMode(o.T3Launch)
+	if mode == "" {
+		mode = t3.LaunchAuto
+	}
+	instance, err := t3LaunchInstance(mode, os.Getenv, os.Stderr)
+	if err != nil {
 		return err
 	}
 	ep, err := t3.ResolveEndpoint(os.Getenv)
@@ -3907,6 +3935,8 @@ func runT3LaunchCommand(ctx context.Context, o opts, cfg *config.Config, colors 
 		Model:      t3TaskModel(o, cfg),
 		Shell:      shell,
 		Endpoint:   ep,
+		Mode:       mode,
+		Instance:   instance,
 		HeadOf: func(dir string) (string, error) {
 			svc, svcErr := git.NewService(dir, colors.Info(), cfg.VcsCommand)
 			if svcErr != nil {
@@ -3919,6 +3949,14 @@ func runT3LaunchCommand(ctx context.Context, o opts, cfg *config.Config, colors 
 		return fmt.Errorf("--t3-launch: %w", err)
 	}
 	fmt.Fprintf(stdout, "started loopai in T3 Code thread %s\n", res.ThreadID)
+	if res.Mode == t3.LaunchAgent {
+		fmt.Fprintf(stdout, "mode: agent (loopai provider session, instance %s; the stop button cancels the run)\n", instance.ID)
+	} else {
+		fmt.Fprintln(stdout, "mode: terminal")
+		if mode == t3.LaunchAuto {
+			fmt.Fprintln(stdout, "add a loopai provider instance in providerInstances for agent mode; see docs/t3-code.md")
+		}
+	}
 	fmt.Fprintf(stdout, "worktree: %s\n", res.WorktreePath)
 	fmt.Fprintf(stdout, "branch:   %s\n", res.Branch)
 	fmt.Fprintf(stdout, "close out from this checkout with: loopai --merge %s   (or --pr %s)\n", res.Branch, res.Branch)
@@ -5102,7 +5140,7 @@ func clearStaleCmuxStatus(o opts) {
 // nor get handed over to a new cmux workspace. --gen-agents belongs here: it executes no plan
 // and never constructs a reporter.
 func isStandaloneCommand(o opts) bool {
-	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || o.GenAgents || o.T3Launch ||
+	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || o.GenAgents || o.T3Launch != "" ||
 		o.ACP || (o.Reset && isResetOnly(o))
 }
 
