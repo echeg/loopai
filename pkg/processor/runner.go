@@ -147,6 +147,8 @@ type Runner struct {
 	resume              reviewResume
 	phases              runnerPhases
 	finalizeOutcome     FinalizeOutcome
+	reviewScope         reviewScoper
+	perTaskReview       bool // a per-task external block is running; its reviewers save no checkpoint stage
 }
 
 // FinalizeOutcome describes the finalize base sync; see phase.FinalizeOutcome.
@@ -182,6 +184,12 @@ type externalReviewPhaseRunner interface {
 	Label() string
 	SetResume(completed int, hadFindings bool)
 	Run(ctx context.Context) (phase.ExternalReviewOutcome, error)
+}
+
+// reviewScoper narrows the shared prompt builder's external prompts to one task.
+type reviewScoper interface {
+	SetReviewScope(diffBase, scope string)
+	ClearReviewScope()
 }
 
 type finalizePhaseRunner interface {
@@ -261,10 +269,6 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 	deps := &phase.Deps{}
 	breaks := phase.NewBreakController(deps)
 	git := phase.NewGitState(deps, log)
-	taskPhase := phase.NewTaskPhase(phase.TaskPhaseOpts{
-		Cfg: phaseCfg, Log: log, Exec: execs.Task, Policy: policy, Prompts: prompts,
-		Locator: locator, Deps: deps, Breaks: breaks, IterationDelay: iterDelay, RetryCount: retryCount,
-	})
 	reviewPhase := phase.NewReviewPhase(phase.ReviewPhaseOpts{
 		Cfg: phaseCfg, Log: log, Exec: review, Policy: policy, Prompts: prompts,
 		Git: git, Deps: deps, PhaseHolder: holder, IterationDelay: iterDelay,
@@ -282,6 +286,18 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 		OnReviewerDone: func(ctx context.Context, done phase.ReviewerCompletion) error {
 			return runner.onReviewerDone(ctx, done)
 		},
+	})
+	// the per-task external block runs only in full mode: tasks-only runs no reviews at all
+	var afterTask func(ctx context.Context, taskNum int, headBefore string) error
+	if cfg.Mode == ModeFull && cfg.ReviewCadence == config.ReviewCadenceTask && externalPhase.Enabled() {
+		afterTask = func(ctx context.Context, taskNum int, headBefore string) error {
+			return runner.afterTaskReview(ctx, taskNum, headBefore)
+		}
+	}
+	taskPhase := phase.NewTaskPhase(phase.TaskPhaseOpts{
+		Cfg: phaseCfg, Log: log, Exec: execs.Task, Policy: policy, Prompts: prompts,
+		Locator: locator, Deps: deps, Breaks: breaks, IterationDelay: iterDelay, RetryCount: retryCount,
+		AfterTask: afterTask,
 	})
 	finalizePhase := phase.NewFinalizePhase(phase.FinalizePhaseOpts{
 		Cfg: phaseCfg, Log: log, Exec: review, Policy: policy, Prompts: prompts, Deps: deps, PhaseHolder: holder,
@@ -308,6 +324,7 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 		phaseHolder: holder,
 		deps:        deps,
 		phases:      phases,
+		reviewScope: prompts,
 	}
 	runner.recorder = &runRecorder{runner: runner}
 	deps.Recorder = runner.recorder
@@ -444,6 +461,37 @@ func (r *Runner) runFull(ctx context.Context) error {
 	}
 
 	r.log.Print("all phases completed successfully")
+	return nil
+}
+
+// afterTaskReview runs the external reviewer chain against one completed task under
+// review_cadence = task. the diff base is the HEAD the task started from, so the reviewers see that
+// task alone. the block saves no review checkpoint stage; the final whole-branch block repeats it.
+func (r *Runner) afterTaskReview(ctx context.Context, taskNum int, headBefore string) error {
+	if headBefore == "" {
+		r.log.Print("review cadence: HEAD before task %d is unknown, skipping its external review", taskNum)
+		return nil
+	}
+	r.log.Print("review cadence: external review after task %d", taskNum)
+
+	r.perTaskReview = true
+	if r.reviewScope != nil {
+		r.reviewScope.SetReviewScope(headBefore, reviewScopeForTask(taskNum, r.cfg.PlanFile))
+	}
+	r.phases.external.SetResume(0, false)
+	r.phaseHolder.Set(status.PhaseExternalReview)
+	defer func() {
+		r.phaseHolder.Set(status.PhaseTask)
+		if r.reviewScope != nil {
+			r.reviewScope.ClearReviewScope()
+		}
+		r.perTaskReview = false
+		r.phases.external.SetResume(r.resume.completedReviewers, r.resume.hadFindings)
+	}()
+
+	if _, err := r.phases.external.Run(ctx); err != nil {
+		return fmt.Errorf("%s loop: %w", r.phases.external.Label(), err)
+	}
 	return nil
 }
 

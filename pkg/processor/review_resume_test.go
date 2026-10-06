@@ -709,3 +709,19 @@ func TestRunnerReviewCheckpoint_NewWithExecutorsWiresReviewerCallback(t *testing
 	assert.Equal(t, "codex:gpt:high", store.saves[0].Stages[0].Reviewer)
 	assert.False(t, store.found, "checkpoint should be removed after finalize")
 }
+
+func TestRunnerReviewCheckpoint_PerTaskReviewSavesNoStage(t *testing.T) {
+	store := &checkpointMemoryStore{}
+	r, _, _, _ := newCheckpointRunner(Config{
+		Mode: ModeFull, PlanFile: "plan.md", ExternalReviewTool: config.ExternalReviewToolCodex,
+	}, store, &checkpointGit{head: "h1"})
+	done := phase.ReviewerCompletion{Index: 0}
+
+	r.perTaskReview = true
+	require.NoError(t, r.onReviewerDone(t.Context(), done))
+	assert.Empty(t, store.saves)
+
+	r.perTaskReview = false
+	require.NoError(t, r.onReviewerDone(t.Context(), done))
+	assert.Len(t, store.saves, 1)
+}

@@ -88,13 +88,13 @@
 - [x] run `go test ./pkg/processor/...` - must pass before task 5
 
 ### Task 5: Run the per-task external block from the runner
-- [ ] in `pkg/processor/runner.go` add `ReviewCadence string` to `Config`, and in the phase wiring set `TaskPhaseOpts.AfterTask` to `runner.afterTaskReview` when the effective cadence is `task` and `externalPhase.Enabled()`
-- [ ] implement `afterTaskReview(ctx, taskNum, headBefore)`: log `review cadence: external review after task N`, set `r.perTaskReview = true`, `prompts.SetReviewScope(headBefore, scope)`, `external.SetResume(0, false)`, `phaseHolder.Set(status.PhaseExternalReview)`, call `external.Run`, then restore `phaseHolder.Set(status.PhaseTask)`, `ClearReviewScope`, `perTaskReview = false`, and re-apply the resume state from `r.resume` so the final block still honors the checkpoint; use `defer` for the restores so a failure leaves no scope set
-- [ ] in `review_resume.go` make `onReviewerDone` skip `saveReviewStage` while `perTaskReview` is set (the recorder call in the phase still runs)
-- [ ] when `headBefore` is empty (no git), skip the block with a warning instead of diffing against the default branch
-- [ ] make `runFull` set `TaskPhaseOpts.AfterTask` only in full mode; `runTasksOnly` keeps the hook nil
-- [ ] write tests in `runner_test.go` with mocked phases: cadence `end` never calls the external phase before the internal review; cadence `task` calls it once per advanced task with the task's head as diff base and then again in the final block with the default branch; a per-task block never saves a review stage; the phase holder returns to task after each block; an external error from a block fails the run as `task phase: after task N: ...`; cadence `task` with an empty chain installs no hook
-- [ ] run `go test ./pkg/processor/...` - must pass before task 6
+- [x] in `pkg/processor/runner.go` add `ReviewCadence string` to `Config` (already added in task 2), and in the phase wiring set `TaskPhaseOpts.AfterTask` to `runner.afterTaskReview` when the effective cadence is `task` and `externalPhase.Enabled()`
+- [x] implement `afterTaskReview(ctx, taskNum, headBefore)`: log `review cadence: external review after task N`, set `r.perTaskReview = true`, `prompts.SetReviewScope(headBefore, scope)`, `external.SetResume(0, false)`, `phaseHolder.Set(status.PhaseExternalReview)`, call `external.Run`, then restore `phaseHolder.Set(status.PhaseTask)`, `ClearReviewScope`, `perTaskReview = false`, and re-apply the resume state from `r.resume` so the final block still honors the checkpoint; use `defer` for the restores so a failure leaves no scope set
+- [x] in `review_resume.go` make `onReviewerDone` skip `saveReviewStage` while `perTaskReview` is set (the recorder call in the phase still runs)
+- [x] when `headBefore` is empty (no git), skip the block with a warning instead of diffing against the default branch
+- [x] make `runFull` set `TaskPhaseOpts.AfterTask` only in full mode; `runTasksOnly` keeps the hook nil
+- [x] write tests in `runner_test.go` with mocked phases: cadence `end` never calls the external phase before the internal review; cadence `task` calls it once per advanced task with the task's head as diff base and then again in the final block with the default branch; a per-task block never saves a review stage; the phase holder returns to task after each block; an external error from a block fails the run as `task phase: after task N: ...`; cadence `task` with an empty chain installs no hook
+- [x] run `go test ./pkg/processor/...` - must pass before task 6
 
 ### Task 6: Aggregate repeated reviewer completions in the run record
 - [ ] in `pkg/processor/run_recorder.go` make `ExternalDone` add the duration to the existing record's `Duration`, OR `HadFindings` into it, keep `EndedBy` from the latest completion, and increment a new `Blocks int` field on `ExternalReviewerRecord` (`run_record.go`) counting completed loops; iterations already append
