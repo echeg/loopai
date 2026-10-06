@@ -143,6 +143,29 @@ func TestParseACPPrompt(t *testing.T) {
 	}
 }
 
+func TestACPLooksLikeLaunch(t *testing.T) {
+	cwd := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(cwd, "plan"), []byte("# Plan\n"), 0o600))
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "russian question", text: "а по итогу оно замержено?", want: false},
+		{name: "english question", text: "did it merge?", want: false},
+		{name: "markdown path", text: "docs/plans/x.md --worktree", want: true},
+		{name: "uppercase markdown extension", text: "PLAN.MD extra", want: true},
+		{name: "existing file without extension", text: "plan extra", want: true},
+		{name: "option first", text: "--task-model opus docs/plans/x.md", want: true},
+		{name: "empty", text: " \n ", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, acpLooksLikeLaunch(tc.text, cwd))
+		})
+	}
+}
+
 func TestACPStages(t *testing.T) {
 	assert.Equal(t, []acp.Stage{acp.StageReview}, acpStages(&config.Config{}, externalReviewSelection{}))
 	assert.Equal(t, []acp.Stage{acp.StageReview, acp.StageExternalReview, acp.StageFinalize, acp.StageReport},
@@ -814,6 +837,24 @@ printf '%s\n' '{"type":"result","result":""}'
 			assert.Equal(t, canonicalPlanPath(f.start), canonicalPlanPath(wd))
 		})
 	}
+}
+
+// TestServeACPAnswersNonLaunchMessages sends a question after nothing ran: it ends its turn with the
+// launcher guidance, while a malformed launch in the same session still fails its turn.
+func TestServeACPAnswersNonLaunchMessages(t *testing.T) {
+	f := newACPFixture(t, acpTaskClaude)
+	c := startACPServer(t.Context(), t, opts{ConfigDir: f.cfgDir}, io.Discard)
+	sid := c.handshake(f.repo)
+
+	requireACPStopReason(t, c.response(c.prompt(sid, "а по итогу оно замержено?")), "end_turn")
+	msg := requireACPError(t, c.response(c.prompt(sid, "docs/plans/two.md --worktree")))
+	c.close()
+
+	assert.Contains(t, msg, `unsupported option "--worktree"`)
+	assert.Contains(t, c.messages(), acpNotALaunch+"\n\n"+acpPromptUsage)
+	data, err := os.ReadFile(f.planFile)
+	require.NoError(t, err)
+	assert.Equal(t, acpTwoTaskPlan, string(data), "neither message runs the plan")
 }
 
 // TestServeACPForcesWorktreeT3AndOrcaOff runs a prompt in a project whose config enables a

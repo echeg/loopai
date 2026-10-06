@@ -125,15 +125,15 @@
 - [x] run tests - must pass before next task
 
 ### Task 5: Answer non-launch thread messages with guidance
-- [ ] add `acpLooksLikeLaunch(text, cwd string) bool`. It returns true when the first whitespace-separated token starts with `-`, ends in `.md` (case-insensitive), or names an existing path relative to `cwd`. Empty text returns false.
-- [ ] in `acpRunner.run`, when `parseACPPrompt` fails and `acpLooksLikeLaunch` is false, return `acp.Result{Message: <guidance>}` with a nil error, so the turn ends `end_turn`. The guidance text:
+- [x] add `acpLooksLikeLaunch(text, cwd string) bool`. It returns true when the first whitespace-separated token starts with `-`, ends in `.md` (case-insensitive), or names an existing path relative to `cwd`. Empty text returns false.
+- [x] in `acpRunner.run`, when `parseACPPrompt` fails and `acpLooksLikeLaunch` is false, return `acp.Result{Message: <guidance>}` with a nil error, so the turn ends `end_turn`. The guidance text:
   - "This thread runs loopai plans and does not answer questions. To ask about a run or continue the work, open a new session on this worktree and choose the model there."
   - then the usage line, `acpPromptUsage`
-- [ ] keep a malformed launch (bad flag, two plan files, missing value) a failed turn exactly as today
-- [ ] write tests:
+- [x] keep a malformed launch (bad flag, two plan files, missing value) a failed turn exactly as today
+- [x] write tests:
   - `acpLooksLikeLaunch` table: a Russian question, an English question, a `docs/plans/x.md` path, a bare existing file without `.md`, a `--task-model` first token, empty text
   - extend `TestServeACPPromptErrors` (or add a sibling test) so the question `а по итогу оно замержено?` answers `end_turn` with the guidance message and `docs/plans/two.md --worktree` still fails with `unsupported option`
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 6: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented

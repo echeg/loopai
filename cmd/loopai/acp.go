@@ -160,9 +160,13 @@ type acpRunner struct {
 
 // run executes one prompt: it parses the plan and pass-through flags, enters the session's
 // working directory, loads config there, and runs the plan in place through the normal execution
-// path with the sink observing sections, output, and phases.
+// path with the sink observing sections, output, and phases. A message that is not a plan launch
+// ends its turn normally with guidance; a malformed launch fails it.
 func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Sink) (acp.Result, error) {
 	prompt, err := parseACPPrompt(req.Text)
+	if err != nil && !acpLooksLikeLaunch(req.Text, req.Cwd) {
+		return acp.Result{Message: acpNotALaunch + "\n\n" + acpPromptUsage}, nil
+	}
 	if err != nil {
 		return acp.Result{Message: fmt.Sprintf("%v\n\n%s", err, acpPromptUsage)}, fmt.Errorf("malformed prompt: %w", err)
 	}
@@ -237,6 +241,28 @@ func loadACPSessionConfig(o opts) (*config.Config, error) {
 	}
 	cfg.T3, cfg.Orca, cfg.WorktreeEnabled = false, false, false
 	return cfg, nil
+}
+
+// acpNotALaunch answers a thread message that is not a plan launch, such as a question typed after
+// a run: the thread is a plan launcher, so it says where follow-up belongs instead of failing a turn.
+const acpNotALaunch = "This thread runs loopai plans and does not answer questions. To ask about a run or " +
+	"continue the work, open a new session on this worktree and choose the model there."
+
+// acpLooksLikeLaunch reports whether a prompt that failed to parse was meant as a plan launch, so a
+// malformed launch still fails its turn while anything else gets the acpNotALaunch reply. It is a
+// launch when the first token is an option, names a Markdown file, or names an existing path
+// relative to cwd.
+func acpLooksLikeLaunch(text, cwd string) bool {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return false
+	}
+	first := fields[0]
+	if strings.HasPrefix(first, "-") || strings.HasSuffix(strings.ToLower(first), ".md") {
+		return true
+	}
+	_, err := os.Stat(absPath(cwd, first))
+	return err == nil
 }
 
 // parseACPPrompt parses a prompt's first text block: one plan file plus --task-model,
