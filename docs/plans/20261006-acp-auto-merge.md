@@ -69,12 +69,12 @@
 ## Implementation Steps
 
 ### Task 1: Extract the report's Risk level
-- [ ] add `reportRiskLevel(report string) string` in `cmd/loopai/pr_body.go`, built on `splitReportSections`:
+- [x] add `reportRiskLevel(report string) string` in `cmd/loopai/pr_body.go`, built on `splitReportSections`:
   - find the first `Risk` section and take its first non-empty line
   - strip Markdown emphasis and code marks (`*`, `_`, `` ` ``) and trailing punctuation, then lowercase it
   - return `low`, `medium`, or `high` when the first word is one of them, and `""` otherwise (absent section, `_assessment unavailable_`, free text)
-- [ ] write table-driven tests in `cmd/loopai/pr_body_test.go`: `**low**`, `Low.`, `` `medium` ``, `high - …`, a Risk heading inside a code fence (ignored), missing section, the fallback `_assessment unavailable_`, a first line starting with another word, CRLF input
-- [ ] run tests - must pass before next task
+- [x] write table-driven tests in `cmd/loopai/pr_body_test.go`: `**low**`, `Low.`, `` `medium` ``, `high - …`, a Risk heading inside a code fence (ignored), missing section, the fallback `_assessment unavailable_`, a first line starting with another word, CRLF input
+- [x] run tests - must pass before next task
 
 ### Task 2: Add the `acp_auto_merge` config key
 - [ ] add `ACPAutoMerge bool` to `config.Config` with loader support for `acp_auto_merge` at every config layer, defaulting to `true`. Follow how an existing boolean key with a `true` default and an explicit-set flag is handled, so a local `false` overrides a global `true`.

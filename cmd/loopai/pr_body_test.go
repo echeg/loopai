@@ -183,3 +183,32 @@ func TestSplitReportSectionsFenceBoundaries(t *testing.T) {
 			splitReportSections("```not`a-fence\n## Summary\nActual."))
 	})
 }
+
+func TestReportRiskLevel(t *testing.T) {
+	tests := []struct {
+		name   string
+		report string
+		want   string
+	}{
+		{name: "bold low", report: "# Report: F\n## Summary\nDone.\n## Risk\n\n**low**\n\n- Public APIs unchanged.", want: "low"},
+		{name: "capitalized with period", report: "## Risk\nLow.\n## Validation\npassed", want: "low"},
+		{name: "code medium", report: "## Risk\n`medium`", want: "medium"},
+		{name: "high with explanation", report: "## Risk\nhigh - rewrites the merge path", want: "high"},
+		{name: "underscore emphasis and colon", report: "## Risk\n_Medium_: touches config", want: "medium"},
+		{name: "first risk section wins", report: "## Risk\nlow\n## Risk\nhigh", want: "low"},
+		{name: "fenced risk heading ignored", report: "## Evidence\n```\n## Risk\nlow\n```\n## Summary\nDone.", want: ""},
+		{name: "fenced heading before real section", report: "## Evidence\n~~~\n## Risk\nlow\n~~~\n## Risk\nhigh", want: "high"},
+		{name: "missing section", report: "# Report: F\n## Summary\nDone.", want: ""},
+		{name: "empty section", report: "## Risk\n\n## Validation\npassed", want: ""},
+		{name: "facts-only fallback", report: "## Risk\n\n_assessment unavailable_", want: ""},
+		{name: "another first word", report: "## Risk\nMostly low, but the config loader changed.", want: ""},
+		{name: "hyphenated range", report: "## Risk\nlow-to-medium", want: ""},
+		{name: "CRLF", report: "# Report: F\r\n## Risk\r\n\r\n**Medium**\r\n\r\n- note\r\n", want: "medium"},
+		{name: "empty report"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, reportRiskLevel(tt.report))
+		})
+	}
+}

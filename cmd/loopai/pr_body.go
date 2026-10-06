@@ -6,6 +6,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/umputun/ralphex/pkg/git"
@@ -57,6 +58,35 @@ func splitReportSections(report string) []reportSection {
 		sections[len(sections)-1].body = strings.TrimSpace(body.String())
 	}
 	return sections
+}
+
+// reportRiskLevel returns low, medium, or high from the first line of the report's first Risk section,
+// and "" when the section is absent or does not open with one of those words.
+func reportRiskLevel(report string) string {
+	for _, section := range splitReportSections(report) {
+		if section.heading != "Risk" {
+			continue
+		}
+		for line := range strings.SplitSeq(section.body, "\n") {
+			line = strings.TrimSpace(strings.Map(func(r rune) rune {
+				if r == '*' || r == '_' || r == '`' {
+					return -1
+				}
+				return r
+			}, line))
+			if line == "" {
+				continue
+			}
+			word := strings.TrimRightFunc(strings.ToLower(strings.Fields(line)[0]), unicode.IsPunct)
+			switch word {
+			case "low", "medium", "high":
+				return word
+			}
+			return ""
+		}
+		return ""
+	}
+	return ""
 }
 
 // reportPRBody renders selected report sections, with and without the optional details blocks.
