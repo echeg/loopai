@@ -3002,6 +3002,27 @@ func (s externalReviewSelection) chainLabel() string {
 	return strings.Join(labels, " → ")
 }
 
+// flagValue renders the chain as the comma-separated provider[:model[:effort]] value
+// --external-reviewers accepts. A chain with a custom reviewer renders empty: its
+// script lives in custom_review_script, so the flag alone cannot replay it.
+func (s externalReviewSelection) flagValue() string {
+	entries := make([]string, 0, len(s.Reviewers))
+	for _, reviewer := range s.Reviewers {
+		if reviewer.Provider == config.ExternalReviewToolCustom {
+			return ""
+		}
+		entry := reviewer.Provider
+		switch {
+		case reviewer.Effort != "":
+			entry += ":" + reviewer.Model + ":" + reviewer.Effort
+		case reviewer.Model != "":
+			entry += ":" + reviewer.Model
+		}
+		entries = append(entries, entry)
+	}
+	return strings.Join(entries, ",")
+}
+
 // bannerLabel renders the chain for the startup banner as "<provider> <model>[:effort]"
 // entries in run order, or the disabled selection's reason when no reviewer runs.
 func (s externalReviewSelection) bannerLabel() string {

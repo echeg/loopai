@@ -185,3 +185,86 @@ func TestRecordLaunchErrors(t *testing.T) {
 		assertNoTempFiles(t, dir, ".launch-history-*.tmp")
 	})
 }
+
+func TestLaunchFlags(t *testing.T) {
+	codexChain := externalReviewSelection{Resolved: true, Explicit: true, Reviewers: []resolvedReviewer{
+		{Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "high"},
+		{Provider: config.ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "high"},
+	}}
+	tests := []struct {
+		name string
+		o    opts
+		cfg  *config.Config
+		sel  externalReviewSelection
+		want string
+	}{
+		{name: "nil config", o: opts{TaskModel: "claude:opus"}, want: ""},
+		{name: "no flags set", cfg: &config.Config{}, want: ""},
+		{name: "task only", o: opts{TaskModel: "codex:gpt-5.6-sol:high"}, cfg: &config.Config{},
+			want: "--task-model codex:gpt-5.6-sol:high"},
+		{name: "task from config", cfg: &config.Config{TaskModel: "claude:opus:high"},
+			want: "--task-model claude:opus:high"},
+		{name: "explicit review equal to task", o: opts{TaskModel: "claude:opus:high", ReviewModel: "claude:opus:high"},
+			cfg: &config.Config{}, want: "--task-model claude:opus:high --review-model claude:opus:high"},
+		{name: "explicit review differing", o: opts{TaskModel: "codex:gpt-5.6-sol:high"},
+			cfg:  &config.Config{ReviewModel: "claude:opus:high"},
+			want: "--task-model codex:gpt-5.6-sol:high --review-model claude:opus:high"},
+		{name: "inherited review omitted", o: opts{TaskModel: "codex:gpt-5.6-sol"}, cfg: &config.Config{},
+			want: "--task-model codex:gpt-5.6-sol"},
+		{name: "review only", o: opts{ReviewModel: "claude::max"}, cfg: &config.Config{},
+			want: "--review-model claude::max"},
+		{name: "explicit chain with efforts", o: opts{TaskModel: "claude:fable"}, cfg: &config.Config{}, sel: codexChain,
+			want: "--task-model claude:fable --external-reviewers claude:opus:high,codex:gpt-6-astra:high"},
+		{name: "explicit chain without models", cfg: &config.Config{},
+			sel: externalReviewSelection{Explicit: true, Reviewers: []resolvedReviewer{
+				{Provider: config.ExternalReviewToolCodex},
+				{Provider: config.ExternalReviewToolCodex, Effort: "medium"},
+				{Provider: config.ExternalReviewToolClaude, Model: "sonnet"},
+			}},
+			want: "--external-reviewers codex,codex::medium,claude:sonnet"},
+		{name: "explicitly empty chain omitted", cfg: &config.Config{},
+			sel: externalReviewSelection{Resolved: true, Explicit: true}, want: ""},
+		{name: "auto-selected chain omitted", o: opts{TaskModel: "claude:opus"}, cfg: &config.Config{},
+			sel: externalReviewSelection{Resolved: true, AutoSelected: true, Reviewers: []resolvedReviewer{
+				{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "xhigh"},
+			}},
+			want: "--task-model claude:opus"},
+		{name: "custom reviewer omitted", o: opts{TaskModel: "claude:opus"}, cfg: &config.Config{},
+			sel: externalReviewSelection{Resolved: true, Explicit: true, Reviewers: []resolvedReviewer{
+				{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5"},
+				{Provider: config.ExternalReviewToolCustom},
+			}},
+			want: "--task-model claude:opus"},
+		{name: "value outside charset omitted", o: opts{TaskModel: "claude:opus high", ReviewModel: "codex:$(x)"},
+			cfg: &config.Config{}, sel: codexChain,
+			want: "--external-reviewers claude:opus:high,codex:gpt-6-astra:high"},
+		{name: "CLI override beating config",
+			o:    opts{TaskModel: "codex:gpt-5.6-sol", ReviewModel: "claude:opus:xhigh"},
+			cfg:  &config.Config{TaskModel: "claude:sonnet", ReviewModel: "claude:sonnet:low"},
+			want: "--task-model codex:gpt-5.6-sol --review-model claude:opus:xhigh"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, launchFlags(tc.o, tc.cfg, tc.sel))
+		})
+	}
+}
+
+func TestLauncherFor(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want string
+	}{
+		{name: "nil config", want: launcherCLI},
+		{name: "none", cfg: &config.Config{}, want: launcherCLI},
+		{name: "orca", cfg: &config.Config{Orca: true}, want: launcherOrca},
+		{name: "t3", cfg: &config.Config{T3: true}, want: launcherT3},
+		{name: "both", cfg: &config.Config{Orca: true, T3: true}, want: launcherT3},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, launcherFor(tc.cfg))
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -100,4 +101,44 @@ func recordLaunch(path string, entry launchEntry) error {
 		}
 		return bw.Flush()
 	})
+}
+
+// launchFlagValue is the charset the loopai-plan, loopai-orca, and loopai-t3 skills
+// accept for a pass-through flag value; a value outside it is never recorded.
+var launchFlagValue = regexp.MustCompile(`^[A-Za-z0-9._:,+-]+$`)
+
+// launchFlags renders the effective model choice as the three pass-through flags. The
+// review spec is rendered only when set, since an inherited one equals the task spec, and
+// the reviewer chain only when explicit, since an automatic reviewer follows from the
+// task provider and is selected again the same way on the next launch.
+func launchFlags(o opts, cfg *config.Config, sel externalReviewSelection) string {
+	if cfg == nil {
+		return ""
+	}
+	var parts []string
+	add := func(flag, value string) {
+		if value != "" && launchFlagValue.MatchString(value) {
+			parts = append(parts, flag+" "+value)
+		}
+	}
+	add("--task-model", resolveSpec(o.TaskModel, cfg.TaskModel))
+	add("--review-model", resolveSpec(o.ReviewModel, cfg.ReviewModel))
+	if sel.Explicit {
+		add("--external-reviewers", sel.flagValue())
+	}
+	return strings.Join(parts, " ")
+}
+
+// launcherFor names the launcher that started the run. T3 wins over Orca because
+// --t3-launch terminal mode runs `loopai --t3`; a config enabling both is a reporting
+// choice, and the Orca skill passes --orca alone.
+func launcherFor(cfg *config.Config) string {
+	switch {
+	case cfg != nil && cfg.T3:
+		return launcherT3
+	case cfg != nil && cfg.Orca:
+		return launcherOrca
+	default:
+		return launcherCLI
+	}
 }

@@ -5538,6 +5538,47 @@ func TestExternalReviewChainLabel(t *testing.T) {
 	}
 }
 
+func TestExternalReviewSelectionFlagValue(t *testing.T) {
+	tests := []struct {
+		name      string
+		selection externalReviewSelection
+		want      string
+	}{
+		{name: "empty", want: ""},
+		{
+			name: "chain with efforts",
+			selection: externalReviewSelection{Reviewers: []resolvedReviewer{
+				{Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "high"},
+				{Provider: config.ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "high"},
+			}},
+			want: "claude:opus:high,codex:gpt-6-astra:high",
+		},
+		{
+			name: "provider defaults",
+			selection: externalReviewSelection{Reviewers: []resolvedReviewer{
+				{Provider: config.ExternalReviewToolCodex},
+				{Provider: config.ExternalReviewToolCodex, Effort: "low"},
+				{Provider: config.ExternalReviewToolClaude, Model: "sonnet"},
+			}},
+			want: "codex,codex::low,claude:sonnet",
+		},
+		{
+			name: "custom reviewer",
+			selection: externalReviewSelection{Reviewers: []resolvedReviewer{
+				{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5"},
+				{Provider: config.ExternalReviewToolCustom},
+			}},
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.selection.flagValue())
+		})
+	}
+}
+
 func TestExternalReviewSelectionProcessorTool(t *testing.T) {
 	tests := []struct {
 		name      string
