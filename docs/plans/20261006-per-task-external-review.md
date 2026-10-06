@@ -97,10 +97,11 @@
 - [x] run `go test ./pkg/processor/...` - must pass before task 6
 
 ### Task 6: Aggregate repeated reviewer completions in the run record
-- [ ] in `pkg/processor/run_recorder.go` make `ExternalDone` add the duration to the existing record's `Duration`, OR `HadFindings` into it, keep `EndedBy` from the latest completion, and increment a new `Blocks int` field on `ExternalReviewerRecord` (`run_record.go`) counting completed loops; iterations already append
-- [ ] in `completion_report.go`/`run_facts.go` render `Blocks` in the external review facts when it is greater than one, as `N review blocks` after the reviewer label, so the report tells per-task reviews from a single end review
-- [ ] write tests in `run_recorder_test.go` for one completion (unchanged output), two completions (summed duration, OR-ed findings, latest `EndedBy`, `Blocks == 2`), and in `completion_report_test.go` for the rendered label
-- [ ] run `go test ./pkg/processor/...` - must pass before task 7
+- [x] in `pkg/processor/run_recorder.go` make `ExternalDone` add the duration to the existing record's `Duration`, OR `HadFindings` into it, keep `EndedBy` from the latest completion, and increment a new `Blocks int` field on `ExternalReviewerRecord` (`run_record.go`) counting completed loops; iterations already append
+- [x] in `completion_report.go`/`run_facts.go` render `Blocks` in the external review facts when it is greater than one, as `N review blocks` after the reviewer label, so the report tells per-task reviews from a single end review
+- [x] write tests in `run_recorder_test.go` for one completion (unchanged output), two completions (summed duration, OR-ed findings, latest `EndedBy`, `Blocks == 2`), and in `completion_report_test.go` for the rendered label
+- [x] ➕ keep this invocation's per-task reviewer records across the record reset that follows a task-phase commit (`currentExternal`, restored by `resetRunRecord` and `adoptLoadedRunRecord`); without it every per-task block was discarded before the report
+- [x] run `go test ./pkg/processor/...` - must pass before task 7
 
 ### Task 7: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented and `review_cadence` unset leaves prompts and pipeline order unchanged

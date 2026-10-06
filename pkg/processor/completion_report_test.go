@@ -124,6 +124,27 @@ func TestRenderRunFacts_TablesAndTwoReviewers(t *testing.T) {
 	assert.Contains(t, got, "- started: 2026-09-06T07:00:00Z")
 }
 
+func TestRenderRunFacts_ExternalReviewBlocks(t *testing.T) {
+	tests := []struct {
+		name   string
+		blocks int
+		label  string
+	}{
+		{name: "legacy record", blocks: 0, label: "- label: Codex\n"},
+		{name: "single end review", blocks: 1, label: "- label: Codex\n"},
+		{name: "per-task reviews", blocks: 3, label: "- label: Codex (3 review blocks)\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			record := RunRecord{Plan: "docs/plans/x.md", External: []ExternalReviewerRecord{
+				{Key: "codex:gpt-5.5", Label: "Codex", Blocks: tc.blocks},
+			}}
+			assert.Contains(t, renderRunFacts(record, RunFacts{}), "### codex:gpt-5.5\n"+tc.label)
+			assert.Contains(t, factsOnlyReport(record, RunFacts{}), "### codex:gpt-5.5\n"+tc.label)
+		})
+	}
+}
+
 func TestRenderRunFacts_BacklogTable(t *testing.T) {
 	facts := RunFacts{Backlog: []BacklogFile{{Status: "A", Path: "docs/backlog/item.md", Title: "A | B"}}}
 	got := renderRunFacts(RunRecord{}, facts)

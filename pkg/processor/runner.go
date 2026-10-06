@@ -138,6 +138,7 @@ type Runner struct {
 	record              RunRecord
 	loadedRecord        bool
 	currentTasks        TaskRunRecord
+	currentExternal     []ExternalReviewerRecord // this invocation's per-task external blocks
 	invocationStarted   time.Time
 	timingsSource       func() (map[string]time.Duration, time.Duration, int)
 	priorPhaseDurations map[string]Duration

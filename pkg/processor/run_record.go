@@ -84,6 +84,7 @@ type ExternalReviewerRecord struct {
 	Duration    Duration                  `json:"duration_ms"`
 	EndedBy     string                    `json:"ended_by"`
 	HadFindings bool                      `json:"had_findings"`
+	Blocks      int                       `json:"blocks,omitempty"` // completed loops; above one under review_cadence = task
 }
 
 // ExternalIterationRecord preserves reviewer and evaluator output for one iteration.
