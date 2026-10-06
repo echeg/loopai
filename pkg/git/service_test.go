@@ -2690,6 +2690,7 @@ func TestService_CreateWorktreeForPlan(t *testing.T) {
 		secondPath := filepath.Join(dir, ".loopai", "worktrees", "branch-conflict-2")
 		err = svc.repo.addWorktree(t.Context(), secondPath, "branch-conflict", false, "")
 		require.Error(t, err)
+		// Git versions describe the same branch conflict with different wording.
 		assert.Regexp(t, `already (used by worktree|checked out at)`, err.Error())
 		assert.Contains(t, filepath.ToSlash(err.Error()), filepath.ToSlash(wtPath))
 	})

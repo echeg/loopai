@@ -36,7 +36,7 @@ jobs:
         run: go vet -tags=e2e ./e2e/...
 
       - name: validate retained assets and provider wrappers
-        run: make check-symlinks test-symlinks check-plugin test-plugin test-grill-skill check-codex-skills test-codex-skills test-completions test-wrappers
+        run: make check-symlinks test-symlinks check-plugin test-plugin test-grill-skill test-merge-skill test-retro-skill test-report-docs check-codex-skills test-codex-skills test-completions test-wrappers
 
       - name: smoke test renamed binary
         run: |

@@ -57,7 +57,9 @@ func factsOnlyReport(record RunRecord, facts RunFacts) string {
 		len(facts.Commits), facts.DiffStats.Files, facts.DiffStats.Additions, facts.DiffStats.Deletions)
 	writeFilesTable(&b, facts.Files)
 
+	b.WriteString("\n## Evidence\n_assessment unavailable_\n")
 	b.WriteString("\n## Risk\n_assessment unavailable_\n")
+	b.WriteString("\n## Merge danger\n_assessment unavailable_\n")
 	b.WriteString("\n## Migrations and operational steps\n_assessment unavailable_\n")
 	b.WriteString("\n## Plan deviation\n_assessment unavailable_\n")
 	writeDrift(&b, facts.Drift)

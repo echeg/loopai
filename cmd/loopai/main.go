@@ -1899,7 +1899,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) (execErr e
 	removeRunRecordAfterArchival(runRecordState, planMoved)
 	// the pull request follows archival so a non-worktree run pushes its archive commit too, and
 	// precedes worktree cleanup because it pushes from the run's own checkout
-	fin := runFinalizeCloseout(ctx, req, r.FinalizeOutcome(), plr.baseLog)
+	fin := runFinalizeCloseout(ctx, req, r.FinalizeOutcome(), r.Report(), plr.baseLog)
 	req.NotifySvc.Send(context.Background(), fin.annotate(buildNotifyResult(req, branch, elapsed, stats, nil)))
 
 	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved, archiveIncomplete, fin)
@@ -5275,6 +5275,7 @@ type closeoutTarget struct {
 	// base. Finalize sets origin/<base>, because the branch already merged it and a stale local
 	// base would count the merged-in base commits as the branch's own changes.
 	statsBase string
+	report    string // finalize supplies the report even when archival happened in the main checkout
 }
 
 // resolveCloseoutBranch determines the feature branch a close-out command operates on: the
@@ -5368,6 +5369,40 @@ func runReportCommand(ctx context.Context, gitSvc *git.Service, target closeoutT
 		name = "current branch"
 	}
 	return fmt.Errorf("no completion report for %s; the run predates report_enabled or archived without one", name)
+}
+
+var errCompletionReportNotFound = errors.New("completion report not found")
+
+// locateCompletionReport is the PR-only lookup: committed sidecars, then bounded regular files.
+// runReportCommand preserves unrestricted reads for configured external or symlinked plans directories.
+// An empty branch skips Git lookup for features whose branch was removed after merge.
+// source identifies the branch revision/path or the working-tree path that supplied the body.
+func locateCompletionReport(gitSvc *git.Service, plansDir, planFile, branch string) (body []byte, source string, err error) {
+	paths := completionReportPaths(plansDirPath(gitSvc.Root(), plansDir), planFile)
+	if branch != "" {
+		for _, path := range paths {
+			body, err := gitSvc.ShowFile("refs/heads/"+branch, path)
+			if err == nil {
+				if int64(len(body)) > maxPRPlanSize {
+					return nil, "", fmt.Errorf("completion report from branch %q exceeds %d-byte size limit", branch, maxPRPlanSize)
+				}
+				return body, "refs/heads/" + branch + ":" + path, nil
+			}
+			if !errors.Is(err, git.ErrPathNotFound) {
+				return nil, "", fmt.Errorf("read completion report from branch %q: %w", branch, err)
+			}
+		}
+	}
+	for _, path := range paths {
+		body, err := readPRPlan(gitSvc.Root(), path)
+		if err == nil {
+			return body, path, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, "", fmt.Errorf("read completion report %q: %w", path, err)
+		}
+	}
+	return nil, "", errCompletionReportNotFound
 }
 
 // findReportPlanForBranch locates the plan identity needed to derive a report sidecar path.
@@ -5878,7 +5913,7 @@ func createPullRequest(ctx context.Context, ghPath string, gitSvc *git.Service, 
 		return "", fmt.Errorf("calculate PR diff stats for %q against %q: %w", branch, statsBase, err)
 	}
 
-	title, body, err := buildPRTitleBody(gitSvc.Root(), target.plansDir, branch, stats)
+	title, body, err := buildReportPRTitleBody(gitSvc, target, branch, stats, os.Stderr)
 	if err != nil {
 		return "", err
 	}
@@ -7041,7 +7076,7 @@ type finalizeLogger interface {
 // incomplete reason rather than a run error. It never touches the local base branch and never
 // removes a worktree: loopai's own --worktree is removed by the caller as on any run.
 func runFinalizeCloseout(ctx context.Context, req executePlanRequest, synced processor.FinalizeOutcome,
-	log finalizeLogger) finalizeResult {
+	report string, log finalizeLogger) finalizeResult {
 	res := finalizeResult{mode: finalizeModeFor(req), sync: synced}
 	if res.mode == config.FinalizeNone {
 		return res
@@ -7052,7 +7087,7 @@ func runFinalizeCloseout(ctx context.Context, req executePlanRequest, synced pro
 	case !res.syncSucceeded():
 		res.incomplete = errors.New("base sync did not run")
 	case res.mode != config.FinalizeSync:
-		res.incomplete = openFinalizePR(ctx, req, &res, log)
+		res.incomplete = openFinalizePR(ctx, req, &res, report, log)
 	}
 	if res.incomplete != nil {
 		log.Warn("finalize incomplete: %v", res.incomplete)
@@ -7062,7 +7097,7 @@ func runFinalizeCloseout(ctx context.Context, req executePlanRequest, synced pro
 
 // openFinalizePR pushes the plan branch, opens its pull request, and under finalize = merge waits
 // for the checks and merges it. It records progress in res and returns the reason it stopped.
-func openFinalizePR(ctx context.Context, req executePlanRequest, res *finalizeResult, log finalizeLogger) error {
+func openFinalizePR(ctx context.Context, req executePlanRequest, res *finalizeResult, report string, log finalizeLogger) error {
 	ghPath, err := exec.LookPath("gh")
 	if err != nil {
 		return fmt.Errorf("finalize = %s requires GitHub CLI (gh) in PATH; install it from https://cli.github.com/", res.mode)
@@ -7083,7 +7118,7 @@ func openFinalizePR(ctx context.Context, req executePlanRequest, res *finalizeRe
 	if err != nil {
 		return fmt.Errorf("read plan branch head: %w", err)
 	}
-	target := closeoutTarget{plansDir: req.Config.PlansDir, statsBase: res.sync.Base}
+	target := closeoutTarget{plansDir: req.Config.PlansDir, statsBase: res.sync.Base, report: report}
 	prURL, err := createPullRequest(ctx, ghPath, gitSvc, branch, base, target)
 	if err != nil {
 		return fmt.Errorf("open pull request: %w", err)

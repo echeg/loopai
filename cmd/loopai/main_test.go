@@ -7319,6 +7319,9 @@ func TestRunPRCommand(t *testing.T) {
 
 	t.Run("success prints only URL and clears pill", func(t *testing.T) {
 		dir, remote, svc := setupFeatureWithRemote(t)
+		writePRReport(t, dir, "20260802-feature.report.md", prReportFixture)
+		runGit(t, dir, "add", "docs/plans/completed/20260802-feature.report.md")
+		runGit(t, dir, "commit", "-m", "completion report")
 		binDir := t.TempDir()
 		argsLog := filepath.Join(binDir, "gh-args.log")
 		bodyLog := filepath.Join(binDir, "gh-body.log")
@@ -7340,7 +7343,11 @@ func TestRunPRCommand(t *testing.T) {
 		assert.NotContains(t, string(args), "Implements feature.", "the body must not be exposed in argv")
 		body, readBodyErr := os.ReadFile(bodyLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, readBodyErr)
-		assert.Contains(t, string(body), "Implements feature.")
+		assert.Contains(t, string(body), "Delivered report-backed PRs.")
+		assert.NotContains(t, string(body), "Implements feature.")
+		assert.Contains(t, string(body), "## Merge danger")
+		assert.Contains(t, string(body), "<details><summary>External review</summary>")
+		assert.Contains(t, string(body), "<details><summary>Validation</summary>")
 		localHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "feature"))
 		assert.Equal(t, localHead, strings.TrimSpace(gitOutput(t, remote, "rev-parse", "refs/heads/feature")))
 		assert.Equal(t, "origin/feature", strings.TrimSpace(gitOutput(t, dir, "rev-parse", "--abbrev-ref", "feature@{upstream}")))
@@ -12326,6 +12333,12 @@ func TestRunPRCommandExplicitFeature(t *testing.T) {
 
 	t.Run("branch name pushes and creates the PR without checking it out", func(t *testing.T) {
 		dir, remote, svc := setupBaseCheckout(t)
+		runGit(t, dir, "checkout", "feature")
+		writePRReport(t, dir, "20260802-feature.report.md", prReportFixture)
+		runGit(t, dir, "add", "docs/plans/completed")
+		runGit(t, dir, "commit", "-m", "completion report")
+		runGit(t, dir, "checkout", "master")
+		assert.NoFileExists(t, filepath.Join(dir, "docs", "plans", "completed", "20260802-feature.report.md"))
 		argsLog, bodyLog := stubGh(t)
 		clearer := &recordingStatusClearer{}
 		var output bytes.Buffer
@@ -12342,9 +12355,14 @@ func TestRunPRCommandExplicitFeature(t *testing.T) {
 		assert.Contains(t, string(args), "--base\nmaster\n--head\nfeature\n--title\nFeature PR\n")
 		body, err := os.ReadFile(bodyLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, err)
-		assert.Contains(t, string(body), "Implements feature.")
-		assert.Contains(t, string(body), "- Files changed: 1", "diff stats must describe the named branch, not HEAD")
-		assert.Contains(t, string(body), "- Additions: 2")
+		assert.Contains(t, string(body), "Delivered report-backed PRs.")
+		assert.Contains(t, string(body), "## Merge danger")
+		assert.Contains(t, string(body), "<details><summary>External review</summary>")
+		assert.Contains(t, string(body), "<details><summary>Validation</summary>")
+		stats, err := svc.BranchDiffStats("master", "feature")
+		require.NoError(t, err)
+		assert.Contains(t, string(body), fmt.Sprintf("- Files changed: %d\n- Additions: %d\n- Deletions: %d",
+			stats.Files, stats.Additions, stats.Deletions), "diff stats must describe the named branch, not HEAD")
 
 		localHead := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "feature"))
 		assert.Equal(t, localHead, strings.TrimSpace(gitOutput(t, remote, "rev-parse", "refs/heads/feature")))
@@ -12352,7 +12370,7 @@ func TestRunPRCommandExplicitFeature(t *testing.T) {
 
 	t.Run("plan basename resolves to the feature branch", func(t *testing.T) {
 		dir, _, svc := setupBaseCheckout(t)
-		argsLog, _ := stubGh(t)
+		argsLog, bodyLog := stubGh(t)
 
 		require.NoError(t, runPRCommand(t.Context(), svc, "master",
 			closeoutTarget{identifier: "20260802-feature", plansDir: filepath.Join(dir, "docs", "plans")},
@@ -12360,6 +12378,10 @@ func TestRunPRCommandExplicitFeature(t *testing.T) {
 		args, err := os.ReadFile(argsLog) //nolint:gosec // path built from t.TempDir
 		require.NoError(t, err)
 		assert.Contains(t, string(args), "--head\nfeature\n")
+		body, err := os.ReadFile(bodyLog) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Contains(t, string(body), "Implements feature.")
+		assert.NotContains(t, string(body), "<details>")
 	})
 
 	t.Run("plan path resolves to the feature branch", func(t *testing.T) {
@@ -12550,6 +12572,23 @@ func TestRunReportCommand(t *testing.T) {
 		}, &out)
 		require.NoError(t, err)
 		assert.Equal(t, "branch: (merged)\n\n"+report, out.String())
+	})
+
+	t.Run("merged fallback reads a report absent from all commits", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		planFile := writePRReport(t, dir, "20261005-feature.md", "# Feature\n")
+		runGit(t, dir, "checkout", "-b", "feature")
+		runGit(t, dir, "add", "docs/plans/completed")
+		runGit(t, dir, "commit", "-m", "archive plan")
+		runGit(t, dir, "checkout", "master")
+		runGit(t, dir, "merge", "--ff-only", "feature")
+		runGit(t, dir, "branch", "-d", "feature")
+		writePRReport(t, dir, "20261005-feature.report.md", prReportFixture)
+		svc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		var output bytes.Buffer
+		require.NoError(t, runReportCommand(t.Context(), svc, closeoutTarget{identifier: filepath.Base(planFile)}, &output))
+		assert.Equal(t, "branch: (merged)\n\n"+prReportFixture, output.String())
 	})
 
 	t.Run("missing report returns actionable error", func(t *testing.T) {
@@ -14795,7 +14834,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		f := setupFinalizePRFixture(t)
 		log := &recordingFinalizeLog{}
 
-		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, log)
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, "", log)
 
 		require.NoError(t, res.incomplete)
 		assert.True(t, res.prOpened)
@@ -14811,6 +14850,29 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		assert.Empty(t, log.warns)
 	})
 
+	t.Run("in-memory report survives worktree archival outside the branch", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		// The run checkout still has the active plan, but no archived report sidecar.
+		planDir := filepath.Join(f.dir, "docs", "plans")
+		require.NoError(t, os.MkdirAll(planDir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(planDir, "20261005-feature.md"),
+			[]byte("# Feature title\n## Overview\nLegacy overview."), 0o600))
+		_, err := f.svc.ShowFile("refs/heads/feature", filepath.Join(planDir, "completed", "20261005-feature.report.md"))
+		require.ErrorIs(t, err, git.ErrPathNotFound)
+
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, prReportFixture, &recordingFinalizeLog{})
+
+		require.NoError(t, res.incomplete)
+		assert.True(t, res.prOpened)
+		body := f.prBody(t)
+		assert.Contains(t, body, "Delivered report-backed PRs.")
+		assert.NotContains(t, body, "Legacy overview.")
+		assert.Contains(t, body, "## Merge danger")
+		assert.Contains(t, body, "<details><summary>External review</summary>")
+		assert.Contains(t, body, "<details><summary>Validation</summary>")
+		assert.Contains(t, body, "- Files changed: 1\n- Additions: 1\n- Deletions: 0")
+	})
+
 	t.Run("pr body stats exclude the base changes the sync merged in", func(t *testing.T) {
 		f := setupFinalizePRFixture(t)
 		f.advanceOriginBase(t, "base.txt", "one\ntwo\nthree\n")
@@ -14821,7 +14883,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		require.Equal(t, git.DiffStats{Files: 2, Additions: 4}, behind,
 			"the local base must lag origin/master for this case to tell the two bases apart")
 
-		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, "", &recordingFinalizeLog{})
 
 		require.NoError(t, res.incomplete)
 		assert.Contains(t, f.prBody(t), "- Files changed: 1\n- Additions: 1\n- Deletions: 0")
@@ -14833,7 +14895,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		head := strings.TrimSpace(gitOutput(t, f.dir, "rev-parse", "HEAD"))
 		baseHead := strings.TrimSpace(gitOutput(t, f.dir, "rev-parse", "master"))
 
-		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, log)
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, "", log)
 
 		require.NoError(t, res.incomplete)
 		assert.True(t, res.merged)
@@ -14853,7 +14915,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		t.Setenv("GH_CHECKS", "fail")
 		log := &recordingFinalizeLog{}
 
-		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, log)
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, "", log)
 
 		require.Error(t, res.incomplete)
 		assert.Contains(t, res.incomplete.Error(),
@@ -14874,7 +14936,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		req.Config.FinalizeChecksTimeout = 300 * time.Millisecond
 
 		start := time.Now()
-		res := runFinalizeCloseout(t.Context(), req, synced, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), req, synced, "", &recordingFinalizeLog{})
 
 		require.Error(t, res.incomplete)
 		assert.Equal(t, "PR checks did not finish within 300ms", res.incomplete.Error())
@@ -14887,7 +14949,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		t.Setenv("GH_CHECKS", "nochecks")
 		shortenFinalizeChecksGrace(t, 0)
 
-		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, "", &recordingFinalizeLog{})
 
 		require.NoError(t, res.incomplete)
 		assert.True(t, res.merged)
@@ -14902,7 +14964,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		req.Config.FinalizeChecksTimeout = 300 * time.Millisecond
 
 		start := time.Now()
-		res := runFinalizeCloseout(t.Context(), req, synced, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), req, synced, "", &recordingFinalizeLog{})
 
 		require.Error(t, res.incomplete)
 		assert.Equal(t, "PR checks did not finish within 300ms", res.incomplete.Error())
@@ -14915,7 +14977,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		t.Setenv("GH_CHECKS", "late")
 		shortenFinalizeChecksGrace(t, time.Minute)
 
-		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, "", &recordingFinalizeLog{})
 
 		require.NoError(t, res.incomplete)
 		assert.True(t, res.merged)
@@ -14932,7 +14994,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		f := setupFinalizePRFixture(t)
 		t.Setenv("GH_MERGE", "refuse")
 
-		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, "", &recordingFinalizeLog{})
 
 		require.Error(t, res.incomplete)
 		assert.Contains(t, res.incomplete.Error(), "merge pull request: X Pull request acme/repo#7 is not mergeable")
@@ -14949,7 +15011,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		req := f.request(config.FinalizeMerge)
 		req.KeepAwake = keep
 
-		res := runFinalizeCloseout(t.Context(), req, synced, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), req, synced, "", &recordingFinalizeLog{})
 
 		require.NoError(t, res.incomplete)
 		assert.Equal(t, int32(1), probe.acquires.Load(),
@@ -14960,7 +15022,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		f := setupFinalizePRFixture(t)
 		t.Setenv("GH_MERGE", "queue")
 
-		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), synced, "", &recordingFinalizeLog{})
 
 		require.Error(t, res.incomplete)
 		assert.Equal(t, "gh pr merge left the pull request OPEN; a merge queue or auto-merge may still merge it",
@@ -14974,7 +15036,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		f := setupFinalizePRFixture(t)
 		blocked := processor.FinalizeOutcome{Status: processor.FinalizeBlocked, Reason: "conflict needs a product decision"}
 
-		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), blocked, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeMerge), blocked, "", &recordingFinalizeLog{})
 
 		require.Error(t, res.incomplete)
 		assert.Equal(t, "base sync blocked: conflict needs a product decision", res.incomplete.Error())
@@ -14989,7 +15051,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		f := setupFinalizePRFixture(t)
 
 		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR),
-			processor.FinalizeOutcome{Status: processor.FinalizeSkipped}, &recordingFinalizeLog{})
+			processor.FinalizeOutcome{Status: processor.FinalizeSkipped}, "", &recordingFinalizeLog{})
 
 		require.EqualError(t, res.incomplete, "base sync did not run")
 		assert.Empty(t, f.ghCalls(t))
@@ -14998,7 +15060,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 	t.Run("sync mode stops after the base sync", func(t *testing.T) {
 		f := setupFinalizePRFixture(t)
 
-		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeSync), synced, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeSync), synced, "", &recordingFinalizeLog{})
 
 		require.NoError(t, res.incomplete)
 		assert.Equal(t, "synced", res.statusNote())
@@ -15010,7 +15072,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		req := f.request(config.FinalizeMerge)
 		req.Mode = processor.ModeReview
 
-		res := runFinalizeCloseout(t.Context(), req, synced, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), req, synced, "", &recordingFinalizeLog{})
 
 		require.NoError(t, res.incomplete)
 		assert.Equal(t, config.FinalizeSync, res.mode)
@@ -15021,7 +15083,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		f := setupFinalizePRFixture(t)
 
 		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizeNone),
-			processor.FinalizeOutcome{Status: processor.FinalizeSkipped}, &recordingFinalizeLog{})
+			processor.FinalizeOutcome{Status: processor.FinalizeSkipped}, "", &recordingFinalizeLog{})
 
 		require.NoError(t, res.incomplete)
 		assert.Empty(t, res.statusNote())
@@ -15032,7 +15094,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		f := setupFinalizePRFixture(t)
 		t.Setenv("PATH", t.TempDir())
 
-		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, "", &recordingFinalizeLog{})
 
 		require.Error(t, res.incomplete)
 		assert.Contains(t, res.incomplete.Error(), "finalize = pr requires GitHub CLI (gh) in PATH")
@@ -15043,7 +15105,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		f := setupFinalizePRFixture(t)
 		t.Setenv("PR_TEST_REMOTE", filepath.Join(t.TempDir(), "missing.git"))
 
-		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, "", &recordingFinalizeLog{})
 
 		require.Error(t, res.incomplete)
 		assert.Contains(t, res.incomplete.Error(), "open pull request: push PR branch")
@@ -15063,7 +15125,7 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		req := f.request(config.FinalizePR)
 		req.Config.T3 = true
 
-		res := runFinalizeCloseout(t.Context(), req, synced, &recordingFinalizeLog{})
+		res := runFinalizeCloseout(t.Context(), req, synced, "", &recordingFinalizeLog{})
 
 		require.NoError(t, res.incomplete)
 		require.Len(t, api.commands, 1)
@@ -15123,7 +15185,7 @@ func TestOpenFinalizePRStops(t *testing.T) {
 			log := &recordingFinalizeLog{}
 
 			start := time.Now()
-			res := runFinalizeCloseout(ctx, f.request(tc.mode), synced, log)
+			res := runFinalizeCloseout(ctx, f.request(tc.mode), synced, "", log)
 
 			require.EqualError(t, res.incomplete, tc.wantErr)
 			assert.Less(t, time.Since(start), 4*time.Second, "a stop must not wait out a hanging gh call")
@@ -15175,6 +15237,12 @@ func runFinalizePlan(t *testing.T, finalize string) finalizePlanRun {
 // cuts the "finalize" branch from the feature HEAD.
 func runFinalizePlanIn(t *testing.T, finalize string, worktree bool) finalizePlanRun {
 	t.Helper()
+	return runFinalizePlanWithReport(t, finalize, worktree, "", "")
+}
+
+// runFinalizePlanWithReport also enables the report phase when a prompt is supplied.
+func runFinalizePlanWithReport(t *testing.T, finalize string, worktree bool, reportPrompt, report string) finalizePlanRun {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
@@ -15186,7 +15254,11 @@ func runFinalizePlanIn(t *testing.T, finalize string, worktree bool) finalizePla
 	t.Chdir(f.dir)
 	sessionsLog := filepath.Join(t.TempDir(), "sessions")
 	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
-	writeExecutable(t, fakeClaude, strings.ReplaceAll(finalizeFakeClaude, "%SESSIONS%", sessionsLog))
+	script := strings.ReplaceAll(finalizeFakeClaude, "%SESSIONS%", sessionsLog)
+	if reportPrompt != "" {
+		script = strings.ReplaceAll(withFinalizeReport(t, script, reportPrompt, report), "%SESSIONS%", sessionsLog)
+	}
+	writeExecutable(t, fakeClaude, script)
 	notifiedFile := filepath.Join(t.TempDir(), "notified.json")
 	notifyScript := filepath.Join(t.TempDir(), "notify.sh")
 	writeExecutable(t, notifyScript, "#!/bin/sh\ncat > '"+notifiedFile+"'\n")
@@ -15201,7 +15273,7 @@ func runFinalizePlanIn(t *testing.T, finalize string, worktree bool) finalizePla
 			ClaudeCommand: fakeClaude, Finalize: finalize, MovePlanOnCompletion: true, WorktreeEnabled: worktree,
 			FinalizeMergeMethod: "squash", FinalizeChecksTimeout: time.Minute,
 			TaskPrompt: "TASK-PROMPT", ReviewFirstPrompt: "REVIEW-PROMPT", ReviewSecondPrompt: "REVIEW-PROMPT",
-			FinalizePrompt: "FINALIZE-PROMPT",
+			FinalizePrompt: "FINALIZE-PROMPT", ReportEnabled: reportPrompt != "", ReportPrompt: reportPrompt,
 		},
 		Colors: testColors(), BaseRef: "master", Outcome: &planExecutionOutcome{}, NotifySvc: notifySvc,
 	}

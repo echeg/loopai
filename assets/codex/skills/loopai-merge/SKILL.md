@@ -19,11 +19,13 @@ Run the following with properly quoted arguments:
 loopai --report "$PLAN_STEM"
 ```
 
-Read the feature branch from the leading `branch:` line and the base from report metadata. Narrate the report in the conversation language in this order: summary, change scope, risk, migrations and operational steps, plan deviation, backlog, then findings and outcomes for each external reviewer. Preserve supplied counts and measurements, applying the duration display formatting below. State when information is absent; do not invent findings, risks, migrations, or validation results.
+Read the feature branch from the leading `branch:` line and the base from report metadata. Narrate the report in the conversation language in this order: Summary, Change scope, Evidence, Risk, Merge danger, Migrations and operational steps, Plan deviation, Backlog, then External review with findings and outcomes for each reviewer. Preserve supplied counts and measurements, applying the duration display formatting below. State when information is absent; do not invent findings, risks, migrations, or validation results.
+
+Older reports lack Evidence and Merge danger. Report those sections as absent, not inferred.
 
 For the narrated report, convert all elapsed durations (including `duration_ms` and phase/total timings) from milliseconds to hours, minutes, and seconds. Round to the nearest whole second before splitting into units; omit leading zero units, display zero as `0 s`, and positive values below one second as `<1 s`. Localize the units and use a readable heading such as `Duration` (`Длительность` in Russian), never `duration_ms`. For example, `3661000 ms` becomes `1 h 1 min 1 s`, and `854733 ms` becomes `14 min 15 s`. Preserve the underlying measurements; this is display formatting only. Other counts and measurements remain unchanged.
 
-If the command specifically says no completion report exists, explain that the run predates reporting or archived without one. Resolve the feature read-only using matching progress header records under `.loopai/progress/` (match the plan basename, prefer the newest full/tasks-only record), then an exact local branch, then the branch derived from the matching plan filename by removing its leading digits and dashes. Use the current branch as the proposed base only when it differs from the feature; otherwise ask for the base. Verify refs before showing `git log "$BASE".."$BRANCH" --stat`. Explain that this log provides no risk, migration, deviation, backlog, or reviewer assessment. Other report-command errors must be shown and resolved before continuing.
+If the command specifically says no completion report exists, explain that the run predates reporting or archived without one. Resolve the feature read-only using matching progress header records under `.loopai/progress/` (match the plan basename, prefer the newest full/tasks-only record), then an exact local branch, then the branch derived from the matching plan filename by removing its leading digits and dashes. Use the current branch as the proposed base only when it differs from the feature; otherwise ask for the base. Verify refs before showing `git log "$BASE".."$BRANCH" --stat`. Explain that this log provides no evidence, risk, merge danger, migration, deviation, backlog, or reviewer assessment. Other report-command errors must be shown and resolved before continuing.
 
 ## Resolve the base
 
@@ -51,7 +53,9 @@ For each conflicted path, gather `git show "$TREE:$path"` (merged content with m
 
 Do not run any mutating command before the answer.
 
-Without conflicts, ask “Merge into <base>?” with choices to merge, open a PR, or cancel. With conflicts, ask “Merge into <base>? <N> files conflict” with choices to resolve and merge, open a PR (the forge will show the conflicts), or cancel. Explain that this skill requires a close-out choice after the report has been presented. Wait for the answer before either mutation.
+Immediately above the `Merge into <base>?` question, restate the reported `Door` and `Blast radius` in one line: `Door: <reported value>; Blast radius: <reported value>`. Include only values present in the report, omit the line when neither is present, and never infer a missing value.
+
+Without conflicts, ask “Merge into <base>?” with choices to merge, open a PR, or cancel. With conflicts, ask “Merge into <base>? <N> files conflict” with choices to resolve and merge, open a PR (the forge will show the conflicts), or cancel. For the Open PR option in either case, explain that the pull request body is built from the report, with the legacy body as fallback. Explain that this skill requires a close-out choice after the report has been presented. Wait for the answer before either mutation.
 
 For Merge:
 
