@@ -68,6 +68,7 @@ type opts struct {
 	IdleTimeout             time.Duration `long:"idle-timeout" description:"kill claude/codex executor session after no output for this duration (e.g. 5m, 10m)"`
 	Finalize                string        `long:"finalize" choice:"none" choice:"sync" choice:"pr" choice:"merge" description:"close out the plan branch after a successful run: sync = merge origin/<base> and validate, pr = sync and open a pull request, merge = pr and merge it after its checks pass"`
 	SkipFinalize            bool          `long:"skip-finalize" description:"skip finalize for this run, overriding --finalize and the finalize config key"`
+	ReviewCadence           string        `long:"review-cadence" choice:"end" choice:"task" description:"when external review runs in full mode: end = once after the task phase, task = also after every completed task"`
 	PreserveAnthropicAPIKey bool          `long:"preserve-anthropic-api-key" description:"pass ANTHROPIC_API_KEY through to claude (for users authenticating Claude Code via API key rather than OAuth/keychain)"`
 	NoClaudeSwap            bool          `long:"no-claude-swap" description:"disable automatic claude-swap account rotation for this run"`
 	Codex                   bool          `long:"codex" hidden:"true" description:"removed; set the provider in --task-model"`
@@ -205,7 +206,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 		"plan-model", "task-model", "review-model", "claude-command", "claude-args", "codex-args",
 		"external-reviewers", "custom-review-script",
 		"review", "external-only", "tasks-only", "base-ref", "wait",
-		"session-timeout", "idle-timeout", "finalize", "skip-finalize", "preserve-anthropic-api-key",
+		"session-timeout", "idle-timeout", "finalize", "skip-finalize", "review-cadence", "preserve-anthropic-api-key",
 		"no-claude-swap", "pass-claude-md", "worktree",
 		"branch", "plan", "gen-agents", "serve", "watch", "init", "reset", "dump-defaults",
 	} {
@@ -262,6 +263,7 @@ type startupInfo struct {
 	PreserveAnthropicAPIKey bool   // when true, surfaced in the banner so users can spot wrong-context runs before claude bills the wrong account
 	CodexSandbox            string // sandbox of the codex phase executors, printed under the first codex phase
 	ExternalReview          externalReviewSelection
+	ReviewCadence           string    // effective review cadence; printed only when it is task
 	Out                     io.Writer // banner destination; nil = color.Output
 }
 
@@ -1831,10 +1833,14 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) (execErr e
 		PreserveAnthropicAPIKey: req.Config.PreserveAnthropicAPIKey,
 		CodexSandbox:            req.Config.CodexExecutorSandbox(),
 		ExternalReview:          req.ExternalReview,
+		ReviewCadence:           reviewCadenceFor(req),
 		Out:                     req.Out,
 	}, req.Colors)
 	warnCodexMaxDropped(req.out(), phases, req.Colors)
 	if warning := finalizeStartupWarning(req); warning != "" {
+		req.Colors.Warn().Fprintf(req.out(), "%s\n", warning)
+	}
+	if warning := reviewCadenceStartupWarning(req); warning != "" {
 		req.Colors.Warn().Fprintf(req.out(), "%s\n", warning)
 	}
 
@@ -3793,6 +3799,8 @@ func validateT3LaunchFlags(o opts) error {
 		// configured pr or merge push and merge a run the user asked to keep local
 		{"--finalize", o.Finalize != ""},
 		{"--skip-finalize", o.SkipFinalize},
+		// review_cadence is read from config by the launched run as well
+		{"--review-cadence", o.ReviewCadence != ""},
 	}
 	for _, conflict := range conflicts {
 		if conflict.set {
@@ -3984,7 +3992,8 @@ func hasExecutionMode(o opts) bool {
 		o.ExternalReviewers != "", o.CustomReviewScript != "",
 		o.PlanDescription != "", o.Review, o.ExternalOnly, o.TasksOnly,
 		o.BaseRef != "", o.waitSet || o.Wait != 0, o.sessionTimeoutSet || o.SessionTimeout != 0,
-		o.idleTimeoutSet || o.IdleTimeout != 0, o.Finalize != "", o.SkipFinalize, o.PreserveAnthropicAPIKey,
+		o.idleTimeoutSet || o.IdleTimeout != 0, o.Finalize != "", o.SkipFinalize, o.ReviewCadence != "",
+		o.PreserveAnthropicAPIKey,
 		o.NoClaudeSwap, o.PassClaudeMd, o.Worktree, o.Commit, o.Branch != "",
 		o.Serve, len(o.Watch) != 0, o.Init, o.Reset, o.DumpDefaults != "", o.GenAgents,
 	} {
@@ -4099,6 +4108,7 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		FinalizeEnabled:       finalizeEnabled,
 		FinalizeBase:          finalizeBase,
 		ReportEnabled:         req.Config.ReportEnabled,
+		ReviewCadence:         reviewCadenceFor(req),
 		DefaultBranch:         req.BaseRef,
 		TaskModel:             resolveSpec(o.TaskModel, req.Config.TaskModel),
 		ReviewModel:           resolveReviewSpec(o, req.Config),
@@ -4198,6 +4208,9 @@ func printExecutorInfo(w io.Writer, info startupInfo, colors *progress.Colors) {
 		}
 	}
 	printExternalReviewInfo(w, info.ExternalReview, colors)
+	if info.ReviewCadence == config.ReviewCadenceTask {
+		colors.Info().Fprintf(w, "%-*s%s\n", bannerLabelWidth, "review cadence:", "external review after every task")
+	}
 }
 
 func printExternalReviewInfo(w io.Writer, selection externalReviewSelection, colors *progress.Colors) {
@@ -6746,6 +6759,10 @@ func applyFinalizeOverride(o opts, cfg *config.Config) {
 // codex executor, which may come from config file rather than CLI).
 func applyCLIOverrides(o opts, cfg *config.Config) error {
 	applyFinalizeOverride(o, cfg)
+	if o.ReviewCadence != "" {
+		cfg.ReviewCadence = o.ReviewCadence
+		cfg.ReviewCadenceSet = true
+	}
 	if o.PreserveAnthropicAPIKey {
 		cfg.PreserveAnthropicAPIKey = true
 	}
@@ -6980,6 +6997,39 @@ func finalizeStartupWarning(req executePlanRequest) string {
 	default:
 		return fmt.Sprintf("finalize = %s opens a pull request only for plan execution; "+
 			"--review and --external-only sync with the base only", configured)
+	}
+}
+
+// reviewCadenceFor returns the review cadence that applies to req: the configured cadence in full
+// mode with at least one external reviewer, otherwise end, since only the full pipeline has a
+// task phase to review after and an empty chain has nobody to run.
+func reviewCadenceFor(req executePlanRequest) string {
+	if req.Config == nil || req.Mode != processor.ModeFull || len(req.ExternalReview.Reviewers) == 0 {
+		return config.ReviewCadenceEnd
+	}
+	return req.Config.EffectiveReviewCadence()
+}
+
+// reviewCadenceStartupWarning explains a configured review_cadence = task the run cannot honor,
+// or returns "".
+func reviewCadenceStartupWarning(req executePlanRequest) string {
+	if req.Config == nil || req.Config.EffectiveReviewCadence() != config.ReviewCadenceTask {
+		return ""
+	}
+	switch req.Mode {
+	case processor.ModeFull:
+		if len(req.ExternalReview.Reviewers) == 0 {
+			return "review_cadence = task has no external reviewers to run; tasks run without per-task review"
+		}
+		return ""
+	case processor.ModeReview:
+		return "review_cadence = task has no effect under --review, which runs no task phase"
+	case processor.ModeCodexOnly:
+		return "review_cadence = task has no effect under --external-only, which runs no task phase"
+	case processor.ModeTasksOnly:
+		return "review_cadence = task has no effect under --tasks-only, which runs no review pipeline"
+	default:
+		return ""
 	}
 }
 

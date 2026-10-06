@@ -53,6 +53,7 @@ type Config struct {
 	FinalizeEnabled       bool                        // whether the finalize base sync runs (finalize != none, and the last plan of a chain)
 	FinalizeBase          string                      // base branch the finalize sync merges from origin
 	ReportEnabled         bool                        // whether completion report generation is enabled
+	ReviewCadence         string                      // end or task; task runs the external chain after every completed task in full mode
 	DefaultBranch         string                      // default branch name (detected from repo)
 	AppConfig             *config.Config              // full application config (for executors and prompts)
 	LimitRecovery         limits.Recovery             // optional provider-specific limit recovery

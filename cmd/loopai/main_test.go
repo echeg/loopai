@@ -3590,6 +3590,44 @@ func TestFinalizeFlags(t *testing.T) {
 	})
 }
 
+func TestReviewCadenceFlag(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		cfg     config.Config
+		want    string
+		wantSet bool
+	}{
+		{name: "absent flag keeps config", cfg: config.Config{ReviewCadence: config.ReviewCadenceTask, ReviewCadenceSet: true},
+			want: config.ReviewCadenceTask, wantSet: true},
+		{name: "absent flag keeps unset config", cfg: config.Config{}, want: ""},
+		{name: "flag overrides config", args: []string{"--review-cadence=end"},
+			cfg:  config.Config{ReviewCadence: config.ReviewCadenceTask, ReviewCadenceSet: true},
+			want: config.ReviewCadenceEnd, wantSet: true},
+		{name: "detached flag value", args: []string{"--review-cadence", "task"},
+			cfg: config.Config{}, want: config.ReviewCadenceTask, wantSet: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg
+			o := parseTestOpts(t, tc.args...)
+			require.NoError(t, applyCLIOverrides(o, &cfg))
+			assert.Equal(t, tc.want, cfg.ReviewCadence)
+			assert.Equal(t, tc.wantSet, cfg.ReviewCadenceSet)
+			assert.Equal(t, len(tc.args) > 0, hasExecutionMode(o), "the flag selects execution mode")
+		})
+	}
+
+	t.Run("invalid value is rejected by the parser", func(t *testing.T) {
+		var o opts
+		parser := flags.NewParser(&o, flags.Default&^flags.PrintErrors)
+		_, err := parser.ParseArgs([]string{"--review-cadence=phase"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "end")
+		assert.Contains(t, err.Error(), "task")
+	})
+}
+
 func TestPreserveAnthropicAPIKeyFlag(t *testing.T) {
 	t.Run("flag enables when config disabled", func(t *testing.T) {
 		cfg := &config.Config{PreserveAnthropicAPIKey: false}
@@ -3932,6 +3970,7 @@ func TestValidateT3LaunchFlags(t *testing.T) {
 		{name: "closeout", o: valid(func(o *opts) { o.Report = true }), wantErr: "--merge, --pr, or --report"},
 		{name: "finalize", o: valid(func(o *opts) { o.Finalize = "none" }), wantErr: "cannot be combined with --finalize"},
 		{name: "skip finalize", o: valid(func(o *opts) { o.SkipFinalize = true }), wantErr: "cannot be combined with --skip-finalize"},
+		{name: "review cadence", o: valid(func(o *opts) { o.ReviewCadence = "task" }), wantErr: "cannot be combined with --review-cadence"},
 		{name: "bad value", o: valid(func(o *opts) { o.TaskModel = "opus; rm -rf" }), wantErr: "invalid --task-model value"},
 		{name: "unprefixed model", o: valid(func(o *opts) { o.TaskModel = "opus:high" }), wantErr: "--task-model \"opus:high\" needs a claude or codex provider prefix"},
 		{name: "custom model", o: valid(func(o *opts) { o.ReviewModel = "custom" }), wantErr: "--review-model \"custom\" needs a claude or codex"},
@@ -5908,6 +5947,28 @@ func TestPrintStartupInfo_PhaseLines(t *testing.T) {
 		out := captureStdout(t, func() { printStartupInfo(info, testColors()) })
 		assert.Contains(t, out, "task:            claude default\n")
 		assert.Contains(t, out, "review:          claude default\n")
+	})
+
+	t.Run("task review cadence prints under the external review line", func(t *testing.T) {
+		info := startupInfo{Mode: processor.ModeFull, Phases: modePhaseBanners(opts{}, &config.Config{}, processor.ModeFull),
+			ExternalReview: externalReviewSelection{Resolved: true, Explicit: true,
+				Reviewers: []resolvedReviewer{{Provider: "codex", Model: "gpt-6-astra"}}},
+			ReviewCadence: config.ReviewCadenceTask}
+		out := captureStdout(t, func() { printStartupInfo(info, testColors()) })
+		assert.Contains(t, out, ""+
+			"external review: codex gpt-6-astra\n"+
+			"review cadence:  external review after every task\n")
+	})
+
+	t.Run("end review cadence prints nothing", func(t *testing.T) {
+		for _, cadence := range []string{"", config.ReviewCadenceEnd} {
+			info := startupInfo{Mode: processor.ModeFull, Phases: modePhaseBanners(opts{}, &config.Config{}, processor.ModeFull),
+				ExternalReview: externalReviewSelection{Resolved: true, Explicit: true,
+					Reviewers: []resolvedReviewer{{Provider: "codex", Model: "gpt-6-astra"}}},
+				ReviewCadence: cadence}
+			out := captureStdout(t, func() { printStartupInfo(info, testColors()) })
+			assert.NotContains(t, out, "review cadence")
+		}
 	})
 
 	t.Run("plan mode prints the plan phase", func(t *testing.T) {
@@ -14588,6 +14649,57 @@ func TestFinalizeModeFor(t *testing.T) {
 	t.Run("nil config", func(t *testing.T) {
 		assert.Equal(t, config.FinalizeNone, finalizeModeFor(executePlanRequest{Mode: processor.ModeFull}))
 		assert.Empty(t, finalizeStartupWarning(executePlanRequest{Mode: processor.ModeFull}))
+	})
+}
+
+func TestReviewCadenceFor(t *testing.T) {
+	chain := externalReviewSelection{Resolved: true, Explicit: true,
+		Reviewers: []resolvedReviewer{{Provider: "codex", Model: "gpt-6-astra"}}}
+	tests := []struct {
+		name        string
+		mode        processor.Mode
+		cadence     string
+		selection   externalReviewSelection
+		want        string
+		wantWarning string
+	}{
+		{name: "unset is end", mode: processor.ModeFull, selection: chain, want: config.ReviewCadenceEnd},
+		{name: "explicit end", mode: processor.ModeFull, cadence: config.ReviewCadenceEnd, selection: chain,
+			want: config.ReviewCadenceEnd},
+		{name: "full keeps task", mode: processor.ModeFull, cadence: config.ReviewCadenceTask, selection: chain,
+			want: config.ReviewCadenceTask},
+		{name: "full with empty chain", mode: processor.ModeFull, cadence: config.ReviewCadenceTask,
+			selection: externalReviewSelection{Resolved: true}, want: config.ReviewCadenceEnd,
+			wantWarning: "review_cadence = task has no external reviewers to run"},
+		{name: "review ignores task", mode: processor.ModeReview, cadence: config.ReviewCadenceTask, selection: chain,
+			want: config.ReviewCadenceEnd, wantWarning: "review_cadence = task has no effect under --review,"},
+		{name: "external-only ignores task", mode: processor.ModeCodexOnly, cadence: config.ReviewCadenceTask,
+			selection: chain, want: config.ReviewCadenceEnd,
+			wantWarning: "review_cadence = task has no effect under --external-only"},
+		{name: "tasks-only ignores task", mode: processor.ModeTasksOnly, cadence: config.ReviewCadenceTask,
+			selection: chain, want: config.ReviewCadenceEnd,
+			wantWarning: "review_cadence = task has no effect under --tasks-only"},
+		{name: "tasks-only with end is silent", mode: processor.ModeTasksOnly, cadence: config.ReviewCadenceEnd,
+			selection: chain, want: config.ReviewCadenceEnd},
+		{name: "review with empty chain and end is silent", mode: processor.ModeReview, want: config.ReviewCadenceEnd},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := executePlanRequest{Mode: tc.mode, ExternalReview: tc.selection, Config: &config.Config{ReviewCadence: tc.cadence}}
+			assert.Equal(t, tc.want, reviewCadenceFor(req))
+			warning := reviewCadenceStartupWarning(req)
+			if tc.wantWarning == "" {
+				assert.Empty(t, warning)
+				return
+			}
+			assert.Contains(t, warning, tc.wantWarning)
+		})
+	}
+
+	t.Run("nil config", func(t *testing.T) {
+		req := executePlanRequest{Mode: processor.ModeFull, ExternalReview: chain}
+		assert.Equal(t, config.ReviewCadenceEnd, reviewCadenceFor(req))
+		assert.Empty(t, reviewCadenceStartupWarning(req))
 	})
 }
 

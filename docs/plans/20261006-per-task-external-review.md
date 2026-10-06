@@ -62,13 +62,13 @@
 - [x] run `go test ./pkg/config/...` - must pass before task 2
 
 ### Task 2: Add the `--review-cadence` flag and startup wiring
-- [ ] in `cmd/loopai/main.go` add `ReviewCadence string` to `opts` with `long:"review-cadence" choice:"end" choice:"task"` and a description, and list it in `markFlagsSet` where `finalize` is listed
-- [ ] in `applyCLIOverrides` copy a set flag into `cfg.ReviewCadence` with `ReviewCadenceSet = true`, following `applyFinalizeOverride`
-- [ ] add `reviewCadenceStartupWarning`: when the effective cadence is `task` and the mode is not full (`--review`, `--external-only`, `--tasks-only`), warn that the cadence is ignored; when the external chain resolves to empty, warn that `review_cadence = task` has no reviewers to run
-- [ ] print the effective cadence in the startup banner only when it is `task`, as one line under the external reviewers line
-- [ ] pass the effective cadence into `processor.Config` (new field `ReviewCadence`) where the other config fields are copied (~4101)
-- [ ] write tests in `cmd/loopai/main_test.go` for the override (flag wins over config, unset leaves config), the mode warning for the three non-full modes, the empty-chain warning, and the banner line present/absent
-- [ ] run `go test ./cmd/loopai/...` - must pass before task 3
+- [x] in `cmd/loopai/main.go` add `ReviewCadence string` to `opts` with `long:"review-cadence" choice:"end" choice:"task"` and a description, and list it in `markFlagsSet` where `finalize` is listed
+- [x] in `applyCLIOverrides` copy a set flag into `cfg.ReviewCadence` with `ReviewCadenceSet = true`, following `applyFinalizeOverride`
+- [x] add `reviewCadenceStartupWarning`: when the effective cadence is `task` and the mode is not full (`--review`, `--external-only`, `--tasks-only`), warn that the cadence is ignored; when the external chain resolves to empty, warn that `review_cadence = task` has no reviewers to run
+- [x] print the effective cadence in the startup banner only when it is `task`, as one line under the external reviewers line
+- [x] pass the effective cadence into `processor.Config` (new field `ReviewCadence`) where the other config fields are copied (~4101)
+- [x] write tests in `cmd/loopai/main_test.go` for the override (flag wins over config, unset leaves config), the mode warning for the three non-full modes, the empty-chain warning, and the banner line present/absent
+- [x] run `go test ./cmd/loopai/...` - must pass before task 3 (WSL unavailable; native Windows run shows the same 70 POSIX-only failures as clean HEAD and none new)
 
 ### Task 3: Add the `AfterTask` hook to `TaskPhase`
 - [ ] in `pkg/processor/phase/task.go` add `AfterTask func(ctx context.Context, taskNum int, headBefore string) error` to `TaskPhaseOpts` and the struct
