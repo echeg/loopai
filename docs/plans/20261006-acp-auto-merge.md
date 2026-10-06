@@ -83,7 +83,7 @@
 - [x] run tests - must pass before next task
 
 ### Task 3: Implement the local auto-merge step
-- [ ] create `cmd/loopai/acp_merge.go` with `acpAutoMerge(ctx, gitSvc *git.Service, cfg *config.Config, defaultBranch, report string) acpMergeResult`. `acpMergeResult` carries `merged bool`, `kind string` (fast-forward / merge commit / already up to date), `base`, `feature`, `head` (short SHA), and `skipped string` (reason). Precondition checks, in order, each producing a `skipped` reason and no repository change:
+- [x] create `cmd/loopai/acp_merge.go` with `acpAutoMerge(ctx, gitSvc *git.Service, cfg *config.Config, defaultBranch, report string) acpMergeResult`. `acpMergeResult` carries `merged bool`, `kind string` (fast-forward / merge commit / already up to date), `base`, `feature`, `head` (short SHA), and `skipped string` (reason). Precondition checks, in order, each producing a `skipped` reason and no repository change:
   - `cfg.ACPAutoMerge` is false
   - `cfg.EffectiveFinalize()` is `pr` or `merge`, so GitHub owns close-out
   - Risk from `reportRiskLevel` is not `low`/`medium`; the reason names the level or "Risk level not stated"
@@ -92,11 +92,11 @@
   - the feature checkout is dirty (`IsDirtyAll`)
   - the base is not checked out in any registered worktree (`Worktrees` + `worktreePathForBranch`); no checkout switching is done on the user's behalf
   - that base worktree is dirty
-- [ ] perform the merge in the base worktree through `openMergeWorktree` and `mergeForCloseout` with the feature head from `BranchHash`. A conflict or failed verification becomes `skipped` with the wrapped reason from `closeoutMergeError` (merge aborted, base unchanged). Never call `DeleteBranch`, `cleanupMergedWorktree`, or any push.
-- [ ] add `(r acpMergeResult) message() string`, which renders a `## Merge` Markdown section:
+- [x] perform the merge in the base worktree through `openMergeWorktree` and `mergeForCloseout` with the feature head from `BranchHash`. A conflict or failed verification becomes `skipped` with the wrapped reason from `closeoutMergeError` (merge aborted, base unchanged). Never call `DeleteBranch`, `cleanupMergedWorktree`, or any push.
+- [x] add `(r acpMergeResult) message() string`, which renders a `## Merge` Markdown section:
   - merged: `` Merged `<feature>` into `<base>` (<kind>, `<sha>`). Not pushed. ``
   - skipped: `` Not merged into `<base>`: <reason>. ``
-- [ ] write tests in `cmd/loopai/acp_merge_test.go` against temp repos with a linked worktree on the feature branch and the base checked out in the primary:
+- [x] write tests in `cmd/loopai/acp_merge_test.go` against temp repos with a linked worktree on the feature branch and the base checked out in the primary:
   - low risk merges and the base advances; the feature branch and worktree still exist
   - medium risk merges
   - high, unknown, and fallback risk skip
@@ -106,7 +106,7 @@
   - a conflict skips and leaves the base unchanged with no `MERGE_HEAD`
   - feature equal to base skips
   - `message()` output for each kind
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 4: Wire the merge and follow-up guidance into the ACP run result
 - [ ] in `acpRunner.run`, after `selectAndExecutePlan` returns with `execReq.Outcome.succeeded` and no error:
