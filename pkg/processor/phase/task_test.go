@@ -453,6 +453,58 @@ func TestTaskPhase_Run_AfterTaskSkipsTimeout(t *testing.T) {
 	assert.Len(t, exec.RunCalls(), 2)
 }
 
+func TestTaskPhase_Run_AfterTaskTimeoutThatTickedTheTask(t *testing.T) {
+	phase, calls, exec := newAfterTaskPhase(t, "# Plan\n### Task 1: first\n- [ ] one\n### Task 2: second\n- [ ] two",
+		[]planStep{tickStep("one", ""), tickStep("two", status.Completed)})
+	phase.policy = newScriptedTestPolicy(phase.log,
+		ExecutionResult{TimedOut: true},
+		ExecutionResult{Result: executor.Result{Signal: status.Completed}},
+	)
+
+	require.NoError(t, phase.Run(t.Context()))
+
+	// the session hung after ticking task 1, so its review runs before the next task starts
+	assert.Equal(t, []afterTaskCall{{taskNum: 1, headBefore: "h1"}, {taskNum: 2, headBefore: "h2"}}, *calls)
+	assert.Len(t, exec.RunCalls(), 2)
+}
+
+func TestTaskPhase_Run_AfterTaskBreakThatTickedTheTask(t *testing.T) {
+	const planBody = "# Plan\n### Task 1: first\n- [ ] one\n### Task 2: second\n- [ ] two"
+	planFile := writeTaskPhasePlan(t, planBody)
+	breakCh := make(chan struct{}, 1)
+	runs := 0
+	exec := &executorMock{RunFunc: func(ctx context.Context, _ string) executor.Result {
+		runs++
+		if runs == 1 {
+			require.NoError(t, os.WriteFile(planFile, []byte(strings.Replace(planBody, "- [ ] one", "- [x] one", 1)), 0o600))
+			breakCh <- struct{}{}
+			<-ctx.Done()
+			return executor.Result{Error: ctx.Err()}
+		}
+		require.NoError(t, os.WriteFile(planFile, []byte(strings.ReplaceAll(planBody, "- [ ]", "- [x]")), 0o600))
+		return executor.Result{Signal: status.Completed}
+	}}
+	phase := taskPhaseFromRunner(t, taskPhaseTestOpts{cfg: Config{MaxIterations: 10}, planFile: planFile, exec: exec, log: newMockLogger("")})
+	phase.deps.BreakCh = breakCh
+	phase.deps.PauseHandler = func(context.Context) bool { return true }
+	heads := 0
+	phase.deps.Git = &gitCheckerMock{HeadHashFunc: func() (string, error) {
+		heads++
+		return fmt.Sprintf("h%d", heads), nil
+	}}
+	var calls []afterTaskCall
+	phase.afterTask = func(_ context.Context, taskNum int, headBefore string) error {
+		calls = append(calls, afterTaskCall{taskNum: taskNum, headBefore: headBefore})
+		return nil
+	}
+
+	require.NoError(t, phase.Run(t.Context()))
+
+	// the session was interrupted after ticking task 1; resuming reviews it before task 2 starts
+	assert.Equal(t, []afterTaskCall{{taskNum: 1, headBefore: "h1"}, {taskNum: 2, headBefore: "h2"}}, calls)
+	assert.Equal(t, 2, runs)
+}
+
 func TestTaskPhase_Run_AfterTaskSkipsBreak(t *testing.T) {
 	planFile := writeTaskPhasePlan(t, "# Plan\n### Task 1: first\n- [ ] one")
 	breakCh := make(chan struct{}, 1)

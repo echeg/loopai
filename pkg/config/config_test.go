@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2003,8 +2004,9 @@ func TestConfig_IsRealCommand(t *testing.T) {
 func Test_defaultsFS_ReviewScopeOnlyInExternalPrompts(t *testing.T) {
 	// {{REVIEW_SCOPE}} is expanded only on the external review and evaluation paths; a token in
 	// any other prompt would reach the model unexpanded
-	for _, file := range []string{"codex_review.txt", "external_claude_review.txt", "custom_review.txt",
-		"codex.txt", "external_claude_eval.txt", "custom_eval.txt"} {
+	external := []string{"codex_review.txt", "external_claude_review.txt", "custom_review.txt",
+		"codex.txt", "external_claude_eval.txt", "custom_eval.txt"}
+	for _, file := range external {
 		t.Run(file, func(t *testing.T) {
 			data, err := defaultsFS.ReadFile("defaults/prompts/" + file)
 			require.NoError(t, err)
@@ -2014,7 +2016,13 @@ func Test_defaultsFS_ReviewScopeOnlyInExternalPrompts(t *testing.T) {
 			assert.Regexp(t, `(?m)^[^#\n][^\n]*\{\{REVIEW_SCOPE\}\}$`, body)
 		})
 	}
-	for _, file := range []string{"review_first.txt", "review_second.txt", "task.txt", "finalize.txt", "report.txt"} {
+	entries, err := defaultsFS.ReadDir("defaults/prompts")
+	require.NoError(t, err)
+	for _, entry := range entries {
+		file := entry.Name()
+		if slices.Contains(external, file) {
+			continue
+		}
 		t.Run(file, func(t *testing.T) {
 			data, err := defaultsFS.ReadFile("defaults/prompts/" + file)
 			require.NoError(t, err)

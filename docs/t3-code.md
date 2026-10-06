@@ -127,7 +127,9 @@ already created.
 itself, after merging `origin/<base>` into the branch, and links it the same way; `merge` also waits
 for the PR checks and merges it on GitHub, so the thread settles without a separate close-out (see
 [Finalize](../README.md#finalize)). Put the key in `.loopai/config`, since `--t3-launch` forwards
-only the model and reviewer flags and rejects `--finalize` and `--skip-finalize`. A run started by
+only the model and reviewer flags and rejects `--finalize` and `--skip-finalize`. The same applies
+to `review_cadence = task`: `--t3-launch` rejects `--review-cadence`, so set the key in
+`.loopai/config`. A run started by
 `--t3-launch` uses the T3 Code-managed worktree without `--worktree`, and finalize never removes a
 worktree loopai did not create, so it stays until it is removed in T3 Code. Terminal mode enables
 `t3` reporting and PR linking; agent mode forces `t3` off and passes no launcher token into the run,

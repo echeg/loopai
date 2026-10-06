@@ -134,17 +134,33 @@ func (b *promptBuilder) replaceExternalVariablesWithIteration(prompt string, isF
 // the end of a line and the scope text starts with a blank line, so an unscoped render is
 // byte-identical to a prompt without the token.
 func (b *promptBuilder) replaceReviewScope(prompt string) string {
+	b.warnMissingReviewScope(prompt)
 	return strings.ReplaceAll(prompt, "{{REVIEW_SCOPE}}", b.reviewScope)
 }
 
+// warnMissingReviewScope warns once when a per-task block renders an external prompt without
+// the {{REVIEW_SCOPE}} placeholder. a customized copy that predates review_cadence still gets the
+// task's diff base, but its reviewers are never told that later tasks are pending.
+func (b *promptBuilder) warnMissingReviewScope(prompt string) {
+	if b.reviewScope == "" || b.reviewScopeMissingWarned || strings.Contains(prompt, "{{REVIEW_SCOPE}}") {
+		return
+	}
+	b.reviewScopeMissingWarned = true
+	b.log.Print("[WARN] external review prompt has no {{REVIEW_SCOPE}} placeholder: per-task reviewers are not told that " +
+		"later tasks are pending, add it to your customized external review and evaluation prompts")
+}
+
 // reviewScopeForTask returns the {{REVIEW_SCOPE}} text for the per-task external review
-// that runs after task taskNum of planFile. the diff base is the commit the task started
-// from, so the reviewer sees that task alone while later tasks do not exist yet.
+// that runs after the task at plan position taskNum. the diff base is the commit the task
+// started from, so the reviewer sees that work alone while later tasks do not exist yet.
+// one session can complete several tasks, so the text names where the work starts rather
+// than claiming a single task.
 func reviewScopeForTask(taskNum int, planFile string) string {
-	return fmt.Sprintf("\n\nReview scope: this review covers only Task %d of the plan at %s. "+
-		"The diff base is the commit before that task started, so the diff shows that task's changes alone. "+
-		"The plan is still being executed: later tasks are not implemented yet, so their absence and "+
-		"missing integration with them are not findings.", taskNum, planFile)
+	return fmt.Sprintf("\n\nReview scope: this review covers only the task just completed in the plan at %s, "+
+		"starting with task section %d (a session that completed several tasks at once is reviewed as one). "+
+		"The diff base is the commit before that work started, so the diff shows those changes alone. "+
+		"The plan is still being executed: tasks still unchecked in the plan are not implemented yet, so their "+
+		"absence and missing integration with them are not findings.", planFile, taskNum)
 }
 
 func providerDisplayName(provider string) string {

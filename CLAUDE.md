@@ -563,10 +563,14 @@ The task and review providers own all repository writes. External reviewers prod
 
 `review_cadence = end|task` (`config.ReviewCadence*`, read through `EffectiveReviewCadence`;
 `--review-cadence` sets it) adds per-task external review blocks to full mode only.
-`phase.TaskPhase` carries an `AfterTask(ctx, taskNum, headBefore)` hook and calls it only after a
-successful iteration that advanced `NextPlanTaskPosition` or ended with `SignalCompleted` and no
-task left; `headBefore` is kept from the first attempt at a position, so a retried attempt does not
-move the diff base past the task's own commits. A hook error is wrapped as `after task N: ...`,
+`phase.TaskPhase` carries an `AfterTask(ctx, taskNum, headBefore)` hook and calls it after an
+iteration that did not end in `SignalFailed` and either advanced `NextPlanTaskPosition` or left no
+uncompleted task, whatever its signal. That includes a timed-out session and one resumed after a
+manual break, when either ticked its task before stopping: the next iteration starts at another
+position, so skipping them would silently drop that task's review. `headBefore` is kept from the
+first attempt at a position, so a retried attempt does not move the diff base past the task's own
+commits. `taskNum` is the plan position, and one session can tick several tasks, so
+`reviewScopeForTask` names where the reviewed work starts rather than a single task. A hook error is wrapped as `after task N: ...`,
 while `context.Canceled` and `ErrUserAborted` propagate unchanged. The runner installs the hook only
 when the mode is `ModeFull`, the cadence is `task`, and `externalPhase.Enabled()`; `runTasksOnly`
 keeps it nil. `Runner.afterTaskReview` skips the block with a log line when `headBefore` is empty,
@@ -578,7 +582,13 @@ commit and fills `{{REVIEW_SCOPE}}` in the six external review and evaluation pr
 It runs the external phase with `SetResume(0, false)` under `PhaseExternalReview`, and its deferred
 restore returns the holder to `PhaseTask`, clears the scope, and re-applies the checkpoint resume
 state for the final block. The internal review and `review_second.txt` loop run only in the final
-block. `perTaskReview` is set for the block's duration: `onReviewerDone` saves no checkpoint stage
+block. The evaluation prompts commit only on `EXTERNAL_REVIEW_DONE`, so a block ending by stalemate,
+iteration cap, or break leaves its fixes uncommitted and nothing on the task path stages them;
+`afterTaskReview` compares `DiffFingerprint` before and after the block and sets
+`perTaskLeftovers`, which makes `runExternalAndPostReview` run the post-review loop, whose
+`commitPrefix` commits them, even when the final chain finds nothing. A fingerprint rather than
+`IsDirtyAll` is what keeps a user's unrelated dirty files from triggering it. `warnMissingReviewScope`
+warns once when a scoped render meets a customized external prompt without `{{REVIEW_SCOPE}}`. `perTaskReview` is set for the block's duration: `onReviewerDone` saves no checkpoint stage
 while it is, because a lost per-task review is repeated by the final whole-branch block, and
 `runRecorder.updateExternal` mirrors the block's reviewer records into `Runner.currentExternal`,
 which `resetRunRecord` and `adoptLoadedRunRecord` restore — the task-phase commit that follows a
@@ -587,7 +597,10 @@ block otherwise resets the record and discards every per-task review before the 
 OR-ed, `EndedBy` keeps the latest completion, and `ExternalReviewerRecord.Blocks` counts loops, which
 `run_facts.go` renders as `(N review blocks)` when above one. `reviewCadenceStartupWarning` warns
 when `task` meets `--review`, `--external-only`, `--tasks-only`, or an empty chain, and
-`--t3-launch` rejects `--review-cadence` since the launched run reads the key from config. The ACP
+`--t3-launch` rejects `--review-cadence` since the launched run reads the key from config.
+`cmd/loopai`'s `reviewCadenceFor` already turns the cadence into `end` outside `ModeFull` or with an
+empty chain, so `processor.Config.ReviewCadence` and the banner's `review cadence:` line carry `task`
+only when it will run. The ACP
 sink's never-reopen rule is unchanged, so the first per-task block completes the Review stage early;
 `docs/t3-code.md` documents that.
 

@@ -7004,7 +7004,7 @@ func finalizeStartupWarning(req executePlanRequest) string {
 // mode with at least one external reviewer, otherwise end, since only the full pipeline has a
 // task phase to review after and an empty chain has nobody to run.
 func reviewCadenceFor(req executePlanRequest) string {
-	if req.Config == nil || req.Mode != processor.ModeFull || len(req.ExternalReview.Reviewers) == 0 {
+	if req.Mode != processor.ModeFull || len(req.ExternalReview.Reviewers) == 0 {
 		return config.ReviewCadenceEnd
 	}
 	return req.Config.EffectiveReviewCadence()
@@ -7013,7 +7013,7 @@ func reviewCadenceFor(req executePlanRequest) string {
 // reviewCadenceStartupWarning explains a configured review_cadence = task the run cannot honor,
 // or returns "".
 func reviewCadenceStartupWarning(req executePlanRequest) string {
-	if req.Config == nil || req.Config.EffectiveReviewCadence() != config.ReviewCadenceTask {
+	if req.Config.EffectiveReviewCadence() != config.ReviewCadenceTask {
 		return ""
 	}
 	switch req.Mode {

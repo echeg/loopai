@@ -150,6 +150,7 @@ type Runner struct {
 	finalizeOutcome     FinalizeOutcome
 	reviewScope         reviewScoper
 	perTaskReview       bool // a per-task external block is running; its reviewers save no checkpoint stage
+	perTaskLeftovers    bool // a per-task block ended with uncommitted fixes; the final block's post-review commits them
 }
 
 // FinalizeOutcome describes the finalize base sync; see phase.FinalizeOutcome.
@@ -476,24 +477,41 @@ func (r *Runner) afterTaskReview(ctx context.Context, taskNum int, headBefore st
 	r.log.Print("review cadence: external review after task %d", taskNum)
 
 	r.perTaskReview = true
-	if r.reviewScope != nil {
-		r.reviewScope.SetReviewScope(headBefore, reviewScopeForTask(taskNum, r.cfg.PlanFile))
-	}
+	r.reviewScope.SetReviewScope(headBefore, reviewScopeForTask(taskNum, r.cfg.PlanFile))
 	r.phases.external.SetResume(0, false)
 	r.phaseHolder.Set(status.PhaseExternalReview)
 	defer func() {
 		r.phaseHolder.Set(status.PhaseTask)
-		if r.reviewScope != nil {
-			r.reviewScope.ClearReviewScope()
-		}
+		r.reviewScope.ClearReviewScope()
 		r.perTaskReview = false
 		r.phases.external.SetResume(r.resume.completedReviewers, r.resume.hadFindings)
 	}()
 
+	before := r.diffFingerprint()
 	if _, err := r.phases.external.Run(ctx); err != nil {
 		return fmt.Errorf("%s loop: %w", r.phases.external.Label(), err)
 	}
+	// the evaluation prompts commit only on EXTERNAL_REVIEW_DONE, so a loop that ended by stalemate,
+	// the iteration cap, or a break leaves its fixes uncommitted. no later task or reviewer stages
+	// them, so the final block runs its post-review loop, whose commit prefix picks them up.
+	if after := r.diffFingerprint(); before != "" && after != "" && after != before {
+		r.perTaskLeftovers = true
+		r.log.Print("review cadence: external review after task %d left uncommitted changes, the final post-review loop commits them", taskNum)
+	}
 	return nil
+}
+
+// diffFingerprint returns the uncommitted-changes fingerprint, or "" when it is unavailable.
+func (r *Runner) diffFingerprint() string {
+	if r.git == nil {
+		return ""
+	}
+	fp, err := r.git.DiffFingerprint()
+	if err != nil {
+		r.log.Print("warning: failed to get diff fingerprint: %v", err)
+		return ""
+	}
+	return fp
 }
 
 // runReviewOnly executes only the review pipeline: review → external review → review.
@@ -545,7 +563,7 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 		return fmt.Errorf("%s loop: %w", label, err)
 	}
 
-	if !outcome.HadFindings {
+	if !outcome.HadFindings && !r.perTaskLeftovers {
 		r.log.Print("external review found no issues, skipping post-%s %s review", label, r.cfg.reviewProvider())
 		if err := r.runFinalize(ctx); err != nil {
 			return err

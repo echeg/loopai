@@ -98,8 +98,12 @@ func (g *checkpointGit) HeadHash() (string, error) {
 	}
 	return g.head, nil
 }
-func (g *checkpointGit) DiffFingerprint() (string, error) { return g.diff, g.diffErr }
-func (g *checkpointGit) IsDirtyAll() (bool, error)        { return g.dirty, g.dirtyErr }
+func (g *checkpointGit) DiffFingerprint() (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.diff, g.diffErr
+}
+func (g *checkpointGit) IsDirtyAll() (bool, error) { return g.dirty, g.dirtyErr }
 func (g *checkpointGit) ContainsRevisionContext(context.Context, string) (bool, error) {
 	return g.contains, g.containsErr
 }
@@ -162,7 +166,8 @@ func newCheckpointRunner(cfg Config, store ReviewCheckpointStore, git GitChecker
 	task := &checkpointTask{}
 	r := &Runner{
 		cfg: cfg, log: log, phaseHolder: &status.PhaseHolder{}, git: git, checkpoints: store,
-		phases: runnerPhases{task: task, taskValidator: task, review: review, external: external, finalize: finalize},
+		phases:      runnerPhases{task: task, taskValidator: task, review: review, external: external, finalize: finalize},
+		reviewScope: &recordingScope{},
 	}
 	return r, review, external, finalize
 }

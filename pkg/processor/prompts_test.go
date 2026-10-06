@@ -2664,13 +2664,36 @@ func TestPromptBuilder_ReviewScope(t *testing.T) {
 		for _, reviewer := range []string{config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, config.ExternalReviewToolCustom} {
 			review := b.ExternalReviewPrompt(reviewer, true, "")
 			assert.Contains(t, review, "git diff abc1234...HEAD", reviewer)
-			assert.Contains(t, review, "covers only Task 3 of the plan at docs/plans/test.md", reviewer)
+			assert.Contains(t, review, "the plan at docs/plans/test.md, starting with task section 3", reviewer)
 			assert.NotContains(t, review, "{{REVIEW_SCOPE}}", reviewer)
 
 			eval := b.ExternalEvaluationPrompt(reviewer, "finding")
-			assert.Contains(t, eval, "covers only Task 3", reviewer)
+			assert.Contains(t, eval, "starting with task section 3", reviewer)
 			assert.NotContains(t, eval, "{{REVIEW_SCOPE}}", reviewer)
 		}
+	})
+
+	t.Run("prompt without the scope token warns once during a block", func(t *testing.T) {
+		log := newMockLogger()
+		b := newPromptBuilder(promptBuilderOpts{cfg: Config{PlanFile: "docs/plans/test.md", DefaultBranch: "main",
+			AppConfig: &config.Config{CodexReviewPrompt: "{{DIFF_INSTRUCTION}}", CodexPrompt: "{{CODEX_OUTPUT}}"}}, log: log})
+		warnings := func() int {
+			var n int
+			for _, call := range log.PrintCalls() {
+				if strings.Contains(fmt.Sprintf(call.Format, call.Args...), "has no {{REVIEW_SCOPE}} placeholder") {
+					n++
+				}
+			}
+			return n
+		}
+
+		b.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, "")
+		assert.Zero(t, warnings(), "an unscoped render does not need the token")
+
+		b.SetReviewScope("abc1234", "SCOPE")
+		assert.Equal(t, "git diff abc1234...HEAD", b.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, ""))
+		b.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "finding")
+		assert.Equal(t, 1, warnings())
 	})
 
 	t.Run("internal prompts ignore the scope token", func(t *testing.T) {
@@ -2683,8 +2706,9 @@ func TestPromptBuilder_ReviewScope(t *testing.T) {
 func TestReviewScopeForTask(t *testing.T) {
 	scope := reviewScopeForTask(4, "docs/plans/feature.md")
 	assert.True(t, strings.HasPrefix(scope, "\n\n"), "scope starts a new paragraph after the token's line")
-	assert.Contains(t, scope, "Task 4 of the plan at docs/plans/feature.md")
-	assert.Contains(t, scope, "commit before that task started")
-	assert.Contains(t, scope, "later tasks are not implemented yet")
+	assert.Contains(t, scope, "the plan at docs/plans/feature.md, starting with task section 4")
+	assert.Contains(t, scope, "several tasks at once is reviewed as one")
+	assert.Contains(t, scope, "commit before that work started")
+	assert.Contains(t, scope, "tasks still unchecked in the plan are not implemented yet")
 	assert.NotContains(t, scope, "{{")
 }

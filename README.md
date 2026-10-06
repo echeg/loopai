@@ -1099,7 +1099,15 @@ external_reviewers = codex:gpt-5.5:xhigh
 
 Each per-task block diffs against the commit that task started from and tells the reviewers that
 later tasks are not implemented yet, so their absence is not a finding. The `review_model`
-provider evaluates and commits the block's fixes before the next task starts. The internal
+provider evaluates and commits the block's fixes before the next task starts. A block that ends
+by stalemate, by `max_external_iterations`, or by Ctrl+\ leaves its fixes uncommitted; the
+final block then runs the post-review loop even when its own reviewers find nothing, and that
+loop commits them. Ctrl+\ during a per-task block ends only that block; the next task and later
+blocks run as usual. Customized external review or evaluation prompts written before this
+setting lack the `{{REVIEW_SCOPE}}` placeholder: they still diff against the task's start commit,
+but their reviewers are not told later tasks are pending, and the run warns once. Add the
+placeholder to such copies (the embedded prompts end the diff-instruction line with it) or
+refresh them with `/loopai-update`. The internal
 review agents and the post-review loop do not run per task, and the final whole-branch block
 still runs unchanged, because cross-task integration defects are only visible there. The cadence
 applies to full mode only: `--review`, `--external-only`, and `--tasks-only` ignore it with a

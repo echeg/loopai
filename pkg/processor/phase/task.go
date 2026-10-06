@@ -90,12 +90,9 @@ func (p *TaskPhase) Run(ctx context.Context) error {
 		loopCancel()
 
 		if manualBreak {
-			p.log.Print("session interrupted by break signal")
-			p.breaks.drain()
-			if p.deps.PauseHandler == nil || !p.deps.PauseHandler(ctx) {
-				return ErrUserAborted
+			if err := p.resumeAfterBreak(ctx, &start); err != nil {
+				return err
 			}
-			p.breaks.drain()
 			i--
 			retryCount = 0
 			continue
@@ -106,6 +103,11 @@ func (p *TaskPhase) Run(ctx context.Context) error {
 		}
 
 		if execResult.TimedOut {
+			// a session that ticked its task before hanging advanced the plan; the next iteration
+			// starts at another position, so this is the only point its review can run
+			if err := p.runAfterTask(ctx, &start, ""); err != nil {
+				return err
+			}
 			p.log.Print("%s session timed out, retrying task iteration after %s...", execName, retryBackoff)
 			if err := p.policy.Sleep(ctx, retryBackoff); err != nil {
 				return fmt.Errorf("interrupted: %w", err)
@@ -147,6 +149,19 @@ func (p *TaskPhase) Run(ctx context.Context) error {
 	return fmt.Errorf("max iterations (%d) reached without completion", p.cfg.MaxIterations)
 }
 
+// resumeAfterBreak asks the pause handler whether to continue after a manual break and returns
+// ErrUserAborted when it declines. A session interrupted after it ticked and committed its task
+// still gets that task's review before the retry starts at the next position.
+func (p *TaskPhase) resumeAfterBreak(ctx context.Context, start *taskStart) error {
+	p.log.Print("session interrupted by break signal")
+	p.breaks.drain()
+	if p.deps.PauseHandler == nil || !p.deps.PauseHandler(ctx) {
+		return ErrUserAborted
+	}
+	p.breaks.drain()
+	return p.runAfterTask(ctx, start, "")
+}
+
 // taskStart is the plan position an iteration started on and the HEAD recorded when it first became current.
 type taskStart struct {
 	pos  int
@@ -163,7 +178,8 @@ func (p *TaskPhase) trackTaskStart(start *taskStart, pos int) {
 }
 
 // runAfterTask calls the after-task hook when an iteration that did not fail advanced the plan:
-// the first uncompleted position moved forward, or no uncompleted task remains. An iteration that
+// the first uncompleted position moved forward, or no uncompleted task remains. That includes a
+// timed-out or interrupted session that ticked its task before it stopped. An iteration that
 // started without a known position, or ticked nothing, does not call it.
 func (p *TaskPhase) runAfterTask(ctx context.Context, start *taskStart, signal string) error {
 	if p.afterTask == nil || signal == SignalFailed || start.pos <= 0 {

@@ -15,6 +15,8 @@ type promptBuilder struct {
 	codexFrontmatterWarned map[string]bool
 	catalogMissingWarned   bool
 	finalizeSignalWarned   bool
+	// reviewScopeMissingWarned is set once a per-task block rendered a prompt without {{REVIEW_SCOPE}}
+	reviewScopeMissingWarned bool
 
 	// diffBase and reviewScope narrow the external review prompts to one task while a
 	// per-task review block runs. the builder is shared by every phase, so the runner
