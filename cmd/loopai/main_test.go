@@ -4150,6 +4150,7 @@ func TestRunT3LaunchCommand(t *testing.T) {
 				assert.Equal(t, "codex:gpt-5:high", parsed.TaskModel)
 				assert.Contains(t, stdout.String(), "mode: agent (loopai provider session, instance loopai-custom;")
 				assert.Contains(t, stdout.String(), "the stop button cancels the run")
+				assert.Contains(t, stdout.String(), "the session merges a low or medium Risk run itself")
 			} else {
 				assert.Equal(t, []string{"vcs.createWorktree", "terminal.open", "terminal.write"}, rpc.calls)
 				require.Len(t, api.commands, 1)
@@ -4173,6 +4174,7 @@ func TestRunT3LaunchCommand(t *testing.T) {
 				}
 				assert.Equal(t, t3.LaunchCommand(shell, program, []string{"--t3", "--task-model", "codex:gpt-5:high", planRel})+"\r", rpc.writes[0])
 				assert.Contains(t, stdout.String(), "mode: terminal")
+				assert.Contains(t, stdout.String(), "close out from this checkout with: loopai --merge demo")
 				if o.T3Launch == "auto" {
 					assert.Contains(t, stdout.String(), "providerInstances")
 					assert.Contains(t, stdout.String(), "docs/t3-code.md")

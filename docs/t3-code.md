@@ -233,8 +233,8 @@ from the normal config layers resolved in that directory: embedded defaults, the
 `LOOPAI_CONFIG_DIR` from the T3 Code server's environment), then `.loopai/config` there. Only the first text block of the
 message is read; the runtime instructions T3 Code appends are ignored. A malformed launch fails
 the turn and shows the usage line. loopai treats a message as a launch when its first word is an
-option, ends in `.md`, or names an existing path in the thread's working directory. Anything else,
-such as a question typed after a run, does not start a run. The turn ends normally with a reply
+option, ends in `.md`, or names an existing file in the thread's working directory. Anything else,
+such as a question typed after a run or a one-word reply like `thanks`, does not start a run. The turn ends normally with a reply
 saying that the thread only launches plans, that follow-up work and questions belong in a new
 session on this worktree with the model chosen there, and the usage line.
 
@@ -251,9 +251,11 @@ repository and other conditions that would otherwise prompt. Only full plan exec
 available: review-only modes, plan creation, and interactive questions are out of scope.
 
 After a successful run, loopai merges the plan branch into the local base branch if the completion
-report rates Risk `low` or `medium`. The merge runs in the worktree that already has the base
-checked out, normally the primary checkout on `main` or `master`. It is an ordinary `git merge`,
-either a fast-forward or a merge commit, and loopai then verifies that the plan branch's head is
+report rates Risk `low` or `medium`. The base is `default_branch` from config, else the detected
+`main` or `master`, without any `origin/` prefix, and it must exist as a local branch. The merge
+runs in the worktree that already has the base checked out, normally the primary checkout. It is
+an ordinary `git merge`, resulting in a fast-forward, a merge commit, or `already up to date`, and
+loopai then verifies that the plan branch's head is
 part of the base. Nothing is pushed. The plan branch is not deleted and the thread's worktree is not
 removed, because T3 Code owns that worktree and the provider session runs inside it. On Windows a
 removal would fail for that reason alone. Once the thread is no longer needed, remove both by hand
@@ -263,11 +265,13 @@ loopai skips the merge and leaves the repository unchanged when:
 
 - `acp_auto_merge = false` is set in config. The key defaults to `true` and applies only to this mode.
 - `finalize` is `pr` or `merge`, because GitHub then owns the close-out. With `finalize = sync` the
-  sync runs first and the merge follows.
+  sync runs first and the merge follows only when it succeeded; a `finalize incomplete` sync skips
+  the merge, since the base and the branch did not combine or validate cleanly.
 - the report rates Risk `high`, states no level, or is the facts-only fallback.
 - the thread's checkout has a detached HEAD or is on the base branch, or the base branch does not
   exist locally.
-- the thread's checkout or the base worktree has uncommitted changes.
+- the thread's checkout or the base worktree has uncommitted changes, untracked files that are not
+  ignored, or an unfinished Git operation such as a merge or rebase.
 - no worktree has the base branch checked out. loopai never switches a checkout to the base for you.
 - the merge conflicts or fails verification. loopai aborts it and the base stays where it was.
 

@@ -146,6 +146,7 @@ func TestParseACPPrompt(t *testing.T) {
 func TestACPLooksLikeLaunch(t *testing.T) {
 	cwd := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(cwd, "plan"), []byte("# Plan\n"), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(cwd, "docs"), 0o700))
 	tests := []struct {
 		name string
 		text string
@@ -159,6 +160,11 @@ func TestACPLooksLikeLaunch(t *testing.T) {
 		{name: "option first", text: "--task-model opus docs/plans/x.md", want: true},
 		{name: "comma chain", text: "docs/plans/a.md,docs/plans/b.md", want: true},
 		{name: "two plans", text: "docs/plans/a.md docs/plans/b.md", want: true},
+		{name: "one word reply", text: "thanks", want: false},
+		{name: "one word question", text: "merged?", want: false},
+		{name: "missing path without extension", text: "docs/plans/missing", want: false},
+		{name: "existing directory", text: "docs are out of date?", want: false},
+		{name: "absolute existing file", text: filepath.Join(cwd, "plan"), want: true},
 		{name: "empty", text: " \n ", want: false},
 	}
 	for _, tc := range tests {
@@ -849,6 +855,7 @@ func TestServeACPAnswersNonLaunchMessages(t *testing.T) {
 	sid := c.handshake(f.repo)
 
 	requireACPStopReason(t, c.response(c.prompt(sid, "а по итогу оно замержено?")), "end_turn")
+	requireACPStopReason(t, c.response(c.prompt(sid, "thanks")), "end_turn")
 	msg := requireACPError(t, c.response(c.prompt(sid, "docs/plans/two.md --worktree")))
 	chainMsg := requireACPError(t, c.response(c.prompt(sid, "docs/plans/two.md,docs/plans/two.md")))
 	c.close()

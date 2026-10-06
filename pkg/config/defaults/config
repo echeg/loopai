@@ -209,7 +209,8 @@ finalize_checks_timeout = 30m
 # where the base is checked out. nothing is pushed, and no branch or worktree
 # is removed. a high or unstated Risk, a dirty checkout, a base checked out
 # nowhere, or a conflict skips the merge and the thread message says why.
-# skipped when finalize is pr or merge, since GitHub then owns the close-out.
+# skipped when finalize is pr or merge, since GitHub then owns the close-out,
+# and when a finalize = sync stopped short.
 # default: true
 acp_auto_merge = true
 

@@ -163,10 +163,10 @@ type acpRunner struct {
 // path with the sink observing sections, output, and phases. A message that is not a plan launch
 // ends its turn normally with guidance; a malformed launch fails it.
 func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Sink) (acp.Result, error) {
-	prompt, err := parseACPPrompt(req.Text)
-	if err != nil && !acpLooksLikeLaunch(req.Text, req.Cwd) {
+	if !acpLooksLikeLaunch(req.Text, req.Cwd) {
 		return acp.Result{Message: acpNotALaunch + "\n\n" + acpPromptUsage}, nil
 	}
+	prompt, err := parseACPPrompt(req.Text)
 	if err != nil {
 		return acp.Result{Message: fmt.Sprintf("%v\n\n%s", err, acpPromptUsage)}, fmt.Errorf("malformed prompt: %w", err)
 	}
@@ -214,10 +214,10 @@ func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Si
 func (a *acpRunner) autoMerge(ctx context.Context, cfg *config.Config, execReq executePlanRequest) acpMergeResult {
 	gitSvc, err := git.NewService(".", writerPrinter{color: execReq.Colors.Info(), w: a.out}, cfg.VcsCommand)
 	if err != nil {
-		return acpMergeResult{base: execReq.DefaultBranch, skipped: fmt.Sprintf("cannot open the repository: %v", err)}
+		return acpMergeResult{base: acpMergeBase(execReq.DefaultBranch), skipped: fmt.Sprintf("cannot open the repository: %v", err)}
 	}
 	gitSvc.SetCommitTrailer(cfg.CommitTrailer)
-	res := acpAutoMerge(ctx, gitSvc, cfg, execReq.DefaultBranch, execReq.Outcome.report)
+	res := acpAutoMerge(ctx, gitSvc, cfg, execReq.DefaultBranch, *execReq.Outcome)
 	fmt.Fprintf(a.out, "acp auto-merge: %s\n", res.summary())
 	return res
 }
@@ -248,10 +248,10 @@ func loadACPSessionConfig(o opts) (*config.Config, error) {
 const acpNotALaunch = "This thread runs loopai plans and does not answer questions. To ask about a run or " +
 	"continue the work, open a new session on this worktree and choose the model there."
 
-// acpLooksLikeLaunch reports whether a prompt that failed to parse was meant as a plan launch, so a
-// malformed launch still fails its turn while anything else gets the acpNotALaunch reply. It is a
-// launch when the first token is an option, names a Markdown file, or names an existing path
-// relative to cwd.
+// acpLooksLikeLaunch reports whether a prompt was meant as a plan launch, so a malformed launch or
+// a missing plan still fails its turn while anything else, a one-word reply included, gets the
+// acpNotALaunch reply. It is a launch when the first token is an option, names a Markdown file, or
+// names an existing file relative to cwd; a directory is never a plan.
 func acpLooksLikeLaunch(text, cwd string) bool {
 	fields := strings.Fields(text)
 	if len(fields) == 0 {
@@ -261,8 +261,8 @@ func acpLooksLikeLaunch(text, cwd string) bool {
 	if strings.HasPrefix(first, "-") || strings.HasSuffix(strings.ToLower(first), ".md") {
 		return true
 	}
-	_, err := os.Stat(absPath(cwd, first))
-	return err == nil
+	info, err := os.Stat(absPath(cwd, first))
+	return err == nil && !info.IsDir()
 }
 
 // parseACPPrompt parses a prompt's first text block: one plan file plus --task-model,
@@ -384,22 +384,15 @@ func acpRunResult(planFile string, outcome *planExecutionOutcome, merge *acpMerg
 	if failure == nil && report == "" {
 		report = "loopai completed " + planFile
 	}
-	parts := []string{report}
+	var parts []string
+	if strings.TrimSpace(report) != "" {
+		parts = append(parts, strings.TrimRight(report, "\n"))
+	}
 	if failure == nil && merge != nil {
 		parts = append(parts, merge.message())
 	}
 	if failure != nil || (merge != nil && !merge.merged) {
 		parts = append(parts, acpNextSteps)
 	}
-	return acp.Result{Message: joinNonEmpty(parts, "\n\n")}, failure
-}
-
-func joinNonEmpty(parts []string, sep string) string {
-	kept := parts[:0:0]
-	for _, p := range parts {
-		if strings.TrimSpace(p) != "" {
-			kept = append(kept, strings.TrimRight(p, "\n"))
-		}
-	}
-	return strings.Join(kept, sep)
+	return acp.Result{Message: strings.Join(parts, "\n\n")}, failure
 }

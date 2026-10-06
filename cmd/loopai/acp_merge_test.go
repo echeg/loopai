@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,6 +40,10 @@ func acpRiskReport(risk string) string {
 	return "# Report: feature\n\n## Summary\n\nDone.\n\n## Risk\n\n" + risk + "\n\n- details\n"
 }
 
+func acpRiskOutcome(risk string) planExecutionOutcome {
+	return planExecutionOutcome{succeeded: true, report: acpRiskReport(risk)}
+}
+
 func acpMergeConfig() *config.Config {
 	return &config.Config{ACPAutoMerge: true}
 }
@@ -54,7 +59,7 @@ func TestACPAutoMergeMerges(t *testing.T) {
 			repo := setupACPMergeRepo(t)
 			featureHead := revParse(t, repo.worktree, "HEAD")
 
-			res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskReport(risk))
+			res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskOutcome(risk))
 
 			require.True(t, res.merged, "skipped: %s", res.skipped)
 			assert.Empty(t, res.skipped)
@@ -79,7 +84,7 @@ func TestACPAutoMergeMergeCommitAndOriginPrefix(t *testing.T) {
 	runGit(t, repo.primary, "add", "base.txt")
 	runGit(t, repo.primary, "commit", "-m", "base work")
 
-	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "origin/master", acpRiskReport("low"))
+	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "origin/master", acpRiskOutcome("low"))
 
 	require.True(t, res.merged, "skipped: %s", res.skipped)
 	assert.Equal(t, "merge commit", res.kind)
@@ -92,7 +97,7 @@ func TestACPAutoMergeAlreadyUpToDate(t *testing.T) {
 	repo := setupACPMergeRepo(t)
 	runGit(t, repo.primary, "merge", "--ff-only", "feature")
 
-	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskReport("low"))
+	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskOutcome("low"))
 
 	require.True(t, res.merged, "skipped: %s", res.skipped)
 	assert.Equal(t, "already up to date", res.kind)
@@ -109,7 +114,7 @@ func TestACPAutoMergeAfterFinalizeSync(t *testing.T) {
 	syncedHead := revParse(t, repo.worktree, "HEAD")
 
 	res := acpAutoMerge(t.Context(), repo.svc, &config.Config{ACPAutoMerge: true, Finalize: config.FinalizeSync},
-		"master", acpRiskReport("low"))
+		"master", acpRiskOutcome("low"))
 
 	require.True(t, res.merged, "skipped: %s", res.skipped)
 	assert.Equal(t, "fast-forward", res.kind)
@@ -125,10 +130,10 @@ func TestACPAutoMergeCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	res := acpAutoMerge(ctx, repo.svc, acpMergeConfig(), "master", acpRiskReport("low"))
+	res := acpAutoMerge(ctx, repo.svc, acpMergeConfig(), "master", acpRiskOutcome("low"))
 
 	assert.False(t, res.merged)
-	assert.NotEmpty(t, res.skipped)
+	assert.Contains(t, res.skipped, context.Canceled.Error())
 	assert.Equal(t, masterBefore, revParse(t, repo.primary, "refs/heads/master"))
 	assert.Equal(t, "master", currentGitBranch(t, repo.primary))
 	assert.Empty(t, strings.TrimSpace(gitOutput(t, repo.primary, "status", "--porcelain")))
@@ -143,18 +148,23 @@ func TestACPAutoMergeSkips(t *testing.T) {
 		report  string
 		prepare func(t *testing.T, repo acpMergeRepo)
 		want    string
+
+		finalizeIncomplete error
 	}{
 		{name: "high risk", report: acpRiskReport("**high**"), want: "Risk is high"},
 		{name: "unknown risk", report: acpRiskReport("Moderate, see below"), want: "Risk level not stated"},
 		{name: "fallback risk", report: acpRiskReport("_assessment unavailable_"), want: "Risk level not stated"},
 		{name: "no risk section", report: "# Report: feature\n\n## Summary\n\nDone.\n", want: "Risk level not stated"},
 		{name: "disabled", cfg: func() *config.Config { return &config.Config{} }, want: "acp_auto_merge is disabled"},
-		{name: "nil config", cfg: func() *config.Config { return nil }, want: "acp_auto_merge is disabled"},
 		{name: "finalize pr", cfg: func() *config.Config { return &config.Config{ACPAutoMerge: true, Finalize: config.FinalizePR} },
 			want: "finalize = pr owns the close-out"},
 		{name: "finalize merge",
 			cfg:  func() *config.Config { return &config.Config{ACPAutoMerge: true, Finalize: config.FinalizeMerge} },
 			want: "finalize = merge owns the close-out"},
+		{name: "finalize sync incomplete",
+			cfg:                func() *config.Config { return &config.Config{ACPAutoMerge: true, Finalize: config.FinalizeSync} },
+			finalizeIncomplete: errors.New("base sync blocked: validation failed"),
+			want:               "finalize incomplete: base sync blocked: validation failed"},
 		{name: "missing base", base: "trunk", want: `base branch "trunk" does not exist locally`},
 		{name: "commit hash base", base: "0123456789abcdef", want: "does not exist locally"},
 		{name: "detached head", prepare: func(t *testing.T, repo acpMergeRepo) {
@@ -167,6 +177,12 @@ func TestACPAutoMergeSkips(t *testing.T) {
 		{name: "dirty base", prepare: func(t *testing.T, repo acpMergeRepo) {
 			require.NoError(t, os.WriteFile(filepath.Join(repo.primary, "README.md"), []byte("edited\n"), 0o600))
 		}, want: "the base worktree at"},
+		{name: "clean pending merge in base", prepare: func(t *testing.T, repo acpMergeRepo) {
+			acpPendingMerge(t, repo.primary, "master", "side")
+		}, want: "has a merge in progress"},
+		{name: "clean pending merge in feature", prepare: func(t *testing.T, repo acpMergeRepo) {
+			acpPendingMerge(t, repo.worktree, "feature", "feature-side")
+		}, want: "the feature worktree at"},
 		{name: "base checked out nowhere", prepare: func(t *testing.T, repo acpMergeRepo) {
 			runGit(t, repo.primary, "checkout", "-b", "other")
 		}, want: `base branch "master" is not checked out in any worktree`},
@@ -192,7 +208,8 @@ func TestACPAutoMergeSkips(t *testing.T) {
 			masterBefore := revParse(t, repo.primary, "refs/heads/master")
 			primaryBranch := currentGitBranch(t, repo.primary)
 
-			res := acpAutoMerge(t.Context(), repo.svc, cfg, base, report)
+			res := acpAutoMerge(t.Context(), repo.svc, cfg, base,
+				planExecutionOutcome{succeeded: true, report: report, finalizeIncomplete: tc.finalizeIncomplete})
 
 			assert.False(t, res.merged)
 			assert.Contains(t, res.skipped, tc.want)
@@ -203,6 +220,17 @@ func TestACPAutoMergeSkips(t *testing.T) {
 	}
 }
 
+// acpPendingMerge leaves an uncommitted merge of a diverged side branch in dir whose index matches
+// HEAD, so git status reports nothing while MERGE_HEAD exists.
+func acpPendingMerge(t *testing.T, dir, branch, side string) {
+	t.Helper()
+	runGit(t, dir, "checkout", "-b", side)
+	runGit(t, dir, "commit", "--allow-empty", "-m", "side work")
+	runGit(t, dir, "checkout", branch)
+	runGit(t, dir, "merge", "--no-commit", "-s", "ours", side)
+	require.Empty(t, strings.TrimSpace(gitOutput(t, dir, "status", "--porcelain")))
+}
+
 func TestACPAutoMergeConflictAborts(t *testing.T) {
 	repo := setupACPMergeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repo.primary, "feature.txt"), []byte("base side\n"), 0o600))
@@ -210,7 +238,7 @@ func TestACPAutoMergeConflictAborts(t *testing.T) {
 	runGit(t, repo.primary, "commit", "-m", "conflicting base work")
 	masterBefore := revParse(t, repo.primary, "refs/heads/master")
 
-	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskReport("low"))
+	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskOutcome("low"))
 
 	assert.False(t, res.merged)
 	assert.Contains(t, res.skipped, "conflicted and was aborted")
@@ -245,9 +273,6 @@ func TestACPMergeResultMessage(t *testing.T) {
 		{name: "skipped reason with trailing period",
 			res:  acpMergeResult{base: "master", skipped: "merge failed."},
 			want: "## Merge\n\nNot merged into `master`: merge failed."},
-		{name: "skipped without base",
-			res:  acpMergeResult{skipped: "acp_auto_merge is disabled"},
-			want: "## Merge\n\nNot merged: acp_auto_merge is disabled."},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -271,9 +296,6 @@ func TestACPMergeResultSummary(t *testing.T) {
 		{name: "skipped",
 			res:  acpMergeResult{base: "master", skipped: "merge failed."},
 			want: "not merged into master: merge failed"},
-		{name: "skipped without base",
-			res:  acpMergeResult{skipped: "acp_auto_merge is disabled"},
-			want: "not merged: acp_auto_merge is disabled"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

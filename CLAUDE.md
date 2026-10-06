@@ -963,20 +963,26 @@ because an ignored disposition is inherited across exec. A canceled process cont
 which cancels the running prompt and waits for its answer without waiting for stdin EOF. That wait is
 still bounded by the 5-second force exit of the `startInterruptWatcher` that `run()` installs before
 routing `--acp`, so a prompt whose cancellation outlasts it is never answered.
-When `parseACPPrompt` fails, `acpLooksLikeLaunch` decides how the turn ends. A first token that is an
-option, ends in `.md`, or names an existing path relative to the session cwd is a malformed launch,
-which still fails the turn with the usage line. Any other text, such as a question typed after a run,
+`acpLooksLikeLaunch` runs before `parseACPPrompt` and decides whether a prompt is a launch at all. A
+first token that is an option, ends in `.md`, or names an existing non-directory path relative to the
+session cwd is a launch, so a malformed one or a missing plan still fails the turn. Any other text,
+a question typed after a run or a one-word `thanks` that would otherwise parse as a missing plan path,
 gets the `acpNotALaunch` guidance and `end_turn`, because a failed turn for a chat message reads as
 a broken provider. After a run that succeeded, returned no error, and was not canceled,
 `acpRunner.autoMerge` opens a fresh Git service in the session cwd with `vcs_command` and calls
 `acpAutoMerge` (`cmd/loopai/acp_merge.go`). It also writes a one-line summary to `a.out`. The policy
 gates come first, in `acpMergePolicySkip`: `acp_auto_merge` (default `true`, ACP only), then
-`finalize = pr|merge` (GitHub owns close-out), then `reportRiskLevel`. That function lives in
+`finalize = pr|merge` (GitHub owns close-out), then `planExecutionOutcome.finalizeIncomplete`,
+which `executePlan` copies from `finalizeResult.incomplete` because a stopped sync keeps the run green
+while the base and branch failed to combine or validate (or the checkout was left unrestored), then
+`reportRiskLevel`. That function lives in
 `pr_body.go` and reads the first non-empty line of the report's first fence-aware `Risk` section,
 strips emphasis, and returns only `low`, `medium`, or `high`. Only the first two merge, and the
 facts-only fallback reads as unstated. The repository gates follow: a resolvable non-detached feature
 branch, a local base distinct from it, a clean feature checkout, and a clean worktree that already
-has the base checked out. The merge then runs there through `openMergeWorktree` and
+has the base checked out. `acpCleanWorktreeSkip` checks `OperationInProgress` before `IsDirtyAll` on
+both, because a pending merge whose index matches HEAD reads as clean and `mergeRevision`'s failure
+path would then `git merge --abort` it. The merge then runs there through `openMergeWorktree` and
 `mergeForCloseout`, pinned to `BranchHash(feature)`. Every gate failure, conflict, or failed
 verification becomes `acpMergeResult.skipped` and leaves the repository unchanged. It deliberately
 reuses only that primitive and none of `runMergeCommand`'s teardown: no push, no `DeleteBranch`, no

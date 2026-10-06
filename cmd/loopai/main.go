@@ -350,6 +350,8 @@ type planExecutionOutcome struct {
 	branchTip string
 	report    string // runner completion report; empty when no report was produced
 	failure   error  // why execution did not succeed, including a user abort executePlan returns as nil
+	// why a requested finalize close-out stopped short; nil when it completed or finalize is off
+	finalizeIncomplete error
 }
 
 // cleanupHolder holds a cleanup function with mutex for safe cross-goroutine access.
@@ -1933,6 +1935,7 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) (execErr e
 	keepDashboardAlive(ctx, o, req, plr.closeLog)
 	if req.Outcome != nil {
 		req.Outcome.succeeded = true
+		req.Outcome.finalizeIncomplete = fin.incomplete
 	}
 
 	return nil
@@ -3987,6 +3990,12 @@ func runT3LaunchCommand(ctx context.Context, o opts, cfg *config.Config, colors 
 	}
 	fmt.Fprintf(stdout, "worktree: %s\n", res.WorktreePath)
 	fmt.Fprintf(stdout, "branch:   %s\n", res.Branch)
+	if res.Mode == t3.LaunchAgent {
+		// the ACP session merges a successful low or medium Risk run into the local base itself
+		fmt.Fprintf(stdout, "close out: the session merges a low or medium Risk run itself; otherwise loopai --merge %s   (or --pr %s)\n",
+			res.Branch, res.Branch)
+		return nil
+	}
 	fmt.Fprintf(stdout, "close out from this checkout with: loopai --merge %s   (or --pr %s)\n", res.Branch, res.Branch)
 	return nil
 }
