@@ -561,6 +561,36 @@ close-out commands and watch-only mode return before it for the same reason.
 
 The task and review providers own all repository writes. External reviewers produce findings only; the `review_model` provider (falling back to `task_model`'s) evaluates and fixes them. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
 
+`review_cadence = end|task` (`config.ReviewCadence*`, read through `EffectiveReviewCadence`;
+`--review-cadence` sets it) adds per-task external review blocks to full mode only.
+`phase.TaskPhase` carries an `AfterTask(ctx, taskNum, headBefore)` hook and calls it only after a
+successful iteration that advanced `NextPlanTaskPosition` or ended with `SignalCompleted` and no
+task left; `headBefore` is kept from the first attempt at a position, so a retried attempt does not
+move the diff base past the task's own commits. A hook error is wrapped as `after task N: ...`,
+while `context.Canceled` and `ErrUserAborted` propagate unchanged. The runner installs the hook only
+when the mode is `ModeFull`, the cadence is `task`, and `externalPhase.Enabled()`; `runTasksOnly`
+keeps it nil. `Runner.afterTaskReview` skips the block with a log line when `headBefore` is empty,
+otherwise calls `promptBuilder.SetReviewScope(headBefore, reviewScopeForTask(...))` — the builder is
+one instance shared by every phase, so the override is a mutable field — which makes
+`getDefaultBranch`, and with it `{{DIFF_INSTRUCTION}}` and `{{DEFAULT_BRANCH}}`, name the task's start
+commit and fills `{{REVIEW_SCOPE}}` in the six external review and evaluation prompts;
+`{{FINALIZE_BASE}}` is untouched and an unset scope renders empty, keeping `end` byte-identical.
+It runs the external phase with `SetResume(0, false)` under `PhaseExternalReview`, and its deferred
+restore returns the holder to `PhaseTask`, clears the scope, and re-applies the checkpoint resume
+state for the final block. The internal review and `review_second.txt` loop run only in the final
+block. `perTaskReview` is set for the block's duration: `onReviewerDone` saves no checkpoint stage
+while it is, because a lost per-task review is repeated by the final whole-branch block, and
+`runRecorder.updateExternal` mirrors the block's reviewer records into `Runner.currentExternal`,
+which `resetRunRecord` and `adoptLoadedRunRecord` restore — the task-phase commit that follows a
+block otherwise resets the record and discards every per-task review before the report.
+`ExternalDone` aggregates rather than overwrites per reviewer key: durations add, `HadFindings` is
+OR-ed, `EndedBy` keeps the latest completion, and `ExternalReviewerRecord.Blocks` counts loops, which
+`run_facts.go` renders as `(N review blocks)` when above one. `reviewCadenceStartupWarning` warns
+when `task` meets `--review`, `--external-only`, `--tasks-only`, or an empty chain, and
+`--t3-launch` rejects `--review-cadence` since the launched run reads the key from config. The ACP
+sink's never-reopen rule is unchanged, so the first per-task block completes the Review stage early;
+`docs/t3-code.md` documents that.
+
 Completion reporting is split between durable fact collection and model assessment. `processor.RunRecord` is the persisted run-level model; `phase.RunRecorder`, supplied through `phase.Deps`, lets task, internal-review, external-review, and post-review phases record events without depending on the processor store. `Runner` owns the concrete recorder and saves `.loopai/progress/<progress-log-stem>.run.json` atomically with mode `0600` after each event. The record captures phase/task counts and timings plus bounded reviewer/evaluator text; repository facts such as commits, name-status, diff totals, backlog entries, validation commands, and plan drift are collected separately at report time. `Runner.SetRunTimingsSource` reads non-finalizing `SectionTimer` and `ValidationTimer` snapshots at recorded events and before reporting; resumed records add prior measurements once. The report uses a finish timestamp captured before model assessment, while the final persisted record timestamp includes the report phase. Sidecar creation uses exclusive creation so existing files and symlink targets are never overwritten.
 
 Every plan-archive commit is pathspec-restricted: `MovePlanToCompleted` commits through

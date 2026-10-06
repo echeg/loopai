@@ -111,11 +111,11 @@
 - [x] run `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 8: Update documentation
-- [ ] `README.md`: document `review_cadence`/`--review-cadence` with the cost note and the two v1 limitations (per-task blocks are not checkpointed; the T3 Code plan view marks the task stage complete at the first per-task block)
-- [ ] `llms.txt`: add the key and flag
-- [ ] `CLAUDE.md`: add a paragraph on the cadence mechanics (hook, diff base override, no checkpoint, recorder aggregation) in the architecture section
-- [ ] `docs/t3-code.md` Limitations: note the stage behavior under `review_cadence = task`
-- [ ] run `make test-report-docs` - must pass
+- [x] `README.md`: document `review_cadence`/`--review-cadence` with the cost note and the two v1 limitations (per-task blocks are not checkpointed; the T3 Code plan view marks the task stage complete at the first per-task block) (⚠️ the sink has no task stage: the first per-task block marks the Review stage completed and External review in progress, documented as such)
+- [x] `llms.txt`: add the key and flag
+- [x] `CLAUDE.md`: add a paragraph on the cadence mechanics (hook, diff base override, no checkpoint, recorder aggregation) in the architecture section
+- [x] `docs/t3-code.md` Limitations: note the stage behavior under `review_cadence = task`
+- [x] run `make test-report-docs` - must pass (run through a `python3` shim; this Windows host has only `python`)
 
 ## Technical Details
 - **Hook contract**: `AfterTask` runs after the task session's own commit, so the block starts on a clean tree; the chain's evaluation prompts commit their fixes before `EXTERNAL_REVIEW_DONE`, so the next task starts clean too. A block that leaves uncommitted fixes (stalemate or iteration cap) is tolerated: the next task's `task.txt` stages only its own paths, and the final block picks the rest up through the existing `commitPrefix`.

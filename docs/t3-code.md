@@ -311,6 +311,11 @@ created with it remain as ordinary history.
   PRs during that run.
 - Agent mode does not support plan paths containing whitespace. Use `--t3-launch=terminal` for
   those paths.
+- Under `review_cadence = task` the first per-task external review enters the External review
+  stage, which marks the Review stage completed before the internal review has run. A completed
+  stage never reopens, so for the rest of the run the plan view shows Review completed and External
+  review in progress while later tasks and the final internal review run. Plan tasks keep their
+  own status. Phase activities and thread titles follow every per-task block as usual.
 - `--pr` linking understands GitHub pull request URLs only, matching what `--pr` creates.
 - The token grants full access to the T3 Code server. In terminal mode it lives in the thread
   terminal's environment for the run. Agent mode uses it only for launcher requests and places no
