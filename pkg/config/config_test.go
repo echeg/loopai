@@ -1999,3 +1999,26 @@ func TestConfig_IsRealCommand(t *testing.T) {
 		})
 	}
 }
+
+func Test_defaultsFS_ReviewScopeOnlyInExternalPrompts(t *testing.T) {
+	// {{REVIEW_SCOPE}} is expanded only on the external review and evaluation paths; a token in
+	// any other prompt would reach the model unexpanded
+	for _, file := range []string{"codex_review.txt", "external_claude_review.txt", "custom_review.txt",
+		"codex.txt", "external_claude_eval.txt", "custom_eval.txt"} {
+		t.Run(file, func(t *testing.T) {
+			data, err := defaultsFS.ReadFile("defaults/prompts/" + file)
+			require.NoError(t, err)
+			body := string(data)
+			assert.Contains(t, body, "#   {{REVIEW_SCOPE}} - ", "header documents the variable")
+			// the token ends a body line so an empty scope leaves no blank line behind
+			assert.Regexp(t, `(?m)^[^#\n][^\n]*\{\{REVIEW_SCOPE\}\}$`, body)
+		})
+	}
+	for _, file := range []string{"review_first.txt", "review_second.txt", "task.txt", "finalize.txt", "report.txt"} {
+		t.Run(file, func(t *testing.T) {
+			data, err := defaultsFS.ReadFile("defaults/prompts/" + file)
+			require.NoError(t, err)
+			assert.NotContains(t, string(data), "{{REVIEW_SCOPE}}")
+		})
+	}
+}

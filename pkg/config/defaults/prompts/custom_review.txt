@@ -4,6 +4,7 @@
 #
 # available variables:
 #   {{DIFF_INSTRUCTION}} - git diff command appropriate for current iteration
+#   {{REVIEW_SCOPE}} - per-task review scope under review_cadence = task (empty otherwise)
 #   {{GOAL}} - human-readable goal description
 #   {{PLAN_FILE}} - path to the plan file being executed
 #   {{PROGRESS_FILE}} - path to progress log with previous review iterations
@@ -15,7 +16,7 @@ You are reviewing code changes for: {{GOAL}}
 ## Get the Diff
 
 Run this command to see the changes:
-{{DIFF_INSTRUCTION}}
+{{DIFF_INSTRUCTION}}{{REVIEW_SCOPE}}
 
 ## Review Focus
 

@@ -104,13 +104,14 @@ If the dismissals are invalid, explain why the issues still exist.`, providerDis
 
 // replaceVariablesWithIteration replaces all template variables including iteration-aware ones.
 // supported: {{PLAN_FILE}}, {{PROGRESS_FILE}}, {{GOAL}}, {{DEFAULT_BRANCH}}, {{PLANS_DIR}}, {{BACKLOG_DIR}},
-// {{DIFF_INSTRUCTION}}, {{PREVIOUS_REVIEW_CONTEXT}}, {{agent:name}}, {{agents:dynamic}}
+// {{DIFF_INSTRUCTION}}, {{REVIEW_SCOPE}}, {{PREVIOUS_REVIEW_CONTEXT}}, {{agent:name}}, {{agents:dynamic}}
 // the embedded external-review prompts use neither agent token; both are expanded here so
 // a customized external prompt behaves like the internal ones.
 // this variant is used when iteration context is needed (e.g., external review prompts).
 func (b *promptBuilder) replaceExternalVariablesWithIteration(prompt string, isFirstIteration bool, reviewer, evaluator, evaluatorResponse string) string {
 	result := b.replaceBaseVariables(prompt)
 	result = strings.ReplaceAll(result, "{{DIFF_INSTRUCTION}}", b.getDiffInstruction(isFirstIteration))
+	result = b.replaceReviewScope(result)
 	inlined := agentRefNames(result)
 	// a customized external prompt renders agents in the syntax of the reviewer that runs it: a
 	// claude reviewer keeps the Task tool. a custom script has no agent tooling to match, so it
@@ -126,6 +127,24 @@ func (b *promptBuilder) replaceExternalVariablesWithIteration(prompt string, isF
 		return result
 	}
 	return b.appendCommitTrailerInstruction(result)
+}
+
+// replaceReviewScope expands {{REVIEW_SCOPE}}: empty outside a per-task review block,
+// otherwise the scope text set by SetReviewScope. the embedded prompts place the token at
+// the end of a line and the scope text starts with a blank line, so an unscoped render is
+// byte-identical to a prompt without the token.
+func (b *promptBuilder) replaceReviewScope(prompt string) string {
+	return strings.ReplaceAll(prompt, "{{REVIEW_SCOPE}}", b.reviewScope)
+}
+
+// reviewScopeForTask returns the {{REVIEW_SCOPE}} text for the per-task external review
+// that runs after task taskNum of planFile. the diff base is the commit the task started
+// from, so the reviewer sees that task alone while later tasks do not exist yet.
+func reviewScopeForTask(taskNum int, planFile string) string {
+	return fmt.Sprintf("\n\nReview scope: this review covers only Task %d of the plan at %s. "+
+		"The diff base is the commit before that task started, so the diff shows that task's changes alone. "+
+		"The plan is still being executed: later tasks are not implemented yet, so their absence and "+
+		"missing integration with them are not findings.", taskNum, planFile)
 }
 
 func providerDisplayName(provider string) string {
@@ -480,8 +499,18 @@ func (b *promptBuilder) replacePromptVariables(prompt, provider string) string {
 	return b.appendCommitTrailerInstruction(result)
 }
 
-// getDefaultBranch returns the default branch name or "master" as fallback.
+// getDefaultBranch returns the diff base: the task's start commit while a per-task review
+// scope is set, otherwise the default branch name or "master" as fallback.
 func (b *promptBuilder) getDefaultBranch() string {
+	if b.diffBase != "" {
+		return b.diffBase
+	}
+	return b.configuredDefaultBranch()
+}
+
+// configuredDefaultBranch returns the default branch name or "master" as fallback,
+// ignoring any per-task diff base override.
+func (b *promptBuilder) configuredDefaultBranch() string {
 	if b.cfg.DefaultBranch == "" {
 		return "master"
 	}
@@ -495,7 +524,7 @@ func (b *promptBuilder) getFinalizeBase() string {
 	if b.cfg.FinalizeBase != "" {
 		return strings.TrimPrefix(b.cfg.FinalizeBase, "origin/")
 	}
-	return strings.TrimPrefix(b.getDefaultBranch(), "origin/")
+	return strings.TrimPrefix(b.configuredDefaultBranch(), "origin/")
 }
 
 // getPlansDir returns the plans directory or "docs/plans" as fallback.

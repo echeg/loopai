@@ -79,13 +79,13 @@
 - [x] run `go test ./pkg/processor/phase/...` - must pass before task 4
 
 ### Task 4: Diff base override and `{{REVIEW_SCOPE}}` in the prompt builder
-- [ ] in `pkg/processor/prompt_builder.go` add `diffBase string` and `reviewScope string` fields with `SetReviewScope(diffBase, scope string)` and `ClearReviewScope()`; `getDefaultBranch` returns `diffBase` when set, so `{{DIFF_INSTRUCTION}}` (first iteration `git diff <base>...HEAD`) and `{{DEFAULT_BRANCH}}` both name the task's start commit; `{{FINALIZE_BASE}}` is untouched
-- [ ] expand a new `{{REVIEW_SCOPE}}` variable in `replaceExternalVariablesWithIteration` and in the evaluation prompt path (`ExternalEvaluationPrompt`): empty when no scope is set, otherwise the scope text
-- [ ] add `reviewScopeForTask(taskNum int, planFile string) string` building: this review covers only task N of the plan; the diff base is the commit before that task started; the plan is still being executed, so later tasks not yet implemented and missing integration with them are not findings
-- [ ] add `{{REVIEW_SCOPE}}` to the six external prompts (`codex_review.txt`, `external_claude_review.txt`, `custom_review.txt`, `codex.txt`, `external_claude_eval.txt`, `custom_eval.txt`) right after the goal/diff instruction lines, and add the variable to each prompt's header comment
-- [ ] write tests in `prompts_test.go`: without a scope every external and evaluation prompt renders byte-identical to before; with a scope `DIFF_INSTRUCTION` uses the hash, `DEFAULT_BRANCH` uses the hash, `REVIEW_SCOPE` carries the task number, and `ClearReviewScope` restores the default branch
-- [ ] add a check that the embedded prompts contain `{{REVIEW_SCOPE}}` and that `review_first.txt`, `review_second.txt`, `task.txt`, `finalize.txt`, and `report.txt` do not
-- [ ] run `go test ./pkg/processor/...` - must pass before task 5
+- [x] in `pkg/processor/prompt_builder.go` add `diffBase string` and `reviewScope string` fields with `SetReviewScope(diffBase, scope string)` and `ClearReviewScope()`; `getDefaultBranch` returns `diffBase` when set, so `{{DIFF_INSTRUCTION}}` (first iteration `git diff <base>...HEAD`) and `{{DEFAULT_BRANCH}}` both name the task's start commit; `{{FINALIZE_BASE}}` is untouched
+- [x] expand a new `{{REVIEW_SCOPE}}` variable in `replaceExternalVariablesWithIteration` and in the evaluation prompt path (`ExternalEvaluationPrompt`): empty when no scope is set, otherwise the scope text
+- [x] add `reviewScopeForTask(taskNum int, planFile string) string` building: this review covers only task N of the plan; the diff base is the commit before that task started; the plan is still being executed, so later tasks not yet implemented and missing integration with them are not findings
+- [x] add `{{REVIEW_SCOPE}}` to the six external prompts (`codex_review.txt`, `external_claude_review.txt`, `custom_review.txt`, `codex.txt`, `external_claude_eval.txt`, `custom_eval.txt`) right after the goal/diff instruction lines, and add the variable to each prompt's header comment
+- [x] write tests in `prompts_test.go`: without a scope every external and evaluation prompt renders byte-identical to before; with a scope `DIFF_INSTRUCTION` uses the hash, `DEFAULT_BRANCH` uses the hash, `REVIEW_SCOPE` carries the task number, and `ClearReviewScope` restores the default branch
+- [x] add a check that the embedded prompts contain `{{REVIEW_SCOPE}}` and that `review_first.txt`, `review_second.txt`, `task.txt`, `finalize.txt`, and `report.txt` do not
+- [x] run `go test ./pkg/processor/...` - must pass before task 5
 
 ### Task 5: Run the per-task external block from the runner
 - [ ] in `pkg/processor/runner.go` add `ReviewCadence string` to `Config`, and in the phase wiring set `TaskPhaseOpts.AfterTask` to `runner.afterTaskReview` when the effective cadence is `task` and `externalPhase.Enabled()`

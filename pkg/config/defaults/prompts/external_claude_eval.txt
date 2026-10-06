@@ -4,11 +4,12 @@
 # available variables:
 #   {{PLAN_FILE}} - path to the plan file being executed
 #   {{GOAL}} - human-readable goal description
+#   {{REVIEW_SCOPE}} - per-task review scope under review_cadence = task (empty otherwise)
 #   {{DEFAULT_BRANCH}} - default branch name (main, master, trunk, etc.)
 #   {{BACKLOG_DIR}} - backlog directory for out-of-scope findings (default: docs/backlog)
 #   {{CLAUDE_OUTPUT}} - findings from the external claude reviewer
 
-External code review evaluation.
+External code review evaluation.{{REVIEW_SCOPE}}
 
 Claude reviewed the code and reported:
 

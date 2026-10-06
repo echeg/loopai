@@ -2567,3 +2567,124 @@ func TestPromptBuilder_EvaluatorNameFollowsReviewProvider(t *testing.T) {
 		})
 	}
 }
+
+func TestPromptBuilder_ReviewScopeUnsetIsByteIdentical(t *testing.T) {
+	// the embedded prompts carry {{REVIEW_SCOPE}}; without a scope every render must equal the
+	// render of the same template with the token removed, so review_cadence = end changes nothing
+	strip := func(cfg *config.Config) *config.Config {
+		out := *cfg
+		for _, field := range []*string{&out.CodexReviewPrompt, &out.ExternalClaudeReviewPrompt, &out.CustomReviewPrompt,
+			&out.CodexPrompt, &out.ExternalClaudeEvalPrompt, &out.CustomEvalPrompt} {
+			require.Contains(t, *field, "{{REVIEW_SCOPE}}")
+			*field = strings.ReplaceAll(*field, "{{REVIEW_SCOPE}}", "")
+		}
+		return &out
+	}
+	builders := []struct {
+		name  string
+		build func(b *promptBuilder) string
+	}{
+		{"codex review first", func(b *promptBuilder) string {
+			return b.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, "")
+		}},
+		{"codex review later", func(b *promptBuilder) string {
+			return b.ExternalReviewPrompt(config.ExternalReviewToolCodex, false, "dismissed")
+		}},
+		{"claude review", func(b *promptBuilder) string {
+			return b.ExternalReviewPrompt(config.ExternalReviewToolClaude, true, "")
+		}},
+		{"custom review", func(b *promptBuilder) string {
+			return b.ExternalReviewPrompt(config.ExternalReviewToolCustom, true, "")
+		}},
+		{"codex eval", func(b *promptBuilder) string {
+			return b.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "finding")
+		}},
+		{"claude eval", func(b *promptBuilder) string {
+			return b.ExternalEvaluationPrompt(config.ExternalReviewToolClaude, "finding")
+		}},
+		{"custom eval", func(b *promptBuilder) string {
+			return b.ExternalEvaluationPrompt(config.ExternalReviewToolCustom, "finding")
+		}},
+	}
+	appCfg := testAppConfig(t)
+	appCfg.CommitTrailer = "Signed-off-by: test"
+	stripped := strip(appCfg)
+	for _, tc := range builders {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{PlanFile: "docs/plans/test.md", DefaultBranch: "main"}
+			withToken := newPromptBuilder(promptBuilderOpts{cfg: Config{PlanFile: cfg.PlanFile,
+				DefaultBranch: cfg.DefaultBranch, AppConfig: appCfg}, log: newMockLogger()})
+			withoutToken := newPromptBuilder(promptBuilderOpts{cfg: Config{PlanFile: cfg.PlanFile,
+				DefaultBranch: cfg.DefaultBranch, AppConfig: stripped}, log: newMockLogger()})
+			got := tc.build(withToken)
+			assert.Equal(t, tc.build(withoutToken), got)
+			assert.NotContains(t, got, "{{REVIEW_SCOPE}}")
+
+			// a set-then-cleared scope renders the same as one never set
+			withToken.SetReviewScope("abc1234", reviewScopeForTask(2, "docs/plans/test.md"))
+			withToken.ClearReviewScope()
+			assert.Equal(t, got, tc.build(withToken))
+		})
+	}
+}
+
+func TestPromptBuilder_ReviewScope(t *testing.T) {
+	newBuilder := func(appCfg *config.Config) *promptBuilder {
+		return newPromptBuilder(promptBuilderOpts{cfg: Config{PlanFile: "docs/plans/test.md", DefaultBranch: "main",
+			FinalizeBase: "main", AppConfig: appCfg}, log: newMockLogger()})
+	}
+
+	t.Run("variables follow the scope", func(t *testing.T) {
+		tmpl := "{{DEFAULT_BRANCH}}|{{DIFF_INSTRUCTION}}|{{FINALIZE_BASE}}|{{REVIEW_SCOPE}}"
+		b := newBuilder(&config.Config{CodexReviewPrompt: tmpl, CodexPrompt: tmpl})
+		assert.Equal(t, "main|git diff main...HEAD|main|", b.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, ""))
+
+		b.SetReviewScope("abc1234", "SCOPE")
+		assert.Equal(t, "abc1234|git diff abc1234...HEAD|main|SCOPE",
+			b.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, ""))
+		assert.Equal(t, "abc1234|git diff|main|SCOPE", b.ExternalReviewPrompt(config.ExternalReviewToolCodex, false, ""))
+		assert.Equal(t, "abc1234|{{DIFF_INSTRUCTION}}|main|SCOPE",
+			b.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "x"), "evaluation has no diff instruction")
+
+		b.ClearReviewScope()
+		assert.Equal(t, "main|git diff main...HEAD|main|", b.ExternalReviewPrompt(config.ExternalReviewToolCodex, true, ""))
+		assert.Equal(t, "main|{{DIFF_INSTRUCTION}}|main|", b.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "x"))
+	})
+
+	t.Run("findings are inserted after scope expansion", func(t *testing.T) {
+		b := newBuilder(&config.Config{CodexPrompt: "{{REVIEW_SCOPE}}|{{CODEX_OUTPUT}}"})
+		b.SetReviewScope("abc1234", "SCOPE")
+		assert.Equal(t, "SCOPE|literal {{REVIEW_SCOPE}}",
+			b.ExternalEvaluationPrompt(config.ExternalReviewToolCodex, "literal {{REVIEW_SCOPE}}"))
+	})
+
+	t.Run("embedded prompts carry the task scope", func(t *testing.T) {
+		b := newBuilder(testAppConfig(t))
+		b.SetReviewScope("abc1234", reviewScopeForTask(3, "docs/plans/test.md"))
+		for _, reviewer := range []string{config.ExternalReviewToolCodex, config.ExternalReviewToolClaude, config.ExternalReviewToolCustom} {
+			review := b.ExternalReviewPrompt(reviewer, true, "")
+			assert.Contains(t, review, "git diff abc1234...HEAD", reviewer)
+			assert.Contains(t, review, "covers only Task 3 of the plan at docs/plans/test.md", reviewer)
+			assert.NotContains(t, review, "{{REVIEW_SCOPE}}", reviewer)
+
+			eval := b.ExternalEvaluationPrompt(reviewer, "finding")
+			assert.Contains(t, eval, "covers only Task 3", reviewer)
+			assert.NotContains(t, eval, "{{REVIEW_SCOPE}}", reviewer)
+		}
+	})
+
+	t.Run("internal prompts ignore the scope token", func(t *testing.T) {
+		b := newBuilder(&config.Config{ReviewFirstPrompt: "{{DEFAULT_BRANCH}}|{{REVIEW_SCOPE}}"})
+		b.SetReviewScope("abc1234", "SCOPE")
+		assert.Equal(t, "abc1234|{{REVIEW_SCOPE}}", b.FirstReviewPrompt())
+	})
+}
+
+func TestReviewScopeForTask(t *testing.T) {
+	scope := reviewScopeForTask(4, "docs/plans/feature.md")
+	assert.True(t, strings.HasPrefix(scope, "\n\n"), "scope starts a new paragraph after the token's line")
+	assert.Contains(t, scope, "Task 4 of the plan at docs/plans/feature.md")
+	assert.Contains(t, scope, "commit before that task started")
+	assert.Contains(t, scope, "later tasks are not implemented yet")
+	assert.NotContains(t, scope, "{{")
+}
