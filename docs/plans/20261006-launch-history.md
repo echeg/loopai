@@ -143,9 +143,11 @@
   - ➕ the regression cases live in the new `scripts/check-launch-history-skills_test.sh` (`make test-launch-history-skills`, wired into `make test` and CI): the t3 suite compares Claude and Codex variants, which diverge until Task 5; it executes each skill's extracted history snippet against fixture files and requires the snippet to be identical across the three skills, and Task 5 extends its skill list to the Codex copies
 
 ### Task 5: Mirror the Codex skills and bump the manifests
-- [ ] apply the Task 4 changes to `assets/codex/skills/{loopai-plan,loopai-t3,loopai-orca}/SKILL.md` in Codex phrasing (plain numbered choices instead of `AskUserQuestion`, no Task subagents), keeping report sections identical where `check-loopai-t3-skill_test.sh` compares them
-- [ ] bump `.claude-plugin/plugin.json` and the `loopai` entry in `.claude-plugin/marketplace.json` from `0.6.2` to `0.7.0` (new user-visible skill behavior)
-- [ ] run `make check-codex-skills test-codex-skills check-plugin test-plugin` - must pass before task 6
+- [x] apply the Task 4 changes to `assets/codex/skills/{loopai-plan,loopai-t3,loopai-orca}/SKILL.md` in Codex phrasing (plain numbered choices instead of `AskUserQuestion`, no Task subagents), keeping report sections identical where `check-loopai-t3-skill_test.sh` compares them
+  - ➕ `scripts/check-launch-history-skills_test.sh` now covers the three Codex copies too: the history snippet must be identical across all six skills and is executed against the fixtures; the AskUserQuestion-only contract text (four-option cap, "Other") is required of the Claude copies and the numbered-list/typed-flags wording of the Codex copies
+- [x] bump `.claude-plugin/plugin.json` and the `loopai` entry in `.claude-plugin/marketplace.json` from `0.6.2` to `0.7.0` (new user-visible skill behavior)
+- [x] run `make check-codex-skills test-codex-skills check-plugin test-plugin` - must pass before task 6
+  - ⚠️ on this Windows host `test-codex-skills` and `test-symlinks` need `MSYS=winsymlinks:nativestrict` (Git Bash otherwise cannot create the fixture symlinks; they fail identically on an unmodified HEAD without it) and pass with it; `test-grill-skill` still fails on the unmodified grill path helper (POSIX-only) and WSL has no usable shell here, so it stays deferred to a POSIX `make test`
 
 ### Task 6: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented

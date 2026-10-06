@@ -177,9 +177,38 @@ cfgval() {
 
 Map the three keys to `--task-model <v>`, `--review-model <v>`, `--external-reviewers <v>`. Skip a key with no value, and skip a value that does not match `^[A-Za-z0-9._:,+-]+$` - `$loopai-orca` and `$loopai-t3` reject it - naming the skipped key. Join with single spaces.
 
-With Orca available, report the plan path and the launch line `$loopai-orca <plan> <FLAGS>`; with T3 Code available, also the line `$loopai-t3 <plan> <FLAGS>`. When `FLAGS` came out empty, add one line saying no `task_model`/`review_model`/`external_reviewers` is set, so the run would use loopai defaults.
+Then read `HISTORY` and `LAST_LAUNCHER` from the launch history. loopai itself writes `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/launch-history` on every plan-executing launch: one line per launch, newest first, `<UTC time>\t<launcher>\t<flags>`, where the launcher is `orca`, `t3`, or `cli`. The file holds flag strings only, never tokens or paths. Read it only; never write to it.
 
-Then ask how to proceed: run it in Orca now, run it in T3 Code now (each only when available), start implementing here from task 1, or stop. Without Orca or T3 Code, offer the plain `loopai <plan>` run instead.
+```bash
+HIST="${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/launch-history"
+HISTORY=$(awk -F'\t' '
+  function ok(s,   n, t, i, seen) {
+    n = split(s, t, " ")
+    if (n == 0 || n % 2) return 0
+    for (i = 1; i <= n; i += 2) {
+      if (t[i] !~ /^--(task-model|review-model|external-reviewers)$/ || seen[t[i]]++) return 0
+      if (t[i+1] !~ /^[A-Za-z0-9._:,+-]+$/) return 0
+      if (t[i] != "--external-reviewers" && t[i+1] !~ /^(claude|codex)(:|$)/) return 0
+    }
+    return 1
+  }
+  $2 ~ /^(orca|t3|cli)$/ && ok($3) && !dup[$3]++ { print $3; if (++k == 3) exit }
+' "$HIST" 2>/dev/null)
+LAST_LAUNCHER=$(awk -F'\t' '$2 ~ /^(orca|t3)$/ { print $2; exit }' "$HIST" 2>/dev/null)
+```
+
+`HISTORY` holds up to three distinct flag strings, newest first, one per line. A line the skill cannot validate is skipped, never offered: an unknown launcher, a token other than `--task-model`, `--review-model`, or `--external-reviewers` (or one given twice), a value outside `^[A-Za-z0-9._:,+-]+$`, or a model spec without the `claude`/`codex` provider. A line with no flags is not listed; the "No flags" choice below covers it. A missing, unreadable, or empty file yields an empty `HISTORY` and `LAST_LAUNCHER`, and everything below behaves as it would without history.
+
+With Orca available, report the plan path and the launch line `$loopai-orca <plan> <FLAGS>`; with T3 Code available, also the line `$loopai-t3 <plan> <FLAGS>`. When `FLAGS` came out empty, add one line saying no `task_model`/`review_model`/`external_reviewers` is set, so the run would use loopai defaults. When `HISTORY` is non-empty, add that recent flag combinations from earlier launches are offered once a launcher is picked.
+
+Then ask how to proceed as a numbered list, always in this order: run it in Orca now, run it in T3 Code now (each only when available), start implementing here from task 1, or stop. "(Recommended)" goes to the choice for `LAST_LAUNCHER` (the launcher of the newest history line whose launcher is `orca` or `t3`) when that launcher is available; otherwise, including when `LAST_LAUNCHER` is empty, it goes to the first launcher offered. Without Orca or T3 Code, offer the plain `loopai <plan>` run instead.
+
+**Choosing the flags** (after the user picks Orca or T3 Code; `<launcher>` below is "Orca" or "T3 Code"):
+- `HISTORY` empty and `FLAGS` non-empty: do not ask; use exactly the `FLAGS` reported above.
+- `HISTORY` non-empty: ask "Which loopai flags should the <launcher> run use?" as a numbered list: one choice per `HISTORY` entry labelled by its flags, newest first and the newest marked "(Recommended)"; then, when `FLAGS` is non-empty and not already among them, "From .loopai/config: <FLAGS>"; then "No flags (loopai defaults: Claude for every phase)" and "Cancel".
+- `HISTORY` and `FLAGS` both empty: ask "Which loopai flags should the <launcher> run use? Type them, e.g. `--task-model codex:gpt-5.6-sol:high --review-model claude:opus:high --external-reviewers claude:opus:high,codex:gpt-6-astra:high,claude:fable:high`" with the numbered choices "No flags (loopai defaults: Claude for every phase)" and "Cancel".
+- A picked history or config choice is used exactly as listed, without the "From .loopai/config: " prefix or the "(Recommended)" suffix. "No flags" is the empty string. "Cancel" stops without launching. Typing flags instead of a number is the manual-entry path: accept only `--task-model SPEC`, `--review-model SPEC`, `--external-reviewers LIST` with values matching `^[A-Za-z0-9._:,+-]+$`, where each `SPEC` starts with `claude` or `codex` (`provider[:model[:effort]]`); on any other token repeat the question naming it verbatim.
+- Pass the chosen string to `$loopai-orca`/`$loopai-t3` exactly. The flag choice is made here, so those skills must not ask again, including when the chosen string is empty.
 
 ## Key Principles
 

@@ -18,7 +18,19 @@ import textwrap
 root = Path(sys.argv[1])
 out = Path(sys.argv[2])
 charset = "`^[A-Za-z0-9._:,+-]+$`"
-skills = [("claude", name) for name in ("loopai-plan", "loopai-t3", "loopai-orca")]
+skills = [(variant, name) for variant in ("claude", "codex")
+          for name in ("loopai-plan", "loopai-t3", "loopai-orca")]
+# the two hosts phrase the flag question differently: Claude Code has AskUserQuestion with
+# its four-option cap and "Other" entry, Codex offers a numbered list and typed flags.
+variant_contract = {
+    "claude": ("at most four options", "\"Other\" is the manual-entry path"),
+    "codex": ("as a numbered list", "Typing flags instead of a number is the manual-entry path"),
+}
+launcher_options = {
+    "claude": ("\"Run in Orca now\"", "\"Run in T3 Code now\"", "\"Start implementation here\"", "\"Not now\""),
+    "codex": ("run it in Orca now", "run it in T3 Code now", "start implementing here", "or stop"),
+}
+recommended_target = {"claude": "option", "codex": "choice"}
 
 history_parts = {}
 for variant, name in skills:
@@ -29,7 +41,7 @@ for variant, name in skills:
                      "loopai itself writes", "flag strings only, never tokens or paths",
                      "never write to it", "skipped, never offered", charset,
                      "newest first and the newest marked \"(Recommended)\"",
-                     "at most four options", "\"Cancel\"", "\"Other\" is the manual-entry path"):
+                     "\"Cancel\"") + variant_contract[variant]:
         assert expected in text, f"{label}: missing history contract: {expected}"
 
     blocks = [b for b in re.findall(r"```bash\n(.*?)```", text, re.S) if "launch-history" in b]
@@ -44,10 +56,9 @@ for variant, name in skills:
         assert step, f"{label}: missing Step 3"
         step = step[1]
         assert "LAST_LAUNCHER=$(awk" in snippet, f"{label}: snippet must assign LAST_LAUNCHER"
-        assert "\"(Recommended)\" goes to the option for `LAST_LAUNCHER`" in step, f"{label}: recommendation must follow the last launcher"
+        assert f"\"(Recommended)\" goes to the {recommended_target[variant]} for `LAST_LAUNCHER`" in step, f"{label}: recommendation must follow the last launcher"
         assert "otherwise, including when `LAST_LAUNCHER` is empty, it goes to the first launcher offered" in step, f"{label}: recommendation fallback"
-        order = [step.find(option) for option in ("\"Run in Orca now\"", "\"Run in T3 Code now\"",
-                                                  "\"Start implementation here\"", "\"Not now\"")]
+        order = [step.find(option) for option in launcher_options[variant]]
         assert -1 not in order and order == sorted(order), f"{label}: launcher options must stay Orca, T3 Code, here, not now"
         assert "(Recommended)\", only with" not in step, f"{label}: Orca must not be recommended unconditionally"
         assert "\"From .loopai/config: <FLAGS>\"" in step, f"{label}: config flags option"
