@@ -185,6 +185,8 @@ func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Si
 	if err != nil {
 		return acp.Result{}, err
 	}
+	// the session config forces t3 off, so the launcher is named here rather than derived
+	recordLaunchHistory(o, cfg, execReq.ExternalReview, launcherT3, a.out)
 	// --acp is routed before run() creates its holder, so each prompt holds its own
 	keepAwake := newAwakeHolder(cfg.KeepAwake)
 	defer keepAwake.Stop()

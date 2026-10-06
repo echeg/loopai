@@ -268,3 +268,246 @@ func TestLauncherFor(t *testing.T) {
 		})
 	}
 }
+
+func TestRecordLaunchHistory(t *testing.T) {
+	t.Run("records the effective flags under the given launcher", func(t *testing.T) {
+		cfgDir := t.TempDir()
+		var stderr strings.Builder
+		recordLaunchHistory(opts{ConfigDir: cfgDir, TaskModel: "claude:opus:high"}, &config.Config{},
+			externalReviewSelection{}, launcherOrca, &stderr)
+
+		entries := readLaunchHistory(filepath.Join(cfgDir, launchHistoryFile))
+		require.Len(t, entries, 1)
+		assert.Equal(t, launcherOrca, entries[0].Launcher)
+		assert.Equal(t, "--task-model claude:opus:high", entries[0].Flags)
+		assert.WithinDuration(t, time.Now(), entries[0].When, time.Minute)
+		assert.Empty(t, stderr.String())
+	})
+
+	t.Run("a failure is one warning and never panics", func(t *testing.T) {
+		cfgDir := t.TempDir()
+		blockLaunchHistory(t, cfgDir)
+		var stderr strings.Builder
+		recordLaunchHistory(opts{ConfigDir: cfgDir}, &config.Config{}, externalReviewSelection{}, launcherCLI, &stderr)
+
+		assert.Equal(t, 1, strings.Count(stderr.String(), "\n"), stderr.String())
+		assert.True(t, strings.HasPrefix(stderr.String(), "warning: launch history not recorded: "), stderr.String())
+		assert.NotPanics(t, func() {
+			recordLaunchHistory(opts{ConfigDir: cfgDir}, &config.Config{}, externalReviewSelection{}, launcherCLI, nil)
+		})
+	})
+}
+
+// blockLaunchHistory makes the history unwritable on every platform: a non-empty directory
+// at the file's path cannot be replaced by the rename.
+func blockLaunchHistory(t *testing.T, cfgDir string) {
+	t.Helper()
+	blocked := filepath.Join(cfgDir, launchHistoryFile)
+	require.NoError(t, os.MkdirAll(blocked, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(blocked, "keep"), []byte("x"), 0o600))
+}
+
+// launchRunClaude answers plan creation by writing docs/plans/launch.md and signaling
+// PLAN_READY, ticks the plan's first open checkbox on each task session, and ends every other
+// session with REVIEW_DONE. Paths are relative because a non-worktree run executes in place.
+const launchRunClaude = `#!/bin/sh
+prompt=$(cat)
+plan=docs/plans/launch.md
+case "$prompt" in
+*"PLAN_READY"*)
+  # file timestamps come from a coarse clock; without the pause the plan can predate the
+  # start time runPlanMode searches from
+  sleep 0.1
+  mkdir -p docs/plans
+  printf '%s\n' '# Launch' '' '### Task 1: Only' '- [ ] only item' > "$plan"
+  printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:PLAN_READY>>>"}}'
+  ;;
+*"Complete ONE Task section"*)
+  awk 'BEGIN{d=0} !d && /- \[ \]/ {sub(/- \[ \]/, "- [x]"); d=1} {print}' "$plan" > "$plan.tmp" && mv "$plan.tmp" "$plan"
+  git add "$plan" >/dev/null && git commit -q -m "complete task" >/dev/null
+  printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
+  ;;
+*)
+  printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:REVIEW_DONE>>>"}}'
+  ;;
+esac
+printf '%s\n' '{"type":"result","result":""}'
+`
+
+// newLaunchConfigDir is a config directory pointing at launchRunClaude with every optional
+// phase and integration off, so a run finishes quickly and offline.
+func newLaunchConfigDir(t *testing.T) string {
+	t.Helper()
+	cfgDir := t.TempDir()
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, launchRunClaude)
+	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "config"), []byte("claude_command = "+fakeClaude+"\n"+
+		"claude_swap_enabled = false\ncodex_enabled = false\nfinalize = none\nreport_enabled = false\n"+
+		"iteration_delay_ms = 0\ntask_retry_count = 0\nkeep_awake = false\n"), 0o600))
+	return cfgDir
+}
+
+// newLaunchRepo enters a fresh repository with isolated HOME, holding a committed one-task
+// plan when withPlan is set.
+func newLaunchRepo(t *testing.T, withPlan bool) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on windows
+	dir := setupTestRepo(t)
+	if withPlan {
+		planFile := filepath.Join(dir, "docs", "plans", "launch.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Launch\n\n### Task 1: Only\n- [ ] only item\n"), 0o600))
+		runGit(t, dir, "add", ".")
+		runGit(t, dir, "commit", "-m", "add plan")
+	}
+	t.Chdir(dir)
+	return dir
+}
+
+// runLaunch runs o through run() and returns its captured stdout and stderr, joined, with the
+// run error.
+func runLaunch(t *testing.T, o opts) (string, error) {
+	t.Helper()
+	var runErr error
+	var stderr string
+	stdout := captureStdout(t, func() {
+		stderr = captureStderr(t, func() { runErr = run(t.Context(), o) })
+	})
+	return stdout + stderr, runErr
+}
+
+func TestRunRecordsLaunchHistory(t *testing.T) {
+	const flags = "--task-model claude:sonnet --review-model claude:opus"
+	launchOpts := func(cfgDir string) opts {
+		return opts{ConfigDir: cfgDir, PlanFile: "docs/plans/launch.md", TaskModel: "claude:sonnet",
+			ReviewModel: "claude:opus", MaxIterations: 3, NoColor: true}
+	}
+
+	for _, tc := range []struct {
+		name     string
+		mutate   func(*opts)
+		launcher string
+	}{
+		{name: "cli", mutate: func(*opts) {}, launcher: launcherCLI},
+		{name: "t3", mutate: func(o *opts) { o.T3 = true }, launcher: launcherT3},
+		{name: "orca", mutate: func(o *opts) { o.Orca = true }, launcher: launcherOrca},
+		{name: "tasks-only", mutate: func(o *opts) { o.TasksOnly = true }, launcher: launcherCLI},
+	} {
+		t.Run(tc.name+" run records one entry", func(t *testing.T) {
+			newLaunchRepo(t, true)
+			cfgDir := newLaunchConfigDir(t)
+			o := launchOpts(cfgDir)
+			tc.mutate(&o)
+
+			output, err := runLaunch(t, o)
+			require.NoError(t, err, output)
+
+			entries := readLaunchHistory(filepath.Join(cfgDir, launchHistoryFile))
+			require.Len(t, entries, 1)
+			assert.Equal(t, tc.launcher, entries[0].Launcher)
+			assert.Equal(t, flags, entries[0].Flags)
+			assert.NotContains(t, output, "launch history not recorded")
+		})
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*opts)
+	}{
+		{name: "review", mutate: func(o *opts) { o.Review = true }},
+		{name: "external-only", mutate: func(o *opts) { o.ExternalOnly = true }},
+	} {
+		t.Run(tc.name+" records nothing", func(t *testing.T) {
+			newLaunchRepo(t, true)
+			cfgDir := newLaunchConfigDir(t)
+			o := launchOpts(cfgDir)
+			tc.mutate(&o)
+
+			// on the base branch the review preflight fails, which is past the hook point
+			_, err := runLaunch(t, o)
+			require.ErrorContains(t, err, "nothing to review")
+			assert.NoFileExists(t, filepath.Join(cfgDir, launchHistoryFile))
+		})
+	}
+
+	t.Run("a repeated combination keeps one entry", func(t *testing.T) {
+		cfgDir := newLaunchConfigDir(t)
+		for _, orca := range []bool{false, true} {
+			newLaunchRepo(t, true)
+			o := launchOpts(cfgDir)
+			o.Orca = orca
+			output, err := runLaunch(t, o)
+			require.NoError(t, err, output)
+		}
+
+		entries := readLaunchHistory(filepath.Join(cfgDir, launchHistoryFile))
+		require.Len(t, entries, 1)
+		assert.Equal(t, launcherOrca, entries[0].Launcher, "the newer launch wins")
+		assert.Equal(t, flags, entries[0].Flags)
+	})
+
+	t.Run("a failing recorder warns and leaves the run outcome unchanged", func(t *testing.T) {
+		dir := newLaunchRepo(t, true)
+		cfgDir := newLaunchConfigDir(t)
+		blockLaunchHistory(t, cfgDir)
+
+		output, err := runLaunch(t, launchOpts(cfgDir))
+		require.NoError(t, err, output)
+		assert.Contains(t, output, "warning: launch history not recorded: ")
+		assert.FileExists(t, filepath.Join(dir, "docs", "plans", "completed", "launch.md"), "the run still completes")
+	})
+}
+
+func TestRunPlanModeRecordsLaunchHistoryOnContinuation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer string
+		want   bool
+	}{
+		{name: "continuing into execution records", answer: "y\n", want: true},
+		{name: "stopping after plan creation records nothing", answer: "n\n", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newLaunchRepo(t, false)
+			cfgDir := newLaunchConfigDir(t)
+			withStdin(t, tc.answer)
+
+			o := opts{ConfigDir: cfgDir, PlanDescription: "add launch", TaskModel: "claude:sonnet",
+				MaxIterations: 3, NoColor: true}
+			output, err := runLaunch(t, o)
+			require.NoError(t, err, output)
+			require.Contains(t, output, "Continue with plan implementation?", "plan creation found its plan")
+
+			path := filepath.Join(cfgDir, launchHistoryFile)
+			completed := filepath.Join(dir, "docs", "plans", "completed", "launch.md")
+			if !tc.want {
+				assert.NoFileExists(t, path)
+				assert.NoFileExists(t, completed)
+				return
+			}
+			entries := readLaunchHistory(path)
+			require.Len(t, entries, 1, output)
+			assert.Equal(t, launcherCLI, entries[0].Launcher)
+			assert.Equal(t, "--task-model claude:sonnet", entries[0].Flags)
+			assert.FileExists(t, completed, "execution followed plan creation")
+		})
+	}
+}
+
+// withStdin replaces os.Stdin with a pipe carrying input for the rest of the test.
+func withStdin(t *testing.T, input string) {
+	t.Helper()
+	oldStdin := os.Stdin
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	_, err = w.WriteString(input)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = oldStdin
+		_ = r.Close()
+	})
+}

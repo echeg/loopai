@@ -142,3 +142,14 @@ func launcherFor(cfg *config.Config) string {
 		return launcherCLI
 	}
 }
+
+// recordLaunchHistory records one plan-executing launch in the global history. It is
+// best-effort like the cmux, Orca, and T3 reporters: a failure is one warning on stderr
+// and never fails, delays, or changes the run. stderr must not be the process stdout,
+// which the ACP protocol owns.
+func recordLaunchHistory(o opts, cfg *config.Config, sel externalReviewSelection, launcher string, stderr io.Writer) {
+	entry := launchEntry{When: time.Now().UTC(), Launcher: launcher, Flags: launchFlags(o, cfg, sel)}
+	if err := recordLaunch(launchHistoryPath(o.ConfigDir), entry); err != nil && stderr != nil {
+		fmt.Fprintf(stderr, "warning: launch history not recorded: %v\n", err)
+	}
+}

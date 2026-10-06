@@ -518,6 +518,11 @@ func run(ctx context.Context, o opts) (runErr error) {
 	if mode == processor.ModeGenAgents {
 		return runGenAgentsMode(ctx, o, cfg, colors, limitRecovery, keepAwake)
 	}
+	// specs and the reviewer chain are final here. review-only modes replay no model choice, and
+	// plan mode records only once plan creation continues into execution (runPlanMode).
+	if modeRequiresBranch(mode) {
+		recordLaunchHistory(o, cfg, externalReview, launcherFor(cfg), os.Stderr)
+	}
 
 	repo, err := openExecutionRepository(ctx, o, cfg, colors, mode, executionIO{
 		stdin: os.Stdin, stdout: os.Stdout, setupTitles: setupTitles,
@@ -4544,6 +4549,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 
 	// continue with plan implementation
 	req.Colors.Info().Printf("\ncontinuing with plan implementation...\n")
+	recordLaunchHistory(o, req.Config, req.ExternalReview, launcherFor(req.Config), os.Stderr)
 
 	// Keep the non-final pill in place across branch/worktree setup, but tear down this reporter's
 	// spinner and polling before the execution reporter takes ownership.

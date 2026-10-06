@@ -672,6 +672,12 @@ func TestServeACPRunsPlanInProcess(t *testing.T) {
 	assert.Regexp(t, `(?m)^review:\s+claude opus$`, stderr.String(), "the prompt's --review-model reaches the run")
 	assert.Contains(t, stderr.String(), "Authorization=[redacted]")
 	assert.NotContains(t, stderr.String(), "acp-SECRET-token")
+
+	// the session config forces t3 off, yet the launch is recorded as a T3 Code launch
+	entries := readLaunchHistory(filepath.Join(f.cfgDir, launchHistoryFile))
+	require.Len(t, entries, 1)
+	assert.Equal(t, launcherT3, entries[0].Launcher)
+	assert.Equal(t, "--task-model claude:sonnet --review-model claude:opus", entries[0].Flags)
 }
 
 func TestServeACPPromptErrors(t *testing.T) {
