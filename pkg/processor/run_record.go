@@ -93,6 +93,7 @@ type ExternalReviewerRecord struct {
 // ExternalIterationRecord preserves reviewer and evaluator output for one iteration.
 type ExternalIterationRecord struct {
 	Index             int    `json:"index"`
+	Block             int    `json:"block,omitempty"` // 1-based review block; zero in records that predate blocks
 	ReviewerOutput    string `json:"reviewer_output"`
 	EvaluatorResponse string `json:"evaluator_response"`
 	Truncated         bool   `json:"truncated"`
@@ -128,42 +129,77 @@ func truncateForRecord(s string) (string, bool) {
 
 // boundExternalReviewText shares the aggregate budget among nonempty outputs.
 // Keep every iteration and its metadata so truncation never changes reported counts.
+// Under review_cadence = task each reviewer's latest block keeps up to half the budget, so the
+// final whole-branch review is not crowded out by the per-task blocks it re-reviews.
 func boundExternalReviewText(reviewers []ExternalReviewerRecord) {
-	fields := 0
-	total := 0
+	var latest, earlier []boundedReviewField
 	for i := range reviewers {
+		last := lastReviewBlock(reviewers[i])
 		for j := range reviewers[i].Iterations {
 			iteration := &reviewers[i].Iterations[j]
 			for _, field := range []*string{&iteration.ReviewerOutput, &iteration.EvaluatorResponse} {
-				if *field != "" {
-					fields++
-					total += len(*field)
+				if *field == "" {
+					continue
 				}
+				if iteration.Block < last {
+					earlier = append(earlier, boundedReviewField{text: field, iteration: iteration})
+					continue
+				}
+				latest = append(latest, boundedReviewField{text: field, iteration: iteration})
 			}
 		}
 	}
-	if total <= runRecordExternalTextCap {
+	if len(earlier) == 0 {
+		truncateReviewFields(latest, runRecordExternalTextCap)
 		return
 	}
-	limit := runRecordExternalTextCap / fields
-	for i := range reviewers {
-		for j := range reviewers[i].Iterations {
-			iteration := &reviewers[i].Iterations[j]
-			for _, field := range []*string{&iteration.ReviewerOutput, &iteration.EvaluatorResponse} {
-				if len(*field) <= limit {
-					continue
-				}
-				iteration.Truncated = true
-				if limit < len(truncatedRecordMarker) {
-					*field = ""
-					continue
-				}
-				cut := limit - len(truncatedRecordMarker)
-				for cut > 0 && !utf8.RuneStart((*field)[cut]) {
-					cut--
-				}
-				*field = (*field)[:cut] + truncatedRecordMarker
-			}
+	latestBudget := min(reviewFieldsSize(latest), runRecordExternalTextCap/2)
+	truncateReviewFields(latest, latestBudget)
+	truncateReviewFields(earlier, runRecordExternalTextCap-latestBudget)
+}
+
+// boundedReviewField is one nonempty output and the iteration whose truncation flag it sets.
+type boundedReviewField struct {
+	text      *string
+	iteration *ExternalIterationRecord
+}
+
+// lastReviewBlock returns the highest block number among a reviewer's iterations.
+func lastReviewBlock(reviewer ExternalReviewerRecord) int {
+	last := 0
+	for _, iteration := range reviewer.Iterations {
+		last = max(last, iteration.Block)
+	}
+	return last
+}
+
+func reviewFieldsSize(fields []boundedReviewField) int {
+	total := 0
+	for _, field := range fields {
+		total += len(*field.text)
+	}
+	return total
+}
+
+// truncateReviewFields splits budget evenly among fields when their total exceeds it.
+func truncateReviewFields(fields []boundedReviewField, budget int) {
+	if len(fields) == 0 || reviewFieldsSize(fields) <= budget {
+		return
+	}
+	limit := budget / len(fields)
+	for _, field := range fields {
+		if len(*field.text) <= limit {
+			continue
 		}
+		field.iteration.Truncated = true
+		if limit < len(truncatedRecordMarker) {
+			*field.text = ""
+			continue
+		}
+		cut := limit - len(truncatedRecordMarker)
+		for cut > 0 && !utf8.RuneStart((*field.text)[cut]) {
+			cut--
+		}
+		*field.text = (*field.text)[:cut] + truncatedRecordMarker
 	}
 }

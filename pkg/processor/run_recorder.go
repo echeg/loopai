@@ -43,8 +43,9 @@ func (r *runRecorder) ExternalIteration(index int, key, label, reviewerOutput, e
 	boundedEvaluatorResponse, evaluatorTruncated := truncateForRecord(evaluatorResponse)
 	r.updateExternal(func(reviewers *[]ExternalReviewerRecord) {
 		reviewer := externalRecord(reviewers, key, label)
+		// Blocks counts completed loops, so the loop this iteration belongs to is the next one
 		reviewer.Iterations = append(reviewer.Iterations, ExternalIterationRecord{
-			Index: index, ReviewerOutput: boundedReviewerOutput, EvaluatorResponse: boundedEvaluatorResponse,
+			Index: index, Block: reviewer.Blocks + 1, ReviewerOutput: boundedReviewerOutput, EvaluatorResponse: boundedEvaluatorResponse,
 			Truncated: reviewerTruncated || evaluatorTruncated,
 		})
 	})

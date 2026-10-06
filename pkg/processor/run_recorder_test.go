@@ -269,6 +269,53 @@ func TestRunRecorderBoundsAggregateReviewText(t *testing.T) {
 	}
 }
 
+func TestRunRecorderTagsIterationsWithReviewBlock(t *testing.T) {
+	reviewer := phase.ExternalReviewer{Tool: "codex", ModelSpec: "gpt"}
+	store := &runRecordMemoryStore{}
+	recorder := &runRecorder{runner: &Runner{log: newMockLogger(), recordStore: store}}
+	recorder.ExternalIteration(1, "codex:gpt", "codex", "a", "b")
+	recorder.ExternalIteration(2, "codex:gpt", "codex", "c", "d")
+	recorder.ExternalDone(phase.ReviewerCompletion{Reviewer: reviewer, Label: "codex", EndedBy: "done"})
+	recorder.ExternalIteration(1, "codex:gpt", "codex", "e", "f")
+
+	require.Len(t, store.record.External, 1)
+	blocks := make([]int, 0, len(store.record.External[0].Iterations))
+	for _, iteration := range store.record.External[0].Iterations {
+		blocks = append(blocks, iteration.Block)
+	}
+	assert.Equal(t, []int{1, 1, 2}, blocks)
+}
+
+func TestBoundExternalReviewTextKeepsLatestBlockShare(t *testing.T) {
+	output := strings.Repeat("x", runRecordTextCap)
+	reviewer := ExternalReviewerRecord{Key: "codex:gpt"}
+	for block := 1; block <= 30; block++ {
+		reviewer.Iterations = append(reviewer.Iterations, ExternalIterationRecord{
+			Index: 1, Block: block, ReviewerOutput: output, EvaluatorResponse: output,
+		})
+	}
+	reviewers := []ExternalReviewerRecord{reviewer}
+
+	boundExternalReviewText(reviewers)
+
+	total, earlier := 0, 0
+	for _, iteration := range reviewers[0].Iterations {
+		size := len(iteration.ReviewerOutput) + len(iteration.EvaluatorResponse)
+		total += size
+		if iteration.Block < 30 {
+			earlier += size
+			assert.True(t, iteration.Truncated)
+		}
+	}
+	last := reviewers[0].Iterations[29]
+	assert.LessOrEqual(t, total, runRecordExternalTextCap)
+	assert.LessOrEqual(t, earlier, runRecordExternalTextCap/2)
+	// the final block fits its half of the budget whole instead of an even 1/60th share
+	assert.False(t, last.Truncated)
+	assert.Equal(t, output, last.ReviewerOutput)
+	assert.Equal(t, output, last.EvaluatorResponse)
+}
+
 func TestRunnerBoundsLoadedReviewTextBeforeSaving(t *testing.T) {
 	output := strings.Repeat("x", runRecordTextCap)
 	stored := RunRecord{Version: runRecordVersion, Branch: "feature", External: []ExternalReviewerRecord{{Key: "legacy"}}}
