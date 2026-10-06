@@ -23,6 +23,7 @@ type TaskPhase struct {
 	breaks         *BreakController
 	iterationDelay time.Duration
 	retryCount     int
+	afterTask      func(ctx context.Context, taskNum int, headBefore string) error
 }
 
 // TaskPhaseOpts contains dependencies for TaskPhase.
@@ -37,6 +38,9 @@ type TaskPhaseOpts struct {
 	Breaks         *BreakController
 	IterationDelay time.Duration
 	RetryCount     int
+	// AfterTask, when set, runs after a task iteration that advanced the plan. taskNum is the plan
+	// position the iteration started on, headBefore the HEAD hash recorded before it (empty without git).
+	AfterTask func(ctx context.Context, taskNum int, headBefore string) error
 }
 
 // NewTaskPhase creates a task phase engine.
@@ -48,7 +52,7 @@ func NewTaskPhase(opts TaskPhaseOpts) *TaskPhase {
 	return &TaskPhase{
 		cfg: opts.Cfg, log: opts.Log, exec: opts.Exec, policy: opts.Policy,
 		prompts: opts.Prompts, locator: opts.Locator, deps: opts.Deps, breaks: breaks,
-		iterationDelay: opts.IterationDelay, retryCount: opts.RetryCount,
+		iterationDelay: opts.IterationDelay, retryCount: opts.RetryCount, afterTask: opts.AfterTask,
 	}
 }
 
@@ -56,6 +60,7 @@ func NewTaskPhase(opts TaskPhaseOpts) *TaskPhase {
 func (p *TaskPhase) Run(ctx context.Context) error {
 	prompt := p.prompts.TaskPrompt()
 	retryCount := 0
+	start := taskStart{pos: -1}
 
 	for i := 1; i <= p.cfg.MaxIterations; i++ {
 		select {
@@ -65,9 +70,11 @@ func (p *TaskPhase) Run(ctx context.Context) error {
 		}
 
 		taskNum := i
-		if pos := p.NextPlanTaskPosition(); pos > 0 {
+		pos := p.NextPlanTaskPosition()
+		if pos > 0 {
 			taskNum = pos
 		}
+		p.trackTaskStart(&start, pos)
 		p.log.PrintSection(status.NewTaskIterationSection(taskNum))
 
 		loopCtx, loopCancel := p.breaks.context(ctx)
@@ -106,6 +113,10 @@ func (p *TaskPhase) Run(ctx context.Context) error {
 			continue
 		}
 
+		if err := p.runAfterTask(ctx, &start, result.Signal); err != nil {
+			return err
+		}
+
 		if result.Signal == SignalCompleted {
 			if p.HasUncompletedTasks() {
 				p.log.Print("warning: completion signal received but plan still has [ ] items, continuing...")
@@ -134,6 +145,47 @@ func (p *TaskPhase) Run(ctx context.Context) error {
 	}
 
 	return fmt.Errorf("max iterations (%d) reached without completion", p.cfg.MaxIterations)
+}
+
+// taskStart is the plan position an iteration started on and the HEAD recorded when it first became current.
+type taskStart struct {
+	pos  int
+	head string
+}
+
+// trackTaskStart records HEAD when the plan position changes. Keeping it across a retried, timed-out,
+// or non-advancing attempt at the same task keeps the diff base before that task's own commits.
+func (p *TaskPhase) trackTaskStart(start *taskStart, pos int) {
+	if p.afterTask == nil || pos == start.pos {
+		return
+	}
+	start.pos, start.head = pos, NewGitState(p.deps, p.log).headHash()
+}
+
+// runAfterTask calls the after-task hook when an iteration that did not fail advanced the plan:
+// the first uncompleted position moved forward, or no uncompleted task remains. An iteration that
+// started without a known position, or ticked nothing, does not call it.
+func (p *TaskPhase) runAfterTask(ctx context.Context, start *taskStart, signal string) error {
+	if p.afterTask == nil || signal == SignalFailed || start.pos <= 0 {
+		return nil
+	}
+	pos := start.pos
+	next := p.NextPlanTaskPosition()
+	advanced := next > pos
+	if next == 0 {
+		advanced = !p.HasUncompletedTasks()
+	}
+	if !advanced {
+		return nil
+	}
+	start.pos = -1
+	if err := p.afterTask(ctx, pos, start.head); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, ErrUserAborted) {
+			return err
+		}
+		return fmt.Errorf("after task %d: %w", pos, err)
+	}
+	return nil
 }
 
 // ValidatePlanHasTasks rejects plan files without executable task sections.

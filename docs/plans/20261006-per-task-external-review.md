@@ -71,12 +71,12 @@
 - [x] run `go test ./cmd/loopai/...` - must pass before task 3 (WSL unavailable; native Windows run shows the same 70 POSIX-only failures as clean HEAD and none new)
 
 ### Task 3: Add the `AfterTask` hook to `TaskPhase`
-- [ ] in `pkg/processor/phase/task.go` add `AfterTask func(ctx context.Context, taskNum int, headBefore string) error` to `TaskPhaseOpts` and the struct
-- [ ] in `Run`, record `NextPlanTaskPosition()` and the HEAD hash (through the existing `GitState`/`Deps` git access, or a new `HeadHash` on `TaskPhaseOpts` if the phase has none) before each iteration; after a successful iteration (no timeout, no `SignalFailed`, no manual break) call the hook when the plan position advanced or the iteration ended with `SignalCompleted` and no uncompleted tasks remain
-- [ ] on a hook error return `fmt.Errorf("after task %d: %w", taskNum, err)`; a `context.Canceled` from the hook propagates unchanged
-- [ ] do not call the hook for a retried failure, a timed-out session, a manual break, or an iteration that did not advance the plan (the model ticked nothing)
-- [ ] write tests in `task_test.go`: hook called once per advanced task with the right number and head; not called on retry, timeout, break, or no-advance; hook error aborts the phase with the wrapped message; `SignalCompleted` on the last task calls the hook before `Run` returns
-- [ ] run `go test ./pkg/processor/phase/...` - must pass before task 4
+- [x] in `pkg/processor/phase/task.go` add `AfterTask func(ctx context.Context, taskNum int, headBefore string) error` to `TaskPhaseOpts` and the struct
+- [x] in `Run`, record `NextPlanTaskPosition()` and the HEAD hash (through the existing `GitState`/`Deps` git access, or a new `HeadHash` on `TaskPhaseOpts` if the phase has none) before each iteration; after a successful iteration (no timeout, no `SignalFailed`, no manual break) call the hook when the plan position advanced or the iteration ended with `SignalCompleted` and no uncompleted tasks remain; the head is kept from the first attempt at a position, so a retried or non-advancing attempt does not move the diff base past that task's own commits
+- [x] on a hook error return `fmt.Errorf("after task %d: %w", taskNum, err)`; a `context.Canceled` from the hook propagates unchanged (`ErrUserAborted` too, so a break aborted inside the block reads as an abort)
+- [x] do not call the hook for a retried failure, a timed-out session, a manual break, or an iteration that did not advance the plan (the model ticked nothing)
+- [x] write tests in `task_test.go`: hook called once per advanced task with the right number and head; not called on retry, timeout, break, or no-advance; hook error aborts the phase with the wrapped message; `SignalCompleted` on the last task calls the hook before `Run` returns
+- [x] run `go test ./pkg/processor/phase/...` - must pass before task 4
 
 ### Task 4: Diff base override and `{{REVIEW_SCOPE}}` in the prompt builder
 - [ ] in `pkg/processor/prompt_builder.go` add `diffBase string` and `reviewScope string` fields with `SetReviewScope(diffBase, scope string)` and `ClearReviewScope()`; `getDefaultBranch` returns `diffBase` when set, so `{{DIFF_INSTRUCTION}}` (first iteration `git diff <base>...HEAD`) and `{{DEFAULT_BRANCH}}` both name the task's start commit; `{{FINALIZE_BASE}}` is untouched
