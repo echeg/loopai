@@ -160,11 +160,12 @@
   - every function at 100% except `recordLaunch` at 92.3%; `cmd/loopai` overall 89.4%
 
 ### Task 7: [Final] Update documentation
-- [ ] `README.md`: add `launch-history` to the `~/.config/loopai/` tree in the Configuration section and one paragraph under the plugin section describing what the skills offer and how to clear the history (delete the file)
-- [ ] `docs/t3-code.md`: in the `--t3-launch` section, note that launches are recorded with launcher `t3` (agent mode included) and that `loopai-plan`'s recommendation follows the last launcher
-- [ ] `llms.txt`: update the plugin paragraph and the "Configuration and data" block
-- [ ] `CLAUDE.md`: add a short paragraph after the `--gen-agents` paragraph describing the recorder's contract (best-effort, three hook points, launcher precedence, explicit-only chain, charset bound, dedup and cap) so future changes keep it
-- [ ] update project knowledge docs if new patterns discovered
+- [x] `README.md`: add `launch-history` to the `~/.config/loopai/` tree in the Configuration section and one paragraph under the plugin section describing what the skills offer and how to clear the history (delete the file)
+- [x] `docs/t3-code.md`: in the `--t3-launch` section, note that launches are recorded with launcher `t3` (agent mode included) and that `loopai-plan`'s recommendation follows the last launcher
+- [x] `llms.txt`: update the plugin paragraph and the "Configuration and data" block
+- [x] `CLAUDE.md`: add a short paragraph after the `--gen-agents` paragraph describing the recorder's contract (best-effort, three hook points, launcher precedence, explicit-only chain, charset bound, dedup and cap) so future changes keep it
+- [x] update project knowledge docs if new patterns discovered
+  - ➕ CLAUDE.md also lists `make test-launch-history-skills` among the build commands; docs-only change, verified with `test-report-docs`, `test-launch-history-skills`, `check-symlinks`, `check-codex-skills`, `check-plugin`, and the t3 skill suite
 
 ## Technical Details
 - **File**: `<config dir>/launch-history`, text, newest first, one entry per line:

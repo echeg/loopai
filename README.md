@@ -139,6 +139,17 @@ the plan branch inside that branch's checkout, resolves the conflicted files the
 validation commands, commits, and only then delegates close-out to `loopai --merge`, which finds a
 clean merge and performs its usual cleanup. It never merges the plan branch into the base by hand.
 
+Every plan-executing launch (full and tasks-only runs, a `--plan` session that continues into
+execution, and T3 Code agent-mode runs) records its effective `--task-model`, `--review-model`, and
+`--external-reviewers` flags and its launcher (`orca`, `t3`, or `cli`) in
+`~/.config/loopai/launch-history` (or under `LOOPAI_CONFIG_DIR`). The file keeps the ten newest
+distinct flag combinations, holds flag strings only, and recording never fails or changes a run.
+`loopai:loopai-plan`, `loopai:loopai-orca`, and `loopai:loopai-t3` offer the newest three
+combinations as ready-made choices, so a model typed once becomes an option on the next launch, and
+`loopai:loopai-plan` recommends the launcher you used last instead of always recommending Orca. A
+review chain is recorded only when set explicitly, since an automatic reviewer is selected again
+the same way. Delete the file to clear the history.
+
 Invoke `/loopai:loopai-retro [plan stem | progress log path | --last N]` manually for a
 retrospective (default: the five newest progress logs). It reads bounded log excerpts,
 completion reports, backlog entries, and repository steering and check definitions, then ranks
@@ -1181,10 +1192,13 @@ Global configuration:
 ```text
 ~/.config/loopai/
 ├── config
+├── launch-history
 ├── prompts/
 ├── agents/
 └── scripts/
 ```
+
+`launch-history` is written by loopai itself; see [Claude Code plugin](#claude-code-plugin).
 
 Project-local overrides:
 

@@ -116,6 +116,12 @@ The `loopai:loopai-t3` Claude Code skill and the `$loopai-t3` Codex skill wrap t
 token inline when `LOOPAI_T3_TOKEN` is unset, and report the effective mode. `loopai-plan` offers
 the launch when a T3 Code runtime file exists.
 
+The launcher itself records nothing. The run it starts does: a terminal-mode `loopai --t3` run and an
+agent-mode ACP run both add a line with launcher `t3` to `~/.config/loopai/launch-history` (see
+[Claude Code plugin](../README.md#claude-code-plugin)). `loopai-plan` recommends the launcher of the
+newest `orca` or `t3` line, so after a T3 Code launch it recommends T3 Code, and `loopai-t3` offers
+the recent flag combinations when invoked without flags.
+
 ## Pull requests
 
 With `t3` enabled and `LOOPAI_T3_TOKEN` set, `loopai --pr` links the created GitHub pull request to

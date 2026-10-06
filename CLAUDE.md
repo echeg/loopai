@@ -30,6 +30,7 @@ make check-plugin   # validate Claude plugin and marketplace manifests
 make test-plugin    # regression tests for manifest validation
 make test-grill-skill # validate loopai-grill metadata and workflow contracts
 make test-report-docs # check skill inventories and report contracts in documentation
+make test-launch-history-skills # launch-history snippet and contract in the six launch skills
 make test-wrappers # all retained provider-wrapper and wrapper-doc suites
 make lint       # golangci-lint
 make fmt        # gofmt and goimports
@@ -558,6 +559,30 @@ also routed before `notify.New`, which validates channels eagerly: the mode send
 no notification, so a half-filled `notify_slack_*`/`notify_email_*` block must not
 be what stops it. Notification setup covers only the plan-executing paths — the
 close-out commands and watch-only mode return before it for the same reason.
+
+`cmd/loopai/launch_history.go` records every plan-executing launch in
+`<config dir>/launch-history`, where the directory is `o.ConfigDir` or `config.DefaultConfigDir()` —
+never `DefaultConfigDir()` alone, which would ignore `--config-dir`. It is best-effort like the cmux,
+Orca, and T3 reporters: `recordLaunchHistory` returns nothing and turns a failure into one
+`warning: launch history not recorded` line on the caller's stderr writer, never `os.Stdout`, which
+ACP owns. There are exactly three hook points: `run()` after `resolveExecutionDeps` and the
+gen-agents return, gated on `modeRequiresBranch` (so `--review`, `--external-only`, and every
+standalone command record nothing, and a plan chain records once); `runPlanMode` where plan creation
+continues into a `ModeFull` run; and `acpRunner.run` after `prepareNonInteractiveRequest`, which
+passes `launcherT3` explicitly because `loadACPSessionConfig` forces `cfg.T3` off. `launcherFor`
+ranks `t3` over `orca` over `cli` from the post-override config, since `--t3-launch` terminal mode
+runs `loopai --t3` and a config enabling both is a reporting choice. `launchFlags` renders the
+review spec only when set and the reviewer chain only when `sel.Explicit`, because an inherited
+review spec or an automatic reviewer follows from the task spec and would be frozen into an explicit
+choice on replay; any value outside `^[A-Za-z0-9._:,+-]+$`, the charset the three skills accept,
+drops that flag, so a skill never offers a string it would reject. The file is
+tab-separated `<RFC3339 UTC>`, `<launcher>`, and `<flags>`, newest first, deduplicated by the flags string alone (a
+repeated combination moves to the top and takes the new launcher), capped at
+`launchHistoryLimit` (10), and rewritten whole through `writeFileAtomic` with mode `0600`; an empty
+flags string is a valid entry. There is no lock: two simultaneous launches lose at most one line.
+`loopai-plan`, `loopai-orca`, `loopai-t3`, and their Codex copies read it with one shared snippet
+that `scripts/check-launch-history-skills_test.sh` requires to be identical across all six skills
+and executes against fixtures; change the format and the snippet together.
 
 The task and review providers own all repository writes. External reviewers produce findings only; the `review_model` provider (falling back to `task_model`'s) evaluates and fixes them. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
 
