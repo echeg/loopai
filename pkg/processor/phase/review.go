@@ -45,12 +45,13 @@ func NewReviewPhase(opts ReviewPhaseOpts) *ReviewPhase {
 }
 
 // First runs the comprehensive first review pass and applies first-review timeout semantics.
-func (p *ReviewPhase) First(ctx context.Context) error {
+// prefix is prepended to the prompt, as in Loop.
+func (p *ReviewPhase) First(ctx context.Context, prefix string) error {
 	if p.phaseHolder != nil {
 		p.phaseHolder.Set(status.PhaseReview)
 	}
 	p.log.PrintSection(p.section(0, ": all findings"))
-	return p.run(ctx, p.prompts.FirstReviewPrompt(), "first review pass")
+	return p.run(ctx, prefix+p.prompts.FirstReviewPrompt(), "first review pass")
 }
 
 // Loop runs critical/major review iterations until review completion or no changed HEAD.

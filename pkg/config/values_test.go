@@ -397,6 +397,48 @@ func TestValuesLoader_Load_ACPAutoMergeLayers(t *testing.T) {
 	}
 }
 
+func TestValuesLoader_Load_ReviewCadence(t *testing.T) {
+	tests := []struct {
+		name    string
+		global  string
+		local   string
+		cadence string
+		set     bool
+		errText string
+	}{
+		{name: "unset", cadence: "", set: false},
+		{name: "end", local: "review_cadence = end", cadence: "end", set: true},
+		{name: "task", local: "review_cadence = task", cadence: "task", set: true},
+		{name: "case-insensitive and trimmed", local: "review_cadence =  Task ", cadence: "task", set: true},
+		{name: "local overrides global", global: "review_cadence = task", local: "review_cadence = end",
+			cadence: "end", set: true},
+		{name: "global applies when local is unset", global: "review_cadence = task", cadence: "task", set: true},
+		{name: "empty local value falls back", global: "review_cadence = task", local: "review_cadence =",
+			cadence: "task", set: true},
+		{name: "invalid value", local: "review_cadence = phase",
+			errText: `invalid review_cadence: must be one of end, task, got "phase"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			globalConfig := filepath.Join(tmpDir, "global")
+			localConfig := filepath.Join(tmpDir, "local")
+			require.NoError(t, os.WriteFile(globalConfig, []byte(tc.global), 0o600))
+			require.NoError(t, os.WriteFile(localConfig, []byte(tc.local), 0o600))
+
+			values, err := newValuesLoader(defaultsFS).Load(localConfig, globalConfig)
+			if tc.errText != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errText)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.cadence, values.ReviewCadence)
+			assert.Equal(t, tc.set, values.ReviewCadenceSet)
+		})
+	}
+}
+
 func TestValuesLoader_Load_LocalOverridesReportEnabled(t *testing.T) {
 	tmpDir := t.TempDir()
 	globalConfig := filepath.Join(tmpDir, "global")

@@ -600,6 +600,55 @@ dropped first.
 
 The task and review providers own all repository writes. External reviewers produce findings only; the `review_model` provider (falling back to `task_model`'s) evaluates and fixes them. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
 
+`review_cadence = end|task` (`config.ReviewCadence*`, read through `EffectiveReviewCadence`;
+`--review-cadence` sets it) adds per-task external review blocks to full mode only.
+`phase.TaskPhase` carries an `AfterTask(ctx, taskNum, headBefore)` hook and calls it after an
+iteration that did not end in `SignalFailed` and either advanced `NextPlanTaskPosition` or left no
+uncompleted task, whatever its signal. That includes a timed-out session and one resumed after a
+manual break, when either ticked its task before stopping: the next iteration starts at another
+position, so skipping them would silently drop that task's review. `task.txt` ticks the plan before it commits, so such a session can
+stop in between: `taskStart` also records the `DiffFingerprint` at the position's first attempt, and an
+interrupted iteration whose fingerprint changed skips the hook with a log line, since a reviewer diffing
+against HEAD would miss the uncommitted work, and reports the task through `TaskPhaseOpts.UncommittedTask`, which sets the same pending flag described below; a break the user answers with abort, and an executor error or cancellation such as Ctrl+C, runs no review but reports such a task too, since the next invocation starts at the following position. `headBefore` is kept from the
+first attempt at a position, so a retried attempt does not move the diff base past the task's own
+commits. `taskNum` is the plan position, and one session can tick several tasks, so
+`reviewScopeForTask` names where the reviewed work starts rather than a single task. A hook error is wrapped as `after task N: ...`,
+while `context.Canceled` and `ErrUserAborted` propagate unchanged. The runner installs the hook only
+when the mode is `ModeFull`, the cadence is `task`, and `externalPhase.Enabled()`; `runTasksOnly`
+keeps it nil. `Runner.afterTaskReview` skips the block with a log line when `headBefore` is empty,
+otherwise calls `promptBuilder.SetReviewScope(headBefore, reviewScopeForTask(...))` — the builder is
+one instance shared by every phase, so the override is a mutable field — which makes
+`getDefaultBranch`, and with it `{{DIFF_INSTRUCTION}}` and `{{DEFAULT_BRANCH}}`, name the task's start
+commit and fills `{{REVIEW_SCOPE}}` in the six external review and evaluation prompts;
+`{{FINALIZE_BASE}}` is untouched and an unset scope renders empty, keeping `end` byte-identical.
+It runs the external phase with `SetResume(0, false)` under `PhaseExternalReview`, and its deferred
+restore returns the holder to `PhaseTask`, clears the scope, and re-applies the checkpoint resume
+state for the final block. The internal review and `review_second.txt` loop run only in the final
+block. The evaluation prompts commit only on `EXTERNAL_REVIEW_DONE`, so a block ending by stalemate,
+iteration cap, or break leaves its fixes uncommitted and nothing on the task path stages them;
+`afterTaskReview` compares `DiffFingerprint` before and after the block, on an error or cancellation exit as well, and sets
+`perTaskLeftovers` through `Runner.setPendingReviewFixes`. While it is set, `runInternalReview` prepends a `leftoverCommitPrefix` to the final block's first review, because every final reviewer reads `<base>...HEAD` and would otherwise miss the work, and `runExternalAndPostReview` runs the post-review loop as a backstop, whose
+`commitPrefix` commits anything left, even when the final chain finds nothing; once that loop returns, or was checkpointed as done, the flag is cleared and saved, so a later invocation on the branch does not owe it again. The flag is persisted as
+`RunRecord.PendingReviewFixes` through `runRecorder.SetPendingReviewFixes`, read back by `startRunRecord` in
+full mode, carried across `resetRunRecord` (which saves at once when it is set) and `adoptLoadedRunRecord`,
+so a run stopped between that block and the final one still commits the fixes after a resume. A fingerprint rather than
+`IsDirtyAll` is what keeps a user's unrelated dirty files from triggering it. `warnMissingReviewScope`
+warns once when a scoped render meets a customized external prompt without `{{REVIEW_SCOPE}}`. `perTaskReview` is set for the block's duration: `onReviewerDone` saves no checkpoint stage
+while it is, because a lost per-task review is repeated by the final whole-branch block, and
+`runRecorder.updateExternal` mirrors the block's reviewer records into `Runner.currentExternal`,
+which `resetRunRecord` and `adoptLoadedRunRecord` restore — the task-phase commit that follows a
+block otherwise resets the record and discards every per-task review before the report.
+`ExternalDone` aggregates rather than overwrites per reviewer key: durations add, `HadFindings` is
+OR-ed, `EndedBy` keeps the latest completion, and `ExternalReviewerRecord.Blocks` counts loops, which
+`run_facts.go` renders as `(N review blocks)` when above one. Each iteration carries its 1-based `Block`, rendered as `#### Block N, iteration M` once a reviewer has more than one, because indexes restart per block; `boundExternalReviewText` truncates nothing while the total fits and otherwise guarantees the reviewers' latest blocks at least half the text budget, plus whatever the earlier blocks leave unused, so the final whole-branch review is not truncated to an even share with the per-task blocks it re-reviews. `reviewCadenceStartupWarning` warns
+when `task` meets `--review`, `--external-only`, `--tasks-only`, or an empty chain, and
+`--t3-launch` rejects `--review-cadence` since the launched run reads the key from config.
+`cmd/loopai`'s `reviewCadenceFor` already turns the cadence into `end` outside `ModeFull` or with an
+empty chain, so `processor.Config.ReviewCadence` and the banner's `review cadence:` line carry `task`
+only when it will run. The ACP
+sink's never-reopen rule is unchanged, so the first per-task block completes the Review stage early;
+`docs/t3-code.md` documents that.
+
 Completion reporting is split between durable fact collection and model assessment. `processor.RunRecord` is the persisted run-level model; `phase.RunRecorder`, supplied through `phase.Deps`, lets task, internal-review, external-review, and post-review phases record events without depending on the processor store. `Runner` owns the concrete recorder and saves `.loopai/progress/<progress-log-stem>.run.json` atomically with mode `0600` after each event. The record captures phase/task counts and timings plus bounded reviewer/evaluator text; repository facts such as commits, name-status, diff totals, backlog entries, validation commands, and plan drift are collected separately at report time. `Runner.SetRunTimingsSource` reads non-finalizing `SectionTimer` and `ValidationTimer` snapshots at recorded events and before reporting; resumed records add prior measurements once. The report uses a finish timestamp captured before model assessment, while the final persisted record timestamp includes the report phase. Sidecar creation uses exclusive creation so existing files and symlink targets are never overwritten.
 
 Every plan-archive commit is pathspec-restricted: `MovePlanToCompleted` commits through

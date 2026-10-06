@@ -39,24 +39,50 @@ func (r *runRecorder) InternalReviewDone(loopIterations int, endedBy string) {
 }
 
 func (r *runRecorder) ExternalIteration(index int, key, label, reviewerOutput, evaluatorResponse string) {
-	r.update(func(record *RunRecord) {
-		reviewer := externalRecord(record, key, label)
-		boundedReviewerOutput, reviewerTruncated := truncateForRecord(reviewerOutput)
-		boundedEvaluatorResponse, evaluatorTruncated := truncateForRecord(evaluatorResponse)
+	boundedReviewerOutput, reviewerTruncated := truncateForRecord(reviewerOutput)
+	boundedEvaluatorResponse, evaluatorTruncated := truncateForRecord(evaluatorResponse)
+	r.updateExternal(func(reviewers *[]ExternalReviewerRecord) {
+		reviewer := externalRecord(reviewers, key, label)
+		// Blocks counts completed loops, so the loop this iteration belongs to is the next one
 		reviewer.Iterations = append(reviewer.Iterations, ExternalIterationRecord{
-			Index: index, ReviewerOutput: boundedReviewerOutput, EvaluatorResponse: boundedEvaluatorResponse,
+			Index: index, Block: reviewer.Blocks + 1, ReviewerOutput: boundedReviewerOutput, EvaluatorResponse: boundedEvaluatorResponse,
 			Truncated: reviewerTruncated || evaluatorTruncated,
 		})
 	})
 }
 
+// ExternalDone aggregates every completed loop of a reviewer: review_cadence = task runs the
+// chain once per task and again at the end, and overwriting would keep only the last block.
 func (r *runRecorder) ExternalDone(done phase.ReviewerCompletion) {
-	r.update(func(record *RunRecord) {
-		key := done.Reviewer.Tool + ":" + done.Reviewer.ModelSpec
-		reviewer := externalRecord(record, key, done.Label)
-		reviewer.Duration = Duration(done.Duration)
+	key := done.Reviewer.Tool + ":" + done.Reviewer.ModelSpec
+	r.updateExternal(func(reviewers *[]ExternalReviewerRecord) {
+		reviewer := externalRecord(reviewers, key, done.Label)
+		reviewer.Duration += Duration(done.Duration)
 		reviewer.EndedBy = done.EndedBy
-		reviewer.HadFindings = done.HadFindings
+		reviewer.HadFindings = reviewer.HadFindings || done.HadFindings
+		reviewer.Blocks++
+	})
+}
+
+// updateExternal applies an external-review mutation to the record and, inside a per-task block,
+// to the invocation's own copy, which survives the record reset after the task phase commits.
+func (r *runRecorder) updateExternal(mutate func(*[]ExternalReviewerRecord)) {
+	r.update(func(record *RunRecord) {
+		mutate(&record.External)
+		if r.runner.perTaskReview {
+			mutate(&r.runner.currentExternal)
+			boundExternalReviewText(r.runner.currentExternal)
+		}
+	})
+}
+
+// SetPendingReviewFixes records whether the final block still owes a commit of work the per-task
+// cadence left uncommitted. the flag is kept in the persisted record so a run stopped before its
+// final block still commits them after a resume, and cleared once the post-review loop has.
+func (r *runRecorder) SetPendingReviewFixes(pending bool) {
+	r.update(func(record *RunRecord) {
+		r.runner.perTaskLeftovers = pending
+		record.PendingReviewFixes = pending
 	})
 }
 
@@ -67,17 +93,17 @@ func (r *runRecorder) PostReviewDone(iterations int) {
 	})
 }
 
-func externalRecord(record *RunRecord, key, label string) *ExternalReviewerRecord {
-	for i := range record.External {
-		if record.External[i].Key == key {
+func externalRecord(reviewers *[]ExternalReviewerRecord, key, label string) *ExternalReviewerRecord {
+	for i := range *reviewers {
+		if (*reviewers)[i].Key == key {
 			if label != "" {
-				record.External[i].Label = label
+				(*reviewers)[i].Label = label
 			}
-			return &record.External[i]
+			return &(*reviewers)[i]
 		}
 	}
-	record.External = append(record.External, ExternalReviewerRecord{Key: key, Label: label})
-	return &record.External[len(record.External)-1]
+	*reviewers = append(*reviewers, ExternalReviewerRecord{Key: key, Label: label})
+	return &(*reviewers)[len(*reviewers)-1]
 }
 
 func (r *runRecorder) update(mutate func(*RunRecord)) {
@@ -118,15 +144,26 @@ func cloneRunRecord(record RunRecord) RunRecord {
 		cloned.PhaseDurations = make(map[string]Duration, len(record.PhaseDurations))
 		maps.Copy(cloned.PhaseDurations, record.PhaseDurations)
 	}
-	cloned.External = make([]ExternalReviewerRecord, len(record.External))
-	for i := range record.External {
-		cloned.External[i] = record.External[i]
-		cloned.External[i].Iterations = append([]ExternalIterationRecord(nil), record.External[i].Iterations...)
+	cloned.External = cloneExternalRecords(record.External)
+	if cloned.External == nil {
+		cloned.External = []ExternalReviewerRecord{}
 	}
 	if record.Finalize != nil {
 		finalize := *record.Finalize
 		finalize.Files = slices.Clone(record.Finalize.Files)
 		cloned.Finalize = &finalize
+	}
+	return cloned
+}
+
+func cloneExternalRecords(reviewers []ExternalReviewerRecord) []ExternalReviewerRecord {
+	if reviewers == nil {
+		return nil
+	}
+	cloned := make([]ExternalReviewerRecord, len(reviewers))
+	for i := range reviewers {
+		cloned[i] = reviewers[i]
+		cloned[i].Iterations = append([]ExternalIterationRecord(nil), reviewers[i].Iterations...)
 	}
 	return cloned
 }
@@ -145,6 +182,8 @@ func (r *Runner) prepareReviewResume(ctx context.Context) {
 func (r *Runner) startRunRecord() {
 	r.invocationStarted = time.Now().UTC()
 	r.currentTasks = TaskRunRecord{}
+	r.currentExternal = nil
+	r.perTaskLeftovers = false
 	r.priorPhaseDurations = nil
 	r.priorValidation = ValidationRunRecord{}
 	r.loadedRecord = false
@@ -164,6 +203,8 @@ func (r *Runner) startRunRecord() {
 		case r.cfg.Mode == ModeFull:
 			r.loadedRecord = true
 			fresh = stored
+			// the leftover fixes of an earlier invocation's per-task block are still uncommitted
+			r.perTaskLeftovers = stored.PendingReviewFixes
 		}
 	}
 	r.record = fresh
@@ -222,7 +263,13 @@ func (r *Runner) resetRunRecord() {
 	}
 	r.record = r.newRunRecord()
 	r.record.Tasks = r.currentTasks
+	r.record.External = cloneExternalRecords(r.currentExternal)
+	r.record.PendingReviewFixes = r.perTaskLeftovers
 	r.fillRunRecordFields()
+	if r.record.PendingReviewFixes && r.recorder != nil {
+		// the store was just emptied; a process death before the next event must not lose the flag
+		r.recorder.save(cloneRunRecord(r.record))
+	}
 }
 
 func (r *Runner) adoptLoadedRunRecord() {
@@ -242,6 +289,8 @@ func (r *Runner) adoptLoadedRunRecord() {
 	}
 	r.record = r.newRunRecord()
 	r.record.Tasks = r.currentTasks
+	r.record.External = cloneExternalRecords(r.currentExternal)
+	r.record.PendingReviewFixes = r.perTaskLeftovers
 	r.loadedRecord = false
 	r.priorPhaseDurations = nil
 	r.priorValidation = ValidationRunRecord{}

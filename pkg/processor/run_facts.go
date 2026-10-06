@@ -316,11 +316,23 @@ func writeExternalReviewers(b *strings.Builder, reviewers []ExternalReviewerReco
 	boundExternalReviewText(reviewers)
 	for _, reviewer := range reviewers {
 		fmt.Fprintf(b, "### %s\n", valueOrNone(reviewer.Key))
+		label := valueOrNone(reviewer.Label)
+		if reviewer.Blocks > 1 {
+			// review_cadence = task: one block per task plus the final whole-branch review
+			label += fmt.Sprintf(" (%d review blocks)", reviewer.Blocks)
+		}
 		fmt.Fprintf(b, "- label: %s\n- iterations: %d\n- duration_ms: %d\n- ended by: %s\n- had findings: %t\n",
-			valueOrNone(reviewer.Label), len(reviewer.Iterations), time.Duration(reviewer.Duration).Milliseconds(),
+			label, len(reviewer.Iterations), time.Duration(reviewer.Duration).Milliseconds(),
 			valueOrNone(reviewer.EndedBy), reviewer.HadFindings)
+		// iteration indexes restart in every block, so name the block once there is more than one
+		multiBlock := lastReviewBlock(reviewer) > 1
 		for _, iteration := range reviewer.Iterations {
-			fmt.Fprintf(b, "#### Iteration %d\n- truncated: %t\n", iteration.Index, iteration.Truncated)
+			if multiBlock {
+				fmt.Fprintf(b, "#### Block %d, iteration %d\n", iteration.Block, iteration.Index)
+			} else {
+				fmt.Fprintf(b, "#### Iteration %d\n", iteration.Index)
+			}
+			fmt.Fprintf(b, "- truncated: %t\n", iteration.Truncated)
 			b.WriteString("Reviewer output:\n")
 			writeFencedBlock(b, iteration.ReviewerOutput)
 			b.WriteString("Evaluator response:\n")

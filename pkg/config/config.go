@@ -124,6 +124,21 @@ func IsValidFinalizeMode(mode string) bool {
 	return slices.Contains(FinalizeModes, mode)
 }
 
+// Review cadences: end reviews once after the task phase, task additionally runs the
+// external reviewer chain after every completed task in full mode.
+const (
+	ReviewCadenceEnd  = "end"
+	ReviewCadenceTask = "task"
+)
+
+// ReviewCadenceModes lists the accepted review_cadence values.
+var ReviewCadenceModes = []string{ReviewCadenceEnd, ReviewCadenceTask}
+
+// IsValidReviewCadence reports whether cadence is one of ReviewCadenceModes.
+func IsValidReviewCadence(cadence string) bool {
+	return slices.Contains(ReviewCadenceModes, cadence)
+}
+
 // IsValidFinalizeMergeMethod reports whether method is one of FinalizeMergeMethods.
 func IsValidFinalizeMergeMethod(method string) bool {
 	return slices.Contains(FinalizeMergeMethods, method)
@@ -164,6 +179,9 @@ type Config struct {
 	MaxIterationsSet      bool `json:"-"` // tracks if max_iterations was explicitly set in config
 	MaxExternalIterations int  `json:"max_external_iterations"`
 	ReviewPatience        int  `json:"review_patience"`
+
+	ReviewCadence    string `json:"review_cadence"` // end or task; see EffectiveReviewCadence
+	ReviewCadenceSet bool   `json:"-"`              // tracks if review_cadence was explicitly set in config
 
 	Finalize                 string        `json:"finalize"`                // none, sync, pr, or merge; see EffectiveFinalize
 	FinalizeSet              bool          `json:"-"`                       // tracks if finalize was explicitly set in config
@@ -427,6 +445,8 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		MaxIterationsSet:         values.MaxIterationsSet,
 		MaxExternalIterations:    values.MaxExternalIterations,
 		ReviewPatience:           values.ReviewPatience,
+		ReviewCadence:            values.ReviewCadence,
+		ReviewCadenceSet:         values.ReviewCadenceSet,
 		Finalize:                 values.Finalize,
 		FinalizeSet:              values.FinalizeSet,
 		FinalizeMergeMethod:      values.FinalizeMergeMethod,
@@ -564,6 +584,14 @@ func (c *Config) EffectiveFinalize() string {
 		return FinalizeNone
 	}
 	return c.Finalize
+}
+
+// EffectiveReviewCadence returns the review cadence, treating an unset value as ReviewCadenceEnd.
+func (c *Config) EffectiveReviewCadence() string {
+	if c == nil || c.ReviewCadence == "" {
+		return ReviewCadenceEnd
+	}
+	return c.ReviewCadence
 }
 
 // EffectiveFinalizeMergeMethod returns the merge method, falling back to DefaultFinalizeMergeMethod.

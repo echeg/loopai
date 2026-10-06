@@ -41,7 +41,7 @@ func TestReviewPhase_First_FailedSignal(t *testing.T) {
 	exec := newTaskPhaseMockExecutor([]executor.Result{{Output: "error", Signal: status.Failed}})
 	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{cfg: Config{MaxIterations: 50}, exec: exec})
 
-	err := phase.First(t.Context())
+	err := phase.First(t.Context(), "")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "FAILED signal")
@@ -51,7 +51,7 @@ func TestReviewPhase_First_PatternMatchError(t *testing.T) {
 	exec := newTaskPhaseMockExecutor([]executor.Result{{Error: &executor.PatternMatchError{Pattern: "limit", HelpCmd: "usage"}}})
 	phase, log := reviewPhaseFromRunner(t, reviewPhaseTestOpts{cfg: Config{MaxIterations: 50}, exec: exec})
 
-	err := phase.First(t.Context())
+	err := phase.First(t.Context(), "")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "limit")
@@ -160,7 +160,7 @@ func TestReviewPhase_First_TimeoutWarningStillLogged(t *testing.T) {
 	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{cfg: Config{MaxIterations: 50}, exec: exec, log: log})
 	phase.policy = newScriptedTestPolicy(log, ExecutionResult{TimedOut: true})
 
-	err := phase.First(t.Context())
+	err := phase.First(t.Context(), "")
 
 	require.NoError(t, err)
 	assert.Len(t, exec.RunCalls(), 1)
@@ -191,7 +191,7 @@ func TestReviewPhase_First_CodexTimeoutSurfacesAsError(t *testing.T) {
 		cfg: Config{MaxIterations: 50, TaskProvider: config.ExecutorClaude, ReviewProvider: config.ExecutorCodex}, exec: exec})
 	phase.policy = newScriptedTestPolicy(newMockLogger(""), ExecutionResult{Result: executor.Result{Output: "partial output"}, TimedOut: true})
 
-	err := phase.First(t.Context())
+	err := phase.First(t.Context(), "")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "first review pass timed out")
@@ -204,7 +204,7 @@ func TestReviewPhase_ClaudeReviewUnderCodexTaskUsesClaudeSemantics(t *testing.T)
 		cfg: Config{MaxIterations: 50, TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorClaude}, exec: exec, log: log})
 	phase.policy = newScriptedTestPolicy(log, ExecutionResult{Result: executor.Result{Output: "partial output"}, TimedOut: true})
 
-	require.NoError(t, phase.First(t.Context()), "a claude review timeout warns instead of failing")
+	require.NoError(t, phase.First(t.Context(), ""), "a claude review timeout warns instead of failing")
 	assertLogContains(t, log, "did not complete cleanly (session timed out)")
 	require.NotEmpty(t, log.PrintSectionCalls())
 	assert.Equal(t, "claude review 0: all findings", log.PrintSectionCalls()[0].Section.Label)

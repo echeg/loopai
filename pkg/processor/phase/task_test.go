@@ -315,6 +315,396 @@ func TestTaskPhase_Run_TimeoutBacksOffThenContinues(t *testing.T) {
 	assert.Equal(t, []time.Duration{retryBackoff}, policy.sleepCalls, "timeout retry waits the backoff once")
 }
 
+type afterTaskCall struct {
+	taskNum    int
+	headBefore string
+}
+
+type planStep func(content string) (string, executor.Result)
+
+// newAfterTaskPhase builds a task phase whose executor applies one plan edit per call and whose
+// git checker returns h1, h2, ... on successive HEAD reads.
+func newAfterTaskPhase(t *testing.T, content string, steps []planStep) (*taskPhase, *[]afterTaskCall, *executorMock) {
+	t.Helper()
+	planFile := writeTaskPhasePlan(t, content)
+	call := 0
+	exec := &executorMock{RunFunc: func(_ context.Context, _ string) executor.Result {
+		if call >= len(steps) {
+			return executor.Result{Error: errors.New("no more mock results")}
+		}
+		data, err := os.ReadFile(planFile) //nolint:gosec // test plan path
+		require.NoError(t, err)
+		updated, result := steps[call](string(data))
+		call++
+		require.NoError(t, os.WriteFile(planFile, []byte(updated), 0o600))
+		return result
+	}}
+	phase := taskPhaseFromRunner(t, taskPhaseTestOpts{cfg: Config{MaxIterations: 10}, planFile: planFile, exec: exec, log: newMockLogger("")})
+	heads := 0
+	phase.deps.Git = &gitCheckerMock{HeadHashFunc: func() (string, error) {
+		heads++
+		return fmt.Sprintf("h%d", heads), nil
+	}, DiffFingerprintFunc: func() (string, error) { return "clean", nil }}
+	calls := &[]afterTaskCall{}
+	phase.afterTask = func(_ context.Context, taskNum int, headBefore string) error {
+		*calls = append(*calls, afterTaskCall{taskNum: taskNum, headBefore: headBefore})
+		return nil
+	}
+	return phase, calls, exec
+}
+
+// tickStep checks the named plan item, or nothing for an empty item, and returns the signal.
+func tickStep(item, signal string) planStep {
+	return func(content string) (string, executor.Result) {
+		if item != "" {
+			content = strings.Replace(content, "- [ ] "+item, "- [x] "+item, 1)
+		}
+		return content, executor.Result{Output: "worked", Signal: signal}
+	}
+}
+
+func TestTaskPhase_Run_AfterTask(t *testing.T) {
+	const twoTasks = "# Plan\n### Task 1: first\n- [ ] one\n### Task 2: second\n- [ ] two"
+
+	tests := []struct {
+		name      string
+		content   string
+		steps     []planStep
+		wantCalls []afterTaskCall
+		wantRuns  int
+	}{
+		{
+			name:      "called once per advanced task, last one on completion signal",
+			content:   twoTasks,
+			steps:     []planStep{tickStep("one", ""), tickStep("two", status.Completed)},
+			wantCalls: []afterTaskCall{{taskNum: 1, headBefore: "h1"}, {taskNum: 2, headBefore: "h2"}},
+			wantRuns:  2,
+		},
+		{
+			name:      "retried failure keeps the first attempt's head",
+			content:   twoTasks,
+			steps:     []planStep{tickStep("", status.Failed), tickStep("one", ""), tickStep("two", status.Completed)},
+			wantCalls: []afterTaskCall{{taskNum: 1, headBefore: "h1"}, {taskNum: 2, headBefore: "h2"}},
+			wantRuns:  3,
+		},
+		{
+			name:      "failed signal that ticked the task does not call the hook",
+			content:   twoTasks,
+			steps:     []planStep{tickStep("one", status.Failed), tickStep("two", status.Completed)},
+			wantCalls: []afterTaskCall{{taskNum: 2, headBefore: "h2"}},
+			wantRuns:  2,
+		},
+		{
+			name:      "iteration that ticked nothing does not call the hook",
+			content:   twoTasks,
+			steps:     []planStep{tickStep("", ""), tickStep("one", ""), tickStep("two", status.Completed)},
+			wantCalls: []afterTaskCall{{taskNum: 1, headBefore: "h1"}, {taskNum: 2, headBefore: "h2"}},
+			wantRuns:  3,
+		},
+		{
+			name:    "iteration completing two tasks calls the hook once",
+			content: twoTasks,
+			steps: []planStep{func(content string) (string, executor.Result) {
+				return strings.ReplaceAll(content, "- [ ]", "- [x]"), executor.Result{Signal: status.Completed}
+			}},
+			wantCalls: []afterTaskCall{{taskNum: 1, headBefore: "h1"}},
+			wantRuns:  1,
+		},
+		{
+			name:      "last task ticked without signal is reviewed once",
+			content:   "# Plan\n### Task 1: first\n- [ ] one",
+			steps:     []planStep{tickStep("one", ""), tickStep("", status.Completed)},
+			wantCalls: []afterTaskCall{{taskNum: 1, headBefore: "h1"}},
+			wantRuns:  2,
+		},
+		{
+			name:      "already completed plan does not call the hook",
+			content:   "# Plan\n### Task 1: first\n- [x] one",
+			steps:     []planStep{tickStep("", status.Completed)},
+			wantCalls: []afterTaskCall{},
+			wantRuns:  1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			phase, calls, exec := newAfterTaskPhase(t, tc.content, tc.steps)
+
+			require.NoError(t, phase.Run(t.Context()))
+
+			assert.Equal(t, tc.wantCalls, *calls)
+			assert.Len(t, exec.RunCalls(), tc.wantRuns)
+		})
+	}
+}
+
+func TestTaskPhase_Run_AfterTaskSkipsTimeout(t *testing.T) {
+	phase, calls, exec := newAfterTaskPhase(t, "# Plan\n### Task 1: first\n- [ ] one",
+		[]planStep{tickStep("", ""), tickStep("one", status.Completed)})
+	phase.policy = newScriptedTestPolicy(phase.log,
+		ExecutionResult{TimedOut: true},
+		ExecutionResult{Result: executor.Result{Signal: status.Completed}},
+	)
+
+	require.NoError(t, phase.Run(t.Context()))
+
+	// the timed-out session calls no hook and the retry keeps the head read before it
+	assert.Equal(t, []afterTaskCall{{taskNum: 1, headBefore: "h1"}}, *calls)
+	assert.Len(t, exec.RunCalls(), 2)
+}
+
+func TestTaskPhase_Run_AfterTaskTimeoutThatTickedTheTask(t *testing.T) {
+	phase, calls, exec := newAfterTaskPhase(t, "# Plan\n### Task 1: first\n- [ ] one\n### Task 2: second\n- [ ] two",
+		[]planStep{tickStep("one", ""), tickStep("two", status.Completed)})
+	phase.policy = newScriptedTestPolicy(phase.log,
+		ExecutionResult{TimedOut: true},
+		ExecutionResult{Result: executor.Result{Signal: status.Completed}},
+	)
+
+	require.NoError(t, phase.Run(t.Context()))
+
+	// the session hung after ticking task 1, so its review runs before the next task starts
+	assert.Equal(t, []afterTaskCall{{taskNum: 1, headBefore: "h1"}, {taskNum: 2, headBefore: "h2"}}, *calls)
+	assert.Len(t, exec.RunCalls(), 2)
+}
+
+func TestTaskPhase_Run_AfterTaskTimeoutBeforeCommitSkipsReview(t *testing.T) {
+	phase, calls, exec := newAfterTaskPhase(t, "# Plan\n### Task 1: first\n- [ ] one\n### Task 2: second\n- [ ] two",
+		[]planStep{tickStep("one", ""), tickStep("two", status.Completed)})
+	phase.policy = newScriptedTestPolicy(phase.log,
+		ExecutionResult{TimedOut: true},
+		ExecutionResult{Result: executor.Result{Signal: status.Completed}},
+	)
+	git := phase.deps.Git.(*gitCheckerMock)
+	fingerprints := []string{"clean", "dirty", "dirty"}
+	git.DiffFingerprintFunc = func() (string, error) {
+		fp := fingerprints[0]
+		if len(fingerprints) > 1 {
+			fingerprints = fingerprints[1:]
+		}
+		return fp, nil
+	}
+	var uncommitted []int
+	phase.uncommitted = func(taskNum int) { uncommitted = append(uncommitted, taskNum) }
+
+	require.NoError(t, phase.Run(t.Context()))
+
+	// the session ticked task 1 and hung before committing it, so a review against HEAD would miss
+	// that work; only task 2, which started from the dirty tree and left it unchanged, is reviewed
+	assert.Equal(t, []afterTaskCall{{taskNum: 2, headBefore: "h2"}}, *calls)
+	assert.Equal(t, []int{1}, uncommitted, "the skipped task is reported so the final block commits it first")
+	assert.Len(t, exec.RunCalls(), 2)
+}
+
+func TestTaskPhase_Run_AfterTaskBreakThatTickedTheTask(t *testing.T) {
+	const planBody = "# Plan\n### Task 1: first\n- [ ] one\n### Task 2: second\n- [ ] two"
+	planFile := writeTaskPhasePlan(t, planBody)
+	breakCh := make(chan struct{}, 1)
+	runs := 0
+	exec := &executorMock{RunFunc: func(ctx context.Context, _ string) executor.Result {
+		runs++
+		if runs == 1 {
+			require.NoError(t, os.WriteFile(planFile, []byte(strings.Replace(planBody, "- [ ] one", "- [x] one", 1)), 0o600))
+			breakCh <- struct{}{}
+			<-ctx.Done()
+			return executor.Result{Error: ctx.Err()}
+		}
+		require.NoError(t, os.WriteFile(planFile, []byte(strings.ReplaceAll(planBody, "- [ ]", "- [x]")), 0o600))
+		return executor.Result{Signal: status.Completed}
+	}}
+	phase := taskPhaseFromRunner(t, taskPhaseTestOpts{cfg: Config{MaxIterations: 10}, planFile: planFile, exec: exec, log: newMockLogger("")})
+	phase.deps.BreakCh = breakCh
+	phase.deps.PauseHandler = func(context.Context) bool { return true }
+	heads := 0
+	phase.deps.Git = &gitCheckerMock{HeadHashFunc: func() (string, error) {
+		heads++
+		return fmt.Sprintf("h%d", heads), nil
+	}, DiffFingerprintFunc: func() (string, error) { return "clean", nil }}
+	var calls []afterTaskCall
+	phase.afterTask = func(_ context.Context, taskNum int, headBefore string) error {
+		calls = append(calls, afterTaskCall{taskNum: taskNum, headBefore: headBefore})
+		return nil
+	}
+
+	require.NoError(t, phase.Run(t.Context()))
+
+	// the session was interrupted after ticking task 1; resuming reviews it before task 2 starts
+	assert.Equal(t, []afterTaskCall{{taskNum: 1, headBefore: "h1"}, {taskNum: 2, headBefore: "h2"}}, calls)
+	assert.Equal(t, 2, runs)
+}
+
+func TestTaskPhase_Run_AfterTaskSkipsBreak(t *testing.T) {
+	planFile := writeTaskPhasePlan(t, "# Plan\n### Task 1: first\n- [ ] one")
+	breakCh := make(chan struct{}, 1)
+	runs := 0
+	exec := &executorMock{RunFunc: func(ctx context.Context, _ string) executor.Result {
+		runs++
+		if runs == 1 {
+			breakCh <- struct{}{}
+			<-ctx.Done()
+			return executor.Result{Error: ctx.Err()}
+		}
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n### Task 1: first\n- [x] one"), 0o600))
+		return executor.Result{Signal: status.Completed}
+	}}
+	phase := taskPhaseFromRunner(t, taskPhaseTestOpts{cfg: Config{MaxIterations: 10}, planFile: planFile, exec: exec, log: newMockLogger("")})
+	phase.deps.BreakCh = breakCh
+	phase.deps.PauseHandler = func(context.Context) bool { return true }
+	heads := 0
+	phase.deps.Git = &gitCheckerMock{HeadHashFunc: func() (string, error) {
+		heads++
+		return fmt.Sprintf("h%d", heads), nil
+	}, DiffFingerprintFunc: func() (string, error) { return "clean", nil }}
+	var calls []afterTaskCall
+	phase.afterTask = func(_ context.Context, taskNum int, headBefore string) error {
+		calls = append(calls, afterTaskCall{taskNum: taskNum, headBefore: headBefore})
+		return nil
+	}
+
+	require.NoError(t, phase.Run(t.Context()))
+
+	// the interrupted session calls no hook; the resumed one does, against the head read before the break
+	assert.Equal(t, []afterTaskCall{{taskNum: 1, headBefore: "h1"}}, calls)
+	assert.Equal(t, 2, runs)
+}
+
+func TestTaskPhase_Run_AfterTaskBreakAbort(t *testing.T) {
+	tests := []struct {
+		name            string
+		tick            bool
+		fingerprints    []string
+		wantUncommitted []int
+	}{
+		{name: "ticked and uncommitted task is reported", tick: true, fingerprints: []string{"clean", "dirty"}, wantUncommitted: []int{1}},
+		{name: "ticked and committed task is not reported", tick: true, fingerprints: []string{"clean", "clean"}},
+		{name: "unticked task is not reported", fingerprints: []string{"clean", "dirty"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			const planBody = "# Plan\n### Task 1: first\n- [ ] one\n### Task 2: second\n- [ ] two"
+			planFile := writeTaskPhasePlan(t, planBody)
+			breakCh := make(chan struct{}, 1)
+			exec := &executorMock{RunFunc: func(ctx context.Context, _ string) executor.Result {
+				if tc.tick {
+					require.NoError(t, os.WriteFile(planFile, []byte(strings.Replace(planBody, "- [ ] one", "- [x] one", 1)), 0o600))
+				}
+				breakCh <- struct{}{}
+				<-ctx.Done()
+				return executor.Result{Error: ctx.Err()}
+			}}
+			phase := taskPhaseFromRunner(t, taskPhaseTestOpts{cfg: Config{MaxIterations: 10}, planFile: planFile, exec: exec, log: newMockLogger("")})
+			phase.deps.BreakCh = breakCh
+			phase.deps.PauseHandler = func(context.Context) bool { return false }
+			fingerprints := tc.fingerprints
+			phase.deps.Git = &gitCheckerMock{HeadHashFunc: func() (string, error) { return "h1", nil },
+				DiffFingerprintFunc: func() (string, error) {
+					fp := fingerprints[0]
+					if len(fingerprints) > 1 {
+						fingerprints = fingerprints[1:]
+					}
+					return fp, nil
+				}}
+			var calls []afterTaskCall
+			phase.afterTask = func(_ context.Context, taskNum int, headBefore string) error {
+				calls = append(calls, afterTaskCall{taskNum: taskNum, headBefore: headBefore})
+				return nil
+			}
+			var uncommitted []int
+			phase.uncommitted = func(taskNum int) { uncommitted = append(uncommitted, taskNum) }
+
+			require.ErrorIs(t, phase.Run(t.Context()), ErrUserAborted)
+
+			// an aborted run reviews nothing, but a ticked task it left uncommitted is reported so the next
+			// invocation, which starts at the following task, commits that work before its final review
+			assert.Empty(t, calls)
+			assert.Equal(t, tc.wantUncommitted, uncommitted)
+			assert.Len(t, exec.RunCalls(), 1)
+		})
+	}
+}
+
+func TestTaskPhase_Run_AfterTaskExecutorError(t *testing.T) {
+	tests := []struct {
+		name            string
+		item            string
+		fingerprints    []string
+		wantUncommitted []int
+	}{
+		{name: "ticked and uncommitted task is reported", item: "one", fingerprints: []string{"clean", "dirty"}, wantUncommitted: []int{1}},
+		{name: "ticked and committed task is not reported", item: "one", fingerprints: []string{"clean", "clean"}},
+		{name: "unticked task is not reported", fingerprints: []string{"clean", "dirty"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			execErr := errors.New("session crashed")
+			phase, calls, exec := newAfterTaskPhase(t, "# Plan\n### Task 1: first\n- [ ] one\n### Task 2: second\n- [ ] two",
+				[]planStep{func(content string) (string, executor.Result) {
+					content, _ = tickStep(tc.item, "")(content)
+					return content, executor.Result{Error: execErr}
+				}})
+			fingerprints := tc.fingerprints
+			phase.deps.Git.(*gitCheckerMock).DiffFingerprintFunc = func() (string, error) {
+				fp := fingerprints[0]
+				if len(fingerprints) > 1 {
+					fingerprints = fingerprints[1:]
+				}
+				return fp, nil
+			}
+			var uncommitted []int
+			phase.uncommitted = func(taskNum int) { uncommitted = append(uncommitted, taskNum) }
+
+			require.ErrorIs(t, phase.Run(t.Context()), execErr)
+
+			// a session that failed or was canceled reviews nothing, but a ticked task it left uncommitted
+			// is reported so the next invocation, which starts at the following task, commits that work
+			assert.Empty(t, *calls)
+			assert.Equal(t, tc.wantUncommitted, uncommitted)
+			assert.Len(t, exec.RunCalls(), 1)
+		})
+	}
+}
+
+func TestTaskPhase_Run_AfterTaskError(t *testing.T) {
+	tests := []struct {
+		name    string
+		hookErr error
+		wantErr string
+	}{
+		{name: "error is wrapped with the task number", hookErr: errors.New("reviewer failed"), wantErr: "after task 1: reviewer failed"},
+		{name: "context canceled propagates unchanged", hookErr: context.Canceled},
+		{name: "user abort propagates unchanged", hookErr: ErrUserAborted},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			phase, _, exec := newAfterTaskPhase(t, "# Plan\n### Task 1: first\n- [ ] one\n### Task 2: second\n- [ ] two",
+				[]planStep{tickStep("one", ""), tickStep("two", status.Completed)})
+			phase.afterTask = func(context.Context, int, string) error { return tc.hookErr }
+
+			err := phase.Run(t.Context())
+
+			require.Error(t, err)
+			if tc.wantErr == "" {
+				assert.Same(t, tc.hookErr, err, "error must not be wrapped")
+			} else {
+				require.EqualError(t, err, tc.wantErr)
+			}
+			assert.Len(t, exec.RunCalls(), 1, "the phase stops at the failing hook")
+		})
+	}
+}
+
+func TestTaskPhase_Run_NoAfterTaskReadsNoHead(t *testing.T) {
+	phase, _, _ := newAfterTaskPhase(t, "# Plan\n### Task 1: first\n- [ ] one", []planStep{tickStep("one", status.Completed)})
+	phase.afterTask = nil
+	git := &gitCheckerMock{}
+	phase.deps.Git = git
+
+	require.NoError(t, phase.Run(t.Context()))
+
+	assert.Empty(t, git.HeadHashCalls())
+}
+
 func writeTaskPhasePlan(t *testing.T, content string) string {
 	t.Helper()
 	planFile := filepath.Join(t.TempDir(), "plan.md")
