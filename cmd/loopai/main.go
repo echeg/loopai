@@ -2955,6 +2955,9 @@ type resolvedReviewer struct {
 	Model      string
 	Effort     string
 	MaxDropped bool
+	// Spec is the model[:effort] remainder as configured, before provider defaults fill
+	// Model and Effort; empty for an automatically selected reviewer.
+	Spec string
 }
 
 func (r resolvedReviewer) modelSpec() string {
@@ -3008,8 +3011,10 @@ func (s externalReviewSelection) chainLabel() string {
 }
 
 // flagValue renders the chain as the comma-separated provider[:model[:effort]] value
-// --external-reviewers accepts. A chain with a custom reviewer renders empty: its
-// script lives in custom_review_script, so the flag alone cannot replay it.
+// --external-reviewers accepts, from each reviewer's spec as configured: the resolved
+// model and effort carry provider defaults, which a replay would freeze into an explicit
+// choice. A chain with a custom reviewer renders empty: its script lives in
+// custom_review_script, so the flag alone cannot replay it.
 func (s externalReviewSelection) flagValue() string {
 	entries := make([]string, 0, len(s.Reviewers))
 	for _, reviewer := range s.Reviewers {
@@ -3017,11 +3022,8 @@ func (s externalReviewSelection) flagValue() string {
 			return ""
 		}
 		entry := reviewer.Provider
-		switch {
-		case reviewer.Effort != "":
-			entry += ":" + reviewer.Model + ":" + reviewer.Effort
-		case reviewer.Model != "":
-			entry += ":" + reviewer.Model
+		if reviewer.Spec != "" {
+			entry += ":" + reviewer.Spec
 		}
 		entries = append(entries, entry)
 	}
@@ -3150,7 +3152,7 @@ func resolveReviewerChain(cfg *config.Config, mode processor.Mode) (externalRevi
 		for _, spec := range specs {
 			model, effort, maxDropped := processor.ResolveExternalReviewerModelEffort(spec.Provider, spec.ModelSpec)
 			selection.Reviewers = append(selection.Reviewers, resolvedReviewer{
-				Provider: spec.Provider, Model: model, Effort: effort, MaxDropped: maxDropped,
+				Provider: spec.Provider, Model: model, Effort: effort, MaxDropped: maxDropped, Spec: spec.ModelSpec,
 			})
 		}
 		return selection, nil

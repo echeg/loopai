@@ -181,7 +181,9 @@
   auto-selected reviewer is omitted and the next launch selects it again the same way.
 - **Skill reading**: `awk -F'\t' '$2 ~ /^(orca|t3|cli)$/ {print $3}'` then first three
   distinct non-empty strings; the launcher recommendation takes the first line whose second
-  field is `orca` or `t3`.
+  field is `orca` or `t3`. The shipped snippet also drops any flag string with an unknown or
+  repeated token, a value outside the charset, or a spec without a `claude`/`codex` provider, and
+  must stay identical across all six skills (`scripts/check-launch-history-skills_test.sh`).
 - **Failure policy**: recorder errors are one stderr warning; reader errors in the skills
   mean "no history" and fall back to today's behavior.
 

@@ -575,14 +575,28 @@ runs `loopai --t3` and a config enabling both is a reporting choice. `launchFlag
 review spec only when set and the reviewer chain only when `sel.Explicit`, because an inherited
 review spec or an automatic reviewer follows from the task spec and would be frozen into an explicit
 choice on replay; any value outside `^[A-Za-z0-9._:,+-]+$`, the charset the three skills accept,
-drops that flag, so a skill never offers a string it would reject. The file is
+drops that flag, so a skill never offers a string it would reject. `externalReviewSelection.flagValue`
+renders each reviewer from `resolvedReviewer.Spec`, the `model[:effort]` remainder as configured, and
+never from the resolved `Model`/`Effort`: `ResolveExternalReviewerModelEffort` fills Claude's
+`opus`/`xhigh` default and drops a Codex `max`, so a resolved rendering would freeze today's default
+into every replay. A chain containing a `custom` reviewer renders empty, since `custom_review_script`
+cannot travel through the flag, and an explicitly empty chain is omitted for the same reason; a replay
+of either selects the automatic reviewer. The `run()` hook sits before plan selection, so a full-mode
+run that falls into auto-plan records there even when the description prompt is canceled, and records
+again, deduplicated, if plan creation continues. The file is
 tab-separated `<RFC3339 UTC>`, `<launcher>`, and `<flags>`, newest first, deduplicated by the flags string alone (a
 repeated combination moves to the top and takes the new launcher), capped at
 `launchHistoryLimit` (10), and rewritten whole through `writeFileAtomic` with mode `0600`; an empty
 flags string is a valid entry. There is no lock: two simultaneous launches lose at most one line.
 `loopai-plan`, `loopai-orca`, `loopai-t3`, and their Codex copies read it with one shared snippet
 that `scripts/check-launch-history-skills_test.sh` requires to be identical across all six skills
-and executes against fixtures; change the format and the snippet together.
+and executes against fixtures; change the format and the snippet together. The skills read only
+`${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}`, so a launch made with `--config-dir` is recorded where
+no skill looks. Without pass-through flags, `loopai-orca` and `loopai-t3` offer up to three history
+entries before launching, but never when `loopai-plan` already chose the flags in the same
+conversation, an empty choice included; `loopai-plan` marks the launcher of the newest `orca`/`t3`
+line "(Recommended)", and within `AskUserQuestion`'s four-option cap the oldest history entries are
+dropped first.
 
 The task and review providers own all repository writes. External reviewers produce findings only; the `review_model` provider (falling back to `task_model`'s) evaluates and fixes them. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
 

@@ -4443,7 +4443,7 @@ func TestResolveExternalReviewerChain(t *testing.T) {
 	assert.True(t, got.Explicit)
 	assert.Equal(t, []resolvedReviewer{
 		{Provider: config.ExternalReviewToolCodex},
-		{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max"},
+		{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max", Spec: "fable:max"},
 		{Provider: config.ExternalReviewToolCustom},
 	}, got.Reviewers)
 
@@ -5516,7 +5516,7 @@ func TestExternalReviewChainLabel(t *testing.T) {
 			name: "reviewer chain",
 			selection: externalReviewSelection{Reviewers: []resolvedReviewer{
 				{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "xhigh"},
-				{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max"},
+				{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max", Spec: "fable:max"},
 			}},
 			want: "codex (gpt-5.5:xhigh) → claude (fable:max)",
 		},
@@ -5548,17 +5548,17 @@ func TestExternalReviewSelectionFlagValue(t *testing.T) {
 		{
 			name: "chain with efforts",
 			selection: externalReviewSelection{Reviewers: []resolvedReviewer{
-				{Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "high"},
-				{Provider: config.ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "high"},
+				{Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "high", Spec: "opus:high"},
+				{Provider: config.ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "high", Spec: "gpt-6-astra:high"},
 			}},
 			want: "claude:opus:high,codex:gpt-6-astra:high",
 		},
 		{
-			name: "provider defaults",
+			name: "provider defaults not rendered",
 			selection: externalReviewSelection{Reviewers: []resolvedReviewer{
 				{Provider: config.ExternalReviewToolCodex},
-				{Provider: config.ExternalReviewToolCodex, Effort: "low"},
-				{Provider: config.ExternalReviewToolClaude, Model: "sonnet"},
+				{Provider: config.ExternalReviewToolCodex, Effort: "low", Spec: ":low"},
+				{Provider: config.ExternalReviewToolClaude, Model: "sonnet", Effort: "xhigh", Spec: "sonnet"},
 			}},
 			want: "codex,codex::low,claude:sonnet",
 		},
@@ -5622,7 +5622,7 @@ func TestCmuxRunModels(t *testing.T) {
 	t.Run("external reviewer chain uses joined provider and model labels", func(t *testing.T) {
 		externalReview := externalReviewSelection{Reviewers: []resolvedReviewer{
 			{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "xhigh"},
-			{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max"},
+			{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max", Spec: "fable:max"},
 		}}
 
 		got := cmuxRunModels(opts{}, &config.Config{}, externalReview)
@@ -5751,7 +5751,7 @@ func TestRunHeaderParams(t *testing.T) {
 	t.Run("external reviewer chain is recorded as one label", func(t *testing.T) {
 		external := externalReviewSelection{Reviewers: []resolvedReviewer{
 			{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "xhigh"},
-			{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max"},
+			{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max", Spec: "fable:max"},
 		}}
 
 		got := runHeaderParams(opts{}, &config.Config{}, processor.ModeFull, external)
@@ -6071,7 +6071,7 @@ func TestPrintStartupInfo(t *testing.T) {
 			ProgressPath:  "progress.txt",
 			ExternalReview: externalReviewSelection{Reviewers: []resolvedReviewer{
 				{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "xhigh"},
-				{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max"},
+				{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max", Spec: "fable:max"},
 				{Provider: config.ExternalReviewToolCustom},
 			}},
 		}
@@ -9883,7 +9883,7 @@ func TestBuildNotifyResult(t *testing.T) {
 			Mode: processor.ModeFull, PlanFile: "plan.md",
 			ExternalReview: externalReviewSelection{Resolved: true, Reviewers: []resolvedReviewer{
 				{Provider: config.ExternalReviewToolCodex, Model: "gpt-5.5", Effort: "xhigh"},
-				{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max"},
+				{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max", Spec: "fable:max"},
 			}},
 		}
 		stats := git.DiffStats{Files: 3, Additions: 100, Deletions: 20}

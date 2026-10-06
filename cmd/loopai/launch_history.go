@@ -112,9 +112,6 @@ var launchFlagValue = regexp.MustCompile(`^[A-Za-z0-9._:,+-]+$`)
 // the reviewer chain only when explicit, since an automatic reviewer follows from the
 // task provider and is selected again the same way on the next launch.
 func launchFlags(o opts, cfg *config.Config, sel externalReviewSelection) string {
-	if cfg == nil {
-		return ""
-	}
 	var parts []string
 	add := func(flag, value string) {
 		if value != "" && launchFlagValue.MatchString(value) {
@@ -134,9 +131,9 @@ func launchFlags(o opts, cfg *config.Config, sel externalReviewSelection) string
 // choice, and the Orca skill passes --orca alone.
 func launcherFor(cfg *config.Config) string {
 	switch {
-	case cfg != nil && cfg.T3:
+	case cfg.T3:
 		return launcherT3
-	case cfg != nil && cfg.Orca:
+	case cfg.Orca:
 		return launcherOrca
 	default:
 		return launcherCLI
@@ -149,7 +146,7 @@ func launcherFor(cfg *config.Config) string {
 // which the ACP protocol owns.
 func recordLaunchHistory(o opts, cfg *config.Config, sel externalReviewSelection, launcher string, stderr io.Writer) {
 	entry := launchEntry{When: time.Now().UTC(), Launcher: launcher, Flags: launchFlags(o, cfg, sel)}
-	if err := recordLaunch(launchHistoryPath(o.ConfigDir), entry); err != nil && stderr != nil {
+	if err := recordLaunch(launchHistoryPath(o.ConfigDir), entry); err != nil {
 		fmt.Fprintf(stderr, "warning: launch history not recorded: %v\n", err)
 	}
 }

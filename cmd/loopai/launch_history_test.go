@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/umputun/ralphex/pkg/config"
+	"github.com/umputun/ralphex/pkg/processor"
 )
 
 func TestLaunchHistoryPath(t *testing.T) {
@@ -188,8 +189,8 @@ func TestRecordLaunchErrors(t *testing.T) {
 
 func TestLaunchFlags(t *testing.T) {
 	codexChain := externalReviewSelection{Resolved: true, Explicit: true, Reviewers: []resolvedReviewer{
-		{Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "high"},
-		{Provider: config.ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "high"},
+		{Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "high", Spec: "opus:high"},
+		{Provider: config.ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "high", Spec: "gpt-6-astra:high"},
 	}}
 	tests := []struct {
 		name string
@@ -198,7 +199,6 @@ func TestLaunchFlags(t *testing.T) {
 		sel  externalReviewSelection
 		want string
 	}{
-		{name: "nil config", o: opts{TaskModel: "claude:opus"}, want: ""},
 		{name: "no flags set", cfg: &config.Config{}, want: ""},
 		{name: "task only", o: opts{TaskModel: "codex:gpt-5.6-sol:high"}, cfg: &config.Config{},
 			want: "--task-model codex:gpt-5.6-sol:high"},
@@ -218,8 +218,8 @@ func TestLaunchFlags(t *testing.T) {
 		{name: "explicit chain without models", cfg: &config.Config{},
 			sel: externalReviewSelection{Explicit: true, Reviewers: []resolvedReviewer{
 				{Provider: config.ExternalReviewToolCodex},
-				{Provider: config.ExternalReviewToolCodex, Effort: "medium"},
-				{Provider: config.ExternalReviewToolClaude, Model: "sonnet"},
+				{Provider: config.ExternalReviewToolCodex, Effort: "medium", Spec: ":medium"},
+				{Provider: config.ExternalReviewToolClaude, Model: "sonnet", Effort: "xhigh", Spec: "sonnet"},
 			}},
 			want: "--external-reviewers codex,codex::medium,claude:sonnet"},
 		{name: "explicitly empty chain omitted", cfg: &config.Config{},
@@ -250,13 +250,23 @@ func TestLaunchFlags(t *testing.T) {
 	}
 }
 
+// TestLaunchFlagsResolvedChain runs the configured chain through the real resolver: the
+// recorded value is the chain as configured, not the provider defaults filled into it.
+func TestLaunchFlagsResolvedChain(t *testing.T) {
+	cfg := &config.Config{ExternalReviewers: "claude,claude:sonnet,codex::max,codex:gpt-6-astra:high", ExternalReviewersSet: true}
+	sel, err := resolveReviewerChain(cfg, processor.ModeFull)
+	require.NoError(t, err)
+	require.Len(t, sel.Reviewers, 4)
+	assert.Equal(t, "opus", sel.Reviewers[0].Model, "the resolver fills the claude default")
+	assert.Equal(t, "--external-reviewers claude,claude:sonnet,codex::max,codex:gpt-6-astra:high", launchFlags(opts{}, cfg, sel))
+}
+
 func TestLauncherFor(t *testing.T) {
 	tests := []struct {
 		name string
 		cfg  *config.Config
 		want string
 	}{
-		{name: "nil config", want: launcherCLI},
 		{name: "none", cfg: &config.Config{}, want: launcherCLI},
 		{name: "orca", cfg: &config.Config{Orca: true}, want: launcherOrca},
 		{name: "t3", cfg: &config.Config{T3: true}, want: launcherT3},
@@ -284,7 +294,7 @@ func TestRecordLaunchHistory(t *testing.T) {
 		assert.Empty(t, stderr.String())
 	})
 
-	t.Run("a failure is one warning and never panics", func(t *testing.T) {
+	t.Run("a failure is one warning", func(t *testing.T) {
 		cfgDir := t.TempDir()
 		blockLaunchHistory(t, cfgDir)
 		var stderr strings.Builder
@@ -292,9 +302,6 @@ func TestRecordLaunchHistory(t *testing.T) {
 
 		assert.Equal(t, 1, strings.Count(stderr.String(), "\n"), stderr.String())
 		assert.True(t, strings.HasPrefix(stderr.String(), "warning: launch history not recorded: "), stderr.String())
-		assert.NotPanics(t, func() {
-			recordLaunchHistory(opts{ConfigDir: cfgDir}, &config.Config{}, externalReviewSelection{}, launcherCLI, nil)
-		})
 	})
 }
 

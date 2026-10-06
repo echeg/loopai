@@ -146,9 +146,14 @@ execution, and T3 Code agent-mode runs) records its effective `--task-model`, `-
 distinct flag combinations, holds flag strings only, and recording never fails or changes a run.
 `loopai:loopai-plan`, `loopai:loopai-orca`, and `loopai:loopai-t3` offer the newest three
 combinations as ready-made choices, so a model typed once becomes an option on the next launch, and
-`loopai:loopai-plan` recommends the launcher you used last instead of always recommending Orca. A
-review chain is recorded only when set explicitly, since an automatic reviewer is selected again
-the same way. Delete the file to clear the history.
+`loopai:loopai-plan` recommends the launcher of your most recent Orca or T3 Code launch instead of
+always recommending Orca; a plain terminal (`cli`) run does not change the recommendation. The
+launcher comes from the run's effective `orca`/`t3` settings, so `orca = true` in config records a
+terminal run as `orca`. A review chain is recorded only when set explicitly, as typed, since an
+automatic reviewer is selected again the same way; an explicitly empty chain and a chain with a
+`custom` reviewer are not recorded, because the flag cannot replay them. `--config-dir` moves where
+loopai writes the history, but the skills read only `LOOPAI_CONFIG_DIR` or `~/.config/loopai`.
+Delete the file to clear the history.
 
 Invoke `/loopai:loopai-retro [plan stem | progress log path | --last N]` manually for a
 retrospective (default: the five newest progress logs). It reads bounded log excerpts,
@@ -257,6 +262,8 @@ Nine skills are installed: `loopai`, `loopai-plan`, `loopai-adopt`,
 version; each skill directory is replaced wholesale, so a file dropped upstream
 does not linger. Invoke `$loopai-retro [plan stem | progress log path | --last N]`
 explicitly for the same read-only retrospective and selected-backlog filing workflow.
+`$loopai-plan`, `$loopai-orca`, and `$loopai-t3` read the same `launch-history` file and offer the
+newest flag combinations as a numbered list.
 
 The installer also removes pre-rename `ralphex-plan`, `ralphex-run`,
 `ralphex-adopt`, and `ralphex-update` skills, but only when they still have the
