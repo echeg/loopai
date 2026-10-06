@@ -982,8 +982,15 @@ facts-only fallback reads as unstated. The repository gates follow: a resolvable
 branch, a local base distinct from it, a clean feature checkout, and a clean worktree that already
 has the base checked out. `acpCleanWorktreeSkip` checks `OperationInProgress` before `IsDirtyAll` on
 both, because a pending merge whose index matches HEAD reads as clean and `mergeRevision`'s failure
-path would then `git merge --abort` it. The merge then runs there through `openMergeWorktree` and
-`mergeForCloseout`, pinned to `BranchHash(feature)`. Every gate failure, conflict, or failed
+path would then `git merge --abort` it. `acpCompletedTip` then requires `BranchHash(feature)` to
+equal `planExecutionOutcome.branchTip`, the commit `capturePlanOutcome` recorded, since commits
+added afterwards were not covered by the report's Risk rating. The base checks and the merge run
+under `AcquireWorktreeCreationLockContext`, bounded by `acpMergeLockTimeout`: two ACP processes
+can finish together, and a merge failing on Git's index lock while the other succeeds would see
+HEAD move and `reset --hard` the other's merge away. The merge runs in the base worktree through
+`openMergeWorktree` and `mergeIntoBase` with `MergeBranchTipContext`, which merges the recorded
+commit by hash, not `refs/heads/<feature>`, with a `Merge branch '<feature>'` message;
+`mergeForCloseout` is `mergeIntoBase` over the ref-based merge `--merge` keeps. Every gate failure, conflict, or failed
 verification becomes `acpMergeResult.skipped` and leaves the repository unchanged. It deliberately
 reuses only that primitive and none of `runMergeCommand`'s teardown: no push, no `DeleteBranch`, no
 `cleanupMergedWorktree`, and no checkout switch. The feature worktree belongs to T3 Code and is the

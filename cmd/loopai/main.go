@@ -5771,6 +5771,13 @@ type closeoutMergeResult struct {
 }
 
 func mergeForCloseout(ctx context.Context, gitSvc *git.Service, feature, base, featureHead string) (closeoutMergeResult, error) {
+	return mergeIntoBase(ctx, gitSvc, feature, base, featureHead, gitSvc.MergeBranchCommitContext)
+}
+
+// mergeIntoBase checks out base in gitSvc's worktree when needed and merges feature through merge,
+// which receives the feature branch and featureHead.
+func mergeIntoBase(ctx context.Context, gitSvc *git.Service, feature, base, featureHead string,
+	merge func(ctx context.Context, branch, head string) error) (closeoutMergeResult, error) {
 	original, err := gitSvc.CurrentBranch()
 	if err != nil {
 		return closeoutMergeResult{}, fmt.Errorf("read merge worktree branch: %w", err)
@@ -5788,7 +5795,7 @@ func mergeForCloseout(ctx context.Context, gitSvc *git.Service, feature, base, f
 	if err != nil {
 		return closeoutMergeResult{}, fmt.Errorf("read base branch head: %w", err)
 	}
-	if err = gitSvc.MergeBranchCommitContext(ctx, feature, featureHead); err != nil {
+	if err = merge(ctx, feature, featureHead); err != nil {
 		return closeoutMergeResult{}, closeoutMergeError(gitSvc, original, originalHead, feature, base, err)
 	}
 	mergedHead, err := gitSvc.HeadHash()

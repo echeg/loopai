@@ -254,9 +254,11 @@ After a successful run, loopai merges the plan branch into the local base branch
 report rates Risk `low` or `medium`. The base is `default_branch` from config, else the detected
 `main` or `master`, without any `origin/` prefix, and it must exist as a local branch. The merge
 runs in the worktree that already has the base checked out, normally the primary checkout. It is
-an ordinary `git merge`, resulting in a fast-forward, a merge commit, or `already up to date`, and
-loopai then verifies that the plan branch's head is
-part of the base. Nothing is pushed. The plan branch is not deleted and the thread's worktree is not
+an ordinary `git merge` of the commit the run completed on, resulting in a fast-forward, a merge
+commit named after the plan branch, or `already up to date`, and loopai then verifies that commit is
+part of the base. Commits added to the plan branch after the run are never merged with it. Two
+threads finishing at once merge one after the other: the merge waits up to two minutes for another
+loopai process's repository lock. Nothing is pushed. The plan branch is not deleted and the thread's worktree is not
 removed, because T3 Code owns that worktree and the provider session runs inside it. On Windows a
 removal would fail for that reason alone. Once the thread is no longer needed, remove both by hand
 or through T3 Code.
@@ -273,6 +275,8 @@ loopai skips the merge and leaves the repository unchanged when:
 - the thread's checkout or the base worktree has uncommitted changes, untracked files that are not
   ignored, or an unfinished Git operation such as a merge or rebase.
 - no worktree has the base branch checked out. loopai never switches a checkout to the base for you.
+- the plan branch moved after the run completed, or another loopai process held the repository lock
+  for the whole wait.
 - the merge conflicts or fails verification. loopai aborts it and the base stays where it was.
 
 A canceled run never merges.

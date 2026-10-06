@@ -502,7 +502,20 @@ func (e *externalBackend) mergeBranch(ctx context.Context, name, expectedHead st
 	return e.mergeRevision(ctx, "refs/heads/"+name, expectedHead)
 }
 
+// mergeBranchTip merges commit, the tip of the named branch as the caller read it, into the current
+// HEAD. The commit is merged by hash, so commits added to the branch afterwards are not merged with
+// it, and the message names the branch the way a merge of refs/heads/<name> would.
+func (e *externalBackend) mergeBranchTip(ctx context.Context, name, commit string) error {
+	return e.mergeRevisionWithMessage(ctx, commit, commit, fmt.Sprintf("Merge branch '%s'", name))
+}
+
 func (e *externalBackend) mergeRevision(ctx context.Context, revision, expectedHead string) error {
+	return e.mergeRevisionWithMessage(ctx, revision, expectedHead, "")
+}
+
+// mergeRevisionWithMessage is mergeRevision with an explicit merge commit message; an empty message
+// keeps Git's default.
+func (e *externalBackend) mergeRevisionWithMessage(ctx context.Context, revision, expectedHead, message string) error {
 	preMergeHead, err := e.headHash()
 	if err != nil {
 		return fmt.Errorf("read pre-merge HEAD: %w", err)
@@ -511,8 +524,11 @@ func (e *externalBackend) mergeRevision(ctx context.Context, revision, expectedH
 	if err != nil {
 		return fmt.Errorf("read current branch before merge: %w", err)
 	}
-	mergeArgs, cleanup, err := neutralizedMergeArgs(currentBranch,
-		"merge", "--commit", "--no-squash", "--no-overwrite-ignore", revision)
+	args := []string{"merge", "--commit", "--no-squash", "--no-overwrite-ignore"}
+	if message != "" {
+		args = append(args, "-m", message)
+	}
+	mergeArgs, cleanup, err := neutralizedMergeArgs(currentBranch, append(args, revision)...)
 	if err != nil {
 		return err
 	}

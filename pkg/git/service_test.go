@@ -389,6 +389,42 @@ func TestService_MergeBranch(t *testing.T) {
 	})
 }
 
+func TestService_MergeBranchTipContext(t *testing.T) {
+	for _, diverged := range []bool{false, true} {
+		t.Run(fmt.Sprintf("diverged=%v", diverged), func(t *testing.T) {
+			dir := setupExternalTestRepo(t)
+			runGit(t, dir, "checkout", "-b", "feature")
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+			runGit(t, dir, "add", "feature.txt")
+			runGit(t, dir, "commit", "-m", "feature")
+			tip := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+			// a commit added after the caller read the tip must not be merged with it
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "later.txt"), []byte("later\n"), 0o600))
+			runGit(t, dir, "add", "later.txt")
+			runGit(t, dir, "commit", "-m", "later")
+			runGit(t, dir, "checkout", "master")
+			if diverged {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o600))
+				runGit(t, dir, "add", "base.txt")
+				runGit(t, dir, "commit", "-m", "base")
+			}
+
+			svc, err := NewService(dir, noopServiceLogger())
+			require.NoError(t, err)
+			require.NoError(t, svc.MergeBranchTipContext(t.Context(), "feature", tip))
+
+			assert.FileExists(t, filepath.Join(dir, "feature.txt"))
+			assert.NoFileExists(t, filepath.Join(dir, "later.txt"))
+			if !diverged {
+				assert.Equal(t, tip, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD")))
+				return
+			}
+			assert.Equal(t, tip, strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD^2")))
+			assert.Equal(t, "Merge branch 'feature'", strings.TrimSpace(runGit(t, dir, "log", "-1", "--format=%s")))
+		})
+	}
+}
+
 func TestService_DeleteBranch(t *testing.T) {
 	tests := []struct {
 		name   string

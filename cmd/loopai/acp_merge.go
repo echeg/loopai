@@ -4,10 +4,15 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/git"
 )
+
+// acpMergeLockTimeout bounds the wait for another loopai process's repository lock before the
+// merge is skipped.
+var acpMergeLockTimeout = 2 * time.Minute
 
 // acpMergeResult is the outcome of acpAutoMerge. Exactly one of merged and skipped is set.
 type acpMergeResult struct {
@@ -21,8 +26,8 @@ type acpMergeResult struct {
 
 // acpAutoMerge merges the plan branch checked out at gitSvc's root into the local base branch after
 // a successful ACP run. It runs only when every precondition holds and otherwise reports why it
-// skipped without touching the repository. The merge happens in the worktree the base is already
-// checked out in, is never pushed, and deletes neither the branch nor any worktree: the feature
+// skipped without touching the repository. The merge takes the commit the run completed on, happens
+// in the worktree the base is already checked out in under the repository lock, is never pushed, and deletes neither the branch nor any worktree: the feature
 // worktree belongs to T3 Code and is the process cwd.
 func acpAutoMerge(ctx context.Context, gitSvc *git.Service, cfg *config.Config, defaultBranch string,
 	outcome planExecutionOutcome) acpMergeResult {
@@ -55,17 +60,28 @@ func acpAutoMerge(ctx context.Context, gitSvc *git.Service, cfg *config.Config, 
 	if reason := acpCleanWorktreeSkip(gitSvc, "feature"); reason != "" {
 		return skip("%s", reason)
 	}
+	featureHead, reason := acpCompletedTip(gitSvc, feature, outcome.branchTip)
+	if reason != "" {
+		return skip("%s", reason)
+	}
+
+	// another ACP process can finish at the same time and merge into the same base checkout; a merge
+	// failing on Git's index lock while the other succeeds would see HEAD move and reset it back,
+	// so the base checks and the merge run under the repository's shared lock
+	lockCtx, cancel := context.WithTimeout(ctx, acpMergeLockTimeout)
+	release, err := gitSvc.AcquireWorktreeCreationLockContext(lockCtx)
+	cancel()
+	if err != nil {
+		return skip("another loopai process holds the repository lock: %v", err)
+	}
+	defer func() { _ = release() }() // the OS drops the advisory lock with the process regardless
 
 	mergeSvc, reason := acpBaseWorktree(gitSvc, base)
 	if reason != "" {
 		return skip("%s", reason)
 	}
 
-	featureHead, err := gitSvc.BranchHash(feature)
-	if err != nil {
-		return skip("cannot read the feature branch head: %v", err)
-	}
-	merge, err := mergeForCloseout(ctx, mergeSvc, feature, base, featureHead)
+	merge, err := mergeIntoBase(ctx, mergeSvc, feature, base, featureHead, mergeSvc.MergeBranchTipContext)
 	if err != nil {
 		return skip("%v", err)
 	}
@@ -75,6 +91,24 @@ func acpAutoMerge(ctx context.Context, gitSvc *git.Service, cfg *config.Config, 
 		result.head = shortSHA(head)
 	}
 	return result
+}
+
+// acpCompletedTip returns the commit the run completed on, or why it cannot be merged. The merge
+// takes that commit rather than the branch, and a branch that has moved since is refused: commits
+// added after the run were not covered by its report's Risk assessment.
+func acpCompletedTip(gitSvc *git.Service, feature, completedTip string) (string, string) {
+	if completedTip == "" {
+		return "", "the run did not record the commit it completed on"
+	}
+	head, err := gitSvc.BranchHash(feature)
+	if err != nil {
+		return "", fmt.Sprintf("cannot read the feature branch head: %v", err)
+	}
+	if head != completedTip {
+		return "", fmt.Sprintf("branch %q moved from %s to %s after the run completed", feature,
+			shortSHA(completedTip), shortSHA(head))
+	}
+	return completedTip, ""
 }
 
 // acpMergeBase names the local branch the plan branch merges into: the run's diff base without the

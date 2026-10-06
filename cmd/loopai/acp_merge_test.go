@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -40,8 +41,10 @@ func acpRiskReport(risk string) string {
 	return "# Report: feature\n\n## Summary\n\nDone.\n\n## Risk\n\n" + risk + "\n\n- details\n"
 }
 
-func acpRiskOutcome(risk string) planExecutionOutcome {
-	return planExecutionOutcome{succeeded: true, report: acpRiskReport(risk)}
+// acpRiskOutcome is a successful run that completed on the feature worktree's current HEAD.
+func acpRiskOutcome(t *testing.T, repo acpMergeRepo, risk string) planExecutionOutcome {
+	t.Helper()
+	return planExecutionOutcome{succeeded: true, report: acpRiskReport(risk), branchTip: revParse(t, repo.worktree, "HEAD")}
 }
 
 func acpMergeConfig() *config.Config {
@@ -59,7 +62,7 @@ func TestACPAutoMergeMerges(t *testing.T) {
 			repo := setupACPMergeRepo(t)
 			featureHead := revParse(t, repo.worktree, "HEAD")
 
-			res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskOutcome(risk))
+			res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskOutcome(t, repo, risk))
 
 			require.True(t, res.merged, "skipped: %s", res.skipped)
 			assert.Empty(t, res.skipped)
@@ -84,20 +87,45 @@ func TestACPAutoMergeMergeCommitAndOriginPrefix(t *testing.T) {
 	runGit(t, repo.primary, "add", "base.txt")
 	runGit(t, repo.primary, "commit", "-m", "base work")
 
-	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "origin/master", acpRiskOutcome("low"))
+	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "origin/master", acpRiskOutcome(t, repo, "low"))
 
 	require.True(t, res.merged, "skipped: %s", res.skipped)
 	assert.Equal(t, "merge commit", res.kind)
 	assert.Equal(t, "master", res.base)
 	assert.Equal(t, revParse(t, repo.primary, "HEAD")[:7], res.head)
 	assert.FileExists(t, filepath.Join(repo.primary, "feature.txt"))
+	// the merge takes the completed commit by hash but still names the branch
+	assert.Equal(t, "Merge branch 'feature'", strings.TrimSpace(gitOutput(t, repo.primary, "log", "-1", "--format=%s")))
+	assert.Equal(t, revParse(t, repo.worktree, "HEAD"), revParse(t, repo.primary, "HEAD^2"))
+}
+
+// TestACPAutoMergeWaitsForRepositoryLock covers a second loopai process holding the shared lock,
+// as a concurrent ACP auto-merge into the same base does: the merge is skipped once the wait
+// expires and the base is unchanged.
+func TestACPAutoMergeWaitsForRepositoryLock(t *testing.T) {
+	repo := setupACPMergeRepo(t)
+	masterBefore := revParse(t, repo.primary, "refs/heads/master")
+	other, err := git.NewService(repo.primary, noopLogger())
+	require.NoError(t, err)
+	release, err := other.AcquireWorktreeCreationLock()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, release()) })
+	prev := acpMergeLockTimeout
+	acpMergeLockTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { acpMergeLockTimeout = prev })
+
+	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskOutcome(t, repo, "low"))
+
+	assert.False(t, res.merged)
+	assert.Contains(t, res.skipped, "another loopai process holds the repository lock")
+	assert.Equal(t, masterBefore, revParse(t, repo.primary, "refs/heads/master"))
 }
 
 func TestACPAutoMergeAlreadyUpToDate(t *testing.T) {
 	repo := setupACPMergeRepo(t)
 	runGit(t, repo.primary, "merge", "--ff-only", "feature")
 
-	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskOutcome("low"))
+	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskOutcome(t, repo, "low"))
 
 	require.True(t, res.merged, "skipped: %s", res.skipped)
 	assert.Equal(t, "already up to date", res.kind)
@@ -114,7 +142,7 @@ func TestACPAutoMergeAfterFinalizeSync(t *testing.T) {
 	syncedHead := revParse(t, repo.worktree, "HEAD")
 
 	res := acpAutoMerge(t.Context(), repo.svc, &config.Config{ACPAutoMerge: true, Finalize: config.FinalizeSync},
-		"master", acpRiskOutcome("low"))
+		"master", acpRiskOutcome(t, repo, "low"))
 
 	require.True(t, res.merged, "skipped: %s", res.skipped)
 	assert.Equal(t, "fast-forward", res.kind)
@@ -130,7 +158,7 @@ func TestACPAutoMergeCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	res := acpAutoMerge(ctx, repo.svc, acpMergeConfig(), "master", acpRiskOutcome("low"))
+	res := acpAutoMerge(ctx, repo.svc, acpMergeConfig(), "master", acpRiskOutcome(t, repo, "low"))
 
 	assert.False(t, res.merged)
 	assert.Contains(t, res.skipped, context.Canceled.Error())
@@ -147,6 +175,7 @@ func TestACPAutoMergeSkips(t *testing.T) {
 		base    string
 		report  string
 		prepare func(t *testing.T, repo acpMergeRepo)
+		outcome func(t *testing.T, repo acpMergeRepo, outcome *planExecutionOutcome)
 		want    string
 
 		finalizeIncomplete error
@@ -186,6 +215,12 @@ func TestACPAutoMergeSkips(t *testing.T) {
 		{name: "base checked out nowhere", prepare: func(t *testing.T, repo acpMergeRepo) {
 			runGit(t, repo.primary, "checkout", "-b", "other")
 		}, want: `base branch "master" is not checked out in any worktree`},
+		{name: "completed tip not recorded", outcome: func(_ *testing.T, _ acpMergeRepo, outcome *planExecutionOutcome) {
+			outcome.branchTip = ""
+		}, want: "the run did not record the commit it completed on"},
+		{name: "branch moved after completion", outcome: func(t *testing.T, repo acpMergeRepo, _ *planExecutionOutcome) {
+			runGit(t, repo.worktree, "commit", "--allow-empty", "-m", "unreviewed follow-up")
+		}, want: `branch "feature" moved from`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -208,8 +243,13 @@ func TestACPAutoMergeSkips(t *testing.T) {
 			masterBefore := revParse(t, repo.primary, "refs/heads/master")
 			primaryBranch := currentGitBranch(t, repo.primary)
 
-			res := acpAutoMerge(t.Context(), repo.svc, cfg, base,
-				planExecutionOutcome{succeeded: true, report: report, finalizeIncomplete: tc.finalizeIncomplete})
+			outcome := planExecutionOutcome{succeeded: true, report: report, finalizeIncomplete: tc.finalizeIncomplete,
+				branchTip: revParse(t, repo.worktree, "HEAD")}
+			if tc.outcome != nil {
+				tc.outcome(t, repo, &outcome)
+			}
+
+			res := acpAutoMerge(t.Context(), repo.svc, cfg, base, outcome)
 
 			assert.False(t, res.merged)
 			assert.Contains(t, res.skipped, tc.want)
@@ -238,7 +278,7 @@ func TestACPAutoMergeConflictAborts(t *testing.T) {
 	runGit(t, repo.primary, "commit", "-m", "conflicting base work")
 	masterBefore := revParse(t, repo.primary, "refs/heads/master")
 
-	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskOutcome("low"))
+	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskOutcome(t, repo, "low"))
 
 	assert.False(t, res.merged)
 	assert.Contains(t, res.skipped, "conflicted and was aborted")

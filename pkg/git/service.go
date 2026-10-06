@@ -46,6 +46,7 @@ type backend interface {
 	checkoutBranch(name string) error
 	mergeBranch(ctx context.Context, name, expectedHead string) error
 	mergeRevision(ctx context.Context, revision, expectedHead string) error
+	mergeBranchTip(ctx context.Context, name, commit string) error
 	deleteBranch(name string) error
 	push(ctx context.Context, branch string) error
 	worktrees() ([]Worktree, error)
@@ -230,8 +231,9 @@ func (s *Service) AutoCommitAll(message string) (bool, error) {
 	return committed, nil
 }
 
-// AcquireWorktreeCreationLock serializes source auto-commit and worktree creation across
-// loopai processes using the repository's shared Git metadata directory.
+// AcquireWorktreeCreationLock serializes source auto-commit, worktree creation, and the ACP
+// auto-merge into a checked-out base branch across loopai processes using the repository's shared
+// Git metadata directory.
 func (s *Service) AcquireWorktreeCreationLock() (func() error, error) {
 	return s.AcquireWorktreeCreationLockContext(context.Background())
 }
@@ -530,6 +532,17 @@ func (s *Service) MergeBranchContext(ctx context.Context, branch string) error {
 func (s *Service) MergeBranchCommitContext(ctx context.Context, branch, expectedHead string) error {
 	if err := s.repo.mergeBranch(ctx, branch, expectedHead); err != nil {
 		return fmt.Errorf("merge branch %q: %w", branch, err)
+	}
+	return nil
+}
+
+// MergeBranchTipContext merges commit, the tip of branch as the caller read it, into the current
+// branch. Unlike MergeBranchCommitContext it merges the commit itself rather than refs/heads/<branch>,
+// so commits added to the branch after the caller read its tip are not merged; the merge commit
+// message still names the branch.
+func (s *Service) MergeBranchTipContext(ctx context.Context, branch, commit string) error {
+	if err := s.repo.mergeBranchTip(ctx, branch, commit); err != nil {
+		return fmt.Errorf("merge branch %q at %s: %w", branch, commit, err)
 	}
 	return nil
 }
