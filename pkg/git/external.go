@@ -1151,6 +1151,21 @@ func (e *externalBackend) isDirtyAll() (bool, error) {
 	return out != "", nil
 }
 
+// untrackedFiles lists every untracked, non-ignored file individually, with forward slashes.
+func (e *externalBackend) untrackedFiles() ([]string, error) {
+	out, err := e.run("status", "--porcelain=v1", "-z", "-uall")
+	if err != nil {
+		return nil, fmt.Errorf("get status: %w", err)
+	}
+	var files []string
+	for record := range strings.SplitSeq(out, "\x00") {
+		if path, ok := strings.CutPrefix(record, "?? "); ok {
+			files = append(files, filepath.ToSlash(path))
+		}
+	}
+	return files, nil
+}
+
 // fileHasChanges returns true if the given file has uncommitted changes.
 func (e *externalBackend) fileHasChanges(path string) (bool, error) {
 	rel, err := e.toRelative(path)

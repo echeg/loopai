@@ -121,6 +121,50 @@ func TestACPAutoMergeWaitsForRepositoryLock(t *testing.T) {
 	assert.Equal(t, masterBefore, revParse(t, repo.primary, "refs/heads/master"))
 }
 
+// writeACPOverrides leaves untracked .loopai overrides in dir, as --t3-launch carries them into the
+// thread's worktree and the source checkout keeps its own copies.
+func writeACPOverrides(t *testing.T, dir string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "prompts"), 0o750))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".loopai", "agents"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "config"), []byte("task_model = claude\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "prompts", "task.txt"), []byte("task\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".loopai", "agents", "custom.txt"), []byte("agent\n"), 0o600))
+}
+
+func TestACPAutoMergeIgnoresUntrackedLocalOverrides(t *testing.T) {
+	repo := setupACPMergeRepo(t)
+	writeACPOverrides(t, repo.worktree)
+	writeACPOverrides(t, repo.primary)
+
+	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskOutcome(t, repo, "low"))
+
+	require.True(t, res.merged, "skipped: %s", res.skipped)
+	assert.Equal(t, revParse(t, repo.worktree, "HEAD"), revParse(t, repo.primary, "refs/heads/master"))
+	assert.FileExists(t, filepath.Join(repo.primary, ".loopai", "config"))
+}
+
+// TestACPAutoMergeRefusesToOverwriteUntrackedOverride covers a plan branch that committed a file the
+// base worktree holds as an untracked override: git refuses the merge and the override survives.
+func TestACPAutoMergeRefusesToOverwriteUntrackedOverride(t *testing.T) {
+	repo := setupACPMergeRepo(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(repo.worktree, ".loopai"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(repo.worktree, ".loopai", "config"), []byte("committed\n"), 0o600))
+	runGit(t, repo.worktree, "add", ".loopai/config")
+	runGit(t, repo.worktree, "commit", "-m", "commit override")
+	writeACPOverrides(t, repo.primary)
+	masterBefore := revParse(t, repo.primary, "refs/heads/master")
+
+	res := acpAutoMerge(t.Context(), repo.svc, acpMergeConfig(), "master", acpRiskOutcome(t, repo, "low"))
+
+	assert.False(t, res.merged)
+	assert.NotEmpty(t, res.skipped)
+	assert.Equal(t, masterBefore, revParse(t, repo.primary, "refs/heads/master"))
+	data, err := os.ReadFile(filepath.Join(repo.primary, ".loopai", "config"))
+	require.NoError(t, err)
+	assert.Equal(t, "task_model = claude\n", string(data))
+}
+
 func TestACPAutoMergeAlreadyUpToDate(t *testing.T) {
 	repo := setupACPMergeRepo(t)
 	runGit(t, repo.primary, "merge", "--ff-only", "feature")
@@ -206,6 +250,13 @@ func TestACPAutoMergeSkips(t *testing.T) {
 		{name: "dirty base", prepare: func(t *testing.T, repo acpMergeRepo) {
 			require.NoError(t, os.WriteFile(filepath.Join(repo.primary, "README.md"), []byte("edited\n"), 0o600))
 		}, want: "the base worktree at"},
+		{name: "untracked base file", prepare: func(t *testing.T, repo acpMergeRepo) {
+			require.NoError(t, os.WriteFile(filepath.Join(repo.primary, "notes.txt"), []byte("notes\n"), 0o600))
+		}, want: "has untracked files"},
+		{name: "untracked file beside overrides", prepare: func(t *testing.T, repo acpMergeRepo) {
+			writeACPOverrides(t, repo.worktree)
+			require.NoError(t, os.WriteFile(filepath.Join(repo.worktree, ".loopai", "notes.txt"), []byte("x\n"), 0o600))
+		}, want: "the feature worktree at"},
 		{name: "clean pending merge in base", prepare: func(t *testing.T, repo acpMergeRepo) {
 			acpPendingMerge(t, repo.primary, "master", "side")
 		}, want: "has a merge in progress"},

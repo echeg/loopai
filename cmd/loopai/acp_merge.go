@@ -174,14 +174,33 @@ func acpCleanWorktreeSkip(svc *git.Service, role string) string {
 	if op != "" {
 		return fmt.Sprintf("the %s worktree at %s has a %s in progress", role, svc.Root(), op)
 	}
-	dirty, err := svc.IsDirtyAll()
+	dirty, err := svc.IsDirty()
 	if err != nil {
 		return fmt.Sprintf("cannot check the %s worktree: %v", role, err)
 	}
 	if dirty {
 		return fmt.Sprintf("the %s worktree at %s has uncommitted changes", role, svc.Root())
 	}
+	untracked, err := svc.UntrackedFiles()
+	if err != nil {
+		return fmt.Sprintf("cannot check the %s worktree: %v", role, err)
+	}
+	for _, path := range untracked {
+		if !isLocalOverridePath(path) {
+			return fmt.Sprintf("the %s worktree at %s has untracked files", role, svc.Root())
+		}
+	}
 	return ""
+}
+
+// isLocalOverridePath reports whether an untracked path is a project-local .loopai override.
+// --t3-launch copies those into the thread's worktree uncommitted, and the source checkout that
+// normally holds the base keeps its own copies, so counting them would skip every merge for a
+// project with local overrides. Ignoring them is safe: git merge refuses to overwrite an untracked
+// file, and the failed merge leaves the base unchanged.
+func isLocalOverridePath(path string) bool {
+	return path == ".loopai/config" || strings.HasPrefix(path, ".loopai/prompts/") ||
+		strings.HasPrefix(path, ".loopai/agents/")
 }
 
 func shortSHA(hash string) string {

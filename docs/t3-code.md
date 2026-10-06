@@ -273,7 +273,10 @@ loopai skips the merge and leaves the repository unchanged when:
 - the thread's checkout has a detached HEAD or is on the base branch, or the base branch does not
   exist locally.
 - the thread's checkout or the base worktree has uncommitted changes, untracked files that are not
-  ignored, or an unfinished Git operation such as a merge or rebase.
+  ignored, or an unfinished Git operation such as a merge or rebase. Untracked `.loopai/config`,
+  `prompts/`, and `agents/` overrides do not count, since `--t3-launch` copies them into the
+  thread's checkout uncommitted. If the plan branch committed a file at one of those paths, Git
+  refuses to overwrite the base worktree's untracked copy and the merge is skipped.
 - no worktree has the base branch checked out. loopai never switches a checkout to the base for you.
 - the plan branch moved after the run completed, or another loopai process held the repository lock
   for the whole wait.

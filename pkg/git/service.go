@@ -53,6 +53,7 @@ type backend interface {
 	diffFingerprint() (string, error)
 	isDirty() (bool, error)
 	isDirtyAll() (bool, error)
+	untrackedFiles() ([]string, error)
 	fileHasChanges(path string) (bool, error)
 	fileTracked(path string) (bool, error)
 	fileStateFingerprint(path string) (string, error)
@@ -373,6 +374,16 @@ func (s *Service) IsDirtyAll() (bool, error) {
 		return false, fmt.Errorf("check complete working tree: %w", err)
 	}
 	return dirty, nil
+}
+
+// UntrackedFiles lists every untracked, non-ignored file individually, relative to the worktree
+// root with forward slashes.
+func (s *Service) UntrackedFiles() ([]string, error) {
+	files, err := s.repo.untrackedFiles()
+	if err != nil {
+		return nil, fmt.Errorf("list untracked files: %w", err)
+	}
+	return files, nil
 }
 
 // IsDefaultBranch returns true if the current branch matches the given default branch.

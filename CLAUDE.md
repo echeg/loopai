@@ -980,9 +980,13 @@ while the base and branch failed to combine or validate (or the checkout was lef
 strips emphasis, and returns only `low`, `medium`, or `high`. Only the first two merge, and the
 facts-only fallback reads as unstated. The repository gates follow: a resolvable non-detached feature
 branch, a local base distinct from it, a clean feature checkout, and a clean worktree that already
-has the base checked out. `acpCleanWorktreeSkip` checks `OperationInProgress` before `IsDirtyAll` on
-both, because a pending merge whose index matches HEAD reads as clean and `mergeRevision`'s failure
-path would then `git merge --abort` it. `acpCompletedTip` then requires `BranchHash(feature)` to
+has the base checked out. `acpCleanWorktreeSkip` checks `OperationInProgress` before `IsDirty` and
+`UntrackedFiles` on both, because a pending merge whose index matches HEAD reads as clean and
+`mergeRevision`'s failure path would then `git merge --abort` it. Untracked paths that
+`isLocalOverridePath` names (`.loopai/config`, `prompts/`, `agents/`) do not count: `--t3-launch`
+copies them into the thread's worktree uncommitted and the source checkout keeps its own, so counting
+them would skip every merge for a project with local overrides, while `git merge` already refuses to
+overwrite an untracked file. `acpCompletedTip` then requires `BranchHash(feature)` to
 equal `planExecutionOutcome.branchTip`, the commit `capturePlanOutcome` recorded, since commits
 added afterwards were not covered by the report's Risk rating. The base checks and the merge run
 under `AcquireWorktreeCreationLockContext`, bounded by `acpMergeLockTimeout`: two ACP processes

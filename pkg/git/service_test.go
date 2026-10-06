@@ -506,6 +506,26 @@ func TestService_Push(t *testing.T) {
 	})
 }
 
+func TestService_UntrackedFiles(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+
+	files, err := svc.UntrackedFiles()
+	require.NoError(t, err)
+	assert.Empty(t, files)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub", "deep"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "deep", "a b.txt"), []byte("x\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "top.txt"), []byte("x\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ignored.txt\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ignored.txt"), []byte("x\n"), 0o600))
+
+	files, err = svc.UntrackedFiles()
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{".gitignore", "sub/deep/a b.txt", "top.txt"}, files)
+}
+
 func TestService_WorktreeInspectionAndSafeRemoval(t *testing.T) {
 	dir := setupExternalTestRepo(t)
 	worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")
