@@ -551,6 +551,60 @@ func TestIsValidFinalizeValues(t *testing.T) {
 	}
 }
 
+func TestLoad_ReviewCadence(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		cadence   string
+		set       bool
+		effective string
+		errText   string
+	}{
+		{name: "unset defaults to end", body: "", cadence: "", set: false, effective: ReviewCadenceEnd},
+		{name: "explicit end", body: "review_cadence = end\n", cadence: ReviewCadenceEnd, set: true,
+			effective: ReviewCadenceEnd},
+		{name: "explicit task", body: "review_cadence = task\n", cadence: ReviewCadenceTask, set: true,
+			effective: ReviewCadenceTask},
+		{name: "invalid value", body: "review_cadence = always\n", errText: "invalid review_cadence"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			configDir := filepath.Join(t.TempDir(), "loopai")
+			require.NoError(t, os.MkdirAll(configDir, 0o700))
+			require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(tc.body), 0o600))
+
+			cfg, err := Load(configDir)
+			if tc.errText != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errText)
+				assert.Contains(t, err.Error(), "end, task")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.cadence, cfg.ReviewCadence)
+			assert.Equal(t, tc.set, cfg.ReviewCadenceSet)
+			assert.Equal(t, tc.effective, cfg.EffectiveReviewCadence())
+		})
+	}
+}
+
+func TestConfig_EffectiveReviewCadence(t *testing.T) {
+	var nilCfg *Config
+	assert.Equal(t, ReviewCadenceEnd, nilCfg.EffectiveReviewCadence())
+	assert.Equal(t, ReviewCadenceEnd, (&Config{}).EffectiveReviewCadence())
+	assert.Equal(t, ReviewCadenceEnd, (&Config{ReviewCadence: ReviewCadenceEnd}).EffectiveReviewCadence())
+	assert.Equal(t, ReviewCadenceTask, (&Config{ReviewCadence: ReviewCadenceTask}).EffectiveReviewCadence())
+}
+
+func TestIsValidReviewCadence(t *testing.T) {
+	for _, cadence := range []string{"end", "task"} {
+		assert.True(t, IsValidReviewCadence(cadence), cadence)
+	}
+	for _, cadence := range []string{"", "Task", "phase", "always"} {
+		assert.False(t, IsValidReviewCadence(cadence), cadence)
+	}
+}
+
 func TestLoad_ReportEnabled(t *testing.T) {
 	t.Run("embedded default is true but unset", func(t *testing.T) {
 		configDir := filepath.Join(t.TempDir(), "loopai")
@@ -1764,7 +1818,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		"codex_enabled", "codex_command", "codex_args",
 		"codex_timeout_ms", "codex_sandbox", "external_reviewers", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
-		"review_patience", "finalize", "finalize_merge_method", "finalize_checks_timeout", "report_enabled", "preserve_anthropic_api_key",
+		"review_patience", "review_cadence", "finalize", "finalize_merge_method", "finalize_checks_timeout", "report_enabled", "preserve_anthropic_api_key",
 		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "orca", "t3", "keep_awake", "plans_dir", "backlog_dir",
 		"watch_dirs", "default_branch", "vcs_command", "commit_trailer",
 		"claude_error_patterns", "codex_error_patterns", "claude_limit_patterns",

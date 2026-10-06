@@ -54,12 +54,12 @@
 ## Implementation Steps
 
 ### Task 1: Add the `review_cadence` config key
-- [ ] in `pkg/config/config.go` add constants `ReviewCadenceEnd = "end"`, `ReviewCadenceTask = "task"`, a `ReviewCadenceModes` slice, `IsValidReviewCadence`, fields `ReviewCadence string` and `ReviewCadenceSet bool` on `Config`, and `EffectiveReviewCadence()` returning `end` for an empty value, following the `Finalize` pattern
-- [ ] in `pkg/config/values.go` add `ReviewCadence`/`ReviewCadenceSet` to `Values`, reset them with the other `*Set` flags, and parse the key with a validation error naming the allowed values, following `parseFinalizeValues`
-- [ ] copy the value into `Config` where `Finalize` is copied (`config.go` ~434)
-- [ ] document the key in `pkg/config/defaults/config` next to `review_patience`: `end` (default) reviews once after the task phase; `task` additionally runs the external reviewer chain after every completed task in full mode, with the cost note that `max_external_iterations` and `review_patience` apply to every block separately
-- [ ] write tests in `pkg/config/values_test.go` and `config_test.go` for: unset → `end`, `end`, `task`, an invalid value error, and the `Set` flag
-- [ ] run `go test ./pkg/config/...` - must pass before task 2
+- [x] in `pkg/config/config.go` add constants `ReviewCadenceEnd = "end"`, `ReviewCadenceTask = "task"`, a `ReviewCadenceModes` slice, `IsValidReviewCadence`, fields `ReviewCadence string` and `ReviewCadenceSet bool` on `Config`, and `EffectiveReviewCadence()` returning `end` for an empty value, following the `Finalize` pattern
+- [x] in `pkg/config/values.go` add `ReviewCadence`/`ReviewCadenceSet` to `Values`, reset them with the other `*Set` flags, and parse the key with a validation error naming the allowed values, following `parseFinalizeValues`
+- [x] copy the value into `Config` where `Finalize` is copied (`config.go` ~434)
+- [x] document the key in `pkg/config/defaults/config` next to `review_patience`: `end` (default) reviews once after the task phase; `task` additionally runs the external reviewer chain after every completed task in full mode, with the cost note that `max_external_iterations` and `review_patience` apply to every block separately
+- [x] write tests in `pkg/config/values_test.go` and `config_test.go` for: unset → `end`, `end`, `task`, an invalid value error, and the `Set` flag
+- [x] run `go test ./pkg/config/...` - must pass before task 2
 
 ### Task 2: Add the `--review-cadence` flag and startup wiring
 - [ ] in `cmd/loopai/main.go` add `ReviewCadence string` to `opts` with `long:"review-cadence" choice:"end" choice:"task"` and a description, and list it in `markFlagsSet` where `finalize` is listed

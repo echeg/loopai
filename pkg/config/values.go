@@ -52,6 +52,8 @@ type Values struct {
 	MaxIterationsSet           bool          // tracks if max_iterations was explicitly set
 	MaxExternalIterations      int           // override external review iteration limit (0 = auto)
 	ReviewPatience             int           // terminate external review after N unchanged rounds (0 = disabled)
+	ReviewCadence              string        // review cadence: end or task
+	ReviewCadenceSet           bool          // tracks if review_cadence was explicitly set
 	Finalize                   string        // finalize mode: none, sync, pr, or merge
 	FinalizeSet                bool          // tracks if finalize was explicitly set
 	FinalizeMergeMethod        string        // GitHub merge method for finalize = merge: merge, squash, or rebase
@@ -194,6 +196,7 @@ func (vl *valuesLoader) parseValuesFromEmbedded() (Values, error) {
 	values.ExternalReviewersSet = false
 	values.ReportEnabledSet = false
 	values.KeepAwakeSet = false
+	values.ReviewCadenceSet = false
 	values.FinalizeSet = false
 	values.FinalizeMergeMethodSet = false
 	values.FinalizeChecksTimeoutSet = false
@@ -334,6 +337,17 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 			return Values{}, fmt.Errorf("invalid review_patience: must be non-negative, got %d", val)
 		}
 		values.ReviewPatience = val
+	}
+
+	if key, err := section.GetKey("review_cadence"); err == nil {
+		if val := strings.ToLower(strings.TrimSpace(key.String())); val != "" {
+			if !IsValidReviewCadence(val) {
+				return Values{}, fmt.Errorf("invalid review_cadence: must be one of %s, got %q",
+					strings.Join(ReviewCadenceModes, ", "), key.String())
+			}
+			values.ReviewCadence = val
+			values.ReviewCadenceSet = true
+		}
 	}
 
 	// finalize settings
@@ -689,6 +703,10 @@ func (dst *Values) mergeExtraFrom(src *Values) {
 // mergeFinalizeFrom merges the finalize settings from src into dst.
 // a value is never empty once set, and the embedded defaults carry values with cleared Set flags.
 func (dst *Values) mergeFinalizeFrom(src *Values) {
+	if src.ReviewCadence != "" {
+		dst.ReviewCadence = src.ReviewCadence
+		dst.ReviewCadenceSet = dst.ReviewCadenceSet || src.ReviewCadenceSet
+	}
 	if src.Finalize != "" {
 		dst.Finalize = src.Finalize
 		dst.FinalizeSet = dst.FinalizeSet || src.FinalizeSet
