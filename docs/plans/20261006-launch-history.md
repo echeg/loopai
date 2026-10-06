@@ -150,12 +150,14 @@
   - ⚠️ on this Windows host `test-codex-skills` and `test-symlinks` need `MSYS=winsymlinks:nativestrict` (Git Bash otherwise cannot create the fixture symlinks; they fail identically on an unmodified HEAD without it) and pass with it; `test-grill-skill` still fails on the unmodified grill path helper (POSIX-only) and WSL has no usable shell here, so it stays deferred to a POSIX `make test`
 
 ### Task 6: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify edge cases are handled (missing file, malformed lines, read-only config dir, ACP path, plan-mode continuation, custom reviewer chain, dedup across launchers)
-- [ ] run full test suite (`make test`, in WSL on Windows)
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] verify test coverage of `launch_history.go` is at or above the project standard (80%+)
+- [x] verify all requirements from Overview are implemented
+- [x] verify edge cases are handled (missing file, malformed lines, read-only config dir, ACP path, plan-mode continuation, custom reviewer chain, dedup across launchers)
+- [x] run full test suite (`make test`, in WSL on Windows)
+  - ⚠️ WSL failed to start on this host (`Wsl/Service/E_UNEXPECTED`), so `make test` ran on a POSIX host instead: a `golang:1.26` Linux container holding a `git archive HEAD` snapshot, as a non-root user with `HOME` pointed into the container. Exit 0, including `test-symlinks` and `test-grill-skill`, which Tasks 4–5 had deferred
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] verify test coverage of `launch_history.go` is at or above the project standard (80%+)
+  - every function at 100% except `recordLaunch` at 92.3%; `cmd/loopai` overall 89.4%
 
 ### Task 7: [Final] Update documentation
 - [ ] `README.md`: add `launch-history` to the `~/.config/loopai/` tree in the Configuration section and one paragraph under the plugin section describing what the skills offer and how to clear the history (delete the file)
