@@ -129,7 +129,7 @@ func truncateForRecord(s string) (string, bool) {
 
 // boundExternalReviewText shares the aggregate budget among nonempty outputs.
 // Keep every iteration and its metadata so truncation never changes reported counts.
-// Under review_cadence = task each reviewer's latest block keeps up to half the budget, so the
+// Under review_cadence = task the latest blocks are guaranteed at least half the budget, so the
 // final whole-branch review is not crowded out by the per-task blocks it re-reviews.
 func boundExternalReviewText(reviewers []ExternalReviewerRecord) {
 	var latest, earlier []boundedReviewField
@@ -149,11 +149,14 @@ func boundExternalReviewText(reviewers []ExternalReviewerRecord) {
 			}
 		}
 	}
-	if len(earlier) == 0 {
+	latestSize, earlierSize := reviewFieldsSize(latest), reviewFieldsSize(earlier)
+	if len(earlier) == 0 || latestSize+earlierSize <= runRecordExternalTextCap {
 		truncateReviewFields(latest, runRecordExternalTextCap)
 		return
 	}
-	latestBudget := min(reviewFieldsSize(latest), runRecordExternalTextCap/2)
+	// half the budget is a floor for the latest block, not a ceiling: it also takes whatever
+	// the earlier blocks leave unused.
+	latestBudget := min(latestSize, max(runRecordExternalTextCap/2, runRecordExternalTextCap-earlierSize))
 	truncateReviewFields(latest, latestBudget)
 	truncateReviewFields(earlier, runRecordExternalTextCap-latestBudget)
 }

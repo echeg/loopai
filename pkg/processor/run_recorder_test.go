@@ -316,6 +316,52 @@ func TestBoundExternalReviewTextKeepsLatestBlockShare(t *testing.T) {
 	assert.Equal(t, output, last.EvaluatorResponse)
 }
 
+func TestBoundExternalReviewTextLatestShareIsAFloor(t *testing.T) {
+	earlierOutput := strings.Repeat("e", 1024)
+	tests := []struct {
+		name           string
+		latestReviewer int
+		latestEval     int
+		latestCount    int
+		wantTruncated  bool
+	}{
+		{name: "total under cap keeps latest whole past half", latestReviewer: 12 * 1024, latestEval: 2 * 1024,
+			latestCount: 3},
+		{name: "total over cap gives latest what earlier leaves", latestReviewer: runRecordTextCap,
+			latestEval: runRecordTextCap, latestCount: 2, wantTruncated: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reviewer := ExternalReviewerRecord{Key: "codex:gpt", Iterations: []ExternalIterationRecord{
+				{Index: 1, Block: 1, ReviewerOutput: earlierOutput},
+			}}
+			for i := 1; i <= tc.latestCount; i++ {
+				reviewer.Iterations = append(reviewer.Iterations, ExternalIterationRecord{
+					Index: i, Block: 2, ReviewerOutput: strings.Repeat("r", tc.latestReviewer),
+					EvaluatorResponse: strings.Repeat("v", tc.latestEval),
+				})
+			}
+			reviewers := []ExternalReviewerRecord{reviewer}
+
+			boundExternalReviewText(reviewers)
+
+			total, latest := 0, 0
+			for _, iteration := range reviewers[0].Iterations {
+				size := len(iteration.ReviewerOutput) + len(iteration.EvaluatorResponse)
+				total += size
+				if iteration.Block == 2 {
+					latest += size
+					assert.Equal(t, tc.wantTruncated, iteration.Truncated)
+				}
+			}
+			assert.LessOrEqual(t, total, runRecordExternalTextCap)
+			assert.False(t, reviewers[0].Iterations[0].Truncated)
+			assert.Equal(t, earlierOutput, reviewers[0].Iterations[0].ReviewerOutput)
+			assert.Greater(t, latest, runRecordExternalTextCap/2)
+		})
+	}
+}
+
 func TestRunnerBoundsLoadedReviewTextBeforeSaving(t *testing.T) {
 	output := strings.Repeat("x", runRecordTextCap)
 	stored := RunRecord{Version: runRecordVersion, Branch: "feature", External: []ExternalReviewerRecord{{Key: "legacy"}}}

@@ -601,7 +601,7 @@ which `resetRunRecord` and `adoptLoadedRunRecord` restore — the task-phase com
 block otherwise resets the record and discards every per-task review before the report.
 `ExternalDone` aggregates rather than overwrites per reviewer key: durations add, `HadFindings` is
 OR-ed, `EndedBy` keeps the latest completion, and `ExternalReviewerRecord.Blocks` counts loops, which
-`run_facts.go` renders as `(N review blocks)` when above one. Each iteration carries its 1-based `Block`, rendered as `#### Block N, iteration M` once a reviewer has more than one, because indexes restart per block; `boundExternalReviewText` reserves up to half the text budget for each reviewer's latest block, so the final whole-branch review is not truncated to an even share with the per-task blocks it re-reviews. `reviewCadenceStartupWarning` warns
+`run_facts.go` renders as `(N review blocks)` when above one. Each iteration carries its 1-based `Block`, rendered as `#### Block N, iteration M` once a reviewer has more than one, because indexes restart per block; `boundExternalReviewText` truncates nothing while the total fits and otherwise guarantees the reviewers' latest blocks at least half the text budget, plus whatever the earlier blocks leave unused, so the final whole-branch review is not truncated to an even share with the per-task blocks it re-reviews. `reviewCadenceStartupWarning` warns
 when `task` meets `--review`, `--external-only`, `--tasks-only`, or an empty chain, and
 `--t3-launch` rejects `--review-cadence` since the launched run reads the key from config.
 `cmd/loopai`'s `reviewCadenceFor` already turns the cadence into `end` outside `ModeFull` or with an
