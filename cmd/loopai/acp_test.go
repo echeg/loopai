@@ -157,6 +157,8 @@ func TestACPLooksLikeLaunch(t *testing.T) {
 		{name: "uppercase markdown extension", text: "PLAN.MD extra", want: true},
 		{name: "existing file without extension", text: "plan extra", want: true},
 		{name: "option first", text: "--task-model opus docs/plans/x.md", want: true},
+		{name: "comma chain", text: "docs/plans/a.md,docs/plans/b.md", want: true},
+		{name: "two plans", text: "docs/plans/a.md docs/plans/b.md", want: true},
 		{name: "empty", text: " \n ", want: false},
 	}
 	for _, tc := range tests {
@@ -848,9 +850,11 @@ func TestServeACPAnswersNonLaunchMessages(t *testing.T) {
 
 	requireACPStopReason(t, c.response(c.prompt(sid, "а по итогу оно замержено?")), "end_turn")
 	msg := requireACPError(t, c.response(c.prompt(sid, "docs/plans/two.md --worktree")))
+	chainMsg := requireACPError(t, c.response(c.prompt(sid, "docs/plans/two.md,docs/plans/two.md")))
 	c.close()
 
 	assert.Contains(t, msg, `unsupported option "--worktree"`)
+	assert.Contains(t, chainMsg, "plan chains are not supported", "a chain prompt is still a failed launch")
 	assert.Contains(t, c.messages(), acpNotALaunch+"\n\n"+acpPromptUsage)
 	data, err := os.ReadFile(f.planFile)
 	require.NoError(t, err)

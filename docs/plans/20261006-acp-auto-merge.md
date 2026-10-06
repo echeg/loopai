@@ -136,11 +136,11 @@
 - [x] run tests - must pass before next task
 
 ### Task 6: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify edge cases are handled (cancel mid-run skips merge; finalize sync then merge works; chain prompts remain rejected)
-- [ ] run full test suite (unit tests) per the Windows host safety note
-- [ ] run linter - all issues must be fixed
-- [ ] verify test coverage meets project standard (80%+) for the new files
+- [x] verify all requirements from Overview are implemented
+- [x] verify edge cases are handled (cancel mid-run skips merge; finalize sync then merge works; chain prompts remain rejected) - added TestACPAutoMergeAfterFinalizeSync, TestACPAutoMergeCanceledContext, and chain cases in TestACPLooksLikeLaunch and TestServeACPAnswersNonLaunchMessages
+- [x] run full test suite (unit tests) per the Windows host safety note - `make test` passes as non-root in a golang Linux container; run it with `docker run --init`, since without an init reaper the killed orphans in pkg/executor procgroup tests stay zombies and read as alive
+- [x] run linter - all issues must be fixed
+- [x] verify test coverage meets project standard (80%+) for the new files - acp_merge.go functions 67-100% (about 90% overall); the new acp.go and pr_body.go functions 86-100%
 
 ### Task 7: [Final] Update documentation
 - [ ] `docs/t3-code.md`: in "Running a plan" and "What the thread shows", describe the auto-merge (risk gate, local only, no push, no branch or worktree removal, `acp_auto_merge`, finalize pr/merge precedence) and the guidance reply to non-launch messages

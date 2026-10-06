@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,6 +96,43 @@ func TestACPAutoMergeAlreadyUpToDate(t *testing.T) {
 
 	require.True(t, res.merged, "skipped: %s", res.skipped)
 	assert.Equal(t, "already up to date", res.kind)
+}
+
+// TestACPAutoMergeAfterFinalizeSync covers finalize = sync: the sync merged the base into the plan
+// branch first, so the auto-merge that follows fast-forwards the base to that merge commit.
+func TestACPAutoMergeAfterFinalizeSync(t *testing.T) {
+	repo := setupACPMergeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo.primary, "base.txt"), []byte("base\n"), 0o600))
+	runGit(t, repo.primary, "add", "base.txt")
+	runGit(t, repo.primary, "commit", "-m", "base work")
+	runGit(t, repo.worktree, "merge", "--no-ff", "-m", "sync master", "master")
+	syncedHead := revParse(t, repo.worktree, "HEAD")
+
+	res := acpAutoMerge(t.Context(), repo.svc, &config.Config{ACPAutoMerge: true, Finalize: config.FinalizeSync},
+		"master", acpRiskReport("low"))
+
+	require.True(t, res.merged, "skipped: %s", res.skipped)
+	assert.Equal(t, "fast-forward", res.kind)
+	assert.Equal(t, syncedHead, revParse(t, repo.primary, "refs/heads/master"))
+	assert.True(t, branchExists(t, repo.primary, "feature"))
+}
+
+// TestACPAutoMergeCanceledContext covers a run canceled as the merge starts: the merge fails and
+// is reported as skipped with the base, its checkout, and the feature branch unchanged.
+func TestACPAutoMergeCanceledContext(t *testing.T) {
+	repo := setupACPMergeRepo(t)
+	masterBefore := revParse(t, repo.primary, "refs/heads/master")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	res := acpAutoMerge(ctx, repo.svc, acpMergeConfig(), "master", acpRiskReport("low"))
+
+	assert.False(t, res.merged)
+	assert.NotEmpty(t, res.skipped)
+	assert.Equal(t, masterBefore, revParse(t, repo.primary, "refs/heads/master"))
+	assert.Equal(t, "master", currentGitBranch(t, repo.primary))
+	assert.Empty(t, strings.TrimSpace(gitOutput(t, repo.primary, "status", "--porcelain")))
+	assert.True(t, branchExists(t, repo.primary, "feature"))
 }
 
 func TestACPAutoMergeSkips(t *testing.T) {
