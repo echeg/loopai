@@ -104,11 +104,11 @@
 - [x] run `go test ./pkg/processor/...` - must pass before task 7
 
 ### Task 7: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented and `review_cadence` unset leaves prompts and pipeline order unchanged
-- [ ] verify edge cases: last task with `SignalCompleted`, a hook error, review checkpoint resume with cadence `task` (final block still resumes), `--tasks-only` ignores the cadence
-- [ ] run `make test` (in WSL on Windows)
-- [ ] run `make lint` - all issues must be fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify all requirements from Overview are implemented and `review_cadence` unset leaves prompts and pipeline order unchanged
+- [x] verify edge cases: last task with `SignalCompleted`, a hook error, review checkpoint resume with cadence `task` (final block still resumes), `--tasks-only` ignores the cadence (➕ added `TestRunnerReviewCheckpoint_CadenceTaskFinalBlockResumes`)
+- [x] run `make test` (in WSL on Windows) (⚠️ WSL fails to start; native Windows run with isolated HOME: config, processor, phase pass; cmd/loopai shows the same 70 POSIX-only failures as master and none new; other failing packages and the shell suites (python3, symlinks) are untouched by this branch)
+- [x] run `make lint` - all issues must be fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 8: Update documentation
 - [ ] `README.md`: document `review_cadence`/`--review-cadence` with the cost note and the two v1 limitations (per-task blocks are not checkpointed; the T3 Code plan view marks the task stage complete at the first per-task block)
