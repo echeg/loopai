@@ -3,11 +3,20 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
 
 func saveJSONState(path, tempPattern, label string, value any) error {
+	return writeFileAtomic(path, tempPattern, label, func(w io.Writer) error {
+		return json.NewEncoder(w).Encode(value)
+	})
+}
+
+// writeFileAtomic writes path through a mode 0600 temp file in the same directory and
+// renames it into place, so a concurrent reader never sees a partial file.
+func writeFileAtomic(path, tempPattern, label string, write func(io.Writer) error) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create %s directory: %w", label, err)
@@ -22,10 +31,10 @@ func saveJSONState(path, tempPattern, label string, value any) error {
 		_ = tmp.Close()
 		return fmt.Errorf("secure %s: %w", label, err)
 	}
-	encodeErr := json.NewEncoder(tmp).Encode(value)
+	writeErr := write(tmp)
 	closeErr := tmp.Close()
-	if encodeErr != nil {
-		return fmt.Errorf("write %s: %w", label, encodeErr)
+	if writeErr != nil {
+		return fmt.Errorf("write %s: %w", label, writeErr)
 	}
 	if closeErr != nil {
 		return fmt.Errorf("close %s: %w", label, closeErr)
