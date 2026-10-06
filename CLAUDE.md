@@ -567,7 +567,10 @@ The task and review providers own all repository writes. External reviewers prod
 iteration that did not end in `SignalFailed` and either advanced `NextPlanTaskPosition` or left no
 uncompleted task, whatever its signal. That includes a timed-out session and one resumed after a
 manual break, when either ticked its task before stopping: the next iteration starts at another
-position, so skipping them would silently drop that task's review. `headBefore` is kept from the
+position, so skipping them would silently drop that task's review. `task.txt` ticks the plan before it commits, so such a session can
+stop in between: `taskStart` also records the `DiffFingerprint` at the position's first attempt, and an
+interrupted iteration whose fingerprint changed skips the hook with a log line, since a reviewer diffing
+against HEAD would miss the uncommitted work, and reports the task through `TaskPhaseOpts.UncommittedTask`, which sets the same pending flag described below; a break the user answers with abort, and an executor error or cancellation such as Ctrl+C, runs no review but reports such a task too, since the next invocation starts at the following position. `headBefore` is kept from the
 first attempt at a position, so a retried attempt does not move the diff base past the task's own
 commits. `taskNum` is the plan position, and one session can tick several tasks, so
 `reviewScopeForTask` names where the reviewed work starts rather than a single task. A hook error is wrapped as `after task N: ...`,
@@ -584,9 +587,12 @@ restore returns the holder to `PhaseTask`, clears the scope, and re-applies the 
 state for the final block. The internal review and `review_second.txt` loop run only in the final
 block. The evaluation prompts commit only on `EXTERNAL_REVIEW_DONE`, so a block ending by stalemate,
 iteration cap, or break leaves its fixes uncommitted and nothing on the task path stages them;
-`afterTaskReview` compares `DiffFingerprint` before and after the block and sets
-`perTaskLeftovers`, which makes `runExternalAndPostReview` run the post-review loop, whose
-`commitPrefix` commits them, even when the final chain finds nothing. A fingerprint rather than
+`afterTaskReview` compares `DiffFingerprint` before and after the block, on an error or cancellation exit as well, and sets
+`perTaskLeftovers` through `Runner.setPendingReviewFixes`. While it is set, `runInternalReview` prepends a `leftoverCommitPrefix` to the final block's first review, because every final reviewer reads `<base>...HEAD` and would otherwise miss the work, and `runExternalAndPostReview` runs the post-review loop as a backstop, whose
+`commitPrefix` commits anything left, even when the final chain finds nothing; once that loop returns, or was checkpointed as done, the flag is cleared and saved, so a later invocation on the branch does not owe it again. The flag is persisted as
+`RunRecord.PendingReviewFixes` through `runRecorder.SetPendingReviewFixes`, read back by `startRunRecord` in
+full mode, carried across `resetRunRecord` (which saves at once when it is set) and `adoptLoadedRunRecord`,
+so a run stopped between that block and the final one still commits the fixes after a resume. A fingerprint rather than
 `IsDirtyAll` is what keeps a user's unrelated dirty files from triggering it. `warnMissingReviewScope`
 warns once when a scoped render meets a customized external prompt without `{{REVIEW_SCOPE}}`. `perTaskReview` is set for the block's duration: `onReviewerDone` saves no checkpoint stage
 while it is, because a lost per-task review is repeated by the final whole-branch block, and

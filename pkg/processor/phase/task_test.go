@@ -344,7 +344,7 @@ func newAfterTaskPhase(t *testing.T, content string, steps []planStep) (*taskPha
 	phase.deps.Git = &gitCheckerMock{HeadHashFunc: func() (string, error) {
 		heads++
 		return fmt.Sprintf("h%d", heads), nil
-	}}
+	}, DiffFingerprintFunc: func() (string, error) { return "clean", nil }}
 	calls := &[]afterTaskCall{}
 	phase.afterTask = func(_ context.Context, taskNum int, headBefore string) error {
 		*calls = append(*calls, afterTaskCall{taskNum: taskNum, headBefore: headBefore})
@@ -468,6 +468,34 @@ func TestTaskPhase_Run_AfterTaskTimeoutThatTickedTheTask(t *testing.T) {
 	assert.Len(t, exec.RunCalls(), 2)
 }
 
+func TestTaskPhase_Run_AfterTaskTimeoutBeforeCommitSkipsReview(t *testing.T) {
+	phase, calls, exec := newAfterTaskPhase(t, "# Plan\n### Task 1: first\n- [ ] one\n### Task 2: second\n- [ ] two",
+		[]planStep{tickStep("one", ""), tickStep("two", status.Completed)})
+	phase.policy = newScriptedTestPolicy(phase.log,
+		ExecutionResult{TimedOut: true},
+		ExecutionResult{Result: executor.Result{Signal: status.Completed}},
+	)
+	git := phase.deps.Git.(*gitCheckerMock)
+	fingerprints := []string{"clean", "dirty", "dirty"}
+	git.DiffFingerprintFunc = func() (string, error) {
+		fp := fingerprints[0]
+		if len(fingerprints) > 1 {
+			fingerprints = fingerprints[1:]
+		}
+		return fp, nil
+	}
+	var uncommitted []int
+	phase.uncommitted = func(taskNum int) { uncommitted = append(uncommitted, taskNum) }
+
+	require.NoError(t, phase.Run(t.Context()))
+
+	// the session ticked task 1 and hung before committing it, so a review against HEAD would miss
+	// that work; only task 2, which started from the dirty tree and left it unchanged, is reviewed
+	assert.Equal(t, []afterTaskCall{{taskNum: 2, headBefore: "h2"}}, *calls)
+	assert.Equal(t, []int{1}, uncommitted, "the skipped task is reported so the final block commits it first")
+	assert.Len(t, exec.RunCalls(), 2)
+}
+
 func TestTaskPhase_Run_AfterTaskBreakThatTickedTheTask(t *testing.T) {
 	const planBody = "# Plan\n### Task 1: first\n- [ ] one\n### Task 2: second\n- [ ] two"
 	planFile := writeTaskPhasePlan(t, planBody)
@@ -491,7 +519,7 @@ func TestTaskPhase_Run_AfterTaskBreakThatTickedTheTask(t *testing.T) {
 	phase.deps.Git = &gitCheckerMock{HeadHashFunc: func() (string, error) {
 		heads++
 		return fmt.Sprintf("h%d", heads), nil
-	}}
+	}, DiffFingerprintFunc: func() (string, error) { return "clean", nil }}
 	var calls []afterTaskCall
 	phase.afterTask = func(_ context.Context, taskNum int, headBefore string) error {
 		calls = append(calls, afterTaskCall{taskNum: taskNum, headBefore: headBefore})
@@ -526,7 +554,7 @@ func TestTaskPhase_Run_AfterTaskSkipsBreak(t *testing.T) {
 	phase.deps.Git = &gitCheckerMock{HeadHashFunc: func() (string, error) {
 		heads++
 		return fmt.Sprintf("h%d", heads), nil
-	}}
+	}, DiffFingerprintFunc: func() (string, error) { return "clean", nil }}
 	var calls []afterTaskCall
 	phase.afterTask = func(_ context.Context, taskNum int, headBefore string) error {
 		calls = append(calls, afterTaskCall{taskNum: taskNum, headBefore: headBefore})
@@ -538,6 +566,102 @@ func TestTaskPhase_Run_AfterTaskSkipsBreak(t *testing.T) {
 	// the interrupted session calls no hook; the resumed one does, against the head read before the break
 	assert.Equal(t, []afterTaskCall{{taskNum: 1, headBefore: "h1"}}, calls)
 	assert.Equal(t, 2, runs)
+}
+
+func TestTaskPhase_Run_AfterTaskBreakAbort(t *testing.T) {
+	tests := []struct {
+		name            string
+		tick            bool
+		fingerprints    []string
+		wantUncommitted []int
+	}{
+		{name: "ticked and uncommitted task is reported", tick: true, fingerprints: []string{"clean", "dirty"}, wantUncommitted: []int{1}},
+		{name: "ticked and committed task is not reported", tick: true, fingerprints: []string{"clean", "clean"}},
+		{name: "unticked task is not reported", fingerprints: []string{"clean", "dirty"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			const planBody = "# Plan\n### Task 1: first\n- [ ] one\n### Task 2: second\n- [ ] two"
+			planFile := writeTaskPhasePlan(t, planBody)
+			breakCh := make(chan struct{}, 1)
+			exec := &executorMock{RunFunc: func(ctx context.Context, _ string) executor.Result {
+				if tc.tick {
+					require.NoError(t, os.WriteFile(planFile, []byte(strings.Replace(planBody, "- [ ] one", "- [x] one", 1)), 0o600))
+				}
+				breakCh <- struct{}{}
+				<-ctx.Done()
+				return executor.Result{Error: ctx.Err()}
+			}}
+			phase := taskPhaseFromRunner(t, taskPhaseTestOpts{cfg: Config{MaxIterations: 10}, planFile: planFile, exec: exec, log: newMockLogger("")})
+			phase.deps.BreakCh = breakCh
+			phase.deps.PauseHandler = func(context.Context) bool { return false }
+			fingerprints := tc.fingerprints
+			phase.deps.Git = &gitCheckerMock{HeadHashFunc: func() (string, error) { return "h1", nil },
+				DiffFingerprintFunc: func() (string, error) {
+					fp := fingerprints[0]
+					if len(fingerprints) > 1 {
+						fingerprints = fingerprints[1:]
+					}
+					return fp, nil
+				}}
+			var calls []afterTaskCall
+			phase.afterTask = func(_ context.Context, taskNum int, headBefore string) error {
+				calls = append(calls, afterTaskCall{taskNum: taskNum, headBefore: headBefore})
+				return nil
+			}
+			var uncommitted []int
+			phase.uncommitted = func(taskNum int) { uncommitted = append(uncommitted, taskNum) }
+
+			require.ErrorIs(t, phase.Run(t.Context()), ErrUserAborted)
+
+			// an aborted run reviews nothing, but a ticked task it left uncommitted is reported so the next
+			// invocation, which starts at the following task, commits that work before its final review
+			assert.Empty(t, calls)
+			assert.Equal(t, tc.wantUncommitted, uncommitted)
+			assert.Len(t, exec.RunCalls(), 1)
+		})
+	}
+}
+
+func TestTaskPhase_Run_AfterTaskExecutorError(t *testing.T) {
+	tests := []struct {
+		name            string
+		item            string
+		fingerprints    []string
+		wantUncommitted []int
+	}{
+		{name: "ticked and uncommitted task is reported", item: "one", fingerprints: []string{"clean", "dirty"}, wantUncommitted: []int{1}},
+		{name: "ticked and committed task is not reported", item: "one", fingerprints: []string{"clean", "clean"}},
+		{name: "unticked task is not reported", fingerprints: []string{"clean", "dirty"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			execErr := errors.New("session crashed")
+			phase, calls, exec := newAfterTaskPhase(t, "# Plan\n### Task 1: first\n- [ ] one\n### Task 2: second\n- [ ] two",
+				[]planStep{func(content string) (string, executor.Result) {
+					content, _ = tickStep(tc.item, "")(content)
+					return content, executor.Result{Error: execErr}
+				}})
+			fingerprints := tc.fingerprints
+			phase.deps.Git.(*gitCheckerMock).DiffFingerprintFunc = func() (string, error) {
+				fp := fingerprints[0]
+				if len(fingerprints) > 1 {
+					fingerprints = fingerprints[1:]
+				}
+				return fp, nil
+			}
+			var uncommitted []int
+			phase.uncommitted = func(taskNum int) { uncommitted = append(uncommitted, taskNum) }
+
+			require.ErrorIs(t, phase.Run(t.Context()), execErr)
+
+			// a session that failed or was canceled reviews nothing, but a ticked task it left uncommitted
+			// is reported so the next invocation, which starts at the following task, commits that work
+			assert.Empty(t, *calls)
+			assert.Equal(t, tc.wantUncommitted, uncommitted)
+			assert.Len(t, exec.RunCalls(), 1)
+		})
+	}
 }
 
 func TestTaskPhase_Run_AfterTaskError(t *testing.T) {

@@ -129,7 +129,7 @@ type checkpointReview struct {
 	loops []string
 }
 
-func (p *checkpointReview) First(context.Context) error { p.first++; return nil }
+func (p *checkpointReview) First(context.Context, string) error { p.first++; return nil }
 func (p *checkpointReview) Loop(_ context.Context, prefix string) error {
 	p.loops = append(p.loops, prefix)
 	return nil

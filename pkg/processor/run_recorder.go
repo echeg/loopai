@@ -75,6 +75,16 @@ func (r *runRecorder) updateExternal(mutate func(*[]ExternalReviewerRecord)) {
 	})
 }
 
+// SetPendingReviewFixes records whether the final block still owes a commit of work the per-task
+// cadence left uncommitted. the flag is kept in the persisted record so a run stopped before its
+// final block still commits them after a resume, and cleared once the post-review loop has.
+func (r *runRecorder) SetPendingReviewFixes(pending bool) {
+	r.update(func(record *RunRecord) {
+		r.runner.perTaskLeftovers = pending
+		record.PendingReviewFixes = pending
+	})
+}
+
 func (r *runRecorder) PostReviewDone(iterations int) {
 	r.update(func(record *RunRecord) {
 		record.PostReview.Ran = true
@@ -172,6 +182,7 @@ func (r *Runner) startRunRecord() {
 	r.invocationStarted = time.Now().UTC()
 	r.currentTasks = TaskRunRecord{}
 	r.currentExternal = nil
+	r.perTaskLeftovers = false
 	r.priorPhaseDurations = nil
 	r.priorValidation = ValidationRunRecord{}
 	r.loadedRecord = false
@@ -191,6 +202,8 @@ func (r *Runner) startRunRecord() {
 		case r.cfg.Mode == ModeFull:
 			r.loadedRecord = true
 			fresh = stored
+			// the leftover fixes of an earlier invocation's per-task block are still uncommitted
+			r.perTaskLeftovers = stored.PendingReviewFixes
 		}
 	}
 	r.record = fresh
@@ -250,7 +263,12 @@ func (r *Runner) resetRunRecord() {
 	r.record = r.newRunRecord()
 	r.record.Tasks = r.currentTasks
 	r.record.External = cloneExternalRecords(r.currentExternal)
+	r.record.PendingReviewFixes = r.perTaskLeftovers
 	r.fillRunRecordFields()
+	if r.record.PendingReviewFixes && r.recorder != nil {
+		// the store was just emptied; a process death before the next event must not lose the flag
+		r.recorder.save(cloneRunRecord(r.record))
+	}
 }
 
 func (r *Runner) adoptLoadedRunRecord() {
@@ -271,6 +289,7 @@ func (r *Runner) adoptLoadedRunRecord() {
 	r.record = r.newRunRecord()
 	r.record.Tasks = r.currentTasks
 	r.record.External = cloneExternalRecords(r.currentExternal)
+	r.record.PendingReviewFixes = r.perTaskLeftovers
 	r.loadedRecord = false
 	r.priorPhaseDurations = nil
 	r.priorValidation = ValidationRunRecord{}

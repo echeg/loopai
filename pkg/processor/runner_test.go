@@ -71,15 +71,15 @@ func (p testTaskPhase) ValidatePlanHasTasks() error {
 }
 
 type testReviewPhase struct {
-	firstFunc func(ctx context.Context) error
+	firstFunc func(ctx context.Context, prefix string) error
 	loopFunc  func(ctx context.Context, prefix string) error
 }
 
-func (p testReviewPhase) First(ctx context.Context) error {
+func (p testReviewPhase) First(ctx context.Context, prefix string) error {
 	if p.firstFunc == nil {
 		return nil
 	}
-	return p.firstFunc(ctx)
+	return p.firstFunc(ctx, prefix)
 }
 
 func (p testReviewPhase) Loop(ctx context.Context, prefix string) error {
@@ -1782,6 +1782,8 @@ type cadenceRun struct {
 	store        *checkpointMemoryStore
 	codexPrompts []string
 	claudeLast   string // the last prompt the task/review executor received
+	claudeAll    []string
+	records      *runRecordMemoryStore // set for the leftover options
 	codexPhases  []status.Phase
 	taskPhases   []status.Phase
 	stageSaves   [][]ReviewStage // saved stages observed at each codex call
@@ -1795,6 +1797,8 @@ type cadenceRunOpts struct {
 	externals bool
 	codexErr  error
 	leftover  bool // the first per-task block ends with uncommitted fixes
+	// an earlier invocation's per-task block left uncommitted fixes recorded in the run record
+	storedLeftover bool
 }
 
 func newCadenceRun(t *testing.T, opts cadenceRunOpts) *cadenceRun {
@@ -1852,12 +1856,13 @@ func newCadenceRun(t *testing.T, opts cadenceRunOpts) *cadenceRun {
 		if opts.externals {
 			steps = append(steps, evalDone)
 		}
-		if perTask && opts.leftover {
+		if (perTask && opts.leftover) || opts.storedLeftover {
 			steps = append(steps, reviewDone)
 		}
 	}
 	claude := &mocks.ExecutorMock{RunFunc: func(_ context.Context, prompt string) executor.Result {
 		run.claudeLast = prompt
+		run.claudeAll = append(run.claudeAll, prompt)
 		if len(steps) == 0 {
 			return executor.Result{Error: errors.New("no more mock results")}
 		}
@@ -1891,6 +1896,16 @@ func newCadenceRun(t *testing.T, opts cadenceRunOpts) *cadenceRun {
 	if !opts.noGit {
 		run.runner.SetGitChecker(git)
 		run.runner.SetReviewCheckpoints(run.store)
+	}
+	switch {
+	case opts.storedLeftover:
+		run.records = &runRecordMemoryStore{found: true, record: RunRecord{
+			Version: runRecordVersion, Branch: "feature", PendingReviewFixes: true,
+		}}
+		run.runner.SetRunRecordStore(run.records)
+	case opts.leftover:
+		run.records = &runRecordMemoryStore{}
+		run.runner.SetRunRecordStore(run.records)
 	}
 	return run
 }
@@ -1964,14 +1979,36 @@ func TestRunner_ReviewCadenceTaskLeftoversRunPostReview(t *testing.T) {
 	run := newCadenceRun(t, cadenceRunOpts{cadence: config.ReviewCadenceTask, externals: true, leftover: true})
 	require.NoError(t, run.runner.Run(t.Context()))
 
-	// the final block found nothing, but the first per-task block left uncommitted fixes, so the
-	// post-review loop runs and its commit prefix picks them up
-	assert.Contains(t, run.printed(), "review cadence: external review after task 1 left uncommitted changes, the final post-review loop commits them")
-	assert.NotContains(t, run.printed(), "review cadence: external review after task 2 left uncommitted changes, the final post-review loop commits them")
+	// the first per-task block left uncommitted fixes, so the final block's first review commits them
+	// before anything reads <base>...HEAD, and the post-review loop still runs as a backstop
+	assert.Contains(t, run.printed(), "review cadence: external review after task 1 left uncommitted changes, the final review block commits them")
+	assert.NotContains(t, run.printed(), "review cadence: external review after task 2 left uncommitted changes, the final review block commits them")
+	require.Len(t, run.claudeAll, 8)
+	assert.True(t, strings.HasPrefix(run.claudeAll[4], "IMPORTANT: Before starting the review, run `git status --porcelain`"))
+	assert.Contains(t, run.claudeAll[4], "uncommitted changes from earlier phases of this run (a task session interrupted")
+	assert.NotContains(t, run.claudeAll[5], "IMPORTANT: Before starting the review", "the pre-external loop carries no prefix")
 	assert.Contains(t, run.claudeLast, "Before starting the review, run `git status --porcelain`")
 	for _, line := range run.printed() {
 		assert.NotContains(t, line, "skipping post-")
 	}
+
+	// the post-review loop committed them, so the obligation is cleared in memory and on disk
+	assert.False(t, run.runner.perTaskLeftovers)
+	assert.True(t, run.records.found)
+	assert.False(t, run.records.record.PendingReviewFixes)
+}
+
+func TestRunner_ReviewCadenceTaskStoredLeftoversRunPostReview(t *testing.T) {
+	run := newCadenceRun(t, cadenceRunOpts{cadence: config.ReviewCadenceTask, externals: true, storedLeftover: true})
+	require.NoError(t, run.runner.Run(t.Context()))
+
+	// no block of this invocation left fixes, but the stopped earlier one did, so post-review still runs
+	assert.Contains(t, run.claudeLast, "Before starting the review, run `git status --porcelain`")
+	for _, line := range run.printed() {
+		assert.NotContains(t, line, "skipping post-")
+	}
+	assert.False(t, run.runner.perTaskLeftovers)
+	assert.False(t, run.records.record.PendingReviewFixes, "a later invocation must not owe the post-review again")
 }
 
 func TestRunner_ReviewCadenceTaskBlockErrorFailsTaskPhase(t *testing.T) {
@@ -2045,4 +2082,21 @@ func TestRunner_AfterTaskReviewRestoresStateOnError(t *testing.T) {
 	assert.Equal(t, status.PhaseTask, r.phaseHolder.Get())
 	assert.Equal(t, 1, external.completed, "the final block's resume state is re-applied")
 	assert.True(t, external.hadFindings)
+}
+
+func TestRunner_AfterTaskReviewErrorKeepsLeftovers(t *testing.T) {
+	git := &checkpointGit{head: "abc1234", branch: "feature", diff: "clean"}
+	r, _, external, _ := newCheckpointRunner(Config{Mode: ModeFull, PlanFile: "plan.md"}, nil, git)
+	external.run = func(context.Context) (phase.ExternalReviewOutcome, error) {
+		git.diff = "dirty"
+		return phase.ExternalReviewOutcome{}, context.Canceled
+	}
+
+	err := r.afterTaskReview(t.Context(), 2, "abc123")
+
+	// the evaluator edited files before the block was canceled; a resumed run skips the completed
+	// task, so the obligation to commit that work is recorded before the error returns
+	require.ErrorIs(t, err, context.Canceled)
+	assert.True(t, r.perTaskLeftovers)
+	assertLogContains(t, r.log.(*mocks.LoggerMock), "external review after task %d left uncommitted changes")
 }

@@ -150,7 +150,7 @@ type Runner struct {
 	finalizeOutcome     FinalizeOutcome
 	reviewScope         reviewScoper
 	perTaskReview       bool // a per-task external block is running; its reviewers save no checkpoint stage
-	perTaskLeftovers    bool // a per-task block ended with uncommitted fixes; the final block's post-review commits them
+	perTaskLeftovers    bool // a per-task block left uncommitted fixes or an interrupted task its uncommitted work; the final block commits them. persisted in the run record
 }
 
 // FinalizeOutcome describes the finalize base sync; see phase.FinalizeOutcome.
@@ -177,7 +177,7 @@ type taskPlanValidator interface {
 }
 
 type reviewPhaseRunner interface {
-	First(ctx context.Context) error
+	First(ctx context.Context, prefix string) error
 	Loop(ctx context.Context, prefix string) error
 }
 
@@ -291,15 +291,17 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 	})
 	// the per-task external block runs only in full mode: tasks-only runs no reviews at all
 	var afterTask func(ctx context.Context, taskNum int, headBefore string) error
+	var uncommittedTask func(taskNum int)
 	if cfg.Mode == ModeFull && cfg.ReviewCadence == config.ReviewCadenceTask && externalPhase.Enabled() {
 		afterTask = func(ctx context.Context, taskNum int, headBefore string) error {
 			return runner.afterTaskReview(ctx, taskNum, headBefore)
 		}
+		uncommittedTask = func(int) { runner.setPendingReviewFixes(true) }
 	}
 	taskPhase := phase.NewTaskPhase(phase.TaskPhaseOpts{
 		Cfg: phaseCfg, Log: log, Exec: execs.Task, Policy: policy, Prompts: prompts,
 		Locator: locator, Deps: deps, Breaks: breaks, IterationDelay: iterDelay, RetryCount: retryCount,
-		AfterTask: afterTask,
+		AfterTask: afterTask, UncommittedTask: uncommittedTask,
 	})
 	finalizePhase := phase.NewFinalizePhase(phase.FinalizePhaseOpts{
 		Cfg: phaseCfg, Log: log, Exec: review, Policy: policy, Prompts: prompts, Deps: deps, PhaseHolder: holder,
@@ -488,17 +490,42 @@ func (r *Runner) afterTaskReview(ctx context.Context, taskNum int, headBefore st
 	}()
 
 	before := r.diffFingerprint()
-	if _, err := r.phases.external.Run(ctx); err != nil {
+	_, err := r.phases.external.Run(ctx)
+	// the evaluation prompts commit only on EXTERNAL_REVIEW_DONE, so a loop that ended by stalemate,
+	// the iteration cap, or a break leaves its fixes uncommitted, and so does one that failed or was
+	// canceled mid-evaluation. no later task or reviewer stages them, and a resumed run skips the
+	// completed task, so the obligation is persisted before any error returns: the final block's first
+	// review commits them and its post-review loop runs as a backstop.
+	if after := r.diffFingerprint(); before != "" && after != "" && after != before {
+		r.setPendingReviewFixes(true)
+		r.log.Print("review cadence: external review after task %d left uncommitted changes, the final review block commits them", taskNum)
+	}
+	if err != nil {
 		return fmt.Errorf("%s loop: %w", r.phases.external.Label(), err)
 	}
-	// the evaluation prompts commit only on EXTERNAL_REVIEW_DONE, so a loop that ended by stalemate,
-	// the iteration cap, or a break leaves its fixes uncommitted. no later task or reviewer stages
-	// them, so the final block runs its post-review loop, whose commit prefix picks them up.
-	if after := r.diffFingerprint(); before != "" && after != "" && after != before {
-		r.perTaskLeftovers = true
-		r.log.Print("review cadence: external review after task %d left uncommitted changes, the final post-review loop commits them", taskNum)
-	}
 	return nil
+}
+
+// setPendingReviewFixes sets whether the final block owes a commit of uncommitted per-task work and
+// persists it in the run record.
+func (r *Runner) setPendingReviewFixes(pending bool) {
+	r.perTaskLeftovers = pending
+	r.recorder.SetPendingReviewFixes(pending)
+}
+
+// leftoverCommitPrefix tells a review session to commit uncommitted work that the phases named by
+// from left behind before it starts reviewing, through a pathspec stage rather than a sweep.
+func leftoverCommitPrefix(from, message string) string {
+	return "IMPORTANT: Before starting the review, run `git status --porcelain`. " +
+		"If there are uncommitted changes from " + from + ", stage them with " +
+		"`git add <paths>` over the files those phases created, modified, or deleted, " +
+		"and commit with message: `" + message + "`. " +
+		"Do NOT `git add -A`: `--review` and `--external-only` create no " +
+		"worktree and run in the user's own checkout, where a dirty tree is allowed and never " +
+		"gated, and without --worktree a run resumed on its own feature branch skips branch " +
+		"creation and the clean-tree gate with it, so a sweep commits their unrelated work " +
+		"in progress.\n" +
+		"Then continue with the sequence below.\n\n"
 }
 
 // diffFingerprint returns the uncommitted-changes fingerprint, or "" when it is unavailable.
@@ -577,16 +604,7 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 
 	r.phaseHolder.Set(status.PhaseReview)
 
-	commitPrefix := "IMPORTANT: Before starting the review, run `git status --porcelain`. " +
-		"If there are uncommitted changes from previous review phases, stage them with " +
-		"`git add <paths>` over the files those phases created, modified, or deleted, " +
-		"and commit with message: `fix: address code review findings`. " +
-		"Do NOT `git add -A`: `--review` and `--external-only` create no " +
-		"worktree and run in the user's own checkout, where a dirty tree is allowed and never " +
-		"gated, and without --worktree a run resumed on its own feature branch skips branch " +
-		"creation and the clean-tree gate with it, so a sweep commits their unrelated work " +
-		"in progress.\n" +
-		"Then continue with the sequence below.\n\n"
+	commitPrefix := leftoverCommitPrefix("previous review phases", "fix: address code review findings")
 	if r.resume.skipPostReview {
 		r.log.Print("review checkpoint: post-review completed in an earlier run, skipping")
 	} else {
@@ -594,6 +612,11 @@ func (r *Runner) runExternalAndPostReview(ctx context.Context) error {
 			return fmt.Errorf("post-external review loop: %w", err)
 		}
 		r.saveReviewStage(ctx, ReviewStage{Stage: reviewStagePostReview})
+	}
+	if r.perTaskLeftovers {
+		// the post-review loop committed what the per-task cadence left behind; a later invocation
+		// on this branch must not run it again for work that is already committed
+		r.setPendingReviewFixes(false)
 	}
 
 	if err := r.runFinalize(ctx); err != nil {
@@ -684,7 +707,14 @@ func (r *Runner) runInternalReview(ctx context.Context) error {
 		r.log.Print("review checkpoint: internal review completed in an earlier run, skipping")
 		return nil
 	}
-	if err := r.phases.review.First(ctx); err != nil {
+	prefix := ""
+	if r.perTaskLeftovers {
+		// the reviewers read <base>...HEAD, so work the per-task cadence left uncommitted is
+		// committed first; otherwise neither this review nor the external chain would see it
+		prefix = leftoverCommitPrefix("earlier phases of this run (a task session interrupted before "+
+			"its commit, or a per-task external review block)", "fix: commit work left by earlier phases")
+	}
+	if err := r.phases.review.First(ctx, prefix); err != nil {
 		return fmt.Errorf("first review: %w", err)
 	}
 	if err := r.phases.review.Loop(ctx, ""); err != nil {

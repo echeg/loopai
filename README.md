@@ -1101,9 +1101,12 @@ Each per-task block diffs against the commit that task started from and tells th
 later tasks are not implemented yet, so their absence is not a finding. The `review_model`
 provider evaluates and commits the block's fixes before the next task starts. A block that ends
 by stalemate, by `max_external_iterations`, or by Ctrl+\ leaves its fixes uncommitted; the
-final block then runs the post-review loop even when its own reviewers find nothing, and that
-loop commits them. Ctrl+\ during a per-task block ends only that block; the next task and later
-blocks run as usual. Customized external review or evaluation prompts written before this
+final block's first review commits them before reviewing, and the post-review loop runs even when
+the final reviewers find nothing, as a backstop; the run record keeps that obligation until it is met, so it survives a stop and resume before
+the final block. Ctrl+\ during a per-task block ends only that block; the next task and later
+blocks run as usual. A task session that times out or is interrupted after ticking its task but
+before committing it gets no per-task block, since the reviewers would not see its uncommitted
+work; the final block commits that work the same way before any final reviewer reads the branch. Customized external review or evaluation prompts written before this
 setting lack the `{{REVIEW_SCOPE}}` placeholder: they still diff against the task's start commit,
 but their reviewers are not told later tasks are pending, and the run warns once. Add the
 placeholder to such copies (the embedded prompts end the diff-instruction line with it) or

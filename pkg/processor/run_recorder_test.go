@@ -180,6 +180,44 @@ func TestRunRecorderKeepsPerTaskReviewsAcrossTaskCommitReset(t *testing.T) {
 	assert.Nil(t, runner.currentExternal, "a new invocation starts without per-task reviews")
 }
 
+func TestRunRecorderPersistsPerTaskLeftoversAcrossResume(t *testing.T) {
+	store := &runRecordMemoryStore{}
+	runner := &Runner{
+		cfg: Config{Mode: ModeFull, PlanFile: "plan.md"}, log: newMockLogger(),
+		git: &checkpointGit{branch: "feature"}, recordStore: store,
+	}
+	runner.startRunRecord()
+	assert.False(t, runner.perTaskLeftovers)
+
+	runner.recorder.SetPendingReviewFixes(true)
+	assert.True(t, runner.perTaskLeftovers)
+	assert.True(t, store.record.PendingReviewFixes)
+
+	// a later task commit resets the record; the flag is saved again at once, not on the next event
+	runner.clearReviewCheckpoint("task phase committed new work")
+	assert.True(t, store.found)
+	assert.True(t, store.record.PendingReviewFixes)
+
+	// the process stops before its final block; the resumed invocation still owes the post-review
+	resumed := &Runner{
+		cfg: Config{Mode: ModeFull, PlanFile: "plan.md"}, log: newMockLogger(),
+		git: &checkpointGit{branch: "feature"}, recordStore: store,
+	}
+	resumed.startRunRecord()
+	assert.True(t, resumed.perTaskLeftovers)
+	resumed.adoptLoadedRunRecord()
+	assert.True(t, resumed.record.PendingReviewFixes)
+	assert.True(t, store.record.PendingReviewFixes)
+
+	// a record from another branch carries nothing over
+	other := &Runner{
+		cfg: Config{Mode: ModeFull, PlanFile: "plan.md"}, log: newMockLogger(),
+		git: &checkpointGit{branch: "other"}, recordStore: store,
+	}
+	other.startRunRecord()
+	assert.False(t, other.perTaskLeftovers)
+}
+
 func TestRunRecorderLogsSaveFailureOnce(t *testing.T) {
 	log := newMockLogger()
 	store := &runRecordMemoryStore{saveErr: errors.New("disk full")}

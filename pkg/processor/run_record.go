@@ -55,6 +55,9 @@ type RunRecord struct {
 	PostReview     PostReviewRunRecord      `json:"post_review"`
 	Finalize       *FinalizeOutcome         `json:"finalize,omitempty"`
 	Report         string                   `json:"report"`
+	// PendingReviewFixes is set when a review_cadence = task block left its fixes uncommitted, so
+	// a resumed run still runs the final post-review loop whose commit prefix commits them.
+	PendingReviewFixes bool `json:"pending_review_fixes,omitempty"`
 }
 
 // ValidationRunRecord summarizes measured validation commands across invocations.
