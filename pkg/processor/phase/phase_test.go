@@ -75,7 +75,7 @@ func TestPhasesRunUnderTheirOwnProvider(t *testing.T) {
 			review, ok := r.phases.review.(*reviewPhase)
 			require.True(t, ok)
 			review.policy = reviewPolicy
-			require.NoError(t, review.First(t.Context()))
+			require.NoError(t, review.First(t.Context(), ""))
 
 			finalizePolicy := newTestPolicy(cfg, log)
 			finalize, ok := r.phases.finalize.(*finalizePhase)

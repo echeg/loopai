@@ -15,6 +15,14 @@ type promptBuilder struct {
 	codexFrontmatterWarned map[string]bool
 	catalogMissingWarned   bool
 	finalizeSignalWarned   bool
+	// reviewScopeMissingWarned is set once a per-task block rendered a prompt without {{REVIEW_SCOPE}}
+	reviewScopeMissingWarned bool
+
+	// diffBase and reviewScope narrow the external review prompts to one task while a
+	// per-task review block runs. the builder is shared by every phase, so the runner
+	// sets them for the block and clears them afterwards.
+	diffBase    string
+	reviewScope string
 }
 
 type promptBuilderOpts struct {
@@ -46,6 +54,20 @@ func (b *promptBuilder) FirstReviewPrompt() string {
 
 func (b *promptBuilder) SecondReviewPrompt(prefix string) string {
 	return prefix + b.prependCodexReviewGuidance(b.replacePromptVariables(b.cfg.AppConfig.ReviewSecondPrompt, b.cfg.reviewProvider()))
+}
+
+// SetReviewScope narrows the external prompts to one task: diffBase replaces the default
+// branch in {{DEFAULT_BRANCH}} and {{DIFF_INSTRUCTION}}, and scope is rendered for
+// {{REVIEW_SCOPE}}. {{FINALIZE_BASE}} keeps naming the configured branch.
+func (b *promptBuilder) SetReviewScope(diffBase, scope string) {
+	b.diffBase = diffBase
+	b.reviewScope = scope
+}
+
+// ClearReviewScope restores whole-branch rendering after a per-task review block.
+func (b *promptBuilder) ClearReviewScope() {
+	b.diffBase = ""
+	b.reviewScope = ""
 }
 
 // ExternalReviewPrompt renders the prompt for the selected external reviewer.
@@ -82,7 +104,7 @@ func (b *promptBuilder) ExternalEvaluationPrompt(reviewer, findings string) stri
 	default:
 		prompt, outputVariable = b.cfg.AppConfig.CodexPrompt, "{{CODEX_OUTPUT}}"
 	}
-	prompt = b.replacePromptVariables(prompt, b.cfg.reviewProvider())
+	prompt = b.replaceReviewScope(b.replacePromptVariables(prompt, b.cfg.reviewProvider()))
 	return strings.ReplaceAll(prompt, outputVariable, findings)
 }
 

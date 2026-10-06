@@ -292,7 +292,9 @@ func (r *Runner) clearReviewTaskMarker(startingHead string) bool {
 }
 
 func (r *Runner) onReviewerDone(ctx context.Context, done phase.ReviewerCompletion) error {
-	if r.checkpoints == nil {
+	// a per-task block reviews one task, not the branch; its completion must not mark the
+	// final block's reviewer as done
+	if r.checkpoints == nil || r.perTaskReview {
 		return nil
 	}
 	keys := reviewerKeys(r.cfg)

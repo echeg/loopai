@@ -490,6 +490,9 @@ The full pipeline has four phases:
 3. External review runs the configured reviewer or reviewer chain for findings. The `review_model` provider evaluates findings and owns all fixes.
 4. Second review checks the final changes for critical or major regressions.
 
+With `review_cadence = task`, step 3's reviewer chain also runs after every completed task, scoped
+to that task's changes (see [Executors and reviews](#executors-and-reviews)).
+
 An optional finalize step closes out the plan branch after review (see [Finalize](#finalize)). It is
 off by default. When `report_enabled = true` (the default), a best-effort report phase runs
 immediately afterwards in full and review-only pipelines. Tasks-only runs skip both.
@@ -1101,6 +1104,45 @@ loopai \
 An effort outside `low`, `medium`, `high`, `xhigh`, `max` is rejected at startup, for the phase
 specs and for each `--external-reviewers` entry alike, rather than when the provider rejects it
 during review after the task phase has already finished.
+
+By default the external reviewer chain runs once, after the task phase and the internal review.
+`review_cadence = task` (or `--review-cadence=task` for one run) additionally runs the complete
+chain after every completed plan task, so an early design mistake is reviewed before later tasks
+are built on top of it:
+
+```ini
+review_cadence = task
+external_reviewers = codex:gpt-5.5:xhigh
+```
+
+Each per-task block diffs against the commit that task started from and tells the reviewers that
+later tasks are not implemented yet, so their absence is not a finding. The `review_model`
+provider evaluates and commits the block's fixes before the next task starts. A block that ends
+by stalemate, by `max_external_iterations`, or by Ctrl+\ leaves its fixes uncommitted; the
+final block's first review commits them before reviewing, and the post-review loop runs even when
+the final reviewers find nothing, as a backstop; the run record keeps that obligation until it is met, so it survives a stop and resume before
+the final block. Ctrl+\ during a per-task block ends only that block; the next task and later
+blocks run as usual. A task session that times out or is interrupted after ticking its task but
+before committing it gets no per-task block, since the reviewers would not see its uncommitted
+work; the final block commits that work the same way before any final reviewer reads the branch. Customized external review or evaluation prompts written before this
+setting lack the `{{REVIEW_SCOPE}}` placeholder: they still diff against the task's start commit,
+but their reviewers are not told later tasks are pending, and the run warns once. Add the
+placeholder to such copies (the embedded prompts end the diff-instruction line with it) or
+refresh them with `/loopai-update`. The internal
+review agents and the post-review loop do not run per task, and the final whole-branch block
+still runs unchanged, because cross-task integration defects are only visible there. The cadence
+applies to full mode only: `--review`, `--external-only`, and `--tasks-only` ignore it with a
+startup warning, as does a run whose chain resolves to no reviewers. The startup banner prints a
+`review cadence:` line when it is `task`.
+
+The cost grows with the plan: `max_external_iterations` and `review_patience` apply to every
+block separately, so a chain of R reviewers over T tasks can spend up to T × R extra reviewer
+loops. The completion report's External review facts show `(N review blocks)` after a reviewer
+that ran more than once. Two limitations apply in this version: per-task blocks save no
+[review checkpoint](#execution-pipeline), so a process death between tasks loses only
+that task's review, which the final block repeats; and the T3 Code provider session's plan view
+marks the Review stage completed and External review in progress at the first per-task block (see
+[docs/t3-code.md](docs/t3-code.md#limitations)).
 
 ## Worktree isolation
 

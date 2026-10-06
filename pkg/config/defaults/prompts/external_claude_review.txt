@@ -4,6 +4,7 @@
 #
 # available variables:
 #   {{DIFF_INSTRUCTION}} - git diff command appropriate for current iteration
+#   {{REVIEW_SCOPE}} - per-task review scope under review_cadence = task (empty otherwise)
 #   {{PLAN_FILE}} - path to the plan file being executed
 #   {{PROGRESS_FILE}} - path to progress log with previous review iterations
 #   {{PREVIOUS_REVIEW_CONTEXT}} - previous evaluator context (empty on first iteration)
@@ -12,7 +13,7 @@
 
 Review the code changes for: {{GOAL}}
 
-Run {{DIFF_INSTRUCTION}} and read the changed files in full context. Check the plan at {{PLAN_FILE}} and the review history at {{PROGRESS_FILE}}.
+Run {{DIFF_INSTRUCTION}} and read the changed files in full context. Check the plan at {{PLAN_FILE}} and the review history at {{PROGRESS_FILE}}.{{REVIEW_SCOPE}}
 
 Analyze for bugs, logic errors, security vulnerabilities, race conditions, error-handling gaps, missing tests, and material code-quality problems. Report only verified findings with file:line references. If there are no actionable issues, say "NO ISSUES FOUND".
 

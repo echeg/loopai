@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -548,6 +549,60 @@ func TestIsValidFinalizeValues(t *testing.T) {
 	}
 	for _, method := range []string{"", "auto", "fast-forward"} {
 		assert.False(t, IsValidFinalizeMergeMethod(method), method)
+	}
+}
+
+func TestLoad_ReviewCadence(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		cadence   string
+		set       bool
+		effective string
+		errText   string
+	}{
+		{name: "unset defaults to end", body: "", cadence: "", set: false, effective: ReviewCadenceEnd},
+		{name: "explicit end", body: "review_cadence = end\n", cadence: ReviewCadenceEnd, set: true,
+			effective: ReviewCadenceEnd},
+		{name: "explicit task", body: "review_cadence = task\n", cadence: ReviewCadenceTask, set: true,
+			effective: ReviewCadenceTask},
+		{name: "invalid value", body: "review_cadence = always\n", errText: "invalid review_cadence"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			configDir := filepath.Join(t.TempDir(), "loopai")
+			require.NoError(t, os.MkdirAll(configDir, 0o700))
+			require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(tc.body), 0o600))
+
+			cfg, err := Load(configDir)
+			if tc.errText != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errText)
+				assert.Contains(t, err.Error(), "end, task")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.cadence, cfg.ReviewCadence)
+			assert.Equal(t, tc.set, cfg.ReviewCadenceSet)
+			assert.Equal(t, tc.effective, cfg.EffectiveReviewCadence())
+		})
+	}
+}
+
+func TestConfig_EffectiveReviewCadence(t *testing.T) {
+	var nilCfg *Config
+	assert.Equal(t, ReviewCadenceEnd, nilCfg.EffectiveReviewCadence())
+	assert.Equal(t, ReviewCadenceEnd, (&Config{}).EffectiveReviewCadence())
+	assert.Equal(t, ReviewCadenceEnd, (&Config{ReviewCadence: ReviewCadenceEnd}).EffectiveReviewCadence())
+	assert.Equal(t, ReviewCadenceTask, (&Config{ReviewCadence: ReviewCadenceTask}).EffectiveReviewCadence())
+}
+
+func TestIsValidReviewCadence(t *testing.T) {
+	for _, cadence := range []string{"end", "task"} {
+		assert.True(t, IsValidReviewCadence(cadence), cadence)
+	}
+	for _, cadence := range []string{"", "Task", "phase", "always"} {
+		assert.False(t, IsValidReviewCadence(cadence), cadence)
 	}
 }
 
@@ -1764,7 +1819,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		"codex_enabled", "codex_command", "codex_args",
 		"codex_timeout_ms", "codex_sandbox", "external_reviewers", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
-		"review_patience", "finalize", "finalize_merge_method", "finalize_checks_timeout", "report_enabled", "preserve_anthropic_api_key",
+		"review_patience", "review_cadence", "finalize", "finalize_merge_method", "finalize_checks_timeout", "report_enabled", "preserve_anthropic_api_key",
 		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "orca", "t3", "keep_awake", "plans_dir", "backlog_dir",
 		"watch_dirs", "default_branch", "vcs_command", "commit_trailer",
 		"claude_error_patterns", "codex_error_patterns", "claude_limit_patterns",
@@ -1942,6 +1997,36 @@ func TestConfig_IsRealCommand(t *testing.T) {
 					}
 				})
 			}
+		})
+	}
+}
+
+func Test_defaultsFS_ReviewScopeOnlyInExternalPrompts(t *testing.T) {
+	// {{REVIEW_SCOPE}} is expanded only on the external review and evaluation paths; a token in
+	// any other prompt would reach the model unexpanded
+	external := []string{"codex_review.txt", "external_claude_review.txt", "custom_review.txt",
+		"codex.txt", "external_claude_eval.txt", "custom_eval.txt"}
+	for _, file := range external {
+		t.Run(file, func(t *testing.T) {
+			data, err := defaultsFS.ReadFile("defaults/prompts/" + file)
+			require.NoError(t, err)
+			body := string(data)
+			assert.Contains(t, body, "#   {{REVIEW_SCOPE}} - ", "header documents the variable")
+			// the token ends a body line so an empty scope leaves no blank line behind
+			assert.Regexp(t, `(?m)^[^#\n][^\n]*\{\{REVIEW_SCOPE\}\}$`, body)
+		})
+	}
+	entries, err := defaultsFS.ReadDir("defaults/prompts")
+	require.NoError(t, err)
+	for _, entry := range entries {
+		file := entry.Name()
+		if slices.Contains(external, file) {
+			continue
+		}
+		t.Run(file, func(t *testing.T) {
+			data, err := defaultsFS.ReadFile("defaults/prompts/" + file)
+			require.NoError(t, err)
+			assert.NotContains(t, string(data), "{{REVIEW_SCOPE}}")
 		})
 	}
 }

@@ -98,8 +98,12 @@ func (g *checkpointGit) HeadHash() (string, error) {
 	}
 	return g.head, nil
 }
-func (g *checkpointGit) DiffFingerprint() (string, error) { return g.diff, g.diffErr }
-func (g *checkpointGit) IsDirtyAll() (bool, error)        { return g.dirty, g.dirtyErr }
+func (g *checkpointGit) DiffFingerprint() (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.diff, g.diffErr
+}
+func (g *checkpointGit) IsDirtyAll() (bool, error) { return g.dirty, g.dirtyErr }
 func (g *checkpointGit) ContainsRevisionContext(context.Context, string) (bool, error) {
 	return g.contains, g.containsErr
 }
@@ -125,7 +129,7 @@ type checkpointReview struct {
 	loops []string
 }
 
-func (p *checkpointReview) First(context.Context) error { p.first++; return nil }
+func (p *checkpointReview) First(context.Context, string) error { p.first++; return nil }
 func (p *checkpointReview) Loop(_ context.Context, prefix string) error {
 	p.loops = append(p.loops, prefix)
 	return nil
@@ -162,7 +166,8 @@ func newCheckpointRunner(cfg Config, store ReviewCheckpointStore, git GitChecker
 	task := &checkpointTask{}
 	r := &Runner{
 		cfg: cfg, log: log, phaseHolder: &status.PhaseHolder{}, git: git, checkpoints: store,
-		phases: runnerPhases{task: task, taskValidator: task, review: review, external: external, finalize: finalize},
+		phases:      runnerPhases{task: task, taskValidator: task, review: review, external: external, finalize: finalize},
+		reviewScope: &recordingScope{},
 	}
 	return r, review, external, finalize
 }
@@ -708,4 +713,61 @@ func TestRunnerReviewCheckpoint_NewWithExecutorsWiresReviewerCallback(t *testing
 	assert.Equal(t, reviewStageExternal, store.saves[0].Stages[0].Stage)
 	assert.Equal(t, "codex:gpt:high", store.saves[0].Stages[0].Reviewer)
 	assert.False(t, store.found, "checkpoint should be removed after finalize")
+}
+
+func TestRunnerReviewCheckpoint_PerTaskReviewSavesNoStage(t *testing.T) {
+	store := &checkpointMemoryStore{}
+	r, _, _, _ := newCheckpointRunner(Config{
+		Mode: ModeFull, PlanFile: "plan.md", ExternalReviewTool: config.ExternalReviewToolCodex,
+	}, store, &checkpointGit{head: "h1"})
+	done := phase.ReviewerCompletion{Index: 0}
+
+	r.perTaskReview = true
+	require.NoError(t, r.onReviewerDone(t.Context(), done))
+	assert.Empty(t, store.saves)
+
+	r.perTaskReview = false
+	require.NoError(t, r.onReviewerDone(t.Context(), done))
+	assert.Len(t, store.saves, 1)
+}
+
+func TestRunnerReviewCheckpoint_CadenceTaskFinalBlockResumes(t *testing.T) {
+	cfg := Config{Mode: ModeFull, PlanFile: "plan.md", ReviewCadence: config.ReviewCadenceTask, ExternalReviewers: []config.ReviewerSpec{
+		{Provider: "claude", ModelSpec: "opus:high"}, {Provider: "codex", ModelSpec: "gpt:high"},
+	}}
+	store := &checkpointMemoryStore{}
+	git := &checkpointGit{head: "abc1234", branch: "feature", contains: true}
+
+	// first run: a per-task block completes both reviewers, then the final block crashes after the first
+	first, _, firstExternal, _ := newCheckpointRunner(cfg, store, git)
+	first.phases.task.(*checkpointTask).onRun = func() {
+		require.NoError(t, first.afterTaskReview(t.Context(), 1, "h0"))
+	}
+	var perTaskBlocks int
+	firstExternal.run = func(ctx context.Context) (phase.ExternalReviewOutcome, error) {
+		require.NoError(t, first.onReviewerDone(ctx, phase.ReviewerCompletion{Index: 0, EndedBy: "done"}))
+		if first.perTaskReview {
+			perTaskBlocks++
+			require.NoError(t, first.onReviewerDone(ctx, phase.ReviewerCompletion{Index: 1, EndedBy: "done"}))
+			return phase.ExternalReviewOutcome{}, nil
+		}
+		return phase.ExternalReviewOutcome{}, errors.New("reviewer crashed")
+	}
+	require.ErrorContains(t, first.Run(t.Context()), "reviewer crashed")
+	assert.Equal(t, 1, perTaskBlocks)
+	require.Len(t, store.cp.Stages, 2, "the per-task block saved no stage")
+	assert.Equal(t, []string{reviewStageInternal, reviewStageExternal}, []string{store.cp.Stages[0].Stage, store.cp.Stages[1].Stage})
+	assert.Equal(t, 0, store.cp.Stages[1].Index)
+
+	// second run: every task is done, so no per-task block runs and the final block resumes at reviewer two
+	second, secondReview, secondExternal, _ := newCheckpointRunner(cfg, store, git)
+	secondExternal.run = func(ctx context.Context) (phase.ExternalReviewOutcome, error) {
+		assert.False(t, second.perTaskReview)
+		require.NoError(t, second.onReviewerDone(ctx, phase.ReviewerCompletion{Index: 1, EndedBy: "done"}))
+		return phase.ExternalReviewOutcome{}, nil
+	}
+	require.NoError(t, second.Run(t.Context()))
+	assert.Zero(t, secondReview.first, "completed internal review must be skipped")
+	assert.Equal(t, 1, secondExternal.completed, "the final block resumes after the checkpointed reviewer")
+	assert.False(t, store.found, "successful finalize must remove the checkpoint")
 }

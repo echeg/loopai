@@ -300,6 +300,19 @@ task_retry_count = 1
 # default: 0
 # review_patience = 0
 
+# review_cadence: when the external reviewer chain runs
+#   end  - once, after the task phase (and the internal review) finishes
+#   task - additionally after every completed plan task, against the commit that
+#          task started from, so an early design mistake is reviewed before later
+#          tasks build on it. full mode only; --review, --external-only, and
+#          --tasks-only ignore it. the final whole-branch review still runs.
+# cost: max_external_iterations and review_patience apply to every block
+# separately, so a chain of R reviewers over T tasks can run up to T x R extra
+# reviewer loops.
+# can also be set via --review-cadence CLI flag (CLI takes precedence)
+# default: end
+# review_cadence = end
+
 # session_timeout: maximum duration for a single executor session
 # kills hanging sessions (e.g., agent started a blocking operation)
 # applies to every claude session; when task_model or review_model names codex it applies

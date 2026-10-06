@@ -124,6 +124,60 @@ func TestRenderRunFacts_TablesAndTwoReviewers(t *testing.T) {
 	assert.Contains(t, got, "- started: 2026-09-06T07:00:00Z")
 }
 
+func TestRenderRunFacts_ExternalReviewBlocks(t *testing.T) {
+	tests := []struct {
+		name   string
+		blocks int
+		label  string
+	}{
+		{name: "legacy record", blocks: 0, label: "- label: Codex\n"},
+		{name: "single end review", blocks: 1, label: "- label: Codex\n"},
+		{name: "per-task reviews", blocks: 3, label: "- label: Codex (3 review blocks)\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			record := RunRecord{Plan: "docs/plans/x.md", External: []ExternalReviewerRecord{
+				{Key: "codex:gpt-5.5", Label: "Codex", Blocks: tc.blocks},
+			}}
+			assert.Contains(t, renderRunFacts(record, RunFacts{}), "### codex:gpt-5.5\n"+tc.label)
+			assert.Contains(t, factsOnlyReport(record, RunFacts{}), "### codex:gpt-5.5\n"+tc.label)
+		})
+	}
+}
+
+func TestRenderRunFacts_ExternalIterationHeadingsNameBlocks(t *testing.T) {
+	tests := []struct {
+		name       string
+		iterations []ExternalIterationRecord
+		want       []string
+	}{
+		{
+			name:       "legacy record",
+			iterations: []ExternalIterationRecord{{Index: 1}, {Index: 2}},
+			want:       []string{"#### Iteration 1\n", "#### Iteration 2\n"},
+		},
+		{
+			name:       "single block",
+			iterations: []ExternalIterationRecord{{Index: 1, Block: 1}},
+			want:       []string{"#### Iteration 1\n"},
+		},
+		{
+			name:       "per-task blocks",
+			iterations: []ExternalIterationRecord{{Index: 1, Block: 1}, {Index: 2, Block: 1}, {Index: 1, Block: 2}},
+			want:       []string{"#### Block 1, iteration 1\n", "#### Block 1, iteration 2\n", "#### Block 2, iteration 1\n"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			record := RunRecord{External: []ExternalReviewerRecord{{Key: "codex:gpt", Iterations: tc.iterations}}}
+			got := renderRunFacts(record, RunFacts{})
+			for _, heading := range tc.want {
+				assert.Contains(t, got, heading)
+			}
+		})
+	}
+}
+
 func TestRenderRunFacts_BacklogTable(t *testing.T) {
 	facts := RunFacts{Backlog: []BacklogFile{{Status: "A", Path: "docs/backlog/item.md", Title: "A | B"}}}
 	got := renderRunFacts(RunRecord{}, facts)

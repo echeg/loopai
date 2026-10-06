@@ -80,6 +80,144 @@ func TestRunRecorderSavesAfterEveryEvent(t *testing.T) {
 	assert.Equal(t, PostReviewRunRecord{Ran: true, Iterations: 3}, last.PostReview)
 }
 
+func TestRunRecorderAggregatesRepeatedReviewerCompletions(t *testing.T) {
+	reviewer := phase.ExternalReviewer{Tool: "codex", ModelSpec: "gpt:high"}
+	tests := []struct {
+		name        string
+		completions []phase.ReviewerCompletion
+		want        ExternalReviewerRecord
+	}{
+		{
+			name: "one completion",
+			completions: []phase.ReviewerCompletion{
+				{Reviewer: reviewer, Label: "codex", Duration: 2 * time.Second, HadFindings: true, EndedBy: "done"},
+			},
+			want: ExternalReviewerRecord{
+				Key: "codex:gpt:high", Label: "codex", Duration: Duration(2 * time.Second),
+				EndedBy: "done", HadFindings: true, Blocks: 1,
+			},
+		},
+		{
+			name: "two completions",
+			completions: []phase.ReviewerCompletion{
+				{Reviewer: reviewer, Label: "codex", Duration: 2 * time.Second, HadFindings: true, EndedBy: "done"},
+				{Reviewer: reviewer, Label: "codex", Duration: 3 * time.Second, HadFindings: false, EndedBy: "stalemate"},
+			},
+			want: ExternalReviewerRecord{
+				Key: "codex:gpt:high", Label: "codex", Duration: Duration(5 * time.Second),
+				EndedBy: "stalemate", HadFindings: true, Blocks: 2,
+			},
+		},
+		{
+			name: "findings only in the later block",
+			completions: []phase.ReviewerCompletion{
+				{Reviewer: reviewer, Label: "codex", Duration: time.Second, EndedBy: "done"},
+				{Reviewer: reviewer, Label: "codex", Duration: time.Second, HadFindings: true, EndedBy: "done"},
+			},
+			want: ExternalReviewerRecord{
+				Key: "codex:gpt:high", Label: "codex", Duration: Duration(2 * time.Second),
+				EndedBy: "done", HadFindings: true, Blocks: 2,
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &runRecordMemoryStore{}
+			runner := &Runner{log: newMockLogger(), recordStore: store}
+			recorder := &runRecorder{runner: runner}
+			for _, done := range tc.completions {
+				recorder.ExternalDone(done)
+			}
+			require.Len(t, store.record.External, 1)
+			assert.Equal(t, tc.want, store.record.External[0])
+		})
+	}
+}
+
+func TestRunRecorderKeepsPerTaskReviewsAcrossTaskCommitReset(t *testing.T) {
+	store := &runRecordMemoryStore{found: true, record: RunRecord{
+		Version: runRecordVersion, Branch: "feature",
+		External: []ExternalReviewerRecord{{Key: "codex:gpt:high", Label: "stale", Blocks: 4}},
+	}}
+	runner := &Runner{
+		cfg: Config{Mode: ModeFull, PlanFile: "plan.md"}, log: newMockLogger(),
+		git: &checkpointGit{branch: "feature"}, recordStore: store, record: store.record,
+	}
+	recorder := &runRecorder{runner: runner}
+	runner.recorder = recorder
+	reviewer := phase.ExternalReviewer{Tool: "codex", ModelSpec: "gpt:high"}
+
+	// a per-task block recorded during the task phase
+	runner.perTaskReview = true
+	recorder.ExternalIteration(1, "codex:gpt:high", "codex", "task finding", "fixed")
+	recorder.ExternalDone(phase.ReviewerCompletion{
+		Reviewer: reviewer, Label: "codex", Duration: time.Second, HadFindings: true, EndedBy: "done",
+	})
+	runner.perTaskReview = false
+
+	// the task phase committed, so the stale record is discarded but this invocation's block is kept
+	runner.clearReviewCheckpoint("task phase committed new work")
+	require.Len(t, runner.record.External, 1)
+	assert.Equal(t, "codex", runner.record.External[0].Label)
+	assert.Equal(t, 1, runner.record.External[0].Blocks)
+	require.Len(t, runner.record.External[0].Iterations, 1)
+	assert.Equal(t, "task finding", runner.record.External[0].Iterations[0].ReviewerOutput)
+
+	// the final block aggregates into the same reviewer and is not mirrored into the per-task copy
+	recorder.ExternalIteration(1, "codex:gpt:high", "codex", "", "")
+	recorder.ExternalDone(phase.ReviewerCompletion{Reviewer: reviewer, Label: "codex", Duration: 2 * time.Second, EndedBy: "clean"})
+	require.Len(t, store.record.External, 1)
+	got := store.record.External[0]
+	assert.Equal(t, 2, got.Blocks)
+	assert.Equal(t, Duration(3*time.Second), got.Duration)
+	assert.Equal(t, "clean", got.EndedBy)
+	assert.True(t, got.HadFindings)
+	assert.Len(t, got.Iterations, 2)
+	require.Len(t, runner.currentExternal, 1)
+	assert.Equal(t, 1, runner.currentExternal[0].Blocks)
+
+	runner.startRunRecord()
+	assert.Nil(t, runner.currentExternal, "a new invocation starts without per-task reviews")
+}
+
+func TestRunRecorderPersistsPerTaskLeftoversAcrossResume(t *testing.T) {
+	store := &runRecordMemoryStore{}
+	runner := &Runner{
+		cfg: Config{Mode: ModeFull, PlanFile: "plan.md"}, log: newMockLogger(),
+		git: &checkpointGit{branch: "feature"}, recordStore: store,
+	}
+	runner.startRunRecord()
+	assert.False(t, runner.perTaskLeftovers)
+
+	runner.recorder.SetPendingReviewFixes(true)
+	assert.True(t, runner.perTaskLeftovers)
+	assert.True(t, store.record.PendingReviewFixes)
+
+	// a later task commit resets the record; the flag is saved again at once, not on the next event
+	runner.clearReviewCheckpoint("task phase committed new work")
+	assert.True(t, store.found)
+	assert.True(t, store.record.PendingReviewFixes)
+
+	// the process stops before its final block; the resumed invocation still owes the post-review
+	resumed := &Runner{
+		cfg: Config{Mode: ModeFull, PlanFile: "plan.md"}, log: newMockLogger(),
+		git: &checkpointGit{branch: "feature"}, recordStore: store,
+	}
+	resumed.startRunRecord()
+	assert.True(t, resumed.perTaskLeftovers)
+	resumed.adoptLoadedRunRecord()
+	assert.True(t, resumed.record.PendingReviewFixes)
+	assert.True(t, store.record.PendingReviewFixes)
+
+	// a record from another branch carries nothing over
+	other := &Runner{
+		cfg: Config{Mode: ModeFull, PlanFile: "plan.md"}, log: newMockLogger(),
+		git: &checkpointGit{branch: "other"}, recordStore: store,
+	}
+	other.startRunRecord()
+	assert.False(t, other.perTaskLeftovers)
+}
+
 func TestRunRecorderLogsSaveFailureOnce(t *testing.T) {
 	log := newMockLogger()
 	store := &runRecordMemoryStore{saveErr: errors.New("disk full")}
@@ -128,6 +266,99 @@ func TestRunRecorderBoundsAggregateReviewText(t *testing.T) {
 		assert.Equal(t, 10, reviewer.Iterations[9].Index)
 		assert.NotEmpty(t, reviewer.Iterations[9].ReviewerOutput)
 		assert.NotEmpty(t, reviewer.Iterations[9].EvaluatorResponse)
+	}
+}
+
+func TestRunRecorderTagsIterationsWithReviewBlock(t *testing.T) {
+	reviewer := phase.ExternalReviewer{Tool: "codex", ModelSpec: "gpt"}
+	store := &runRecordMemoryStore{}
+	recorder := &runRecorder{runner: &Runner{log: newMockLogger(), recordStore: store}}
+	recorder.ExternalIteration(1, "codex:gpt", "codex", "a", "b")
+	recorder.ExternalIteration(2, "codex:gpt", "codex", "c", "d")
+	recorder.ExternalDone(phase.ReviewerCompletion{Reviewer: reviewer, Label: "codex", EndedBy: "done"})
+	recorder.ExternalIteration(1, "codex:gpt", "codex", "e", "f")
+
+	require.Len(t, store.record.External, 1)
+	blocks := make([]int, 0, len(store.record.External[0].Iterations))
+	for _, iteration := range store.record.External[0].Iterations {
+		blocks = append(blocks, iteration.Block)
+	}
+	assert.Equal(t, []int{1, 1, 2}, blocks)
+}
+
+func TestBoundExternalReviewTextKeepsLatestBlockShare(t *testing.T) {
+	output := strings.Repeat("x", runRecordTextCap)
+	reviewer := ExternalReviewerRecord{Key: "codex:gpt"}
+	for block := 1; block <= 30; block++ {
+		reviewer.Iterations = append(reviewer.Iterations, ExternalIterationRecord{
+			Index: 1, Block: block, ReviewerOutput: output, EvaluatorResponse: output,
+		})
+	}
+	reviewers := []ExternalReviewerRecord{reviewer}
+
+	boundExternalReviewText(reviewers)
+
+	total, earlier := 0, 0
+	for _, iteration := range reviewers[0].Iterations {
+		size := len(iteration.ReviewerOutput) + len(iteration.EvaluatorResponse)
+		total += size
+		if iteration.Block < 30 {
+			earlier += size
+			assert.True(t, iteration.Truncated)
+		}
+	}
+	last := reviewers[0].Iterations[29]
+	assert.LessOrEqual(t, total, runRecordExternalTextCap)
+	assert.LessOrEqual(t, earlier, runRecordExternalTextCap/2)
+	// the final block fits its half of the budget whole instead of an even 1/60th share
+	assert.False(t, last.Truncated)
+	assert.Equal(t, output, last.ReviewerOutput)
+	assert.Equal(t, output, last.EvaluatorResponse)
+}
+
+func TestBoundExternalReviewTextLatestShareIsAFloor(t *testing.T) {
+	earlierOutput := strings.Repeat("e", 1024)
+	tests := []struct {
+		name           string
+		latestReviewer int
+		latestEval     int
+		latestCount    int
+		wantTruncated  bool
+	}{
+		{name: "total under cap keeps latest whole past half", latestReviewer: 12 * 1024, latestEval: 2 * 1024,
+			latestCount: 3},
+		{name: "total over cap gives latest what earlier leaves", latestReviewer: runRecordTextCap,
+			latestEval: runRecordTextCap, latestCount: 2, wantTruncated: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reviewer := ExternalReviewerRecord{Key: "codex:gpt", Iterations: []ExternalIterationRecord{
+				{Index: 1, Block: 1, ReviewerOutput: earlierOutput},
+			}}
+			for i := 1; i <= tc.latestCount; i++ {
+				reviewer.Iterations = append(reviewer.Iterations, ExternalIterationRecord{
+					Index: i, Block: 2, ReviewerOutput: strings.Repeat("r", tc.latestReviewer),
+					EvaluatorResponse: strings.Repeat("v", tc.latestEval),
+				})
+			}
+			reviewers := []ExternalReviewerRecord{reviewer}
+
+			boundExternalReviewText(reviewers)
+
+			total, latest := 0, 0
+			for _, iteration := range reviewers[0].Iterations {
+				size := len(iteration.ReviewerOutput) + len(iteration.EvaluatorResponse)
+				total += size
+				if iteration.Block == 2 {
+					latest += size
+					assert.Equal(t, tc.wantTruncated, iteration.Truncated)
+				}
+			}
+			assert.LessOrEqual(t, total, runRecordExternalTextCap)
+			assert.False(t, reviewers[0].Iterations[0].Truncated)
+			assert.Equal(t, earlierOutput, reviewers[0].Iterations[0].ReviewerOutput)
+			assert.Greater(t, latest, runRecordExternalTextCap/2)
+		})
 	}
 }
 
