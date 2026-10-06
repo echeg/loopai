@@ -962,7 +962,28 @@ process on the first write after the client is gone, which skips cancellation an
 because an ignored disposition is inherited across exec. A canceled process context calls `acp.Server.Shutdown`,
 which cancels the running prompt and waits for its answer without waiting for stdin EOF. That wait is
 still bounded by the 5-second force exit of the `startInterruptWatcher` that `run()` installs before
-routing `--acp`, so a prompt whose cancellation outlasts it is never answered. The mode
+routing `--acp`, so a prompt whose cancellation outlasts it is never answered.
+When `parseACPPrompt` fails, `acpLooksLikeLaunch` decides how the turn ends. A first token that is an
+option, ends in `.md`, or names an existing path relative to the session cwd is a malformed launch,
+which still fails the turn with the usage line. Any other text, such as a question typed after a run,
+gets the `acpNotALaunch` guidance and `end_turn`, because a failed turn for a chat message reads as
+a broken provider. After a run that succeeded, returned no error, and was not canceled,
+`acpRunner.autoMerge` opens a fresh Git service in the session cwd with `vcs_command` and calls
+`acpAutoMerge` (`cmd/loopai/acp_merge.go`). It also writes a one-line summary to `a.out`. The policy
+gates come first, in `acpMergePolicySkip`: `acp_auto_merge` (default `true`, ACP only), then
+`finalize = pr|merge` (GitHub owns close-out), then `reportRiskLevel`. That function lives in
+`pr_body.go` and reads the first non-empty line of the report's first fence-aware `Risk` section,
+strips emphasis, and returns only `low`, `medium`, or `high`. Only the first two merge, and the
+facts-only fallback reads as unstated. The repository gates follow: a resolvable non-detached feature
+branch, a local base distinct from it, a clean feature checkout, and a clean worktree that already
+has the base checked out. The merge then runs there through `openMergeWorktree` and
+`mergeForCloseout`, pinned to `BranchHash(feature)`. Every gate failure, conflict, or failed
+verification becomes `acpMergeResult.skipped` and leaves the repository unchanged. It deliberately
+reuses only that primitive and none of `runMergeCommand`'s teardown: no push, no `DeleteBranch`, no
+`cleanupMergedWorktree`, and no checkout switch. The feature worktree belongs to T3 Code and is the
+process cwd, so removing it fails on Windows with `Permission denied` and would strand the thread, and while that worktree has the branch checked out Git refuses to delete it. `acpRunResult` composes the final message
+as the report, then the `## Merge` section, then `acpNextSteps` when the run failed or the merge was
+skipped. A skipped merge never changes a successful turn's `end_turn`. The mode
 relies on undocumented Grok driver contracts, documented in `docs/t3-code.md`, and must be
 re-verified after T3 Code updates.
 

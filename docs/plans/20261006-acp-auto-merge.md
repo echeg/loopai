@@ -143,9 +143,9 @@
 - [x] verify test coverage meets project standard (80%+) for the new files - acp_merge.go functions 67-100% (about 90% overall); the new acp.go and pr_body.go functions 86-100%
 
 ### Task 7: [Final] Update documentation
-- [ ] `docs/t3-code.md`: in "Running a plan" and "What the thread shows", describe the auto-merge (risk gate, local only, no push, no branch or worktree removal, `acp_auto_merge`, finalize pr/merge precedence) and the guidance reply to non-launch messages
-- [ ] update the README ACP paragraph and the `llms.txt` ACP paragraph
-- [ ] update the CLAUDE.md ACP agent-mode paragraph with `acpAutoMerge`, `reportRiskLevel`, `acpLooksLikeLaunch`, and why the T3 worktree and branch are never removed
+- [x] `docs/t3-code.md`: in "Running a plan" and "What the thread shows", describe the auto-merge (risk gate, local only, no push, no branch or worktree removal, `acp_auto_merge`, finalize pr/merge precedence) and the guidance reply to non-launch messages
+- [x] update the README ACP paragraph and the `llms.txt` ACP paragraph
+- [x] update the CLAUDE.md ACP agent-mode paragraph with `acpAutoMerge`, `reportRiskLevel`, `acpLooksLikeLaunch`, and why the T3 worktree and branch are never removed
 
 ## Technical Details
 - Risk parsing: in `## Risk\n\n**low**\n\n- Public APIs…`, the first non-empty line is `**low**`, which normalizes to `low`.

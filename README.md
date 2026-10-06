@@ -1369,8 +1369,12 @@ the completion report as the final message. `--t3-launch` starts this session au
 configured, and the stop button cancels the run. A T3 Code provider instance of the `grok` driver points
 at `loopai-acp`, which starts `loopai --acp`, a JSON-RPC server for the Agent Client Protocol on
 stdin/stdout. Each message names a plan and optionally `--task-model`, `--review-model`, and
-`--external-reviewers`; the plan runs in place in the thread's working directory. The mode relies on
-undocumented T3 Code Grok driver contracts. See
+`--external-reviewers`; the plan runs in place in the thread's working directory. A message that is
+not a plan launch gets a reply pointing follow-up work to a new session instead of failing the turn.
+If a run succeeds and its report rates Risk `low` or `medium`, loopai merges the plan branch into the
+local base branch where the base is checked out. Nothing is pushed, and neither the branch nor T3
+Code's worktree is removed. `acp_auto_merge = false` turns this off, and `finalize = pr|merge` takes
+precedence. The mode relies on undocumented T3 Code Grok driver contracts. See
 [docs/t3-code.md](docs/t3-code.md#experimental-loopai-as-a-t3-code-provider).
 
 The cmux status pill and progress bar belong to the workspace, not to an individual run, so
