@@ -39,6 +39,31 @@ Split `$ARGUMENTS` on whitespace. The first token that does not start with `--` 
 - Every value must match `^[A-Za-z0-9._:,+-]+$`; `--t3-launch` rejects anything else too.
 - Any token not in the table — `--worktree`, `--commit`, `--serve`, `--plan`, `--branch`, a second plan path, anything else — a flag given twice, or a value-taking flag without a value **stops the run**. Report the offending token verbatim and state that only the three flags above are passed through. `--codex` was removed from loopai: for it, also say to write `--task-model codex:<model>[:effort]` instead.
 
+**Recent flag combinations.** When `FLAGS` is empty, offer the combinations from earlier launches before launching. Skip this entirely when `FLAGS` is non-empty, and also when the `loopai-plan` skill invoked this skill in the current conversation after its own flag question, since the choice (possibly no flags) is already made there.
+
+loopai itself writes `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/launch-history` on every plan-executing launch: one line per launch, newest first, `<UTC time>\t<launcher>\t<flags>`, where the launcher is `orca`, `t3`, or `cli`. The file holds flag strings only, never tokens or paths. Read it only; never write to it.
+
+```bash
+HIST="${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/launch-history"
+HISTORY=$(awk -F'\t' '
+  function ok(s,   n, t, i, seen) {
+    n = split(s, t, " ")
+    if (n == 0 || n % 2) return 0
+    for (i = 1; i <= n; i += 2) {
+      if (t[i] !~ /^--(task-model|review-model|external-reviewers)$/ || seen[t[i]]++) return 0
+      if (t[i+1] !~ /^[A-Za-z0-9._:,+-]+$/) return 0
+      if (t[i] != "--external-reviewers" && t[i+1] !~ /^(claude|codex)(:|$)/) return 0
+    }
+    return 1
+  }
+  $2 ~ /^(orca|t3|cli)$/ && ok($3) && !dup[$3]++ { print $3; if (++k == 3) exit }
+' "$HIST" 2>/dev/null)
+```
+
+`HISTORY` holds up to three distinct flag strings, newest first, one per line. A line the skill cannot validate is skipped, never offered: an unknown launcher, a token other than the three flags above (or one given twice), a value outside `^[A-Za-z0-9._:,+-]+$`, or a model spec without the `claude`/`codex` provider. A line with no flags is not listed. A missing, unreadable, or empty file yields an empty `HISTORY`; then launch with the empty `FLAGS` as before, without asking.
+
+With `HISTORY` non-empty, ask AskUserQuestion — "Which loopai flags should the T3 Code run use?" — with one option per `HISTORY` entry labelled by its flags, newest first and the newest marked "(Recommended)"; then "No flags (models and reviewers from .loopai/config and loopai defaults)" and "Cancel". AskUserQuestion takes at most four options: when the list is longer, drop the oldest `HISTORY` entries until it fits. A selected entry becomes `FLAGS` exactly as listed, without the "(Recommended)" suffix; "No flags" leaves `FLAGS` empty; "Cancel" stops without launching. "Other" is the manual-entry path: parse the typed text with the rules above and repeat the question naming any rejected token verbatim.
+
 ## Step 1: Choose the Plan
 
 - If `PLAN_ARG` is set: validate it exists with Read.
