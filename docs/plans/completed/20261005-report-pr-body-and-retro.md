@@ -146,103 +146,136 @@ Three related improvements, inspired by the `/pr` and `/retro` skills in mattpoc
 
 ### Task 1: Add Evidence and Merge danger to the report contract
 
-- [ ] in `pkg/config/defaults/prompts/report.txt`, insert `## Evidence` after `## Change scope`:
+- [x] in `pkg/config/defaults/prompts/report.txt`, insert `## Evidence` after `## Change scope`:
       show before/after proof of the delivered change — the specific test, command output, or
       behavior that failed before and passes now, drawn from the supplied validation facts and the
       diff; write the literal `none` when the facts carry no such evidence; never invent a test run
-- [ ] in the same file, insert `## Merge danger` after `## Risk` with the fixed shape
+- [x] in the same file, insert `## Merge danger` after `## Risk` with the fixed shape
       `**Door:** one-way | two-way` plus one line of reasoning (a change is two-way when a plain
       revert restores the previous state; destructive data changes, published APIs, released
       config formats, and anything consumers already depend on are one-way) and
       `**Blast radius:** <one word>` plus an optional line of ramifications; update the "exactly
       these sections" wording and the header comment
-- [ ] in `factsOnlyReport` (`pkg/processor/completion_report.go`), write `## Evidence` and
+- [x] in `factsOnlyReport` (`pkg/processor/completion_report.go`), write `## Evidence` and
       `## Merge danger` as `_assessment unavailable_` at the same positions, keeping the order
       identical to the prompt
-- [ ] update `pkg/processor/completion_report_test.go`: add both headings to the pinned list, raise
+- [x] update `pkg/processor/completion_report_test.go`: add both headings to the pinned list, raise
       the `## ` count from 8 to 10, and assert the order of all eleven sections
-- [ ] add a test that `extractReport` returns a report containing the new sections unchanged
-- [ ] run `go test ./pkg/processor/...` - must pass before task 2
+- [x] add a test that `extractReport` returns a report containing the new sections unchanged
+- [x] run `go test ./pkg/processor/...` - must pass before task 2
+
+Validation adjustment for Task 1: the full suite exposed pre-existing portability
+assumptions. The rollout directory-cache test now sets a distinct initial directory timestamp,
+and the branch-conflict test accepts both supported Git error messages while checking the
+conflicting worktree path. The Copilot wrapper timestamp pattern now works with awk versions
+without interval expressions; its existing accepted-draft regression cases cover the fix.
+The Pi wrapper EOF assertion now checks all JSON events, avoiding jq 1.6 exit-status
+sensitivity to the trailing result event. Full Linux validation runs as a non-root user
+for permission tests.
+
+Validation passed: go test ./pkg/processor/... and make test in a non-root Linux Docker
+checkout of HEAD plus the task changes; make lint on Windows reported zero issues.
 
 ### Task 2: Parse report sections and render the PR body
 
-- [ ] create `cmd/loopai/pr_body.go` with `splitReportSections(report string) []reportSection`
+- [x] create `cmd/loopai/pr_body.go` with `splitReportSections(report string) []reportSection`
       (`heading`, `body`), splitting on `## ` lines only, treating `### ` lines as body, and
       ignoring everything before the first `## ` heading
-- [ ] add `reportPRBody(report string, stats git.DiffStats) (string, bool)`: returns `false` when
+- [x] add `reportPRBody(report string, stats git.DiffStats) (full, trimmed string, ok bool)`: returns `false` when
       the report has no `## Summary` section; otherwise emits Summary body first (no heading), then
       `## Evidence`, `## Merge danger`, `## Risk`, `## Migrations and operational steps`,
       `## Plan deviation` in that order, omitting absent sections; then `External review` and
       `Validation` each as `<details><summary>…</summary>` blocks with a blank line after the
       opening tag so Markdown renders inside; then the existing `## Changes` stats block
-- [ ] add `fitPRBody(full, trimmed, legacy string) string`: returns the first candidate within
+- [x] add `fitPRBody(full, trimmed, legacy string) string`: returns the first candidate within
       `maxPRBodyRunes`; `reportPRBody` exposes both the full body and the body without the
       `<details>` blocks so the caller can degrade in that order
-- [ ] create `cmd/loopai/pr_body_test.go` with table-driven tests: full eleven-section report,
+- [x] create `cmd/loopai/pr_body_test.go` with table-driven tests: full eleven-section report,
       report predating the new sections, report missing `## Summary`, `### reviewer` subsections
       staying inside External review, an oversized External review degrading to the trimmed body,
       and an oversized Summary degrading to the legacy body
-- [ ] run `go test ./cmd/loopai/ -run 'PRBody|ReportSections'` - must pass before task 3
+- [x] run `go test ./cmd/loopai/ -run 'PRBody|ReportSections'` - must pass before task 3
+
+Implementation adjustment for Task 2: reportPRBody returns both full and trimmed bodies
+plus its success flag. This reconciles the originally listed two-value signature with
+the requirement to expose both candidates to fitPRBody and the Task 3 caller.
+
+Validation passed: go test ./cmd/loopai/ -run 'PRBody|ReportSections', make test
+in a non-root Linux Docker checkout of HEAD plus the Task 2 files, and make lint
+on Windows (zero issues).
 
 ### Task 3: Locate the report and feed it into PR creation
 
-- [ ] extract the lookup from `runReportCommand` into
+- [x] extract the lookup from `runReportCommand` into
       `locateCompletionReport(gitSvc, plansDir, planFile, branch string) (body []byte, source string, err error)`
       that tries `ShowFile("refs/heads/"+branch, path)` for each `completionReportPaths` candidate,
       then the working tree through `readPRPlan`, and returns a sentinel not-found error; make
       `runReportCommand` call it so `--report` output is unchanged
-- [ ] add `report string` to `closeoutTarget`; in `buildPRTitleBody` (or a wrapper it calls),
+- [x] add `report string` to `closeoutTarget`; in `buildPRTitleBody` (or a wrapper it calls),
       prefer `target.report`, else call `locateCompletionReport` with the plan `findPRPlan`
       resolved and the branch; on not-found keep the legacy body; on any other lookup error warn
       on stderr and keep the legacy body rather than failing the PR
-- [ ] cap a report read from `ShowFile` at `maxPRPlanSize` like the working-tree path
-- [ ] thread the report through finalize: add a `report string` parameter to `runFinalizeCloseout`,
+- [x] cap a report read from `ShowFile` at `maxPRPlanSize` like the working-tree path
+- [x] thread the report through finalize: add a `report string` parameter to `runFinalizeCloseout`,
       pass `r.Report()` at the `executePlan` call site, and set `closeoutTarget.report` in
       `openFinalizePR`
-- [ ] update `TestBuildPRTitleBody` for the report-backed body and add cases: committed sidecar on
+- [x] update `TestBuildPRTitleBody` for the report-backed body and add cases: committed sidecar on
       the branch only (not in the working tree), sidecar only in the working tree, no sidecar, and
       an in-memory report winning over an on-disk one
-- [ ] extend `TestRunPRCommand`/`TestRunPRCommandExplicitFeature` with a committed sidecar fixture
+- [x] extend `TestRunPRCommand`/`TestRunPRCommandExplicitFeature` with a committed sidecar fixture
       and assert `$GH_BODY_LOG` contains `## Merge danger` and the `<details>` blocks; extend
       `TestRunFinalizeCloseout` with a report passed in memory and no sidecar on the branch,
       asserting the body
-- [ ] add a `TestRunReportCommand` case proving the extracted helper preserves the `(merged)`
+- [x] add a `TestRunReportCommand` case proving the extracted helper preserves the `(merged)`
       fallback
-- [ ] run `go test ./cmd/loopai/...` - must pass before task 4
+- [x] run `go test ./cmd/loopai/...` - must pass before task 4
+
+Validation passed: go test ./cmd/loopai/... and full make test in a non-root
+Linux Docker checkout of HEAD plus the Task 3 changes; make lint on Windows
+reported zero issues. The report-aware wrapper retains the legacy title/body builder
+and applies report selection and size fallbacks before PR metadata validation.
 
 ### Task 4: Narrate the new sections in loopai-merge
 
-- [ ] in `assets/claude/skills/loopai-merge/SKILL.md`, extend the fixed topic list to Summary,
+- [x] in `assets/claude/skills/loopai-merge/SKILL.md`, extend the fixed topic list to Summary,
       Change scope, Evidence, Risk, Merge danger, Migrations and operational steps, Plan deviation,
       Backlog, External review; state that an older report lacks Evidence and Merge danger and
       that they are then reported as absent, not inferred
-- [ ] in the confirmation gate, restate `Door` and `Blast radius` in one line above the
+- [x] in the confirmation gate, restate `Door` and `Blast radius` in one line above the
       `Merge into <base>?` question when present; add to the `Open PR` option that the pull request
       body is built from the report
-- [ ] mirror both changes in `assets/codex/skills/loopai-merge/SKILL.md` (prose, no
+- [x] mirror both changes in `assets/codex/skills/loopai-merge/SKILL.md` (prose, no
       `AskUserQuestion`)
-- [ ] run `make check-symlinks check-codex-skills test-symlinks test-codex-skills` - must pass
+- [x] run `make check-symlinks check-codex-skills test-symlinks test-codex-skills` - must pass
       before task 5
+
+Added scripts/check-merge-skill_test.sh and the make test-merge-skill target,
+also included in make test, to pin the narration order, older-report absence rule,
+confirmation reminder, partial/missing danger handling, and both PR choices.
+
+Validation passed: make check-symlinks check-codex-skills test-symlinks
+test-codex-skills test-merge-skill and full make test in a non-root Linux Docker
+checkout of HEAD plus the Task 4 changes; make lint on Windows reported zero issues.
 
 ### Task 5: Create the loopai-retro Claude skill
 
-- [ ] create `assets/claude/skills/loopai-retro/SKILL.md` with frontmatter `name: loopai-retro`,
+- [x] create `assets/claude/skills/loopai-retro/SKILL.md` with frontmatter `name: loopai-retro`,
       a description with triggers (`loopai-retro`, `retro`, `retrospective`, `ретро`),
       `argument-hint: '[plan stem | progress log path | --last N]'`,
       `allowed-tools: [Bash, Read, Glob, Grep, AskUserQuestion]`, and
       `disable-model-invocation: true`
-- [ ] write the input-selection section: with a plan stem, use its progress log, `history/`
+- [x] write the input-selection section: with a plan stem, use its progress log, `history/`
       archives, `.run.json` if present, and `docs/plans/completed/<stem>.report.md`; with a log
       path, that log alone; with `--last N` or no argument, the N (default 5) newest top-level
       `progress-*.txt` logs by mtime; always add `docs/backlog/*.md` and the steering files
       `CLAUDE.md`, `AGENTS.md`, `.loopai/config`, `.loopai/prompts/`, `.loopai/agents/`, plus the
       repository's check commands (`Makefile`, CI workflows, pre-commit config)
-- [ ] write the bounded-reading rule: never read a progress log whole; first `grep -n` the
+- [x] write the bounded-reading rule: never read a progress log whole; first `grep -n` the
       structural lines (`--- … ---` section headers, `validation:`, `Completed:`, `Failed:`,
       `QUESTION:`, `DRAFT REVIEW:`, `TASK_FAILED`, `stalemate`, `limit`, `retry`, `warning:`),
       then read bounded windows around the hits; report sidecars and backlog entries may be read
       whole
-- [ ] write the candidate categories with their "use when" trigger: navigation pointers;
+- [x] write the candidate categories with their "use when" trigger: navigation pointers;
       automated checks (an unwired or absent guardrail is itself a finding); coding standards
       (a mechanical violation becomes a lint rule or check, a judgement call becomes a dynamic
       review agent in `.loopai/agents/` or a `CLAUDE.md` line); bloated steering files; no-op
@@ -251,58 +284,110 @@ Three related improvements, inspired by the `/pr` and `/retro` skills in mattpoc
       rather than clean, task iterations that failed and retried, validation commands whose
       measured time dominates the run or that ran many times, and human waits (`QUESTION:` lines)
       a config key or plan detail would have avoided
-- [ ] write the output section: candidates ranked by severity, each with the category, the
+- [x] write the output section: candidates ranked by severity, each with the category, the
       evidence as `path:line` into the log or report, the proposed change, and where it belongs
       (lint rule, Makefile/CI, `.loopai/agents/<name>.txt`, `CLAUDE.md` pointer, `.loopai/config`
       key, plan template); then `AskUserQuestion` with `multiSelect` offering to file selected
       candidates as `docs/backlog/<kebab-slug>.md` entries in the format `loopai-plan` uses, each
       committed through `git add <entry>` and `git commit -m "docs: add backlog entry" -- <entry>`
-- [ ] write the constraints: read-only except the selected backlog entries; never edit prompts,
+- [x] write the constraints: read-only except the selected backlog entries; never edit prompts,
       agents, config, steering files, plans, or reports; never run loopai; never present a
       candidate without evidence; a round where nothing is selected writes nothing
-- [ ] add the symlink `assets/claude/loopai-retro.md -> ./skills/loopai-retro/SKILL.md`, add
+- [x] add the symlink `assets/claude/loopai-retro.md -> ./skills/loopai-retro/SKILL.md`, add
       `loopai-retro` to `expected_skills` in `scripts/check-symlinks.sh`, and add
       `add_skill loopai-retro` to the valid fixture in `scripts/check-symlinks_test.sh`
-- [ ] run `make check-symlinks test-symlinks` - must pass before task 6
+- [x] add `scripts/check-retro-skill_test.sh` and the `make test-retro-skill` target,
+      included in `make test`, covering input boundaries, manual invocation, evidence-backed
+      candidates, selection-only writes, and executing the bounded log-reading examples
+- [x] run `make check-symlinks test-symlinks` - must pass before task 6
+
+Validation adjustment for Task 5: adding the Claude skill makes the existing Codex
+inventory check require its counterpart, which is explicitly assigned to Task 6.
+Run `make test` to confirm that this is its only failure, then
+`make -o check-codex-skills -o test-codex-skills test` plus the standalone
+`scripts/check-codex-skills_test.sh` for the remaining full suite. The installer
+regression tests also run the inventory check and share this dependency. Do not exempt
+`loopai-retro` or implement Task 6 here; Task 6 must pass the unchanged inventory
+check, and Task 7 runs the unmodified full suite.
+
+Validation passed: make check-symlinks test-symlinks test-retro-skill, the
+standalone Codex inventory regression tests, and the remaining make test targets
+(including Go race/coverage and wrapper suites) in a non-root Linux Docker
+checkout of HEAD plus the Task 5 changes. make lint on Windows reported zero
+issues. The full suite confirms only the scheduled Codex counterpart dependency;
+its inventory and installer targets remain for Task 6.
 
 ### Task 6: Create the loopai-retro Codex skill and bump the manifests
 
-- [ ] create `assets/codex/skills/loopai-retro/SKILL.md` as a hand-written port: same inputs,
+- [x] create `assets/codex/skills/loopai-retro/SKILL.md` as a hand-written port: same inputs,
       bounded reading, categories, output, and constraints, with the selection asked in prose and
       no Claude-only tokens (`AskUserQuestion`, `allowed-tools`, `/loopai:`, `Task tool`); say the
       skill runs only on an explicit `$loopai-retro` request
-- [ ] create `assets/codex/skills/loopai-retro/agents/openai.yaml` with `display_name`,
+- [x] create `assets/codex/skills/loopai-retro/agents/openai.yaml` with `display_name`,
       `short_description`, and `default_prompt`
-- [ ] add `add_pair loopai-retro` to the fixture in `scripts/check-codex-skills_test.sh`
-- [ ] bump `.claude-plugin/plugin.json` and the loopai entry in `.claude-plugin/marketplace.json`
+- [x] add `add_pair loopai-retro` to the fixture in `scripts/check-codex-skills_test.sh`
+- [x] bump `.claude-plugin/plugin.json` and the loopai entry in `.claude-plugin/marketplace.json`
       from `0.5.12` to `0.6.0`
-- [ ] run `make check-codex-skills test-codex-skills check-plugin test-plugin test-wrappers` -
+- [x] extend `scripts/check-retro-skill_test.sh` to validate both ports, execute both bounded
+      log-reading examples, and check Codex explicit invocation and selection-only writes
+- [x] run `make check-codex-skills test-codex-skills check-plugin test-plugin test-wrappers` -
       must pass before task 7
+
+Validation passed: Codex inventory and installer checks, plugin manifest checks,
+the shared retro regression suite, and full make test (including Go race/coverage
+and all wrapper suites) in a non-root Linux Docker checkout with init enabled.
+make lint on Windows reported zero issues. Codex invocation policy also disables
+implicit invocation, matching the skill's explicit-request rule.
 
 ### Task 7: Verify acceptance criteria
 
-- [ ] verify a `--pr` from a checkout whose branch carries the committed sidecar produces the
+- [x] verify a `--pr` from a checkout whose branch carries the committed sidecar produces the
       report-backed body, and a repository with no report produces the legacy body
-- [ ] verify a finalize PR under `--worktree` carries the in-memory report
-- [ ] verify a report produced from an unmodified pre-change `report.txt` copy still yields a body
-- [ ] run `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify a finalize PR under `--worktree` carries the in-memory report
+- [x] verify a report produced from an unmodified pre-change `report.txt` copy still yields a body
+- [x] run `make test`
+- [x] run `make lint` - all issues must be fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
+
+Acceptance coverage added in cmd/loopai/pr_acceptance_test.go: committed-sidecar
+and no-report PR creation, plus full single-plan worktree execution with report generation,
+archival in the source checkout, and an in-memory PR body while the pushed branch has no
+sidecar. The compatibility case uses testdata/report-pre-evidence.txt, a byte-for-byte
+copy of the report prompt at 36e57f8^, and a deterministic executor response in the old
+nine-section format; it verifies the actual rendered prompt and resulting PR body.
+
+Validation passed: focused acceptance and existing finalize tests, full make test
+(including Go race/coverage and all wrapper suites) in a non-root Linux Docker
+checkout with init enabled, make lint on Windows (zero issues), and
+GOOS=windows GOARCH=amd64 go build ./....
 
 ### Task 8: [Final] Update documentation
 
-- [ ] `README.md`: list `loopai:loopai-retro` in the plugin skills and fix the "eight skills"
+- [x] `README.md`: list `loopai:loopai-retro` in the plugin skills and fix the "eight skills"
       count, add `loopai-retro` to the Codex install list and its count, describe the report-backed
       PR body under `--pr` and finalize, and replace the nine-section report description with the
       eleven sections
-- [ ] `llms.txt`: add `loopai:loopai-retro` and `$loopai-retro` to the skill lists and update the
+- [x] `llms.txt`: add `loopai:loopai-retro` and `$loopai-retro` to the skill lists and update the
       report section summary and the PR body note
-- [ ] `CLAUDE.md`: add `loopai-retro` to the current skill set, describe the skill in one short
+- [x] `CLAUDE.md`: add `loopai-retro` to the current skill set, describe the skill in one short
       paragraph (read-only, manual invocation, backlog entries are its only write), replace
       "nine-section" with "eleven-section", and document `closeoutTarget.report`, the in-memory
       report under finalize, and the `<details>` → legacy degradation order
-- [ ] `docs/t3-code.md` or `docs/notifications.md` only if they mention the PR body (grep first;
+- [x] `docs/t3-code.md` or `docs/notifications.md` only if they mention the PR body (grep first;
       otherwise no change)
+- [x] add `scripts/check-report-docs_test.sh` and `make test-report-docs`, included in
+      `make test`, to compare documented skill inventories and report section order with
+      their canonical sources and exercise stale-documentation rejection cases
+
+The T3 and notification guides were searched and contain no PR-body descriptions,
+so neither requires changes. The documentation regression suite checks all three
+skill inventories against the asset trees, report heading order against the prompt,
+manual retro invocation and write boundaries, PR lookup and size fallbacks, and
+rejection of stale counts, missing skills, and reordered report sections.
+
+Validation passed: full make test (including documentation checks, Go race/coverage,
+and all wrapper suites) in a non-root Linux Docker checkout with init enabled;
+make lint on Windows reported zero issues.
 
 ## Technical Details
 
@@ -360,6 +445,18 @@ Three related improvements, inspired by the `/pr` and `/retro` skills in mattpoc
 - **Retro ranking**: severity is major when the evidence shows a failed run, a stalemate, an
   iteration cap, or a finding repeated across runs; minor otherwise. Evidence is mandatory: a
   candidate without a `path:line` is dropped.
+
+## External review adjustments
+
+- Preserve the original unrestricted `--report` reads; the bounded, no-symlink
+  report lookup is used only for PR bodies. Cover external plans directories,
+  symlinked directories/files, and reports above the PR read limit.
+- Treat the deterministic facts-only Summary as unavailable for PR narration,
+  preserving the plan overview. Exercise actual report fallback through finalize
+  and both in-memory and sidecar PR lookup.
+- Run the merge-skill, retro-skill, and report-doc suites in CI.
+- Resolve configured plans and backlog directories in both retro skill ports,
+  including duplicate lookup and selected-entry filing.
 
 ## Post-Completion
 

@@ -1,0 +1,6 @@
+interface:
+  display_name: "loopai Retro"
+  short_description: "Rank evidence-backed improvements from loopai runs"
+  default_prompt: "Use $loopai-retro to review the last 5 runs and propose environment improvements."
+policy:
+  allow_implicit_invocation: false

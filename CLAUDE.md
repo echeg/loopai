@@ -21,7 +21,7 @@ The fork does not contain upstream packaging/release infrastructure or the upstr
 ```bash
 make build      # build .bin/loopai and the .bin/loopai-acp launcher (on Windows the launcher is .bin/loopai-acp.exe only, plus .bin/loopai.exe)
 make test       # asset checks, race-enabled unit tests with coverage, provider-wrapper suites
-make check-symlinks # validate the eight Claude skill assets and links
+make check-symlinks # validate the ten Claude skill assets and links
 make test-symlinks  # regression tests for Claude skill asset validation
 make check-codex-skills # validate the Codex skill tree against the Claude inventory
 make test-codex-skills  # regression tests for Codex skill validation and installation
@@ -29,6 +29,7 @@ make install-codex-skills # copy the Codex skills into ${CODEX_HOME:-~/.codex}/s
 make check-plugin   # validate Claude plugin and marketplace manifests
 make test-plugin    # regression tests for manifest validation
 make test-grill-skill # validate loopai-grill metadata and workflow contracts
+make test-report-docs # check skill inventories and report contracts in documentation
 make test-wrappers # all retained provider-wrapper and wrapper-doc suites
 make lint       # golangci-lint
 make fmt        # gofmt and goimports
@@ -92,8 +93,15 @@ line naming a removed loopai spelling (`--codex`, `--codex-only`, the
 removed"; `--codex-args` does not match, and the two `removed_spellings` lists must
 stay identical. The current set is `loopai`, `loopai-merge`,
 `loopai-plan`, `loopai-brainstorm`, `loopai-adopt`, `loopai-update`,
-`loopai-grill`, `loopai-orca`, and `loopai-t3`; every added skill needs the matching
+`loopai-grill`, `loopai-orca`, `loopai-t3`, and `loopai-retro`; every added skill needs the matching
 top-level symlink.
+
+`loopai-retro` is a read-only retrospective over bounded progress-log excerpts, completion
+reports, backlog, steering files, and check definitions, invoked manually as
+`/loopai:loopai-retro` or explicitly as `$loopai-retro`. It ranks environment improvements
+with `path:line` evidence. User-selected `docs/backlog/` entries, committed by pathspec, are
+its only writes; it never edits prompts, agents, config, steering files, plans, or reports.
+
 `loopai-t3` is the T3 Code counterpart of `loopai-orca` and does even less: it
 validates the same three pass-through flags and runs `loopai --t3-launch`, minting a
 T3 Code token inline (`t3 auth session issue --token-only`) when `LOOPAI_T3_TOKEN`
@@ -633,7 +641,10 @@ member flagged `ChainNotLast`, since an earlier member's branch is the next one'
 cleanup, because it pushes from the run's own checkout. A PR opens only after a successful sync
 (`up_to_date|merged|resolved`), through `createPullRequest` — the body of `--pr`, factored out so
 `runPRCommand` keeps its own error wording and output; `closeoutTarget.statsBase` measures the
-body against `origin/<base>`. T3 linking stays with each caller. `merge` runs
+body against `origin/<base>`. `executePlan` passes `Runner.Report()` through
+`runFinalizeCloseout` and `openFinalizePR` into `closeoutTarget.report`. This in-memory report
+reaches the PR even under single-plan `--worktree`, where archival writes the sidecar through
+`MainGitSvc` in the source checkout rather than on the pushed branch. T3 linking stays with each caller. `merge` runs
 `gh pr checks <url> --watch --fail-fast` under `finalize_checks_timeout`, retrying a fresh PR's
 "no checks reported" for `finalizeNoChecksGrace` before treating it as having none — the wait
 emits no output, so `awake.Holder.Pin` holds the keep-awake inhibitor through it — then
@@ -648,7 +659,31 @@ on the cmux, Orca, and T3 reporters (`synced`, `PR opened`, `PR merged`, `finali
 Finalize removes no worktree: loopai's own `--worktree` is removed by the usual teardown, and a
 T3 Code-managed checkout, which the run uses without `--worktree`, is never touched.
 
-`phase.ReportPhase` runs after finalize and before the successful review-checkpoint clear on every review pipeline when `report_enabled` is true. It receives rendered deterministic facts and returns ordinary assistant Markdown; the model must not write the repository file because a single-plan worktree run archives through `MainGitSvc` in the main checkout, outside the executor's worktree. `Runner.Report()` exposes the extracted report, or a nine-section facts-only fallback when model assessment is unavailable. `MovePlanToCompletedWithReport` writes `docs/plans/completed/<stem>.report.md` beside the archived plan in the same commit; tasks-only never generates a report, and review-only modes may populate `Runner.Report()` but do not archive a sidecar because `shouldMovePlan` is false. A non-empty review-checkpoint invalidation reason resets and removes stale run-record state together with the checkpoint. Current-invocation task counts and start time survive post-task invalidation so newly completed work remains in the report. The success clear intentionally removes only the checkpoint, preserving the record through report generation and archival; successful archival then removes the `.run.json` file.
+`phase.ReportPhase` runs after finalize and before the successful review-checkpoint clear on every review pipeline when `report_enabled` is true. It receives rendered deterministic facts and returns ordinary assistant Markdown; the model must not write the repository file because a single-plan worktree run archives through `MainGitSvc` in the main checkout, outside the executor's worktree. `Runner.Report()` exposes the extracted report, or an eleven-section facts-only fallback when model assessment is unavailable. `MovePlanToCompletedWithReport` writes `docs/plans/completed/<stem>.report.md` beside the archived plan in the same commit; tasks-only never generates a report, and review-only modes may populate `Runner.Report()` but do not archive a sidecar because `shouldMovePlan` is false. A non-empty review-checkpoint invalidation reason resets and removes stale run-record state together with the checkpoint. Current-invocation task counts and start time survive post-task invalidation so newly completed work remains in the report. The success clear intentionally removes only the checkpoint, preserving the record through report generation and archival; successful archival then removes the `.run.json` file.
+
+The report contract is eleven sections (the title and ten level-two headings), in order:
+`# Report: <plan title>`, `Summary`, `Change scope`, `Evidence`, `Risk`, `Merge danger`,
+`Migrations and operational steps`, `Plan deviation`, `Backlog`, `External review`, and
+`Validation`. Evidence requires before/after proof or `none`; Merge danger records
+`Door: one-way | two-way` and a one-word `Blast radius`. `extractReport` still validates only
+the report title, so older reports and customized prompts remain supported.
+
+`buildReportPRTitleBody` preserves the plan-derived title and legacy body, then prefers
+`closeoutTarget.report`; otherwise `locateCompletionReport` searches the associated sidecar
+on `refs/heads/<branch>` via `ShowFile`, then the working tree through `readPRPlan`.
+`findReportPlanForBranch` resolves report identity from progress records across registered
+worktrees, including custom branch names. Both
+PR reads are capped at `maxPRPlanSize`; `--report` retains unrestricted file reads
+for configured external or symlinked plans directories. Not-found keeps
+the legacy body, and other lookup errors warn on stderr without failing PR creation.
+`reportPRBody` requires Summary, emits its body without a heading, then Evidence, Merge danger,
+Risk, Migrations and operational steps, and Plan deviation, omitting absent sections. External
+review and Validation go in collapsed `<details>` blocks before `## Changes` stats.
+`fitPRBody` checks `maxPRBodyRunes` (65,536): use the full body, then drop both `<details>`
+blocks, then fall back to the legacy plan-overview and diff-statistics body. Missing Summary
+or a facts-only Summary also uses the legacy body; existing PR metadata validation
+still applies to that fallback.
+Section parsing preserves headings inside backtick or tilde code fences as section content.
 
 Claude runs every phase by default. `task_model = codex:<model>[:effort]` moves tasks to Codex, and with them planning and the review block unless `plan_model` or `review_model` names another provider. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. With the chain unset, the provider other than `task_model`'s (`review_model`'s under `--review` and `--external-only`) is selected when installed. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
 

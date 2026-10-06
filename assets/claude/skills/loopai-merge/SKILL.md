@@ -48,11 +48,15 @@ When `loopai --report` succeeds, preserve its facts and narrate them in the lang
 
 1. Summary
 2. Change scope
-3. Risk
-4. Migrations and operational steps
-5. Plan deviation
-6. Backlog
-7. External review, one reviewer at a time, including each reported finding and outcome
+3. Evidence
+4. Risk
+5. Merge danger
+6. Migrations and operational steps
+7. Plan deviation
+8. Backlog
+9. External review, one reviewer at a time, including each reported finding and outcome
+
+Older reports lack Evidence and Merge danger. Report those sections as absent, not inferred.
 
 Use only information present in the report. Do not infer missing migrations, risks, findings, reviewer outcomes, validation results, branch names, or base branches. Keep Go-provided facts unchanged, applying the duration display formatting below.
 
@@ -75,7 +79,7 @@ Validate both refs with `git rev-parse --verify` before using them. If either ca
 git log "$BASE".."$BRANCH" --stat
 ```
 
-Do not turn the fallback log into report facts. Explain that risk, migration, deviation, backlog, and reviewer assessments are unavailable, then continue to the conflict preview.
+Do not turn the fallback log into report facts. Explain that evidence, risk, merge danger, migration, deviation, backlog, and reviewer assessments are unavailable, then continue to the conflict preview.
 
 ## Resolve the Base
 
@@ -121,16 +125,18 @@ Report per file: the path, the conflict kind, what each side changed and in whic
 
 Do not run any mutating command before the answer. Use AskUserQuestion in the conversation language.
 
+Immediately above the `Merge into <base>?` question, restate the reported `Door` and `Blast radius` in one line: `Door: <reported value>; Blast radius: <reported value>`. Include only values present in the report, omit the line when neither is present, and never infer a missing value.
+
 **Without conflicts**, ask exactly `Merge into <base>?`, replacing `<base>` with `BASE`, with these options:
 
 - `Merge` - run `loopai --merge="$BASE" "$PLAN_STEM"`
-- `Open PR` - run `loopai --pr="$BASE" "$PLAN_STEM"`
+- `Open PR` - run `loopai --pr="$BASE" "$PLAN_STEM"`; the pull request body is built from the report, with the legacy body as fallback
 - `Cancel` - make no changes and stop
 
 **With conflicts**, ask `Merge into <base>? <N> files conflict`, with these options:
 
 - `Resolve and merge` - follow the Resolve Conflicts section, then run `loopai --merge="$BASE" "$PLAN_STEM"`
-- `Open PR` - run `loopai --pr="$BASE" "$PLAN_STEM"`; the PR will show the conflicts on the forge
+- `Open PR` - run `loopai --pr="$BASE" "$PLAN_STEM"`; the pull request body is built from the report, with the legacy body as fallback; the PR will show the conflicts on the forge
 - `Cancel` - make no changes and stop
 
 For Merge, run:

@@ -3574,6 +3574,9 @@ func TestCodexExecutor_discoverRolloutStates_RefreshesDirectoryCacheForNewChild(
 	})
 	knownParents := map[string]bool{rootID: true}
 	discovery := newRolloutDiscovery()
+	// Ensure the next directory entry changes its timestamp even on coarse filesystems.
+	beforeChild := time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(dir, beforeChild, beforeChild))
 	e.discoverRolloutStates(rootPath, states, knownParents, discovery)
 	assert.NotContains(t, states, childPath)
 
