@@ -15,6 +15,7 @@ import (
 
 	"github.com/umputun/ralphex/pkg/acp"
 	"github.com/umputun/ralphex/pkg/config"
+	"github.com/umputun/ralphex/pkg/git"
 	"github.com/umputun/ralphex/pkg/processor"
 )
 
@@ -196,7 +197,25 @@ func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Si
 	execReq.PhaseObserver = sink.OnPhase
 
 	runErr := errors.Join(selectAndExecutePlan(ctx, o, execReq, selector), release())
-	return acpRunResult(o.PlanFile, execReq.Outcome, runErr)
+	var merge *acpMergeResult
+	if runErr == nil && execReq.Outcome.succeeded && ctx.Err() == nil {
+		merged := a.autoMerge(ctx, cfg, execReq)
+		merge = &merged
+	}
+	return acpRunResult(o.PlanFile, execReq.Outcome, merge, runErr)
+}
+
+// autoMerge runs acpAutoMerge on the session checkout after a successful run and logs a one-line
+// summary. The Git service is opened afresh in the session cwd, as the run opened its own.
+func (a *acpRunner) autoMerge(ctx context.Context, cfg *config.Config, execReq executePlanRequest) acpMergeResult {
+	gitSvc, err := git.NewService(".", writerPrinter{color: execReq.Colors.Info(), w: a.out}, cfg.VcsCommand)
+	if err != nil {
+		return acpMergeResult{base: execReq.DefaultBranch, skipped: fmt.Sprintf("cannot open the repository: %v", err)}
+	}
+	gitSvc.SetCommitTrailer(cfg.CommitTrailer)
+	res := acpAutoMerge(ctx, gitSvc, cfg, execReq.DefaultBranch, execReq.Outcome.report)
+	fmt.Fprintf(a.out, "acp auto-merge: %s\n", res.summary())
+	return res
 }
 
 // promptOpts layers a parsed prompt's plan and pass-through flags over the process-level options.
@@ -315,20 +334,46 @@ func acpStages(cfg *config.Config, review externalReviewSelection) []acp.Stage {
 	return stages
 }
 
+// acpNextSteps closes the final message of a failed run or a skipped merge: the thread is a plan
+// launcher, so follow-up work belongs in a new session with a model chosen there.
+const acpNextSteps = "## Next steps\n\nThis thread only launches loopai plans. For follow-up work or questions, " +
+	"open a new session on this worktree and choose the model there."
+
 // acpRunResult turns an execution outcome into the prompt result. The completion report becomes
-// the final message; a run that returned nil without succeeding, such as an abort, still fails.
-func acpRunResult(planFile string, outcome *planExecutionOutcome, runErr error) (acp.Result, error) {
-	res := acp.Result{Message: outcome.report}
+// the final message, followed by the auto-merge outcome when one was attempted and by follow-up
+// guidance when the run failed or the merge was skipped. A run that returned nil without
+// succeeding, such as an abort, still fails; a skipped merge never fails a successful run.
+func acpRunResult(planFile string, outcome *planExecutionOutcome, merge *acpMergeResult, runErr error) (acp.Result, error) {
+	var failure error
 	switch {
 	case runErr != nil:
-		return res, runErr
+		failure = runErr
 	case !outcome.succeeded && outcome.failure != nil:
-		return res, outcome.failure
+		failure = outcome.failure
 	case !outcome.succeeded:
-		return res, errors.New("loopai run did not complete")
+		failure = errors.New("loopai run did not complete")
 	}
-	if res.Message == "" {
-		res.Message = "loopai completed " + planFile
+
+	report := outcome.report
+	if failure == nil && report == "" {
+		report = "loopai completed " + planFile
 	}
-	return res, nil
+	parts := []string{report}
+	if failure == nil && merge != nil {
+		parts = append(parts, merge.message())
+	}
+	if failure != nil || (merge != nil && !merge.merged) {
+		parts = append(parts, acpNextSteps)
+	}
+	return acp.Result{Message: joinNonEmpty(parts, "\n\n")}, failure
+}
+
+func joinNonEmpty(parts []string, sep string) string {
+	kept := parts[:0:0]
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			kept = append(kept, strings.TrimRight(p, "\n"))
+		}
+	}
+	return strings.Join(kept, sep)
 }

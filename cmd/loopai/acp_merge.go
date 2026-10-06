@@ -135,6 +135,22 @@ func shortSHA(hash string) string {
 	return hash
 }
 
+// summary renders the outcome as one plain line for the run's human-readable output.
+func (r acpMergeResult) summary() string {
+	if r.merged {
+		head := ""
+		if r.head != "" {
+			head = ", " + r.head
+		}
+		return fmt.Sprintf("merged %s into %s (%s%s), not pushed", r.feature, r.base, r.kind, head)
+	}
+	reason := strings.TrimRight(r.skipped, ".")
+	if r.base == "" {
+		return "not merged: " + reason
+	}
+	return fmt.Sprintf("not merged into %s: %s", r.base, reason)
+}
+
 // message renders the outcome as a Markdown section for the final thread message.
 func (r acpMergeResult) message() string {
 	if r.merged {

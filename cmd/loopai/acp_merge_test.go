@@ -217,3 +217,29 @@ func TestACPMergeResultMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestACPMergeResultSummary(t *testing.T) {
+	tests := []struct {
+		name string
+		res  acpMergeResult
+		want string
+	}{
+		{name: "merged",
+			res:  acpMergeResult{merged: true, kind: "fast-forward", base: "master", feature: "feat", head: "abc1234"},
+			want: "merged feat into master (fast-forward, abc1234), not pushed"},
+		{name: "merged without head",
+			res:  acpMergeResult{merged: true, kind: "merge commit", base: "main", feature: "feat"},
+			want: "merged feat into main (merge commit), not pushed"},
+		{name: "skipped",
+			res:  acpMergeResult{base: "master", skipped: "merge failed."},
+			want: "not merged into master: merge failed"},
+		{name: "skipped without base",
+			res:  acpMergeResult{skipped: "acp_auto_merge is disabled"},
+			want: "not merged: acp_auto_merge is disabled"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.res.summary())
+		})
+	}
+}

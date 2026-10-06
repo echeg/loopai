@@ -152,22 +152,36 @@ func TestACPStages(t *testing.T) {
 
 func TestACPRunResult(t *testing.T) {
 	failure := errors.New("task failed")
+	merged := &acpMergeResult{merged: true, kind: "fast-forward", base: "master", feature: "two", head: "abc1234"}
+	skipped := &acpMergeResult{base: "master", skipped: "Risk is high"}
+	mergedMsg := "## Merge\n\nMerged `two` into `master` (fast-forward, `abc1234`). Not pushed."
+	skippedMsg := "## Merge\n\nNot merged into `master`: Risk is high."
 	tests := []struct {
 		name    string
 		outcome *planExecutionOutcome
+		merge   *acpMergeResult
 		runErr  error
 		wantMsg string
 		wantErr string
 	}{
-		{"success with report", &planExecutionOutcome{succeeded: true, report: "# Report"}, nil, "# Report", ""},
-		{"success without report", &planExecutionOutcome{succeeded: true}, nil, "loopai completed plan.md", ""},
-		{"run error keeps partial report", &planExecutionOutcome{report: "partial"}, failure, "partial", "task failed"},
-		{"abort returned nil", &planExecutionOutcome{failure: failure}, nil, "", "task failed"},
-		{"no success and no reason", &planExecutionOutcome{}, nil, "", "loopai run did not complete"},
+		{"success with report", &planExecutionOutcome{succeeded: true, report: "# Report"}, nil, nil, "# Report", ""},
+		{"success without report", &planExecutionOutcome{succeeded: true}, nil, nil, "loopai completed plan.md", ""},
+		{"merged run", &planExecutionOutcome{succeeded: true, report: "# Report\n"}, merged, nil,
+			"# Report\n\n" + mergedMsg, ""},
+		{"merged run without report", &planExecutionOutcome{succeeded: true}, merged, nil,
+			"loopai completed plan.md\n\n" + mergedMsg, ""},
+		{"skipped merge adds next steps", &planExecutionOutcome{succeeded: true, report: "# Report"}, skipped, nil,
+			"# Report\n\n" + skippedMsg + "\n\n" + acpNextSteps, ""},
+		{"run error keeps partial report", &planExecutionOutcome{report: "partial"}, nil, failure,
+			"partial\n\n" + acpNextSteps, "task failed"},
+		{"failed run never shows a merge", &planExecutionOutcome{report: "partial"}, merged, failure,
+			"partial\n\n" + acpNextSteps, "task failed"},
+		{"abort returned nil", &planExecutionOutcome{failure: failure}, nil, nil, acpNextSteps, "task failed"},
+		{"no success and no reason", &planExecutionOutcome{}, nil, nil, acpNextSteps, "loopai run did not complete"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := acpRunResult("plan.md", tc.outcome, tc.runErr)
+			res, err := acpRunResult("plan.md", tc.outcome, tc.merge, tc.runErr)
 			assert.Equal(t, tc.wantMsg, res.Message)
 			if tc.wantErr == "" {
 				require.NoError(t, err)
@@ -678,6 +692,65 @@ func TestServeACPRunsPlanInProcess(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, launcherT3, entries[0].Launcher)
 	assert.Equal(t, "--task-model claude:sonnet --review-model claude:opus", entries[0].Flags)
+}
+
+// acpWorktreeFixture runs acpTaskClaude in a linked worktree on branch two, the layout T3 Code
+// gives an agent-mode thread, with the primary checkout left on master. The report session answers
+// with a report rating Risk as risk.
+func acpWorktreeFixture(t *testing.T, risk string) (f acpFixture, worktree string) {
+	t.Helper()
+	worktree = filepath.Join(t.TempDir(), "two-wt")
+	f = newACPFixture(t, func(f acpFixture) string {
+		f.planFile = filepath.Join(worktree, "docs", "plans", "two.md")
+		report := `  printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta",` +
+			`"text":"# Report: Two\n\n## Summary\n\nDone.\n\n## Risk\n\n**` + risk + `**\n\n- fixture change\n"}}'`
+		return strings.Replace(acpTaskClaude(f), "\n*)\n",
+			"\n*\"Create the completion report\"*)\n"+report+"\n  ;;\n*)\n", 1)
+	})
+	runGit(t, f.repo, "worktree", "add", "-b", "two", worktree)
+	return f, worktree
+}
+
+func TestServeACPAutoMergesLowRisk(t *testing.T) {
+	f, worktree := acpWorktreeFixture(t, "low")
+	stderr := &lockedBuffer{}
+
+	c := startACPServer(t.Context(), t, opts{ConfigDir: f.cfgDir}, stderr)
+	sid := c.handshake(worktree)
+	requireACPStopReason(t, c.response(c.prompt(sid, "docs/plans/two.md")), "end_turn")
+	c.close()
+
+	featureHead := revParse(t, worktree, "HEAD")
+	assert.Equal(t, featureHead, revParse(t, f.repo, "master"), "master fast-forwards to the plan branch")
+	assert.Equal(t, "master", strings.TrimSpace(gitOutput(t, f.repo, "branch", "--show-current")))
+	assert.Empty(t, strings.TrimSpace(gitOutput(t, f.repo, "status", "--porcelain")), "the primary checkout is updated")
+	assert.True(t, branchExists(t, f.repo, "two"), "the plan branch survives")
+	assert.DirExists(t, worktree, "the T3 Code worktree survives")
+	assert.FileExists(t, filepath.Join(f.repo, "docs", "plans", "completed", "two.md"), "the archived plan reaches master")
+
+	msg := c.messages()
+	assert.Contains(t, msg, "# Report: Two")
+	assert.Contains(t, msg, "## Merge\n\nMerged `two` into `master` (fast-forward, `"+featureHead[:7]+"`). Not pushed.")
+	assert.NotContains(t, msg, "## Next steps")
+	assert.Contains(t, stderr.String(), "acp auto-merge: merged two into master (fast-forward")
+}
+
+func TestServeACPSkipsMergeForHighRisk(t *testing.T) {
+	f, worktree := acpWorktreeFixture(t, "high")
+	masterBefore := revParse(t, f.repo, "master")
+	stderr := &lockedBuffer{}
+
+	c := startACPServer(t.Context(), t, opts{ConfigDir: f.cfgDir}, stderr)
+	sid := c.handshake(worktree)
+	requireACPStopReason(t, c.response(c.prompt(sid, "docs/plans/two.md")), "end_turn")
+	c.close()
+
+	assert.Equal(t, masterBefore, revParse(t, f.repo, "master"), "a high-risk run leaves master unchanged")
+	assert.FileExists(t, filepath.Join(worktree, "docs", "plans", "completed", "two.md"), "the run itself succeeded")
+	msg := c.messages()
+	assert.Contains(t, msg, "## Merge\n\nNot merged into `master`: Risk is high.")
+	assert.Contains(t, msg, acpNextSteps)
+	assert.Contains(t, stderr.String(), "acp auto-merge: not merged into master: Risk is high")
 }
 
 func TestServeACPPromptErrors(t *testing.T) {

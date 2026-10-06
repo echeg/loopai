@@ -109,20 +109,20 @@
 - [x] run tests - must pass before next task
 
 ### Task 4: Wire the merge and follow-up guidance into the ACP run result
-- [ ] in `acpRunner.run`, after `selectAndExecutePlan` returns with `execReq.Outcome.succeeded` and no error:
+- [x] in `acpRunner.run`, after `selectAndExecutePlan` returns with `execReq.Outcome.succeeded` and no error:
   - open the session-cwd Git service the same way the run does (respecting `vcs_command`) and call `acpAutoMerge` with `execReq.DefaultBranch` and `execReq.Outcome.report`
   - write a one-line summary to `a.out`, never stdout
   - on cancellation (`ctx.Err() != nil`), skip the merge entirely
-- [ ] extend `acpRunResult` (or add a small composer it calls) so the final message is:
+- [x] extend `acpRunResult` (or add a small composer it calls) so the final message is:
   - the report
   - the `## Merge` section, when a merge was attempted or skipped after a successful run
   - a `## Next steps` section, whenever the run failed or the merge was skipped: "This thread only launches loopai plans. For follow-up work or questions, open a new session on this worktree and choose the model there." On a merged run, no follow-up block is added.
-- [ ] keep the turn outcome unchanged: a successful run with a skipped or failed merge still answers `end_turn`, and a failed run still answers with the JSON-RPC error and its message
-- [ ] write tests:
+- [x] keep the turn outcome unchanged: a successful run with a skipped or failed merge still answers `end_turn`, and a failed run still answers with the JSON-RPC error and its message
+- [x] write tests:
   - extend `TestACPRunResult` for message composition with merged, skipped, and failed-run cases
   - add an in-process `TestServeACP…` case that runs the two-task fixture plan in a linked worktree, with a fake report rating Risk `low`, and asserts that the base advanced, the branch and worktree survive, and the final `agent_message_chunk` contains `## Merge`
   - add a case with Risk `high` asserting no merge and the `## Next steps` text
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 5: Answer non-launch thread messages with guidance
 - [ ] add `acpLooksLikeLaunch(text, cwd string) bool`. It returns true when the first whitespace-separated token starts with `-`, ends in `.md` (case-insensitive), or names an existing path relative to `cwd`. Empty text returns false.
