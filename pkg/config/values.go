@@ -58,6 +58,8 @@ type Values struct {
 	FinalizeMergeMethodSet     bool          // tracks if finalize_merge_method was explicitly set
 	FinalizeChecksTimeout      time.Duration // how long finalize = merge waits for PR checks
 	FinalizeChecksTimeoutSet   bool          // tracks if finalize_checks_timeout was explicitly set
+	ACPAutoMerge               bool          // ACP agent mode merges the plan branch into the local base after a low/medium-risk run
+	ACPAutoMergeSet            bool          // tracks if acp_auto_merge was explicitly set
 	ReportEnabled              bool
 	ReportEnabledSet           bool // tracks if report_enabled was explicitly set
 	PreserveAnthropicAPIKey    bool
@@ -197,6 +199,7 @@ func (vl *valuesLoader) parseValuesFromEmbedded() (Values, error) {
 	values.FinalizeSet = false
 	values.FinalizeMergeMethodSet = false
 	values.FinalizeChecksTimeoutSet = false
+	values.ACPAutoMergeSet = false
 	return values, nil
 }
 
@@ -475,9 +478,18 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 	return values, nil
 }
 
-// parseFinalizeValues extracts the finalize mode, merge method, and checks timeout.
-// an empty value leaves the key unset, like the duration keys, so the embedded default applies.
+// parseFinalizeValues extracts the finalize mode, merge method, checks timeout, and the
+// ACP auto-merge switch. an empty finalize value leaves the key unset, like the duration
+// keys, so the embedded default applies.
 func (vl *valuesLoader) parseFinalizeValues(section *ini.Section, values *Values) error {
+	if key, err := section.GetKey("acp_auto_merge"); err == nil {
+		val, boolErr := key.Bool()
+		if boolErr != nil {
+			return fmt.Errorf("invalid acp_auto_merge: %w", boolErr)
+		}
+		values.ACPAutoMerge = val
+		values.ACPAutoMergeSet = true
+	}
 	if key, err := section.GetKey("finalize"); err == nil {
 		if val := strings.ToLower(strings.TrimSpace(key.String())); val != "" {
 			if !IsValidFinalizeMode(val) {
@@ -686,9 +698,13 @@ func (dst *Values) mergeExtraFrom(src *Values) {
 	}
 }
 
-// mergeFinalizeFrom merges the finalize settings from src into dst.
-// a value is never empty once set, and the embedded defaults carry values with cleared Set flags.
+// mergeFinalizeFrom merges the finalize settings and the ACP auto-merge switch from src into dst.
+// a finalize value is never empty once set, and the embedded defaults carry values with cleared Set flags.
 func (dst *Values) mergeFinalizeFrom(src *Values) {
+	if src.ACPAutoMergeSet {
+		dst.ACPAutoMerge = src.ACPAutoMerge
+		dst.ACPAutoMergeSet = true
+	}
 	if src.Finalize != "" {
 		dst.Finalize = src.Finalize
 		dst.FinalizeSet = dst.FinalizeSet || src.FinalizeSet

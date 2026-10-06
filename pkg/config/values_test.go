@@ -185,6 +185,7 @@ func TestValuesLoader_Load_InvalidConfig(t *testing.T) {
 		{name: "invalid finalize_checks_timeout", config: "finalize_checks_timeout = soon", errPart: "invalid finalize_checks_timeout"},
 		{name: "negative finalize_checks_timeout", config: "finalize_checks_timeout = -1m", errPart: "invalid finalize_checks_timeout"},
 		{name: "zero finalize_checks_timeout", config: "finalize_checks_timeout = 0s", errPart: "finalize_checks_timeout: must be positive"},
+		{name: "invalid acp_auto_merge", config: "acp_auto_merge = maybe", errPart: "invalid acp_auto_merge"},
 		{name: "invalid report_enabled", config: "report_enabled = maybe", errPart: "report_enabled"},
 		{name: "invalid move_plan_on_completion", config: "move_plan_on_completion = maybe", errPart: "move_plan_on_completion"},
 		{name: "negative task_retry_count", config: "task_retry_count = -1", errPart: "task_retry_count"},
@@ -362,6 +363,36 @@ func TestValuesLoader_Load_FinalizeLayers(t *testing.T) {
 			assert.Equal(t, tc.methodSet, values.FinalizeMergeMethodSet)
 			assert.Equal(t, tc.timeout, values.FinalizeChecksTimeout)
 			assert.Equal(t, tc.timeoutSet, values.FinalizeChecksTimeoutSet)
+		})
+	}
+}
+
+func TestValuesLoader_Load_ACPAutoMergeLayers(t *testing.T) {
+	tests := []struct {
+		name    string
+		global  string
+		local   string
+		want    bool
+		wantSet bool
+	}{
+		{name: "embedded default", want: true},
+		{name: "global false", global: "acp_auto_merge = false", want: false, wantSet: true},
+		{name: "local false overrides global true", global: "acp_auto_merge = true", local: "acp_auto_merge = false", want: false, wantSet: true},
+		{name: "local true overrides global false", global: "acp_auto_merge = false", local: "acp_auto_merge = true", want: true, wantSet: true},
+		{name: "local without the key keeps global", global: "acp_auto_merge = false", local: "finalize = sync", want: false, wantSet: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			globalConfig := filepath.Join(tmpDir, "global")
+			localConfig := filepath.Join(tmpDir, "local")
+			require.NoError(t, os.WriteFile(globalConfig, []byte(tc.global), 0o600))
+			require.NoError(t, os.WriteFile(localConfig, []byte(tc.local), 0o600))
+
+			values, err := newValuesLoader(defaultsFS).Load(localConfig, globalConfig)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, values.ACPAutoMerge)
+			assert.Equal(t, tc.wantSet, values.ACPAutoMergeSet)
 		})
 	}
 }

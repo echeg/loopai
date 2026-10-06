@@ -1727,6 +1727,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		Finalize:                FinalizeMerge,
 		FinalizeMergeMethod:     "squash",
 		FinalizeChecksTimeout:   time.Minute,
+		ACPAutoMerge:            true,
 		ReportEnabled:           true,
 		PreserveAnthropicAPIKey: true,
 		TaskProvider:            ExecutorCodex,
@@ -1764,7 +1765,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		"codex_enabled", "codex_command", "codex_args",
 		"codex_timeout_ms", "codex_sandbox", "external_reviewers", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
-		"review_patience", "finalize", "finalize_merge_method", "finalize_checks_timeout", "report_enabled", "preserve_anthropic_api_key",
+		"review_patience", "finalize", "finalize_merge_method", "finalize_checks_timeout", "acp_auto_merge", "report_enabled", "preserve_anthropic_api_key",
 		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "orca", "t3", "keep_awake", "plans_dir", "backlog_dir",
 		"watch_dirs", "default_branch", "vcs_command", "commit_trailer",
 		"claude_error_patterns", "codex_error_patterns", "claude_limit_patterns",
@@ -1885,6 +1886,73 @@ func TestLoad_KeepAwake(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, cfg.KeepAwake)
 		assert.True(t, cfg.KeepAwakeSet)
+	})
+}
+
+func TestLoad_ACPAutoMerge(t *testing.T) {
+	newConfigDir := func(t *testing.T, content string) string {
+		t.Helper()
+		configDir := filepath.Join(t.TempDir(), "loopai")
+		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "prompts"), 0o700))
+		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "agents"), 0o700))
+		if content != "" {
+			require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(content), 0o600))
+		}
+		return configDir
+	}
+
+	t.Run("embedded default is true but unset", func(t *testing.T) {
+		cfg, err := Load(newConfigDir(t, ""))
+		require.NoError(t, err)
+		assert.True(t, cfg.ACPAutoMerge)
+		assert.False(t, cfg.ACPAutoMergeSet)
+	})
+
+	t.Run("global false", func(t *testing.T) {
+		cfg, err := Load(newConfigDir(t, "acp_auto_merge = false"))
+		require.NoError(t, err)
+		assert.False(t, cfg.ACPAutoMerge)
+		assert.True(t, cfg.ACPAutoMergeSet)
+	})
+
+	t.Run("invalid value", func(t *testing.T) {
+		_, err := Load(newConfigDir(t, "acp_auto_merge = maybe"))
+		require.ErrorContains(t, err, "invalid acp_auto_merge")
+	})
+
+	t.Run("local false overrides global true", func(t *testing.T) {
+		globalDir := newConfigDir(t, "acp_auto_merge = true")
+		localDir := filepath.Join(t.TempDir(), ".loopai")
+		require.NoError(t, os.MkdirAll(localDir, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(localDir, "config"), []byte("acp_auto_merge = false"), 0o600))
+
+		cfg, err := loadWithLocal(globalDir, localDir)
+		require.NoError(t, err)
+		assert.False(t, cfg.ACPAutoMerge)
+		assert.True(t, cfg.ACPAutoMergeSet)
+	})
+
+	t.Run("local true overrides global false", func(t *testing.T) {
+		globalDir := newConfigDir(t, "acp_auto_merge = false")
+		localDir := filepath.Join(t.TempDir(), ".loopai")
+		require.NoError(t, os.MkdirAll(localDir, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(localDir, "config"), []byte("acp_auto_merge = true"), 0o600))
+
+		cfg, err := loadWithLocal(globalDir, localDir)
+		require.NoError(t, err)
+		assert.True(t, cfg.ACPAutoMerge)
+		assert.True(t, cfg.ACPAutoMergeSet)
+	})
+
+	t.Run("local without the key keeps global false", func(t *testing.T) {
+		globalDir := newConfigDir(t, "acp_auto_merge = false")
+		localDir := filepath.Join(t.TempDir(), ".loopai")
+		require.NoError(t, os.MkdirAll(localDir, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(localDir, "config"), []byte("keep_awake = false"), 0o600))
+
+		cfg, err := loadWithLocal(globalDir, localDir)
+		require.NoError(t, err)
+		assert.False(t, cfg.ACPAutoMerge)
 	})
 }
 

@@ -171,6 +171,8 @@ type Config struct {
 	FinalizeMergeMethodSet   bool          `json:"-"`                       // tracks if finalize_merge_method was explicitly set in config
 	FinalizeChecksTimeout    time.Duration `json:"finalize_checks_timeout"` // bound on waiting for PR checks under finalize = merge
 	FinalizeChecksTimeoutSet bool          `json:"-"`                       // tracks if finalize_checks_timeout was explicitly set in config
+	ACPAutoMerge             bool          `json:"acp_auto_merge"`          // ACP agent mode merges the plan branch into the local base after a low/medium-risk run
+	ACPAutoMergeSet          bool          `json:"-"`                       // tracks if acp_auto_merge was explicitly set in config
 	ReportEnabled            bool          `json:"report_enabled"`
 	ReportEnabledSet         bool          `json:"-"` // tracks if report_enabled was explicitly set in config
 
@@ -431,6 +433,8 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		FinalizeMergeMethodSet:   values.FinalizeMergeMethodSet,
 		FinalizeChecksTimeout:    values.FinalizeChecksTimeout,
 		FinalizeChecksTimeoutSet: values.FinalizeChecksTimeoutSet,
+		ACPAutoMerge:             values.ACPAutoMerge,
+		ACPAutoMergeSet:          values.ACPAutoMergeSet,
 		ReportEnabled:            values.ReportEnabled,
 		ReportEnabledSet:         values.ReportEnabledSet,
 		PreserveAnthropicAPIKey:  values.PreserveAnthropicAPIKey,

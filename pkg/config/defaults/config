@@ -203,6 +203,16 @@ finalize_merge_method = merge
 # default: 30m
 finalize_checks_timeout = 30m
 
+# acp_auto_merge: ACP agent mode only (loopai --acp, the T3 Code provider
+# session). after a successful run whose completion report rates Risk low or
+# medium, merge the plan branch into the local base branch in the worktree
+# where the base is checked out. nothing is pushed, and no branch or worktree
+# is removed. a high or unstated Risk, a dirty checkout, a base checked out
+# nowhere, or a conflict skips the merge and the thread message says why.
+# skipped when finalize is pr or merge, since GitHub then owns the close-out.
+# default: true
+acp_auto_merge = true
+
 # ------------------------------------------------------------------------------
 # completion report
 # ------------------------------------------------------------------------------

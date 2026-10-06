@@ -77,10 +77,10 @@
 - [x] run tests - must pass before next task
 
 ### Task 2: Add the `acp_auto_merge` config key
-- [ ] add `ACPAutoMerge bool` to `config.Config` with loader support for `acp_auto_merge` at every config layer, defaulting to `true`. Follow how an existing boolean key with a `true` default and an explicit-set flag is handled, so a local `false` overrides a global `true`.
-- [ ] document the key in `pkg/config/defaults/config` next to `finalize`: ACP agent mode only; merges into the local base after a successful run whose report rates Risk `low` or `medium`; nothing is pushed, no branch or worktree is removed; skipped when `finalize` is `pr` or `merge`
-- [ ] write tests in `pkg/config/config_test.go` (or the loader's test file): default true, global false, local overriding global, invalid value error
-- [ ] run tests - must pass before next task
+- [x] add `ACPAutoMerge bool` to `config.Config` with loader support for `acp_auto_merge` at every config layer, defaulting to `true`. Follow how an existing boolean key with a `true` default and an explicit-set flag is handled, so a local `false` overrides a global `true`.
+- [x] document the key in `pkg/config/defaults/config` next to `finalize`: ACP agent mode only; merges into the local base after a successful run whose report rates Risk `low` or `medium`; nothing is pushed, no branch or worktree is removed; skipped when `finalize` is `pr` or `merge`
+- [x] write tests in `pkg/config/config_test.go` (or the loader's test file): default true, global false, local overriding global, invalid value error
+- [x] run tests - must pass before next task
 
 ### Task 3: Implement the local auto-merge step
 - [ ] create `cmd/loopai/acp_merge.go` with `acpAutoMerge(ctx, gitSvc *git.Service, cfg *config.Config, defaultBranch, report string) acpMergeResult`. `acpMergeResult` carries `merged bool`, `kind string` (fast-forward / merge commit / already up to date), `base`, `feature`, `head` (short SHA), and `skipped string` (reason). Precondition checks, in order, each producing a `skipped` reason and no repository change:
