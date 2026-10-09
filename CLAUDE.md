@@ -1106,7 +1106,9 @@ already the final message); `chatSignal` still searches the whole `Output`. `NoR
 none; `acpChatProvider` pairs the review provider with `IsRealClaudeCommand`/`IsRealCodexCommand` so
 such a reply carries `acpChatNoResumeNote`, and the stored id is passed only when the stored provider
 equals the current one. `ChatPhase` retries a failed resumed session once as a fresh one with the full
-context unless the failure is a limit, an error pattern, a timeout, or cancellation, and returns no
+context unless the failure is a limit, a timeout, or cancellation — an error pattern is retried,
+since the default `API Error: 400/404/413` patterns are what an unusable resumed transcript produces
+and the stored id would otherwise fail every later message — and returns no
 result on cancellation, so `runChat` saves nothing and the previous id survives. `acp_chat.txt`
 renders in full only for a fresh session (`ACPChatPrompt` with `resumed` sends the message alone),
 forbids loopai commands, worktree removal, branch switches, push, and `reset --hard`, and tells the

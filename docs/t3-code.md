@@ -307,8 +307,9 @@ the branch, the base, `git log <base>..HEAD --oneline` (at most 50 commits), the
 and its auto-merge outcome. Later turns send only the message and resume the provider session:
 Claude through `--resume <id>` after the configured arguments, `claude_args` included, and Codex
 through `codex exec resume <id>`. A resume that fails for any reason other than a provider limit,
-a configured error pattern, a session timeout, or cancellation is retried once as a fresh session with the full
-context. Wrapper commands (a `claude_command` or `codex_command` that is not the real CLI) define
+a session timeout, or cancellation is retried once as a fresh session with the full context. That
+includes a configured error pattern such as `API Error: 400`, which is how a provider rejects a
+transcript it can no longer continue. Wrapper commands (a `claude_command` or `codex_command` that is not the real CLI) define
 their own interface, so they never resume: every message starts a fresh session with the run's
 context, and the answer ends with a note saying so. Without a recorded run, chat still works from
 the branch, the base, and its commits.

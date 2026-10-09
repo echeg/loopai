@@ -148,30 +148,49 @@ func TestChatPhase_FreshFailureIsNotRetried(t *testing.T) {
 	assert.Len(t, *calls, 1)
 }
 
-func TestChatPhase_PatternErrorsAreNotRetriedFresh(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-	}{
-		{name: "limit", err: &executor.LimitPatternError{Pattern: "You've hit your limit", HelpCmd: "claude /usage"}},
-		{name: "error pattern", err: &executor.PatternMatchError{Pattern: "API Error", HelpCmd: "claude /status"}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			exec, calls := newChatExecutor(executor.Result{Error: tc.err})
-			log := newMockLogger("progress.txt")
-			p := newChatPhase(t, exec, log, nil)
-			req := testChatRequest
-			req.ResumeID = "s-1"
+func TestChatPhase_LimitIsNotRetriedFresh(t *testing.T) {
+	limitErr := &executor.LimitPatternError{Pattern: "You've hit your limit", HelpCmd: "claude /usage"}
+	exec, calls := newChatExecutor(executor.Result{Error: limitErr})
+	log := newMockLogger("progress.txt")
+	p := newChatPhase(t, exec, log, nil)
+	req := testChatRequest
+	req.ResumeID = "s-1"
 
-			_, err := p.Run(t.Context(), req)
+	_, err := p.Run(t.Context(), req)
 
-			require.ErrorIs(t, err, tc.err)
-			require.ErrorContains(t, err, "claude pattern handling")
-			assert.Len(t, *calls, 1, "a fresh session would hit the same pattern")
-			assertLogContains(t, log, "error: detected %q in %s output")
-		})
-	}
+	require.ErrorIs(t, err, limitErr)
+	require.ErrorContains(t, err, "claude pattern handling")
+	assert.Len(t, *calls, 1, "a fresh session would hit the same limit")
+	assertLogContains(t, log, "error: detected %q in %s output")
+}
+
+func TestChatPhase_ErrorPatternOnResumeRetriesFresh(t *testing.T) {
+	exec, calls := newChatExecutor(
+		executor.Result{Error: &executor.PatternMatchError{Pattern: "API Error: 400", HelpCmd: "claude /usage"}},
+		executor.Result{Output: "fresh answer", SessionID: "s-2"},
+	)
+	p := newChatPhase(t, exec, newMockLogger("progress.txt"), nil)
+	req := testChatRequest
+	req.ResumeID = "s-1"
+
+	res, err := p.Run(t.Context(), req)
+
+	require.NoError(t, err)
+	assert.Equal(t, ChatResult{Answer: "fresh answer", SessionID: "s-2"}, res,
+		"an unusable resumed transcript is replaced by a fresh session")
+	require.Len(t, *calls, 2)
+	assert.Empty(t, (*calls)[1].resumeID)
+}
+
+func TestChatPhase_ErrorPatternOnFreshSessionIsNotRetried(t *testing.T) {
+	patternErr := &executor.PatternMatchError{Pattern: "API Error: 400", HelpCmd: "claude /usage"}
+	exec, calls := newChatExecutor(executor.Result{Error: patternErr})
+	p := newChatPhase(t, exec, newMockLogger("progress.txt"), nil)
+
+	_, err := p.Run(t.Context(), testChatRequest)
+
+	require.ErrorIs(t, err, patternErr)
+	assert.Len(t, *calls, 1)
 }
 
 func TestChatPhase_CancellationReturnsNoSessionID(t *testing.T) {

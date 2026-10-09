@@ -75,9 +75,9 @@ func NewChatPhase(opts ChatPhaseOpts) *ChatPhase {
 }
 
 // Run executes one chat turn. A resumed session that fails for any reason other than a
-// limit, a configured error pattern, or cancellation is retried once as a fresh session with
-// the full context, since the provider may have discarded the session. A canceled turn
-// returns the context error and no result, so the caller keeps the previous session id.
+// limit, a timeout, or cancellation is retried once as a fresh session with the full context,
+// since the provider may have discarded the session or be unable to continue it. A canceled
+// turn returns the context error and no result, so the caller keeps the previous session id.
 func (p *ChatPhase) Run(ctx context.Context, req ChatRequest) (ChatResult, error) {
 	p.log.PrintSection(status.NewGenericSection("chat"))
 
@@ -119,17 +119,16 @@ func (p *ChatPhase) runSession(ctx context.Context, req ChatRequest, resumeID st
 }
 
 // resumeFailed reports whether a resumed session failed in a way a fresh session can fix.
-// a limit or configured error pattern would fail the fresh session too, and a canceled or
-// timed-out turn did not fail because of the resume.
+// a limit would fail the fresh session too, and a canceled or timed-out turn did not fail
+// because of the resume. a configured error pattern is retried: the default claude patterns
+// include the API 400/404/413 errors an unusable resumed transcript produces, and without the
+// retry the stored id would fail every later message until the next plan run replaced it.
 func resumeFailed(ctx context.Context, res ExecutionResult) bool {
 	err := res.Result.Error
 	if err == nil || res.TimedOut || ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return false
 	}
 	if _, ok := errors.AsType[*executor.LimitPatternError](err); ok {
-		return false
-	}
-	if _, ok := errors.AsType[*executor.PatternMatchError](err); ok {
 		return false
 	}
 	return true
