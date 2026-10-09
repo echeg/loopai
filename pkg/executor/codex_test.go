@@ -3372,7 +3372,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 	tailDone := make(chan struct{})
 	go func() {
 		defer close(tailDone)
-		e.tailRolloutFile(ctx, sessionID, nil, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil, rolloutStart{})
 	}()
 
 	// wait briefly for initial drain (assistant text + reasoning title)
@@ -3423,7 +3423,7 @@ func TestCodexExecutor_tailRolloutFile_tracksCommandsWithoutOutputHandler(t *tes
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil, rolloutStart{})
 	}()
 
 	select {
@@ -3455,7 +3455,7 @@ func TestCodexExecutor_tailRolloutFile_ProcessesUnterminatedFinalRecordOnCancel(
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil, rolloutStart{})
 	}()
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -3495,7 +3495,7 @@ func TestCodexExecutor_tailRolloutFile_TracksChildSessionCustomExec(t *testing.T
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil, rolloutStart{})
 	}()
 
 	select {
@@ -3656,7 +3656,7 @@ func TestCodexExecutor_tailRolloutFile_CancelDropsPendingCommand(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil, rolloutStart{})
 	}()
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -4314,6 +4314,60 @@ func TestCodexExecutor_Run_ResumeArgs(t *testing.T) {
 			assert.Equal(t, append(append([]string{}, fresh...), "resume", id, "-"), resumed)
 		})
 	}
+}
+
+// a resumed session appends to the rollout file its earlier turns wrote; the tail must start at
+// the file's end so the previous turn's task_complete neither starts the grace kill nor becomes
+// this turn's answer.
+func TestCodexExecutor_Run_ResumeSkipsEarlierTurns(t *testing.T) {
+	completion := func(msg string) string {
+		return `{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":` + strconv.Quote(msg) + "}}\n"
+	}
+	sessionID, dir := taskCompleteFixture(t, completion("stale answer <<<RALPHEX:ACP_MERGE>>>"))
+	rollout := filepath.Join(dir, "rollout-test-"+sessionID+".jsonl")
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	exit := make(chan error, 1)
+	inner := taskCompleteRunner(sessionID, "", exit)
+	started := make(chan time.Duration, 1)
+	fire := make(chan time.Time, 1)
+	e := &CodexExecutor{
+		runner: &mockCodexRunner{runFunc: func(runCtx context.Context, cmd string, args ...string) (CodexStreams, func() error, error) {
+			f, err := os.OpenFile(rollout, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test fixture path
+			if err != nil {
+				return CodexStreams{}, nil, fmt.Errorf("open rollout: %w", err)
+			}
+			_, err = f.WriteString(completion("fresh answer"))
+			if closeErr := f.Close(); err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				return CodexStreams{}, nil, fmt.Errorf("append rollout: %w", err)
+			}
+			return inner.runFunc(runCtx, cmd, args...)
+		}},
+		completionTimer: func(d time.Duration) (<-chan time.Time, func()) {
+			started <- d
+			return fire, func() {}
+		},
+	}
+	resultCh := make(chan Result, 1)
+	go func() { resultCh <- e.Run(WithResumeSession(ctx, sessionID), "next message") }()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("the resumed turn's task_complete did not start the grace timer")
+	}
+	fire <- time.Now()
+	var result Result
+	select {
+	case result = <-resultCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return after the grace kill")
+	}
+	require.NoError(t, result.Error)
+	assert.Equal(t, "fresh answer", result.Output, "the previous turn's completion must not be read")
+	assert.Empty(t, result.Signal)
 }
 
 func TestCodexExecutor_Run_SessionID(t *testing.T) {

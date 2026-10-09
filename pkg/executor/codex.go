@@ -265,9 +265,14 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	// before the subcommand because `resume` itself rejects --sandbox, while options given
 	// to `exec` apply to the resumed session (verified against codex-cli 0.162.0); `-`
 	// is resume's explicit read-the-prompt-from-stdin positional.
-	if resumeID := e.resumeID(ctx); resumeID != "" {
+	resumeID := e.resumeID(ctx)
+	if resumeID != "" {
 		args = append(args, "resume", resumeID, "-")
 	}
+	// a resumed session appends to the rollout file its earlier turns wrote, so the tail starts
+	// where that file ends now: replaying it would show old reasoning again and read the previous
+	// turn's task_complete as this one's, starting the grace kill at once.
+	resumeStart := e.rolloutEnd(resumeID)
 
 	// pass prompt via stdin to avoid Windows 8191-char command-line limit;
 	// codex reads from stdin when no positional prompt argument is given.
@@ -321,7 +326,7 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	go func() {
 		completionDone <- e.watchTaskComplete(execCtx, execCancel, completed, runDone)
 	}()
-	tailCancel, tailDone := e.startRolloutTail(execCtx, sessionIDCh, idleTouch, completed)
+	tailCancel, tailDone := e.startRolloutTail(execCtx, sessionIDCh, idleTouch, completed, resumeStart)
 
 	// read stdout entirely as final response; wrap with touch-on-read so reads
 	// keep the idle timer alive even while stderr is quiet.
@@ -779,7 +784,8 @@ func (e *CodexExecutor) extractSessionID(line string) string {
 // cancel is called. caller must invoke tailCancel and wait on tailDone before
 // returning so the tailer drains remaining file content and exits cleanly.
 // Completion monitoring also requires the tailer when both display handlers are nil.
-func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-chan string, idleTouch func(), completed chan<- string) (context.CancelFunc, <-chan struct{}) {
+func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-chan string, idleTouch func(),
+	completed chan<- string, start rolloutStart) (context.CancelFunc, <-chan struct{}) {
 	tailCtx, tailCancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	go func() {
@@ -788,10 +794,52 @@ func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-c
 		case <-tailCtx.Done():
 			return
 		case id := <-sessionIDCh:
-			e.tailRolloutFile(tailCtx, id, idleTouch, completed)
+			e.tailRolloutFile(tailCtx, id, idleTouch, completed, start)
 		}
 	}()
 	return tailCancel, done
+}
+
+// rolloutStart is where the main rollout tail begins: offset bytes into path. The zero value
+// reads every file from its start.
+type rolloutStart struct {
+	path   string
+	offset int64
+}
+
+// rolloutEnd returns the current end of the rollout file a resumed session will append to, or
+// the zero rolloutStart for a fresh session or a file that does not exist yet.
+func (e *CodexExecutor) rolloutEnd(sessionID string) rolloutStart {
+	if sessionID == "" {
+		return rolloutStart{}
+	}
+	pattern := rolloutFilePattern(sessionID)
+	if pattern == "" {
+		return rolloutStart{}
+	}
+	matches, _ := filepath.Glob(pattern)
+	if len(matches) == 0 {
+		return rolloutStart{}
+	}
+	info, err := os.Stat(matches[0])
+	if err != nil {
+		return rolloutStart{}
+	}
+	return rolloutStart{path: matches[0], offset: info.Size()}
+}
+
+// rolloutFilePattern is the glob matching a session's rollout file, or "" when no codex home
+// can be resolved.
+func rolloutFilePattern(sessionID string) string {
+	root := os.Getenv("CODEX_HOME")
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		root = filepath.Join(home, ".codex")
+	}
+	return filepath.Join(root, "sessions", "*", "*", "*", "rollout-*-"+sessionID+".jsonl")
 }
 
 // findRolloutFile resolves the path to codex's session-rollout JSONL file
@@ -802,15 +850,10 @@ func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-c
 // especially under load, so we poll up to ~30s. returns "" when the file
 // cannot be located.
 func (e *CodexExecutor) findRolloutFile(ctx context.Context, sessionID string) string {
-	root := os.Getenv("CODEX_HOME")
-	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		root = filepath.Join(home, ".codex")
+	pattern := rolloutFilePattern(sessionID)
+	if pattern == "" {
+		return ""
 	}
-	pattern := filepath.Join(root, "sessions", "*", "*", "*", "rollout-*-"+sessionID+".jsonl")
 
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -834,7 +877,9 @@ func (e *CodexExecutor) findRolloutFile(ctx context.Context, sessionID string) s
 // runs until ctx is canceled. on cancellation, drains any remaining buffered
 // lines before returning so late writes (e.g. codex flushing the final
 // assistant message just before exit) are not lost.
-func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, idleTouch func(), completed chan<- string) {
+// the main rollout starts at start.offset when the located file is start.path.
+func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, idleTouch func(),
+	completed chan<- string, start rolloutStart) {
 	path := e.findRolloutFile(ctx, sessionID)
 	if path == "" {
 		// suppress the diagnostic when the session was canceled — findRolloutFile
@@ -857,6 +902,11 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 		return
 	}
 	states[path].completed = completed // child rollouts never complete the main invocation
+	if start.offset > 0 && start.path == path {
+		if _, err := states[path].file.Seek(start.offset, io.SeekStart); err != nil {
+			log.Printf("codex rollout seek failed (%s): %v; earlier turns may be replayed", path, err)
+		}
+	}
 	defer func() {
 		for _, state := range states {
 			_ = state.file.Close()

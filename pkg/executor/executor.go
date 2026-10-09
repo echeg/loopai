@@ -33,6 +33,10 @@ type Result struct {
 	Error          error  // execution error if any
 	IdleTimedOut   bool   // true when idle timeout fired (derived context canceled, parent alive)
 	SessionID      string // provider session id a later run can resume; empty when unknown or resume is disabled
+	// Reply is the session's final assistant message when the provider reports it apart from
+	// Output: Claude's string result, whereas Output joins every text block of the session.
+	// Empty when the provider reports none; codex's Output already is its final message.
+	Reply string
 }
 
 // resumeSessionKey carries the provider session id a run should resume.
@@ -650,6 +654,7 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 	}
 	var lastProgress time.Time // throttle window for subagent heartbeat lines
 	var sessionID string       // from the first system/init event
+	var reply string           // from the string-valued result event
 
 	err := readLines(ctx, r, func(line string) {
 		idleTouch() // reset idle timer on every line of pipe activity
@@ -673,9 +678,7 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 			return
 		}
 
-		if sessionID == "" && event.Type == "system" && event.Subtype == "init" {
-			sessionID = event.SessionID
-		}
+		trackSession(&event, &sessionID, &reply)
 
 		if e.CommandTimingHandler != nil {
 			e.trackCommandTiming(&event, commandStarts, now)
@@ -725,11 +728,25 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 
 	if err != nil {
 		return Result{Output: output.String(), RecentText: recentText.text(),
-			DiagnosticText: diagnostics.text(), Signal: signal, SessionID: sessionID, Error: fmt.Errorf("stream read: %w", err)}
+			DiagnosticText: diagnostics.text(), Signal: signal, SessionID: sessionID, Reply: reply, Error: fmt.Errorf("stream read: %w", err)}
 	}
 
 	return Result{Output: output.String(), RecentText: recentText.text(),
-		DiagnosticText: diagnostics.text(), Signal: signal, SessionID: sessionID}
+		DiagnosticText: diagnostics.text(), Signal: signal, SessionID: sessionID, Reply: reply}
+}
+
+// trackSession records the session id of the first system/init event and the string result of
+// a successful session, which is its final assistant message.
+func trackSession(event *streamEvent, sessionID, reply *string) {
+	if *sessionID == "" && event.Type == "system" && event.Subtype == "init" {
+		*sessionID = event.SessionID
+	}
+	if event.Type == "result" && !isErrorResult(event) {
+		var final string
+		if json.Unmarshal(event.Result, &final) == nil {
+			*reply = final
+		}
+	}
 }
 
 // extractDiagnostic returns pattern input from structured Claude events. normal

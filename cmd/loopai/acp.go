@@ -292,18 +292,35 @@ func loadACPSessionConfig(o opts) (*config.Config, error) {
 
 // acpLooksLikeLaunch reports whether a prompt was meant as a plan launch, so a malformed launch or
 // a missing plan still fails its turn while anything else, a one-word reply included, becomes a
-// command or a chat turn. It is a launch when the first token is an option, names a Markdown file, or
-// names an existing file relative to cwd; a directory is never a plan.
+// command or a chat turn. It is a launch when the first token is an option, or when it names a plan
+// and nothing but an option or another plan follows it: a chat message about a file, such as
+// "README.md is outdated", names one too and continues in prose.
 func acpLooksLikeLaunch(text, cwd string) bool {
 	fields := strings.Fields(text)
 	if len(fields) == 0 {
 		return false
 	}
-	first := fields[0]
-	if strings.HasPrefix(first, "-") || strings.HasSuffix(strings.ToLower(first), ".md") {
+	if acpOptionToken(fields[0]) {
 		return true
 	}
-	info, err := os.Stat(absPath(cwd, first))
+	if !acpPlanToken(fields[0], cwd) {
+		return false
+	}
+	return len(fields) == 1 || acpOptionToken(fields[1]) || acpPlanToken(fields[1], cwd)
+}
+
+// acpOptionToken reports whether a prompt token is an option; a lone "-" opens a Markdown bullet.
+func acpOptionToken(tok string) bool {
+	return len(tok) > 1 && strings.HasPrefix(tok, "-")
+}
+
+// acpPlanToken reports whether a prompt token names a plan: a Markdown file, or an existing file
+// relative to cwd; a directory is never a plan.
+func acpPlanToken(tok, cwd string) bool {
+	if strings.HasSuffix(strings.ToLower(tok), ".md") {
+		return true
+	}
+	info, err := os.Stat(absPath(cwd, tok))
 	return err == nil && !info.IsDir()
 }
 

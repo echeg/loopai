@@ -234,6 +234,7 @@ alone. When these contracts change, update and run `scripts/check-grill-skill_te
 - Local prompts/agents: `.loopai/{prompts,agents}/`
 - Progress: `.loopai/progress/`
 - Worktrees: `.loopai/worktrees/`
+- ACP session state: `.loopai/acp/<session-id>.json` (gitignored runtime path)
 - Override: `--config-dir` or `LOOPAI_CONFIG_DIR`
 
 Local files override global files, which override embedded defaults. Embedded defaults remain the per-file fallback, so deleting an installed prompt or agent does not disable it. Remove its template reference to disable an agent.
@@ -473,8 +474,8 @@ prompts receive the literal value. It does not reuse `DiffStats`, because that h
 unresolvable base like an empty diff instead of preserving the base-ref error.
 
 `pkg/processor/prompts.go` expands `{{BACKLOG_DIR}}` alongside `{{PLANS_DIR}}` in
-`replaceBaseVariables`, the choke point every builder funnels through, so all twelve
-prompt paths get it from one line plus `getBacklogDir`, which mirrors `getPlansDir`
+`replaceBaseVariables`, the choke point every builder funnels through, so every
+prompt path gets it from one line plus `getBacklogDir`, which mirrors `getPlansDir`
 and falls back to `docs/backlog` when `BacklogDir` is unset. A prompt file's header
 comment lists the variables that prompt actually uses, not every variable expanded in
 it, so adding the placeholder to a prompt and its header happen together.
@@ -568,7 +569,8 @@ Orca, and T3 reporters: `recordLaunchHistory` returns nothing and turns a failur
 ACP owns. There are exactly three hook points: `run()` after `resolveExecutionDeps` and the
 gen-agents return, gated on `modeRequiresBranch` (so `--review`, `--external-only`, and every
 standalone command record nothing, and a plan chain records once); `runPlanMode` where plan creation
-continues into a `ModeFull` run; and `acpRunner.run` after `prepareNonInteractiveRequest`, which
+continues into a `ModeFull` run; and `acpRunner.runPlan` after `prepareNonInteractiveRequest` (chat and
+command turns record nothing), which
 passes `launcherT3` explicitly because `loadACPSessionConfig` forces `cfg.T3` off. `launcherFor`
 ranks `t3` over `orca` over `cli` from the post-override config, since `--t3-launch` terminal mode
 runs `loopai --t3` and a config enabling both is a reporting choice. `launchFlags` renders the
@@ -780,7 +782,7 @@ Claude runs every phase by default. `task_model = codex:<model>[:effort]` moves 
 
 Codex invocations use additive `-c` overrides so user `~/.codex/config.toml` settings remain available. loopai never writes to `~/.codex/`. `--pass-claude-md` lets Codex discover project `CLAUDE.md`; it does not install or link user-level files.
 
-`--codex-args` and the `codex_args` config key extend that additive contract: their value is tokenized by the shared `splitArgs`, which separates tokens on any unquoted, unescaped ASCII whitespace rather than the space alone — a tab or newline surviving the ini loader would otherwise fold into the neighboring token and turn the remainder into the bare positional `codex exec` takes as its prompt. The set is deliberately ASCII and not `unicode.IsSpace`, since no shell splits on U+00A0 and a non-breaking or thin space pasted from rendered documentation into an unquoted value would otherwise produce that same stray positional — and applies POSIX-shell backslash rules (literal inside single quotes, escaping only `"` and `\` inside double quotes, escaping the next rune when unquoted) so literal backslashes in Windows paths survive while the documented `[\"CLAUDE.md\"]` quote-escaping recipe still works, and appended to every codex invocation loopai composes, at both construction sites in `pkg/processor/executor_factory.go` — codex plan/task/review phases and external codex reviewers, which share `newBaseCodexExecutor`. The extras go *after* loopai's own `-c` overrides and sandbox flags, because codex resolves repeated `-c` keys last-occurrence-wins (verified against codex-cli 0.147.0), so a user value deliberately overrides the matching loopai one. This is the intentional asymmetry with `claude_args`, which replaces the claude command's argument list rather than extending it: loopai owns the `codex exec` invocation shape. An explicit empty `--codex-args=` clears an inherited config value through the `o.codexArgsSet` guard in `applyCLIOverrides` alone; there is deliberately no `Config.CodexArgsSet` mirroring `ClaudeArgsSet`, because that flag exists only so an empty `claude_args` means "no arguments" instead of "use the defaults", and empty codex extras already append nothing — the invocation stays byte-identical to a build without the flag. Four consequences of appending rather than merging are documented for users and deliberately not policed in code, since extras are trusted input like `codex_command`: `splitArgs` consumes unescaped quotes, so a `-c` value whose TOML type depends on them must escape them or codex fails to load its config and every phase dies at startup; last-occurrence-wins covers `-c key=value` only, so repeating any flag loopai already emits, valued or bare, is a fatal codex parse error rather than an override — `--sandbox` on every path, and `--dangerously-bypass-approvals-and-sandbox` on codex plan/task/review phases, where `codex.go` emits it whenever the effective sandbox is `danger-full-access`, which is the codex phase default; the extras land after the `exec` subcommand, so an option only the top-level `codex` command accepts (`--search`) is a fatal unexpected-argument error rather than a pass-through, while the global options that matter here (`-c`, `--model`, `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too; and a bare positional token becomes `codex exec`'s prompt, demoting the one loopai sends on stdin to the trailing `<stdin>` block codex appends when both are present. Because the extras are appended on the shared base, they also reach the external reviewer whose `ForceReadOnly` pin exists so it cannot write — that pin holds against `codex_sandbox` but not against `--dangerously-bypass-approvals-and-sandbox` in `codex_args`, which codex accepts alongside `--sandbox read-only` precisely because loopai emits no bypass flag on the reviewer path. The CLI spelling is `--codex-args=<value>`: the values that matter start with `-`, so the detached form is rejected by go-flags before the run starts, and the documented examples use the attached form.
+`--codex-args` and the `codex_args` config key extend that additive contract: their value is tokenized by the shared `splitArgs`, which separates tokens on any unquoted, unescaped ASCII whitespace rather than the space alone — a tab or newline surviving the ini loader would otherwise fold into the neighboring token and turn the remainder into the bare positional `codex exec` takes as its prompt. The set is deliberately ASCII and not `unicode.IsSpace`, since no shell splits on U+00A0 and a non-breaking or thin space pasted from rendered documentation into an unquoted value would otherwise produce that same stray positional — and applies POSIX-shell backslash rules (literal inside single quotes, escaping only `"` and `\` inside double quotes, escaping the next rune when unquoted) so literal backslashes in Windows paths survive while the documented `[\"CLAUDE.md\"]` quote-escaping recipe still works, and appended to every codex invocation loopai composes, at both construction sites in `pkg/processor/executor_factory.go` — codex plan/task/review phases and external codex reviewers, which share `newBaseCodexExecutor`. The extras go *after* loopai's own `-c` overrides and sandbox flags, because codex resolves repeated `-c` keys last-occurrence-wins (verified against codex-cli 0.147.0), so a user value deliberately overrides the matching loopai one. This is the intentional asymmetry with `claude_args`, which replaces the claude command's argument list rather than extending it: loopai owns the `codex exec` invocation shape. An explicit empty `--codex-args=` clears an inherited config value through the `o.codexArgsSet` guard in `applyCLIOverrides` alone; there is deliberately no `Config.CodexArgsSet` mirroring `ClaudeArgsSet`, because that flag exists only so an empty `claude_args` means "no arguments" instead of "use the defaults", and empty codex extras already append nothing — the invocation stays byte-identical to a build without the flag. Four consequences of appending rather than merging are documented for users and deliberately not policed in code, since extras are trusted input like `codex_command`: `splitArgs` consumes unescaped quotes, so a `-c` value whose TOML type depends on them must escape them or codex fails to load its config and every phase dies at startup; last-occurrence-wins covers `-c key=value` only, so repeating any flag loopai already emits, valued or bare, is a fatal codex parse error rather than an override — `--sandbox` on every path, and `--dangerously-bypass-approvals-and-sandbox` on codex plan/task/review phases, where `codex.go` emits it whenever the effective sandbox is `danger-full-access`, which is the codex phase default; the extras land after the `exec` subcommand, so an option only the top-level `codex` command accepts (`--search`) is a fatal unexpected-argument error rather than a pass-through, while the global options that matter here (`-c`, `--model`, `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too; and a bare positional token becomes `codex exec`'s prompt, demoting the one loopai sends on stdin to the trailing `<stdin>` block codex appends when both are present — and on a resumed ACP chat turn, whose `resume <id> -` follows the extras, it breaks the resume, so `ChatPhase` falls back to a fresh session every turn. Because the extras are appended on the shared base, they also reach the external reviewer whose `ForceReadOnly` pin exists so it cannot write — that pin holds against `codex_sandbox` but not against `--dangerously-bypass-approvals-and-sandbox` in `codex_args`, which codex accepts alongside `--sandbox read-only` precisely because loopai emits no bypass flag on the reviewer path. The CLI spelling is `--codex-args=<value>`: the values that matter start with `-`, so the detached form is rejected by go-flags before the run starts, and the documented examples use the attached form.
 
 On Windows, `CodexExecutor.ForceReadOnly` adds `-c windows.sandbox="unelevated"`
 before user extras, retaining the external reviewer's `--sandbox read-only` pin without
@@ -797,6 +799,10 @@ handling. Review text is not scanned for patterns on this path. Non-empty stdout
 the result; otherwise `last_agent_message` does, with signals detected from the selected
 text. Normal exits retain their stdout result without an extra delay. Parent cancellation
 still returns the context error, and existing idle/session timeouts remain in force.
+A resumed run (`codex exec ... resume <id> -`) appends to the rollout file its session's earlier
+turns wrote, so `rolloutEnd` records that file's size before the process starts and the tail seeks
+past it: read from offset 0, the previous turn's `task_complete` would start the grace kill at once
+and its `last_agent_message`, signals included, would become this turn's answer.
 Without an observed completion event (including a missing rollout file), there is no
 grace kill. This mechanism applies independently of whether reviewer idle timeout is enabled.
 
@@ -861,8 +867,8 @@ releases them without cleanup; the Windows backend drives `SetThreadExecutionSta
 locked OS thread because the continuous flag is per thread. A failed `Acquire` disables the holder
 for the run instead of retrying on every output line. Watch-only mode, close-out, and the other
 standalone commands return before the holder is created. `--acp` returns before it too, so
-`acpRunner.run` creates one holder per prompt from the session's loaded `keep_awake` and stops it when
-the run ends. `cmd/loopai` tests replace
+`acpRunner.runPlan` and `acpRunner.runChat` each create one holder per plan run or chat turn from the
+session's loaded `keep_awake` and stop it when the turn ends; the `merge`/`pr` commands take none. `cmd/loopai` tests replace
 `newAwakeHolder` in `TestMain` so `run()` never starts a real inhibitor.
 
 cmux reporting is best-effort and must never affect execution. The status key and notification title are `loopai`. All calls go through the public `cmux` CLI and failures are ignored. After a completed run, `Reporter.Finish` intentionally leaves the final success or failure pill in place: `Stop` still clears the spinner and progress, but does not clear that pill. Abort paths do not call `Finish`, so `Stop` performs the full cleanup. A later run overwrites the pill, while `--clear`, a successful `--merge`, or a successful `--pr` removes it explicitly.
@@ -985,7 +991,7 @@ stage to `pending` on failure. `PrintAligned` becomes `agent_thought_chunk`, coa
 500 ms and capped per chunk. The report becomes the final `agent_message_chunk`, sent after
 `Sink.Finish` flushes reasoning and closes the open call. The heartbeat retitles the open tool call
 after 4 silent minutes, opening one titled `loopai` when none is open, because the Grok driver fails a
-turn after 10 minutes without progress and a `wait_on_limit` sleep emits nothing. `acpRunner.run` in
+turn after 10 minutes without progress and a `wait_on_limit` sleep emits nothing. `acpRunner.runPlan` in
 `cmd/loopai/acp.go` parses the prompt with `parseACPPrompt`, which applies `validatePassThroughValues`,
 the rules `--t3-launch` uses. It enters the session cwd, refuses an unreadable plan through
 `planFileRefusal`, and loads config there through `loadACPSessionConfig`, which forces `t3`, `orca`,
@@ -1013,8 +1019,11 @@ which cancels the running prompt and waits for its answer without waiting for st
 still bounded by the 5-second force exit of the `startInterruptWatcher` that `run()` installs before
 routing `--acp`, so a prompt whose cancellation outlasts it is never answered.
 `acpLooksLikeLaunch` runs before `parseACPPrompt` and decides whether a prompt is a launch at all. A
-first token that is an option, ends in `.md`, or names an existing non-directory path relative to the
-session cwd is a launch, so a malformed one or a missing plan still fails the turn. `acpRoute` checks
+first token that is an option (a lone `-` opens a Markdown bullet and is not one) is a launch, and so
+is a first token that ends in `.md` or names an existing non-directory path relative to the session
+cwd when nothing follows it or the next token is an option or another such path; a malformed launch
+or a missing plan still fails the turn. A plan-like first token followed by prose, as in `README.md is
+outdated`, is a chat message about that file and must not fail as a launch. `acpRoute` checks
 that first; then `acpCommand` matches a whole trimmed, case-insensitive `merge`/`мерж`/`pr`/`пр`,
 which `runCommand` performs with no model; any other text, a question typed after a run or a one-word
 `thanks` that would otherwise parse as a missing plan path, is a chat turn through `runChat`. Neither
@@ -1090,7 +1099,10 @@ appends `--resume <id>` after the configured arguments, stripping any `--resume`
 id survives a `claude_args` that replaces the defaults, and reports the `session_id` of its
 `system/init` event. Codex builds `codex exec <options> resume <id> -` with every option before the
 subcommand, because `resume` rejects `--sandbox` while `exec`'s options apply to the resumed session.
-Both report `Result.SessionID`. `NoResume`, set for wrapper commands, ignores the id and reports
+Both report `Result.SessionID`. Claude's `Result.Output` joins every text block of the session,
+narration between tool calls included, so it also reports `Result.Reply`, the string `result` of a
+successful session, and `ChatPhase` answers with that, falling back to `Output` (Codex's stdout is
+already the final message); `chatSignal` still searches the whole `Output`. `NoResume`, set for wrapper commands, ignores the id and reports
 none; `acpChatProvider` pairs the review provider with `IsRealClaudeCommand`/`IsRealCodexCommand` so
 such a reply carries `acpChatNoResumeNote`, and the stored id is passed only when the stored provider
 equals the current one. `ChatPhase` retries a failed resumed session once as a fresh one with the full
@@ -1195,6 +1207,10 @@ The full suite is required because configuration and progress paths cross packag
 The Go suite assumes a POSIX host: many `cmd/loopai` tests use `/bin/sh` stubs and several packages test
 file permissions, so on Windows run `make test` in WSL. Git fixtures that assert exact file contents
 set `core.autocrlf=false` so a system-wide Git for Windows setting cannot change them.
+`cmd/loopai`'s `TestMain` resolves `TMPDIR` through `filepath.EvalSymlinks`, so on macOS
+(`/var` -> `/private/var`) fixture paths match the symlink-resolved roots Git reports; those tests
+therefore do not cover a checkout reached through a symlink (see
+`docs/backlog/symlinked-checkout-path-containment.md`).
 `make test` first validates Claude skill assets, plugin manifests, and the Codex
 skill tree, runs their regression suites and shell-completion checks, then runs
 the race-enabled Go suite with coverage and every retained provider-wrapper and wrapper-documentation

@@ -35,7 +35,6 @@ type ChatResult struct {
 	Answer    string
 	Signal    string
 	SessionID string
-	Resumed   bool // the answer came from the resumed session, not a fresh one
 }
 
 // ChatPrompts renders an ACP chat turn.
@@ -86,7 +85,6 @@ func (p *ChatPhase) Run(ctx context.Context, req ChatRequest) (ChatResult, error
 	execResult := p.runSession(ctx, req, resumeID)
 	if resumeID != "" && resumeFailed(ctx, execResult) {
 		p.log.Print("chat: resuming provider session %s failed (%v), starting a fresh session", resumeID, execResult.Result.Error)
-		resumeID = ""
 		execResult = p.runSession(ctx, req, "")
 	}
 
@@ -102,11 +100,15 @@ func (p *ChatPhase) Run(ctx context.Context, req ChatRequest) (ChatResult, error
 		return ChatResult{}, errors.New("chat session timed out")
 	}
 
+	// claude's Output joins the narration of every step; the answer is its final message
+	answer := result.Reply
+	if answer == "" {
+		answer = result.Output
+	}
 	return ChatResult{
-		Answer:    strings.TrimSpace(status.StripSignals(result.Output)),
+		Answer:    strings.TrimSpace(status.StripSignals(answer)),
 		Signal:    chatSignal(result),
 		SessionID: result.SessionID,
-		Resumed:   resumeID != "",
 	}, nil
 }
 

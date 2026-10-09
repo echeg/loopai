@@ -155,8 +155,12 @@ func TestACPLooksLikeLaunch(t *testing.T) {
 		{name: "russian question", text: "а по итогу оно замержено?", want: false},
 		{name: "english question", text: "did it merge?", want: false},
 		{name: "markdown path", text: "docs/plans/x.md --worktree", want: true},
-		{name: "uppercase markdown extension", text: "PLAN.MD extra", want: true},
-		{name: "existing file without extension", text: "plan extra", want: true},
+		{name: "uppercase markdown extension", text: "PLAN.MD", want: true},
+		{name: "existing file without extension", text: "plan", want: true},
+		{name: "existing file then option", text: "plan --review-model codex", want: true},
+		{name: "markdown file in prose", text: "README.md is outdated, update it", want: false},
+		{name: "existing file in prose", text: "plan needs a new task", want: false},
+		{name: "markdown bullet", text: "- fix the test", want: false},
 		{name: "option first", text: "--task-model opus docs/plans/x.md", want: true},
 		{name: "comma chain", text: "docs/plans/a.md,docs/plans/b.md", want: true},
 		{name: "two plans", text: "docs/plans/a.md docs/plans/b.md", want: true},
@@ -942,8 +946,15 @@ func TestServeACPSecondPromptAfterFailedRun(t *testing.T) {
 
 	c := startACPServer(t.Context(), t, opts{ConfigDir: relCfg}, io.Discard)
 	sid := c.handshake(f.repo)
+	require.NoError(t, saveACPState(f.repo, sid, acpSessionState{Provider: "claude", ProviderSessionID: "chat-before"}))
 	msg := requireACPError(t, c.response(c.prompt(sid, "docs/plans/two.md")))
 	assert.Contains(t, msg, "FAILED signal received", "the first run uses the configured fake claude and fails")
+	state, err := loadACPState(f.repo, sid, io.Discard)
+	require.NoError(t, err)
+	require.NotNil(t, state.LastRun, "a failed run is recorded for later chat turns")
+	assert.Equal(t, "docs/plans/two.md", state.LastRun.Plan)
+	assert.Empty(t, state.LastRun.MergeSummary, "a failed run attempts no merge")
+	assert.Empty(t, state.ProviderSessionID, "a new run drops the chat's provider session")
 	requireACPStopReason(t, c.response(c.prompt(sid, "docs/plans/two.md")), "end_turn")
 	c.close()
 

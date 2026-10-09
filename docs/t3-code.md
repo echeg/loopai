@@ -235,7 +235,9 @@ from the normal config layers resolved in that directory: embedded defaults, the
 `LOOPAI_CONFIG_DIR` from the T3 Code server's environment), then `.loopai/config` there. Only the first text block of the
 message is read; the runtime instructions T3 Code appends are ignored. A malformed launch fails
 the turn and shows the usage line. loopai treats a message as a launch when its first word is an
-option, ends in `.md`, or names an existing file in the thread's working directory. Anything else,
+option, or when its first word ends in `.md` or names an existing file in the thread's working
+directory and nothing but options or another plan follows it. Anything else, a message that starts
+with a file name and goes on in prose (`README.md is outdated`) included,
 such as a question typed after a run or a one-word reply like `thanks`, does not start a run: it is
 one of the thread commands or a chat turn, described under [Thread chat](#thread-chat).
 
@@ -297,14 +299,15 @@ happen where the report and worktree are. loopai routes every message that is no
   answers, edits, and commits on the thread's branch, staging only the files it changed.
 
 A chat turn streams the model's output as reasoning and ends with its answer as the final message.
-It shows no plan steps, and no activity other than a provider-limit wait. The stop button cancels it, and a message sent while it runs
+It shows no plan steps, and no activity other than a provider-limit wait and the `loopai` heartbeat
+card after 4 silent minutes. The stop button cancels it, and a message sent while it runs
 steers it, as with a plan run. The prompt is the embedded `acp_chat.txt`, overridable in
 `.loopai/prompts/` or the global prompts directory. The first turn of a provider session carries
 the branch, the base, `git log <base>..HEAD --oneline` (at most 50 commits), the last run's report,
 and its auto-merge outcome. Later turns send only the message and resume the provider session:
 Claude through `--resume <id>` after the configured arguments, `claude_args` included, and Codex
 through `codex exec resume <id>`. A resume that fails for any reason other than a provider limit,
-a configured error pattern, or cancellation is retried once as a fresh session with the full
+a configured error pattern, a session timeout, or cancellation is retried once as a fresh session with the full
 context. Wrapper commands (a `claude_command` or `codex_command` that is not the real CLI) define
 their own interface, so they never resume: every message starts a fresh session with the run's
 context, and the answer ends with a note saying so. Without a recorded run, chat still works from
@@ -336,7 +339,8 @@ at the same GitHub repository. The worktree is untouched.
 A refused merge or pull request, such as a dirty checkout, a base checked out nowhere, a conflict
 that was aborted, or a missing `gh`, ends the turn normally with the reason. A session that cannot
 be opened, such as an invalid config or a working directory that is not a repository, fails the
-turn.
+turn, and so does a chat session that fails: a provider error, a limit without `wait_on_limit`, a
+timeout, or a missing provider binary. A failed chat turn keeps the previous provider session.
 
 Each session keeps its state in `.loopai/acp/<session-id>.json` in the thread's working directory,
 written atomically with mode `0600`: the chat provider, its session id, and the last plan run (plan,

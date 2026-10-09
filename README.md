@@ -980,8 +980,10 @@ Codex invocations are composed by loopai and use additive `-c` overrides, so `~/
 settings remain available. `--codex-args`, or the `codex_args` config key, appends extra arguments
 to every codex invocation loopai spawns — every phase whose spec names codex and every external
 codex reviewer. Unlike `claude_args`, which *is* the claude command's argument list,
-codex args are strictly additive and are appended last, so an explicit `-c` value there overrides
-the matching override loopai sets. The motivating recipe keeps long autonomous runs off the
+codex args are strictly additive and are appended after loopai's own options, so an explicit `-c`
+value there overrides the matching override loopai sets. A resumed ACP chat turn adds
+`resume <id> -` after them, so a bare positional token in codex args breaks the resume and every
+such turn falls back to a fresh session. The motivating recipe keeps long autonomous runs off the
 priority tier while interactive codex sessions keep `service_tier = "priority"`:
 
 ```bash

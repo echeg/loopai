@@ -2882,6 +2882,40 @@ func TestClaudeExecutor_Run_SessionID(t *testing.T) {
 	})
 }
 
+func TestClaudeExecutor_Run_Reply(t *testing.T) {
+	tests := []struct {
+		name   string
+		stream []string
+		want   string
+	}{
+		{name: "string result is the final message", stream: []string{
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"I'll check the report."}]}}`,
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"Risk is medium."}]}}`,
+			`{"type":"result","subtype":"success","result":"Risk is medium."}`,
+		}, want: "Risk is medium."},
+		{name: "error result is not a reply", stream: []string{
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}`,
+			`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"boom"}`,
+		}},
+		{name: "object result is not a reply", stream: []string{
+			`{"type":"result","result":{"output":"structured"}}`,
+		}},
+		{name: "no result event", stream: []string{
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"answer"}]}}`,
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &ClaudeExecutor{cmdRunner: &mocks.CommandRunnerMock{
+				RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+					return strings.NewReader(strings.Join(tc.stream, "\n")), func() error { return nil }, nil
+				},
+			}}
+			assert.Equal(t, tc.want, e.Run(context.Background(), "prompt").Reply)
+		})
+	}
+}
+
 func TestWithResumeSession(t *testing.T) {
 	ctx := context.Background()
 	assert.Equal(t, ctx, WithResumeSession(ctx, ""), "empty id leaves the context unchanged")

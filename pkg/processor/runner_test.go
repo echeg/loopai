@@ -1471,7 +1471,7 @@ func TestRunner_ACPChatModeResumedTurnSendsMessageOnly(t *testing.T) {
 	require.Len(t, exec.RunCalls(), 1)
 	assert.Equal(t, "and now?", exec.RunCalls()[0].Prompt)
 	assert.Equal(t, "s-1", resumeID)
-	assert.True(t, r.ChatResult().Resumed)
+	assert.Equal(t, ChatResult{Answer: "answer", SessionID: "s-1"}, r.ChatResult())
 }
 
 func TestRunner_ACPChatModeLimitWaitsThroughPolicy(t *testing.T) {

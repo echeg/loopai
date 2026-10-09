@@ -184,12 +184,10 @@ func (a *acpRunner) runChat(ctx context.Context, req acp.PromptRequest, sink *ac
 	}
 
 	res := r.ChatResult()
-	state := s.state
-	state.Provider, state.ProviderSessionID = provider, res.SessionID
-	if saveErr := saveACPState(req.Cwd, req.SessionID, state); saveErr != nil {
+	s.state.Provider, s.state.ProviderSessionID = provider, res.SessionID
+	if saveErr := saveACPState(req.Cwd, req.SessionID, s.state); saveErr != nil {
 		fmt.Fprintf(a.out, "warning: ACP session state not saved: %v\n", saveErr)
 	}
-	s.state = state
 
 	parts := []string{res.Answer}
 	if strings.TrimSpace(res.Answer) == "" {

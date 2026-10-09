@@ -70,9 +70,35 @@ func TestChatPhase_ResumedTurn(t *testing.T) {
 	res, err := p.Run(t.Context(), req)
 
 	require.NoError(t, err)
-	assert.Equal(t, ChatResult{Answer: "done", SessionID: "s-1", Resumed: true}, res)
+	assert.Equal(t, ChatResult{Answer: "done", SessionID: "s-1"}, res)
 	require.Len(t, *calls, 1)
 	assert.Equal(t, chatCall{prompt: "why medium risk?", resumeID: "s-1"}, (*calls)[0], "a resumed turn sends only the message")
+}
+
+func TestChatPhase_AnswerPrefersFinalReply(t *testing.T) {
+	tests := []struct {
+		name   string
+		result executor.Result
+		want   ChatResult
+	}{
+		{name: "claude narration is replaced by the final reply",
+			result: executor.Result{Output: "I'll check the report.Now the log.Risk is medium because X.\n<<<RALPHEX:ACP_MERGE>>>",
+				Reply: "Risk is medium because X.\n<<<RALPHEX:ACP_MERGE>>>", SessionID: "s-1"},
+			want: ChatResult{Answer: "Risk is medium because X.", Signal: status.ACPMerge, SessionID: "s-1"}},
+		{name: "a signal only in the narration is still detected",
+			result: executor.Result{Output: "merging <<<RALPHEX:ACP_MERGE>>>Done.", Reply: "Done."},
+			want:   ChatResult{Answer: "Done.", Signal: status.ACPMerge}},
+		{name: "no reply falls back to the output", result: executor.Result{Output: "codex answer"},
+			want: ChatResult{Answer: "codex answer"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			exec, _ := newChatExecutor(tc.result)
+			res, err := newChatPhase(t, exec, newMockLogger("progress.txt"), nil).Run(t.Context(), testChatRequest)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, res)
+		})
+	}
 }
 
 func TestChatPhase_ResumeFailureRetriesFresh(t *testing.T) {

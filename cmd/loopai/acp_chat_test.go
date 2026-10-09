@@ -28,6 +28,8 @@ func TestACPRoute(t *testing.T) {
 		{"docs/plans/x.md", acpRouteLaunch},
 		{"--task-model claude:opus docs/plans/x.md", acpRouteLaunch},
 		{"plan.txt", acpRouteLaunch},
+		{"plan.txt is stale", acpRouteChat},
+		{"README.md опечатка в заголовке", acpRouteChat},
 		{"merge", acpCommandMerge},
 		{" PR ", acpCommandPR},
 		{"мерж", acpCommandMerge},
@@ -91,7 +93,7 @@ func TestACPBranchLog(t *testing.T) {
 
 // acpChatStub is a fake claude named claude, so loopai treats it as the real CLI and resumes its
 // sessions. Each call records its arguments and prompt under dir, reports session id sess-<n>, and
-// answers with the text set through setAnswer.
+// answers with the text set through setAnswer; a "fail" file in dir makes every call exit 1.
 type acpChatStub struct {
 	dir string
 }
@@ -105,6 +107,9 @@ n=$(( $(cat "$dir/count" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$dir/count"
 cat > "$dir/prompt-$n"
 printf '%s\n' "$*" > "$dir/args-$n"
+if [ -f "$dir/fail" ]; then
+  exit 1
+fi
 if [ -f "$dir/sleep" ]; then
   touch "$dir/started"
   exec sleep 300
@@ -322,7 +327,52 @@ func TestServeACPCommandFailsOnBrokenConfig(t *testing.T) {
 	chatErr := requireACPError(t, c.response(c.prompt(sid, "hello")))
 	c.close()
 
-	assert.NotEmpty(t, mergeErr, "a config error fails the command turn")
-	assert.NotEmpty(t, chatErr, "a config error fails the chat turn")
+	assert.Contains(t, mergeErr, "executor", "the command turn carries the config error")
+	assert.Contains(t, chatErr, "executor", "the chat turn carries the config error")
+	assert.Contains(t, chatErr, "task_model", "the error names the replacement spelling")
 	assert.Zero(t, stub.calls())
+}
+
+func TestServeACPChatProviderFailureFailsTurn(t *testing.T) {
+	f, stub := newACPChatFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(stub.dir, "fail"), nil, 0o600))
+	c := startACPServer(t.Context(), t, opts{ConfigDir: f.cfgDir}, io.Discard)
+	sid := c.handshake(f.repo)
+	require.NoError(t, saveACPState(f.repo, sid, acpSessionState{Provider: "claude", ProviderSessionID: "keep-me"}))
+
+	msg := requireACPError(t, c.response(c.prompt(sid, "why?")))
+	c.close()
+
+	assert.Contains(t, msg, "exit status 1")
+	assert.Equal(t, 2, stub.calls(), "the failed resume is retried once as a fresh session")
+	assert.Contains(t, stub.read(t, "args", 1), "--resume keep-me")
+	assert.NotContains(t, stub.read(t, "args", 2), "--resume")
+	state, err := loadACPState(f.repo, sid, io.Discard)
+	require.NoError(t, err)
+	assert.Equal(t, acpSessionState{Provider: "claude", ProviderSessionID: "keep-me"}, state, "a failed turn saves nothing")
+}
+
+func TestServeACPChatPRSignal(t *testing.T) {
+	f, stub := newACPChatFixture(t)
+	worktree := acpChatWorktree(t, f)
+	master := revParse(t, f.repo, "master")
+	stub.setAnswer(t, "Opening a pull request.\n<<<RALPHEX:ACP_PR>>>")
+	// a PATH without gh: the requested PR is refused, which proves the PR action ran and not the merge
+	binDir := t.TempDir()
+	for _, name := range []string{"git", "cat"} {
+		path, err := exec.LookPath(name)
+		require.NoError(t, err)
+		require.NoError(t, os.Symlink(path, filepath.Join(binDir, name)))
+	}
+	t.Setenv("PATH", binDir)
+
+	c := startACPServer(t.Context(), t, opts{ConfigDir: f.cfgDir}, io.Discard)
+	sid := c.handshake(worktree)
+	requireACPStopReason(t, c.response(c.prompt(sid, "open a PR please")), "end_turn")
+	c.close()
+
+	msg := c.messages()
+	assert.True(t, strings.HasPrefix(msg, "Opening a pull request.\n\n## Pull request\n\nNo pull request opened against `master`"), msg)
+	assert.NotContains(t, msg, "RALPHEX")
+	assert.Equal(t, master, revParse(t, f.repo, "master"), "a PR request never merges")
 }
