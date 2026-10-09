@@ -28,6 +28,7 @@ const (
 	ModeTasksOnly Mode = "tasks-only" // run only task phase, skip all reviews
 	ModePlan      Mode = "plan"       // interactive plan creation mode
 	ModeGenAgents Mode = "gen-agents" // one-session generation of project-specific review agents
+	ModeACPChat   Mode = "acp-chat"   // one ACP thread chat turn through the review executor
 )
 
 // Config holds runner configuration.
@@ -151,7 +152,15 @@ type Runner struct {
 	reviewScope         reviewScoper
 	perTaskReview       bool // a per-task external block is running; its reviewers save no checkpoint stage
 	perTaskLeftovers    bool // a per-task block left uncommitted fixes or an interrupted task its uncommitted work; the final block commits them. persisted in the run record
+	chatRequest         ChatRequest
+	chatResult          ChatResult
 }
+
+// ChatRequest is one ACP chat turn; see phase.ChatRequest.
+type ChatRequest = phase.ChatRequest
+
+// ChatResult is the outcome of one ACP chat turn; see phase.ChatResult.
+type ChatResult = phase.ChatResult
 
 // FinalizeOutcome describes the finalize base sync; see phase.FinalizeOutcome.
 type FinalizeOutcome = phase.FinalizeOutcome
@@ -210,6 +219,10 @@ type genAgentsPhaseRunner interface {
 	Run(ctx context.Context) error
 }
 
+type chatPhaseRunner interface {
+	Run(ctx context.Context, req phase.ChatRequest) (phase.ChatResult, error)
+}
+
 type runnerPhases struct {
 	task          taskPhaseRunner
 	taskValidator taskPlanValidator
@@ -219,6 +232,7 @@ type runnerPhases struct {
 	report        reportPhaseRunner
 	planCreation  planCreationPhaseRunner
 	genAgents     genAgentsPhaseRunner
+	chat          chatPhaseRunner
 }
 
 // New creates a new Runner with the given configuration and shared phase holder.
@@ -316,10 +330,13 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 	genAgentsPhase := phase.NewGenAgentsPhase(phase.GenAgentsPhaseOpts{
 		Cfg: phaseCfg, Log: log, Exec: execs.Task, Policy: policy, Prompts: prompts, PhaseHolder: holder,
 	})
+	chatPhase := phase.NewChatPhase(phase.ChatPhaseOpts{
+		Cfg: phaseCfg, Log: log, Exec: review, Policy: policy, Prompts: prompts,
+	})
 	phases := runnerPhases{
 		task: taskPhase, taskValidator: taskPhase, review: reviewPhase,
 		external: externalPhase, finalize: finalizePhase, report: reportPhase, planCreation: planCreationPhase,
-		genAgents: genAgentsPhase,
+		genAgents: genAgentsPhase, chat: chatPhase,
 	}
 
 	runner = &Runner{
@@ -360,6 +377,17 @@ func (r *Runner) SetFinalizeGit(g FinalizeGit) {
 	r.deps.FinalizeGit = g
 }
 
+// SetChatRequest sets the turn ModeACPChat runs.
+func (r *Runner) SetChatRequest(req ChatRequest) {
+	r.chatRequest = req
+}
+
+// ChatResult returns the outcome of the last ModeACPChat run; it is empty after a failed or
+// canceled turn, so the caller keeps its previous provider session id.
+func (r *Runner) ChatResult() ChatResult {
+	return r.chatResult
+}
+
 // SetReviewCheckpoints configures durable review-stage checkpoint storage.
 func (r *Runner) SetReviewCheckpoints(store ReviewCheckpointStore) {
 	r.checkpoints = store
@@ -392,6 +420,7 @@ func (r *Runner) SetPauseHandler(fn func(ctx context.Context) bool) {
 // Run executes the main loop based on configured mode.
 func (r *Runner) Run(ctx context.Context) error {
 	r.finalizeOutcome = FinalizeOutcome{}
+	r.chatResult = ChatResult{}
 	r.prepareReviewResume(ctx)
 	r.startRunRecord()
 	defer r.finishRunRecord()
@@ -417,6 +446,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err := r.phases.genAgents.Run(ctx); err != nil {
 			return fmt.Errorf("agent generation phase: %w", err)
 		}
+		return nil
+	case ModeACPChat:
+		result, err := r.phases.chat.Run(ctx, r.chatRequest)
+		if err != nil {
+			return fmt.Errorf("chat phase: %w", err)
+		}
+		r.chatResult = result
 		return nil
 	default:
 		return fmt.Errorf("unknown mode: %s", r.cfg.Mode)

@@ -2885,6 +2885,6 @@ func TestClaudeExecutor_Run_SessionID(t *testing.T) {
 func TestWithResumeSession(t *testing.T) {
 	ctx := context.Background()
 	assert.Equal(t, ctx, WithResumeSession(ctx, ""), "empty id leaves the context unchanged")
-	assert.Empty(t, resumeSession(ctx))
-	assert.Equal(t, "abc", resumeSession(WithResumeSession(ctx, "abc")))
+	assert.Empty(t, ResumeSession(ctx))
+	assert.Equal(t, "abc", ResumeSession(WithResumeSession(ctx, "abc")))
 }

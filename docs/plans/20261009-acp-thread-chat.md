@@ -188,12 +188,12 @@
 - [x] run `make test </dev/null` and `make lint` - must pass before task 3
 
 ### Task 3: Add ModeACPChat and ChatPhase
-- [ ] add `processor.ModeACPChat` in `pkg/processor/runner.go` and dispatch it like `ModeGenAgents`, through the review executor
-- [ ] create `pkg/processor/phase/chat.go` with `ChatPhase` running one session with the rendered prompt and resume id, under the shared retry and limit policy, returning the answer text, the detected signal, and the provider session id
-- [ ] on a resume failure (non-zero exit or error result while a resume id was set, not a limit or cancellation), retry once with a fresh session and the full context, clearing the id
-- [ ] return no session id when the context was canceled, so the caller keeps the previous one
-- [ ] write tests with a mock executor: fresh turn, resumed turn, resume failure then fresh success, limit error goes through the limit policy, cancellation returns no id, `ACP_MERGE`/`ACP_PR` detected and stripped from the answer
-- [ ] run `make test </dev/null` and `make lint` - must pass before task 4
+- [x] add `processor.ModeACPChat` in `pkg/processor/runner.go` and dispatch it like `ModeGenAgents`, through the review executor
+- [x] create `pkg/processor/phase/chat.go` with `ChatPhase` running one session with the rendered prompt and resume id, under the shared retry and limit policy, returning the answer text, the detected signal, and the provider session id
+- [x] on a resume failure (non-zero exit or error result while a resume id was set, not a limit or cancellation), retry once with a fresh session and the full context, clearing the id
+- [x] return no session id when the context was canceled, so the caller keeps the previous one
+- [x] write tests with a mock executor: fresh turn, resumed turn, resume failure then fresh success, limit error goes through the limit policy, cancellation returns no id, `ACP_MERGE`/`ACP_PR` detected and stripped from the answer
+- [x] run `make test </dev/null` and `make lint` - must pass before task 4
 
 ### Task 4: Add the ACP session state file
 - [ ] create `cmd/loopai/acp_state.go` with `acpSessionState{Provider, ProviderSessionID, LastRun *acpLastRun}` and `acpLastRun{Plan, Branch, Base, Tip, Report, MergeSummary, MergeSkipped}`, stored at `.loopai/acp/<session-id>.json` relative to the session cwd

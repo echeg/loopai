@@ -50,8 +50,8 @@ func WithResumeSession(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, resumeSessionKey{}, id)
 }
 
-// resumeSession returns the session id set by WithResumeSession, or "".
-func resumeSession(ctx context.Context) string {
+// ResumeSession returns the session id set by WithResumeSession, or "".
+func ResumeSession(ctx context.Context) string {
 	id, _ := ctx.Value(resumeSessionKey{}).(string)
 	return id
 }
@@ -507,7 +507,7 @@ func (e *ClaudeExecutor) Run(ctx context.Context, prompt string) Result {
 	// that replaces the defaults; any --resume already there is dropped to avoid a conflict.
 	resumeID := ""
 	if !e.NoResume {
-		resumeID = resumeSession(ctx)
+		resumeID = ResumeSession(ctx)
 	}
 	if resumeID != "" {
 		args = stripFlag(args, "--resume")

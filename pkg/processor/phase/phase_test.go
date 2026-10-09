@@ -90,12 +90,18 @@ func TestPhasesRunUnderTheirOwnProvider(t *testing.T) {
 			_, err = report.Run(t.Context(), "facts")
 			require.NoError(t, err)
 
+			chatPolicy := newTestPolicy(cfg, log)
+			chat := NewChatPhase(ChatPhaseOpts{Cfg: cfg, Log: log, Exec: run(""), Policy: chatPolicy, Prompts: testPrompts{}})
+			_, err = chat.Run(t.Context(), ChatRequest{Message: "hi"})
+			require.NoError(t, err)
+
 			assertToolNames(t, tc.wantTask, taskPolicy, "task")
 			assertToolNames(t, tc.wantTask, planPolicy, "plan creation runs the task-slot executor")
 			assertToolNames(t, tc.wantTask, genPolicy, "gen agents")
 			assertToolNames(t, tc.wantReview, reviewPolicy, "review")
 			assertToolNames(t, tc.wantReview, finalizePolicy, "finalize")
 			assertToolNames(t, tc.wantReview, reportPolicy, "report")
+			assertToolNames(t, tc.wantReview, chatPolicy, "chat")
 		})
 	}
 }

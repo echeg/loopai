@@ -192,7 +192,7 @@ func (e *CodexExecutor) resumeID(ctx context.Context) string {
 	if e.NoResume {
 		return ""
 	}
-	return resumeSession(ctx)
+	return ResumeSession(ctx)
 }
 
 // codexFilterState tracks header separator count for filtering.

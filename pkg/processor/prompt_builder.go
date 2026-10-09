@@ -5,6 +5,7 @@ import (
 
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/plan"
+	"github.com/umputun/ralphex/pkg/processor/phase"
 	"github.com/umputun/ralphex/pkg/status"
 )
 
@@ -123,14 +124,8 @@ func (b *promptBuilder) GenAgentsPrompt() string {
 }
 
 // ACPChatContext is what the first turn of an ACP chat provider session knows about the
-// thread: its branch and base, the branch's commits, and the last run's report and merge outcome.
-type ACPChatContext struct {
-	Branch       string
-	Base         string
-	Log          string
-	Report       string
-	MergeOutcome string
-}
+// thread; see phase.ChatContext.
+type ACPChatContext = phase.ChatContext
 
 // ACPChatPrompt renders one ACP chat turn. A resumed provider session already holds the
 // context and rules, so it gets the user message alone; a fresh one gets the full template.
