@@ -214,14 +214,15 @@
 - [x] ➕ signatures as built: `acpRequestedMerge(ctx, gitSvc, base, lastRun)` (no config: it applies no policy gate) and `acpRequestedPR(ctx, gitSvc, cfg, base, lastRun)` (config for `plans_dir`); `acpActionBase` resolves the base; an already-contained branch is `acpMergeResult.upToDate`, and the auto-merge and requested merge share `acpFeatureBranch` and `acpMergeIntoBase`
 
 ### Task 6: Route ACP prompts to launch, command, or chat
-- [ ] in `cmd/loopai/acp.go` add `acpCommand(text) (kind string, ok bool)` matching trimmed, case-insensitive `merge`, `мерж`, `pr`, `пр`
-- [ ] in `acpRunner.run` route launch → existing path; command → enter the session cwd, load session config and state, run `acpRequestedMerge`/`acpRequestedPR`, return its message; anything else → `runChat`
-- [ ] create `cmd/loopai/acp_chat.go` with `runChat`: enter cwd, load session config and state, resolve the review spec, build the chat request through the same non-interactive wiring the run uses (`LogDecorator`/`PhaseObserver` on the sink, keep-awake holder), run `ModeACPChat` with the state's provider session id (dropped when the resolved provider differs from the stored one), save the new session id unless canceled, execute the signaled action and append its message, and return the stripped answer as `acp.Result.Message`; add the wrapper note line when resume is unavailable
-- [ ] gate refusals end the turn with a message; repository-open and config errors fail the turn
-- [ ] remove `acpNotALaunch`; rewrite `acpNextSteps` to "write here: questions, edits, `merge`, `pr`"; keep `acpPromptUsage` for malformed launches
-- [ ] write tests: routing table (`docs/plans/x.md` launch, `--task-model ...` launch, `merge`, ` PR `, `мерж`, `test` → chat, `thanks` → chat); chat turn with a stub executor saves the session id and returns the stripped answer; second turn passes the stored id; canceled chat keeps the old id; provider change drops the id; `ACP_MERGE` signal runs the merge and appends its result; update the existing test asserting `acpNotALaunch` (`cmd/loopai/acp_test.go:865`)
-- [ ] verify in `pkg/acp` that a chat turn's final message is sent after its thought chunks, and add a sink test if ordering needed a change
-- [ ] run `make test </dev/null` and `make lint` - must pass before task 7
+- [x] in `cmd/loopai/acp.go` add `acpCommand(text) (kind string, ok bool)` matching trimmed, case-insensitive `merge`, `мерж`, `pr`, `пр`
+- [x] in `acpRunner.run` route launch → existing path; command → enter the session cwd, load session config and state, run `acpRequestedMerge`/`acpRequestedPR`, return its message; anything else → `runChat`
+- [x] create `cmd/loopai/acp_chat.go` with `runChat`: enter cwd, load session config and state, resolve the review spec, build the chat request through the same non-interactive wiring the run uses (`LogDecorator`/`PhaseObserver` on the sink, keep-awake holder), run `ModeACPChat` with the state's provider session id (dropped when the resolved provider differs from the stored one), save the new session id unless canceled, execute the signaled action and append its message, and return the stripped answer as `acp.Result.Message`; add the wrapper note line when resume is unavailable
+- [x] gate refusals end the turn with a message; repository-open and config errors fail the turn
+- [x] remove `acpNotALaunch`; rewrite `acpNextSteps` to "write here: questions, edits, `merge`, `pr`"; keep `acpPromptUsage` for malformed launches
+- [x] write tests: routing table (`docs/plans/x.md` launch, `--task-model ...` launch, `merge`, ` PR `, `мерж`, `test` → chat, `thanks` → chat); chat turn with a stub executor saves the session id and returns the stripped answer; second turn passes the stored id; canceled chat keeps the old id; provider change drops the id; `ACP_MERGE` signal runs the merge and appends its result; update the existing test asserting `acpNotALaunch` (`cmd/loopai/acp_test.go:865`)
+- [x] verify in `pkg/acp` that a chat turn's final message is sent after its thought chunks, and add a sink test if ordering needed a change
+- [x] run `make test </dev/null` and `make lint` - must pass before task 7
+- [x] ➕ as built: `acpRoute` returns launch, `merge`, `pr`, or chat and `run` dispatches to `runPlan`/`runCommand`/`runChat`; `openSession` is shared by commands and chat; `ModeACPChat` joins the review-provider branches of `modePhaseProviders`, `modePhaseBanners`, and `runHeaderParams`, skips reviewer resolution like gen-agents, and logs to `.loopai/progress/progress-acp-chat.txt`; the sink needed no ordering change (`Finish` flushes reasoning before `Message`)
 
 ### Task 7: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented

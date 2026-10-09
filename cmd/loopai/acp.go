@@ -158,14 +158,40 @@ type acpRunner struct {
 	out  io.Writer // human-readable run output
 }
 
-// run executes one prompt: it parses the plan and pass-through flags, enters the session's
-// working directory, loads config there, and runs the plan in place through the normal execution
-// path with the sink observing sections, output, and phases. A message that is not a plan launch
-// ends its turn normally with guidance; a malformed launch fails it.
+// run executes one prompt. A plan launch runs the plan; the bare merge and pr commands run the
+// requested action without a model; anything else is a chat turn answered in the thread.
 func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Sink) (acp.Result, error) {
-	if !acpLooksLikeLaunch(req.Text, req.Cwd) {
-		return acp.Result{Message: acpNotALaunch + "\n\n" + acpPromptUsage}, nil
+	switch route := acpRoute(req.Text, req.Cwd); route {
+	case acpRouteLaunch:
+		return a.runPlan(ctx, req, sink)
+	case acpCommandMerge, acpCommandPR:
+		return a.runCommand(ctx, req, route)
+	default:
+		return a.runChat(ctx, req, sink)
 	}
+}
+
+// prompt routes besides the two commands
+const (
+	acpRouteLaunch = "launch"
+	acpRouteChat   = "chat"
+)
+
+// acpRoute decides what a prompt is: a plan launch, the merge or pr command, or a chat turn.
+func acpRoute(text, cwd string) string {
+	if acpLooksLikeLaunch(text, cwd) {
+		return acpRouteLaunch
+	}
+	if kind, ok := acpCommand(text); ok {
+		return kind
+	}
+	return acpRouteChat
+}
+
+// runPlan executes a plan launch: it parses the plan and pass-through flags, enters the session's
+// working directory, loads config there, and runs the plan in place through the normal execution
+// path with the sink observing sections, output, and phases. A malformed launch fails its turn.
+func (a *acpRunner) runPlan(ctx context.Context, req acp.PromptRequest, sink *acp.Sink) (acp.Result, error) {
 	prompt, err := parseACPPrompt(req.Text)
 	if err != nil {
 		return acp.Result{Message: fmt.Sprintf("%v\n\n%s", err, acpPromptUsage)}, fmt.Errorf("malformed prompt: %w", err)
@@ -264,14 +290,9 @@ func loadACPSessionConfig(o opts) (*config.Config, error) {
 	return cfg, nil
 }
 
-// acpNotALaunch answers a thread message that is not a plan launch, such as a question typed after
-// a run: the thread is a plan launcher, so it says where follow-up belongs instead of failing a turn.
-const acpNotALaunch = "This thread runs loopai plans and does not answer questions. To ask about a run or " +
-	"continue the work, open a new session on this worktree and choose the model there."
-
 // acpLooksLikeLaunch reports whether a prompt was meant as a plan launch, so a malformed launch or
-// a missing plan still fails its turn while anything else, a one-word reply included, gets the
-// acpNotALaunch reply. It is a launch when the first token is an option, names a Markdown file, or
+// a missing plan still fails its turn while anything else, a one-word reply included, becomes a
+// command or a chat turn. It is a launch when the first token is an option, names a Markdown file, or
 // names an existing file relative to cwd; a directory is never a plan.
 func acpLooksLikeLaunch(text, cwd string) bool {
 	fields := strings.Fields(text)
@@ -381,10 +402,9 @@ func acpStages(cfg *config.Config, review externalReviewSelection) []acp.Stage {
 	return stages
 }
 
-// acpNextSteps closes the final message of a failed run or a skipped merge: the thread is a plan
-// launcher, so follow-up work belongs in a new session with a model chosen there.
-const acpNextSteps = "## Next steps\n\nThis thread only launches loopai plans. For follow-up work or questions, " +
-	"open a new session on this worktree and choose the model there."
+// acpNextSteps closes the final message of a failed run or a skipped merge: follow-up happens in
+// the same thread, as a chat message or one of the two commands.
+const acpNextSteps = "## Next steps\n\nWrite here: questions, edits, `merge`, `pr`."
 
 // acpRunResult turns an execution outcome into the prompt result. The completion report becomes
 // the final message, followed by the auto-merge outcome when one was attempted and by follow-up

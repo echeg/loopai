@@ -858,8 +858,9 @@ printf '%s\n' '{"type":"result","result":""}'
 	}
 }
 
-// TestServeACPAnswersNonLaunchMessages sends a question after nothing ran: it ends its turn with the
-// launcher guidance, while a malformed launch in the same session still fails its turn.
+// TestServeACPAnswersNonLaunchMessages sends messages that are not launches after nothing ran: each
+// becomes a chat turn that ends normally, while a malformed launch in the same session still fails.
+// The fixture's claude command is a wrapper, so every answer carries the no-resume note.
 func TestServeACPAnswersNonLaunchMessages(t *testing.T) {
 	f := newACPFixture(t, acpTaskClaude)
 	c := startACPServer(t.Context(), t, opts{ConfigDir: f.cfgDir}, io.Discard)
@@ -873,10 +874,14 @@ func TestServeACPAnswersNonLaunchMessages(t *testing.T) {
 
 	assert.Contains(t, msg, `unsupported option "--worktree"`)
 	assert.Contains(t, chainMsg, "plan chains are not supported", "a chain prompt is still a failed launch")
-	assert.Contains(t, c.messages(), acpNotALaunch+"\n\n"+acpPromptUsage)
+	assert.Equal(t, 2, strings.Count(c.messages(), acpChatEmptyAnswer+"\n\n"+acpChatNoResumeNote),
+		"both chat turns answer, the stub's signal-only reply standing in as an empty answer")
+	state, err := loadACPState(f.repo, sid, io.Discard)
+	require.NoError(t, err)
+	assert.Empty(t, state.ProviderSessionID, "a wrapper reports no session to resume")
 	data, err := os.ReadFile(f.planFile)
 	require.NoError(t, err)
-	assert.Equal(t, acpTwoTaskPlan, string(data), "neither message runs the plan")
+	assert.Equal(t, acpTwoTaskPlan, string(data), "no message runs the plan")
 }
 
 // TestServeACPForcesWorktreeT3AndOrcaOff runs a prompt in a project whose config enables a

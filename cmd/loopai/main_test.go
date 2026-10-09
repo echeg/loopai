@@ -5779,6 +5779,20 @@ func TestRunHeaderParams(t *testing.T) {
 		assert.Equal(t, "codex", runHeaderParams(opts{}, split, processor.ModeCodexOnly).Executor)
 	})
 
+	t.Run("acp chat records the review spec alone", func(t *testing.T) {
+		split := &config.Config{TaskModel: "claude:opus", TaskProvider: config.ExternalReviewToolClaude,
+			ReviewModel: "codex:gpt-5.5", ReviewProvider: config.ExecutorCodex}
+		assert.Equal(t, progress.RunParams{Executor: "codex", ReviewModel: "codex:gpt-5.5"},
+			runHeaderParams(opts{}, split, processor.ModeACPChat), "the chat runs on the review block's provider")
+		inherited := &config.Config{TaskModel: "claude:opus"}
+		assert.Equal(t, progress.RunParams{ReviewModel: "claude:opus"}, runHeaderParams(opts{}, inherited, processor.ModeACPChat),
+			"an unset review spec inherits task_model")
+		assert.Equal(t, []string{config.ExecutorCodex}, modePhaseProviders(split, processor.ModeACPChat))
+		chain, err := resolveReviewerChain(&config.Config{ExternalReviewers: "codex", ExternalReviewersSet: true}, processor.ModeACPChat)
+		require.NoError(t, err)
+		assert.Empty(t, chain.Reviewers, "a chat turn requires no reviewer binary")
+	})
+
 	t.Run("plan mode records effective plan model", func(t *testing.T) {
 		got := runHeaderParams(parseTestOpts(t, "--plan-model", "claude:opus:high"), &config.Config{}, processor.ModePlan)
 		assert.Equal(t, progress.RunParams{PlanModel: "claude:opus:high"}, got)

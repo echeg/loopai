@@ -3147,8 +3147,9 @@ func resolveReviewerChain(cfg *config.Config, mode processor.Mode) (externalRevi
 		return externalReviewSelection{Resolved: true}, nil
 	}
 	// modes that never run a review phase must not require reviewer binaries: --gen-agents
-	// only writes agent files, so a configured reviewer missing from PATH is irrelevant to it.
-	if mode == processor.ModeTasksOnly || mode == processor.ModeGenAgents {
+	// only writes agent files and an ACP chat turn answers in one session, so a configured
+	// reviewer missing from PATH is irrelevant to them.
+	if mode == processor.ModeTasksOnly || mode == processor.ModeGenAgents || mode == processor.ModeACPChat {
 		return externalReviewSelection{Resolved: true}, nil
 	}
 
@@ -3225,7 +3226,7 @@ func modePhaseProviders(cfg *config.Config, mode processor.Mode) []string {
 		add(cfg.ReviewProvider)
 	case processor.ModeTasksOnly, processor.ModeGenAgents:
 		add(cfg.TaskProvider)
-	case processor.ModeReview, processor.ModeCodexOnly:
+	case processor.ModeReview, processor.ModeCodexOnly, processor.ModeACPChat:
 		add(cfg.ReviewProvider)
 	default:
 		add(cfg.TaskProvider)
@@ -4292,7 +4293,7 @@ func modePhaseBanners(o opts, cfg *config.Config, mode processor.Mode) []phaseBa
 		return []phaseBanner{resolvePhaseBanner("plan", resolvePlanSpec(o, cfg))}
 	case processor.ModeTasksOnly, processor.ModeGenAgents:
 		return []phaseBanner{task}
-	case processor.ModeReview, processor.ModeCodexOnly:
+	case processor.ModeReview, processor.ModeCodexOnly, processor.ModeACPChat:
 		return []phaseBanner{review}
 	default:
 		return []phaseBanner{task, review}
@@ -4350,6 +4351,11 @@ func runHeaderParams(o opts, cfg *config.Config, mode processor.Mode, external .
 		// one analysis session driven by task_model; no review phase runs, so do not
 		// print a review model the mode never uses
 		p.TaskModel = resolveSpec(o.TaskModel, cfg.TaskModel)
+		return p
+	}
+	if mode == processor.ModeACPChat {
+		// one session driven by the review spec, which inherits task_model when unset
+		p.ReviewModel = resolveReviewSpec(o, cfg)
 		return p
 	}
 	p.TaskModel = resolveSpec(o.TaskModel, cfg.TaskModel)
