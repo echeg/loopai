@@ -2,17 +2,26 @@ package main
 
 import (
 	"bytes"
+	"flag"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/pmezard/go-difflib/difflib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// updateSkillContract rewrites testdata/skill-contract.golden from the current constant and surface.
+var updateSkillContract = flag.Bool("update", false, "rewrite testdata/skill-contract.golden")
+
+const skillContractGolden = "testdata/skill-contract.golden"
 
 // skillContractMainEnv makes the test binary run main() with the unit-separator-delimited arguments it holds.
 const skillContractMainEnv = "LOOPAI_TEST_SKILL_CONTRACT_MAIN"
@@ -120,4 +129,92 @@ func TestPrintSkillContract(t *testing.T) {
 
 func TestIsStandaloneCommandSkillContract(t *testing.T) {
 	assert.True(t, isStandaloneCommand(opts{SkillContract: true}))
+}
+
+func TestSkillContract(t *testing.T) {
+	surface, err := skillContractSurface()
+	require.NoError(t, err)
+	current := fmt.Sprintf("contract: %d\n\n%s", skillContract, surface)
+
+	if *updateSkillContract {
+		require.NoError(t, os.WriteFile(skillContractGolden, []byte(current), 0o600))
+		return
+	}
+
+	data, err := os.ReadFile(skillContractGolden)
+	require.NoError(t, err, "golden missing; run go test ./cmd/loopai -run TestSkillContract -update")
+	golden := string(data)
+
+	header, goldenSurface, _ := strings.Cut(golden, "\n\n")
+	require.Equal(t, fmt.Sprintf("contract: %d", skillContract), header,
+		"skillContract changed; update the golden with go test ./cmd/loopai -run TestSkillContract -update")
+
+	if goldenSurface != surface {
+		diff, diffErr := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+			A: difflib.SplitLines(goldenSurface), B: difflib.SplitLines(surface),
+			FromFile: skillContractGolden, ToFile: "current surface", Context: 2,
+		})
+		require.NoError(t, diffErr)
+		t.Fatalf("contract surface changed; bump skillContract if skills depend on the change, "+
+			"then run go test ./cmd/loopai -run TestSkillContract -update\n%s", diff)
+	}
+}
+
+func TestSkillContractSurface(t *testing.T) {
+	surface, err := skillContractSurface()
+	require.NoError(t, err)
+
+	section := func(name string) []string {
+		_, rest, found := strings.Cut(surface, name+":\n")
+		require.True(t, found, "section %s missing", name)
+		body, _, _ := strings.Cut(rest, "\n\n")
+		return strings.Split(strings.TrimSuffix(body, "\n"), "\n")
+	}
+
+	flagsSection := section("flags")
+	assert.Contains(t, flagsSection, "--skill-contract")
+	assert.Contains(t, flagsSection, "--task-model")
+	for _, removed := range []string{"--codex", "--codex-only", "--external-review-tool", "--external-review-model"} {
+		assert.NotContains(t, flagsSection, removed, "hidden removed flag must be excluded")
+	}
+	assert.True(t, slices.IsSorted(flagsSection), "flags sorted")
+
+	keys := section("config keys")
+	assert.Contains(t, keys, "task_model", "a commented default key is included")
+	assert.Contains(t, keys, "claude_command", "an uncommented key is included")
+	assert.True(t, slices.IsSorted(keys), "keys sorted")
+	assert.Len(t, slices.Compact(slices.Clone(keys)), len(keys), "keys deduplicated")
+
+	headings := section("report headings")
+	assert.Equal(t, []string{"Summary", "Change scope", "Evidence", "Risk", "Merge danger",
+		"Migrations and operational steps", "Plan deviation", "Backlog", "External review", "Validation"}, headings,
+		"headings keep file order")
+
+	again, err := skillContractSurface()
+	require.NoError(t, err)
+	assert.Equal(t, surface, again, "deterministic across calls")
+}
+
+func TestConfigKeyLine(t *testing.T) {
+	tests := []struct {
+		line, want string
+	}{
+		{"claude_command = claude", "claude_command"},
+		{"# task_model =", "task_model"},
+		{"#   codex_args = -c windows.sandbox=\"elevated\"", "codex_args"},
+		{"# example: codex_args = -c x", ""},
+		{"# claude_command: the command to run", ""},
+		{"# (task_model = opus:high must become claude:opus:high)", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.line, func(t *testing.T) {
+			m := configKeyLine.FindStringSubmatch(tc.line)
+			if tc.want == "" {
+				assert.Nil(t, m)
+				return
+			}
+			require.NotNil(t, m)
+			assert.Equal(t, tc.want, m[1])
+		})
+	}
 }

@@ -161,11 +161,11 @@
 - [x] run `make test </dev/null` and `make lint` - must pass before task 2
 
 ### Task 2: Add the contract surface fingerprint test
-- [ ] in `cmd/loopai/skill_contract.go` add `skillContractSurface() (string, error)` rendering three sorted sections: `flags:` (long names from the go-flags parser over `opts`, skipping hidden options), `config keys:` (keys from embedded `pkg/config/defaults/config`, commented `# key = value` lines included, since the defaults file documents keys commented out), `report headings:` (`## ` lines of the embedded `report.txt` with its `# ` comment prefix stripped, in file order)
-- [ ] create `cmd/loopai/testdata/skill-contract.golden` with `contract: 1` on the first line followed by the rendered surface
-- [ ] write `TestSkillContract` in `cmd/loopai/skill_contract_test.go`: fails when the golden `contract:` differs from `skillContract`; fails when the surface differs, printing a unified diff plus "contract surface changed; bump skillContract if skills depend on the change, then run go test ./cmd/loopai -run TestSkillContract -update"; a package-level `-update` flag rewrites the golden with the current constant and surface
-- [ ] write tests for the surface renderer: hidden removed flags (`--codex`, `--codex-only`) absent; a known key (`task_model`) and heading (`Merge danger`) present; output deterministic across calls
-- [ ] run `make test </dev/null` and `make lint` - must pass before task 3
+- [x] in `cmd/loopai/skill_contract.go` add `skillContractSurface() (string, error)` rendering three sorted sections: `flags:` (long names from the go-flags parser over `opts`, skipping hidden options), `config keys:` (keys from embedded `pkg/config/defaults/config`, commented `# key = value` lines included, since the defaults file documents keys commented out), `report headings:` (`## ` lines of the embedded `report.txt` with its `# ` comment prefix stripped, in file order)
+- [x] create `cmd/loopai/testdata/skill-contract.golden` with `contract: 1` on the first line followed by the rendered surface
+- [x] write `TestSkillContract` in `cmd/loopai/skill_contract_test.go`: fails when the golden `contract:` differs from `skillContract`; fails when the surface differs, printing a unified diff plus "contract surface changed; bump skillContract if skills depend on the change, then run go test ./cmd/loopai -run TestSkillContract -update"; a package-level `-update` flag rewrites the golden with the current constant and surface
+- [x] write tests for the surface renderer: hidden removed flags (`--codex`, `--codex-only`) absent; a known key (`task_model`) and heading (`Merge danger`) present; output deterministic across calls
+- [x] run `make test </dev/null` and `make lint` - must pass before task 3
 
 ### Task 3: Add the shared contract snippet to every skill
 - [ ] define the snippet once (in this plan's Technical Details) and insert it as the first step of all 10 `assets/claude/skills/*/SKILL.md`, byte-identical, inside a fenced bash block followed by the identical instruction paragraph; for `loopai-update` add its variant sentence that it reports the line in its summary instead of warning

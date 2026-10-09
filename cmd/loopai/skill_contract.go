@@ -3,13 +3,26 @@ package main
 import (
 	"fmt"
 	"io"
+	"regexp"
+	"slices"
+	"strings"
+
+	"github.com/jessevdk/go-flags"
+
+	"github.com/umputun/ralphex/pkg/config"
 )
 
 // skillContract is the version of the binary surface the Claude and Codex skills depend on: CLI
 // flags, config keys, and the completion-report headings. every skill embeds the number it was
 // written for and warns when `loopai --skill-contract` answers differently. bump it, together with
 // `expected=` in every skill, whenever a surface change affects what a skill tells the model to do.
+// TestSkillContract fingerprints that surface against testdata/skill-contract.golden, so a change
+// cannot land without either a bump or a deliberate `-update`.
 const skillContract = 1
+
+// configKeyLine matches a key assignment in the embedded defaults config, commented or not: the
+// file documents most keys as `# key =` lines left at their built-in default.
+var configKeyLine = regexp.MustCompile(`^#?\s*([a-z][a-z0-9_]*)\s*=`)
 
 // skillContractRequested reports whether the raw arguments ask for the skill contract. main needs
 // the answer before flag parsing, because the version banner is printed first and stdout must carry
@@ -21,4 +34,69 @@ func skillContractRequested(args []string) bool {
 // printSkillContract writes the contract number alone on one line, the form the skills parse.
 func printSkillContract(w io.Writer) {
 	fmt.Fprintln(w, skillContract)
+}
+
+// skillContractSurface renders the binary surface the skills depend on as readable text: visible
+// long flags, config keys of the embedded defaults, and the level-two headings of the embedded
+// report prompt. flags and keys are sorted; headings keep file order, since their order is part of
+// the report contract.
+func skillContractSurface() (string, error) {
+	var b strings.Builder
+
+	b.WriteString("flags:\n")
+	for _, name := range visibleLongFlags() {
+		b.WriteString("--" + name + "\n")
+	}
+
+	cfg, err := config.EmbeddedDefault("config")
+	if err != nil {
+		return "", fmt.Errorf("skill contract surface: %w", err)
+	}
+	keys := []string{}
+	for line := range strings.Lines(string(cfg)) {
+		if m := configKeyLine.FindStringSubmatch(line); len(m) == 2 {
+			keys = append(keys, m[1])
+		}
+	}
+	slices.Sort(keys)
+	keys = slices.Compact(keys)
+	b.WriteString("\nconfig keys:\n")
+	for _, k := range keys {
+		b.WriteString(k + "\n")
+	}
+
+	report, err := config.EmbeddedDefault("prompts/report.txt")
+	if err != nil {
+		return "", fmt.Errorf("skill contract surface: %w", err)
+	}
+	b.WriteString("\nreport headings:\n")
+	for line := range strings.Lines(string(report)) {
+		if heading, ok := strings.CutPrefix(strings.TrimRight(line, "\r\n"), "## "); ok {
+			b.WriteString(strings.TrimSpace(heading) + "\n")
+		}
+	}
+	return b.String(), nil
+}
+
+// visibleLongFlags returns the sorted long names of every non-hidden option in opts. hidden
+// options are the removed spellings kept only to print a migration error.
+func visibleLongFlags() []string {
+	var o opts
+	parser := flags.NewParser(&o, flags.None)
+	var names []string
+	var walk func(groups []*flags.Group)
+	walk = func(groups []*flags.Group) {
+		for _, g := range groups {
+			for _, opt := range g.Options() {
+				if opt.Hidden || opt.LongName == "" {
+					continue
+				}
+				names = append(names, opt.LongName)
+			}
+			walk(g.Groups())
+		}
+	}
+	walk(parser.Groups())
+	slices.Sort(names)
+	return slices.Compact(names)
 }
