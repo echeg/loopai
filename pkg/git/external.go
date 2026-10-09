@@ -1305,7 +1305,7 @@ func isLoopaiRuntimePath(path string) bool {
 }
 
 func loopaiRuntimePaths() []string {
-	return []string{".loopai/progress", ".loopai/worktrees"}
+	return []string{".loopai/progress", ".loopai/worktrees", ".loopai/acp"}
 }
 
 func loopaiRuntimeExclusionPathspecs() []string {

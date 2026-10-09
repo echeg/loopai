@@ -196,12 +196,13 @@
 - [x] run `make test </dev/null` and `make lint` - must pass before task 4
 
 ### Task 4: Add the ACP session state file
-- [ ] create `cmd/loopai/acp_state.go` with `acpSessionState{Provider, ProviderSessionID, LastRun *acpLastRun}` and `acpLastRun{Plan, Branch, Base, Tip, Report, MergeSummary, MergeSkipped}`, stored at `.loopai/acp/<session-id>.json` relative to the session cwd
-- [ ] implement `loadACPState` (missing file → empty state; corrupt file → warning on `a.out` and empty state) and `saveACPState` through `writeFileAtomic` with mode `0600`; reject a session id that is not a safe single path segment
-- [ ] after a plan run in `acpRunner.run`, write `last_run` from the outcome and merge result and clear `ProviderSessionID`
-- [ ] ➕ add `.loopai/acp` to `loopaiRuntimePaths` (`pkg/git`) so `EnsureLocalGitignore` ignores the state directory; otherwise the state file is an untracked path that `acpCleanWorktreeSkip`'s `UntrackedFiles` gate counts, skipping every merge
-- [ ] write tests: create, atomic rewrite, mode 0600, corrupt file recovery, unsafe session id rejected, a new run resets the provider session id, state reloads for the same session id in a fresh `acpRunner` (simulating `session/load` after restart)
-- [ ] run `make test </dev/null` and `make lint` - must pass before task 5
+- [x] create `cmd/loopai/acp_state.go` with `acpSessionState{Provider, ProviderSessionID, LastRun *acpLastRun}` and `acpLastRun{Plan, Branch, Base, Tip, Report, MergeSummary, MergeSkipped}`, stored at `.loopai/acp/<session-id>.json` relative to the session cwd
+- [x] implement `loadACPState` (missing file → empty state; corrupt file → warning on `a.out` and empty state) and `saveACPState` through `writeFileAtomic` with mode `0600`; reject a session id that is not a safe single path segment
+- [x] after a plan run in `acpRunner.run`, write `last_run` from the outcome and merge result and clear `ProviderSessionID`
+- [x] ➕ add `.loopai/acp` to `loopaiRuntimePaths` (`pkg/git`) so `EnsureLocalGitignore` ignores the state directory; otherwise the state file is an untracked path that `acpCleanWorktreeSkip`'s `UntrackedFiles` gate counts, skipping every merge
+- [x] ➕ upgrade an untracked `.loopai/.gitignore` that holds the previous generated content (`progress/`, `worktrees/`) in place, so existing checkouts pick up `acp/` without falling into the custom-file fallback; `--init` writes the new content too
+- [x] write tests: create, atomic rewrite, mode 0600, corrupt file recovery, unsafe session id rejected, a new run resets the provider session id, state reloads for the same session id in a fresh `acpRunner` (simulating `session/load` after restart)
+- [x] run `make test </dev/null` and `make lint` - must pass before task 5
 
 ### Task 5: Add explicit merge and PR actions
 - [ ] in `cmd/loopai/acp_merge.go` add `acpRequestedMerge(ctx, gitSvc, cfg, base, lastRun)` reusing the repository gates and lock of `acpAutoMerge` without `acpMergePolicySkip`; merge the feature's current HEAD by hash through `MergeBranchTipContext`; list commits after `lastRun.Tip` when HEAD moved; return "already in <base>" when HEAD is an ancestor of base

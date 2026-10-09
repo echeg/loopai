@@ -53,4 +53,7 @@ __pycache__/
 
 # loopai worktrees
 .loopai/worktrees/
+
+# loopai ACP session state
+.loopai/acp/
 AGENTS.md

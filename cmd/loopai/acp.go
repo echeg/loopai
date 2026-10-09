@@ -206,7 +206,28 @@ func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Si
 		merged := a.autoMerge(ctx, cfg, execReq)
 		merge = &merged
 	}
+	a.recordLastRun(req, o.PlanFile, cfg, execReq, merge)
 	return acpRunResult(o.PlanFile, execReq.Outcome, merge, runErr)
+}
+
+// recordLastRun saves the run in the session state for later chat turns and drops the chat's
+// provider session. It is best-effort: a failure costs only the chat's context, so it is reported
+// and never fails the run.
+func (a *acpRunner) recordLastRun(req acp.PromptRequest, planFile string, cfg *config.Config,
+	execReq executePlanRequest, merge *acpMergeResult) {
+	state, err := loadACPState(req.Cwd, req.SessionID, a.out)
+	if err == nil {
+		branch := ""
+		if gitSvc, svcErr := git.NewService(req.Cwd, writerPrinter{color: execReq.Colors.Info(), w: io.Discard},
+			cfg.VcsCommand); svcErr == nil {
+			branch, _ = gitSvc.CurrentBranch() // a detached or unreadable HEAD records no branch
+		}
+		run := newACPLastRun(planFile, branch, acpMergeBase(execReq.DefaultBranch), *execReq.Outcome, merge)
+		err = saveACPState(req.Cwd, req.SessionID, state.withLastRun(run))
+	}
+	if err != nil {
+		fmt.Fprintf(a.out, "warning: ACP session state not saved: %v\n", err)
+	}
 }
 
 // autoMerge runs acpAutoMerge on the session checkout after a successful run and logs a one-line

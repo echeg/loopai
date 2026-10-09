@@ -1316,7 +1316,7 @@ func TestInitLocal(t *testing.T) {
 		// verify .gitignore for runtime artifacts
 		igData, err := os.ReadFile(filepath.Join(localDir, ".gitignore")) //nolint:gosec // test
 		require.NoError(t, err)
-		assert.Equal(t, ".gitignore\nprogress/\nworktrees/\n", string(igData))
+		assert.Equal(t, ".gitignore\nprogress/\nworktrees/\nacp/\n", string(igData))
 	})
 
 	t.Run("second call preserves existing customized files", func(t *testing.T) {

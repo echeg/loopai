@@ -1072,8 +1072,8 @@ func (testPrompts) ExternalReviewPrompt(reviewer string, _ bool, evaluatorRespon
 func (testPrompts) ExternalEvaluationPrompt(reviewer, output string) string {
 	return reviewer + " eval: " + output
 }
-func (testPrompts) PlanPrompt() string             { return "plan prompt" }
-func (testPrompts) GenAgentsPrompt() string        { return "gen agents prompt" }
+func (testPrompts) PlanPrompt() string      { return "plan prompt" }
+func (testPrompts) GenAgentsPrompt() string { return "gen agents prompt" }
 func (testPrompts) ACPChatPrompt(chat ChatContext, message string, resumed bool) string {
 	if resumed {
 		return message

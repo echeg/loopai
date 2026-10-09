@@ -764,6 +764,17 @@ func TestServeACPAutoMergesLowRisk(t *testing.T) {
 	assert.Contains(t, msg, "## Merge\n\nMerged `two` into `master` (fast-forward, `"+featureHead[:7]+"`). Not pushed.")
 	assert.NotContains(t, msg, "## Next steps")
 	assert.Contains(t, stderr.String(), "acp auto-merge: merged two into master (fast-forward")
+
+	state, err := loadACPState(worktree, sid, stderr)
+	require.NoError(t, err)
+	require.NotNil(t, state.LastRun, "the run is recorded for later chat turns")
+	assert.Equal(t, acpLastRun{Plan: "docs/plans/two.md", Branch: "two", Base: "master", Tip: featureHead,
+		Report: state.LastRun.Report, MergeSummary: "merged two into master (fast-forward, " + featureHead[:7] + "), not pushed"},
+		*state.LastRun)
+	assert.Contains(t, state.LastRun.Report, "# Report: Two")
+	assert.FileExists(t, filepath.Join(worktree, ".loopai", "acp", sid+".json"))
+	assert.Empty(t, strings.TrimSpace(gitOutput(t, worktree, "status", "--porcelain")),
+		"the state file is ignored, so it never blocks a merge")
 }
 
 func TestServeACPSkipsMergeForHighRisk(t *testing.T) {

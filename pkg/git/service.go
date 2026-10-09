@@ -2693,16 +2693,11 @@ func (s *Service) EnsureLocalGitignore() error {
 		if string(existing) == gitignoreContent {
 			return nil
 		}
-		if excludeErr := s.repo.ensureRuntimeExcludes(runtimeExcludes...); excludeErr != nil {
-			return fmt.Errorf("preserve custom .loopai/.gitignore: %w", excludeErr)
+		upgraded, upgradeErr := s.upgradeGeneratedGitignore(gitignorePath, string(existing), gitignoreContent)
+		if upgradeErr != nil || upgraded {
+			return upgradeErr
 		}
-		for _, runtimeDir := range runtimeDirs {
-			if ignoreErr := ensureRuntimeDirectoryIgnored(filepath.Join(loopaiDir, filepath.FromSlash(runtimeDir))); ignoreErr != nil {
-				return fmt.Errorf("preserve custom .loopai/.gitignore: %w", ignoreErr)
-			}
-		}
-		s.log.Printf("preserved custom .loopai/.gitignore and configured repository-local runtime excludes\n")
-		return nil
+		return s.preserveCustomGitignore(loopaiDir, runtimeDirs, runtimeExcludes)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("read .loopai/.gitignore: %w", err)
 	}
@@ -2713,6 +2708,46 @@ func (s *Service) EnsureLocalGitignore() error {
 
 	s.log.Printf("created .loopai/.gitignore\n")
 	return nil
+}
+
+// preserveCustomGitignore keeps a project-owned .loopai/.gitignore and ignores the runtime
+// directories through repository-local excludes and per-directory ignore files instead.
+func (s *Service) preserveCustomGitignore(loopaiDir string, runtimeDirs, runtimeExcludes []string) error {
+	if err := s.repo.ensureRuntimeExcludes(runtimeExcludes...); err != nil {
+		return fmt.Errorf("preserve custom .loopai/.gitignore: %w", err)
+	}
+	for _, runtimeDir := range runtimeDirs {
+		if err := ensureRuntimeDirectoryIgnored(filepath.Join(loopaiDir, filepath.FromSlash(runtimeDir))); err != nil {
+			return fmt.Errorf("preserve custom .loopai/.gitignore: %w", err)
+		}
+	}
+	s.log.Printf("preserved custom .loopai/.gitignore and configured repository-local runtime excludes\n")
+	return nil
+}
+
+// legacyLocalGitignores lists .loopai/.gitignore contents earlier versions generated before a
+// runtime directory was added. Such a file is loopai's own and is rewritten rather than treated as
+// project-owned, which would install repository-local excludes on every run.
+var legacyLocalGitignores = []string{".gitignore\nprogress/\nworktrees/\n"}
+
+// upgradeGeneratedGitignore rewrites a .loopai/.gitignore that an earlier version generated with the
+// current content. A tracked copy is left alone, since rewriting it would dirty the checkout.
+func (s *Service) upgradeGeneratedGitignore(path, existing, content string) (bool, error) {
+	if !slices.Contains(legacyLocalGitignores, existing) {
+		return false, nil
+	}
+	tracked, err := s.repo.fileTracked(path)
+	if err != nil {
+		return false, fmt.Errorf("check .loopai/.gitignore: %w", err)
+	}
+	if tracked {
+		return false, nil
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil { //nolint:gosec // .gitignore needs world-readable
+		return false, fmt.Errorf("update .loopai/.gitignore: %w", err)
+	}
+	s.log.Printf("updated .loopai/.gitignore\n")
+	return true, nil
 }
 
 // validateRuntimeDirectoryPath rejects symlinked and non-directory components beneath the
