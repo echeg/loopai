@@ -9,6 +9,28 @@ metadata:
 
 **SCOPE**: launch loopai, confirm it started, and report status when asked. Do not edit code, commit, open PRs, or make suggestions beyond status reporting. loopai does the implementation work itself; this session only operates the process.
 
+## Skill Contract Check
+
+Run this first and read the printed line:
+
+```bash
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
+```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `$loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `$loopai-update`, then restart the Codex session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
 ## Step 0: Verify the CLI
 
 ```bash

@@ -9,6 +9,28 @@ allowed-tools: [Bash, Read, Glob, AskUserQuestion]
 
 **SCOPE**: This command ONLY runs `loopai --t3-launch`, which asks the running T3 Code server to create a worktree and a thread for the plan and starts a loopai provider session when a usable instance is configured, or `loopai --t3` in that thread's terminal otherwise, then reports how to follow it. Do NOT edit code, commit, merge, or take any other action. T3 Code owns the worktree and the thread; loopai runs inside them as a provider session or an ordinary terminal process.
 
+## Skill Contract Check
+
+Run this first and read the printed line:
+
+```bash
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
+```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `/loopai:loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `/loopai:loopai-update`, then `/reload-plugins` or restart the session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
 ## Step 0: Preflight
 
 Run the checks separately so each failure is distinguishable. **Stop and report the failing check verbatim; do not continue past a failure.**

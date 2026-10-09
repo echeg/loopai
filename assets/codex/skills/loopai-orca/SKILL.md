@@ -11,6 +11,28 @@ metadata:
 
 Every `orca` call below must use `--json`; read fields from the JSON, never from prose output. If a flag is rejected, check `orca <command> --help` (or `orca skills get orca-cli`) before improvising - the flag surface changes between Orca releases.
 
+## Skill Contract Check
+
+Run this first and read the printed line:
+
+```bash
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
+```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `$loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `$loopai-update`, then restart the Codex session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
 ## Step 0: Preflight
 
 Run the checks separately so each failure is distinguishable. **Stop and report the failing check verbatim; do not continue past a failure.**

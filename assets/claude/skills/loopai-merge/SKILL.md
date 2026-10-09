@@ -9,6 +9,28 @@ allowed-tools: [Bash, Read, Glob, Edit, AskUserQuestion]
 
 SCOPE: This skill reads and narrates a loopai completion report, predicts merge conflicts read-only and narrates them, then runs the close-out action the user explicitly chooses. When the user chooses to resolve conflicts, it merges the base into the plan branch inside that branch's own checkout, resolves the conflicted files there, and hands the clean result to `loopai --merge`. It never merges the plan branch into the base by hand, never deletes branches, and removes only a temporary worktree it created itself.
 
+## Skill Contract Check
+
+Run this first and read the printed line:
+
+```bash
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
+```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `/loopai:loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `/loopai:loopai-update`, then `/reload-plugins` or restart the session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
 ## Preflight
 
 Run each check separately and stop on the first failure:

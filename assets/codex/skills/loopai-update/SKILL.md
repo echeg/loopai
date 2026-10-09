@@ -9,6 +9,30 @@ metadata:
 
 **SCOPE**: compare the current embedded defaults with the user's installed config and merge updates into the files they customized. Do not modify project source code, do not run loopai, and do not touch anything outside the config directory.
 
+## Skill Contract Check
+
+Run this first and read the printed line:
+
+```bash
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
+```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `$loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `$loopai-update`, then restart the Codex session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
+This skill is the update path itself, so do not tell the user to run it: instead of warning, report the `skill contract:` line in the final summary.
+
 ## Step 0: Verify the CLI
 
 ```bash

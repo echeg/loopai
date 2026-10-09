@@ -168,11 +168,11 @@
 - [x] run `make test </dev/null` and `make lint` - must pass before task 3
 
 ### Task 3: Add the shared contract snippet to every skill
-- [ ] define the snippet once (in this plan's Technical Details) and insert it as the first step of all 10 `assets/claude/skills/*/SKILL.md`, byte-identical, inside a fenced bash block followed by the identical instruction paragraph; for `loopai-update` add its variant sentence that it reports the line in its summary instead of warning
-- [ ] insert the same snippet and instruction (with `$loopai-update` wording) into all 9 `assets/codex/skills/*/SKILL.md`; keep the Codex wording free of Claude-only constructs so `check-codex-skills.sh` passes
-- [ ] verify `loopai-grill` still satisfies `scripts/check-grill-skill_test.sh` (it pre-approves no tools; the snippet needs Bash, which the skill already uses for its helpers) and update that test only if a contract it checks legitimately moved
-- [ ] bump `.claude-plugin/plugin.json` and the `loopai` entry in `.claude-plugin/marketplace.json` to the same new version (0.8.0)
-- [ ] run the existing skill suites (`make test-symlinks test-codex-skills test-merge-skill test-retro-skill test-launch-history-skills test-report-docs test-grill-skill </dev/null`) - must pass before task 4
+- [x] define the snippet once (in this plan's Technical Details) and insert it as the first step of all 10 `assets/claude/skills/*/SKILL.md`, byte-identical, inside a fenced bash block followed by the identical instruction paragraph; for `loopai-update` add its variant sentence that it reports the line in its summary instead of warning
+- [x] insert the same snippet and instruction (with `$loopai-update` wording) into all 9 `assets/codex/skills/*/SKILL.md`; keep the Codex wording free of Claude-only constructs so `check-codex-skills.sh` passes
+- [x] verify `loopai-grill` still satisfies `scripts/check-grill-skill_test.sh` (it pre-approves no tools; the snippet needs Bash, which the skill already uses for its helpers) and update that test only if a contract it checks legitimately moved
+- [x] bump `.claude-plugin/plugin.json` and the `loopai` entry in `.claude-plugin/marketplace.json` to the same new version (0.8.0)
+- [x] run the existing skill suites (`make test-symlinks test-codex-skills test-merge-skill test-retro-skill test-launch-history-skills test-report-docs test-grill-skill </dev/null`) - must pass before task 4
 
 ### Task 4: Enforce the snippet in the checkers
 - [ ] in `scripts/check-symlinks.sh` read `skillContract` from `cmd/loopai/skill_contract.go` (`grep`/`sed`, fail loudly when not found) and require every Claude skill to contain the canonical snippet with `expected=<N>`; the canonical text lives in one place the checker reads (a shared `scripts/lib/skill-contract-snippet.txt` or a heredoc in one script sourced by both checkers)

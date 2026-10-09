@@ -10,6 +10,28 @@ disable-model-invocation: true
 
 Run only when the user explicitly invokes `/loopai:loopai-retro`. Analyze loopai's durable artifacts and the repository's working environment, then propose improvements for future runs. Analysis is read-only; the only permitted writes are backlog entries the user explicitly selects.
 
+## Skill Contract Check
+
+Run this first and read the printed line:
+
+```bash
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
+```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `/loopai:loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `/loopai:loopai-update`, then `/reload-plugins` or restart the session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
 ## Select Inputs
 
 Use `git rev-parse --show-toplevel` to locate the repository root. A dirty checkout does not prevent read-only analysis. Resolve `plans_dir` and `backlog_dir` from the effective configuration: project `.loopai/config` overrides the global config in `LOOPAI_CONFIG_DIR` (or `~/.config/loopai`), with defaults `docs/plans` and `docs/backlog`. Resolve relative directory values from the repository root and preserve absolute paths. All default paths below stand for these resolved directories, including report lookup, backlog inspection, duplicate detection, selection prompts, and filing. Resolve `$ARGUMENTS` as one of these input modes; reject an invalid or ambiguous argument rather than silently widening the selection:

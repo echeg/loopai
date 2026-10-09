@@ -7,6 +7,28 @@ description: "Read and narrate a loopai completion report, preview merge conflic
 
 Read the report, predict conflicts read-only, and present the close-out choice. When the user chooses to resolve conflicts, merge the base into the plan branch inside that branch's own checkout, resolve the conflicted files there, and hand the clean result to `loopai --merge`. Never merge the plan branch into the base by hand, never delete branches, and remove only a temporary worktree this invocation created.
 
+## Skill Contract Check
+
+Run this first and read the printed line:
+
+```bash
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
+```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `$loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `$loopai-update`, then restart the Codex session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
 ## Resolve the plan and report
 
 Check `command -v loopai` and `git rev-parse --show-toplevel`, then work from that repository root. Run `git status --porcelain`; if it is nonempty, show the changes and stop because this close-out workflow requires a clean checkout.
