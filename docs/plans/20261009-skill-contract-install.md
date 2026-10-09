@@ -175,11 +175,12 @@
 - [x] run the existing skill suites (`make test-symlinks test-codex-skills test-merge-skill test-retro-skill test-launch-history-skills test-report-docs test-grill-skill </dev/null`) - must pass before task 4
 
 ### Task 4: Enforce the snippet in the checkers
-- [ ] in `scripts/check-symlinks.sh` read `skillContract` from `cmd/loopai/skill_contract.go` (`grep`/`sed`, fail loudly when not found) and require every Claude skill to contain the canonical snippet with `expected=<N>`; the canonical text lives in one place the checker reads (a shared `scripts/lib/skill-contract-snippet.txt` or a heredoc in one script sourced by both checkers)
-- [ ] apply the same check in `scripts/check-codex-skills.sh` for every Codex skill
-- [ ] extend `scripts/check-symlinks_test.sh` and `scripts/check-codex-skills_test.sh` fixtures: valid fixture carries the snippet; new failing fixtures for a missing snippet, a modified snippet, and a stale `expected=` value
-- [ ] create `scripts/check-skill-contract-snippet_test.sh` that extracts the snippet from one skill, executes it with `PATH` pointing at stub `loopai` scripts, and asserts the printed line for: loopai absent (`missing`), flag unknown (exit 1 → `0`), non-numeric output (→ `0`), older, equal, and newer contracts; add a `test-skill-contract` Makefile target and include it in `make test`
-- [ ] run `make test </dev/null` - must pass before task 5
+- [x] in `scripts/check-symlinks.sh` read `skillContract` from `cmd/loopai/skill_contract.go` (`grep`/`sed`, fail loudly when not found) and require every Claude skill to contain the canonical snippet with `expected=<N>`; the canonical text lives in one place the checker reads (a shared `scripts/lib/skill-contract-snippet.txt` or a heredoc in one script sourced by both checkers)
+- [x] apply the same check in `scripts/check-codex-skills.sh` for every Codex skill
+- [x] extend `scripts/check-symlinks_test.sh` and `scripts/check-codex-skills_test.sh` fixtures: valid fixture carries the snippet; new failing fixtures for a missing snippet, a modified snippet, and a stale `expected=` value
+- [x] create `scripts/check-skill-contract-snippet_test.sh` that extracts the snippet from one skill, executes it with `PATH` pointing at stub `loopai` scripts, and asserts the printed line for: loopai absent (`missing`), flag unknown (exit 1 → `0`), non-numeric output (→ `0`), older, equal, and newer contracts; add a `test-skill-contract` Makefile target and include it in `make test`
+- [x] ➕ the shared canonical snippet lives in `scripts/lib/skill-contract.sh` (sourced by both checkers and both fixture suites); `test-skill-contract` also added to the CI asset-check step
+- [x] run `make test </dev/null` - must pass before task 5
 
 ### Task 5: Add scripts/install.sh and make install
 - [ ] create `scripts/install.sh` (Bash, `set -euo pipefail`, repo root resolved from the script path) implementing the seven steps from Technical Details with one `✓`/`!` line per step and a final summary

@@ -28,6 +28,9 @@ codex_dir="$repo_root/assets/codex"
 codex_skills_dir="$codex_dir/skills"
 status=0
 
+# shellcheck source=lib/skill-contract.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/skill-contract.sh"
+
 # loopai-grill is Claude-only on purpose. Its safety model is the read-only
 # Claude tool pin plus scripts addressed through ${CLAUDE_SKILL_DIR}; Codex has
 # no equivalent way to restrict a session to read-only repository tools, and a
@@ -74,6 +77,13 @@ fail() {
 	printf '%s\n' "$*" >&2
 	status=1
 }
+
+# every skill must open with the shared contract snippet, its expected= equal to the
+# binary's skillContract; without the constant there is nothing to compare against.
+if ! skill_contract="$(skill_contract_value "$repo_root")"; then
+	fail "missing skillContract constant: $repo_root/cmd/loopai/skill_contract.go"
+	skill_contract=""
+fi
 
 check_frontmatter() {
 	local skill_file="$1"
@@ -179,6 +189,16 @@ while IFS= read -r skill_name; do
 			fail "removed loopai flag or key in codex skill: $skill_file matches '$spelling'"
 		fi
 	done
+
+	if [[ -n "$skill_contract" ]]; then
+		snippet_status=0
+		stale="$(check_skill_contract_snippet "$skill_file" "$skill_contract")" || snippet_status=$?
+		case "$snippet_status" in
+		0) ;;
+		2) fail "stale skill contract in codex skill: $skill_file has expected=$stale (skillContract is $skill_contract)" ;;
+		*) fail "missing or modified skill contract snippet in codex skill: $skill_file" ;;
+		esac
+	fi
 done <<<"$expected_skills"
 
 for exempt in "${exempt_skills[@]}"; do

@@ -16,10 +16,21 @@ add_claude_skill() {
 	printf '%s\n' '---' "name: $name" 'description: fixture skill' '---' >"$claude_skills/$name/SKILL.md"
 }
 
+# shellcheck source=lib/skill-contract.sh
+source "$script_dir/lib/skill-contract.sh"
+
+mkdir -p "$fixture/cmd/loopai"
+printf '%s\n' 'package main' '' 'const skillContract = 3' >"$fixture/cmd/loopai/skill_contract.go"
+
+# write_codex_skill writes a valid skill: frontmatter, the contract snippet for
+# skillContract 3, and the openai interface file.
 write_codex_skill() {
 	local name="$1"
 	mkdir -p "$codex_skills/$name/agents"
-	printf '%s\n' '---' "name: $name" 'description: fixture skill' '---' >"$codex_skills/$name/SKILL.md"
+	{
+		printf '%s\n' '---' "name: $name" 'description: fixture skill' '---' '' 'Run this first:' ''
+		skill_contract_snippet 3
+	} >"$codex_skills/$name/SKILL.md"
 	printf '%s\n' 'interface:' \
 		"  display_name: \"$name\"" \
 		'  short_description: "fixture"' \
@@ -140,6 +151,27 @@ printf '%s\n' "loopai --codex-args='-c x=1' --task-model codex:gpt-6-astra:mediu
 	>>"$codex_skills/loopai-orca/SKILL.md"
 "$checker" "$fixture"
 write_codex_skill loopai-orca
+
+# every codex skill must carry the shared contract snippet with the current expected= value
+skill_file="$codex_skills/loopai-merge/SKILL.md"
+add_pair loopai-merge
+"$checker" "$fixture"
+printf '%s\n' '---' 'name: loopai-merge' 'description: fixture skill' '---' >"$skill_file"
+expect_failure "missing or modified skill contract snippet in codex skill: $skill_file"
+write_codex_skill loopai-merge
+sed -i.bak 's/2>\/dev\/null) || actual=0/) || actual=0/' "$skill_file" && rm -f "$skill_file.bak"
+expect_failure "missing or modified skill contract snippet in codex skill: $skill_file"
+write_codex_skill loopai-merge
+sed -i.bak 's/^expected=3$/expected=4/' "$skill_file" && rm -f "$skill_file.bak"
+expect_failure "stale skill contract in codex skill: $skill_file has expected=4 (skillContract is 3)"
+write_codex_skill loopai-merge
+"$checker" "$fixture"
+
+# the constant itself must be readable, or nothing can be compared
+printf '%s\n' 'package main' '' 'const skillContract = "x"' >"$fixture/cmd/loopai/skill_contract.go"
+expect_failure "missing skillContract constant"
+printf '%s\n' 'package main' '' 'const skillContract = 3' >"$fixture/cmd/loopai/skill_contract.go"
+"$checker" "$fixture"
 
 # a symlink would reintroduce the coupling the split exists to avoid
 ln -s "../../claude/skills/loopai/SKILL.md" "$fixture/assets/codex/skills/loopai-orca/CLAUDE.md"
