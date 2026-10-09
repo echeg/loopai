@@ -18,6 +18,28 @@ Supported source shapes:
 - **Free-form markdown** - prose with no fixed structure
 - **loopai backlog entry** - a single-finding file under `backlog_dir` (`docs/backlog/` by default) carrying `found`/`plan`/`phase`, `severity`, and `area`; convert it as free-form and do not treat its small size as a scope ambiguity
 
+## Skill Contract Check
+
+Run this first and read the printed line:
+
+```bash
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
+```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `$loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `$loopai-update`, then restart the Codex session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
 ## Step 0: Optional CLI Check
 
 Informational only. A missing loopai must not block the conversion - do not prompt, wait, or exit.
@@ -26,7 +48,7 @@ Informational only. A missing loopai must not block the conversion - do not prom
 command -v loopai
 ```
 
-On failure, mention once that loopai is needed later to execute the plan, show the source install (`git clone https://github.com/echeg/loopai && cd loopai && make build && install -m 0755 .bin/loopai ~/.local/bin/loopai`), and continue immediately. On success say nothing.
+On failure, mention once that loopai is needed later to execute the plan, show the source install (`git clone https://github.com/echeg/loopai && make -C loopai install`), and continue immediately. On success say nothing.
 
 ## Step 1: Resolve the Source
 

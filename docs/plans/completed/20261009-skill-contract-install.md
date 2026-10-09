@@ -151,62 +151,67 @@
 ## Implementation Steps
 
 ### Task 1: Add skillContract and the --skill-contract flag
-- [ ] create `cmd/loopai/skill_contract.go` with `const skillContract = 1` and a short comment saying what the number guards and when to bump it
-- [ ] add `SkillContract bool \`long:"skill-contract" description:"print the skill contract number and exit"\`` to `opts` in `cmd/loopai/main.go`; handle it right after parsing, beside `o.Version`, printing exactly `<N>\n` to stdout and exiting 0 before config loading, repository checks, cmux/orca/T3 setup, or keep-awake
-- [ ] suppress the pre-parse version banner when `--skill-contract` is present in raw args (extend `versionBannerWriter` or add a sibling raw-args check honoring `--` like `acpRequested`), so stdout carries only the integer
-- [ ] include `o.SkillContract` in `isStandaloneCommand` and reject it combined with plan arguments or other modes the same way `--version` combinations are handled (verify existing behavior first and match it)
-- [ ] write tests: output is exactly the integer with no banner; exit path skips config loading (temp `HOME`, no config present); `--` before the flag disables the banner suppression check; combination with a plan argument behaves as decided
-- [ ] run `make test </dev/null` and `make lint` - must pass before task 2
+- [x] create `cmd/loopai/skill_contract.go` with `const skillContract = 1` and a short comment saying what the number guards and when to bump it
+- [x] add `SkillContract bool \`long:"skill-contract" description:"print the skill contract number and exit"\`` to `opts` in `cmd/loopai/main.go`; handle it right after parsing, beside `o.Version`, printing exactly `<N>\n` to stdout and exiting 0 before config loading, repository checks, cmux/orca/T3 setup, or keep-awake
+- [x] suppress the pre-parse version banner when `--skill-contract` is present in raw args (extend `versionBannerWriter` or add a sibling raw-args check honoring `--` like `acpRequested`), so stdout carries only the integer
+- [x] include `o.SkillContract` in `isStandaloneCommand` and reject it combined with plan arguments or other modes the same way `--version` combinations are handled (verify existing behavior first and match it)
+- [x] write tests: output is exactly the integer with no banner; exit path skips config loading (temp `HOME`, no config present); `--` before the flag disables the banner suppression check; combination with a plan argument behaves as decided (like `--version`: ignored, prints the integer and exits 0)
+- [x] ➕ fix pre-existing macOS failures surfaced by `make test` (temp dir `/var` vs resolved `/private/var`): `pkg/t3` `planRelPath` now resolves symlinks on both sides (a real bug for checkouts entered through a symlink), `TestLocateCompletionReport`/`TestRunFinalizeCloseout` expectations use the resolved root, and `codex_image_test.py` compares against the resolved `CODEX_HOME`
+- [x] ➕ fix pre-existing `unparam` lint in `pkg/git/external.go` `classifyNoCommitMerge` (`abandon` returns only the error)
+- [x] run `make test </dev/null` and `make lint` - must pass before task 2
 
 ### Task 2: Add the contract surface fingerprint test
-- [ ] in `cmd/loopai/skill_contract.go` add `skillContractSurface() (string, error)` rendering three sorted sections: `flags:` (long names from the go-flags parser over `opts`, skipping hidden options), `config keys:` (keys from embedded `pkg/config/defaults/config`, commented `# key = value` lines included, since the defaults file documents keys commented out), `report headings:` (`## ` lines of the embedded `report.txt` with its `# ` comment prefix stripped, in file order)
-- [ ] create `cmd/loopai/testdata/skill-contract.golden` with `contract: 1` on the first line followed by the rendered surface
-- [ ] write `TestSkillContract` in `cmd/loopai/skill_contract_test.go`: fails when the golden `contract:` differs from `skillContract`; fails when the surface differs, printing a unified diff plus "contract surface changed; bump skillContract if skills depend on the change, then run go test ./cmd/loopai -run TestSkillContract -update"; a package-level `-update` flag rewrites the golden with the current constant and surface
-- [ ] write tests for the surface renderer: hidden removed flags (`--codex`, `--codex-only`) absent; a known key (`task_model`) and heading (`Merge danger`) present; output deterministic across calls
-- [ ] run `make test </dev/null` and `make lint` - must pass before task 3
+- [x] in `cmd/loopai/skill_contract.go` add `skillContractSurface() (string, error)` rendering three sorted sections: `flags:` (long names from the go-flags parser over `opts`, skipping hidden options), `config keys:` (keys from embedded `pkg/config/defaults/config`, commented `# key = value` lines included, since the defaults file documents keys commented out), `report headings:` (`## ` lines of the embedded `report.txt` with its `# ` comment prefix stripped, in file order)
+- [x] create `cmd/loopai/testdata/skill-contract.golden` with `contract: 1` on the first line followed by the rendered surface
+- [x] write `TestSkillContract` in `cmd/loopai/skill_contract_test.go`: fails when the golden `contract:` differs from `skillContract`; fails when the surface differs, printing a unified diff plus "contract surface changed; bump skillContract if skills depend on the change, then run go test ./cmd/loopai -run TestSkillContract -update"; a package-level `-update` flag rewrites the golden with the current constant and surface
+- [x] write tests for the surface renderer: hidden removed flags (`--codex`, `--codex-only`) absent; a known key (`task_model`) and heading (`Merge danger`) present; output deterministic across calls
+- [x] run `make test </dev/null` and `make lint` - must pass before task 3
 
 ### Task 3: Add the shared contract snippet to every skill
-- [ ] define the snippet once (in this plan's Technical Details) and insert it as the first step of all 10 `assets/claude/skills/*/SKILL.md`, byte-identical, inside a fenced bash block followed by the identical instruction paragraph; for `loopai-update` add its variant sentence that it reports the line in its summary instead of warning
-- [ ] insert the same snippet and instruction (with `$loopai-update` wording) into all 9 `assets/codex/skills/*/SKILL.md`; keep the Codex wording free of Claude-only constructs so `check-codex-skills.sh` passes
-- [ ] verify `loopai-grill` still satisfies `scripts/check-grill-skill_test.sh` (it pre-approves no tools; the snippet needs Bash, which the skill already uses for its helpers) and update that test only if a contract it checks legitimately moved
-- [ ] bump `.claude-plugin/plugin.json` and the `loopai` entry in `.claude-plugin/marketplace.json` to the same new version (0.8.0)
-- [ ] run the existing skill suites (`make test-symlinks test-codex-skills test-merge-skill test-retro-skill test-launch-history-skills test-report-docs test-grill-skill </dev/null`) - must pass before task 4
+- [x] define the snippet once (in this plan's Technical Details) and insert it as the first step of all 10 `assets/claude/skills/*/SKILL.md`, byte-identical, inside a fenced bash block followed by the identical instruction paragraph; for `loopai-update` add its variant sentence that it reports the line in its summary instead of warning
+- [x] insert the same snippet and instruction (with `$loopai-update` wording) into all 9 `assets/codex/skills/*/SKILL.md`; keep the Codex wording free of Claude-only constructs so `check-codex-skills.sh` passes
+- [x] verify `loopai-grill` still satisfies `scripts/check-grill-skill_test.sh` (it pre-approves no tools; the snippet needs Bash, which the skill already uses for its helpers) and update that test only if a contract it checks legitimately moved
+- [x] bump `.claude-plugin/plugin.json` and the `loopai` entry in `.claude-plugin/marketplace.json` to the same new version (0.8.0)
+- [x] run the existing skill suites (`make test-symlinks test-codex-skills test-merge-skill test-retro-skill test-launch-history-skills test-report-docs test-grill-skill </dev/null`) - must pass before task 4
 
 ### Task 4: Enforce the snippet in the checkers
-- [ ] in `scripts/check-symlinks.sh` read `skillContract` from `cmd/loopai/skill_contract.go` (`grep`/`sed`, fail loudly when not found) and require every Claude skill to contain the canonical snippet with `expected=<N>`; the canonical text lives in one place the checker reads (a shared `scripts/lib/skill-contract-snippet.txt` or a heredoc in one script sourced by both checkers)
-- [ ] apply the same check in `scripts/check-codex-skills.sh` for every Codex skill
-- [ ] extend `scripts/check-symlinks_test.sh` and `scripts/check-codex-skills_test.sh` fixtures: valid fixture carries the snippet; new failing fixtures for a missing snippet, a modified snippet, and a stale `expected=` value
-- [ ] create `scripts/check-skill-contract-snippet_test.sh` that extracts the snippet from one skill, executes it with `PATH` pointing at stub `loopai` scripts, and asserts the printed line for: loopai absent (`missing`), flag unknown (exit 1 → `0`), non-numeric output (→ `0`), older, equal, and newer contracts; add a `test-skill-contract` Makefile target and include it in `make test`
-- [ ] run `make test </dev/null` - must pass before task 5
+- [x] in `scripts/check-symlinks.sh` read `skillContract` from `cmd/loopai/skill_contract.go` (`grep`/`sed`, fail loudly when not found) and require every Claude skill to contain the canonical snippet with `expected=<N>`; the canonical text lives in one place the checker reads (a shared `scripts/lib/skill-contract-snippet.txt` or a heredoc in one script sourced by both checkers)
+- [x] apply the same check in `scripts/check-codex-skills.sh` for every Codex skill
+- [x] extend `scripts/check-symlinks_test.sh` and `scripts/check-codex-skills_test.sh` fixtures: valid fixture carries the snippet; new failing fixtures for a missing snippet, a modified snippet, and a stale `expected=` value
+- [x] create `scripts/check-skill-contract-snippet_test.sh` that extracts the snippet from one skill, executes it with `PATH` pointing at stub `loopai` scripts, and asserts the printed line for: loopai absent (`missing`), flag unknown (exit 1 → `0`), non-numeric output (→ `0`), older, equal, and newer contracts; add a `test-skill-contract` Makefile target and include it in `make test`
+- [x] ➕ the shared canonical snippet lives in `scripts/lib/skill-contract.sh` (sourced by both checkers and both fixture suites); `test-skill-contract` also added to the CI asset-check step
+- [x] run `make test </dev/null` - must pass before task 5
 
 ### Task 5: Add scripts/install.sh and make install
-- [ ] create `scripts/install.sh` (Bash, `set -euo pipefail`, repo root resolved from the script path) implementing the seven steps from Technical Details with one `✓`/`!` line per step and a final summary
-- [ ] add `install:` target to `Makefile` calling it, and add it to `.PHONY`
-- [ ] make step 5 compare `<bin_dir>/loopai --skill-contract` with the constant read the same way as the checkers, compare `claude plugin list` output for `loopai@loopai` with `plugin.json` version, and warn when `command -v loopai` resolves to a different path than `<bin_dir>/loopai`
-- [ ] create `scripts/install_test.sh` with temp `HOME`, `CODEX_HOME`, `LOOPAI_BIN_DIR`, and stub `make`, `claude`, `codex`, `go` in `PATH` (keep the real `PATH` appended); cases: success path, build failure (nothing installed, non-zero exit), no `claude` on PATH (`!`, exit 0), plugin not installed (prints install command, does not call `install`), contract mismatch (non-zero exit), shadowing `loopai` earlier in `PATH` (warning), standalone `~/.claude/skills/loopai-merge` present (warning with `rm -rf` line, directory still exists), missing Codex home (skipped)
-- [ ] wire `scripts/install_test.sh` into `make test`; ensure it runs with closed stdin and generous timeouts for stub spawns
-- [ ] run `make test </dev/null` and `make lint` - must pass before task 6
+- [x] create `scripts/install.sh` (Bash, `set -euo pipefail`, repo root resolved from the script path) implementing the seven steps from Technical Details with one `✓`/`!` line per step and a final summary
+- [x] add `install:` target to `Makefile` calling it, and add it to `.PHONY`
+- [x] make step 5 compare `<bin_dir>/loopai --skill-contract` with the constant read the same way as the checkers, compare `claude plugin list` output for `loopai@loopai` with `plugin.json` version, and warn when `command -v loopai` resolves to a different path than `<bin_dir>/loopai`
+- [x] create `scripts/install_test.sh` with temp `HOME`, `CODEX_HOME`, `LOOPAI_BIN_DIR`, and stub `make`, `claude`, `codex`, `go` in `PATH` (keep the real `PATH` appended); cases: success path, build failure (nothing installed, non-zero exit), no `claude` on PATH (`!`, exit 0), plugin not installed (prints install command, does not call `install`), contract mismatch (non-zero exit), shadowing `loopai` earlier in `PATH` (warning), standalone `~/.claude/skills/loopai-merge` present (warning with `rm -rf` line, directory still exists), missing Codex home (skipped)
+- [x] wire `scripts/install_test.sh` into `make test`; ensure it runs with closed stdin and generous timeouts for stub spawns (the suite is synchronous with no waits; `test-install` closes stdin and is also in the CI asset-check step)
+- [x] ➕ deviation: `install_test.sh` builds PATH from stubs plus `/usr/bin:/bin` instead of appending the real PATH, because a real `claude` or installed `~/.local/bin/loopai` would leak into the cases the installer inspects; it runs the installer from a copied repo tree so the stub `make` never writes the real `.bin/`, and stubs `install-codex-skills.sh` instead of `codex`/`go`, which the installer never calls; plugin versions come from `claude plugin list --json` (`folderVersion` for directory-sourced plugins, which is what Claude Code reads); extra cases cover the default `~/.local/bin`, a failed plugin update, a plugin version mismatch, an old binary without the flag, and a bin dir missing from PATH
+- [x] run `make test </dev/null` and `make lint` - must pass before task 6
 
 ### Task 6: Teach loopai-update to run the installer
-- [ ] in `assets/claude/skills/loopai-update/SKILL.md` replace Step 0's clone-only guidance with an "update installation" step: locate the checkout (`$LOOPAI_SRC`, else the `loopai` marketplace `path` in `~/.claude/plugins/known_marketplaces.json` when its source type is `directory`, else AskUserQuestion), show `git -C <checkout> status -sb`, offer `git pull --ff-only` through AskUserQuestion only when upstream is ahead, run `make -C <checkout> install`, summarize its `✓`/`!` lines, then continue with the existing prompt-merge steps unchanged; keep the clone instructions as the fallback when no checkout exists
-- [ ] mirror the step in `assets/codex/skills/loopai-update/SKILL.md` with a plain-text question instead of AskUserQuestion and Codex-safe wording
-- [ ] keep the manifest version from task 3 (bump again only if task 3's version was already released)
-- [ ] extend an existing skill-contract shell suite (or add assertions to `check-skill-contract-snippet_test.sh`) so both `loopai-update` copies mention `make -C` and `known_marketplaces.json`, guarding the step against accidental removal
-- [ ] run `make test </dev/null` - must pass before task 7
+- [x] in `assets/claude/skills/loopai-update/SKILL.md` replace Step 0's clone-only guidance with an "update installation" step: locate the checkout (`$LOOPAI_SRC`, else the `loopai` marketplace `path` in `~/.claude/plugins/known_marketplaces.json` when its source type is `directory`, else AskUserQuestion), show `git -C <checkout> status -sb`, offer `git pull --ff-only` through AskUserQuestion only when upstream is ahead, run `make -C <checkout> install`, summarize its `✓`/`!` lines, then continue with the existing prompt-merge steps unchanged; keep the clone instructions as the fallback when no checkout exists
+- [x] mirror the step in `assets/codex/skills/loopai-update/SKILL.md` with a plain-text question instead of AskUserQuestion and Codex-safe wording
+- [x] keep the manifest version from task 3 (bump again only if task 3's version was already released; 0.8.0 is unreleased, master is 0.7.1)
+- [x] extend an existing skill-contract shell suite (or add assertions to `check-skill-contract-snippet_test.sh`) so both `loopai-update` copies mention `make -C` and `known_marketplaces.json`, guarding the step against accidental removal
+- [x] ➕ the step also fetches before reading ahead/behind, refuses any pull but `--ff-only`, continues to the prompt merge after a failed install only while a binary is still installed, and both summaries gain Installation and Skill contract lines; Constraints/SCOPE now allow Step 0's writes outside the config directory
+- [x] run `make test </dev/null` - must pass before task 7
 
 ### Task 7: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify a stub binary without `--skill-contract` yields `binary=0` through the snippet and that every skill contains the warning instruction
-- [ ] verify editing a `##` heading in embedded `report.txt` fails `TestSkillContract` (then revert)
-- [ ] run full test suite (`make test </dev/null`)
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify all requirements from Overview are implemented
+- [x] verify a stub binary without `--skill-contract` yields `binary=0` through the snippet and that every skill contains the warning instruction
+- [x] verify editing a `##` heading in embedded `report.txt` fails `TestSkillContract` (then revert)
+- [x] run full test suite (`make test </dev/null`)
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 8: [Final] Update documentation
-- [ ] `CLAUDE.md`: add `make install` to Build commands; add a paragraph on `skillContract`, `--skill-contract`, the fingerprint contents, when to bump, the `-update` command, and the byte-identical snippet in all 19 skills; add the PR checklist item "contract surface changed → `skillContract` bumped or the change deliberately accepted via `-update`"
-- [ ] `README.md` `## Installation`: rewrite around `make install` and `/loopai:loopai-update`, mention `LOOPAI_BIN_DIR` and the standalone-copy warning
-- [ ] `llms.txt`: one line on `--skill-contract`
-- [ ] confirm `make test-report-docs` and other doc-contract suites still pass
+- [x] `CLAUDE.md`: add `make install` to Build commands; add a paragraph on `skillContract`, `--skill-contract`, the fingerprint contents, when to bump, the `-update` command, and the byte-identical snippet in all 19 skills; add the PR checklist item "contract surface changed → `skillContract` bumped or the change deliberately accepted via `-update`"
+- [x] `README.md` `## Installation`: rewrite around `make install` and `/loopai:loopai-update`, mention `LOOPAI_BIN_DIR` and the standalone-copy warning
+- [x] `llms.txt`: one line on `--skill-contract`
+- [x] confirm `make test-report-docs` and other doc-contract suites still pass
 
 ## Technical Details
 

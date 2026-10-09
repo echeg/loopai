@@ -24,8 +24,12 @@ const acpPromptUsage = "usage: <plan-file> [--task-model provider[:model[:effort
 	"[--review-model provider[:model[:effort]]] [--external-reviewers provider[:model[:effort]],...]"
 
 // versionBannerWriter is where main prints the version banner: stderr in ACP mode, where stdout
-// carries JSON-RPC only, and stdout otherwise.
+// carries JSON-RPC only, nowhere under --skill-contract, whose stdout carries the integer alone,
+// and stdout otherwise.
 func versionBannerWriter(args []string) io.Writer {
+	if skillContractRequested(args) {
+		return io.Discard
+	}
 	if acpRequested(args) {
 		return os.Stderr
 	}
@@ -35,11 +39,16 @@ func versionBannerWriter(args []string) io.Writer {
 // acpRequested reports whether the raw arguments ask for ACP mode. main needs the answer before
 // flag parsing, because the banner is printed first.
 func acpRequested(args []string) bool {
+	return rawFlagRequested(args, "--acp")
+}
+
+// rawFlagRequested reports whether flag appears in the raw arguments before a `--` terminator.
+func rawFlagRequested(args []string, flag string) bool {
 	for _, arg := range args {
 		if arg == "--" {
 			return false
 		}
-		if arg == "--acp" {
+		if arg == flag {
 			return true
 		}
 	}

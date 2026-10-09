@@ -7,6 +7,28 @@ description: "On an explicit $loopai-retro request, analyze loopai run artifacts
 
 Run only on an explicit `$loopai-retro` request. Read loopai's durable artifacts and the repository environment to propose improvements for future runs. Analysis is read-only; the only permitted writes are backlog entries the user explicitly selects. Use shell commands to inspect files and preserve citation line numbers.
 
+## Skill Contract Check
+
+Run this first and read the printed line:
+
+```bash
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
+```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `$loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `$loopai-update`, then restart the Codex session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
 ## Select Inputs
 
 Locate the repository root with `git rev-parse --show-toplevel`. Read-only analysis can proceed in a dirty checkout. Resolve `plans_dir` and `backlog_dir` from the effective configuration: project `.loopai/config` overrides the global config in `LOOPAI_CONFIG_DIR` (or `~/.config/loopai`), with defaults `docs/plans` and `docs/backlog`. Resolve relative directory values from the repository root and preserve absolute paths. All default paths below stand for these resolved directories, including report lookup, backlog inspection, duplicate detection, selection prompts, and filing. Interpret the user's arguments as one of these modes; reject invalid or ambiguous arguments instead of widening the selection:

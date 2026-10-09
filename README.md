@@ -44,6 +44,8 @@ workflows are distributed through this repository's plugin marketplace.
 - Optional for `--pr` and `finalize = pr|merge`: authenticated GitHub CLI
   (`gh auth login`) and a GitHub repository remote named `origin`; `finalize = sync` needs only a
   fetchable `origin`
+- Bash for `make install`, and `jq` for its Claude Code plugin steps (skipped with a warning
+  without it)
 - Development: Bash and `jq` for the full test suite, including plugin manifest
   validation and provider-wrapper tests
 - Optional for development: `golangci-lint`
@@ -54,33 +56,57 @@ the same arguments as Git and return compatible output, including for
 
 ## Installation
 
-Build and install from this checkout:
+Clone the repository and install every channel from the checkout with one command:
 
 ```bash
 git clone https://github.com/echeg/loopai
 cd loopai
-make build
-install -d ~/.local/bin
-install -m 0755 .bin/loopai ~/.local/bin/loopai
+make install
 ```
 
-Ensure `~/.local/bin` is in `PATH`, then verify:
+`make install` runs `scripts/install.sh`, which prints one `✓` (done) or `!` (needs your attention)
+line per step:
+
+1. `make build`; a failed build stops before anything is installed.
+2. Installs `loopai` and the `loopai-acp` launcher into `${LOOPAI_BIN_DIR:-~/.local/bin}`.
+3. When `claude` is on `PATH`: `claude plugin marketplace update loopai`, then `claude plugin update`
+   for every installed plugin from that marketplace. If `loopai@loopai` is not installed it prints
+   the `claude plugin install loopai@loopai` command instead of running it. On a fresh machine the
+   marketplace does not exist yet, so the update warns and names `claude plugin marketplace add`
+   (see [Claude Code plugin](#claude-code-plugin)).
+4. When `${CODEX_HOME:-~/.codex}` exists: reinstalls the Codex skills (see
+   [Codex CLI skills](#codex-cli-skills)); otherwise the step is skipped.
+5. Verifies that the installed binary answers `loopai --skill-contract` with the number the skills
+   expect, that the installed plugin version matches the checkout, and that `loopai` on `PATH` is the
+   binary it just installed.
+6. Warns about standalone `~/.claude/skills/loopai*` copies, which duplicate the plugin and never
+   receive its updates, and prints the `rm -rf` command for each. It never deletes them, since they may
+   hold your own edits.
+7. Reminds you that open Claude Code sessions need `/reload-plugins` or a restart and open Codex
+   sessions need a restart.
+
+Only a failed build, a failed binary install, and a skill contract mismatch (including a checkout
+whose `skillContract` cannot be read) exit non-zero; a missing
+`claude` or Codex home is a warning. Ensure the bin directory is in `PATH`, then verify:
 
 ```bash
 loopai --version
 ```
 
-For development, `make build` always refreshes `.bin/loopai` and `.bin/loopai-acp`, the launcher for
-the experimental T3 Code provider mode. On Windows the launcher is written only as
-`.bin/loopai-acp.exe`, and loopai also gets a `.bin/loopai.exe` copy.
-Install `loopai-acp` beside `loopai` only if you use that mode:
+To update later, run `/loopai:loopai-update` in Claude Code (`$loopai-update` in Codex). It locates
+the checkout (`$LOOPAI_SRC`, else the `loopai` marketplace's directory source), offers
+`git pull --ff-only` only when upstream is ahead, runs `make install`, and then merges updated
+defaults into your customized prompts and agents. It never pulls without asking.
 
-```bash
-install -m 0755 .bin/loopai-acp ~/.local/bin/loopai-acp
-```
+Every skill begins by comparing `loopai --skill-contract` with the contract number it was written
+for. When they differ, the skill tells you which side is older and to run `/loopai:loopai-update`,
+then continues; a binary too old to know the flag reads as contract `0`.
 
-The launcher prefers a `loopai` in its own directory (`loopai.exe` on Windows), then `PATH`;
-`LOOPAI_ACP_LOOPAI` overrides both. See [docs/t3-code.md](docs/t3-code.md).
+`make build` alone refreshes `.bin/loopai` and `.bin/loopai-acp`, the launcher for the experimental
+T3 Code provider mode, without installing anything. On Windows the launcher is written only as
+`.bin/loopai-acp.exe`, and loopai also gets a `.bin/loopai.exe` copy. The launcher prefers a `loopai`
+in its own directory (`loopai.exe` on Windows), then `PATH`; `LOOPAI_ACP_LOOPAI` overrides both. See
+[docs/t3-code.md](docs/t3-code.md).
 
 ### Shell completions
 
@@ -107,6 +133,11 @@ claude plugin marketplace add echeg/loopai
 claude plugin install loopai@loopai
 ```
 
+To let `make install` and `/loopai:loopai-update` serve the plugin from your checkout, add the
+marketplace from its local path instead (`claude plugin marketplace add /path/to/loopai`). With the
+GitHub source the plugin follows the published repository: `make install` warns when its version
+differs from the checkout, and `loopai-update` needs `LOOPAI_SRC` or asks where the checkout is.
+
 The plugin provides ten skills:
 
 - `loopai:loopai` launches loopai, monitors progress, and resumes active runs
@@ -124,8 +155,8 @@ The plugin provides ten skills:
 - `loopai:loopai-brainstorm` designs a feature interactively, then hands the
   approved design to `loopai:loopai-plan`
 - `loopai:loopai-adopt` converts an existing specification or issue into a plan
-- `loopai:loopai-update` merges updated embedded defaults into local
-  customizations
+- `loopai:loopai-update` updates the installation through `make install`, then merges updated
+  embedded defaults into local customizations
 - `loopai:loopai-grill` critiques an existing plan with Claude and Codex, or
   runs a plan-off that compares and synthesizes competing plans
 - `loopai:loopai-retro` reviews run artifacts and ranks evidence-backed improvements;
@@ -242,8 +273,10 @@ cp -R assets/claude/skills/loopai* ~/.claude/skills/
 
 This keeps each skill's bundled resources, including the safety helpers used by
 `loopai-grill`. Standalone copies are not managed by Claude Code's plugin
-updater. After pulling a newer repository version, rerun the copy command to
-refresh them. If replacing older command-file copies, remove only the
+updater, and `make install` and `/loopai:loopai-update` do not refresh them either: `make install`
+warns about every copy and prints an `rm -rf` line for it, without deleting anything. After
+pulling a newer repository version, rerun the copy command to refresh them; a copy older than the
+binary reports a skill contract mismatch when it runs. If replacing older command-file copies, remove only the
 `~/.claude/commands/loopai*.md` files that you previously installed.
 
 ### Codex CLI skills
@@ -254,6 +287,8 @@ marketplace to subscribe to and installation is a copy:
 ```bash
 make install-codex-skills          # add --dry-run first to see what changes
 ```
+
+`make install` runs this step too whenever the Codex home exists.
 
 Nine skills are installed: `loopai`, `loopai-plan`, `loopai-adopt`,
 `loopai-update`, `loopai-brainstorm`, `loopai-orca`, `loopai-t3`, `loopai-merge`, and

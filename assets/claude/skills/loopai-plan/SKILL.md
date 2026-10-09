@@ -6,6 +6,28 @@ description: Create a structured loopai implementation plan in docs/plans/
 
 Create an implementation plan in `docs/plans/YYYYMMDD-<task-name>.md` with interactive context gathering.
 
+## Skill Contract Check
+
+Run this first and read the printed line:
+
+```bash
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
+```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `/loopai:loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `/loopai:loopai-update`, then `/reload-plugins` or restart the session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
 ## Prerequisites: Verify CLI Installation
 
 Check if loopai CLI is installed (needed to execute the plan after creation):
@@ -17,10 +39,7 @@ which loopai
 
 ```bash
 git clone https://github.com/echeg/loopai
-cd loopai
-make build
-install -d ~/.local/bin
-install -m 0755 .bin/loopai ~/.local/bin/loopai
+make -C loopai install
 ```
 
 Proceed with plan creation regardless, but remind user to install before execution.

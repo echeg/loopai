@@ -9,6 +9,28 @@ metadata:
 
 Produce a plan, not an implementation. The output is one file at `docs/plans/YYYYMMDD-<slug>.md`.
 
+## Skill Contract Check
+
+Run this first and read the printed line:
+
+```bash
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
+```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `$loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `$loopai-update`, then restart the Codex session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
 ## Prerequisites
 
 ```bash
@@ -18,8 +40,8 @@ command -v loopai
 Missing loopai does not block planning. Mention the source install once and continue:
 
 ```bash
-git clone https://github.com/echeg/loopai && cd loopai && make build
-install -d ~/.local/bin && install -m 0755 .bin/loopai ~/.local/bin/loopai
+git clone https://github.com/echeg/loopai
+make -C loopai install
 ```
 
 ## Step 0: Read Intent, Then the Repository

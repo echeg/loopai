@@ -18,6 +18,28 @@ Supported source shapes:
 
 This is a single-skill conversion: discover, classify, ask focused questions when in doubt, draft, review, write. Do not modify code or run tests. Output is the new plan file and its own Git commit.
 
+## Skill Contract Check
+
+Run this first and read the printed line:
+
+```bash
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
+```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `/loopai:loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `/loopai:loopai-update`, then `/reload-plugins` or restart the session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
 ## Step 0: Optional CLI Check
 
 This check is **informational only**. Missing loopai CLI must NOT break the flow — conversion does not require it. Do NOT block, exit, prompt the user, or wait for installation. Always continue to Step 1 regardless of the result.
@@ -30,10 +52,7 @@ If `which loopai` returns non-zero, briefly mention that loopai is needed to exe
 
 ```bash
 git clone https://github.com/echeg/loopai
-cd loopai
-make build
-install -d ~/.local/bin
-install -m 0755 .bin/loopai ~/.local/bin/loopai
+make -C loopai install
 ```
 
 If `which loopai` succeeds, say nothing and proceed.
