@@ -52,6 +52,14 @@ func writePRReport(t *testing.T, root, name, report string) string {
 	return path
 }
 
+// mustRel returns path relative to base.
+func mustRel(t *testing.T, base, path string) string {
+	t.Helper()
+	rel, err := filepath.Rel(base, path)
+	require.NoError(t, err)
+	return rel
+}
+
 func TestBuildPRTitleBodyReport(t *testing.T) {
 	tests := []struct {
 		name, committed, disk, memory, branch, warning string
@@ -137,7 +145,8 @@ func TestLocateCompletionReport(t *testing.T) {
 		body, source, err := locateCompletionReport(svc, "docs/plans", "20261005-feature.md", "feature")
 		require.NoError(t, err)
 		assert.Equal(t, prReportFixture, string(body))
-		assert.Equal(t, "refs/heads/feature:"+path, source)
+		// the source names the path under the symlink-resolved root (macOS /var -> /private/var)
+		assert.Equal(t, "refs/heads/feature:"+filepath.Join(svc.Root(), mustRel(t, dir, path)), source)
 	})
 
 	t.Run("missing report is a sentinel", func(t *testing.T) {
@@ -158,7 +167,7 @@ func TestLocateCompletionReport(t *testing.T) {
 		body, source, err := locateCompletionReport(svc, "docs/plans", "20261005-feature.md", "")
 		require.NoError(t, err)
 		assert.Equal(t, prReportFixture, string(body))
-		assert.Equal(t, path, source)
+		assert.Equal(t, filepath.Join(svc.Root(), mustRel(t, dir, path)), source)
 	})
 
 	t.Run("symlink errors warn and preserve legacy body", func(t *testing.T) {

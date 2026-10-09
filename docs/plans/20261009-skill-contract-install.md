@@ -151,12 +151,14 @@
 ## Implementation Steps
 
 ### Task 1: Add skillContract and the --skill-contract flag
-- [ ] create `cmd/loopai/skill_contract.go` with `const skillContract = 1` and a short comment saying what the number guards and when to bump it
-- [ ] add `SkillContract bool \`long:"skill-contract" description:"print the skill contract number and exit"\`` to `opts` in `cmd/loopai/main.go`; handle it right after parsing, beside `o.Version`, printing exactly `<N>\n` to stdout and exiting 0 before config loading, repository checks, cmux/orca/T3 setup, or keep-awake
-- [ ] suppress the pre-parse version banner when `--skill-contract` is present in raw args (extend `versionBannerWriter` or add a sibling raw-args check honoring `--` like `acpRequested`), so stdout carries only the integer
-- [ ] include `o.SkillContract` in `isStandaloneCommand` and reject it combined with plan arguments or other modes the same way `--version` combinations are handled (verify existing behavior first and match it)
-- [ ] write tests: output is exactly the integer with no banner; exit path skips config loading (temp `HOME`, no config present); `--` before the flag disables the banner suppression check; combination with a plan argument behaves as decided
-- [ ] run `make test </dev/null` and `make lint` - must pass before task 2
+- [x] create `cmd/loopai/skill_contract.go` with `const skillContract = 1` and a short comment saying what the number guards and when to bump it
+- [x] add `SkillContract bool \`long:"skill-contract" description:"print the skill contract number and exit"\`` to `opts` in `cmd/loopai/main.go`; handle it right after parsing, beside `o.Version`, printing exactly `<N>\n` to stdout and exiting 0 before config loading, repository checks, cmux/orca/T3 setup, or keep-awake
+- [x] suppress the pre-parse version banner when `--skill-contract` is present in raw args (extend `versionBannerWriter` or add a sibling raw-args check honoring `--` like `acpRequested`), so stdout carries only the integer
+- [x] include `o.SkillContract` in `isStandaloneCommand` and reject it combined with plan arguments or other modes the same way `--version` combinations are handled (verify existing behavior first and match it)
+- [x] write tests: output is exactly the integer with no banner; exit path skips config loading (temp `HOME`, no config present); `--` before the flag disables the banner suppression check; combination with a plan argument behaves as decided (like `--version`: ignored, prints the integer and exits 0)
+- [x] ➕ fix pre-existing macOS failures surfaced by `make test` (temp dir `/var` vs resolved `/private/var`): `pkg/t3` `planRelPath` now resolves symlinks on both sides (a real bug for checkouts entered through a symlink), `TestLocateCompletionReport`/`TestRunFinalizeCloseout` expectations use the resolved root, and `codex_image_test.py` compares against the resolved `CODEX_HOME`
+- [x] ➕ fix pre-existing `unparam` lint in `pkg/git/external.go` `classifyNoCommitMerge` (`abandon` returns only the error)
+- [x] run `make test </dev/null` and `make lint` - must pass before task 2
 
 ### Task 2: Add the contract surface fingerprint test
 - [ ] in `cmd/loopai/skill_contract.go` add `skillContractSurface() (string, error)` rendering three sorted sections: `flags:` (long names from the go-flags parser over `opts`, skipping hidden options), `config keys:` (keys from embedded `pkg/config/defaults/config`, commented `# key = value` lines included, since the defaults file documents keys commented out), `report headings:` (`## ` lines of the embedded `report.txt` with its `# ` comment prefix stripped, in file order)

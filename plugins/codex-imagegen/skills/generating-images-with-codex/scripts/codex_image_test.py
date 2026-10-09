@@ -224,7 +224,8 @@ class CodexImageTest(unittest.TestCase):
                                  env_overrides={"CODEX_HOME": str(runtime_home)})
         self.assertEqual(result.returncode, 0, result.stderr)
         record = json.loads((self.root / "out" / "apple.png.json").read_text(encoding="utf-8"))
-        self.assertIn(runtime_home, Path(record["codex"]["savedPath"]).parents)
+        # the script resolves CODEX_HOME, and on macOS the temp directory sits behind the /var symlink
+        self.assertIn(runtime_home.resolve(), Path(record["codex"]["savedPath"]).parents)
         self.assertFalse((self.home / "sessions").exists())
 
     def test_explicit_profile_overrides_environment_and_is_passed_to_codex(self):

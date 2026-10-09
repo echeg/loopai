@@ -15012,7 +15012,9 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		require.NoError(t, os.MkdirAll(planDir, 0o750))
 		require.NoError(t, os.WriteFile(filepath.Join(planDir, "20261005-feature.md"),
 			[]byte("# Feature title\n## Overview\nLegacy overview."), 0o600))
-		_, err := f.svc.ShowFile("refs/heads/feature", filepath.Join(planDir, "completed", "20261005-feature.report.md"))
+		// joined under the resolved root: ShowFile cannot resolve symlinks in a directory that is absent
+		_, err := f.svc.ShowFile("refs/heads/feature",
+			filepath.Join(f.svc.Root(), "docs", "plans", "completed", "20261005-feature.report.md"))
 		require.ErrorIs(t, err, git.ErrPathNotFound)
 
 		res := runFinalizeCloseout(t.Context(), f.request(config.FinalizePR), synced, prReportFixture, &recordingFinalizeLog{})

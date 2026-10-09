@@ -219,6 +219,16 @@ func planRelPath(root, planFile string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("t3: resolve plan path: %w", err)
 	}
+	// git reports the root with symlinks resolved, while a relative plan inherits the logical
+	// working directory, so a checkout entered through a symlink (macOS /tmp -> /private/tmp) would
+	// read as outside. both sides are resolved; for the plan only its directory, so a symlinked plan
+	// file itself is kept as named.
+	if resolvedRoot, evalErr := filepath.EvalSymlinks(root); evalErr == nil {
+		root = resolvedRoot
+	}
+	if resolvedDir, evalErr := filepath.EvalSymlinks(filepath.Dir(absPlan)); evalErr == nil {
+		absPlan = filepath.Join(resolvedDir, filepath.Base(absPlan))
+	}
 	rel, err := filepath.Rel(root, absPlan)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return "", fmt.Errorf("t3: plan %s is outside the repository %s", planFile, root)

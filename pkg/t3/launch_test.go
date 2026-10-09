@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -177,6 +178,29 @@ func TestLaunchPreflightErrors(t *testing.T) {
 		var partial *PartialLaunchError
 		assert.NotErrorAs(t, err, &partial)
 	})
+}
+
+func TestPlanRelPathThroughSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on windows")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	writeFile(t, filepath.Join(root, "docs", "plans", "x.md"), "# X\n")
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(root, link))
+
+	rel, err := planRelPath(root, filepath.Join(link, "docs", "plans", "x.md"))
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join("docs", "plans", "x.md"), rel)
+
+	t.Chdir(link)
+	rel, err = planRelPath(root, filepath.Join("docs", "plans", "x.md"))
+	require.NoError(t, err, "a relative plan under a symlinked working directory is inside the repository")
+	assert.Equal(t, filepath.Join("docs", "plans", "x.md"), rel)
+
+	_, err = planRelPath(root, filepath.Join(t.TempDir(), "x.md"))
+	require.ErrorContains(t, err, "outside the repository")
 }
 
 func TestLaunchPartialFailures(t *testing.T) {
