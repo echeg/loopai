@@ -71,9 +71,11 @@ expect_line "stderr noise is not read" "$(stub noisy 'echo warning >&2; echo 5')
 # loopai-update is the one command that updates every channel: both copies must locate
 # the checkout through the marketplace record and run its installer. A rewrite that
 # drops either would leave the contract warning pointing at a command that installs nothing.
+# the merge must extract defaults from the binary just installed, not whatever PATH finds first.
 for update_skill in "$repo_root/assets/claude/skills/loopai-update/SKILL.md" \
 	"$repo_root/assets/codex/skills/loopai-update/SKILL.md"; do
-	for needle in 'make -C <checkout> install' 'known_marketplaces.json' 'LOOPAI_SRC' 'git pull --ff-only'; do
+	for needle in 'make -C <checkout> install' 'known_marketplaces.json' 'LOOPAI_SRC' 'git pull --ff-only' \
+		'"$LOOPAI_BIN" --dump-defaults'; do
 		grep -Fq -- "$needle" "$update_skill" || fail "$update_skill does not mention $needle"
 	done
 done

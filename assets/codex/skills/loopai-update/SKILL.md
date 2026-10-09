@@ -76,15 +76,18 @@ make -C <checkout> install </dev/null
 
 Summarize its output: every `✓` line in one short list, every `!` line verbatim, since each one names something the user has to do (a standalone copy to remove, a `PATH` entry that shadows the installed binary, a plugin to install). Tell the user to restart open Codex sessions so they load the reinstalled skills.
 
-If it exits non-zero, report the failing line. Continue to Step 1 only when `command -v loopai` succeeds, and tell the user the merge compares against the binary that is still installed. If no loopai binary exists at all, stop here.
+Choose the binary Step 1 runs. When the output has the line `installed loopai and loopai-acp into <dir>`, the new binary is `<dir>/loopai` (on Windows the line names `loopai.exe` and the binary is `<dir>/loopai.exe`): Step 1 runs that absolute path, never a bare `loopai`, because a `PATH` entry that shadows it, or an install directory missing from `PATH`, would otherwise extract the old binary's defaults or none at all.
 
-When the user skipped the update, continue to Step 1 only when `command -v loopai` succeeds; otherwise stop and tell them to install it from a checkout with `make install`.
+If it exits non-zero without that line (the build failed), report the failing line, continue to Step 1 with `loopai` from `PATH` only when `command -v loopai` succeeds, and tell the user the merge compares against the binary that is still installed. If no loopai binary exists at all, stop here. A non-zero exit after that line (a contract mismatch) still installed the new binary: report the failing line and use `<dir>/loopai`.
+
+When the user skipped the update, continue to Step 1 with `loopai` from `PATH` only when `command -v loopai` succeeds; otherwise stop and tell them to install it from a checkout with `make install`.
 
 ## Step 1: Extract the Current Defaults
 
 ```bash
 DUMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/loopai-defaults-XXXXXX")
-loopai --dump-defaults "$DUMP_DIR"
+LOOPAI_BIN=<binary chosen in Step 0>  # <dir>/loopai after an install, otherwise loopai
+"$LOOPAI_BIN" --dump-defaults "$DUMP_DIR"
 printf '%s\n' "$DUMP_DIR"
 ```
 
