@@ -232,14 +232,14 @@ func (a *acpRunner) runPlan(ctx context.Context, req acp.PromptRequest, sink *ac
 		merged := a.autoMerge(ctx, cfg, execReq)
 		merge = &merged
 	}
-	a.recordLastRun(req, o.PlanFile, cfg, execReq, merge)
+	a.recordLastRun(req, o, cfg, execReq, merge)
 	return acpRunResult(o.PlanFile, execReq.Outcome, merge, runErr)
 }
 
 // recordLastRun saves the run in the session state for later chat turns and drops the chat's
 // provider session. It is best-effort: a failure costs only the chat's context, so it is reported
 // and never fails the run.
-func (a *acpRunner) recordLastRun(req acp.PromptRequest, planFile string, cfg *config.Config,
+func (a *acpRunner) recordLastRun(req acp.PromptRequest, o opts, cfg *config.Config,
 	execReq executePlanRequest, merge *acpMergeResult) {
 	state, err := loadACPState(req.Cwd, req.SessionID, a.out)
 	if err == nil {
@@ -248,7 +248,7 @@ func (a *acpRunner) recordLastRun(req acp.PromptRequest, planFile string, cfg *c
 			cfg.VcsCommand); svcErr == nil {
 			branch, _ = gitSvc.CurrentBranch() // a detached or unreadable HEAD records no branch
 		}
-		run := newACPLastRun(planFile, branch, acpMergeBase(execReq.DefaultBranch), *execReq.Outcome, merge)
+		run := newACPLastRun(o, branch, acpMergeBase(execReq.DefaultBranch), *execReq.Outcome, merge)
 		err = saveACPState(req.Cwd, req.SessionID, state.withLastRun(run))
 	}
 	if err != nil {

@@ -295,8 +295,10 @@ happen where the report and worktree are. loopai routes every message that is no
 - `merge` or `мерж`, and `pr` or `пр`: the whole message, trimmed and case-insensitive, runs the
   action directly, with no model.
 - Anything else is a chat turn: one session of the `review_model` provider (falling back to
-  `task_model`'s, as for the review phase) in the thread's working directory. It reads files,
-  answers, edits, and commits on the thread's branch, staging only the files it changed.
+  `task_model`'s, as for the review phase) in the thread's working directory. A `--task-model` or
+  `--review-model` the thread's last run was launched with applies to its chat too, so the chat
+  answers through the model that reviewed the run. It reads files, answers, edits, and commits on
+  the thread's branch, staging only the files it changed.
 
 A chat turn streams the model's output as reasoning and ends with its answer as the final message.
 It shows no plan steps, and no activity other than a provider-limit wait and the `loopai` heartbeat
@@ -304,8 +306,11 @@ card after 4 silent minutes. The stop button cancels it, and a message sent whil
 steers it, as with a plan run. The prompt is the embedded `acp_chat.txt`, overridable in
 `.loopai/prompts/` or the global prompts directory. The first turn of a provider session carries
 the branch, the base, `git log <base>..HEAD --oneline` (at most 50 commits), the last run's report,
-and its auto-merge outcome. Later turns send only the message and resume the provider session:
-Claude through `--resume <id>` after the configured arguments, `claude_args` included, and Codex
+and its auto-merge outcome. Later turns send only the message and resume the provider session.
+A merge or pull request runs outside the provider session, whether typed as a command or requested
+by an answer, so its outcome is kept and prepended to the next chat message: a follow-up such as
+"why did that fail?" reaches a model that saw the refusal. Resume works
+for Claude through `--resume <id>` after the configured arguments, `claude_args` included, and Codex
 through `codex exec resume <id>`. A resume that fails for any reason other than a provider limit,
 a session timeout, or cancellation is retried once as a fresh session with the full context. That
 includes a configured error pattern such as `API Error: 400`, which is how a provider rejects a
@@ -345,9 +350,12 @@ timeout, or a missing provider binary. A failed chat turn keeps the previous pro
 
 Each session keeps its state in `.loopai/acp/<session-id>.json` in the thread's working directory,
 written atomically with mode `0600`: the chat provider, its session id, and the last plan run (plan,
-branch, base, the commit the run completed on, the report, and the auto-merge outcome). loopai adds
+branch, base, the commit the run completed on, the report, the auto-merge outcome, and the model
+overrides the run was launched with), and the outcomes of up to five merge or pull request actions
+not yet shown to the chat provider. loopai adds
 `acp/` to the generated `.loopai/.gitignore`, so the file never counts as an untracked path for the
-merge gates. A new plan run replaces the last run and drops the provider session, so the next chat
+merge gates. A new plan run replaces the last run and drops the provider session and pending
+action outcomes, so the next chat
 starts fresh about the new run. Changing `review_model` to another provider also starts a fresh
 session. A canceled or failed chat turn saves nothing and keeps the previous session id. A corrupt state file
 is reported on stderr and treated as empty.

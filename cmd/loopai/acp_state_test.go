@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -104,17 +105,64 @@ func TestACPStateRejectsUnsafeSessionID(t *testing.T) {
 
 func TestACPStateWithLastRunDropsProviderSession(t *testing.T) {
 	merge := &acpMergeResult{base: "main", skipped: "Risk is high"}
-	run := newACPLastRun("docs/plans/x.md", "x", "main",
+	run := newACPLastRun(opts{PlanFile: "docs/plans/x.md", ReviewModel: "codex::high"}, "x", "main",
 		planExecutionOutcome{succeeded: true, branchTip: "abc", report: "# Report: X"}, merge)
 	assert.Equal(t, &acpLastRun{Plan: "docs/plans/x.md", Branch: "x", Base: "main", Tip: "abc", Report: "# Report: X",
-		MergeSummary: "not merged into main: Risk is high", MergeSkipped: "Risk is high"}, run)
-	assert.Equal(t, &acpLastRun{Plan: "p.md"}, newACPLastRun("p.md", "", "", planExecutionOutcome{}, nil),
+		MergeSummary: "not merged into main: Risk is high", MergeSkipped: "Risk is high", ReviewModel: "codex::high"}, run)
+	assert.Equal(t, &acpLastRun{Plan: "p.md"}, newACPLastRun(opts{PlanFile: "p.md"}, "", "", planExecutionOutcome{}, nil),
 		"no merge attempted records no merge outcome")
 
-	prev := acpSessionState{Provider: "claude", ProviderSessionID: "old", LastRun: &acpLastRun{Plan: "old.md"}}
+	prev := acpSessionState{Provider: "claude", ProviderSessionID: "old", LastRun: &acpLastRun{Plan: "old.md"},
+		Actions: []string{"merge (x):\n\nmerged"}}
 	next := prev.withLastRun(run)
-	assert.Equal(t, acpSessionState{LastRun: run}, next)
+	assert.Equal(t, acpSessionState{LastRun: run}, next, "a new run drops the provider session and pending outcomes")
 	assert.Equal(t, "old", prev.ProviderSessionID, "the receiver is not modified")
+}
+
+func TestACPStateWithAction(t *testing.T) {
+	var s acpSessionState
+	for i := range acpActionLimit + 2 {
+		s = s.withAction("outcome " + strconv.Itoa(i))
+	}
+	require.Len(t, s.Actions, acpActionLimit)
+	assert.Equal(t, "outcome 2", s.Actions[0], "the oldest outcomes are dropped")
+	assert.Equal(t, "outcome "+strconv.Itoa(acpActionLimit+1), s.Actions[acpActionLimit-1])
+
+	prev := acpSessionState{Actions: []string{"a"}}
+	next := prev.withAction(strings.Repeat("ж", acpActionRunes+10))
+	assert.Equal(t, []string{"a"}, prev.Actions, "the receiver is not modified")
+	assert.Equal(t, strings.Repeat("ж", acpActionRunes)+"...", next.Actions[1], "a long outcome is cut on a rune boundary")
+}
+
+func TestACPStateSessionOpts(t *testing.T) {
+	base := opts{ConfigDir: "/cfg", TaskModel: "claude:opus", ReviewModel: "claude:sonnet"}
+	tests := []struct {
+		name     string
+		state    acpSessionState
+		want     opts
+		wantWarn string
+	}{
+		{"no run keeps the base", acpSessionState{}, base, ""},
+		{"run overrides apply", acpSessionState{LastRun: &acpLastRun{TaskModel: "codex:gpt-6-astra", ReviewModel: "codex::high"}},
+			opts{ConfigDir: "/cfg", TaskModel: "codex:gpt-6-astra", ReviewModel: "codex::high"}, ""},
+		{"a run without overrides used the configured models", acpSessionState{LastRun: &acpLastRun{Plan: "p.md"}},
+			opts{ConfigDir: "/cfg"}, ""},
+		{"an invalid recorded value is ignored", acpSessionState{LastRun: &acpLastRun{ReviewModel: "gpt; rm -rf /"}},
+			base, "warning: ignoring the recorded model overrides"},
+		{"an unprefixed recorded value is ignored", acpSessionState{LastRun: &acpLastRun{TaskModel: "opus"}},
+			base, "needs a claude or codex provider prefix"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			assert.Equal(t, tc.want, tc.state.sessionOpts(base, &out))
+			if tc.wantWarn == "" {
+				assert.Empty(t, out.String())
+				return
+			}
+			assert.Contains(t, out.String(), tc.wantWarn)
+		})
+	}
 }
 
 func TestACPRunnerRecordLastRun(t *testing.T) {
@@ -129,7 +177,8 @@ func TestACPRunnerRecordLastRun(t *testing.T) {
 		LastRun: &acpLastRun{Plan: "docs/plans/old.md"}}))
 
 	var out bytes.Buffer
-	(&acpRunner{out: &out}).recordLastRun(req, "docs/plans/f.md", &config.Config{}, execReq, &acpMergeResult{merged: true,
+	(&acpRunner{out: &out}).recordLastRun(req, opts{PlanFile: "docs/plans/f.md", TaskModel: "codex:gpt-6-astra"},
+		&config.Config{}, execReq, &acpMergeResult{merged: true,
 		kind: "fast-forward", base: "master", feature: "feature"})
 	assert.Empty(t, out.String())
 
@@ -140,13 +189,14 @@ func TestACPRunnerRecordLastRun(t *testing.T) {
 	assert.Empty(t, state.ProviderSessionID, "a new run resets the provider session")
 	require.NotNil(t, state.LastRun)
 	assert.Equal(t, acpLastRun{Plan: "docs/plans/f.md", Branch: "feature", Base: "master", Tip: "abc",
-		Report: "# Report: F", MergeSummary: "merged feature into master (fast-forward), not pushed"}, *state.LastRun)
+		Report: "# Report: F", MergeSummary: "merged feature into master (fast-forward), not pushed",
+		TaskModel: "codex:gpt-6-astra"}, *state.LastRun)
 }
 
 func TestACPRunnerRecordLastRunWarnsOnFailure(t *testing.T) {
 	execReq := executePlanRequest{Colors: testColors(), Outcome: &planExecutionOutcome{}}
 	var out bytes.Buffer
-	(&acpRunner{out: &out}).recordLastRun(acp.PromptRequest{SessionID: "../escape", Cwd: t.TempDir()}, "p.md",
+	(&acpRunner{out: &out}).recordLastRun(acp.PromptRequest{SessionID: "../escape", Cwd: t.TempDir()}, opts{PlanFile: "p.md"},
 		&config.Config{}, execReq, nil)
 	assert.Contains(t, out.String(), "warning: ACP session state not saved: unsafe ACP session id")
 }

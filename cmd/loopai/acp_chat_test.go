@@ -290,6 +290,51 @@ func TestServeACPChatMergeSignal(t *testing.T) {
 	assert.Contains(t, stderr.String(), "acp merge: merged two into master")
 }
 
+func TestServeACPChatSeesActionOutcomes(t *testing.T) {
+	f, stub := newACPChatFixture(t)
+	worktree := acpChatWorktree(t, f)
+	c := startACPServer(t.Context(), t, opts{ConfigDir: f.cfgDir}, io.Discard)
+	sid := c.handshake(worktree)
+
+	// a typed command never reaches the provider, so its outcome waits for the next chat turn
+	requireACPStopReason(t, c.response(c.prompt(sid, "merge")), "end_turn")
+	requireACPStopReason(t, c.response(c.prompt(sid, "what happened?")), "end_turn")
+	first := stub.read(t, "prompt", 1)
+	assert.Contains(t, first, "merge (the user typed it as a command):\n\n## Merge\n\nMerged `two` into `master`")
+	assert.Contains(t, first, "The user's message:\n\nwhat happened?")
+	state, err := loadACPState(worktree, sid, io.Discard)
+	require.NoError(t, err)
+	assert.Empty(t, state.Actions, "a chat turn consumes the pending outcomes")
+
+	// an action the answer requests runs after the provider session ended
+	stub.setAnswer(t, "Merging.\n<<<RALPHEX:ACP_MERGE>>>")
+	requireACPStopReason(t, c.response(c.prompt(sid, "merge it again")), "end_turn")
+	assert.Equal(t, "merge it again", strings.TrimSpace(stub.read(t, "prompt", 2)), "nothing was pending")
+	stub.setAnswer(t, "ok")
+	requireACPStopReason(t, c.response(c.prompt(sid, "why nothing?")), "end_turn")
+	c.close()
+	third := stub.read(t, "prompt", 3)
+	assert.Contains(t, stub.read(t, "args", 3), "--resume sess-2")
+	assert.True(t, strings.HasPrefix(third, "Since the last chat answer, loopai performed"), third)
+	assert.Contains(t, third, "merge (your previous answer requested it):\n\n## Merge\n\n`two` is already in `master`")
+	assert.True(t, strings.HasSuffix(strings.TrimSpace(third), "The user's message:\n\nwhy nothing?"), third)
+}
+
+func TestServeACPChatUsesLaunchModels(t *testing.T) {
+	f, stub := newACPChatFixture(t)
+	c := startACPServer(t.Context(), t, opts{ConfigDir: f.cfgDir}, io.Discard)
+	sid := c.handshake(f.repo)
+	// the thread's run was launched with --review-model; chat answers through the same model
+	require.NoError(t, saveACPState(f.repo, sid, acpSessionState{LastRun: &acpLastRun{Plan: "docs/plans/two.md",
+		ReviewModel: "claude:sonnet:low"}}))
+
+	requireACPStopReason(t, c.response(c.prompt(sid, "what changed?")), "end_turn")
+	c.close()
+	args := stub.read(t, "args", 1)
+	assert.Contains(t, args, "--model sonnet")
+	assert.Contains(t, args, "--effort low")
+}
+
 func TestServeACPCommands(t *testing.T) {
 	f, stub := newACPChatFixture(t)
 	worktree := acpChatWorktree(t, f)

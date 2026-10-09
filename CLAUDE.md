@@ -1090,7 +1090,7 @@ the same branch; a missing `gh` is a refusal. Both keep the auto-merge's no-tear
 `runChat` runs `processor.ModeACPChat`, modeled on `ModeGenAgents`: `resolveExecutionDeps` skips
 reviewer resolution for it, `modePhaseProviders`, `modePhaseBanners`, and `runHeaderParams` treat it
 as a review-provider mode, it logs to `.loopai/progress/progress-acp-chat.txt`, and
-`EnsureLocalGitignore` runs before anything is written. The runner hands it to `phase.ChatPhase`
+`openSession` runs `EnsureLocalGitignore` before anything is written. The runner hands it to `phase.ChatPhase`
 through the review executor, so retry, `wait_on_limit`, and claude-swap match the other phases. The
 phase deliberately leaves the phase holder alone, because the sink turns every phase into a tool-call
 card and a chat shows none, while its section and output still reach the sink's reasoning through
@@ -1110,7 +1110,15 @@ context unless the failure is a limit, a timeout, or cancellation — an error p
 since the default `API Error: 400/404/413` patterns are what an unusable resumed transcript produces
 and the stored id would otherwise fail every later message — and returns no
 result on cancellation, so `runChat` saves nothing and the previous id survives. `acp_chat.txt`
-renders in full only for a fresh session (`ACPChatPrompt` with `resumed` sends the message alone),
+renders in full only for a fresh session (`ACPChatPrompt` with `resumed` sends the message alone).
+A merge or PR runs outside the provider session, so `runCommand` and a signaled action record its
+message through `acpSessionState.withAction` (latest five, each capped), `acpChatMessage` prepends
+the pending outcomes to the next chat message, fresh or resumed, and a successful chat turn clears
+them; `withLastRun` drops them with the provider session. `acpLastRun` also records the launch's
+`--task-model`/`--review-model`, and `openSession` loads the state before config and applies them
+through `sessionOpts` (revalidated by `validatePassThroughValues`), so chat and commands run with
+the providers the thread's run used rather than the configured ones; `openSession` also runs
+`EnsureLocalGitignore`, since a command turn now writes the state file too. The template
 forbids loopai commands, worktree removal, branch switches, push, and `reset --hard`, and tells the
 model to end with `<<<RALPHEX:ACP_MERGE>>>` or `<<<RALPHEX:ACP_PR>>>` only when the current message
 asks. Both are `status.ACPMerge`/`ACPPR`, registered in `knownSignals`; `chatSignal` also searches the

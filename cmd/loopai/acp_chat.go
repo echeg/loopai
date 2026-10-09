@@ -41,17 +41,19 @@ func acpCommand(text string) (kind string, ok bool) {
 	}
 }
 
-// acpSession is what a command or chat turn works with: the session's config, state, and
-// repository, opened in the session cwd.
+// acpSession is what a command or chat turn works with: the session's options, config, state,
+// and repository, opened in the session cwd.
 type acpSession struct {
+	o      opts
 	cfg    *config.Config
 	state  acpSessionState
 	gitSvc *git.Service
 	colors *progress.Colors
 }
 
-// openSession enters the session cwd and loads its config, state, and repository. The returned
-// function restores the previous working directory; it is nil when an error is returned.
+// openSession enters the session cwd and loads its state, config, and repository, applying the
+// model overrides the session's last run was launched with. The returned function restores the
+// previous working directory; it is nil when an error is returned.
 func (a *acpRunner) openSession(req acp.PromptRequest) (acpSession, func(), error) {
 	leave, err := enterDir(req.Cwd, a.out)
 	if err != nil {
@@ -61,11 +63,12 @@ func (a *acpRunner) openSession(req acp.PromptRequest) (acpSession, func(), erro
 		leave()
 		return acpSession{}, nil, err
 	}
-	cfg, err := loadACPSessionConfig(a.base)
+	state, err := loadACPState(req.Cwd, req.SessionID, a.out)
 	if err != nil {
 		return fail(err)
 	}
-	state, err := loadACPState(req.Cwd, req.SessionID, a.out)
+	o := state.sessionOpts(a.base, a.out)
+	cfg, err := loadACPSessionConfig(o)
 	if err != nil {
 		return fail(err)
 	}
@@ -75,18 +78,55 @@ func (a *acpRunner) openSession(req acp.PromptRequest) (acpSession, func(), erro
 		return fail(fmt.Errorf("open the repository: %w", err))
 	}
 	gitSvc.SetCommitTrailer(cfg.CommitTrailer)
-	return acpSession{cfg: cfg, state: state, gitSvc: gitSvc, colors: colors}, leave, nil
+	// both turn kinds write the session state under .loopai/, and a chat turn its progress log, while
+	// the merge gates count untracked files, so .loopai/ must be ignored before anything is written
+	if err = gitSvc.EnsureLocalGitignore(); err != nil {
+		return fail(fmt.Errorf("ensure gitignore: %w", err))
+	}
+	return acpSession{o: o, cfg: cfg, state: state, gitSvc: gitSvc, colors: colors}, leave, nil
 }
 
 // runCommand performs a merge or pr command typed into the thread. Every gate refusal is part of
-// the answer; only a session that cannot be opened fails the turn.
+// the answer; only a session that cannot be opened fails the turn. The outcome is recorded for the
+// next chat turn, since the provider session never sees a command.
 func (a *acpRunner) runCommand(ctx context.Context, req acp.PromptRequest, kind string) (acp.Result, error) {
 	s, leave, err := a.openSession(req)
 	if err != nil {
 		return acp.Result{}, err
 	}
 	defer leave()
-	return acp.Result{Message: a.runAction(ctx, s, kind)}, nil
+	msg := a.runAction(ctx, s, kind)
+	a.saveState(req, s.state.withAction(acpActionOutcome(kind, "the user typed it as a command", msg)))
+	return acp.Result{Message: msg}, nil
+}
+
+// saveState saves the session state; a failure costs only the chat's context, so it is reported
+// and never fails the turn.
+func (a *acpRunner) saveState(req acp.PromptRequest, state acpSessionState) {
+	if err := saveACPState(req.Cwd, req.SessionID, state); err != nil {
+		fmt.Fprintf(a.out, "warning: ACP session state not saved: %v\n", err)
+	}
+}
+
+// acpActionOutcome renders a merge or pull request outcome for the next chat turn.
+func acpActionOutcome(kind, origin, msg string) string {
+	return fmt.Sprintf("%s (%s):\n\n%s", kind, origin, msg)
+}
+
+// acpChatMessage prefixes the user's message with the action outcomes loopai reported since the
+// provider last answered, so a question such as "why did that fail?" reaches a model that saw them.
+func acpChatMessage(text string, actions []string) string {
+	text = strings.TrimSpace(text)
+	if len(actions) == 0 {
+		return text
+	}
+	var b strings.Builder
+	b.WriteString("Since the last chat answer, loopai performed these actions in this thread and showed the user their outcomes:\n\n")
+	for _, action := range actions {
+		b.WriteString(action + "\n\n")
+	}
+	b.WriteString("The user's message:\n\n" + text)
+	return b.String()
 }
 
 // runAction performs a requested merge or pull request and renders its outcome for the thread.
@@ -109,7 +149,7 @@ func (a *acpRunner) runAction(ctx context.Context, s acpSession, kind string) st
 // runChat answers a thread message through one review-executor session in the session cwd. The
 // session continues the thread's provider session when the state holds one for the same provider,
 // and the new session id is saved for the next turn unless the turn was canceled. A merge or pull
-// request the answer signals is performed and its outcome appended.
+// request the answer signals is performed and its outcome appended, and recorded for the next turn.
 func (a *acpRunner) runChat(ctx context.Context, req acp.PromptRequest, sink *acp.Sink) (acp.Result, error) {
 	s, leave, err := a.openSession(req)
 	if err != nil {
@@ -117,15 +157,10 @@ func (a *acpRunner) runChat(ctx context.Context, req acp.PromptRequest, sink *ac
 	}
 	defer leave()
 
-	o, mode := a.base, processor.ModeACPChat
+	o, mode := s.o, processor.ModeACPChat
 	_, recovery, err := resolveExecutionDeps(ctx, o, s.cfg, mode, false, a.out)
 	if err != nil {
 		return acp.Result{}, err
-	}
-	// the turn writes a progress log and the session state under .loopai/, and the merge gates
-	// count untracked files, so both must be ignored before anything is written
-	if err = s.gitSvc.EnsureLocalGitignore(); err != nil {
-		return acp.Result{}, fmt.Errorf("ensure gitignore: %w", err)
 	}
 
 	provider, resumable := acpChatProvider(s.cfg)
@@ -176,7 +211,7 @@ func (a *acpRunner) runChat(ctx context.Context, req acp.PromptRequest, sink *ac
 		AppConfig:          s.cfg,
 		LimitRecovery:      recovery,
 	}, chatLog, holder)
-	r.SetChatRequest(processor.ChatRequest{Context: chat, Message: strings.TrimSpace(req.Text), ResumeID: resumeID})
+	r.SetChatRequest(processor.ChatRequest{Context: chat, Message: acpChatMessage(req.Text, s.state.Actions), ResumeID: resumeID})
 	chatErr = runWithSectionTiming(ctx, r.Run, timer)
 	if chatErr != nil {
 		// a canceled turn keeps the previous provider session id: nothing is saved
@@ -184,10 +219,8 @@ func (a *acpRunner) runChat(ctx context.Context, req acp.PromptRequest, sink *ac
 	}
 
 	res := r.ChatResult()
-	s.state.Provider, s.state.ProviderSessionID = provider, res.SessionID
-	if saveErr := saveACPState(req.Cwd, req.SessionID, s.state); saveErr != nil {
-		fmt.Fprintf(a.out, "warning: ACP session state not saved: %v\n", saveErr)
-	}
+	// the provider has now seen the pending outcomes
+	s.state.Provider, s.state.ProviderSessionID, s.state.Actions = provider, res.SessionID, nil
 
 	parts := []string{res.Answer}
 	if strings.TrimSpace(res.Answer) == "" {
@@ -196,12 +229,19 @@ func (a *acpRunner) runChat(ctx context.Context, req acp.PromptRequest, sink *ac
 	if !resumable {
 		parts = append(parts, acpChatNoResumeNote)
 	}
+	kind := ""
 	switch res.Signal {
 	case status.ACPMerge:
-		parts = append(parts, a.runAction(ctx, s, acpCommandMerge))
+		kind = acpCommandMerge
 	case status.ACPPR:
-		parts = append(parts, a.runAction(ctx, s, acpCommandPR))
+		kind = acpCommandPR
 	}
+	if kind != "" {
+		msg := a.runAction(ctx, s, kind)
+		parts = append(parts, msg)
+		s.state = s.state.withAction(acpActionOutcome(kind, "your previous answer requested it", msg))
+	}
+	a.saveState(req, s.state)
 	return acp.Result{Message: strings.Join(parts, "\n\n")}, nil
 }
 
