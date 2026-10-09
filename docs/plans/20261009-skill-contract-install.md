@@ -200,12 +200,12 @@
 - [x] run `make test </dev/null` - must pass before task 7
 
 ### Task 7: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify a stub binary without `--skill-contract` yields `binary=0` through the snippet and that every skill contains the warning instruction
-- [ ] verify editing a `##` heading in embedded `report.txt` fails `TestSkillContract` (then revert)
-- [ ] run full test suite (`make test </dev/null`)
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify all requirements from Overview are implemented
+- [x] verify a stub binary without `--skill-contract` yields `binary=0` through the snippet and that every skill contains the warning instruction
+- [x] verify editing a `##` heading in embedded `report.txt` fails `TestSkillContract` (then revert)
+- [x] run full test suite (`make test </dev/null`)
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 8: [Final] Update documentation
 - [ ] `CLAUDE.md`: add `make install` to Build commands; add a paragraph on `skillContract`, `--skill-contract`, the fingerprint contents, when to bump, the `-update` command, and the byte-identical snippet in all 19 skills; add the PR checklist item "contract surface changed → `skillContract` bumped or the change deliberately accepted via `-update`"
