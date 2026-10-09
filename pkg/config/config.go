@@ -26,6 +26,7 @@ const (
 	codexPromptFile                = "codex.txt"
 	makePlanPromptFile             = "make_plan.txt"
 	genAgentsPromptFile            = "gen_agents.txt"
+	acpChatPromptFile              = "acp_chat.txt"
 	finalizePromptFile             = "finalize.txt"
 	reportPromptFile               = "report.txt"
 	customReviewPromptFile         = "custom_review.txt"
@@ -253,6 +254,7 @@ type Config struct {
 	CodexPrompt                string `json:"-"`
 	MakePlanPrompt             string `json:"-"`
 	GenAgentsPrompt            string `json:"-"`
+	ACPChatPrompt              string `json:"-"`
 	FinalizePrompt             string `json:"-"`
 	ReportPrompt               string `json:"-"`
 	CustomReviewPrompt         string `json:"-"`
@@ -512,6 +514,7 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		CodexPrompt:                prompts.Codex,
 		MakePlanPrompt:             prompts.MakePlan,
 		GenAgentsPrompt:            prompts.GenAgents,
+		ACPChatPrompt:              prompts.ACPChat,
 		FinalizePrompt:             prompts.Finalize,
 		ReportPrompt:               prompts.Report,
 		CustomReviewPrompt:         prompts.CustomReview,

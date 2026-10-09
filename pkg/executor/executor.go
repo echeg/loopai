@@ -915,6 +915,9 @@ func detectSignal(text string) string {
 		// blocked precedes done so output carrying both reads as the fail-safe outcome.
 		status.FinalizeBlocked,
 		status.FinalizeDone,
+		// ACP chat actions; merge precedes pr so an answer carrying both runs the local action.
+		status.ACPMerge,
+		status.ACPPR,
 	}
 	for _, sig := range knownSignals {
 		if strings.Contains(text, sig) {

@@ -38,7 +38,7 @@ func TestClaudeExecutor_Run_Success(t *testing.T) {
 	assert.Equal(t, "<<<RALPHEX:ALL_TASKS_DONE>>>", result.Signal)
 }
 
-func TestClaudeExecutor_Run_FinalizeSignals(t *testing.T) {
+func TestClaudeExecutor_Run_FinalizeAndChatSignals(t *testing.T) {
 	tests := []struct {
 		name       string
 		text       string
@@ -46,6 +46,8 @@ func TestClaudeExecutor_Run_FinalizeSignals(t *testing.T) {
 	}{
 		{name: "done", text: `merge resolved, validation passed\n<<<RALPHEX:FINALIZE_DONE>>>`, wantSignal: status.FinalizeDone},
 		{name: "blocked", text: `<<<RALPHEX:FINALIZE_BLOCKED>>>\nmake test failed`, wantSignal: status.FinalizeBlocked},
+		{name: "acp merge", text: `committed the fix\n<<<RALPHEX:ACP_MERGE>>>`, wantSignal: status.ACPMerge},
+		{name: "acp pr", text: `opening a pull request\n<<<RALPHEX:ACP_PR>>>`, wantSignal: status.ACPPR},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -776,6 +778,9 @@ Note: a minor formatting preference was noted but not flagged.`, status.CodexDon
 		{"merged and validated " + status.FinalizeDone, status.FinalizeDone},
 		{status.FinalizeBlocked + "\ngo test failed", status.FinalizeBlocked},
 		{"quoted " + status.FinalizeDone + " but " + status.FinalizeBlocked + "\nreason", status.FinalizeBlocked},
+		{"merge requested\n" + status.ACPMerge, status.ACPMerge},
+		{"pull request requested\n" + status.ACPPR, status.ACPPR},
+		{"both " + status.ACPPR + " and " + status.ACPMerge, status.ACPMerge},
 		{"no signal here", ""},
 	}
 

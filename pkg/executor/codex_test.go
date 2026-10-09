@@ -140,7 +140,7 @@ func TestCodexExecutor_Run_Success(t *testing.T) {
 	assert.Equal(t, "<<<RALPHEX:CODEX_REVIEW_DONE>>>", result.Signal)
 }
 
-func TestCodexExecutor_Run_FinalizeSignals(t *testing.T) {
+func TestCodexExecutor_Run_FinalizeAndChatSignals(t *testing.T) {
 	tests := []struct {
 		name       string
 		stdout     string
@@ -148,6 +148,8 @@ func TestCodexExecutor_Run_FinalizeSignals(t *testing.T) {
 	}{
 		{name: "done", stdout: "merge resolved, validation passed\n<<<RALPHEX:FINALIZE_DONE>>>", wantSignal: "<<<RALPHEX:FINALIZE_DONE>>>"},
 		{name: "blocked", stdout: "<<<RALPHEX:FINALIZE_BLOCKED>>>\nmake test failed", wantSignal: "<<<RALPHEX:FINALIZE_BLOCKED>>>"},
+		{name: "acp merge", stdout: "committed the fix, merging now\n<<<RALPHEX:ACP_MERGE>>>", wantSignal: "<<<RALPHEX:ACP_MERGE>>>"},
+		{name: "acp pr", stdout: "opening a pull request\n<<<RALPHEX:ACP_PR>>>", wantSignal: "<<<RALPHEX:ACP_PR>>>"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

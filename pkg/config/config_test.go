@@ -125,6 +125,9 @@ func Test_defaultsFS_PromptFiles(t *testing.T) {
 		{file: "defaults/prompts/codex_review.txt", contains: []string{"{{DIFF_INSTRUCTION}}", "{{PROGRESS_FILE}}", "{{PREVIOUS_REVIEW_CONTEXT}}", "{{PLAN_FILE}}"}},
 		{file: "defaults/prompts/external_claude_review.txt", contains: []string{"{{DIFF_INSTRUCTION}}", "{{PREVIOUS_REVIEW_CONTEXT}}", "findings-only", "Do not edit", "side-effecting Bash"}},
 		{file: "defaults/prompts/external_claude_eval.txt", contains: []string{"{{CLAUDE_OUTPUT}}", "primary executor owns", "RALPHEX:EXTERNAL_REVIEW_DONE"}},
+		{file: "defaults/prompts/acp_chat.txt", contains: []string{"{{CHAT_BRANCH}}", "{{CHAT_BASE}}", "{{CHAT_LOG}}",
+			"{{CHAT_REPORT}}", "{{CHAT_MERGE}}", "{{CHAT_MESSAGE}}", "RALPHEX:ACP_MERGE", "RALPHEX:ACP_PR",
+			"git add <paths>", "git worktree remove", "git push", "reset --hard", "loopai --merge"}},
 	}
 
 	for _, tc := range testCases {
@@ -164,6 +167,7 @@ func Test_defaultsFS_AllFilesPresent(t *testing.T) {
 		"defaults/prompts/codex_review.txt",
 		"defaults/prompts/external_claude_review.txt",
 		"defaults/prompts/external_claude_eval.txt",
+		"defaults/prompts/acp_chat.txt",
 	}
 
 	for _, file := range expectedFiles {
@@ -257,6 +261,7 @@ func TestLoad_PopulatesAllFields(t *testing.T) {
 	assert.NotEmpty(t, cfg.ExternalClaudeReviewPrompt)
 	assert.NotEmpty(t, cfg.ExternalClaudeEvalPrompt)
 	assert.NotEmpty(t, cfg.GenAgentsPrompt)
+	assert.NotEmpty(t, cfg.ACPChatPrompt)
 }
 
 func TestLoad_WithUserConfig(t *testing.T) {

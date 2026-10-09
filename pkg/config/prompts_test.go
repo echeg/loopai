@@ -912,3 +912,37 @@ func TestPromptLoader_Load_GenAgentsPrompt_GlobalOverridesEmbedded(t *testing.T)
 
 	assert.Equal(t, "custom gen agents prompt", prompts.GenAgents)
 }
+
+func TestPromptLoader_Load_ACPChatPrompt(t *testing.T) {
+	t.Run("embedded default", func(t *testing.T) {
+		prompts, err := newPromptLoader(defaultsFS).Load("", filepath.Join(t.TempDir(), "nonexistent"))
+		require.NoError(t, err)
+		require.NotEmpty(t, prompts.ACPChat, "acp_chat prompt must fall back to the embedded default")
+		assert.Contains(t, prompts.ACPChat, "{{CHAT_MESSAGE}}")
+		assert.NotContains(t, prompts.ACPChat, "available variables", "the header comment is stripped")
+	})
+
+	t.Run("local overrides global", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		globalDir := filepath.Join(tmpDir, "global", "prompts")
+		localDir := filepath.Join(tmpDir, "local", "prompts")
+		require.NoError(t, os.MkdirAll(globalDir, 0o700))
+		require.NoError(t, os.MkdirAll(localDir, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(globalDir, "acp_chat.txt"), []byte("global chat"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(localDir, "acp_chat.txt"), []byte("local chat"), 0o600))
+
+		prompts, err := newPromptLoader(defaultsFS).Load(localDir, globalDir)
+		require.NoError(t, err)
+		assert.Equal(t, "local chat", prompts.ACPChat)
+	})
+
+	t.Run("global overrides embedded", func(t *testing.T) {
+		globalDir := filepath.Join(t.TempDir(), "prompts")
+		require.NoError(t, os.MkdirAll(globalDir, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(globalDir, "acp_chat.txt"), []byte("global chat"), 0o600))
+
+		prompts, err := newPromptLoader(defaultsFS).Load("", globalDir)
+		require.NoError(t, err)
+		assert.Equal(t, "global chat", prompts.ACPChat)
+	})
+}

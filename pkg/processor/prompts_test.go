@@ -2099,6 +2099,7 @@ func TestPromptBuilder_BacklogDirPlaceholder(t *testing.T) {
 			MakePlanPrompt:             "{{BACKLOG_DIR}}",
 			FinalizePrompt:             "{{BACKLOG_DIR}}",
 			GenAgentsPrompt:            "{{BACKLOG_DIR}}",
+			ACPChatPrompt:              "{{BACKLOG_DIR}}",
 		}
 	}
 
@@ -2130,6 +2131,7 @@ func TestPromptBuilder_BacklogDirPlaceholder(t *testing.T) {
 		{"plan", func(b *promptBuilder) string { return b.PlanPrompt() }},
 		{"finalize", func(b *promptBuilder) string { return b.FinalizePrompt(nil) }},
 		{"gen agents", func(b *promptBuilder) string { return b.GenAgentsPrompt() }},
+		{"acp chat", func(b *promptBuilder) string { return b.ACPChatPrompt(ACPChatContext{}, "message", false) }},
 	}
 
 	tests := []struct {
@@ -2180,6 +2182,7 @@ func TestPromptBuilder_BacklogDirNoLiteralLeak(t *testing.T) {
 		"plan":                   builder.PlanPrompt(),
 		"finalize":               builder.FinalizePrompt(nil),
 		"gen agents":             builder.GenAgentsPrompt(),
+		"acp chat":               builder.ACPChatPrompt(ACPChatContext{}, "message", false),
 	}
 	for name, prompt := range prompts {
 		assert.NotContains(t, prompt, "{{BACKLOG_DIR}}", "%s prompt leaks the raw placeholder", name)

@@ -6773,6 +6773,7 @@ func TestDumpDefaults(t *testing.T) {
 		assert.FileExists(t, filepath.Join(tmpDir, "prompts", "task.txt"))
 		assert.FileExists(t, filepath.Join(tmpDir, "prompts", "external_claude_review.txt"))
 		assert.FileExists(t, filepath.Join(tmpDir, "prompts", "external_claude_eval.txt"))
+		assert.FileExists(t, filepath.Join(tmpDir, "prompts", "acp_chat.txt"))
 
 		// verify specific agent file exists
 		assert.FileExists(t, filepath.Join(tmpDir, "agents", "quality.txt"))

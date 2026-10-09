@@ -122,6 +122,46 @@ func (b *promptBuilder) GenAgentsPrompt() string {
 	return b.replaceBaseVariables(b.cfg.AppConfig.GenAgentsPrompt)
 }
 
+// ACPChatContext is what the first turn of an ACP chat provider session knows about the
+// thread: its branch and base, the branch's commits, and the last run's report and merge outcome.
+type ACPChatContext struct {
+	Branch       string
+	Base         string
+	Log          string
+	Report       string
+	MergeOutcome string
+}
+
+// ACPChatPrompt renders one ACP chat turn. A resumed provider session already holds the
+// context and rules, so it gets the user message alone; a fresh one gets the full template.
+// Context values and the message are inserted in one pass after template expansion, so a
+// report or message quoting a placeholder is never expanded. A customized template without
+// {{CHAT_MESSAGE}} still receives the message, appended at the end.
+func (b *promptBuilder) ACPChatPrompt(chat ACPChatContext, message string, resumed bool) string {
+	if resumed {
+		return message
+	}
+	prompt := b.replaceBaseVariables(b.cfg.AppConfig.ACPChatPrompt)
+	if !strings.Contains(prompt, "{{CHAT_MESSAGE}}") {
+		prompt += "\n\nUser message:\n\n{{CHAT_MESSAGE}}"
+	}
+	orNone := func(value, none string) string {
+		if strings.TrimSpace(value) == "" {
+			return none
+		}
+		return strings.TrimSpace(value)
+	}
+	prompt = strings.NewReplacer(
+		"{{CHAT_BRANCH}}", orNone(chat.Branch, "(unknown)"),
+		"{{CHAT_BASE}}", orNone(chat.Base, "(unknown)"),
+		"{{CHAT_LOG}}", orNone(chat.Log, "(no commits on this branch yet)"),
+		"{{CHAT_REPORT}}", orNone(chat.Report, "(no loopai run recorded in this thread)"),
+		"{{CHAT_MERGE}}", orNone(chat.MergeOutcome, "(none recorded)"),
+		"{{CHAT_MESSAGE}}", message,
+	).Replace(prompt)
+	return b.appendCommitTrailerInstruction(prompt)
+}
+
 // FinalizePrompt renders the base-sync prompt. conflicts lists the paths the merge left
 // unmerged; it is empty for a clean merge or an up-to-date branch. Conflict paths and
 // validation commands are inserted after template expansion so their contents are never

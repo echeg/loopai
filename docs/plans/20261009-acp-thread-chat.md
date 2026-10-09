@@ -180,12 +180,12 @@
 - [x] ➕ fix pre-existing failures surfaced by validation: macOS `/var` symlink in `codex_image_test.py` and `cmd/loopai` fixtures (`TMPDIR` resolved in `TestMain`; product-side issue filed as `docs/backlog/symlinked-checkout-path-containment.md`), `unparam` lint in `pkg/git/external.go`
 
 ### Task 2: Add the chat signals and the acp_chat prompt
-- [ ] add `ACP_MERGE` and `ACP_PR` signal constants (`<<<RALPHEX:ACP_MERGE>>>`, `<<<RALPHEX:ACP_PR>>>`) beside the existing ones in `pkg/status` and register both in `knownSignals` (`pkg/executor/executor.go`)
-- [ ] add a signal-stripping helper that removes recognized signal lines from text shown to the user
-- [ ] create `pkg/config/defaults/prompts/acp_chat.txt` with the header comment listing its variables, the first-turn context block (branch, base, log, report, auto-merge outcome), the allowed and forbidden actions from Decisions item 5, the pathspec-commit rule, and the explicit-request rule for the two signals; add `acpChatPromptFile` in `pkg/config/config.go` and load it like `gen_agents.txt` (local → global → embedded)
-- [ ] add `promptBuilder.ACPChatPrompt(ctx ACPChatContext, message string, resumed bool)` in `pkg/processor/prompt_builder.go` that renders the full template on a fresh session and only the user message when resumed
-- [ ] write tests: both signals detected by the executor parser; stripping keeps surrounding text; prompt renders context on a fresh turn and only the message on a resumed turn; local override wins; `--dump-defaults` and `--init` include the new prompt (update their expected file lists)
-- [ ] run `make test </dev/null` and `make lint` - must pass before task 3
+- [x] add `ACP_MERGE` and `ACP_PR` signal constants (`<<<RALPHEX:ACP_MERGE>>>`, `<<<RALPHEX:ACP_PR>>>`) beside the existing ones in `pkg/status` and register both in `knownSignals` (`pkg/executor/executor.go`)
+- [x] add a signal-stripping helper that removes recognized signal lines from text shown to the user
+- [x] create `pkg/config/defaults/prompts/acp_chat.txt` with the header comment listing its variables, the first-turn context block (branch, base, log, report, auto-merge outcome), the allowed and forbidden actions from Decisions item 5, the pathspec-commit rule, and the explicit-request rule for the two signals; add `acpChatPromptFile` in `pkg/config/config.go` and load it like `gen_agents.txt` (local → global → embedded)
+- [x] add `promptBuilder.ACPChatPrompt(ctx ACPChatContext, message string, resumed bool)` in `pkg/processor/prompt_builder.go` that renders the full template on a fresh session and only the user message when resumed
+- [x] write tests: both signals detected by the executor parser; stripping keeps surrounding text; prompt renders context on a fresh turn and only the message on a resumed turn; local override wins; `--dump-defaults` and `--init` include the new prompt (update their expected file lists)
+- [x] run `make test </dev/null` and `make lint` - must pass before task 3
 
 ### Task 3: Add ModeACPChat and ChatPhase
 - [ ] add `processor.ModeACPChat` in `pkg/processor/runner.go` and dispatch it like `ModeGenAgents`, through the review executor
@@ -199,6 +199,7 @@
 - [ ] create `cmd/loopai/acp_state.go` with `acpSessionState{Provider, ProviderSessionID, LastRun *acpLastRun}` and `acpLastRun{Plan, Branch, Base, Tip, Report, MergeSummary, MergeSkipped}`, stored at `.loopai/acp/<session-id>.json` relative to the session cwd
 - [ ] implement `loadACPState` (missing file → empty state; corrupt file → warning on `a.out` and empty state) and `saveACPState` through `writeFileAtomic` with mode `0600`; reject a session id that is not a safe single path segment
 - [ ] after a plan run in `acpRunner.run`, write `last_run` from the outcome and merge result and clear `ProviderSessionID`
+- [ ] ➕ add `.loopai/acp` to `loopaiRuntimePaths` (`pkg/git`) so `EnsureLocalGitignore` ignores the state directory; otherwise the state file is an untracked path that `acpCleanWorktreeSkip`'s `UntrackedFiles` gate counts, skipping every merge
 - [ ] write tests: create, atomic rewrite, mode 0600, corrupt file recovery, unsafe session id rejected, a new run resets the provider session id, state reloads for the same session id in a fresh `acpRunner` (simulating `session/load` after restart)
 - [ ] run `make test </dev/null` and `make lint` - must pass before task 5
 

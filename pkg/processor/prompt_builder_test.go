@@ -71,6 +71,78 @@ func TestPromptBuilder_GenAgentsPrompt_NoProgressFile(t *testing.T) {
 	assert.Equal(t, "log: (no progress file available)", builder.GenAgentsPrompt())
 }
 
+func TestPromptBuilder_ACPChatPrompt(t *testing.T) {
+	chat := ACPChatContext{
+		Branch:       "echeg/feature",
+		Base:         "main",
+		Log:          "abc123 add feature\n",
+		Report:       "# Report: feature\n\n## Risk\nmedium",
+		MergeOutcome: "skipped: risk medium",
+	}
+	template := "branch={{CHAT_BRANCH}} base={{CHAT_BASE}} default={{DEFAULT_BRANCH}}\n" +
+		"log:\n{{CHAT_LOG}}\nreport:\n{{CHAT_REPORT}}\nmerge: {{CHAT_MERGE}}\nmessage: {{CHAT_MESSAGE}}"
+
+	tests := []struct {
+		name     string
+		template string
+		trailer  string
+		chat     ACPChatContext
+		message  string
+		resumed  bool
+		want     string
+	}{
+		{
+			name: "fresh session renders the full context", template: template, chat: chat, message: "why medium?",
+			want: "branch=echeg/feature base=main default=main\nlog:\nabc123 add feature\nreport:\n" +
+				"# Report: feature\n\n## Risk\nmedium\nmerge: skipped: risk medium\nmessage: why medium?",
+		},
+		{name: "resumed session sends the message alone", template: template, trailer: "Co-Authored-By: bot",
+			chat: chat, message: "and now?", resumed: true, want: "and now?"},
+		{
+			name: "empty context falls back to placeholders", template: template, message: "hi",
+			want: "branch=(unknown) base=(unknown) default=main\nlog:\n(no commits on this branch yet)\nreport:\n" +
+				"(no loopai run recorded in this thread)\nmerge: (none recorded)\nmessage: hi",
+		},
+		{
+			name: "placeholders inside values are not expanded", template: "{{CHAT_REPORT}} | {{CHAT_MESSAGE}}",
+			chat: ACPChatContext{Report: "quotes {{CHAT_MESSAGE}} and {{CHAT_BASE}}"}, message: "uses {{CHAT_REPORT}}",
+			want: "quotes {{CHAT_MESSAGE}} and {{CHAT_BASE}} | uses {{CHAT_REPORT}}",
+		},
+		{name: "template without the message placeholder still gets the message", template: "custom rules",
+			message: "fix it", want: "custom rules\n\nUser message:\n\nfix it"},
+		{
+			name: "commit trailer is appended on a fresh session", template: "{{CHAT_MESSAGE}}", trailer: "Co-Authored-By: bot",
+			message: "commit it",
+			want: "commit it\n\nWhen making git commits, add the following trailer after a blank line at the end of the commit message:\n" +
+				"Co-Authored-By: bot",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{DefaultBranch: "main",
+				AppConfig: &config.Config{ACPChatPrompt: tc.template, CommitTrailer: tc.trailer}}
+			builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
+			assert.Equal(t, tc.want, builder.ACPChatPrompt(tc.chat, tc.message, tc.resumed))
+		})
+	}
+}
+
+func TestPromptBuilder_ACPChatPrompt_Embedded(t *testing.T) {
+	cfg := Config{DefaultBranch: "main", AppConfig: testAppConfig(t)}
+	builder := newPromptBuilder(promptBuilderOpts{cfg: cfg, log: newMockLogger(), locator: newPlanLocator(cfg)})
+
+	prompt := builder.ACPChatPrompt(ACPChatContext{Branch: "echeg/feature", Base: "main", Log: "abc123 add feature",
+		Report: "# Report: feature", MergeOutcome: "merged into main"}, "почему риск medium?", false)
+
+	assert.NotContains(t, prompt, "{{", "every variable in the embedded acp_chat prompt is expanded")
+	assert.NotContains(t, prompt, "available variables", "the header comment never reaches the model")
+	for _, want := range []string{"echeg/feature", "abc123 add feature", "# Report: feature", "merged into main",
+		status.ACPMerge, status.ACPPR} {
+		assert.Contains(t, prompt, want)
+	}
+	assert.True(t, strings.HasSuffix(prompt, "почему риск medium?"), "the user message ends the first turn")
+}
+
 func TestPromptBuilder_NilConfigDependencies(t *testing.T) {
 	builder := newPromptBuilder(promptBuilderOpts{cfg: Config{}, log: newMockLogger()})
 
@@ -81,6 +153,7 @@ func TestPromptBuilder_NilConfigDependencies(t *testing.T) {
 		assert.Empty(t, builder.FinalizePrompt(nil))
 		assert.Empty(t, builder.ReportPrompt("facts"))
 		assert.Empty(t, builder.GenAgentsPrompt())
+		assert.Equal(t, "msg", builder.ACPChatPrompt(ACPChatContext{}, "msg", true))
 	})
 }
 
