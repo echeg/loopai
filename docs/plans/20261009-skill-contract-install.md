@@ -192,11 +192,12 @@
 - [x] run `make test </dev/null` and `make lint` - must pass before task 6
 
 ### Task 6: Teach loopai-update to run the installer
-- [ ] in `assets/claude/skills/loopai-update/SKILL.md` replace Step 0's clone-only guidance with an "update installation" step: locate the checkout (`$LOOPAI_SRC`, else the `loopai` marketplace `path` in `~/.claude/plugins/known_marketplaces.json` when its source type is `directory`, else AskUserQuestion), show `git -C <checkout> status -sb`, offer `git pull --ff-only` through AskUserQuestion only when upstream is ahead, run `make -C <checkout> install`, summarize its `✓`/`!` lines, then continue with the existing prompt-merge steps unchanged; keep the clone instructions as the fallback when no checkout exists
-- [ ] mirror the step in `assets/codex/skills/loopai-update/SKILL.md` with a plain-text question instead of AskUserQuestion and Codex-safe wording
-- [ ] keep the manifest version from task 3 (bump again only if task 3's version was already released)
-- [ ] extend an existing skill-contract shell suite (or add assertions to `check-skill-contract-snippet_test.sh`) so both `loopai-update` copies mention `make -C` and `known_marketplaces.json`, guarding the step against accidental removal
-- [ ] run `make test </dev/null` - must pass before task 7
+- [x] in `assets/claude/skills/loopai-update/SKILL.md` replace Step 0's clone-only guidance with an "update installation" step: locate the checkout (`$LOOPAI_SRC`, else the `loopai` marketplace `path` in `~/.claude/plugins/known_marketplaces.json` when its source type is `directory`, else AskUserQuestion), show `git -C <checkout> status -sb`, offer `git pull --ff-only` through AskUserQuestion only when upstream is ahead, run `make -C <checkout> install`, summarize its `✓`/`!` lines, then continue with the existing prompt-merge steps unchanged; keep the clone instructions as the fallback when no checkout exists
+- [x] mirror the step in `assets/codex/skills/loopai-update/SKILL.md` with a plain-text question instead of AskUserQuestion and Codex-safe wording
+- [x] keep the manifest version from task 3 (bump again only if task 3's version was already released; 0.8.0 is unreleased, master is 0.7.1)
+- [x] extend an existing skill-contract shell suite (or add assertions to `check-skill-contract-snippet_test.sh`) so both `loopai-update` copies mention `make -C` and `known_marketplaces.json`, guarding the step against accidental removal
+- [x] ➕ the step also fetches before reading ahead/behind, refuses any pull but `--ff-only`, continues to the prompt merge after a failed install only while a binary is still installed, and both summaries gain Installation and Skill contract lines; Constraints/SCOPE now allow Step 0's writes outside the config directory
+- [x] run `make test </dev/null` - must pass before task 7
 
 ### Task 7: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented

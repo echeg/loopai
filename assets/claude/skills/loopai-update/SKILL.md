@@ -5,7 +5,7 @@ allowed-tools: [Bash, Read, Write, Glob, AskUserQuestion]
 
 # loopai-update - Smart Prompt Merging
 
-**SCOPE**: Compare current embedded defaults with user's installed config, and intelligently merge updates into customized files. Preserves user intent while incorporating structural changes.
+**SCOPE**: Update the loopai installation from its source checkout, then compare current embedded defaults with user's installed config, and intelligently merge updates into customized files. Preserves user intent while incorporating structural changes.
 
 ## Skill Contract Check
 
@@ -31,23 +31,72 @@ Never stop on a mismatch.
 
 This skill is the update path itself, so do not tell the user to run it: instead of warning, report the `skill contract:` line in the final summary.
 
-## Step 0: Verify CLI Installation
+## Step 0: Update the Installation
+
+`make install` in the loopai checkout rebuilds and installs the binary and its ACP launcher, updates the Claude Code plugins, reinstalls the Codex skills, and verifies that the binary speaks the skill contract. Run it before merging prompts, so the defaults below come from the updated binary.
+
+Locate the checkout: `$LOOPAI_SRC` first, then the `loopai` marketplace when Claude Code reads it from a local directory:
 
 ```bash
-which loopai
+src="${LOOPAI_SRC:-}"
+marketplaces="$HOME/.claude/plugins/known_marketplaces.json"
+if [ -z "$src" ] && [ -f "$marketplaces" ] && command -v jq >/dev/null 2>&1; then
+  src=$(jq -r '.loopai // empty | select(.source.source == "directory") | .source.path // empty' "$marketplaces")
+fi
+if [ -n "$src" ] && [ -f "$src/scripts/install.sh" ]; then
+  printf 'checkout: %s\n' "$src"
+else
+  printf 'checkout: not found\n'
+fi
 ```
 
-**If not found**, guide installation:
+**If no checkout was found**, use AskUserQuestion:
+- header: "Checkout"
+- question: "Where is the loopai source checkout?"
+- options:
+  - label: "Enter a path"
+    description: "Use an existing checkout; it must contain scripts/install.sh"
+  - label: "Clone it"
+    description: "Clone the repository and install from the new checkout"
+  - label: "Skip"
+    description: "Leave the installation as it is and only merge prompts"
+
+For "Clone it", clone into a directory the user names and use it as the checkout:
 
 ```bash
-git clone https://github.com/echeg/loopai
-cd loopai
-make build
-install -d ~/.local/bin
-install -m 0755 .bin/loopai ~/.local/bin/loopai
+git clone https://github.com/echeg/loopai <dir>
 ```
 
-**Do not proceed until `which loopai` succeeds.**
+**With a checkout**, show its state, fetching first so the ahead/behind counts are current (a failed fetch is not fatal):
+
+```bash
+git -C <checkout> fetch --quiet || echo "fetch failed; upstream state may be stale"
+git -C <checkout> status -sb
+git -C <checkout> rev-list --count HEAD..@{u} 2>/dev/null || echo "no upstream"
+```
+
+Only when the count is above zero, use AskUserQuestion:
+- header: "Pull"
+- question: "The checkout is N commits behind its upstream. Fast-forward it before installing?"
+- options:
+  - label: "Pull"
+    description: "Run git pull --ff-only, then install"
+  - label: "Install as is"
+    description: "Install the current checkout without pulling"
+
+Never pull without that answer, and never pull anything but `--ff-only`. If the pull fails, report its output and install the checkout as it is.
+
+Then run the installer:
+
+```bash
+make -C <checkout> install </dev/null
+```
+
+Summarize its output: every `✓` line in one short list, every `!` line verbatim, since each one names something the user has to do (a standalone copy to remove, a `PATH` entry that shadows the installed binary, a plugin to install). Keep its closing reminder about `/reload-plugins`.
+
+If it exits non-zero, report the failing line. Continue to Step 1 only when `command -v loopai` succeeds, and tell the user the merge compares against the binary that is still installed. If no loopai binary exists at all, stop here.
+
+For "Skip", continue to Step 1 only when `command -v loopai` succeeds; otherwise stop and tell the user to install it from a checkout with `make install`.
 
 ## Step 1: Extract Current Defaults
 
@@ -188,6 +237,8 @@ rm -rf <dump-dir>
 Report final summary:
 ```
 Update complete:
+  Installation: <make install result, or "skipped">
+  Skill contract: <the skill contract: line>
   Skipped: N files (no changes needed)
   Smart-merged: N files (M accepted, K kept)
 ```
@@ -205,8 +256,8 @@ When proposing smart merges, follow these rules:
 
 ## Constraints
 
-- This command is ONLY for updating loopai configuration files
+- This command is ONLY for updating the loopai installation and its configuration files
 - Do NOT modify any project source code
 - Do NOT run loopai execution or review
-- Do NOT touch files outside the config directory
+- Do NOT touch files outside the config directory, except through Step 0's `make install` and the pull the user approved
 - Always clean up the temp directory when done
