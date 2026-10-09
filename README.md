@@ -1373,7 +1373,7 @@ waiting for your answer at a prompt counts as inactivity. The inhibitor is bound
 process, so a crash releases it. Closing a MacBook lid still sleeps the machine on battery. One hold
 covers a whole plan chain, and watch-only dashboard mode, the close-out commands, and the other
 standalone utility commands never take one. Under the experimental T3 Code provider mode
-(`--acp`), each plan run takes its own hold. Set `keep_awake = false` to opt out.
+(`--acp`), each plan run and chat turn takes its own hold. Set `keep_awake = false` to opt out.
 
 | loopai state | Terminal title | Orca status |
 |---|---|---|
@@ -1411,8 +1411,10 @@ the completion report as the final message. `--t3-launch` starts this session au
 configured, and the stop button cancels the run. A T3 Code provider instance of the `grok` driver points
 at `loopai-acp`, which starts `loopai --acp`, a JSON-RPC server for the Agent Client Protocol on
 stdin/stdout. Each message names a plan and optionally `--task-model`, `--review-model`, and
-`--external-reviewers`; the plan runs in place in the thread's working directory. A message that is
-not a plan launch gets a reply pointing follow-up work to a new session instead of failing the turn.
+`--external-reviewers`; the plan runs in place in the thread's working directory. After a run the
+thread stays usable: any other message is a chat turn answered by the `review_model` provider in the
+thread's worktree, which remembers earlier messages by resuming its provider session, and `merge` or
+`pr` merges the branch into the local base or opens a pull request without removing the worktree.
 If a run succeeds and its report rates Risk `low` or `medium`, loopai merges the plan branch into the
 local base branch where the base is checked out. Nothing is pushed, and neither the branch nor T3
 Code's worktree is removed. `acp_auto_merge = false` turns this off, and `finalize = pr|merge` takes

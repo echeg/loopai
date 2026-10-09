@@ -236,9 +236,8 @@ from the normal config layers resolved in that directory: embedded defaults, the
 message is read; the runtime instructions T3 Code appends are ignored. A malformed launch fails
 the turn and shows the usage line. loopai treats a message as a launch when its first word is an
 option, ends in `.md`, or names an existing file in the thread's working directory. Anything else,
-such as a question typed after a run or a one-word reply like `thanks`, does not start a run. The turn ends normally with a reply
-saying that the thread only launches plans, that follow-up work and questions belong in a new
-session on this worktree with the model chosen there, and the usage line.
+such as a question typed after a run or a one-word reply like `thanks`, does not start a run: it is
+one of the thread commands or a chat turn, described under [Thread chat](#thread-chat).
 
 The plan runs in place in the thread's working directory, without `--worktree`: T3 Code owns the
 thread's worktree, as with `--t3-launch`. On the default branch, loopai creates the plan branch in
@@ -249,8 +248,8 @@ holds committed files only. For manual starts, commit the plan first, and commit
 An agent-mode `--t3-launch` carries those inputs over before sending the turn, so uncommitted plans
 and missing local overrides are available without committing them first.
 A plan file that is missing is an error rather than an interactive selector. So are an empty
-repository and other conditions that would otherwise prompt. Only full plan execution is
-available: review-only modes, plan creation, and interactive questions are out of scope.
+repository and other conditions that would otherwise prompt. Only full plan execution can be
+launched: review-only modes, plan creation, and interactive questions are out of scope.
 
 After a successful run, loopai merges the plan branch into the local base branch if the completion
 report rates Risk `low` or `medium`. The base is `default_branch` from config, else the detected
@@ -286,6 +285,68 @@ loopai skips the merge and leaves the repository unchanged when:
 
 A canceled run never merges.
 
+### Thread chat
+
+The thread stays usable after a run, so questions about the report, small fixes, and the merge
+happen where the report and worktree are. loopai routes every message that is not a plan launch:
+
+- `merge` or `мерж`, and `pr` or `пр`: the whole message, trimmed and case-insensitive, runs the
+  action directly, with no model.
+- Anything else is a chat turn: one session of the `review_model` provider (falling back to
+  `task_model`'s, as for the review phase) in the thread's working directory. It reads files,
+  answers, edits, and commits on the thread's branch, staging only the files it changed.
+
+A chat turn streams the model's output as reasoning and ends with its answer as the final message.
+It shows no plan steps, and no activity other than a provider-limit wait. The stop button cancels it, and a message sent while it runs
+steers it, as with a plan run. The prompt is the embedded `acp_chat.txt`, overridable in
+`.loopai/prompts/` or the global prompts directory. The first turn of a provider session carries
+the branch, the base, `git log <base>..HEAD --oneline` (at most 50 commits), the last run's report,
+and its auto-merge outcome. Later turns send only the message and resume the provider session:
+Claude through `--resume <id>` after the configured arguments, `claude_args` included, and Codex
+through `codex exec resume <id>`. A resume that fails for any reason other than a provider limit,
+a configured error pattern, or cancellation is retried once as a fresh session with the full
+context. Wrapper commands (a `claude_command` or `codex_command` that is not the real CLI) define
+their own interface, so they never resume: every message starts a fresh session with the run's
+context, and the answer ends with a note saying so. Without a recorded run, chat still works from
+the branch, the base, and its commits.
+
+The prompt forbids `loopai --merge` and every other loopai command, `git worktree remove`, branch
+deletion, switching to another branch, `git push`, and `git reset --hard`, because T3 Code runs
+every later message in this worktree. The model cannot merge or open a pull request itself. When
+you ask for one in your message, the answer ends with `<<<RALPHEX:ACP_MERGE>>>` or
+`<<<RALPHEX:ACP_PR>>>`; loopai strips the marker, performs the action, and appends its outcome.
+Only the prompt guards against a marker you did not ask for: the merge is local, reversible, and
+gated like the command.
+
+`merge` merges the thread branch's current head into the local base branch. The base is the last
+run's base, else `default_branch` or the detected `main` or `master`. Unlike the auto-merge, it
+applies none of the policy gates (`acp_auto_merge`, `finalize`, the report's Risk), because you
+asked, and it takes commits added after the run: the `## Merge` section lists them. Every repository
+gate of the auto-merge still applies: a non-detached branch other than the base, a local base, both
+checkouts clean with no Git operation in progress (untracked local overrides excepted), the base
+checked out in some worktree, and the repository lock. A branch the base already contains is
+reported as already in the base, and nothing changes. Nothing is pushed, and neither the branch nor
+the thread's worktree is removed.
+
+`pr` reports the URL of a pull request already open for the branch. Otherwise it pushes the branch
+and opens one against the base through the same code as `loopai --pr`, with the body built from the
+last run's report when it was on this branch, otherwise the body `--pr` would build. It needs `gh` and an `origin` that points
+at the same GitHub repository. The worktree is untouched.
+
+A refused merge or pull request, such as a dirty checkout, a base checked out nowhere, a conflict
+that was aborted, or a missing `gh`, ends the turn normally with the reason. A session that cannot
+be opened, such as an invalid config or a working directory that is not a repository, fails the
+turn.
+
+Each session keeps its state in `.loopai/acp/<session-id>.json` in the thread's working directory,
+written atomically with mode `0600`: the chat provider, its session id, and the last plan run (plan,
+branch, base, the commit the run completed on, the report, and the auto-merge outcome). loopai adds
+`acp/` to the generated `.loopai/.gitignore`, so the file never counts as an untracked path for the
+merge gates. A new plan run replaces the last run and drops the provider session, so the next chat
+starts fresh about the new run. Changing `review_model` to another provider also starts a fresh
+session. A canceled or failed chat turn saves nothing and keeps the previous session id. A corrupt state file
+is reported on stderr and treated as empty.
+
 ### What the thread shows
 
 | loopai event | Thread |
@@ -296,21 +357,23 @@ A canceled run never merges.
 | Executor output | Streamed reasoning, at most one update every 500 ms, with oversized chunks truncated |
 | Completion report | The final assistant message |
 | Auto-merge after a successful run | A `## Merge` section after the report, either ``Merged `<branch>` into `<base>` (<kind>, `<sha>`). Not pushed.`` or ``Not merged into `<base>`: <reason>.`` |
-| Skipped merge or failed run | A closing `## Next steps` section pointing follow-up work to a new session on this worktree, with the model chosen there |
+| Skipped merge or failed run | A closing `## Next steps` section: write questions, edits, `merge`, or `pr` in this thread |
 | Failed run | A failed turn carrying the failure as its error; a completion report, when one was produced, is sent as the final message first |
-| Message that is not a plan launch | A normal reply with the same follow-up guidance and the usage line; nothing runs |
+| `merge` or `pr` message | A `## Merge` or `## Pull request` section with the outcome or the reason nothing happened |
+| Any other message that is not a plan launch | A chat turn: the model's output as streamed reasoning and its answer as the final message, followed by the outcome of a merge or pull request it was asked for |
 
 The stop button cancels the run, and the turn ends as cancelled. The plan stays in place with the
-tasks completed so far. One run executes at a time per loopai process. A message that reaches loopai
+tasks completed so far. One run or chat turn executes at a time per loopai process. A message that reaches loopai
 while a run is active steers it: the Grok driver cancels the running turn and sends the new message,
 so the current run stops as if canceled and the new message starts its own run once the canceled
-one has ended. Each run takes its own keep-awake hold when
-`keep_awake` is on, released when the run ends.
+one has ended. Each run and chat turn takes its own keep-awake hold when
+`keep_awake` is on, released when it ends.
 
 A thread keeps working after its provider session stops, for example when T3 Code restarts or reaps
 an idle session. T3 Code then resumes the saved session with `session/load` rather than starting a
 new one. loopai accepts any saved session id and records the thread's working directory under it.
-There is no history to restore, because every message is a self-contained run.
+It replays no history, but the session state file outlives the process, so the next chat message
+resumes the same provider conversation and still knows the last run.
 
 ### Watchdog and heartbeat
 
@@ -323,7 +386,7 @@ provider session reaper skips threads with an active turn, so a long run is not 
 ### Troubleshooting
 
 Each run writes its full log to `.loopai/progress/progress-<plan>.txt` in the thread's working
-directory. Human-readable output goes to the agent's stderr, never to stdout, which carries only
+directory, and chat turns write theirs to `.loopai/progress/progress-acp-chat.txt`. Human-readable output goes to the agent's stderr, never to stdout, which carries only
 protocol messages. Config is loaded per message in the thread's working directory, so an invalid
 config fails that turn with the error rather than stopping the provider from starting.
 

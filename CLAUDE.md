@@ -66,7 +66,7 @@ pkg/notify/          Telegram, email, Slack, webhook, custom notifications
 pkg/orca/            best-effort OSC terminal-title status integration
 pkg/plan/            plan discovery, parsing, and mutation
 pkg/processor/       pipeline coordinator, prompts, executor policy
-pkg/processor/phase/ task, review, external, finalize, report, and planning phases
+pkg/processor/phase/ task, review, external, finalize, report, planning, and ACP chat phases
 pkg/progress/        timestamped progress logging
 pkg/status/          shared phases, sections, and protocol signals
 pkg/t3/              best-effort T3 Code thread status, PR linking, and --t3-launch
@@ -960,7 +960,7 @@ implements `initialize`, `authenticate`, `session/new` (records `cwd`, discards 
 headers carry T3's bearer credential and must never be logged), `session/load`, `session/prompt`,
 and `session/cancel` (a notification, also answered when sent as a request), and replies `{}` to
 `session/set_config_option`, `session/set_mode`, and `session/set_model`. `session/load` registers any saved session id with its `cwd` and replays
-nothing. It must succeed, because T3 resumes a thread whose agent process is gone through
+nothing; chat continuity across a restart comes from the session state file described below, not from the server. It must succeed, because T3 resumes a thread whose agent process is gone through
 `session/load` with the saved id, without checking `loadSession` and with no `session/new` fallback.
 Rejecting it breaks every later message in that thread. It runs at most one prompt across all sessions, because a run changes the process
 cwd. A second prompt is rejected unless it follows its own session's `session/cancel`: T3 steers a
@@ -1014,10 +1014,12 @@ still bounded by the 5-second force exit of the `startInterruptWatcher` that `ru
 routing `--acp`, so a prompt whose cancellation outlasts it is never answered.
 `acpLooksLikeLaunch` runs before `parseACPPrompt` and decides whether a prompt is a launch at all. A
 first token that is an option, ends in `.md`, or names an existing non-directory path relative to the
-session cwd is a launch, so a malformed one or a missing plan still fails the turn. Any other text,
-a question typed after a run or a one-word `thanks` that would otherwise parse as a missing plan path,
-gets the `acpNotALaunch` guidance and `end_turn`, because a failed turn for a chat message reads as
-a broken provider. After a run that succeeded, returned no error, and was not canceled,
+session cwd is a launch, so a malformed one or a missing plan still fails the turn. `acpRoute` checks
+that first; then `acpCommand` matches a whole trimmed, case-insensitive `merge`/`мерж`/`pr`/`пр`,
+which `runCommand` performs with no model; any other text, a question typed after a run or a one-word
+`thanks` that would otherwise parse as a missing plan path, is a chat turn through `runChat`. Neither
+fails the turn for an ordinary message, because a failed turn for a chat message reads as a broken
+provider. After a run that succeeded, returned no error, and was not canceled,
 `acpRunner.autoMerge` opens a fresh Git service in the session cwd with `vcs_command` and calls
 `acpAutoMerge` (`cmd/loopai/acp_merge.go`). It also writes a one-line summary to `a.out`. The policy
 gates come first, in `acpMergePolicySkip`: `acp_auto_merge` (default `true`, ACP only), then
@@ -1049,7 +1051,59 @@ reuses only that primitive and none of `runMergeCommand`'s teardown: no push, no
 `cleanupMergedWorktree`, and no checkout switch. The feature worktree belongs to T3 Code and is the
 process cwd, so removing it fails on Windows with `Permission denied` and would strand the thread, and while that worktree has the branch checked out Git refuses to delete it. `acpRunResult` composes the final message
 as the report, then the `## Merge` section, then `acpNextSteps` when the run failed or the merge was
-skipped. A skipped merge never changes a successful turn's `end_turn`. The mode
+skipped; `acpNextSteps` now points at this same thread ("questions, edits, `merge`, `pr`"). A skipped
+merge never changes a successful turn's `end_turn`. `runPlan` then calls `recordLastRun`, which on
+every run, failed ones included, writes `acpLastRun` (plan, branch, base, the recorded `branchTip`,
+report, auto-merge summary and skip reason) to the session state and clears the provider session
+through `withLastRun`, since a chat resumed across a new run would answer about the previous one; it
+only warns on failure. The state (`cmd/loopai/acp_state.go`) lives at `.loopai/acp/<session-id>.json`
+relative to the session cwd and is saved atomically with mode `0600` through `saveJSONState`.
+`acpStatePath` rejects a session id that is not one safe path segment, since the id comes from the
+client and `session/load` accepts any. A missing file is an empty state, and so is a corrupt one,
+with a warning on `a.out`. `.loopai/acp` is one of `loopaiRuntimePaths`, so `EnsureLocalGitignore`
+ignores it: otherwise the state file is an untracked path and `acpCleanWorktreeSkip`'s
+`UntrackedFiles` gate skips every merge. `upgradeGeneratedGitignore` rewrites an untracked
+`.loopai/.gitignore` that still holds an earlier generated content in place, so existing checkouts
+pick up `acp/` instead of falling into the custom-file fallback. `openSession`
+(`cmd/loopai/acp_chat.go`) enters the cwd and loads config, state, and the repository for commands
+and chat alike; its errors, and a chat's executor error, are the only ways those turns fail.
+`runAction` resolves the base through `acpActionBase` (the last run's base, else
+`resolveDefaultBranch` as `--merge` does) and runs `acpRequestedMerge` or `acpRequestedPR`, whose
+refusals are part of the answer. `acpRequestedMerge` shares `acpFeatureBranch`,
+`acpCleanWorktreeSkip`, and `acpMergeIntoBase` (the lock, the base-worktree gates, and
+`MergeBranchTipContext` by hash) with `acpAutoMerge`, but skips `acpMergePolicySkip` and
+`acpCompletedTip` because a human asked: it merges the branch's current `BranchHash`, lists the
+commits after the last run's tip through `acpCommitsAfterRun`, and reports a branch the base already
+contains as `acpMergeResult.upToDate` without merging. `acpRequestedPR` returns the URL of an open
+pull request found through `gh pr view <branch> --repo <origin spec>`, otherwise calls
+`createPullRequest` with the last run's report as `closeoutTarget.report`, only when that run was on
+the same branch; a missing `gh` is a refusal. Both keep the auto-merge's no-teardown rule.
+`runChat` runs `processor.ModeACPChat`, modeled on `ModeGenAgents`: `resolveExecutionDeps` skips
+reviewer resolution for it, `modePhaseProviders`, `modePhaseBanners`, and `runHeaderParams` treat it
+as a review-provider mode, it logs to `.loopai/progress/progress-acp-chat.txt`, and
+`EnsureLocalGitignore` runs before anything is written. The runner hands it to `phase.ChatPhase`
+through the review executor, so retry, `wait_on_limit`, and claude-swap match the other phases. The
+phase deliberately leaves the phase holder alone, because the sink turns every phase into a tool-call
+card and a chat shows none, while its section and output still reach the sink's reasoning through
+`WrapLogger`. Executor resume is a per-run context value set by `executor.WithResumeSession`. Claude
+appends `--resume <id>` after the configured arguments, stripping any `--resume` already there so the
+id survives a `claude_args` that replaces the defaults, and reports the `session_id` of its
+`system/init` event. Codex builds `codex exec <options> resume <id> -` with every option before the
+subcommand, because `resume` rejects `--sandbox` while `exec`'s options apply to the resumed session.
+Both report `Result.SessionID`. `NoResume`, set for wrapper commands, ignores the id and reports
+none; `acpChatProvider` pairs the review provider with `IsRealClaudeCommand`/`IsRealCodexCommand` so
+such a reply carries `acpChatNoResumeNote`, and the stored id is passed only when the stored provider
+equals the current one. `ChatPhase` retries a failed resumed session once as a fresh one with the full
+context unless the failure is a limit, an error pattern, a timeout, or cancellation, and returns no
+result on cancellation, so `runChat` saves nothing and the previous id survives. `acp_chat.txt`
+renders in full only for a fresh session (`ACPChatPrompt` with `resumed` sends the message alone),
+forbids loopai commands, worktree removal, branch switches, push, and `reset --hard`, and tells the
+model to end with `<<<RALPHEX:ACP_MERGE>>>` or `<<<RALPHEX:ACP_PR>>>` only when the current message
+asks. Both are `status.ACPMerge`/`ACPPR`, registered in `knownSignals`; `chatSignal` also searches the
+output because a later Claude text block overwrites the stream's signal, `status.StripSignals`
+removes them from the answer, and `runChat` then performs the action and appends its message. The
+prompt is deliberately the only guard against an unrequested signal: the merge is local,
+reversible, and gated. The mode
 relies on undocumented Grok driver contracts, documented in `docs/t3-code.md`, and must be
 re-verified after T3 Code updates.
 

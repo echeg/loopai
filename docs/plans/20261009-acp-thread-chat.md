@@ -233,10 +233,11 @@
 - [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 8: [Final] Update documentation
-- [ ] `docs/t3-code.md`: add a "Thread chat" section (routing, `merge`/`pr` commands, `review_model`, resume and its absence for wrappers, the state file, explicit merge versus auto-merge gates) and replace every "open a new session" statement, including the table row for non-launch messages
-- [ ] `CLAUDE.md`: update the ACP paragraph for routing, `ModeACPChat`/`ChatPhase`, the `ACP_MERGE`/`ACP_PR` signals in `knownSignals`, the state file, `acpRequestedMerge` versus `acpAutoMerge`, and executor resume
-- [ ] `llms.txt`: one line on chatting in a loopai T3 thread
-- [ ] update embedded config or prompt header comments if they list prompt files
+- [x] `docs/t3-code.md`: add a "Thread chat" section (routing, `merge`/`pr` commands, `review_model`, resume and its absence for wrappers, the state file, explicit merge versus auto-merge gates) and replace every "open a new session" statement, including the table row for non-launch messages
+- [x] `CLAUDE.md`: update the ACP paragraph for routing, `ModeACPChat`/`ChatPhase`, the `ACP_MERGE`/`ACP_PR` signals in `knownSignals`, the state file, `acpRequestedMerge` versus `acpAutoMerge`, and executor resume
+- [x] `llms.txt`: one line on chatting in a loopai T3 thread
+- [x] update embedded config or prompt header comments if they list prompt files (none list them; `acp_chat.txt` carries its own variable header)
+- [x] ➕ README: the provider-mode paragraph and the keep-awake note describe thread chat and per-turn holds
 
 ## Technical Details
 
