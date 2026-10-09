@@ -66,7 +66,8 @@ cat >"$stubs/claude" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >>"$STUB_LOG_DIR/claude"
 case "$*" in
-"plugin list --json") cat "$STUB_PLUGINS" ;;
+"plugin marketplace update loopai") [ -z "$STUB_MARKET_FAIL" ] || exit 1 ;;
+"plugin list --json") [ -z "$STUB_LIST_FAIL" ] || exit 1; cat "$STUB_PLUGINS" ;;
 "plugin update "*) [ -z "$STUB_UPDATE_FAIL" ] || exit 1 ;;
 esac
 STUB
@@ -203,6 +204,27 @@ run_install STUB_UPDATE_FAIL=1
 expect_status update-failure 0
 expect_output update-failure "! claude plugin update loopai@loopai failed"
 
+# a marketplace that was never added: the warning names the command that adds it
+new_case market-missing
+run_install STUB_MARKET_FAIL=1
+expect_status market-missing 0
+expect_output market-missing "! claude plugin marketplace update loopai failed; if the marketplace was never added, add it with: claude plugin marketplace add $fake_repo"
+
+# a failed plugin listing is reported as such, not as a plugin that is not installed
+new_case list-failure
+run_install STUB_LIST_FAIL=1
+expect_status list-failure 0
+expect_output list-failure "! claude plugin list failed"
+reject_output list-failure "is not installed"
+reject_claude_call list-failure "plugin update"
+
+# a plugin without folderVersion is read through its install version
+new_case no-folder-version
+printf '[{"id":"loopai@loopai","version":"%s","scope":"user"}]\n' "$plugin_version" >"$plugins"
+run_install
+expect_status no-folder-version 0
+expect_output no-folder-version "✓ plugin loopai@loopai is at $plugin_version"
+
 # an installed plugin version that differs from the checkout is a warning
 new_case plugin-version
 plugins_json 0.0.1 loopai@loopai >"$plugins"
@@ -232,6 +254,21 @@ path="$stubs:$case_dir/shadow:$bin:$tools:/usr/bin:/bin"
 run_install
 expect_status shadowed 0
 expect_output shadowed "! loopai on PATH resolves to $case_dir/shadow/loopai, not $bin/loopai"
+
+# a trailing slash in LOOPAI_BIN_DIR still names the binary found on PATH
+new_case trailing-slash
+run_install LOOPAI_BIN_DIR="$bin/"
+expect_status trailing-slash 0
+reject_output trailing-slash "resolves to"
+[[ "$(warning_lines)" == 0 ]] || fail "trailing-slash: unexpected warnings: $output"
+
+# a bin directory that cannot be created fails before any other channel is touched
+new_case bin-failure
+printf 'not a directory\n' >"$case_dir/bin"
+run_install
+expect_status bin-failure 1
+expect_output bin-failure "could not install loopai and loopai-acp into $bin"
+[[ ! -s "$logs/claude" ]] || fail "bin-failure: claude was called"
 
 # the bin directory missing from PATH is reported
 new_case not-on-path

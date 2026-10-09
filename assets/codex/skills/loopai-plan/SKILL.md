@@ -40,8 +40,8 @@ command -v loopai
 Missing loopai does not block planning. Mention the source install once and continue:
 
 ```bash
-git clone https://github.com/echeg/loopai && cd loopai && make build
-install -d ~/.local/bin && install -m 0755 .bin/loopai ~/.local/bin/loopai
+git clone https://github.com/echeg/loopai
+make -C loopai install
 ```
 
 ## Step 0: Read Intent, Then the Repository

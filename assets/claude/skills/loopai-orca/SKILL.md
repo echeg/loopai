@@ -38,7 +38,7 @@ Never stop on a mismatch.
 Run the checks separately so each failure is distinguishable. **Stop and report the failing check verbatim; do not continue past a failure.**
 
 ```bash
-which loopai                              # missing -> stop, suggest: make build && install -m 0755 .bin/loopai ~/.local/bin/loopai
+which loopai                              # missing -> stop, suggest: make install in the loopai checkout
 loopai --help | grep -q -- '--orca' || echo "MISSING_ORCA_FLAG"   # printed -> stop: fork too old, needs the --orca build
 orca status --json                        # result.runtime.state must be "ready"; anything else -> stop
 git rev-parse --show-toplevel

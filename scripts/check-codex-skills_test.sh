@@ -164,6 +164,13 @@ expect_failure "missing or modified skill contract snippet in codex skill: $skil
 write_codex_skill loopai-merge
 sed -i.bak 's/^expected=3$/expected=4/' "$skill_file" && rm -f "$skill_file.bak"
 expect_failure "stale skill contract in codex skill: $skill_file has expected=4 (skillContract is 3)"
+# the snippet must open the skill, not follow a step that already ran loopai
+write_codex_skill loopai-merge
+{
+	printf '%s\n' '---' 'name: loopai-merge' 'description: fixture skill' '---' '' '```bash' 'loopai --version' '```' ''
+	skill_contract_snippet 3
+} >"$skill_file"
+expect_failure "missing or modified skill contract snippet in codex skill: $skill_file"
 write_codex_skill loopai-merge
 "$checker" "$fixture"
 

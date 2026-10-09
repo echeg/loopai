@@ -201,6 +201,25 @@ func TestPlanRelPathThroughSymlink(t *testing.T) {
 
 	_, err = planRelPath(root, filepath.Join(t.TempDir(), "x.md"))
 	require.ErrorContains(t, err, "outside the repository")
+
+	// symlinks inside the checkout keep the name the plan was given
+	require.NoError(t, os.Symlink(filepath.Join(root, "docs", "plans"), filepath.Join(root, "plans")))
+	rel, err = planRelPath(root, filepath.Join(root, "plans", "x.md"))
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join("plans", "x.md"), rel)
+
+	external, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	writeFile(t, filepath.Join(external, "y.md"), "# Y\n")
+	require.NoError(t, os.Symlink(external, filepath.Join(root, "shared")))
+	rel, err = planRelPath(root, filepath.Join(root, "shared", "y.md"))
+	require.NoError(t, err, "a plans directory linked to outside the checkout is still named inside it")
+	assert.Equal(t, filepath.Join("shared", "y.md"), rel)
+
+	require.NoError(t, os.Symlink(filepath.Join(root, "docs", "plans", "x.md"), filepath.Join(root, "linked.md")))
+	rel, err = planRelPath(root, filepath.Join(root, "linked.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "linked.md", rel)
 }
 
 func TestLaunchPartialFailures(t *testing.T) {

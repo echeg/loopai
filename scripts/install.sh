@@ -78,7 +78,7 @@ else
 	if claude plugin marketplace update loopai </dev/null; then
 		ok "updated the loopai marketplace"
 	else
-		warn "claude plugin marketplace update loopai failed"
+		warn "claude plugin marketplace update loopai failed; if the marketplace was never added, add it with: claude plugin marketplace add $repo_root"
 	fi
 	if listing="$(installed_loopai_plugins)"; then
 		while read -r id _; do
@@ -96,7 +96,7 @@ else
 		if [[ " ${plugin_ids[*]-} " == *" loopai@loopai "* ]]; then
 			loopai_plugin=1
 		else
-			warn "plugin loopai@loopai is not installed; install it with: claude plugin install loopai@loopai"
+			warn "plugin loopai@loopai is not installed; install it with: claude plugin install loopai@loopai (after claude plugin marketplace add $repo_root when the marketplace is missing)"
 		fi
 	else
 		warn "claude plugin list failed; Claude Code plugins not updated"
@@ -144,7 +144,8 @@ fi
 resolved="$(command -v "loopai$exe" 2>/dev/null)" || resolved=""
 if [[ -z "$resolved" ]]; then
 	warn "loopai$exe is not on PATH; add $bin_dir to PATH"
-elif [[ "$resolved" != "$bin_dir/loopai$exe" ]]; then
+# compared as files, so a trailing slash in LOOPAI_BIN_DIR or a symlinked PATH entry is not a shadow
+elif [[ ! "$resolved" -ef "$bin_dir/loopai$exe" ]]; then
 	warn "loopai$exe on PATH resolves to $resolved, not $bin_dir/loopai$exe; remove it or reorder PATH"
 fi
 

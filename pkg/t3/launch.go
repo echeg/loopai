@@ -219,24 +219,36 @@ func planRelPath(root, planFile string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("t3: resolve plan path: %w", err)
 	}
-	// git reports the root with symlinks resolved, while a relative plan inherits the logical
-	// working directory, so a checkout entered through a symlink (macOS /tmp -> /private/tmp) would
-	// read as outside. both sides are resolved; for the plan only its directory, so a symlinked plan
-	// file itself is kept as named.
-	if resolvedRoot, evalErr := filepath.EvalSymlinks(root); evalErr == nil {
-		root = resolvedRoot
-	}
-	if resolvedDir, evalErr := filepath.EvalSymlinks(filepath.Dir(absPlan)); evalErr == nil {
-		absPlan = filepath.Join(resolvedDir, filepath.Base(absPlan))
-	}
-	rel, err := filepath.Rel(root, absPlan)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("t3: plan %s is outside the repository %s", planFile, root)
+	rel, ok := relInside(root, absPlan)
+	if !ok {
+		// git reports the root with symlinks resolved, while a relative plan inherits the logical
+		// working directory, so a checkout entered through a symlink (macOS /tmp -> /private/tmp)
+		// reads as outside. only then are both sides resolved, for the plan only its directory, so
+		// a symlinked plans directory or plan file inside the checkout keeps the name it was given.
+		resolvedRoot, resolvedPlan := root, absPlan
+		if r, evalErr := filepath.EvalSymlinks(root); evalErr == nil {
+			resolvedRoot = r
+		}
+		if d, evalErr := filepath.EvalSymlinks(filepath.Dir(absPlan)); evalErr == nil {
+			resolvedPlan = filepath.Join(d, filepath.Base(absPlan))
+		}
+		if rel, ok = relInside(resolvedRoot, resolvedPlan); !ok {
+			return "", fmt.Errorf("t3: plan %s is outside the repository %s", planFile, root)
+		}
 	}
 	if _, err := os.Stat(absPlan); err != nil {
 		return "", fmt.Errorf("t3: plan: %w", err)
 	}
 	return rel, nil
+}
+
+// relInside returns path relative to root when it lies inside root.
+func relInside(root, path string) (string, bool) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", false
+	}
+	return rel, true
 }
 
 // carryInputs copies the plan (so uncommitted edits reach the worktree) and every .loopai

@@ -186,14 +186,14 @@ integer. An old binary answers `unknown flag` with exit 1, which the skills read
 `--version` and the banner are deliberately unchanged. All 19 skills (10 Claude, 9 Codex) open with
 one byte-identical fenced snippet whose only variable line is `expected=<N>`, followed by an
 instruction to warn and continue — never stop — when `binary` differs from `skill`, and to fall back
-to the skill's own missing-CLI handling for `binary=missing`; `loopai-update` reports the line in its
-summary instead. The canonical text lives only in `scripts/lib/skill-contract.sh`, which both
+to the skill's own missing-CLI handling for `binary=missing`; `loopai-update` reruns the snippet after
+`make install` and reports that line in its summary instead. The canonical text lives only in `scripts/lib/skill-contract.sh`, which both
 `check-symlinks.sh` and `check-codex-skills.sh` source: they read the constant from the Go file, fail
-when it cannot be found, and reject a missing or modified snippet and a stale `expected=`.
+when it cannot be found, and reject a missing or modified snippet, one that is not the skill's first fenced block, and a stale `expected=`.
 `scripts/check-skill-contract-snippet_test.sh` executes the snippet against stub binaries. The number
 detects incompatibility only: an all-old but consistent install stays silent, and there is
 deliberately no lag-behind-checkout detection. `TestSkillContract` fingerprints the surface —
-visible long flags of `opts` (hidden removed spellings excluded), keys of the embedded `config`
+visible long flags of `opts` with their sorted `choice:` values (hidden removed spellings excluded), keys of the embedded `config`
 (commented `# key =` lines included), and the `##` headings of the embedded `report.txt` in file
 order — against `cmd/loopai/testdata/skill-contract.golden`, whose first line is `contract: N`.
 Protocol signals and the launch-history format stay out of it. When the surface changes, bump
@@ -209,7 +209,7 @@ manifests too.
 `${CODEX_HOME:-$HOME/.codex}` exists, then a contract check of the installed binary, a plugin
 version check against `plugin.json` (from `claude plugin list --json`, `folderVersion` first because a
 directory-sourced plugin is read live from the checkout), and a warning when `loopai` on `PATH`
-resolves elsewhere. Only the build, the binary install, and a contract mismatch exit non-zero.
+resolves elsewhere. Only the build, the binary install, and a contract mismatch (an unreadable `skillContract` in the checkout included) exit non-zero.
 Standalone `~/.claude/skills/loopai*` copies are reported with an `rm -rf` line and never deleted:
 they are foreign directories with no baseline. `scripts/install_test.sh` runs it from a copied repo
 tree with stub `make` and `claude` on a `PATH` of stubs plus `/usr/bin:/bin` — not the real `PATH`,

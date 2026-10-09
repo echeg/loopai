@@ -36,7 +36,7 @@ Never stop on a mismatch.
 Run the checks separately so each failure is distinguishable. **Stop and report the failing check verbatim; do not continue past a failure.**
 
 ```bash
-which loopai                                                   # missing -> stop, suggest: make build && install -m 0755 .bin/loopai ~/.local/bin/loopai
+which loopai                                                   # missing -> stop, suggest: make install in the loopai checkout
 loopai --help | grep -qE -- '(--|/)t3-launch' || echo "MISSING_T3_FLAG"   # printed -> stop: fork too old, needs the --t3-launch build
 T3_HOME=${T3CODE_HOME:-$HOME/.t3}; cat "$T3_HOME/userdata/server-runtime.json"   # missing -> stop: T3 Code is not running
 git rev-parse --show-toplevel                                   # must equal the current directory

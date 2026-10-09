@@ -78,25 +78,26 @@ func skillContractSurface() (string, error) {
 	return b.String(), nil
 }
 
-// visibleLongFlags returns the sorted long names of every non-hidden option in opts. hidden
-// options are the removed spellings kept only to print a migration error.
+// visibleLongFlags returns the sorted long names of every non-hidden option in opts, each followed
+// by its sorted choice values when it restricts them, since skills pass values such as
+// `--t3-launch=terminal`. hidden options are the removed spellings kept only to print a migration
+// error. opts declares no groups, so every option sits in the parser's top-level group.
 func visibleLongFlags() []string {
 	var o opts
-	parser := flags.NewParser(&o, flags.None)
 	var names []string
-	var walk func(groups []*flags.Group)
-	walk = func(groups []*flags.Group) {
-		for _, g := range groups {
-			for _, opt := range g.Options() {
-				if opt.Hidden || opt.LongName == "" {
-					continue
-				}
-				names = append(names, opt.LongName)
+	for _, g := range flags.NewParser(&o, flags.None).Groups() {
+		for _, opt := range g.Options() {
+			if opt.Hidden {
+				continue
 			}
-			walk(g.Groups())
+			name := opt.LongName
+			if len(opt.Choices) > 0 {
+				choices := slices.Sorted(slices.Values(opt.Choices))
+				name += " [" + strings.Join(choices, "|") + "]"
+			}
+			names = append(names, name)
 		}
 	}
-	walk(parser.Groups())
 	slices.Sort(names)
-	return slices.Compact(names)
+	return names
 }

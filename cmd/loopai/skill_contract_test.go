@@ -174,6 +174,8 @@ func TestSkillContractSurface(t *testing.T) {
 	flagsSection := section("flags")
 	assert.Contains(t, flagsSection, "--skill-contract")
 	assert.Contains(t, flagsSection, "--task-model")
+	assert.Contains(t, flagsSection, "--t3-launch [agent|auto|terminal]", "choice values are part of the surface")
+	assert.Contains(t, flagsSection, "--finalize [merge|none|pr|sync]")
 	for _, removed := range []string{"--codex", "--codex-only", "--external-review-tool", "--external-review-model"} {
 		assert.NotContains(t, flagsSection, removed, "hidden removed flag must be excluded")
 	}

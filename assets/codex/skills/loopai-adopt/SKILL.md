@@ -48,7 +48,7 @@ Informational only. A missing loopai must not block the conversion - do not prom
 command -v loopai
 ```
 
-On failure, mention once that loopai is needed later to execute the plan, show the source install (`git clone https://github.com/echeg/loopai && cd loopai && make build && install -m 0755 .bin/loopai ~/.local/bin/loopai`), and continue immediately. On success say nothing.
+On failure, mention once that loopai is needed later to execute the plan, show the source install (`git clone https://github.com/echeg/loopai && make -C loopai install`), and continue immediately. On success say nothing.
 
 ## Step 1: Resolve the Source
 

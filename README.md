@@ -44,6 +44,8 @@ workflows are distributed through this repository's plugin marketplace.
 - Optional for `--pr` and `finalize = pr|merge`: authenticated GitHub CLI
   (`gh auth login`) and a GitHub repository remote named `origin`; `finalize = sync` needs only a
   fetchable `origin`
+- Bash for `make install`, and `jq` for its Claude Code plugin steps (skipped with a warning
+  without it)
 - Development: Bash and `jq` for the full test suite, including plugin manifest
   validation and provider-wrapper tests
 - Optional for development: `golangci-lint`
@@ -69,7 +71,9 @@ line per step:
 2. Installs `loopai` and the `loopai-acp` launcher into `${LOOPAI_BIN_DIR:-~/.local/bin}`.
 3. When `claude` is on `PATH`: `claude plugin marketplace update loopai`, then `claude plugin update`
    for every installed plugin from that marketplace. If `loopai@loopai` is not installed it prints
-   the `claude plugin install loopai@loopai` command instead of running it.
+   the `claude plugin install loopai@loopai` command instead of running it. On a fresh machine the
+   marketplace does not exist yet, so the update warns and names `claude plugin marketplace add`
+   (see [Claude Code plugin](#claude-code-plugin)).
 4. When `${CODEX_HOME:-~/.codex}` exists: reinstalls the Codex skills (see
    [Codex CLI skills](#codex-cli-skills)); otherwise the step is skipped.
 5. Verifies that the installed binary answers `loopai --skill-contract` with the number the skills
@@ -81,7 +85,8 @@ line per step:
 7. Reminds you that open Claude Code sessions need `/reload-plugins` or a restart and open Codex
    sessions need a restart.
 
-Only a failed build, a failed binary install, and a skill contract mismatch exit non-zero; a missing
+Only a failed build, a failed binary install, and a skill contract mismatch (including a checkout
+whose `skillContract` cannot be read) exit non-zero; a missing
 `claude` or Codex home is a warning. Ensure the bin directory is in `PATH`, then verify:
 
 ```bash
@@ -127,6 +132,11 @@ Add this repository as a Claude Code marketplace and install its plugin:
 claude plugin marketplace add echeg/loopai
 claude plugin install loopai@loopai
 ```
+
+To let `make install` and `/loopai:loopai-update` serve the plugin from your checkout, add the
+marketplace from its local path instead (`claude plugin marketplace add /path/to/loopai`). With the
+GitHub source the plugin follows the published repository: `make install` warns when its version
+differs from the checkout, and `loopai-update` needs `LOOPAI_SRC` or asks where the checkout is.
 
 The plugin provides ten skills:
 
@@ -263,8 +273,10 @@ cp -R assets/claude/skills/loopai* ~/.claude/skills/
 
 This keeps each skill's bundled resources, including the safety helpers used by
 `loopai-grill`. Standalone copies are not managed by Claude Code's plugin
-updater. After pulling a newer repository version, rerun the copy command to
-refresh them. If replacing older command-file copies, remove only the
+updater, and `make install` and `/loopai:loopai-update` do not refresh them either: `make install`
+warns about every copy and prints an `rm -rf` line for it, without deleting anything. After
+pulling a newer repository version, rerun the copy command to refresh them; a copy older than the
+binary reports a skill contract mismatch when it runs. If replacing older command-file copies, remove only the
 `~/.claude/commands/loopai*.md` files that you previously installed.
 
 ### Codex CLI skills

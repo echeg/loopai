@@ -7,7 +7,7 @@ flags:
 --claude-args
 --claude-command
 --clear
---cmux-workspace
+--cmux-workspace [always|auto]
 --codex-args
 --commit
 --config-dir
@@ -16,7 +16,7 @@ flags:
 --dump-defaults
 --external-only
 --external-reviewers
---finalize
+--finalize [merge|none|pr|sync]
 --gen-agents
 --host
 --idle-timeout
@@ -36,7 +36,7 @@ flags:
 --report
 --reset
 --review
---review-cadence
+--review-cadence [end|task]
 --review-model
 --review-patience
 --serve
@@ -44,7 +44,7 @@ flags:
 --skill-contract
 --skip-finalize
 --t3
---t3-launch
+--t3-launch [agent|auto|terminal]
 --task-model
 --tasks-only
 --version

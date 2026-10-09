@@ -22,6 +22,7 @@ Requirements:
 - Claude Code CLI and/or Codex CLI 0.130.0+ for every provider named by `plan_model`, `task_model`, `review_model`, or the external reviewer chain; each distinct provider's binary is checked once at startup
 - Provider selection: every model spec is `provider[:model[:effort]]` with a mandatory `claude` or `codex` prefix. `task_model`'s provider runs tasks (unset means Claude with CLI defaults); `review_model`'s provider runs internal review, external-findings evaluation, finalize, and the report; `plan_model`'s runs plan creation; both fall back to `task_model` whole, provider included. A bare spec such as `opus:high` fails at startup naming the rewrite (`claude:opus:high`), and a model of the other provider (`codex:opus`) fails too unless that provider's command is a custom wrapper. The former `--codex`, `--codex-only`, `--external-review-tool`, and `--external-review-model` flags and the `executor`, `codex_model`, `codex_reasoning_effort`, `external_review_tool`, and `external_review_model` keys fail at startup naming their replacement, as does the former boolean `finalize_enabled` (write `finalize = sync|pr|merge`).
 - Optional second provider for cross-provider external review
+- Bash for `make install`, and jq for its Claude Code plugin steps
 - Optional fzf, cmux, and golangci-lint
 - Optional for `--pr` and `finalize = pr|merge`: authenticated GitHub CLI and a GitHub remote named `origin`
 
@@ -246,6 +247,7 @@ Both close-out commands accept an optional positional argument naming the featur
 
 ## Useful options
 
+- `--skill-contract` (print the skill contract number alone and exit)
 - `--max-iterations=N`
 - `--max-external-iterations=N`
 - `--review-patience=N`

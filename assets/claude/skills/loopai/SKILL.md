@@ -41,13 +41,10 @@ which loopai
 
 ```bash
 git clone https://github.com/echeg/loopai
-cd loopai
-make build
-install -d ~/.local/bin
-install -m 0755 .bin/loopai ~/.local/bin/loopai
+make -C loopai install
 ```
 
-Ensure `~/.local/bin` is in `PATH`. **Do not proceed until `which loopai` succeeds.**
+`make install` puts the binary in `~/.local/bin` (or `$LOOPAI_BIN_DIR`), which must be on `PATH`. **Do not proceed until `which loopai` succeeds.**
 
 ## Step 1: Check for Plan Argument
 

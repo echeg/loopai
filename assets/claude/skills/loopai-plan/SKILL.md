@@ -39,10 +39,7 @@ which loopai
 
 ```bash
 git clone https://github.com/echeg/loopai
-cd loopai
-make build
-install -d ~/.local/bin
-install -m 0755 .bin/loopai ~/.local/bin/loopai
+make -C loopai install
 ```
 
 Proceed with plan creation regardless, but remind user to install before execution.

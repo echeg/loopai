@@ -38,23 +38,30 @@ echo "skill contract: skill=$expected binary=$actual"
 SNIPPET
 }
 
+# first_fenced_block prints the skill's first fenced code block, fences included. The
+# snippet must open the skill, so a copy placed after steps that already ran loopai
+# does not count.
+first_fenced_block() {
+	awk '/^```/ { print; if (inside) exit; inside = 1; next } inside { print }' "$1"
+}
+
 # check_skill_contract_snippet validates one skill file against the canonical snippet.
-# Status 0: present and current; 1: missing or modified; 2: present with a stale
-# expected= value, which it prints on stdout.
+# Status 0: present and current; 1: missing, modified, or not the first fenced block;
+# 2: present with a stale expected= value, which it prints on stdout.
 check_skill_contract_snippet() {
 	local skill_file="$1"
 	local contract="$2"
-	local snippet content normalized
+	local snippet block stale
 
 	snippet="$(skill_contract_snippet "$contract")"
-	content="$(<"$skill_file")"
-	if [[ "$content" == *"$snippet"* ]]; then
+	block="$(first_fenced_block "$skill_file")"
+	if [[ "$block" == "$snippet" ]]; then
 		return 0
 	fi
 
-	normalized="$(sed -E "s/^expected=[0-9]+\$/expected=$contract/" "$skill_file")"
-	if [[ "$normalized" == *"$snippet"* ]]; then
-		sed -nE 's/^expected=([0-9]+)$/\1/p' "$skill_file" | grep -vx -- "$contract" | head -n 1
+	stale="$(sed -nE 's/^expected=([0-9]+)$/\1/p' <<<"$block" | head -n 1)"
+	if [[ -n "$stale" && "$(sed -E "s/^expected=[0-9]+\$/expected=$contract/" <<<"$block")" == "$snippet" ]]; then
+		printf '%s\n' "$stale"
 		return 2
 	fi
 	return 1

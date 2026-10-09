@@ -41,13 +41,10 @@ If it is missing, this personal fork installs from source:
 
 ```bash
 git clone https://github.com/echeg/loopai
-cd loopai
-make build
-install -d ~/.local/bin
-install -m 0755 .bin/loopai ~/.local/bin/loopai
+make -C loopai install
 ```
 
-`~/.local/bin` must be on `PATH`. Do not proceed until `command -v loopai` succeeds.
+`make install` puts the binary in `~/.local/bin` (or `$LOOPAI_BIN_DIR`), which must be on `PATH`. Do not proceed until `command -v loopai` succeeds.
 
 ## Step 1: Choose the Mode
 

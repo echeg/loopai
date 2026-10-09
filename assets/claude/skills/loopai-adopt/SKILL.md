@@ -52,10 +52,7 @@ If `which loopai` returns non-zero, briefly mention that loopai is needed to exe
 
 ```bash
 git clone https://github.com/echeg/loopai
-cd loopai
-make build
-install -d ~/.local/bin
-install -m 0755 .bin/loopai ~/.local/bin/loopai
+make -C loopai install
 ```
 
 If `which loopai` succeeds, say nothing and proceed.

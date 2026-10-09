@@ -134,6 +134,16 @@ expect_failure "missing or modified skill contract snippet in skill: $skill_file
 write_skill loopai-merge
 sed -i.bak 's/^expected=3$/expected=2/' "$skill_file" && rm -f "$skill_file.bak"
 expect_failure "stale skill contract in skill: $skill_file has expected=2 (skillContract is 3)"
+# a stray expected= line outside the snippet is neither read nor rewritten
+write_skill loopai-merge
+printf '%s\n' '' 'expected=9' >>"$skill_file"
+"$checker" "$fixture"
+# the snippet must open the skill, not follow a step that already ran loopai
+{
+	printf '%s\n' '---' 'name: loopai-merge' 'description: fixture skill' '---' '' '```bash' 'loopai --version' '```' ''
+	skill_contract_snippet 3
+} >"$skill_file"
+expect_failure "missing or modified skill contract snippet in skill: $skill_file"
 write_skill loopai-merge
 "$checker" "$fixture"
 

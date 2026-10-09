@@ -31,7 +31,7 @@ echo "skill contract: skill=$expected binary=$actual"
 
 Never stop on a mismatch.
 
-This skill is the update path itself, so do not tell the user to run it: instead of warning, report the `skill contract:` line in the final summary.
+This skill is the update path itself, so do not tell the user to run it: instead of warning, run the snippet above again after Step 0, because `make install` may have replaced the binary, and report that second `skill contract:` line in the final summary.
 
 ## Step 0: Update the Installation
 
@@ -157,7 +157,7 @@ rm -rf "$DUMP_DIR"
 ```
 Update complete:
   Installation:   <make install result, or "skipped">
-  Skill contract: <the skill contract: line>
+  Skill contract: <the skill contract: line from after Step 0>
   Skipped:        N files (no changes needed)
   Smart-merged:   N files (M accepted, K kept)
 ```
