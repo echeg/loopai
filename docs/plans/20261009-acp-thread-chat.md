@@ -171,12 +171,13 @@
 ## Implementation Steps
 
 ### Task 1: Add provider session resume to the executors
-- [ ] add `SessionID string` to `executor.Result` (`pkg/executor/executor.go:28`) and an optional resume id on the Claude and Codex executors (a field or per-run option, matching how per-run state is passed today)
-- [ ] Claude: capture `session_id` from the stream-json `system/init` event into `Result.SessionID`; when a resume id is set, append `--resume <id>` to that invocation after the configured arguments, including when `claude_args` replaces the defaults
-- [ ] Codex: return the already extracted session id in `Result.SessionID`; when a resume id is set, build `exec resume <id>` instead of `exec`, keeping loopai's `-c` overrides, sandbox flags, and `codex_args` extras valid for the `resume` subcommand (verify option placement against `codex exec resume --help` and adjust if `resume` rejects any flag loopai emits)
-- [ ] ignore the resume id when `IsRealClaudeCommand`/`IsRealCodexCommand` is false, so wrapper commands always start fresh
-- [ ] write tests: Claude args with and without resume, with replaced `claude_args`; session id from a fixture `system/init` line; Codex args for `exec` versus `exec resume <id>` with overrides and extras; session id surfaced in `Result`; wrapper commands ignore the resume id
-- [ ] run `make test </dev/null` and `make lint` - must pass before task 2
+- [x] add `SessionID string` to `executor.Result` (`pkg/executor/executor.go:28`) and an optional resume id on the Claude and Codex executors (a field or per-run option, matching how per-run state is passed today)
+- [x] Claude: capture `session_id` from the stream-json `system/init` event into `Result.SessionID`; when a resume id is set, append `--resume <id>` to that invocation after the configured arguments, including when `claude_args` replaces the defaults
+- [x] Codex: return the already extracted session id in `Result.SessionID`; when a resume id is set, build `exec resume <id>` instead of `exec`, keeping loopai's `-c` overrides, sandbox flags, and `codex_args` extras valid for the `resume` subcommand (verify option placement against `codex exec resume --help` and adjust if `resume` rejects any flag loopai emits)
+- [x] ignore the resume id when `IsRealClaudeCommand`/`IsRealCodexCommand` is false, so wrapper commands always start fresh
+- [x] write tests: Claude args with and without resume, with replaced `claude_args`; session id from a fixture `system/init` line; Codex args for `exec` versus `exec resume <id>` with overrides and extras; session id surfaced in `Result`; wrapper commands ignore the resume id
+- [x] run `make test </dev/null` and `make lint` - must pass before task 2
+- [x] ➕ fix pre-existing failures surfaced by validation: macOS `/var` symlink in `codex_image_test.py` and `cmd/loopai` fixtures (`TMPDIR` resolved in `TestMain`; product-side issue filed as `docs/backlog/symlinked-checkout-path-containment.md`), `unparam` lint in `pkg/git/external.go`
 
 ### Task 2: Add the chat signals and the acp_chat prompt
 - [ ] add `ACP_MERGE` and `ACP_PR` signal constants (`<<<RALPHEX:ACP_MERGE>>>`, `<<<RALPHEX:ACP_PR>>>`) beside the existing ones in `pkg/status` and register both in `knownSignals` (`pkg/executor/executor.go`)

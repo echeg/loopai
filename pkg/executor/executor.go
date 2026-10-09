@@ -32,6 +32,28 @@ type Result struct {
 	Signal         string // detected signal (COMPLETED, FAILED, etc.) or empty
 	Error          error  // execution error if any
 	IdleTimedOut   bool   // true when idle timeout fired (derived context canceled, parent alive)
+	SessionID      string // provider session id a later run can resume; empty when unknown or resume is disabled
+}
+
+// resumeSessionKey carries the provider session id a run should resume.
+type resumeSessionKey struct{}
+
+// WithResumeSession returns a context asking the Claude and Codex executors to continue
+// the provider session id instead of starting a fresh one. The id travels on the context
+// rather than an executor field because phases share one executor instance through an
+// interface and run it through the retry and limit policy, which forwards ctx untouched.
+// An empty id leaves ctx unchanged.
+func WithResumeSession(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, resumeSessionKey{}, id)
+}
+
+// resumeSession returns the session id set by WithResumeSession, or "".
+func resumeSession(ctx context.Context) string {
+	id, _ := ctx.Value(resumeSessionKey{}).(string)
+	return id
 }
 
 // recentBlockCount bounds both recent surfaced output and trusted diagnostics.
@@ -396,6 +418,7 @@ type streamContentBlock struct {
 type streamEvent struct {
 	Type              string `json:"type"`
 	Subtype           string `json:"subtype"` // for "system" events: init, task_started, task_progress, etc.
+	SessionID         string `json:"session_id"`
 	IsError           bool   `json:"is_error"`
 	Error             string `json:"error"`
 	ErrorStatus       int    `json:"error_status"`
@@ -439,6 +462,7 @@ type ClaudeExecutor struct {
 	RetryPatterns        []string                              // patterns to detect transient errors that should retry like timeouts
 	IdleTimeout          time.Duration                         // kill session after this duration of no output, zero = disabled
 	PreserveAPIKey       bool                                  // when true, ANTHROPIC_API_KEY is passed through to the child; default false strips it
+	NoResume             bool                                  // ignore a WithResumeSession id and report no session id; set for wrapper commands, which define their own CLI
 	cmdRunner            CommandRunner                         // for testing, nil uses default
 	now                  func() time.Time                      // arrival clock for command timing; nil uses time.Now
 }
@@ -479,6 +503,16 @@ func (e *ClaudeExecutor) Run(ctx context.Context, prompt string) Result {
 		args = stripFlag(args, "--effort")
 		args = append(args, "--effort", e.Effort)
 	}
+	// a resume id goes after the configured arguments, so it survives a claude_args value
+	// that replaces the defaults; any --resume already there is dropped to avoid a conflict.
+	resumeID := ""
+	if !e.NoResume {
+		resumeID = resumeSession(ctx)
+	}
+	if resumeID != "" {
+		args = stripFlag(args, "--resume")
+		args = append(args, "--resume", resumeID)
+	}
 	// always append --print to enable non-interactive mode; mirrors old -p flag that was
 	// always appended. wrapper scripts ignore unknown flags via '*) shift ;;' catch-all.
 	args = append(args, "--print")
@@ -513,6 +547,9 @@ func (e *ClaudeExecutor) Run(ctx context.Context, prompt string) Result {
 
 	result := e.parseStream(execCtx, stdout, idleTouch)
 	waitErr := wait()
+	if e.NoResume {
+		result.SessionID = ""
+	}
 
 	return e.resolveRunResult(result, claudeRunOutcome{
 		waitErr:      waitErr,
@@ -612,6 +649,7 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 		now = time.Now
 	}
 	var lastProgress time.Time // throttle window for subagent heartbeat lines
+	var sessionID string       // from the first system/init event
 
 	err := readLines(ctx, r, func(line string) {
 		idleTouch() // reset idle timer on every line of pipe activity
@@ -633,6 +671,10 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 				e.OutputHandler(line + "\n")
 			}
 			return
+		}
+
+		if sessionID == "" && event.Type == "system" && event.Subtype == "init" {
+			sessionID = event.SessionID
 		}
 
 		if e.CommandTimingHandler != nil {
@@ -683,11 +725,11 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 
 	if err != nil {
 		return Result{Output: output.String(), RecentText: recentText.text(),
-			DiagnosticText: diagnostics.text(), Signal: signal, Error: fmt.Errorf("stream read: %w", err)}
+			DiagnosticText: diagnostics.text(), Signal: signal, SessionID: sessionID, Error: fmt.Errorf("stream read: %w", err)}
 	}
 
 	return Result{Output: output.String(), RecentText: recentText.text(),
-		DiagnosticText: diagnostics.text(), Signal: signal}
+		DiagnosticText: diagnostics.text(), Signal: signal, SessionID: sessionID}
 }
 
 // extractDiagnostic returns pattern input from structured Claude events. normal

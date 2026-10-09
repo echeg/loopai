@@ -1159,3 +1159,43 @@ func TestExecutorFactory_Build_CodexArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestExecutorFactory_Build_NoResumeForWrapperCommands(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		command  string
+		noResume bool
+	}{
+		{name: "default claude resumes", provider: config.ExecutorClaude},
+		{name: "real claude path resumes", provider: config.ExecutorClaude, command: "/usr/local/bin/claude"},
+		{name: "claude wrapper starts fresh", provider: config.ExecutorClaude, command: "claude-wrapper", noResume: true},
+		{name: "default codex resumes", provider: config.ExecutorCodex},
+		{name: "codex wrapper starts fresh", provider: config.ExecutorCodex, command: "codex-wrapper.sh", noResume: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			appCfg := testAppConfig(t)
+			appCfg.ClaudeCommand, appCfg.CodexCommand = "", ""
+			if tc.provider == config.ExecutorClaude {
+				appCfg.ClaudeCommand = tc.command
+			} else {
+				appCfg.CodexCommand = tc.command
+			}
+			cfg := Config{Mode: ModeTasksOnly, MaxIterations: 1, TaskModel: phaseSpecFor(tc.provider), AppConfig: appCfg}
+			_, execs := (&executorFactory{}).Build(cfg, newMockLogger())
+
+			switch e := execs.Task.(type) {
+			case *executor.ClaudeExecutor:
+				require.Equal(t, config.ExecutorClaude, tc.provider)
+				assert.Equal(t, tc.noResume, e.NoResume)
+			case *executor.CodexExecutor:
+				require.Equal(t, config.ExecutorCodex, tc.provider)
+				assert.Equal(t, tc.noResume, e.NoResume)
+			default:
+				t.Fatalf("unexpected task executor %T", execs.Task)
+			}
+		})
+	}
+}

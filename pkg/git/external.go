@@ -835,20 +835,20 @@ func (e *externalBackend) classifyNoCommitMerge(
 			errors.New("merge moved HEAD despite --no-commit"))
 	}
 	mergeHead, mergeInProgress := e.mergeHead(cleanupCtx)
-	abandon := func(cause error) (MergeResult, error) {
+	abandon := func(cause error) error {
 		if !mergeInProgress {
-			return MergeResult{}, cause
+			return cause
 		}
 		if _, abortErr := e.runContext(cleanupCtx, "merge", "--abort"); abortErr != nil {
-			return MergeResult{}, fmt.Errorf("%w (abort failed: %w)", cause, abortErr)
+			return fmt.Errorf("%w (abort failed: %w)", cause, abortErr)
 		}
-		return MergeResult{}, cause
+		return cause
 	}
 	if ctx.Err() != nil {
-		return abandon(contextError(ctx, "merge", mergeErr))
+		return MergeResult{}, abandon(contextError(ctx, "merge", mergeErr))
 	}
 	if mergeInProgress && mergeHead != target {
-		return abandon(fmt.Errorf("merge recorded %s instead of %s", mergeHead, target))
+		return MergeResult{}, abandon(fmt.Errorf("merge recorded %s instead of %s", mergeHead, target))
 	}
 	if mergeErr == nil {
 		if !mergeInProgress {
@@ -860,10 +860,10 @@ func (e *externalBackend) classifyNoCommitMerge(
 	}
 	unmerged, err := e.unmergedPaths(cleanupCtx)
 	if err != nil {
-		return abandon(fmt.Errorf("merge: %w (inspect unmerged paths: %w)", mergeErr, err))
+		return MergeResult{}, abandon(fmt.Errorf("merge: %w (inspect unmerged paths: %w)", mergeErr, err))
 	}
 	if !mergeInProgress || len(unmerged) == 0 {
-		return abandon(fmt.Errorf("merge: %w", mergeErr))
+		return MergeResult{}, abandon(fmt.Errorf("merge: %w", mergeErr))
 	}
 	return MergeResult{State: MergeConflicted, Target: target, Conflicts: unmerged}, nil
 }

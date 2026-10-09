@@ -4265,3 +4265,85 @@ func TestCodexExecutor_Run_MissingRollout(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexExecutor_Run_ResumeArgs(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	const id = "019e3bbe-9788-79f1-b668-cccccccccccc"
+	tests := []struct {
+		name    string
+		newExec func() *CodexExecutor
+		resume  string
+	}{
+		{name: "phase executor with overrides and extras", resume: id, newExec: func() *CodexExecutor {
+			return &CodexExecutor{Model: "gpt-x", ReasoningEffort: "high", ProjectDoc: "DOC.md", MultiAgent: true,
+				Sandbox: "danger-full-access", ExtraArgs: `-c service_tier="default"`}
+		}},
+		{name: "read-only reviewer", resume: id, newExec: func() *CodexExecutor {
+			return &CodexExecutor{ForceReadOnly: true}
+		}},
+		{name: "no resume id", newExec: func() *CodexExecutor { return &CodexExecutor{MultiAgent: true} }},
+		{name: "wrapper ignores resume id", resume: id, newExec: func() *CodexExecutor {
+			return &CodexExecutor{Command: "codex-wrapper", NoResume: true}
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			capture := func(ctx context.Context, e *CodexExecutor) []string {
+				var args []string
+				e.runner = &mockCodexRunner{runFunc: func(_ context.Context, _ string, a ...string) (CodexStreams, func() error, error) {
+					args = a
+					return mockStreams("", "result"), mockWait(), nil
+				}}
+				require.NoError(t, e.Run(ctx, "prompt").Error)
+				return args
+			}
+			fresh := capture(context.Background(), tc.newExec())
+			resumed := capture(WithResumeSession(context.Background(), tc.resume), tc.newExec())
+
+			require.Equal(t, "exec", fresh[0])
+			assert.NotContains(t, fresh, "resume")
+			if tc.resume == "" || tc.name == "wrapper ignores resume id" {
+				assert.Equal(t, fresh, resumed, "no resume subcommand")
+				return
+			}
+			// every option loopai and the user compose stays before the subcommand, which
+			// rejects --sandbox; the prompt still arrives on stdin through "-"
+			assert.Equal(t, append(append([]string{}, fresh...), "resume", id, "-"), resumed)
+		})
+	}
+}
+
+func TestCodexExecutor_Run_SessionID(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	const id = "019e3bbe-9788-79f1-b668-dddddddddddd"
+	stderr := "--------\nworkdir: /tmp/x\nsession id: " + id + "\n--------\n"
+	tests := []struct {
+		name    string
+		exec    *CodexExecutor
+		wait    func() error
+		wantID  string
+		wantErr bool
+	}{
+		{name: "successful run", exec: &CodexExecutor{}, wait: mockWait(), wantID: id},
+		{name: "failed run", exec: &CodexExecutor{}, wait: mockWaitError(errors.New("exit status 1")), wantID: id, wantErr: true},
+		{name: "wrapper reports none", exec: &CodexExecutor{NoResume: true}, wait: mockWait()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.exec.runner = &mockCodexRunner{runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+				return mockStreams(stderr, "answer"), tc.wait, nil
+			}}
+			result := tc.exec.Run(context.Background(), "prompt")
+			assert.Equal(t, tc.wantErr, result.Error != nil)
+			assert.Equal(t, tc.wantID, result.SessionID)
+		})
+	}
+
+	t.Run("no banner reports none", func(t *testing.T) {
+		e := &CodexExecutor{runner: &mockCodexRunner{runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+			return mockStreams("", "answer"), mockWait(), nil
+		}}}
+		assert.Empty(t, e.Run(context.Background(), "prompt").SessionID)
+	})
+}

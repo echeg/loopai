@@ -95,6 +95,15 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "unset CMUX_WORKSPACE_ID: %v\n", err)
 		os.Exit(1)
 	}
+	// t.TempDir lives under TMPDIR, which macOS places behind the /var -> /private/var symlink
+	// while Git reports symlink-resolved roots; resolving it once makes fixture paths match the
+	// paths Git returns, as they already do on Linux CI.
+	if dir, err := filepath.EvalSymlinks(os.TempDir()); err == nil {
+		if err := os.Setenv("TMPDIR", dir); err != nil {
+			fmt.Fprintf(os.Stderr, "set TMPDIR: %v\n", err)
+			os.Exit(1)
+		}
+	}
 	// keep_awake defaults to on, and awake.New would otherwise start a real sleep inhibitor
 	// for every run() under test. wiring tests inject their own holder or override this.
 	newAwakeHolder = func(bool) *awake.Holder { return nil }

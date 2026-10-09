@@ -116,6 +116,7 @@ type CodexExecutor struct {
 	ForceReadOnly        bool                                  // require the read-only sandbox even when the runtime disables its default sandbox; used by external review so it cannot modify the project. holds against loopai config (codex_sandbox) but not against ExtraArgs, which is trusted user input and can carry --dangerously-bypass-approvals-and-sandbox
 	ExtraArgs            string                                // user-supplied extras (codex_args / --codex-args), appended after loopai's own -c overrides so an explicit user value wins on key collision
 	IdleTimeout          time.Duration                         // kill session after this duration of no output, zero = disabled
+	NoResume             bool                                  // ignore a WithResumeSession id and report no session id; set for wrapper commands, which define their own CLI
 	headerEmitted        atomic.Bool                           // tracks first invocation across Run() calls; false until first task/review then suppressed permanently — used to emit codex's resolved model/sandbox/effort once at the top of the run
 	callbackMu           sync.Mutex                            // serializes output and timing handlers; runner loggers require serialized calls
 	targetOS             string                                // for testing; empty uses runtime.GOOS
@@ -186,6 +187,14 @@ func (e *CodexExecutor) reviewerSandboxOverrides() []string {
 	return nil
 }
 
+// resumeID returns the session id this run should resume, or "" for a fresh session.
+func (e *CodexExecutor) resumeID(ctx context.Context) string {
+	if e.NoResume {
+		return ""
+	}
+	return resumeSession(ctx)
+}
+
 // codexFilterState tracks header separator count for filtering.
 type codexFilterState struct {
 	headerCount int  // tracks "--------" separators seen (show config between first two)
@@ -251,6 +260,14 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	// to --sandbox read-only on the external reviewer, which emits no bypass flag of its own,
 	// so it defeats ForceReadOnly there.
 	args = append(args, splitArgs(e.ExtraArgs)...)
+
+	// a resumed run is `codex exec <options> resume <id> -`. every option above stays
+	// before the subcommand because `resume` itself rejects --sandbox, while options given
+	// to `exec` apply to the resumed session (verified against codex-cli 0.162.0); `-`
+	// is resume's explicit read-the-prompt-from-stdin positional.
+	if resumeID := e.resumeID(ctx); resumeID != "" {
+		args = append(args, "resume", resumeID, "-")
+	}
 
 	// pass prompt via stdin to avoid Windows 8191-char command-line limit;
 	// codex reads from stdin when no positional prompt argument is given.
@@ -329,6 +346,17 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	tailCancel()
 	<-tailDone
 
+	result := e.runResult(ctx, execCtx, stdoutContent, lastAgentMessage, stderrRes, stdoutErr, waitErr)
+	if !e.NoResume {
+		result.SessionID = stderrRes.sessionID
+	}
+	return result
+}
+
+// runResult classifies a finished codex process into a Result. it runs after
+// stdout, stderr, the completion watcher, and the rollout tail have all drained.
+func (e *CodexExecutor) runResult(ctx, execCtx context.Context, stdoutContent, lastAgentMessage string,
+	stderrRes stderrResult, stdoutErr, waitErr error) Result {
 	if errors.Is(context.Cause(execCtx), errCodexTaskComplete) && ctx.Err() == nil {
 		return taskCompleteResult(stdoutContent, lastAgentMessage, stderrRes)
 	}
@@ -534,6 +562,7 @@ func (e *CodexExecutor) checkPatterns(stdoutContent string, stderr stderrResult)
 // subject to the lastLines tail truncation (5 lines, 256 runes per line).
 type stderrResult struct {
 	lastLines  []string // last few lines of stderr for error context
+	sessionID  string   // first "session id: <uuid>" seen on stderr
 	limitMatch string   // first matched limit pattern seen on stderr (live scan)
 	errorMatch string   // first matched error pattern seen on stderr (live scan)
 	err        error
@@ -560,7 +589,7 @@ func (e *CodexExecutor) processStderr(ctx context.Context, r io.Reader, opts std
 	state := &codexFilterState{firstRun: opts.firstRun}
 	var tail []string
 	var limitMatch, errorMatch string
-	sessionIDSent := false
+	var sessionID string
 
 	err := readLines(ctx, r, func(line string) {
 		if opts.idleTouch != nil {
@@ -573,13 +602,15 @@ func (e *CodexExecutor) processStderr(ctx context.Context, r io.Reader, opts std
 
 		// surface session id from header block to caller (once) so the rollout
 		// file can be tailed in parallel for assistant-message streaming.
-		if !sessionIDSent && opts.sessionIDCh != nil {
+		if sessionID == "" {
 			if id := e.extractSessionID(line); id != "" {
-				select {
-				case opts.sessionIDCh <- id:
-				default:
+				sessionID = id
+				if opts.sessionIDCh != nil {
+					select {
+					case opts.sessionIDCh <- id:
+					default:
+					}
 				}
-				sessionIDSent = true
 			}
 		}
 
@@ -602,9 +633,9 @@ func (e *CodexExecutor) processStderr(ctx context.Context, r io.Reader, opts std
 	})
 
 	if err != nil {
-		return stderrResult{lastLines: tail, limitMatch: limitMatch, errorMatch: errorMatch, err: fmt.Errorf("read stderr: %w", err)}
+		return stderrResult{lastLines: tail, limitMatch: limitMatch, errorMatch: errorMatch, sessionID: sessionID, err: fmt.Errorf("read stderr: %w", err)}
 	}
-	return stderrResult{lastLines: tail, limitMatch: limitMatch, errorMatch: errorMatch}
+	return stderrResult{lastLines: tail, limitMatch: limitMatch, errorMatch: errorMatch, sessionID: sessionID}
 }
 
 // scanLineForPatterns updates limitMatch / errorMatch with the first matching
