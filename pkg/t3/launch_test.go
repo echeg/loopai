@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -177,6 +178,48 @@ func TestLaunchPreflightErrors(t *testing.T) {
 		var partial *PartialLaunchError
 		assert.NotErrorAs(t, err, &partial)
 	})
+}
+
+func TestPlanRelPathThroughSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on windows")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	writeFile(t, filepath.Join(root, "docs", "plans", "x.md"), "# X\n")
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(root, link))
+
+	rel, err := planRelPath(root, filepath.Join(link, "docs", "plans", "x.md"))
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join("docs", "plans", "x.md"), rel)
+
+	t.Chdir(link)
+	rel, err = planRelPath(root, filepath.Join("docs", "plans", "x.md"))
+	require.NoError(t, err, "a relative plan under a symlinked working directory is inside the repository")
+	assert.Equal(t, filepath.Join("docs", "plans", "x.md"), rel)
+
+	_, err = planRelPath(root, filepath.Join(t.TempDir(), "x.md"))
+	require.ErrorContains(t, err, "outside the repository")
+
+	// symlinks inside the checkout keep the name the plan was given
+	require.NoError(t, os.Symlink(filepath.Join(root, "docs", "plans"), filepath.Join(root, "plans")))
+	rel, err = planRelPath(root, filepath.Join(root, "plans", "x.md"))
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join("plans", "x.md"), rel)
+
+	external, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	writeFile(t, filepath.Join(external, "y.md"), "# Y\n")
+	require.NoError(t, os.Symlink(external, filepath.Join(root, "shared")))
+	rel, err = planRelPath(root, filepath.Join(root, "shared", "y.md"))
+	require.NoError(t, err, "a plans directory linked to outside the checkout is still named inside it")
+	assert.Equal(t, filepath.Join("shared", "y.md"), rel)
+
+	require.NoError(t, os.Symlink(filepath.Join(root, "docs", "plans", "x.md"), filepath.Join(root, "linked.md")))
+	rel, err = planRelPath(root, filepath.Join(root, "linked.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "linked.md", rel)
 }
 
 func TestLaunchPartialFailures(t *testing.T) {

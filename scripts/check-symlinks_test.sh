@@ -7,10 +7,25 @@ checker="$script_dir/check-symlinks.sh"
 fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture"' EXIT
 
+# shellcheck source=lib/skill-contract.sh
+source "$script_dir/lib/skill-contract.sh"
+
+mkdir -p "$fixture/cmd/loopai"
+printf '%s\n' 'package main' '' 'const skillContract = 3' >"$fixture/cmd/loopai/skill_contract.go"
+
+# write_skill writes a valid skill: frontmatter plus the contract snippet for skillContract 3.
+write_skill() {
+	local name="$1"
+	{
+		printf '%s\n' '---' "name: $name" 'description: fixture skill' '---' '' 'Run this first:' ''
+		skill_contract_snippet 3
+	} >"$fixture/assets/claude/skills/$name/SKILL.md"
+}
+
 add_skill() {
 	local name="$1"
 	mkdir -p "$fixture/assets/claude/skills/$name"
-	printf '%s\n' '---' "name: $name" 'description: fixture skill' '---' >"$fixture/assets/claude/skills/$name/SKILL.md"
+	write_skill "$name"
 	ln -s "./skills/$name/SKILL.md" "$fixture/assets/claude/$name.md"
 }
 
@@ -50,7 +65,7 @@ add_skill loopai-plan
 
 printf '%s\n' '# missing frontmatter' >"$fixture/assets/claude/skills/loopai/SKILL.md"
 expect_failure "invalid skill frontmatter"
-printf '%s\n' '---' 'name: loopai' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai/SKILL.md"
+write_skill loopai
 
 printf '%s\n' '---' 'name: loopai' 'description: ""' '---' >"$fixture/assets/claude/skills/loopai/SKILL.md"
 expect_failure "invalid skill frontmatter"
@@ -58,7 +73,7 @@ printf '%s\n' '---' 'name: loopai' 'description: # missing value' '---' >"$fixtu
 expect_failure "invalid skill frontmatter"
 printf '%s\n' '---' 'name: other' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai/SKILL.md"
 expect_failure "invalid skill frontmatter"
-printf '%s\n' '---' 'name: loopai' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai/SKILL.md"
+write_skill loopai
 
 rm "$fixture/assets/claude/loopai.md"
 expect_failure "missing skill symlink"
@@ -99,7 +114,7 @@ for spelling in 'loopai --codex docs/plans/x.md' \
 	'finalize_enabled = true'; do
 	printf '%s\n' "$spelling" >>"$fixture/assets/claude/skills/loopai-orca/SKILL.md"
 	expect_failure "removed loopai flag or key in skill"
-	printf '%s\n' '---' 'name: loopai-orca' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai-orca/SKILL.md"
+	write_skill loopai-orca
 done
 # the surviving codex flag, the per-phase spec grammar, and a migration hint stay allowed
 printf '%s\n' "loopai --codex-args='-c x=1' --task-model codex:gpt-6-astra:medium" 'the codex executor' \
@@ -107,7 +122,36 @@ printf '%s\n' "loopai --codex-args='-c x=1' --task-model codex:gpt-6-astra:mediu
 	'`finalize_enabled` was removed; write `finalize = sync|pr|merge`' 'finalize = pr' \
 	>>"$fixture/assets/claude/skills/loopai-orca/SKILL.md"
 "$checker" "$fixture"
-printf '%s\n' '---' 'name: loopai-orca' 'description: fixture skill' '---' >"$fixture/assets/claude/skills/loopai-orca/SKILL.md"
+write_skill loopai-orca
+
+# every skill must carry the shared contract snippet with the current expected= value
+skill_file="$fixture/assets/claude/skills/loopai-merge/SKILL.md"
+printf '%s\n' '---' 'name: loopai-merge' 'description: fixture skill' '---' >"$skill_file"
+expect_failure "missing or modified skill contract snippet in skill: $skill_file"
+write_skill loopai-merge
+sed -i.bak 's/2>\/dev\/null) || actual=0/) || actual=0/' "$skill_file" && rm -f "$skill_file.bak"
+expect_failure "missing or modified skill contract snippet in skill: $skill_file"
+write_skill loopai-merge
+sed -i.bak 's/^expected=3$/expected=2/' "$skill_file" && rm -f "$skill_file.bak"
+expect_failure "stale skill contract in skill: $skill_file has expected=2 (skillContract is 3)"
+# a stray expected= line outside the snippet is neither read nor rewritten
+write_skill loopai-merge
+printf '%s\n' '' 'expected=9' >>"$skill_file"
+"$checker" "$fixture"
+# the snippet must open the skill, not follow a step that already ran loopai
+{
+	printf '%s\n' '---' 'name: loopai-merge' 'description: fixture skill' '---' '' '```bash' 'loopai --version' '```' ''
+	skill_contract_snippet 3
+} >"$skill_file"
+expect_failure "missing or modified skill contract snippet in skill: $skill_file"
+write_skill loopai-merge
+"$checker" "$fixture"
+
+# the constant itself must be readable, or nothing can be compared
+mv "$fixture/cmd/loopai/skill_contract.go" "$fixture/cmd/loopai/skill_contract.away"
+expect_failure "missing skillContract constant"
+mv "$fixture/cmd/loopai/skill_contract.away" "$fixture/cmd/loopai/skill_contract.go"
+"$checker" "$fixture"
 
 mkdir -p "$fixture/assets/claude/nested"
 ln -s ./missing.asset "$fixture/assets/claude/nested/broken.asset"

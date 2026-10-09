@@ -1386,3 +1386,17 @@ func TestInitLocal(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+func TestEmbeddedDefault(t *testing.T) {
+	data, err := EmbeddedDefault("config")
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "task_model")
+
+	data, err = EmbeddedDefault("prompts/" + reportPromptFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "## Merge danger")
+
+	_, err = EmbeddedDefault("prompts/missing.txt")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read embedded default prompts/missing.txt")
+}

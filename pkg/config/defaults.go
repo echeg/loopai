@@ -661,3 +661,13 @@ func (d *defaultsInstaller) printResetSummary(result ResetResult, stdout io.Writ
 	}
 	_, _ = fmt.Fprintln(stdout)
 }
+
+// EmbeddedDefault returns the raw embedded default file at path, relative to the defaults root,
+// e.g. "config" or "prompts/report.txt".
+func EmbeddedDefault(path string) ([]byte, error) {
+	data, err := defaultsFS.ReadFile("defaults/" + path)
+	if err != nil {
+		return nil, fmt.Errorf("read embedded default %s: %w", path, err)
+	}
+	return data, nil
+}

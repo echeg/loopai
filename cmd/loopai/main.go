@@ -85,6 +85,7 @@ type opts struct {
 	T3Launch                string        `long:"t3-launch" optional:"true" optional-value:"auto" choice:"auto" choice:"agent" choice:"terminal" description:"launch in a T3 Code worktree and exit: bare/auto = configured loopai provider session or terminal, agent = require provider instance, terminal = skip provider settings"`
 	ACP                     bool          `long:"acp" description:"serve the Agent Client Protocol on stdin/stdout so T3 Code can host loopai as a provider session (started by loopai-acp)"`
 	Version                 bool          `short:"v" long:"version" description:"print version and exit"`
+	SkillContract           bool          `long:"skill-contract" description:"print the skill contract number and exit"`
 	Serve                   bool          `short:"s" long:"serve" description:"start web dashboard for real-time streaming"`
 	Port                    int           `short:"p" long:"port" default:"8080" description:"web dashboard port"`
 	Host                    string        `long:"host" default:"127.0.0.1" env:"LOOPAI_WEB_HOST" description:"web dashboard listen address"`
@@ -399,6 +400,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// checked before --version: the banner was suppressed, so stdout carries the integer alone
+	if o.SkillContract {
+		printSkillContract(os.Stdout)
+		os.Exit(0)
+	}
 	if o.Version {
 		os.Exit(0)
 	}
@@ -5198,7 +5204,7 @@ func clearStaleCmuxStatus(o opts) {
 // and never constructs a reporter.
 func isStandaloneCommand(o opts) bool {
 	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || o.GenAgents || o.T3Launch != "" ||
-		o.ACP || (o.Reset && isResetOnly(o))
+		o.ACP || o.SkillContract || (o.Reset && isResetOnly(o))
 }
 
 // handOffSucceeded reports whether an early stop came from a successful cmux workspace hand-off,

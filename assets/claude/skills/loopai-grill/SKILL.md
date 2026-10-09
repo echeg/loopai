@@ -10,6 +10,28 @@ Improve a loopai implementation plan by combining independent Claude and Codex a
 
 Resolve the repository root with `git rev-parse --show-toplevel`, then use `${CLAUDE_SKILL_DIR}/scripts/plan_paths.py` for every plan lookup, validation, scratch-directory check, active-plan read or replacement, collision check, and final write. Stop if the helper is absent or returns an error. Never replace its checks with ad hoc path handling.
 
+## Skill Contract Check
+
+Run this first and read the printed line:
+
+```bash
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
+```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `/loopai:loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `/loopai:loopai-update`, then `/reload-plugins` or restart the session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
 ## Route the Request
 
 Interpret the arguments before doing any critique or generation:

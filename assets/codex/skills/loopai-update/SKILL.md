@@ -7,26 +7,87 @@ metadata:
 
 # loopai-update - Smart Prompt Merging
 
-**SCOPE**: compare the current embedded defaults with the user's installed config and merge updates into the files they customized. Do not modify project source code, do not run loopai, and do not touch anything outside the config directory.
+**SCOPE**: update the loopai installation from its source checkout, then compare the current embedded defaults with the user's installed config and merge updates into the files they customized. Do not modify project source code, do not run loopai, and do not touch anything outside the config directory except through Step 0's `make install` and the pull the user approved.
 
-## Step 0: Verify the CLI
+## Skill Contract Check
 
-```bash
-command -v loopai
-```
-
-If missing, install from source and stop until it succeeds:
+Run this first and read the printed line:
 
 ```bash
-git clone https://github.com/echeg/loopai && cd loopai && make build
-install -d ~/.local/bin && install -m 0755 .bin/loopai ~/.local/bin/loopai
+expected=1
+if ! command -v loopai >/dev/null 2>&1; then
+  actual=missing
+else
+  actual=$(loopai --skill-contract 2>/dev/null) || actual=0
+  case $actual in ''|*[!0-9]*) actual=0 ;; esac
+fi
+echo "skill contract: skill=$expected binary=$actual"
 ```
+
+- `binary=missing`: continue with this skill's existing handling of a missing CLI.
+- `binary` lower than `skill`: tell the user "the installed loopai binary is older than these skills; run `$loopai-update`", then continue.
+- `binary` higher than `skill`: tell the user "these skills are older than the installed loopai binary; run `$loopai-update`, then restart the Codex session", then continue.
+- equal: continue silently.
+
+Never stop on a mismatch.
+
+This skill is the update path itself, so do not tell the user to run it: instead of warning, run the snippet above again after Step 0, because `make install` may have replaced the binary, and report that second `skill contract:` line in the final summary.
+
+## Step 0: Update the Installation
+
+`make install` in the loopai checkout rebuilds and installs the binary and its ACP launcher, updates the Claude Code plugins when `claude` is installed, reinstalls these Codex skills, and verifies that the binary speaks the skill contract. Run it before merging prompts, so the defaults below come from the updated binary.
+
+Locate the checkout: `$LOOPAI_SRC` first, then the `loopai` Claude Code marketplace when it is read from a local directory:
+
+```bash
+src="${LOOPAI_SRC:-}"
+marketplaces="$HOME/.claude/plugins/known_marketplaces.json"
+if [ -z "$src" ] && [ -f "$marketplaces" ] && command -v jq >/dev/null 2>&1; then
+  src=$(jq -r '.loopai // empty | select(.source.source == "directory") | .source.path // empty' "$marketplaces")
+fi
+if [ -n "$src" ] && [ -f "$src/scripts/install.sh" ]; then
+  printf 'checkout: %s\n' "$src"
+else
+  printf 'checkout: not found\n'
+fi
+```
+
+If no checkout was found, ask the user in plain text whether to use an existing checkout (a path that contains `scripts/install.sh`), clone a fresh one into a directory they name, or skip the installation update and only merge prompts. Wait for the answer. To clone:
+
+```bash
+git clone https://github.com/echeg/loopai <dir>
+```
+
+With a checkout, show its state, fetching first so the ahead/behind counts are current (a failed fetch is not fatal):
+
+```bash
+git -C <checkout> fetch --quiet || echo "fetch failed; upstream state may be stale"
+git -C <checkout> status -sb
+git -C <checkout> rev-list --count HEAD..@{u} 2>/dev/null || echo "no upstream"
+```
+
+Only when the count is above zero, ask whether to fast-forward the checkout with `git pull --ff-only` before installing, or install it as it is. Wait for the answer. Never pull without it, and never pull anything but `--ff-only`. If the pull fails, report its output and install the checkout as it is.
+
+Then run the installer:
+
+```bash
+make -C <checkout> install </dev/null
+```
+
+Summarize its output: every `✓` line in one short list, every `!` line verbatim, since each one names something the user has to do (a standalone copy to remove, a `PATH` entry that shadows the installed binary, a plugin to install). Tell the user to restart open Codex sessions so they load the reinstalled skills.
+
+Choose the binary Step 1 runs. When the output has the line `installed loopai and loopai-acp into <dir>`, the new binary is `<dir>/loopai` (on Windows the line names `loopai.exe` and the binary is `<dir>/loopai.exe`): Step 1 runs that absolute path, never a bare `loopai`, because a `PATH` entry that shadows it, or an install directory missing from `PATH`, would otherwise extract the old binary's defaults or none at all.
+
+If it exits non-zero without that line (the build failed), report the failing line, continue to Step 1 with `loopai` from `PATH` only when `command -v loopai` succeeds, and tell the user the merge compares against the binary that is still installed. If no loopai binary exists at all, stop here. A non-zero exit after that line (a contract mismatch) still installed the new binary: report the failing line and use `<dir>/loopai`.
+
+When the user skipped the update, continue to Step 1 with `loopai` from `PATH` only when `command -v loopai` succeeds; otherwise stop and tell them to install it from a checkout with `make install`.
 
 ## Step 1: Extract the Current Defaults
 
 ```bash
 DUMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/loopai-defaults-XXXXXX")
-loopai --dump-defaults "$DUMP_DIR"
+LOOPAI_BIN=<binary chosen in Step 0>  # <dir>/loopai after an install, otherwise loopai
+"$LOOPAI_BIN" --dump-defaults "$DUMP_DIR"
 printf '%s\n' "$DUMP_DIR"
 ```
 
@@ -98,8 +159,10 @@ rm -rf "$DUMP_DIR"
 
 ```
 Update complete:
-  Skipped:      N files (no changes needed)
-  Smart-merged: N files (M accepted, K kept)
+  Installation:   <make install result, or "skipped">
+  Skill contract: <the skill contract: line from after Step 0>
+  Skipped:        N files (no changes needed)
+  Smart-merged:   N files (M accepted, K kept)
 ```
 
 ## Merge Principles
