@@ -31,6 +31,9 @@ make test-plugin    # regression tests for manifest validation
 make test-grill-skill # validate loopai-grill metadata and workflow contracts
 make test-report-docs # check skill inventories and report contracts in documentation
 make test-launch-history-skills # launch-history snippet and contract in the six launch skills
+make test-skill-contract # execute the shared skill contract snippet against stub binaries
+make install    # build, install binaries, update the Claude plugin and Codex skills, verify the contract
+make test-install # regression tests for scripts/install.sh against stub tools in a temp HOME
 make test-wrappers # all retained provider-wrapper and wrapper-doc suites
 make lint       # golangci-lint
 make fmt        # gofmt and goimports
@@ -172,6 +175,49 @@ exists or the name joins `exempt_skills`. The installer removes a pre-rename
 optionally `agents/openai.yaml` — the shape the old hand-install produced —
 because anything else means the user extended it, and there is no baseline to
 diff against.
+
+`skillContract` in `cmd/loopai/skill_contract.go` is a manually bumped integer naming the binary
+surface the skills depend on, so a stale binary and newer skills (or the reverse) cannot disagree
+silently — a binary built before the report gained Evidence and Merge danger once produced reports
+the skills described differently, with no warning. `loopai --skill-contract` prints it alone on
+stdout and exits 0 before config loading; it is a standalone command, and `versionBannerWriter`
+discards the pre-parse banner when the flag appears before `--`, because stdout must carry only the
+integer. An old binary answers `unknown flag` with exit 1, which the skills read as contract 0.
+`--version` and the banner are deliberately unchanged. All 19 skills (10 Claude, 9 Codex) open with
+one byte-identical fenced snippet whose only variable line is `expected=<N>`, followed by an
+instruction to warn and continue — never stop — when `binary` differs from `skill`, and to fall back
+to the skill's own missing-CLI handling for `binary=missing`; `loopai-update` reports the line in its
+summary instead. The canonical text lives only in `scripts/lib/skill-contract.sh`, which both
+`check-symlinks.sh` and `check-codex-skills.sh` source: they read the constant from the Go file, fail
+when it cannot be found, and reject a missing or modified snippet and a stale `expected=`.
+`scripts/check-skill-contract-snippet_test.sh` executes the snippet against stub binaries. The number
+detects incompatibility only: an all-old but consistent install stays silent, and there is
+deliberately no lag-behind-checkout detection. `TestSkillContract` fingerprints the surface —
+visible long flags of `opts` (hidden removed spellings excluded), keys of the embedded `config`
+(commented `# key =` lines included), and the `##` headings of the embedded `report.txt` in file
+order — against `cmd/loopai/testdata/skill-contract.golden`, whose first line is `contract: N`.
+Protocol signals and the launch-history format stay out of it. When the surface changes, bump
+`skillContract` and `expected=` in every skill if a skill depends on the change, then run
+`go test ./cmd/loopai -run TestSkillContract -update`; `-update` without a bump is a deliberate,
+diff-visible acceptance that no skill is affected. A bump is a skill change, so it bumps both
+manifests too.
+
+`make install` runs `scripts/install.sh`, which updates every channel from the checkout: build
+(failure stops before anything is installed), `loopai` and `loopai-acp` into
+`${LOOPAI_BIN_DIR:-$HOME/.local/bin}`, `claude plugin marketplace update loopai` plus
+`claude plugin update` for each installed `@loopai` plugin, the Codex skills when
+`${CODEX_HOME:-$HOME/.codex}` exists, then a contract check of the installed binary, a plugin
+version check against `plugin.json` (from `claude plugin list --json`, `folderVersion` first because a
+directory-sourced plugin is read live from the checkout), and a warning when `loopai` on `PATH`
+resolves elsewhere. Only the build, the binary install, and a contract mismatch exit non-zero.
+Standalone `~/.claude/skills/loopai*` copies are reported with an `rm -rf` line and never deleted:
+they are foreign directories with no baseline. `scripts/install_test.sh` runs it from a copied repo
+tree with stub `make` and `claude` on a `PATH` of stubs plus `/usr/bin:/bin` — not the real `PATH`,
+where an installed `claude` or `~/.local/bin/loopai` would leak into what the installer inspects.
+`loopai-update` (both copies) starts with an installation step: it locates the checkout from
+`$LOOPAI_SRC`, else the `directory` source of the `loopai` marketplace in
+`~/.claude/plugins/known_marketplaces.json`, else asks; fetches, offers only `git pull --ff-only` and
+only when upstream is ahead, runs `make -C <checkout> install`, and only then merges prompts.
 
 `.claude-plugin/marketplace.json` exposes this repository as the `loopai`
 marketplace, and `.claude-plugin/plugin.json` points Claude Code at the skill
@@ -1215,6 +1261,8 @@ tail -f .loopai/progress/progress-codex.txt
 - `make lint` reports no issues.
 - Documentation and embedded config comments match behavior.
 - Any Claude skill change bumps both manifest versions to the same value.
+- A changed contract surface (`TestSkillContract`) either bumps `skillContract` and every
+  skill's `expected=`, or is deliberately accepted through `-update` without a bump.
 - A new or removed Claude skill has a matching change under `assets/codex/skills/`
   or an explicit `exempt_skills` entry in `scripts/check-codex-skills.sh`.
 - No test touched real user configuration.

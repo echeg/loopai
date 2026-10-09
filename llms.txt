@@ -9,11 +9,11 @@ This fork is distributed from source:
 ```bash
 git clone https://github.com/echeg/loopai
 cd loopai
-make build
-install -d ~/.local/bin
-install -m 0755 .bin/loopai ~/.local/bin/loopai
+make install
 loopai --version
 ```
+
+`make install` builds, installs `loopai` and `loopai-acp` into `${LOOPAI_BIN_DIR:-~/.local/bin}`, updates the Claude Code plugins from the `loopai` marketplace, reinstalls the Codex skills when `${CODEX_HOME:-~/.codex}` exists, verifies the skill contract, and warns about standalone `~/.claude/skills/loopai*` copies without deleting them. `/loopai:loopai-update` (`$loopai-update` in Codex) runs it from the located checkout, pulling only with consent. `loopai --skill-contract` prints the binary's skill contract number alone and exits; every skill compares it with the number it was written for and warns, without stopping, when they differ (a binary without the flag reads as `0`).
 
 Requirements:
 

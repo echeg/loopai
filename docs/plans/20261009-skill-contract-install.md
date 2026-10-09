@@ -208,10 +208,10 @@
 - [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 8: [Final] Update documentation
-- [ ] `CLAUDE.md`: add `make install` to Build commands; add a paragraph on `skillContract`, `--skill-contract`, the fingerprint contents, when to bump, the `-update` command, and the byte-identical snippet in all 19 skills; add the PR checklist item "contract surface changed → `skillContract` bumped or the change deliberately accepted via `-update`"
-- [ ] `README.md` `## Installation`: rewrite around `make install` and `/loopai:loopai-update`, mention `LOOPAI_BIN_DIR` and the standalone-copy warning
-- [ ] `llms.txt`: one line on `--skill-contract`
-- [ ] confirm `make test-report-docs` and other doc-contract suites still pass
+- [x] `CLAUDE.md`: add `make install` to Build commands; add a paragraph on `skillContract`, `--skill-contract`, the fingerprint contents, when to bump, the `-update` command, and the byte-identical snippet in all 19 skills; add the PR checklist item "contract surface changed → `skillContract` bumped or the change deliberately accepted via `-update`"
+- [x] `README.md` `## Installation`: rewrite around `make install` and `/loopai:loopai-update`, mention `LOOPAI_BIN_DIR` and the standalone-copy warning
+- [x] `llms.txt`: one line on `--skill-contract`
+- [x] confirm `make test-report-docs` and other doc-contract suites still pass
 
 ## Technical Details
 
