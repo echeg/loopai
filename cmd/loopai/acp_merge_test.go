@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -393,4 +394,382 @@ func TestACPMergeResultSummary(t *testing.T) {
 			assert.Equal(t, tc.want, tc.res.summary())
 		})
 	}
+}
+
+func TestACPRequestedMergeIgnoresPolicyGates(t *testing.T) {
+	// a human asked, so a high-risk report merges; acpRequestedMerge reads no config at all
+	repo := setupACPMergeRepo(t)
+	featureHead := revParse(t, repo.worktree, "HEAD")
+	lastRun := &acpLastRun{Branch: "feature", Base: "master", Tip: featureHead, Report: acpRiskReport("**high**")}
+
+	res := acpRequestedMerge(t.Context(), repo.svc, "master", lastRun)
+
+	require.True(t, res.merged, "skipped: %s", res.skipped)
+	assert.Equal(t, "fast-forward", res.kind)
+	assert.Empty(t, res.added)
+	assert.Equal(t, featureHead, revParse(t, repo.primary, "refs/heads/master"))
+	assert.Equal(t, "master", currentGitBranch(t, repo.primary))
+	assert.Equal(t, "feature", currentGitBranch(t, repo.worktree))
+	assert.True(t, branchExists(t, repo.primary, "feature"))
+	assert.DirExists(t, repo.worktree)
+	assert.Contains(t, gitOutput(t, repo.primary, "worktree", "list"), filepath.Base(repo.worktree))
+}
+
+func TestACPRequestedMergeListsCommitsAfterReport(t *testing.T) {
+	repo := setupACPMergeRepo(t)
+	reportTip := revParse(t, repo.worktree, "HEAD")
+	runGit(t, repo.worktree, "commit", "--allow-empty", "-m", "fix after report")
+	runGit(t, repo.worktree, "commit", "--allow-empty", "-m", "second fix")
+	featureHead := revParse(t, repo.worktree, "HEAD")
+	lastRun := &acpLastRun{Branch: "feature", Base: "master", Tip: reportTip, Report: acpRiskReport("low")}
+
+	res := acpRequestedMerge(t.Context(), repo.svc, "master", lastRun)
+
+	require.True(t, res.merged, "skipped: %s", res.skipped)
+	assert.Equal(t, featureHead, revParse(t, repo.primary, "refs/heads/master"), "the current head is merged, not the report tip")
+	require.Len(t, res.added, 2)
+	assert.Equal(t, "second fix", res.added[0].Subject)
+	assert.Equal(t, "fix after report", res.added[1].Subject)
+	msg := res.message()
+	assert.Contains(t, msg, "Commits added after the report:\n- `"+featureHead[:7]+"` second fix\n- `")
+	assert.Contains(t, msg, "` fix after report")
+	assert.DirExists(t, repo.worktree)
+}
+
+func TestACPRequestedMergeMergeCommit(t *testing.T) {
+	repo := setupACPMergeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo.primary, "base.txt"), []byte("base\n"), 0o600))
+	runGit(t, repo.primary, "add", "base.txt")
+	runGit(t, repo.primary, "commit", "-m", "base work")
+
+	res := acpRequestedMerge(t.Context(), repo.svc, "master", nil)
+
+	require.True(t, res.merged, "skipped: %s", res.skipped)
+	assert.Equal(t, "merge commit", res.kind)
+	assert.Empty(t, res.added, "no recorded run lists nothing")
+	assert.Equal(t, "Merge branch 'feature'", strings.TrimSpace(gitOutput(t, repo.primary, "log", "-1", "--format=%s")))
+	assert.Equal(t, revParse(t, repo.worktree, "HEAD"), revParse(t, repo.primary, "HEAD^2"))
+}
+
+// TestACPRequestedMergeAlreadyInBase covers a branch the base already contains: nothing is merged,
+// and the base worktree need not even be clean or checked out.
+func TestACPRequestedMergeAlreadyInBase(t *testing.T) {
+	repo := setupACPMergeRepo(t)
+	runGit(t, repo.primary, "merge", "--ff-only", "feature")
+	runGit(t, repo.primary, "checkout", "-b", "other")
+	require.NoError(t, os.WriteFile(filepath.Join(repo.primary, "wip.txt"), []byte("wip\n"), 0o600))
+	masterBefore := revParse(t, repo.primary, "refs/heads/master")
+
+	res := acpRequestedMerge(t.Context(), repo.svc, "master", nil)
+
+	assert.True(t, res.upToDate)
+	assert.False(t, res.merged)
+	assert.Empty(t, res.skipped)
+	assert.Equal(t, masterBefore, revParse(t, repo.primary, "refs/heads/master"))
+	assert.Equal(t, "other", currentGitBranch(t, repo.primary))
+	assert.Equal(t, "## Merge\n\n`feature` is already in `master`; nothing to merge.", res.message())
+	assert.Equal(t, "feature is already in master", res.summary())
+}
+
+func TestACPRequestedMergeSkips(t *testing.T) {
+	tests := []struct {
+		name    string
+		base    string
+		prepare func(t *testing.T, repo acpMergeRepo)
+		want    string
+	}{
+		{name: "missing base", base: "trunk", want: `base branch "trunk" does not exist locally`},
+		{name: "detached head", prepare: func(t *testing.T, repo acpMergeRepo) {
+			runGit(t, repo.worktree, "checkout", "--detach")
+		}, want: "HEAD is detached"},
+		{name: "feature equals base", base: "feature", want: "the run is on the base branch itself"},
+		{name: "dirty feature", prepare: func(t *testing.T, repo acpMergeRepo) {
+			require.NoError(t, os.WriteFile(filepath.Join(repo.worktree, "feature.txt"), []byte("edited\n"), 0o600))
+		}, want: "the feature worktree at"},
+		{name: "untracked feature file", prepare: func(t *testing.T, repo acpMergeRepo) {
+			require.NoError(t, os.WriteFile(filepath.Join(repo.worktree, "notes.txt"), []byte("x\n"), 0o600))
+		}, want: "has untracked files"},
+		{name: "dirty base", prepare: func(t *testing.T, repo acpMergeRepo) {
+			require.NoError(t, os.WriteFile(filepath.Join(repo.primary, "README.md"), []byte("edited\n"), 0o600))
+		}, want: "the base worktree at"},
+		{name: "operation in progress in base", prepare: func(t *testing.T, repo acpMergeRepo) {
+			acpPendingMerge(t, repo.primary, "master", "side")
+		}, want: "has a merge in progress"},
+		{name: "operation in progress in feature", prepare: func(t *testing.T, repo acpMergeRepo) {
+			acpPendingMerge(t, repo.worktree, "feature", "feature-side")
+		}, want: "the feature worktree at"},
+		{name: "base checked out nowhere", prepare: func(t *testing.T, repo acpMergeRepo) {
+			runGit(t, repo.primary, "checkout", "-b", "other")
+		}, want: `base branch "master" is not checked out in any worktree`},
+		{name: "conflict aborted", prepare: func(t *testing.T, repo acpMergeRepo) {
+			require.NoError(t, os.WriteFile(filepath.Join(repo.primary, "feature.txt"), []byte("base side\n"), 0o600))
+			runGit(t, repo.primary, "add", "feature.txt")
+			runGit(t, repo.primary, "commit", "-m", "conflicting base work")
+		}, want: "conflicted and was aborted"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := setupACPMergeRepo(t)
+			if tc.prepare != nil {
+				tc.prepare(t, repo)
+			}
+			base := tc.base
+			if base == "" {
+				base = "master"
+			}
+			masterBefore := revParse(t, repo.primary, "refs/heads/master")
+			primaryBranch := currentGitBranch(t, repo.primary)
+
+			res := acpRequestedMerge(t.Context(), repo.svc, base, &acpLastRun{Branch: "feature", Tip: "0123456"})
+
+			assert.False(t, res.merged)
+			assert.False(t, res.upToDate)
+			assert.Contains(t, res.skipped, tc.want)
+			assert.Equal(t, masterBefore, revParse(t, repo.primary, "refs/heads/master"))
+			assert.Equal(t, primaryBranch, currentGitBranch(t, repo.primary))
+			assert.True(t, branchExists(t, repo.primary, "feature"))
+			assert.DirExists(t, repo.worktree)
+		})
+	}
+}
+
+func TestACPRequestedMergeWaitsForRepositoryLock(t *testing.T) {
+	repo := setupACPMergeRepo(t)
+	masterBefore := revParse(t, repo.primary, "refs/heads/master")
+	other, err := git.NewService(repo.primary, noopLogger())
+	require.NoError(t, err)
+	release, err := other.AcquireWorktreeCreationLock()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, release()) })
+	prev := acpMergeLockTimeout
+	acpMergeLockTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { acpMergeLockTimeout = prev })
+
+	res := acpRequestedMerge(t.Context(), repo.svc, "master", nil)
+
+	assert.False(t, res.merged)
+	assert.Contains(t, res.skipped, "another loopai process holds the repository lock")
+	assert.Equal(t, masterBefore, revParse(t, repo.primary, "refs/heads/master"))
+}
+
+func TestACPCommitsAfterRun(t *testing.T) {
+	repo := setupACPMergeRepo(t)
+	tip := revParse(t, repo.worktree, "HEAD")
+	runGit(t, repo.worktree, "commit", "--allow-empty", "-m", "later")
+	head := revParse(t, repo.worktree, "HEAD")
+
+	tests := []struct {
+		name    string
+		lastRun *acpLastRun
+		want    []string
+	}{
+		{name: "no run"},
+		{name: "no tip", lastRun: &acpLastRun{Branch: "feature"}},
+		{name: "head unchanged", lastRun: &acpLastRun{Branch: "feature", Tip: head}},
+		{name: "run on another branch", lastRun: &acpLastRun{Branch: "other", Tip: tip}},
+		{name: "unknown tip", lastRun: &acpLastRun{Branch: "feature", Tip: "0123456789abcdef0123456789abcdef01234567"}},
+		{name: "moved", lastRun: &acpLastRun{Branch: "feature", Tip: tip}, want: []string{"later"}},
+		{name: "moved without recorded branch", lastRun: &acpLastRun{Tip: tip}, want: []string{"later"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var subjects []string
+			for _, c := range acpCommitsAfterRun(repo.svc, tc.lastRun, "feature", head) {
+				subjects = append(subjects, c.Subject)
+			}
+			assert.Equal(t, tc.want, subjects)
+		})
+	}
+}
+
+func TestACPAddedCommits(t *testing.T) {
+	assert.Empty(t, acpAddedCommits(nil))
+	commits := make([]git.Commit, acpAddedCommitsLimit+3)
+	for i := range commits {
+		commits[i] = git.Commit{Hash: "abcdef0123456789", Subject: "fix"}
+	}
+	got := acpAddedCommits(commits)
+	assert.True(t, strings.HasPrefix(got, "\n\nCommits added after the report:\n- `abcdef0` fix\n"))
+	assert.Equal(t, acpAddedCommitsLimit, strings.Count(got, "` fix"))
+	assert.True(t, strings.HasSuffix(got, "\n- and 3 more"))
+}
+
+func TestACPActionBase(t *testing.T) {
+	repo := setupACPMergeRepo(t)
+	tests := []struct {
+		name    string
+		cfg     *config.Config
+		lastRun *acpLastRun
+		want    string
+	}{
+		{name: "last run base wins", cfg: &config.Config{DefaultBranch: "develop"}, lastRun: &acpLastRun{Base: "release"}, want: "release"},
+		{name: "configured default without run", cfg: &config.Config{DefaultBranch: "origin/develop"}, want: "develop"},
+		{name: "run without base uses config", cfg: &config.Config{DefaultBranch: "develop"}, lastRun: &acpLastRun{}, want: "develop"},
+		{name: "detected default", cfg: &config.Config{}, want: "master"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, acpActionBase(repo.svc, tc.cfg, tc.lastRun))
+		})
+	}
+}
+
+// acpPRRepo is a checkout on the feature branch whose GitHub origin is redirected to a local bare
+// repository by a git wrapper, with a gh stub on PATH that records its calls.
+type acpPRRepo struct {
+	dir    string
+	remote string
+	svc    *git.Service
+	calls  string // one gh argv per line
+	body   string // the body piped to gh pr create
+}
+
+// setupACPPRRepo prepares the repository; existingPR, when set, is the URL gh pr view reports.
+func setupACPPRRepo(t *testing.T, existingPR string) acpPRRepo {
+	t.Helper()
+	dir := setupTestRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, filepath.Dir(remote), "init", "--bare", remote)
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/acme/repo.git")
+	runGit(t, dir, "checkout", "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+	runGit(t, dir, "add", "feature.txt")
+	runGit(t, dir, "commit", "-m", "feature")
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	t.Setenv("PR_TEST_REAL_GIT", realGit)
+	t.Setenv("PR_TEST_REMOTE", remote)
+	gitWrapper := filepath.Join(t.TempDir(), "git-wrapper")
+	writeExecutable(t, gitWrapper, "#!/bin/sh\nif [ \"$1\" = push ]; then\n  refspec=$4\n  \"$PR_TEST_REAL_GIT\" push \"$PR_TEST_REMOTE\" \"$refspec\" || exit $?\n  branch=${refspec#refs/heads/}\n  branch=${branch%%:*}\n  \"$PR_TEST_REAL_GIT\" update-ref \"refs/remotes/origin/$branch\" \"$branch\" || exit $?\n  exit 0\nfi\nexec \"$PR_TEST_REAL_GIT\" \"$@\"\n")
+	svc, err := git.NewService(dir, noopLogger(), gitWrapper)
+	require.NoError(t, err)
+
+	binDir := t.TempDir()
+	repo := acpPRRepo{dir: dir, remote: remote, svc: svc,
+		calls: filepath.Join(binDir, "gh-calls.log"), body: filepath.Join(binDir, "gh-body.log")}
+	writeExecutable(t, filepath.Join(binDir, "gh"), `#!/bin/sh
+echo "$*" >> "$GH_CALLS"
+case "$1 $2" in
+"repo view") echo acme/repo ;;
+"pr view")
+  if [ -n "$GH_EXISTING" ]; then echo "$GH_EXISTING"; exit 0; fi
+  echo 'no pull requests found for branch "feature"' >&2; exit 1 ;;
+"pr create") cat > "$GH_BODY"; echo https://github.com/acme/repo/pull/7 ;;
+*) exit 2 ;;
+esac
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GH_CALLS", repo.calls)
+	t.Setenv("GH_BODY", repo.body)
+	t.Setenv("GH_EXISTING", existingPR)
+	return repo
+}
+
+func (r acpPRRepo) ghCalls(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(r.calls)
+	if errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
+	require.NoError(t, err)
+	return string(data)
+}
+
+func TestACPRequestedPRCreates(t *testing.T) {
+	repo := setupACPPRRepo(t, "")
+	lastRun := &acpLastRun{Branch: "feature", Base: "master", Report: prReportFixture}
+
+	res := acpRequestedPR(t.Context(), repo.svc, &config.Config{PlansDir: "docs/plans"}, "master", lastRun)
+
+	require.Empty(t, res.skipped)
+	assert.Equal(t, "https://github.com/acme/repo/pull/7", res.url)
+	assert.False(t, res.existing)
+	assert.Equal(t, "## Pull request\n\nPushed `feature` and opened a pull request against `master`: https://github.com/acme/repo/pull/7",
+		res.message())
+	calls := repo.ghCalls(t)
+	assert.Contains(t, calls, "pr view feature --repo acme/repo --json url,state --jq select(.state == \"OPEN\") | .url\n")
+	assert.Contains(t, calls, "pr create --repo acme/repo --base master --head feature")
+	body, err := os.ReadFile(repo.body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "Delivered report-backed PRs.", "the body comes from the last run report")
+	assert.Equal(t, revParse(t, repo.dir, "feature"), revParse(t, repo.remote, "refs/heads/feature"))
+	assert.Equal(t, "feature", currentGitBranch(t, repo.dir))
+}
+
+// TestACPRequestedPRReportFromOtherBranch covers a last run recorded on another branch: its report
+// does not describe this branch, so the body falls back to the legacy one.
+func TestACPRequestedPRReportFromOtherBranch(t *testing.T) {
+	repo := setupACPPRRepo(t, "")
+
+	res := acpRequestedPR(t.Context(), repo.svc, &config.Config{PlansDir: "docs/plans"}, "master",
+		&acpLastRun{Branch: "other", Report: prReportFixture})
+
+	require.Empty(t, res.skipped)
+	body, err := os.ReadFile(repo.body)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "Delivered report-backed PRs.")
+	assert.Contains(t, string(body), "## Changes")
+}
+
+func TestACPRequestedPRExisting(t *testing.T) {
+	repo := setupACPPRRepo(t, "https://github.com/acme/repo/pull/3")
+
+	res := acpRequestedPR(t.Context(), repo.svc, &config.Config{PlansDir: "docs/plans"}, "master", nil)
+
+	require.Empty(t, res.skipped)
+	assert.True(t, res.existing)
+	assert.Equal(t, "https://github.com/acme/repo/pull/3", res.url)
+	assert.Equal(t, "## Pull request\n\nA pull request for `feature` is already open: https://github.com/acme/repo/pull/3",
+		res.message())
+	assert.NotContains(t, repo.ghCalls(t), "pr create")
+	cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/feature")
+	cmd.Dir = repo.remote
+	assert.Error(t, cmd.Run(), "an existing pull request pushes nothing")
+}
+
+func TestACPRequestedPRRefusals(t *testing.T) {
+	t.Run("gh missing", func(t *testing.T) {
+		repo := setupACPMergeRepo(t)
+		t.Setenv("PATH", t.TempDir())
+
+		res := acpRequestedPR(t.Context(), repo.svc, &config.Config{PlansDir: "docs/plans"}, "master", nil)
+
+		assert.Contains(t, res.skipped, "pr needs GitHub CLI (gh) in PATH")
+		assert.Empty(t, res.url)
+		assert.Equal(t, "## Pull request\n\nNo pull request opened against `master`: pr needs GitHub CLI (gh) in PATH; "+
+			"install it from https://cli.github.com/.", res.message())
+	})
+	t.Run("detached head", func(t *testing.T) {
+		repo := setupACPPRRepo(t, "")
+		runGit(t, repo.dir, "checkout", "--detach")
+
+		res := acpRequestedPR(t.Context(), repo.svc, &config.Config{PlansDir: "docs/plans"}, "master", nil)
+
+		assert.Equal(t, "HEAD is detached", res.skipped)
+		assert.Empty(t, repo.ghCalls(t))
+	})
+	t.Run("missing base", func(t *testing.T) {
+		repo := setupACPPRRepo(t, "")
+
+		res := acpRequestedPR(t.Context(), repo.svc, &config.Config{PlansDir: "docs/plans"}, "trunk", nil)
+
+		assert.Contains(t, res.skipped, `base branch "trunk" does not exist locally`)
+	})
+	t.Run("gh create failure", func(t *testing.T) {
+		repo := setupACPPRRepo(t, "")
+		binDir := t.TempDir()
+		writeExecutable(t, filepath.Join(binDir, "gh"), "#!/bin/sh\nif [ \"$1\" = repo ]; then echo acme/repo; exit 0; fi\n"+
+			"if [ \"$2\" = view ]; then exit 1; fi\necho 'authentication required' >&2\nexit 1\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		res := acpRequestedPR(t.Context(), repo.svc, &config.Config{PlansDir: "docs/plans"}, "master", nil)
+
+		assert.Contains(t, res.skipped, "authentication required")
+		assert.Empty(t, res.url)
+	})
+}
+
+func TestACPPRResultMessageWithoutURL(t *testing.T) {
+	res := acpPRResult{feature: "feat", base: "main"}
+	assert.Equal(t, "## Pull request\n\nPushed `feat` and opened a pull request against `main`.", res.message())
 }

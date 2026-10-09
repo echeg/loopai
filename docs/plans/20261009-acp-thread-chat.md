@@ -205,12 +205,13 @@
 - [x] run `make test </dev/null` and `make lint` - must pass before task 5
 
 ### Task 5: Add explicit merge and PR actions
-- [ ] in `cmd/loopai/acp_merge.go` add `acpRequestedMerge(ctx, gitSvc, cfg, base, lastRun)` reusing the repository gates and lock of `acpAutoMerge` without `acpMergePolicySkip`; merge the feature's current HEAD by hash through `MergeBranchTipContext`; list commits after `lastRun.Tip` when HEAD moved; return "already in <base>" when HEAD is an ancestor of base
-- [ ] add `acpRequestedPR` calling `createPullRequest` with the `last_run` report as `closeoutTarget.report` (legacy body when absent); detect an existing PR for the branch (`gh pr view <branch> --json url` before creating) and reply with its URL
-- [ ] resolve the base from `last_run.Base`, falling back to the configured or detected default branch as `--merge` does; both actions run in the session cwd and never remove the worktree, delete the branch, push on merge, or switch checkouts
-- [ ] write tests on the existing `acp_merge_test.go` fixtures: gate table (dirty feature, dirty base, operation in progress, detached HEAD, base not checked out, conflict aborted), high risk and `acp_auto_merge = false` still merge, HEAD moved past the report tip lists commits, already merged is a no-op, the feature worktree still exists afterwards
-- [ ] write PR tests with a bare remote and a `PATH`-stub `gh`: created PR returns its URL; existing PR returns the existing URL without `gh pr create`; `gh` missing is a refusal message, not a failed turn
-- [ ] run `make test </dev/null` and `make lint` - must pass before task 6
+- [x] in `cmd/loopai/acp_merge.go` add `acpRequestedMerge(ctx, gitSvc, cfg, base, lastRun)` reusing the repository gates and lock of `acpAutoMerge` without `acpMergePolicySkip`; merge the feature's current HEAD by hash through `MergeBranchTipContext`; list commits after `lastRun.Tip` when HEAD moved; return "already in <base>" when HEAD is an ancestor of base
+- [x] add `acpRequestedPR` calling `createPullRequest` with the `last_run` report as `closeoutTarget.report` (legacy body when absent); detect an existing PR for the branch (`gh pr view <branch> --json url` before creating) and reply with its URL
+- [x] resolve the base from `last_run.Base`, falling back to the configured or detected default branch as `--merge` does; both actions run in the session cwd and never remove the worktree, delete the branch, push on merge, or switch checkouts
+- [x] write tests on the existing `acp_merge_test.go` fixtures: gate table (dirty feature, dirty base, operation in progress, detached HEAD, base not checked out, conflict aborted), high risk and `acp_auto_merge = false` still merge, HEAD moved past the report tip lists commits, already merged is a no-op, the feature worktree still exists afterwards
+- [x] write PR tests with a bare remote and a `PATH`-stub `gh`: created PR returns its URL; existing PR returns the existing URL without `gh pr create`; `gh` missing is a refusal message, not a failed turn
+- [x] run `make test </dev/null` and `make lint` - must pass before task 6
+- [x] ➕ signatures as built: `acpRequestedMerge(ctx, gitSvc, base, lastRun)` (no config: it applies no policy gate) and `acpRequestedPR(ctx, gitSvc, cfg, base, lastRun)` (config for `plans_dir`); `acpActionBase` resolves the base; an already-contained branch is `acpMergeResult.upToDate`, and the auto-merge and requested merge share `acpFeatureBranch` and `acpMergeIntoBase`
 
 ### Task 6: Route ACP prompts to launch, command, or chat
 - [ ] in `cmd/loopai/acp.go` add `acpCommand(text) (kind string, ok bool)` matching trimmed, case-insensitive `merge`, `мерж`, `pr`, `пр`
