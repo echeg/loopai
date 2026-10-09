@@ -225,12 +225,12 @@
 - [x] ➕ as built: `acpRoute` returns launch, `merge`, `pr`, or chat and `run` dispatches to `runPlan`/`runCommand`/`runChat`; `openSession` is shared by commands and chat; `ModeACPChat` joins the review-provider branches of `modePhaseProviders`, `modePhaseBanners`, and `runHeaderParams`, skips reviewer resolution like gen-agents, and logs to `.loopai/progress/progress-acp-chat.txt`; the sink needed no ordering change (`Finish` flushes reasoning before `Message`)
 
 ### Task 7: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify a plan launch still behaves exactly as before (existing ACP tests unchanged except the removed guidance)
-- [ ] verify no code path in a chat or command turn calls `cleanupMergedWorktree`, `DeleteBranch`, or a checkout switch
-- [ ] run full test suite (`make test </dev/null`)
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify all requirements from Overview are implemented
+- [x] verify a plan launch still behaves exactly as before (existing ACP tests unchanged except the removed guidance)
+- [x] verify no code path in a chat or command turn calls `cleanupMergedWorktree`, `DeleteBranch`, or a checkout switch
+- [x] run full test suite (`make test </dev/null`)
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...`
 
 ### Task 8: [Final] Update documentation
 - [ ] `docs/t3-code.md`: add a "Thread chat" section (routing, `merge`/`pr` commands, `review_model`, resume and its absence for wrappers, the state file, explicit merge versus auto-merge gates) and replace every "open a new session" statement, including the table row for non-launch messages
