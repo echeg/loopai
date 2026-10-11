@@ -4128,6 +4128,28 @@ func TestService_BranchExists(t *testing.T) {
 	})
 }
 
+func TestService_BranchHashContextHonorsCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("custom VCS fixture uses a POSIX shell")
+	}
+	dir := t.TempDir()
+	command := filepath.Join(dir, "slow-git")
+	// Keep the output pipe inherited by a child: cancellation must stop the command group,
+	// not just the wrapper, or an after-reply callback would still block the next ACP prompt.
+	require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\nsleep 30\n"), 0o700)) //nolint:gosec // executable test fixture
+	svc := &Service{repo: &externalBackend{path: dir, command: command}, log: noopServiceLogger()}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	hash, err := svc.BranchHashContext(ctx, "feature")
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Empty(t, hash)
+	assert.Less(t, time.Since(started), 2*time.Second,
+		"the callback must not wait for the custom VCS command's 30-second delay")
+}
+
 func TestService_BranchHash(t *testing.T) {
 	t.Run("returns head of a branch that is not checked out", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

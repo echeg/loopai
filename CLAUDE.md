@@ -955,7 +955,8 @@ non-completions. OSC writes are best-effort single writes to stdout and never fa
 T3 Code reporting (`pkg/t3`) follows the same best-effort contract and uses only T3 Code's
 public API: the origin comes from `${T3CODE_HOME:-~/.t3}/userdata/server-runtime.json` or
 `LOOPAI_T3_URL`, the bearer token only from `LOOPAI_T3_TOKEN` (read directly, not an `opts` tag, so a
-cmux hand-off never types it into another shell), and nothing is ever written below the T3 home.
+cmux hand-off never types it into another shell). Title reporting never writes below the T3 home;
+merge settlement can invoke the official authentication CLI as described below.
 `startRunReporters`, called from `executePlan`, constructs it through `startT3Reporter` only when
 `cfg.T3` is set and the request is not `NonInteractive`; plan creation, the setup phase, watch-only
 mode, standalone commands, and ACP prompts never do. The reporter binds to
@@ -990,6 +991,21 @@ phase titles or link PRs in that run. Terminal mode types `loopai --t3` with Pow
 Windows (T3 Code's default shell there is pwsh or Windows PowerShell) and POSIX quoting elsewhere,
 passing the token in the terminal environment. Tests replace `newT3Reporter`, `newT3Dispatcher`,
 and `newT3Session` in `TestMain` so no test reaches a live server.
+
+Local-merge settlement (`cmd/loopai/t3_settle.go`, `pkg/t3/settle.go`) is independent of `cfg.T3`.
+`--merge` captures the worktree roots before cleanup and dispatches `thread.settle` only after all
+merge/cleanup steps succeed. Project-root and feature-branch matching deliberately ignores
+`LOOPAI_T3_THREAD_ID`; archived/settled/input-blocked threads are skipped. Active CLI targets warn
+instead of waiting on the calling agent. ACP merge callers prepare a snapshot after verified merge
+and attach it as `acp.Result.AfterReply`. The server starts it only after a successful prompt reply,
+and cancels and joins it before running the next accepted prompt or shutting down. The callback
+polls idle status for up to 15 seconds, abandons a changed message/turn/project/branch, and rechecks
+Git head and base containment at dispatch. T3 settlement stops provider sessions, so state and
+report writes must precede the callback. `newT3SettleDispatcher` is disabled in `TestMain` too.
+`ResolveSettleEndpoint` reuses an explicit token, or invokes `t3` (fallback `npx --yes t3@latest`)
+with a 1-hour token lifetime and 15-second timeout against the discovered local runtime only.
+The CLI owns the auth-store write; loopai never prints the token or modifies the runtime/settings.
+Missing runtime silently skips; other failures only warn and never fail the completed merge.
 
 ACP agent mode is the experimental way T3 Code hosts loopai as a real provider session, which
 `--t3` cannot do: T3 Code derives "working" only from a running provider session. T3 Code has no

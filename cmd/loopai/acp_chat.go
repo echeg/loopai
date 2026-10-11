@@ -143,6 +143,9 @@ func (a *acpRunner) runAction(ctx context.Context, s acpSession, kind string) st
 	}
 	res := acpRequestedMerge(ctx, s.gitSvc, base, s.state.LastRun)
 	fmt.Fprintf(a.out, "acp merge: %s\n", res.summary())
+	if res.merged || res.upToDate {
+		a.afterReply = prepareT3MergedBranchSettlement(ctx, s.gitSvc, res.feature, res.base, a.out)
+	}
 	return res.message()
 }
 

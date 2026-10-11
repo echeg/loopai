@@ -5626,6 +5626,7 @@ func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase stri
 	if err != nil {
 		return err
 	}
+	settleRoots := t3MergeRoots(gitSvc)
 
 	removedWorktree := targets.removableWorktree()
 	if cleanupErr := cleanupMergedWorktree(targets, feature); cleanupErr != nil {
@@ -5640,6 +5641,7 @@ func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase stri
 	if rep != nil {
 		rep.Clear()
 	}
+	settleT3Threads(ctx, settleRoots, feature, os.Stderr)
 	// name the removed directory: with an explicit feature the removal target is resolved from the
 	// worktree list rather than being the caller's own directory, so it is otherwise invisible, and
 	// removal takes ignored files such as .env with it.

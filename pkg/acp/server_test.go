@@ -326,6 +326,117 @@ func TestServerPromptFailure(t *testing.T) {
 	require.NoError(t, c.close())
 }
 
+func TestServerAfterReplyStartsAfterReplyAndStopsAtShutdown(t *testing.T) {
+	gw := &gatedWriter{marker: []byte(`"stopReason":"end_turn"`), reached: make(chan struct{}), gate: make(chan struct{})}
+	started := make(chan error, 1)
+	var finished atomic.Bool
+	c := startServerWithWriter(t, Options{Run: func(context.Context, PromptRequest, *Sink) (Result, error) {
+		return Result{Message: "merged", AfterReply: func(ctx context.Context) {
+			started <- ctx.Err()
+			<-ctx.Done()
+			finished.Store(true)
+		}}, nil
+	}}, func(w io.Writer) io.Writer { gw.w = w; return gw })
+	sid := c.newSession(t.TempDir())
+	id := c.request("session/prompt", textPrompt(sid, "merge"))
+	select {
+	case <-gw.reached:
+	case <-time.After(testTimeout):
+		t.Fatal("the reply was not sent")
+	}
+	select {
+	case <-started:
+		t.Fatal("the callback started before the reply was written")
+	default:
+	}
+	close(gw.gate)
+	requireStopReason(t, c.response(id), stopEndTurn)
+	select {
+	case err := <-started:
+		require.NoError(t, err, "the completed turn's canceled context is not reused")
+	case <-time.After(testTimeout):
+		t.Fatal("the callback did not start")
+	}
+	require.NoError(t, c.close())
+	assert.True(t, finished.Load(), "shutdown cancels the callback and waits for it")
+}
+
+func TestServerNextPromptCancelsAndWaitsForAfterReply(t *testing.T) {
+	started := make(chan PromptRequest, 2)
+	callbackStarted, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var active, overlap atomic.Bool
+	c := startServer(t, Options{Run: func(_ context.Context, req PromptRequest, _ *Sink) (Result, error) {
+		started <- req
+		if req.Text != "merge" {
+			overlap.Store(active.Load())
+			return Result{}, nil
+		}
+		return Result{AfterReply: func(ctx context.Context) {
+			active.Store(true)
+			close(callbackStarted)
+			<-ctx.Done()
+			close(canceled)
+			<-release
+			active.Store(false)
+		}}, nil
+	}})
+	sid := c.newSession(t.TempDir())
+	requireStopReason(t, c.call("session/prompt", textPrompt(sid, "merge")), stopEndTurn)
+	assert.Equal(t, "merge", waitStarted(t, started).Text)
+	select {
+	case <-callbackStarted:
+	case <-time.After(testTimeout):
+		t.Fatal("the callback did not start")
+	}
+	next := c.request("session/prompt", textPrompt(sid, "follow-up"))
+	select {
+	case <-canceled:
+	case <-time.After(testTimeout):
+		t.Fatal("the next prompt did not cancel the callback")
+	}
+	// Protocol dispatch stays responsive while the callback unwinds.
+	require.Contains(t, c.call("initialize", map[string]any{"protocolVersion": 1}), "result")
+	select {
+	case <-started:
+		t.Fatal("the next run started before the callback ended")
+	default:
+	}
+	close(release)
+	assert.Equal(t, "follow-up", waitStarted(t, started).Text)
+	requireStopReason(t, c.response(next), stopEndTurn)
+	assert.False(t, overlap.Load(), "the follow-up cannot race the next run's cwd or output")
+	require.NoError(t, c.close())
+}
+
+func TestServerAfterReplyDoesNotRunForFailedOrCanceledTurn(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("canceled=%t", canceled), func(t *testing.T) {
+			started := make(chan PromptRequest, 1)
+			var called atomic.Bool
+			c := startServer(t, Options{Run: func(ctx context.Context, req PromptRequest, _ *Sink) (Result, error) {
+				started <- req
+				res := Result{AfterReply: func(context.Context) { called.Store(true) }}
+				if canceled {
+					<-ctx.Done()
+					return res, nil
+				}
+				return res, errors.New("merge failed")
+			}})
+			sid := c.newSession(t.TempDir())
+			id := c.request("session/prompt", textPrompt(sid, "merge"))
+			waitStarted(t, started)
+			if canceled {
+				c.cancel(map[string]any{"sessionId": sid})
+				requireStopReason(t, c.response(id), stopCanceled)
+			} else {
+				requireError(t, c.response(id), CodeInternalError)
+			}
+			require.NoError(t, c.close())
+			assert.False(t, called.Load())
+		})
+	}
+}
+
 func TestServerFinishesSinkBeforeReply(t *testing.T) {
 	tests := []struct {
 		name string
@@ -613,10 +724,15 @@ func (g *gatedWriter) Write(p []byte) (int, error) {
 // and interleaving its updates with the predecessor's.
 func TestServerPromptStaysActiveUntilAnswered(t *testing.T) {
 	started := make(chan PromptRequest, 2)
+	var afterReplyCalled atomic.Bool
 	gw := &gatedWriter{marker: []byte("first report"), reached: make(chan struct{}), gate: make(chan struct{})}
 	c := startServerWithWriter(t, Options{Run: func(_ context.Context, req PromptRequest, _ *Sink) (Result, error) {
 		started <- req
-		return Result{Message: "first report"}, nil
+		res := Result{Message: "first report"}
+		if req.Text == "first.md" {
+			res.AfterReply = func(context.Context) { afterReplyCalled.Store(true) }
+		}
+		return res, nil
 	}}, func(w io.Writer) io.Writer { gw.w = w; return gw })
 	sid := c.newSession(t.TempDir())
 
@@ -641,6 +757,7 @@ func TestServerPromptStaysActiveUntilAnswered(t *testing.T) {
 	assert.Equal(t, "second.md", waitStarted(t, started).Text)
 	requireStopReason(t, c.response(second), stopEndTurn)
 	require.NoError(t, c.close())
+	assert.False(t, afterReplyCalled.Load(), "a late cancel suppresses the completed turn's follow-up")
 }
 
 // TestServerCancelWhileWaitingForCanceledRun cancels a steered prompt before its predecessor has

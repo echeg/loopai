@@ -2,8 +2,8 @@
 
 [T3 Code](https://t3.codes) is a control surface for coding agents with desktop, web, and mobile
 clients. loopai integrates with it through T3 Code's public, authenticated HTTP and WebSocket
-APIs. No T3 Code fork or plugin is involved, and loopai never writes below the T3 home directory:
-it only reads the server's runtime and settings files and changes everything else through the API. An
+APIs. No T3 Code fork or plugin is involved. loopai reads the server's runtime and settings files,
+changes threads through the API, and can invoke the official CLI to issue a settlement token. An
 [experimental provider mode](#experimental-loopai-as-a-t3-code-provider) instead lets T3 Code run
 loopai as a provider session through its Grok driver.
 
@@ -27,7 +27,8 @@ without affecting execution. Pinning and unpinning are best-effort; their failur
 loopai finds the server through `<T3 home>/userdata/server-runtime.json`, where the T3 home is
 `T3CODE_HOME` or `~/.t3`. `LOOPAI_T3_URL` overrides the origin, for example when the server
 listens on a non-default address. The token is read only from `LOOPAI_T3_TOKEN`; there is no
-config key for it, and loopai never issues one itself.
+config key for it. Launching and title reporting require that token; local-merge settlement can
+issue its own short-lived token as described below.
 
 ## Thread status: `--t3`
 
@@ -142,6 +143,31 @@ worktree loopai did not create, so it stays until it is removed in T3 Code. Term
 so it does not perform that linking. When finalize stops, for example on a conflict that needs a
 decision, terminal mode's title ends in `done · finalize incomplete`; agent mode reports the outcome
 in its final message. Close out the plan by hand with `/loopai-merge` or `--pr`.
+
+## Automatic settlement after a local merge
+
+After a successful `loopai --merge`, loopai marks matching T3 Code threads **Settled**. This runs
+independently of `--t3` or `t3 = true`: the repository's registered worktree roots identify its
+projects, and the merged feature branch identifies the threads. The invoking thread id is not
+used. Archived and already settled threads, and threads awaiting approval or input, are skipped.
+A failed merge never settles anything. Cleanup must also succeed for `--merge`.
+
+ACP automatic merges and the thread's `merge` command do the same, including an already merged
+branch. They wait until the final answer has been sent and T3 marks the completed turn idle,
+because T3 rejects settlement during a running turn. The wait is bounded to 15 seconds. A new
+message or turn cancels the pending settlement. New commits on the branch, or a base that no
+longer contains the merged commit, also prevent it.
+T3 may stop the provider session when settling, so loopai saves the report and chat state first.
+The thread's branch and worktree remain available, and sending another message reopens the thread.
+The CLI `--merge` does not wait for active agent turns: such a thread is left open with a warning.
+
+When `LOOPAI_T3_TOKEN` is absent, settlement discovers the local server runtime and invokes
+`t3 auth session issue --token-only --ttl 1h --label loopai-settle`, falling back to
+`npx --yes t3@latest` when `t3` is not installed. Issuance has a 15-second timeout, uses the same
+T3 home, and never prints or stores the token in loopai configuration. The official CLI records
+the session in T3's authentication store. A different `LOOPAI_T3_URL` requires an explicit token;
+a locally issued credential is never sent to that override. Without a local runtime, settlement
+is silently skipped. Other failures warn and leave the successful Git merge intact.
 
 ## Project actions in `t3.json`
 

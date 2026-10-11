@@ -112,6 +112,7 @@ func TestMain(m *testing.M) {
 		return nil, errors.New("t3 reporting is disabled in tests")
 	}
 	newT3Dispatcher = func(func(string) string) (t3.Dispatcher, error) { return nil, t3.ErrNoToken }
+	newT3SettleDispatcher = func(context.Context, func(string) string) (t3.Dispatcher, error) { return nil, t3.ErrNoRuntime }
 	newT3Session = func(context.Context, t3.Endpoint) (t3Session, error) {
 		return t3Session{}, errors.New("t3 sessions are disabled in tests")
 	}

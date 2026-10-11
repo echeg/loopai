@@ -31,6 +31,9 @@ type PromptRequest struct {
 // Result is the outcome of a successful or failed run.
 type Result struct {
 	Message string // final assistant message, such as the completion report; sent before the reply
+	// AfterReply runs after a successful turn's reply reaches the client. It must return promptly
+	// when canceled: the next accepted prompt cancels it and waits before starting its run.
+	AfterReply func(context.Context)
 }
 
 // RunFunc executes one prompt. It must return promptly once ctx is canceled. A non-nil error
@@ -57,9 +60,16 @@ type Server struct {
 	stop context.CancelFunc
 	wg   sync.WaitGroup
 
-	mu       sync.Mutex
-	sessions map[string]string // session id -> cwd
-	active   *activePrompt
+	mu         sync.Mutex
+	sessions   map[string]string // session id -> cwd
+	active     *activePrompt
+	afterReply *afterReplyTask
+}
+
+// afterReplyTask keeps a completed turn's follow-up separate from its canceled run context.
+type afterReplyTask struct {
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // activePrompt is the latest accepted prompt, running or waiting for its canceled predecessor.
@@ -300,22 +310,31 @@ func (s *Server) handlePrompt(id, params json.RawMessage) {
 	// session/prompt, so a prompt following its own session's cancel waits for that run to end
 	ctx, cancel := context.WithCancel(s.ctx)
 	active := &activePrompt{sessionID: p.SessionID, cancel: cancel, done: make(chan struct{})}
+	afterReply := s.afterReply
+	if afterReply != nil {
+		afterReply.cancel()
+		s.afterReply = nil
+	}
 	s.active = active
 	s.wg.Add(1)
 	s.mu.Unlock()
 
 	s.logf("session/prompt %s started", p.SessionID)
 	req := PromptRequest{SessionID: p.SessionID, Cwd: cwd, Text: p.Prompt[0].Text}
-	go s.runPrompt(ctx, id, req, active, prev)
+	go s.runPrompt(ctx, id, req, active, prev, afterReply)
 }
 
 // runPrompt executes one prompt once its canceled predecessor, if any, has been answered, and
 // answers its own request exactly once.
-func (s *Server) runPrompt(ctx context.Context, id json.RawMessage, req PromptRequest, active, prev *activePrompt) {
+func (s *Server) runPrompt(ctx context.Context, id json.RawMessage, req PromptRequest, active, prev *activePrompt,
+	afterReply *afterReplyTask) {
 	defer s.wg.Done()
 	defer close(active.done)
 	if prev != nil {
 		<-prev.done // already canceled, so it ends promptly
+	}
+	if afterReply != nil {
+		<-afterReply.done // no follow-up may overlap the next run's cwd or output changes
 	}
 	sink := NewSink(s.conn, req.SessionID)
 	var res Result
@@ -337,6 +356,7 @@ func (s *Server) runPrompt(ctx context.Context, id json.RawMessage, req PromptRe
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	latest := s.active == active && !active.cancelRequested
 	if s.active == active {
 		s.active = nil
 	}
@@ -350,8 +370,31 @@ func (s *Server) runPrompt(ctx context.Context, id json.RawMessage, req PromptRe
 		_ = s.conn.ReplyError(id, CodeInternalError, err.Error())
 	default:
 		s.logf("session/prompt %s completed", req.SessionID)
-		_ = s.conn.Reply(id, promptResult{StopReason: stopEndTurn})
+		if replyErr := s.conn.Reply(id, promptResult{StopReason: stopEndTurn}); replyErr == nil && latest && res.AfterReply != nil {
+			s.startAfterReply(res.AfterReply)
+		}
 	}
+}
+
+// startAfterReply starts a successful turn's follow-up while s.mu is held, so the next accepted
+// prompt always finds its cancellation and completion handles. Shutdown cancels its context and
+// waits for it alongside prompt runs.
+func (s *Server) startAfterReply(run func(context.Context)) {
+	ctx, cancel := context.WithCancel(s.ctx)
+	task := &afterReplyTask{cancel: cancel, done: make(chan struct{})}
+	s.afterReply = task
+	s.wg.Go(func() {
+		defer close(task.done)
+		defer cancel()
+		defer func() {
+			if r := recover(); r != nil {
+				s.logf("after-reply callback panicked: %v", r)
+			}
+		}()
+		if ctx.Err() == nil {
+			run(ctx)
+		}
+	})
 }
 
 // invokeRun calls the run function, turning a panic, including a missing run function, into an

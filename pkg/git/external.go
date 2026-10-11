@@ -464,9 +464,12 @@ func (e *externalBackend) branchExists(name string) bool {
 }
 
 // branchHash returns the commit hash a local branch points at.
-func (e *externalBackend) branchHash(name string) (string, error) {
-	out, err := e.run("rev-parse", "--verify", "refs/heads/"+name)
+func (e *externalBackend) branchHash(ctx context.Context, name string) (string, error) {
+	out, err := e.runContext(ctx, "rev-parse", "--verify", "refs/heads/"+name)
 	if err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return "", fmt.Errorf("get branch %q head: %w", name, err)
 	}
 	return out, nil

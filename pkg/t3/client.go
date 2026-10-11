@@ -176,6 +176,12 @@ type ThreadPinToggle struct {
 	ThreadID string `json:"threadId"`
 }
 
+// ThreadSettle marks a completed thread as settled. The server refuses active provider turns.
+type ThreadSettle struct {
+	commandHeader
+	ThreadID string `json:"threadId"`
+}
+
 // NewThreadCreate builds a thread.create command. Empty branch or worktree path are sent as null.
 func NewThreadCreate(threadID, projectID, title string, model ModelSelection, branch, worktreePath string) *ThreadCreate {
 	return &ThreadCreate{
@@ -236,6 +242,11 @@ func NewThreadUnpin(threadID string) *ThreadPinToggle {
 	return &ThreadPinToggle{commandHeader: commandHeader{Type: "thread.unpin"}, ThreadID: threadID}
 }
 
+// NewThreadSettle builds a thread.settle command.
+func NewThreadSettle(threadID string) *ThreadSettle {
+	return &ThreadSettle{commandHeader: commandHeader{Type: "thread.settle"}, ThreadID: threadID}
+}
+
 func optionalString(s string) *string {
 	if strings.TrimSpace(s) == "" {
 		return nil
@@ -280,14 +291,31 @@ type Project struct {
 
 // Thread is a T3 Code thread as seen in the shell snapshot.
 type Thread struct {
-	ID           string            `json:"id"`
-	ProjectID    string            `json:"projectId"`
-	Title        string            `json:"title"`
-	Branch       *string           `json:"branch"`
-	WorktreePath *string           `json:"worktreePath"`
-	ArchivedAt   *string           `json:"archivedAt"`
-	PinnedAt     *string           `json:"pinnedAt"`
-	PullRequests []PullRequestLink `json:"pullRequests"`
+	ID                  string            `json:"id"`
+	ProjectID           string            `json:"projectId"`
+	Title               string            `json:"title"`
+	Branch              *string           `json:"branch"`
+	WorktreePath        *string           `json:"worktreePath"`
+	ArchivedAt          *string           `json:"archivedAt"`
+	SettledAt           *string           `json:"settledAt"`
+	PinnedAt            *string           `json:"pinnedAt"`
+	PullRequests        []PullRequestLink `json:"pullRequests"`
+	Session             *ThreadSession    `json:"session"`
+	LatestTurn          *ThreadTurn       `json:"latestTurn"`
+	LatestUserMessageAt *string           `json:"latestUserMessageAt"`
+	HasPendingApprovals bool              `json:"hasPendingApprovals"`
+	HasPendingUserInput bool              `json:"hasPendingUserInput"`
+}
+
+// ThreadSession is the provider lifecycle state needed to avoid settling a working thread.
+type ThreadSession struct {
+	Status string `json:"status"`
+}
+
+// ThreadTurn identifies the latest turn independently of provider completion updates.
+type ThreadTurn struct {
+	TurnID string `json:"turnId"`
+	State  string `json:"state"`
 }
 
 // PullRequestLink is a pull request already linked to a thread.

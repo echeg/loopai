@@ -163,13 +163,19 @@ func serveACP(ctx context.Context, o opts, in io.Reader, out, stderr io.Writer) 
 // acpRunner executes ACP prompts as plan runs. The server runs one prompt at a time, which a run
 // relies on because it changes the process working directory.
 type acpRunner struct {
-	base opts      // process-level options every prompt inherits
-	out  io.Writer // human-readable run output
+	base       opts                  // process-level options every prompt inherits
+	out        io.Writer             // human-readable run output
+	afterReply func(context.Context) // successful merge settlement, deferred until T3 ends the turn
 }
 
 // run executes one prompt. A plan launch runs the plan; the bare merge and pr commands run the
 // requested action without a model; anything else is a chat turn answered in the thread.
-func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Sink) (acp.Result, error) {
+func (a *acpRunner) run(ctx context.Context, req acp.PromptRequest, sink *acp.Sink) (res acp.Result, err error) {
+	a.afterReply = nil
+	defer func() {
+		res.AfterReply = a.afterReply
+		a.afterReply = nil
+	}()
 	switch route := acpRoute(req.Text, req.Cwd); route {
 	case acpRouteLaunch:
 		return a.runPlan(ctx, req, sink)
@@ -275,6 +281,9 @@ func (a *acpRunner) autoMerge(ctx context.Context, cfg *config.Config, execReq e
 	gitSvc.SetCommitTrailer(cfg.CommitTrailer)
 	res := acpAutoMerge(ctx, gitSvc, cfg, execReq.DefaultBranch, *execReq.Outcome)
 	fmt.Fprintf(a.out, "acp auto-merge: %s\n", res.summary())
+	if res.merged || res.upToDate {
+		a.afterReply = prepareT3MergedBranchSettlement(ctx, gitSvc, res.feature, res.base, a.out)
+	}
 	return res
 }
 

@@ -1,8 +1,8 @@
 // Package t3 reports loopai runs to a running T3 Code server through its public HTTP and
 // WebSocket APIs.
 //
-// The integration is best-effort: loopai only reads the server's runtime and settings files and never writes
-// below the T3 home directory, every change goes through the authenticated API, and failures
+// The integration is best-effort: loopai only reads the server's runtime and settings files,
+// thread changes use the authenticated API, and settlement can invoke the official auth CLI. Failures
 // never reach the run.
 package t3
 

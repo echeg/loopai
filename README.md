@@ -1454,7 +1454,10 @@ thread's worktree, which remembers earlier messages by resuming its provider ses
 `pr` merges the branch into the local base or opens a pull request without removing the worktree.
 If a run succeeds and its report rates Risk `low` or `medium`, loopai merges the plan branch into the
 local base branch where the base is checked out. Nothing is pushed, and neither the branch nor T3
-Code's worktree is removed. `acp_auto_merge = false` turns this off, and `finalize = pr|merge` takes
+Code's worktree is removed. Successful local merges automatically settle the branch's T3 threads:
+`--merge` settles idle threads after cleanup, while ACP waits until its final answer has been sent.
+Settlement can issue a short-lived token through the local T3 CLI and is independent of `t3`
+title reporting; failures only warn. `acp_auto_merge = false` turns automatic merging off, and `finalize = pr|merge` takes
 precedence. The mode relies on undocumented T3 Code Grok driver contracts. See
 [docs/t3-code.md](docs/t3-code.md#experimental-loopai-as-a-t3-code-provider).
 

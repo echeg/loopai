@@ -746,14 +746,47 @@ func acpWorktreeFixture(t *testing.T, risk string) (f acpFixture, worktree strin
 	return f, worktree
 }
 
+// stubACPSettlement confines merge settlement to a fake T3 project on the fixture branch.
+func stubACPSettlement(t *testing.T, root, branch string) *t3ShellDispatcher {
+	t.Helper()
+	api := &t3ShellDispatcher{shell: t3.Shell{
+		Projects: []t3.Project{{ID: "project", WorkspaceRoot: root}},
+		Threads:  []t3.Thread{{ID: "merged-thread", ProjectID: "project", Branch: &branch}},
+	}}
+	previous := newT3SettleDispatcher
+	t.Cleanup(func() { newT3SettleDispatcher = previous })
+	newT3SettleDispatcher = func(context.Context, func(string) string) (t3.Dispatcher, error) { return api, nil }
+	return api
+}
+
+func assertACPSettlementCommand(t *testing.T, api *t3ShellDispatcher) {
+	t.Helper()
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	require.Len(t, api.commands, 1)
+	data, err := json.Marshal(api.commands[0])
+	require.NoError(t, err)
+	var command map[string]any
+	require.NoError(t, json.Unmarshal(data, &command))
+	assert.Equal(t, "thread.settle", command["type"])
+	assert.Equal(t, "merged-thread", command["threadId"])
+}
+
 func TestServeACPAutoMergesLowRisk(t *testing.T) {
 	f, worktree := acpWorktreeFixture(t, "low")
+	api := stubACPSettlement(t, f.repo, "two")
 	stderr := &lockedBuffer{}
 
 	c := startACPServer(t.Context(), t, opts{ConfigDir: f.cfgDir}, stderr)
 	sid := c.handshake(worktree)
 	requireACPStopReason(t, c.response(c.prompt(sid, "docs/plans/two.md")), "end_turn")
+	require.Eventually(t, func() bool {
+		api.mu.Lock()
+		defer api.mu.Unlock()
+		return len(api.commands) > 0
+	}, 2*time.Second, 5*time.Millisecond, "a successful ACP auto-merge settles after its reply")
 	c.close()
+	assertACPSettlementCommand(t, api)
 
 	featureHead := revParse(t, worktree, "HEAD")
 	assert.Equal(t, featureHead, revParse(t, f.repo, "master"), "master fast-forwards to the plan branch")
@@ -783,6 +816,7 @@ func TestServeACPAutoMergesLowRisk(t *testing.T) {
 
 func TestServeACPSkipsMergeForHighRisk(t *testing.T) {
 	f, worktree := acpWorktreeFixture(t, "high")
+	api := stubACPSettlement(t, f.repo, "two")
 	masterBefore := revParse(t, f.repo, "master")
 	stderr := &lockedBuffer{}
 
@@ -790,6 +824,7 @@ func TestServeACPSkipsMergeForHighRisk(t *testing.T) {
 	sid := c.handshake(worktree)
 	requireACPStopReason(t, c.response(c.prompt(sid, "docs/plans/two.md")), "end_turn")
 	c.close()
+	assert.Empty(t, api.commands, "a skipped auto-merge leaves its thread unsettled")
 
 	assert.Equal(t, masterBefore, revParse(t, f.repo, "master"), "a high-risk run leaves master unchanged")
 	assert.FileExists(t, filepath.Join(worktree, "docs", "plans", "completed", "two.md"), "the run itself succeeded")

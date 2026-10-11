@@ -248,6 +248,20 @@ func TestDispatchBadResponseAndUnreachable(t *testing.T) {
 	assert.False(t, IsAuthError(err))
 }
 
+func TestDispatchThreadSettle(t *testing.T) {
+	srv, reqs := newTestServer(t, okSequence)
+	seq, err := testClient(srv.URL).Dispatch(context.Background(), NewThreadSettle("th-1"))
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), seq)
+	require.Len(t, reqs(), 1)
+	assert.Equal(t, http.MethodPost, reqs()[0].method)
+	assert.Equal(t, "/api/orchestration/dispatch", reqs()[0].path)
+	assert.Equal(t, "Bearer secret", reqs()[0].auth)
+	assert.Equal(t, map[string]any{
+		"type": "thread.settle", "commandId": "cmd-1", "threadId": "th-1",
+	}, reqs()[0].body)
+}
+
 func TestDispatchHonorsContext(t *testing.T) {
 	block := make(chan struct{})
 	srv, _ := newTestServer(t, func(_ http.ResponseWriter, _ *http.Request) { <-block })
@@ -264,7 +278,10 @@ func TestShellAndFindProject(t *testing.T) {
 			{"id":"p1","title":"Other","workspaceRoot":"C:\\Other"},
 			{"id":"p2","title":"Loopai","workspaceRoot":"C:\\Projects\\AI\\loopai","scripts":[]}],
 			"threads":[{"id":"t1","projectId":"p2","title":"x","branch":"feat","worktreePath":null,
-			"archivedAt":null,"pinnedAt":"2026-10-01T00:00:00Z","pullRequests":[{"host":"github.com","repository":"o/r","number":3}]}]}`))
+			"archivedAt":null,"pinnedAt":"2026-10-01T00:00:00Z","settledAt":"2026-10-02T00:00:00Z",
+			"session":{"status":"ready"},"latestTurn":{"turnId":"turn-1","state":"completed"},
+			"latestUserMessageAt":"2026-10-01T00:00:00Z","hasPendingApprovals":true,"hasPendingUserInput":true,
+			"pullRequests":[{"host":"github.com","repository":"o/r","number":3}]}]}`))
 	})
 	shell, err := testClient(srv.URL).Shell(context.Background())
 	require.NoError(t, err)
@@ -283,6 +300,14 @@ func TestShellAndFindProject(t *testing.T) {
 	assert.Equal(t, "feat", *thread.Branch)
 	assert.Nil(t, thread.WorktreePath)
 	require.NotNil(t, thread.PinnedAt)
+	require.NotNil(t, thread.SettledAt)
+	assert.Equal(t, "2026-10-02T00:00:00Z", *thread.SettledAt)
+	assert.Equal(t, &ThreadSession{Status: "ready"}, thread.Session)
+	assert.Equal(t, &ThreadTurn{TurnID: "turn-1", State: "completed"}, thread.LatestTurn)
+	require.NotNil(t, thread.LatestUserMessageAt)
+	assert.Equal(t, "2026-10-01T00:00:00Z", *thread.LatestUserMessageAt)
+	assert.True(t, thread.HasPendingApprovals)
+	assert.True(t, thread.HasPendingUserInput)
 	assert.True(t, thread.HasPullRequest(PullRequest{Host: "GitHub.com", Repository: "O/R", Number: 3}))
 	assert.False(t, thread.HasPullRequest(PullRequest{Host: "github.com", Repository: "o/r", Number: 4}))
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -15,9 +16,61 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/umputun/ralphex/pkg/acp"
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/git"
 )
+
+func TestACPMergeCommandDefersSettlementUntilAfterReply(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(*testing.T, acpMergeRepo)
+		settle  bool
+		message string
+	}{
+		{name: "merged", settle: true, message: "Merged `feature` into `master`"},
+		{name: "already merged", settle: true, message: "is already in `master`", prepare: func(t *testing.T, repo acpMergeRepo) {
+			runGit(t, repo.primary, "merge", "--ff-only", "feature")
+		}},
+		{name: "dirty feature", message: "has untracked files", prepare: func(t *testing.T, repo acpMergeRepo) {
+			require.NoError(t, os.WriteFile(filepath.Join(repo.worktree, "wip.txt"), []byte("unfinished\n"), 0o600))
+		}},
+		{name: "conflict", message: "conflicted and was aborted", prepare: func(t *testing.T, repo acpMergeRepo) {
+			require.NoError(t, os.WriteFile(filepath.Join(repo.primary, "feature.txt"), []byte("base side\n"), 0o600))
+			runGit(t, repo.primary, "add", "feature.txt")
+			runGit(t, repo.primary, "commit", "-m", "conflicting base work")
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := setupACPMergeRepo(t)
+			if tc.prepare != nil {
+				tc.prepare(t, repo)
+			}
+			api := stubACPSettlement(t, repo.primary, "feature")
+			cfgDir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "config"), []byte("default_branch = master\n"), 0o600))
+			var stderr bytes.Buffer
+			runner := &acpRunner{base: opts{ConfigDir: cfgDir}, out: &stderr}
+			req := acp.PromptRequest{SessionID: "settle-test", Cwd: repo.worktree, Text: "merge"}
+
+			res, err := runner.run(t.Context(), req, nil)
+
+			require.NoError(t, err)
+			assert.Contains(t, res.Message, tc.message)
+			assert.Empty(t, api.commands, "settlement cannot run while the ACP turn is active")
+			assert.Nil(t, runner.afterReply, "the pending callback is transferred into this turn's result")
+			if !tc.settle {
+				assert.Nil(t, res.AfterReply)
+				return
+			}
+			require.NotNil(t, res.AfterReply)
+			res.AfterReply(t.Context())
+			assertACPSettlementCommand(t, api)
+			assert.Contains(t, stderr.String(), "settled 1 T3 Code thread(s) after merge")
+		})
+	}
+}
 
 func TestACPRoute(t *testing.T) {
 	cwd := t.TempDir()
