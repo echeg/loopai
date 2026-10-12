@@ -14,7 +14,7 @@ metadata:
 Run this first and read the printed line:
 
 ```bash
-expected=1
+expected=2
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else
@@ -32,6 +32,14 @@ echo "skill contract: skill=$expected binary=$actual"
 Never stop on a mismatch.
 
 ## Step 0: Verify the CLI
+
+For a full plan run inside T3 Code, when its injected runtime identifies the current conversation
+and native subagents are available, use `$loopai-t3` for the current-thread workflow. It keeps the
+conversation in Working through an observer and leaves report review and merge here. Carry over
+the user's selected plan and model/reviewer flags; do not ask for choices already made. For a
+status request, inspect the existing observer and its saved result instead of launching again.
+Review-only modes and an explicitly requested standalone background run use the steps below.
+Outside T3 Code, a local T3 server alone is not evidence that this is a T3 conversation.
 
 ```bash
 command -v loopai

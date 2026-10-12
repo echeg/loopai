@@ -3705,6 +3705,74 @@ func TestT3Flag(t *testing.T) {
 	})
 }
 
+func TestNoT3Flag(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		configT3 bool
+		envT3    string
+		args     []string
+	}{
+		{name: "disabled config", args: []string{"--no-t3"}},
+		{name: "enabled config", configT3: true, args: []string{"--no-t3"}},
+		{name: "environment", envT3: "true", args: []string{"--no-t3"}},
+		{name: "config and environment", configT3: true, envT3: "true", args: []string{"--no-t3"}},
+		{name: "disable last", args: []string{"--t3", "--no-t3"}},
+		{name: "enable last", args: []string{"--no-t3", "--t3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOOPAI_T3", tc.envT3)
+			o := parseTestOpts(t, tc.args...)
+			require.True(t, o.NoT3)
+			require.NoError(t, validateFlags(o))
+			cfg := &config.Config{T3: tc.configT3}
+			require.NoError(t, applyCLIOverrides(o, cfg))
+			assert.False(t, cfg.T3)
+		})
+	}
+
+	for _, mode := range []string{"--acp", "--merge", "--pr", "--report"} {
+		t.Run(mode, func(t *testing.T) {
+			o := parseTestOpts(t, "--no-t3", mode)
+			require.NoError(t, validateFlags(o), "disabling reporting is compatible with standalone close-out and ACP")
+		})
+	}
+}
+
+func TestLoadRunConfigCloseoutT3(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, mode := range []string{"--pr", "--merge", "--report"} {
+		for _, tc := range []struct {
+			name     string
+			configT3 bool
+			envT3    string
+			args     []string
+			wantT3   bool
+		}{
+			{name: "preserves config", configT3: true, wantT3: true},
+			{name: "disables config", configT3: true, args: []string{"--no-t3"}},
+			{name: "disables all enable sources", configT3: true, envT3: "true", args: []string{"--no-t3", "--t3"}},
+			{name: "enables from CLI", args: []string{"--t3"}, wantT3: true},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				t.Setenv("LOOPAI_T3", tc.envT3)
+				configDir := t.TempDir()
+				// An executor-only semantic error must remain irrelevant to close-out config loading.
+				content := fmt.Sprintf("t3 = %t\npass_claude_md = true\ntask_model = claude\n", tc.configT3)
+				require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(content), 0o600))
+				args := append([]string{mode, "--config-dir", configDir}, tc.args...)
+				o := parseTestOpts(t, args...)
+				require.NoError(t, validateFlags(o))
+
+				cfg, err := loadRunConfig(o)
+
+				require.NoError(t, err)
+				assert.Equal(t, tc.wantT3, cfg.T3, "standalone PR linking consumes the loaded T3 value")
+				assert.True(t, cfg.PassClaudeMd, "close-out must still skip executor-only overrides and validation")
+			})
+		}
+	}
+}
+
 // t3RecordingDispatcher is a t3.Dispatcher fake that records every command.
 type t3RecordingDispatcher struct {
 	mu       sync.Mutex
@@ -3759,6 +3827,18 @@ func TestStartT3Reporter(t *testing.T) {
 		req := executePlanRequest{Config: &config.Config{}, GitSvc: gitSvc, Mode: processor.ModeFull}
 		assert.Nil(t, startT3Reporter(opts{}, req, "feat"))
 		assert.Empty(t, got)
+	})
+
+	t.Run("no-t3 suppresses configured reporter", func(t *testing.T) {
+		got = nil
+		t.Setenv("LOOPAI_T3", "true")
+		t.Setenv("LOOPAI_T3_THREAD_ID", "planning-thread")
+		o := parseTestOpts(t, "--no-t3")
+		cfg := &config.Config{T3: true}
+		require.NoError(t, applyCLIOverrides(o, cfg))
+		req := executePlanRequest{Config: cfg, GitSvc: gitSvc, Mode: processor.ModeFull}
+		assert.Nil(t, startT3Reporter(o, req, "feat"))
+		assert.Empty(t, got, "the planning thread must not be rebound or a new thread created")
 	})
 
 	t.Run("normal run records its checkout", func(t *testing.T) {
@@ -3940,6 +4020,8 @@ func TestT3LaunchFlagParsing(t *testing.T) {
 			assert.Equal(t, tc.want, o.T3Launch)
 			assert.Equal(t, "docs/plans/x.md", o.PlanFile)
 			require.NoError(t, validateT3LaunchFlags(o))
+			conflicting := parseTestOpts(t, tc.flag, "--no-t3", "docs/plans/x.md")
+			require.ErrorContains(t, validateFlags(conflicting), "--t3-launch cannot be combined with --no-t3")
 		})
 	}
 	t.Run("invalid mode", func(t *testing.T) {
@@ -15315,6 +15397,25 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, "th", link.ThreadID)
 		assert.Equal(t, 7, link.Number)
+	})
+
+	t.Run("no-t3 suppresses configured pull request linking", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		original := newT3Dispatcher
+		t.Cleanup(func() { newT3Dispatcher = original })
+		newT3Dispatcher = func(func(string) string) (t3.Dispatcher, error) {
+			t.Error("--no-t3 must not connect to T3 for pull request linking")
+			return nil, t3.ErrNoToken
+		}
+		t.Setenv("LOOPAI_T3", "true")
+		req := f.request(config.FinalizePR)
+		req.Config.T3 = true
+		require.NoError(t, applyCLIOverrides(parseTestOpts(t, "--no-t3"), req.Config))
+
+		res := runFinalizeCloseout(t.Context(), req, synced, "", &recordingFinalizeLog{})
+
+		require.NoError(t, res.incomplete)
+		assert.True(t, res.prOpened, "ordinary finalize still runs while T3 linking is disabled")
 	})
 }
 

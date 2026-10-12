@@ -117,13 +117,19 @@ expect_failure "invalid codex skill interface"
 write_codex_skill loopai
 
 # every claude-only construct must be caught, since each marks an unadapted copy
-for token in AskUserQuestion TaskOutput TodoWrite subagent_type spawn_agent \
+for token in AskUserQuestion TaskOutput TodoWrite subagent_type \
 	CLAUDE_SKILL_DIR allowed-tools run_in_background "Task tool" "/loopai:"; do
 	write_codex_skill loopai-plan
 	printf '%s\n' "use $token here" >>"$codex_skills/loopai-plan/SKILL.md"
 	expect_failure "claude-only construct in codex skill"
 done
 write_codex_skill loopai-plan
+
+# Native Codex collaboration tools are valid; availability is a runtime decision.
+printf '%s\n' 'When the runtime exposes collaboration.spawn_agent, use that native tool.' \
+	>>"$codex_skills/loopai-t3/SKILL.md"
+"$checker" "$fixture"
+write_codex_skill loopai-t3
 
 # a skill teaching a removed loopai flag or key would stop loopai at startup
 for spelling in 'loopai --codex docs/plans/x.md' \

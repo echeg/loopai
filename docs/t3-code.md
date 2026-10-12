@@ -59,6 +59,42 @@ that rejects it changes nothing else.
 `LOOPAI_T3_THREAD_ID` makes the run update an existing thread instead of creating one; the
 launcher below sets it.
 
+`--no-t3` disables this reporting for one invocation, overriding `--t3`, `LOOPAI_T3`, and
+`t3 = true`. It also disables run-time PR linking through this reporter. Local-merge settlement
+remains independent. It cannot be combined with `--t3-launch`, which creates a thread itself.
+
+## Keep the current Codex thread
+
+Inside T3 Code, the Codex `$loopai-t3` skill defaults to running in the current conversation
+when native subagents are available. Discussion, the plan, status checks, the completion report,
+and a later merge stay in that conversation. Ask for a new thread explicitly to use the launcher
+below. The Claude Code skill and the `--t3-launch` CLI keep their separate-thread behavior.
+
+The skill delegates one ordinary `loopai --worktree --no-t3 --skip-finalize <plan>` run to a
+native Codex subagent. loopai owns the isolated Git worktree; creating it creates no T3 thread.
+The thread keeps its original Codex provider, while loopai uses its configured task and review
+models. The original agent can finish its reply: T3 keeps the thread in **Working** while the
+subagent monitors the process. The subagent must stay active until the process exits; starting a
+detached shell alone does not keep this status. No T3 token or thread-id lookup is needed.
+
+Current-thread mode leaves close-out to the user: `--skip-finalize` overrides automatic finalize
+and the ordinary CLI does not use ACP auto-merge. Review the report and use `$loopai-merge <plan>`
+from the original conversation. `loopai --report <plan>` and `loopai --merge <plan>` can resolve
+the feature branch from the original checkout even after the successful run removes its worktree.
+
+The observer saves its log and exit status under the source checkout's `.loopai/progress/`.
+Later questions inspect that existing run instead of starting it again. Messages in the original
+conversation reach Codex, rather than being ACP prompts that cancel the plan. While loopai runs,
+avoid making competing changes in its worktree. A failed run is reported and never retried silently.
+
+When the observer finishes, T3 removes the background Working state; this does not settle the
+thread or merge the branch. In the tested Codex harness the child result becomes available on
+the next user turn, but does not automatically start a new parent reply. Do not expect an
+unsolicited final message. A stopped provider session or server restart can remove the observer;
+the durable log does not itself keep Working, and process survival must be checked before
+reattaching a watcher. Native subagents are required for this mode; the skill checks their
+availability rather than assuming every Codex installation supports them.
+
 ## Launching a plan in T3 Code: `--t3-launch`
 
 ```bash

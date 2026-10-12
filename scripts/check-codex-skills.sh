@@ -4,11 +4,10 @@
 #
 # The Codex skills are deliberately NOT generated from assets/claude/skills: the
 # bodies differ because the host tool contract differs. Claude Code offers
-# AskUserQuestion, Task subagents, and named Read/Write/Glob tools; Codex offers
-# none of them, and spawn_agent exists in loopai's own codex invocations only
-# because pkg/executor/codex.go registers the agent through -c overrides, which
-# an interactive Codex session does not do. A mechanical copy would therefore
-# produce a skill that stalls at its first interactive step.
+# AskUserQuestion, Task subagents, and named Read/Write/Glob tools; Codex uses a
+# different tool contract. Some Codex hosts expose native spawn_agent, so skills
+# may use it after checking the actual runtime capability. A mechanical copy
+# would still produce a skill that stalls at its first interactive step.
 #
 # What is enforced instead:
 #   - the Codex inventory equals the Claude inventory minus an explicit exemption
@@ -46,7 +45,6 @@ forbidden_tokens=(
 	TaskOutput
 	TodoWrite
 	subagent_type
-	spawn_agent
 	CLAUDE_SKILL_DIR
 	allowed-tools
 	run_in_background

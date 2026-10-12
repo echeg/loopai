@@ -162,6 +162,13 @@ The plugin provides ten skills:
 - `loopai:loopai-retro` reviews run artifacts and ranks evidence-backed improvements;
   it files only backlog entries you select
 
+In Codex inside T3 Code, `$loopai-t3` defaults to the **current thread** when native
+subagents are available. A subagent runs and monitors loopai in an isolated Git worktree, keeping
+the original conversation in Working until the process exits. Report review and merge stay in
+that conversation; ask for a new thread to use `--t3-launch`. See
+[current-thread execution](docs/t3-code.md#keep-the-current-codex-thread) for completion and
+observer-lifetime details.
+
 Use `/loopai:loopai-merge <plan>` after a successful run to have Claude narrate the report in the
 conversation language, predict merge conflicts read-only with `git merge-tree` and describe each
 conflicting file and what both sides changed, then ask whether to merge, open a pull request, or
@@ -1432,6 +1439,9 @@ Pass `--t3`, set `t3 = true`, or set `LOOPAI_T3=1` to report plan execution and 
 [T3 Code](https://t3.codes) thread whose title follows the same phases (`<plan> · task 3/7`,
 `<plan> · done`), pinned to the top of the sidebar while the run is active. It needs a running T3 Code server that has the repository as a project and a
 bearer token in `LOOPAI_T3_TOKEN`; without them loopai warns once and runs normally.
+`--no-t3` overrides those settings for one run, disabling thread reporting and PR linking.
+It does not disable the separate local-merge settlement mechanism.
+
 `loopai --t3-launch[=auto|agent|terminal] <plan>` creates a T3 Code-managed worktree and thread,
 carrying the plan and missing local `.loopai/` overrides over. The bare flag uses `auto`: it reads
 `providerInstances` from `${T3CODE_HOME:-~/.t3}/userdata/settings.json` and starts a provider session

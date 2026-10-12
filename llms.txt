@@ -88,10 +88,21 @@ skips pre-rename `ralphex-*` cleanup). It installs `$loopai`, `$loopai-plan`,
 `$loopai-adopt`, `$loopai-update`, `$loopai-brainstorm`, `$loopai-orca`, `$loopai-t3`, `$loopai-merge`, and `$loopai-retro`.
 `loopai-grill` stays Claude-only: its safety model is a read-only Claude tool
 pin that Codex cannot express. The Codex bodies live in `assets/codex/skills/`
-and are maintained by hand, because Codex has no `AskUserQuestion`, no `Task`
-subagents, and no `spawn_agent` outside loopai's own runs; `make
+and are maintained by hand, because Codex has no Claude `AskUserQuestion` or `Task`
+tools. Native Codex subagents depend on the runtime; the T3 skill checks availability. `make
 check-codex-skills` keeps the inventories aligned and fails on a Claude-only
 construct copied across.
+
+Inside a T3 Code Codex conversation with native subagents, `$loopai-t3` defaults to the current
+thread: one subagent runs `loopai --worktree --no-t3 --skip-finalize <plan>` and monitors its
+actual exit, retaining Working after the parent replies. An explicit new-thread request keeps
+`--t3-launch`. No new T3 thread, token or provider switch is needed in current-thread mode.
+Status and logs persist under the original checkout's `.loopai/progress/`; report review and
+`$loopai-merge <plan>` stay in that conversation. Completion removes background Working, but
+does not automatically post a parent reply or settle the thread. Do not start a duplicate run
+when checking status. `$loopai-plan` recommends this mode inside the current T3 runtime.
+`--no-t3` overrides `--t3`, `LOOPAI_T3`, and config reporting, and conflicts with `--t3-launch`;
+local-merge settlement remains independent.
 
 Superpowers may remain installed for its other skills. When migrating from the
 upstream ralphex plugin, run `claude plugin uninstall ralphex` and

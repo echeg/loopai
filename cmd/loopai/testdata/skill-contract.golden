@@ -1,4 +1,4 @@
-contract: 1
+contract: 2
 
 flags:
 --acp
@@ -26,6 +26,7 @@ flags:
 --merge
 --no-claude-swap
 --no-color
+--no-t3
 --orca
 --pass-claude-md
 --plan

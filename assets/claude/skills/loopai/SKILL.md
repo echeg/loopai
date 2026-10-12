@@ -13,7 +13,7 @@ allowed-tools: [Bash, Read, AskUserQuestion, TaskOutput, Glob]
 Run this first and read the printed line:
 
 ```bash
-expected=1
+expected=2
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else

@@ -1,20 +1,20 @@
 ---
 name: loopai-t3
-description: "Run an existing loopai plan inside a T3 Code-managed worktree and thread (T3 Code desktop, web, or mobile app, t3.codes) so the run appears as a T3 Code thread that runs loopai as a provider session when configured, or shows live output in a terminal otherwise, optionally with per-phase model or external-reviewer overrides. Triggers: loopai-t3, run plan in t3, launch loopai in t3 code."
+description: "Run an existing loopai plan in T3 Code. In an active Codex thread with native subagents, keep execution and Working status in that thread; otherwise launch a separate T3-managed thread. Supports per-phase model and reviewer overrides. Use for loopai-t3, run plan in t3, or launch loopai in t3 code."
 metadata:
-  short-description: Run a loopai plan in a T3 Code thread
+  short-description: Run loopai in the current or a new T3 thread
 ---
 
 # loopai-t3 - Run a Plan in a T3 Code Thread
 
-**SCOPE**: run `loopai --t3-launch`, which asks the running T3 Code server to create a worktree and a thread for the plan and starts a loopai provider session when a usable instance is configured, or `loopai --t3` in that thread's terminal otherwise, then report how to follow it. Do not edit code, commit, or merge. T3 Code owns the worktree and the thread; loopai runs inside them as a provider session or an ordinary terminal process.
+**SCOPE**: launch an existing plan and report its status. The current-thread mode delegates ordinary CLI execution to one native observer; the new-thread mode uses `loopai --t3-launch` to start a provider session or terminal. loopai does the implementation work. Do not independently edit code, commit, or merge.
 
 ## Skill Contract Check
 
 Run this first and read the printed line:
 
 ```bash
-expected=1
+expected=2
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else
@@ -31,7 +31,15 @@ echo "skill contract: skill=$expected binary=$actual"
 
 Never stop on a mismatch.
 
+## Choose the Thread Mode
+
+- **Current thread (default inside T3 Codex):** the injected runtime identifies this as a T3 Code Codex conversation and the current tool inventory exposes native `collaboration.spawn_agent` / `spawn_agent` with live-agent inspection or messaging. Read [references/current-thread.md](references/current-thread.md). For status/resume/recovery, inspect its existing-run record before flag/history questions, plan selection, or any missing-plan rejection; only a new launch needs those shared selections. Then follow that reference instead of the new-thread preflight and Steps 2–4. A runtime file on disk alone does not prove that this conversation is inside T3, and a CLI-spawned model is not a native subagent.
+- **New thread:** the user explicitly requests a separate/new thread, or this host lacks the current-thread capability and the user has not required staying here. Follow the existing new-thread steps below. This keeps provider/terminal launching available outside T3 Codex.
+- If the user explicitly requires this thread but the necessary native tools or active T3 context are absent, report the missing capability; do not silently create a second thread or invent a tool. If current-thread launch fails, report the failure without switching modes.
+
 ## Step 0: Preflight
+
+**New-thread mode only.** Current-thread preflight is in the linked reference.
 
 Run the checks separately so each failure is distinguishable. **Stop and report the failing check verbatim; do not continue past a failure.**
 
@@ -49,7 +57,7 @@ git branch --show-current
 
 ## Step 0b: Parse Arguments
 
-Split the request on whitespace. The first token that does not start with `--` is `PLAN_ARG` (may be absent). Every other token must be one of the pass-through flags below; collect them, in order, into `FLAGS` (one space-separated string, empty when none were given):
+Parse flag/value pairs first; the one remaining positional argument is `PLAN_ARG` (may be absent). Preserve a quoted or explicitly supplied plan path with spaces as one argument. Every other argument must be one of the pass-through flags below; collect them in order as an argument array and use `FLAGS` for their space-separated display (empty when none were given):
 
 | Flag | Form | Value |
 |------|------|-------|
@@ -88,11 +96,14 @@ With `HISTORY` non-empty, ask "Which loopai flags should the T3 Code run use?" a
 
 ## Step 1: Choose the Plan
 
+- For a current-thread status/resume request, inspect the existing run as described in the reference first; a completed run may already have archived the original plan. Do not turn a status question into a new launch.
 - If `PLAN_ARG` is set, confirm the file exists.
 - Otherwise list `ls -t docs/plans/*.md` (this excludes `completed/`), show up to four as a numbered list with the newest marked recommended, and ask the user to pick one.
 - Refuse a plan under `docs/plans/completed/` or under `.loopai/`.
 
 Keep `PLAN` as the path relative to the repository root.
+
+For current-thread mode, continue with [references/current-thread.md](references/current-thread.md) now. The remaining steps concern a **new thread only**.
 
 ## Step 2: Resolve the Token
 

@@ -106,7 +106,7 @@ reports, backlog, steering files, and check definitions, invoked manually as
 with `path:line` evidence. User-selected `docs/backlog/` entries, committed by pathspec, are
 its only writes; it never edits prompts, agents, config, steering files, plans, or reports.
 
-`loopai-t3` is the T3 Code counterpart of `loopai-orca` and does even less: it
+The Claude `loopai-t3` skill is the T3 Code counterpart of `loopai-orca`: it
 validates the same three pass-through flags and runs `loopai --t3-launch`, minting a
 T3 Code token inline (`t3 auth session issue --token-only`) when `LOOPAI_T3_TOKEN`
 is unset so the token never reaches the transcript. Worktree creation, input
@@ -114,6 +114,15 @@ copying, thread creation, and provider-session or terminal launch all live in Go
 The bare flag uses `auto`: `providerInstances` in `<T3 home>/userdata/settings.json` selects a usable
 loopai instance for agent mode; otherwise it falls back to terminal mode. Agent mode places no
 token in the thread; terminal mode passes it in the terminal environment.
+The Codex skill defaults to the current conversation when an injected T3 runtime and native
+subagent tools are available. One native subagent runs and monitors ordinary
+`loopai --worktree --no-t3 --skip-finalize`, with durable status under `.loopai/progress/`.
+T3 derives Working from the active subagent, even after the parent replies; the shell process
+alone cannot provide that status. A user-requested new thread retains the launcher above.
+The original conversation retains its provider and handles later report review and merge.
+Child completion does not reliably wake an idle parent, so no unsolicited parent report is
+promised. `--no-t3` wins over CLI, environment and config reporting; independent merge settlement
+is unchanged. See `docs/t3-code.md` for the observer's lifecycle and limitations.
 `loopai-orca` drives the Orca desktop app's `orca` CLI and executes nothing
 itself: it creates an Orca-managed worktree cut from the current branch (Orca's
 default base is the remote-tracking ref, so `--base-branch` is always passed and
@@ -155,9 +164,10 @@ macOS, or Windows via WSL) for its path helper.
 which is the only place Codex looks. Those skills are written by hand and are
 deliberately not generated from `assets/claude/skills/`: the two hosts expose
 different tools. Claude Code has `AskUserQuestion`, `Task` subagents, and named
-file tools; Codex has none of them, and `spawn_agent` resolves inside loopai's
-own Codex runs only because `pkg/executor/codex.go` registers that agent through
-`-c agents.reviewer.description=...`, which an interactive session never does.
+file tools, which cannot be copied into Codex skills. Native Codex subagent tools are
+runtime-dependent: the T3 current-thread workflow checks that they are available before use;
+other Codex hosts must not assume they exist. loopai's executor also registers a reviewer agent
+through `-c agents.reviewer.description=...` for its own Codex runs.
 A mechanical conversion would produce a skill that stalls at its first
 interactive step. `scripts/check-codex-skills.sh` is what keeps the split honest:
 it derives the expected Codex inventory from the Claude inventory minus an

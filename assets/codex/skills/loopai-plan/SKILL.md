@@ -14,7 +14,7 @@ Produce a plan, not an implementation. The output is one file at `docs/plans/YYY
 Run this first and read the printed line:
 
 ```bash
-expected=1
+expected=2
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else
@@ -184,7 +184,16 @@ The explicit file path and `--only` keep unrelated staged changes out of the com
 
 ## Step 3: Offer to Start
 
-Detect Orca before speaking: `ORCA=${ORCA_CLI_COMMAND:-orca}`, and on Linux outside an Orca terminal use `orca-ide` instead of bare `orca`, which is the GNOME screen reader there. Orca is available when `command -v "$ORCA"` succeeds. Do not call `orca status`; `$loopai-orca` runs its own preflight. T3 Code is available when `${T3CODE_HOME:-$HOME/.t3}/userdata/server-runtime.json` exists; do not contact the server, since `$loopai-t3` runs its own preflight.
+Detect Orca before speaking: `ORCA=${ORCA_CLI_COMMAND:-orca}`, and on Linux outside an Orca terminal use `orca-ide` instead of bare `orca`, which is the GNOME screen reader there. Orca is available when `command -v "$ORCA"` succeeds. Do not call `orca status`; `$loopai-orca` runs its own preflight. T3 Code is available when the injected runtime identifies this conversation as T3 Code with native subagents, or when `${T3CODE_HOME:-$HOME/.t3}/userdata/server-runtime.json` exists for separate-thread launching. Current-thread mode needs no runtime file. Do not contact the server, since `$loopai-t3` runs its own preflight.
+
+When the injected runtime identifies this as a T3 Code conversation with native subagents,
+label the T3 choice "Run loopai in this thread" and recommend it unless the user selected another
+launcher. Invoke `$loopai-t3` with the plan and chosen flags: its current-thread mode keeps a
+native observer active, leaves report review and merge in this conversation, and creates no
+second T3 thread. Do not invoke `loopai --t3-launch` directly for that choice. An explicit request
+for a new T3 thread uses `$loopai-t3`'s separate-thread mode. This current-runtime preference
+takes precedence over the history-based recommendation below. A runtime file alone only makes
+the separate-thread launcher available; it does not identify the current conversation.
 
 Derive `FLAGS` from the effective configuration - the first uncommented `key = value` for `task_model`, `review_model`, and `external_reviewers`, taken from `<repo root>/.loopai/config` and falling back to `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/config`:
 

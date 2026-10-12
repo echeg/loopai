@@ -82,6 +82,7 @@ type opts struct {
 	NoColor                 bool          `long:"no-color" description:"disable color output"`
 	Orca                    bool          `long:"orca" env:"LOOPAI_ORCA" description:"emit terminal title status for orca"`
 	T3                      bool          `long:"t3" env:"LOOPAI_T3" description:"report the run as a T3 Code thread (token in LOOPAI_T3_TOKEN)"`
+	NoT3                    bool          `long:"no-t3" description:"disable T3 thread reporting and PR linking, overriding --t3, LOOPAI_T3, and config"`
 	T3Launch                string        `long:"t3-launch" optional:"true" optional-value:"auto" choice:"auto" choice:"agent" choice:"terminal" description:"launch in a T3 Code worktree and exit: bare/auto = configured loopai provider session or terminal, agent = require provider instance, terminal = skip provider settings"`
 	ACP                     bool          `long:"acp" description:"serve the Agent Client Protocol on stdin/stdout so T3 Code can host loopai as a provider session (started by loopai-acp)"`
 	Version                 bool          `short:"v" long:"version" description:"print version and exit"`
@@ -841,9 +842,10 @@ func loadRunConfig(o opts) (*config.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
-	// Close-out modes reject execution flags and only consume VCS/color configuration. Do not
-	// let executor-only semantic checks make an otherwise valid merge or PR impossible.
+	// Close-out modes consume VCS/color configuration and reporting overrides. Do not let
+	// executor-only semantic checks make an otherwise valid merge or PR impossible.
 	if closeoutRequested(o) {
+		applyReportingOverrides(o, cfg)
 		return cfg, nil
 	}
 	if overrideErr := applyCLIOverrides(o, cfg); overrideErr != nil {
@@ -3814,6 +3816,7 @@ func validateT3LaunchFlags(o opts) error {
 		flag string
 		set  bool
 	}{
+		{"--no-t3", o.NoT3},
 		{"--plan", o.PlanDescription != ""},
 		{"--review", o.Review},
 		{"--external-only", o.ExternalOnly},
@@ -6811,6 +6814,12 @@ func applyFinalizeOverride(o opts, cfg *config.Config) {
 	}
 }
 
+// applyReportingOverrides resolves optional host reporting; --no-t3 wins over every enable source.
+func applyReportingOverrides(o opts, cfg *config.Config) {
+	cfg.Orca = enabledByCLI(cfg.Orca, o.Orca)
+	cfg.T3 = enabledByCLI(cfg.T3, o.T3) && !o.NoT3
+}
+
 // applyCLIOverrides applies CLI flag overrides to config.
 // uses opts.*Set bools (populated by markFlagsSet) to detect explicitly-set zero values
 // so that e.g. --idle-timeout 0 can disable a non-zero config value.
@@ -6825,8 +6834,7 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 	if o.PreserveAnthropicAPIKey {
 		cfg.PreserveAnthropicAPIKey = true
 	}
-	cfg.Orca = enabledByCLI(cfg.Orca, o.Orca)
-	cfg.T3 = enabledByCLI(cfg.T3, o.T3)
+	applyReportingOverrides(o, cfg)
 	if o.Worktree {
 		cfg.WorktreeEnabled = true
 	}
