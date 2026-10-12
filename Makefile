@@ -68,6 +68,7 @@ test-codex-skills:
 
 test-t3-observer:
 	@python3 ./scripts/t3-observer_test.py
+	@python3 ./scripts/t3-thread-resolver_test.py
 
 test-codex-imagegen:
 	@python3 -m unittest discover -s plugins/codex-imagegen/skills/generating-images-with-codex/scripts -p '*_test.py'

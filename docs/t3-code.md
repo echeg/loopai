@@ -70,12 +70,46 @@ when native subagents are available. Discussion, the plan, status checks, the co
 and a later merge stay in that conversation. Ask for a new thread explicitly to use the launcher
 below. The Claude Code skill and the `--t3-launch` CLI keep their separate-thread behavior.
 
-The skill delegates one ordinary `loopai --worktree --no-t3 --skip-finalize <plan>` run to a
+The skill delegates one ordinary `loopai --worktree --skip-finalize <plan>` run to a
 native Codex subagent. loopai owns the isolated Git worktree; creating it creates no T3 thread.
 The thread keeps its original Codex provider, while loopai uses its configured task and review
 models. The original agent can finish its reply: T3 keeps the thread in **Working** while the
 subagent monitors the process. The subagent must stay active until the process exits; starting a
-detached shell alone does not keep this status. No T3 token or thread-id lookup is needed.
+detached shell alone does not keep this status.
+
+The parent resolves its native `CODEX_THREAD_ID` to exactly one active T3 thread **before**
+spawning the observer, then passes `--t3-progress-thread ID`. The sidebar keeps its native
+Working badge while the thread title shows the actual loopai phase:
+
+| Run state | Current thread title |
+|---|---|
+| Task 3 of 7 | `[loopai: task 3/7] Original conversation name` |
+| Internal review, second pass | `[loopai: review · iteration 2] Original conversation name` |
+| External review | `[loopai: external review · iteration 1] Original conversation name` |
+| Report | `[loopai: report] Original conversation name` |
+| Finished / failed / stopped | `[loopai: done]`, `[loopai: failed]`, or `[loopai: stopped]` followed by the original name |
+
+The prefix comes first so it remains visible in a narrow sidebar. Only a recognized loopai
+prefix is replaced on subsequent runs; a manual rename is preserved at the next transition.
+This mode changes only the existing thread's title. It never creates a thread, changes its
+provider/branch/worktree, pins it, or links a PR. It suppresses ordinary T3 reporting even when
+`--t3`, config or environment enables that reporting. It conflicts with `--no-t3`, `--t3-launch`,
+ACP and standalone commands that do not execute a plan or review.
+
+Title updates require API credentials. An explicit `LOOPAI_T3_TOKEN` is used as usual; otherwise
+loopai issues a 7-day token through the local `t3` CLI (falling back to `npx --yes t3@latest`) and
+keeps it in memory. Without an explicit token, a URL override must match the local runtime.
+Tokens are never put in observer arguments, state or logs. Authentication or title-update
+failures warn once and leave plan execution and native Working unaffected.
+
+T3's public shell API does not expose the native Codex session binding. The skill's bundled
+resolver therefore reads only `provider_session_runtime` and active `projection_threads` from
+`state.sqlite` beside the selected T3 home's `userdata/server-runtime.json`, using SQLite's
+read-only mode. It never writes that database or guesses from a thread title/project. This
+binding schema is an internal T3 interface: missing files, schema changes, no match or multiple
+matches disable titles, and the skill uses `--no-t3` instead. Every title update also checks the
+exact ID through the public shell API. The resolver also rejects a `LOOPAI_T3_URL` for a different
+runtime, even with an explicit token. The native observer's own session ID is not the parent's.
 
 Current-thread mode leaves close-out to the user: `--skip-finalize` overrides automatic finalize
 and the ordinary CLI does not use ACP auto-merge. Review the report and use `$loopai-merge <plan>`

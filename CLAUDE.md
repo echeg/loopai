@@ -116,12 +116,22 @@ loopai instance for agent mode; otherwise it falls back to terminal mode. Agent 
 token in the thread; terminal mode passes it in the terminal environment.
 The Codex skill defaults to the current conversation when an injected T3 runtime and native
 subagent tools are available. One native subagent runs and monitors ordinary
-`loopai --worktree --no-t3 --skip-finalize`, with durable status under `.loopai/progress/`.
+`loopai --worktree --skip-finalize`, with durable status under `.loopai/progress/`.
+Before delegation, the parent resolves its `CODEX_THREAD_ID` through T3's local read-only
+`provider_session_runtime` binding and passes `--t3-progress-thread ID`. This mode updates only
+that existing thread's title with a replaceable `[loopai: task N/M]` or review/outcome prefix,
+preserving the original name and any later manual rename. It never creates/pins a thread or
+changes its provider, branch or worktree. Title credentials use `LOOPAI_T3_TOKEN`, or the local
+T3 CLI's 7-day token kept in memory. Missing/ambiguous parent identity falls back to `--no-t3`;
+missing runtime/auth or a failed title request only disables titles. Never resolve the native
+child's session ID or guess from a project/name. The resolver depends on T3's SQLite schema and
+fails closed when that schema changes; API writes revalidate the exact target on each transition.
 T3 derives Working from the active subagent, even after the parent replies; the shell process
 alone cannot provide that status. A user-requested new thread retains the launcher above.
 The original conversation retains its provider and handles later report review and merge.
 Child completion does not reliably wake an idle parent, so no unsolicited parent report is
-promised. `--no-t3` wins over CLI, environment and config reporting; independent merge settlement
+promised. `--no-t3` wins over CLI, environment and config reporting and conflicts with explicit
+`--t3-progress-thread`; progress-only mode suppresses regular reporting/PR linking. Independent merge settlement
 is unchanged. See `docs/t3-code.md` for the observer's lifecycle and limitations.
 `loopai-orca` drives the Orca desktop app's `orca` CLI and executes nothing
 itself: it creates an Orca-managed worktree cut from the current branch (Orca's

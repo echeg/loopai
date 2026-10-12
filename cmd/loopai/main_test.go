@@ -3773,6 +3773,113 @@ func TestLoadRunConfigCloseoutT3(t *testing.T) {
 	}
 }
 
+func TestT3ProgressThreadFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		configT3 bool
+		envT3    string
+		args     []string
+	}{
+		{name: "disabled config"},
+		{name: "enabled config", configT3: true},
+		{name: "environment", envT3: "true"},
+		{name: "all enable sources", configT3: true, envT3: "true", args: []string{"--t3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOOPAI_T3", tc.envT3)
+			t.Setenv("LOOPAI_T3_THREAD_ID", "unrelated-inherited-thread")
+			args := append([]string{"--t3-progress-thread", "planning-thread", "--worktree", "--skip-finalize"}, tc.args...)
+			o := parseTestOpts(t, args...)
+			require.NoError(t, validateFlags(o))
+			assert.Equal(t, "planning-thread", o.T3ProgressThread)
+			assert.True(t, o.t3ProgressThreadSet)
+			cfg := &config.Config{T3: tc.configT3}
+			require.NoError(t, applyCLIOverrides(o, cfg))
+			assert.False(t, cfg.T3, "ordinary reporting and PR linking must stay disabled")
+		})
+	}
+
+	t.Run("missing argument", func(t *testing.T) {
+		var o opts
+		parser := flags.NewParser(&o, flags.None)
+		_, err := parser.ParseArgs([]string{"--t3-progress-thread"})
+		require.Error(t, err)
+	})
+	for _, value := range []string{"", " ", "\t\n"} {
+		t.Run(fmt.Sprintf("blank/%q", value), func(t *testing.T) {
+			o := parseTestOpts(t, "--t3-progress-thread="+value)
+			require.True(t, o.t3ProgressThreadSet)
+			require.ErrorContains(t, validateFlags(o), "requires a non-empty thread ID")
+			cfg := &config.Config{T3: true}
+			require.NoError(t, applyCLIOverrides(o, cfg))
+			assert.False(t, cfg.T3, "an invalid explicit target must never enable ordinary reporting")
+		})
+	}
+}
+
+func TestValidateT3ProgressThreadFlags(t *testing.T) {
+	for _, flag := range []string{
+		"--no-t3", "--t3-launch", "--t3-launch=agent", "--t3-launch=terminal", "--acp", "--merge", "--pr", "--report",
+		"--plan=idea", "--gen-agents", "--init", "--reset", "--dump-defaults=/tmp/defaults", "--clear", "--version", "--skill-contract", "--serve",
+	} {
+		t.Run(flag, func(t *testing.T) {
+			o := parseTestOpts(t, "--t3-progress-thread", "planning-thread", flag)
+			require.ErrorContains(t, validateFlags(o), "--t3-progress-thread cannot be combined with ")
+		})
+	}
+	for _, mode := range []string{"--tasks-only", "--review", "--external-only", "--serve"} {
+		t.Run("execution/"+mode, func(t *testing.T) {
+			o := parseTestOpts(t, "--t3-progress-thread", "planning-thread", mode, "plan.md")
+			require.NoError(t, validateFlags(o))
+		})
+	}
+	for _, mode := range []string{"--version", "--skill-contract"} {
+		t.Run("main/"+mode, func(t *testing.T) {
+			_, code := runSkillContractMain(t, mode, "--t3-progress-thread=planning-thread")
+			assert.Equal(t, 1, code, "standalone early exits must reject the ignored progress target")
+		})
+	}
+}
+
+func TestStartT3ProgressReporter(t *testing.T) {
+	dir := setupTestRepo(t)
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	mainDir := setupTestRepo(t)
+	mainSvc, err := git.NewService(mainDir, noopLogger())
+	require.NoError(t, err)
+	t.Setenv("LOOPAI_T3", "true")
+	t.Setenv("LOOPAI_T3_THREAD_ID", "unrelated-inherited-thread")
+	original := newT3Reporter
+	t.Cleanup(func() { newT3Reporter = original })
+	var got []t3.Options
+	newT3Reporter = func(options t3.Options, _ func(string) string) (*t3.Reporter, error) {
+		got = append(got, options)
+		return nil, errors.New("test reporter unavailable") // capture options without a real network client
+	}
+	o := parseTestOpts(t, "--t3-progress-thread", "planning-thread", "--t3", "--worktree", "--skip-finalize")
+	cfg := &config.Config{T3: true, TaskProvider: config.ExecutorClaude, TaskModel: "claude:opus:high"}
+	require.NoError(t, applyCLIOverrides(o, cfg))
+	require.False(t, cfg.T3)
+	req := executePlanRequest{
+		Config: cfg, GitSvc: gitSvc, MainGitSvc: mainSvc, Mode: processor.ModeFull, PlanFile: "plan.md",
+	}
+	startT3Reporter(o, req, "feature")
+	require.Len(t, got, 1, "only the title-only reporter may be constructed")
+	assert.Equal(t, "planning-thread", got[0].ThreadID, "an inherited thread ID must not replace the explicit target")
+	assert.True(t, got[0].TitleOnly)
+	assert.Equal(t, mainSvc.Root(), got[0].RepoRoot)
+	assert.Empty(t, got[0].WorktreePath)
+	assert.Equal(t, "plan.md", got[0].PlanFile)
+	assert.NotNil(t, got[0].Warn)
+
+	got = nil
+	o = parseTestOpts(t, "--t3-progress-thread=")
+	req.Config.T3 = true
+	assert.Nil(t, startT3Reporter(o, req, "feature"))
+	assert.Empty(t, got, "a malformed target must never construct the normal reporter, even without prior flag validation")
+}
+
 // t3RecordingDispatcher is a t3.Dispatcher fake that records every command.
 type t3RecordingDispatcher struct {
 	mu       sync.Mutex
@@ -3850,6 +3957,8 @@ func TestStartT3Reporter(t *testing.T) {
 		require.Eventually(t, func() bool { return len(api.titles()) > 0 }, 2*time.Second, 5*time.Millisecond)
 		threads.Stop()
 		require.Len(t, got, 1)
+		assert.False(t, got[0].TitleOnly)
+		assert.Empty(t, got[0].ThreadID, "ordinary reporting keeps environment-based thread discovery")
 		assert.Equal(t, gitSvc.Root(), got[0].RepoRoot)
 		assert.Equal(t, gitSvc.Root(), got[0].WorktreePath)
 		assert.Equal(t, "feat", got[0].Branch)
@@ -15411,6 +15520,26 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		req := f.request(config.FinalizePR)
 		req.Config.T3 = true
 		require.NoError(t, applyCLIOverrides(parseTestOpts(t, "--no-t3"), req.Config))
+
+		res := runFinalizeCloseout(t.Context(), req, synced, "", &recordingFinalizeLog{})
+
+		require.NoError(t, res.incomplete)
+		assert.True(t, res.prOpened, "ordinary finalize still runs while T3 linking is disabled")
+	})
+
+	t.Run("title-only progress suppresses configured pull request linking", func(t *testing.T) {
+		f := setupFinalizePRFixture(t)
+		original := newT3Dispatcher
+		t.Cleanup(func() { newT3Dispatcher = original })
+		newT3Dispatcher = func(func(string) string) (t3.Dispatcher, error) {
+			t.Error("title-only progress must not connect to T3 for pull request linking")
+			return nil, t3.ErrNoToken
+		}
+		t.Setenv("LOOPAI_T3", "true")
+		req := f.request(config.FinalizePR)
+		req.Config.T3 = true
+		o := parseTestOpts(t, "--t3-progress-thread", "planning-thread", "--t3")
+		require.NoError(t, applyCLIOverrides(o, req.Config))
 
 		res := runFinalizeCloseout(t.Context(), req, synced, "", &recordingFinalizeLog{})
 

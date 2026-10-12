@@ -1,4 +1,4 @@
-contract: 2
+contract: 3
 
 flags:
 --acp
@@ -46,6 +46,7 @@ flags:
 --skip-finalize
 --t3
 --t3-launch [agent|auto|terminal]
+--t3-progress-thread
 --task-model
 --tasks-only
 --version

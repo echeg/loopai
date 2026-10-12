@@ -83,6 +83,7 @@ type opts struct {
 	Orca                    bool          `long:"orca" env:"LOOPAI_ORCA" description:"emit terminal title status for orca"`
 	T3                      bool          `long:"t3" env:"LOOPAI_T3" description:"report the run as a T3 Code thread (token in LOOPAI_T3_TOKEN)"`
 	NoT3                    bool          `long:"no-t3" description:"disable T3 thread reporting and PR linking, overriding --t3, LOOPAI_T3, and config"`
+	T3ProgressThread        string        `long:"t3-progress-thread" value-name:"thread-id" description:"update only the title of this existing T3 Code thread with run progress, preserving its provider and original title"`
 	T3Launch                string        `long:"t3-launch" optional:"true" optional-value:"auto" choice:"auto" choice:"agent" choice:"terminal" description:"launch in a T3 Code worktree and exit: bare/auto = configured loopai provider session or terminal, agent = require provider instance, terminal = skip provider settings"`
 	ACP                     bool          `long:"acp" description:"serve the Agent Client Protocol on stdin/stdout so T3 Code can host loopai as a provider session (started by loopai-acp)"`
 	Version                 bool          `short:"v" long:"version" description:"print version and exit"`
@@ -109,12 +110,13 @@ type opts struct {
 	extraArgs []string
 
 	// set by markFlagsSet after parsing; true when the flag was explicitly provided on the CLI
-	waitSet           bool
-	sessionTimeoutSet bool
-	idleTimeoutSet    bool
-	mergeSet          bool
-	prSet             bool
-	executionModeSet  bool
+	waitSet             bool
+	sessionTimeoutSet   bool
+	idleTimeoutSet      bool
+	mergeSet            bool
+	prSet               bool
+	executionModeSet    bool
+	t3ProgressThreadSet bool
 
 	claudeCommandSet      bool
 	claudeArgsSet         bool
@@ -196,6 +198,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 	o.idleTimeoutSet = isFlagSet(parser, "idle-timeout")
 	o.mergeSet = isFlagSet(parser, "merge")
 	o.prSet = isFlagSet(parser, "pr")
+	o.t3ProgressThreadSet = isFlagSet(parser, "t3-progress-thread")
 	o.claudeCommandSet = isFlagSet(parser, "claude-command")
 	o.claudeArgsSet = isFlagSet(parser, "claude-args")
 	o.codexArgsSet = isFlagSet(parser, "codex-args")
@@ -401,6 +404,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Record explicit empty values before standalone exits too, so a malformed progress target
+	// cannot be silently ignored by --version or --skill-contract.
+	o.markFlagsSet(parser)
+	if o.Version || o.SkillContract {
+		if err := validateT3ProgressThreadFlags(o); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// checked before --version: the banner was suppressed, so stdout carries the integer alone
 	if o.SkillContract {
 		printSkillContract(os.Stdout)
@@ -409,10 +422,6 @@ func main() {
 	if o.Version {
 		os.Exit(0)
 	}
-
-	// detect explicitly-set zero values for duration flags so --flag 0 can disable config values.
-	// go-flags can't distinguish "not provided" from "set to zero" via the field alone.
-	o.markFlagsSet(parser)
 
 	// handle positional arguments after marking flags so --merge/--pr/--report identifiers remain opaque.
 	if err := o.applyPositionalArgs(args); err != nil {
@@ -1649,12 +1658,17 @@ func initialOrcaPhase(mode processor.Mode) status.Phase {
 	}
 }
 
-// startT3Reporter binds the run to a T3 Code thread when the t3 option is enabled. The thread
-// records the worktree path only when the directory outlives the run: a --worktree checkout is
-// removed after success, so it registers the branch alone. An unavailable server produces one
-// warning and a nil, no-op reporter.
+// startT3Reporter binds the run to a T3 Code thread when reporting is enabled. An explicit
+// progress target updates only that existing thread's title, even with ordinary reporting off.
+// Ordinary reporting records the worktree path only when the directory outlives the run: a
+// --worktree checkout is removed after success, so it registers the branch alone. An unavailable
+// server produces one warning and a nil, no-op reporter.
 func startT3Reporter(o opts, req executePlanRequest, branch string) *t3.Reporter {
-	if req.Config == nil || !req.Config.T3 || req.GitSvc == nil {
+	titleOnly := t3ProgressThreadRequested(o)
+	if req.Config == nil || req.GitSvc == nil || (!req.Config.T3 && !titleOnly) {
+		return nil
+	}
+	if titleOnly && strings.TrimSpace(o.T3ProgressThread) == "" {
 		return nil
 	}
 	repoRoot, worktreePath := req.GitSvc.Root(), req.GitSvc.Root()
@@ -1665,6 +1679,8 @@ func startT3Reporter(o opts, req executePlanRequest, branch string) *t3.Reporter
 		fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
 	}
 	threads, err := newT3Reporter(t3.Options{
+		ThreadID:     o.T3ProgressThread,
+		TitleOnly:    titleOnly,
 		PlanFile:     req.PlanFile,
 		Executor:     req.Config.TaskProvider,
 		Model:        t3TaskModel(o, req.Config),
@@ -3596,6 +3612,9 @@ func validateFlags(o opts) error {
 	if err := rejectRemovedFlags(o); err != nil {
 		return err
 	}
+	if err := validateT3ProgressThreadFlags(o); err != nil {
+		return err
+	}
 	if err := validateCloseoutFlags(o); err != nil {
 		return err
 	}
@@ -3798,6 +3817,44 @@ func runConfiguredStandaloneCommand(ctx context.Context, o opts, cfg *config.Con
 // passThroughValue is the value shape --t3-launch and an ACP prompt forward, matching the
 // loopai-t3 skill's check.
 var passThroughValue = regexp.MustCompile(`^[A-Za-z0-9._:,+-]+$`)
+
+func t3ProgressThreadRequested(o opts) bool {
+	return o.t3ProgressThreadSet || o.T3ProgressThread != ""
+}
+
+// validateT3ProgressThreadFlags confines title-only reporting to execution runs. A target is
+// always explicit; an empty flag must never fall back to environment discovery or a new thread.
+func validateT3ProgressThreadFlags(o opts) error {
+	if !t3ProgressThreadRequested(o) {
+		return nil
+	}
+	if strings.TrimSpace(o.T3ProgressThread) == "" {
+		return errors.New("--t3-progress-thread requires a non-empty thread ID")
+	}
+	for _, conflict := range []struct {
+		flag string
+		set  bool
+	}{
+		{"--no-t3", o.NoT3},
+		{"--t3-launch", o.T3Launch != ""},
+		{"--acp", o.ACP},
+		{"--merge, --pr, or --report", closeoutRequested(o)},
+		{"--plan", o.PlanDescription != ""},
+		{"--gen-agents", o.GenAgents},
+		{"--init", o.Init},
+		{"--reset", o.Reset},
+		{"--dump-defaults", o.DumpDefaults != ""},
+		{"--clear", o.Clear},
+		{"--version", o.Version},
+		{"--skill-contract", o.SkillContract},
+		{"--serve without a plan file", o.Serve && o.PlanFile == ""},
+	} {
+		if conflict.set {
+			return fmt.Errorf("--t3-progress-thread cannot be combined with %s", conflict.flag)
+		}
+	}
+	return nil
+}
 
 // validateT3LaunchFlags keeps --t3-launch standalone. It forwards only the phase model specs and
 // the reviewer chain to the launched run: anything that picks a mode, a worktree, a branch, or a
@@ -6814,10 +6871,11 @@ func applyFinalizeOverride(o opts, cfg *config.Config) {
 	}
 }
 
-// applyReportingOverrides resolves optional host reporting; --no-t3 wins over every enable source.
+// applyReportingOverrides resolves optional host reporting. --no-t3 and title-only progress
+// both suppress ordinary T3 reporting and PR linking, regardless of the enable source.
 func applyReportingOverrides(o opts, cfg *config.Config) {
 	cfg.Orca = enabledByCLI(cfg.Orca, o.Orca)
-	cfg.T3 = enabledByCLI(cfg.T3, o.T3) && !o.NoT3
+	cfg.T3 = enabledByCLI(cfg.T3, o.T3) && !o.NoT3 && !t3ProgressThreadRequested(o)
 }
 
 // applyCLIOverrides applies CLI flag overrides to config.

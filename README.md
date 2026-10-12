@@ -164,8 +164,9 @@ The plugin provides ten skills:
 
 In Codex inside T3 Code, `$loopai-t3` defaults to the **current thread** when native
 subagents are available. A subagent runs and monitors loopai in an isolated Git worktree, keeping
-the original conversation in Working until the process exits. Report review and merge stay in
-that conversation; ask for a new thread to use `--t3-launch`. See
+the original conversation in Working until the process exits. The title shows a compact prefix
+such as `[loopai: task 3/7]` or `[loopai: review · iteration 2]`, preserving the conversation's
+name. Report review and merge stay in that conversation; ask for a new thread to use `--t3-launch`. See
 [current-thread execution](docs/t3-code.md#keep-the-current-codex-thread) for completion and
 observer-lifetime details.
 
@@ -1441,6 +1442,12 @@ Pass `--t3`, set `t3 = true`, or set `LOOPAI_T3=1` to report plan execution and 
 bearer token in `LOOPAI_T3_TOKEN`; without them loopai warns once and runs normally.
 `--no-t3` overrides those settings for one run, disabling thread reporting and PR linking.
 It does not disable the separate local-merge settlement mechanism.
+
+`--t3-progress-thread ID` updates only the title of that existing thread, preserving its name,
+provider, branch and pin state. It suppresses ordinary T3 reporting and PR linking even when
+config enables them, and conflicts with `--no-t3` and `--t3-launch`. The current-thread Codex
+skill resolves the ID before delegation. Without an explicit token, loopai can issue a local
+7-day token through `t3` (or `npx`); failed title updates only warn and never stop the plan.
 
 `loopai --t3-launch[=auto|agent|terminal] <plan>` creates a T3 Code-managed worktree and thread,
 carrying the plan and missing local `.loopai/` overrides over. The bare flag uses `auto`: it reads

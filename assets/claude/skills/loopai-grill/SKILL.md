@@ -15,7 +15,7 @@ Resolve the repository root with `git rev-parse --show-toplevel`, then use `${CL
 Run this first and read the printed line:
 
 ```bash
-expected=2
+expected=3
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else

@@ -52,6 +52,13 @@ func (f *fakeDispatcher) Dispatch(_ context.Context, cmd Command) (int64, error)
 		return 0, f.titleErr
 	}
 	f.commands = append(f.commands, cmd)
+	if update, ok := cmd.(*ThreadTitleUpdate); ok {
+		for i := range f.shell.Threads {
+			if f.shell.Threads[i].ID == update.ThreadID {
+				f.shell.Threads[i].Title = update.Title
+			}
+		}
+	}
 	return int64(len(f.commands)), nil
 }
 
@@ -134,6 +141,215 @@ func TestNewReadsThreadIDFromEnv(t *testing.T) {
 	assert.Equal(t, "th-env", r.opts.ThreadID)
 	close(r.quit) // stop the worker without publishing
 	<-r.done
+}
+
+func TestNewTitleOnlyRequiresExplicitThreadID(t *testing.T) {
+	for _, id := range []string{"", " \t"} {
+		r, err := New(Options{TitleOnly: true, ThreadID: id}, func(string) string {
+			t.Fatal("missing explicit thread ID must fail before inspecting credentials or the environment")
+			return "environment-thread"
+		})
+		require.ErrorContains(t, err, "requires an explicit thread ID")
+		assert.Nil(t, r)
+	}
+
+	r, err := New(Options{TitleOnly: true, ThreadID: " th-explicit "}, envMap(map[string]string{
+		EnvToken: "tok", EnvURL: "http://127.0.0.1:1", EnvThreadID: "th-env",
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "th-explicit", r.opts.ThreadID)
+	close(r.quit) // do not publish to the test endpoint
+	<-r.done
+}
+
+func TestReporterTitleOnlyProgress(t *testing.T) {
+	const title = "[Draft] Устройство проекта"
+	api := &fakeDispatcher{shell: Shell{Threads: []Thread{
+		{ID: "other", Title: "Other thread"},
+		{ID: "current", Title: title, PinnedAt: new("already pinned"), Branch: new("main"),
+			WorktreePath: new("/original"), Session: &ThreadSession{Status: "running"}},
+	}}}
+	r := NewWithDispatcher(api, Options{
+		TitleOnly: true, ThreadID: "current", PlanFile: writePlan(t, 3),
+		RepoRoot: "/different", Branch: "different", WorktreePath: "/different", Model: "different",
+	})
+	r.OnPhase("", status.PhaseTask)
+	waitFor(t, api, 1)
+	r.OnSection(status.NewTaskIterationSection(2))
+	waitFor(t, api, 2)
+	assert.True(t, r.WithInputWait(func() bool {
+		waitFor(t, api, 3)
+		return true
+	}))
+	waitFor(t, api, 4)
+	r.OnPhase(status.PhaseTask, status.PhaseLimitWait)
+	waitFor(t, api, 5)
+	r.OnPhase(status.PhaseLimitWait, status.PhaseTask)
+	waitFor(t, api, 6)
+	r.OnSection(status.NewInternalReviewSection(2, "review"))
+	waitFor(t, api, 7)
+	r.OnSection(status.NewExternalReviewIterationSection("codex", 3))
+	waitFor(t, api, 8)
+	r.OnPhase(status.PhaseExternalReview, status.PhaseExternalEval)
+	waitFor(t, api, 9)
+	r.OnPhase(status.PhaseExternalEval, status.PhaseFinalize)
+	waitFor(t, api, 10)
+	r.OnPhase(status.PhaseFinalize, status.PhaseReport)
+	waitFor(t, api, 11)
+	r.Finish(true)
+	r.OnPhase(status.PhaseReport, status.PhaseTask) // the final outcome is frozen
+	r.Stop()
+
+	labels := []string{"task", "task 2/3", "waiting for input", "task 2/3", "waiting for limit", "task 2/3",
+		"review · iteration 2", "external review · iteration 3", "external eval", "finalize", "report", "done"}
+	want := make([]string, len(labels))
+	for i, label := range labels {
+		want[i] = "[loopai: " + label + "] " + title
+	}
+	assert.Equal(t, want, api.titles())
+	assert.Equal(t, len(want), api.shellHits, "each changed title revalidates the target and rereads the user title")
+	assertTitleOnlyCommands(t, api)
+	assert.Equal(t, "Other thread", api.shell.Threads[0].Title)
+	assert.Equal(t, "main", *api.shell.Threads[1].Branch)
+	assert.Equal(t, "/original", *api.shell.Threads[1].WorktreePath)
+	assert.Equal(t, "running", api.shell.Threads[1].Session.Status)
+}
+
+func TestReporterTitleOnlyPreservesNames(t *testing.T) {
+	tests := []struct {
+		name, title, base string
+	}{
+		{"repeat run", "[loopai: done] Original", "Original"},
+		{"repeat with outcome", "[loopai: done · PR merged] Original", "Original"},
+		{"interrupted run", "[loopai: review · iteration 2] Original", "Original"},
+		{"arbitrary brackets", "[review] Original", "[review] Original"},
+		{"unknown namespace value", "[loopai: special] Original", "[loopai: special] Original"},
+		{"prefix in middle", "Original [loopai: task 2/3]", "Original [loopai: task 2/3]"},
+		{"only one prefix", "[loopai: task] [loopai: review] Original", "[loopai: review] Original"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			api := &fakeDispatcher{shell: Shell{Threads: []Thread{{ID: "current", Title: tc.title}}}}
+			r := NewWithDispatcher(api, Options{TitleOnly: true, ThreadID: "current"})
+			r.OnPhase("", status.PhaseTask)
+			waitFor(t, api, 1)
+			r.Stop()
+			assert.Equal(t, []string{"[loopai: task] " + tc.base, "[loopai: stopped] " + tc.base}, api.titles())
+			assertTitleOnlyCommands(t, api)
+		})
+	}
+}
+
+func TestReporterTitleOnlyKeepsManualRename(t *testing.T) {
+	for _, rename := range []string{"User renamed", "[loopai: task] User renamed"} {
+		api := &fakeDispatcher{shell: Shell{Threads: []Thread{{ID: "current", Title: "Original"}}}}
+		r := NewWithDispatcher(api, Options{TitleOnly: true, ThreadID: "current"})
+		r.OnPhase("", status.PhaseTask)
+		waitFor(t, api, 1)
+		api.mu.Lock()
+		api.shell.Threads[0].Title = rename
+		api.mu.Unlock()
+		r.OnPhase(status.PhaseTask, status.PhaseReview)
+		waitFor(t, api, 2)
+		r.Finish(false)
+		r.Stop()
+		assert.Equal(t, []string{
+			"[loopai: task] Original", "[loopai: review] User renamed", "[loopai: failed] User renamed",
+		}, api.titles())
+		assertTitleOnlyCommands(t, api)
+	}
+}
+
+func TestReporterTitleOnlyDisablesWithoutFallback(t *testing.T) {
+	tests := []struct {
+		name, threadID, wantErr string
+		api                     *fakeDispatcher
+	}{
+		{"missing ID", "", "explicit thread ID", &fakeDispatcher{shell: projectShell("/repo")}},
+		{"missing thread", "current", "not found", &fakeDispatcher{shell: Shell{
+			Projects: []Project{{ID: "p", WorkspaceRoot: "/repo"}}, Threads: []Thread{{ID: "other", Title: "Other"}},
+		}}},
+		{"archived thread", "current", "archived", &fakeDispatcher{shell: Shell{Threads: []Thread{
+			{ID: "current", Title: "Original", ArchivedAt: new("yesterday")},
+		}}}},
+		{"shell failure", "current", "disconnected", &fakeDispatcher{shellErr: errors.New("disconnected")}},
+		{"dispatch failure", "current", "denied", &fakeDispatcher{
+			shell: Shell{Threads: []Thread{{ID: "current", Title: "Original"}}}, dispErr: errors.New("denied"),
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			warnings := make(chan string, 8)
+			r := NewWithDispatcher(tc.api, Options{TitleOnly: true, ThreadID: tc.threadID, RepoRoot: "/repo",
+				Warn: func(format string, args ...any) { warnings <- fmt.Sprintf(format, args...) },
+			})
+			r.OnPhase("", status.PhaseTask)
+			select {
+			case warning := <-warnings:
+				assert.Contains(t, warning, tc.wantErr)
+			case <-time.After(2 * time.Second):
+				t.Fatal("expected best-effort reporting warning")
+			}
+			r.OnSection(status.NewTaskIterationSection(2))
+			r.Finish(true)
+			r.Stop()
+			assert.Empty(t, tc.api.commands, "no thread is created, pinned, or otherwise changed on invalid target or API failure")
+			assert.Empty(t, warnings, "failure only warns once")
+			if tc.threadID == "" {
+				assert.Zero(t, tc.api.shellHits, "an explicit ID is required before any server call")
+			}
+		})
+	}
+}
+
+func TestReporterTitleOnlyRevalidatesTarget(t *testing.T) {
+	for _, archive := range []bool{false, true} {
+		api := &fakeDispatcher{shell: Shell{Threads: []Thread{{ID: "current", Title: "Original"}}}}
+		var warnings atomic.Int32
+		r := NewWithDispatcher(api, Options{TitleOnly: true, ThreadID: "current",
+			Warn: func(string, ...any) { warnings.Add(1) },
+		})
+		r.OnPhase("", status.PhaseTask)
+		waitFor(t, api, 1)
+		api.mu.Lock()
+		if archive {
+			api.shell.Threads[0].ArchivedAt = new("now")
+		} else {
+			api.shell.Threads = nil
+		}
+		api.mu.Unlock()
+		r.OnPhase(status.PhaseTask, status.PhaseReview)
+		require.Eventually(t, func() bool { return warnings.Load() == 1 }, time.Second, time.Millisecond)
+		r.Finish(true)
+		r.Stop()
+		assert.Equal(t, []string{"[loopai: task] Original"}, api.titles())
+		assert.EqualValues(t, 1, warnings.Load())
+		assertTitleOnlyCommands(t, api)
+	}
+}
+
+func TestReporterTitleOnlyFinishNote(t *testing.T) {
+	api := &fakeDispatcher{shell: Shell{Threads: []Thread{{ID: "current", Title: "Original"}}}}
+	r := NewWithDispatcher(api, Options{TitleOnly: true, ThreadID: "current"})
+	r.SetFinishNote("finalize incomplete [retry]\nneeded")
+	r.Finish(true)
+	r.Stop()
+	assert.Equal(t, []string{"[loopai: done · finalize incomplete (retry) needed] Original"}, api.titles())
+	// The emitted prefix must remain replaceable on the next run.
+	r = NewWithDispatcher(api, Options{TitleOnly: true, ThreadID: "current"})
+	r.Stop()
+	assert.Equal(t, "[loopai: stopped] Original", api.titles()[1])
+	assertTitleOnlyCommands(t, api)
+}
+
+func assertTitleOnlyCommands(t *testing.T, api *fakeDispatcher) {
+	t.Helper()
+	for _, cmd := range api.commands {
+		update, ok := cmd.(*ThreadTitleUpdate)
+		require.True(t, ok, "title-only reporting may dispatch only a title update, got %T", cmd)
+		assert.Equal(t, "thread.meta.update", update.Type)
+		assert.Equal(t, "current", update.ThreadID)
+	}
 }
 
 func TestReporterNilReceiver(t *testing.T) {

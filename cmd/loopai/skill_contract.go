@@ -18,7 +18,7 @@ import (
 // `expected=` in every skill, whenever a surface change affects what a skill tells the model to do.
 // TestSkillContract fingerprints that surface against testdata/skill-contract.golden, so a change
 // cannot land without either a bump or a deliberate `-update`.
-const skillContract = 2
+const skillContract = 3
 
 // configKeyLine matches a key assignment in the embedded defaults config, commented or not: the
 // file documents most keys as `# key =` lines left at their built-in default.

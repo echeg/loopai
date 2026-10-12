@@ -11,7 +11,7 @@ Create an implementation plan in `docs/plans/YYYYMMDD-<task-name>.md` with inter
 Run this first and read the printed line:
 
 ```bash
-expected=2
+expected=3
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else

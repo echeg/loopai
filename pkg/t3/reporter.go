@@ -2,8 +2,10 @@ package t3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +21,11 @@ import (
 // skips the pin, so it is shorter. A missed unpin leaves the thread pinned, and a later run bound to
 // it reads that pin as the user's and never releases it.
 const stopTimeout = 4*requestTimeout + time.Second
+
+// Only our own recognized status prefix is replaceable. Other bracketed titles are user text.
+var currentTitlePrefix = regexp.MustCompile(`^\[loopai: (?:task(?: [1-9][0-9]*(?:/[1-9][0-9]*)?)?|` +
+	`(?:review|external review|plan)(?: · iteration [1-9][0-9]*)?|external eval|finalize|report|` +
+	`waiting for (?:input|limit)|done(?: · [^\]\r\n]+)?|failed|stopped)\] `)
 
 type waitingKind uint8
 
@@ -67,6 +74,9 @@ type Options struct {
 	Branch       string
 	// ThreadID binds the reporter to an existing thread instead of creating one.
 	ThreadID string
+	// TitleOnly updates only the title of an explicitly supplied, existing ThreadID, preserving
+	// its original title. It never creates or pins a thread, or reads a thread ID from the environment.
+	TitleOnly bool
 	// Warn receives at most one line explaining why reporting stopped. It may be nil.
 	Warn func(format string, args ...any)
 }
@@ -98,7 +108,16 @@ type Reporter struct {
 // construct it only when reporting is enabled; the error explains why it could not start, and
 // callers print it once and continue without one.
 func New(opts Options, getenv func(string) string) (*Reporter, error) {
-	ep, err := ResolveEndpoint(getenv)
+	if opts.TitleOnly && strings.TrimSpace(opts.ThreadID) == "" {
+		return nil, errors.New("t3 status disabled: title-only reporting requires an explicit thread ID")
+	}
+	var ep Endpoint
+	var err error
+	if opts.TitleOnly {
+		ep, err = ResolveProgressEndpoint(context.Background(), getenv)
+	} else {
+		ep, err = ResolveEndpoint(getenv)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -114,6 +133,9 @@ func NewWithDispatcher(api Dispatcher, opts Options) *Reporter {
 }
 
 func newReporter(api Dispatcher, opts Options) *Reporter {
+	if opts.TitleOnly {
+		opts.ThreadID = strings.TrimSpace(opts.ThreadID)
+	}
 	r := &Reporter{
 		api:  api,
 		opts: opts,
@@ -328,8 +350,8 @@ func (r *Reporter) takePending() string {
 }
 
 // run owns every network call: it binds the thread once, then sends each changed title. Any
-// title error disables reporting for the rest of the run. The thread is pinned for the duration
-// of the run so it stays at the top of the sidebar, and unpinned after the final title.
+// title error disables reporting for the rest of the run. Normal reporting pins the thread for
+// the run and unpins it after the final title. Title-only reporting never changes the pin.
 func (r *Reporter) run() {
 	defer close(r.done)
 	threadID := ""
@@ -349,9 +371,12 @@ func (r *Reporter) run() {
 		title := r.takePending()
 		if title != "" && title != sent {
 			var err error
-			if threadID == "" {
+			switch {
+			case r.opts.TitleOnly:
+				err = r.sendCurrentTitle(title)
+			case threadID == "":
 				threadID, pinned, err = r.bindAndPin(title)
-			} else {
+			default:
 				err = r.send(threadID, title)
 			}
 			if err != nil {
@@ -420,6 +445,31 @@ func (r *Reporter) send(threadID, title string) error {
 		return fmt.Errorf("t3 status disabled: %w", err)
 	}
 	return nil
+}
+
+// sendCurrentTitle revalidates the exact target and rereads its base title on every transition,
+// so a user's rename during execution is preserved. A missing target never falls back to creation.
+func (r *Reporter) sendCurrentTitle(prefix string) error {
+	if r.opts.ThreadID == "" {
+		return errors.New("t3 status disabled: title-only reporting requires an explicit thread ID")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	shell, err := r.api.Shell(ctx)
+	if err != nil {
+		return fmt.Errorf("t3 status disabled: read current thread: %w", err)
+	}
+	for _, thread := range shell.Threads {
+		if thread.ID != r.opts.ThreadID {
+			continue
+		}
+		if thread.ArchivedAt != nil {
+			return fmt.Errorf("t3 status disabled: thread %s is archived", r.opts.ThreadID)
+		}
+		base := currentTitlePrefix.ReplaceAllString(thread.Title, "")
+		return r.send(thread.ID, prefix+" "+base)
+	}
+	return fmt.Errorf("t3 status disabled: thread %s not found", r.opts.ThreadID)
 }
 
 // bindAndPin binds the thread with its first title, then takes the run's pin. A run that stopped
@@ -499,30 +549,39 @@ func planTaskTotal(planFile string) int {
 
 // titleFor formats the thread title. Final and waiting states take precedence over phases.
 func (r *Reporter) titleFor(s state) string {
+	label := stateLabel(s)
+	if label == "" {
+		return ""
+	}
+	if r.opts.TitleOnly {
+		// Keep finish notes inside the replaceable prefix even if a caller supplies brackets.
+		label = strings.NewReplacer("[", "(", "]", ")", "\r", " ", "\n", " ").Replace(label)
+		return "[loopai: " + label + "]"
+	}
+	return r.name + " · " + label
+}
+
+func stateLabel(s state) string {
 	switch s.final {
 	case finalDone:
 		if s.note != "" {
-			return r.name + " · done · " + s.note
+			return "done · " + s.note
 		}
-		return r.name + " · done"
+		return "done"
 	case finalFailed:
-		return r.name + " · failed"
+		return "failed"
 	case finalStopped:
-		return r.name + " · stopped"
+		return "stopped"
 	case finalNone:
 	}
 	switch s.waiting {
 	case waitingInput:
-		return r.name + " · waiting for input"
+		return "waiting for input"
 	case waitingLimit:
-		return r.name + " · waiting for limit"
+		return "waiting for limit"
 	case waitingNone:
 	}
-	label := phaseLabel(s)
-	if label == "" {
-		return ""
-	}
-	return r.name + " · " + label
+	return phaseLabel(s)
 }
 
 func phaseLabel(s state) string {

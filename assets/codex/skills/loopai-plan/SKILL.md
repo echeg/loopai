@@ -14,7 +14,7 @@ Produce a plan, not an implementation. The output is one file at `docs/plans/YYY
 Run this first and read the printed line:
 
 ```bash
-expected=2
+expected=3
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else

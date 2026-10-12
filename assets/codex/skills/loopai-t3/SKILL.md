@@ -1,6 +1,6 @@
 ---
 name: loopai-t3
-description: "Run an existing loopai plan in T3 Code. In an active Codex thread with native subagents, keep execution and Working status in that thread; otherwise launch a separate T3-managed thread. Supports per-phase model and reviewer overrides. Use for loopai-t3, run plan in t3, or launch loopai in t3 code."
+description: "Run an existing loopai plan in T3 Code. In an active Codex thread with native subagents, keep execution, Working status, and task/review progress in that thread; otherwise launch a separate T3-managed thread. Supports per-phase model and reviewer overrides. Use for loopai-t3, run plan in t3, or launch loopai in t3 code."
 metadata:
   short-description: Run loopai in the current or a new T3 thread
 ---
@@ -14,7 +14,7 @@ metadata:
 Run this first and read the printed line:
 
 ```bash
-expected=2
+expected=3
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else
@@ -33,7 +33,7 @@ Never stop on a mismatch.
 
 ## Choose the Thread Mode
 
-- **Current thread (default inside T3 Codex):** the injected runtime identifies this as a T3 Code Codex conversation and the current tool inventory exposes native `collaboration.spawn_agent` / `spawn_agent` with live-agent inspection or messaging. Read [references/current-thread.md](references/current-thread.md). For status/resume/recovery, inspect its existing-run record before flag/history questions, plan selection, or any missing-plan rejection; only a new launch needs those shared selections. Then follow that reference instead of the new-thread preflight and Steps 2–4. A runtime file on disk alone does not prove that this conversation is inside T3, and a CLI-spawned model is not a native subagent.
+- **Current thread (default inside T3 Codex):** the injected runtime identifies this as a T3 Code Codex conversation and the current tool inventory exposes native `collaboration.spawn_agent` / `spawn_agent` with live-agent inspection or messaging. Read [references/current-thread.md](references/current-thread.md). For status/resume/recovery, inspect its existing-run record before flag/history questions, plan selection, or any missing-plan rejection; only a new launch needs those shared selections. Before spawning a new observer, resolve the parent thread's identity as the reference describes so loopai can show task/review progress in its title. Then follow that reference instead of the new-thread preflight and Steps 2–4. A runtime file on disk alone does not prove that this conversation is inside T3, and a CLI-spawned model is not a native subagent.
 - **New thread:** the user explicitly requests a separate/new thread, or this host lacks the current-thread capability and the user has not required staying here. Follow the existing new-thread steps below. This keeps provider/terminal launching available outside T3 Codex.
 - If the user explicitly requires this thread but the necessary native tools or active T3 context are absent, report the missing capability; do not silently create a second thread or invent a tool. If current-thread launch fails, report the failure without switching modes.
 

@@ -18,7 +18,7 @@ Do not invoke an implementation skill, write code, scaffold a project, or take a
 Run this first and read the printed line:
 
 ```bash
-expected=2
+expected=3
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else

@@ -12,13 +12,18 @@ import (
 	"unicode"
 )
 
-const settleAuthTimeout = 15 * time.Second
+const localAuthTimeout = 15 * time.Second
 
 // ResolveSettleEndpoint resolves credentials for a best-effort local merge close-out. An explicit
 // token follows ResolveEndpoint's usual rules. Otherwise, a local runtime must exist and any URL
 // override must match its origin before the T3 CLI may issue a short-lived settlement token.
 // The issued bearer token stays in memory and the process environment is not changed.
 func ResolveSettleEndpoint(ctx context.Context, getenv func(string) string) (Endpoint, error) {
+	return resolveLocalEndpoint(ctx, getenv, "settlement", "1h", "loopai-settle")
+}
+
+// resolveLocalEndpoint keeps locally issued credentials in memory and rejects a different server.
+func resolveLocalEndpoint(ctx context.Context, getenv func(string) string, purpose, ttl, label string) (Endpoint, error) {
 	if strings.TrimSpace(getenv(EnvToken)) != "" {
 		return ResolveEndpoint(getenv)
 	}
@@ -35,19 +40,19 @@ func ResolveSettleEndpoint(ctx context.Context, getenv func(string) string) (End
 		return Endpoint{}, fmt.Errorf("t3: URL override differs from the local runtime: %w", ErrNoToken)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, settleAuthTimeout)
+	ctx, cancel := context.WithTimeout(ctx, localAuthTimeout)
 	defer cancel()
-	cmd, err := settleTokenCommand(ctx, home)
+	cmd, err := localTokenCommand(ctx, home, ttl, label)
 	if err != nil {
 		return Endpoint{}, err
 	}
 	output, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() != nil {
-			return Endpoint{}, fmt.Errorf("t3: issue settlement token: %w", ctx.Err())
+			return Endpoint{}, fmt.Errorf("t3: issue %s token: %w", purpose, ctx.Err())
 		}
 		// CLI output can contain credentials, so only expose the process error, never its output.
-		return Endpoint{}, fmt.Errorf("t3: issue settlement token: %w", err)
+		return Endpoint{}, fmt.Errorf("t3: issue %s token: %w", purpose, err)
 	}
 	token := strings.TrimSpace(string(output))
 	if token == "" || strings.IndexFunc(token, unicode.IsSpace) >= 0 {
@@ -56,11 +61,11 @@ func ResolveSettleEndpoint(ctx context.Context, getenv func(string) string) (End
 	return Endpoint{BaseURL: base, Token: token}, nil
 }
 
-// settleTokenCommand uses the official CLI, including its documented npx fallback when the
+// localTokenCommand uses the official CLI, including its documented npx fallback when the
 // desktop installation has not installed t3 on PATH. Override an inherited T3CODE_HOME with the
 // resolved home so injected environment readers and the CLI always use the same runtime.
-func settleTokenCommand(ctx context.Context, home string) (*exec.Cmd, error) {
-	args := []string{"auth", "session", "issue", "--token-only", "--ttl", "1h", "--label", "loopai-settle"}
+func localTokenCommand(ctx context.Context, home, ttl, label string) (*exec.Cmd, error) {
+	args := []string{"auth", "session", "issue", "--token-only", "--ttl", ttl, "--label", label}
 	bin, err := exec.LookPath("t3")
 	if errors.Is(err, exec.ErrNotFound) {
 		bin, err = exec.LookPath("npx")
