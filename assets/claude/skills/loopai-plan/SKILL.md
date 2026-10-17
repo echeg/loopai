@@ -99,7 +99,7 @@ Show the discovered context, then ask questions **one at a time** using the AskU
 
 **Ask questions one at a time (do not overwhelm with multiple questions):**
 
-When the request comes from `loopai-brainstorm`, treat its approved design as authoritative. Preserve its goal, scope, constraints, chosen approach, and rejected alternatives; ask only for missing information such as testing preference or plan title.
+When the request comes from `loopai-brainstorm`, treat its approved design as authoritative. Preserve its goal, scope, constraints, chosen approach, and rejected alternatives; ask only for missing information such as testing preference.
 
 1. **Plan purpose**: use AskUserQuestion - "What is the main goal?"
    - provide multiple choice with suggested answer based on discovered intent
@@ -118,8 +118,7 @@ When the request comes from `loopai-brainstorm`, treat its approved design as au
    - store preference for reference during implementation
    - wait for response before next question
 
-5. **Plan title**: use AskUserQuestion - "Short descriptive title?"
-   - provide suggested name based on intent
+Do not ask for a plan title. Derive a short descriptive title from the answered goal, and the `<task-name>` slug from that title: lowercase, ASCII-only, words joined by `-`, at most ~50 characters. The slug also becomes the branch name, so keep it specific. The user can rename the file before running it.
 
 After all questions answered, synthesize responses into plan context.
 

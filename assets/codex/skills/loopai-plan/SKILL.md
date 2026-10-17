@@ -73,7 +73,8 @@ Show the discovered context, then ask **one question per message**, waiting for 
 2. **Scope** - which components and files are involved?
 3. **Constraints** - requirements or limitations that shape the design?
 4. **Testing approach** - TDD (tests first) or regular (code first, then tests)?
-5. **Title** - a short descriptive name for the plan.
+
+Do not ask for a plan title. Derive a short descriptive title from the answered goal, and the `<slug>` from that title: lowercase, ASCII-only, words joined by `-`, at most ~50 characters. The slug also becomes the branch name, so keep it specific. The user can rename the file before running it.
 
 When the request arrives from `$loopai-brainstorm`, its approved design is authoritative: preserve the goal, scope, constraints, chosen approach, and rejected alternatives, and ask only for what is genuinely missing.
 
