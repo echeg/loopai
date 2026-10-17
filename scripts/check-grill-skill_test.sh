@@ -916,6 +916,13 @@ if grep -Eq '/\.loopai-grill-recovery-' "$fixture/codex.snapshot"; then
 fi
 grep -Fq 'Inspect only the sanitized repository snapshot in repository/' "$fixture/codex.stdin" || fail "Codex prompt omitted the sanitized snapshot boundary"
 grep -Fq 'review this plan' "$fixture/codex.stdin" || fail "Codex prompt file was not forwarded"
+# The wrapper grants read access to the directory of the codex entry on PATH and to the directory of its
+# resolved binary, so Codex's seatbelt helper can re-exec codex through a symlink (Homebrew installs one).
+fake_codex_bin_dir="$(cd "$fixture/fake-bin" && pwd)"
+fake_codex_real_dir="$(cd "$fixture/fake-bin" && pwd -P)"
+fake_codex_filesystem="{ \":minimal\" = \"read\", \":workspace_roots\" = \"read\", \"$fake_codex_bin_dir\" = \"read\""
+[[ "$fake_codex_real_dir" == "$fake_codex_bin_dir" ]] || fake_codex_filesystem+=", \"$fake_codex_real_dir\" = \"read\""
+fake_codex_filesystem+=" }"
 printf '%s\n' \
 	--ask-for-approval \
 	never \
@@ -928,9 +935,7 @@ printf '%s\n' \
 	-c \
 	'default_permissions="loopai_grill"' \
 	-c \
-	'permissions.loopai_grill.filesystem.:minimal="read"' \
-	-c \
-	'permissions.loopai_grill.filesystem.:workspace_roots="read"' \
+	"permissions.loopai_grill.filesystem=$fake_codex_filesystem" \
 	-c \
 	'permissions.loopai_grill.network.enabled=false' \
 	-c \
@@ -1014,6 +1019,21 @@ if command -v codex >/dev/null 2>&1 && codex sandbox --help 2>&1 | grep -Fq -- '
 		-c 'permissions.loopai_grill.filesystem.:workspace_roots="read"' \
 		-c 'permissions.loopai_grill.network.enabled=false' \
 		-C "$fixture/containment-allowed" -- /bin/cat "$fixture/containment-denied/sentinel"
+	# Regression: codex re-execs itself under seatbelt through the path it was found at; with Homebrew that is
+	# a symlink outside :minimal, and without the directory grants the helper dies with
+	# "sandbox-exec: execvp() ... Operation not permitted" while loading AGENTS.md.
+	codex_bin_path="$(command -v codex)"
+	codex_bin_dir="$(cd "$(dirname "$codex_bin_path")" && pwd)"
+	codex_real_dir="$(dirname "$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$codex_bin_path")")"
+	codex_filesystem="{ \":minimal\" = \"read\", \":workspace_roots\" = \"read\", \"$codex_bin_dir\" = \"read\""
+	[[ "$codex_real_dir" == "$codex_bin_dir" ]] || codex_filesystem+=", \"$codex_real_dir\" = \"read\""
+	codex_filesystem+=" }"
+	env CODEX_HOME="$fixture/empty-codex-home" codex sandbox -P loopai_grill \
+		-c "permissions.loopai_grill.filesystem=$codex_filesystem" \
+		-c 'permissions.loopai_grill.network.enabled=false' \
+		-C "$fixture/containment-allowed" -- "$codex_bin_path" --version \
+		>"$fixture/reexec.stdout" 2>"$fixture/reexec.stderr" ||
+		fail "restricted profile cannot re-exec codex through its PATH entry: $(<"$fixture/reexec.stderr")"
 fi
 
 printf 'loopai-grill acceptance tests passed\n'

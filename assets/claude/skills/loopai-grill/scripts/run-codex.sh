@@ -49,6 +49,32 @@ if [[ "$(git -C "$canonical_root" rev-parse --is-inside-work-tree 2>/dev/null)" 
 	exit 65
 fi
 
+# Codex re-execs itself under seatbelt (for example to load AGENTS.md) through the path it was found at. With a
+# Homebrew install that is a symlink under /opt/homebrew/bin, outside the :minimal read set, and the helper dies
+# with "sandbox-exec: execvp() ... Operation not permitted". Grant read access to the directory of the PATH entry
+# and to the directory of the resolved binary; nothing else outside :minimal becomes readable.
+codex_bin="$(command -v codex)"
+if ! codex_bin_dir="$(cd "$(dirname "$codex_bin")" 2>/dev/null && pwd)"; then
+	printf 'cannot resolve the directory of the codex binary: %s\n' "$codex_bin" >&2
+	exit 127
+fi
+if ! codex_real="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$codex_bin")"; then
+	printf 'cannot resolve the codex binary target: %s\n' "$codex_bin" >&2
+	exit 127
+fi
+codex_real_dir="$(dirname "$codex_real")"
+toml_basic_string() {
+	local value="$1"
+	value="${value//\\/\\\\}"
+	value="${value//\"/\\\"}"
+	printf '"%s"' "$value"
+}
+codex_filesystem="{ \":minimal\" = \"read\", \":workspace_roots\" = \"read\", $(toml_basic_string "$codex_bin_dir") = \"read\""
+if [[ "$codex_real_dir" != "$codex_bin_dir" ]]; then
+	codex_filesystem+=", $(toml_basic_string "$codex_real_dir") = \"read\""
+fi
+codex_filesystem+=" }"
+
 codex_isolation_dir="$(mktemp -d "${TMPDIR:-/tmp}/loopai-grill-codex.XXXXXX")" || {
 	printf 'cannot create isolated Codex working directory\n' >&2
 	exit 67
@@ -109,8 +135,7 @@ fi
 	--ignore-rules \
 	-c 'mcp_servers={}' \
 	-c 'default_permissions="loopai_grill"' \
-	-c 'permissions.loopai_grill.filesystem.:minimal="read"' \
-	-c 'permissions.loopai_grill.filesystem.:workspace_roots="read"' \
+	-c "permissions.loopai_grill.filesystem=$codex_filesystem" \
 	-c 'permissions.loopai_grill.network.enabled=false' \
 	-c 'shell_environment_policy.inherit="core"' \
 	-c 'shell_environment_policy.exclude=["*KEY*","*TOKEN*","*SECRET*","*PASSWORD*","*CREDENTIAL*","AWS_*","AZURE_*","GOOGLE_*","GITHUB_*","GH_*","OPENAI_*","ANTHROPIC_*"]' \
