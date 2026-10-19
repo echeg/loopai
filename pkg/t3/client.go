@@ -104,6 +104,25 @@ type ModelSelection struct {
 	Model      string `json:"model"`
 }
 
+// ProjectCreate adds a project rooted at an existing workspace directory, as the T3 Code sidebar's
+// add-project action does.
+type ProjectCreate struct {
+	commandHeader
+	ProjectID     string `json:"projectId"`
+	Title         string `json:"title"`
+	WorkspaceRoot string `json:"workspaceRoot"`
+	// a missing root is an error rather than a directory T3 Code creates
+	CreateWorkspaceRootIfMissing bool            `json:"createWorkspaceRootIfMissing"`
+	DefaultModelSelection        *ModelSelection `json:"defaultModelSelection"`
+	CreatedAt                    string          `json:"createdAt"`
+}
+
+func (c *ProjectCreate) stampCreatedAt(timestamp string) {
+	if c.CreatedAt == "" {
+		c.CreatedAt = timestamp
+	}
+}
+
 // ThreadCreate creates a thread. It starts no provider session.
 type ThreadCreate struct {
 	commandHeader
@@ -180,6 +199,16 @@ type ThreadPinToggle struct {
 type ThreadSettle struct {
 	commandHeader
 	ThreadID string `json:"threadId"`
+}
+
+// NewProjectCreate builds a project.create command with no default model selection.
+func NewProjectCreate(projectID, title, workspaceRoot string) *ProjectCreate {
+	return &ProjectCreate{
+		commandHeader: commandHeader{Type: "project.create"},
+		ProjectID:     projectID,
+		Title:         title,
+		WorkspaceRoot: workspaceRoot,
+	}
 }
 
 // NewThreadCreate builds a thread.create command. Empty branch or worktree path are sent as null.

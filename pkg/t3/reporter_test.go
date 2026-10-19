@@ -21,16 +21,20 @@ import (
 )
 
 type fakeDispatcher struct {
-	mu        sync.Mutex
-	shell     Shell
-	shellErr  error
-	dispErr   error
-	pinErr    error         // returned for thread.pin only, so a wrongly sent unpin is still recorded
-	titleErr  error         // returned for thread.meta.update only
-	gate      chan struct{} // when set, each Dispatch waits for one receive
-	entered   chan struct{} // when set, each Dispatch announces itself before waiting on gate
-	commands  []Command
-	shellHits int
+	mu       sync.Mutex
+	shell    Shell
+	shellErr error
+	dispErr  error
+	pinErr   error // returned for thread.pin only, so a wrongly sent unpin is still recorded
+	titleErr error // returned for thread.meta.update only
+	// projectErr is returned for project.create only; hideProjects keeps a created project out of
+	// the shell snapshot, as a server that never projects it would.
+	projectErr   error
+	hideProjects bool
+	gate         chan struct{} // when set, each Dispatch waits for one receive
+	entered      chan struct{} // when set, each Dispatch announces itself before waiting on gate
+	commands     []Command
+	shellHits    int
 }
 
 func (f *fakeDispatcher) Dispatch(_ context.Context, cmd Command) (int64, error) {
@@ -51,7 +55,13 @@ func (f *fakeDispatcher) Dispatch(_ context.Context, cmd Command) (int64, error)
 	if _, ok := cmd.(*ThreadTitleUpdate); ok && f.titleErr != nil {
 		return 0, f.titleErr
 	}
+	if _, ok := cmd.(*ProjectCreate); ok && f.projectErr != nil {
+		return 0, f.projectErr
+	}
 	f.commands = append(f.commands, cmd)
+	if create, ok := cmd.(*ProjectCreate); ok && !f.hideProjects {
+		f.shell.Projects = append(f.shell.Projects, Project{ID: create.ProjectID, Title: create.Title, WorkspaceRoot: create.WorkspaceRoot})
+	}
 	if update, ok := cmd.(*ThreadTitleUpdate); ok {
 		for i := range f.shell.Threads {
 			if f.shell.Threads[i].ID == update.ThreadID {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -157,13 +158,6 @@ func TestLaunchPreflightErrors(t *testing.T) {
 		_, err := Launch(context.Background(), f.api, f.rpc, f.req)
 		require.ErrorContains(t, err, "t3: plan:")
 	})
-	t.Run("no project", func(t *testing.T) {
-		f := newLaunchFixture(t)
-		f.api.shell = projectShell("/elsewhere")
-		_, err := Launch(context.Background(), f.api, f.rpc, f.req)
-		require.ErrorContains(t, err, "add the repository in T3 Code first")
-		assert.Empty(t, f.rpc.created)
-	})
 	t.Run("shell error", func(t *testing.T) {
 		f := newLaunchFixture(t)
 		f.api.shellErr = &APIError{Status: 401}
@@ -177,6 +171,80 @@ func TestLaunchPreflightErrors(t *testing.T) {
 		require.ErrorContains(t, err, "branch exists")
 		var partial *PartialLaunchError
 		assert.NotErrorAs(t, err, &partial)
+	})
+}
+
+func TestLaunchCreatesMissingProject(t *testing.T) {
+	f := newLaunchFixture(t)
+	stale := Project{ID: "p-old", Title: filepath.Base(f.src), WorkspaceRoot: "/moved/away/" + filepath.Base(f.src)}
+	f.api.shell = Shell{Projects: []Project{stale}}
+
+	res, err := Launch(context.Background(), f.api, f.rpc, f.req)
+	require.NoError(t, err)
+
+	require.Len(t, f.api.commands, 2)
+	create, ok := f.api.commands[0].(*ProjectCreate)
+	require.True(t, ok, "the project is created before the thread")
+	assert.NotEmpty(t, create.ProjectID)
+	assert.Equal(t, filepath.Base(f.src), create.Title)
+	assert.Equal(t, f.src, create.WorkspaceRoot)
+	assert.Equal(t, &Project{ID: create.ProjectID, Title: create.Title, WorkspaceRoot: f.src}, res.CreatedProject)
+
+	thread, ok := f.api.commands[1].(*ThreadCreate)
+	require.True(t, ok)
+	assert.Equal(t, create.ProjectID, thread.ProjectID)
+	assert.Equal(t, []Project{stale, *res.CreatedProject}, f.api.shell.Projects, "the stale project is left alone")
+}
+
+func TestLaunchExistingProjectCreatesNone(t *testing.T) {
+	f := newLaunchFixture(t)
+	res, err := Launch(context.Background(), f.api, f.rpc, f.req)
+	require.NoError(t, err)
+	assert.Nil(t, res.CreatedProject)
+	for _, cmd := range f.api.commands {
+		assert.NotEqual(t, "project.create", cmd.header().Type)
+	}
+}
+
+func TestLaunchProjectCreateFailures(t *testing.T) {
+	t.Run("rejected", func(t *testing.T) {
+		f := newLaunchFixture(t)
+		f.api.shell = Shell{}
+		f.api.projectErr = errors.New("workspace root does not exist")
+		_, err := Launch(context.Background(), f.api, f.rpc, f.req)
+		require.ErrorContains(t, err, "add T3 Code project for "+f.src)
+		require.ErrorContains(t, err, "workspace root does not exist")
+		assert.Empty(t, f.rpc.created, "nothing else is created")
+	})
+	t.Run("never appears", func(t *testing.T) {
+		f := newLaunchFixture(t)
+		f.api.shell = Shell{}
+		f.api.hideProjects = true
+		f.req.ProjectWait = 50 * time.Millisecond
+		_, err := Launch(context.Background(), f.api, f.rpc, f.req)
+		require.ErrorContains(t, err, "did not appear")
+		var partial *PartialLaunchError
+		require.ErrorAs(t, err, &partial)
+		assert.Contains(t, err.Error(), "already created: project "+filepath.Base(f.src))
+		assert.Empty(t, f.rpc.created, "no worktree is created for an invisible project")
+	})
+	t.Run("later failure lists the project", func(t *testing.T) {
+		f := newLaunchFixture(t)
+		f.api.shell = Shell{}
+		f.rpc.openErr = errors.New("no pty")
+		_, err := Launch(context.Background(), f.api, f.rpc, f.req)
+		require.ErrorContains(t, err, "no pty")
+		assert.Contains(t, err.Error(), "already created: project "+filepath.Base(f.src)+" ("+f.src+"), worktree "+f.wt)
+	})
+	t.Run("canceled while waiting", func(t *testing.T) {
+		f := newLaunchFixture(t)
+		f.api.shell = Shell{}
+		f.api.hideProjects = true
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := Launch(ctx, f.api, f.rpc, f.req)
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Empty(t, f.rpc.created)
 	})
 }
 

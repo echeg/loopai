@@ -128,9 +128,30 @@ func TestDispatchThreadTurnStart(t *testing.T) {
 	}, req.body)
 }
 
+func TestDispatchProjectCreate(t *testing.T) {
+	srv, reqs := newTestServer(t, okSequence)
+	c := testClient(srv.URL)
+
+	_, err := c.Dispatch(context.Background(), NewProjectCreate("pr-1", "2026-10-12", "/repo/2026-10-12"))
+	require.NoError(t, err)
+
+	require.Len(t, reqs(), 1)
+	assert.Equal(t, map[string]any{
+		"type":                         "project.create",
+		"commandId":                    "cmd-1",
+		"projectId":                    "pr-1",
+		"title":                        "2026-10-12",
+		"workspaceRoot":                "/repo/2026-10-12",
+		"createWorkspaceRootIfMissing": false,
+		"defaultModelSelection":        nil,
+		"createdAt":                    "2026-09-25T10:00:00Z",
+	}, reqs()[0].body)
+}
+
 func TestDispatchCreatedAt(t *testing.T) {
 	for _, timestamp := range []string{"", "2026-09-24T08:00:00Z"} {
 		for _, cmd := range []Command{
+			NewProjectCreate("pr-1", "demo", "/repo"),
 			NewThreadCreate("th-1", "pr-1", "demo", ModelSelection{}, "", ""),
 			NewThreadTurnStart("th-1", "docs/plans/demo.md", "demo", ModelSelection{}),
 		} {

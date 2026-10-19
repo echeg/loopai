@@ -14,6 +14,7 @@ without affecting execution. Pinning and unpinning are best-effort; their failur
 ## Setup
 
 1. Run T3 Code (the desktop app or `t3`) and add the repository as a project in its sidebar.
+   `--t3-launch` adds it itself when it is missing; `--t3` reporting and merge settlement do not.
 2. Issue a bearer token and export it in the shell that starts loopai:
 
    ```bash
@@ -156,12 +157,17 @@ the first settings key in sorted order wins; the output names the selected insta
 
 Run from the repository root, either mode:
 
-1. asks T3 Code to create a worktree it manages (in `~/.t3/worktrees` by default) on a new branch
+1. adds a T3 Code project for the repository when no project's workspace root matches it, titled
+   after the repository directory as the sidebar's add-project action does, and waits up to ten
+   seconds for it to appear. Existing projects are never changed, so a project left at a path the
+   repository was moved away from stays in the sidebar beside the new one; remove it there. The
+   output starts with `created T3 Code project "<title>" for <root>` when this happens;
+2. asks T3 Code to create a worktree it manages (in `~/.t3/worktrees` by default) on a new branch
    named after the plan, cut from the current branch or, on a detached HEAD, the current commit,
    and verifies that the new worktree checks out the same commit;
-2. copies the plan (so uncommitted edits carry over) and any `.loopai/config`, `prompts/`, and
+3. copies the plan (so uncommitted edits carry over) and any `.loopai/config`, `prompts/`, and
    `agents/` files the worktree lacks;
-3. creates a thread bound to that worktree and branch.
+4. creates a thread bound to that worktree and branch.
 
 Agent mode then dispatches `thread.turn.start` with the selected instance, model `loopai`, and
 `<plan relative path> [flags]` as the user message. T3 Code starts `loopai-acp` in the worktree.
@@ -181,7 +187,8 @@ waiting for the run. The worktree survives for review and close-out in both mode
 flags above are forwarded, and the two model specs need a `claude` or `codex` prefix; the rest comes
 from `.loopai/config`. Agent mode uses forward slashes in the plan path and refuses paths containing
 whitespace before creating anything; use `--t3-launch=terminal` for those paths. If a step fails
-after the worktree exists, nothing is rolled back and the error lists what was already created.
+after the project or worktree exists, nothing is rolled back and the error lists what was already
+created.
 
 The `loopai:loopai-t3` Claude Code skill and the `$loopai-t3` Codex skill wrap the bare flag, mint a
 token inline when `LOOPAI_T3_TOKEN` is unset, and report the effective mode. `loopai-plan` offers

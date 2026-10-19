@@ -4048,7 +4048,20 @@ type t3ShellDispatcher struct {
 }
 
 func (d *t3ShellDispatcher) Shell(context.Context) (t3.Shell, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return d.shell, nil
+}
+
+// Dispatch records the command and projects a created project into the shell, as the server does.
+func (d *t3ShellDispatcher) Dispatch(ctx context.Context, cmd t3.Command) (int64, error) {
+	seq, err := d.t3RecordingDispatcher.Dispatch(ctx, cmd)
+	if create, ok := cmd.(*t3.ProjectCreate); ok {
+		d.mu.Lock()
+		d.shell.Projects = append(d.shell.Projects, t3.Project{ID: create.ProjectID, Title: create.Title, WorkspaceRoot: create.WorkspaceRoot})
+		d.mu.Unlock()
+	}
+	return seq, err
 }
 
 func TestLinkT3PullRequest(t *testing.T) {
@@ -4427,6 +4440,42 @@ func TestRunT3LaunchCommand(t *testing.T) {
 			assert.Contains(t, stdout.String(), "loopai --merge demo")
 		})
 	}
+}
+
+func TestRunT3LaunchCommandCreatesProject(t *testing.T) {
+	dir := setupTestRepo(t)
+	planRel := filepath.Join("docs", "plans", "20260925-demo.md")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, planRel), []byte("# Demo\n"), 0o600))
+	t.Chdir(dir)
+	t.Setenv("LOOPAI_T3_TOKEN", "tok")
+	t.Setenv("LOOPAI_T3_URL", "http://127.0.0.1:1")
+	writeT3LaunchSettings(t, "")
+
+	gitSvc, err := git.NewService(dir, noopLogger())
+	require.NoError(t, err)
+	api := &t3ShellDispatcher{shell: t3.Shell{Projects: []t3.Project{{ID: "p-old", WorkspaceRoot: "/moved/away"}}}}
+	rpc := &t3LaunchRPC{t: t, path: filepath.Join(t.TempDir(), "wt")}
+	original := newT3Session
+	t.Cleanup(func() { newT3Session = original })
+	newT3Session = func(context.Context, t3.Endpoint) (t3Session, error) {
+		return t3Session{api: api, rpc: rpc, close: func() {}}, nil
+	}
+
+	var stdout bytes.Buffer
+	o := parseTestOpts(t, "--t3-launch=terminal", planRel)
+	require.NoError(t, validateT3LaunchFlags(o))
+	cfg := &config.Config{}
+	require.NoError(t, applyCLIOverrides(o, cfg))
+	require.NoError(t, runT3LaunchCommand(t.Context(), o, cfg, testColors(), &stdout))
+
+	require.Len(t, api.commands, 2)
+	create, ok := api.commands[0].(*t3.ProjectCreate)
+	require.True(t, ok)
+	assert.Equal(t, gitSvc.Root(), create.WorkspaceRoot)
+	assert.Contains(t, stdout.String(),
+		fmt.Sprintf("created T3 Code project %q for %s\n", filepath.Base(gitSvc.Root()), gitSvc.Root()))
+	assert.Contains(t, stdout.String(), "started loopai in T3 Code thread ")
 }
 
 func TestRunT3LaunchCommandErrors(t *testing.T) {

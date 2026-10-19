@@ -1450,7 +1450,8 @@ skill resolves the ID before delegation. Without an explicit token, loopai can i
 7-day token through `t3` (or `npx`); failed title updates only warn and never stop the plan.
 
 `loopai --t3-launch[=auto|agent|terminal] <plan>` creates a T3 Code-managed worktree and thread,
-carrying the plan and missing local `.loopai/` overrides over. The bare flag uses `auto`: it reads
+carrying the plan and missing local `.loopai/` overrides over. It adds the repository as a T3 Code
+project first when no project has it as workspace root, leaving existing projects untouched. The bare flag uses `auto`: it reads
 `providerInstances` from `${T3CODE_HOME:-~/.t3}/userdata/settings.json` and starts a provider session
 when an enabled `grok` instance points at `loopai-acp` or `loopai-acp.exe`; otherwise it starts
 `loopai --t3 <plan>` in the thread's terminal. Attach the mode with `=`. `agent` requires a matching

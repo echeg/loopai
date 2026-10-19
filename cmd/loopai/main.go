@@ -4054,6 +4054,9 @@ func runT3LaunchCommand(ctx context.Context, o opts, cfg *config.Config, colors 
 	if err != nil {
 		return fmt.Errorf("--t3-launch: %w", err)
 	}
+	if p := res.CreatedProject; p != nil {
+		fmt.Fprintf(stdout, "created T3 Code project %q for %s\n", p.Title, p.WorkspaceRoot)
+	}
 	fmt.Fprintf(stdout, "started loopai in T3 Code thread %s\n", res.ThreadID)
 	if res.Mode == t3.LaunchAgent {
 		fmt.Fprintf(stdout, "mode: agent (loopai provider session, instance %s; the stop button cancels the run)\n", instance.ID)

@@ -52,7 +52,7 @@ git branch --show-current
 ```
 
 - A stale runtime file survives a crash; `--t3-launch` reports a refused connection itself, so do not probe the port separately.
-- The repository must already be a T3 Code project (added through its sidebar). `--t3-launch` stops with `no T3 Code project for <root>` otherwise; relay that and stop.
+- The repository does not need to be a T3 Code project yet: `--t3-launch` adds one titled after the repository directory and prints `created T3 Code project "<title>" for <root>` first. Existing projects are never changed, so one left at a path the repository moved away from stays in the sidebar; mention that line in the report.
 - On a detached HEAD the worktree is cut from the current commit; mention that in the report.
 
 ## Step 0b: Parse Arguments
@@ -126,8 +126,8 @@ LOOPAI_T3_TOKEN=${LOOPAI_T3_TOKEN:-$($T3_CLI auth session issue --token-only --t
 - Agent mode submits the plan and flags as a user turn to the provider session and opens no terminal. Terminal mode types `loopai --t3` into the thread terminal. The launcher exits after submitting the turn or typing the command; it does not wait for the run.
 - Agent mode rejects whitespace in the plan's relative path before creating a worktree; use terminal mode for such paths.
 - Never echo, log, or print the token.
-- Success prints `started loopai in T3 Code thread <id>`, then `mode: agent (...)` or `mode: terminal`, `worktree:`, `branch:`, and the close-out line. Read the effective mode from this output and keep all of these lines for the report.
-- A failure after the worktree was created ends with `already created: worktree <path> (branch <name>)[, thread <id>]`. Nothing is rolled back; relay the line verbatim.
+- Success prints an optional `created T3 Code project ...` line, then `started loopai in T3 Code thread <id>`, then `mode: agent (...)` or `mode: terminal`, `worktree:`, `branch:`, and the close-out line. Read the effective mode from this output and keep all of these lines for the report.
+- A failure after the project or worktree was created ends with `already created: [project <title> (<root>), ]worktree <path> (branch <name>)[, thread <id>]`. Nothing is rolled back; relay the line verbatim.
 
 ## Step 4: Report
 
@@ -177,7 +177,7 @@ With `finalize = pr` or `merge` in `.loopai/config` (`--t3-launch` forwards only
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `no T3 Code project for <root>` | Repository not added to T3 Code | Add it in the T3 Code sidebar, then rerun |
+| `add T3 Code project for <root>: ...` | T3 Code rejected the new project (for example the root is not a directory it can see) | Relay the reason; add the repository in the T3 Code sidebar if needed, then rerun |
 | `LOOPAI_T3_TOKEN is not set` | Token step skipped | Step 2/3 inline mint |
 | `HTTP 401` | Token revoked, expired, or minted for another T3 home | Mint a new one with the same `T3CODE_HOME` the server uses |
 | Need terminal output or a plan path with whitespace | Agent mode opens no terminal and rejects whitespace paths | Run the Step 3 command with `--t3-launch=terminal` instead of the bare flag; it ignores provider settings |

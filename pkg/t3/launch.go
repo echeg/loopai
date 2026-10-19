@@ -1,6 +1,7 @@
 package t3
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -15,6 +17,12 @@ import (
 
 // worktreeTimeout bounds `git worktree add` on the server; checkouts of large repositories are slow.
 const worktreeTimeout = 5 * time.Minute
+
+// projectWait bounds how long a launch waits for a project it created to reach the shell snapshot.
+const projectWait = 10 * time.Second
+
+// projectPollInterval spaces the shell snapshot reads while waiting for a created project.
+const projectPollInterval = 200 * time.Millisecond
 
 // launchTerminalID names the thread terminal that runs loopai.
 const launchTerminalID = "loopai"
@@ -50,7 +58,7 @@ type RPC interface {
 
 // LaunchRequest describes one --t3-launch invocation.
 type LaunchRequest struct {
-	RepoRoot   string // source checkout root; must be a T3 Code project root
+	RepoRoot   string // source checkout root; a T3 Code project is added for it when none exists
 	PlanFile   string // plan path inside RepoRoot
 	Branch     string // new branch name for the worktree
 	BaseRef    string // branch or commit the worktree starts from
@@ -63,20 +71,24 @@ type LaunchRequest struct {
 	Endpoint   Endpoint
 	Mode       LaunchMode
 	Instance   ProviderInstance // discovered by the caller; an empty ID means no instance
+	// ProjectWait overrides projectWait; zero uses the default.
+	ProjectWait time.Duration
 	// HeadOf reports the commit checked out in a directory.
 	HeadOf func(dir string) (string, error)
 }
 
 // LaunchResult reports what the launcher created.
 type LaunchResult struct {
-	ThreadID     string
-	WorktreePath string
-	Branch       string
-	Mode         LaunchMode
+	// CreatedProject is the project added because none matched RepoRoot; nil when one existed.
+	CreatedProject *Project
+	ThreadID       string
+	WorktreePath   string
+	Branch         string
+	Mode           LaunchMode
 }
 
-// PartialLaunchError reports a launch that failed after the worktree was created. The worktree is
-// left in place so nothing the user might need is deleted.
+// PartialLaunchError reports a launch that failed after the project or worktree was created. Both
+// are left in place so nothing the user might need is deleted.
 type PartialLaunchError struct {
 	Result LaunchResult
 	Err    error
@@ -84,6 +96,9 @@ type PartialLaunchError struct {
 
 func (e *PartialLaunchError) Error() string {
 	var created []string
+	if p := e.Result.CreatedProject; p != nil {
+		created = append(created, "project "+p.Title+" ("+p.WorkspaceRoot+")")
+	}
 	if e.Result.WorktreePath != "" {
 		created = append(created, "worktree "+e.Result.WorktreePath+" (branch "+e.Result.Branch+")")
 	}
@@ -117,21 +132,27 @@ func Launch(ctx context.Context, api Dispatcher, rpc RPC, req LaunchRequest) (La
 	if err != nil {
 		return LaunchResult{}, err //nolint:wrapcheck // Shell already names the failing call
 	}
-	project, ok := shell.FindProject(req.RepoRoot)
-	if !ok {
-		return LaunchResult{}, fmt.Errorf("t3: no T3 Code project for %s; add the repository in T3 Code first", req.RepoRoot)
+	result := LaunchResult{Branch: req.Branch, Mode: mode}
+	// a failure before anything was created is not partial
+	fail := func(err error) (LaunchResult, error) {
+		if result.CreatedProject == nil && result.WorktreePath == "" {
+			return LaunchResult{}, err
+		}
+		return result, &PartialLaunchError{Result: result, Err: err}
+	}
+	project, createdProject, err := ensureProject(ctx, api, shell, req)
+	result.CreatedProject = createdProject
+	if err != nil {
+		return fail(err)
 	}
 
 	wtCtx, cancel := context.WithTimeout(ctx, worktreeTimeout)
 	wt, err := rpc.CreateWorktree(wtCtx, CreateWorktreeInput{Cwd: req.RepoRoot, RefName: req.BaseRef, NewRefName: req.Branch})
 	cancel()
 	if err != nil {
-		return LaunchResult{}, err //nolint:wrapcheck // RPC errors name the failing method
+		return fail(err)
 	}
-	result := LaunchResult{WorktreePath: wt.Path, Branch: req.Branch, Mode: mode}
-	fail := func(err error) (LaunchResult, error) {
-		return result, &PartialLaunchError{Result: result, Err: err}
-	}
+	result.WorktreePath = wt.Path
 
 	if req.HeadOf != nil {
 		head, headErr := req.HeadOf(wt.Path)
@@ -185,6 +206,45 @@ func Launch(ctx context.Context, api Dispatcher, rpc RPC, req LaunchRequest) (La
 		return fail(err)
 	}
 	return result, nil
+}
+
+// ensureProject returns the project rooted at req.RepoRoot, adding one titled after the directory
+// when none exists. created is the added project, set once it was dispatched even when waiting for
+// it fails, and nil when one already existed.
+func ensureProject(ctx context.Context, api Dispatcher, shell Shell, req LaunchRequest) (project Project, created *Project, err error) {
+	if existing, ok := shell.FindProject(req.RepoRoot); ok {
+		return existing, nil, nil
+	}
+	project = Project{ID: NewID(), Title: filepath.Base(req.RepoRoot), WorkspaceRoot: req.RepoRoot}
+	if _, err := api.Dispatch(ctx, NewProjectCreate(project.ID, project.Title, project.WorkspaceRoot)); err != nil {
+		return Project{}, nil, fmt.Errorf("t3: add T3 Code project for %s: %w", req.RepoRoot, err)
+	}
+	return project, &project, waitForProject(ctx, api, project.ID, cmp.Or(req.ProjectWait, projectWait))
+}
+
+// waitForProject polls the shell snapshot until a just-created project appears, since a thread
+// cannot be created in a project the server has not projected yet.
+func waitForProject(ctx context.Context, api Dispatcher, projectID string, limit time.Duration) error {
+	deadline := time.NewTimer(limit)
+	defer deadline.Stop()
+	ticker := time.NewTicker(projectPollInterval)
+	defer ticker.Stop()
+	for {
+		shell, err := api.Shell(ctx)
+		if err == nil && slices.ContainsFunc(shell.Projects, func(p Project) bool { return p.ID == projectID }) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err() //nolint:wrapcheck // a canceled launch reports the cancellation itself
+		case <-deadline.C:
+			if err != nil {
+				return fmt.Errorf("t3: created project did not appear within %s: %w", limit, err)
+			}
+			return fmt.Errorf("t3: created project did not appear within %s", limit)
+		case <-ticker.C:
+		}
+	}
 }
 
 func resolveLaunchMode(req LaunchRequest) (LaunchMode, error) {
