@@ -3595,9 +3595,13 @@ func validateReviewerProviders(selection externalReviewSelection, cfg *config.Co
 		if provider == "" || provider == reviewer.Provider {
 			continue
 		}
-		spec := reviewer.Model
-		if reviewer.Effort != "" {
-			spec += ":" + reviewer.Effort
+		// name the entry as configured: the resolved effort may be a filled-in reviewer default
+		spec := reviewer.Spec
+		if spec == "" {
+			spec = reviewer.Model
+			if reviewer.Effort != "" {
+				spec += ":" + reviewer.Effort
+			}
 		}
 		label := fmt.Sprintf("external reviewer entry %d (%s)", i+1, reviewer.Provider)
 		return fmt.Errorf("%s names a %s model %q", label, provider, spec)

@@ -60,6 +60,9 @@ func TestValuesLoader_Load_EmbeddedOnly(t *testing.T) {
 	assert.Equal(t, 3600000, values.CodexTimeoutMs)
 	assert.Equal(t, "read-only", values.CodexSandbox)
 	assert.False(t, values.CodexSandboxSet)
+	assert.Equal(t, "claude:opus:high", values.TaskModel)
+	assert.Empty(t, values.ReviewModel, "review_model inherits task_model, provider included")
+	assert.Empty(t, values.PlanModel, "plan_model inherits task_model, provider included")
 	assert.Empty(t, values.ExternalReviewers)
 	assert.False(t, values.ExternalReviewersSet, "ExternalReviewersSet must be false for embedded defaults")
 	assert.Empty(t, values.CustomReviewScript)
@@ -71,7 +74,7 @@ func TestValuesLoader_Load_EmbeddedOnly(t *testing.T) {
 	assert.Empty(t, values.CommitTrailer)
 	assert.Equal(t, []string{"You've hit your limit", "You've hit your session limit", "You've hit your weekly limit", "API Error: 400", "API Error: 401", "API Error: 403", "API Error: 404", "API Error: 413", "API Error: 429", "API Error: 500", "cannot be launched inside another Claude Code session", "Not logged in", "Your usage allocation has been disabled by your admin", "You've hit your org's monthly usage limit", "You're out of usage credits", "You've hit your individual spend limit"}, values.ClaudeErrorPatterns)
 	assert.Equal(t, []string{"Rate limit exceeded", "rate limit reached", "429 Too Many Requests", "quota exceeded", "insufficient_quota", "You've hit your usage limit"}, values.CodexErrorPatterns)
-	assert.Equal(t, []string{"You've hit your limit", "You've hit your session limit", "You've hit your weekly limit", "API Error: 429", "Your usage allocation has been disabled by your admin", "You've hit your org's monthly usage limit", "You're out of usage credits", "You've hit your individual spend limit"}, values.ClaudeLimitPatterns)
+	assert.Equal(t, []string{"You've hit your limit", "You've hit your session limit", "You've hit your weekly limit", "API Error: 429", "Your usage allocation has been disabled by your admin", "You've hit your org's monthly usage limit", "You're out of usage credits", "You've hit your individual spend limit", "ECONNREFUSED"}, values.ClaudeLimitPatterns)
 	assert.Equal(t, []string{"Rate limit exceeded", "rate limit reached", "429 Too Many Requests", "quota exceeded", "insufficient_quota", "You've hit your usage limit", "is at capacity", "You hit your spend cap"}, values.CodexLimitPatterns)
 	assert.Equal(t, []string{"FYA_TRANSIENT_TIMEOUT", "API Error: 529", "API Error: 502", "API Error: 503", "API Error: 504"}, values.ClaudeRetryPatterns)
 	assert.Equal(t, 10*time.Minute, values.WaitOnLimit)
@@ -2792,11 +2795,11 @@ func TestValuesLoader_Load_TaskModel(t *testing.T) {
 		assert.Equal(t, "sonnet", values.TaskModel)
 	})
 
-	t.Run("not set defaults to empty", func(t *testing.T) {
+	t.Run("not set uses embedded default", func(t *testing.T) {
 		loader := newValuesLoader(defaultsFS)
 		values, err := loader.Load("", "")
 		require.NoError(t, err)
-		assert.Empty(t, values.TaskModel)
+		assert.Equal(t, "claude:opus:high", values.TaskModel)
 	})
 
 	t.Run("full model ID accepted", func(t *testing.T) {

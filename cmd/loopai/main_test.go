@@ -4672,7 +4672,7 @@ func TestResolveExternalReviewSelection(t *testing.T) {
 		wantMax    bool
 		wantErr    string
 	}{
-		{name: "claude primary auto selects codex with codex defaults", cfg: config.Config{CodexEnabled: true}, mode: processor.ModeFull, wantTool: "codex", wantAuto: true},
+		{name: "claude primary auto selects codex with its reviewer default", cfg: config.Config{CodexEnabled: true}, mode: processor.ModeFull, wantTool: "codex", wantModel: "gpt-6-astra", wantEffort: "high", wantAuto: true},
 		{name: "codex primary auto selects claude dynamic default", cfg: config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex, CodexEnabled: true}, mode: processor.ModeFull, wantTool: "claude", wantModel: "opus", wantEffort: "xhigh", wantAuto: true},
 		{name: "codex enabled false disables ordinary auto", cfg: config.Config{}, mode: processor.ModeFull, wantTool: "none", wantAuto: true},
 		// a run with a task phase picks the automatic reviewer against task_model's provider alone,
@@ -4680,11 +4680,11 @@ func TestResolveExternalReviewSelection(t *testing.T) {
 		{name: "codex task with claude review auto selects claude", cfg: config.Config{TaskProvider: config.ExecutorCodex,
 			ReviewProvider: config.ExecutorClaude, CodexEnabled: true}, mode: processor.ModeFull, wantTool: "claude", wantModel: "opus", wantEffort: "xhigh", wantAuto: true},
 		{name: "claude task with codex review auto selects codex", cfg: config.Config{TaskProvider: config.ExecutorClaude,
-			ReviewProvider: config.ExecutorCodex, CodexEnabled: true}, mode: processor.ModeFull, wantTool: "codex", wantAuto: true},
+			ReviewProvider: config.ExecutorCodex, CodexEnabled: true}, mode: processor.ModeFull, wantTool: "codex", wantModel: "gpt-6-astra", wantEffort: "high", wantAuto: true},
 		// the review-only modes run no task phase, so the reviewer differs from the review provider
 		// that evaluates its findings
 		{name: "review mode codex task with claude review auto selects codex", cfg: config.Config{TaskProvider: config.ExecutorCodex,
-			ReviewProvider: config.ExecutorClaude, CodexEnabled: true}, mode: processor.ModeReview, wantTool: "codex", wantAuto: true},
+			ReviewProvider: config.ExecutorClaude, CodexEnabled: true}, mode: processor.ModeReview, wantTool: "codex", wantModel: "gpt-6-astra", wantEffort: "high", wantAuto: true},
 		{name: "external only claude task with codex review auto selects claude", cfg: config.Config{TaskProvider: config.ExecutorClaude,
 			ReviewProvider: config.ExecutorCodex}, mode: processor.ModeCodexOnly, wantTool: "claude", wantModel: "opus", wantEffort: "xhigh", wantAuto: true},
 		{name: "external only forces auto despite legacy gate", cfg: config.Config{TaskProvider: config.ExecutorCodex, ReviewProvider: config.ExecutorCodex}, mode: processor.ModeCodexOnly, wantTool: "claude", wantModel: "opus", wantEffort: "xhigh", wantAuto: true},
@@ -4693,7 +4693,7 @@ func TestResolveExternalReviewSelection(t *testing.T) {
 		{name: "explicit claude model overrides both defaults", cfg: reviewerChainConfig("claude:sonnet:high"), mode: processor.ModeFull, wantTool: "claude", wantModel: "sonnet", wantEffort: "high"},
 		{name: "claude effort-only keeps opus", cfg: reviewerChainConfig("claude::max"), mode: processor.ModeFull, wantTool: "claude", wantModel: "opus", wantEffort: "max"},
 		{name: "codex explicit model and effort", cfg: reviewerChainConfig("codex:gpt-5.6:low"), mode: processor.ModeFull, wantTool: "codex", wantModel: "gpt-5.6", wantEffort: "low"},
-		{name: "codex max is dropped with warning signal", cfg: reviewerChainConfig("codex:gpt-5.6:max"), mode: processor.ModeFull, wantTool: "codex", wantModel: "gpt-5.6", wantEffort: "", wantMax: true},
+		{name: "codex max is dropped to the reviewer default with warning signal", cfg: reviewerChainConfig("codex:gpt-5.6:max"), mode: processor.ModeFull, wantTool: "codex", wantModel: "gpt-5.6", wantEffort: "high", wantMax: true},
 		{name: "explicit empty chain disables review", cfg: reviewerChainConfig(""), mode: processor.ModeFull, wantTool: "none"},
 		{name: "custom with model rejected", cfg: reviewerChainConfig("custom:anything"), mode: processor.ModeFull, wantErr: "must not specify a model"},
 	}
@@ -4733,7 +4733,7 @@ func TestResolveExternalReviewerChain(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, got.Explicit)
 	assert.Equal(t, []resolvedReviewer{
-		{Provider: config.ExternalReviewToolCodex},
+		{Provider: config.ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "high"},
 		{Provider: config.ExternalReviewToolClaude, Model: "fable", Effort: "max", Spec: "fable:max"},
 		{Provider: config.ExternalReviewToolCustom},
 	}, got.Reviewers)
@@ -14847,13 +14847,18 @@ func TestResolveExternalReviewSelectionValidatesProviders(t *testing.T) {
 			want: `external reviewer entry 1 (claude) names a codex model "gpt-6-astra:high"`,
 		},
 		{
-			name: "chain codex without model leaves codex default",
+			name: "chain codex without model takes the codex reviewer default",
 			cfg:  config.Config{ExternalReviewersSet: true, ExternalReviewers: "codex, codex::high"},
 		},
 		{
 			name: "chain explicit codex model names entry",
 			cfg:  config.Config{ExternalReviewersSet: true, ExternalReviewers: "codex:fable"},
 			want: `external reviewer entry 1 (codex) names a claude model "fable"`,
+		},
+		{
+			name: "chain explicit claude model names entry without the filled effort",
+			cfg:  config.Config{ExternalReviewersSet: true, ExternalReviewers: "claude:gpt-5"},
+			want: `external reviewer entry 1 (claude) names a codex model "gpt-5"`,
 		},
 		{
 			name: "claude wrapper chain",

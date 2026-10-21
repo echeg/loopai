@@ -37,7 +37,7 @@ workflows are distributed through this repository's plugin marketplace.
 - Go 1.26 or newer to build loopai
 - Git, or a Git-compatible `vcs_command` wrapper
 - The CLI of every provider your model specs name (each is checked at startup):
-  - Claude Code CLI for `claude:` specs and the default when `task_model` is unset
+  - Claude Code CLI for `claude:` specs, including the default `task_model = claude:opus:high`
   - Codex CLI 0.130.0 or newer for `codex:` specs
 - Optional: the other provider's CLI for automatic cross-provider review
 - Optional: `fzf` for interactive selection; a numbered fallback is built in
@@ -946,7 +946,7 @@ Every phase runs on the provider its model spec names. `plan_model`, `task_model
 
 | Spec | Governs | Unset means |
 |---|---|---|
-| `task_model` | task execution | Claude Code with its CLI defaults |
+| `task_model` | task execution | `claude:opus:high` |
 | `review_model` | internal review, external-findings evaluation, finalize, report | `task_model`, provider included |
 | `plan_model` | interactive plan creation | `task_model`, provider included |
 
@@ -1015,9 +1015,9 @@ The former provider switches fail at startup naming their replacement:
 | `finalize_enabled = true` | `finalize = sync`, `pr`, or `merge` (see [Finalize](#finalize)) |
 
 Removing `codex_model` and `codex_reasoning_effort` also removed their embedded defaults
-(`gpt-5.5` at `xhigh`). A bare `codex` spec and the automatic Codex reviewer now use the codex
-CLI's own defaults from `~/.codex/config.toml`; set `external_reviewers = codex:gpt-5.5:xhigh` to
-keep the former reviewer.
+(`gpt-5.5` at `xhigh`). A bare `codex` phase spec now uses the codex CLI's own defaults from
+`~/.codex/config.toml`, while a Codex reviewer, the automatic one included, defaults to
+`gpt-6-astra:high`; set `external_reviewers = codex:gpt-5.5:xhigh` to keep the former reviewer.
 
 Codex invocations are composed by loopai and use additive `-c` overrides, so `~/.codex/config.toml`
 settings remain available. `--codex-args`, or the `codex_args` config key, appends extra arguments
@@ -1128,9 +1128,10 @@ Reviewers run in list order. Each reviewer loops until it reports no findings, r
 `max_external_iterations` cap, or triggers its own `review_patience` threshold; then the next
 reviewer starts. Reviewers remain read-only: the `review_model` provider (falling back to
 `task_model`'s) evaluates their findings and applies fixes. A bare `claude` entry defaults to
-`opus:xhigh`; a bare `codex` entry uses the codex CLI's own defaults from `~/.codex/config.toml`.
-Codex ignores the Claude-only `max` effort with a warning. Use `provider::effort` to override
-only effort.
+`opus:xhigh` and a bare `codex` entry, like the automatic Codex reviewer, to `gpt-6-astra:high`;
+a missing model or effort is filled separately, so `codex::medium` means `gpt-6-astra:medium`.
+Codex ignores the Claude-only `max` effort with a warning and falls back to `high`. Use
+`provider::effort` to override only effort.
 
 Providers may be repeated—each entry creates a separate review loop. Use an empty local value
 or `--external-reviewers=` to clear/disable an inherited chain. Every non-empty chain entry is

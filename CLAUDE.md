@@ -432,7 +432,8 @@ Every model-bearing setting shares one grammar, `provider[:model[:effort]]`, par
 means the provider CLI's default, so `codex::medium` sets effort alone. There is no
 implicit provider selection: `--codex`, the `executor` key, and model-name inference are
 gone. The provider is a property of the phase, not the run. `task_model`'s provider runs
-the task phase and an unset `task_model` means Claude — a default, not an inference;
+the task phase and an unset `task_model` means Claude — a default, not an inference; the embedded
+config sets `task_model = claude:opus:high`, and bare `claude` keeps the Claude CLI's own model;
 `review_model`'s provider runs internal review, external-findings evaluation, finalize,
 and report (the four consumers of the runner's review executor); `plan_model`'s runs plan
 creation; the latter two inherit `task_model` whole, provider included, when unset.
@@ -646,7 +647,7 @@ choice on replay; any value outside `^[A-Za-z0-9._:,+-]+$`, the charset the thre
 drops that flag, so a skill never offers a string it would reject. `externalReviewSelection.flagValue`
 renders each reviewer from `resolvedReviewer.Spec`, the `model[:effort]` remainder as configured, and
 never from the resolved `Model`/`Effort`: `ResolveExternalReviewerModelEffort` fills Claude's
-`opus`/`xhigh` default and drops a Codex `max`, so a resolved rendering would freeze today's default
+`opus`/`xhigh` and Codex's `gpt-6-astra`/`high` defaults and drops a Codex `max`, so a resolved rendering would freeze today's default
 into every replay. A chain containing a `custom` reviewer renders empty, since `custom_review_script`
 cannot travel through the flag, and an explicitly empty chain is omitted for the same reason; a replay
 of either selects the automatic reviewer. The `run()` hook sits before plan selection, so a full-mode
@@ -844,7 +845,7 @@ or a facts-only Summary also uses the legacy body; existing PR metadata validati
 still applies to that fallback.
 Section parsing preserves headings inside backtick or tilde code fences as section content.
 
-Claude runs every phase by default. `task_model = codex:<model>[:effort]` moves tasks to Codex, and with them planning and the review block unless `plan_model` or `review_model` names another provider. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. With the chain unset, the provider other than `task_model`'s (`review_model`'s under `--review` and `--external-only`) is selected when installed. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
+Claude runs every phase by default. `task_model = codex:<model>[:effort]` moves tasks to Codex, and with them planning and the review block unless `plan_model` or `review_model` names another provider. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. With the chain unset, the provider other than `task_model`'s (`review_model`'s under `--review` and `--external-only`) is selected when installed. A reviewer spec missing its model or effort gets the reviewer default segment by segment — `opus:xhigh` for Claude, `gpt-6-astra:high` for Codex, a dropped Codex `max` counting as missing — while a bare `codex` phase spec keeps the codex CLI's own defaults. The embedded config cannot pin the automatic reviewer through `external_reviewers`: embedded values reset `ExternalReviewersSet`, and automatic selection never reads the key. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
 
 Codex invocations use additive `-c` overrides so user `~/.codex/config.toml` settings remain available. loopai never writes to `~/.codex/`. `--pass-claude-md` lets Codex discover project `CLAUDE.md`; it does not install or link user-level files.
 

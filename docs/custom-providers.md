@@ -1,6 +1,6 @@
 # Custom Providers for Claude Phases
 
-loopai runs each phase on the provider its model spec names: `claude` (Claude Code, the default when `task_model` is unset) or `codex` (the codex CLI). The `claude_command` and `claude_args` configuration options allow replacing Claude Code with any CLI tool that produces compatible output — codex, Gemini CLI, local LLMs, or custom scripts — for every phase whose spec names `claude`. The same provider can also be selected per run with `--claude-command` and `--claude-args`.
+loopai runs each phase on the provider its model spec names: `claude` (Claude Code, the default provider: the embedded `task_model` is `claude:opus:high`) or `codex` (the codex CLI). The `claude_command` and `claude_args` configuration options allow replacing Claude Code with any CLI tool that produces compatible output — codex, Gemini CLI, local LLMs, or custom scripts — for every phase whose spec names `claude`. The same provider can also be selected per run with `--claude-command` and `--claude-args`.
 
 **For codex specifically, name it in the model spec** (`task_model = codex:<model>[:effort]`), as described in the next section. The `claude_command` wrapper path remains supported for backwards compatibility and for tools without first-class integration (Gemini, Copilot, OpenCode, local LLMs).
 

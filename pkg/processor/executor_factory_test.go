@@ -220,9 +220,11 @@ func TestResolveExternalReviewerModelEffort(t *testing.T) {
 		{name: "claude defaults", provider: config.ExternalReviewToolClaude, wantModel: "opus", wantEffort: "xhigh"},
 		{name: "claude overrides", provider: config.ExternalReviewToolClaude, spec: "fable:max", wantModel: "fable", wantEffort: "max"},
 		{name: "claude effort only keeps default model", provider: config.ExternalReviewToolClaude, spec: ":high", wantModel: "opus", wantEffort: "high"},
-		{name: "codex leaves defaults to codex", provider: config.ExternalReviewToolCodex, wantModel: "", wantEffort: ""},
-		{name: "codex explicit", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6:high", wantModel: "gpt-5.6", wantEffort: "high"},
-		{name: "codex max dropped", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6:max", wantModel: "gpt-5.6", wantEffort: "", wantMax: true},
+		{name: "codex defaults", provider: config.ExternalReviewToolCodex, wantModel: "gpt-6-astra", wantEffort: "high"},
+		{name: "codex explicit", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6:xhigh", wantModel: "gpt-5.6", wantEffort: "xhigh"},
+		{name: "codex effort only keeps default model", provider: config.ExternalReviewToolCodex, spec: ":medium", wantModel: "gpt-6-astra", wantEffort: "medium"},
+		{name: "codex model only keeps default effort", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6", wantModel: "gpt-5.6", wantEffort: "high"},
+		{name: "codex max dropped to default effort", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6:max", wantModel: "gpt-5.6", wantEffort: "high", wantMax: true},
 		{name: "custom has no model", provider: config.ExternalReviewToolCustom},
 	}
 	for _, tc := range tests {
@@ -650,7 +652,7 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 		assert.Equal(t, [2]string{"sonnet", "max"}, [2]string{externalExec.Model, externalExec.Effort})
 	})
 
-	t.Run("codex external empty spec leaves codex defaults", func(t *testing.T) {
+	t.Run("codex external empty spec takes the codex reviewer default", func(t *testing.T) {
 		appCfg := testAppConfig(t)
 		cfg := Config{
 			Mode: ModeReview, MaxIterations: 50, CodexEnabled: true,
@@ -660,7 +662,7 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 
 		_, execs := (&executorFactory{}).Build(cfg, log)
 		externalExec := externalExecutor(t, execs).(*executor.CodexExecutor)
-		assert.Equal(t, [2]string{"", ""}, [2]string{externalExec.Model, externalExec.ReasoningEffort})
+		assert.Equal(t, [2]string{"gpt-6-astra", "high"}, [2]string{externalExec.Model, externalExec.ReasoningEffort})
 	})
 }
 
