@@ -226,6 +226,71 @@ func TestLatestFor(t *testing.T) {
 	assert.False(t, found)
 }
 
+func TestLatestForUnderOwnLaunchLock(t *testing.T) {
+	const plan, branch = "docs/plans/feature.md", "feature"
+	tests := []struct {
+		name    string
+		lock    bool   // the run holds its lifetime lock
+		outcome Status // outcome of the current attempt, empty for none
+		stop    bool   // the stop marker is present
+		want    Status
+	}{
+		{name: "crashed run", want: StatusCrashed},
+		{name: "live run", lock: true, want: StatusRunning},
+		{name: "failed run", outcome: StatusFailed, want: StatusFailed},
+		{name: "stopped run", stop: true, want: StatusStopped},
+		{name: "succeeded run", outcome: StatusSucceeded, want: StatusSucceeded},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := writeTestRun(t, root, "feature-1", plan, branch, 1, testEpoch)
+			if tc.lock {
+				holdTestLock(t, filepath.Join(dir, LockFile))
+			}
+			if tc.outcome != "" {
+				writeTestOutcome(t, dir, 1, tc.outcome)
+			}
+			if tc.stop {
+				require.NoError(t, RequestStop(dir))
+			}
+			// the launcher decides the run under its own launch lock, spelled as the user typed it
+			release, err := AcquireLaunchLock(root, "./"+plan, branch, time.Second)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = release() })
+
+			run, found, err := LatestFor(root, "./"+plan, branch)
+			require.NoError(t, err)
+			require.True(t, found)
+			assert.Equal(t, tc.want, run.Status, "the launcher's own launch lock is not a starting run")
+		})
+	}
+
+	t.Run("observers still see the launch as starting", func(t *testing.T) {
+		root := t.TempDir()
+		dir := writeTestRun(t, root, "feature-1", plan, branch, 1, testEpoch)
+		other := writeTestRun(t, root, "other-1", "docs/plans/other.md", "other", 1, testEpoch.Add(time.Hour))
+		release, err := AcquireLaunchLock(root, plan, branch, time.Second)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = release() })
+		otherRelease, err := AcquireLaunchLock(root, "docs/plans/other.md", "other", time.Second)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = otherRelease() })
+
+		status, err := Classify(root, dir)
+		require.NoError(t, err)
+		assert.Equal(t, StatusStarting, status)
+
+		// only the caller's own plan and branch skip the launch-lock tier
+		all, err := list(root, classifyOptions{ownLaunchLock: launchLockPath(root, plan, branch)})
+		require.NoError(t, err)
+		require.Len(t, all, 2)
+		assert.Equal(t, other, all[0].Dir)
+		assert.Equal(t, StatusStarting, all[0].Status)
+		assert.Equal(t, StatusCrashed, all[1].Status)
+	})
+}
+
 func TestLiveRunForBranch(t *testing.T) {
 	root := t.TempDir()
 	running := writeTestRun(t, root, "feature-1", "docs/plans/feature.md", "feature", 1, testEpoch)

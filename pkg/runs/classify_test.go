@@ -3,6 +3,7 @@
 package runs
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -40,6 +41,10 @@ func TestClassify(t *testing.T) {
 		{name: "previous attempt outcome with stop marker", attempt: 2, outcome: StatusFailed,
 			outcomeAttempt: 1, stop: true, want: StatusStopped},
 		{name: "launch lock held", attempt: 1, launchBranch: branch, want: StatusStarting},
+		{name: "lock held while the launcher still holds the launch lock", attempt: 1, lock: true,
+			launchBranch: branch, want: StatusRunning},
+		{name: "outcome wins over the launch lock", attempt: 2, outcome: StatusFailed, launchBranch: branch,
+			want: StatusFailed},
 		{name: "stop marker wins over the launch lock", attempt: 1, stop: true, launchBranch: branch,
 			want: StatusStopped},
 		{name: "launch lock of another branch", attempt: 1, launchBranch: "other", want: StatusCrashed},
@@ -75,6 +80,35 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+func TestClassifyStartingRunSeenBetweenProbes(t *testing.T) {
+	const plan, branch = "docs/plans/feature.md", "feature"
+	root := t.TempDir()
+	dir := writeTestRun(t, root, "feature-1", plan, branch, 1, time.Now())
+	release, err := AcquireLaunchLock(root, plan, branch, time.Second)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = release() })
+
+	// between classify's two probes the child takes its lifetime lock and acks, and the
+	// launcher releases the launch lock; one of the probes must still see the run
+	var probed []string
+	probeLock = func(path string) (bool, error) {
+		probed = append(probed, filepath.Base(path))
+		if len(probed) == 2 {
+			holdTestLock(t, filepath.Join(dir, LockFile))
+			require.NoError(t, release())
+		}
+		return Probe(path)
+	}
+	t.Cleanup(func() { probeLock = Probe })
+
+	got, err := Classify(root, dir)
+	require.NoError(t, err)
+	assert.Equal(t, StatusRunning, got, "a run that starts during classification is never crashed")
+	require.Len(t, probed, 2)
+	assert.Equal(t, filepath.Base(launchLockPath(root, plan, branch)), probed[0], "the launch lock is probed first")
+	assert.Equal(t, LockFile, probed[1])
+}
+
 func TestClassifyErrors(t *testing.T) {
 	t.Run("missing descriptor", func(t *testing.T) {
 		root := t.TempDir()
@@ -101,6 +135,21 @@ func TestClassifyErrors(t *testing.T) {
 		_, err := Classify(root, dir)
 		require.ErrorContains(t, err, "classify run feature-1")
 		assert.ErrorContains(t, err, "decode")
+	})
+
+	t.Run("launch lock probe fails", func(t *testing.T) {
+		root := t.TempDir()
+		dir := writeTestRun(t, root, "feature-1", "plan.md", "feature", 1, time.Now())
+		probeLock = func(path string) (bool, error) {
+			if filepath.Base(path) != LockFile {
+				return false, errors.New("boom")
+			}
+			return Probe(path)
+		}
+		t.Cleanup(func() { probeLock = Probe })
+
+		_, err := Classify(root, dir)
+		require.ErrorContains(t, err, "classify run feature-1: probe launch lock: boom")
 	})
 
 	t.Run("outcome with an invalid status", func(t *testing.T) {

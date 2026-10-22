@@ -54,6 +54,28 @@ func TestAcquireLaunchLock(t *testing.T) {
 	require.NoError(t, again())
 }
 
+func TestLaunchLockNormalizesPlanPath(t *testing.T) {
+	root := t.TempDir()
+	const plan, branch = "docs/plans/x.md", "x"
+	for _, spelling := range []string{"./docs/plans/x.md", "docs//plans/x.md", "docs/plans/../plans/x.md", "docs/plans/x.md/"} {
+		assert.Equal(t, launchLockPath(root, plan, branch), launchLockPath(root, spelling, branch),
+			"%q is the same plan", spelling)
+	}
+	sum := sha256.Sum256([]byte(plan + "\x00" + branch))
+	assert.Equal(t, ".launch-"+hex.EncodeToString(sum[:])[:16]+".lock",
+		filepath.Base(launchLockPath(root, "./"+plan, branch)), "the key hashes the cleaned path")
+	assert.NotEqual(t, launchLockPath(root, plan, branch), launchLockPath(root, "docs/plans/y.md", branch))
+
+	release, err := AcquireLaunchLock(root, "./"+plan, branch, time.Second)
+	require.NoError(t, err)
+	inProgress, err := LaunchInProgress(root, plan, branch)
+	require.NoError(t, err)
+	assert.True(t, inProgress, "a launch spelled ./docs/plans/x.md is in progress for docs/plans/x.md")
+	_, err = AcquireLaunchLock(root, plan, branch, 50*time.Millisecond)
+	require.ErrorIs(t, err, ErrLaunchBusy, "two spellings of one plan serialize")
+	require.NoError(t, release())
+}
+
 func TestAcquireLaunchLockErrors(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "file")
 	require.NoError(t, os.WriteFile(root, []byte("x"), 0o600))

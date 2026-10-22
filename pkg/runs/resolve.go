@@ -26,6 +26,11 @@ type Run struct {
 // are skipped, as is a run directory whose descriptor is not written yet. A corrupt descriptor
 // or outcome, or a failed lock probe, is an error naming the run.
 func List(root string) ([]Run, error) {
+	return list(root, classifyOptions{})
+}
+
+// list is List with classification adjusted by opts.
+func list(root string, opts classifyOptions) ([]Run, error) {
 	runsDir := RunsDir(root)
 	entries, err := os.ReadDir(runsDir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -47,7 +52,7 @@ func List(root string) ([]Run, error) {
 		if err != nil {
 			return nil, fmt.Errorf("list runs: %w", err)
 		}
-		status, err := classify(root, dir, desc)
+		status, err := classify(root, dir, desc, opts)
 		if err != nil {
 			return nil, fmt.Errorf("list runs: %w", err)
 		}
@@ -112,14 +117,24 @@ func DefaultRun(root string) (Run, error) {
 }
 
 // LatestFor returns the newest run of plan planRel on branch under root, and false when there
-// is none.
+// is none. Plans are compared in their planKey form, the one launch locks hash.
+//
+// LatestFor is the launcher's query: the caller must hold AcquireLaunchLock(root, planRel,
+// branch) while it calls LatestFor and acts on the result. Its classification therefore skips
+// the launch-lock tier for that plan and branch. A probe from the holder's own process reads its
+// own launch lock as held, which would report a crashed run as starting, a live status, so it
+// could never be resumed. While the caller holds the lock no other launch of the plan and
+// branch can be in progress, so the run returned is running, finished, stopped, or crashed,
+// never starting. Called without the lock, LatestFor would report another launcher's starting
+// run as crashed; observers use Classify, List, or LiveRunForBranch instead.
 func LatestFor(root, planRel, branch string) (Run, bool, error) {
-	all, err := List(root)
+	all, err := list(root, classifyOptions{ownLaunchLock: launchLockPath(root, planRel, branch)})
 	if err != nil {
 		return Run{}, false, err
 	}
+	key := planKey(planRel)
 	for _, run := range all {
-		if run.Descriptor.Branch == branch && filepath.Clean(run.Descriptor.Plan) == filepath.Clean(planRel) {
+		if run.Descriptor.Branch == branch && planKey(run.Descriptor.Plan) == key {
 			return run, true, nil
 		}
 	}

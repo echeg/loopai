@@ -65,29 +65,42 @@ func Probe(path string) (held bool, err error) {
 	if !acquired {
 		return true, nil
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+	if err := flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
 		return false, fmt.Errorf("release probe of lock %s: %w", path, err)
 	}
 	return false, nil
 }
 
-// tryFlock attempts a non-blocking flock of kind on f. A lock held elsewhere, or an attempt
-// interrupted by a signal, reports false with no error.
+// tryFlock attempts a non-blocking flock of kind on f. A lock held elsewhere reports false with
+// no error. An attempt a signal interrupted is retried by flock rather than reported as not
+// acquired, which would make Probe read a free lock as held.
 func tryFlock(f *os.File, kind int) (bool, error) {
-	err := syscall.Flock(int(f.Fd()), kind|syscall.LOCK_NB)
+	err := flock(int(f.Fd()), kind|syscall.LOCK_NB)
 	switch {
 	case err == nil:
 		return true, nil
-	case errors.Is(err, syscall.EWOULDBLOCK), errors.Is(err, syscall.EAGAIN), errors.Is(err, syscall.EINTR):
+	case errors.Is(err, syscall.EWOULDBLOCK), errors.Is(err, syscall.EAGAIN):
 		return false, nil
 	default:
 		return false, fmt.Errorf("flock: %w", err)
 	}
 }
 
+// flockSyscall is syscall.Flock; tests replace it to interrupt calls.
+var flockSyscall = syscall.Flock
+
+// flock applies how to fd, repeating a call a signal interrupted (EINTR).
+func flock(fd, how int) error {
+	for {
+		if err := flockSyscall(fd, how); !errors.Is(err, syscall.EINTR) {
+			return err
+		}
+	}
+}
+
 // releaseFlock unlocks and closes a lock file taken by AcquireBounded.
 func releaseFlock(f *os.File) error {
-	unlockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	unlockErr := flock(int(f.Fd()), syscall.LOCK_UN)
 	closeErr := f.Close()
 	if unlockErr != nil {
 		return fmt.Errorf("unlock %s: %w", f.Name(), unlockErr)

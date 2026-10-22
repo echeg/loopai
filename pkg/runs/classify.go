@@ -34,18 +34,48 @@ func (s Status) Live() bool {
 //   - starting when there is no such outcome and the launch lock of its plan and branch is held;
 //   - crashed otherwise.
 //
+// Classify is the observers' query. A launcher that holds the launch lock of a plan and branch
+// must use LatestFor instead: a probe from the holder's own process reads that lock as held.
+//
 // A missing or corrupt descriptor, a corrupt outcome, and a failed lock probe are errors.
 func Classify(root, dir string) (Status, error) {
 	desc, err := LoadDescriptor(dir)
 	if err != nil {
 		return "", fmt.Errorf("classify run %s: %w", filepath.Base(dir), err)
 	}
-	return classify(root, dir, desc)
+	return classify(root, dir, desc, classifyOptions{})
 }
 
+// classifyOptions adjusts classify for locks the caller holds itself.
+type classifyOptions struct {
+	// ownLaunchLock is the path of a launch lock the caller holds, or empty. flock locks belong
+	// to an open file description, so a probe from the holder's own process conflicts with its
+	// lock and reads it as held. A run keyed to this lock skips the launch-lock tier instead of
+	// reading as starting; no other launch of its plan and branch can be in progress while the
+	// caller holds the lock.
+	ownLaunchLock string
+}
+
+// probeLock is Probe; tests replace it to change lock state between classify's probes.
+var probeLock = Probe
+
 // classify is Classify for a run whose descriptor is already loaded.
-func classify(root, dir string, desc Descriptor) (Status, error) {
-	held, err := Probe(filepath.Join(dir, LockFile))
+//
+// The launch lock is probed before the lifetime lock although its tier ranks lower. A launcher
+// releases the launch lock only after its child holds run.lock, so a run that starts between
+// the two probes is seen by one of them. Probing run.lock first can find it still free, then
+// find the launch lock already released, and report a live run as crashed.
+func classify(root, dir string, desc Descriptor, opts classifyOptions) (Status, error) {
+	launching := false
+	if launchLock := launchLockPath(root, desc.Plan, desc.Branch); launchLock != opts.ownLaunchLock {
+		held, err := probeLock(launchLock)
+		if err != nil {
+			return "", fmt.Errorf("classify run %s: probe launch lock: %w", desc.ID, err)
+		}
+		launching = held
+	}
+
+	held, err := probeLock(filepath.Join(dir, LockFile))
 	if err != nil {
 		return "", fmt.Errorf("classify run %s: %w", desc.ID, err)
 	}
@@ -69,10 +99,6 @@ func classify(root, dir string, desc Descriptor) (Status, error) {
 		return StatusStopped, nil
 	}
 
-	launching, err := LaunchInProgress(root, desc.Plan, desc.Branch)
-	if err != nil {
-		return "", fmt.Errorf("classify run %s: %w", desc.ID, err)
-	}
 	if launching {
 		return StatusStarting, nil
 	}

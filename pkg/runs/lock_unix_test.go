@@ -86,6 +86,55 @@ func TestProbe(t *testing.T) {
 	assert.False(t, held)
 }
 
+func TestFlockRetriesInterruptedCalls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), LockFile)
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+
+	// every flock call is interrupted once by a signal before it goes through
+	interrupted, interrupt := 0, true
+	flockSyscall = func(fd, how int) error {
+		if interrupt {
+			interrupt = false
+			interrupted++
+			return syscall.EINTR
+		}
+		interrupt = true
+		return syscall.Flock(fd, how)
+	}
+	t.Cleanup(func() { flockSyscall = syscall.Flock })
+
+	held, err := Probe(path)
+	require.NoError(t, err)
+	assert.False(t, held, "an interrupted probe of a free lock is retried, not read as held")
+	assert.Equal(t, 2, interrupted, "the probe's lock and unlock were both retried")
+
+	release, err := AcquireBounded(path, time.Second)
+	require.NoError(t, err)
+	held, err = Probe(path)
+	require.NoError(t, err)
+	assert.True(t, held, "a held lock still reads as held after a retry")
+	require.NoError(t, release())
+
+	held, err = Probe(path)
+	require.NoError(t, err)
+	assert.False(t, held, "the retried unlock released the lock")
+	assert.Equal(t, 7, interrupted)
+}
+
+func TestFlockErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), LockFile)
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+	flockSyscall = func(int, int) error { return syscall.ENOLCK }
+	t.Cleanup(func() { flockSyscall = syscall.Flock })
+
+	_, err := Probe(path)
+	require.ErrorIs(t, err, syscall.ENOLCK)
+	require.ErrorContains(t, err, "probe lock")
+	_, err = AcquireBounded(path, time.Second)
+	require.ErrorIs(t, err, syscall.ENOLCK)
+	assert.NotErrorIs(t, err, ErrBusy, "a failing flock is not a busy lock")
+}
+
 func TestProbesDoNotSeeEachOther(t *testing.T) {
 	path := filepath.Join(t.TempDir(), LockFile)
 	require.NoError(t, os.WriteFile(path, nil, 0o600))
