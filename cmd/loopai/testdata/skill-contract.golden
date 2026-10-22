@@ -12,6 +12,7 @@ flags:
 --config-dir
 --custom-review-script
 --debug
+--detach
 --dump-defaults
 --external-only
 --external-reviewers

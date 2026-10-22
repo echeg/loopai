@@ -98,6 +98,7 @@ type opts struct {
 	Report                  bool          `long:"report" description:"print the completion report for a plan or branch; positional argument names the feature (branch or plan), default current branch"`
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
 	ConfigDir               string        `long:"config-dir" env:"LOOPAI_CONFIG_DIR" description:"custom config directory"`
+	Detach                  bool          `long:"detach" description:"start the plan as a detached run in its own worktree, print the run id, and return; launching a plan whose last run did not succeed resumes it"`
 	DetachedRun             string        `long:"detached-run" hidden:"true" description:"internal: run as the detached child of the given run id"`
 
 	PlanFile  string   `positional-arg-name:"plan-file" description:"path to one plan file or a comma-separated plan chain (optional, uses fzf if omitted); with --merge/--pr/--report it names the feature to close out"`
@@ -114,6 +115,7 @@ type opts struct {
 	mergeSet          bool
 	prSet             bool
 	executionModeSet  bool
+	detachedRunSet    bool
 
 	claudeCommandSet      bool
 	claudeArgsSet         bool
@@ -206,6 +208,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 	o.t3LaunchSet = isFlagSet(parser, "t3-launch")
 	o.externalReviewersSet = isFlagSet(parser, "external-reviewers")
 	o.customReviewScriptSet = isFlagSet(parser, "custom-review-script")
+	o.detachedRunSet = isFlagSet(parser, "detached-run")
 	for _, name := range []string{
 		"max-iterations", "max-external-iterations", "review-patience",
 		"plan-model", "task-model", "review-model", "claude-command", "claude-args", "codex-args",
@@ -213,7 +216,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 		"review", "external-only", "tasks-only", "base-ref", "wait",
 		"session-timeout", "idle-timeout", "finalize", "skip-finalize", "review-cadence", "preserve-anthropic-api-key",
 		"no-claude-swap", "pass-claude-md", "worktree",
-		"branch", "plan", "gen-agents", "serve", "watch", "init", "reset", "dump-defaults",
+		"branch", "plan", "gen-agents", "serve", "watch", "init", "reset", "dump-defaults", "detach",
 	} {
 		if isFlagSet(parser, name) {
 			o.executionModeSet = true
@@ -3628,6 +3631,9 @@ func validateFlags(o opts) error {
 	if err := validateCloseoutFlags(o); err != nil {
 		return err
 	}
+	if err := validateDetachFlags(o); err != nil {
+		return err
+	}
 	if err := validatePlanChain(o); err != nil {
 		return err
 	}
@@ -3829,9 +3835,14 @@ func runPreConfigCommand(ctx context.Context, o opts) (bool, error) {
 }
 
 // runConfiguredStandaloneCommand routes the standalone commands that need loaded config but no
-// executor or notification dependencies: git close-out.
+// executor or notification dependencies: the --detach launcher, whose child records the launch
+// history, and git close-out.
 func runConfiguredStandaloneCommand(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors) (bool, error) {
-	if closeoutRequested(o) {
+	switch {
+	case o.Detach:
+		return true, runDetachCommand(ctx, o, cfg, detachIO{args: os.Args[1:], stdout: os.Stdout, stderr: os.Stderr,
+			colors: colors})
+	case closeoutRequested(o):
 		return true, runCloseoutCommand(ctx, o, cfg, colors)
 	}
 	return false, nil
@@ -3887,7 +3898,7 @@ func hasExecutionMode(o opts) bool {
 		o.idleTimeoutSet || o.IdleTimeout != 0, o.Finalize != "", o.SkipFinalize, o.ReviewCadence != "",
 		o.PreserveAnthropicAPIKey,
 		o.NoClaudeSwap, o.PassClaudeMd, o.Worktree, o.Commit, o.Branch != "",
-		o.Serve, len(o.Watch) != 0, o.Init, o.Reset, o.DumpDefaults != "", o.GenAgents,
+		o.Serve, len(o.Watch) != 0, o.Init, o.Reset, o.DumpDefaults != "", o.GenAgents, o.Detach,
 	} {
 		if set {
 			return true
@@ -5045,10 +5056,11 @@ func clearStaleCmuxStatus(o opts) {
 // rather than a run. those own no sidebar state, so they neither replace a previous run's pill
 // nor get handed over to a new cmux workspace. --gen-agents belongs here: it executes no plan
 // and never constructs a reporter. so does the detached-run child: it runs a plan, but in a
-// process of its own with no terminal and no sidebar card.
+// process of its own with no terminal and no sidebar card. its launcher, --detach, starts that
+// process and returns, so it owns no card either.
 func isStandaloneCommand(o opts) bool {
 	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || o.GenAgents ||
-		o.SkillContract || o.DetachedRun != "" || (o.Reset && isResetOnly(o))
+		o.SkillContract || o.Detach || o.DetachedRun != "" || (o.Reset && isResetOnly(o))
 }
 
 // handOffSucceeded reports whether an early stop came from a successful cmux workspace hand-off,
@@ -5445,6 +5457,9 @@ func runMergeCommand(ctx context.Context, gitSvc *git.Service, explicitBase stri
 	if err != nil {
 		return err
 	}
+	if liveErr := refuseLiveDetachedRun(ctx, gitSvc, feature); liveErr != nil {
+		return liveErr
+	}
 	base, err := gitSvc.ResolveBaseBranch(explicitBase)
 	if err != nil {
 		return fmt.Errorf("resolve merge base branch: %w", err)
@@ -5783,6 +5798,9 @@ func runPRCommand(ctx context.Context, gitSvc *git.Service, explicitBase string,
 	branch, err := resolveCloseoutBranch(gitSvc, target, "--pr")
 	if err != nil {
 		return err
+	}
+	if liveErr := refuseLiveDetachedRun(ctx, gitSvc, branch); liveErr != nil {
+		return liveErr
 	}
 	base, err := gitSvc.ResolveBaseBranch(explicitBase)
 	if err != nil {

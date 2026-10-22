@@ -108,6 +108,9 @@ func TestMain(m *testing.M) {
 	// keep_awake defaults to on, and awake.New would otherwise start a real sleep inhibitor
 	// for every run() under test. wiring tests inject their own holder or override this.
 	newAwakeHolder = func(bool) *awake.Holder { return nil }
+	// a Linux machine with a systemd user manager would otherwise start every detached child the
+	// suite launches in a transient scope of the real user manager
+	detachScopePrefix = func() []string { return nil }
 	// a developer shell may export a T3 Code token or server URL; no test may reach a real T3
 	// server, so neither leaks into the suite. tests that need them set them through t.Setenv.
 	for _, key := range []string{"LOOPAI_T3_TOKEN", "LOOPAI_T3_URL"} {
@@ -7024,31 +7027,35 @@ func TestExecutePlan_DashboardStartupFailureDoesNotPersistPill(t *testing.T) {
 	assert.Contains(t, string(recorded), "clear-status loopai")
 }
 
+// setupPRFeatureWithRemote returns a repository on branch feature with a GitHub origin whose pushes a
+// git wrapper redirects to a local bare remote, the remote, and a service using that wrapper.
+func setupPRFeatureWithRemote(t *testing.T) (string, string, *git.Service) {
+	t.Helper()
+	dir := setupTestRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, filepath.Dir(remote), "init", "--bare", remote)
+	originURL := "https://github.com/acme/repo.git"
+	runGit(t, dir, "remote", "add", "origin", originURL)
+	runGit(t, dir, "checkout", "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
+	runGit(t, dir, "add", "feature.txt")
+	runGit(t, dir, "commit", "-m", "feature")
+	plansDir := filepath.Join(dir, "docs", "plans", "completed")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260802-feature.md"), []byte("# Feature PR\n\n## Overview\n\nImplements feature.\n"), 0o600))
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	t.Setenv("PR_TEST_REAL_GIT", realGit)
+	t.Setenv("PR_TEST_REMOTE", remote)
+	gitWrapper := filepath.Join(t.TempDir(), "git-wrapper")
+	writeExecutable(t, gitWrapper, "#!/bin/sh\nif [ \"$1\" = push ]; then\n  refspec=$4\n  \"$PR_TEST_REAL_GIT\" push \"$PR_TEST_REMOTE\" \"$refspec\" || exit $?\n  branch=${refspec#refs/heads/}\n  branch=${branch%%:*}\n  \"$PR_TEST_REAL_GIT\" update-ref \"refs/remotes/origin/$branch\" \"$branch\" || exit $?\n  \"$PR_TEST_REAL_GIT\" config \"branch.$branch.remote\" origin || exit $?\n  \"$PR_TEST_REAL_GIT\" config \"branch.$branch.merge\" \"refs/heads/$branch\" || exit $?\n  exit 0\nfi\nexec \"$PR_TEST_REAL_GIT\" \"$@\"\n")
+	svc, err := git.NewService(dir, noopLogger(), gitWrapper)
+	require.NoError(t, err)
+	return dir, remote, svc
+}
+
 func TestRunPRCommand(t *testing.T) {
-	setupFeatureWithRemote := func(t *testing.T) (string, string, *git.Service) {
-		t.Helper()
-		dir := setupTestRepo(t)
-		remote := filepath.Join(t.TempDir(), "origin.git")
-		runGit(t, filepath.Dir(remote), "init", "--bare", remote)
-		originURL := "https://github.com/acme/repo.git"
-		runGit(t, dir, "remote", "add", "origin", originURL)
-		runGit(t, dir, "checkout", "-b", "feature")
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600))
-		runGit(t, dir, "add", "feature.txt")
-		runGit(t, dir, "commit", "-m", "feature")
-		plansDir := filepath.Join(dir, "docs", "plans", "completed")
-		require.NoError(t, os.MkdirAll(plansDir, 0o750))
-		require.NoError(t, os.WriteFile(filepath.Join(plansDir, "20260802-feature.md"), []byte("# Feature PR\n\n## Overview\n\nImplements feature.\n"), 0o600))
-		realGit, err := exec.LookPath("git")
-		require.NoError(t, err)
-		t.Setenv("PR_TEST_REAL_GIT", realGit)
-		t.Setenv("PR_TEST_REMOTE", remote)
-		gitWrapper := filepath.Join(t.TempDir(), "git-wrapper")
-		writeExecutable(t, gitWrapper, "#!/bin/sh\nif [ \"$1\" = push ]; then\n  refspec=$4\n  \"$PR_TEST_REAL_GIT\" push \"$PR_TEST_REMOTE\" \"$refspec\" || exit $?\n  branch=${refspec#refs/heads/}\n  branch=${branch%%:*}\n  \"$PR_TEST_REAL_GIT\" update-ref \"refs/remotes/origin/$branch\" \"$branch\" || exit $?\n  \"$PR_TEST_REAL_GIT\" config \"branch.$branch.remote\" origin || exit $?\n  \"$PR_TEST_REAL_GIT\" config \"branch.$branch.merge\" \"refs/heads/$branch\" || exit $?\n  exit 0\nfi\nexec \"$PR_TEST_REAL_GIT\" \"$@\"\n")
-		svc, err := git.NewService(dir, noopLogger(), gitWrapper)
-		require.NoError(t, err)
-		return dir, remote, svc
-	}
+	setupFeatureWithRemote := setupPRFeatureWithRemote
 
 	t.Run("success prints only URL and clears pill", func(t *testing.T) {
 		dir, remote, svc := setupFeatureWithRemote(t)
@@ -7379,6 +7386,8 @@ func TestClearStaleCmuxStatusSkipsConfigUtilities(t *testing.T) {
 		{GenAgents: true},
 		// a detached run's child has no card of its own; the invoking workspace's pill is not its own
 		{DetachedRun: "plan-20261022-120000-abcd", PlanFile: "plan.md"},
+		// nor has its launcher, which returns once the child started
+		{Detach: true, PlanFile: "plan.md"},
 	} {
 		clearStaleCmuxStatus(o)
 	}

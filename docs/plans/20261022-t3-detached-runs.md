@@ -856,57 +856,57 @@
 - [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 8
 
 ### Task 8: Add the --detach launcher, the launch lock, and the --merge/--pr guard
-- [ ] add `Detach bool` (`long:"detach"`, visible) to `opts`:
+- [x] add `Detach bool` (`long:"detach"`, visible) to `opts`:
   - add `detach` to `markFlagsSet`'s `executionModeSet` list and to `hasExecutionMode`, so close-out and other standalone commands reject it;
   - add it to `isStandaloneCommand`.
-- [ ] add `validateDetachFlags` in table style, inserted in `validateFlags` BEFORE `validatePlanChain`. It applies to `--detach` and `--detached-run`:
+- [x] add `validateDetachFlags` in table style, inserted in `validateFlags` BEFORE `validatePlanChain`. It applies to `--detach` and `--detached-run`:
   - require a plan;
   - refuse `len(o.PlanFiles) > 1` ("a detached run takes exactly one plan; plan chains are not supported") and any `o.extraArgs`;
   - refuse `--review`, `--external-only`, `--plan`, `--gen-agents`, `--serve`, `--watch`, `--cmux-workspace`, `--init`, `--reset`, `--dump-defaults`, `--clear`, and `--merge`/`--pr`/`--report`;
   - refuse `--commit`: a detached run never commits into the invoking checkout;
   - accept `--tasks-only` and an explicit `--worktree`.
-- [ ] route `--detach` through `runConfiguredStandaloneCommand`'s switch, after config and before main.go:543, so launch history is not recorded twice. Every symbol the untagged `detach_launch.go` calls from `detach_launch_unix.go` gets a same-signature stub in `detach_launch_windows.go` returning `detached runs are not supported on Windows`.
-- [ ] add `stripDetachArgs(args []string) []string` with these rules:
+- [x] route `--detach` through `runConfiguredStandaloneCommand`'s switch, after config and before main.go:543, so launch history is not recorded twice. Every symbol the untagged `detach_launch.go` calls from `detach_launch_unix.go` gets a same-signature stub in `detach_launch_windows.go` returning `detached runs are not supported on Windows`.
+- [x] add `stripDetachArgs(args []string) []string` with these rules:
   - remove `--detach`;
   - remove both forms of each value flag: `--detached-run=v` and `--detached-run v`, `--t3-thread=v` and `--t3-thread v`, `--acp-thread=v` and `--acp-thread v`, `--acp-session=v` and `--acp-session v` (the next token is consumed);
   - stop scanning at `--`, which is kept along with everything after it;
   - keep explicit empty values such as `--external-reviewers=`.
-- [ ] implement the launcher preflight (`cmd/loopai/detach_launch.go` + `_unix.go`), in this order:
+- [x] implement the launcher preflight (`cmd/loopai/detach_launch.go` + `_unix.go`), in this order:
   1. refuse inside a detected sandbox. `detectSandbox(getenv)` reports `CODEX_SANDBOX` non-empty, `CODEX_SANDBOX_NETWORK_DISABLED == "1"`, or `SANDBOX_RUNTIME == "1"`; the message names the signal and points to Mode 2 of the loopai-t3 skill;
   2. apply `planFileRefusal` and `executableHandOffRefusal`;
   3. open the repository with `vcs_command` and require the repo root;
   4. call `EnsureLocalGitignore()` before creating the run directory;
   5. resolve the branch: the `--branch` override, else `git.Service.EffectiveBranchName`.
-- [ ] decide the run under `AcquireLaunchLock(root, planRel, branch, 5s)`; if it is busy, report "another launch of this plan is in progress". Then `LatestFor` gives one of three cases:
+- [x] decide the run under `AcquireLaunchLock(root, planRel, branch, 5s)`; if it is busy, report "another launch of this plan is in progress". Then `LatestFor` gives one of three cases:
   - live run: refuse with its id and `loopai --attach <id>`;
   - not succeeded and not live: resume with the same id. Call `ArchiveOutcome`, clear the stop marker, increment the attempt, and record the new argv. Keep the recorded origin (kind, thread id, ACP session id) unless the relaunch passes `--t3-thread`, `--acp-thread`, or `--acp-session`;
   - succeeded or none: create a `NewID`, create the directory, call `PruneSucceeded(root, 20)`, and give the descriptor origin `cli`.
-- [ ] spawn the child:
+- [x] spawn the child:
   - command: `detachExecutable()` with `--detached-run=<id>` plus `stripDetachArgs(os.Args[1:])`;
   - `cmd.Dir` = the invoking checkout; `SysProcAttr{Setsid: true}`; stdin nil (the null device);
   - stdout and stderr = `console.log`, opened `O_APPEND|O_CREATE` 0600 and preceded by an attempt separator line. It is an `*os.File`, so os/exec hands the descriptor over directly;
   - `ExtraFiles` = [secret pipe read end (fd 3), ack pipe write end (fd 4)];
   - environment = `os.Environ()` minus `T3_ACP_MCP_*`, `LOOPAI_T3_TOKEN`, and `CMUX_*`, plus the descriptor's recorded env-tag options when relaunching.
-- [ ] add the Linux transient scope:
+- [x] add the Linux transient scope:
   - the prefix comes from `var detachScopePrefix = defaultDetachScopePrefix`, wrapping a pure `systemdScopePrefix(goos string, lookPath func(string) (string, error), stat func(string) (os.FileInfo, error), getenv func(string) string) []string`;
   - it returns `systemd-run --user --scope --quiet --collect --` only on Linux, when `systemd-run` is on `PATH` and `$XDG_RUNTIME_DIR/systemd/private` exists. Descriptors are kept across its exec;
   - if a scoped start fails before any ack, retry once without it and print one warning;
   - stub `detachScopePrefix` to return nil in `TestMain`.
-- [ ] after `Start`:
+- [x] after `Start`:
   - close the child ends;
   - write the secret JSON line (`{"t3_token":""}` until Task 11) and close the write end;
   - wait for the ack line (bounded 120 s) while also watching for child exit;
   - on `ok`: print `run: <id>` and `follow: loopai --attach <id>`, call `Process.Release`, release the launch lock, and exit 0;
   - on an error message or child exit: print the reason, or the console log tail, and exit 1;
   - on timeout: print the console log path and exit 1 without killing the detached child.
-- [ ] make the executable and the child argv prefix replaceable package variables (`detachExecutable = os.Executable`, `detachChildArgs`) so tests can point them at the test binary.
-- [ ] add the guard `refuseLiveDetachedRun(ctx, gitSvc, feature)` to `runMergeCommand` and `runPRCommand` (main.go:5652, :6001), right after the feature branch is resolved. It refuses in either of two cases:
+- [x] make the executable and the child argv prefix replaceable package variables (`detachExecutable = os.Executable`, `detachChildArgs`) so tests can point them at the test binary.
+- [x] add the guard `refuseLiveDetachedRun(ctx, gitSvc, feature)` to `runMergeCommand` and `runPRCommand` (main.go:5652, :6001), right after the feature branch is resolved. It refuses in either of two cases:
   1. `runs.LiveRunForBranch(root, feature)` finds a live run in the runs directory of any root from `progressRecordRoots(gitSvc)`;
   2. the registered worktree that has `feature` checked out (from `gitSvc.Worktrees()`) answers a non-blocking `AcquireWorktreeRunLockContext` with `ErrWorktreeBusy`. Release the lock at once when it was acquired.
 
   The error names the run id (when known) and `loopai --stop <id>`. `runs.ErrUnsupported` on Windows counts as "no live run" for check 1.
-- [ ] run `go test ./cmd/loopai -run TestSkillContract -update` (adds `--detach`).
-- [ ] write tests (success) with a stub child, a test-binary helper that reads fd 3, dumps its environment and argv to a file, and writes an ack:
+- [x] run `go test ./cmd/loopai -run TestSkillContract -update` (adds `--detach`).
+- [x] write tests (success) with a stub child, a test-binary helper that reads fd 3, dumps its environment and argv to a file, and writes an ack:
   - the launch prints the run id and follow command and exits 0;
   - the argv keeps raw explicit empty values (`--external-reviewers=`) and drops `--detach`;
   - the environment contains no `T3_ACP_MCP_ENDPOINT`, `T3_ACP_MCP_AUTHORIZATION`, `LOOPAI_T3_TOKEN`, or `CMUX_WORKSPACE_ID`;
@@ -916,7 +916,7 @@
   - `.loopai/.gitignore` exists before the run directory;
   - `stripDetachArgs` table: both forms of each value flag, `--` handling, and empty values. The stripped argv parses back to the same `o.PlanFile` with empty `extraArgs`;
   - `systemdScopePrefix` table: darwin → nil; linux without `systemd-run` → nil; linux without the private socket → nil; linux with both → the prefix.
-- [ ] write tests (errors/edge):
+- [x] write tests (errors/edge):
   - a validation table: chain, surplus positional, `--review`, `--external-only`, `--commit`, `--serve`, `--cmux-workspace`, `--merge`, no plan;
   - a `detectSandbox` table for each signal and for none;
   - launching inside a sandbox fails before any directory is created;
@@ -927,7 +927,11 @@
     - refuse while a live run of that branch holds its lock, and proceed once it is released;
     - refuse when the run directory lives in a second registered worktree and `--merge <branch>` is invoked from the primary checkout;
     - refuse when only the feature worktree's run lock is held, with no run directory at all.
-- [ ] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 9
+- [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 9
+
+⚠️ Check 2 of the `--merge`/`--pr` guard says "a loopai run of <branch> is live: <busy error>; stop it first (loopai --stop <run-id> for a detached run)" instead of the detached-run message minus the id, since the worktree-lock probe also catches a foreground `--worktree` run and has no id to name.
+
+⚠️ F5 is handled once in `pkg/runs`: `List` wraps an unreadable run directory in an error naming the run id, its directory, and the fix (check that no loopai process uses it, then remove it); filtered queries (`LatestFor`, `LiveRunForBranch`, `PruneSucceeded`) still fail closed, because a broken run could belong to the same plan or branch. F2 is handled in `Classify`: a current-attempt `finish` journal event with status `succeeded` and no outcome classifies as succeeded.
 
 ### Task 9: Add --attach, --runs, and --stop
 - [ ] add visible `Attach bool` (`long:"attach"`), `Runs bool` (`long:"runs"`), and `Stop bool` (`long:"stop"`), with the identifier as the positional:
