@@ -25,7 +25,10 @@ func TestClassify(t *testing.T) {
 		outcomeAttempt int
 		stop           bool   // the stop marker is present
 		launchBranch   string // a launcher holds the launch lock of plan on this branch
-		want           Status
+		finish         Status // a finish event recorded in the journal for finishAttempt, empty for none
+		// finishAttempt is the attempt the finish event belongs to; zero means the current one
+		finishAttempt int
+		want          Status
 	}{
 		{name: "lock held", attempt: 1, lock: true, want: StatusRunning},
 		{name: "lock held over a finished outcome", attempt: 1, lock: true, outcome: StatusSucceeded,
@@ -49,6 +52,19 @@ func TestClassify(t *testing.T) {
 			want: StatusStopped},
 		{name: "launch lock of another branch", attempt: 1, launchBranch: "other", want: StatusCrashed},
 		{name: "nothing", attempt: 1, want: StatusCrashed},
+		// a success whose outcome could not be written after its finish event
+		{name: "succeeded finish without its outcome", attempt: 1, finish: StatusSucceeded, want: StatusSucceeded},
+		{name: "succeeded finish wins over the stop marker", attempt: 1, finish: StatusSucceeded, stop: true,
+			want: StatusSucceeded},
+		{name: "succeeded finish wins over the launch lock", attempt: 1, finish: StatusSucceeded,
+			launchBranch: branch, want: StatusSucceeded},
+		{name: "outcome wins over a succeeded finish", attempt: 1, finish: StatusSucceeded, outcome: StatusFailed,
+			want: StatusFailed},
+		{name: "lock held over a succeeded finish", attempt: 1, finish: StatusSucceeded, lock: true,
+			want: StatusRunning},
+		{name: "succeeded finish of a previous attempt does not count", attempt: 2, finish: StatusSucceeded,
+			finishAttempt: 1, want: StatusCrashed},
+		{name: "failed finish without its outcome", attempt: 1, finish: StatusFailed, want: StatusCrashed},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,6 +82,13 @@ func TestClassify(t *testing.T) {
 			}
 			if tc.stop {
 				require.NoError(t, RequestStop(dir))
+			}
+			if tc.finish != "" {
+				attempt := tc.finishAttempt
+				if attempt == 0 {
+					attempt = tc.attempt
+				}
+				writeTestFinish(t, dir, attempt, tc.finish)
 			}
 			if tc.launchBranch != "" {
 				release, err := AcquireLaunchLock(root, plan, tc.launchBranch, time.Second)
@@ -187,6 +210,19 @@ func writeTestRun(t *testing.T, root, id, plan, branch string, attempt int, crea
 func writeTestOutcome(t *testing.T, dir string, attempt int, status Status) {
 	t.Helper()
 	require.NoError(t, SaveOutcome(dir, &Outcome{RunID: filepath.Base(dir), Attempt: attempt, Status: status}))
+}
+
+// writeTestFinish appends attempt's start and a finish event with status to the journal of run
+// directory dir.
+func writeTestFinish(t *testing.T, dir string, attempt int, status Status) {
+	t.Helper()
+	j, err := OpenJournal(dir, attempt)
+	require.NoError(t, err)
+	_, err = j.Append(Event{Type: EventAttemptStart})
+	require.NoError(t, err)
+	_, err = j.Append(Event{Type: EventFinish, Status: status})
+	require.NoError(t, err)
+	require.NoError(t, j.Close())
 }
 
 // holdTestLock takes the lock at path for the rest of the test, as a live run holds its

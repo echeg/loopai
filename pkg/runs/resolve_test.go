@@ -58,7 +58,13 @@ func TestListErrors(t *testing.T) {
 
 		_, err := List(root)
 		require.ErrorContains(t, err, "list runs")
-		assert.ErrorContains(t, err, filepath.Join("plan-b-1", DescriptorFile))
+		require.ErrorContains(t, err, filepath.Join("plan-b-1", DescriptorFile))
+		require.ErrorContains(t, err, "run plan-b-1 cannot be read: ", "the error names the run")
+		require.ErrorContains(t, err, "; check that no loopai process still uses "+dir+", then remove it",
+			"and how to clear it")
+		_, _, err = LatestFor(root, "docs/plans/a.md", "a")
+		require.ErrorContains(t, err, "run plan-b-1 cannot be read",
+			"a query filtered by plan still fails: the broken run could be of the same plan")
 	})
 
 	t.Run("corrupt outcome", func(t *testing.T) {
@@ -68,6 +74,32 @@ func TestListErrors(t *testing.T) {
 
 		_, err := List(root)
 		require.ErrorContains(t, err, "classify run plan-a-1")
+		require.ErrorContains(t, err, "run plan-a-1 cannot be read: ")
+		assert.ErrorContains(t, err, "then remove it")
+	})
+
+	t.Run("unknown descriptor version", func(t *testing.T) {
+		root := t.TempDir()
+		dir := Dir(root, "plan-c-1")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, DescriptorFile), []byte(`{"version":2,"id":"plan-c-1"}`), 0o600))
+
+		_, _, err := LiveRunForBranch(root, "c")
+		require.ErrorContains(t, err, "run plan-c-1 cannot be read: ")
+		require.ErrorContains(t, err, "unsupported version 2")
+		require.ErrorContains(t, err, dir)
+		require.ErrorContains(t, PruneSucceeded(root, 0), "run plan-c-1 cannot be read: ")
+	})
+
+	t.Run("a platform without detached runs names no directory to remove", func(t *testing.T) {
+		root := t.TempDir()
+		writeTestRun(t, root, "plan-a-1", "docs/plans/a.md", "a", 1, testEpoch)
+		probeLock = func(string) (bool, error) { return false, ErrUnsupported }
+		t.Cleanup(func() { probeLock = Probe })
+
+		_, err := List(root)
+		require.ErrorIs(t, err, ErrUnsupported)
+		assert.NotContains(t, err.Error(), "remove it")
 	})
 
 	t.Run("unreadable runs directory", func(t *testing.T) {
@@ -233,6 +265,7 @@ func TestLatestForUnderOwnLaunchLock(t *testing.T) {
 		lock    bool   // the run holds its lifetime lock
 		outcome Status // outcome of the current attempt, empty for none
 		stop    bool   // the stop marker is present
+		finish  Status // a finish event of the current attempt in the journal, empty for none
 		want    Status
 	}{
 		{name: "crashed run", want: StatusCrashed},
@@ -240,6 +273,8 @@ func TestLatestForUnderOwnLaunchLock(t *testing.T) {
 		{name: "failed run", outcome: StatusFailed, want: StatusFailed},
 		{name: "stopped run", stop: true, want: StatusStopped},
 		{name: "succeeded run", outcome: StatusSucceeded, want: StatusSucceeded},
+		// a launcher must never resume a run that finished but could not write its outcome
+		{name: "succeeded run without its outcome", finish: StatusSucceeded, want: StatusSucceeded},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -253,6 +288,9 @@ func TestLatestForUnderOwnLaunchLock(t *testing.T) {
 			}
 			if tc.stop {
 				require.NoError(t, RequestStop(dir))
+			}
+			if tc.finish != "" {
+				writeTestFinish(t, dir, 1, tc.finish)
 			}
 			// the launcher decides the run under its own launch lock, spelled as the user typed it
 			release, err := AcquireLaunchLock(root, "./"+plan, branch, time.Second)

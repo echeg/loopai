@@ -24,9 +24,34 @@ type Run struct {
 // List returns the runs recorded under root, newest first by created_at. Entries of the runs
 // directory that are not run directories (lock files, names that are not valid ids, symlinks)
 // are skipped, as is a run directory whose descriptor is not written yet. A corrupt descriptor
-// or outcome, or a failed lock probe, is an error naming the run.
+// or outcome, or a failed lock probe, is an error naming the run, its directory, and how to clear
+// it. List fails as a whole on such a run, and so does every query built on it: a run that cannot
+// be read could be live, so no launch, merge, or prune may assume it is not.
 func List(root string) ([]Run, error) {
 	return list(root, classifyOptions{})
+}
+
+// brokenRunError reports a run directory whose records cannot be read or classified: a corrupt
+// descriptor or outcome, one written by a newer loopai, or a lock that cannot be probed.
+type brokenRunError struct {
+	dir string
+	err error
+}
+
+func (e *brokenRunError) Error() string {
+	return fmt.Sprintf("run %s cannot be read: %v; check that no loopai process still uses %s, then remove it",
+		filepath.Base(e.dir), e.err, e.dir)
+}
+
+func (e *brokenRunError) Unwrap() error { return e.err }
+
+// unreadableRun wraps the error that keeps the run in dir from being listed. A platform without
+// detached runs is reported as it is: there is nothing to remove.
+func unreadableRun(dir string, err error) error {
+	if errors.Is(err, ErrUnsupported) {
+		return fmt.Errorf("list runs: %w", err)
+	}
+	return fmt.Errorf("list runs: %w", &brokenRunError{dir: dir, err: err})
 }
 
 // list is List with classification adjusted by opts.
@@ -50,11 +75,11 @@ func list(root string, opts classifyOptions) ([]Run, error) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("list runs: %w", err)
+			return nil, unreadableRun(dir, err)
 		}
 		status, err := classify(root, dir, desc, opts)
 		if err != nil {
-			return nil, fmt.Errorf("list runs: %w", err)
+			return nil, unreadableRun(dir, err)
 		}
 		result = append(result, Run{Dir: dir, Descriptor: desc, Status: status})
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 )
 
 // Status is the state of a run as observed from outside its process.
@@ -30,6 +31,9 @@ func (s Status) Live() bool {
 //   - running when its lifetime lock is held;
 //   - the outcome's status when the lock is free and outcome.json belongs to the descriptor's
 //     current attempt (an outcome left by an earlier attempt does not count);
+//   - succeeded when there is no such outcome but the journal's last finish event of the current
+//     attempt says so: the attempt finished, archived its plan, and only failed to write its
+//     outcome, so it must never be resumed;
 //   - stopped when there is no such outcome and the stop marker is present;
 //   - starting when there is no such outcome and the launch lock of its plan and branch is held;
 //   - crashed otherwise.
@@ -91,6 +95,14 @@ func classify(root, dir string, desc Descriptor, opts classifyOptions) (Status, 
 		return "", fmt.Errorf("classify run %s: %w", desc.ID, err)
 	}
 
+	succeeded, err := finishedSucceeded(dir, desc.Attempt)
+	if err != nil {
+		return "", fmt.Errorf("classify run %s: %w", desc.ID, err)
+	}
+	if succeeded {
+		return StatusSucceeded, nil
+	}
+
 	stop, err := StopRequested(dir)
 	if err != nil {
 		return "", fmt.Errorf("classify run %s: %w", desc.ID, err)
@@ -103,4 +115,20 @@ func classify(root, dir string, desc Descriptor, opts classifyOptions) (Status, 
 		return StatusStarting, nil
 	}
 	return StatusCrashed, nil
+}
+
+// finishedSucceeded reports whether the last finish event attempt recorded in the journal of run
+// directory dir is a success. Only success is read from the journal: every other ending leaves the
+// run resumable whatever it is called, while a success must never run again.
+func finishedSucceeded(dir string, attempt int) (bool, error) {
+	events, err := ReadFrom(dir, 0)
+	if err != nil {
+		return false, fmt.Errorf("read finish event: %w", err)
+	}
+	for _, ev := range slices.Backward(events) {
+		if ev.Type == EventFinish && ev.Attempt == attempt {
+			return ev.Status == StatusSucceeded, nil
+		}
+	}
+	return false, nil
 }
