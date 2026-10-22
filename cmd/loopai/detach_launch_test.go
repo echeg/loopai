@@ -65,6 +65,13 @@ func TestValidateDetachFlags(t *testing.T) {
 			wantErr: "--detached-run requires a run id"},
 		{name: "a blank run id", args: []string{"--detached-run", " ", "docs/plans/x.md"},
 			wantErr: "--detached-run requires a run id"},
+		{name: "detach with the child's run id", args: []string{"--detach", "--detached-run=x-20261022-120000-abcd",
+			"docs/plans/x.md"},
+			wantErr: "--detach cannot be combined with --detached-run: the launcher starts the detached run itself"},
+		{name: "detach with the child's run id separate", args: []string{"--detached-run", "x-1", "--detach",
+			"docs/plans/x.md"}, wantErr: "--detach cannot be combined with --detached-run"},
+		{name: "detach with an empty child run id", args: []string{"--detach", "--detached-run=", "docs/plans/x.md"},
+			wantErr: "--detach cannot be combined with --detached-run"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -168,6 +175,15 @@ func TestDetectSandbox(t *testing.T) {
 			assert.Equal(t, tc.want, detectSandbox(func(key string) string { return tc.env[key] }))
 		})
 	}
+}
+
+func TestRefuseDetachInSandbox(t *testing.T) {
+	require.NoError(t, refuseDetachInSandbox(func(string) string { return "" }))
+
+	err := refuseDetachInSandbox(func(key string) string { return map[string]string{"CODEX_SANDBOX": "seatbelt"}[key] })
+	require.EqualError(t, err, "refusing to start a detached run inside an agent sandbox (CODEX_SANDBOX=seatbelt): "+
+		"the run and every model process it starts would inherit the sandbox; start the plan in a new loopai thread "+
+		"(Mode 2 of the loopai-t3 skill) or from a shell outside the sandbox")
 }
 
 func TestSystemdScopePrefix(t *testing.T) {

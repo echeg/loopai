@@ -183,7 +183,9 @@ func LiveRunForBranch(root, branch string) (Run, bool, error) {
 
 // PruneSucceeded deletes the directories of succeeded runs under root beyond the newest keep.
 // Only runs classified as succeeded are touched, which requires their lifetime lock to be free;
-// live, failed, stopped, and crashed runs are never removed.
+// live, failed, stopped, and crashed runs are never removed. Neither is a succeeded run whose
+// worktree is still in place (KeptWorktree), which does not count toward keep either: its record is
+// what stops a new launch of its plan from resuming that worktree.
 func PruneSucceeded(root string, keep int) error {
 	all, err := List(root)
 	if err != nil {
@@ -192,7 +194,7 @@ func PruneSucceeded(root string, keep int) error {
 	var errs []error
 	kept := 0
 	for _, run := range all {
-		if run.Status != StatusSucceeded {
+		if run.Status != StatusSucceeded || KeptWorktree(run) != "" {
 			continue
 		}
 		if kept < keep {
@@ -204,6 +206,25 @@ func PruneSucceeded(root string, keep int) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// KeptWorktree returns the worktree a finished run left in place, or "" when it left none or the
+// directory is gone: the one its current attempt's outcome records keeping or, for a run whose
+// current attempt has no outcome, such as a success that failed to write it, the worktree its
+// descriptor records. A succeeded run removes its worktree unless it keeps it, and a new run of the
+// plan would resume a kept one, whose plan already moved to completed/.
+func KeptWorktree(run Run) string {
+	path := run.Descriptor.Worktree
+	if outcome, err := LoadOutcome(run.Dir); err == nil && outcome.Attempt == run.Descriptor.Attempt {
+		path = outcome.WorktreeKept
+	}
+	if path == "" {
+		return ""
+	}
+	if _, err := os.Lstat(path); err != nil {
+		return ""
+	}
+	return path
 }
 
 // planMatches reports whether ident names plan, which is recorded relative to root: as the

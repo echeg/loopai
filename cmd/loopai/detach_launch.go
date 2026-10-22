@@ -61,8 +61,13 @@ var detachValueFlags = []string{"--detached-run", "--t3-thread", "--acp-thread",
 // It applies to the --detach launcher and to the hidden --detached-run child, which receives the
 // launcher's arguments, so the child refuses what the launcher would.
 func validateDetachFlags(o opts) error {
-	if !o.Detach && !o.detachedRunSet && o.DetachedRun == "" {
+	childSet := o.detachedRunSet || o.DetachedRun != ""
+	if !o.Detach && !childSet {
 		return nil
+	}
+	// the child is routed before the launcher, so the pair would run as a child no launcher started
+	if o.Detach && childSet {
+		return errors.New("--detach cannot be combined with --detached-run: the launcher starts the detached run itself")
 	}
 	if o.detachedRunSet && strings.TrimSpace(o.DetachedRun) == "" {
 		return errors.New("--detached-run requires a run id")
@@ -133,6 +138,19 @@ func stripDetachArgs(args []string) []string {
 		}
 	}
 	return kept
+}
+
+// refuseDetachInSandbox refuses a --detach launch inside the agent sandbox detectSandbox finds in
+// getenv. It runs before config loading, whose defaults installer writes under HOME: a sandbox denies
+// that write, and its error would otherwise replace this guidance, meant for exactly that environment.
+func refuseDetachInSandbox(getenv func(string) string) error {
+	signal := detectSandbox(getenv)
+	if signal == "" {
+		return nil
+	}
+	return fmt.Errorf("refusing to start a detached run inside an agent sandbox (%s): the run and every model "+
+		"process it starts would inherit the sandbox; start the plan in a new loopai thread (Mode 2 of the "+
+		"loopai-t3 skill) or from a shell outside the sandbox", signal)
 }
 
 // detectSandbox names the agent sandbox signal getenv reports, or returns "" outside one: Codex sets
@@ -247,26 +265,22 @@ type detachIO struct {
 type detachLaunch struct {
 	o       opts
 	dio     detachIO
-	exe     string // the binary started as the child
-	root    string // the invoking checkout
-	planRel string // the plan relative to root, as the descriptor records it
-	branch  string // the run's branch
-	dir     string // the run directory
+	svc     *git.Service // the invoking checkout's repository
+	exe     string       // the binary started as the child
+	root    string       // the invoking checkout
+	planRel string       // the plan relative to root, as the descriptor records it
+	branch  string       // the run's branch
+	dir     string       // the run directory
 	desc    runs.Descriptor
 	env     []string // the child's environment
 }
 
-// launchDetached is the --detach launcher. It refuses inside an agent sandbox, prepares the
-// repository, decides the run under the launch lock of its plan and branch, starts the detached child,
-// and returns once the child answers: nil after printing the run id and the follow command when the
-// attempt started, an error otherwise. The child is never killed: a launcher that stops waiting leaves
-// it to start on its own.
+// launchDetached is the --detach launcher, which runPreConfigCommand has already refused inside an
+// agent sandbox. It prepares the repository, decides the run under the launch lock of its plan and
+// branch, starts the detached child, and returns once the child answers: nil after printing the run id
+// and the follow command when the attempt started, an error otherwise. The child is never killed: a
+// launcher that stops waiting leaves it to start on its own.
 func launchDetached(ctx context.Context, o opts, cfg *config.Config, dio detachIO) error {
-	if signal := detectSandbox(os.Getenv); signal != "" {
-		return fmt.Errorf("refusing to start a detached run inside an agent sandbox (%s): the run and every model "+
-			"process it starts would inherit the sandbox; start the plan in a new loopai thread (Mode 2 of the "+
-			"loopai-t3 skill) or from a shell outside the sandbox", signal)
-	}
 	l, err := prepareDetachLaunch(o, cfg, dio)
 	if err != nil {
 		return err
@@ -308,7 +322,7 @@ func prepareDetachLaunch(o opts, cfg *config.Config, dio detachIO) (*detachLaunc
 		return nil, fmt.Errorf("prepare .loopai: %w", ignoreErr)
 	}
 	root := svc.Root()
-	return &detachLaunch{o: o, dio: dio, exe: exe, root: root, planRel: relativePlan(root, o.PlanFile),
+	return &detachLaunch{o: o, dio: dio, svc: svc, exe: exe, root: root, planRel: relativePlan(root, o.PlanFile),
 		branch: svc.EffectiveBranchName(o.PlanFile, o.Branch)}, nil
 }
 
@@ -354,7 +368,7 @@ func relativePlan(root, planFile string) string {
 // decide picks the run this launch starts and records it in its descriptor. It runs under the launch
 // lock of the plan and branch, so it asks runs.LatestFor, which reads that lock as this launcher's own:
 // a live latest run is refused, one that did not succeed is resumed, and otherwise a new run is
-// created, unless the succeeded run left its worktree behind.
+// created, unless a worktree of the succeeded run's branch is still in place.
 func (l *detachLaunch) decide(now time.Time) error {
 	latest, found, err := runs.LatestFor(l.root, l.planRel, l.branch)
 	if err != nil {
@@ -369,30 +383,51 @@ func (l *detachLaunch) decide(now time.Time) error {
 		case latest.Status != runs.StatusSucceeded:
 			return l.resume(latest)
 		}
-		if kept := keptWorktree(latest); kept != "" {
-			return fmt.Errorf("run %s of %s succeeded but kept its worktree %s; inspect it, then commit or remove "+
-				"what it holds and remove the worktree, or merge the branch with loopai --merge %s, "+
-				"before launching the plan again", id, l.planRel, kept, latest.Descriptor.Branch)
+		if refusal := l.refuseLeftWorktree(latest); refusal != nil {
+			return refusal
 		}
 	}
 	return l.create(now)
 }
 
-// keptWorktree returns the worktree a succeeded run left in place, or "" once it is gone: the one its
-// outcome recorded keeping or, for a run whose outcome could not be written, the one it ran in. A new
-// run of the plan would otherwise resume that worktree, whose plan already moved to completed/.
-func keptWorktree(run runs.Run) string {
-	path := run.Descriptor.Worktree
-	if outcome, err := runs.LoadOutcome(run.Dir); err == nil && outcome.Attempt == run.Descriptor.Attempt {
-		path = outcome.WorktreeKept
+// refuseLeftWorktree refuses a new run of a plan whose latest run succeeded while a worktree of its
+// branch is still in place: the one the run recorded keeping, or any other registered worktree with
+// the branch checked out, such as one whose removal the outcome missed. A new run would otherwise
+// resume that worktree, whose plan already moved to completed/, or fail to check the branch out.
+func (l *detachLaunch) refuseLeftWorktree(latest runs.Run) error {
+	const advice = "inspect it, then commit or remove what it holds and remove the worktree, or merge the branch " +
+		"with loopai --merge %s, before launching the plan again"
+	id, branch := latest.Descriptor.ID, latest.Descriptor.Branch
+	if kept := runs.KeptWorktree(latest); kept != "" {
+		return fmt.Errorf("run %s of %s succeeded but kept its worktree %s; "+advice, id, l.planRel, kept, branch)
 	}
-	if path == "" {
-		return ""
+	checkedOut, err := l.branchWorktree()
+	if err != nil {
+		return err
 	}
-	if _, err := os.Lstat(path); err != nil {
-		return ""
+	if checkedOut != "" {
+		return fmt.Errorf("run %s of %s succeeded, but its branch %s is still checked out in worktree %s; "+advice,
+			id, l.planRel, branch, checkedOut, branch)
 	}
-	return path
+	return nil
+}
+
+// branchWorktree returns the registered worktree other than the invoking checkout that has the run's
+// branch checked out, or "" when there is none or its directory is gone.
+func (l *detachLaunch) branchWorktree() (string, error) {
+	worktrees, err := l.svc.Worktrees()
+	if err != nil {
+		return "", fmt.Errorf("check the worktrees of %s: %w", l.branch, err)
+	}
+	for _, wt := range worktrees {
+		if wt.Branch != l.branch || sameProgressRoot(wt.Path, l.root) {
+			continue
+		}
+		if _, statErr := os.Stat(wt.Path); statErr == nil {
+			return wt.Path, nil
+		}
+	}
+	return "", nil
 }
 
 // resume prepares the next attempt of run, which did not succeed: its outcome is kept as attempt

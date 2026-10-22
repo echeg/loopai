@@ -38,6 +38,9 @@ const (
 	// detachLaunchMainEnv makes the test binary run main() with the unit-separator-delimited
 	// arguments it holds, starting stub children.
 	detachLaunchMainEnv = "LOOPAI_TEST_DETACH_LAUNCH_MAIN"
+	// detachLaunchSandboxEnv holds a sandbox signal, KEY=value, that the main helper sets before main():
+	// TestMain unsets the real signals in every test process, the re-executed helper included.
+	detachLaunchSandboxEnv = "LOOPAI_TEST_DETACH_SANDBOX"
 	// detachLaunchPlan is the plan every launcher test launches.
 	detachLaunchPlan = "docs/plans/20261022-feature.md"
 )
@@ -73,6 +76,10 @@ func TestDetachLaunchMainHelper(t *testing.T) {
 	raw, ok := os.LookupEnv(detachLaunchMainEnv)
 	if !ok {
 		t.Skip("helper process only")
+	}
+	if signal, set := os.LookupEnv(detachLaunchSandboxEnv); set {
+		key, value, _ := strings.Cut(signal, "=")
+		t.Setenv(key, value)
 	}
 	detachChildArgs = detachStubSelector
 	os.Args = append([]string{"loopai"}, strings.Split(raw, "\x1f")...)
@@ -377,6 +384,75 @@ func TestDetachLaunchThroughMain(t *testing.T) {
 		"the launcher records no launch history; its child does")
 }
 
+func TestDetachLaunchSandboxThroughMain(t *testing.T) {
+	// launchInSandbox runs main() as the launcher in f's repository with SANDBOX_RUNTIME=1, HOME at
+	// home, and LOOPAI_CONFIG_DIR at configDir when it is not empty, and checks that it refused.
+	launchInSandbox := func(t *testing.T, f *detachLaunchFixture, home, configDir string) {
+		t.Helper()
+		env := []string{detachLaunchMainEnv + "=--detach\x1f" + detachLaunchPlan, detachLaunchSandboxEnv + "=SANDBOX_RUNTIME=1",
+			"HOME=" + home, "USERPROFILE=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config")}
+		if configDir != "" {
+			env = append(env, "LOOPAI_CONFIG_DIR="+configDir)
+		}
+		cmd := exec.Command(os.Args[0], "-test.run=^TestDetachLaunchMainHelper$")
+		cmd.Dir = f.repo
+		cmd.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool {
+			return strings.HasPrefix(kv, "LOOPAI_CONFIG_DIR=")
+		}), env...)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, err, &exitErr, "stdout: %s\nstderr: %s", stdout.String(), stderr.String())
+		assert.Equal(t, 1, exitErr.ExitCode())
+		assert.NotContains(t, stdout.String(), "run: ")
+		assert.Contains(t, stderr.String(), "error: refusing to start a detached run inside an agent sandbox "+
+			"(SANDBOX_RUNTIME=1): ")
+		assert.Contains(t, stderr.String(), "(Mode 2 of the loopai-t3 skill)")
+		assert.NotContains(t, stderr.String(), "load config")
+		assert.NoDirExists(t, filepath.Join(f.repo, ".loopai"), "nothing is created in the checkout")
+	}
+
+	t.Run("an all-commented config in an unwritable directory is left alone", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		home := t.TempDir()
+		configDir := filepath.Join(home, "config")
+		for _, sub := range []string{"prompts", "agents"} {
+			require.NoError(t, os.MkdirAll(filepath.Join(configDir, sub), 0o700))
+		}
+		// all-commented, so the defaults installer would rewrite it on every config load
+		const commented = "# my notes\n"
+		configFile := filepath.Join(configDir, "config")
+		require.NoError(t, os.WriteFile(configFile, []byte(commented), 0o400))
+		require.NoError(t, os.Chmod(configDir, 0o500))       //nolint:gosec // a directory without write permission
+		t.Cleanup(func() { _ = os.Chmod(configDir, 0o700) }) //nolint:gosec // restore permissions for cleanup
+
+		launchInSandbox(t, f, home, configDir)
+
+		data, err := os.ReadFile(configFile) //nolint:gosec // path built from t.TempDir
+		require.NoError(t, err)
+		assert.Equal(t, commented, string(data), "the config is not rewritten")
+		for _, sub := range []string{"prompts", "agents"} {
+			entries, readErr := os.ReadDir(filepath.Join(configDir, sub))
+			require.NoError(t, readErr)
+			assert.Empty(t, entries, "no default %s are installed", sub)
+		}
+		assert.NoFileExists(t, filepath.Join(configDir, ".gitignore"))
+	})
+
+	t.Run("no config directory is created", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		home := t.TempDir()
+
+		launchInSandbox(t, f, home, "")
+
+		assert.NoDirExists(t, filepath.Join(home, ".config"), "the default config directory is not created")
+		entries, err := os.ReadDir(home)
+		require.NoError(t, err)
+		assert.Empty(t, entries, "nothing is written under HOME")
+	})
+}
+
 func TestDetachLaunchResumesFailedRun(t *testing.T) {
 	f := newDetachLaunchFixture(t)
 	const id = detachSeedID
@@ -502,6 +578,129 @@ func TestDetachLaunchAfterSuccess(t *testing.T) {
 		_, _, err = f.launch(t, "--detach", detachLaunchPlan)
 		require.ErrorContains(t, err, "succeeded but kept its worktree")
 	})
+
+	t.Run("a registered worktree of the branch blocks a new launch until it is removed", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		dir := f.seedRun(t, runs.Origin{Kind: runs.OriginCLI}, nil)
+		// the outcome says the worktree was removed, yet the branch is still checked out in one
+		require.NoError(t, runs.SaveOutcome(dir, &runs.Outcome{RunID: oldID, Attempt: 1, Status: runs.StatusSucceeded}))
+		wt := filepath.Join(t.TempDir(), "elsewhere")
+		runGit(t, f.repo, "worktree", "add", "-b", "feature", wt)
+
+		_, _, err := f.launch(t, "--detach", detachLaunchPlan)
+		require.ErrorContains(t, err, "run "+oldID+" of "+detachLaunchPlan+
+			" succeeded, but its branch feature is still checked out in worktree "+wt+"; ")
+		require.ErrorContains(t, err, "loopai --merge feature")
+		assert.Len(t, f.runDirs(), 1, "no run is created")
+
+		runGit(t, f.repo, "worktree", "remove", wt)
+		_, stderr, err := f.launch(t, "--detach", detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		assert.Len(t, f.runDirs(), 2)
+	})
+
+	t.Run("the branch checked out in the invoking checkout does not block", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		dir := f.seedRun(t, runs.Origin{Kind: runs.OriginCLI}, nil)
+		require.NoError(t, runs.SaveOutcome(dir, &runs.Outcome{RunID: oldID, Attempt: 1, Status: runs.StatusSucceeded}))
+		runGit(t, f.repo, "checkout", "-b", "feature")
+
+		_, stderr, err := f.launch(t, "--detach", detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		assert.Len(t, f.runDirs(), 2)
+	})
+
+	t.Run("a registered worktree whose directory is gone does not block", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		dir := f.seedRun(t, runs.Origin{Kind: runs.OriginCLI}, nil)
+		require.NoError(t, runs.SaveOutcome(dir, &runs.Outcome{RunID: oldID, Attempt: 1, Status: runs.StatusSucceeded}))
+		wt := filepath.Join(t.TempDir(), "gone")
+		runGit(t, f.repo, "worktree", "add", "-b", "feature", wt)
+		require.NoError(t, os.RemoveAll(wt))
+
+		_, stderr, err := f.launch(t, "--detach", detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		assert.Len(t, f.runDirs(), 2)
+	})
+}
+
+// seedSucceededRun records a succeeded first attempt of run id of plan on branch, created at created,
+// whose outcome records kept as the worktree it kept.
+func (f *detachLaunchFixture) seedSucceededRun(t *testing.T, id, plan, branch string, created time.Time, kept string) {
+	t.Helper()
+	dir := runs.Dir(f.repo, id)
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	desc := runs.Descriptor{ID: id, Attempt: 1, CreatedAt: created, Cwd: f.repo, Mode: "full", Plan: plan,
+		Branch: branch, Origin: runs.Origin{Kind: runs.OriginCLI}}
+	require.NoError(t, runs.SaveDescriptor(dir, &desc))
+	require.NoError(t, runs.SaveOutcome(dir, &runs.Outcome{RunID: id, Attempt: 1, Status: runs.StatusSucceeded,
+		WorktreeKept: kept}))
+}
+
+// seedSucceededOthers records n succeeded runs of another plan, oldest first, each created a minute
+// after the previous one starting at from, and returns their ids in that order.
+func (f *detachLaunchFixture) seedSucceededOthers(t *testing.T, n int, from time.Time) []string {
+	t.Helper()
+	ids := make([]string, 0, n)
+	for i := range n {
+		created := from.Add(time.Duration(i) * time.Minute)
+		id := "other-" + created.Format("20060102-150405") + "-abcd"
+		f.seedSucceededRun(t, id, "docs/plans/other.md", "other", created, "")
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func TestDetachLaunchPrunesSucceededRuns(t *testing.T) {
+	epoch := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+
+	t.Run("a new run prunes succeeded runs beyond 20 and keeps a kept worktree's run", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		const keptID = "feature-20261001-110000-abcd"
+		kept := filepath.Join(f.repo, ".loopai", "worktrees", "feature")
+		require.NoError(t, os.MkdirAll(kept, 0o750))
+		// the oldest run of all, so the first pruned if a kept worktree did not keep it
+		f.seedSucceededRun(t, keptID, detachLaunchPlan, "feature", epoch.Add(-time.Hour), kept)
+		others := f.seedSucceededOthers(t, detachKeepSucceeded+1, epoch)
+
+		stdout, stderr, err := f.launch(t, "--detach", "--branch", "elsewhere", detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		assert.Contains(t, stdout, "run: ")
+		assert.NotContains(t, stderr, "warning:")
+
+		assert.NoDirExists(t, runs.Dir(f.repo, others[0]), "the oldest succeeded run beyond 20 is pruned")
+		for _, id := range others[1:] {
+			assert.DirExists(t, runs.Dir(f.repo, id), "one of the newest 20 succeeded runs: %s", id)
+		}
+		assert.DirExists(t, runs.Dir(f.repo, keptID), "a succeeded run whose worktree is kept is never pruned")
+		assert.Len(t, f.runDirs(), detachKeepSucceeded+2, "20 succeeded runs, the kept one, and the new run")
+
+		_, _, err = f.launch(t, "--detach", detachLaunchPlan)
+		require.ErrorContains(t, err, "run "+keptID+" of "+detachLaunchPlan+" succeeded but kept its worktree "+kept,
+			"the retained run still stops a launch from resuming the kept worktree")
+	})
+
+	t.Run("a failed prune only warns", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory permissions")
+		}
+		f := newDetachLaunchFixture(t)
+		others := f.seedSucceededOthers(t, detachKeepSucceeded+1, epoch)
+		// a directory the prune cannot empty
+		locked := filepath.Join(runs.Dir(f.repo, others[0]), "locked")
+		require.NoError(t, os.Mkdir(locked, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(locked, "file"), nil, 0o600))
+		require.NoError(t, os.Chmod(locked, 0o500))       //nolint:gosec // a directory without write permission
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) //nolint:gosec // restore permissions for cleanup
+
+		stdout, stderr, err := f.launch(t, "--detach", detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		assert.Contains(t, stdout, "run: ", "the launch proceeds")
+		assert.Contains(t, stderr, "warning: prune run "+others[0]+": ")
+		assert.Contains(t, stderr, "permission denied")
+		assert.Equal(t, 1, strings.Count(stderr, "warning:"), "one warning")
+		assert.DirExists(t, locked)
+	})
 }
 
 func TestDetachLaunchRefusals(t *testing.T) {
@@ -516,16 +715,6 @@ func TestDetachLaunchRefusals(t *testing.T) {
 		_, _, err = f.launch(t, "--detach", detachLaunchPlan)
 		require.EqualError(t, err, "run "+id+" of "+detachLaunchPlan+" is already running; follow it with loopai --attach "+id)
 		assert.Len(t, f.runDirs(), 1)
-	})
-
-	t.Run("inside a sandbox, before anything is created", func(t *testing.T) {
-		f := newDetachLaunchFixture(t)
-		t.Setenv("SANDBOX_RUNTIME", "1")
-
-		_, _, err := f.launch(t, "--detach", detachLaunchPlan)
-		require.ErrorContains(t, err, "refusing to start a detached run inside an agent sandbox (SANDBOX_RUNTIME=1)")
-		require.ErrorContains(t, err, "loopai-t3 skill")
-		assert.NoDirExists(t, filepath.Join(f.repo, ".loopai"))
 	})
 
 	t.Run("a missing plan", func(t *testing.T) {

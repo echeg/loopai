@@ -3826,10 +3826,17 @@ func validateGenAgentsFlags(o opts) error {
 
 // runPreConfigCommand routes the standalone commands that load config themselves, before run loads
 // it in the invoking directory: the hidden detached-run child, which first takes its run's lifetime
-// lock and answers its launcher, so a config error becomes the attempt's recorded failure.
+// lock and answers its launcher, so a config error becomes the attempt's recorded failure. It also
+// refuses the --detach launcher inside an agent sandbox before config loading writes anything; the
+// launcher itself runs after config.
 func runPreConfigCommand(ctx context.Context, o opts) (bool, error) {
-	if o.DetachedRun != "" {
+	switch {
+	case o.DetachedRun != "":
 		return true, runDetachedChild(ctx, o)
+	case o.Detach:
+		if err := refuseDetachInSandbox(os.Getenv); err != nil {
+			return true, err
+		}
 	}
 	return false, nil
 }

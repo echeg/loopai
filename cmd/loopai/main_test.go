@@ -4506,6 +4506,30 @@ func TestGetCurrentBranch(t *testing.T) {
 	})
 }
 
+func TestRunPreConfigCommandDetach(t *testing.T) {
+	o := parseTestOpts(t, "--detach", "docs/plans/x.md")
+
+	t.Run("the launcher continues to config outside a sandbox", func(t *testing.T) {
+		handled, err := runPreConfigCommand(t.Context(), o)
+		require.NoError(t, err)
+		assert.False(t, handled)
+	})
+
+	t.Run("the launcher is refused inside a sandbox before config", func(t *testing.T) {
+		t.Setenv("SANDBOX_RUNTIME", "1")
+		handled, err := runPreConfigCommand(t.Context(), o)
+		assert.True(t, handled)
+		require.ErrorContains(t, err, "inside an agent sandbox (SANDBOX_RUNTIME=1)")
+	})
+
+	t.Run("other commands are not refused", func(t *testing.T) {
+		t.Setenv("SANDBOX_RUNTIME", "1")
+		handled, err := runPreConfigCommand(t.Context(), parseTestOpts(t, "docs/plans/x.md"))
+		require.NoError(t, err)
+		assert.False(t, handled)
+	})
+}
+
 func TestValidateFlags(t *testing.T) {
 	tests := []struct {
 		name    string

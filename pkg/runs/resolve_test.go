@@ -400,6 +400,88 @@ func TestPruneSucceeded(t *testing.T) {
 	assert.Len(t, runs, 24)
 }
 
+func TestPruneSucceededKeepsKeptWorktrees(t *testing.T) {
+	root := t.TempDir()
+	kept := filepath.Join(root, ".loopai", "worktrees", "kept")
+	require.NoError(t, os.MkdirAll(kept, 0o750))
+	lost := filepath.Join(root, ".loopai", "worktrees", "lost")
+	require.NoError(t, os.MkdirAll(lost, 0o750))
+
+	// the three oldest runs, each first in line for pruning if it counted
+	keptDir := writeTestRun(t, root, "kept-1", "docs/plans/kept.md", "kept", 1, testEpoch.Add(-3*time.Hour))
+	require.NoError(t, SaveOutcome(keptDir, &Outcome{RunID: "kept-1", Attempt: 1, Status: StatusSucceeded,
+		WorktreeKept: kept}))
+	lostDir := writeTestRun(t, root, "lost-1", "docs/plans/lost.md", "lost", 1, testEpoch.Add(-2*time.Hour))
+	desc := mustLoadDescriptor(t, lostDir)
+	desc.Worktree = lost
+	require.NoError(t, SaveDescriptor(lostDir, &desc))
+	writeTestFinish(t, lostDir, 1, StatusSucceeded) // its outcome was never written
+	goneDir := writeTestRun(t, root, "gone-1", "docs/plans/gone.md", "gone", 1, testEpoch.Add(-time.Hour))
+	require.NoError(t, SaveOutcome(goneDir, &Outcome{RunID: "gone-1", Attempt: 1, Status: StatusSucceeded,
+		WorktreeKept: filepath.Join(root, ".loopai", "worktrees", "gone")}))
+
+	succeeded := make([]string, 0, 3)
+	for i := range 3 {
+		id := fmt.Sprintf("done-%02d", i)
+		dir := writeTestRun(t, root, id, "docs/plans/done.md", "done", 1, testEpoch.Add(time.Duration(i)*time.Minute))
+		writeTestOutcome(t, dir, 1, StatusSucceeded)
+		succeeded = append(succeeded, id)
+	}
+
+	require.NoError(t, PruneSucceeded(root, 2))
+
+	assert.DirExists(t, keptDir, "a run whose kept worktree is in place is never pruned")
+	assert.DirExists(t, lostDir, "nor one whose outcome is lost while its worktree is in place")
+	assert.NoDirExists(t, goneDir, "a run whose kept worktree is gone is pruned like any other")
+	assert.NoDirExists(t, Dir(root, succeeded[0]), "the kept runs do not count toward keep")
+	for _, id := range succeeded[1:] {
+		assert.DirExists(t, Dir(root, id))
+	}
+
+	require.NoError(t, os.RemoveAll(kept))
+	require.NoError(t, PruneSucceeded(root, 2))
+	assert.NoDirExists(t, keptDir, "once its worktree is gone the run is pruned")
+	assert.DirExists(t, lostDir)
+}
+
+func TestKeptWorktree(t *testing.T) {
+	root := t.TempDir()
+	present := filepath.Join(root, "present")
+	require.NoError(t, os.Mkdir(present, 0o750))
+	missing := filepath.Join(root, "missing")
+
+	tests := []struct {
+		name     string
+		worktree string   // the descriptor's worktree
+		outcome  *Outcome // nil for no outcome
+		want     string
+	}{
+		{name: "an outcome that kept a present worktree", outcome: &Outcome{Attempt: 1, WorktreeKept: present},
+			want: present},
+		{name: "an outcome that kept a worktree that is gone", outcome: &Outcome{Attempt: 1, WorktreeKept: missing}},
+		{name: "an outcome that kept nothing", worktree: present, outcome: &Outcome{Attempt: 1}},
+		{name: "no outcome and the run's worktree in place", worktree: present, want: present},
+		{name: "no outcome and the run's worktree gone", worktree: missing},
+		{name: "an earlier attempt's outcome", worktree: present,
+			outcome: &Outcome{Attempt: 0, WorktreeKept: missing}, want: present},
+		{name: "no outcome and no worktree"},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := fmt.Sprintf("run-%d", i)
+			dir := writeTestRun(t, root, id, "docs/plans/x.md", "x", 1, testEpoch)
+			desc := mustLoadDescriptor(t, dir)
+			desc.Worktree = tc.worktree
+			require.NoError(t, SaveDescriptor(dir, &desc))
+			if tc.outcome != nil {
+				tc.outcome.RunID, tc.outcome.Status = id, StatusSucceeded
+				require.NoError(t, SaveOutcome(dir, tc.outcome))
+			}
+			assert.Equal(t, tc.want, KeptWorktree(Run{Dir: dir, Descriptor: mustLoadDescriptor(t, dir)}))
+		})
+	}
+}
+
 func TestPruneSucceededListError(t *testing.T) {
 	root := t.TempDir()
 	dir := Dir(root, "plan-1")

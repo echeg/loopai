@@ -933,6 +933,8 @@
 
 ⚠️ F5 is handled once in `pkg/runs`: `List` wraps an unreadable run directory in an error naming the run id, its directory, and the fix (check that no loopai process uses it, then remove it); filtered queries (`LatestFor`, `LiveRunForBranch`, `PruneSucceeded`) still fail closed, because a broken run could belong to the same plan or branch. F2 is handled in `Classify`: a current-attempt `finish` journal event with status `succeeded` and no outcome classifies as succeeded.
 
+⚠️ Review fix round 1: the sandbox refusal runs in `runPreConfigCommand`, before config loading, because the defaults installer writes under HOME and a sandbox's write denial would otherwise replace the refusal; the rest of the preflight still runs after config. `--detach` with `--detached-run` is rejected. `PruneSucceeded` never removes a succeeded run whose kept worktree (`runs.KeptWorktree`) is still in place, and such a run does not count toward the 20; the launcher also refuses a new run when the latest run succeeded and another registered worktree (not the invoking checkout) still has the branch checked out.
+
 ### Task 9: Add --attach, --runs, and --stop
 - [ ] add visible `Attach bool` (`long:"attach"`), `Runs bool` (`long:"runs"`), and `Stop bool` (`long:"stop"`), with the identifier as the positional:
   - extend `opts.applyPositionalArgs` (main.go:140) so `--attach`/`--stop` identifiers are never comma-split;
