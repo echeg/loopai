@@ -936,41 +936,43 @@
 ⚠️ Review fix round 1: the sandbox refusal runs in `runPreConfigCommand`, before config loading, because the defaults installer writes under HOME and a sandbox's write denial would otherwise replace the refusal; the rest of the preflight still runs after config. `--detach` with `--detached-run` is rejected. `PruneSucceeded` never removes a succeeded run whose kept worktree (`runs.KeptWorktree`) is still in place, and such a run does not count toward the 20; the launcher also refuses a new run when the latest run succeeded and another registered worktree (not the invoking checkout) still has the branch checked out.
 
 ### Task 9: Add --attach, --runs, and --stop
-- [ ] add visible `Attach bool` (`long:"attach"`), `Runs bool` (`long:"runs"`), and `Stop bool` (`long:"stop"`), with the identifier as the positional:
+- [x] add visible `Attach bool` (`long:"attach"`), `Runs bool` (`long:"runs"`), and `Stop bool` (`long:"stop"`), with the identifier as the positional:
   - extend `opts.applyPositionalArgs` (main.go:140) so `--attach`/`--stop` identifiers are never comma-split;
   - add validators that reject execution flags (reuse the `bare := o; bare.PlanFile = ""` trick and the surplus-positional rejection from close-out), require an identifier for `--stop`, and refuse combinations of the three;
   - add all three to `isStandaloneCommand`.
-- [ ] `--attach` returns the Task 6 `exitCodeError` carrying the run's exit code. Route `--runs` and `--stop` through `runConfiguredStandaloneCommand`'s switch.
-- [ ] route `--attach` at the top of `run()`, before `disableCtrlCEcho` and `startInterruptWatcher`. Ctrl+C then only detaches quietly: it prints `detached; the run continues: loopai --attach <id>` and exits 0. `runAttachCommand` calls `validateFlags` and loads config read-only for colors itself.
-- [ ] implement `--attach [run|plan|branch]` in `cmd/loopai/runs_cmd.go`:
+- [x] `--attach` returns the Task 6 `exitCodeError` carrying the run's exit code. Route `--runs` and `--stop` through `runConfiguredStandaloneCommand`'s switch.
+- [x] route `--attach` at the top of `run()`, before `disableCtrlCEcho` and `startInterruptWatcher`. Ctrl+C then only detaches quietly: it prints `detached; the run continues: loopai --attach <id>` and exits 0. `runAttachCommand` calls `validateFlags` and loads config read-only for colors itself.
+- [x] implement `--attach [run|plan|branch]` in `cmd/loopai/runs_cmd.go`:
   1. resolve with `runs.Resolve`; with no argument, use `runs.DefaultRun`;
   2. print a header from the observer `Snapshot`: run id, attempt, status, phase, task n/m;
   3. replay `console.log` from byte 0 and follow it (250 ms poll) until the observer reports finish and the file is drained;
   4. print the outcome block: status, reason, branch, commit, report location (`<run dir>/report.md` and `loopai --report <branch>`), PR URL, kept worktree;
+     - ⚠️ `loopai --report <branch>` is shown only when the outcome records the plan archived (`plan_moved`), since only then is the report sidecar on the branch.
   5. exit with the run's code (crashed → 1).
-- [ ] implement `--runs`: one row per run, newest first, with id, status, attempt, origin (`cli`, `t3-terminal:<thread>`, `t3-thread:<thread>`), plan, branch, and start time.
-- [ ] implement `--stop <run>` through an untagged `stopRun(root string, desc runs.Descriptor) error`, which the Mode 2 provider also uses:
+- [x] implement `--runs`: one row per run, newest first, with id, status, attempt, origin (`cli`, `t3-terminal:<thread>`, `t3-thread:<thread>`), plan, branch, and start time.
+- [x] implement `--stop <run>` through an untagged `stopRun(root string, desc runs.Descriptor) error`, which the Mode 2 provider also uses:
   1. require the lifetime lock to be held and the descriptor pid's `ProcessStartToken` to equal the recorded one; otherwise refuse as not running or pid reused;
   2. write the stop marker FIRST;
   3. then call `signalTerm(pid)`, the pid only and never the group;
   4. wait up to 15 s for the lock to be released and print the resulting status; otherwise print that the stop was requested and how to follow it.
 
   `signalTerm(pid int) error` lives in `runs_signal_unix.go` (`syscall.Kill(pid, syscall.SIGTERM)`) and `runs_signal_windows.go` (returns `errDetachUnsupported`).
-- [ ] on Windows, `--attach`, `--runs`, and `--stop` return `detached runs are not supported on Windows`.
-- [ ] run `go test ./cmd/loopai -run TestSkillContract -update` (adds `--attach`, `--runs`, `--stop`).
-- [ ] write tests (success):
+  - ⚠️ `stopRun` does steps 1-3 and returns without waiting (it has no writer, and Mode 2 must neither print nor block); the `--stop` command (`stopDetachedRun`) does step 4. `stopRun` rereads the descriptor from the run directory, so a caller's stale copy cannot misread a resumed attempt's pid.
+- [x] on Windows, `--attach`, `--runs`, and `--stop` return `detached runs are not supported on Windows`.
+- [x] run `go test ./cmd/loopai -run TestSkillContract -update` (adds `--attach`, `--runs`, `--stop`).
+- [x] write tests (success):
   - `--attach` on a finished run replays the whole console log and exits with its code (0 succeeded, 1 failed, 2 stopped), through the re-exec helper;
   - `--attach` on a live run (a helper holding the lock and appending) follows appended lines and returns when the helper writes the outcome and exits;
   - no-argument resolution picks the single live run, else the newest;
   - `--runs` lists statuses including `crashed` and `starting`;
   - `--stop` on a helper child writes the marker, the child exits on SIGTERM, and the run classifies as `stopped`.
-- [ ] write tests (errors/edge):
+- [x] write tests (errors/edge):
   - Ctrl+C (context cancel) during `--attach` returns quickly with code 0 and leaves the run untouched;
   - `--stop` refuses a finished run, an unknown id, and a descriptor whose start token does not match (pid reuse), without sending a signal;
   - a run killed by the force exit after `--stop` (no outcome, marker present) classifies as `stopped`, not `crashed`;
   - positional identifiers with commas are not split;
   - `--attach --detach` and `--runs plan.md` are rejected.
-- [ ] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 10
+- [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 10
 
 ### Task 10: Add the protocol-2 T3 client and an importable fake server
 - [ ] create `pkg/t3/runtime.go` (a new package; nothing is ported):

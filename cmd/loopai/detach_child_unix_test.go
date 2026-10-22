@@ -38,11 +38,13 @@ const (
 // detachChildFakeClaude completes every session: a review with REVIEW_DONE, the report with a
 // report of low risk, and a task with ALL_TASKS_DONE, unless $DETACH_CHILD_MODE is fail, which
 // leaves leftover.txt and reports TASK_FAILED. The fixture's prompts tell the sessions apart. While
-// $DETACH_CHILD_GATE is set every session first waits, at most a minute, for that file to exist, so
-// a test can hold the run inside its first session.
+// $DETACH_CHILD_GATE is set every session first creates $DETACH_CHILD_STARTED, then waits, at most a
+// minute, for the gate file to exist, so a test can hold the run inside its first session and know
+// that session is running.
 const detachChildFakeClaude = `#!/bin/sh
 prompt=$(cat)
 if [ -n "$DETACH_CHILD_GATE" ]; then
+  : > "$DETACH_CHILD_STARTED"
   i=0
   while [ ! -e "$DETACH_CHILD_GATE" ] && [ "$i" -lt 1200 ]; do sleep 0.05; i=$((i+1)); done
 fi
@@ -96,6 +98,7 @@ type detachChildFixture struct {
 	console string // the run's console log
 	config  string // the global config file
 	gate    string // the file a gated fake claude waits for
+	started string // the file a gated fake claude creates before it waits
 	fds     string // where descriptor probes are recorded
 	env     []string
 }
@@ -105,9 +108,10 @@ type detachChildFixture struct {
 func newDetachChildFixture(t *testing.T, gated bool) *detachChildFixture {
 	t.Helper()
 	f := &detachChildFixture{
-		repo: setupTestRepo(t),
-		gate: filepath.Join(t.TempDir(), "gate"),
-		fds:  filepath.Join(t.TempDir(), "fds"),
+		repo:    setupTestRepo(t),
+		gate:    filepath.Join(t.TempDir(), "gate"),
+		started: filepath.Join(t.TempDir(), "started"),
+		fds:     filepath.Join(t.TempDir(), "fds"),
 	}
 	runGit(t, f.repo, "config", "core.autocrlf", "false")
 	planPath := filepath.Join(f.repo, "docs", "plans", "child.md")
@@ -146,9 +150,26 @@ func newDetachChildFixture(t *testing.T, gated bool) *detachChildFixture {
 		"LOOPAI_CONFIG_DIR="+cfgDir, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "DETACH_CHILD_FDS="+f.fds)
 	if gated {
-		f.env = append(f.env, "DETACH_CHILD_GATE="+f.gate)
+		f.env = append(f.env, "DETACH_CHILD_GATE="+f.gate, "DETACH_CHILD_STARTED="+f.started)
 	}
 	return f
+}
+
+// awaitSession waits until a gated fake claude session has started, so the run is inside a live
+// session rather than merely past its journal's task event, which is appended before the session
+// starts.
+func (f *detachChildFixture) awaitSession(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(detachChildWait)
+	for {
+		if _, err := os.Stat(f.started); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the task session never started; console log:\n%s", f.consoleLog(t))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // addConfig appends lines to the global config file.
@@ -616,10 +637,7 @@ func TestDetachedChildStopped(t *testing.T) {
 	p := f.launch(t, "--tasks-only", "docs/plans/child.md")
 	assert.Contains(t, p.awaitAck(t, f), `"ok":true`)
 	// the gated session holds the run inside its first task
-	require.Eventually(t, func() bool {
-		events, err := runs.ReadFrom(f.dir, 0)
-		return err == nil && slices.ContainsFunc(events, func(ev runs.Event) bool { return ev.Type == runs.EventTask })
-	}, detachChildWait, 20*time.Millisecond, "the task session never started")
+	f.awaitSession(t)
 
 	// what loopai --stop does: the marker first, then the signal
 	require.NoError(t, runs.RequestStop(f.dir))

@@ -1,6 +1,7 @@
 contract: 3
 
 flags:
+--attach
 --base-ref
 --branch
 --claude-args
@@ -39,10 +40,12 @@ flags:
 --review-cadence [end|task]
 --review-model
 --review-patience
+--runs
 --serve
 --session-timeout
 --skill-contract
 --skip-finalize
+--stop
 --task-model
 --tasks-only
 --version

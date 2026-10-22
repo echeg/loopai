@@ -100,8 +100,11 @@ type opts struct {
 	ConfigDir               string        `long:"config-dir" env:"LOOPAI_CONFIG_DIR" description:"custom config directory"`
 	Detach                  bool          `long:"detach" description:"start the plan as a detached run in its own worktree, print the run id, and return; launching a plan whose last run did not succeed resumes it"`
 	DetachedRun             string        `long:"detached-run" hidden:"true" description:"internal: run as the detached child of the given run id"`
+	Attach                  bool          `long:"attach" description:"follow a detached run: replay its console log, wait for it to end, and exit with its code (0 succeeded, 1 failed, 2 stopped); positional argument names the run (id, plan, or branch), default the single live run, else the newest; Ctrl+C only detaches"`
+	Runs                    bool          `long:"runs" description:"list this checkout's detached runs with their status, attempt, and origin"`
+	Stop                    bool          `long:"stop" description:"stop a live detached run gracefully, keeping its worktree; positional argument names the run (id, plan, or branch)"`
 
-	PlanFile  string   `positional-arg-name:"plan-file" description:"path to one plan file or a comma-separated plan chain (optional, uses fzf if omitted); with --merge/--pr/--report it names the feature to close out"`
+	PlanFile  string   `positional-arg-name:"plan-file" description:"path to one plan file or a comma-separated plan chain (optional, uses fzf if omitted); with --merge/--pr/--report it names the feature to close out, with --attach/--stop the detached run"`
 	PlanFiles []string // normalized comma-separated plan chain; PlanFile is always its first entry
 
 	// positional arguments beyond the first, recorded by main so close-out validation can reject
@@ -135,16 +138,17 @@ type opts struct {
 const commandUsage = "[OPTIONS] [plan-file[,plan-file...]]"
 
 // applyPositionalArgs records the parsed positional arguments: the first names a comma-separated
-// plan chain, or the feature to close out under --merge/--pr/--report. the rest are kept so close-out
-// validation can reject them; go-flags never fills a positional field beyond the first one
-// declared. Close-out identifiers are deliberately not split because they do not name plans.
+// plan chain, the feature to close out under --merge/--pr/--report, or the detached run under
+// --attach/--stop. the rest are kept so close-out and run-command validation can reject them;
+// go-flags never fills a positional field beyond the first one declared. Close-out and run
+// identifiers are deliberately not split because they do not name plan chains.
 func (o *opts) applyPositionalArgs(args []string) error {
 	if len(args) == 0 {
 		return nil
 	}
 	o.PlanFile = args[0]
 	o.extraArgs = args[1:]
-	if closeoutRequested(*o) {
+	if closeoutRequested(*o) || runCommandRequested(*o) {
 		return nil
 	}
 
@@ -492,6 +496,12 @@ func reportRunError(err error, stderr io.Writer) int {
 }
 
 func run(ctx context.Context, o opts) (runErr error) {
+	// --attach only watches a run that lives in a process of its own, so Ctrl+C detaches from it
+	// quietly with exit code 0: neither the ^C echo suppression nor the force-exit watcher applies
+	if o.Attach {
+		return runAttachCommand(ctx, o, os.Stdout)
+	}
+
 	// suppress ^C echo in terminal before setting up interrupt watcher
 	restoreTerminal := disableCtrlCEcho()
 	defer restoreTerminal()
@@ -903,9 +913,10 @@ func loadRunConfig(o opts) (*config.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
-	// Close-out modes consume VCS/color configuration and reporting overrides. Do not let
-	// executor-only semantic checks make an otherwise valid merge or PR impossible.
-	if closeoutRequested(o) {
+	// Close-out modes consume VCS/color configuration and reporting overrides, and --runs and --stop
+	// only colors. Do not let executor-only semantic checks make an otherwise valid merge, PR, listing,
+	// or stop impossible.
+	if closeoutRequested(o) || runCommandRequested(o) {
 		applyReportingOverrides(o, cfg)
 		return cfg, nil
 	}
@@ -3631,6 +3642,11 @@ func validateFlags(o opts) error {
 	if err := validateCloseoutFlags(o); err != nil {
 		return err
 	}
+	// before the detach checks: --attach --detach must read as a combination of commands, not as a
+	// launch that lacks its plan
+	if err := validateRunCommandFlags(o); err != nil {
+		return err
+	}
 	if err := validateDetachFlags(o); err != nil {
 		return err
 	}
@@ -3843,12 +3859,17 @@ func runPreConfigCommand(ctx context.Context, o opts) (bool, error) {
 
 // runConfiguredStandaloneCommand routes the standalone commands that need loaded config but no
 // executor or notification dependencies: the --detach launcher, whose child records the launch
-// history, and git close-out.
+// history, the --runs listing and --stop, and git close-out. --attach is routed by run itself,
+// before the interrupt watcher.
 func runConfiguredStandaloneCommand(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors) (bool, error) {
 	switch {
 	case o.Detach:
 		return true, runDetachCommand(ctx, o, cfg, detachIO{args: os.Args[1:], stdout: os.Stdout, stderr: os.Stderr,
 			colors: colors})
+	case o.Runs:
+		return true, runRunsCommand(os.Stdout)
+	case o.Stop:
+		return true, runStopCommand(ctx, o.PlanFile, colors, os.Stdout)
 	case closeoutRequested(o):
 		return true, runCloseoutCommand(ctx, o, cfg, colors)
 	}
@@ -5064,10 +5085,11 @@ func clearStaleCmuxStatus(o opts) {
 // nor get handed over to a new cmux workspace. --gen-agents belongs here: it executes no plan
 // and never constructs a reporter. so does the detached-run child: it runs a plan, but in a
 // process of its own with no terminal and no sidebar card. its launcher, --detach, starts that
-// process and returns, so it owns no card either.
+// process and returns, so it owns no card either, and neither do --attach, --runs, and --stop,
+// which only observe or signal such a process.
 func isStandaloneCommand(o opts) bool {
 	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || o.GenAgents ||
-		o.SkillContract || o.Detach || o.DetachedRun != "" || (o.Reset && isResetOnly(o))
+		o.SkillContract || o.Detach || o.DetachedRun != "" || runCommandRequested(o) || (o.Reset && isResetOnly(o))
 }
 
 // handOffSucceeded reports whether an early stop came from a successful cmux workspace hand-off,
