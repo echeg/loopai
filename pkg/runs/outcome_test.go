@@ -83,6 +83,15 @@ func TestSaveOutcomeCapsReportAndSummary(t *testing.T) {
 	assert.True(t, utf8.ValidString(loaded.ReportSummary))
 }
 
+func TestCapReportSummary(t *testing.T) {
+	short := "Delivered the feature."
+	assert.Equal(t, short, CapReportSummary(short))
+	long := strings.Repeat("b", maxOutcomeSummary-2) + "€tail"
+	got := CapReportSummary(long)
+	assert.Equal(t, strings.Repeat("b", maxOutcomeSummary-2), got, "the cap matches the outcome's")
+	assert.True(t, utf8.ValidString(got))
+}
+
 func TestTruncateUTF8(t *testing.T) {
 	tests := []struct {
 		name  string

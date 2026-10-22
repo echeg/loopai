@@ -12,7 +12,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The launcher hands the child two pipe ends as ExtraFiles, which the child sees as fds 3 and 4.
+// the launcher hands the child two pipe ends as ExtraFiles, which the child sees as fds 3 and 4.
 const (
 	detachSecretFD = 3 // the secret pipe's read end: one JSON line from the launcher, then EOF
 	detachAckFD    = 4 // the ack pipe's write end: the child's one JSON answer

@@ -823,34 +823,37 @@
 - [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 7
 
 ### Task 7: Complete the detached child's outcome, report, and source-plan lifecycle
-- [ ] add the `finalize`, `report`, and `finish` event builders to `cmd/loopai/detach_journal.go`. The `report` builder takes the bounded summary (≤ 4 KiB) via `splitReportSections` and the risk via `reportRiskLevel`.
-- [ ] after `errors.Join(selectAndExecutePlan(...), release())` returns, classify:
+- [x] add the `finalize`, `report`, and `finish` event builders to `cmd/loopai/detach_journal.go`. The `report` builder takes the bounded summary (≤ 4 KiB) via `splitReportSections` and the risk via `reportRiskLevel`.
+- [x] after `errors.Join(selectAndExecutePlan(...), release())` returns, classify:
   - check the returned error first, then `Outcome.failure`;
   - `stopped` when the stop marker exists or `errors.Is(err, context.Canceled)`;
   - `succeeded` only on `Outcome.succeeded`;
   - otherwise `failed`.
-- [ ] complete the run after classification, in this order:
+- [x] complete the run after classification, in this order:
   - fill the commit from `Outcome.branchTip`, or `BranchHash(branch)`;
   - write `report.md`;
   - append the `finalize`, `report`, and `finish` events;
   - write `outcome.json` with exit code 0/1/2 and `worktree_kept`;
   - reconcile the source plan on success only, writing warnings to the console log and the outcome's `notes`;
   - only then let process exit release the lock, returning `exitCodeError` with the outcome's code.
-- [ ] record launch history in the child right after `prepareNonInteractiveRequest`, with `recordLaunchHistory(o, cfg, req.ExternalReview, launcherForOrigin(desc.Origin.Kind), os.Stderr)`.
-- [ ] write tests (success) with the Task 6 helper and a fake claude. A successful run:
+- [x] record launch history in the child right after `prepareNonInteractiveRequest`, with `recordLaunchHistory(o, cfg, req.ExternalReview, launcherForOrigin(desc.Origin.Kind), os.Stderr)`.
+- [x] write tests (success) with the Task 6 helper and a fake claude. A successful run:
   - writes `outcome.json` (status, exit code 0, branch, commit, report text) and `report.md`;
   - removes the worktree;
   - archives on the run branch;
   - reconciles the untracked source plan;
   - appends one launch-history line with launcher `cli`; a descriptor with origin `t3-thread` records `t3`;
   - writes events ending in `finish` with exit code 0.
-- [ ] write tests (errors/edge):
+- [x] write tests (errors/edge):
   - a failing task keeps the worktree and writes `failed` with exit code 1;
   - SIGTERM after a stop marker yields `stopped` with exit code 2 and a kept worktree;
   - a second attempt appends `attempt_start` with attempt 2 and reuses the first `source-plans.json`;
   - a report longer than 256 KiB is capped in `outcome.json` while `report.md` holds the full text;
   - a failed run does not reconcile the source plan.
-- [ ] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 8
+- ⚠️ a run that returned no error and recorded its success is `succeeded` even when the stop marker exists: the stop arrived after the run completed, its worktree is gone and its plan archived, so `stopped` would invite a resume of finished work.
+- ⚠️ `report.md` and the `report` event are written only when the run produced a report, and the `finalize` event only when the close-out ran, so a later attempt without a report never replaces an earlier `report.md` with an empty one.
+- ⚠️ `cfg.Orca = false` has no observable effect on the non-interactive path, which builds no title reporter, so it is pinned by a unit test of the extracted `loadDetachedConfig` rather than through the child.
+- [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 8
 
 ### Task 8: Add the --detach launcher, the launch lock, and the --merge/--pr guard
 - [ ] add `Detach bool` (`long:"detach"`, visible) to `opts`:

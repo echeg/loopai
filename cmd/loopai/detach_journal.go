@@ -97,13 +97,25 @@ func (h *journalHooks) onSection(section status.Section) {
 // onTask records the task at plan position n, then re-reads the worktree plan for every task's
 // status. A plan that cannot be read leaves the task event to the tasks known so far and records no
 // statuses.
+//
+// The task phase numbers its section by the iteration instead when it finds no task left to do, so
+// n names a plan position only when the fresh plan still has work there; otherwise the event
+// carries no title rather than an unrelated task's.
 func (h *journalHooks) onTask(n int) {
 	parsed, tasks := h.parsePlan()
 	ev := runs.Event{Type: runs.EventTask, N: n, M: len(tasks)}
-	if n >= 1 && n <= len(tasks) {
+	if n >= 1 && n <= len(tasks) && (parsed == nil || parsed.Tasks[n-1].HasUncompletedActionableWork()) {
 		ev.Title = tasks[n-1].Title
 	}
 	h.append(ev)
+	h.appendStatuses(parsed)
+}
+
+// recordStatuses re-reads the worktree plan and records every task's status. A run that ends
+// without success calls it before its finish event, since its last session may have ticked tasks
+// after the last section or phase change recorded them.
+func (h *journalHooks) recordStatuses() {
+	parsed, _ := h.parsePlan()
 	h.appendStatuses(parsed)
 }
 
@@ -179,6 +191,33 @@ func attemptStartEvent(start attemptStart, mode processor.Mode, cfg *config.Conf
 	}
 	ev.TaskTotal = len(ev.Tasks)
 	return ev
+}
+
+// finalizeEvent is the finalize event of a run's close-out result f.
+func finalizeEvent(f runs.Finalize) runs.Event {
+	return runs.Event{Type: runs.EventFinalize, Mode: f.Mode, StatusNote: f.StatusNote, PRURL: f.PRURL,
+		Merged: f.Merged, Incomplete: f.Incomplete}
+}
+
+// reportEvent is the report event of a completion report: its bounded summary and its risk level.
+func reportEvent(report string) runs.Event {
+	return runs.Event{Type: runs.EventReport, Summary: reportSummary(report), Risk: reportRiskLevel(report)}
+}
+
+// finishEvent is the event that closes an attempt with st, reason, and exit code.
+func finishEvent(st runs.Status, reason string, exitCode int) runs.Event {
+	return runs.Event{Type: runs.EventFinish, Status: st, Reason: reason, ExitCode: exitCode}
+}
+
+// reportSummary returns the body of a report's first Summary section, cut to the 4 KiB an outcome
+// keeps; a report without one has no summary.
+func reportSummary(report string) string {
+	for _, section := range splitReportSections(report) {
+		if section.heading == "Summary" {
+			return runs.CapReportSummary(section.body)
+		}
+	}
+	return ""
 }
 
 // attemptStages lists the pipeline stages a run in mode passes through after its tasks: none for

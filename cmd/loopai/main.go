@@ -326,7 +326,9 @@ type executePlanRequest struct {
 
 	// KeepWorktreeOnFailure keeps a worktree mode run's worktree on every exit after a successful
 	// AttemptStarted except a clean success: a non-success, or a success whose close-out is
-	// incomplete or whose worktree is dirty. It has no effect without AttemptStarted.
+	// incomplete or whose worktree is dirty. Without AttemptStarted a fresh worktree is removed as
+	// usual; a resumed one, which every non-success keeps anyway, is then also kept after such a
+	// success.
 	KeepWorktreeOnFailure bool
 	// ArchiveOnRunBranch archives a single plan through the run's own Git service and plan copy, as
 	// a chain does, so the archive commit lands on the run branch and never in the invoking checkout.
@@ -526,6 +528,9 @@ func run(ctx context.Context, o opts) (runErr error) {
 		resolveStaleCmuxStatus(preserveEarlyStatus)
 		return err
 	}
+	// with --detached-run, nothing before this call may start a process: the handshake pipes on fds
+	// 3 and 4 are marked close-on-exec only inside it, so a process started earlier inherits them and
+	// keeps the launcher's ack pipe open
 	if handled, preConfigErr := runPreConfigCommand(ctx, o); handled {
 		return preConfigErr
 	}

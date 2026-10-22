@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
+	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/git"
 	"github.com/umputun/ralphex/pkg/processor"
 	"github.com/umputun/ralphex/pkg/runs"
@@ -34,17 +35,35 @@ const (
 	detachChildID = "child-20261022-120000-abcd"
 )
 
-// detachChildFakeClaude completes every session. While $DETACH_CHILD_GATE is set it first waits, at
-// most a minute, for that file to exist, so a test can hold the run inside its first session.
+// detachChildFakeClaude completes every session: a review with REVIEW_DONE, the report with a
+// report of low risk, and a task with ALL_TASKS_DONE, unless $DETACH_CHILD_MODE is fail, which
+// leaves leftover.txt and reports TASK_FAILED. The fixture's prompts tell the sessions apart. While
+// $DETACH_CHILD_GATE is set every session first waits, at most a minute, for that file to exist, so
+// a test can hold the run inside its first session.
 const detachChildFakeClaude = `#!/bin/sh
-cat >/dev/null
+prompt=$(cat)
 if [ -n "$DETACH_CHILD_GATE" ]; then
   i=0
   while [ ! -e "$DETACH_CHILD_GATE" ] && [ "$i" -lt 1200 ]; do sleep 0.05; i=$((i+1)); done
 fi
-printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
+case "$prompt" in
+*REPORT-PROMPT*) text='# Report: Child\n\n## Summary\nDelivered the child plan.\n\n## Risk\nlow - a test fixture' ;;
+*REVIEW-PROMPT*) text='<<<RALPHEX:REVIEW_DONE>>>' ;;
+*) if [ "$DETACH_CHILD_MODE" = fail ]; then
+     echo leftover > leftover.txt; text='<<<RALPHEX:TASK_FAILED>>>'
+   else
+     text='<<<RALPHEX:ALL_TASKS_DONE>>>'
+   fi ;;
+esac
+printf '{"type":"content_block_delta","delta":{"type":"text_delta","text":"%s"}}\n' "$text"
 printf '%s\n' '{"type":"result","result":""}'
 `
+
+// detachChildPrompts are the global prompt overrides that let detachChildFakeClaude tell the review
+// and report sessions from the task sessions, which keep the embedded prompt.
+var detachChildPrompts = map[string]string{
+	"review_first.txt": "REVIEW-PROMPT", "review_second.txt": "REVIEW-PROMPT", "report.txt": "REPORT-PROMPT",
+}
 
 // detachFDProbe appends "$probe fd3=<open|closed> fd4=<open|closed>" for the shell running it to
 // $DETACH_CHILD_FDS. Duplicating a closed descriptor fails; the subshell keeps that from ending the
@@ -106,6 +125,10 @@ func newDetachChildFixture(t *testing.T, gated bool) *detachChildFixture {
 	f.config = filepath.Join(cfgDir, "config")
 	f.addConfig(t, "claude_swap_enabled = false", "codex_enabled = false", "keep_awake = false",
 		"iteration_delay_ms = 1", "task_retry_count = 0", "report_enabled = false")
+	require.NoError(t, os.MkdirAll(filepath.Join(cfgDir, "prompts"), 0o750))
+	for name, prompt := range detachChildPrompts {
+		require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "prompts", name), []byte(prompt+"\n"), 0o600))
+	}
 	bin := t.TempDir()
 	writeExecutable(t, filepath.Join(bin, "claude"), detachChildFakeClaude)
 
@@ -136,6 +159,68 @@ func (f *detachChildFixture) addConfig(t *testing.T, lines ...string) {
 	_, err = file.WriteString(strings.Join(lines, "\n") + "\n")
 	require.NoError(t, err)
 	require.NoError(t, file.Close())
+}
+
+// addLocalConfig appends lines to the repository's local config, which overrides the global one.
+func (f *detachChildFixture) addLocalConfig(t *testing.T, lines ...string) {
+	t.Helper()
+	file, err := os.OpenFile(filepath.Join(f.repo, ".loopai", "config"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	require.NoError(t, err)
+	_, err = file.WriteString(strings.Join(lines, "\n") + "\n")
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+}
+
+// untrackPlan commits the plan's removal from the index, leaving it on disk as an untracked file
+// with body, as a plan written but never committed.
+func (f *detachChildFixture) untrackPlan(t *testing.T, body string) {
+	t.Helper()
+	runGit(t, f.repo, "rm", "--cached", "--quiet", "docs/plans/child.md")
+	runGit(t, f.repo, "commit", "-m", "untrack plan")
+	require.NoError(t, os.WriteFile(f.planPath(), []byte(body), 0o600))
+}
+
+// planPath is the plan in the invoking checkout.
+func (f *detachChildFixture) planPath() string {
+	return filepath.Join(f.repo, "docs", "plans", "child.md")
+}
+
+// worktreePath is the run's worktree.
+func (f *detachChildFixture) worktreePath() string {
+	return filepath.Join(f.repo, ".loopai", "worktrees", "child")
+}
+
+// outcome returns the run's outcome.
+func (f *detachChildFixture) outcome(t *testing.T) runs.Outcome {
+	t.Helper()
+	outcome, err := runs.LoadOutcome(f.dir)
+	require.NoError(t, err)
+	return outcome
+}
+
+// events returns the run's journal events.
+func (f *detachChildFixture) events(t *testing.T) []runs.Event {
+	t.Helper()
+	events, err := runs.ReadFrom(f.dir, 0)
+	require.NoError(t, err)
+	require.NotEmpty(t, events)
+	return events
+}
+
+// launchHistory returns the launch history lines the runs recorded.
+func (f *detachChildFixture) launchHistory(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(f.config), launchHistoryFile))
+	require.NoError(t, err)
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
+// checkoutState is the invoking checkout's HEAD, index, and branch, which a detached run never
+// changes.
+func (f *detachChildFixture) checkoutState(t *testing.T) []string {
+	t.Helper()
+	return []string{gitOutput(t, f.repo, "rev-parse", "HEAD"), gitOutput(t, f.repo, "ls-files", "--stage"),
+		currentGitBranch(t, f.repo)}
 }
 
 // consoleLog returns the run's console log.
@@ -294,7 +379,8 @@ func (p *detachChildProc) alive() bool {
 
 func TestDetachedChildStartsAttempt(t *testing.T) {
 	f := newDetachChildFixture(t, true)
-	wtPath := filepath.Join(f.repo, ".loopai", "worktrees", "child")
+	wtPath := f.worktreePath()
+	checkout := f.checkoutState(t)
 	p := f.launch(t, "--tasks-only", "docs/plans/child.md")
 
 	ack := p.awaitAck(t, f)
@@ -349,6 +435,228 @@ func TestDetachedChildStartsAttempt(t *testing.T) {
 		assert.Equal(t, 0, p.wait(t, f))
 		assert.NotRegexp(t, `(?m)^error: `, f.consoleLog(t))
 	})
+
+	t.Run("the archive lands on the run branch, never in the invoking checkout", func(t *testing.T) {
+		assert.Equal(t, runs.StatusSucceeded, f.outcome(t).Status)
+		runGit(t, f.repo, "cat-file", "-e", "refs/heads/child:docs/plans/completed/child.md")
+		assert.Equal(t, checkout, f.checkoutState(t), "HEAD, index, and branch of the invoking checkout are unchanged")
+		assert.FileExists(t, f.planPath(), "a committed clean plan has nothing to reconcile")
+		assert.NoDirExists(t, filepath.Join(f.repo, "docs", "plans", "completed"))
+		assert.NoDirExists(t, wtPath, "a clean success removes the worktree")
+	})
+}
+
+func TestDetachedChildSucceeds(t *testing.T) {
+	f := newDetachChildFixture(t, false)
+	f.addLocalConfig(t, "report_enabled = true")
+	f.untrackPlan(t, detachedFinishedPlan)
+	checkout := f.checkoutState(t)
+
+	p := f.launch(t, "docs/plans/child.md")
+	assert.Contains(t, p.awaitAck(t, f), `"ok":true`)
+	require.Equal(t, 0, p.wait(t, f))
+	console := f.consoleLog(t)
+	assert.NotRegexp(t, `(?m)^error: `, console)
+	rec := f.outcome(t)
+
+	t.Run("outcome.json and report.md record the success", func(t *testing.T) {
+		assert.Equal(t, detachChildID, rec.RunID)
+		assert.Equal(t, 1, rec.Attempt)
+		assert.Equal(t, runs.StatusSucceeded, rec.Status)
+		assert.Empty(t, rec.Reason)
+		assert.Equal(t, 0, rec.ExitCode)
+		assert.Equal(t, "child", rec.Branch)
+		assert.Equal(t, gitOutput(t, f.repo, "rev-parse", "refs/heads/child"), rec.Commit+"\n",
+			"the commit is the run branch's tip, archive included")
+		assert.True(t, strings.HasPrefix(rec.Report, "# Report: Child\n"), rec.Report)
+		assert.Equal(t, "Delivered the child plan.", rec.ReportSummary)
+		assert.Equal(t, "low", rec.Risk)
+		assert.Equal(t, config.FinalizeNone, rec.Finalize.Mode)
+		assert.True(t, rec.PlanMoved)
+		assert.Empty(t, rec.WorktreeKept)
+		assert.Empty(t, rec.Notes, console)
+		report, err := runs.ReadReport(f.dir)
+		require.NoError(t, err)
+		assert.Equal(t, rec.Report, report)
+	})
+
+	t.Run("the worktree is removed and the archive is on the run branch", func(t *testing.T) {
+		assert.NoDirExists(t, f.worktreePath())
+		runGit(t, f.repo, "cat-file", "-e", "refs/heads/child:docs/plans/completed/child.md")
+		sidecar := gitOutput(t, f.repo, "show", "refs/heads/child:docs/plans/completed/child.report.md")
+		assert.Equal(t, strings.TrimSpace(rec.Report), strings.TrimSpace(sidecar))
+		assert.Equal(t, checkout, f.checkoutState(t), "HEAD, index, and branch of the invoking checkout are unchanged")
+		assert.NoDirExists(t, filepath.Join(f.repo, "docs", "plans", "completed"))
+	})
+
+	t.Run("the untracked source plan is reconciled", func(t *testing.T) {
+		assert.NoFileExists(t, f.planPath(), "an unchanged untracked plan is consumed by the run")
+		assert.Empty(t, gitOutput(t, f.repo, "status", "--porcelain", "--", "docs"), "the invoking checkout is merge-ready")
+	})
+
+	t.Run("one launch-history line with launcher cli", func(t *testing.T) {
+		history := f.launchHistory(t)
+		require.Len(t, history, 1)
+		assert.Equal(t, launcherCLI, strings.Split(history[0], "\t")[1])
+	})
+
+	t.Run("the events end in finish with exit code 0", func(t *testing.T) {
+		events := f.events(t)
+		types := eventTypes(events)
+		require.GreaterOrEqual(t, len(types), 4)
+		assert.Equal(t, []runs.EventType{runs.EventFinalize, runs.EventReport, runs.EventFinish}, types[len(types)-3:])
+		report, finish := events[len(events)-2], events[len(events)-1]
+		assert.Equal(t, "Delivered the child plan.", report.Summary)
+		assert.Equal(t, "low", report.Risk)
+		assert.Equal(t, runs.StatusSucceeded, finish.Status)
+		assert.Zero(t, finish.ExitCode)
+		assert.Equal(t, 1, finish.Attempt)
+		snapshot := runs.Fold(events)
+		for _, stage := range snapshot.Stages {
+			assert.Equal(t, runs.ProgressDone, stage.Status, stage.Name)
+		}
+	})
+}
+
+func TestDetachedChildRecordsT3Launcher(t *testing.T) {
+	f := newDetachChildFixture(t, false)
+	desc := f.descriptor(t)
+	desc.Origin = runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "thread-1", ACPSessionID: "sess-1"}
+	require.NoError(t, runs.SaveDescriptor(f.dir, &desc))
+
+	p := f.launch(t, "--tasks-only", "docs/plans/child.md")
+	assert.Contains(t, p.awaitAck(t, f), `"ok":true`)
+	require.Equal(t, 0, p.wait(t, f))
+
+	history := f.launchHistory(t)
+	require.Len(t, history, 1)
+	assert.Equal(t, launcherT3, strings.Split(history[0], "\t")[1])
+}
+
+func TestDetachedChildFailedTask(t *testing.T) {
+	f := newDetachChildFixture(t, false)
+	f.env = append(f.env, "DETACH_CHILD_MODE=fail")
+	f.untrackPlan(t, detachedOpenPlan)
+	checkout := f.checkoutState(t)
+
+	p := f.launch(t, "--tasks-only", "docs/plans/child.md")
+	assert.Contains(t, p.awaitAck(t, f), `"ok":true`, "the failure comes after the attempt started")
+	assert.Equal(t, 1, p.wait(t, f))
+	statePath := filepath.Join(f.dir, runs.SourcePlansFile)
+	firstState, err := os.ReadFile(statePath) //nolint:gosec // test temp path
+	require.NoError(t, err)
+
+	t.Run("the worktree is kept and the outcome is failed", func(t *testing.T) {
+		assert.Regexp(t, `(?m)^error: runner: .*task execution failed`, f.consoleLog(t))
+		require.DirExists(t, f.worktreePath())
+		assert.FileExists(t, filepath.Join(f.worktreePath(), "leftover.txt"), "the failed session's work survives")
+		rec := f.outcome(t)
+		assert.Equal(t, runs.StatusFailed, rec.Status)
+		assert.Equal(t, 1, rec.ExitCode)
+		assert.Contains(t, rec.Reason, "task execution failed")
+		assert.Equal(t, f.worktreePath(), rec.WorktreeKept)
+		assert.Equal(t, gitOutput(t, f.repo, "rev-parse", "refs/heads/child"), rec.Commit+"\n")
+		assert.Empty(t, rec.Report)
+		assert.NoFileExists(t, filepath.Join(f.dir, runs.ReportFile))
+		status, err := runs.Classify(f.repo, f.dir)
+		require.NoError(t, err)
+		assert.Equal(t, runs.StatusFailed, status)
+	})
+
+	t.Run("a failed run does not reconcile the source plan", func(t *testing.T) {
+		data, err := os.ReadFile(f.planPath())
+		require.NoError(t, err)
+		assert.Equal(t, detachedOpenPlan, string(data), "the unchanged untracked plan stays in place")
+		assert.Equal(t, checkout, f.checkoutState(t))
+		assert.Contains(t, string(firstState), `"docs/plans/child.md"`, "the untracked plan was captured")
+	})
+
+	t.Run("the events end in the final statuses and a failed finish", func(t *testing.T) {
+		events := f.events(t)
+		types := eventTypes(events)
+		assert.Equal(t, []runs.EventType{runs.EventTasks, runs.EventFinish}, types[len(types)-2:])
+		finish := events[len(events)-1]
+		assert.Equal(t, runs.StatusFailed, finish.Status)
+		assert.Equal(t, 1, finish.ExitCode)
+		assert.Contains(t, finish.Reason, "task execution failed")
+	})
+
+	t.Run("a second attempt resumes and reuses the first source plan state", func(t *testing.T) {
+		// what the launcher does before it resumes the run
+		require.NoError(t, runs.ArchiveOutcome(f.dir, 1))
+		desc := f.descriptor(t)
+		desc.Attempt = 2
+		require.NoError(t, runs.SaveDescriptor(f.dir, &desc))
+		// a capture now would record this edit; the first attempt's capture is kept instead
+		require.NoError(t, os.WriteFile(f.planPath(), []byte(detachedOpenPlan+"\n- [ ] added between attempts\n"), 0o600))
+
+		p := f.launch(t, "--tasks-only", "docs/plans/child.md")
+		assert.JSONEq(t, `{"ok":true,"run_id":"`+detachChildID+`","attempt":2}`, p.awaitAck(t, f))
+		assert.Equal(t, 1, p.wait(t, f))
+
+		var starts []runs.Event
+		for _, ev := range f.events(t) {
+			if ev.Type == runs.EventAttemptStart {
+				starts = append(starts, ev)
+			}
+		}
+		require.Len(t, starts, 2)
+		assert.Equal(t, []int{1, 2}, []int{starts[0].Attempt, starts[1].Attempt})
+		assert.Equal(t, f.worktreePath(), starts[1].Worktree, "the attempt resumes the kept worktree")
+		state, err := os.ReadFile(statePath) //nolint:gosec // test temp path
+		require.NoError(t, err)
+		assert.Equal(t, string(firstState), string(state))
+		assert.Equal(t, 2, f.outcome(t).Attempt)
+		assert.FileExists(t, filepath.Join(f.dir, "outcome-attempt-1.json"))
+	})
+}
+
+func TestDetachedChildStopped(t *testing.T) {
+	f := newDetachChildFixture(t, true)
+	p := f.launch(t, "--tasks-only", "docs/plans/child.md")
+	assert.Contains(t, p.awaitAck(t, f), `"ok":true`)
+	// the gated session holds the run inside its first task
+	require.Eventually(t, func() bool {
+		events, err := runs.ReadFrom(f.dir, 0)
+		return err == nil && slices.ContainsFunc(events, func(ev runs.Event) bool { return ev.Type == runs.EventTask })
+	}, detachChildWait, 20*time.Millisecond, "the task session never started")
+
+	// what loopai --stop does: the marker first, then the signal
+	require.NoError(t, runs.RequestStop(f.dir))
+	require.NoError(t, p.cmd.Process.Signal(syscall.SIGTERM))
+
+	assert.Equal(t, 2, p.wait(t, f))
+	rec := f.outcome(t)
+	assert.Equal(t, runs.StatusStopped, rec.Status)
+	assert.Equal(t, 2, rec.ExitCode)
+	assert.NotEmpty(t, rec.Reason)
+	assert.Equal(t, f.worktreePath(), rec.WorktreeKept)
+	assert.DirExists(t, f.worktreePath(), "a stopped run keeps its worktree for the next attempt")
+	events := f.events(t)
+	finish := events[len(events)-1]
+	assert.Equal(t, runs.EventFinish, finish.Type)
+	assert.Equal(t, runs.StatusStopped, finish.Status)
+	assert.Equal(t, 2, finish.ExitCode)
+	assert.Contains(t, f.consoleLog(t), "error: "+rec.Reason)
+}
+
+func TestDetachedChildWorktreeNotRemoved(t *testing.T) {
+	f := newDetachChildFixture(t, true)
+	p := f.launch(t, "--tasks-only", "docs/plans/child.md")
+	assert.Contains(t, p.awaitAck(t, f), `"ok":true`)
+	// a locked worktree makes git worktree remove --force fail, which the run only warns about
+	runGit(t, f.repo, "worktree", "lock", f.worktreePath())
+	require.NoError(t, os.WriteFile(f.gate, nil, 0o600))
+
+	assert.Equal(t, 0, p.wait(t, f))
+	rec := f.outcome(t)
+	assert.Equal(t, runs.StatusSucceeded, rec.Status)
+	assert.DirExists(t, f.worktreePath())
+	assert.Equal(t, f.worktreePath(), rec.WorktreeKept, "the outcome reports the worktree that is still there")
+	assert.Equal(t, []string{"worktree " + f.worktreePath() + " was not removed and is kept"}, rec.Notes)
+	console := f.consoleLog(t)
+	assert.Contains(t, console, "warning: failed to remove worktree")
+	assert.Contains(t, console, "warning: worktree "+f.worktreePath()+" was not removed and is kept")
 }
 
 func TestDetachedChildDescriptorsNotInherited(t *testing.T) {

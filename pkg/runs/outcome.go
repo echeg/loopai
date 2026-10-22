@@ -98,6 +98,12 @@ func ArchiveOutcome(dir string, attempt int) error {
 	return nil
 }
 
+// CapReportSummary cuts a report summary to the 4 KiB an outcome keeps, without splitting a UTF-8
+// sequence, for a record that carries the summary outside the outcome, such as the report event.
+func CapReportSummary(s string) string {
+	return truncateUTF8(s, maxOutcomeSummary)
+}
+
 // truncateUTF8 returns s cut to at most limit bytes without splitting a UTF-8 sequence.
 func truncateUTF8(s string, limit int) string {
 	if len(s) <= limit {

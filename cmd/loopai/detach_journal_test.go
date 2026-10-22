@@ -148,6 +148,88 @@ func TestJournalLoggerMissingPlan(t *testing.T) {
 	assert.Empty(t, warn.String(), "an unreadable plan is not reported to the run")
 }
 
+func TestJournalLoggerTaskWithoutWorkLeft(t *testing.T) {
+	// with no task left to do the task phase numbers its section by the iteration, which names no
+	// plan position; the event then carries no unrelated task's title
+	tests := []struct {
+		name string
+		n    int
+	}{
+		{name: "a position whose task is done", n: 1},
+		{name: "a position past the plan", n: 4},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hooks, dir, _ := newTestJournalHooks(t, &config.Config{})
+			startTestAttempt(t, hooks, writeJournalTestPlan(t))
+
+			hooks.decorateLogger(&runnerLoggerRecorder{}).PrintSection(status.NewTaskIterationSection(tc.n))
+
+			events := journalEventsAfterStart(t, dir)
+			require.Len(t, events, 2)
+			assert.Equal(t, runs.Event{Type: runs.EventTask, N: tc.n, M: 3}, events[0])
+			assert.Equal(t, runs.EventTasks, events[1].Type)
+		})
+	}
+}
+
+func TestJournalHooksRecordStatuses(t *testing.T) {
+	hooks, dir, warn := newTestJournalHooks(t, &config.Config{})
+	planFile := writeJournalTestPlan(t)
+	startTestAttempt(t, hooks, planFile)
+	// the last session ticked the rest of task 2 after the last section recorded it
+	require.NoError(t, os.WriteFile(planFile, []byte(strings.Replace(journalTestPlan, "- [ ] rest", "- [x] rest", 1)), 0o600))
+
+	hooks.recordStatuses()
+	require.NoError(t, os.Remove(planFile))
+	hooks.recordStatuses()
+
+	assert.Equal(t, []runs.Event{{Type: runs.EventTasks, Statuses: []runs.TaskStatus{{N: 1, Status: runs.ProgressDone},
+		{N: 2, Status: runs.ProgressDone}, {N: 3, Status: runs.ProgressPending}}}}, journalEventsAfterStart(t, dir),
+		"an unreadable plan records nothing")
+	assert.Empty(t, warn.String())
+}
+
+func TestClosingEventBuilders(t *testing.T) {
+	t.Run("finalize", func(t *testing.T) {
+		got := finalizeEvent(runs.Finalize{Mode: config.FinalizeMerge, StatusNote: "finalize incomplete",
+			PRURL: "https://github.com/acme/repo/pull/7", Incomplete: "PR checks failed"})
+		assert.Equal(t, runs.Event{Type: runs.EventFinalize, Mode: config.FinalizeMerge, StatusNote: "finalize incomplete",
+			PRURL: "https://github.com/acme/repo/pull/7", Incomplete: "PR checks failed"}, got)
+		assert.True(t, finalizeEvent(runs.Finalize{Mode: config.FinalizeMerge, Merged: true}).Merged)
+	})
+
+	t.Run("finish", func(t *testing.T) {
+		assert.Equal(t, runs.Event{Type: runs.EventFinish, Status: runs.StatusStopped, Reason: "canceled", ExitCode: 2},
+			finishEvent(runs.StatusStopped, "canceled", 2))
+	})
+
+	tests := []struct {
+		name        string
+		report      string
+		wantSummary string
+		wantRisk    string
+	}{
+		{name: "summary and risk", report: "# Report: X\n\n## Summary\nDid the thing.\nTwo lines.\n\n## Risk\n_High_: schema.\n",
+			wantSummary: "Did the thing.\nTwo lines.", wantRisk: "high"},
+		{name: "the first summary counts", report: "# Report: X\n\n## Summary\nfirst\n\n## Summary\nsecond\n",
+			wantSummary: "first"},
+		{name: "a heading inside a fence stays in the summary",
+			report: "# Report: X\n\n## Summary\n```\n## Risk\nhigh\n```\n\n## Risk\nlow\n", wantSummary: "```\n## Risk\nhigh\n```",
+			wantRisk: "low"},
+		{name: "no sections", report: "# Report: X\njust text\n"},
+		{name: "a risk that is no level", report: "# Report: X\n\n## Risk\nunclear\n"},
+		{name: "a long summary is capped", report: "# Report: X\n\n## Summary\n" + strings.Repeat("s", 5000) + "\n",
+			wantSummary: strings.Repeat("s", 4096)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := reportEvent(tc.report)
+			assert.Equal(t, runs.Event{Type: runs.EventReport, Summary: tc.wantSummary, Risk: tc.wantRisk}, got)
+		})
+	}
+}
+
 func TestJournalLoggerTaskBeforeAttempt(t *testing.T) {
 	hooks, dir, _ := newTestJournalHooks(t, &config.Config{})
 	hooks.decorateLogger(&runnerLoggerRecorder{}).PrintSection(status.NewTaskIterationSection(1))
