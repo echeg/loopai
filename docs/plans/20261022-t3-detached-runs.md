@@ -30,7 +30,8 @@
 
 ## Decisions
 - **Context**: the approved design is `docs/superpowers/specs/2026-10-22-t3-detached-runs-design.md`.
-  Its "Amendments from plan discovery" section overrides earlier sections.
+  Its "Amendments from plan discovery" section overrides earlier sections, and its "Amendments from the
+  T3 v0.1.1 source study" section overrides both.
   - Goals: survive about 40 hours, and survive every launcher, terminal, agent, provider, and T3
     restart. T3 is a window onto the run, not its host.
   - Anti-goals. Each of these is a failure even if the feature "works":
@@ -131,7 +132,8 @@
   - Keeping the worktree after a review stalemate on an otherwise successful run. The post-review
     loop commits leftover fixes on the branch, so this would be a design change; it is not part of
     this plan.
-- **Verified facts** (T3 Code 0.1.1 server bundle, re-verified, not exercised live; `B:` = bundle line):
+- **Verified facts** (T3 Code 0.1.1 server bundle, re-verified, not exercised live; `B:` = bundle line;
+  items the v0.1.1 source study corrected are stated in their corrected form):
   - **Transport**
     - `/ws` requires `?orchestrationProtocol=2` before authentication (426 otherwise).
       `Authorization: Bearer` on the upgrade works.
@@ -151,28 +153,46 @@
       provider instance.
     - It then spawns a fresh provider, calls `session/load` with the saved session id, then
       `session/prompt`.
-    - A failed or slow `session/load` (90 s timeout) does not fall back: the turn fails.
+    - A failed or slow `session/load` (90 s timeout) falls back: T3 starts a new process with
+      `session/new` (a new session id) and prepends a `Context handoff (full_thread_summary):` block
+      (up to 16k tokens) before `\n\nUser message:\nContinue where you left off.`. Without
+      `loadSession` advertised, the continuation fails.
     - Continuation is skipped: after a user Stop; with a pending permission request; when the
       instance changed or is disabled; when `settings.json` fails to decode; and after more than 3
       continuations within 5 minutes.
+    - It also needs a running provider turn, an active provider thread, a session not stopped or
+      errored, and a thread not archived, settled, or snoozed. A provider that dies by itself while T3
+      is up has its turn finalized `failed`, never continued.
+    - The web Resume button after Stop (latest run `interrupted`) and usage-limit auto-resume send the
+      same `Continue where you left off.`. T3 never sends a restart continuation after a Stop.
   - **Process model**
-    - The `acpRegistry` provider is spawned in the T3 server's own process group (no own group on
-      macOS).
-    - It is retired with SIGTERM, then SIGKILL after 1 second, without `session/cancel`.
+    - On macOS the `acpRegistry` provider leads its own process group (Effect's default `detached` on
+      non-Windows).
+    - T3 retires it by signalling the group with SIGTERM, then SIGKILL after 1 second, without
+      `session/cancel`.
     - A `setsid` process whose stdio is not tied to the provider survives.
     - On Linux under a systemd user manager, providers live in a slice that is stopped at the next
       server start.
   - **Stop**
-    - One `session/cancel` notification, then a 10-second wait for stopReason `cancelled`.
-    - Stop disables continuation for that run.
+    - One `session/cancel` notification, then a 10-second wait for stopReason `cancelled`. The same
+      process and session serve the next prompt.
+    - Stop disables continuation for that run and records a `run_interrupt_request`.
     - Steering is interrupt plus restart (`supportsSteeringByInterruptRestart:true`,
       B:175125-175133). Messages typed during a turn are queued.
+    - Steer, promote-to-steer, and MCP `t3_thread_send` (auto) send `session/cancel`, wait for the
+      prompt to end, then send a new `session/prompt`, usually unwrapped. A steer records no
+      `run_interrupt_request`. v0.1.2 previews also send `session/cancel` when T3's own event
+      ingestion fails a run.
   - **`acpRegistry`**
     - Enabled by default, with no CLI probes.
-    - A local instance is `commandPath` plus `commandArgs` (the UI always writes `commandArgs: []`),
-      spawned with the thread's cwd.
-    - A background probe (`initialize` + `session/new`, cwd = server cwd, `mcpServers: []`) runs about
-      every 15 minutes.
+    - A local instance is `commandPath` plus `commandArgs`, spawned with the thread's cwd. The add
+      dialog seeds `commandArgs: []`; the settings form has an Arguments editor (one literal argument
+      per row). The default instance id is `acpRegistry_local_acp`.
+    - Readiness probes (`initialize` + `session/new`, cwd = server cwd, `mcpServers: []`) refresh
+      about every minute while provider status is in demand. Only `ready` is cached (15 minutes);
+      failures retry every minute.
+    - Probe clientInfo names: `t3-code-provider-test`, `t3-code-session-manager`, and
+      `t3-code-provider-auth` (`initialize` only, then EOF).
     - `initialize` must answer ACP v1 without an `info` key (its presence switches T3 to V2 methods)
       and with `loadSession: true`. `session/load` must succeed quickly for any id.
     - Plan entries require `priority`, and `tool_call` requires `title`. Use kind `other`/`think`,
@@ -181,20 +201,25 @@
       `/\b(?:authenticat(?:e|ed|es|ing|ion)|credentials?|log(?:[\s-]+)?in)\b/iu` from
       `initialize`/`session/new`, marks the instance unauthenticated (B:173700-173709).
   - **Prompt envelope**
-    - Every prompt sent before one has completed successfully in the current ACP process is wrapped
-      in `<t3_code_instructions>…</t3_code_instructions>\n\n<user_request>\n…\n</user_request>`, with
-      a separate `<runtime_info>` block.
+    - A prompt is wrapped in
+      `<t3_code_instructions>…</t3_code_instructions>\n\n<user_request>\n…\n</user_request>`, with a
+      separate `<runtime_info>` block, until the session's instruction state is recorded. That happens
+      after any non-error prompt response (a cancelled one counts), so a steered prompt after a cancel
+      usually arrives unwrapped.
     - Inside `user_request`, a handoff history or restart note may precede the last
       `\n\nUser message:\n`.
     - Text starting with `/` arrives unwrapped.
     - Neither block carries a thread id.
   - **Thread identity for Mode 2**
-    - The thread-scoped MCP endpoint is streamable HTTP. Its URL is in the `t3-code` entry of
-      `session/new`/`session/load` `mcpServers`, which is preferred over the spawn-time
-      `T3_ACP_MCP_*` env.
+    - The thread-scoped MCP endpoint is streamable HTTP. The `t3-code` entry of
+      `session/new`/`session/load` `mcpServers` is a stdio `acp-mcp-bridge` whose `env` array carries
+      `T3_ACP_MCP_ENDPOINT` and `T3_ACP_MCP_AUTHORIZATION`; it is preferred over the spawn-time
+      `T3_ACP_MCP_*` env. Never advertise `mcpCapabilities.acp`, which makes T3 send an entry with no
+      URL.
     - It answers `tools/call t3_thread_list` with `currentThreadId` = the ACP thread
       (B:334265-334281).
-    - The credential is per provider session; read it right after `session/new`/`session/load`.
+    - The credential is per provider session; read it right after `session/new`/`session/load`. It
+      is touched hourly during a running run, and issuing a new one revokes the old.
   - **Thread ids are not always UUIDs.** Subagent and provider-native threads have ids like
     `thread:provider:claudeAgent:native-thread:thread%3Aprovider%3A…%3Aagent%3A3` (about 330
     characters, containing `:` and `%`). `ThreadId` is a branded `TrimmedNonEmptyString` with no
@@ -211,11 +236,18 @@
   - **Same-thread terminal**
     - No MCP tool opens or writes a thread terminal, so Mode 1 needs a bearer token and WS
       `terminal.open`/`terminal.write`.
-    - Terminal sessions live in server memory. After a restart the bridge's terminal is absent from
-      terminal metadata until the user views the thread and the UI re-attaches it with a fresh shell.
+    - Terminal sessions live only in server memory. After a restart the bridge's terminal is absent.
+      `terminal.open` of an unknown id creates a fresh shell seeded from the persisted history. A UI
+      re-attach is not guaranteed: it needs that client's localStorage and the thread being viewed.
     - Re-opening an existing terminal id with a different cwd, env, or worktree path resets its shell
-      and history.
+      and history; with an identical launch context it only resizes.
+    - `terminal.write` fails with `TerminalNotRunningError` while `starting`/`error` and drops data
+      once `exited`.
     - The terminal shell has T3's `PATH`.
+    - Titles have no compare-and-set, and any title write clears a pending `titleRegeneration`.
+    - Background work in an ordinary thread never shows Working: a held Monitor shows a grey
+      "Waiting", and a background Bash shows nothing and dies about 4.5 h after the last provider
+      event. Mode 1 keeps its bearer-token bridge; no Monitor or scheduler follower is added.
   - **Skills**
     - `orchestrator_capabilities` returns `parentThreadId` (null outside T3), the caller's
       `runtimeMode` and `interactionMode`, and `providers[]` without any command path.
@@ -229,7 +261,8 @@
     - `t3 auth session issue` takes a repeatable `--scope` that replaces the default, over-broad set.
     - The mint uses `T3CODE_CLI_PATH` when set, else `<T3 home>/bin/t3`. The `t3` on `PATH` may be a
       stale 0.0.45 that writes into the frozen V1 database.
-    - Threads idle for 3 days are auto-settled unless pinned.
+    - Threads idle for 3 days are auto-settled unless pinned. The pin protects in code, contrary to
+      T3's user docs; `thread.auto-settle.set` also exists.
   - **Codebase**
     - The old integration is about 13.1k lines: `pkg/t3` (20 files), `pkg/acp` (6 files),
       `cmd/loopai-acp` (2 files), and `cmd/loopai` `acp*.go` and `t3_settle*.go`.
@@ -246,14 +279,15 @@
       - the model id is `default` before the first probe;
       - `<runtime_info>` and `<t3_code_instructions>` carry no thread id;
       - the continuation text form is `Continue where you left off.`, possibly after the restart
-        note;
-      - the `acpRegistry` provider has no own process group and is killed SIGTERM then SIGKILL
-        after 1 s;
+        note or, after a `session/load` fallback, a context handoff block;
+      - the `acpRegistry` provider is killed SIGTERM then SIGKILL after 1 s (corrected by the
+        source study: on macOS it leads its own process group, which T3 signals as a whole);
       - steering is interrupt plus restart (B:175125-175133);
       - `currentThreadId` from the provider's thread-scoped credential is the ACP thread.
     - Still open until a live check:
       - that the provider's MCP endpoint actually returns `currentThreadId` live;
-      - that steering arrives as `session/cancel` followed by `session/prompt` live;
+      - that steering arrives as `session/cancel` followed by `session/prompt` live (the source
+        study confirms it from source);
       - whether Working shows during `session/load`;
       - the live handoff budget;
       - token minting from a Codex sandbox;
@@ -406,8 +440,8 @@
   - **Mode 1 bridge**
     - the title prefix keeps a user rename;
     - pin only when unpinned;
-    - a terminal absent after a restart is not re-opened, and is re-typed after the UI re-attach
-      upsert;
+    - a terminal absent after a server restart is re-opened once with the identical UI launch
+      context and receives the follow command;
     - a `remove` during a live connection is never re-typed;
     - token rejection disables the bridge with one line and never affects the run;
     - a thread id containing `:` and `%` works.
@@ -446,6 +480,44 @@
 - `make test </dev/null`
 - `make lint`
 - `GOOS=windows GOARCH=amd64 go build ./...`
+
+## Decision Log
+- 2026-10-22 pre-flight scan: **accepted** - C1: the `AttemptStarted` hook logs and ignores a failed ack write; only descriptor or journal errors fail it, so a launcher that timed out or died never kills a 40-hour run (Tasks 6 and 8).
+- 2026-10-22 pre-flight scan: **accepted** - C2: a hook error keeps a resumed worktree (`keep = wt.resumed`), protecting the previous attempt's work (Task 4).
+- 2026-10-22 pre-flight scan: **accepted** - C3: the keep-worktree decision is computed once, before removal, and memoized, so no phantom "preserved" path is recorded (Task 4).
+- 2026-10-22 pre-flight scan: **accepted** - C4: `recordFinalize` sets `finalizeIncomplete` before the keep decision, and a clean-tree incomplete close-out keeps the worktree (Task 4).
+- 2026-10-22 pre-flight scan: **accepted** - C5: the Mode 1 bridge ends on the journal `finish` event, not on `Follow`'s lock-based finish, and the child stops it (bounded) through a before-exit hook added in Task 7, so the final title and the unpin are sent (Tasks 7 and 11).
+- 2026-10-22 pre-flight scan: **accepted** - C6: `journalHooks.progressLogger()` queues lines written before `LogDecorator` runs and flushes them when it does, because the bridge starts before `executePlan` (Task 11).
+- 2026-10-22 pre-flight scan: **accepted** - C7: the source plan is reconciled before `outcome.json` is written, so reconcile warnings land in its `notes` (Task 7).
+- 2026-10-22 pre-flight scan: **accepted** - C8: the docs-removal grep excludes `docs/plans` and `docs/superpowers`, which name the removed spellings as history (Task 18).
+- 2026-10-22 pre-flight scan: **accepted** - C9: the docs-removal grep uses `LOOPAI_T3([^_[:alnum:]]|$)`, because `LOOPAI_T3\b` matches nothing under `git grep -E` here (Task 18).
+- 2026-10-22 pre-flight scan: **accepted** - C10: the tautological descriptor-token test is dropped; Task 11 instead scans the run directory, console log, progress log, and child environment for the token (Tasks 3 and 11).
+- 2026-10-22 pre-flight scan: **accepted** - C11: `pkg/runs` exports `WriteFileAtomic` and `cmd/loopai/json_state.go` delegates to it instead of keeping a verbatim copy (Task 3).
+- 2026-10-22 pre-flight scan: **accepted** - C12: review stalemate and review max-iterations are not run failures and get no keep rule of their own; the dirty-tree and incomplete-success keep rules cover uncommitted work (Decisions, Task 4).
+- 2026-10-22 pre-flight scan: **accepted** - C13: `errDetachUnsupported` lives in `detach_child_windows.go` from Task 6, so `unused` passes on darwin (Tasks 6, 8, and 9).
+- 2026-10-22 pre-flight scan: **accepted** - C14: without a thread id, `--acp-thread` is omitted; when present it is validated with the `--t3-thread` charset. Stop matches the run through the binding key, the thread id when known, else the session id (Tasks 14 and 15).
+- 2026-10-22 pre-flight scan: **accepted** - C15: the descriptor records `argv` and `env_options` on every launch, not only on resume, because Mode 2 relaunches every run from them (Task 8).
+- 2026-10-22 pre-flight scan: **accepted** - C16: the launcher detects child exit through fd-4 EOF, since `Process.Release` precludes `Wait`, and retries without the systemd scope only on EOF with no handshake line (Task 8).
+- 2026-10-22 pre-flight scan: **accepted** - C17: Task 2 adds a direct `validatePassThroughValues` table test, because the function has no caller until Task 14 (Task 2).
+- 2026-10-22 pre-flight scan: **accepted** - C18: "never patch cfg" means `WorktreeEnabled`; setting `cfg.Orca = false` after load stays (Task 6).
+- 2026-10-22 pre-flight scan: **accepted** - C19: a bound run in status `starting` counts as live for routing rule 1 and is attached (Task 14; Technical Details "Mode 2 routing").
+- 2026-10-22 pre-flight scan: **accepted** - C20: the skills run `loopai --detach` with a Bash timeout of at least 180 s, above the launcher's 120 s ack wait (Task 16; Technical Details "Skills").
+- 2026-10-22 pre-flight scan: **accepted** - SIGTERM or EOF during the Stop grace window abandons the pending stop, consistent with the spec's "steered or restarted" reasoning, since a T3 restart sends SIGTERM (Task 15; Technical Details "Mode 2 routing").
+- 2026-10-22 Task 3 review: **accepted** - F1: `LatestFor`, the launcher's query under its own launch lock, skips that lock's tier, so a crashed run reads `crashed` and can be resumed. `List`, `DefaultRun`, and `LiveRunForBranch` keep the tier, so every in-lock launcher decision in Task 8 uses `LatestFor` (Tasks 3 and 8).
+- 2026-10-22 Task 3 review: **accepted** - F2: `Classify` probes the launch lock before the lifetime lock, closing the window in which a starting run read `crashed`; result precedence is unchanged (Task 3).
+- 2026-10-22 Task 3 review: **accepted** - F3: `launchLockPath` hashes the normalized plan path (`filepath.ToSlash(filepath.Clean(planRel))`), so every spelling of a plan shares one launch lock (Task 3).
+- 2026-10-22 Task 3 review: **accepted** - F4: the flock helper retries on EINTR, so `Probe` never reports a false `held` (Task 3).
+- 2026-10-22 Task 3 review: **accepted** - F5 (deferred to Task 8): `List` fails as a whole on one corrupt run directory; Task 8 names the run id in that error or lets plan- and branch-filtered queries skip unrelated broken runs (Task 8).
+- 2026-10-22 Task 3 review: **accepted** - F6 (deferred to Task 8): Task 8 creates run directories with `os.Mkdir` and retries with a new id on `EEXIST`, never `MkdirAll` (Task 8).
+- 2026-10-22 T3 source study: **accepted** - facts F1-F13 from the T3 Code v0.1.1 source replace bundle-derived facts in Decisions (Verified facts) and Technical Details, and are recorded in the spec's "Amendments from the T3 v0.1.1 source study".
+- 2026-10-22 T3 source study: **accepted** - Task 10: `GetThreadProjection` also returns `titleRegeneration`; a 426 or a decode failure is a typed "protocol unsupported" error that disables the bridge, never a crash (Task 10; Technical Details "T3 WebSocket protocol 2", "Mode 1 bridge behaviour").
+- 2026-10-22 T3 source study: **accepted** - Task 11: replaces "never re-open, wait for the UI". After a reconnect where the server restarted, if the bridge's terminal is absent and no `remove` was seen during a live connection, it calls `terminal.open` once with the identical UI launch context, waits until it runs (bounded retry on `TerminalNotRunningError`), then types the follow command. A `remove` seen while connected still means never recreate. The follow command is never `exec`'d and never ends in `; exit`. Before the first prefix write the bridge waits (about 2 minutes) for `titleRegeneration` to be null. The pin stays (Task 11; Technical Details "Mode 1 bridge behaviour"; Testing Strategy; Post-Completion).
+- 2026-10-22 T3 source study: **accepted** - Task 12: tests cover a `user_request` carrying a ~16k-token `Context handoff (full_thread_summary):` block before `User message:\nContinue where you left off.`, and both wrapped and unwrapped steered prompts (Task 12).
+- 2026-10-22 T3 source study: **accepted** - Task 13: probe detection includes clientInfo `t3-code-provider-auth`, whose initialize-only connection ends in EOF with no side effects or error output; `loopai --acp` never exits by itself during a held turn (handler panics recovered) and exits promptly on SIGTERM or EOF; the `loopai-acp` package doc states that the process group is signalled as a whole and `exec` keeps one stable process; the MCP thread id is the required binding key and the session id only a fallback (Task 13; Technical Details "ACP v1 surface", "Mode 2 routing").
+- 2026-10-22 T3 source study: **accepted** - Task 14: routing rule 1 refined. A live bound run, `starting` included, is attached whatever the text says; one not live and not succeeded (crashed, stopped, or failed) is relaunched from its recorded argv on continuation text (restart or Resume button) or `resume`; a succeeded one gets the status reply. Tests cover a stopped run plus continuation text relaunching (Task 14; Technical Details "Mode 2 routing").
+- 2026-10-22 T3 source study: **accepted** - Task 15: the Stop grace is measured from loopai's `cancelled` answer; a steered prompt naming a plan while the bound run is live re-attaches it; before stopping, a best-effort, isolated `t3_thread_read` (≤5 s, session credential) requires a recorded `run_interrupt_request`, and a failed read or unavailable item kind stops as before; every finished run ends with `end_turn`, never a JSON-RPC error (Task 15; Technical Details "Mode 2 routing").
+- 2026-10-22 T3 source study: **accepted** - Task 16: the read-only `settings.json` lookup also accepts `loopai`/`loopai.exe` with `--acp` in `commandArgs`, never assumes the instance id, and tolerates unknown keys and value types; only `models[].id` is read; after an error or lost reply from `t3_thread_launch`, `t3_thread_list` is inspected before a retry; the Mode 1 launcher is a foreground Bash call with a timeout of at least 180 s; registration text names the absolute `loopai-acp` path (or `loopai` with argument `--acp`) and keeps the default instance id, which supersedes the recommended instance id `loopai` in Task 18 (Tasks 16 and 18; Technical Details "Skills").
+- 2026-10-22 T3 source study: **accepted** - Task 18: the docs cover Resume-button support, the restart-continuation preconditions (the per-project switch, archived, settled, or snoozed threads, and typing `resume` after a provider killed while T3 runs), queued messages held after a restart, switching the model only after the run, the 1-minute probe, the process-group fact, pin versus auto-settle, and that background commands and Monitors do not give Working (Task 18).
 
 ## Implementation Steps
 
@@ -1403,12 +1475,14 @@
   - Payload: `{threadId, terminalId (≤128, client-chosen), cwd (existing directory), worktreePath?: string|null, cols? 1..1000 (120), rows? 1..500 (30), env?: {NAME: value} (≤128 keys, names ^[A-Za-z_][A-Za-z0-9_]*$, values ≤8192), providerInstanceId?}`.
   - Success: `{threadId, terminalId, cwd, worktreePath|null, status:"starting"|"running"|"exited"|"error", pid|null, history, exitCode|null, exitSignal|null, label, updatedAt, sequence?}`.
   - On an existing live session, a different `cwd`, normalized `env`, or `worktreePath` stops the
-    process, clears history, and restarts.
+    process, clears history, and restarts. An identical launch context only resizes it.
+  - An unknown id creates a fresh shell seeded from the persisted history.
   - Never send `providerInstanceId`; never use `term-1`.
 - **`terminal.write`** (terminal:operate)
   - Payload `{threadId, terminalId, data}`, with `data` non-empty and ≤65536. Returns Void.
-  - The errors `TerminalSessionLookupError`, `TerminalNotRunningError`, and `TerminalWriteError` mean
-    the terminal is gone.
+  - `TerminalNotRunningError` is returned while the terminal is `starting` or `error`; data written
+    once it has `exited` is dropped. `TerminalSessionLookupError` and `TerminalWriteError` mean the
+    terminal is gone.
   - UI convention: ` ${command}\r`. The leading space keeps the command out of shell history.
 - **`terminal.close`** without `terminalId` closes EVERY terminal of the thread. The bridge never
   calls it.
@@ -1435,15 +1509,18 @@
 - **`orchestration.getThreadProjection`** (orchestration:read)
   - Payload `{threadId}`.
   - Read `thread.title`, `thread.pinnedAt` (absent = null), `thread.worktreePath`,
-    `thread.projectId`, and `thread.archivedAt`.
+    `thread.projectId`, `thread.archivedAt`, and `thread.titleRegeneration`.
   - Error: `OrchestrationV2GetThreadProjectionError{threadId, message}`.
+  - A 426 or a reply that fails to decode is a typed "protocol unsupported" error that disables the
+    bridge, never a crash.
 - **`GET /api/projects`** (Bearer, orchestration:read; no protocol header needed)
   - Returns `{projects:[{id, title, workspaceRoot, …, deletedAt}], updatedAt}`.
   - Match `id == thread.projectId`.
 - **Restarts**
-  - Terminal sessions live in server memory. After a restart the metadata snapshot lacks the bridge's
-    terminal until the user views the thread and the UI re-attaches it.
-  - The re-attach uses `terminal.attach`, never a reset, with cwd = `worktreePath ?? workspaceRoot`
+  - Terminal sessions live only in server memory. After a restart the metadata snapshot lacks the
+    bridge's terminal. A UI re-attach is not guaranteed (it needs that client's localStorage and the
+    thread being viewed), so the bridge re-opens its own terminal (see Mode 1 bridge behaviour).
+  - A UI re-attach uses `terminal.attach`, never a reset, with cwd = `worktreePath ?? workspaceRoot`
     and env `{T3CODE_PROJECT_ROOT, T3CODE_WORKTREE_PATH?}`.
   - The terminal shell inherits the T3 server environment minus `T3CODE_*`, `VITE_*`, and a few
     multiplexer variables, so the follow command uses absolute paths.
@@ -1454,18 +1531,30 @@
     final `done` (succeeded), `failed`, or `stopped`.
   - Format: `[loopai: <state>] <base>`. Strip regex: `^\[loopai: [^\]]*\] ?`. When the base is empty,
     the title is the prefix alone.
-- **Pin**: pin at start only when `pinnedAt` is null, to avoid the 3-day auto-settle. Unpin at finish
-  only if the bridge pinned.
+  - Titles have no compare-and-set, and any title write clears a pending `titleRegeneration`. Before
+    the first prefix write, wait (bounded, about 2 minutes) until `titleRegeneration` is null. A later
+    regeneration is simply overwritten at the next transition.
+- **Pin**: pin at start only when `pinnedAt` is null, to avoid the 3-day auto-settle (the pin protects
+  in code, contrary to T3's user docs). Unpin at finish only if the bridge pinned.
 - **Terminal state machine**
   - On the first snapshot: if the terminal is present, reuse it; if absent, call `terminal.open` once
     with the UI cwd/env, then write the follow command.
-  - After a restart or reconnect, an absent terminal is pending until an `upsert`.
-  - A `remove` seen on a live connection means the user closed the terminal; never re-type.
+  - After a reconnect where the server restarted (runtime pid or `startedAt` changed, or the
+    connection was lost): if the terminal is absent and no `remove` for it was seen during a live
+    connection, call `terminal.open` ONCE with the identical UI launch context (cwd =
+    `thread.worktreePath ?? project.workspaceRoot`, `worktreePath` only when non-null, the same
+    two-key env, no `providerInstanceId`). Wait until it reports running, retrying on
+    `TerminalNotRunningError` within a bound, then type the follow command. This replaces the earlier
+    "never re-open, wait for the UI" rule, because a UI re-attach is not guaranteed.
+  - A `remove` seen on a live connection means the user closed the terminal; never recreate it and
+    never re-type.
   - Re-type only when the terminal is running, `hasRunningSubprocess` has been false for ≥60 s, and
     nothing was typed in the last 90 s.
-  - Never a second `terminal.open` in one process.
-- **Failure**: a 401 `auth_invalid` (expired or revoked token) or another unrecoverable error disables
-  the bridge with one progress-log line. The run is unaffected.
+  - At most one `terminal.open` per server start. Never `exec` the follow command and never append
+    `; exit` to it.
+- **Failure**: a 401 `auth_invalid` (expired or revoked token), a 426 or undecodable reply ("protocol
+  unsupported"), or another unrecoverable error disables the bridge with one progress-log line. The
+  run is unaffected.
 - **Thread id**: an opaque string matching `^[A-Za-z0-9_.:%-]{1,1024}$`. It is sent unchanged in
   payloads and always single-quoted in shell text.
 
@@ -1494,26 +1583,49 @@ LOOPAI_T3_TOKEN=${LOOPAI_T3_TOKEN:-$("$T3_CLI" auth session issue --scope orches
   - T3 allows 90 s.
   - Updates sent during load are suppressed.
   - It must never fail.
+  - A failed or slow load does not fail the turn: T3 falls back to a new process with `session/new`
+    (a new session id) and prepends a `Context handoff (full_thread_summary):` block (up to 16k
+    tokens) before `\n\nUser message:\nContinue where you left off.`. Without `loadSession` advertised,
+    the continuation fails. The MCP thread id is therefore the required binding key.
 - **`session/prompt`**: params `{sessionId, prompt:[ContentBlock]}` →
   `{"stopReason":"end_turn"|"cancelled"}`. T3 maps `cancelled` to interrupted. Never return a
   usage-limit-shaped failure.
 - **`session/cancel`** notification:
   `{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"…"}}`.
+  - Stop sends one and waits ≤10 s for `cancelled`; the same process and session serve the next
+    prompt.
+  - Steer, promote-to-steer, and MCP `t3_thread_send` (auto) send one, wait for the prompt to end, then
+    send a new `session/prompt`. Only a Stop records a `run_interrupt_request`. v0.1.2 previews also
+    cancel when T3's own event ingestion fails a run.
 - **Auth classification by T3**: error code -32000, or detail matching
   `/\b(?:authenticat(?:e|ed|es|ing|ion)|credentials?|log(?:[\s-]+)?in)\b/iu`, marks the instance
   unauthenticated. The Go equivalent is
   `(?i)\b(authenticat(e|ed|es|ing|ion)|credentials?|log([\s-]+)?in)\b`.
 - **`mcpServers` entry injected by T3**:
   `{"name":"t3-code","command":<T3 executable>,"args":[…,"acp-mcp-bridge"],"env":[{"name":"ELECTRON_RUN_AS_NODE","value":"1"},{"name":"T3_ACP_MCP_ENDPOINT","value":<endpoint>},{"name":"T3_ACP_MCP_AUTHORIZATION","value":"Bearer <token>"}]}`
-  (no `type` key).
+  (no `type` key). It is a stdio bridge, never a URL entry; advertising `mcpCapabilities.acp` would
+  make T3 send an entry with no URL instead.
   - The same values are in the spawn environment, frozen at spawn time. Prefer the latest params.
   - Never log header values.
+  - The credential is touched hourly during a running run; issuing a new one revokes the old.
 - **Probe**
   - `initialize` with `clientInfo {"name":"t3-code-provider-test"}`, then `session/new` with
     cwd = the T3 server cwd and `mcpServers: []`.
-  - T3 waits ≤500 ms for `available_commands_update`, has a 60 s timeout, and repeats every ~15
-    minutes.
+  - T3 waits ≤500 ms for `available_commands_update` and has a 60 s timeout. Readiness is refreshed
+    about every minute while provider status is in demand; only `ready` is cached (15 minutes), and
+    failures retry every minute.
   - The session manager uses clientInfo `t3-code-session-manager`.
+  - `t3-code-provider-auth` sends `initialize` only, then EOF. That connection has no side effects and
+    no error output.
+  - A connection is a probe when its clientInfo name is one of these three, or when `mcpServers` is
+    empty and no `T3_ACP_MCP_*` is set.
+- **Process lifetime**
+  - `loopai --acp` never exits by itself during a held turn: handler panics are recovered and serving
+    continues, because a provider that dies while T3 is up has its turn finalized `failed` and never
+    continued.
+  - It exits promptly on SIGTERM or stdin EOF.
+  - On macOS the provider leads its own process group, which T3 signals as a whole (SIGTERM, then
+    SIGKILL after 1 s). `loopai-acp` `exec`s `loopai --acp` to stay one stable process.
 - **`session/update`** notification:
   `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":…,"update":{…}}}`, where `update`
   is one of:
@@ -1527,14 +1639,25 @@ LOOPAI_T3_TOKEN=${LOOPAI_T3_TOKEN:-$("$T3_CLI" auth session issue --scope orches
   - `prompt = [{type:"text", text:<wrapped or raw>}, …, {type:"text", text:"<runtime_info>…"}]`.
   - Wrapper:
     `<t3_code_instructions>\n…\n</t3_code_instructions>\n\n<user_request>\n<message>\n</user_request>`.
-  - `<message>` may be `<context>\n\nUser message:\n<text>`.
+  - Wrapping follows per-session instruction state, recorded after any non-error prompt response (a
+    cancelled one counts). A steered prompt after a cancel therefore usually arrives unwrapped.
+  - `<message>` may be `<context>\n\nUser message:\n<text>`. After a `session/load` fallback,
+    `<context>` is the `Context handoff (full_thread_summary):` block.
   - Restart note:
     `Note: the T3 server restarted, and this background work was cancelled before it finished. It will not report back on its own, so resume or restart what you still need and wait for its result:`,
     followed by `- <kind>: <label>` lines.
   - The final continuation text is `Continue where you left off.`, or the note, a blank line, and
     `Continue where you left off.`.
+  - The web Resume button after Stop and usage-limit auto-resume send the same `Continue where you
+    left off.`. T3 never sends a restart continuation after a Stop.
 
 ### MCP thread id (streamable HTTP, protocol `2025-06-18`)
+- The endpoint and authorization come from the `env` array of the `t3-code` `mcpServers` entry, a
+  stdio `acp-mcp-bridge` (`T3_ACP_MCP_ENDPOINT`, `T3_ACP_MCP_AUTHORIZATION`), else from the spawn-time
+  environment. loopai never spawns the bridge: it speaks streamable HTTP to the endpoint directly,
+  following the sequence of T3's own bridge client (`AcpMcpStdioBridge.ts:82-134`, the reference
+  client):
+
 1. `POST <endpoint>` with `Authorization: Bearer …` exactly as given,
    `Content-Type: application/json`, `Accept: application/json, text/event-stream`, and no `Origin`:
    `{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"loopai","version":"<version>"}}}`.
@@ -1550,17 +1673,23 @@ LOOPAI_T3_TOKEN=${LOOPAI_T3_TOKEN:-$("$T3_CLI" auth session issue --scope orches
   - 403 with an Origin;
   - 400 without `mcp-session-id`.
 - The credential is per provider session. It expires after 24 h unused and is lost on a T3 restart.
+  It is touched hourly during a running run, and issuing a new one for the thread revokes the old.
+- The same client calls `t3_thread_read` for the Mode 2 Stop guard.
 
 ### Mode 2 routing and turn behaviour
 - **Binding keys**
-  - The primary key is the T3 thread id from MCP; the fallback key is the ACP session id.
+  - The T3 thread id from MCP is the required key. The ACP session id is only a fallback, because T3
+    replaces the session id when `session/load` falls back.
   - Bindings live in `<session cwd>/.loopai/acp/binding-thread-<sha256(thread id)[:32] hex>.json` and
     `binding-session-<session id>.json`. The raw thread id is stored inside the file.
 - **Routing order**
   1. **Bound run.**
-     - Live: attach, whatever the text says (this covers continuation).
-     - Crashed, with continuation text; or ended without success, with the text `resume` (trimmed,
-       case-insensitive): relaunch from the recorded argv and env options, then attach.
+     - Live, including `starting`: attach, whatever the text says (this covers continuation and a
+       steered prompt that names a plan).
+     - Not live and not succeeded (crashed, stopped, or failed), with continuation text (a restart
+       continuation or the Resume button) or the text `resume` (trimmed, case-insensitive): relaunch
+       from the recorded argv and env options, then attach.
+     - Succeeded: never relaunched; continuation text or `resume` gets the status reply (rule 4).
   2. **A message naming a plan**: `loopai --detach` of that plan (origin `t3-thread`), bind, attach.
      Never another run.
   3. **No binding.** Only a continuation may adopt, and only a live run that has origin `t3-thread`,
@@ -1572,11 +1701,19 @@ LOOPAI_T3_TOKEN=${LOOPAI_T3_TOKEN:-$("$T3_CLI" auth session issue --scope orches
   - One `session/prompt` stays open for the whole run.
   - The final message is at most 12,000 bytes of JSON-escaped UTF-8: summary, risk, status and reason,
     branch, and `<run dir>/report.md`. It is sent before `end_turn`.
+  - Every finished run ends with `end_turn`, a failed or crashed status stated in the final message.
+    Never answer with a JSON-RPC error.
 - **Stop**
-  - Answer `cancelled` at once, then wait the grace (`acpStopGrace`, 5 s).
-  - A new prompt within the window keeps the run.
-  - Otherwise stop only this thread's bound `t3-thread` run (stop marker, then SIGTERM). The worktree
-    is kept.
+  - Answer `cancelled` at once, then wait the grace (`acpStopGrace`, 5 s), measured from that answer.
+  - A new prompt within the window keeps the run. One that names a plan while the bound run is live
+    re-attaches it (rule 1) and never launches another run.
+  - Guard: after the window, read the thread's latest run through MCP `t3_thread_read` with the
+    session's credential (best-effort, isolated, ≤5 s). Stop only when a user interrupt request
+    (`run_interrupt_request`) is recorded for it, since a steer or T3's own ingestion-failure cancel
+    records none. If the read fails or the item kind is unavailable, stop.
+  - Stop only this thread's bound `t3-thread` run, matched through the binding key (stop marker, then
+    SIGTERM). The worktree is kept.
+  - SIGTERM or EOF during the window abandons the pending stop.
   - SIGTERM or EOF without a cancel: exit at once and never touch the run.
 
 ### Skills (Mode selection and Mode 2 launch)
@@ -1584,26 +1721,32 @@ LOOPAI_T3_TOKEN=${LOOPAI_T3_TOKEN:-$("$T3_CLI" auth session issue --scope orches
   - `parentThreadId` (null means not a T3 thread: stop);
   - `runtimeMode`, `interactionMode`;
   - `providers[]`: `providerInstanceId`, `driverKind`, `displayName` (may be null),
-    `models[{id,label,options?}]`, `constraints[]`.
+    `models[{id,label?,options?}]` (read only `models[].id`), `constraints[]`.
 - **Mode 1 gate**: offered only when `runtimeMode` is `full-access`, `SANDBOX_RUNTIME`/`CODEX_SANDBOX`
   are unset, and the OS is not Windows. The thread id must match `^[A-Za-z0-9_.:%-]{1,1024}$` and is
   always single-quoted.
 - **Mode question** (Claude: AskUserQuestion; Codex: numbered list): "Terminal in this thread", "New
   loopai thread (shows Working)", "Cancel".
+- **Mode 1 launch**: the token mint and `loopai --detach --t3-thread` run as one FOREGROUND Bash call,
+  never `run_in_background`, with a timeout of at least 180 s, above the launcher's 120 s ack wait.
 - **Finding the loopai instance**
   - Read `${T3CODE_HOME:-~/.t3}/userdata/settings.json`, read-only.
   - Pick, in sorted key order, a `providerInstances.<id>` with `driver: "acpRegistry"`,
-    `config.source: "local"`, a `config.commandPath` basename in {`loopai-acp`, `loopai-acp.exe`},
-    and `enabled` and `config.enabled` not false.
+    `config.source: "local"`, and `enabled` and `config.enabled` not false, whose `config.commandPath`
+    basename is in {`loopai-acp`, `loopai-acp.exe`}, or is in {`loopai`, `loopai.exe`} with
+    `config.commandArgs` containing `--acp`.
+  - Never assume the instance id (the T3 default is `acpRegistry_local_acp`). Tolerate unknown keys
+    and value types.
   - Cross-check that `<id>` appears in `providers[]` with empty `constraints`.
   - Instance shape:
     `{driver:"acpRegistry", displayName?, accentColor?, environment?, enabled?, config:{source:"registry"|"local", enabled, agentId, commandPath, commandArgs, authMethodId, distribution, customModels}}`.
 - **No instance**: explain registration, and never edit `settings.json`:
   1. T3 Settings → Providers → Add provider → ACP Registry;
-  2. Instance ID `loopai` (recommended; must start with a letter, letters/digits/`-`/`_`, ≤64);
+  2. Instance ID: the default is fine (the skill never assumes it);
   3. Display name `loopai`;
   4. ACP source `Local command`;
-  5. Executable override = the output of `command -v loopai-acp`;
+  5. Executable override = the absolute path of `loopai-acp` (the output of `command -v loopai-acp`),
+     or the absolute path of `loopai` with the argument `--acp` in the Arguments editor;
   6. Add instance.
 - **`t3_thread_launch`**
   - Params:
@@ -1616,7 +1759,8 @@ LOOPAI_T3_TOKEN=${LOOPAI_T3_TOKEN:-$("$T3_CLI" auth session issue --scope orches
   - Refuse plan paths with whitespace.
   - When `interactionMode` is `plan`, stop and ask the user to leave plan mode.
   - Returns `{threadId, projectId, modelSelection, runId, status}`.
-  - There is no idempotency key: on a lost response, check `t3_thread_list` before retrying.
+  - There is no idempotency key: after an error or a lost reply, inspect `t3_thread_list` before
+    retrying.
   - Link format: `[title](t3-thread://v1/<threadId>)`.
 - **Tool names**
   - Claude names them `mcp__t3-code__<tool>`. They may be deferred: load them with ToolSearch, or call
@@ -1661,8 +1805,8 @@ LOOPAI_T3_TOKEN=${LOOPAI_T3_TOKEN:-$("$T3_CLI" auth session issue --scope orches
   - the title prefix advances and ends `done`/`failed`;
   - the thread is pinned and unpinned;
   - the agent stays usable;
-  - restart T3 mid-run, open the thread, and confirm the follow command is re-typed into the
-    restored shell;
+  - restart T3 mid-run and confirm the bridge re-opens its terminal and types the follow command,
+    without the thread being opened first;
   - close the terminal and confirm it is not recreated;
   - run Mode 1 from a subagent thread whose id contains `:` and `%`.
 - **Mode 2**:
