@@ -777,6 +777,7 @@
   - a missing plan file during re-parse emits no `tasks` event and no error to the run.
 - [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 6
 - ⚠️ beyond the brief: `runs.FollowUntilFinish(ctx, dir, attempt, fromSeq, fn)` ends at that attempt's `finish` event without the lock (ruling C5, for the in-child bridge); `journalHooks.startAttempt(ev)` appends `attempt_start` and records the worktree plan the task sections re-read. `Follow` returns the final `Status`; task and stage progress uses `pending`/`active`/`done`.
+- ⚠️ review fix: the task phase prints its section only when an iteration starts, so `PhaseObserver` also emits a re-parsed `tasks` event whenever the phase leaves `PhaseTask` (a review block, a limit wait, or the review stage). The `Snapshot` derives `Tasks` from the recorded statuses: the running task is `active` until recorded done, and every task is `done` once a post-task stage is entered or the attempt succeeds (tasks-only changes no phase after its last task); a finish that is not a success keeps the recorded statuses.
 
 ### Task 6: Add the hidden detached child skeleton and the handshake
 - [ ] add an exit-code error type `exitCodeError{code int; err error}`. `main()` (main.go:436-439) unwraps it with `errors.As`, prints `error: …` only when the wrapped error is non-nil, then calls `os.Exit(code)`. Every other error keeps exit status 1.

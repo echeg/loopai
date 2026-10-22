@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/umputun/ralphex/pkg/status"
@@ -145,6 +146,12 @@ type Finish struct {
 
 // Snapshot is the state of a run's current attempt folded from its journal events alone. Apply
 // each event in journal order; an attempt_start event starts the fold over for the new attempt.
+//
+// Tasks holds each task's status as the latest tasks event recorded it from the plan, with three
+// corrections the plan alone cannot give: the task the task phase is working on is active until the
+// plan records it done; entering a post-task stage means the task phase completed, so every task is
+// done; and so does a successful finish, which also covers a tasks-only run, where no phase follows
+// the last task. A finish that is not a success leaves the recorded statuses.
 type Snapshot struct {
 	Seq       int // seq of the last event applied
 	Attempt   int
@@ -161,8 +168,11 @@ type Snapshot struct {
 	LimitWaitSince time.Time
 	Finish         *Finish // nil until the attempt's finish event
 
-	workPhase    status.Phase // the latest phase other than a limit wait
-	perTaskBlock bool         // an external review block runs between tasks
+	workPhase     status.Phase // the latest phase other than a limit wait
+	perTaskBlock  bool         // an external review block runs between tasks
+	recorded      []TaskState  // the tasks as the journal recorded them, before the corrections
+	taskRunning   bool         // the task phase is working on Task
+	tasksComplete bool         // a post-task stage was entered, so the task phase completed
 }
 
 // Fold returns the Snapshot of events applied in order.
@@ -185,21 +195,25 @@ func (s *Snapshot) Apply(ev Event) {
 	case EventTask:
 		s.Task, s.TaskTotal, s.TaskTitle = ev.N, ev.M, ev.Title
 		s.Section = SectionMark{Type: EventTask, N: ev.N, Label: ev.Title}
+		s.taskRunning = true
 	case EventTasks:
 		s.applyTaskStatuses(ev.Statuses)
 	case EventReview:
 		s.Section = SectionMark{Type: EventReview, Kind: ev.Kind, N: ev.Iteration, Label: ev.Label}
+		return
 	case EventFinish:
 		s.applyFinish(ev)
 	default:
+		return
 	}
+	s.refreshTasks()
 }
 
 // startAttempt resets s to the new attempt's tasks and stages, all pending.
 func (s *Snapshot) startAttempt(ev Event) {
 	*s = Snapshot{Seq: ev.Seq, Attempt: ev.Attempt, TaskTotal: ev.TaskTotal}
 	for _, t := range ev.Tasks {
-		s.Tasks = append(s.Tasks, TaskState{N: t.N, Title: t.Title, Status: ProgressPending})
+		s.recorded = append(s.recorded, TaskState{N: t.N, Title: t.Title, Status: ProgressPending})
 	}
 	for _, name := range ev.Stages {
 		s.Stages = append(s.Stages, StageState{Name: name, Status: ProgressPending})
@@ -222,6 +236,9 @@ func (s *Snapshot) applyPhase(ev Event) {
 	s.LimitWait, s.LimitWaitSince = 0, time.Time{}
 	previous := s.workPhase
 	s.workPhase = ev.Phase
+	if ev.Phase != status.PhaseTask {
+		s.taskRunning = false
+	}
 	stage, ok := stageForPhase(ev.Phase)
 	switch {
 	case ev.Phase == status.PhaseTask:
@@ -231,6 +248,7 @@ func (s *Snapshot) applyPhase(ev Event) {
 		s.perTaskBlock = true
 	default:
 		s.perTaskBlock = false
+		s.tasksComplete = true
 		s.enterStage(stage)
 	}
 }
@@ -261,11 +279,11 @@ func (s *Snapshot) enterStage(stage string) {
 	}
 }
 
-// applyTaskStatuses replaces the task list with the statuses of a tasks event, keeping the titles
-// already known for each position.
+// applyTaskStatuses replaces the recorded tasks with the statuses of a tasks event, keeping the
+// titles already known for each position.
 func (s *Snapshot) applyTaskStatuses(statuses []TaskStatus) {
-	titles := make(map[int]string, len(s.Tasks)+1)
-	for _, t := range s.Tasks {
+	titles := make(map[int]string, len(s.recorded)+1)
+	for _, t := range s.recorded {
 		titles[t.N] = t.Title
 	}
 	if s.Task > 0 && s.TaskTitle != "" {
@@ -275,14 +293,33 @@ func (s *Snapshot) applyTaskStatuses(statuses []TaskStatus) {
 	for _, st := range statuses {
 		tasks = append(tasks, TaskState{N: st.N, Title: titles[st.N], Status: st.Status})
 	}
+	s.recorded = tasks
+}
+
+// refreshTasks derives Tasks from the recorded tasks: every task is done once the task phase
+// completed or the attempt succeeded, and the task the task phase is working on is active until it
+// is recorded done. Tasks is a fresh slice, so a copy of an earlier Snapshot keeps its own.
+func (s *Snapshot) refreshTasks() {
+	tasks := slices.Clone(s.recorded)
+	allDone := s.tasksComplete || (s.Finish != nil && s.Finish.Status == StatusSucceeded)
+	for i := range tasks {
+		switch {
+		case allDone:
+			tasks[i].Status = ProgressDone
+		case s.taskRunning && tasks[i].N == s.Task && tasks[i].Status != ProgressDone:
+			tasks[i].Status = ProgressActive
+		}
+	}
 	s.Tasks = tasks
 }
 
 // applyFinish records the attempt's end. A successful run has passed every stage, including any it
-// skipped through a review checkpoint; otherwise the stage it stopped in drops back to pending.
+// skipped through a review checkpoint; otherwise the stage it stopped in drops back to pending, and
+// the task it stopped in drops back to its recorded status.
 func (s *Snapshot) applyFinish(ev Event) {
 	s.Finish = &Finish{Status: ev.Status, Reason: ev.Reason, ExitCode: ev.ExitCode}
 	s.LimitWait, s.LimitWaitSince = 0, time.Time{}
+	s.taskRunning = false
 	for i := range s.Stages {
 		switch {
 		case ev.Status == StatusSucceeded:

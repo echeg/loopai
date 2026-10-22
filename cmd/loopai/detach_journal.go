@@ -56,12 +56,21 @@ func (h *journalHooks) decorateLogger(inner processor.Logger) processor.Logger {
 
 // observePhase records a phase change. A limit wait carries the configured wait_on_limit, because
 // the duration label never reaches the loggers below section timing.
-func (h *journalHooks) observePhase(_, cur status.Phase) {
+//
+// Leaving the task phase also re-reads the worktree plan for every task's status. The task phase
+// prints its section when an iteration starts and returns once the plan is complete without
+// printing another, so the tasks its last session ticked are recorded only here, when it hands
+// over to a review block or a limit wait.
+func (h *journalHooks) observePhase(old, cur status.Phase) {
 	ev := runs.Event{Type: runs.EventPhase, Phase: cur}
 	if cur == status.PhaseLimitWait {
 		ev.WaitSeconds = int(h.waitOnLimit / time.Second)
 	}
 	h.append(ev)
+	if old == status.PhaseTask && cur != status.PhaseTask {
+		parsed, _ := h.parsePlan()
+		h.appendStatuses(parsed)
+	}
 }
 
 // onSection records the task and review sections; other sections leave no event.
@@ -89,6 +98,18 @@ func (h *journalHooks) onSection(section status.Section) {
 // status. A plan that cannot be read leaves the task event to the tasks known so far and records no
 // statuses.
 func (h *journalHooks) onTask(n int) {
+	parsed, tasks := h.parsePlan()
+	ev := runs.Event{Type: runs.EventTask, N: n, M: len(tasks)}
+	if n >= 1 && n <= len(tasks) {
+		ev.Title = tasks[n-1].Title
+	}
+	h.append(ev)
+	h.appendStatuses(parsed)
+}
+
+// parsePlan re-reads the worktree plan and returns it with the tasks known so far, which a
+// successful read refreshes. The plan is nil before an attempt names it and when it cannot be read.
+func (h *journalHooks) parsePlan() (*plan.Plan, []runs.TaskInfo) {
 	h.mu.Lock()
 	planFile := h.planFile
 	h.mu.Unlock()
@@ -101,17 +122,15 @@ func (h *journalHooks) onTask(n int) {
 	}
 
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	if parsed != nil {
 		h.tasks = taskInfos(parsed)
 	}
-	tasks := h.tasks
-	h.mu.Unlock()
+	return parsed, h.tasks
+}
 
-	ev := runs.Event{Type: runs.EventTask, N: n, M: len(tasks)}
-	if n >= 1 && n <= len(tasks) {
-		ev.Title = tasks[n-1].Title
-	}
-	h.append(ev)
+// appendStatuses records the status of every task of a parsed plan; a nil plan records nothing.
+func (h *journalHooks) appendStatuses(parsed *plan.Plan) {
 	if parsed != nil {
 		h.append(runs.Event{Type: runs.EventTasks, Statuses: taskStatuses(parsed)})
 	}

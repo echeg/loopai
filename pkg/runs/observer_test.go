@@ -198,9 +198,12 @@ func TestFollowUntilFinishCanceled(t *testing.T) {
 }
 
 func TestSnapshotTasksAndStages(t *testing.T) {
+	// the events the journal hooks write: a tasks event after every task section and after the task
+	// phase hands over to a limit wait or a review block
 	stages := []string{StageReview, StageExternalReview, StageFinalize, StageReport}
 	start := Event{Type: EventAttemptStart, Attempt: 1, TaskTotal: 2, Stages: stages,
 		Tasks: []TaskInfo{{N: 1, Title: "one"}, {N: 2, Title: "two"}}}
+	pending := []string{"pending", "pending", "pending", "pending"}
 	steps := []struct {
 		name       string
 		ev         Event
@@ -209,28 +212,36 @@ func TestSnapshotTasksAndStages(t *testing.T) {
 		taskStates []string
 		stages     []string
 	}{
-		{name: "attempt start", ev: start, of: 2, taskStates: []string{"pending", "pending"},
-			stages: []string{"pending", "pending", "pending", "pending"}},
+		{name: "attempt start", ev: start, of: 2, taskStates: []string{"pending", "pending"}, stages: pending},
 		{name: "task phase", ev: phaseEvent(status.PhaseTask), of: 2, taskStates: []string{"pending", "pending"},
-			stages: []string{"pending", "pending", "pending", "pending"}},
+			stages: pending},
 		{name: "task 1", ev: Event{Type: EventTask, N: 1, M: 2, Title: "one"}, task: 1, of: 2, title: "one",
-			taskStates: []string{"pending", "pending"}, stages: []string{"pending", "pending", "pending", "pending"}},
-		{name: "task 1 ticked", ev: tasksEvent("done", "pending"), task: 1, of: 2, title: "one",
-			taskStates: []string{"done", "pending"}, stages: []string{"pending", "pending", "pending", "pending"}},
+			taskStates: []string{"active", "pending"}, stages: pending},
+		{name: "task 1 statuses", ev: tasksEvent("pending", "pending"), task: 1, of: 2, title: "one",
+			taskStates: []string{"active", "pending"}, stages: pending},
+		{name: "limit wait keeps the task active", ev: phaseEvent(status.PhaseLimitWait), task: 1, of: 2, title: "one",
+			taskStates: []string{"active", "pending"}, stages: pending},
+		{name: "statuses at the limit wait", ev: tasksEvent("active", "pending"), task: 1, of: 2, title: "one",
+			taskStates: []string{"active", "pending"}, stages: pending},
+		{name: "back from the wait", ev: phaseEvent(status.PhaseTask), task: 1, of: 2, title: "one",
+			taskStates: []string{"active", "pending"}, stages: pending},
 		{name: "per-task external review", ev: phaseEvent(status.PhaseExternalReview), task: 1, of: 2, title: "one",
-			taskStates: []string{"done", "pending"}, stages: []string{"pending", "pending", "pending", "pending"}},
+			taskStates: []string{"active", "pending"}, stages: pending},
+		{name: "task 1 ticked", ev: tasksEvent("done", "pending"), task: 1, of: 2, title: "one",
+			taskStates: []string{"done", "pending"}, stages: pending},
 		{name: "per-task evaluation", ev: phaseEvent(status.PhaseExternalEval), task: 1, of: 2, title: "one",
-			taskStates: []string{"done", "pending"}, stages: []string{"pending", "pending", "pending", "pending"}},
+			taskStates: []string{"done", "pending"}, stages: pending},
 		{name: "back to tasks", ev: phaseEvent(status.PhaseTask), task: 1, of: 2, title: "one",
-			taskStates: []string{"done", "pending"}, stages: []string{"pending", "pending", "pending", "pending"}},
+			taskStates: []string{"done", "pending"}, stages: pending},
 		{name: "task 2 of a grown plan", ev: Event{Type: EventTask, N: 2, M: 3, Title: "two"}, task: 2, of: 3,
-			title: "two", taskStates: []string{"done", "pending"}, stages: []string{"pending", "pending", "pending", "pending"}},
-		{name: "statuses of the grown plan", ev: tasksEvent("done", "active", "pending"), task: 2, of: 3, title: "two",
-			taskStates: []string{"done", "active", "pending"}, stages: []string{"pending", "pending", "pending", "pending"}},
-		{name: "all ticked", ev: tasksEvent("done", "done", "done"), task: 2, of: 3, title: "two",
-			taskStates: []string{"done", "done", "done"}, stages: []string{"pending", "pending", "pending", "pending"}},
-		{name: "review", ev: phaseEvent(status.PhaseReview), task: 2, of: 3, title: "two",
+			title: "two", taskStates: []string{"done", "active"}, stages: pending},
+		{name: "statuses of the grown plan", ev: tasksEvent("done", "pending", "pending"), task: 2, of: 3, title: "two",
+			taskStates: []string{"done", "active", "pending"}, stages: pending},
+		{name: "review completes every task", ev: phaseEvent(status.PhaseReview), task: 2, of: 3, title: "two",
 			taskStates: []string{"done", "done", "done"}, stages: []string{"active", "pending", "pending", "pending"}},
+		{name: "statuses on leaving the task phase", ev: tasksEvent("done", "done", "done"), task: 2, of: 3,
+			title: "two", taskStates: []string{"done", "done", "done"},
+			stages: []string{"active", "pending", "pending", "pending"}},
 		{name: "external review", ev: phaseEvent(status.PhaseExternalReview), task: 2, of: 3, title: "two",
 			taskStates: []string{"done", "done", "done"}, stages: []string{"done", "active", "pending", "pending"}},
 		{name: "post-review never reopens review", ev: phaseEvent(status.PhaseReview), task: 2, of: 3, title: "two",
@@ -257,6 +268,54 @@ func TestSnapshotTasksAndStages(t *testing.T) {
 	assert.Equal(t, StatusSucceeded, s.Finish.Status)
 	assert.Equal(t, 1, s.Attempt)
 	assert.Equal(t, status.PhaseReport, s.Phase)
+}
+
+func TestSnapshotTaskStatusCorrections(t *testing.T) {
+	start := Event{Type: EventAttemptStart, Attempt: 1, TaskTotal: 3,
+		Tasks: []TaskInfo{{N: 1, Title: "one"}, {N: 2, Title: "two"}, {N: 3, Title: "three"}}}
+	tests := []struct {
+		name   string
+		events []Event
+		want   []string
+	}{
+		{name: "running task", events: []Event{start, phaseEvent(status.PhaseTask),
+			{Type: EventTask, N: 3, M: 3, Title: "three"}, tasksEvent("done", "done", "pending")},
+			want: []string{"done", "done", "active"}},
+		{name: "tasks-only success with no phase after the last task", events: []Event{start,
+			phaseEvent(status.PhaseTask), {Type: EventTask, N: 3, M: 3, Title: "three"}, tasksEvent("done", "done", "pending"),
+			{Type: EventFinish, Status: StatusSucceeded}},
+			want: []string{"done", "done", "done"}},
+		{name: "a failed finish leaves the recorded statuses", events: []Event{start, phaseEvent(status.PhaseTask),
+			{Type: EventTask, N: 2, M: 3, Title: "two"}, tasksEvent("done", "pending", "active"),
+			{Type: EventFinish, Status: StatusFailed}},
+			want: []string{"done", "pending", "active"}},
+		{name: "a stopped finish leaves the recorded statuses", events: []Event{start, phaseEvent(status.PhaseTask),
+			{Type: EventTask, N: 1, M: 3, Title: "one"}, {Type: EventFinish, Status: StatusStopped}},
+			want: []string{"pending", "pending", "pending"}},
+		{name: "a review block between tasks is not the task phase", events: []Event{start,
+			phaseEvent(status.PhaseTask), {Type: EventTask, N: 2, M: 3, Title: "two"},
+			phaseEvent(status.PhaseExternalReview)},
+			want: []string{"pending", "pending", "pending"}},
+		{name: "a post-task stage completes every task without a tasks event", events: []Event{start,
+			phaseEvent(status.PhaseTask), {Type: EventTask, N: 1, M: 3, Title: "one"}, phaseEvent(status.PhaseReview)},
+			want: []string{"done", "done", "done"}},
+		{name: "a new attempt starts over", events: []Event{start, phaseEvent(status.PhaseReview),
+			{Type: EventFinish, Status: StatusSucceeded}, start, phaseEvent(status.PhaseTask)},
+			want: []string{"pending", "pending", "pending"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, taskStates(Fold(tc.events)))
+		})
+	}
+
+	t.Run("a copy keeps its tasks", func(t *testing.T) {
+		s := Fold([]Event{start, phaseEvent(status.PhaseTask), {Type: EventTask, N: 1, M: 3, Title: "one"}})
+		before := s
+		s.Apply(Event{Type: EventFinish, Status: StatusSucceeded})
+		assert.Equal(t, []string{"active", "pending", "pending"}, taskStates(before))
+		assert.Equal(t, []string{"done", "done", "done"}, taskStates(s))
+	})
 }
 
 func TestSnapshotSectionsLimitWaitAndFinish(t *testing.T) {
