@@ -688,41 +688,41 @@
 - ⚠️ ruling C10: the token-shaped-string descriptor test was dropped as tautological; the descriptor and outcome tests pin the exact JSON key sets instead, and the real token-leak scan of the run directory, logs, and child environment lands in Task 11.
 
 ### Task 4: Add execution knobs for detached runs (inert unless set)
-- [ ] lint constraint: `executePlan` and `prepareWorktreeRunContext` are already at gocyclo 20 and `runWithWorktree` at 18 (limit 20). Add no `if`/`&&`/`||` to the first two. Add at most one branch to `runWithWorktree`, and move all new decisions into small helpers. Run `make lint` early in this task.
-- [ ] add three fields to `executePlanRequest` (main.go:276) and copy all three in `worktreeExecuteRequest` (main.go:2308-2347):
+- [x] lint constraint: `executePlan` and `prepareWorktreeRunContext` are already at gocyclo 20 and `runWithWorktree` at 18 (limit 20). Add no `if`/`&&`/`||` to the first two. Add at most one branch to `runWithWorktree`, and move all new decisions into small helpers. Run `make lint` early in this task.
+- [x] add three fields to `executePlanRequest` (main.go:276) and copy all three in `worktreeExecuteRequest` (main.go:2308-2347):
   - `KeepWorktreeOnFailure bool`;
   - `ArchiveOnRunBranch bool`;
   - `AttemptStarted func(attemptStart) error`, with `attemptStart{PlanFile (worktree plan copy), MainPlanFile, Branch, WorktreePath, ProgressLog string; Resumed bool}`.
-- [ ] add a helper `fireAttemptStarted(req, wt, baseLog) (keep bool, err error)` and call it once in `runWithWorktree`, after the progress logger exists (after main.go:2235) and before `os.Chdir(wt.path)` (:2252), passing `baseLog.Path()`. It returns `keep = wt.resumed || (req.AttemptStarted != nil && req.KeepWorktreeOnFailure)` after a successful hook. A hook error aborts the run before execution, and a fresh worktree is then removed as today.
-- [ ] honour the knob with `keep` only at the sites that run after the hook:
+- [x] add a helper `fireAttemptStarted(req, wt, baseLog) (keep bool, err error)` and call it once in `runWithWorktree`, after the progress logger exists (after main.go:2235) and before `os.Chdir(wt.path)` (:2252), passing `baseLog.Path()`. It returns `keep = wt.resumed || (req.AttemptStarted != nil && req.KeepWorktreeOnFailure)` after a successful hook. A hook error aborts the run before execution, and a fresh worktree is then removed as today.
+- [x] honour the knob with `keep` only at the sites that run after the hook:
   - when `keep` is true for a fresh worktree, re-set `req.WtCleanup` to the non-removing `restoreCWD` variant;
   - the `:2197` safety-net defer uses `!keep`;
   - `worktreeCmuxFinishCleanup` (:2271-2272) receives a `keepWorktree func(success bool) bool` decision instead of `wt.resumed`;
   - the branch at `:2281-2298` uses that decision for fresh and resumed worktrees alike, printing `worktree preserved for resume: <path>` whenever it keeps one.
   - Leave `:2183-2189` and `prepareWorktreeRunContext` (:2452-2459) unchanged: setup failures before the hook keep today's removal.
-- [ ] implement the decision in a helper `keepDetachedWorktree(req, wtSvc, success bool) bool`:
+- [x] implement the decision in a helper `keepDetachedWorktree(req, wtSvc, success bool) bool`:
   - a non-success always keeps (when `keep` holds);
   - a success keeps only when `KeepWorktreeOnFailure` is set and any of these hold: `req.Outcome.finalizeIncomplete != nil`, `req.Outcome.archiveIncomplete != ""`, `wtSvc.IsDirtyAll()` is true or errors, or `wtSvc.OperationInProgress()` is non-empty or errors;
   - otherwise a success removes it;
   - without the knob, today's `wt.resumed` behaviour is unchanged.
   - The finalize and archive fields are written into `req.Outcome` before `completeCmux` (main.go:1957) triggers the cleanup.
-- [ ] honour `ArchiveOnRunBranch` in `moveCompletedPlan` (main.go:2043-2073) and `displayStats` (:1573-1575), like `chainRun`: archive through `req.GitSvc` and `req.PlanFile`, which is the run branch. Keep the single-plan semantics: an archive error becomes `incomplete` and is never fatal. Update the comments at `pkg/git/service.go:978-981` and `:1696-1706`, which say a single plan always archives in the invoking checkout.
-- [ ] extend `planExecutionOutcome`:
+- [x] honour `ArchiveOnRunBranch` in `moveCompletedPlan` (main.go:2043-2073) and `displayStats` (:1573-1575), like `chainRun`: archive through `req.GitSvc` and `req.PlanFile`, which is the run branch. Keep the single-plan semantics: an archive error becomes `incomplete` and is never fatal. Update the comments at `pkg/git/service.go:978-981` and `:1696-1706`, which say a single plan always archives in the invoking checkout.
+- [x] extend `planExecutionOutcome`:
   - new fields: `finalizeMode`, `finalizeStatusNote`, `prURL`, `prOpened`, `merged` (from `finalizeResult`, :1939), `planMoved`, `archiveIncomplete` (from `moveCompletedPlan`), and `worktreeKept` (a path);
   - write them through nil-safe methods `func (o *planExecutionOutcome) recordArchive(moved bool, incomplete error)` and `recordFinalize(fin finalizeResult)` (each with the `if o == nil` guard inside), called in `executePlan` right after archival and right after `runFinalizeCloseout`, so `executePlan` gains no branch;
   - `runWithWorktree` sets `worktreeKept` through `recordWorktreeKept(path)` when it keeps the worktree under the knob;
   - all of this goes through the shared `Outcome` pointer, so it survives `worktreeExecuteRequest`.
-- [ ] add `captureDetachedSourcePlan(svc, planFile, statePath)` and `reconcileDetachedSourcePlan(svc, statePath)` in `cmd/loopai/detach_source.go`:
+- [x] add `captureDetachedSourcePlan(svc, planFile, statePath)` and `reconcileDetachedSourcePlan(svc, statePath)` in `cmd/loopai/detach_source.go`:
   - capture through `CapturePlanChainSourceState([]string{planFile})`, only when `statePath` does not exist yet (a resume reuses the first attempt's capture), and persist via `saveJSONState`;
   - reconcile through `ReconcilePlanChainSourceState`, returning joined errors without failing.
-- [ ] write tests (success) with the fake-claude worktree flow (`runFinalizePlanWithReport` pattern, main_test.go:15710-15762) and `NonInteractive: true` plus `WorktreeEnabled` (a combination never exercised before):
+- [x] write tests (success) with the fake-claude worktree flow (`runFinalizePlanWithReport` pattern, main_test.go:15710-15762) and `NonInteractive: true` plus `WorktreeEnabled` (a combination never exercised before):
   - the hook fires once, with absolute worktree, plan, branch, and progress-log paths, before the chdir;
   - a clean success with the knob removes the worktree;
   - `ArchiveOnRunBranch` puts `docs/plans/completed/<plan>` and `<stem>.report.md` on the run branch while the invoking checkout's HEAD and index stay unchanged;
   - the outcome fields carry the finalize, archive, and report results;
   - a table test sets every knob and asserts that `worktreeExecuteRequest` copies it;
   - the nil-safe recorders accept a nil outcome.
-- [ ] write tests (errors/edge):
+- [x] write tests (errors/edge):
   - with `KeepWorktreeOnFailure`:
     - a failing task keeps the fresh worktree with its uncommitted file;
     - a task-phase `max iterations … reached` failure (`MaxIterations: 1` with a never-completing fake claude) keeps the worktree;
@@ -738,7 +738,10 @@
     - restores an unchanged tracked plan;
     - leaves a concurrently edited plan untouched;
     - a second capture call does not overwrite the first.
-- [ ] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 5
+- [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 5
+- ⚠️ `fireAttemptStarted` also takes the derived `branch`, which `worktreeRun` does not carry; the hook receives every path absolute (a relative plan path is resolved against the worktree and the invoking checkout).
+- ⚠️ `recordWorktreeKept` is called from `runWithWorktree`'s non-removing cleanup, so the outcome names every worktree the run leaves in place, the safety-net keep after a failed hook on a resumed worktree (C2) and a resumed worktree without the knob included, not only a kept fresh one.
+- ⚠️ the knob helpers live in `cmd/loopai/detach_worktree.go`; `source-plans.json` holds `{"source_plans": [...]}` (the captured `git.PlanSourceState` list, empty for a clean tracked plan).
 
 ### Task 5: Add the event journal writer and the observer
 - [ ] create `pkg/runs/journal.go`:

@@ -957,6 +957,61 @@ func TestRunPlanChain(t *testing.T) { //nolint:gocyclo // table-style integratio
 		assert.NoFileExists(t, filepath.Join(executionDir, "docs", "plans", "completed", "main.report.md"))
 	})
 
+	t.Run("archive_on_run_branch_commits_through_the_run_service", func(t *testing.T) {
+		mainDir := setupTestRepo(t)
+		mainPlan := filepath.Join(mainDir, "docs", "plans", "main.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(mainPlan), 0o750))
+		require.NoError(t, os.WriteFile(mainPlan, []byte("# Plan\n"), 0o600))
+		mainHead := strings.TrimSpace(gitOutput(t, mainDir, "rev-parse", "HEAD"))
+		mainSvc, err := git.NewService(mainDir, noopLogger())
+		require.NoError(t, err)
+
+		executionDir := setupTestRepo(t)
+		executionPlan := filepath.Join(executionDir, "docs", "plans", "main.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(executionPlan), 0o750))
+		require.NoError(t, os.WriteFile(executionPlan, []byte("# Plan\n"), 0o600))
+		runGit(t, executionDir, "add", "docs/plans/main.md")
+		runGit(t, executionDir, "commit", "-m", "add main plan")
+		executionSvc, err := git.NewService(executionDir, noopLogger())
+		require.NoError(t, err)
+
+		moved, incomplete, err := moveCompletedPlan(executePlanRequest{
+			PlanFile: executionPlan, MainPlanFile: mainPlan, GitSvc: executionSvc, MainGitSvc: mainSvc,
+			ArchiveOnRunBranch: true, Mode: processor.ModeFull, Config: &config.Config{MovePlanOnCompletion: true},
+		}, "# Report: Main\n", &recordingWarner{})
+
+		require.NoError(t, err)
+		require.NoError(t, incomplete)
+		assert.True(t, moved)
+		runGit(t, executionDir, "cat-file", "-e", "HEAD:docs/plans/completed/main.md")
+		runGit(t, executionDir, "cat-file", "-e", "HEAD:docs/plans/completed/main.report.md")
+		assert.FileExists(t, mainPlan, "the invoking checkout's plan is not archived")
+		assert.NoDirExists(t, filepath.Join(mainDir, "docs", "plans", "completed"))
+		assert.Equal(t, mainHead, strings.TrimSpace(gitOutput(t, mainDir, "rev-parse", "HEAD")))
+	})
+
+	t.Run("rejected_run_branch_archive_is_incomplete_not_fatal", func(t *testing.T) {
+		dir := setupTestRepo(t)
+		planFile := filepath.Join(dir, "docs", "plans", "hooked.md")
+		require.NoError(t, os.MkdirAll(filepath.Dir(planFile), 0o750))
+		require.NoError(t, os.WriteFile(planFile, []byte("# Plan\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/hooked.md")
+		runGit(t, dir, "commit", "-m", "add hooked plan")
+		hook := filepath.Join(dir, ".git", "hooks", "commit-msg")
+		require.NoError(t, os.WriteFile(hook, []byte("#!/bin/sh\necho rejected by hook >&2\nexit 1\n"), 0o700)) //nolint:gosec // hook must be executable
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+
+		moved, incomplete, moveErr := moveCompletedPlan(executePlanRequest{
+			PlanFile: planFile, GitSvc: gitSvc, ArchiveOnRunBranch: true, Mode: processor.ModeFull,
+			Config: &config.Config{MovePlanOnCompletion: true},
+		}, "", &recordingWarner{})
+
+		require.NoError(t, moveErr, "a single plan archived on its run branch keeps the single-plan semantics")
+		assert.False(t, moved)
+		require.ErrorContains(t, incomplete, "move hooked.md")
+	})
+
 	t.Run("report_write_failure_warns_after_archiving_plan", func(t *testing.T) {
 		dir := setupTestRepo(t)
 		plansDir := filepath.Join(dir, "docs", "plans")
@@ -9579,6 +9634,29 @@ func TestDisplayStats(t *testing.T) {
 				wantPath:  filepath.Join("worktree", "docs", "plans", "completed", "feature.md"),
 			},
 			{
+				name: "detached_run_shows_execution_branch_archive",
+				req: executePlanRequest{
+					PlanFile:           "worktree/docs/plans/feature.md",
+					MainPlanFile:       "docs/plans/feature.md",
+					ArchiveOnRunBranch: true,
+					Mode:               processor.ModeFull,
+					Config:             &config.Config{MovePlanOnCompletion: true},
+				},
+				planMoved: true,
+				wantPath:  filepath.Join("worktree", "docs", "plans", "completed", "feature.md"),
+			},
+			{
+				name: "worktree_run_shows_invoking_checkout_archive",
+				req: executePlanRequest{
+					PlanFile:     "worktree/docs/plans/feature.md",
+					MainPlanFile: "docs/plans/feature.md",
+					Mode:         processor.ModeFull,
+					Config:       &config.Config{MovePlanOnCompletion: true},
+				},
+				planMoved: true,
+				wantPath:  filepath.Join("docs", "plans", "completed", "feature.md"),
+			},
+			{
 				name: "move_failed_shows_original_path",
 				req: executePlanRequest{
 					PlanFile: "docs/plans/feature.md",
@@ -10062,7 +10140,8 @@ func TestWorktreeCmuxFinishCleanup(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var calls []string
-			cleanup := worktreeCmuxFinishCleanup(tt.resumed, tt.serve,
+			// without KeepWorktreeOnFailure the decision never inspects the worktree
+			cleanup := worktreeCmuxFinishCleanup(keepWorktreeDecision(tt.resumed, executePlanRequest{}, nil), tt.serve,
 				func() { calls = append(calls, "restore") },
 				func(remove bool) {
 					calls = append(calls, "release")
@@ -14142,6 +14221,41 @@ func TestWorktreeExecuteRequestForwardsChainNotLast(t *testing.T) {
 		assert.Equal(t, notLast, got.ChainNotLast)
 		assert.Equal(t, "wt.md", got.PlanFile)
 		assert.Equal(t, "main.md", got.MainPlanFile)
+	}
+}
+
+func TestWorktreeExecuteRequestForwardsDetachedKnobs(t *testing.T) {
+	// a knob the rebuilt request drops would make a detached run archive into the invoking checkout
+	// or lose its worktree without any error
+	hookCalls := 0
+	hook := func(attemptStart) error { hookCalls++; return nil }
+	tests := []struct {
+		name   string
+		req    executePlanRequest
+		assert func(t *testing.T, got executePlanRequest)
+	}{
+		{name: "keep worktree on failure", req: executePlanRequest{KeepWorktreeOnFailure: true},
+			assert: func(t *testing.T, got executePlanRequest) { assert.True(t, got.KeepWorktreeOnFailure) }},
+		{name: "archive on run branch", req: executePlanRequest{ArchiveOnRunBranch: true},
+			assert: func(t *testing.T, got executePlanRequest) { assert.True(t, got.ArchiveOnRunBranch) }},
+		{name: "attempt started", req: executePlanRequest{AttemptStarted: hook},
+			assert: func(t *testing.T, got executePlanRequest) {
+				require.NotNil(t, got.AttemptStarted)
+				before := hookCalls
+				require.NoError(t, got.AttemptStarted(attemptStart{}))
+				assert.Equal(t, before+1, hookCalls, "the copied hook is the caller's")
+			}},
+		{name: "unset knobs stay unset", req: executePlanRequest{},
+			assert: func(t *testing.T, got executePlanRequest) {
+				assert.False(t, got.KeepWorktreeOnFailure)
+				assert.False(t, got.ArchiveOnRunBranch)
+				assert.Nil(t, got.AttemptStarted)
+			}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.assert(t, worktreeExecuteRequest(tc.req, worktreeRun{planFile: "wt.md"}, nil, nil, nil))
+		})
 	}
 }
 

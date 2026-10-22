@@ -977,7 +977,8 @@ func (s *Service) prepareWorktreePlan(planFile, branchOverride string) (string, 
 		// git worktree add checks out a commit, so unrelated source-checkout changes never reach
 		// the worktree; an uncommitted selected plan is copied separately. the archive commit that
 		// later runs in this checkout is pathspec-restricted and refuses to overwrite an existing
-		// completed/ copy, so these files stay untouched.
+		// completed/ copy, so these files stay untouched. a detached run archives on its own
+		// branch instead and never commits here.
 		s.log.Printf("warning: source checkout has uncommitted files not copied into the worktree\n"+
 			"an uncommitted selected plan is copied separately\n\n"+
 			"uncommitted files:\n%s\n", s.formatDirtyFiles(dirtyFiles))
@@ -1692,9 +1693,10 @@ func (s *Service) validatePreparedPlanChainBranch(
 func (s *Service) inspectWorktreePlanChanges(
 	planFile, branchOverride string, chainPlanFiles []string,
 ) (bool, []string, error) {
-	// a single plan archives in this checkout at the end of the run and a chain restores its
-	// source plans here, so do not start while another Git operation owns its index. the dirty
-	// list cannot reveal one: resolved, staged conflicts look like ordinary staged work.
+	// a single plan archives in this checkout at the end of the run, and a chain or a detached
+	// run, which both archive on the run's own branch, restore their source plans here, so do not
+	// start while another Git operation owns its index. the dirty list cannot reveal one:
+	// resolved, staged conflicts look like ordinary staged work.
 	op, opErr := s.repo.operationInProgress()
 	if opErr != nil {
 		return false, nil, fmt.Errorf("check for unfinished git operation: %w", opErr)

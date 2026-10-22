@@ -322,6 +322,17 @@ type executePlanRequest struct {
 	LogDecorator func(processor.Logger) processor.Logger
 	// PhaseObserver is subscribed to phase changes beside the status reporters.
 	PhaseObserver func(old, cur status.Phase)
+
+	// KeepWorktreeOnFailure keeps a worktree mode run's worktree on every exit after a successful
+	// AttemptStarted except a clean success: a non-success, or a success whose close-out is
+	// incomplete or whose worktree is dirty. It has no effect without AttemptStarted.
+	KeepWorktreeOnFailure bool
+	// ArchiveOnRunBranch archives a single plan through the run's own Git service and plan copy, as
+	// a chain does, so the archive commit lands on the run branch and never in the invoking checkout.
+	ArchiveOnRunBranch bool
+	// AttemptStarted is called once in worktree mode, after the worktree and the progress logger
+	// exist and before execution starts. An error aborts the run before execution.
+	AttemptStarted func(attemptStart) error
 }
 
 // out returns the writer for human-readable run output, read at call time so a redirected
@@ -352,6 +363,9 @@ type reviewStartup struct {
 // starting a dependent plan.
 // report and failure let an in-process caller read the completion report and the reason a run
 // did not succeed after executePlan returns.
+// The finalize, archive, and worktree fields describe the close-out for a detached run's outcome.
+// They are written through the nil-safe record* methods; the pointer is shared with the request
+// worktreeExecuteRequest rebuilds, so they reach the caller in worktree mode too.
 type planExecutionOutcome struct {
 	succeeded bool
 	branchTip string
@@ -359,6 +373,15 @@ type planExecutionOutcome struct {
 	failure   error  // why execution did not succeed, including a user abort executePlan returns as nil
 	// why a requested finalize close-out stopped short; nil when it completed or finalize is off
 	finalizeIncomplete error
+
+	finalizeMode       string // effective finalize mode: none, sync, pr, or merge
+	finalizeStatusNote string // short close-out note, as the cmux and Orca done status shows it
+	prURL              string
+	prOpened           bool
+	merged             bool
+	planMoved          bool   // the plan reached completed/
+	archiveIncomplete  string // why the plan archive stopped short; empty when it completed or was skipped
+	worktreeKept       string // path of a worktree left in place at the end of the run; empty when removed
 }
 
 // cleanupHolder holds a cleanup function with mutex for safe cross-goroutine access.
@@ -1555,9 +1578,10 @@ func displayStats(req executePlanRequest, baseLog *progress.Logger, stats git.Di
 	planPath := ""
 	if req.PlanFile != "" {
 		planFile := req.PlanFile
-		// A worktree chain archives on the execution branch, not in the source checkout. Keep
-		// its displayed path relative to that branch instead of claiming the source copy moved.
-		if req.MainPlanFile != "" && len(req.ChainPlanFiles) <= 1 {
+		// A worktree chain or detached run archives on the execution branch, not in the source
+		// checkout. Keep its displayed path relative to that branch instead of claiming the source
+		// copy moved.
+		if req.MainPlanFile != "" && !archivesOnRunBranch(req) {
 			planFile = req.MainPlanFile
 		}
 		planPath = planFile
@@ -1839,9 +1863,9 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) (execErr e
 	}
 
 	// Move completed plans before capturing the branch tip so archival is part of the stack. A
-	// single worktree run retains its historical source-checkout archival behavior; a chain archives
-	// inside each execution worktree so the source checkout stays untouched between plans and the
-	// final branch contains every completed-plan move.
+	// single worktree run retains its historical source-checkout archival behavior; a chain or a
+	// detached run (ArchiveOnRunBranch) archives inside its execution worktree so the source
+	// checkout stays untouched and the branch contains the completed-plan move.
 	// track actual success so the completion summary reflects where the plan really lives.
 	planMoved, archiveIncomplete, moveErr := archiveAfterFinalize(req, r.FinalizeOutcome(), r.Report(), plr.baseLog)
 	if moveErr != nil {
@@ -1850,10 +1874,14 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) (execErr e
 		completeCmux(elapsed, moveErr)
 		return moveErr
 	}
+	// both close-out results reach the outcome before completeCmux runs the worktree cleanup, which
+	// keeps a detached run's worktree when either stopped short
+	req.Outcome.recordArchive(planMoved, archiveIncomplete)
 	removeRunRecordAfterArchival(runRecordState, planMoved)
 	// the pull request follows archival so a non-worktree run pushes its archive commit too, and
 	// precedes worktree cleanup because it pushes from the run's own checkout
 	fin := runFinalizeCloseout(ctx, req, r.FinalizeOutcome(), r.Report(), plr.baseLog)
+	req.Outcome.recordFinalize(fin)
 	req.NotifySvc.Send(context.Background(), fin.annotate(buildNotifyResult(req, branch, elapsed, stats, nil)))
 
 	displayStats(req, plr.baseLog, stats, elapsed, branch, planMoved, archiveIncomplete, fin)
@@ -1880,7 +1908,6 @@ func executePlan(ctx context.Context, o opts, req executePlanRequest) (execErr e
 	keepDashboardAlive(ctx, o, req, plr.closeLog)
 	if req.Outcome != nil {
 		req.Outcome.succeeded = true
-		req.Outcome.finalizeIncomplete = fin.incomplete
 	}
 
 	return nil
@@ -1954,7 +1981,8 @@ func archiveAfterFinalize(req executePlanRequest, synced processor.FinalizeOutco
 // moveCompletedPlan archives the completed plan and its report. err is fatal and is returned only
 // for a chain, whose successors depend on the archived tip. incomplete reports a failed single-plan
 // archive: the run stays green, but displayStats repeats it last in the summary because the plan
-// move may be left staged, for example after a commit hook rejected the archive commit.
+// move may be left staged, for example after a commit hook rejected the archive commit. A worktree
+// run archives in the invoking checkout through MainGitSvc unless archivesOnRunBranch holds.
 func moveCompletedPlan(req executePlanRequest, report string, log archiveWarner) (moved bool, incomplete, err error) {
 	chainRun := len(req.ChainPlanFiles) > 1
 	if chainRun && req.PlanFile != "" && modeRequiresBranch(req.Mode) && req.ChainFinalizing != nil {
@@ -1967,10 +1995,11 @@ func moveCompletedPlan(req executePlanRequest, report string, log archiveWarner)
 	}
 	moveSvc := req.GitSvc
 	movePlanFile := req.PlanFile
-	if req.MainGitSvc != nil && !chainRun {
+	onRunBranch := archivesOnRunBranch(req)
+	if req.MainGitSvc != nil && !onRunBranch {
 		moveSvc = req.MainGitSvc
 	}
-	if req.MainPlanFile != "" && !chainRun {
+	if req.MainPlanFile != "" && !onRunBranch {
 		movePlanFile = req.MainPlanFile
 	}
 	if moveErr := moveSvc.MovePlanToCompletedWithReport(movePlanFile, []byte(report)); moveErr != nil {
@@ -2056,7 +2085,9 @@ func retainCmuxAfterCleanup(req executePlanRequest, plr progressLogResult, rep *
 // runWithWorktree creates or resumes a worktree, creates the progress logger (before chdir so it
 // lands in the main repo), chdirs into the worktree, and runs executePlan. New worktrees are
 // cleaned up on every return. Resumed worktrees are cleaned up only on success so interrupted
-// work is preserved for another retry. req.WtCleanup is populated for interrupt handler use.
+// work is preserved for another retry; once AttemptStarted succeeds, KeepWorktreeOnFailure gives a
+// fresh worktree the same treatment and keepDetachedWorktree also keeps it after a success that
+// would lose work. req.WtCleanup is populated for interrupt handler use.
 func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err error) {
 	// derived from the plan file, so it is known before the worktree exists — both the progress
 	// logger below and the setup failure banner need it.
@@ -2094,6 +2125,7 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 			return
 		}
 		releaseRunLock()
+		req.Outcome.recordWorktreeKept(wt.path)
 	}
 	if wt.resumed {
 		// A forced exit must not explicitly release a resumed worktree while execution may still
@@ -2105,11 +2137,14 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 
 	// Safety net for errors before cwd-aware cleanup is registered below. Fresh worktrees are
 	// removed while ownership is transferred under the repository coordination lock; resumed
-	// worktrees are preserved and only release their run lock.
+	// worktrees are preserved and only release their run lock. keep starts as wt.resumed and
+	// changes only once AttemptStarted succeeds, so a setup failure before it removes a fresh
+	// worktree as it always did.
+	keep := wt.resumed
 	setupDone := false
 	defer func() {
 		if !setupDone {
-			setupCleanup(!wt.resumed)
+			setupCleanup(!keep)
 		}
 	}()
 	if preparedErr := recordPreparedChainBranch(req, branch); preparedErr != nil {
@@ -2163,14 +2198,21 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 	}
 	defer closeLog()
 
+	// the attempt begins once the worktree and its progress log exist; from here on keep, not
+	// wt.resumed, decides whether a run that does not succeed leaves the worktree in place
+	if keep, err = fireAttemptStarted(req, wt, branch, baseLog); err != nil {
+		return err
+	}
+
 	// chdir into worktree
 	if err = os.Chdir(wt.path); err != nil {
 		return fmt.Errorf("chdir to worktree: %w", err)
 	}
 
 	// register cleanup. New worktrees retain the existing remove-on-any-exit behavior. Resumed
-	// worktrees are removed only after success; failure or interruption leaves them available for
-	// another auto-resume run.
+	// worktrees, and fresh ones kept under KeepWorktreeOnFailure, are removed only after a success
+	// keepWorktree accepts; failure or interruption leaves them available for another auto-resume
+	// run.
 	var restoreOnce sync.Once
 	restoreCWD := func() {
 		restoreOnce.Do(func() {
@@ -2183,24 +2225,26 @@ func runWithWorktree(ctx context.Context, o opts, req executePlanRequest) (err e
 		restoreCWD()
 		setupCleanup(remove)
 	}
+	// decided once, while the worktree still exists, and shared by the finish callback and the defer
+	keepWorktree := keepWorktreeDecision(keep, req, wt.gitSvc)
 	finishState := worktreeFinishState{cleanup: worktreeCmuxFinishCleanup(
-		wt.resumed, o.Serve, restoreCWD, cleanup, closeLog,
+		keepWorktree, o.Serve, restoreCWD, cleanup, closeLog,
 		func() {
-			// During execution, resumed worktrees must survive interruption. Once execution has
+			// During execution, kept worktrees must survive interruption. Once execution has
 			// succeeded and only the dashboard is alive, force-exit cleanup may remove it too.
 			req.WtCleanup.set(func() { cleanup(true) })
 		},
 	)}
 
 	setupDone = true // disable safety-net defer, main cleanup takes over
-	if wt.resumed {
+	if keep {
 		// Restore process-global cwd on forced exit, but retain run ownership until process death.
 		// Normal-return cleanup below explicitly releases the lock after execution has stopped.
 		req.WtCleanup.set(restoreCWD)
 		defer func() {
 			// executePlan deliberately returns nil for a user abort. Use its internal completion
 			// outcome instead of the public return value so aborted work remains resumable.
-			if finishState.succeeded {
+			if !keepWorktree(finishState.succeeded) {
 				cleanup(true)
 				return
 			}
@@ -2259,6 +2303,9 @@ func worktreeExecuteRequest(req executePlanRequest, wt worktreeRun, baseLog *pro
 		NonInteractive:         req.NonInteractive,
 		LogDecorator:           req.LogDecorator,
 		PhaseObserver:          req.PhaseObserver,
+		KeepWorktreeOnFailure:  req.KeepWorktreeOnFailure,
+		ArchiveOnRunBranch:     req.ArchiveOnRunBranch,
+		AttemptStarted:         req.AttemptStarted,
 	}
 }
 
@@ -2275,8 +2322,10 @@ func (s *worktreeFinishState) beforeCmuxFinish(success bool) {
 	s.cleanup(success)
 }
 
+// worktreeCmuxFinishCleanup returns the cleanup executePlan runs before its final status: it
+// restores cwd, removes the worktree unless keepWorktree keeps it, and closes the progress log.
 func worktreeCmuxFinishCleanup(
-	resumed, serve bool,
+	keepWorktree func(success bool) bool, serve bool,
 	restoreCWD func(), cleanup func(remove bool), closeLog, enableDeferredCleanup func(),
 ) func(bool) {
 	return func(success bool) {
@@ -2285,7 +2334,7 @@ func worktreeCmuxFinishCleanup(
 		// plan-bearing worktree available to /api/plan; runWithWorktree's existing defer removes it
 		// when the dashboard exits. Failures never enter that idle period and retain normal cleanup.
 		if !serve || !success {
-			cleanup(!resumed || success)
+			cleanup(!keepWorktree(success))
 		}
 		closeLog()
 		if serve && success {
@@ -3341,6 +3390,13 @@ func makePauseHandler(stdin io.Reader, stdout io.Writer, titles *orca.Reporter) 
 // has not opted out via move_plan_on_completion=false.
 func shouldMovePlan(req executePlanRequest) bool {
 	return req.PlanFile != "" && modeRequiresBranch(req.Mode) && req.Config.MovePlanOnCompletion
+}
+
+// archivesOnRunBranch reports whether the completed plan is archived through the run's own Git
+// service and plan copy: a chain, whose successors start from the archived tip, and a detached run,
+// which never commits into the invoking checkout. Any other worktree run archives there.
+func archivesOnRunBranch(req executePlanRequest) bool {
+	return len(req.ChainPlanFiles) > 1 || req.ArchiveOnRunBranch
 }
 
 // knownEfforts lists the reasoning-effort levels loopai understands in a model[:effort]
