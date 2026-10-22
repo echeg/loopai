@@ -744,25 +744,25 @@
 - ⚠️ the knob helpers live in `cmd/loopai/detach_worktree.go`; `source-plans.json` holds `{"source_plans": [...]}` (the captured `git.PlanSourceState` list, empty for a clean tracked plan).
 
 ### Task 5: Add the event journal writer and the observer
-- [ ] create `pkg/runs/journal.go`:
+- [x] create `pkg/runs/journal.go`:
   - an append-only `events.jsonl` writer with a monotonically increasing `seq` across attempts, resumed from the last line on open;
   - mutex-safe, with one `O_APPEND` write per event;
   - a reader `ReadFrom(dir, seq)`;
   - the event schema from Technical Details.
-- [ ] create `pkg/runs/observer.go`:
+- [x] create `pkg/runs/observer.go`:
   - `Follow(ctx, root, dir, fromSeq, func(Event))` tails the journal (250 ms poll) and returns after the lifetime lock is free and the journal is drained;
   - a `Snapshot` fold (attempt, phase, task n/m and title, task statuses, stages, last section, limit wait, finish) computed from events only;
   - finish is reported from the lock plus the outcome record (`Classify`).
-- [ ] create `cmd/loopai/detach_journal.go` with a `journalHooks` value providing two hooks:
+- [x] create `cmd/loopai/detach_journal.go` with a `journalHooks` value providing two hooks:
   - `LogDecorator` forwards every `processor.Logger` method unchanged. On `PrintSection` it emits:
     - `task` for `SectionTaskIteration`, with `Iteration` as the plan position; it then re-reads the worktree plan with `plan.ParsePlanFile` to emit `tasks` statuses;
     - `review` for `SectionInternalReview`, `SectionExternalReviewIteration`, `SectionCustomIteration`, and `SectionExternalEvaluation`;
   - `PhaseObserver` emits `phase`. For `status.PhaseLimitWait` it adds `wait_seconds` from `cfg.WaitOnLimit`, because the duration label never reaches loggers below section timing.
-- [ ] add `attemptStartEvent(...)`, which builds the `attempt_start` payload:
+- [x] add `attemptStartEvent(...)`, which builds the `attempt_start` payload:
   - plan, branch, worktree, worktree plan, progress log, console log byte offset, mode, tasks with titles, and task total;
   - stages, computed mode-aware: none for tasks-only; otherwise `review`, plus `external_review` when the resolved reviewer chain is non-empty, `finalize` when `cfg.EffectiveFinalize() != config.FinalizeNone`, and `report` when `cfg.ReportEnabled`.
   - The `finalize`, `report`, and `finish` builders are added in Task 7, where they are first called.
-- [ ] write tests (success):
+- [x] write tests (success):
   - sequence numbers continue after a reopen;
   - concurrent appends from several goroutines stay valid JSON lines;
   - the decorator forwards every logger call to the wrapped logger and emits the expected events for each section type;
@@ -770,12 +770,13 @@
   - `Follow` from a mid-journal `seq` delivers only later events, follows appends, and returns after finish;
   - `Snapshot` reproduces task n/m and stage states;
   - `attemptStartEvent` stages: full mode with a chain, finalize, and report yields all four; an empty chain drops `external_review`; tasks-only yields none.
-- [ ] write tests (errors/edge):
+- [x] write tests (errors/edge):
   - a truncated final line (crash mid-write) is skipped, not fatal;
   - `Follow` returns on context cancel;
   - a crashed run (lock free, no outcome) ends follow with status `crashed`;
   - a missing plan file during re-parse emits no `tasks` event and no error to the run.
-- [ ] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 6
+- [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 6
+- ⚠️ beyond the brief: `runs.FollowUntilFinish(ctx, dir, attempt, fromSeq, fn)` ends at that attempt's `finish` event without the lock (ruling C5, for the in-child bridge); `journalHooks.startAttempt(ev)` appends `attempt_start` and records the worktree plan the task sections re-read. `Follow` returns the final `Status`; task and stage progress uses `pending`/`active`/`done`.
 
 ### Task 6: Add the hidden detached child skeleton and the handshake
 - [ ] add an exit-code error type `exitCodeError{code int; err error}`. `main()` (main.go:436-439) unwraps it with `errors.As`, prints `error: …` only when the wrapped error is non-nil, then calls `os.Exit(code)`. Every other error keeps exit status 1.
