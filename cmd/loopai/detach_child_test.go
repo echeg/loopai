@@ -450,6 +450,49 @@ func TestDetachedChildCompleteNotes(t *testing.T) {
 		assert.Contains(t, out, "warning: read the run's commit: ")
 	})
 
+	t.Run("a finish event the journal cannot take is noted", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			outcome *planExecutionOutcome
+			code    int
+		}{
+			{name: "success", outcome: &planExecutionOutcome{succeeded: true, branchTip: "abc"}, code: 0},
+			// the hooks' one warning is spent on the task statuses recorded before finish
+			{name: "failure", outcome: &planExecutionOutcome{failure: errors.New("boom"), branchTip: "abc"}, code: 1},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				c := newCompletingChild(t)
+				require.NoError(t, c.journal.Close(), "every later append fails")
+
+				code, _, out := c.complete(t, tc.outcome, nil)
+
+				assert.Equal(t, tc.code, code)
+				rec, err := runs.LoadOutcome(c.dir)
+				require.NoError(t, err)
+				want := "record the finish event: append journal event: journal is closed"
+				assert.Equal(t, []string{want}, rec.Notes)
+				assert.Contains(t, out, "warning: "+want)
+			})
+		}
+	})
+
+	t.Run("a failed finalize or report event is noted too", func(t *testing.T) {
+		c := newCompletingChild(t)
+		require.NoError(t, c.journal.Close())
+
+		_, _, _ = c.complete(t, &planExecutionOutcome{succeeded: true, branchTip: "abc", report: "# Report: X\n",
+			finalizeMode: config.FinalizeSync, finalizeStatusNote: "synced"}, nil)
+
+		rec, err := runs.LoadOutcome(c.dir)
+		require.NoError(t, err)
+		assert.Equal(t, []string{
+			"record the finalize event: append journal event: journal is closed",
+			"record the report event: append journal event: journal is closed",
+			"record the finish event: append journal event: journal is closed",
+		}, rec.Notes)
+	})
+
 	t.Run("an outcome that cannot be saved keeps the exit code and is reported", func(t *testing.T) {
 		c := newCompletingChild(t)
 		require.NoError(t, os.Mkdir(filepath.Join(c.dir, runs.OutcomeFile), 0o750))

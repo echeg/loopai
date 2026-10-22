@@ -98,9 +98,9 @@ type detachedChild struct {
 
 	dir           string
 	desc          runs.Descriptor
-	releaseLock   func() error // releases the lifetime lock; the process exit does it instead
-	consoleOffset int64        // console.log size when the child took the run
-	started       bool         // AttemptStarted succeeded: the launcher was answered ok
+	releaseLock   func() error  // releases the lifetime lock; the process exit does it instead
+	consoleOffset int64         // console.log size when the child took the run
+	started       bool          // AttemptStarted succeeded: the launcher was answered ok
 	journal       *runs.Journal // the attempt's event journal; nil until execute opens it
 	hooks         *journalHooks // record the run in journal; set with it
 
@@ -281,12 +281,12 @@ func (c *detachedChild) complete(svc *git.Service, outcome *planExecutionOutcome
 		c.hooks.recordStatuses()
 	}
 	if outcome.finalizeMode != "" {
-		c.hooks.append(finalizeEvent(rec.Finalize))
+		c.appendClosing(&rec, finalizeEvent(rec.Finalize))
 	}
 	if rec.Report != "" {
-		c.hooks.append(report)
+		c.appendClosing(&rec, report)
 	}
-	c.hooks.append(finishEvent(rec.Status, rec.Reason, rec.ExitCode))
+	c.appendClosing(&rec, finishEvent(rec.Status, rec.Reason, rec.ExitCode))
 
 	rec.WorktreeKept = c.keptWorktree(&rec, outcome.worktreeKept)
 	if status == runs.StatusSucceeded {
@@ -298,6 +298,15 @@ func (c *detachedChild) complete(svc *git.Service, outcome *planExecutionOutcome
 		c.beforeExit()
 	}
 	return &exitCodeError{code: rec.ExitCode, err: errors.Join(cause, saveErr)}
+}
+
+// appendClosing appends one of the attempt's closing events, finalize, report, or finish, straight
+// to the journal. Unlike the hooks, which warn about the first failed append only, every failure is
+// noted: observers end a run on its finish event, so a lost one must leave a trace.
+func (c *detachedChild) appendClosing(rec *runs.Outcome, ev runs.Event) {
+	if _, err := c.journal.Append(ev); err != nil {
+		c.note(rec, fmt.Errorf("record the %s event: %w", ev.Type, err))
+	}
 }
 
 // note reports err as a warning on the console log and records it in the outcome's notes; a nil
