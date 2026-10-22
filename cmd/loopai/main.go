@@ -98,6 +98,7 @@ type opts struct {
 	Report                  bool          `long:"report" description:"print the completion report for a plan or branch; positional argument names the feature (branch or plan), default current branch"`
 	DumpDefaults            string        `long:"dump-defaults" description:"extract raw embedded defaults to specified directory"`
 	ConfigDir               string        `long:"config-dir" env:"LOOPAI_CONFIG_DIR" description:"custom config directory"`
+	DetachedRun             string        `long:"detached-run" hidden:"true" description:"internal: run as the detached child of the given run id"`
 
 	PlanFile  string   `positional-arg-name:"plan-file" description:"path to one plan file or a comma-separated plan chain (optional, uses fzf if omitted); with --merge/--pr/--report it names the feature to close out"`
 	PlanFiles []string // normalized comma-separated plan chain; PlanFile is always its first entry
@@ -450,9 +451,39 @@ func main() {
 	defer cancel()
 
 	if err := run(ctx, o); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		os.Exit(reportRunError(err, os.Stderr))
 	}
+}
+
+// exitCodeError ends the process with code instead of the usual exit status 1. err is printed as
+// the usual error line when set; a nil err exits silently, so a run can exit 0 through it.
+type exitCodeError struct {
+	code int
+	err  error
+}
+
+func (e *exitCodeError) Error() string {
+	if e.err == nil {
+		return fmt.Sprintf("exit status %d", e.code)
+	}
+	return e.err.Error()
+}
+
+func (e *exitCodeError) Unwrap() error { return e.err }
+
+// reportRunError prints the error line for err on stderr and returns the process exit status: the
+// code an exitCodeError in err's chain carries, with the line printed only when that exitCodeError
+// wraps an error, and 1 with the line for every other error.
+func reportRunError(err error, stderr io.Writer) int {
+	var exitErr *exitCodeError
+	if errors.As(err, &exitErr) {
+		if exitErr.err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+		}
+		return exitErr.code
+	}
+	fmt.Fprintf(stderr, "error: %v\n", err)
+	return 1
 }
 
 func run(ctx context.Context, o opts) (runErr error) {
@@ -494,6 +525,9 @@ func run(ctx context.Context, o opts) (runErr error) {
 	if err != nil || done {
 		resolveStaleCmuxStatus(preserveEarlyStatus)
 		return err
+	}
+	if handled, preConfigErr := runPreConfigCommand(ctx, o); handled {
+		return preConfigErr
 	}
 	// load config first to get custom command paths
 	cfg, err := loadRunConfig(o)
@@ -3779,6 +3813,16 @@ func validateGenAgentsFlags(o opts) error {
 	return nil
 }
 
+// runPreConfigCommand routes the standalone commands that load config themselves, before run loads
+// it in the invoking directory: the hidden detached-run child, which first takes its run's lifetime
+// lock and answers its launcher, so a config error becomes the attempt's recorded failure.
+func runPreConfigCommand(ctx context.Context, o opts) (bool, error) {
+	if o.DetachedRun != "" {
+		return true, runDetachedChild(ctx, o)
+	}
+	return false, nil
+}
+
 // runConfiguredStandaloneCommand routes the standalone commands that need loaded config but no
 // executor or notification dependencies: git close-out.
 func runConfiguredStandaloneCommand(ctx context.Context, o opts, cfg *config.Config, colors *progress.Colors) (bool, error) {
@@ -4995,10 +5039,11 @@ func clearStaleCmuxStatus(o opts) {
 // isStandaloneCommand reports whether the invocation is a config utility or close-out command
 // rather than a run. those own no sidebar state, so they neither replace a previous run's pill
 // nor get handed over to a new cmux workspace. --gen-agents belongs here: it executes no plan
-// and never constructs a reporter.
+// and never constructs a reporter. so does the detached-run child: it runs a plan, but in a
+// process of its own with no terminal and no sidebar card.
 func isStandaloneCommand(o opts) bool {
 	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || o.GenAgents ||
-		o.SkillContract || (o.Reset && isResetOnly(o))
+		o.SkillContract || o.DetachedRun != "" || (o.Reset && isResetOnly(o))
 }
 
 // handOffSucceeded reports whether an early stop came from a successful cmux workspace hand-off,

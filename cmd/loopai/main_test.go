@@ -88,10 +88,12 @@ func (l *runnerLoggerRecorder) Path() string { return "progress.log" }
 // ambient environment, so running these tests inside cmux would drive the developer's real sidebar
 // and fire real notification banners — the same class of leak as touching the user's config dir.
 // tests that need a reporter set the variable themselves via t.Setenv, which restores this unset
-// state afterwards, so the deliberate cases keep working.
+// state afterwards, so the deliberate cases keep working. The same goes for the sandbox signals of
+// an agent shell running the suite and for a T3 provider's MCP credentials: detached runs refuse to
+// start inside a sandbox and must never pass those credentials on.
 func TestMain(m *testing.M) {
-	if err := os.Unsetenv("CMUX_WORKSPACE_ID"); err != nil {
-		fmt.Fprintf(os.Stderr, "unset CMUX_WORKSPACE_ID: %v\n", err)
+	if err := unsetAmbientTestEnv(os.Environ()); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	// t.TempDir lives under TMPDIR, which macOS places behind the /var -> /private/var symlink
@@ -115,6 +117,90 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(m.Run())
+}
+
+var (
+	// ambientTestEnvNames are the variables TestMain unsets by exact name: the sandbox signals of
+	// Codex and Claude Code agent shells.
+	ambientTestEnvNames = []string{"CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "SANDBOX_RUNTIME"}
+	// ambientTestEnvPrefixes are the prefixes of the variables TestMain unsets: cmux's and a T3
+	// provider's MCP endpoint and credential.
+	ambientTestEnvPrefixes = []string{"CMUX_", "T3_ACP_MCP_"}
+)
+
+// unsetAmbientTestEnv unsets every variable of environ named in ambientTestEnvNames or starting with
+// one of ambientTestEnvPrefixes.
+func unsetAmbientTestEnv(environ []string) error {
+	for _, kv := range environ {
+		key, _, _ := strings.Cut(kv, "=")
+		prefixed := slices.ContainsFunc(ambientTestEnvPrefixes, func(prefix string) bool {
+			return strings.HasPrefix(key, prefix)
+		})
+		if !prefixed && !slices.Contains(ambientTestEnvNames, key) {
+			continue
+		}
+		if err := os.Unsetenv(key); err != nil {
+			return fmt.Errorf("unset %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+func TestUnsetAmbientTestEnv(t *testing.T) {
+	for _, key := range []string{
+		"CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "SANDBOX_RUNTIME",
+		"CMUX_WORKSPACE_ID", "CMUX_SOCKET_PATH", "T3_ACP_MCP_ENDPOINT", "T3_ACP_MCP_AUTHORIZATION",
+	} {
+		t.Setenv(key, "1")
+	}
+	t.Setenv("LOOPAI_TEST_KEEP", "1")
+	t.Setenv("CODEX_SANDBOXED_LOOKALIKE", "1")
+
+	require.NoError(t, unsetAmbientTestEnv(os.Environ()))
+
+	for _, kv := range os.Environ() {
+		key, _, _ := strings.Cut(kv, "=")
+		assert.False(t, slices.Contains(ambientTestEnvNames, key), "%s is unset", key)
+		for _, prefix := range ambientTestEnvPrefixes {
+			assert.False(t, strings.HasPrefix(key, prefix), "%s is unset", key)
+		}
+	}
+	assert.Equal(t, "1", os.Getenv("LOOPAI_TEST_KEEP"), "unrelated variables stay")
+	assert.Equal(t, "1", os.Getenv("CODEX_SANDBOXED_LOOKALIKE"), "names match exactly, not by prefix")
+}
+
+func TestReportRunError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode int
+		wantOut  string
+	}{
+		{name: "plain error exits 1", err: errors.New("boom"), wantCode: 1, wantOut: "error: boom\n"},
+		{name: "carried code with an error", err: &exitCodeError{code: 2, err: errors.New("stopped")},
+			wantCode: 2, wantOut: "error: stopped\n"},
+		{name: "carried zero without an error is silent", err: &exitCodeError{code: 0}, wantCode: 0},
+		{name: "carried one without an error is silent", err: &exitCodeError{code: 1}, wantCode: 1},
+		{name: "wrapped carried code keeps the context", err: fmt.Errorf("run: %w", &exitCodeError{code: 2, err: errors.New("x")}),
+			wantCode: 2, wantOut: "error: run: x\n"},
+		{name: "wrapped carried code without an error is silent", err: fmt.Errorf("run: %w", &exitCodeError{code: 3}),
+			wantCode: 3},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			assert.Equal(t, tc.wantCode, reportRunError(tc.err, &stderr))
+			assert.Equal(t, tc.wantOut, stderr.String())
+		})
+	}
+}
+
+func TestExitCodeError(t *testing.T) {
+	assert.Equal(t, "exit status 2", (&exitCodeError{code: 2}).Error())
+	err := &exitCodeError{code: 1, err: fmt.Errorf("run: %w", context.Canceled)}
+	assert.Equal(t, "run: context canceled", err.Error())
+	require.ErrorIs(t, err, context.Canceled, "the wrapped error stays reachable")
+	assert.NoError(t, (&exitCodeError{code: 0}).Unwrap())
 }
 
 // prepareWorktreeRun is a test helper for cases that inspect a prepared worktree without
@@ -7291,6 +7377,8 @@ func TestClearStaleCmuxStatusSkipsConfigUtilities(t *testing.T) {
 		{Reset: true},
 		{DumpDefaults: filepath.Join(t.TempDir(), "defaults")},
 		{GenAgents: true},
+		// a detached run's child has no card of its own; the invoking workspace's pill is not its own
+		{DetachedRun: "plan-20261022-120000-abcd", PlanFile: "plan.md"},
 	} {
 		clearStaleCmuxStatus(o)
 	}

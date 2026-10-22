@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/umputun/ralphex/pkg/config"
+	"github.com/umputun/ralphex/pkg/runs"
 )
 
 // launcher tags recorded in the launch history; the skills read only these three.
@@ -131,6 +132,17 @@ func launchFlags(o opts, cfg *config.Config, sel externalReviewSelection) string
 func launcherFor(cfg *config.Config) string {
 	if cfg.Orca {
 		return launcherOrca
+	}
+	return launcherCLI
+}
+
+// launcherForOrigin names the launcher of a detached run from its recorded origin kind: both T3
+// origins, a terminal in an existing thread and a loopai thread of its own, are t3; anything else
+// is a plain CLI launch.
+func launcherForOrigin(kind string) string {
+	switch kind {
+	case runs.OriginT3Terminal, runs.OriginT3Thread:
+		return launcherT3
 	}
 	return launcherCLI
 }

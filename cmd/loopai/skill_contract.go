@@ -103,7 +103,8 @@ func skillContractSurface() (string, error) {
 
 // visibleLongFlags returns the sorted long names of every non-hidden option in opts, each followed
 // by its sorted choice values when it restricts them, since a skill may pass a value such as
-// `--finalize=pr`. hidden options are the removed spellings kept only to print a migration error.
+// `--finalize=pr`. hidden options are the removed spellings kept only to print a migration error and
+// --detached-run, which only the --detach launcher passes; no skill uses either.
 // opts declares no groups, so every option sits in the parser's top-level group.
 func visibleLongFlags() []string {
 	var o opts

@@ -780,17 +780,17 @@
 - ⚠️ review fix: the task phase prints its section only when an iteration starts, so `PhaseObserver` also emits a re-parsed `tasks` event whenever the phase leaves `PhaseTask` (a review block, a limit wait, or the review stage). The `Snapshot` derives `Tasks` from the recorded statuses: the running task is `active` until recorded done, and every task is `done` once a post-task stage is entered or the attempt succeeds (tasks-only changes no phase after its last task); a finish that is not a success keeps the recorded statuses.
 
 ### Task 6: Add the hidden detached child skeleton and the handshake
-- [ ] add an exit-code error type `exitCodeError{code int; err error}`. `main()` (main.go:436-439) unwraps it with `errors.As`, prints `error: …` only when the wrapped error is non-nil, then calls `os.Exit(code)`. Every other error keeps exit status 1.
-- [ ] add the hidden flag `DetachedRun string` (`long:"detached-run" hidden:"true"`, no env tag) to `opts`:
+- [x] add an exit-code error type `exitCodeError{code int; err error}`. `main()` (main.go:436-439) unwraps it with `errors.As`, prints `error: …` only when the wrapped error is non-nil, then calls `os.Exit(code)`. Every other error keeps exit status 1.
+- [x] add the hidden flag `DetachedRun string` (`long:"detached-run" hidden:"true"`, no env tag) to `opts`:
   - route it in `run()` before `loadRunConfig` through one helper, `runPreConfigCommand`, which will also host `--acp` in Task 13; this keeps `run()` under gocyclo 20;
   - add it to `isStandaloneCommand`;
   - add `launcherForOrigin(kind string) string` to `cmd/loopai/launch_history.go`: `t3` for origins `t3-terminal` and `t3-thread`, else `cli`, with a table test.
-- [ ] create `cmd/loopai/detach_child_unix.go` (`//go:build !windows`):
+- [x] create `cmd/loopai/detach_child_unix.go` (`//go:build !windows`):
   - as the very first step, call `syscall.CloseOnExec(3)` and `syscall.CloseOnExec(4)`, because handshake descriptors from `ExtraFiles` arrive without `FD_CLOEXEC`;
   - read one JSON line from fd 3, then close it;
   - install `signal.Notify` for SIGHUP. Never use `signal.Ignore`, whose disposition exec inherits.
   - `detach_child_windows.go` defines the same entry point and returns `detached runs are not supported on Windows`.
-- [ ] implement `runDetachedChild(ctx, o)`:
+- [x] implement `runDetachedChild(ctx, o)`:
   - load the descriptor for `o.DetachedRun` from `<cwd>/.loopai/progress/runs/`;
   - acquire the lifetime lock with `AcquireBounded(…, 2s)`. If it is busy, send the ack error `run <id> is already running` and exit without writing an outcome;
   - update the descriptor with the pid and `ProcessStartToken`;
@@ -800,23 +800,27 @@
   - create and stop its own `newAwakeHolder(cfg.KeepAwake)` and set `req.KeepAwake`;
   - set `KeepWorktreeOnFailure`, `ArchiveOnRunBranch`, the journal hooks, and `AttemptStarted`;
   - capture the source plan into `source-plans.json` before `selectAndExecutePlan`.
-- [ ] in `AttemptStarted`:
+- [x] in `AttemptStarted`:
   - update the descriptor (branch, worktree path, progress log);
   - append `attempt_start`;
   - write the ack line `{"ok":true,"run_id":…,"attempt":…}` to fd 4 and close it.
-- [ ] handle errors before the ack: any error is written to fd 4 as `{"ok":false,"error":…}` and also recorded as a `failed` outcome with reason `startup: …` and exit code 1. After `selectAndExecutePlan` returns in this task, the child returns `exitCodeError` with 0 on `Outcome.succeeded`, else 1. Full outcome classification comes in Task 7.
-- [ ] add to `TestMain`: unset `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`, `SANDBOX_RUNTIME`, every `T3_ACP_MCP_*`, and `CMUX_*`.
-- [ ] write tests (success). They re-execute the test binary as the child: `TestDetachChildHelper` sets `os.Args` from an env var and calls `main()`, with HOME/USERPROFILE/LOOPAI_CONFIG_DIR redirected, a fake claude on `PATH`, and two `os.Pipe` pairs passed as `ExtraFiles`.
+- [x] handle errors before the ack: any error is written to fd 4 as `{"ok":false,"error":…}` and also recorded as a `failed` outcome with reason `startup: …` and exit code 1. After `selectAndExecutePlan` returns in this task, the child returns `exitCodeError` with 0 on `Outcome.succeeded`, else 1. Full outcome classification comes in Task 7.
+- [x] add to `TestMain`: unset `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`, `SANDBOX_RUNTIME`, every `T3_ACP_MCP_*`, and `CMUX_*`.
+- [x] write tests (success). They re-execute the test binary as the child: `TestDetachChildHelper` sets `os.Args` from an env var and calls `main()`, with HOME/USERPROFILE/LOOPAI_CONFIG_DIR redirected, a fake claude on `PATH`, and two `os.Pipe` pairs passed as `ExtraFiles`.
   - the ack arrives after `attempt_start`, carrying the run id;
   - the descriptor gains pid and start token;
   - `exitCodeError` makes `main()` exit with the carried code and prints nothing for a nil error.
-- [ ] write tests (errors/edge):
+- [x] write tests (errors/edge):
   - fd 3 and fd 4 are not open in a grandchild the child spawns: the helper runs `sh -c 'ls /dev/fd'` or checks `fcntl(F_GETFD)` for `FD_CLOEXEC`;
   - the launcher side sees EOF on fd 4 only after the explicit ack;
   - a missing plan or a broken config reaches fd 4 as `{"ok":false}` and produces a `failed` outcome with reason `startup: …`;
   - a held lifetime lock yields `already running` with no outcome;
   - SIGHUP does not terminate the child.
-- [ ] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 7
+- ⚠️ the child logic that is not Unix-specific lives in an untagged `cmd/loopai/detach_child.go`; `detach_child_unix.go` holds only the handshake entry point (`runDetachedChild`, `takeHandshakePipes`) and `detach_child_windows.go` the stub with `errDetachUnsupported`.
+- ⚠️ before `CloseOnExec`, the child checks that fds 3 and 4 are pipes that arrived without `FD_CLOEXEC` (inherited) and refuses otherwise: without a launcher, the Go runtime's own Darwin signal-delivery pipe lands on fds 3/4 and reading or closing it hangs or breaks the process. Nothing can start a process between the check and the marking.
+- ⚠️ errors before the lifetime lock is held (a malformed secret line, an invalid id or unreadable descriptor, a busy lock) are answered on fd 4 but record no outcome, since the run directory may belong to a live attempt; a child without usable handshake descriptors cannot answer and exits 1. Every error after the lock and before the ack records the `startup: …` outcome.
+- ⚠️ the fd-inheritance test probes Git processes (a `vcs_command` wrapper) that run while the ack pipe is still open; the claude session starts only after both pipes are closed, so probing it would prove nothing. fd 3 is closed before any process starts, so its `FD_CLOEXEC` marking is checked in-process with `fcntl(F_GETFD)`.
+- [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 7
 
 ### Task 7: Complete the detached child's outcome, report, and source-plan lifecycle
 - [ ] add the `finalize`, `report`, and `finish` event builders to `cmd/loopai/detach_journal.go`. The `report` builder takes the bounded summary (≤ 4 KiB) via `splitReportSections` and the risk via `reportRiskLevel`.

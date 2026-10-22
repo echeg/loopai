@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/processor"
+	"github.com/umputun/ralphex/pkg/runs"
 )
 
 func TestLaunchHistoryPath(t *testing.T) {
@@ -273,6 +274,23 @@ func TestLauncherFor(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, launcherFor(tc.cfg))
+		})
+	}
+}
+
+func TestLauncherForOrigin(t *testing.T) {
+	tests := []struct {
+		name, kind, want string
+	}{
+		{name: "terminal in a T3 thread", kind: runs.OriginT3Terminal, want: launcherT3},
+		{name: "loopai T3 thread", kind: runs.OriginT3Thread, want: launcherT3},
+		{name: "shell", kind: runs.OriginCLI, want: launcherCLI},
+		{name: "unrecorded", kind: "", want: launcherCLI},
+		{name: "unknown kind", kind: "orca", want: launcherCLI},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, launcherForOrigin(tc.kind))
 		})
 	}
 }
