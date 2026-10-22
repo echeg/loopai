@@ -68,7 +68,7 @@ func TestReviewCheckpointStoreCleansTempFileOnRenameFailure(t *testing.T) {
 	require.NoError(t, os.Mkdir(store.path, 0o750))
 
 	require.ErrorContains(t, store.Save(processor.ReviewCheckpoint{}), "replace review checkpoint")
-	matches, err := filepath.Glob(filepath.Join(dir, ".review-checkpoint-*.tmp"))
+	matches, err := filepath.Glob(filepath.Join(dir, "."+filepath.Base(store.path)+"-*.tmp"))
 	require.NoError(t, err)
 	assert.Empty(t, matches)
 }

@@ -92,7 +92,7 @@ func recordLaunch(path string, entry launchEntry) error {
 	if len(entries) > launchHistoryLimit {
 		entries = entries[:launchHistoryLimit]
 	}
-	return writeFileAtomic(path, ".launch-history-*.tmp", "launch history", func(w io.Writer) error {
+	return writeFileAtomic(path, "launch history", func(w io.Writer) error {
 		bw := bufio.NewWriter(w)
 		for _, e := range entries {
 			if _, err := fmt.Fprintf(bw, "%s\t%s\t%s\n", e.When.UTC().Format(time.RFC3339), e.Launcher, e.Flags); err != nil {

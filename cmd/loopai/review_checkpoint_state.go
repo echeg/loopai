@@ -44,7 +44,7 @@ func (s *reviewCheckpointStore) Load() (processor.ReviewCheckpoint, bool, error)
 }
 
 func (s *reviewCheckpointStore) Save(checkpoint processor.ReviewCheckpoint) error {
-	return saveJSONState(s.path, ".review-checkpoint-*.tmp", "review checkpoint", checkpoint)
+	return saveJSONState(s.path, "review checkpoint", checkpoint)
 }
 
 func (s *reviewCheckpointStore) Remove() error {

@@ -17,7 +17,7 @@ func TestSaveJSONStateOutput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "state.json")
 	value := map[string]any{"version": 1, "plan": "docs/plans/a.md", "tasks": []int{1, 2}}
 
-	require.NoError(t, saveJSONState(path, ".state-*.tmp", "state", value))
+	require.NoError(t, saveJSONState(path, "state", value))
 
 	want, err := json.Marshal(value)
 	require.NoError(t, err)
@@ -29,15 +29,15 @@ func TestSaveJSONStateOutput(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 	}
-	assertNoTempFiles(t, filepath.Dir(path), ".state-*.tmp")
+	assertNoTempFiles(t, filepath.Dir(path), ".state.json-*.tmp")
 }
 
 func TestSaveJSONStateEncodeError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	err := saveJSONState(path, ".state-*.tmp", "state", func() {})
+	err := saveJSONState(path, "state", func() {})
 	require.ErrorContains(t, err, "write state")
 	assert.NoFileExists(t, path)
-	assertNoTempFiles(t, filepath.Dir(path), ".state-*.tmp")
+	assertNoTempFiles(t, filepath.Dir(path), ".state.json-*.tmp")
 }
 
 func TestWriteFileAtomicReplacesAndCleansUp(t *testing.T) {
@@ -45,7 +45,7 @@ func TestWriteFileAtomicReplacesAndCleansUp(t *testing.T) {
 	path := filepath.Join(dir, "file")
 	require.NoError(t, os.WriteFile(path, []byte("old"), 0o600))
 
-	require.NoError(t, writeFileAtomic(path, ".file-*.tmp", "file", func(w io.Writer) error {
+	require.NoError(t, writeFileAtomic(path, "file", func(w io.Writer) error {
 		_, err := io.WriteString(w, "new")
 		return err //nolint:wrapcheck // test helper
 	}))
@@ -54,7 +54,7 @@ func TestWriteFileAtomicReplacesAndCleansUp(t *testing.T) {
 	assert.Equal(t, "new", string(got))
 	assertNoTempFiles(t, dir, ".file-*.tmp")
 
-	err = writeFileAtomic(path, ".file-*.tmp", "file", func(io.Writer) error { return errors.New("boom") })
+	err = writeFileAtomic(path, "file", func(io.Writer) error { return errors.New("boom") })
 	require.ErrorContains(t, err, "write file: boom")
 	got, err = os.ReadFile(path) //nolint:gosec // test temp path
 	require.NoError(t, err)

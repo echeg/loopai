@@ -68,7 +68,7 @@ func TestRunRecordStoreSaveCleansTempFileOnRenameFailure(t *testing.T) {
 	require.NoError(t, os.Mkdir(store.path, 0o700))
 
 	require.ErrorContains(t, store.Save(processor.RunRecord{}), "replace run record")
-	matches, err := filepath.Glob(filepath.Join(dir, ".run-record-*.tmp"))
+	matches, err := filepath.Glob(filepath.Join(dir, "."+filepath.Base(store.path)+"-*.tmp"))
 	require.NoError(t, err)
 	assert.Empty(t, matches)
 }

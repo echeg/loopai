@@ -35,7 +35,7 @@ func (s *runRecordStore) Load() (processor.RunRecord, bool, error) {
 }
 
 func (s *runRecordStore) Save(record processor.RunRecord) error {
-	return saveJSONState(s.path, ".run-record-*.tmp", "run record", record)
+	return saveJSONState(s.path, "run record", record)
 }
 
 func (s *runRecordStore) Remove() error {

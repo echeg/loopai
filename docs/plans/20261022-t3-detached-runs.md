@@ -558,44 +558,44 @@
 - [x] run `make test </dev/null`, `make lint`, `make build`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 3
 
 ### Task 3: Add the run registry package pkg/runs
-- [ ] create `pkg/runs/paths.go`: `RunsDir(root)` = `<root>/.loopai/progress/runs`, `Dir(root, id)`, and the per-run file names from Technical Details (none matches `progress-*.txt`). Every path is made absolute before any chdir.
-- [ ] create `pkg/runs/id.go`:
+- [x] create `pkg/runs/paths.go`: `RunsDir(root)` = `<root>/.loopai/progress/runs`, `Dir(root, id)`, and the per-run file names from Technical Details (none matches `progress-*.txt`). Every path is made absolute before any chdir.
+- [x] create `pkg/runs/id.go`:
   - `NewID(planPath, now)` produces `<sanitized plan stem>-<YYYYMMDD-HHMMSS>-<4 hex from crypto/rand>`;
   - `ValidID` accepts one safe path segment: `^[a-z0-9][a-z0-9._-]{0,99}$`;
   - `ThreadKey(threadID)` = the first 32 hex characters of `sha256(threadID)`. T3 thread ids can contain `:` and `%` and exceed 300 characters, so they never become file names raw.
-- [ ] create `pkg/runs/atomic.go` and `pkg/runs/descriptor.go`:
+- [x] create `pkg/runs/atomic.go` and `pkg/runs/descriptor.go`:
   - `atomic.go` is the package's own copy of the temp-file + chmod 0600 + rename write; package main's `writeFileAtomic` stays;
   - `descriptor.go` implements the descriptor schema in Technical Details, with `LoadDescriptor` and `SaveDescriptor`;
   - the descriptor has no token field, and the writer is never given one.
-- [ ] create build-tagged lock helpers:
+- [x] create build-tagged lock helpers:
   - `lock_unix.go` (`//go:build !windows`, flock) with:
     - `AcquireBounded(path, timeout)`, which polls `LOCK_EX|LOCK_NB` every 25 ms until the deadline, so an observer probe never makes a run fail;
     - `Probe(path) (held bool, err error)`, which does a non-blocking acquire-and-release;
   - `lock_windows.go` defines the same symbols returning `ErrUnsupported`;
   - the run's lock fd is opened with Go's default `O_CLOEXEC`.
-- [ ] add `AcquireLaunchLock(root, planRel, branch, timeout)` and `LaunchInProgress(root, planRel, branch)` (a probe). The lock file is `.launch-<first 16 hex of sha256(planRel + "\x00" + branch)>.lock` in the runs dir.
-- [ ] create the stop marker, outcome, and report helpers:
+- [x] add `AcquireLaunchLock(root, planRel, branch, timeout)` and `LaunchInProgress(root, planRel, branch)` (a probe). The lock file is `.launch-<first 16 hex of sha256(planRel + "\x00" + branch)>.lock` in the runs dir.
+- [x] create the stop marker, outcome, and report helpers:
   - `pkg/runs/stop.go`: write, detect, and clear the `stop-requested` marker;
   - `pkg/runs/outcome.go`: the outcome schema from Technical Details, with `SaveOutcome`/`LoadOutcome` and `ArchiveOutcome(dir, attempt)`, which renames `outcome.json` to `outcome-attempt-<n>.json`;
   - `report.md` read/write helpers.
-- [ ] create `pkg/runs/classify.go`: `Classify(root, dir)` returns, in order:
+- [x] create `pkg/runs/classify.go`: `Classify(root, dir)` returns, in order:
   - `running` when the lifetime lock is held;
   - `succeeded`/`failed`/`stopped` when the lock is free and an outcome exists for the descriptor's current attempt;
   - `stopped` when the lock is free, there is no outcome, and the stop marker is present;
   - `starting` when the lock is free, there is no outcome, and the launch lock for its plan and branch is held;
   - otherwise `crashed`.
-- [ ] create `pkg/runs/resolve.go`:
+- [x] create `pkg/runs/resolve.go`:
   - `List(root)`, newest first by `created_at`;
   - `Resolve(root, ident)`: by exact id, then plan (path relative to cwd or root, or matching basename/stem), then branch; the newest match wins;
   - `DefaultRun(root)`: the single live run, else the newest;
   - `LatestFor(root, planRel, branch)`;
   - `LiveRunForBranch(root, branch)`;
   - `PruneSucceeded(root, keep)`: delete succeeded run directories beyond the newest `keep` whose lock is free.
-- [ ] create process identity helpers behind `ProcessStartToken(pid) (string, error)`, which returns an opaque string compared for equality:
+- [x] create process identity helpers behind `ProcessStartToken(pid) (string, error)`, which returns an opaque string compared for equality:
   - `procstart_darwin.go`: `unix.SysctlKinfoProc("kern.proc.pid", pid)` → `Proc.P_starttime`;
   - `procstart_linux.go`: field 22 of `/proc/<pid>/stat`;
   - `procstart_other.go`: unsupported.
-- [ ] write tests (success):
+- [x] write tests (success):
   - ids are valid and unique per call;
   - `ThreadKey` is stable, 32 hex characters, and differs for two distinct `thread:provider:…%3A…` ids;
   - the descriptor and outcome round-trip with mode 0600;
@@ -605,13 +605,15 @@
   - `DefaultRun` prefers the single live run;
   - prune keeps the newest 20 succeeded runs and never touches live, failed, or crashed runs;
   - `ProcessStartToken(os.Getpid())` is stable across calls.
-- [ ] write tests (errors/edge):
+- [x] write tests (errors/edge):
   - `ValidID` rejects `..`, slashes, and the empty string;
   - a corrupt descriptor or outcome is reported, not a panic;
   - `AcquireBounded` times out while a helper process holds the lock (re-exec pattern from `pkg/git/worktree_run_lock_test.go:90-140`) and succeeds after the helper is killed;
   - a busy launch lock returns a distinct error;
   - a saved descriptor never contains a token-shaped string (the schema has no field for it).
-- [ ] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 4
+- [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 4
+- ⚠️ ruling C11: `atomic.go` exports `WriteFileAtomic(path, data, perm)` and package main's `writeFileAtomic` delegates to it instead of keeping a second copy; main's temp files are now named `.<file name>-*.tmp`.
+- ⚠️ ruling C10: the token-shaped-string descriptor test was dropped as tautological; the descriptor and outcome tests pin the exact JSON key sets instead, and the real token-leak scan of the run directory, logs, and child environment lands in Task 11.
 
 ### Task 4: Add execution knobs for detached runs (inert unless set)
 - [ ] lint constraint: `executePlan` and `prepareWorktreeRunContext` are already at gocyclo 20 and `runWithWorktree` at 18 (limit 20). Add no `if`/`&&`/`||` to the first two. Add at most one branch to `runWithWorktree`, and move all new decisions into small helpers. Run `make lint` early in this task.
