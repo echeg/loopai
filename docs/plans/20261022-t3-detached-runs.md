@@ -975,12 +975,12 @@
 - [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 10
 
 ### Task 10: Add the protocol-2 T3 client and an importable fake server
-- [ ] create `pkg/t3/runtime.go` (a new package; nothing is ported):
+- [x] create `pkg/t3/runtime.go` (a new package; nothing is ported):
   - T3 home = trimmed `T3CODE_HOME`, else `~/.t3`;
   - read `<home>/userdata/server-runtime.json` (`origin`, `pid`, `startedAt`, `serverVersion`) on every connect and reconnect; `LOOPAI_T3_URL` overrides the origin;
   - WS URL = the origin with `http`→`ws` and `https`→`wss`, path `/ws`, query `orchestrationProtocol=2`;
   - the client never writes below the T3 home.
-- [ ] create `pkg/t3/rpc.go`:
+- [x] create `pkg/t3/rpc.go`:
   - dial with `Authorization: Bearer <token>` using gorilla/websocket;
   - on a failed upgrade, parse the JSON body (`code`/`reason`/`message`) into a typed `HandshakeError` (426 `orchestration_protocol_incompatible`; 401 `auth_invalid` with `reason`) instead of a bare status;
   - the codec follows Technical Details:
@@ -991,14 +991,14 @@
     - `Defect` fails every pending call;
     - Ping/Pong;
   - streams send `{"_tag":"Ack","requestId":id}` after every Chunk, and `Interrupt` on unsubscribe.
-- [ ] create `pkg/t3/client.go` methods:
+- [x] create `pkg/t3/client.go` methods:
   - `TerminalOpen(TerminalOpenInput)`, `TerminalWrite(threadID, terminalID, data)`;
   - `SubscribeTerminalMetadata(ctx)`, with events `snapshot`/`upsert`/`remove`;
   - `GetThreadProjection(threadID)`, returning title, pinnedAt, worktreePath, projectId, archivedAt;
   - `SetTitle(threadID, title)` (title-only `thread.metadata.update`), `Pin(threadID)`, `Unpin(threadID)`. Each dispatch gets a fresh 32-hex `commandId` from `crypto/rand`, reused only for a retry of the same update;
   - HTTP `Projects()` (`GET /api/projects`, Bearer), returning `{id, workspaceRoot}`;
   - never send `providerInstanceId`, `createdBy`, or `creationSource`; never call `terminal.close`.
-- [ ] create `pkg/t3/t3test/fake.go` (package `t3test`, a non-test file importable from `pkg/t3` and `cmd/loopai` tests). It exports `NewServer(t testing.TB, opts ...Option) *Server`, backed by `httptest`. The server:
+- [x] create `pkg/t3/t3test/fake.go` (package `t3test`, a non-test file importable from `pkg/t3` and `cmd/loopai` tests). It exports `NewServer(t testing.TB, opts ...Option) *Server`, backed by `httptest`. The server:
   - answers 426 with the exact incompatible-protocol JSON when the query parameter is missing, before auth;
   - answers 401 `auth_invalid` for a missing or wrong Bearer;
   - rejects a Request without `headers`;
@@ -1006,7 +1006,7 @@
   - delivers the next metadata Chunk only after the client's Ack;
   - provides options and hooks for: a token, thread projections, projects, the terminal list, an injected upsert/remove, a forced 401 on the next connection, a simulated restart (drop connections and clear terminals), and recorded requests (dispatches, opens, writes);
   - has its own `fake_test.go`.
-- [ ] write tests (success) in `pkg/t3` using `t3test.NewServer`:
+- [x] write tests (success) in `pkg/t3` using `t3test.NewServer`:
   - the handshake carries the query and the Bearer;
   - terminal open/write payloads match the schema;
   - the metadata stream delivers snapshot then upserts, only with acks;
@@ -1014,13 +1014,14 @@
   - the projection and projects decode;
   - the runtime file is re-read on reconnect (port change);
   - `LOOPAI_T3_URL` wins.
-- [ ] write tests (errors):
+- [x] write tests (errors):
   - 426 and 401 surface code and message;
   - a Fail exit surfaces `_tag` and message (e.g. `TerminalNotRunningError`);
   - a Defect fails all pending calls;
   - a missing runtime file is a typed "T3 not running" error;
   - a stalled stream without Ack (fake server mode) proves the client acks.
-- [ ] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 11
+- [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 11
+- ⚠️ every client method takes a leading `context.Context` (Go convention), and `Projects` uses the origin of the current connection; with `LOOPAI_T3_URL` set, a missing or unreadable runtime file only leaves the PID and start time zero. The fake additionally fails a request carrying `providerInstanceId`, `createdBy`, `creationSource`, or `createdAt`, so a violation is loud; T3 v0.1.1 itself tolerates a Request without `headers` (`Headers.fromInput(undefined)`), so the fake's rejection is stricter than the server.
 
 ### Task 11: Add Mode 1 (--t3-thread) and the title/terminal bridge
 - [ ] add the visible `T3Thread string` (`long:"t3-thread" value-name:"thread-id"`, no env tag):
