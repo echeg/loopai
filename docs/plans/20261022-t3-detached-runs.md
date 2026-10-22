@@ -450,26 +450,26 @@
 ## Implementation Steps
 
 ### Task 1: Remove the old ACP integration (keep the JSON-RPC transport)
-- [ ] move `versionBannerWriter` and `rawFlagRequested` from `cmd/loopai/acp.go:29-56` into `cmd/loopai/skill_contract.go`:
+- [x] move `versionBannerWriter` and `rawFlagRequested` from `cmd/loopai/acp.go:29-56` into `cmd/loopai/skill_contract.go`:
   - `versionBannerWriter` keeps only the `--skill-contract` → `io.Discard` branch and otherwise returns `os.Stdout`; the stderr branch for `--acp` returns in Task 13;
   - move `TestVersionBannerWriter` (acp_test.go:49) into `skill_contract_test.go`, keeping only the `--skill-contract` and plain-run cases;
   - drop `TestACPRequested`.
-- [ ] delete `cmd/loopai/acp.go`, `acp_chat.go`, `acp_merge.go`, `acp_state.go` and their four `_test.go` files:
+- [x] delete `cmd/loopai/acp.go`, `acp_chat.go`, `acp_merge.go`, `acp_state.go` and their four `_test.go` files:
   - also delete the test-only helpers that live only there: `revParse`, `lockedBuffer`, `containsPrefix`, `sigpipeHelperEnv`, `acpFixture`/`newACPFixture`/`acpTaskClaude`/`acpTwoTaskPlan`, `writeACPOverrides`;
   - keep `splitReportSections`/`reportRiskLevel` (pr_body.go) with their existing tests;
   - keep `prepareNonInteractiveRequest`, `errNonInteractivePlanRequired`, the nil-stdin `executionIO`, and every `planExecutionOutcome` field.
-- [ ] delete the ACP→T3 entanglements that would not compile:
+- [x] delete the ACP→T3 entanglements that would not compile:
   - `prepareT3MergedBranchSettlement` and `t3MergedDispatcher` (`cmd/loopai/t3_settle.go:48-101`), with `TestPreparedT3SettlementRechecksGit` (`t3_settle_test.go:84-118`, uses `setupACPMergeRepo`);
   - the `parseACPPrompt` asserts at `main_test.go:4400-4403` inside `TestRunT3LaunchCommand`;
   - keep the other three `t3_settle` tests for Task 2.
-- [ ] remove the `--acp` flag and its plumbing from `cmd/loopai/main.go`:
+- [x] remove the `--acp` flag and its plumbing from `cmd/loopai/main.go`:
   - the `ACP` opts field (main.go:88), its routing in `run()` (:482-487), and the banner comment (:390);
   - `validateACPFlags` from `validateFlags`, and `o.ACP` from `isStandaloneCommand` (:5274);
   - the `{"--acp", o.ACP}` row in `validateT3ProgressThreadFlags` (:3844);
   - the `--acp` entries in `main_test.go:3733` and `:3822`;
   - update the `executePlanRequest` comment (:317-320) and the `launch_history.go` comment (:144-146).
-- [ ] delete `pkg/acp/server.go`, `pkg/acp/sink.go` and their tests. Keep `pkg/acp/transport.go` and `transport_test.go`, and rewrite the package doc at `transport.go:1-2` to describe a generic newline-delimited JSON-RPC 2.0 stdio connection.
-- [ ] delete the chat mode:
+- [x] delete `pkg/acp/server.go`, `pkg/acp/sink.go` and their tests. Keep `pkg/acp/transport.go` and `transport_test.go`, and rewrite the package doc at `transport.go:1-2` to describe a generic newline-delimited JSON-RPC 2.0 stdio connection.
+- [x] delete the chat mode:
   - `pkg/processor/phase/chat.go` (and its test);
   - `ModeACPChat` and the chat request/result plumbing in `pkg/processor/runner.go` (:31, :155-163, :222-224, :235, :333-339, :380-389, :423, :450-456);
   - `ACPChatContext`/`ACPChatPrompt` (`pkg/processor/prompt_builder.go:126-158`);
@@ -477,21 +477,21 @@
   - in ONE edit so `pkg/config` compiles: `acpChatPromptFile`/`ACPChatPrompt` in `pkg/config/config.go` (:29, :257, :517) and `ACPChat` in `pkg/config/prompts.go` (:22 field, :77-80 loader);
   - the `acp-chat` case and suffix in `pkg/progress/progress.go` (:925, :942-943);
   - the `ModeACPChat` branches in `cmd/loopai/main.go` (:3173-3176, :3253, :4369, :4429-4433).
-- [ ] delete executor resume-session support; only the chat phase used it.
+- [x] delete executor resume-session support; only the chat phase used it.
   - In `pkg/executor/executor.go`: `Result.SessionID`, `Result.Reply`, `resumeSessionKey`/`WithResumeSession`/`ResumeSession`, `ClaudeExecutor.NoResume`, the `--resume` argument code, `trackSession`, `streamEvent.SessionID`.
   - In `pkg/executor/codex.go`:
     - `NoResume`, `resumeID()`, and the `resume <id> -` arguments;
     - `rolloutStart`/`rolloutEnd`, together with the then always-zero `start` parameter of `startRolloutTail`/`tailRolloutFile` and its seek.
   - In `pkg/processor/executor_factory.go`: the `e.NoResume = ...` lines (:268, :342).
   - Keep `extractSessionID`, `sessionIDPattern`, `sessionIDCh`, and `findRolloutFile`: rollout tailing and the 60-second `task_complete` grace use them.
-- [ ] delete the two fork-added chat signals `ACPMerge`/`ACPPR` (`pkg/status/status.go:23-26`) and their `knownSignals` entries (`executor.go:935-937`). Delete `StripSignals` together with the unexported `signals` var (status.go:30-57) and `TestStripSignals`, or the `unused` linter fails.
-- [ ] remove the `acp_auto_merge` key in ONE edit:
+- [x] delete the two fork-added chat signals `ACPMerge`/`ACPPR` (`pkg/status/status.go:23-26`) and their `knownSignals` entries (`executor.go:935-937`). Delete `StripSignals` together with the unexported `signals` var (status.go:30-57) and `TestStripSignals`, or the `unused` linter fails.
+- [x] remove the `acp_auto_merge` key in ONE edit:
   - delete the active `acp_auto_merge = true` block in `pkg/config/defaults/config:207-216`;
   - add `{name: "acp_auto_merge", replacement: "merge with loopai --merge or the loopai-merge skill"}` to `removedKeys` (`pkg/config/values.go:981`);
   - remove `ACPAutoMerge`/`ACPAutoMergeSet` from `config.go` (:193-194, :458-459) and from `values.go` (:63-64, :205, :496-506 and its doc comment, :715-725).
-- [ ] delete `docs/backlog/acp-chat-models-in-t3-picker.md`, which is obsolete. Reword the comment on `AcquireWorktreeCreationLock` (`pkg/git/service.go:235-237`) that cites ACP auto-merge. Leave the exported `MergeBranchTipContext`/`UntrackedFiles` helpers in place.
-- [ ] run `go test ./cmd/loopai -run TestSkillContract -update`. This drops `--acp` and `acp_auto_merge` from the golden; there is no contract bump.
-- [ ] update tests: delete the chat, resume, signal, and `acp_auto_merge` tests listed in the discovery:
+- [x] delete `docs/backlog/acp-chat-models-in-t3-picker.md`, which is obsolete. Reword the comment on `AcquireWorktreeCreationLock` (`pkg/git/service.go:235-237`) that cites ACP auto-merge. Leave the exported `MergeBranchTipContext`/`UntrackedFiles` helpers in place.
+- [x] run `go test ./cmd/loopai -run TestSkillContract -update`. This drops `--acp` and `acp_auto_merge` from the golden; there is no contract bump.
+- [x] update tests: delete the chat, resume, signal, and `acp_auto_merge` tests listed in the discovery:
   - `executor_test.go:49-50`, `:781-783`, `:2792-2924`;
   - `codex_test.go:151-152`, `:4271-4405`, and the `rolloutStart{}` args at `:3375`/`:3426`;
   - `executor_factory_test.go:1165-1200`; `runner_test.go:1441-1515`;
@@ -502,11 +502,11 @@
   - `defaults_test.go` expectedPrompts; `pkg/config/prompts_test.go:916-946`;
   - `progress_test.go:1401`; `status_test.go:24-50`;
   - the `TestRunHeaderParams` chat subtest and the `TestDumpDefaults` prompt list.
-- [ ] write tests:
+- [x] write tests:
   - `acp_auto_merge = true` in a local config fails `config.Load` naming the replacement (extend `TestLoad_RemovedKeysRejected` and the values removed-key table);
   - `TestValuesLoader_EmbeddedDefaultsCarryNoRemovedKeys` stays green;
   - `versionBannerWriter` returns discard for `--skill-contract` and stdout for a plain run.
-- [ ] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 2
+- [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 2
 
 ### Task 2: Remove the old T3 integration
 - [ ] delete `pkg/t3` (all 20 files). Do not run `go mod tidy`/`go mod vendor`: gorilla/websocket stays as is for Task 10.

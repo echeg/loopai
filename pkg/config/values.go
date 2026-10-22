@@ -60,8 +60,6 @@ type Values struct {
 	FinalizeMergeMethodSet     bool          // tracks if finalize_merge_method was explicitly set
 	FinalizeChecksTimeout      time.Duration // how long finalize = merge waits for PR checks
 	FinalizeChecksTimeoutSet   bool          // tracks if finalize_checks_timeout was explicitly set
-	ACPAutoMerge               bool          // ACP agent mode merges the plan branch into the local base after a low/medium-risk run
-	ACPAutoMergeSet            bool          // tracks if acp_auto_merge was explicitly set
 	ReportEnabled              bool
 	ReportEnabledSet           bool // tracks if report_enabled was explicitly set
 	PreserveAnthropicAPIKey    bool
@@ -202,7 +200,6 @@ func (vl *valuesLoader) parseValuesFromEmbedded() (Values, error) {
 	values.FinalizeSet = false
 	values.FinalizeMergeMethodSet = false
 	values.FinalizeChecksTimeoutSet = false
-	values.ACPAutoMergeSet = false
 	return values, nil
 }
 
@@ -492,18 +489,9 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 	return values, nil
 }
 
-// parseFinalizeValues extracts the finalize mode, merge method, checks timeout, and the
-// ACP auto-merge switch. an empty finalize value leaves the key unset, like the duration
-// keys, so the embedded default applies.
+// parseFinalizeValues extracts the finalize mode, merge method, and checks timeout. an empty
+// finalize value leaves the key unset, like the duration keys, so the embedded default applies.
 func (vl *valuesLoader) parseFinalizeValues(section *ini.Section, values *Values) error {
-	if key, err := section.GetKey("acp_auto_merge"); err == nil {
-		val, boolErr := key.Bool()
-		if boolErr != nil {
-			return fmt.Errorf("invalid acp_auto_merge: %w", boolErr)
-		}
-		values.ACPAutoMerge = val
-		values.ACPAutoMergeSet = true
-	}
 	if key, err := section.GetKey("finalize"); err == nil {
 		if val := strings.ToLower(strings.TrimSpace(key.String())); val != "" {
 			if !IsValidFinalizeMode(val) {
@@ -712,16 +700,12 @@ func (dst *Values) mergeExtraFrom(src *Values) {
 	}
 }
 
-// mergeFinalizeFrom merges the finalize settings and the ACP auto-merge switch from src into dst.
+// mergeFinalizeFrom merges the review cadence and finalize settings from src into dst.
 // a finalize value is never empty once set, and the embedded defaults carry values with cleared Set flags.
 func (dst *Values) mergeFinalizeFrom(src *Values) {
 	if src.ReviewCadence != "" {
 		dst.ReviewCadence = src.ReviewCadence
 		dst.ReviewCadenceSet = dst.ReviewCadenceSet || src.ReviewCadenceSet
-	}
-	if src.ACPAutoMergeSet {
-		dst.ACPAutoMerge = src.ACPAutoMerge
-		dst.ACPAutoMergeSet = true
 	}
 	if src.Finalize != "" {
 		dst.Finalize = src.Finalize
@@ -975,9 +959,10 @@ type removedKey struct {
 }
 
 // removedKeys lists keys whose meaning moved into provider[:model[:effort]] specs,
-// plus finalize_enabled, whose boolean became the finalize mode. a removed key is an
-// error even when empty, because honoring or ignoring it silently would change which
-// provider or model a run uses, or whether the run closes out its branch.
+// plus finalize_enabled, whose boolean became the finalize mode, and acp_auto_merge,
+// whose automatic merge left with the old ACP integration. a removed key is an error
+// even when empty, because honoring or ignoring it silently would change which provider
+// or model a run uses, or whether the run closes out its branch.
 var removedKeys = []removedKey{
 	{name: "executor", replacement: "set the provider in the model spec instead, e.g. task_model = codex:<model>[:effort]"},
 	{name: "external_review_tool", replacement: "use external_reviewers = <provider>[:model[:effort]] (an empty value disables external review)"},
@@ -985,6 +970,7 @@ var removedKeys = []removedKey{
 	{name: "codex_model", replacement: "put the model in each codex spec, e.g. codex:<model>[:effort]"},
 	{name: "codex_reasoning_effort", replacement: "put the effort in each codex spec, e.g. codex:<model>:<effort>"},
 	{name: "finalize_enabled", replacement: "use finalize = sync|pr|merge (finalize = none disables it)"},
+	{name: "acp_auto_merge", replacement: "merge with loopai --merge or the loopai-merge skill"},
 }
 
 // checkRemovedKeys returns an error naming the first removed key present in section.

@@ -140,7 +140,7 @@ func TestCodexExecutor_Run_Success(t *testing.T) {
 	assert.Equal(t, "<<<RALPHEX:CODEX_REVIEW_DONE>>>", result.Signal)
 }
 
-func TestCodexExecutor_Run_FinalizeAndChatSignals(t *testing.T) {
+func TestCodexExecutor_Run_FinalizeSignals(t *testing.T) {
 	tests := []struct {
 		name       string
 		stdout     string
@@ -148,8 +148,6 @@ func TestCodexExecutor_Run_FinalizeAndChatSignals(t *testing.T) {
 	}{
 		{name: "done", stdout: "merge resolved, validation passed\n<<<RALPHEX:FINALIZE_DONE>>>", wantSignal: "<<<RALPHEX:FINALIZE_DONE>>>"},
 		{name: "blocked", stdout: "<<<RALPHEX:FINALIZE_BLOCKED>>>\nmake test failed", wantSignal: "<<<RALPHEX:FINALIZE_BLOCKED>>>"},
-		{name: "acp merge", stdout: "committed the fix, merging now\n<<<RALPHEX:ACP_MERGE>>>", wantSignal: "<<<RALPHEX:ACP_MERGE>>>"},
-		{name: "acp pr", stdout: "opening a pull request\n<<<RALPHEX:ACP_PR>>>", wantSignal: "<<<RALPHEX:ACP_PR>>>"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3372,7 +3370,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 	tailDone := make(chan struct{})
 	go func() {
 		defer close(tailDone)
-		e.tailRolloutFile(ctx, sessionID, nil, nil, rolloutStart{})
+		e.tailRolloutFile(ctx, sessionID, nil, nil)
 	}()
 
 	// wait briefly for initial drain (assistant text + reasoning title)
@@ -3423,7 +3421,7 @@ func TestCodexExecutor_tailRolloutFile_tracksCommandsWithoutOutputHandler(t *tes
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil, nil, rolloutStart{})
+		e.tailRolloutFile(ctx, sessionID, nil, nil)
 	}()
 
 	select {
@@ -3455,7 +3453,7 @@ func TestCodexExecutor_tailRolloutFile_ProcessesUnterminatedFinalRecordOnCancel(
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil, nil, rolloutStart{})
+		e.tailRolloutFile(ctx, sessionID, nil, nil)
 	}()
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -3495,7 +3493,7 @@ func TestCodexExecutor_tailRolloutFile_TracksChildSessionCustomExec(t *testing.T
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil, nil, rolloutStart{})
+		e.tailRolloutFile(ctx, sessionID, nil, nil)
 	}()
 
 	select {
@@ -3656,7 +3654,7 @@ func TestCodexExecutor_tailRolloutFile_CancelDropsPendingCommand(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil, nil, rolloutStart{})
+		e.tailRolloutFile(ctx, sessionID, nil, nil)
 	}()
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -4266,140 +4264,4 @@ func TestCodexExecutor_Run_MissingRollout(t *testing.T) {
 			assert.False(t, timerStarted.Load(), "missing rollout cannot trigger grace completion")
 		})
 	}
-}
-
-func TestCodexExecutor_Run_ResumeArgs(t *testing.T) {
-	t.Setenv("CODEX_HOME", t.TempDir())
-	const id = "019e3bbe-9788-79f1-b668-cccccccccccc"
-	tests := []struct {
-		name    string
-		newExec func() *CodexExecutor
-		resume  string
-	}{
-		{name: "phase executor with overrides and extras", resume: id, newExec: func() *CodexExecutor {
-			return &CodexExecutor{Model: "gpt-x", ReasoningEffort: "high", ProjectDoc: "DOC.md", MultiAgent: true,
-				Sandbox: "danger-full-access", ExtraArgs: `-c service_tier="default"`}
-		}},
-		{name: "read-only reviewer", resume: id, newExec: func() *CodexExecutor {
-			return &CodexExecutor{ForceReadOnly: true}
-		}},
-		{name: "no resume id", newExec: func() *CodexExecutor { return &CodexExecutor{MultiAgent: true} }},
-		{name: "wrapper ignores resume id", resume: id, newExec: func() *CodexExecutor {
-			return &CodexExecutor{Command: "codex-wrapper", NoResume: true}
-		}},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			capture := func(ctx context.Context, e *CodexExecutor) []string {
-				var args []string
-				e.runner = &mockCodexRunner{runFunc: func(_ context.Context, _ string, a ...string) (CodexStreams, func() error, error) {
-					args = a
-					return mockStreams("", "result"), mockWait(), nil
-				}}
-				require.NoError(t, e.Run(ctx, "prompt").Error)
-				return args
-			}
-			fresh := capture(context.Background(), tc.newExec())
-			resumed := capture(WithResumeSession(context.Background(), tc.resume), tc.newExec())
-
-			require.Equal(t, "exec", fresh[0])
-			assert.NotContains(t, fresh, "resume")
-			if tc.resume == "" || tc.name == "wrapper ignores resume id" {
-				assert.Equal(t, fresh, resumed, "no resume subcommand")
-				return
-			}
-			// every option loopai and the user compose stays before the subcommand, which
-			// rejects --sandbox; the prompt still arrives on stdin through "-"
-			assert.Equal(t, append(append([]string{}, fresh...), "resume", id, "-"), resumed)
-		})
-	}
-}
-
-// a resumed session appends to the rollout file its earlier turns wrote; the tail must start at
-// the file's end so the previous turn's task_complete neither starts the grace kill nor becomes
-// this turn's answer.
-func TestCodexExecutor_Run_ResumeSkipsEarlierTurns(t *testing.T) {
-	completion := func(msg string) string {
-		return `{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":` + strconv.Quote(msg) + "}}\n"
-	}
-	sessionID, dir := taskCompleteFixture(t, completion("stale answer <<<RALPHEX:ACP_MERGE>>>"))
-	rollout := filepath.Join(dir, "rollout-test-"+sessionID+".jsonl")
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	exit := make(chan error, 1)
-	inner := taskCompleteRunner(sessionID, "", exit)
-	started := make(chan time.Duration, 1)
-	fire := make(chan time.Time, 1)
-	e := &CodexExecutor{
-		runner: &mockCodexRunner{runFunc: func(runCtx context.Context, cmd string, args ...string) (CodexStreams, func() error, error) {
-			f, err := os.OpenFile(rollout, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test fixture path
-			if err != nil {
-				return CodexStreams{}, nil, fmt.Errorf("open rollout: %w", err)
-			}
-			_, err = f.WriteString(completion("fresh answer"))
-			if closeErr := f.Close(); err == nil {
-				err = closeErr
-			}
-			if err != nil {
-				return CodexStreams{}, nil, fmt.Errorf("append rollout: %w", err)
-			}
-			return inner.runFunc(runCtx, cmd, args...)
-		}},
-		completionTimer: func(d time.Duration) (<-chan time.Time, func()) {
-			started <- d
-			return fire, func() {}
-		},
-	}
-	resultCh := make(chan Result, 1)
-	go func() { resultCh <- e.Run(WithResumeSession(ctx, sessionID), "next message") }()
-	select {
-	case <-started:
-	case <-ctx.Done():
-		t.Fatal("the resumed turn's task_complete did not start the grace timer")
-	}
-	fire <- time.Now()
-	var result Result
-	select {
-	case result = <-resultCh:
-	case <-time.After(3 * time.Second):
-		t.Fatal("Run did not return after the grace kill")
-	}
-	require.NoError(t, result.Error)
-	assert.Equal(t, "fresh answer", result.Output, "the previous turn's completion must not be read")
-	assert.Empty(t, result.Signal)
-}
-
-func TestCodexExecutor_Run_SessionID(t *testing.T) {
-	t.Setenv("CODEX_HOME", t.TempDir())
-	const id = "019e3bbe-9788-79f1-b668-dddddddddddd"
-	stderr := "--------\nworkdir: /tmp/x\nsession id: " + id + "\n--------\n"
-	tests := []struct {
-		name    string
-		exec    *CodexExecutor
-		wait    func() error
-		wantID  string
-		wantErr bool
-	}{
-		{name: "successful run", exec: &CodexExecutor{}, wait: mockWait(), wantID: id},
-		{name: "failed run", exec: &CodexExecutor{}, wait: mockWaitError(errors.New("exit status 1")), wantID: id, wantErr: true},
-		{name: "wrapper reports none", exec: &CodexExecutor{NoResume: true}, wait: mockWait()},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			tc.exec.runner = &mockCodexRunner{runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
-				return mockStreams(stderr, "answer"), tc.wait, nil
-			}}
-			result := tc.exec.Run(context.Background(), "prompt")
-			assert.Equal(t, tc.wantErr, result.Error != nil)
-			assert.Equal(t, tc.wantID, result.SessionID)
-		})
-	}
-
-	t.Run("no banner reports none", func(t *testing.T) {
-		e := &CodexExecutor{runner: &mockCodexRunner{runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
-			return mockStreams("", "answer"), mockWait(), nil
-		}}}
-		assert.Empty(t, e.Run(context.Background(), "prompt").SessionID)
-	})
 }

@@ -19,7 +19,6 @@ type Prompts struct {
 	Codex                string
 	MakePlan             string
 	GenAgents            string
-	ACPChat              string
 	Finalize             string
 	Report               string
 	CustomReview         string
@@ -72,11 +71,6 @@ func (p *promptLoader) Load(localDir, globalDir string) (Prompts, error) {
 	prompts.GenAgents, err = p.loadPromptWithLocalFallback(localDir, globalDir, genAgentsPromptFile)
 	if err != nil {
 		return Prompts{}, fmt.Errorf("load gen_agents prompt: %w", err)
-	}
-
-	prompts.ACPChat, err = p.loadPromptWithLocalFallback(localDir, globalDir, acpChatPromptFile)
-	if err != nil {
-		return Prompts{}, fmt.Errorf("load acp_chat prompt: %w", err)
 	}
 
 	prompts.Finalize, err = p.loadPromptWithLocalFallback(localDir, globalDir, finalizePromptFile)

@@ -3730,10 +3730,10 @@ func TestNoT3Flag(t *testing.T) {
 		})
 	}
 
-	for _, mode := range []string{"--acp", "--merge", "--pr", "--report"} {
+	for _, mode := range []string{"--merge", "--pr", "--report"} {
 		t.Run(mode, func(t *testing.T) {
 			o := parseTestOpts(t, "--no-t3", mode)
-			require.NoError(t, validateFlags(o), "disabling reporting is compatible with standalone close-out and ACP")
+			require.NoError(t, validateFlags(o), "disabling reporting is compatible with standalone close-out")
 		})
 	}
 }
@@ -3819,7 +3819,7 @@ func TestT3ProgressThreadFlag(t *testing.T) {
 
 func TestValidateT3ProgressThreadFlags(t *testing.T) {
 	for _, flag := range []string{
-		"--no-t3", "--t3-launch", "--t3-launch=agent", "--t3-launch=terminal", "--acp", "--merge", "--pr", "--report",
+		"--no-t3", "--t3-launch", "--t3-launch=agent", "--t3-launch=terminal", "--merge", "--pr", "--report",
 		"--plan=idea", "--gen-agents", "--init", "--reset", "--dump-defaults=/tmp/defaults", "--clear", "--version", "--skill-contract", "--serve",
 	} {
 		t.Run(flag, func(t *testing.T) {
@@ -4397,10 +4397,6 @@ func TestRunT3LaunchCommand(t *testing.T) {
 				require.True(t, ok)
 				assert.Equal(t, create.ThreadID, turn.ThreadID)
 				assert.Equal(t, planPath+" --task-model codex:gpt-5:high", turn.Message.Text)
-				parsed, parseErr := parseACPPrompt(turn.Message.Text)
-				require.NoError(t, parseErr)
-				assert.Equal(t, filepath.Clean(planRel), filepath.Clean(parsed.PlanFile))
-				assert.Equal(t, "codex:gpt-5:high", parsed.TaskModel)
 				assert.Contains(t, stdout.String(), "mode: agent (loopai provider session, instance loopai-custom;")
 				assert.Contains(t, stdout.String(), "the stop button cancels the run")
 				assert.Contains(t, stdout.String(), "the session merges a low or medium Risk run itself")
@@ -6020,20 +6016,6 @@ func TestRunHeaderParams(t *testing.T) {
 		assert.Equal(t, "codex", runHeaderParams(opts{}, split, processor.ModeCodexOnly).Executor)
 	})
 
-	t.Run("acp chat records the review spec alone", func(t *testing.T) {
-		split := &config.Config{TaskModel: "claude:opus", TaskProvider: config.ExternalReviewToolClaude,
-			ReviewModel: "codex:gpt-5.5", ReviewProvider: config.ExecutorCodex}
-		assert.Equal(t, progress.RunParams{Executor: "codex", ReviewModel: "codex:gpt-5.5"},
-			runHeaderParams(opts{}, split, processor.ModeACPChat), "the chat runs on the review block's provider")
-		inherited := &config.Config{TaskModel: "claude:opus"}
-		assert.Equal(t, progress.RunParams{ReviewModel: "claude:opus"}, runHeaderParams(opts{}, inherited, processor.ModeACPChat),
-			"an unset review spec inherits task_model")
-		assert.Equal(t, []string{config.ExecutorCodex}, modePhaseProviders(split, processor.ModeACPChat))
-		chain, err := resolveReviewerChain(&config.Config{ExternalReviewers: "codex", ExternalReviewersSet: true}, processor.ModeACPChat)
-		require.NoError(t, err)
-		assert.Empty(t, chain.Reviewers, "a chat turn requires no reviewer binary")
-	})
-
 	t.Run("plan mode records effective plan model", func(t *testing.T) {
 		got := runHeaderParams(parseTestOpts(t, "--plan-model", "claude:opus:high"), &config.Config{}, processor.ModePlan)
 		assert.Equal(t, progress.RunParams{PlanModel: "claude:opus:high"}, got)
@@ -7028,7 +7010,7 @@ func TestDumpDefaults(t *testing.T) {
 		assert.FileExists(t, filepath.Join(tmpDir, "prompts", "task.txt"))
 		assert.FileExists(t, filepath.Join(tmpDir, "prompts", "external_claude_review.txt"))
 		assert.FileExists(t, filepath.Join(tmpDir, "prompts", "external_claude_eval.txt"))
-		assert.FileExists(t, filepath.Join(tmpDir, "prompts", "acp_chat.txt"))
+		assert.NoFileExists(t, filepath.Join(tmpDir, "prompts", "acp_chat.txt"), "the ACP chat prompt was removed")
 
 		// verify specific agent file exists
 		assert.FileExists(t, filepath.Join(tmpDir, "agents", "quality.txt"))

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -29,6 +30,28 @@ var configKeyLine = regexp.MustCompile(`^#?\s*([a-z][a-z0-9_]*)\s*=`)
 // the integer alone.
 func skillContractRequested(args []string) bool {
 	return rawFlagRequested(args, "--skill-contract")
+}
+
+// versionBannerWriter is where main prints the version banner: nowhere under --skill-contract,
+// whose stdout carries the integer alone, and stdout otherwise.
+func versionBannerWriter(args []string) io.Writer {
+	if skillContractRequested(args) {
+		return io.Discard
+	}
+	return os.Stdout
+}
+
+// rawFlagRequested reports whether flag appears in the raw arguments before a `--` terminator.
+func rawFlagRequested(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == flag {
+			return true
+		}
+	}
+	return false
 }
 
 // printSkillContract writes the contract number alone on one line, the form the skills parse.

@@ -114,10 +114,12 @@ func TestSkillContractRequested(t *testing.T) {
 	}
 }
 
-func TestVersionBannerWriterSkillContract(t *testing.T) {
+func TestVersionBannerWriter(t *testing.T) {
 	assert.Equal(t, io.Discard, versionBannerWriter([]string{"--skill-contract"}))
-	assert.Equal(t, io.Discard, versionBannerWriter([]string{"--acp", "--skill-contract"}),
+	assert.Equal(t, io.Discard, versionBannerWriter([]string{"--debug", "--skill-contract", "plan.md"}),
 		"the integer must stay alone on stdout whatever else is passed")
+	assert.Same(t, os.Stdout, versionBannerWriter([]string{"plan.md"}))
+	assert.Same(t, os.Stdout, versionBannerWriter(nil))
 	assert.Same(t, os.Stdout, versionBannerWriter([]string{"--", "--skill-contract"}))
 }
 

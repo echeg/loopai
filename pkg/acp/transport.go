@@ -1,5 +1,6 @@
-// Package acp serves loopai as an Agent Client Protocol (ACP) agent over stdio, so a client such
-// as T3 Code can host a loopai run as a provider session.
+// Package acp provides a newline-delimited JSON-RPC 2.0 connection over a pair of byte streams,
+// typically a process's stdin and stdout: one message per line, request and notification handlers
+// registered by method, and serialized writes.
 package acp
 
 import (

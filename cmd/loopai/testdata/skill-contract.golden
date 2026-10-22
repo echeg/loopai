@@ -1,7 +1,6 @@
 contract: 3
 
 flags:
---acp
 --base-ref
 --branch
 --claude-args
@@ -55,7 +54,6 @@ flags:
 --worktree
 
 config keys:
-acp_auto_merge
 backlog_dir
 claude_args
 claude_command

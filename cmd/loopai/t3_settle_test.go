@@ -81,42 +81,6 @@ func TestMergeT3SettlementIsBestEffort(t *testing.T) {
 	}
 }
 
-func TestPreparedT3SettlementRechecksGit(t *testing.T) {
-	for _, change := range []string{"unchanged", "feature advanced", "base moved back", "canceled"} {
-		t.Run(change, func(t *testing.T) {
-			repo := setupACPMergeRepo(t)
-			runGit(t, repo.primary, "merge", "feature")
-			api := &t3ShellDispatcher{shell: t3.Shell{
-				Projects: []t3.Project{{ID: "p", WorkspaceRoot: repo.primary}},
-				Threads:  []t3.Thread{{ID: "feature-thread", ProjectID: "p", Branch: new("feature")}},
-			}}
-			original := newT3SettleDispatcher
-			t.Cleanup(func() { newT3SettleDispatcher = original })
-			newT3SettleDispatcher = func(context.Context, func(string) string) (t3.Dispatcher, error) { return api, nil }
-			var output bytes.Buffer
-			afterReply := prepareT3MergedBranchSettlement(t.Context(), repo.svc, "feature", "master", &output)
-			require.NotNil(t, afterReply)
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			switch change {
-			case "feature advanced":
-				runGit(t, repo.worktree, "commit", "--allow-empty", "-m", "new work")
-			case "base moved back":
-				runGit(t, repo.primary, "reset", "--hard", "HEAD^")
-			case "canceled":
-				cancel()
-			}
-			afterReply(ctx)
-			if change == "unchanged" {
-				require.Len(t, api.commands, 1)
-				assert.Contains(t, output.String(), "settled 1 T3 Code thread")
-			} else {
-				assert.Empty(t, api.commands)
-			}
-		})
-	}
-}
-
 func TestReportT3Settlement(t *testing.T) {
 	for _, err := range []error{nil, t3.ErrNoRuntime, context.Canceled} {
 		var output bytes.Buffer

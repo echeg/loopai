@@ -125,9 +125,6 @@ func Test_defaultsFS_PromptFiles(t *testing.T) {
 		{file: "defaults/prompts/codex_review.txt", contains: []string{"{{DIFF_INSTRUCTION}}", "{{PROGRESS_FILE}}", "{{PREVIOUS_REVIEW_CONTEXT}}", "{{PLAN_FILE}}"}},
 		{file: "defaults/prompts/external_claude_review.txt", contains: []string{"{{DIFF_INSTRUCTION}}", "{{PREVIOUS_REVIEW_CONTEXT}}", "findings-only", "Do not edit", "side-effecting Bash"}},
 		{file: "defaults/prompts/external_claude_eval.txt", contains: []string{"{{CLAUDE_OUTPUT}}", "primary executor owns", "RALPHEX:EXTERNAL_REVIEW_DONE"}},
-		{file: "defaults/prompts/acp_chat.txt", contains: []string{"{{CHAT_BRANCH}}", "{{CHAT_BASE}}", "{{CHAT_LOG}}",
-			"{{CHAT_REPORT}}", "{{CHAT_MERGE}}", "{{CHAT_MESSAGE}}", "RALPHEX:ACP_MERGE", "RALPHEX:ACP_PR",
-			"git add <paths>", "git worktree remove", "git push", "reset --hard", "loopai --merge"}},
 	}
 
 	for _, tc := range testCases {
@@ -167,7 +164,6 @@ func Test_defaultsFS_AllFilesPresent(t *testing.T) {
 		"defaults/prompts/codex_review.txt",
 		"defaults/prompts/external_claude_review.txt",
 		"defaults/prompts/external_claude_eval.txt",
-		"defaults/prompts/acp_chat.txt",
 	}
 
 	for _, file := range expectedFiles {
@@ -261,7 +257,6 @@ func TestLoad_PopulatesAllFields(t *testing.T) {
 	assert.NotEmpty(t, cfg.ExternalClaudeReviewPrompt)
 	assert.NotEmpty(t, cfg.ExternalClaudeEvalPrompt)
 	assert.NotEmpty(t, cfg.GenAgentsPrompt)
-	assert.NotEmpty(t, cfg.ACPChatPrompt)
 }
 
 func TestLoad_WithUserConfig(t *testing.T) {
@@ -734,7 +729,8 @@ func TestLoad_PreserveAnthropicAPIKey_InvalidValue(t *testing.T) {
 
 func TestLoad_RemovedKeysRejected(t *testing.T) {
 	for _, body := range []string{"executor = codex", "executor =", "codex_model = gpt-5.5", "codex_reasoning_effort = xhigh",
-		"external_review_tool = auto", "external_review_model =", "finalize_enabled = true", "finalize_enabled = false"} {
+		"external_review_tool = auto", "external_review_model =", "finalize_enabled = true", "finalize_enabled = false",
+		"acp_auto_merge = true", "acp_auto_merge = false", "acp_auto_merge ="} {
 		t.Run(body, func(t *testing.T) {
 			configDir := filepath.Join(t.TempDir(), "ralphex")
 			require.NoError(t, os.MkdirAll(configDir, 0o700))
@@ -1787,7 +1783,6 @@ func TestConfig_JSONShape(t *testing.T) {
 		Finalize:                FinalizeMerge,
 		FinalizeMergeMethod:     "squash",
 		FinalizeChecksTimeout:   time.Minute,
-		ACPAutoMerge:            true,
 		ReportEnabled:           true,
 		PreserveAnthropicAPIKey: true,
 		TaskProvider:            ExecutorCodex,
@@ -1825,7 +1820,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		"codex_enabled", "codex_command", "codex_args",
 		"codex_timeout_ms", "codex_sandbox", "external_reviewers", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
-		"review_patience", "review_cadence", "finalize", "finalize_merge_method", "finalize_checks_timeout", "acp_auto_merge", "report_enabled", "preserve_anthropic_api_key",
+		"review_patience", "review_cadence", "finalize", "finalize_merge_method", "finalize_checks_timeout", "report_enabled", "preserve_anthropic_api_key",
 		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "orca", "t3", "keep_awake", "plans_dir", "backlog_dir",
 		"watch_dirs", "default_branch", "vcs_command", "commit_trailer",
 		"claude_error_patterns", "codex_error_patterns", "claude_limit_patterns",
@@ -1949,79 +1944,16 @@ func TestLoad_KeepAwake(t *testing.T) {
 	})
 }
 
-func TestLoad_ACPAutoMerge(t *testing.T) {
-	newConfigDir := func(t *testing.T, content string) string {
-		t.Helper()
-		configDir := filepath.Join(t.TempDir(), "loopai")
-		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "prompts"), 0o700))
-		require.NoError(t, os.MkdirAll(filepath.Join(configDir, "agents"), 0o700))
-		if content != "" {
-			require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(content), 0o600))
-		}
-		return configDir
-	}
-
-	t.Run("embedded default is true but unset", func(t *testing.T) {
-		cfg, err := Load(newConfigDir(t, ""))
-		require.NoError(t, err)
-		assert.True(t, cfg.ACPAutoMerge)
-		assert.False(t, cfg.ACPAutoMergeSet)
-	})
-
-	t.Run("global false", func(t *testing.T) {
-		cfg, err := Load(newConfigDir(t, "acp_auto_merge = false"))
-		require.NoError(t, err)
-		assert.False(t, cfg.ACPAutoMerge)
-		assert.True(t, cfg.ACPAutoMergeSet)
-	})
-
-	t.Run("invalid value", func(t *testing.T) {
-		_, err := Load(newConfigDir(t, "acp_auto_merge = maybe"))
-		require.ErrorContains(t, err, "invalid acp_auto_merge")
-	})
-
-	t.Run("local false overrides global true", func(t *testing.T) {
-		globalDir := newConfigDir(t, "acp_auto_merge = true")
-		localDir := filepath.Join(t.TempDir(), ".loopai")
-		require.NoError(t, os.MkdirAll(localDir, 0o700))
-		require.NoError(t, os.WriteFile(filepath.Join(localDir, "config"), []byte("acp_auto_merge = false"), 0o600))
-
-		cfg, err := loadWithLocal(globalDir, localDir)
-		require.NoError(t, err)
-		assert.False(t, cfg.ACPAutoMerge)
-		assert.True(t, cfg.ACPAutoMergeSet)
-	})
-
-	t.Run("local true overrides global false", func(t *testing.T) {
-		globalDir := newConfigDir(t, "acp_auto_merge = false")
-		localDir := filepath.Join(t.TempDir(), ".loopai")
-		require.NoError(t, os.MkdirAll(localDir, 0o700))
-		require.NoError(t, os.WriteFile(filepath.Join(localDir, "config"), []byte("acp_auto_merge = true"), 0o600))
-
-		cfg, err := loadWithLocal(globalDir, localDir)
-		require.NoError(t, err)
-		assert.True(t, cfg.ACPAutoMerge)
-		assert.True(t, cfg.ACPAutoMergeSet)
-	})
-
-	t.Run("local without the key keeps global false", func(t *testing.T) {
-		globalDir := newConfigDir(t, "acp_auto_merge = false")
-		localDir := filepath.Join(t.TempDir(), ".loopai")
-		require.NoError(t, os.MkdirAll(localDir, 0o700))
-		require.NoError(t, os.WriteFile(filepath.Join(localDir, "config"), []byte("keep_awake = false"), 0o600))
-
-		cfg, err := loadWithLocal(globalDir, localDir)
-		require.NoError(t, err)
-		assert.False(t, cfg.ACPAutoMerge)
-	})
-}
-
 func TestLoad_RemovedKeyInGlobalOrLocal(t *testing.T) {
 	for _, tc := range []struct {
-		name, global, local, wantScope string
+		name, global, local, wantScope, wantKey, wantReplacement string
 	}{
-		{name: "global", global: "executor = codex", local: "plans_dir = plans", wantScope: "parse global config"},
-		{name: "local", global: "plans_dir = plans", local: "executor =", wantScope: "parse local config"},
+		{name: "global", global: "executor = codex", local: "plans_dir = plans", wantScope: "parse global config",
+			wantKey: "executor", wantReplacement: "task_model = codex:<model>[:effort]"},
+		{name: "local", global: "plans_dir = plans", local: "executor =", wantScope: "parse local config",
+			wantKey: "executor", wantReplacement: "task_model = codex:<model>[:effort]"},
+		{name: "local acp_auto_merge", global: "plans_dir = plans", local: "acp_auto_merge = true", wantScope: "parse local config",
+			wantKey: "acp_auto_merge", wantReplacement: "merge with loopai --merge or the loopai-merge skill"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := isolateHome(t)
@@ -2035,8 +1967,8 @@ func TestLoad_RemovedKeyInGlobalOrLocal(t *testing.T) {
 			_, err := Load("")
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantScope)
-			assert.Contains(t, err.Error(), "config key executor was removed")
-			assert.Contains(t, err.Error(), "task_model = codex:<model>[:effort]")
+			assert.Contains(t, err.Error(), "config key "+tc.wantKey+" was removed")
+			assert.Contains(t, err.Error(), tc.wantReplacement)
 		})
 	}
 }

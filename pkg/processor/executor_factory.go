@@ -265,7 +265,6 @@ func (cfg Config) applyClaudeAppConfig(e *executor.ClaudeExecutor) {
 		return
 	}
 	e.Command = cfg.AppConfig.ClaudeCommand
-	e.NoResume = !cfg.AppConfig.IsRealClaudeCommand()
 	e.Args = cfg.AppConfig.ClaudeArgs
 	e.ArgsSet = cfg.AppConfig.ClaudeArgsSet
 	e.ErrorPatterns = cfg.AppConfig.ClaudeErrorPatterns
@@ -339,7 +338,6 @@ func (cfg Config) newBaseCodexExecutor(log Logger) *executor.CodexExecutor {
 		return e
 	}
 	e.Command = cfg.AppConfig.CodexCommand
-	e.NoResume = !cfg.AppConfig.IsRealCodexCommand()
 	// set here so both codex paths carry the extras: codex phase executors and the
 	// external codex reviewer
 	e.ExtraArgs = cfg.AppConfig.CodexArgs

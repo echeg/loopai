@@ -116,7 +116,6 @@ type CodexExecutor struct {
 	ForceReadOnly        bool                                  // require the read-only sandbox even when the runtime disables its default sandbox; used by external review so it cannot modify the project. holds against loopai config (codex_sandbox) but not against ExtraArgs, which is trusted user input and can carry --dangerously-bypass-approvals-and-sandbox
 	ExtraArgs            string                                // user-supplied extras (codex_args / --codex-args), appended after loopai's own -c overrides so an explicit user value wins on key collision
 	IdleTimeout          time.Duration                         // kill session after this duration of no output, zero = disabled
-	NoResume             bool                                  // ignore a WithResumeSession id and report no session id; set for wrapper commands, which define their own CLI
 	headerEmitted        atomic.Bool                           // tracks first invocation across Run() calls; false until first task/review then suppressed permanently — used to emit codex's resolved model/sandbox/effort once at the top of the run
 	callbackMu           sync.Mutex                            // serializes output and timing handlers; runner loggers require serialized calls
 	targetOS             string                                // for testing; empty uses runtime.GOOS
@@ -187,14 +186,6 @@ func (e *CodexExecutor) reviewerSandboxOverrides() []string {
 	return nil
 }
 
-// resumeID returns the session id this run should resume, or "" for a fresh session.
-func (e *CodexExecutor) resumeID(ctx context.Context) string {
-	if e.NoResume {
-		return ""
-	}
-	return ResumeSession(ctx)
-}
-
 // codexFilterState tracks header separator count for filtering.
 type codexFilterState struct {
 	headerCount int  // tracks "--------" separators seen (show config between first two)
@@ -261,19 +252,6 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	// so it defeats ForceReadOnly there.
 	args = append(args, splitArgs(e.ExtraArgs)...)
 
-	// a resumed run is `codex exec <options> resume <id> -`. every option above stays
-	// before the subcommand because `resume` itself rejects --sandbox, while options given
-	// to `exec` apply to the resumed session (verified against codex-cli 0.162.0); `-`
-	// is resume's explicit read-the-prompt-from-stdin positional.
-	resumeID := e.resumeID(ctx)
-	if resumeID != "" {
-		args = append(args, "resume", resumeID, "-")
-	}
-	// a resumed session appends to the rollout file its earlier turns wrote, so the tail starts
-	// where that file ends now: replaying it would show old reasoning again and read the previous
-	// turn's task_complete as this one's, starting the grace kill at once.
-	resumeStart := e.rolloutEnd(resumeID)
-
 	// pass prompt via stdin to avoid Windows 8191-char command-line limit;
 	// codex reads from stdin when no positional prompt argument is given.
 	// MultiAgent signals a codex phase executor (set by processor.buildCodexExecutor only;
@@ -326,7 +304,7 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	go func() {
 		completionDone <- e.watchTaskComplete(execCtx, execCancel, completed, runDone)
 	}()
-	tailCancel, tailDone := e.startRolloutTail(execCtx, sessionIDCh, idleTouch, completed, resumeStart)
+	tailCancel, tailDone := e.startRolloutTail(execCtx, sessionIDCh, idleTouch, completed)
 
 	// read stdout entirely as final response; wrap with touch-on-read so reads
 	// keep the idle timer alive even while stderr is quiet.
@@ -351,11 +329,7 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	tailCancel()
 	<-tailDone
 
-	result := e.runResult(ctx, execCtx, stdoutContent, lastAgentMessage, stderrRes, stdoutErr, waitErr)
-	if !e.NoResume {
-		result.SessionID = stderrRes.sessionID
-	}
-	return result
+	return e.runResult(ctx, execCtx, stdoutContent, lastAgentMessage, stderrRes, stdoutErr, waitErr)
 }
 
 // runResult classifies a finished codex process into a Result. it runs after
@@ -567,7 +541,6 @@ func (e *CodexExecutor) checkPatterns(stdoutContent string, stderr stderrResult)
 // subject to the lastLines tail truncation (5 lines, 256 runes per line).
 type stderrResult struct {
 	lastLines  []string // last few lines of stderr for error context
-	sessionID  string   // first "session id: <uuid>" seen on stderr
 	limitMatch string   // first matched limit pattern seen on stderr (live scan)
 	errorMatch string   // first matched error pattern seen on stderr (live scan)
 	err        error
@@ -594,7 +567,7 @@ func (e *CodexExecutor) processStderr(ctx context.Context, r io.Reader, opts std
 	state := &codexFilterState{firstRun: opts.firstRun}
 	var tail []string
 	var limitMatch, errorMatch string
-	var sessionID string
+	sessionIDSent := false
 
 	err := readLines(ctx, r, func(line string) {
 		if opts.idleTouch != nil {
@@ -607,15 +580,13 @@ func (e *CodexExecutor) processStderr(ctx context.Context, r io.Reader, opts std
 
 		// surface session id from header block to caller (once) so the rollout
 		// file can be tailed in parallel for assistant-message streaming.
-		if sessionID == "" {
+		if !sessionIDSent && opts.sessionIDCh != nil {
 			if id := e.extractSessionID(line); id != "" {
-				sessionID = id
-				if opts.sessionIDCh != nil {
-					select {
-					case opts.sessionIDCh <- id:
-					default:
-					}
+				select {
+				case opts.sessionIDCh <- id:
+				default:
 				}
+				sessionIDSent = true
 			}
 		}
 
@@ -638,9 +609,9 @@ func (e *CodexExecutor) processStderr(ctx context.Context, r io.Reader, opts std
 	})
 
 	if err != nil {
-		return stderrResult{lastLines: tail, limitMatch: limitMatch, errorMatch: errorMatch, sessionID: sessionID, err: fmt.Errorf("read stderr: %w", err)}
+		return stderrResult{lastLines: tail, limitMatch: limitMatch, errorMatch: errorMatch, err: fmt.Errorf("read stderr: %w", err)}
 	}
-	return stderrResult{lastLines: tail, limitMatch: limitMatch, errorMatch: errorMatch, sessionID: sessionID}
+	return stderrResult{lastLines: tail, limitMatch: limitMatch, errorMatch: errorMatch}
 }
 
 // scanLineForPatterns updates limitMatch / errorMatch with the first matching
@@ -785,7 +756,7 @@ func (e *CodexExecutor) extractSessionID(line string) string {
 // returning so the tailer drains remaining file content and exits cleanly.
 // Completion monitoring also requires the tailer when both display handlers are nil.
 func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-chan string, idleTouch func(),
-	completed chan<- string, start rolloutStart) (context.CancelFunc, <-chan struct{}) {
+	completed chan<- string) (context.CancelFunc, <-chan struct{}) {
 	tailCtx, tailCancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	go func() {
@@ -794,38 +765,10 @@ func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-c
 		case <-tailCtx.Done():
 			return
 		case id := <-sessionIDCh:
-			e.tailRolloutFile(tailCtx, id, idleTouch, completed, start)
+			e.tailRolloutFile(tailCtx, id, idleTouch, completed)
 		}
 	}()
 	return tailCancel, done
-}
-
-// rolloutStart is where the main rollout tail begins: offset bytes into path. The zero value
-// reads every file from its start.
-type rolloutStart struct {
-	path   string
-	offset int64
-}
-
-// rolloutEnd returns the current end of the rollout file a resumed session will append to, or
-// the zero rolloutStart for a fresh session or a file that does not exist yet.
-func (e *CodexExecutor) rolloutEnd(sessionID string) rolloutStart {
-	if sessionID == "" {
-		return rolloutStart{}
-	}
-	pattern := rolloutFilePattern(sessionID)
-	if pattern == "" {
-		return rolloutStart{}
-	}
-	matches, _ := filepath.Glob(pattern)
-	if len(matches) == 0 {
-		return rolloutStart{}
-	}
-	info, err := os.Stat(matches[0])
-	if err != nil {
-		return rolloutStart{}
-	}
-	return rolloutStart{path: matches[0], offset: info.Size()}
 }
 
 // rolloutFilePattern is the glob matching a session's rollout file, or "" when no codex home
@@ -877,9 +820,8 @@ func (e *CodexExecutor) findRolloutFile(ctx context.Context, sessionID string) s
 // runs until ctx is canceled. on cancellation, drains any remaining buffered
 // lines before returning so late writes (e.g. codex flushing the final
 // assistant message just before exit) are not lost.
-// the main rollout starts at start.offset when the located file is start.path.
 func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, idleTouch func(),
-	completed chan<- string, start rolloutStart) {
+	completed chan<- string) {
 	path := e.findRolloutFile(ctx, sessionID)
 	if path == "" {
 		// suppress the diagnostic when the session was canceled — findRolloutFile
@@ -902,11 +844,6 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 		return
 	}
 	states[path].completed = completed // child rollouts never complete the main invocation
-	if start.offset > 0 && start.path == path {
-		if _, err := states[path].file.Seek(start.offset, io.SeekStart); err != nil {
-			log.Printf("codex rollout seek failed (%s): %v; earlier turns may be replayed", path, err)
-		}
-	}
 	defer func() {
 		for _, state := range states {
 			_ = state.file.Close()

@@ -85,7 +85,6 @@ type opts struct {
 	NoT3                    bool          `long:"no-t3" description:"disable T3 thread reporting and PR linking, overriding --t3, LOOPAI_T3, and config"`
 	T3ProgressThread        string        `long:"t3-progress-thread" value-name:"thread-id" description:"update only the title of this existing T3 Code thread with run progress, preserving its provider and original title"`
 	T3Launch                string        `long:"t3-launch" optional:"true" optional-value:"auto" choice:"auto" choice:"agent" choice:"terminal" description:"launch in a T3 Code worktree and exit: bare/auto = configured loopai provider session or terminal, agent = require provider instance, terminal = skip provider settings"`
-	ACP                     bool          `long:"acp" description:"serve the Agent Client Protocol on stdin/stdout so T3 Code can host loopai as a provider session (started by loopai-acp)"`
 	Version                 bool          `short:"v" long:"version" description:"print version and exit"`
 	SkillContract           bool          `long:"skill-contract" description:"print the skill contract number and exit"`
 	Serve                   bool          `short:"s" long:"serve" description:"start web dashboard for real-time streaming"`
@@ -314,9 +313,10 @@ type executePlanRequest struct {
 	// Out receives the human-readable run output: startup banner, completion stats, worktree
 	// notices, and the progress logger's console copy. nil keeps stdout (color.Output).
 	Out io.Writer
-	// NonInteractive marks an in-process driver with no terminal: a missing plan is an error
-	// instead of the selector or auto-plan prompt, the pause handler and break signal are not
-	// installed, and the cmux, orca, and T3 reporters are not constructed.
+	// NonInteractive marks a run with no terminal to answer it, as prepareNonInteractiveRequest
+	// builds: a missing plan is an error instead of the selector or auto-plan prompt, the pause
+	// handler and break signal are not installed, and the cmux, orca, and T3 reporters are not
+	// constructed.
 	NonInteractive bool
 	// LogDecorator wraps the runner logger at the dashboard's position, below section timing.
 	LogDecorator func(processor.Logger) processor.Logger
@@ -387,7 +387,6 @@ func (c *cleanupHolder) call() {
 
 func main() {
 	if os.Getenv("GO_FLAGS_COMPLETION") == "" {
-		// in ACP mode stdout carries JSON-RPC only, so the banner moves to stderr
 		fmt.Fprintf(versionBannerWriter(os.Args[1:]), "loopai %s\n", resolveVersion())
 	}
 
@@ -478,12 +477,6 @@ func run(ctx context.Context, o opts) (runErr error) {
 	if err != nil || done {
 		resolveStaleCmuxStatus(preserveEarlyStatus)
 		return err
-	}
-	// the ACP agent loads config per prompt in each session's working directory. Loading it here,
-	// in whatever directory the client started the process in, would turn a config error into a
-	// failed session start instead of a failed turn carrying the message.
-	if o.ACP {
-		return runACPCommand(ctx, o)
 	}
 	// load config first to get custom command paths
 	cfg, err := loadRunConfig(o)
@@ -3171,9 +3164,8 @@ func resolveReviewerChain(cfg *config.Config, mode processor.Mode) (externalRevi
 		return externalReviewSelection{Resolved: true}, nil
 	}
 	// modes that never run a review phase must not require reviewer binaries: --gen-agents
-	// only writes agent files and an ACP chat turn answers in one session, so a configured
-	// reviewer missing from PATH is irrelevant to them.
-	if mode == processor.ModeTasksOnly || mode == processor.ModeGenAgents || mode == processor.ModeACPChat {
+	// only writes agent files, so a configured reviewer missing from PATH is irrelevant to it.
+	if mode == processor.ModeTasksOnly || mode == processor.ModeGenAgents {
 		return externalReviewSelection{Resolved: true}, nil
 	}
 
@@ -3250,7 +3242,7 @@ func modePhaseProviders(cfg *config.Config, mode processor.Mode) []string {
 		add(cfg.ReviewProvider)
 	case processor.ModeTasksOnly, processor.ModeGenAgents:
 		add(cfg.TaskProvider)
-	case processor.ModeReview, processor.ModeCodexOnly, processor.ModeACPChat:
+	case processor.ModeReview, processor.ModeCodexOnly:
 		add(cfg.ReviewProvider)
 	default:
 		add(cfg.TaskProvider)
@@ -3634,9 +3626,6 @@ func validateFlags(o opts) error {
 	if err := validateT3LaunchFlags(o); err != nil {
 		return err
 	}
-	if err := validateACPFlags(o); err != nil {
-		return err
-	}
 	if err := validateCommitFlags(o); err != nil {
 		return err
 	}
@@ -3841,7 +3830,6 @@ func validateT3ProgressThreadFlags(o opts) error {
 	}{
 		{"--no-t3", o.NoT3},
 		{"--t3-launch", o.T3Launch != ""},
-		{"--acp", o.ACP},
 		{"--merge, --pr, or --report", closeoutRequested(o)},
 		{"--plan", o.PlanDescription != ""},
 		{"--gen-agents", o.GenAgents},
@@ -4366,7 +4354,7 @@ func modePhaseBanners(o opts, cfg *config.Config, mode processor.Mode) []phaseBa
 		return []phaseBanner{resolvePhaseBanner("plan", resolvePlanSpec(o, cfg))}
 	case processor.ModeTasksOnly, processor.ModeGenAgents:
 		return []phaseBanner{task}
-	case processor.ModeReview, processor.ModeCodexOnly, processor.ModeACPChat:
+	case processor.ModeReview, processor.ModeCodexOnly:
 		return []phaseBanner{review}
 	default:
 		return []phaseBanner{task, review}
@@ -4424,11 +4412,6 @@ func runHeaderParams(o opts, cfg *config.Config, mode processor.Mode, external .
 		// one analysis session driven by task_model; no review phase runs, so do not
 		// print a review model the mode never uses
 		p.TaskModel = resolveSpec(o.TaskModel, cfg.TaskModel)
-		return p
-	}
-	if mode == processor.ModeACPChat {
-		// one session driven by the review spec, which inherits task_model when unset
-		p.ReviewModel = resolveReviewSpec(o, cfg)
 		return p
 	}
 	p.TaskModel = resolveSpec(o.TaskModel, cfg.TaskModel)
@@ -5271,7 +5254,7 @@ func clearStaleCmuxStatus(o opts) {
 // and never constructs a reporter.
 func isStandaloneCommand(o opts) bool {
 	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || o.GenAgents || o.T3Launch != "" ||
-		o.ACP || o.SkillContract || (o.Reset && isResetOnly(o))
+		o.SkillContract || (o.Reset && isResetOnly(o))
 }
 
 // handOffSucceeded reports whether an early stop came from a successful cmux workspace hand-off,

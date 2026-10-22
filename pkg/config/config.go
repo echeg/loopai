@@ -26,7 +26,6 @@ const (
 	codexPromptFile                = "codex.txt"
 	makePlanPromptFile             = "make_plan.txt"
 	genAgentsPromptFile            = "gen_agents.txt"
-	acpChatPromptFile              = "acp_chat.txt"
 	finalizePromptFile             = "finalize.txt"
 	reportPromptFile               = "report.txt"
 	customReviewPromptFile         = "custom_review.txt"
@@ -190,8 +189,6 @@ type Config struct {
 	FinalizeMergeMethodSet   bool          `json:"-"`                       // tracks if finalize_merge_method was explicitly set in config
 	FinalizeChecksTimeout    time.Duration `json:"finalize_checks_timeout"` // bound on waiting for PR checks under finalize = merge
 	FinalizeChecksTimeoutSet bool          `json:"-"`                       // tracks if finalize_checks_timeout was explicitly set in config
-	ACPAutoMerge             bool          `json:"acp_auto_merge"`          // ACP agent mode merges the plan branch into the local base after a low/medium-risk run
-	ACPAutoMergeSet          bool          `json:"-"`                       // tracks if acp_auto_merge was explicitly set in config
 	ReportEnabled            bool          `json:"report_enabled"`
 	ReportEnabledSet         bool          `json:"-"` // tracks if report_enabled was explicitly set in config
 
@@ -254,7 +251,6 @@ type Config struct {
 	CodexPrompt                string `json:"-"`
 	MakePlanPrompt             string `json:"-"`
 	GenAgentsPrompt            string `json:"-"`
-	ACPChatPrompt              string `json:"-"`
 	FinalizePrompt             string `json:"-"`
 	ReportPrompt               string `json:"-"`
 	CustomReviewPrompt         string `json:"-"`
@@ -455,8 +451,6 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		FinalizeMergeMethodSet:   values.FinalizeMergeMethodSet,
 		FinalizeChecksTimeout:    values.FinalizeChecksTimeout,
 		FinalizeChecksTimeoutSet: values.FinalizeChecksTimeoutSet,
-		ACPAutoMerge:             values.ACPAutoMerge,
-		ACPAutoMergeSet:          values.ACPAutoMergeSet,
 		ReportEnabled:            values.ReportEnabled,
 		ReportEnabledSet:         values.ReportEnabledSet,
 		PreserveAnthropicAPIKey:  values.PreserveAnthropicAPIKey,
@@ -514,7 +508,6 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		CodexPrompt:                prompts.Codex,
 		MakePlanPrompt:             prompts.MakePlan,
 		GenAgentsPrompt:            prompts.GenAgents,
-		ACPChatPrompt:              prompts.ACPChat,
 		FinalizePrompt:             prompts.Finalize,
 		ReportPrompt:               prompts.Report,
 		CustomReviewPrompt:         prompts.CustomReview,

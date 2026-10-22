@@ -232,9 +232,8 @@ func (s *Service) AutoCommitAll(message string) (bool, error) {
 	return committed, nil
 }
 
-// AcquireWorktreeCreationLock serializes source auto-commit, worktree creation, and the ACP
-// auto-merge into a checked-out base branch across loopai processes using the repository's shared
-// Git metadata directory.
+// AcquireWorktreeCreationLock serializes source auto-commit and worktree creation across
+// loopai processes using the repository's shared Git metadata directory.
 func (s *Service) AcquireWorktreeCreationLock() (func() error, error) {
 	return s.AcquireWorktreeCreationLockContext(context.Background())
 }

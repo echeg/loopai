@@ -38,7 +38,7 @@ func TestClaudeExecutor_Run_Success(t *testing.T) {
 	assert.Equal(t, "<<<RALPHEX:ALL_TASKS_DONE>>>", result.Signal)
 }
 
-func TestClaudeExecutor_Run_FinalizeAndChatSignals(t *testing.T) {
+func TestClaudeExecutor_Run_FinalizeSignals(t *testing.T) {
 	tests := []struct {
 		name       string
 		text       string
@@ -46,8 +46,6 @@ func TestClaudeExecutor_Run_FinalizeAndChatSignals(t *testing.T) {
 	}{
 		{name: "done", text: `merge resolved, validation passed\n<<<RALPHEX:FINALIZE_DONE>>>`, wantSignal: status.FinalizeDone},
 		{name: "blocked", text: `<<<RALPHEX:FINALIZE_BLOCKED>>>\nmake test failed`, wantSignal: status.FinalizeBlocked},
-		{name: "acp merge", text: `committed the fix\n<<<RALPHEX:ACP_MERGE>>>`, wantSignal: status.ACPMerge},
-		{name: "acp pr", text: `opening a pull request\n<<<RALPHEX:ACP_PR>>>`, wantSignal: status.ACPPR},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -778,9 +776,6 @@ Note: a minor formatting preference was noted but not flagged.`, status.CodexDon
 		{"merged and validated " + status.FinalizeDone, status.FinalizeDone},
 		{status.FinalizeBlocked + "\ngo test failed", status.FinalizeBlocked},
 		{"quoted " + status.FinalizeDone + " but " + status.FinalizeBlocked + "\nreason", status.FinalizeBlocked},
-		{"merge requested\n" + status.ACPMerge, status.ACPMerge},
-		{"pull request requested\n" + status.ACPPR, status.ACPPR},
-		{"both " + status.ACPPR + " and " + status.ACPMerge, status.ACPMerge},
 		{"no signal here", ""},
 	}
 
@@ -2787,138 +2782,4 @@ func TestClaudeExecutor_Run_CancelProcessTree(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run blocked after process tree cancellation")
 	}
-}
-
-func TestClaudeExecutor_Run_ResumeArgs(t *testing.T) {
-	const id = "6f1c2a3b-0000-4000-8000-000000000001"
-	defaults := []string{"--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"}
-	tests := []struct {
-		name   string
-		exec   func() *ClaudeExecutor
-		resume string
-		want   []string
-	}{
-		{name: "fresh session with defaults", exec: func() *ClaudeExecutor { return &ClaudeExecutor{} },
-			want: append(append([]string{}, defaults...), "--print")},
-		{name: "resume appended to defaults", exec: func() *ClaudeExecutor { return &ClaudeExecutor{} }, resume: id,
-			want: append(append([]string{}, defaults...), "--resume", id, "--print")},
-		{name: "resume follows model and effort", exec: func() *ClaudeExecutor { return &ClaudeExecutor{Model: "opus", Effort: "high"} },
-			resume: id, want: append(append([]string{}, defaults...), "--model", "opus", "--effort", "high", "--resume", id, "--print")},
-		{name: "resume survives replaced claude_args",
-			exec:   func() *ClaudeExecutor { return &ClaudeExecutor{Args: "--custom-arg value", ArgsSet: true} },
-			resume: id, want: []string{"--custom-arg", "value", "--resume", id, "--print"}},
-		{name: "resume survives explicit empty claude_args",
-			exec:   func() *ClaudeExecutor { return &ClaudeExecutor{ArgsSet: true} },
-			resume: id, want: []string{"--resume", id, "--print"}},
-		{name: "configured resume replaced by the requested one",
-			exec:   func() *ClaudeExecutor { return &ClaudeExecutor{Args: "--resume old-id --verbose"} },
-			resume: id, want: []string{"--verbose", "--resume", id, "--print"}},
-		{name: "wrapper command ignores resume",
-			exec:   func() *ClaudeExecutor { return &ClaudeExecutor{Command: "claude-wrapper", NoResume: true} },
-			resume: id, want: append(append([]string{}, defaults...), "--print")},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			var captured []string
-			e := tc.exec()
-			e.cmdRunner = &mocks.CommandRunnerMock{
-				RunFunc: func(_ context.Context, _ string, args ...string) (io.Reader, func() error, error) {
-					captured = args
-					return strings.NewReader(`{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}`), func() error { return nil }, nil
-				},
-			}
-			result := e.Run(WithResumeSession(context.Background(), tc.resume), "prompt")
-			require.NoError(t, result.Error)
-			assert.Equal(t, tc.want, captured)
-		})
-	}
-}
-
-func TestClaudeExecutor_Run_SessionID(t *testing.T) {
-	stream := strings.Join([]string{
-		`{"type":"system","subtype":"init","session_id":"6f1c2a3b-0000-4000-8000-00000000000a","model":"opus"}`,
-		`{"type":"system","subtype":"task_started","session_id":"other","description":"Run tests"}`,
-		`{"type":"system","subtype":"init","session_id":"6f1c2a3b-0000-4000-8000-00000000000b"}`,
-		`{"type":"assistant","session_id":"6f1c2a3b-0000-4000-8000-00000000000a","message":{"content":[{"type":"text","text":"answer"}]}}`,
-		`{"type":"result","subtype":"success","session_id":"6f1c2a3b-0000-4000-8000-00000000000a","result":"answer"}`,
-	}, "\n")
-	run := func(t *testing.T, e *ClaudeExecutor, wait func() error) Result {
-		t.Helper()
-		e.cmdRunner = &mocks.CommandRunnerMock{
-			RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
-				return strings.NewReader(stream), wait, nil
-			},
-		}
-		return e.Run(context.Background(), "prompt")
-	}
-
-	t.Run("first init event wins", func(t *testing.T) {
-		result := run(t, &ClaudeExecutor{}, func() error { return nil })
-		require.NoError(t, result.Error)
-		assert.Equal(t, "6f1c2a3b-0000-4000-8000-00000000000a", result.SessionID)
-		assert.Contains(t, result.Output, "answer")
-	})
-
-	t.Run("failed process still reports the session", func(t *testing.T) {
-		result := run(t, &ClaudeExecutor{}, func() error { return errors.New("exit status 1") })
-		require.Error(t, result.Error)
-		assert.Equal(t, "6f1c2a3b-0000-4000-8000-00000000000a", result.SessionID)
-	})
-
-	t.Run("wrapper reports no session", func(t *testing.T) {
-		result := run(t, &ClaudeExecutor{NoResume: true}, func() error { return nil })
-		require.NoError(t, result.Error)
-		assert.Empty(t, result.SessionID)
-	})
-
-	t.Run("stream without init reports no session", func(t *testing.T) {
-		e := &ClaudeExecutor{cmdRunner: &mocks.CommandRunnerMock{
-			RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
-				return strings.NewReader(`{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}`), func() error { return nil }, nil
-			},
-		}}
-		assert.Empty(t, e.Run(context.Background(), "prompt").SessionID)
-	})
-}
-
-func TestClaudeExecutor_Run_Reply(t *testing.T) {
-	tests := []struct {
-		name   string
-		stream []string
-		want   string
-	}{
-		{name: "string result is the final message", stream: []string{
-			`{"type":"assistant","message":{"content":[{"type":"text","text":"I'll check the report."}]}}`,
-			`{"type":"assistant","message":{"content":[{"type":"text","text":"Risk is medium."}]}}`,
-			`{"type":"result","subtype":"success","result":"Risk is medium."}`,
-		}, want: "Risk is medium."},
-		{name: "error result is not a reply", stream: []string{
-			`{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}`,
-			`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"boom"}`,
-		}},
-		{name: "object result is not a reply", stream: []string{
-			`{"type":"result","result":{"output":"structured"}}`,
-		}},
-		{name: "no result event", stream: []string{
-			`{"type":"assistant","message":{"content":[{"type":"text","text":"answer"}]}}`,
-		}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			e := &ClaudeExecutor{cmdRunner: &mocks.CommandRunnerMock{
-				RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
-					return strings.NewReader(strings.Join(tc.stream, "\n")), func() error { return nil }, nil
-				},
-			}}
-			assert.Equal(t, tc.want, e.Run(context.Background(), "prompt").Reply)
-		})
-	}
-}
-
-func TestWithResumeSession(t *testing.T) {
-	ctx := context.Background()
-	assert.Equal(t, ctx, WithResumeSession(ctx, ""), "empty id leaves the context unchanged")
-	assert.Empty(t, ResumeSession(ctx))
-	assert.Equal(t, "abc", ResumeSession(WithResumeSession(ctx, "abc")))
 }
