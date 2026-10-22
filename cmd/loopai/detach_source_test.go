@@ -61,7 +61,8 @@ func TestDetachedSourcePlanReconcile(t *testing.T) {
 
 		err := reconcileDetachedSourcePlan(svc, statePath)
 
-		require.ErrorContains(t, err, "changed during execution; left untouched")
+		require.EqualError(t, err, `reconcile the invoking checkout: source plan "docs/plans/detached.md" changed `+
+			"during execution; left untouched", "a detached run's warning names no plan chain")
 		got, readErr := os.ReadFile(planPath) //nolint:gosec // test temp path
 		require.NoError(t, readErr)
 		assert.Equal(t, "# Detached\n\nedited during the run\n", string(got))
@@ -130,7 +131,9 @@ func TestDetachedSourcePlanErrors(t *testing.T) {
 		outside := filepath.Join(t.TempDir(), "outside.md")
 		require.NoError(t, os.WriteFile(outside, []byte("# Outside\n"), 0o600))
 
-		require.ErrorContains(t, captureDetachedSourcePlan(svc, outside, statePath), "capture source plan")
+		err := captureDetachedSourcePlan(svc, outside, statePath)
+		require.ErrorContains(t, err, "capture source plan: ")
+		assert.NotContains(t, err.Error(), "chain", "a detached run's error names no plan chain")
 		assert.NoFileExists(t, statePath)
 	})
 

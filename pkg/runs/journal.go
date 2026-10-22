@@ -210,15 +210,25 @@ func nonNil[T any](s []T) []T {
 	return s
 }
 
+// journalFile is the part of the journal's file Journal uses; tests replace it to fail writes.
+type journalFile interface {
+	io.Writer
+	Truncate(size int64) error
+	Close() error
+}
+
 // Journal appends events to a run's events.jsonl. Only the run process, which holds the lifetime
 // lock, writes the journal, so seq numbers stay unique; a Journal is safe for concurrent use by
 // that process's goroutines.
 type Journal struct {
 	mu      sync.Mutex
-	f       *os.File
+	f       journalFile
 	attempt int
 	seq     int   // seq of the last event written
 	size    int64 // length of the journal's complete lines
+	// torn is the length of what failed writes left after size when cutting it off failed too. A
+	// partial write never reaches the newline that ends its line, so these bytes end in none.
+	torn int64
 }
 
 // OpenJournal opens the journal of run directory dir for attempt, creating it with mode 0600 when
@@ -252,7 +262,10 @@ func OpenJournal(dir string, attempt int) (*Journal, error) {
 
 // Append stamps ev with the next seq number, the current time, and the journal's attempt, writes
 // it as one line in a single write, and returns the stamped event. A failed write is cut off
-// again, so the journal keeps only complete lines and the seq number is not used up.
+// again, so the journal keeps only complete lines and the seq number is not used up. When the cut
+// fails too, the next append tries it again and, failing that, starts its line with a newline: the
+// torn bytes then end as a line of their own, which readers skip as corrupt, instead of corrupting
+// the event appended after them.
 func (j *Journal) Append(ev Event) (Event, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -267,12 +280,24 @@ func (j *Journal) Append(ev Event) (Event, error) {
 		return Event{}, fmt.Errorf("append journal event: %w", err)
 	}
 	line = append(line, '\n')
-	if _, err := j.f.Write(line); err != nil {
-		_ = j.f.Truncate(j.size)
+	if j.torn > 0 && j.f.Truncate(j.size) == nil {
+		j.torn = 0
+	}
+	if j.torn > 0 {
+		line = append([]byte{'\n'}, line...)
+	}
+	n, err := j.f.Write(line)
+	if err != nil {
+		if j.f.Truncate(j.size) == nil {
+			j.torn = 0
+		} else {
+			j.torn += int64(n)
+		}
 		return Event{}, fmt.Errorf("append journal event: %w", err)
 	}
 	j.seq = ev.Seq
-	j.size += int64(len(line))
+	j.size += j.torn + int64(len(line))
+	j.torn = 0
 	return ev, nil
 }
 

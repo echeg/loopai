@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -180,6 +181,89 @@ func TestJournalErrors(t *testing.T) {
 	require.NoError(t, j.Close(), "closing twice is harmless")
 	_, err = j.Append(Event{Type: EventPhase, Phase: status.PhaseTask})
 	require.ErrorContains(t, err, "journal is closed")
+}
+
+// faultyJournalFile is a journal file whose next failWrites writes stop halfway with an error and
+// whose next failTruncates truncates fail.
+type faultyJournalFile struct {
+	*os.File
+	failWrites    int
+	failTruncates int
+}
+
+func (f *faultyJournalFile) Write(p []byte) (int, error) {
+	if f.failWrites > 0 {
+		f.failWrites--
+		n, _ := f.File.Write(p[:len(p)/2])
+		return n, errors.New("disk full")
+	}
+	return f.File.Write(p) //nolint:wrapcheck // test double forwards the file's own error
+}
+
+func (f *faultyJournalFile) Truncate(size int64) error {
+	if f.failTruncates > 0 {
+		f.failTruncates--
+		return errors.New("truncate refused")
+	}
+	return f.File.Truncate(size) //nolint:wrapcheck // test double forwards the file's own error
+}
+
+func TestJournalFailedWrite(t *testing.T) {
+	tests := []struct {
+		name          string
+		failTruncates int
+		wantLines     int // newline-terminated lines in the file, corrupt ones included
+	}{
+		{name: "a cut-off failed write leaves no trace", failTruncates: 0, wantLines: 3},
+		{name: "a failed write that cannot be cut off is cut on the next append", failTruncates: 1, wantLines: 3},
+		{name: "torn bytes that stay end as a line of their own", failTruncates: 2, wantLines: 4},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			j, err := OpenJournal(dir, 1)
+			require.NoError(t, err)
+			defer j.Close()
+			_, err = j.Append(Event{Type: EventPhase, Phase: status.PhaseTask})
+			require.NoError(t, err)
+
+			file, ok := j.f.(*os.File)
+			require.True(t, ok)
+			j.f = &faultyJournalFile{File: file, failWrites: 1, failTruncates: tc.failTruncates}
+			_, err = j.Append(Event{Type: EventTask, N: 1, M: 1, Title: "torn"})
+			require.ErrorContains(t, err, "append journal event: disk full")
+
+			second, err := j.Append(Event{Type: EventTask, N: 1, M: 1, Title: "after"})
+			require.NoError(t, err)
+			assert.Equal(t, 2, second.Seq, "the failed write did not use up its seq number")
+			third, err := j.Append(Event{Type: EventFinish, Status: StatusSucceeded})
+			require.NoError(t, err)
+			assert.Equal(t, 3, third.Seq)
+
+			events, err := ReadFrom(dir, 0)
+			require.NoError(t, err)
+			assert.Equal(t, []int{1, 2, 3}, eventSeqs(events))
+			assert.Equal(t, "after", events[1].Title, "the event after the torn bytes decodes")
+			assert.Equal(t, EventFinish, events[2].Type)
+
+			data, err := os.ReadFile(filepath.Join(dir, JournalFile)) //nolint:gosec // test temp path
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantLines, bytes.Count(data, []byte("\n")))
+			assert.True(t, bytes.HasSuffix(data, []byte("\n")))
+
+			// a reopened journal continues after the complete lines, torn ones included
+			require.NoError(t, j.Close())
+			j, err = OpenJournal(dir, 2)
+			require.NoError(t, err)
+			next, err := j.Append(Event{Type: EventAttemptStart, Mode: "full"})
+			require.NoError(t, err)
+			require.NoError(t, j.Close())
+			assert.Equal(t, 4, next.Seq)
+			events, err = ReadFrom(dir, 0)
+			require.NoError(t, err)
+			assert.Equal(t, []int{1, 2, 3, 4}, eventSeqs(events))
+		})
+	}
 }
 
 func TestEventMarshalJSON(t *testing.T) {

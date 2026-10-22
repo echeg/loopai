@@ -2849,33 +2849,33 @@ func (s *Service) CapturePlanChainSourceState(planFiles []string) ([]PlanSourceS
 		}
 		changed, err := s.repo.fileHasChanges(path)
 		if err != nil {
-			return nil, fmt.Errorf("inspect chain source plan %q: %w", planFile, err)
+			return nil, fmt.Errorf("inspect source plan %q: %w", planFile, err)
 		}
 		if !changed {
 			continue
 		}
 		rel, err := filepath.Rel(s.repo.root(), path)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-			return nil, fmt.Errorf("resolve chain source plan %q inside repository", planFile)
+			return nil, fmt.Errorf("resolve source plan %q inside repository", planFile)
 		}
 		info, err := os.Lstat(path)
 		if err != nil {
-			return nil, fmt.Errorf("inspect chain source plan %q: %w", planFile, err)
+			return nil, fmt.Errorf("inspect source plan %q: %w", planFile, err)
 		}
 		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("chain source plan %q is not a regular file", planFile)
+			return nil, fmt.Errorf("source plan %q is not a regular file", planFile)
 		}
 		data, err := os.ReadFile(path) //nolint:gosec // validated regular plan path inside repository
 		if err != nil {
-			return nil, fmt.Errorf("read chain source plan %q: %w", planFile, err)
+			return nil, fmt.Errorf("read source plan %q: %w", planFile, err)
 		}
 		tracked, err := s.repo.fileTracked(path)
 		if err != nil {
-			return nil, fmt.Errorf("inspect chain source tracking for %q: %w", planFile, err)
+			return nil, fmt.Errorf("inspect source plan tracking for %q: %w", planFile, err)
 		}
 		gitState, err := s.repo.fileStateFingerprint(path)
 		if err != nil {
-			return nil, fmt.Errorf("capture chain source Git state for %q: %w", planFile, err)
+			return nil, fmt.Errorf("capture source plan Git state for %q: %w", planFile, err)
 		}
 		digest := sha256.Sum256(data)
 		states = append(states, PlanSourceState{
@@ -2904,12 +2904,12 @@ func (s *Service) reconcilePlanChainSourceState(state PlanSourceState) error {
 		return err
 	}
 	if err = s.validatePlanChainSourceParents(path); err != nil {
-		return fmt.Errorf("refuse unsafe chain source plan %q: %w", state.Path, err)
+		return fmt.Errorf("refuse unsafe source plan %q: %w", state.Path, err)
 	}
 	if state.Tracked {
 		changed, changeErr := s.repo.fileHasChanges(path)
 		if changeErr != nil {
-			return fmt.Errorf("inspect tracked chain source plan %q: %w", state.Path, changeErr)
+			return fmt.Errorf("inspect tracked source plan %q: %w", state.Path, changeErr)
 		}
 		if !changed {
 			return nil // already restored by an earlier reconciliation attempt
@@ -2921,21 +2921,21 @@ func (s *Service) reconcilePlanChainSourceState(state PlanSourceState) error {
 	}
 	if !exists {
 		if state.Tracked {
-			return fmt.Errorf("tracked chain source plan %q was deleted during execution; left untouched", state.Path)
+			return fmt.Errorf("tracked source plan %q was deleted during execution; left untouched", state.Path)
 		}
 		return nil
 	}
 	if err = s.validatePlanChainSourceParents(path); err != nil {
-		return fmt.Errorf("refuse unsafe chain source plan %q: %w", state.Path, err)
+		return fmt.Errorf("refuse unsafe source plan %q: %w", state.Path, err)
 	}
 	if state.Tracked {
 		if err = s.repo.restoreFile(path); err != nil {
-			return fmt.Errorf("restore tracked chain source plan %q: %w", state.Path, err)
+			return fmt.Errorf("restore tracked source plan %q: %w", state.Path, err)
 		}
 		return nil
 	}
 	if err = os.Remove(path); err != nil {
-		return fmt.Errorf("remove consumed untracked chain source plan %q: %w", state.Path, err)
+		return fmt.Errorf("remove consumed untracked source plan %q: %w", state.Path, err)
 	}
 	return nil
 }
@@ -2944,7 +2944,7 @@ func (s *Service) planChainSourcePath(storedPath string) (string, error) {
 	path := filepath.Join(s.repo.root(), filepath.FromSlash(storedPath))
 	rel, err := filepath.Rel(s.repo.root(), path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("refuse chain source path outside repository: %q", storedPath)
+		return "", fmt.Errorf("refuse source plan path outside repository: %q", storedPath)
 	}
 	return path, nil
 }
@@ -2955,21 +2955,21 @@ func (s *Service) capturedPlanChainSourceStillMatches(path string, state PlanSou
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("inspect chain source plan %q: %w", state.Path, err)
+		return false, fmt.Errorf("inspect source plan %q: %w", state.Path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("refuse changed non-regular chain source plan %q", state.Path)
+		return false, fmt.Errorf("refuse changed non-regular source plan %q", state.Path)
 	}
 	if uint32(info.Mode().Perm()) != state.Mode {
-		return false, fmt.Errorf("chain source plan %q mode changed during execution; left untouched", state.Path)
+		return false, fmt.Errorf("source plan %q mode changed during execution; left untouched", state.Path)
 	}
 	data, err := os.ReadFile(path) //nolint:gosec // path is constrained to the repository root
 	if err != nil {
-		return false, fmt.Errorf("read chain source plan %q: %w", state.Path, err)
+		return false, fmt.Errorf("read source plan %q: %w", state.Path, err)
 	}
 	digest := sha256.Sum256(data)
 	if hex.EncodeToString(digest[:]) != state.Digest {
-		return false, fmt.Errorf("chain source plan %q changed during execution; left untouched", state.Path)
+		return false, fmt.Errorf("source plan %q changed during execution; left untouched", state.Path)
 	}
 	return true, s.validatePlanChainSourceGitState(path, state)
 }
@@ -2977,7 +2977,7 @@ func (s *Service) capturedPlanChainSourceStillMatches(path string, state PlanSou
 func (s *Service) validatePlanChainSourceGitState(path string, state PlanSourceState) error {
 	gitState, err := s.repo.fileStateFingerprint(path)
 	if err != nil {
-		return fmt.Errorf("inspect chain source Git state for %q: %w", state.Path, err)
+		return fmt.Errorf("inspect source plan Git state for %q: %w", state.Path, err)
 	}
 	if gitState == state.GitState {
 		return nil
@@ -2985,13 +2985,13 @@ func (s *Service) validatePlanChainSourceGitState(path string, state PlanSourceS
 	if !state.Tracked {
 		tracked, trackErr := s.repo.fileTracked(path)
 		if trackErr != nil {
-			return fmt.Errorf("inspect chain source tracking for %q: %w", state.Path, trackErr)
+			return fmt.Errorf("inspect source plan tracking for %q: %w", state.Path, trackErr)
 		}
 		if tracked {
-			return fmt.Errorf("chain source plan %q became tracked during execution; left untouched", state.Path)
+			return fmt.Errorf("source plan %q became tracked during execution; left untouched", state.Path)
 		}
 	}
-	return fmt.Errorf("chain source plan %q Git state changed during execution; left untouched", state.Path)
+	return fmt.Errorf("source plan %q Git state changed during execution; left untouched", state.Path)
 }
 
 // validatePlanChainSourceParents rejects path-topology changes before source reconciliation.

@@ -51,7 +51,7 @@ func reconcileDetachedSourcePlan(svc *git.Service, statePath string) error {
 		return fmt.Errorf("parse source plan state: %w", err)
 	}
 	if err := svc.ReconcilePlanChainSourceState(state.SourcePlans); err != nil {
-		return fmt.Errorf("reconcile source plan: %w", err)
+		return fmt.Errorf("reconcile the invoking checkout: %w", err)
 	}
 	return nil
 }

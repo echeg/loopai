@@ -372,16 +372,41 @@ func TestSnapshotTaskSection(t *testing.T) {
 
 func TestSnapshotResumedPastInternalReview(t *testing.T) {
 	// a review checkpoint skipped the internal review: the final external block follows the task
-	// phase directly and its stage is completed by the next stage entered
-	s := Fold([]Event{
-		{Seq: 1, Type: EventAttemptStart, Stages: []string{StageReview, StageExternalReview, StageFinalize}},
-		{Seq: 2, Type: EventPhase, Phase: status.PhaseTask},
-		{Seq: 3, Type: EventPhase, Phase: status.PhaseExternalReview},
-		{Seq: 4, Type: EventPhase, Phase: status.PhaseLimitWait},
-		{Seq: 5, Type: EventPhase, Phase: status.PhaseExternalReview},
-		{Seq: 6, Type: EventPhase, Phase: status.PhaseFinalize},
+	// phase directly, and leaving it for a later phase shows it was the final block
+	start := Event{Type: EventAttemptStart, Stages: []string{StageReview, StageExternalReview, StageFinalize}}
+	steps := []struct {
+		name   string
+		phase  status.Phase
+		stages []string
+	}{
+		{name: "task phase", phase: status.PhaseTask, stages: []string{"pending", "pending", "pending"}},
+		{name: "external block entered from the task phase", phase: status.PhaseExternalReview,
+			stages: []string{"pending", "pending", "pending"}},
+		{name: "limit wait inside the block", phase: status.PhaseLimitWait, stages: []string{"pending", "pending", "pending"}},
+		{name: "evaluation", phase: status.PhaseExternalEval, stages: []string{"pending", "pending", "pending"}},
+		{name: "back to the reviewer", phase: status.PhaseExternalReview, stages: []string{"pending", "pending", "pending"}},
+		{name: "post-review loop stays under external review", phase: status.PhaseReview,
+			stages: []string{"done", "active", "pending"}},
+		{name: "finalize", phase: status.PhaseFinalize, stages: []string{"done", "done", "active"}},
+	}
+	s := Fold([]Event{start})
+	for _, step := range steps {
+		s.Apply(phaseEvent(step.phase))
+		assert.Equal(t, step.stages, stageStates(s), step.name)
+	}
+
+	t.Run("a final block followed by finalize", func(t *testing.T) {
+		s := Fold([]Event{start, phaseEvent(status.PhaseTask), phaseEvent(status.PhaseExternalReview),
+			phaseEvent(status.PhaseLimitWait), phaseEvent(status.PhaseExternalReview), phaseEvent(status.PhaseFinalize)})
+		assert.Equal(t, []string{"done", "done", "active"}, stageStates(s))
 	})
-	assert.Equal(t, []string{"done", "done", "active"}, stageStates(s))
+
+	t.Run("a per-task block hands back to the task phase", func(t *testing.T) {
+		s := Fold([]Event{start, phaseEvent(status.PhaseTask), phaseEvent(status.PhaseExternalReview),
+			phaseEvent(status.PhaseTask), phaseEvent(status.PhaseReview)})
+		assert.Equal(t, []string{"active", "pending", "pending"}, stageStates(s),
+			"the internal review after the last task is the review stage")
+	})
 }
 
 func TestSnapshotUndeclaredStage(t *testing.T) {

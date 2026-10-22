@@ -225,7 +225,9 @@ func (s *Snapshot) startAttempt(ev Event) {
 // An external review block entered from the task phase belongs to a task under
 // review_cadence = task and leaves the stages alone until the task phase resumes. A run resumed
 // past its internal review through a review checkpoint enters the final external review block
-// from the task phase too; its stage is then completed by the next stage entered, or by success.
+// from the task phase too; leaving that block for anything but the task phase shows it was the
+// final one, so its stage is entered first. The post-review loop that may follow then stays under
+// it, and the stages never move back to review.
 func (s *Snapshot) applyPhase(ev Event) {
 	s.Phase = ev.Phase
 	if ev.Phase == status.PhaseLimitWait {
@@ -247,6 +249,9 @@ func (s *Snapshot) applyPhase(ev Event) {
 	case stage == StageExternalReview && (s.perTaskBlock || previous == status.PhaseTask):
 		s.perTaskBlock = true
 	default:
+		if s.perTaskBlock {
+			s.enterStage(StageExternalReview)
+		}
 		s.perTaskBlock = false
 		s.tasksComplete = true
 		s.enterStage(stage)
