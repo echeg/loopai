@@ -509,53 +509,53 @@
 - [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 2
 
 ### Task 2: Remove the old T3 integration
-- [ ] delete `pkg/t3` (all 20 files). Do not run `go mod tidy`/`go mod vendor`: gorilla/websocket stays as is for Task 10.
-- [ ] in `cmd/loopai-acp/main.go`, delete only the `models` probe case and the `pkg/t3` import so the launcher stays buildable. Delete `TestRunModelsHasNoLoginVerdict` and the `models` row of `TestRunProbeCommands`. The full rewrite comes with the provider in Task 13.
-- [ ] delete the rest of `cmd/loopai/t3_settle.go` and `t3_settle_test.go`, and both `--merge` settlement call sites (main.go:5696 `t3MergeRoots`, :5711 `settleT3Threads`).
-- [ ] delete from `cmd/loopai/main.go`:
+- [x] delete `pkg/t3` (all 20 files). Do not run `go mod tidy`/`go mod vendor`: gorilla/websocket stays as is for Task 10.
+- [x] in `cmd/loopai-acp/main.go`, delete only the `models` probe case and the `pkg/t3` import so the launcher stays buildable. Delete `TestRunModelsHasNoLoginVerdict` and the `models` row of `TestRunProbeCommands`. The full rewrite comes with the provider in Task 13.
+- [x] delete the rest of `cmd/loopai/t3_settle.go` and `t3_settle_test.go`, and both `--merge` settlement call sites (main.go:5696 `t3MergeRoots`, :5711 `settleT3Threads`).
+- [x] delete from `cmd/loopai/main.go`:
   - the functions `newT3Reporter`, `startT3Reporter`, `t3TaskModel`, `finishT3Failure`, `t3ProgressThreadRequested`, `validateT3ProgressThreadFlags`, `validateT3LaunchFlags`, `t3LaunchArgs`, `t3Session`/`newT3Session`, `t3LaunchInstance`, `runT3LaunchCommand`, `newT3Dispatcher`, `linkT3PullRequest`;
   - their call sites in `validateFlags`, `runConfiguredStandaloneCommand` (and its comment, plus the run() :498 comment), `isStandaloneCommand` (`o.T3Launch != ""`), `applyReportingOverrides` (`cfg.T3 = ...`), `closeoutTarget.linkT3` (:5403, :6198), `runPRCommand` (:6030-6032), the `createPullRequest` doc (:6041), `openFinalizePR` (:7310-7312), and the `statusNote` comment (:7208);
   - keep `validatePassThroughValues`/`passThroughValue`, which Mode 2 plan-message parsing reuses. Their existing tests keep `unused` quiet; if none remain, add a direct table test here;
   - remove the `runtime` and `regexp` imports when their last use goes.
-- [ ] remove the T3 reporter plumbing:
+- [x] remove the T3 reporter plumbing:
   - `startRunReporters` returns `(*cmux.Reporter, *orca.Reporter)` without the `branch` parameter;
   - `executePlan` loses `threads` (:1768-1770, :1791, :1810, :1840, :1844, :1850, :1888, :1910, :1933, :1949, :1964);
   - `buildRunnerLogger` loses the `threads` parameter and its `WrapLogger` layer;
   - `installBreakSignal` and `makePauseHandler` lose `threads`; the latter returns `titles.WithInputWait(wait)`;
   - fix the test call sites (main_test.go:138, :160, :168, :1902, :14717, :15891, :10493-10529, :15985, :15992, :16020) and remove the `T3: true` literals at :15933 and :15983.
-- [ ] apply the removed-spellings policy to the four flags (main.go:84-87):
+- [x] apply the removed-spellings policy to the four flags (main.go:84-87):
   - mark `--t3`, `--no-t3`, `--t3-progress-thread`, `--t3-launch` `hidden:"true"` with "removed; …" descriptions;
   - in the same edit, DROP `env:"LOOPAI_T3"` and remove `"LOOPAI_T3"` from `cmuxEnvOptions` (main.go:5227);
   - drop the `choice` tags on `--t3-launch` but keep `optional:"true" optional-value:"auto"`;
   - keep the `t3ProgressThreadSet` marker and add a `t3LaunchSet` marker in `markFlagsSet`;
   - extend `rejectRemovedFlags` with the messages in Technical Details;
   - delete the pre-version `validateT3ProgressThreadFlags` call in `main()` (:407-415) and fix its comment.
-- [ ] remove the `t3` key:
+- [x] remove the `t3` key:
   - delete the commented block in `pkg/config/defaults/config:266-270`;
   - add `{name: "t3", replacement: "use loopai --detach --t3-thread <thread-id> or the loopai-t3 skill"}` to `removedKeys`;
   - remove `T3`/`T3Set` from `config.go` (:214-215, :469-470) and `values.go` (:77-78, :417-424, :677-680).
-- [ ] re-key launch history: drop the `cfg.T3` case from `launcherFor` (`launch_history.go:129-141`, comment included). Keep the `launcherT3` constant, which parse validation uses.
-- [ ] update `TestMain`:
+- [x] re-key launch history: drop the `cfg.T3` case from `launcherFor` (`launch_history.go:129-141`, comment included). Keep the `launcherT3` constant, which parse validation uses.
+- [x] update `TestMain`:
   - delete the T3 stubs (main_test.go:110-118: `newT3Reporter`, `newT3Dispatcher`, `newT3SettleDispatcher`, `newT3Session`) and reword the comment;
   - add `os.Unsetenv` for `LOOPAI_T3_TOKEN` and `LOOPAI_T3_URL`, so a developer shell cannot leak them into tests.
-- [ ] skill contract:
+- [x] skill contract:
   - delete the `--t3-launch [agent|auto|terminal]` assertion (`skill_contract_test.go:177`); `--finalize` on :178 already covers choice flags;
   - add `"--t3"`, `"--no-t3"`, `"--t3-launch"`, `"--t3-progress-thread"` to the hidden removed-flag `NotContains` list (:179);
   - reword the comment at `skill_contract.go:83`;
   - run `go test ./cmd/loopai -run TestSkillContract -update`.
-- [ ] edit `docs/backlog/symlinked-checkout-path-containment.md`: move its `area:` line to `pkg/git/external.go` and drop the `pkg/t3/launch.go`/`--t3-launch` half of the prose.
-- [ ] write tests for the removal:
+- [x] edit `docs/backlog/symlinked-checkout-path-containment.md`: move its `area:` line to `pkg/git/external.go` and drop the `pkg/t3/launch.go`/`--t3-launch` half of the prose.
+- [x] write tests for the removal:
   - `rejectRemovedFlags` table for `--t3`, `--no-t3`, `--t3-progress-thread=x`, `--t3-progress-thread=`, bare `--t3-launch`, `--t3-launch=agent`, and `--t3-launch=`; each message names the replacement;
   - a run with `LOOPAI_T3=true` in the environment and no flag passes validation;
   - `t3 = true` in config fails `config.Load` with the replacement;
   - `TestCmuxEnvOptionsCoversOptionTags` still passes;
   - `launcherFor` returns only `orca`/`cli`.
-- [ ] delete the obsolete tests:
+- [x] delete the obsolete tests:
   - the T3 test block (main_test.go:3690-4523);
   - the T3 subtests of `TestRunFinalizeCloseout` (:15542-15601);
   - the `launch_history_test.go` rows at :272-273 and :401;
   - the config/values T3 tests.
-- [ ] run `make test </dev/null`, `make lint`, `make build`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 3
+- [x] run `make test </dev/null`, `make lint`, `make build`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 3
 
 ### Task 3: Add the run registry package pkg/runs
 - [ ] create `pkg/runs/paths.go`: `RunsDir(root)` = `<root>/.loopai/progress/runs`, `Dir(root, id)`, and the per-run file names from Technical Details (none matches `progress-*.txt`). Every path is made absolute before any chdir.

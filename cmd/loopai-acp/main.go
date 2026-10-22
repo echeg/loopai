@@ -17,8 +17,6 @@ import (
 	"runtime/debug"
 	"strings"
 	"syscall"
-
-	"github.com/umputun/ralphex/pkg/t3"
 )
 
 // loopaiEnv names an explicit loopai binary, taking precedence over a sibling and PATH.
@@ -28,7 +26,6 @@ const loopaiEnv = "LOOPAI_ACP_LOOPAI"
 const exitUsage = 2
 
 const usage = `usage: loopai-acp --version
-       loopai-acp models
        loopai-acp [--permission-mode MODE] agent [--always-approve] stdio
 
 loopai-acp is a launcher for T3 Code's Grok driver: point a Grok provider instance's
@@ -68,11 +65,6 @@ func run(args []string, e env) int {
 	switch {
 	case len(args) == 1 && (args[0] == "--version" || args[0] == "-v"):
 		_, _ = fmt.Fprintf(e.stdout, "loopai-acp %s\n", resolveVersion())
-		return 0
-	case len(args) == 1 && args[0] == "models":
-		// no login line: T3 Code reads "logged in" text as an auth verdict, and loopai's
-		// providers authenticate on their own
-		_, _ = fmt.Fprintf(e.stdout, "Available models:\n  * %s (default)\n", t3.LoopaiModel)
 		return 0
 	case len(args) == 2 && args[0] == "inspect" && args[1] == "--json":
 		_, _ = fmt.Fprintln(e.stderr, "loopai-acp: inspect is not supported")

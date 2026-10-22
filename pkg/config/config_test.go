@@ -34,7 +34,7 @@ func Test_defaultsFS(t *testing.T) {
 	assert.Contains(t, string(data), "custom entries in external_reviewers")
 	assert.Contains(t, string(data), "iteration_delay_ms")
 	assert.Contains(t, string(data), "# orca = false")
-	assert.Contains(t, string(data), "# t3 = false")
+	assert.NotRegexp(t, `(?m)^#?\s*t3\s*=`, string(data), "the removed t3 key must not be documented")
 }
 
 func TestDumpDefaults_ContainsExternalReviewersComment(t *testing.T) {
@@ -730,7 +730,8 @@ func TestLoad_PreserveAnthropicAPIKey_InvalidValue(t *testing.T) {
 func TestLoad_RemovedKeysRejected(t *testing.T) {
 	for _, body := range []string{"executor = codex", "executor =", "codex_model = gpt-5.5", "codex_reasoning_effort = xhigh",
 		"external_review_tool = auto", "external_review_model =", "finalize_enabled = true", "finalize_enabled = false",
-		"acp_auto_merge = true", "acp_auto_merge = false", "acp_auto_merge ="} {
+		"acp_auto_merge = true", "acp_auto_merge = false", "acp_auto_merge =",
+		"t3 = true", "t3 = false", "t3 ="} {
 		t.Run(body, func(t *testing.T) {
 			configDir := filepath.Join(t.TempDir(), "ralphex")
 			require.NoError(t, os.MkdirAll(configDir, 0o700))
@@ -1701,17 +1702,17 @@ func TestLoad_Orca(t *testing.T) {
 	assert.True(t, cfg.OrcaSet)
 }
 
-func TestLoad_T3(t *testing.T) {
+func TestLoad_T3KeyRemoved(t *testing.T) {
 	tmpDir := t.TempDir()
 	configDir := filepath.Join(tmpDir, "loopai")
 	require.NoError(t, os.MkdirAll(filepath.Join(configDir, "prompts"), 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(configDir, "agents"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte("t3 = true"), 0o600))
 
-	cfg, err := Load(configDir)
-	require.NoError(t, err)
-	assert.True(t, cfg.T3)
-	assert.True(t, cfg.T3Set)
+	_, err := Load(configDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(),
+		"config key t3 was removed; use loopai --detach --t3-thread <thread-id> or the loopai-t3 skill")
 }
 
 func TestLocalConfig_LocalOverridesIdleTimeout(t *testing.T) {
@@ -1791,7 +1792,6 @@ func TestConfig_JSONShape(t *testing.T) {
 		MovePlanOnCompletion:    true,
 		WorktreeEnabled:         true,
 		Orca:                    true,
-		T3:                      true,
 		KeepAwake:               true,
 		PlansDir:                "docs/plans",
 		BacklogDir:              "docs/backlog",
@@ -1821,7 +1821,7 @@ func TestConfig_JSONShape(t *testing.T) {
 		"codex_timeout_ms", "codex_sandbox", "external_reviewers", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
 		"review_patience", "review_cadence", "finalize", "finalize_merge_method", "finalize_checks_timeout", "report_enabled", "preserve_anthropic_api_key",
-		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "orca", "t3", "keep_awake", "plans_dir", "backlog_dir",
+		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "orca", "keep_awake", "plans_dir", "backlog_dir",
 		"watch_dirs", "default_branch", "vcs_command", "commit_trailer",
 		"claude_error_patterns", "codex_error_patterns", "claude_limit_patterns",
 		"codex_limit_patterns", "claude_retry_patterns", "claude_swap_enabled", "wait_on_limit", "session_timeout", "idle_timeout",

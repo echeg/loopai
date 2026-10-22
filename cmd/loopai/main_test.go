@@ -36,7 +36,6 @@ import (
 	"github.com/umputun/ralphex/pkg/processor"
 	"github.com/umputun/ralphex/pkg/progress"
 	"github.com/umputun/ralphex/pkg/status"
-	"github.com/umputun/ralphex/pkg/t3"
 	"github.com/umputun/ralphex/pkg/web"
 )
 
@@ -107,14 +106,13 @@ func TestMain(m *testing.M) {
 	// keep_awake defaults to on, and awake.New would otherwise start a real sleep inhibitor
 	// for every run() under test. wiring tests inject their own holder or override this.
 	newAwakeHolder = func(bool) *awake.Holder { return nil }
-	// a developer shell may export LOOPAI_T3 and a token; no test may reach a real T3 server.
-	newT3Reporter = func(t3.Options, func(string) string) (*t3.Reporter, error) {
-		return nil, errors.New("t3 reporting is disabled in tests")
-	}
-	newT3Dispatcher = func(func(string) string) (t3.Dispatcher, error) { return nil, t3.ErrNoToken }
-	newT3SettleDispatcher = func(context.Context, func(string) string) (t3.Dispatcher, error) { return nil, t3.ErrNoRuntime }
-	newT3Session = func(context.Context, t3.Endpoint) (t3Session, error) {
-		return t3Session{}, errors.New("t3 sessions are disabled in tests")
+	// a developer shell may export a T3 Code token or server URL; no test may reach a real T3
+	// server, so neither leaks into the suite. tests that need them set them through t.Setenv.
+	for _, key := range []string{"LOOPAI_T3_TOKEN", "LOOPAI_T3_URL"} {
+		if err := os.Unsetenv(key); err != nil {
+			fmt.Fprintf(os.Stderr, "unset %s: %v\n", key, err)
+			os.Exit(1)
+		}
 	}
 	os.Exit(m.Run())
 }
@@ -135,7 +133,7 @@ func prepareWorktreeRun(o opts, req executePlanRequest, branch string) (worktree
 
 func TestBuildRunnerLoggerRecordsSectionsInOrder(t *testing.T) {
 	inner := &runnerLoggerRecorder{}
-	out, timer := buildRunnerLogger(nil, nil, nil, nil, inner, nil)
+	out, timer := buildRunnerLogger(nil, nil, nil, inner, nil)
 
 	out.PrintSection(status.NewTaskIterationSection(1))
 	out.PrintSection(status.NewInternalReviewSection(1, ""))
@@ -157,7 +155,7 @@ func TestBuildRunnerLoggerKeepsCmuxOutermost(t *testing.T) {
 	rep := cmux.New("plan.md", cmux.Models{})
 	require.NotNil(t, rep)
 
-	out, _ := buildRunnerLogger(rep, nil, nil, nil, &runnerLoggerRecorder{}, nil)
+	out, _ := buildRunnerLogger(rep, nil, nil, &runnerLoggerRecorder{}, nil)
 	_, ok := out.(interface {
 		LogLimitWait(pattern, tool, waitLabel string)
 	})
@@ -165,7 +163,7 @@ func TestBuildRunnerLoggerKeepsCmuxOutermost(t *testing.T) {
 }
 
 func TestBuildRunnerLoggerWithoutReporterReturnsTimer(t *testing.T) {
-	out, timer := buildRunnerLogger(nil, nil, nil, nil, &runnerLoggerRecorder{}, nil)
+	out, timer := buildRunnerLogger(nil, nil, nil, &runnerLoggerRecorder{}, nil)
 
 	assert.Same(t, timer, out)
 }
@@ -1899,7 +1897,7 @@ func TestBuildRunnerLoggerWithOrcaReporterWritesTitle(t *testing.T) {
 	titleRep := orca.NewWithOutput(true, "", config.ExecutorClaude, &titles, func() bool { return true })
 	require.NotNil(t, titleRep)
 
-	out, _ := buildRunnerLogger(nil, titleRep, nil, nil, &runnerLoggerRecorder{}, nil)
+	out, _ := buildRunnerLogger(nil, titleRep, nil, &runnerLoggerRecorder{}, nil)
 	out.PrintSection(status.NewTaskIterationSection(3))
 
 	assert.Equal(t, "\x1b]0;◐ loopai · task 3 · claude\a", titles.String())
@@ -3687,836 +3685,6 @@ func TestOrcaFlag(t *testing.T) {
 	})
 }
 
-func TestT3Flag(t *testing.T) {
-	t.Run("flag enables when config disabled", func(t *testing.T) {
-		cfg := &config.Config{}
-		require.NoError(t, applyCLIOverrides(opts{T3: true}, cfg))
-		assert.True(t, cfg.T3)
-	})
-	t.Run("absent flag preserves config true", func(t *testing.T) {
-		cfg := &config.Config{T3: true}
-		require.NoError(t, applyCLIOverrides(opts{}, cfg))
-		assert.True(t, cfg.T3)
-	})
-	t.Run("parsed from argv and environment", func(t *testing.T) {
-		assert.True(t, parseTestOpts(t, "--t3").T3)
-		t.Setenv("LOOPAI_T3", "true")
-		assert.True(t, parseTestOpts(t).T3)
-	})
-}
-
-func TestNoT3Flag(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		configT3 bool
-		envT3    string
-		args     []string
-	}{
-		{name: "disabled config", args: []string{"--no-t3"}},
-		{name: "enabled config", configT3: true, args: []string{"--no-t3"}},
-		{name: "environment", envT3: "true", args: []string{"--no-t3"}},
-		{name: "config and environment", configT3: true, envT3: "true", args: []string{"--no-t3"}},
-		{name: "disable last", args: []string{"--t3", "--no-t3"}},
-		{name: "enable last", args: []string{"--no-t3", "--t3"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("LOOPAI_T3", tc.envT3)
-			o := parseTestOpts(t, tc.args...)
-			require.True(t, o.NoT3)
-			require.NoError(t, validateFlags(o))
-			cfg := &config.Config{T3: tc.configT3}
-			require.NoError(t, applyCLIOverrides(o, cfg))
-			assert.False(t, cfg.T3)
-		})
-	}
-
-	for _, mode := range []string{"--merge", "--pr", "--report"} {
-		t.Run(mode, func(t *testing.T) {
-			o := parseTestOpts(t, "--no-t3", mode)
-			require.NoError(t, validateFlags(o), "disabling reporting is compatible with standalone close-out")
-		})
-	}
-}
-
-func TestLoadRunConfigCloseoutT3(t *testing.T) {
-	t.Chdir(t.TempDir())
-	for _, mode := range []string{"--pr", "--merge", "--report"} {
-		for _, tc := range []struct {
-			name     string
-			configT3 bool
-			envT3    string
-			args     []string
-			wantT3   bool
-		}{
-			{name: "preserves config", configT3: true, wantT3: true},
-			{name: "disables config", configT3: true, args: []string{"--no-t3"}},
-			{name: "disables all enable sources", configT3: true, envT3: "true", args: []string{"--no-t3", "--t3"}},
-			{name: "enables from CLI", args: []string{"--t3"}, wantT3: true},
-		} {
-			t.Run(mode+"/"+tc.name, func(t *testing.T) {
-				t.Setenv("LOOPAI_T3", tc.envT3)
-				configDir := t.TempDir()
-				// An executor-only semantic error must remain irrelevant to close-out config loading.
-				content := fmt.Sprintf("t3 = %t\npass_claude_md = true\ntask_model = claude\n", tc.configT3)
-				require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(content), 0o600))
-				args := append([]string{mode, "--config-dir", configDir}, tc.args...)
-				o := parseTestOpts(t, args...)
-				require.NoError(t, validateFlags(o))
-
-				cfg, err := loadRunConfig(o)
-
-				require.NoError(t, err)
-				assert.Equal(t, tc.wantT3, cfg.T3, "standalone PR linking consumes the loaded T3 value")
-				assert.True(t, cfg.PassClaudeMd, "close-out must still skip executor-only overrides and validation")
-			})
-		}
-	}
-}
-
-func TestT3ProgressThreadFlag(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		configT3 bool
-		envT3    string
-		args     []string
-	}{
-		{name: "disabled config"},
-		{name: "enabled config", configT3: true},
-		{name: "environment", envT3: "true"},
-		{name: "all enable sources", configT3: true, envT3: "true", args: []string{"--t3"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("LOOPAI_T3", tc.envT3)
-			t.Setenv("LOOPAI_T3_THREAD_ID", "unrelated-inherited-thread")
-			args := append([]string{"--t3-progress-thread", "planning-thread", "--worktree", "--skip-finalize"}, tc.args...)
-			o := parseTestOpts(t, args...)
-			require.NoError(t, validateFlags(o))
-			assert.Equal(t, "planning-thread", o.T3ProgressThread)
-			assert.True(t, o.t3ProgressThreadSet)
-			cfg := &config.Config{T3: tc.configT3}
-			require.NoError(t, applyCLIOverrides(o, cfg))
-			assert.False(t, cfg.T3, "ordinary reporting and PR linking must stay disabled")
-		})
-	}
-
-	t.Run("missing argument", func(t *testing.T) {
-		var o opts
-		parser := flags.NewParser(&o, flags.None)
-		_, err := parser.ParseArgs([]string{"--t3-progress-thread"})
-		require.Error(t, err)
-	})
-	for _, value := range []string{"", " ", "\t\n"} {
-		t.Run(fmt.Sprintf("blank/%q", value), func(t *testing.T) {
-			o := parseTestOpts(t, "--t3-progress-thread="+value)
-			require.True(t, o.t3ProgressThreadSet)
-			require.ErrorContains(t, validateFlags(o), "requires a non-empty thread ID")
-			cfg := &config.Config{T3: true}
-			require.NoError(t, applyCLIOverrides(o, cfg))
-			assert.False(t, cfg.T3, "an invalid explicit target must never enable ordinary reporting")
-		})
-	}
-}
-
-func TestValidateT3ProgressThreadFlags(t *testing.T) {
-	for _, flag := range []string{
-		"--no-t3", "--t3-launch", "--t3-launch=agent", "--t3-launch=terminal", "--merge", "--pr", "--report",
-		"--plan=idea", "--gen-agents", "--init", "--reset", "--dump-defaults=/tmp/defaults", "--clear", "--version", "--skill-contract", "--serve",
-	} {
-		t.Run(flag, func(t *testing.T) {
-			o := parseTestOpts(t, "--t3-progress-thread", "planning-thread", flag)
-			require.ErrorContains(t, validateFlags(o), "--t3-progress-thread cannot be combined with ")
-		})
-	}
-	for _, mode := range []string{"--tasks-only", "--review", "--external-only", "--serve"} {
-		t.Run("execution/"+mode, func(t *testing.T) {
-			o := parseTestOpts(t, "--t3-progress-thread", "planning-thread", mode, "plan.md")
-			require.NoError(t, validateFlags(o))
-		})
-	}
-	for _, mode := range []string{"--version", "--skill-contract"} {
-		t.Run("main/"+mode, func(t *testing.T) {
-			_, code := runSkillContractMain(t, mode, "--t3-progress-thread=planning-thread")
-			assert.Equal(t, 1, code, "standalone early exits must reject the ignored progress target")
-		})
-	}
-}
-
-func TestStartT3ProgressReporter(t *testing.T) {
-	dir := setupTestRepo(t)
-	gitSvc, err := git.NewService(dir, noopLogger())
-	require.NoError(t, err)
-	mainDir := setupTestRepo(t)
-	mainSvc, err := git.NewService(mainDir, noopLogger())
-	require.NoError(t, err)
-	t.Setenv("LOOPAI_T3", "true")
-	t.Setenv("LOOPAI_T3_THREAD_ID", "unrelated-inherited-thread")
-	original := newT3Reporter
-	t.Cleanup(func() { newT3Reporter = original })
-	var got []t3.Options
-	newT3Reporter = func(options t3.Options, _ func(string) string) (*t3.Reporter, error) {
-		got = append(got, options)
-		return nil, errors.New("test reporter unavailable") // capture options without a real network client
-	}
-	o := parseTestOpts(t, "--t3-progress-thread", "planning-thread", "--t3", "--worktree", "--skip-finalize")
-	cfg := &config.Config{T3: true, TaskProvider: config.ExecutorClaude, TaskModel: "claude:opus:high"}
-	require.NoError(t, applyCLIOverrides(o, cfg))
-	require.False(t, cfg.T3)
-	req := executePlanRequest{
-		Config: cfg, GitSvc: gitSvc, MainGitSvc: mainSvc, Mode: processor.ModeFull, PlanFile: "plan.md",
-	}
-	startT3Reporter(o, req, "feature")
-	require.Len(t, got, 1, "only the title-only reporter may be constructed")
-	assert.Equal(t, "planning-thread", got[0].ThreadID, "an inherited thread ID must not replace the explicit target")
-	assert.True(t, got[0].TitleOnly)
-	assert.Equal(t, mainSvc.Root(), got[0].RepoRoot)
-	assert.Empty(t, got[0].WorktreePath)
-	assert.Equal(t, "plan.md", got[0].PlanFile)
-	assert.NotNil(t, got[0].Warn)
-
-	got = nil
-	o = parseTestOpts(t, "--t3-progress-thread=")
-	req.Config.T3 = true
-	assert.Nil(t, startT3Reporter(o, req, "feature"))
-	assert.Empty(t, got, "a malformed target must never construct the normal reporter, even without prior flag validation")
-}
-
-// t3RecordingDispatcher is a t3.Dispatcher fake that records every command.
-type t3RecordingDispatcher struct {
-	mu       sync.Mutex
-	commands []t3.Command
-}
-
-func (d *t3RecordingDispatcher) Dispatch(_ context.Context, cmd t3.Command) (int64, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.commands = append(d.commands, cmd)
-	return int64(len(d.commands)), nil
-}
-
-func (d *t3RecordingDispatcher) Shell(context.Context) (t3.Shell, error) {
-	return t3.Shell{}, nil
-}
-
-func (d *t3RecordingDispatcher) titles() []string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	var out []string
-	for _, cmd := range d.commands {
-		if update, ok := cmd.(*t3.ThreadTitleUpdate); ok {
-			out = append(out, update.Title)
-		}
-	}
-	return out
-}
-
-func TestStartT3Reporter(t *testing.T) {
-	dir := setupTestRepo(t)
-	gitSvc, err := git.NewService(dir, noopLogger())
-	require.NoError(t, err)
-	mainDir := setupTestRepo(t)
-	mainSvc, err := git.NewService(mainDir, noopLogger())
-	require.NoError(t, err)
-
-	original := newT3Reporter
-	t.Cleanup(func() { newT3Reporter = original })
-
-	var got []t3.Options
-	api := &t3RecordingDispatcher{}
-	newT3Reporter = func(options t3.Options, getenv func(string) string) (*t3.Reporter, error) {
-		assert.NotNil(t, getenv)
-		got = append(got, options)
-		options.ThreadID = "th"
-		return t3.NewWithDispatcher(api, options), nil
-	}
-
-	t.Run("disabled constructs nothing", func(t *testing.T) {
-		got = nil
-		req := executePlanRequest{Config: &config.Config{}, GitSvc: gitSvc, Mode: processor.ModeFull}
-		assert.Nil(t, startT3Reporter(opts{}, req, "feat"))
-		assert.Empty(t, got)
-	})
-
-	t.Run("no-t3 suppresses configured reporter", func(t *testing.T) {
-		got = nil
-		t.Setenv("LOOPAI_T3", "true")
-		t.Setenv("LOOPAI_T3_THREAD_ID", "planning-thread")
-		o := parseTestOpts(t, "--no-t3")
-		cfg := &config.Config{T3: true}
-		require.NoError(t, applyCLIOverrides(o, cfg))
-		req := executePlanRequest{Config: cfg, GitSvc: gitSvc, Mode: processor.ModeFull}
-		assert.Nil(t, startT3Reporter(o, req, "feat"))
-		assert.Empty(t, got, "the planning thread must not be rebound or a new thread created")
-	})
-
-	t.Run("normal run records its checkout", func(t *testing.T) {
-		got = nil
-		cfg := &config.Config{T3: true, TaskProvider: config.ExecutorCodex}
-		req := executePlanRequest{Config: cfg, GitSvc: gitSvc, Mode: processor.ModeReview, PlanFile: "plan.md"}
-		threads := startT3Reporter(opts{}, req, "feat")
-		require.NotNil(t, threads)
-		require.Eventually(t, func() bool { return len(api.titles()) > 0 }, 2*time.Second, 5*time.Millisecond)
-		threads.Stop()
-		require.Len(t, got, 1)
-		assert.False(t, got[0].TitleOnly)
-		assert.Empty(t, got[0].ThreadID, "ordinary reporting keeps environment-based thread discovery")
-		assert.Equal(t, gitSvc.Root(), got[0].RepoRoot)
-		assert.Equal(t, gitSvc.Root(), got[0].WorktreePath)
-		assert.Equal(t, "feat", got[0].Branch)
-		assert.Equal(t, "plan.md", got[0].PlanFile)
-		assert.Equal(t, config.ExecutorCodex, got[0].Executor)
-		assert.NotNil(t, got[0].Warn)
-		assert.Contains(t, api.titles(), "plan · review")
-	})
-
-	t.Run("worktree run records only the branch", func(t *testing.T) {
-		got = nil
-		req := executePlanRequest{
-			Config: &config.Config{T3: true, TaskModel: "claude:opus:high"}, GitSvc: gitSvc, MainGitSvc: mainSvc,
-			Mode: processor.ModeFull,
-		}
-		threads := startT3Reporter(opts{}, req, "feat")
-		threads.Stop()
-		require.Len(t, got, 1)
-		assert.Equal(t, mainSvc.Root(), got[0].RepoRoot)
-		assert.Empty(t, got[0].WorktreePath)
-		assert.Equal(t, "opus", got[0].Model)
-	})
-
-	t.Run("unavailable server disables reporting", func(t *testing.T) {
-		newT3Reporter = func(t3.Options, func(string) string) (*t3.Reporter, error) {
-			return nil, t3.ErrNoToken
-		}
-		req := executePlanRequest{Config: &config.Config{T3: true}, GitSvc: gitSvc, Mode: processor.ModeFull}
-		assert.Nil(t, startT3Reporter(opts{}, req, "feat"))
-	})
-}
-
-func TestBuildRunnerLoggerWithT3ReporterUpdatesTitle(t *testing.T) {
-	api := &t3RecordingDispatcher{}
-	threads := t3.NewWithDispatcher(api, t3.Options{ThreadID: "th"})
-
-	out, _ := buildRunnerLogger(nil, nil, threads, nil, &runnerLoggerRecorder{}, nil)
-	out.PrintSection(status.NewTaskIterationSection(3))
-	require.Eventually(t, func() bool { return len(api.titles()) == 1 }, 2*time.Second, 5*time.Millisecond)
-	threads.Stop()
-
-	assert.Equal(t, []string{"loopai · task 3", "loopai · stopped"}, api.titles())
-}
-
-func TestFinishT3Failure(t *testing.T) {
-	tests := []struct {
-		name   string
-		runErr error
-		want   []string
-	}{
-		{name: "failure", runErr: errors.New("boom"), want: []string{"loopai · failed"}},
-		{name: "nil error", want: []string{"loopai · stopped"}},
-		{name: "user abort", runErr: processor.ErrUserAborted, want: []string{"loopai · stopped"}},
-		{name: "context cancellation", runErr: fmt.Errorf("run: %w", context.Canceled), want: []string{"loopai · stopped"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			api := &t3RecordingDispatcher{}
-			threads := t3.NewWithDispatcher(api, t3.Options{ThreadID: "th"})
-			finishT3Failure(threads, tt.runErr)
-			threads.Stop()
-			assert.Equal(t, tt.want, api.titles())
-		})
-	}
-	finishT3Failure(nil, errors.New("nil reporter is a no-op"))
-}
-
-func TestMakePauseHandlerPublishesT3Wait(t *testing.T) {
-	api := &t3RecordingDispatcher{}
-	threads := t3.NewWithDispatcher(api, t3.Options{ThreadID: "th"})
-	threads.OnPhase("", status.PhaseTask)
-	require.Eventually(t, func() bool { return len(api.titles()) == 1 }, 2*time.Second, 5*time.Millisecond)
-
-	var stdout bytes.Buffer
-	assert.True(t, makePauseHandler(strings.NewReader("\n"), &stdout, nil, threads)(context.Background()))
-	threads.Stop()
-
-	titles := api.titles()
-	assert.Equal(t, "loopai · task", titles[0])
-	assert.Equal(t, "loopai · stopped", titles[len(titles)-1])
-}
-
-// t3ShellDispatcher is a t3.Dispatcher fake serving a fixed shell snapshot.
-type t3ShellDispatcher struct {
-	t3RecordingDispatcher
-	shell t3.Shell
-}
-
-func (d *t3ShellDispatcher) Shell(context.Context) (t3.Shell, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.shell, nil
-}
-
-// Dispatch records the command and projects a created project into the shell, as the server does.
-func (d *t3ShellDispatcher) Dispatch(ctx context.Context, cmd t3.Command) (int64, error) {
-	seq, err := d.t3RecordingDispatcher.Dispatch(ctx, cmd)
-	if create, ok := cmd.(*t3.ProjectCreate); ok {
-		d.mu.Lock()
-		d.shell.Projects = append(d.shell.Projects, t3.Project{ID: create.ProjectID, Title: create.Title, WorkspaceRoot: create.WorkspaceRoot})
-		d.mu.Unlock()
-	}
-	return seq, err
-}
-
-func TestLinkT3PullRequest(t *testing.T) {
-	dir := setupTestRepo(t)
-	gitSvc, err := git.NewService(dir, noopLogger())
-	require.NoError(t, err)
-
-	original := newT3Dispatcher
-	t.Cleanup(func() { newT3Dispatcher = original })
-
-	branch := "feature"
-	api := &t3ShellDispatcher{shell: t3.Shell{
-		Projects: []t3.Project{{ID: "p1", WorkspaceRoot: gitSvc.Root()}},
-		Threads:  []t3.Thread{{ID: "th", ProjectID: "p1", Branch: &branch}},
-	}}
-
-	t.Run("links matching threads", func(t *testing.T) {
-		newT3Dispatcher = func(func(string) string) (t3.Dispatcher, error) { return api, nil }
-		var stderr bytes.Buffer
-		linkT3PullRequest(t.Context(), gitSvc, "feature", "https://github.com/acme/repo/pull/42", &stderr)
-		assert.Equal(t, "linked pull request to 1 T3 Code thread(s)\n", stderr.String())
-		require.Len(t, api.commands, 1)
-		link, ok := api.commands[0].(*t3.ThreadPullRequestLink)
-		require.True(t, ok)
-		assert.Equal(t, "th", link.ThreadID)
-		assert.Equal(t, 42, link.Number)
-	})
-
-	t.Run("no matching thread is silent", func(t *testing.T) {
-		newT3Dispatcher = func(func(string) string) (t3.Dispatcher, error) { return api, nil }
-		var stderr bytes.Buffer
-		linkT3PullRequest(t.Context(), gitSvc, "other", "https://github.com/acme/repo/pull/42", &stderr)
-		assert.Empty(t, stderr.String())
-	})
-
-	t.Run("unavailable server warns", func(t *testing.T) {
-		newT3Dispatcher = func(func(string) string) (t3.Dispatcher, error) { return nil, t3.ErrNoToken }
-		var stderr bytes.Buffer
-		linkT3PullRequest(t.Context(), gitSvc, "feature", "https://github.com/acme/repo/pull/42", &stderr)
-		assert.Contains(t, stderr.String(), "warning: t3 pull request link skipped: t3: LOOPAI_T3_TOKEN is not set")
-	})
-
-	t.Run("link failure warns", func(t *testing.T) {
-		newT3Dispatcher = func(func(string) string) (t3.Dispatcher, error) { return api, nil }
-		var stderr bytes.Buffer
-		linkT3PullRequest(t.Context(), gitSvc, "feature", "https://gitlab.com/acme/repo/-/merge_requests/1", &stderr)
-		assert.Contains(t, stderr.String(), "warning: t3 pull request link failed:")
-	})
-}
-
-func TestT3LaunchHelp(t *testing.T) {
-	var o opts
-	parser := flags.NewParser(&o, flags.HelpFlag)
-	var help bytes.Buffer
-	parser.WriteHelp(&help)
-
-	// Normalize wrapping so the assertions hold at any help output width.
-	text := strings.Join(strings.Fields(help.String()), " ")
-	assert.Regexp(t, `(?:--|/)t3-launch[=:]\[auto\|agent\|terminal\]`, text)
-	assert.Contains(t, text, "bare/auto = configured loopai provider session or terminal")
-	assert.Contains(t, text, "agent = require provider instance")
-	assert.Contains(t, text, "terminal = skip provider settings")
-}
-
-func TestT3LaunchFlagParsing(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		flag string
-		want string
-	}{
-		{name: "bare", flag: "--t3-launch", want: "auto"},
-		{name: "auto", flag: "--t3-launch=auto", want: "auto"},
-		{name: "agent", flag: "--t3-launch=agent", want: "agent"},
-		{name: "terminal", flag: "--t3-launch=terminal", want: "terminal"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			o := parseTestOpts(t, tc.flag, "docs/plans/x.md")
-			assert.Equal(t, tc.want, o.T3Launch)
-			assert.Equal(t, "docs/plans/x.md", o.PlanFile)
-			require.NoError(t, validateT3LaunchFlags(o))
-			conflicting := parseTestOpts(t, tc.flag, "--no-t3", "docs/plans/x.md")
-			require.ErrorContains(t, validateFlags(conflicting), "--t3-launch cannot be combined with --no-t3")
-		})
-	}
-	t.Run("invalid mode", func(t *testing.T) {
-		var o opts
-		parser := flags.NewParser(&o, flags.Default&^flags.PrintErrors)
-		_, err := parser.ParseArgs([]string{"--t3-launch=other", "docs/plans/x.md"})
-		require.ErrorContains(t, err, "other")
-	})
-}
-
-func TestValidateT3LaunchFlags(t *testing.T) {
-	valid := func(mut func(*opts)) opts {
-		o := opts{T3Launch: "auto", PlanFile: "docs/plans/x.md"}
-		if mut != nil {
-			mut(&o)
-		}
-		return o
-	}
-	tests := []struct {
-		name    string
-		o       opts
-		wantErr string
-	}{
-		{name: "not requested", o: opts{Worktree: true}},
-		{name: "plan only", o: valid(nil)},
-		{name: "agent", o: valid(func(o *opts) { o.T3Launch = "agent" })},
-		{name: "terminal", o: valid(func(o *opts) { o.T3Launch = "terminal" })},
-		{name: "forwarded flags", o: valid(func(o *opts) {
-			o.TaskModel, o.ReviewModel, o.ExternalReviewers = "codex:gpt-5:high", "claude:opus", "claude:opus:high,codex"
-		})},
-		{name: "missing plan", o: opts{T3Launch: "auto"}, wantErr: "requires a plan file"},
-		{name: "chain", o: valid(func(o *opts) { o.PlanFiles = []string{"a.md", "b.md"} }), wantErr: "exactly one plan"},
-		{name: "worktree", o: valid(func(o *opts) { o.Worktree = true }), wantErr: "cannot be combined with --worktree"},
-		{name: "serve", o: valid(func(o *opts) { o.Serve = true }), wantErr: "--serve"},
-		{name: "review", o: valid(func(o *opts) { o.Review = true }), wantErr: "--review"},
-		{name: "branch", o: valid(func(o *opts) { o.Branch = "x" }), wantErr: "--branch"},
-		{name: "cmux", o: valid(func(o *opts) { o.CmuxWorkspace = "auto" }), wantErr: "--cmux-workspace"},
-		{name: "closeout", o: valid(func(o *opts) { o.Report = true }), wantErr: "--merge, --pr, or --report"},
-		{name: "finalize", o: valid(func(o *opts) { o.Finalize = "none" }), wantErr: "cannot be combined with --finalize"},
-		{name: "skip finalize", o: valid(func(o *opts) { o.SkipFinalize = true }), wantErr: "cannot be combined with --skip-finalize"},
-		{name: "review cadence", o: valid(func(o *opts) { o.ReviewCadence = "task" }), wantErr: "cannot be combined with --review-cadence"},
-		{name: "bad value", o: valid(func(o *opts) { o.TaskModel = "opus; rm -rf" }), wantErr: "invalid --task-model value"},
-		{name: "unprefixed model", o: valid(func(o *opts) { o.TaskModel = "opus:high" }), wantErr: "--task-model \"opus:high\" needs a claude or codex provider prefix"},
-		{name: "custom model", o: valid(func(o *opts) { o.ReviewModel = "custom" }), wantErr: "--review-model \"custom\" needs a claude or codex"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateT3LaunchFlags(tc.o)
-			if tc.wantErr == "" {
-				require.NoError(t, err)
-				return
-			}
-			require.ErrorContains(t, err, tc.wantErr)
-		})
-	}
-}
-
-func TestT3LaunchArgs(t *testing.T) {
-	assert.Empty(t, t3LaunchArgs(opts{}))
-	assert.Equal(t, []string{"--task-model", "codex:m1", "--review-model", "claude:m2", "--external-reviewers", "codex"},
-		t3LaunchArgs(opts{TaskModel: "codex:m1", ReviewModel: "claude:m2", ExternalReviewers: "codex"}))
-}
-
-func TestIsStandaloneCommandT3Launch(t *testing.T) {
-	assert.False(t, isStandaloneCommand(opts{}))
-	for _, mode := range []string{"auto", "agent", "terminal"} {
-		assert.True(t, isStandaloneCommand(opts{T3Launch: mode}), mode)
-	}
-}
-
-func TestRunConfiguredStandaloneCommandT3Launch(t *testing.T) {
-	dir := setupTestRepo(t)
-	t.Chdir(dir)
-	t.Setenv("LOOPAI_T3_TOKEN", "")
-	writeT3LaunchSettings(t, "")
-	for _, mode := range []string{"auto", "agent", "terminal"} {
-		handled, err := runConfiguredStandaloneCommand(t.Context(), opts{T3Launch: mode, PlanFile: "x.md"}, &config.Config{}, testColors())
-		assert.True(t, handled, mode)
-		if mode == "agent" {
-			require.ErrorContains(t, err, "requires a loopai provider instance")
-		} else {
-			require.ErrorIs(t, err, t3.ErrNoToken)
-		}
-	}
-	handled, err := runConfiguredStandaloneCommand(t.Context(), opts{}, &config.Config{}, testColors())
-	assert.False(t, handled)
-	require.NoError(t, err)
-}
-
-// t3LaunchRPC is a t3.RPC fake that creates a real git worktree so the launcher's HEAD check runs.
-type t3LaunchRPC struct {
-	t       *testing.T
-	path    string
-	created []t3.CreateWorktreeInput
-	opened  []t3.TerminalOpenInput
-	writes  []string
-	calls   []string
-}
-
-func (r *t3LaunchRPC) CreateWorktree(_ context.Context, in t3.CreateWorktreeInput) (t3.Worktree, error) {
-	r.created = append(r.created, in)
-	r.calls = append(r.calls, "vcs.createWorktree")
-	runGit(r.t, in.Cwd, "worktree", "add", "-b", in.NewRefName, r.path, in.RefName)
-	return t3.Worktree{Path: r.path, RefName: in.NewRefName}, nil
-}
-
-func (r *t3LaunchRPC) OpenTerminal(_ context.Context, in t3.TerminalOpenInput) error {
-	r.calls = append(r.calls, "terminal.open")
-	r.opened = append(r.opened, in)
-	return nil
-}
-
-func (r *t3LaunchRPC) WriteTerminal(_ context.Context, _, _, data string) error {
-	r.calls = append(r.calls, "terminal.write")
-	r.writes = append(r.writes, data)
-	return nil
-}
-
-// writeT3LaunchSettings isolates discovery from the user's T3 Code settings.
-func writeT3LaunchSettings(t *testing.T, contents string) {
-	t.Helper()
-	home := t.TempDir()
-	t.Setenv("T3CODE_HOME", home)
-	if contents == "" {
-		return
-	}
-	require.NoError(t, os.MkdirAll(filepath.Join(home, "userdata"), 0o750))
-	require.NoError(t, os.WriteFile(filepath.Join(home, "userdata", "settings.json"), []byte(contents), 0o600))
-}
-
-func TestT3LaunchInstance(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		mode     t3.LaunchMode
-		settings string
-		wantID   string
-		wantErr  string
-		warning  bool
-	}{
-		{name: "auto without settings", mode: t3.LaunchAuto},
-		{name: "agent without settings", mode: t3.LaunchAgent, wantErr: "requires a loopai provider instance"},
-		{name: "auto malformed settings", mode: t3.LaunchAuto, settings: "{", warning: true},
-		{name: "agent malformed settings", mode: t3.LaunchAgent, settings: "{", wantErr: "parse settings file"},
-		{name: "auto configured", mode: t3.LaunchAuto, settings: `{"providerInstances":{"custom":{"driver":"grok","config":{"binaryPath":"loopai-acp.exe"}}}}`, wantID: "custom"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			writeT3LaunchSettings(t, tc.settings)
-			var stderr bytes.Buffer
-			instance, err := t3LaunchInstance(tc.mode, os.Getenv, &stderr)
-			if tc.wantErr != "" {
-				require.ErrorContains(t, err, tc.wantErr)
-			} else {
-				require.NoError(t, err)
-			}
-			assert.Equal(t, tc.wantID, instance.ID)
-			if tc.warning {
-				assert.Contains(t, stderr.String(), "falling back to terminal mode")
-			} else {
-				assert.Empty(t, stderr.String())
-			}
-		})
-	}
-	t.Run("terminal skips discovery", func(t *testing.T) {
-		instance, err := t3LaunchInstance(t3.LaunchTerminal, func(string) string {
-			t.Fatal("terminal mode must not read settings")
-			return ""
-		}, io.Discard)
-		require.NoError(t, err)
-		assert.Empty(t, instance.ID)
-	})
-}
-
-func TestRunT3LaunchCommand(t *testing.T) {
-	const settings = `{"providerInstances":{"loopai-custom":{"driver":"grok","config":{"binaryPath":"/bin/loopai-acp"}}}}`
-	for _, tc := range []struct {
-		name     string
-		flag     string
-		settings string
-		planPath string
-		agent    bool
-		warning  bool
-	}{
-		{name: "bare terminal without settings", flag: "--t3-launch"},
-		{name: "explicit auto without settings", flag: "--t3-launch=auto"},
-		{name: "bare agent", flag: "--t3-launch", settings: settings, agent: true},
-		{name: "auto agent", flag: "--t3-launch=auto", settings: settings, agent: true},
-		{name: "agent hyphen-prefixed file", flag: "--t3-launch=agent", settings: settings, agent: true, planPath: "./-demo.md"},
-		{name: "agent hyphen-prefixed directory", flag: "--t3-launch", settings: settings, agent: true, planPath: "./-plans/20260925-demo.md"},
-		{name: "explicit agent", flag: "--t3-launch=agent", settings: settings, agent: true},
-		{name: "terminal ignores instance", flag: "--t3-launch=terminal", settings: settings},
-		{name: "terminal ignores malformed settings", flag: "--t3-launch=terminal", settings: "{"},
-		{name: "auto malformed settings falls back", flag: "--t3-launch=auto", settings: "{", warning: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := setupTestRepo(t)
-			planPath := tc.planPath
-			if planPath == "" {
-				planPath = "docs/plans/20260925-demo.md"
-			}
-			planRel := filepath.FromSlash(planPath)
-			require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(dir, planRel)), 0o750))
-			require.NoError(t, os.WriteFile(filepath.Join(dir, planRel), []byte("# Demo\n"), 0o600))
-			t.Chdir(dir)
-			t.Setenv("LOOPAI_T3_TOKEN", "tok")
-			t.Setenv("LOOPAI_T3_URL", "http://127.0.0.1:1")
-			writeT3LaunchSettings(t, tc.settings)
-
-			gitSvc, err := git.NewService(dir, noopLogger())
-			require.NoError(t, err)
-			api := &t3ShellDispatcher{shell: t3.Shell{Projects: []t3.Project{{ID: "p1", WorkspaceRoot: gitSvc.Root()}}}}
-			rpc := &t3LaunchRPC{t: t, path: filepath.Join(t.TempDir(), "wt")}
-
-			original := newT3Session
-			t.Cleanup(func() { newT3Session = original })
-			var gotEndpoint t3.Endpoint
-			closed := false
-			newT3Session = func(_ context.Context, ep t3.Endpoint) (t3Session, error) {
-				gotEndpoint = ep
-				return t3Session{api: api, rpc: rpc, close: func() { closed = true }}, nil
-			}
-
-			var stdout bytes.Buffer
-			o := parseTestOpts(t, tc.flag, "--task-model", "codex:gpt-5:high", planRel)
-			require.NoError(t, validateT3LaunchFlags(o))
-			cfg := &config.Config{}
-			require.NoError(t, applyCLIOverrides(o, cfg))
-			stderr := captureStderr(t, func() {
-				require.NoError(t, runT3LaunchCommand(t.Context(), o, cfg, testColors(), &stdout))
-			})
-			if tc.warning {
-				assert.Contains(t, stderr, "warning: --t3-launch: t3: parse settings file:")
-				assert.Contains(t, stderr, "falling back to terminal mode")
-			} else {
-				assert.Empty(t, stderr)
-			}
-			assert.True(t, closed)
-			assert.Equal(t, t3.Endpoint{BaseURL: "http://127.0.0.1:1", Token: "tok"}, gotEndpoint)
-			assert.FileExists(t, filepath.Join(rpc.path, planRel))
-			branch, err := gitSvc.CurrentBranch()
-			require.NoError(t, err)
-			assert.Equal(t, []t3.CreateWorktreeInput{{Cwd: gitSvc.Root(), RefName: branch, NewRefName: "demo"}}, rpc.created)
-			if tc.agent {
-				assert.Equal(t, []string{"vcs.createWorktree"}, rpc.calls)
-				assert.Empty(t, rpc.opened)
-				assert.Empty(t, rpc.writes)
-				require.Len(t, api.commands, 2)
-				create, ok := api.commands[0].(*t3.ThreadCreate)
-				require.True(t, ok)
-				assert.Equal(t, t3.ModelSelection{InstanceID: "loopai-custom", Model: t3.LoopaiModel}, create.ModelSelection)
-				turn, ok := api.commands[1].(*t3.ThreadTurnStart)
-				require.True(t, ok)
-				assert.Equal(t, create.ThreadID, turn.ThreadID)
-				assert.Equal(t, planPath+" --task-model codex:gpt-5:high", turn.Message.Text)
-				assert.Contains(t, stdout.String(), "mode: agent (loopai provider session, instance loopai-custom;")
-				assert.Contains(t, stdout.String(), "the stop button cancels the run")
-				assert.Contains(t, stdout.String(), "the session merges a low or medium Risk run itself")
-			} else {
-				assert.Equal(t, []string{"vcs.createWorktree", "terminal.open", "terminal.write"}, rpc.calls)
-				require.Len(t, api.commands, 1)
-				create, ok := api.commands[0].(*t3.ThreadCreate)
-				require.True(t, ok)
-				assert.Equal(t, t3.ModelSelection{InstanceID: t3.InstanceCodex, Model: "gpt-5"}, create.ModelSelection)
-				require.Len(t, rpc.opened, 1)
-				assert.Equal(t, t3.TerminalOpenInput{
-					ThreadID: create.ThreadID, TerminalID: "loopai", Cwd: rpc.path, WorktreePath: rpc.path,
-					Env: map[string]string{
-						"LOOPAI_T3": "true", "LOOPAI_T3_TOKEN": "tok",
-						"LOOPAI_T3_URL": "http://127.0.0.1:1", "LOOPAI_T3_THREAD_ID": create.ThreadID,
-					},
-				}, rpc.opened[0])
-				require.Len(t, rpc.writes, 1)
-				program, err := os.Executable()
-				require.NoError(t, err)
-				shell := t3.ShellPOSIX
-				if runtime.GOOS == "windows" {
-					shell = t3.ShellPowerShell
-				}
-				assert.Equal(t, t3.LaunchCommand(shell, program, []string{"--t3", "--task-model", "codex:gpt-5:high", planRel})+"\r", rpc.writes[0])
-				assert.Contains(t, stdout.String(), "mode: terminal")
-				assert.Contains(t, stdout.String(), "close out from this checkout with: loopai --merge demo")
-				if o.T3Launch == "auto" {
-					assert.Contains(t, stdout.String(), "providerInstances")
-					assert.Contains(t, stdout.String(), "docs/t3-code.md")
-				} else {
-					assert.NotContains(t, stdout.String(), "providerInstances")
-				}
-			}
-			assert.Contains(t, stdout.String(), "started loopai in T3 Code thread ")
-			assert.Contains(t, stdout.String(), "branch:   demo")
-			assert.Contains(t, stdout.String(), "loopai --merge demo")
-		})
-	}
-}
-
-func TestRunT3LaunchCommandCreatesProject(t *testing.T) {
-	dir := setupTestRepo(t)
-	planRel := filepath.Join("docs", "plans", "20260925-demo.md")
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, planRel), []byte("# Demo\n"), 0o600))
-	t.Chdir(dir)
-	t.Setenv("LOOPAI_T3_TOKEN", "tok")
-	t.Setenv("LOOPAI_T3_URL", "http://127.0.0.1:1")
-	writeT3LaunchSettings(t, "")
-
-	gitSvc, err := git.NewService(dir, noopLogger())
-	require.NoError(t, err)
-	api := &t3ShellDispatcher{shell: t3.Shell{Projects: []t3.Project{{ID: "p-old", WorkspaceRoot: "/moved/away"}}}}
-	rpc := &t3LaunchRPC{t: t, path: filepath.Join(t.TempDir(), "wt")}
-	original := newT3Session
-	t.Cleanup(func() { newT3Session = original })
-	newT3Session = func(context.Context, t3.Endpoint) (t3Session, error) {
-		return t3Session{api: api, rpc: rpc, close: func() {}}, nil
-	}
-
-	var stdout bytes.Buffer
-	o := parseTestOpts(t, "--t3-launch=terminal", planRel)
-	require.NoError(t, validateT3LaunchFlags(o))
-	cfg := &config.Config{}
-	require.NoError(t, applyCLIOverrides(o, cfg))
-	require.NoError(t, runT3LaunchCommand(t.Context(), o, cfg, testColors(), &stdout))
-
-	require.Len(t, api.commands, 2)
-	create, ok := api.commands[0].(*t3.ProjectCreate)
-	require.True(t, ok)
-	assert.Equal(t, gitSvc.Root(), create.WorkspaceRoot)
-	assert.Contains(t, stdout.String(),
-		fmt.Sprintf("created T3 Code project %q for %s\n", filepath.Base(gitSvc.Root()), gitSvc.Root()))
-	assert.Contains(t, stdout.String(), "started loopai in T3 Code thread ")
-}
-
-func TestRunT3LaunchCommandErrors(t *testing.T) {
-	dir := setupTestRepo(t)
-	t.Chdir(dir)
-	writeT3LaunchSettings(t, "")
-
-	t.Run("missing token", func(t *testing.T) {
-		t.Setenv("LOOPAI_T3_TOKEN", "")
-		err := runT3LaunchCommand(t.Context(), opts{T3Launch: "auto", PlanFile: "x.md"}, &config.Config{}, testColors(), io.Discard)
-		require.ErrorIs(t, err, t3.ErrNoToken)
-	})
-	t.Run("connection failure", func(t *testing.T) {
-		t.Setenv("LOOPAI_T3_TOKEN", "tok")
-		t.Setenv("LOOPAI_T3_URL", "http://127.0.0.1:1")
-		original := newT3Session
-		t.Cleanup(func() { newT3Session = original })
-		newT3Session = func(context.Context, t3.Endpoint) (t3Session, error) {
-			return t3Session{}, errors.New("refused")
-		}
-		err := runT3LaunchCommand(t.Context(), opts{T3Launch: "auto", PlanFile: "x.md"}, &config.Config{}, testColors(), io.Discard)
-		require.ErrorContains(t, err, "--t3-launch: refused")
-	})
-	for _, tc := range []struct {
-		name     string
-		settings string
-		wantErr  string
-	}{
-		{name: "agent without instance", wantErr: "agent mode requires a loopai provider instance; see docs/t3-code.md"},
-		{name: "agent malformed settings", settings: "{", wantErr: "parse settings file"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			writeT3LaunchSettings(t, tc.settings)
-			original := newT3Session
-			t.Cleanup(func() { newT3Session = original })
-			newT3Session = func(context.Context, t3.Endpoint) (t3Session, error) {
-				t.Fatal("invalid agent settings must fail before connecting")
-				return t3Session{}, errors.New("unexpected connection")
-			}
-			err := runT3LaunchCommand(t.Context(), opts{T3Launch: "agent", PlanFile: "x.md"}, &config.Config{}, testColors(), io.Discard)
-			require.ErrorContains(t, err, tc.wantErr)
-		})
-	}
-}
-
 func TestProviderOverrideFlags(t *testing.T) {
 	t.Run("external_reviewers_flag_is_tracked_and_overrides_config", func(t *testing.T) {
 		cfg := &config.Config{ExternalReviewers: "claude:sonnet", ExternalReviewersSet: true}
@@ -5461,6 +4629,10 @@ func TestRejectRemovedFlags(t *testing.T) {
 	const codexMsg = "--codex was removed; set the provider in the model spec instead, e.g. --task-model codex:gpt-6-astra:medium"
 	const codexOnlyMsg = "--codex-only was removed; use --external-only instead"
 	const genericReviewers = "use --external-reviewers=<provider>[:model[:effort]] instead, e.g. --external-reviewers=codex:gpt-6-astra:high"
+	const t3Msg = "--t3 was removed; show a run in a T3 thread with loopai --detach --t3-thread <thread-id> or the loopai-t3 skill"
+	const noT3Msg = "--no-t3 was removed; omit it, loopai reports to T3 only with --t3-thread"
+	const t3ProgressMsg = "--t3-progress-thread was removed; use loopai --detach --t3-thread <thread-id>"
+	const t3LaunchMsg = "--t3-launch was removed; use the loopai-t3 skill (a terminal in this thread or a new loopai thread)"
 	tests := []struct {
 		name string
 		args []string
@@ -5508,6 +4680,17 @@ func TestRejectRemovedFlags(t *testing.T) {
 		{name: "unknown model has no provider to suggest", args: []string{"--external-review-model", "my-alias"}, want: "--external-review-model was removed; " + genericReviewers},
 		{name: "explicit empty model is still a use", args: []string{"--external-review-model="}, want: "--external-review-model was removed; " + genericReviewers},
 		{name: "former invalid choice still gets the migration message", args: []string{"--external-review-tool=bogus"}, want: "--external-review-tool was removed; " + genericReviewers},
+		{name: "t3", args: []string{"--t3"}, want: t3Msg},
+		{name: "no-t3", args: []string{"--no-t3"}, want: noT3Msg},
+		{name: "t3 progress thread", args: []string{"--t3-progress-thread=x"}, want: t3ProgressMsg},
+		{name: "t3 progress thread detached value", args: []string{"--t3-progress-thread", "x", "plan.md"}, want: t3ProgressMsg},
+		{name: "explicit empty t3 progress thread is still a use", args: []string{"--t3-progress-thread="}, want: t3ProgressMsg},
+		{name: "bare t3 launch", args: []string{"--t3-launch", "plan.md"}, want: t3LaunchMsg},
+		{name: "t3 launch agent", args: []string{"--t3-launch=agent", "plan.md"}, want: t3LaunchMsg},
+		{name: "former invalid t3 launch mode still gets the migration message", args: []string{"--t3-launch=bogus"}, want: t3LaunchMsg},
+		{name: "explicit empty t3 launch is still a use", args: []string{"--t3-launch="}, want: t3LaunchMsg},
+		{name: "every removed t3 flag is reported", args: []string{"--t3", "--no-t3", "--t3-progress-thread=x", "--t3-launch"},
+			want: t3Msg + "\n" + noT3Msg + "\n" + t3ProgressMsg + "\n" + t3LaunchMsg},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -5523,6 +4706,58 @@ func TestRejectRemovedFlags(t *testing.T) {
 	})
 }
 
+// LOOPAI_T3 lost its env tag together with --t3: a shell or terminal that still exports it must
+// neither turn on the removed flag nor fail the run, and a cmux hand-off does not carry it across.
+func TestLoopaiT3EnvironmentIsInert(t *testing.T) {
+	t.Setenv("LOOPAI_T3", "true")
+	clearCmuxEnvOptions(t)
+
+	o := parseTestOpts(t, "docs/plans/x.md")
+
+	assert.False(t, o.T3)
+	require.NoError(t, rejectRemovedFlags(o))
+	require.NoError(t, validateFlags(o))
+	assert.Equal(t, []string{"/bin/loopai", "docs/plans/x.md"}, cmuxHandOffArgv("/bin/loopai", []string{"docs/plans/x.md"}))
+}
+
+func TestValidatePassThroughValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		o       opts
+		wantErr string
+	}{
+		{name: "nothing forwarded", o: opts{}},
+		{name: "valid specs", o: opts{TaskModel: "codex:gpt-5:high", ReviewModel: "claude:opus",
+			ExternalReviewers: "claude:opus:high,codex"}},
+		{name: "effort only", o: opts{TaskModel: "codex::medium", ReviewModel: "claude::max"}},
+		{name: "duplicate reviewer providers pass", o: opts{ExternalReviewers: "codex:gpt-5,codex:gpt-5.6:high,codex"}},
+		{name: "invalid task model charset", o: opts{TaskModel: "opus; rm -rf"},
+			wantErr: `launch: invalid --task-model value "opus; rm -rf"`},
+		{name: "invalid review model charset", o: opts{ReviewModel: "claude:$(id)"},
+			wantErr: `launch: invalid --review-model value "claude:$(id)"`},
+		{name: "invalid reviewers charset", o: opts{ExternalReviewers: "codex, claude"},
+			wantErr: `launch: invalid --external-reviewers value "codex, claude"`},
+		{name: "task model missing provider", o: opts{TaskModel: "opus:high"},
+			wantErr: `launch: --task-model "opus:high" needs a claude or codex provider prefix (provider[:model[:effort]])`},
+		{name: "review model missing provider", o: opts{ReviewModel: ":high"},
+			wantErr: `launch: --review-model ":high" needs a claude or codex provider prefix`},
+		{name: "custom is not a model provider", o: opts{ReviewModel: "custom"},
+			wantErr: `launch: --review-model "custom" needs a claude or codex provider prefix`},
+		{name: "unknown provider", o: opts{TaskModel: "gemini:pro"},
+			wantErr: `launch: --task-model "gemini:pro" needs a claude or codex provider prefix`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validatePassThroughValues("launch", tc.o)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
 func TestRemovedFlagsAreHiddenFromHelp(t *testing.T) {
 	var o opts
 	parser := flags.NewParser(&o, flags.Default)
@@ -5530,7 +4765,9 @@ func TestRemovedFlagsAreHiddenFromHelp(t *testing.T) {
 	parser.WriteHelp(&help)
 
 	assert.NotRegexp(t, `--codex\s`, help.String())
-	for _, removed := range []string{"--codex-only", "--external-review-tool", "--external-review-model"} {
+	assert.NotRegexp(t, `--t3\s`, help.String())
+	for _, removed := range []string{"--codex-only", "--external-review-tool", "--external-review-model",
+		"--no-t3", "--t3-launch", "--t3-progress-thread"} {
 		assert.NotContains(t, help.String(), removed)
 	}
 	assert.Contains(t, help.String(), "--codex-args", "a live flag sharing the prefix must stay listed")
@@ -5554,6 +4791,10 @@ func TestRunRejectsRemovedFlagsBeforeConfigAndDependencies(t *testing.T) {
 		{"--codex-only"},
 		{"--external-review-tool=claude"},
 		{"--external-review-model=opus"},
+		{"--t3"},
+		{"--no-t3"},
+		{"--t3-progress-thread=thread"},
+		{"--t3-launch"},
 	} {
 		t.Run(args[0], func(t *testing.T) {
 			o := parseTestOpts(t, append([]string{"--config-dir", cfgDir, "--no-color"}, args...)...)
@@ -10472,7 +9713,7 @@ func TestKeepDashboardAlive(t *testing.T) {
 func TestMakePauseHandler_EnterResumes(t *testing.T) {
 	stdin := bytes.NewReader([]byte("\n"))
 	var stdout bytes.Buffer
-	handler := makePauseHandler(stdin, &stdout, nil, nil)
+	handler := makePauseHandler(stdin, &stdout, nil)
 	result := handler(context.Background())
 	assert.True(t, result, "handler should return true on Enter")
 	assert.Contains(t, stdout.String(), "session interrupted")
@@ -10486,7 +9727,7 @@ func TestMakePauseHandler_ContextCancelAborts(t *testing.T) {
 	var stdout bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
-	handler := makePauseHandler(r, &stdout, nil, nil)
+	handler := makePauseHandler(r, &stdout, nil)
 	result := handler(ctx)
 	assert.False(t, result, "handler should return false on context cancel")
 }
@@ -10495,7 +9736,7 @@ func TestMakePauseHandler_EOFAborts(t *testing.T) {
 	// empty reader returns EOF immediately, treated as abort (safe default for piped stdin)
 	stdin := bytes.NewReader(nil)
 	var stdout bytes.Buffer
-	handler := makePauseHandler(stdin, &stdout, nil, nil)
+	handler := makePauseHandler(stdin, &stdout, nil)
 	result := handler(context.Background())
 	assert.False(t, result, "handler should return false on EOF (stdin closed = abort)")
 }
@@ -10508,7 +9749,7 @@ func TestMakePauseHandlerReportsInputWait(t *testing.T) {
 	titles.OnPhase("", status.PhaseTask)
 	titleOut.Reset()
 
-	result := makePauseHandler(stdin, &stdout, titles, nil)(context.Background())
+	result := makePauseHandler(stdin, &stdout, titles)(context.Background())
 
 	assert.True(t, result)
 	assert.Equal(t, "\x1b]0;loopai · waiting for input · claude\a"+
@@ -14696,7 +13937,7 @@ func TestBuildRunnerLoggerRenewsKeepAwake(t *testing.T) {
 	t.Cleanup(keep.Stop)
 	inner := &runnerLoggerRecorder{}
 
-	out, _ := buildRunnerLogger(nil, nil, nil, keep, inner, nil)
+	out, _ := buildRunnerLogger(nil, nil, keep, inner, nil)
 	out.PrintAligned("executor output")
 
 	assert.Equal(t, int32(1), probe.acquires.Load())
@@ -15520,68 +14761,6 @@ func TestRunFinalizeCloseout(t *testing.T) {
 		assert.Contains(t, res.incomplete.Error(), "open pull request: push PR branch")
 		assert.False(t, res.prOpened)
 	})
-
-	t.Run("T3 threads get the pull request linked", func(t *testing.T) {
-		f := setupFinalizePRFixture(t)
-		original := newT3Dispatcher
-		t.Cleanup(func() { newT3Dispatcher = original })
-		branch := "feature"
-		api := &t3ShellDispatcher{shell: t3.Shell{
-			Projects: []t3.Project{{ID: "p1", WorkspaceRoot: f.svc.Root()}},
-			Threads:  []t3.Thread{{ID: "th", ProjectID: "p1", Branch: &branch}},
-		}}
-		newT3Dispatcher = func(func(string) string) (t3.Dispatcher, error) { return api, nil }
-		req := f.request(config.FinalizePR)
-		req.Config.T3 = true
-
-		res := runFinalizeCloseout(t.Context(), req, synced, "", &recordingFinalizeLog{})
-
-		require.NoError(t, res.incomplete)
-		require.Len(t, api.commands, 1)
-		link, ok := api.commands[0].(*t3.ThreadPullRequestLink)
-		require.True(t, ok)
-		assert.Equal(t, "th", link.ThreadID)
-		assert.Equal(t, 7, link.Number)
-	})
-
-	t.Run("no-t3 suppresses configured pull request linking", func(t *testing.T) {
-		f := setupFinalizePRFixture(t)
-		original := newT3Dispatcher
-		t.Cleanup(func() { newT3Dispatcher = original })
-		newT3Dispatcher = func(func(string) string) (t3.Dispatcher, error) {
-			t.Error("--no-t3 must not connect to T3 for pull request linking")
-			return nil, t3.ErrNoToken
-		}
-		t.Setenv("LOOPAI_T3", "true")
-		req := f.request(config.FinalizePR)
-		req.Config.T3 = true
-		require.NoError(t, applyCLIOverrides(parseTestOpts(t, "--no-t3"), req.Config))
-
-		res := runFinalizeCloseout(t.Context(), req, synced, "", &recordingFinalizeLog{})
-
-		require.NoError(t, res.incomplete)
-		assert.True(t, res.prOpened, "ordinary finalize still runs while T3 linking is disabled")
-	})
-
-	t.Run("title-only progress suppresses configured pull request linking", func(t *testing.T) {
-		f := setupFinalizePRFixture(t)
-		original := newT3Dispatcher
-		t.Cleanup(func() { newT3Dispatcher = original })
-		newT3Dispatcher = func(func(string) string) (t3.Dispatcher, error) {
-			t.Error("title-only progress must not connect to T3 for pull request linking")
-			return nil, t3.ErrNoToken
-		}
-		t.Setenv("LOOPAI_T3", "true")
-		req := f.request(config.FinalizePR)
-		req.Config.T3 = true
-		o := parseTestOpts(t, "--t3-progress-thread", "planning-thread", "--t3")
-		require.NoError(t, applyCLIOverrides(o, req.Config))
-
-		res := runFinalizeCloseout(t.Context(), req, synced, "", &recordingFinalizeLog{})
-
-		require.NoError(t, res.incomplete)
-		assert.True(t, res.prOpened, "ordinary finalize still runs while T3 linking is disabled")
-	})
 }
 
 func TestOpenFinalizePRStops(t *testing.T) {
@@ -15870,7 +15049,7 @@ func (l *sectionRecordingLogger) labels() []string {
 func TestBuildRunnerLoggerAppliesDecoratorBelowSectionTimer(t *testing.T) {
 	inner := &runnerLoggerRecorder{}
 	var decorated *sectionRecordingLogger
-	out, timer := buildRunnerLogger(nil, nil, nil, nil, inner, func(l processor.Logger) processor.Logger {
+	out, timer := buildRunnerLogger(nil, nil, nil, inner, func(l processor.Logger) processor.Logger {
 		decorated = &sectionRecordingLogger{Logger: l}
 		return decorated
 	})
@@ -15912,7 +15091,7 @@ printf '%s\n' '{"type":"result","result":""}'
 	stdout := captureStdout(t, func() {
 		err = executePlan(t.Context(), opts{Review: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
 			PlanFile: planPath, Mode: processor.ModeReview, GitSvc: gitSvc,
-			Config: &config.Config{ClaudeCommand: fakeClaude, ReportEnabled: true, Orca: true, T3: true},
+			Config: &config.Config{ClaudeCommand: fakeClaude, ReportEnabled: true, Orca: true},
 			Colors: testColors(), BaseRef: "master", Outcome: outcome,
 			Out: &out, NonInteractive: true,
 			LogDecorator: func(l processor.Logger) processor.Logger {
@@ -15944,36 +15123,35 @@ printf '%s\n' '{"type":"result","result":""}'
 	assert.Contains(t, outcome.report, "| internal review |", "the outcome carries the completion report")
 }
 
-// TestStartRunReportersNonInteractive enables all three reporters the way a cmux terminal and
-// t3/orca config would, and checks that only NonInteractive keeps them off.
+// TestStartRunReportersNonInteractive enables both reporters the way a cmux terminal and orca
+// config would, and checks that only NonInteractive keeps them off.
 func TestStartRunReportersNonInteractive(t *testing.T) {
 	binDir := t.TempDir()
 	writeExecutable(t, filepath.Join(binDir, "cmux"), "#!/bin/sh\nexit 0\n")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
-	original := newT3Reporter
-	t.Cleanup(func() { newT3Reporter = original })
-	t3Calls := 0
-	newT3Reporter = func(t3.Options, func(string) string) (*t3.Reporter, error) {
-		t3Calls++
-		return nil, errors.New("t3 reporting is disabled in tests")
+	original := newOrcaReporter
+	t.Cleanup(func() { newOrcaReporter = original })
+	orcaCalls := 0
+	newOrcaReporter = func(bool, string, string) *orca.Reporter {
+		orcaCalls++
+		return nil
 	}
 	dir := setupTestRepo(t)
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
 	req := executePlanRequest{PlanFile: filepath.Join(dir, "plan.md"), Mode: processor.ModeFull, GitSvc: gitSvc,
-		Config: &config.Config{T3: true, Orca: true}, NonInteractive: true}
+		Config: &config.Config{Orca: true}, NonInteractive: true}
 
-	rep, titles, threads := startRunReporters(opts{}, req, "feature")
+	rep, titles := startRunReporters(opts{}, req)
 	assert.Nil(t, rep, "no cmux reporter")
 	assert.Nil(t, titles, "no orca reporter")
-	assert.Nil(t, threads, "no t3 reporter")
-	assert.Zero(t, t3Calls, "the t3 reporter is never constructed")
+	assert.Zero(t, orcaCalls, "the orca reporter is never constructed")
 
 	req.NonInteractive = false
-	rep, _, _ = startRunReporters(opts{}, req, "feature")
+	rep, _ = startRunReporters(opts{}, req)
 	assert.NotNil(t, rep, "an interactive run in the same environment builds a cmux reporter")
-	assert.Equal(t, 1, t3Calls, "an interactive run in the same environment builds a t3 reporter")
+	assert.Equal(t, 1, orcaCalls, "an interactive run in the same environment builds an orca reporter")
 }
 
 func TestExecutePlanRecordsFailureInOutcome(t *testing.T) {
@@ -15999,7 +15177,7 @@ func TestExecutePlanRecordsFailureInOutcome(t *testing.T) {
 func TestInstallBreakSignalSkipsNonInteractive(t *testing.T) {
 	// a nil runner panics as soon as either half is installed, so this fails wherever the
 	// platform supports the break signal and the non-interactive guard is lost
-	assert.NotPanics(t, func() { installBreakSignal(nil, executePlanRequest{NonInteractive: true}, nil, nil) })
+	assert.NotPanics(t, func() { installBreakSignal(nil, executePlanRequest{NonInteractive: true}, nil) })
 }
 
 func TestRecordPlanFailure(t *testing.T) {

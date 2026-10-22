@@ -15,8 +15,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/umputun/ralphex/pkg/t3"
 )
 
 // helperEnv makes the test binary act as a fake loopai: it records its argv to the named file and
@@ -98,7 +96,6 @@ func TestRunProbeCommands(t *testing.T) {
 	}{
 		{name: "version", args: []string{"--version"}, wantCode: 0, wantStdout: "loopai-acp "},
 		{name: "version short alias", args: []string{"-v"}, wantCode: 0, wantStdout: "loopai-acp "},
-		{name: "models", args: []string{"models"}, wantCode: 0, wantStdout: "* loopai (default)"},
 		{name: "inspect", args: []string{"inspect", "--json"}, wantCode: 1, wantStderr: "inspect is not supported"},
 		{name: "update", args: []string{"update"}, wantCode: 1, wantStderr: "update is not supported"},
 		{name: "no args", args: nil, wantCode: exitUsage, wantStderr: "usage: loopai-acp"},
@@ -126,14 +123,6 @@ func TestRunProbeCommands(t *testing.T) {
 			assert.Empty(t, *calls, "probe commands must not start loopai")
 		})
 	}
-}
-
-func TestRunModelsHasNoLoginVerdict(t *testing.T) {
-	e, stdout, _, _ := testEnv(0)
-	require.Equal(t, 0, run([]string{"models"}, e))
-	assert.Equal(t, "Available models:\n  * "+t3.LoopaiModel+" (default)\n", stdout.String())
-	assert.NotContains(t, strings.ToLower(stdout.String()), "logged in")
-	assert.NotContains(t, strings.ToLower(stdout.String()), "not authenticated")
 }
 
 func TestRunVersionUsesRevision(t *testing.T) {

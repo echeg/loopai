@@ -25,7 +25,6 @@ flags:
 --merge
 --no-claude-swap
 --no-color
---no-t3
 --orca
 --pass-claude-md
 --plan
@@ -43,9 +42,6 @@ flags:
 --session-timeout
 --skill-contract
 --skip-finalize
---t3
---t3-launch [agent|auto|terminal]
---t3-progress-thread
 --task-model
 --tasks-only
 --version
@@ -117,7 +113,6 @@ review_cadence
 review_model
 review_patience
 session_timeout
-t3
 task_model
 task_retry_count
 use_worktree

@@ -126,22 +126,17 @@ func launchFlags(o opts, cfg *config.Config, sel externalReviewSelection) string
 	return strings.Join(parts, " ")
 }
 
-// launcherFor names the launcher that started the run. T3 wins over Orca because
-// --t3-launch terminal mode runs `loopai --t3`; a config enabling both is a reporting
-// choice, and the Orca skill passes --orca alone.
+// launcherFor names the launcher that started the run: the Orca skill passes --orca, and
+// anything else is a plain CLI launch.
 func launcherFor(cfg *config.Config) string {
-	switch {
-	case cfg.T3:
-		return launcherT3
-	case cfg.Orca:
+	if cfg.Orca {
 		return launcherOrca
-	default:
-		return launcherCLI
 	}
+	return launcherCLI
 }
 
 // recordLaunchHistory records one plan-executing launch in the global history. It is
-// best-effort like the cmux, Orca, and T3 reporters: a failure is one warning on stderr
+// best-effort like the cmux and Orca reporters: a failure is one warning on stderr
 // and never fails, delays, or changes the run.
 func recordLaunchHistory(o opts, cfg *config.Config, sel externalReviewSelection, launcher string, stderr io.Writer) {
 	entry := launchEntry{When: time.Now().UTC(), Launcher: launcher, Flags: launchFlags(o, cfg, sel)}

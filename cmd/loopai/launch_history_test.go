@@ -269,8 +269,6 @@ func TestLauncherFor(t *testing.T) {
 	}{
 		{name: "none", cfg: &config.Config{}, want: launcherCLI},
 		{name: "orca", cfg: &config.Config{Orca: true}, want: launcherOrca},
-		{name: "t3", cfg: &config.Config{T3: true}, want: launcherT3},
-		{name: "both", cfg: &config.Config{Orca: true, T3: true}, want: launcherT3},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -398,7 +396,6 @@ func TestRunRecordsLaunchHistory(t *testing.T) {
 		launcher string
 	}{
 		{name: "cli", mutate: func(*opts) {}, launcher: launcherCLI},
-		{name: "t3", mutate: func(o *opts) { o.T3 = true }, launcher: launcherT3},
 		{name: "orca", mutate: func(o *opts) { o.Orca = true }, launcher: launcherOrca},
 		{name: "tasks-only", mutate: func(o *opts) { o.TasksOnly = true }, launcher: launcherCLI},
 	} {

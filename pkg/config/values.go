@@ -72,8 +72,6 @@ type Values struct {
 	WorktreeEnabledSet         bool // tracks if use_worktree was explicitly set
 	Orca                       bool
 	OrcaSet                    bool // tracks if orca was explicitly set
-	T3                         bool
-	T3Set                      bool // tracks if t3 was explicitly set
 	KeepAwake                  bool
 	KeepAwakeSet               bool   // tracks if keep_awake was explicitly set
 	VcsCommand                 string // custom VCS command (default: "git")
@@ -411,14 +409,6 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 		values.Orca = val
 		values.OrcaSet = true
 	}
-	if key, err := section.GetKey("t3"); err == nil {
-		val, boolErr := key.Bool()
-		if boolErr != nil {
-			return Values{}, fmt.Errorf("invalid t3: %w", boolErr)
-		}
-		values.T3 = val
-		values.T3Set = true
-	}
 	if key, err := section.GetKey("keep_awake"); err == nil {
 		val, boolErr := key.Bool()
 		if boolErr != nil {
@@ -661,10 +651,6 @@ func (dst *Values) mergeExtraFrom(src *Values) {
 	if src.OrcaSet {
 		dst.Orca = src.Orca
 		dst.OrcaSet = true
-	}
-	if src.T3Set {
-		dst.T3 = src.T3
-		dst.T3Set = true
 	}
 	if src.KeepAwakeSet {
 		dst.KeepAwake = src.KeepAwake
@@ -959,10 +945,11 @@ type removedKey struct {
 }
 
 // removedKeys lists keys whose meaning moved into provider[:model[:effort]] specs,
-// plus finalize_enabled, whose boolean became the finalize mode, and acp_auto_merge,
-// whose automatic merge left with the old ACP integration. a removed key is an error
-// even when empty, because honoring or ignoring it silently would change which provider
-// or model a run uses, or whether the run closes out its branch.
+// plus finalize_enabled, whose boolean became the finalize mode, acp_auto_merge,
+// whose automatic merge left with the old ACP integration, and t3, whose thread
+// reporting gave way to detached runs. a removed key is an error even when empty,
+// because honoring or ignoring it silently would change which provider or model a run
+// uses, whether the run closes out its branch, or where its progress is shown.
 var removedKeys = []removedKey{
 	{name: "executor", replacement: "set the provider in the model spec instead, e.g. task_model = codex:<model>[:effort]"},
 	{name: "external_review_tool", replacement: "use external_reviewers = <provider>[:model[:effort]] (an empty value disables external review)"},
@@ -971,6 +958,7 @@ var removedKeys = []removedKey{
 	{name: "codex_reasoning_effort", replacement: "put the effort in each codex spec, e.g. codex:<model>:<effort>"},
 	{name: "finalize_enabled", replacement: "use finalize = sync|pr|merge (finalize = none disables it)"},
 	{name: "acp_auto_merge", replacement: "merge with loopai --merge or the loopai-merge skill"},
+	{name: "t3", replacement: "use loopai --detach --t3-thread <thread-id> or the loopai-t3 skill"},
 }
 
 // checkRemovedKeys returns an error naming the first removed key present in section.
