@@ -161,6 +161,16 @@ func acpBoundRun(t *testing.T, cwd, threadID, sessionID string) string {
 	return b.RunID
 }
 
+// waitBound waits until the binding of threadID or sessionID in cwd names run id: a provider binds a
+// run only once it holds the run's attach.lock, so the binding follows the lock.
+func waitBound(t *testing.T, cwd, threadID, sessionID, id string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		b, _ := loadBinding(cwd, threadID, sessionID)
+		return b.RunID == id
+	}, runsWait, 10*time.Millisecond, "run %s is not bound", id)
+}
+
 func TestACPPlanMessageStartsAndBindsItsRun(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -187,7 +197,7 @@ func TestACPPlanMessageStartsAndBindsItsRun(t *testing.T) {
 			assert.Equal(t, []acpLaunch{{cwd: cwd, threadID: tc.wantThread, sessionID: sid,
 				args: []string{"--task-model=codex:gpt-6-astra:high", "--external-reviewers=claude", acpRoutePlan}}},
 				launches.all())
-			assert.Equal(t, acpRouteRunID, acpBoundRun(t, cwd, tc.wantThread, sid), "the run is bound")
+			waitBound(t, cwd, tc.wantThread, sid, acpRouteRunID)
 			if tc.wantThread == "" {
 				assert.Equal(t, acpRouteRunID, readBindingFile(t, filepath.Join(cwd, ".loopai", "acp",
 					"binding-session-"+sid+".json"))["run_id"])
@@ -361,12 +371,80 @@ func TestACPContinuationAdoptsTheOnlyCandidate(t *testing.T) {
 			s, sid := openACPSession(t, cwd, tc.lookup, "")
 			s.send(acpPrompt(3, sid, acpRestartNote+"\n\n"+acp.ContinuationText))
 			run.waitAttached()
-			assert.Equal(t, acpRouteRunID, acpBoundRun(t, cwd, tc.threadID, sid), "the adopted run is bound")
+			waitBound(t, cwd, tc.threadID, sid, acpRouteRunID) // the adopted run is bound
 			run.finish(runs.Outcome{Status: runs.StatusSucceeded})
 			assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", s.turnReply(3, sid))
 			assert.Empty(t, launches.all())
 		})
 	}
+}
+
+// TestACPAdoptionBindsOnlyUnderTheAttachLock lets a candidate change between the selection, which
+// only probes its attach.lock, and the adoption: when another provider takes the lock in between, or
+// the run ends, the continuation answers without binding the run.
+func TestACPAdoptionBindsOnlyUnderTheAttachLock(t *testing.T) {
+	tests := []struct {
+		name  string
+		race  func(t *testing.T, run *acpTestRun)
+		reply string
+	}{
+		{
+			name: "another provider takes the lock",
+			race: func(t *testing.T, run *acpTestRun) {
+				unlock, err := runs.AcquireBounded(filepath.Join(run.dir, runs.AttachLockFile), time.Second)
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = unlock() })
+			},
+			reply: "loopai run " + acpRouteRunID + " is followed by another loopai provider; follow it from a shell " +
+				"with loopai --attach " + acpRouteRunID + ".",
+		},
+		{
+			name:  "the run ends",
+			race:  func(_ *testing.T, run *acpTestRun) { run.finish(runs.Outcome{Status: runs.StatusFailed}) },
+			reply: "No loopai run belongs to this thread yet",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			run := newACPTestRun(t, cwd, runs.Descriptor{ID: acpRouteRunID,
+				Origin: runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "thread-1"}}).start()
+			t.Cleanup(func() { acpAdoptionCandidatesFn = acpAdoptionCandidates })
+			acpAdoptionCandidatesFn = func(cwd, threadID string) ([]runs.Run, error) {
+				candidates, err := acpAdoptionCandidates(cwd, threadID)
+				if len(candidates) == 1 {
+					tc.race(t, run)
+				}
+				return candidates, err
+			}
+			launches := stubACPLaunch(t, func(acpLaunch) (string, error) { return "", errors.New("no launch expected") })
+
+			s, sid := openACPSession(t, cwd, "thread=thread-1", "")
+			assert.Contains(t, s.statusReply(3, sid, acp.ContinuationText), tc.reply)
+			assert.Empty(t, acpBoundRun(t, cwd, "thread-1", sid), "the run is not bound")
+			assert.Empty(t, launches.all())
+		})
+	}
+}
+
+// TestACPLaunchedRunAnotherProviderTakesFirstIsNotBound lets another provider take the attach.lock of a
+// run the plan message just launched before this thread follows it: the thread answers as for any run
+// another provider follows and binds nothing.
+func TestACPLaunchedRunAnotherProviderTakesFirstIsNotBound(t *testing.T) {
+	cwd := t.TempDir()
+	stubACPLaunch(t, func(l acpLaunch) (string, error) {
+		run := newACPTestRun(t, l.cwd, runs.Descriptor{ID: acpRouteRunID,
+			Origin: runs.Origin{Kind: runs.OriginT3Thread, ThreadID: l.threadID, ACPSessionID: l.sessionID}}).start()
+		unlock, err := runs.AcquireBounded(filepath.Join(run.dir, runs.AttachLockFile), time.Second)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = unlock() })
+		return acpRouteRunID, nil
+	})
+
+	s, sid := openACPSession(t, cwd, "thread=thread-1", "")
+	assert.Equal(t, "loopai run "+acpRouteRunID+" is followed by another loopai provider; follow it from a shell with "+
+		"loopai --attach "+acpRouteRunID+".", s.statusReply(3, sid, acpRoutePlan))
+	assert.Empty(t, acpBoundRun(t, cwd, "thread-1", sid), "the run is not bound")
 }
 
 // saveACPNonCandidates records under cwd one run of each kind a continuation must never adopt and
@@ -481,7 +559,7 @@ func TestACPPlanMessageNeverAdoptsAnotherRun(t *testing.T) {
 		run := launchedRun(t, launched)
 		run.waitAttached()
 		assert.False(t, other.attached(), "the other run is left alone")
-		assert.Equal(t, acpRouteRunID, acpBoundRun(t, cwd, "thread-1", sid))
+		waitBound(t, cwd, "thread-1", sid, acpRouteRunID)
 		run.finish(runs.Outcome{Status: runs.StatusSucceeded})
 		assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", s.turnReply(3, sid))
 	})

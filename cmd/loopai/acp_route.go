@@ -88,38 +88,58 @@ func acpRun(cwd, id string) (runs.Run, error) {
 	return runs.Run{Dir: dir, Descriptor: desc, Status: status}, nil
 }
 
-// launch starts the detached run l describes from this session, binds the run the launcher started,
-// and attaches to it. A launcher's refusal is the turn's answer.
+// launch starts the detached run l describes from this session, then binds and follows the run the
+// launcher started once its attach.lock is held. A launcher's refusal is the turn's answer, and so is
+// a run another provider took first, which this thread then does not bind.
 func (t *acpTurn) launch(l acpLaunch) acp.StopReason {
 	l.cwd, l.threadID, l.sessionID = t.req.Cwd, t.threadID, t.req.SessionID
 	id, err := acpLaunchDetached(t.ctx, l)
 	if err != nil {
 		return t.reply(err.Error())
 	}
+	release, refusal := t.lockAttach(id)
+	if release == nil {
+		return t.reply(refusal)
+	}
+	defer release()
 	t.bind(id)
-	return t.attach(id)
+	return t.follow(id)
 }
 
-// adopt binds and attaches the one run acpAdoptionCandidates finds, or answers with the candidates
-// when there are several and with the status reply when there is none.
+// acpAdoptionCandidatesFn is acpAdoptionCandidates; tests replace it to take a candidate's attach.lock
+// between the selection and the adoption.
+var acpAdoptionCandidatesFn = acpAdoptionCandidates
+
+// adopt binds and follows the one run acpAdoptionCandidates finds, or answers with the candidates
+// when there are several and with the status reply when there is none. The selection only probes each
+// attach.lock, so two providers can both pick a run: adopt takes the lock first and checks the run is
+// still a candidate under it, and only then binds it, so the provider that loses answers without
+// leaving a binding to a run it does not follow.
 func (t *acpTurn) adopt() acp.StopReason {
-	candidates, err := acpAdoptionCandidates(t.req.Cwd, t.threadID)
+	candidates, err := acpAdoptionCandidatesFn(t.req.Cwd, t.threadID)
 	switch {
 	case err != nil:
 		return t.reply(fmt.Sprintf("loopai cannot read the detached runs of this checkout: %v", err))
-	case len(candidates) == 1:
-		id := candidates[0].Descriptor.ID
-		t.bind(id)
-		return t.attach(id)
 	case len(candidates) > 1:
 		return t.reply(acpCandidatesReply(candidates))
+	case len(candidates) == 0:
+		return t.reply(acpStatusReply(t.req.Cwd, ""))
 	}
-	return t.reply(acpStatusReply(t.req.Cwd, ""))
+	id := candidates[0].Descriptor.ID
+	release, refusal := t.lockAttach(id)
+	if release == nil {
+		return t.reply(refusal)
+	}
+	defer release()
+	if run, runErr := acpRun(t.req.Cwd, id); runErr != nil || !acpAdoptable(run, t.req.Cwd, t.threadID) {
+		return t.reply(acpStatusReply(t.req.Cwd, ""))
+	}
+	t.bind(id)
+	return t.follow(id)
 }
 
-// acpAdoptionCandidates returns the runs a continuation without a binding may adopt: live runs a
-// loopai thread started (origin t3-thread) from cwd, which no provider follows, since their attach.lock
-// is free. A run recorded for another thread than threadID, when both ids are known, is never one.
+// acpAdoptionCandidates returns the runs a continuation without a binding may adopt: the runs
+// acpAdoptable accepts which no provider follows, since their attach.lock is free.
 func acpAdoptionCandidates(cwd, threadID string) ([]runs.Run, error) {
 	all, err := runs.List(cwd)
 	if err != nil {
@@ -127,11 +147,7 @@ func acpAdoptionCandidates(cwd, threadID string) ([]runs.Run, error) {
 	}
 	var candidates []runs.Run
 	for _, run := range all {
-		origin := run.Descriptor.Origin
-		if !run.Status.Live() || origin.Kind != runs.OriginT3Thread || !sameProgressRoot(run.Descriptor.Cwd, cwd) {
-			continue
-		}
-		if threadID != "" && origin.ThreadID != "" && origin.ThreadID != threadID {
+		if !acpAdoptable(run, cwd, threadID) {
 			continue
 		}
 		if held, probeErr := runs.Probe(filepath.Join(run.Dir, runs.AttachLockFile)); probeErr != nil || held {
@@ -142,6 +158,17 @@ func acpAdoptionCandidates(cwd, threadID string) ([]runs.Run, error) {
 	return candidates, nil
 }
 
+// acpAdoptable reports whether a thread of threadID in cwd may adopt run, its attach.lock aside: the
+// run is live and a loopai thread started it (origin t3-thread) from cwd. A run recorded for another
+// thread than threadID, when both ids are known, is never adoptable.
+func acpAdoptable(run runs.Run, cwd, threadID string) bool {
+	origin := run.Descriptor.Origin
+	if !run.Status.Live() || origin.Kind != runs.OriginT3Thread || !sameProgressRoot(run.Descriptor.Cwd, cwd) {
+		return false
+	}
+	return threadID == "" || origin.ThreadID == "" || origin.ThreadID == threadID
+}
+
 // bind binds run id to the thread, or to the session without a thread id. A binding that cannot be
 // recorded is one warning: the attach goes on, and a later continuation can adopt the run again.
 func (t *acpTurn) bind(id string) {
@@ -150,26 +177,40 @@ func (t *acpTurn) bind(id string) {
 	}
 }
 
-// attach follows run id until it is no longer live and answers its outcome line, holding the run's
-// attach.lock all along so no other provider adopts it. A run another provider follows is answered as
-// such. A cancel ends the turn with StopCancelled and leaves the run running; the provider stopping
-// ends it unanswered.
+// attach follows the run id names, already bound to this thread, while holding its attach.lock.
 func (t *acpTurn) attach(id string) acp.StopReason {
-	dir := runs.Dir(t.req.Cwd, id)
-	release, err := runs.AcquireBounded(filepath.Join(dir, runs.AttachLockFile), acpAttachLockWait)
+	release, refusal := t.lockAttach(id)
+	if release == nil {
+		return t.reply(refusal)
+	}
+	defer release()
+	return t.follow(id)
+}
+
+// lockAttach takes run id's attach.lock, so no other provider adopts the run while this one follows it,
+// and returns the function that releases it. When the lock cannot be taken it returns a nil release and
+// the turn's answer: a run another provider follows is answered as such.
+func (t *acpTurn) lockAttach(id string) (release func(), refusal string) {
+	unlock, err := runs.AcquireBounded(filepath.Join(runs.Dir(t.req.Cwd, id), runs.AttachLockFile), acpAttachLockWait)
 	if errors.Is(err, runs.ErrBusy) {
-		return t.reply(fmt.Sprintf("loopai run %s is followed by another loopai provider; follow it from a shell with "+
-			"loopai --attach %s.", id, id))
+		return nil, fmt.Sprintf("loopai run %s is followed by another loopai provider; follow it from a shell with "+
+			"loopai --attach %s.", id, id)
 	}
 	if err != nil {
-		return t.reply(fmt.Sprintf("loopai cannot follow run %s: %v", id, err))
+		return nil, fmt.Sprintf("loopai cannot follow run %s: %v", id, err)
 	}
-	defer func() {
-		if releaseErr := release(); releaseErr != nil {
+	return func() {
+		if releaseErr := unlock(); releaseErr != nil {
 			fmt.Fprintf(t.stderr, "warning: acp: release the attach lock of run %s: %v\n", id, releaseErr)
 		}
-	}()
+	}, ""
+}
 
+// follow follows run id, whose attach.lock the caller holds, until it is no longer live and answers its
+// outcome line. A cancel ends the turn with StopCancelled and leaves the run running; the provider
+// stopping ends it unanswered.
+func (t *acpTurn) follow(id string) acp.StopReason {
+	dir := runs.Dir(t.req.Cwd, id)
 	followCtx, cancel := context.WithCancel(t.ctx)
 	defer cancel()
 	go func() {
