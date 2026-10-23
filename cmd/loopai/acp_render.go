@@ -61,6 +61,7 @@ type acpRenderer struct {
 	callTitle string          // the open tool call's title, without the elapsed time
 	lastSent  time.Time       // when the last update was sent
 	calls     int             // tool calls opened so far
+	unended   bool            // the attempt ended without a finish event: no entry is still in progress
 }
 
 // newACPRenderer returns a renderer of run runID sending through out, with now as its clock.
@@ -136,6 +137,28 @@ func (r *acpRenderer) tick() {
 	r.send(func() error { return r.out.ToolCallUpdate(r.callID, "", title) })
 }
 
+// abandon closes the open tool call as completed, for a canceled prompt whose run goes on: T3 Code
+// drops the updates sent after the canceled prompt's answer, so a call left open would spin in the
+// thread's history for good. The caller answers the prompt only after abandon returns.
+func (r *acpRenderer) abandon() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.callID != "" {
+		r.closeCall(acp.ToolCompleted)
+	}
+}
+
+// endedWithoutFinish records that the attempt ended without a finish event, as a crashed run or one
+// its force exit killed does: the plan entries still in progress then show pending in the final plan,
+// as the stage a failed run stopped in does.
+func (r *acpRenderer) endedWithoutFinish() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.snap.Finish == nil {
+		r.unended = true
+	}
+}
+
 // finish brings the plan up to date, closes the open tool call with callStatus, and sends message as
 // the run's one final agent message.
 func (r *acpRenderer) finish(callStatus, message string) {
@@ -204,6 +227,13 @@ func (r *acpRenderer) closeCall(callStatus string) {
 // no tasks or stages yet has no plan to send.
 func (r *acpRenderer) sendPlan() {
 	entries := acpPlanEntries(&r.snap)
+	if r.unended {
+		for i := range entries {
+			if entries[i].Status == acp.PlanInProgress {
+				entries[i].Status = acp.PlanPending
+			}
+		}
+	}
 	if slices.Equal(entries, r.plan) || (len(entries) == 0 && r.plan == nil) {
 		return
 	}

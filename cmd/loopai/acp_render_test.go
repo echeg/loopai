@@ -201,6 +201,46 @@ func TestACPRendererStart(t *testing.T) {
 	})
 }
 
+// TestACPRendererEndings covers how a renderer leaves the thread when its prompt ends without a
+// finish event to show: a canceled prompt closes its open tool call as completed, and an attempt that
+// ended without a finish event shows no plan entry in progress, while one that recorded its finish
+// keeps the entries the finish left.
+func TestACPRendererEndings(t *testing.T) {
+	t.Run("abandon closes the open tool call", func(t *testing.T) {
+		sent := &acpSentUpdates{}
+		r := newACPRenderer(sent, "run-1", time.Now)
+		r.start(acpRenderEvents())
+		sent.take()
+		r.abandon()
+		assert.Equal(t, []string{"update 1 completed|"}, sent.take())
+		r.abandon()
+		assert.Empty(t, sent.take(), "no tool call is left to close")
+	})
+	t.Run("an attempt without a finish event", func(t *testing.T) {
+		sent := &acpSentUpdates{}
+		r := newACPRenderer(sent, "run-1", time.Now)
+		r.start(append(acpRenderEvents(), runs.Event{Seq: 4, Attempt: 1, Type: runs.EventPhase, Phase: status.PhaseReview}))
+		assert.Contains(t, sent.take()[0], "Review=in_progress/medium")
+		r.endedWithoutFinish()
+		r.finish(acp.ToolFailed, "loopai run run-1 crashed.")
+		assert.Equal(t, []string{
+			"plan Task 1: Add the parser=completed/medium; Task 2: Wire the CLI=completed/medium; " +
+				"Review=pending/medium; Finalize=pending/medium",
+			"update 1 failed|",
+			"message loopai run run-1 crashed.",
+		}, sent.take(), "the review the run crashed in is pending again")
+	})
+	t.Run("an attempt with a finish event", func(t *testing.T) {
+		sent := &acpSentUpdates{}
+		r := newACPRenderer(sent, "run-1", time.Now)
+		r.start(append(acpRenderEvents(), runs.Event{Seq: 4, Attempt: 1, Type: runs.EventFinish, Status: runs.StatusFailed}))
+		sent.take()
+		r.endedWithoutFinish()
+		r.finish(acp.ToolFailed, "loopai run run-1 failed.")
+		assert.Equal(t, []string{"message loopai run run-1 failed."}, sent.take(), "the plan the finish left is kept")
+	})
+}
+
 func TestACPRendererTitles(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -327,6 +367,68 @@ func TestACPCrashedRunEndsTheTurn(t *testing.T) {
 	assert.Equal(t, "loopai run "+acpRouteRunID+" crashed: the run process ended without recording an outcome.\n\n"+
 		"Branch: feature", content["text"])
 	assert.Equal(t, map[string]any{"stopReason": "end_turn"}, s.result(3))
+}
+
+// TestACPCrashedRunWithAPlanShowsNoEntryInProgress ends a followed run in its first task without a
+// finish event: the final plan update shows the task pending again before the failed tool call and the
+// final message.
+func TestACPCrashedRunWithAPlanShowsNoEntryInProgress(t *testing.T) {
+	cwd := t.TempDir()
+	run := newACPTestRun(t, cwd, runs.Descriptor{ID: acpRouteRunID,
+		Origin: runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "thread-1"}}).start()
+	events := acpRenderEvents()
+	for i := range events {
+		events[i].Seq = 0 // the journal stamps its own
+	}
+	appendRunsTestEvents(t, run.dir, 1, events...)
+	require.NoError(t, bindRun(cwd, "thread-1", "sess-old", acpRouteRunID))
+
+	s, sid := openACPSession(t, cwd, "thread=thread-1", "")
+	s.send(acpPrompt(3, sid, "status"))
+	opened := acpRenderTurn(t, s.acpWire, 2)
+	assert.Equal(t, "in_progress", acpPlanStatuses(opened[0])[0], "the first task is in progress")
+	run.release()
+	closed := acpRenderTurn(t, s.acpWire, 3)
+	assert.Equal(t, "plan", closed[0]["sessionUpdate"])
+	assert.Equal(t, []string{"pending", "pending", "pending", "pending"}, acpPlanStatuses(closed[0]))
+	assert.Equal(t, "failed", closed[1]["status"])
+	assert.Equal(t, "agent_message_chunk", closed[2]["sessionUpdate"])
+	assert.Equal(t, map[string]any{"stopReason": "end_turn"}, s.result(3))
+}
+
+// TestACPCanceledFollowClosesItsToolCall cancels a prompt following a live run: the open tool call is
+// closed as completed before the cancelled answer, so no card keeps spinning in the thread.
+func TestACPCanceledFollowClosesItsToolCall(t *testing.T) {
+	cwd := t.TempDir()
+	run := newACPTestRun(t, cwd, runs.Descriptor{ID: acpRouteRunID,
+		Origin: runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "thread-1"}}).start()
+	require.NoError(t, bindRun(cwd, "thread-1", "sess-old", acpRouteRunID))
+
+	s, sid := openACPSession(t, cwd, "thread=thread-1", "")
+	s.send(acpPrompt(3, sid, acp.ContinuationText))
+	opened := acpRenderTurn(t, s.acpWire, 1)
+	require.Equal(t, "tool_call", opened[0]["sessionUpdate"])
+	s.send(acpCancel(sid))
+	closed := acpRenderTurn(t, s.acpWire, 1)
+	assert.Equal(t, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": opened[0]["toolCallId"],
+		"status": "completed"}, closed[0])
+	assert.Equal(t, map[string]any{"stopReason": string(acp.StopCancelled)}, s.result(3),
+		"the answer follows the closed tool call")
+	st, err := runs.Classify(cwd, run.dir)
+	require.NoError(t, err)
+	assert.Equal(t, runs.StatusRunning, st, "the run goes on")
+}
+
+// acpPlanStatuses returns the status of every entry of a plan update.
+func acpPlanStatuses(update map[string]any) []string {
+	entries, _ := update["entries"].([]any)
+	statuses := make([]string, 0, len(entries))
+	for _, raw := range entries {
+		entry, _ := raw.(map[string]any)
+		st, _ := entry["status"].(string)
+		statuses = append(statuses, st)
+	}
+	return statuses
 }
 
 func TestACPFinalMessage(t *testing.T) {

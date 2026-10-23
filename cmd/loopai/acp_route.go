@@ -267,9 +267,10 @@ func (t *acpTurn) lockAttach(id string) (release func(), refusal string) {
 
 // follow follows run id, whose attach.lock the caller holds, until it is no longer live: it shows the
 // run's plan and current phase through an acpRenderer, then closes the phase's tool call and sends the
-// final message, which every finished run ends with, whatever its status. A cancel ends the turn with
-// StopCancelled, leaves the run running, and arms its stop through stopOnCancel; the provider
-// stopping ends it unanswered.
+// final message, which every finished run ends with, whatever its status; an attempt that ended
+// without a finish event shows no plan entry in progress. A cancel closes the open tool call, ends the
+// turn with StopCancelled, leaves the run running, and arms its stop through stopOnCancel; the
+// provider stopping ends it unanswered.
 func (t *acpTurn) follow(id string) acp.StopReason {
 	dir := runs.Dir(t.req.Cwd, id)
 	events, err := runs.ReadFrom(dir, 0)
@@ -301,6 +302,7 @@ func (t *acpTurn) follow(id string) acp.StopReason {
 	watcher.Wait() // no liveness retitle after the final message
 	switch {
 	case t.canceled():
+		r.abandon() // before the StopCancelled answer, after which T3 Code drops every update
 		if t.stopOnCancel != nil {
 			t.stopOnCancel(id) // armed before the StopCancelled answer, which a steered prompt follows
 		}
@@ -314,6 +316,8 @@ func (t *acpTurn) follow(id string) acp.StopReason {
 	callStatus := acp.ToolFailed
 	if status == runs.StatusSucceeded {
 		callStatus = acp.ToolCompleted
+	} else {
+		r.endedWithoutFinish()
 	}
 	r.finish(callStatus, acpFinalMessage(dir, id, status))
 	return acp.StopEndTurn
