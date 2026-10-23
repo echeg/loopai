@@ -448,24 +448,159 @@ func TestProviderCancel(t *testing.T) {
 	assert.Equal(t, []string{"s1", "s2"}, cancels, "a cancel without a session id is ignored")
 }
 
-func TestProviderCancelEndsAnOpenPrompt(t *testing.T) {
-	canceled := make(chan struct{})
-	h := &fakeHandler{
-		onCancel: func(string) { close(canceled) },
-		onPrompt: func(ctx context.Context, _ PromptRequest, _ *Updates) StopReason {
-			select {
-			case <-canceled:
-				return StopCancelled
-			case <-ctx.Done():
-				return StopEndTurn
-			}
-		},
+// untilCanceled is a prompt handler that answers StopCancelled once its prompt is canceled.
+func untilCanceled(ctx context.Context, req PromptRequest, _ *Updates) StopReason {
+	select {
+	case <-req.Canceled:
+		return StopCancelled
+	case <-ctx.Done():
+		return StopEndTurn
 	}
+}
+
+// isClosed reports whether a Canceled channel is closed, without waiting.
+func isClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// openPromptCount returns how many prompts the provider still records as open.
+func (p *Provider) openPromptCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	for _, chs := range p.open {
+		n += len(chs)
+	}
+	return n
+}
+
+func TestProviderCancelEndsAnOpenPrompt(t *testing.T) {
+	h := &fakeHandler{onPrompt: untilCanceled}
 	s := startProvider(t, h)
 	sid := s.newSession(1, "/repo")
 	s.send(`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"` + sid + `","prompt":[]}}`)
 	s.send(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"` + sid + `"}}`)
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":2,"result":{"stopReason":"cancelled"}}`, s.nextRaw()) //nolint:misspell // ACP wire value
+	s.sync(3)
+	_, _, _, cancels := h.snapshot()
+	assert.Equal(t, []string{sid}, cancels, "the handler hears the cancel too")
+	require.Eventually(t, func() bool { return s.p.openPromptCount() == 0 }, 10*time.Second, 10*time.Millisecond)
+}
+
+// TestProviderCancelBeforePromptCall pins the order a handler cannot see: Prompt starts on its own
+// goroutine, so the cancel that follows a prompt can reach Cancel before the prompt reaches Prompt.
+// The handler here starts its prompt only after Cancel returned, and still finds it canceled.
+func TestProviderCancelBeforePromptCall(t *testing.T) {
+	cancelSeen := make(chan struct{})
+	h := &fakeHandler{
+		onCancel: func(string) { close(cancelSeen) },
+		onPrompt: func(ctx context.Context, req PromptRequest, u *Updates) StopReason {
+			select {
+			case <-cancelSeen:
+			case <-ctx.Done():
+				return StopEndTurn
+			}
+			assert.True(t, isClosed(req.Canceled), "Canceled is closed before Cancel runs")
+			return untilCanceled(ctx, req, u)
+		},
+	}
+	s := startProvider(t, h)
+	sid := s.newSession(1, "/repo")
+	// one write, so the read loop handles the cancel before the prompt's goroutine is likely to run
+	s.send(`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"` + sid + `","prompt":[]}}` + "\n" +
+		`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"` + sid + `"}}`)
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":2,"result":{"stopReason":"cancelled"}}`, s.nextRaw()) //nolint:misspell // ACP wire value
+}
+
+// TestProviderCancelBackToBack sends each prompt and its cancel in one write, the way a Stop pressed
+// right after sending reaches the provider, and expects every prompt answered StopCancelled.
+func TestProviderCancelBackToBack(t *testing.T) {
+	s := startProvider(t, &fakeHandler{onPrompt: untilCanceled})
+	sid := s.newSession(1, "/repo")
+	for i := range 100 {
+		id := i + 2
+		s.send(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"session/prompt","params":{"sessionId":%q,"prompt":[]}}`+"\n"+
+			`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":%q}}`, id, sid, sid))
+		assert.JSONEq(t, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"stopReason":"cancelled"}}`, id), //nolint:misspell // ACP wire value
+			s.nextRaw(), "iteration %d", i)
+	}
+}
+
+// TestProviderCancelClosesOnlyEarlierPrompts walks a steer: a cancel closes the prompts of its own
+// session received before it, never another session's, never a prompt received after it, and a
+// repeated cancel closes nothing twice.
+func TestProviderCancelClosesOnlyEarlierPrompts(t *testing.T) {
+	reqs := make(chan PromptRequest, 4)
+	h := &fakeHandler{onPrompt: func(ctx context.Context, req PromptRequest, u *Updates) StopReason {
+		reqs <- req
+		return untilCanceled(ctx, req, u)
+	}}
+	s := startProvider(t, h)
+	a := s.newSession(1, "/repo")
+	b := s.newSession(2, "/repo")
+	nextReq := func() PromptRequest {
+		t.Helper()
+		select {
+		case r := <-reqs:
+			return r
+		case <-time.After(10 * time.Second):
+			t.Fatal("prompt did not start")
+			return PromptRequest{}
+		}
+	}
+
+	s.send(`{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"` + a + `","prompt":[]}}`)
+	first := nextReq()
+	s.send(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"` + b + `"}}`)
+	s.sync(4)
+	assert.False(t, isClosed(first.Canceled), "another session's cancel leaves the prompt open")
+
+	s.send(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"` + a + `"}}`)
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}}`, s.nextRaw()) //nolint:misspell // ACP wire value
+	s.send(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"` + a + `"}}`)
+	s.sync(5)
+
+	// the steered prompt arrives after the cancel and stays open until a cancel of its own
+	s.send(`{"jsonrpc":"2.0","id":6,"method":"session/prompt","params":{"sessionId":"` + a + `","prompt":[]}}`)
+	steered := nextReq()
+	s.sync(7)
+	assert.False(t, isClosed(steered.Canceled), "a cancel read before the prompt never closes it")
+	s.send(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"` + a + `"}}` + "\n" +
+		`{"jsonrpc":"2.0","id":8,"method":"session/cancel","params":{"sessionId":"` + a + `"}}`)
+	got := map[float64]bool{}
+	for range 2 {
+		m := s.next()
+		id, _ := m["id"].(float64)
+		got[id] = true
+	}
+	assert.Equal(t, map[float64]bool{6: true, 8: true}, got, "the steered prompt and the cancel request are answered")
+	s.sync(9)
+
+	_, _, _, cancels := h.snapshot()
+	assert.Equal(t, []string{b, a, a, a, a}, cancels, "every cancel reaches the handler, open prompt or not")
+	require.Eventually(t, func() bool { return s.p.openPromptCount() == 0 }, 10*time.Second, 10*time.Millisecond)
+}
+
+// TestProviderAnsweredPromptIsForgotten checks that a prompt answered without a cancel is no longer
+// open, so a later cancel of its session closes nothing of it.
+func TestProviderAnsweredPromptIsForgotten(t *testing.T) {
+	h := &fakeHandler{}
+	s := startProvider(t, h)
+	sid := s.newSession(1, "/repo")
+	s.send(`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"` + sid + `","prompt":[]}}`)
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}`, s.nextRaw())
+	require.Eventually(t, func() bool { return s.p.openPromptCount() == 0 }, 10*time.Second, 10*time.Millisecond)
+	s.send(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"` + sid + `"}}`)
+	s.sync(3)
+	_, _, prompts, cancels := h.snapshot()
+	require.Len(t, prompts, 1)
+	assert.False(t, isClosed(prompts[0].Canceled), "a cancel after the answer does not reach the answered prompt")
+	assert.Equal(t, []string{sid}, cancels)
 }
 
 // openPrompt starts a prompt whose handler blocks until its context ends and reports that it did.
@@ -501,8 +636,10 @@ func TestProviderShutdownNeverCancelsOrAnswers(t *testing.T) {
 		t.Fatal("Shutdown returned before the prompt handler")
 	}
 	s.expectSilence()
-	_, _, _, cancels := h.snapshot()
+	_, _, prompts, cancels := h.snapshot()
 	assert.Empty(t, cancels, "shutdown is never reported as a cancel")
+	require.Len(t, prompts, 1)
+	assert.False(t, isClosed(prompts[0].Canceled), "shutdown never closes Canceled")
 
 	// a stopped provider answers nothing, initialize included
 	s.send(t3Initialize)
@@ -511,6 +648,14 @@ func TestProviderShutdownNeverCancelsOrAnswers(t *testing.T) {
 	s.expectSilence()
 	_, _, _, cancels = h.snapshot()
 	assert.Empty(t, cancels)
+
+	// a prompt read after the stop starts no handler and is not left open
+	assert.Zero(t, s.p.openPromptCount(), "the stopped prompt's handler returned and was forgotten")
+	s.p.handlePrompt(json.RawMessage(`99`), json.RawMessage(`{"sessionId":"`+prompts[0].SessionID+`","prompt":[]}`))
+	assert.Zero(t, s.p.openPromptCount(), "a prompt the stopped provider never starts is forgotten at once")
+	s.expectSilence()
+	_, _, prompts, _ = h.snapshot()
+	assert.Len(t, prompts, 1)
 }
 
 func TestProviderEOFNeverCancelsOrAnswers(t *testing.T) {
@@ -528,8 +673,10 @@ func TestProviderEOFNeverCancelsOrAnswers(t *testing.T) {
 		t.Fatal("EOF did not cancel the prompt's context")
 	}
 	s.expectSilence()
-	_, _, _, cancels := h.snapshot()
+	_, _, prompts, cancels := h.snapshot()
 	assert.Empty(t, cancels, "EOF is never reported as a cancel")
+	require.Len(t, prompts, 1)
+	assert.False(t, isClosed(prompts[0].Canceled), "EOF never closes Canceled")
 }
 
 func TestProviderShutdownBoundedByContext(t *testing.T) {

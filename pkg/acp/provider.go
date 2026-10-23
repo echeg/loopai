@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 )
 
@@ -66,11 +67,22 @@ type PromptRequest struct {
 	SessionID string
 	Cwd       string            // recorded by the session's session/new or session/load
 	Blocks    []json.RawMessage // the prompt's content blocks as sent; ParsePrompt reads the message
+	// Canceled is closed by the first session/cancel for this session that the provider reads after
+	// this prompt while the prompt is open, which lasts until its answer is sent. The provider records
+	// the prompt before it reads the next message, so such a cancel closes it even when it is handled
+	// before Prompt is called. A cancel read before this prompt never closes it, and neither does the
+	// provider stopping.
+	Canceled <-chan struct{}
 }
 
 // Handler serves the provider's sessions. NewSession, LoadSession, and Prompt run on goroutines of
-// their own, with a context canceled when the provider stops; Cancel runs on the read loop, in
+// their own, with a context canceled when the provider stops. Cancel runs on the read loop, in
 // message order, and must not block.
+//
+// Because Prompt starts on its own goroutine, a session/cancel read right after a session/prompt
+// can reach Cancel before that prompt reaches Prompt. A handler therefore learns that a prompt was
+// canceled from PromptRequest.Canceled, which is already closed when Cancel runs, and not from
+// whether Prompt was called before Cancel.
 type Handler interface {
 	// NewSession is called for session/new with a fresh session id, which is answered once it
 	// returns. session/new always succeeds, for any cwd.
@@ -81,7 +93,10 @@ type Handler interface {
 	// Prompt runs one session/prompt and returns its stop reason, which is answered unless the
 	// provider stopped meanwhile. Updates sends the session's session/update notifications.
 	Prompt(ctx context.Context, req PromptRequest, updates *Updates) StopReason
-	// Cancel reports a session/cancel from the client. The provider stopping never calls it.
+	// Cancel reports a session/cancel from the client, after the Canceled channels of the session's
+	// open prompts are closed. It is called whether or not a prompt is open, and it may run before
+	// the Prompt call of a prompt received just before the cancel. The provider stopping never calls
+	// it.
 	Cancel(sessionID string)
 }
 
@@ -91,8 +106,8 @@ type Handler interface {
 // It never sends requests of its own, so it never asks the client for permission.
 //
 // A Provider stops when its input ends or Shutdown is called. A stopped provider cancels the
-// context its handlers run with and sends nothing more: an open prompt is never answered, and
-// Cancel is not called.
+// context its handlers run with and sends nothing more: an open prompt is never answered, its
+// Canceled channel is not closed, and Cancel is not called.
 type Provider struct {
 	conn    *Conn
 	handler Handler
@@ -105,7 +120,8 @@ type Provider struct {
 	mu         sync.Mutex
 	stopped    bool
 	clientName string
-	sessions   map[string]string // session id -> cwd
+	sessions   map[string]string          // session id -> cwd
+	open       map[string][]chan struct{} // session id -> Canceled channels of prompts not yet canceled or ended
 }
 
 // NewProvider returns a provider reading client messages from r and writing to w. version is
@@ -119,6 +135,7 @@ func NewProvider(r io.Reader, w io.Writer, version string, h Handler) *Provider 
 		ctx:      ctx,
 		cancel:   cancel,
 		sessions: map[string]string{},
+		open:     map[string][]chan struct{}{},
 	}
 	p.conn.HandleRequest(methodInitialize, p.handleInitialize)
 	p.conn.HandleRequest(methodSessionNew, p.handleNewSession)
@@ -177,14 +194,16 @@ func (p *Provider) isStopped() bool {
 	return p.stopped
 }
 
-// spawn runs fn on a goroutine counted by Shutdown, unless the provider stopped.
-func (p *Provider) spawn(fn func()) {
+// spawn runs fn on a goroutine counted by Shutdown, unless the provider stopped. It reports whether
+// fn was started.
+func (p *Provider) spawn(fn func()) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stopped {
-		return
+		return false
 	}
 	p.wg.Go(fn)
+	return true
 }
 
 // reply answers a request unless the provider stopped. An answer already being written when the
@@ -324,6 +343,8 @@ func (p *Provider) handleLoadSession(id, params json.RawMessage) {
 }
 
 // handlePrompt runs a prompt of a known session on its own goroutine and answers its stop reason.
+// The prompt is recorded as open before the read loop moves on, so a session/cancel read next
+// closes its Canceled channel even when Prompt has not been called yet.
 func (p *Provider) handlePrompt(id, params json.RawMessage) {
 	var req struct {
 		SessionID string            `json:"sessionId"`
@@ -338,9 +359,11 @@ func (p *Provider) handlePrompt(id, params json.RawMessage) {
 		_ = p.replyError(id, CodeInvalidParams, errTextUnknownSession)
 		return
 	}
-	pr := PromptRequest{SessionID: req.SessionID, Cwd: cwd, Blocks: req.Prompt}
+	canceled := p.openPrompt(req.SessionID)
+	pr := PromptRequest{SessionID: req.SessionID, Cwd: cwd, Blocks: req.Prompt, Canceled: canceled}
 	updates := &Updates{p: p, sessionID: req.SessionID, messageID: newMessageID()}
-	p.spawn(func() {
+	started := p.spawn(func() {
+		defer p.endPrompt(req.SessionID, canceled)
 		reason := p.handler.Prompt(p.ctx, pr, updates)
 		if reason == "" {
 			reason = StopEndTurn
@@ -349,9 +372,46 @@ func (p *Provider) handlePrompt(id, params json.RawMessage) {
 			StopReason StopReason `json:"stopReason"`
 		}{reason})
 	})
+	if !started {
+		p.endPrompt(req.SessionID, canceled)
+	}
 }
 
-// handleCancel reports a session/cancel to the handler, unless the provider stopped.
+// openPrompt records a prompt of a session as open and returns its Canceled channel.
+func (p *Provider) openPrompt(sessionID string) chan struct{} {
+	ch := make(chan struct{})
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.open[sessionID] = append(p.open[sessionID], ch)
+	return ch
+}
+
+// endPrompt forgets a prompt whose handler returned. A prompt a cancel already closed was forgotten
+// then, so a channel is never closed twice.
+func (p *Provider) endPrompt(sessionID string, ch chan struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	rest := slices.DeleteFunc(p.open[sessionID], func(c chan struct{}) bool { return c == ch })
+	if len(rest) == 0 {
+		delete(p.open, sessionID)
+		return
+	}
+	p.open[sessionID] = rest
+}
+
+// cancelPrompts closes the Canceled channels of a session's open prompts and forgets them.
+func (p *Provider) cancelPrompts(sessionID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, ch := range p.open[sessionID] {
+		close(ch)
+	}
+	delete(p.open, sessionID)
+}
+
+// handleCancel closes the Canceled channels of the session's open prompts, then reports the
+// session/cancel to the handler, unless the provider stopped. Both happen on the read loop, before
+// any later message is read.
 func (p *Provider) handleCancel(params json.RawMessage) {
 	var req struct {
 		SessionID string `json:"sessionId"`
@@ -359,6 +419,7 @@ func (p *Provider) handleCancel(params json.RawMessage) {
 	if json.Unmarshal(params, &req) != nil || req.SessionID == "" || p.isStopped() {
 		return
 	}
+	p.cancelPrompts(req.SessionID)
 	p.handler.Cancel(req.SessionID)
 }
 
