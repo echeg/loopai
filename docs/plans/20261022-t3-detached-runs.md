@@ -1078,7 +1078,7 @@
 - ⚠️ Review fix round 1: a `terminal.write` answered with `TerminalWriteError` (the pty write threw because the shell died) means the terminal is gone, like `TerminalSessionLookupError`; it no longer disables the bridge, and the bridge forgets the terminal's idle time until T3 reports it again. A runtime naming neither a pid nor a start time (`LOOPAI_T3_URL` with no readable runtime file) cannot tell a restart from a lost connection, so every connection then counts as a new server start, and an absent terminal is reopened at most once per connection.
 
 ### Task 12: Add the ACP provider protocol and the MCP thread-id client (packages only)
-- [ ] create `pkg/acp/provider.go` on top of `transport.go`:
+- [x] create `pkg/acp/provider.go` on top of `transport.go`:
   - `initialize` answers exactly the v1 response in Technical Details: no `info` key, `loadSession: true`, no `mcpCapabilities.acp`, `authMethods: []`;
   - `session/new` returns a fresh `sessionId` through a handler hook, without loading config, opening a repository, or touching the filesystem, for any cwd;
   - `session/load` registers any id and answers `{}` promptly;
@@ -1088,39 +1088,42 @@
   - no error carries code -32000, and no error text matches the auth regex;
   - the provider never sends permission requests;
   - it exposes `Shutdown` for EOF and SIGTERM.
-- [ ] add update encoders, sent as `session/update` notifications:
+- [x] add update encoders, sent as `session/update` notifications:
   - `plan`: entries with `content`, `priority`, `status`;
   - `tool_call`: `toolCallId`, `title`, `kind: "other"`, `status`;
   - `tool_call_update`;
   - `agent_message_chunk` with a stable `messageId`.
-- [ ] add the envelope parser `ParsePrompt(blocks)`:
+- [x] add the envelope parser `ParsePrompt(blocks)`:
   - take the first text block;
   - use the inner text of `<user_request>\n…\n</user_request>` when present;
   - take the text after the LAST `\n\nUser message:\n`;
   - trim it.
 
   Also add `IsContinuation(text)`: true when the last non-empty line equals `Continue where you left off.`.
-- [ ] create `pkg/t3/mcp.go`, a streamable-HTTP client per Technical Details:
+- [x] create `pkg/t3/mcp.go`, a streamable-HTTP client per Technical Details:
   - sequence: `initialize` without a session id, capture `mcp-session-id`, `notifications/initialized`, then `tools/call t3_thread_list {"limit":1}`;
   - bodies may be JSON or SSE `data:` lines;
   - headers: `Accept: application/json, text/event-stream`, `Content-Type: application/json`, no `Origin`; an optional `DELETE` at the end;
   - the input is `{endpoint, authorization}`, and header values are never logged;
   - 401 or any failure means "no thread id".
-- [ ] add `MCPCredentialFromServers(mcpServers, getenv)`: the `t3-code` entry's `env` array from the given `mcpServers` wins over `T3_ACP_MCP_ENDPOINT`/`T3_ACP_MCP_AUTHORIZATION`.
-- [ ] write tests (success):
+- [x] add `MCPCredentialFromServers(mcpServers, getenv)`: the `t3-code` entry's `env` array from the given `mcpServers` wins over `T3_ACP_MCP_ENDPOINT`/`T3_ACP_MCP_AUTHORIZATION`.
+- [x] write tests (success):
   - T3's exact `initialize` (protocolVersion 2 with `info`, `capabilities`, `clientCapabilities`, `clientInfo`) gets a response without `info` and with `loadSession: true`;
   - `session/new` with cwd `/` and `mcpServers: []` succeeds;
   - `session/load` with an unknown id answers `{}`;
   - each encoder emits its required fields;
   - envelope parsing covers the wrapped first prompt, a handoff history containing `User message:` twice, the restart-note continuation, plain continuation, and a raw `/command`;
   - the MCP fake (JSON and SSE replies) yields `currentThreadId`, and params credentials win over env.
-- [ ] write tests (errors/edge):
+- [x] write tests (errors/edge):
   - unknown methods get -32601;
   - a cancel is reported through the cancel callback and never through shutdown;
   - MCP 401/406/415 or a timeout returns "no thread id" without logging the authorization value;
   - no `initialize`/`session/new`/`session/load` reply uses error code -32000;
   - no error text matches the Go regex `(?i)\b(authenticat(e|ed|es|ing|ion)|credentials?|log([\s-]+)?in)\b`.
-- [ ] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 13
+- [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 13
+- ⚠️ The MCP client also sends `Mcp-Protocol-Version` (the version `initialize` negotiated, `2025-06-18`) on every request after `initialize`, as T3's own bridge client (`AcpMcpStdioBridge.ts`) does and MCP `2025-06-18` requires: the effect MCP runtime in T3's v0.1.1 tree (`.repos/effect-smol`, `requiresVersionHeader: true` for `2025-06-18`) answers a session request without it with 400. The Technical Details header list omitted it.
+- ⚠️ `pkg/acp/transport.go` gained `Conn.HandleUnknownRequest`, so the provider answers -32601 with the fixed text `method not found`: the transport's default echoes the method name, and `authenticate` would match T3's auth regex. Other provider error texts are fixed too and never echo client strings.
+- ⚠️ `ParsePrompt` returns "" when the first text block starts with `<runtime_info>`: T3 sends that block first only for a message without text (image only).
 
 ### Task 13: Wire `loopai --acp` and rewrite loopai-acp as an exec launcher
 - [ ] re-add visible `ACP bool` (`long:"acp"`), routed through the Task 6 `runPreConfigCommand`:

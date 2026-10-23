@@ -1,7 +1,8 @@
 // Package t3 is a client of the local T3 Code server's orchestration protocol 2: the WebSocket RPC
 // at /ws?orchestrationProtocol=2 (terminals, the thread projection, and thread commands) and the
 // HTTP project list. It locates the server through T3 Code's server-runtime.json, which it only
-// ever reads, and authenticates with a Bearer token it never logs.
+// ever reads, and authenticates with a Bearer token it never logs. MCPClient separately talks to
+// the thread-scoped MCP endpoint T3 Code hands an ACP provider, with the authorization it carries.
 package t3
 
 import (
