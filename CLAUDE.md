@@ -1045,7 +1045,9 @@ lines until the decorated logger exists. `Snapshot`/`Fold` is the only structure
 phase is a per-task block that leaves the stages alone, a stage never reopens, and entering one
 completes every earlier one. `Follow` ends on the lifetime lock and outcome; `FollowUntilFinish` ends
 on the attempt's `finish` event, for a reader inside the run process, which holds the lock itself.
-`--attach`, `--runs`, and `--stop` (`runs_cmd.go`) read the runs of `runsRoot`, the working directory.
+`--attach`, `--runs`, and `--stop` (`runs_cmd.go`) read the runs of `runsRoot`: the root of the repository
+or worktree holding the working directory, found through `git.NewService` with `vcs_command`, so they work
+from a subdirectory and refuse outside a repository instead of answering "no detached runs".
 `stopRun` rereads the descriptor and, only while the lifetime lock is held and the recorded process
 still carries its start token, writes `stop-requested` and then sends SIGTERM to that process alone;
 the marker comes first so a run killed by its own force exit classifies as stopped. `--stop` then

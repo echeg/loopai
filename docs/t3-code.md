@@ -29,8 +29,9 @@ loopai --attach [run]                          # replay and follow a run until i
 loopai --stop <run>                            # stop a live run gracefully, keeping its worktree
 ```
 
-Run these from the repository root. `[run]` is a run id, a plan, or a branch. Without one, `--attach`
-follows the only live run, else the newest.
+Start `--detach` from the repository root; `--runs`, `--attach`, and `--stop` also work from any
+subdirectory of the checkout, and refuse outside a repository. `[run]` is a run id, a plan, or a
+branch. Without one, `--attach` follows the only live run, else the newest.
 
 `--detach` starts one plan, in full or `--tasks-only` mode, as an independent process. It always runs
 in a loopai worktree (`.loopai/worktrees/<branch>`), as `--worktree` would, and accepts the usual

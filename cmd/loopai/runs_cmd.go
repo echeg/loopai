@@ -15,6 +15,7 @@ import (
 	"github.com/fatih/color"
 
 	"github.com/umputun/ralphex/pkg/config"
+	"github.com/umputun/ralphex/pkg/git"
 	"github.com/umputun/ralphex/pkg/progress"
 	"github.com/umputun/ralphex/pkg/runs"
 )
@@ -86,7 +87,7 @@ func attachDetachedRun(ctx context.Context, o opts, stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	root, err := runsRoot()
+	root, err := runsRoot(cfg.VcsCommand)
 	if err != nil {
 		return err
 	}
@@ -104,9 +105,10 @@ func attachDetachedRun(ctx context.Context, o opts, stdout io.Writer) error {
 	return nil
 }
 
-// listDetachedRuns is --runs: one row per run of the checkout, newest first.
-func listDetachedRuns(stdout io.Writer) error {
-	root, err := runsRoot()
+// listDetachedRuns is --runs: one row per run of the checkout, newest first. vcsCommand is the
+// configured vcs_command, which finds the checkout's root.
+func listDetachedRuns(vcsCommand string, stdout io.Writer) error {
+	root, err := runsRoot(vcsCommand)
 	if err != nil {
 		return err
 	}
@@ -117,11 +119,11 @@ func listDetachedRuns(stdout io.Writer) error {
 	return printRuns(stdout, root, all)
 }
 
-// stopDetachedRun is --stop: it stops the run ident names through stopRun, then waits up to
-// stopWaitTimeout for the run to end and prints the status it ended with, or, when it is still
-// finishing, how to follow it.
-func stopDetachedRun(ctx context.Context, ident string, colors *progress.Colors, stdout io.Writer) error {
-	root, err := runsRoot()
+// stopDetachedRun is --stop: it stops the run ident names in the checkout vcsCommand finds through
+// stopRun, then waits up to stopWaitTimeout for the run to end and prints the status it ended with, or,
+// when it is still finishing, how to follow it.
+func stopDetachedRun(ctx context.Context, vcsCommand, ident string, colors *progress.Colors, stdout io.Writer) error {
+	root, err := runsRoot(vcsCommand)
 	if err != nil {
 		return err
 	}
@@ -146,14 +148,15 @@ func stopDetachedRun(ctx context.Context, ident string, colors *progress.Colors,
 	return nil
 }
 
-// runsRoot is the checkout whose runs --attach, --runs, and --stop see: the working directory, where
-// the launcher, which runs from the repository root, records them.
-func runsRoot() (string, error) {
-	root, err := os.Getwd()
+// runsRoot is the checkout whose runs --attach, --runs, and --stop see: the root of the repository or
+// worktree holding the working directory, found with vcsCommand ("" is git), since the launcher runs
+// from that root and records its runs there. A working directory outside a repository is refused.
+func runsRoot(vcsCommand string) (string, error) {
+	svc, err := git.NewService(".", nil, vcsCommand)
 	if err != nil {
-		return "", fmt.Errorf("resolve working directory: %w", err)
+		return "", fmt.Errorf("detached runs are recorded per checkout; run this inside the repository: %w", err)
 	}
-	return root, nil
+	return svc.Root(), nil
 }
 
 // resolveRun finds the run ident names under root, a run id, plan, or branch, or without ident the

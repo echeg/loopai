@@ -15,11 +15,11 @@ func runAttachCommand(context.Context, opts, io.Writer) error {
 }
 
 // runRunsCommand refuses: detached runs are not supported on Windows.
-func runRunsCommand(io.Writer) error {
+func runRunsCommand(string, io.Writer) error {
 	return errDetachUnsupported
 }
 
 // runStopCommand refuses: detached runs are not supported on Windows.
-func runStopCommand(context.Context, string, *progress.Colors, io.Writer) error {
+func runStopCommand(context.Context, string, string, *progress.Colors, io.Writer) error {
 	return errDetachUnsupported
 }

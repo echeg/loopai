@@ -199,6 +199,15 @@ func (h *runsHolder) wait(t *testing.T) int {
 	return exitErr.ExitCode()
 }
 
+// runsTestRepo returns an empty Git repository in a temp directory, the checkout --runs, --attach,
+// and --stop resolve their runs root in.
+func runsTestRepo(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	runGit(t, root, "init", "-q")
+	return root
+}
+
 // saveRunsTestRun records the run desc describes under root, with attempt 1, mode full, and origin cli
 // unless desc sets them, and returns its directory.
 func saveRunsTestRun(t *testing.T, root string, desc runs.Descriptor) string {
@@ -403,7 +412,7 @@ func TestResolveRun(t *testing.T) {
 }
 
 func TestListDetachedRuns(t *testing.T) {
-	root := t.TempDir()
+	root := runsTestRepo(t)
 	t.Chdir(root)
 	running := saveRunsTestRun(t, root, runs.Descriptor{ID: "a-running", Plan: "docs/plans/a.md", Branch: "a",
 		CreatedAt: runsEpoch.Add(6 * time.Hour), Origin: runs.Origin{Kind: runs.OriginT3Terminal, ThreadID: "thread:a%3Ab"}})
@@ -426,7 +435,7 @@ func TestListDetachedRuns(t *testing.T) {
 	saveRunsTestRun(t, root, runs.Descriptor{ID: "f-crashed", Plan: "docs/plans/f.md", CreatedAt: runsEpoch.Add(time.Hour)})
 
 	var out bytes.Buffer
-	require.NoError(t, listDetachedRuns(&out))
+	require.NoError(t, listDetachedRuns("", &out))
 	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
 	require.Len(t, lines, 7, out.String())
 	assert.Equal(t, []string{"RUN", "STATUS", "ATTEMPT", "ORIGIN", "PLAN", "BRANCH", "STARTED"}, strings.Fields(lines[0]))
@@ -446,21 +455,42 @@ func TestListDetachedRuns(t *testing.T) {
 		assert.Equal(t, strings.Index(lines[0], " STATUS")+1, strings.Index(lines[i+1], " "+row[1])+1, "aligned columns")
 	}
 
+	t.Run("a subdirectory of the checkout", func(t *testing.T) {
+		sub := filepath.Join(root, "docs", "plans")
+		require.NoError(t, os.MkdirAll(sub, 0o750))
+		t.Chdir(sub)
+		var fromSub bytes.Buffer
+		require.NoError(t, listDetachedRuns("", &fromSub))
+		assert.Equal(t, out.String(), fromSub.String(), "the runs of the repository root")
+	})
+
 	t.Run("a checkout without runs", func(t *testing.T) {
-		empty := t.TempDir()
+		empty := runsTestRepo(t)
 		t.Chdir(empty)
 		var out bytes.Buffer
-		require.NoError(t, listDetachedRuns(&out))
+		require.NoError(t, listDetachedRuns("", &out))
 		assert.Equal(t, "no detached runs in "+empty+"\n", out.String())
 	})
 
+	t.Run("outside a repository", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		err := listDetachedRuns("", io.Discard)
+		require.ErrorContains(t, err, "detached runs are recorded per checkout; run this inside the repository")
+	})
+
+	t.Run("a vcs command that fails", func(t *testing.T) {
+		t.Chdir(root)
+		err := listDetachedRuns(filepath.Join(t.TempDir(), "no-such-vcs"), io.Discard)
+		require.ErrorContains(t, err, "run this inside the repository")
+	})
+
 	t.Run("a run that cannot be read", func(t *testing.T) {
-		broken := t.TempDir()
+		broken := runsTestRepo(t)
 		t.Chdir(broken)
 		dir := runs.Dir(broken, "x-1")
 		require.NoError(t, os.MkdirAll(dir, 0o750))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, runs.DescriptorFile), []byte("{"), 0o600))
-		require.ErrorContains(t, listDetachedRuns(io.Discard), "run x-1 cannot be read")
+		require.ErrorContains(t, listDetachedRuns("", io.Discard), "run x-1 cannot be read")
 	})
 }
 
@@ -525,10 +555,10 @@ func TestStopRunRefuses(t *testing.T) {
 
 func TestStopDetachedRunUnknown(t *testing.T) {
 	signals := recordRunSignals(t)
-	root := t.TempDir()
+	root := runsTestRepo(t)
 	t.Chdir(root)
 	saveRunsTestRun(t, root, runs.Descriptor{ID: "other-1", Plan: "docs/plans/other.md", Branch: "other"})
-	err := stopDetachedRun(t.Context(), "nope", testColors(), io.Discard)
+	err := stopDetachedRun(t.Context(), "", "nope", testColors(), io.Discard)
 	require.ErrorIs(t, err, runs.ErrNotFound)
 	require.ErrorContains(t, err, "no matching detached run: nope in "+root)
 	assert.Empty(t, *signals)
@@ -536,7 +566,7 @@ func TestStopDetachedRunUnknown(t *testing.T) {
 
 func TestStopDetachedRunMarksBeforeSignal(t *testing.T) {
 	plainColors(t)
-	root := t.TempDir()
+	root := runsTestRepo(t)
 	t.Chdir(root)
 	pid := os.Getpid()
 	token, err := runs.ProcessStartToken(pid)
@@ -559,7 +589,7 @@ func TestStopDetachedRunMarksBeforeSignal(t *testing.T) {
 	t.Run("a run that does not end within the wait", func(t *testing.T) {
 		stopWaitTimeout = 3 * runsPoll
 		var out bytes.Buffer
-		require.NoError(t, stopDetachedRun(t.Context(), "live-1", testColors(), &out))
+		require.NoError(t, stopDetachedRun(t.Context(), "", "live-1", testColors(), &out))
 		assert.Equal(t, []int{pid}, signaled, "the recorded pid alone is signaled")
 		assert.True(t, markedFirst, "the stop marker is written before the signal")
 		assert.Equal(t, want, out.String())
@@ -571,7 +601,7 @@ func TestStopDetachedRunMarksBeforeSignal(t *testing.T) {
 		cancel()
 		var out bytes.Buffer
 		start := time.Now()
-		require.NoError(t, stopDetachedRun(ctx, "live-1", testColors(), &out))
+		require.NoError(t, stopDetachedRun(ctx, "", "live-1", testColors(), &out))
 		assert.Less(t, time.Since(start), 10*time.Second, "the wait ends with the context")
 		assert.Equal(t, want, out.String())
 	})
@@ -579,13 +609,13 @@ func TestStopDetachedRunMarksBeforeSignal(t *testing.T) {
 
 func TestStopForceExitedRunIsStopped(t *testing.T) {
 	plainColors(t)
-	root := t.TempDir()
+	root := runsTestRepo(t)
 	t.Chdir(root)
 	dir := saveRunsTestRun(t, root, runs.Descriptor{ID: "holder-1", Plan: "docs/plans/h.md", Branch: "h"})
 	h := startRunsHolder(t, dir)
 
 	var out bytes.Buffer
-	require.NoError(t, stopDetachedRun(t.Context(), "holder-1", testColors(), &out))
+	require.NoError(t, stopDetachedRun(t.Context(), "", "holder-1", testColors(), &out))
 	assert.Equal(t, "stop requested: run holder-1\nrun holder-1: stopped\n", out.String())
 	assert.Equal(t, 1, h.wait(t), "the holder exits on SIGTERM the way the force exit ends a run")
 	assert.NoFileExists(t, filepath.Join(dir, runs.OutcomeFile), "the run recorded no outcome")

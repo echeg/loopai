@@ -3884,9 +3884,9 @@ func runConfiguredStandaloneCommand(ctx context.Context, o opts, cfg *config.Con
 		return true, runDetachCommand(ctx, o, cfg, detachIO{args: os.Args[1:], stdout: os.Stdout, stderr: os.Stderr,
 			colors: colors})
 	case o.Runs:
-		return true, runRunsCommand(os.Stdout)
+		return true, runRunsCommand(cfg.VcsCommand, os.Stdout)
 	case o.Stop:
-		return true, runStopCommand(ctx, o.PlanFile, colors, os.Stdout)
+		return true, runStopCommand(ctx, cfg.VcsCommand, o.PlanFile, colors, os.Stdout)
 	case closeoutRequested(o):
 		return true, runCloseoutCommand(ctx, o, cfg, colors)
 	}

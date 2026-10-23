@@ -84,7 +84,7 @@ func TestAttachCommandReplaysFinishedRun(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(string(tc.status), func(t *testing.T) {
-			root := t.TempDir()
+			root := runsTestRepo(t)
 			dir := saveRunsTestRun(t, root, runs.Descriptor{ID: id, Attempt: 2, Plan: "docs/plans/feature.md",
 				Branch: "feature"})
 			require.NoError(t, os.WriteFile(filepath.Join(dir, runs.ConsoleLogFile), []byte(console), 0o600))
@@ -106,7 +106,7 @@ func TestAttachCommandReplaysFinishedRun(t *testing.T) {
 }
 
 func TestAttachCommandCtrlCDetaches(t *testing.T) {
-	root := t.TempDir()
+	root := runsTestRepo(t)
 	dir := saveRunsTestRun(t, root, runs.Descriptor{ID: "live-1", Plan: "docs/plans/live.md", Branch: "live"})
 	h := startRunsHolder(t, dir)
 
@@ -153,17 +153,32 @@ func TestAttachCommandCtrlCDetaches(t *testing.T) {
 }
 
 func TestRunCommandsThroughMain(t *testing.T) {
-	root := t.TempDir()
+	root := runsTestRepo(t)
 	saveRunsTestRun(t, root, runs.Descriptor{ID: "feature-1", Plan: "docs/plans/feature.md", Branch: "feature",
 		CreatedAt: runsEpoch})
+	sub := filepath.Join(root, "docs", "plans")
+	require.NoError(t, os.MkdirAll(sub, 0o750))
+	outside := t.TempDir()
 	tests := []struct {
 		name       string
+		dir        string // the working directory, the repository root when empty
 		args       []string
 		wantCode   int
 		wantStdout string
 		wantStderr string
 	}{
 		{name: "runs lists the runs", args: []string{"--runs"}, wantStdout: "feature-1  crashed"},
+		{name: "runs from a subdirectory", dir: sub, args: []string{"--runs"}, wantStdout: "feature-1  crashed"},
+		{name: "attach from a subdirectory", dir: sub, args: []string{"--attach", "feature-1"}, wantCode: 1,
+			wantStdout: "=== loopai run feature-1, attempt 1 finished ===\nstatus: crashed\n"},
+		{name: "stop from a subdirectory", dir: sub, args: []string{"--stop", "feature-1"}, wantCode: 1,
+			wantStderr: "error: run feature-1 is not running (crashed); there is nothing to stop"},
+		{name: "runs outside a repository", dir: outside, args: []string{"--runs"}, wantCode: 1,
+			wantStderr: "error: detached runs are recorded per checkout; run this inside the repository"},
+		{name: "attach outside a repository", dir: outside, args: []string{"--attach"}, wantCode: 1,
+			wantStderr: "error: detached runs are recorded per checkout; run this inside the repository"},
+		{name: "stop outside a repository", dir: outside, args: []string{"--stop", "feature-1"}, wantCode: 1,
+			wantStderr: "error: detached runs are recorded per checkout; run this inside the repository"},
 		{name: "runs with a plan", args: []string{"--runs", "plan.md"}, wantCode: 1,
 			wantStderr: "error: --runs takes no argument, got 1"},
 		{name: "attach with detach", args: []string{"--attach", "--detach"}, wantCode: 1,
@@ -178,7 +193,11 @@ func TestRunCommandsThroughMain(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			stdout, stderr, code := runRunsMain(t, root, tc.args...)
+			dir := tc.dir
+			if dir == "" {
+				dir = root
+			}
+			stdout, stderr, code := runRunsMain(t, dir, tc.args...)
 			assert.Equal(t, tc.wantCode, code, "stderr:\n%s", stderr)
 			assert.Contains(t, stdout, tc.wantStdout)
 			assert.Contains(t, stderr, tc.wantStderr)
@@ -196,7 +215,7 @@ func TestStopCommandStopsDetachedChild(t *testing.T) {
 	t.Chdir(f.repo)
 
 	var out bytes.Buffer
-	require.NoError(t, runStopCommand(t.Context(), detachChildID, testColors(), &out))
+	require.NoError(t, runStopCommand(t.Context(), "", detachChildID, testColors(), &out))
 	assert.Equal(t, "stop requested: run "+detachChildID+"\nrun "+detachChildID+": stopped\n", out.String())
 
 	assert.Equal(t, 2, p.wait(t, f), "the child exits on SIGTERM with the stopped code")
@@ -214,10 +233,10 @@ func TestStopCommandStopsDetachedChild(t *testing.T) {
 }
 
 func TestRunRunsCommand(t *testing.T) {
-	root := t.TempDir()
+	root := runsTestRepo(t)
 	t.Chdir(root)
 	saveRunsTestRun(t, root, runs.Descriptor{ID: "feature-1", Plan: "docs/plans/feature.md", Branch: "feature"})
 	var out bytes.Buffer
-	require.NoError(t, runRunsCommand(&out))
+	require.NoError(t, runRunsCommand("", &out))
 	assert.Contains(t, out.String(), "feature-1  crashed  1        cli")
 }
