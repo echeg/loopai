@@ -365,7 +365,7 @@ func TestACPCrashedRunEndsTheTurn(t *testing.T) {
 	assert.Equal(t, "failed", closed[0]["status"])
 	content, _ := closed[1]["content"].(map[string]any)
 	assert.Equal(t, "loopai run "+acpRouteRunID+" crashed: the run process ended without recording an outcome.\n\n"+
-		"Branch: feature", content["text"])
+		"Branch: feature\n\nThe worktree is kept; type `resume` in this thread to continue the run.", content["text"])
 	assert.Equal(t, map[string]any{"stopReason": "end_turn"}, s.result(3))
 }
 
@@ -437,7 +437,7 @@ func TestACPFinalMessage(t *testing.T) {
 		dir := saveRunsTestRun(t, cwd, runs.Descriptor{ID: "a-20261022-120000-aaaa", Branch: "feat-a"})
 		appendRunsTestEvents(t, dir, 1, runs.Event{Type: runs.EventAttemptStart},
 			runs.Event{Type: runs.EventFinish, Status: runs.StatusFailed, Reason: "task 2 failed"})
-		assert.Equal(t, "loopai run a-20261022-120000-aaaa failed: task 2 failed.\n\nBranch: feat-a",
+		assert.Equal(t, "loopai run a-20261022-120000-aaaa failed: task 2 failed.\n\nBranch: feat-a\n\n"+acpTestResumeHint,
 			acpFinalMessage(dir, "a-20261022-120000-aaaa", runs.StatusFailed))
 	})
 	t.Run("an earlier attempt's outcome is not shown", func(t *testing.T) {
@@ -447,7 +447,7 @@ func TestACPFinalMessage(t *testing.T) {
 			ReportSummary: "old summary", Risk: "high"}
 		require.NoError(t, runs.SaveOutcome(dir, &outcome))
 		assert.Equal(t, "loopai run b-20261022-120000-bbbb stopped: stopped before the run recorded an outcome.\n\n"+
-			"Branch: feat-b", acpFinalMessage(dir, "b-20261022-120000-bbbb", runs.StatusStopped))
+			"Branch: feat-b\n\n"+acpTestResumeHint, acpFinalMessage(dir, "b-20261022-120000-bbbb", runs.StatusStopped))
 	})
 	t.Run("a truncated message without a report points at the run directory", func(t *testing.T) {
 		cwd := t.TempDir()
@@ -458,9 +458,20 @@ func TestACPFinalMessage(t *testing.T) {
 		assert.LessOrEqual(t, acpJSONLen(got), acpFinalMessageLimit)
 		assert.NotContains(t, got, "Full report:")
 		assert.NotContains(t, got, runs.ReportFile)
-		assert.True(t, strings.HasSuffix(got, "[truncated; the run's records are in "+dir+"]"))
+		assert.True(t, strings.HasSuffix(got, "[truncated; the run's records are in "+dir+"]\n\n"+acpTestResumeHint),
+			"the resume hint survives the cut")
+	})
+	t.Run("a succeeded run has no resume hint", func(t *testing.T) {
+		cwd := t.TempDir()
+		dir := saveRunsTestRun(t, cwd, runs.Descriptor{ID: "d-20261022-120000-dddd", Branch: "feat-d"})
+		saveRunsTestOutcome(t, dir, runs.Outcome{Status: runs.StatusSucceeded, Branch: "feat-d"})
+		assert.Equal(t, "loopai run d-20261022-120000-dddd succeeded.\n\nBranch: feat-d",
+			acpFinalMessage(dir, "d-20261022-120000-dddd", runs.StatusSucceeded))
 	})
 }
+
+// acpTestResumeHint is the line a run that ended without success ends its final message with.
+const acpTestResumeHint = "The worktree is kept; type `resume` in this thread to continue the run."
 
 func TestACPCapMessage(t *testing.T) {
 	pointer := "\n\n[truncated; the full report is in /repo/.loopai/progress/runs/r/report.md]"
@@ -506,7 +517,8 @@ func TestACPLongFinalMessageIsTruncated(t *testing.T) {
 			assert.LessOrEqual(t, acpJSONLen(text), acpFinalMessageLimit)
 			assert.True(t, utf8.ValidString(text))
 			assert.True(t, strings.HasPrefix(text, "loopai run "+acpRouteRunID+" failed: "+unit))
-			assert.True(t, strings.HasSuffix(text, fmt.Sprintf("[truncated; the full report is in %s]", report)))
+			assert.True(t, strings.HasSuffix(text, fmt.Sprintf("[truncated; the full report is in %s]\n\n%s", report,
+				acpTestResumeHint)))
 		})
 	}
 }

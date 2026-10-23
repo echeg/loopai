@@ -804,6 +804,18 @@ func TestACPStatusReply(t *testing.T) {
 	saveACPTestRun(t, cwd, "broke-20261022-120000-abcd", origin,
 		runs.Outcome{Status: runs.StatusFailed, Reason: "task 2 failed"})
 	saveRunsTestRun(t, cwd, runs.Descriptor{ID: "crashed-20261022-120000-abcd", Plan: "docs/plans/c.md", Branch: "c"})
+	stopped := saveRunsTestRun(t, cwd, runs.Descriptor{ID: "stopped-20261022-120000-abcd", Plan: "docs/plans/s.md",
+		Branch: "s"})
+	require.NoError(t, runs.RequestStop(stopped))
+	again := saveRunsTestRun(t, cwd, runs.Descriptor{ID: "again-20261022-120000-abcd", Attempt: 2, Plan: "docs/plans/a.md",
+		Branch: "again"})
+	earlier := runs.Outcome{RunID: "again-20261022-120000-abcd", Attempt: 1, Status: runs.StatusFailed,
+		ReportSummary: "old summary"}
+	require.NoError(t, runs.SaveOutcome(again, &earlier))
+	unreadable := runs.Dir(cwd, "unreadable-20261022-120000-abcd")
+	require.NoError(t, os.MkdirAll(unreadable, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(unreadable, runs.DescriptorFile), []byte("{"), 0o600))
+	resume := "The worktree is kept; type `resume` in this thread to continue the run."
 
 	tests := []struct {
 		name  string
@@ -815,9 +827,19 @@ func TestACPStatusReply(t *testing.T) {
 		{name: "a succeeded run", runID: "done-20261022-120000-abcd",
 			want: "loopai run done-20261022-120000-abcd succeeded.\n\nAdded the provider.\n\nBranch: done\n\n" + acpModelSwitchHint},
 		{name: "a failed run", runID: "broke-20261022-120000-abcd",
-			want: "loopai run broke-20261022-120000-abcd failed: task 2 failed.\n\n" + acpModelSwitchHint},
-		{name: "a run without an outcome", runID: "crashed-20261022-120000-abcd",
-			want: "loopai run crashed-20261022-120000-abcd has no recorded outcome.\n\n" + acpModelSwitchHint},
+			want: "loopai run broke-20261022-120000-abcd failed: task 2 failed.\n\nBranch: feature\n\n" + resume +
+				"\n\n" + acpModelSwitchHint},
+		{name: "a crashed run", runID: "crashed-20261022-120000-abcd",
+			want: "loopai run crashed-20261022-120000-abcd crashed: the run process ended without recording an outcome." +
+				"\n\nBranch: c\n\n" + resume + "\n\n" + acpModelSwitchHint},
+		{name: "a stopped run", runID: "stopped-20261022-120000-abcd",
+			want: "loopai run stopped-20261022-120000-abcd stopped: stopped before the run recorded an outcome." +
+				"\n\nBranch: s\n\n" + resume + "\n\n" + acpModelSwitchHint},
+		{name: "an earlier attempt's outcome is not the current one's", runID: "again-20261022-120000-abcd",
+			want: "loopai run again-20261022-120000-abcd crashed: the run process ended without recording an outcome." +
+				"\n\nBranch: again\n\n" + resume + "\n\n" + acpModelSwitchHint},
+		{name: "a run that cannot be read", runID: "unreadable-20261022-120000-abcd",
+			want: "loopai run unreadable-20261022-120000-abcd has no recorded outcome.\n\n" + acpModelSwitchHint},
 		{name: "a run that is gone", runID: "gone-20261022-120000-abcd",
 			want: "loopai run gone-20261022-120000-abcd has no recorded outcome.\n\n" + acpModelSwitchHint},
 	}

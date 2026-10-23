@@ -267,7 +267,7 @@ worktree and records its state in that checkout, and it is recorded as the threa
 | Plan tasks and the stages after them (Review, External review, Finalize, Report) | Plan entries, each pending, in progress, or completed |
 | Current phase | One activity, titled `Task 3/7: <task title>`, `Review: <section>`, `External review: <section>`, `Finalize`, or `Report`, completed when the next one starts; a usage-limit wait adds `: waiting for the usage limit` |
 | A step without updates for 20 minutes | The activity is retitled with the time the step has taken |
-| Run finished | One final message: the status and reason, the report summary, Risk, the branch, and the path of `report.md` |
+| Run finished | One final message: the status and reason, the report summary, Risk, the branch, and the path of `report.md`; for a failed, stopped, or crashed run, that the worktree is kept and `resume` continues it |
 
 The thread receives updates on transitions only. It shows no reasoning or executor output, because T3
 Code stores every update in its database and never compacts them; the full output is in the run's
@@ -290,8 +290,10 @@ applies:
 3. The thread has no run, and the message is T3 Code's continuation: it adopts the one live run that a
    loopai thread started from the same directory and that no other thread follows; several candidates
    are listed instead.
-4. Anything else gets a status reply: the last outcome of the thread's run, or how to start one, and
-   that the conversation continues by switching the thread's model.
+4. Anything else gets a status reply: how the current attempt of the thread's run ended (a run that
+   ended without recording an outcome reads as crashed or stopped), with the `resume` hint when it did
+   not succeed, or how to start one, and that the conversation continues by switching the thread's
+   model.
 
 The binding between a thread and its run is stored in `.loopai/acp/` of the thread's working
 directory, one file per thread, named by a hash of the thread id, plus one per provider session. The

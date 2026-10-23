@@ -288,30 +288,54 @@ func acpHasMCPServers(raw json.RawMessage) bool {
 	return json.Unmarshal(raw, &servers) == nil && len(servers) > 0
 }
 
-// acpStatusReply is the answer to a prompt that starts or follows no run: the last outcome of the
-// thread's run when runID names one, else how to start a run, and in both cases how to continue the
-// conversation.
+// acpStatusReply is the answer to a prompt that starts or follows no run: how the current attempt
+// of the thread's run ended when runID names a readable one, its status and reason, the report summary,
+// and the branch, with acpResumeHint for a run that ended without success, else how to start a run,
+// and in every case how to continue the conversation.
 func acpStatusReply(cwd, runID string) string {
 	if runID == "" {
 		return "No loopai run belongs to this thread yet. To start one, send the plan path, optionally with " +
 			"model flags:\n\n    " + acpPromptUsage + "\n\n" + acpModelSwitchHint
 	}
-	outcome, err := runs.LoadOutcome(runs.Dir(cwd, runID))
+	dir := runs.Dir(cwd, runID)
+	desc, err := runs.LoadDescriptor(dir)
 	if err != nil {
 		return fmt.Sprintf("loopai run %s has no recorded outcome.\n\n%s", runID, acpModelSwitchHint)
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "loopai run %s %s", runID, outcome.Status)
-	if outcome.Reason != "" {
-		fmt.Fprintf(&b, ": %s", outcome.Reason)
+	st, err := runs.Classify(cwd, dir)
+	if err != nil {
+		return fmt.Sprintf("loopai run %s has no recorded outcome.\n\n%s", runID, acpModelSwitchHint)
 	}
-	b.WriteString(".")
+	outcome, err := runs.LoadOutcome(dir)
+	if err != nil || outcome.Attempt != desc.Attempt {
+		outcome = runs.Outcome{} // an earlier attempt's outcome is not this one's
+	}
+	var b strings.Builder
+	b.WriteString(acpOutcomeLine(dir, runID, st))
 	if summary := strings.TrimSpace(outcome.ReportSummary); summary != "" {
 		b.WriteString("\n\n" + summary)
 	}
-	if outcome.Branch != "" {
-		fmt.Fprintf(&b, "\n\nBranch: %s", outcome.Branch)
+	branch := outcome.Branch
+	if branch == "" {
+		branch = desc.Branch
+	}
+	if branch != "" {
+		fmt.Fprintf(&b, "\n\nBranch: %s", branch)
+	}
+	if hint := acpResumeHint(st); hint != "" {
+		b.WriteString("\n\n" + hint)
 	}
 	b.WriteString("\n\n" + acpModelSwitchHint)
 	return b.String()
+}
+
+// acpResumeHint tells a thread how to continue a run that ended without success, failed, stopped, or
+// crashed, whose worktree loopai keeps; "" for any other status.
+func acpResumeHint(st runs.Status) string {
+	switch st {
+	case runs.StatusFailed, runs.StatusStopped, runs.StatusCrashed:
+		return "The worktree is kept; type `" + acpResumeText + "` in this thread to continue the run."
+	default:
+		return ""
+	}
 }

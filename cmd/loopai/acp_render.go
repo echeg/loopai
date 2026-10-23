@@ -361,8 +361,9 @@ func acpElapsed(d time.Duration) string {
 }
 
 // acpFinalMessage is the message that ends a followed run's turn: how its current attempt ended,
-// with its reason, then the report summary, the risk, the branch, and where the full report is,
-// capped by acpCapMessage.
+// with its reason, then the report summary, the risk, the branch, and where the full report is, then
+// acpResumeHint for a run that ended without success, capped by acpCapMessage. A truncated message
+// keeps the hint after its pointer.
 func acpFinalMessage(dir, id string, st runs.Status) string {
 	desc, _ := runs.LoadDescriptor(dir) // an unreadable descriptor leaves the attempt 0 and no branch
 	outcome, err := runs.LoadOutcome(dir)
@@ -405,7 +406,12 @@ func acpFinalMessage(dir, id string, st runs.Status) string {
 	if !hasReport {
 		pointer = "\n\n[truncated; the run's records are in " + dir + "]"
 	}
-	return acpCapMessage(b.String(), pointer)
+	tail := ""
+	if hint := acpResumeHint(st); hint != "" {
+		tail = "\n\n" + hint
+	}
+	// the cut falls inside the body: a body that fits beside pointer and tail fits whole with tail
+	return acpCapMessage(b.String()+tail, pointer+tail)
 }
 
 // acpCapMessage returns text when its JSON-escaped UTF-8 form fits acpFinalMessageLimit, else the
