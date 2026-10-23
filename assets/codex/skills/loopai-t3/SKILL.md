@@ -1,20 +1,20 @@
 ---
 name: loopai-t3
-description: "Run an existing loopai plan in T3 Code. In an active Codex thread with native subagents, keep execution, Working status, and task/review progress in that thread; otherwise launch a separate T3-managed thread. Supports per-phase model and reviewer overrides. Use for loopai-t3, run plan in t3, or launch loopai in t3 code."
+description: "Run an existing loopai plan from a T3 Code thread: as a detached run this thread follows in a terminal tab with a [loopai: ...] title prefix, or in a new loopai thread that shows Working for the whole run. Supports per-phase model and reviewer overrides. Use for loopai-t3, run plan in t3, or launch loopai in t3 code."
 metadata:
-  short-description: Run loopai in the current or a new T3 thread
+  short-description: Run loopai in this T3 thread's terminal or a new loopai thread
 ---
 
-# loopai-t3 - Run a Plan in a T3 Code Thread
+# loopai-t3 - Run a Plan from a T3 Code Thread
 
-**SCOPE**: launch an existing plan and report its status. The current-thread mode delegates ordinary CLI execution to one native observer; the new-thread mode uses `loopai --t3-launch` to start a provider session or terminal. loopai does the implementation work. Do not independently edit code, commit, or merge.
+**SCOPE**: start one loopai plan run that T3 Code shows, in one of two modes, and report how to follow it. Mode 1 runs `loopai --detach --t3-thread` from this thread: the run gets its own process and loopai worktree, and this thread follows it in a terminal tab and a `[loopai: ...]` title prefix while this conversation stays free. Mode 2 calls `t3_thread_launch` to open a new thread on the loopai provider, which starts the same detached run and shows Working until it ends. loopai does the implementation work. Do not independently edit code, commit, or merge.
 
 ## Skill Contract Check
 
 Run this first and read the printed line:
 
 ```bash
-expected=3
+expected=4
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else
@@ -31,29 +31,18 @@ echo "skill contract: skill=$expected binary=$actual"
 
 Never stop on a mismatch.
 
-## Choose the Thread Mode
-
-- **Current thread (default inside T3 Codex):** the injected runtime identifies this as a T3 Code Codex conversation and the current tool inventory exposes native `collaboration.spawn_agent` / `spawn_agent` with live-agent inspection or messaging. Read [references/current-thread.md](references/current-thread.md). For status/resume/recovery, inspect its existing-run record before flag/history questions, plan selection, or any missing-plan rejection; only a new launch needs those shared selections. Before spawning a new observer, resolve the parent thread's identity as the reference describes so loopai can show task/review progress in its title. Then follow that reference instead of the new-thread preflight and Steps 2–4. A runtime file on disk alone does not prove that this conversation is inside T3, and a CLI-spawned model is not a native subagent.
-- **New thread:** the user explicitly requests a separate/new thread, or this host lacks the current-thread capability and the user has not required staying here. Follow the existing new-thread steps below. This keeps provider/terminal launching available outside T3 Codex.
-- If the user explicitly requires this thread but the necessary native tools or active T3 context are absent, report the missing capability; do not silently create a second thread or invent a tool. If current-thread launch fails, report the failure without switching modes.
-
 ## Step 0: Preflight
-
-**New-thread mode only.** Current-thread preflight is in the linked reference.
 
 Run the checks separately so each failure is distinguishable. **Stop and report the failing check verbatim; do not continue past a failure.**
 
 ```bash
 command -v loopai                                              # missing -> stop: make install in the loopai checkout
-loopai --help | grep -qE -- '(--|/)t3-launch' || echo "MISSING_T3_FLAG"   # printed -> stop: fork too old
-T3_HOME=${T3CODE_HOME:-$HOME/.t3}; cat "$T3_HOME/userdata/server-runtime.json"   # missing -> stop: T3 Code is not running
+loopai --help | grep -qE -- '(--|/)detach' || echo "MISSING_DETACH_FLAG"   # printed -> stop: loopai too old
 git rev-parse --show-toplevel                                   # must equal the current directory
 git branch --show-current
 ```
 
-- A stale runtime file survives a crash; `--t3-launch` reports a refused connection itself, so do not probe the port separately.
-- The repository does not need to be a T3 Code project yet: `--t3-launch` adds one titled after the repository directory and prints `created T3 Code project "<title>" for <root>` first. Existing projects are never changed, so one left at a path the repository moved away from stays in the sidebar; mention that line in the report.
-- On a detached HEAD the worktree is cut from the current commit; mention that in the report.
+- On a detached HEAD the run's worktree is cut from the current commit; mention that in the report.
 
 ## Step 0b: Parse Arguments
 
@@ -65,8 +54,8 @@ Parse flag/value pairs first; the one remaining positional argument is `PLAN_ARG
 | `--review-model` | `--review-model SPEC` or `--review-model=SPEC` | one token: `provider[:model[:effort]]` |
 | `--external-reviewers` | `--external-reviewers LIST` or `=LIST` | one token: comma-separated `provider[:model[:effort]]` |
 
-- `--task-model` and `--review-model` values must start with a provider: `claude` or `codex`, alone or followed by `:model[:effort]` (`codex:gpt-6-astra:medium`, `claude:opus:high`, `codex::medium` for the codex default model). `--t3-launch` rejects a bare `opus:high`; stop here instead and suggest the prefixed spelling.
-- Every value must match `^[A-Za-z0-9._:,+-]+$`; `--t3-launch` rejects anything else too.
+- `--task-model` and `--review-model` values must start with a provider: `claude` or `codex`, alone or followed by `:model[:effort]` (`codex:gpt-6-astra:medium`, `claude:opus:high`, `codex::medium` for the codex default model). `loopai --detach` and the loopai provider reject a bare `opus:high`; stop here instead and suggest the prefixed spelling.
+- Every value must match `^[A-Za-z0-9._:,+-]+$`; `loopai --detach` and the loopai provider reject anything else too.
 - Any other token (`--worktree`, `--commit`, `--serve`, `--plan`, `--branch`, a second plan path, anything else), a flag given twice, or a value-taking flag without a value **stops the run**. Report the offending token verbatim and state that only the three flags above pass through. `--codex` was removed from loopai: for it, also say to write `--task-model codex:<model>[:effort]` instead.
 
 **Recent flag combinations.** When `FLAGS` is empty, offer the combinations from earlier launches before launching. Skip this entirely when `FLAGS` is non-empty, and also when the `loopai-plan` skill invoked this skill in the current conversation after its own flag question, since the choice (possibly no flags) is already made there.
@@ -90,96 +79,181 @@ HISTORY=$(awk -F'\t' '
 ' "$HIST" 2>/dev/null)
 ```
 
-`HISTORY` holds up to three distinct flag strings, newest first, one per line. A line the skill cannot validate is skipped, never offered: an unknown launcher, a token other than the three flags above (or one given twice), a value outside `^[A-Za-z0-9._:,+-]+$`, or a model spec without the `claude`/`codex` provider. A line with no flags is not listed. A missing, unreadable, or empty file yields an empty `HISTORY`; then launch with the empty `FLAGS` as before, without asking.
+`HISTORY` holds up to three distinct flag strings, newest first, one per line. A line the skill cannot validate is skipped, never offered: an unknown launcher, a token other than the three flags above (or one given twice), a value outside `^[A-Za-z0-9._:,+-]+$`, or a model spec without the `claude`/`codex` provider. A line with no flags is not listed. A missing, unreadable, or empty file yields an empty `HISTORY`; then launch with the empty `FLAGS` as before, without asking (the mode question in Step 3 still follows).
 
 With `HISTORY` non-empty, ask "Which loopai flags should the T3 Code run use?" as a numbered list: one choice per `HISTORY` entry labelled by its flags, newest first and the newest marked "(Recommended)"; then "No flags (models and reviewers from .loopai/config and loopai defaults)" and "Cancel". A picked entry becomes `FLAGS` exactly as listed, without the "(Recommended)" suffix; "No flags" leaves `FLAGS` empty; "Cancel" stops without launching. Typing flags instead of a number is the manual-entry path: parse the typed text with the rules above and repeat the question naming any rejected token verbatim.
 
 ## Step 1: Choose the Plan
 
-- For a current-thread status/resume request, inspect the existing run as described in the reference first; a completed run may already have archived the original plan. Do not turn a status question into a new launch.
 - If `PLAN_ARG` is set, confirm the file exists.
 - Otherwise list `ls -t docs/plans/*.md` (this excludes `completed/`), show up to four as a numbered list with the newest marked recommended, and ask the user to pick one.
 - Refuse a plan under `docs/plans/completed/` or under `.loopai/`.
 
 Keep `PLAN` as the path relative to the repository root.
 
-For current-thread mode, continue with [references/current-thread.md](references/current-thread.md) now. The remaining steps concern a **new thread only**.
+## Step 2: Read the T3 Context
 
-## Step 2: Resolve the Token
+The T3 Code tools are named `mcp__t3_code__<tool>` here. T3's rule applies: make one bounded direct attempt using the known T3 tool name on the next tool step. In Codex code mode, for example, call `tools.mcp__t3_code__orchestrator_capabilities({})` before reporting that the capability is absent. When that one attempt fails, stop: this skill runs only inside a T3 Code thread.
 
-`--t3-launch` reads the T3 Code bearer token from `LOOPAI_T3_TOKEN`; the launcher does not mint it. After a local merge, loopai can separately issue a short-lived settlement token through the official CLI.
-
-- If `LOOPAI_T3_TOKEN` is already set, use it.
-- Otherwise the token is minted inline in Step 3 with the `t3` CLI, so it never appears in the conversation. When `t3` is not on `PATH` (the desktop app does not install it), tell the user the launch will run `npx --yes t3@latest` once to issue the token, and continue only after they agree.
-
-In agent mode the token is used only for the launcher's dispatches; no token or environment is placed in the thread. In terminal mode the token lives in the thread terminal's environment for the whole run; `--ttl 7d` keeps it valid for long plans.
-
-## Step 3: Launch
+1. Call `mcp__t3_code__orchestrator_capabilities` with `{}`. Read:
+   - `parentThreadId`: null means this conversation is not a T3 thread; stop and say so;
+   - `runtimeMode` and `interactionMode` of this thread;
+   - `providers[]`: each `providerInstanceId`, `driverKind`, `displayName` (may be null), `models[].id` (read only the id; `label` and `options` are optional), and `constraints[]`.
+2. Call `mcp__t3_code__t3_thread_list` with `{"limit": 1}` and read `currentThreadId`.
+3. Run the environment check:
 
 ```bash
-T3_CLI=$(command -v t3 >/dev/null 2>&1 && echo t3 || echo "npx --yes t3@latest")
-LOOPAI_T3_TOKEN=${LOOPAI_T3_TOKEN:-$($T3_CLI auth session issue --token-only --ttl 7d --label loopai)} \
-  loopai --t3-launch $FLAGS "$PLAN"
+echo "os=$(uname -s)"
+echo "sandbox=${SANDBOX_RUNTIME:+SANDBOX_RUNTIME=$SANDBOX_RUNTIME }${CODEX_SANDBOX:+CODEX_SANDBOX=$CODEX_SANDBOX }${CODEX_SANDBOX_NETWORK_DISABLED:+CODEX_SANDBOX_NETWORK_DISABLED=$CODEX_SANDBOX_NETWORK_DISABLED}"
 ```
 
-- Run it from the repository root. The bare `--t3-launch` uses `auto`: it reads `<T3 home>/userdata/settings.json` and selects agent mode when `providerInstances` contains an enabled `grok` instance whose `config.binaryPath` names `loopai-acp` or `loopai-acp.exe` (and `config.enabled` is not false). Otherwise it selects terminal mode; unreadable settings produce a warning and a terminal fallback. See `docs/t3-code.md` for setup.
-- Agent mode submits the plan and flags as a user turn to the provider session and opens no terminal. Terminal mode types `loopai --t3` into the thread terminal. The launcher exits after submitting the turn or typing the command; it does not wait for the run.
-- Agent mode rejects whitespace in the plan's relative path before creating a worktree; use terminal mode for such paths.
+**Mode 1 gate.** Mode 1 is offered only when all of these hold; otherwise name the first failed condition when asking the mode question:
+
+- `runtimeMode` is `full-access`: the run, its token mint, and the terminal bridge need an unsandboxed shell;
+- `sandbox=` is empty: `loopai --detach` refuses to start inside an agent sandbox (`SANDBOX_RUNTIME`, `CODEX_SANDBOX`, or `CODEX_SANDBOX_NETWORK_DISABLED`), because every model process of a 40-hour run would inherit it;
+- `os=` is not Windows (`MINGW*`, `MSYS*`, `CYGWIN*`, `Windows_NT`): `loopai --detach` is refused on Windows;
+- `parentThreadId` equals `currentThreadId`, so the terminal goes to this thread and no other;
+- the thread id matches `^[A-Za-z0-9_.:%-]{1,1024}$`. T3 thread ids are opaque and not always UUIDs (subagent ids carry `:` and `%`); validate before writing the id into any command, and always single-quote it there.
+
+Mode 2 has no gate here; Step 5 checks the loopai provider.
+
+## Step 3: Choose the Mode
+
+Ask "How should T3 Code show this loopai run?" as a numbered list, in this order, and accept a number in reply:
+
+1. "Terminal in this thread": Mode 1. Only when the Mode 1 gate passed; otherwise leave the choice out and name the failed condition in the question.
+2. "New loopai thread (shows Working)": Mode 2.
+3. "Cancel": stop without launching.
+
+Ask this every time, including when `$loopai-plan` invoked this skill after its own flag question: the flags were chosen there, the mode was not.
+
+## Step 4: Mode 1 - Terminal in This Thread
+
+The run holds a T3 token in memory for its whole life, so it can re-attach its terminal after a T3 restart. The token is minted inline, so it never reaches this conversation, with the four least-privilege scopes and a 3-day lifetime. It comes from the T3 CLI that ships with T3 Code (`T3CODE_CLI_PATH`, else `<T3 home>/bin/t3`), never from a `t3` on `PATH`, which may be a stale release writing into a frozen database, and never from `npx`. A `LOOPAI_T3_TOKEN` already set in this shell is used as is.
+
+Before running, replace `<THREAD_ID>` with the validated `parentThreadId`, `<FLAGS>` with the Step 0b flag tokens written out literally (nothing when `FLAGS` is empty), and `<PLAN>` with `PLAN`. Refuse a plan path containing a single quote. Run the block as one ordinary foreground command, never as a background job, with a timeout of at least 180 seconds: the launcher waits up to 120 s for the run to confirm its start.
+
+```bash
+THREAD_ID='<THREAD_ID>'
+T3_CLI="${T3CODE_CLI_PATH:-${T3CODE_HOME:-$HOME/.t3}/bin/t3}"
+if [ ! -x "$T3_CLI" ]; then
+  echo "T3_CLI_MISSING: $T3_CLI"
+else
+  LOOPAI_T3_TOKEN=${LOOPAI_T3_TOKEN:-$("$T3_CLI" auth session issue --scope orchestration:read --scope orchestration:operate --scope terminal:read --scope terminal:operate --ttl 3d --label loopai --token-only)} \
+    loopai --detach --t3-thread "$THREAD_ID" <FLAGS> '<PLAN>'
+fi
+```
+
 - Never echo, log, or print the token.
-- Success prints an optional `created T3 Code project ...` line, then `started loopai in T3 Code thread <id>`, then `mode: agent (...)` or `mode: terminal`, `worktree:`, `branch:`, and the close-out line. Read the effective mode from this output and keep all of these lines for the report.
-- A failure after the project or worktree was created ends with `already created: [project <title> (<root>), ]worktree <path> (branch <name>)[, thread <id>]`. Nothing is rolled back; relay the line verbatim.
+- `T3_CLI_MISSING` -> stop: T3 Code's own CLI is not installed at that path; set `T3CODE_CLI_PATH` to it or offer Mode 2 instead.
+- Success prints `run: <run-id>` and `follow: loopai --attach <run-id>`; the launcher then exits while the run continues on its own. Keep the run id for the report.
+- Launching a plan whose latest run failed, crashed, or was stopped resumes that run (same id, next attempt) with this fresh token. A live run is refused with `run <id> of <plan> is already <status>; follow it with loopai --attach <id>`: relay it and report that run instead of retrying.
+- `--t3-thread needs LOOPAI_T3_TOKEN` means the mint printed nothing: relay the mint's error.
+- `refusing to start a detached run inside an agent sandbox` means the gate missed a sandbox: offer Mode 2.
+- Any other failure: relay the output verbatim, including the console log path the launcher names.
 
-## Step 4: Report
+## Step 5: Mode 2 - New loopai Thread
 
-Use the `mode:` line from Step 3 to select the report below. Do not infer the mode from local settings.
+When `interactionMode` is `plan`, stop and ask the user to leave plan mode first. Refuse a plan path containing whitespace: the new thread receives the plan and flags as one message split on whitespace.
 
+**Find the loopai provider instance.** Read T3's settings read-only; never edit `settings.json` yourself, because a schema error there silently resets T3's settings:
+
+```bash
+python3 -I - "${T3CODE_HOME:-$HOME/.t3}/userdata/settings.json" <<'PY'
+import json
+import sys
+
+
+def usable(inst):
+    if not isinstance(inst, dict) or inst.get("driver") != "acpRegistry" or inst.get("enabled") is False:
+        return False
+    cfg = inst.get("config")
+    if not isinstance(cfg, dict) or cfg.get("source") != "local" or cfg.get("enabled") is False:
+        return False
+    path, args = cfg.get("commandPath"), cfg.get("commandArgs")
+    if not isinstance(path, str):
+        return False
+    base = path.replace("\\", "/").rsplit("/", 1)[-1]
+    if base in ("loopai-acp", "loopai-acp.exe"):
+        return True
+    return base in ("loopai", "loopai.exe") and isinstance(args, list) and "--acp" in args
+
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        settings = json.load(f)
+except FileNotFoundError:
+    settings = {}
+except (OSError, ValueError) as err:
+    print(f"instance=unreadable ({type(err).__name__})")
+    sys.exit(0)
+instances = settings.get("providerInstances") if isinstance(settings, dict) else None
+found = [key for key in sorted(instances) if usable(instances[key])] if isinstance(instances, dict) else []
+print(f"instance={found[0]}" if found else "instance=none")
+PY
 ```
-loopai started in T3 Code.
 
-Thread:   <id>        (open T3 Code)
-Mode:     <agent or terminal, from command output>
-Worktree: <path>
-Branch:   <branch>
-Plan:     $PLAN
-Flags:    $FLAGS  (empty = phase models and reviewers from .loopai/config and defaults)
-Progress: <worktree>/.loopai/progress/progress-<plan stem>.txt
+The lookup takes, in sorted key order, the first `providerInstances.<id>` with `driver` `acpRegistry`, `config.source` `local`, neither `enabled` nor `config.enabled` false, and a `config.commandPath` whose basename is `loopai-acp` or `loopai-acp.exe`, or `loopai` or `loopai.exe` with `--acp` in `config.commandArgs`. It never assumes the instance id (T3's default is `acpRegistry_local_acp`) and skips keys and values of unexpected types.
 
+- `instance=<id>`: find the `providers[]` entry whose `providerInstanceId` is `<id>`. It must exist and have empty `constraints`; otherwise relay what T3 reports (for example a provider still being probed or failing its probe) and stop. Take `MODEL` = that entry's `models[0].id`, which is `default` before T3's first probe.
+- `instance=none`: the loopai provider is not registered. Explain the registration and stop:
+  1. T3 Settings → Providers → Add provider → ACP Registry;
+  2. Instance ID: the default is fine (this skill never assumes it);
+  3. Display name `loopai`;
+  4. ACP source `Local command`;
+  5. Executable override: the absolute path of `loopai-acp` (the output of `command -v loopai-acp`), or the absolute path of `loopai` with the argument `--acp` added in the Arguments editor;
+  6. Add instance, then run this skill again.
+- `instance=unreadable (...)`: relay it and stop; do not try to repair the file.
+
+**Choose the workspace.** The new thread runs where this checkout is:
+
+```bash
+TOP=$(git rev-parse --show-toplevel)
+GIT_DIR=$(cd "$(git rev-parse --git-dir)" && pwd -P)
+COMMON_DIR=$(cd "$(git rev-parse --git-common-dir)" && pwd -P)
+if [ "$GIT_DIR" = "$COMMON_DIR" ]; then echo "workspace=root"; else echo "workspace=existing_worktree $TOP"; fi
 ```
 
-For `mode: agent`, append:
+`workspace=root` becomes `{"type": "root"}`; `workspace=existing_worktree <path>` (a linked worktree) becomes `{"type": "existing_worktree", "worktreePath": "<path>"}`.
 
-```
-The thread runs loopai as a provider session. It shows the Working state, plan
-steps, streamed reasoning, and the completion report as a final message on
-desktop, web, and mobile. The stop button cancels the run. T3 Code controls the
-thread title; loopai does not update it during the run.
-```
+**Launch.** Call `mcp__t3_code__t3_thread_launch` with:
 
-For `mode: terminal`, append:
-
-```
-The thread title shows "<plan> · task N/M", "<plan> · review · iteration N",
-"<plan> · waiting for input" or "· waiting for limit", and finally
-"<plan> · done" (followed by the finalize outcome, such as "· PR merged",
-when finalize is on), "· failed", or "· stopped". The thread's "loopai" terminal
-shows the live output on desktop, web, and mobile.
+```json
+{
+  "title": "loopai: <plan stem>",
+  "modelSelection": {"instanceId": "<id>", "model": "<MODEL>"},
+  "message": "<PLAN> <FLAGS>",
+  "workspaceStrategy": {"type": "root"}
+}
 ```
 
-**Stop after reporting. Do not monitor automatically.**
+- `title` is required; `<plan stem>` is the plan's file name without `.md`.
+- `message` is the plan path, followed by the Step 0b flag tokens when `FLAGS` is non-empty. The provider starts `loopai --detach` of that plan in the new thread's checkout.
+- Omit `runtimeMode` and `interactionMode`: the new thread inherits this thread's modes and may not be broader. T3 refuses the launch from a read-only thread; then relay the refusal and suggest changing this thread's access mode.
+- The result carries `threadId`, `projectId`, `modelSelection`, `runId`, and `status`. Keep `threadId` and the title for the report.
+- There is no idempotency key. After an error or a lost reply, call `mcp__t3_code__t3_thread_list` with `{"titleContains": "loopai: <plan stem>"}` before retrying, and report a thread this launch already created instead of launching a second one.
 
-## Close-out (tell the user, do not run)
+## Step 6: Report
 
-In agent mode, use the completion report to find the finalize outcome and any pull request URL. The ACP run disables loopai's T3 reporting, so phase/finalize titles and pull request linking described below apply only to terminal mode. Local merges settle matching threads in both modes: ACP waits until its final response is sent and the turn is idle, while `--merge` settles idle threads after successful cleanup. Settlement is best-effort and can issue its own short-lived token through the local T3 CLI; a new ACP message cancels a pending settlement. The T3-managed worktree remains in either mode. In agent mode, a successful run whose report rates Risk `low` or `medium` is merged into the local base branch by loopai itself, in the worktree where the base is checked out; the final message's `## Merge` section says `Merged ...` or `Not merged into <base>: <reason>`. Nothing is pushed, and the branch and the T3-managed worktree are kept. The thread stays usable after the run: ask about the report or request fixes there, and type `merge` or `pr` to merge the branch's current head into the local base or open a pull request without removing the worktree; an explicit `merge` skips the Risk and `acp_auto_merge` gates but keeps the repository gates. Close out by hand only when that section says `Not merged` and the thread cannot do it, and after a merge remove the branch and worktree through T3 Code rather than `loopai --merge`, which would try to remove the worktree the session runs in.
+Report the block for the mode that ran, with the placeholders filled in, plus any detached-HEAD note from Step 0.
 
-With `finalize = pr` or `merge` in `.loopai/config` (`--t3-launch` forwards only the model and reviewer flags), the run itself merges `origin/<base>` into the branch, opens the pull request, links it to the thread, and under `merge` merges it once its checks pass; the thread title then ends in `done · PR opened` or `done · PR merged`, and T3 Code settles the thread after the merge. Close-out by hand is needed when finalize is off or `sync` (`done · synced`), or the title ends in `done · finalize incomplete` before a pull request opened; once the run printed `PR: <url>`, a stop leaves that pull request open to fix or merge on GitHub. Then, from this checkout, prefer `$loopai-merge $PLAN`, or run the printed `loopai --merge <branch>` / `loopai --pr <branch>`. With `t3 = true` in `.loopai/config` (or `--t3` on the command) and `LOOPAI_T3_TOKEN` set, `--pr` links the new pull request to the thread, and T3 Code settles the thread once the PR merges. The T3-managed worktree stays until it is removed in T3 Code; finalize never removes it.
+Mode 1:
 
-## Pitfalls
+```text
+loopai run started: <run-id>
+follow: loopai --attach <run-id>
+Progress shows in this thread's terminal tab and as the [loopai: …] title prefix.
+If the run fails or is stopped, ask me to run the same plan again in this mode: it resumes the run with a fresh token.
+```
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `add T3 Code project for <root>: ...` | T3 Code rejected the new project (for example the root is not a directory it can see) | Relay the reason; add the repository in the T3 Code sidebar if needed, then rerun |
-| `LOOPAI_T3_TOKEN is not set` | Token step skipped | Step 2/3 inline mint |
-| `HTTP 401` | Token revoked, expired, or minted for another T3 home | Mint a new one with the same `T3CODE_HOME` the server uses |
-| Need terminal output or a plan path with whitespace | Agent mode opens no terminal and rejects whitespace paths | Run the Step 3 command with `--t3-launch=terminal` instead of the bare flag; it ignores provider settings |
-| Thread title never changes in terminal mode | Run started without `--t3` or the token expired mid-run | Relaunch; titles are best-effort and never stop the run |
-| Skill stops on an unknown flag | Only three flags pass through | Put other settings in `.loopai/config` |
+Mode 2:
+
+```text
+loopai thread started: [<title>](t3-thread://v1/<threadId>)
+The thread shows Working until the run ends. After Stop or a failure, type `resume` in that thread.
+After the report, switch that thread's model to Claude or Codex to talk about the result.
+```
+
+**STOP HERE after reporting. Do not monitor automatically.**
+
+Later questions about the run are answered from `loopai --runs` (status of this checkout's detached runs); `loopai --attach <run-id>` follows a run until it ends, and `loopai --stop <run-id>` stops it and keeps its worktree. A succeeded run's branch is merged with `$loopai-merge` or `loopai --merge <branch>`.

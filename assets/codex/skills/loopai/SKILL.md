@@ -14,7 +14,7 @@ metadata:
 Run this first and read the printed line:
 
 ```bash
-expected=3
+expected=4
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else
@@ -33,13 +33,13 @@ Never stop on a mismatch.
 
 ## Step 0: Verify the CLI
 
-For a full plan run inside T3 Code, when its injected runtime identifies the current conversation
-and native subagents are available, use `$loopai-t3` for the current-thread workflow. It keeps the
-conversation in Working through an observer and leaves report review and merge here. Carry over
-the user's selected plan and model/reviewer flags; do not ask for choices already made. For a
-status request, inspect the existing observer and its saved result instead of launching again.
-Review-only modes and an explicitly requested standalone background run use the steps below.
-Outside T3 Code, a local T3 server alone is not evidence that this is a T3 conversation.
+For a full plan run inside T3 Code (the `mcp__t3_code__*` tools answer in this conversation), use
+`$loopai-t3`: it asks whether to follow the run in a terminal tab of this thread or in a new loopai
+thread that shows Working. Carry over the user's selected plan and model/reviewer flags; do not ask
+for choices already made. For a status question about a run started that way, answer from
+`loopai --runs` instead of launching again; `loopai --attach <run-id>` replays and follows the run
+and waits until it ends, so suggest it for the user's own terminal rather than running it here.
+Review-only modes and an ordinary run outside T3 Code use the steps below.
 
 ```bash
 command -v loopai

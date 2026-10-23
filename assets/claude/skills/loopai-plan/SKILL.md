@@ -11,7 +11,7 @@ Create an implementation plan in `docs/plans/YYYYMMDD-<task-name>.md` with inter
 Run this first and read the printed line:
 
 ```bash
-expected=3
+expected=4
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else
@@ -317,7 +317,7 @@ The explicit file path and `--only` keep unrelated staged changes out of the com
 After creating the file, detect Orca and T3 Code and build the launch lines before speaking to the user:
 
 1. **Detect Orca.** `ORCA=${ORCA_CLI_COMMAND:-orca}`; on Linux outside an Orca terminal use `orca-ide` instead of bare `orca` (there `orca` is the GNOME screen reader). Orca is available when `command -v "$ORCA"` succeeds. Do not call `orca status`; the `loopai-orca` skill runs its own preflight.
-   **Detect T3 Code.** T3 Code is available when `${T3CODE_HOME:-$HOME/.t3}/userdata/server-runtime.json` exists (the server writes it while running). Do not contact the server; the `loopai-t3` skill runs its own preflight.
+   **Detect T3 Code.** T3 Code is available when this conversation has the T3 Code tools: `mcp__t3-code__orchestrator_capabilities` appears among the available tools, and a deferred tool listed by name only counts (it loads through ToolSearch). Do not call a T3 tool here; the `loopai-t3` skill runs its own preflight and asks how to show the run.
 2. **Derive `FLAGS` from the effective loopai configuration.** For each key `task_model`, `review_model`, `external_reviewers`, take the first uncommented `key = value` line from `<repo root>/.loopai/config`, falling back to `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/config`:
 
    ```bash
@@ -366,7 +366,7 @@ When `FLAGS` is empty, add one line: "No `task_model`/`review_model`/`external_r
 
 Then use AskUserQuestion — "How do you want to proceed?" — with the options below, always in this order. "(Recommended)" goes to the option for `LAST_LAUNCHER` (the launcher of the newest history line whose launcher is `orca` or `t3`) when that launcher is available; otherwise, including when `LAST_LAUNCHER` is empty, it goes to the first launcher offered:
 - "Run in Orca now", only with Orca available: choose the flags as described under "Choosing the flags", then invoke the `loopai-orca` skill with the plan path followed by the chosen string.
-- "Run in T3 Code now", only with T3 Code available: choose the flags the same way, then invoke the `loopai-t3` skill with the plan path followed by the chosen string.
+- "Run in T3 Code now", only with T3 Code available: choose the flags the same way, then invoke the `loopai-t3` skill with the plan path followed by the chosen string. That skill then asks only its mode question (a terminal tab in this thread or a new loopai thread that shows Working), never the flags again.
 - "Start implementation here": begin with task 1
 - "Not now": stop
 

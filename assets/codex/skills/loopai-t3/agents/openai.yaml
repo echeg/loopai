@@ -1,4 +1,4 @@
 interface:
   display_name: "loopai T3"
-  short_description: "Run loopai in the current or a new T3 thread"
-  default_prompt: "Use $loopai-t3 to run this plan in the current T3 Code thread when native subagents are available."
+  short_description: "Run loopai in this T3 thread's terminal or a new loopai thread"
+  default_prompt: "Use $loopai-t3 to run this plan from T3 Code, either followed in this thread's terminal tab or in a new loopai thread that shows Working."

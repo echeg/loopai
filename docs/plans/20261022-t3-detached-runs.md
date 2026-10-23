@@ -1238,7 +1238,7 @@
 - ⚠️ The final message names `<run dir>/report.md` only when that file exists (a run without a report, such as tasks-only or an early failure, writes none); otherwise the line is omitted and the truncation pointer names the run directory instead of a missing report.
 
 ### Task 16: Rewrite the T3 skills, checks, and contract
-- [ ] rewrite `assets/claude/skills/loopai-t3/SKILL.md` around the mode question, per Technical Details:
+- [x] rewrite `assets/claude/skills/loopai-t3/SKILL.md` around the mode question, per Technical Details:
   - keep the frontmatter `name`; write a new description; keep `argument-hint`; add `mcp__t3-code__orchestrator_capabilities`, `mcp__t3-code__t3_thread_list`, `mcp__t3-code__t3_thread_launch`, and `ToolSearch` to `allowed-tools`;
   - the contract snippet stays the first fenced block;
   - keep the Step 0b flag rules, with reworded rejects naming `loopai --detach` and the loopai provider;
@@ -1246,26 +1246,26 @@
   - keep Step 1;
   - replace the token, launch, report, close-out, and pitfalls steps with the Mode 1/Mode 2 flows;
   - keep "STOP HERE after reporting. Do not monitor automatically."
-- [ ] add the report blocks, byte-identical on both hosts, from Technical Details "Skill report blocks":
+- [x] add the report blocks, byte-identical on both hosts, from Technical Details "Skill report blocks":
   - Mode 1: run id, `loopai --attach <run-id>`, that the terminal tab and the `[loopai: …]` title prefix show progress, and that running this skill again for the same plan resumes a failed or stopped run with a fresh token;
   - Mode 2: the thread link `[title](t3-thread://v1/<threadId>)`, typing `resume` in that thread after Stop or a failure, and switching that thread's model to Claude or Codex after the report.
-- [ ] rewrite `assets/codex/skills/loopai-t3/SKILL.md` and `agents/openai.yaml` (display_name, short_description, default_prompt for the two modes):
+- [x] rewrite `assets/codex/skills/loopai-t3/SKILL.md` and `agents/openai.yaml` (display_name, short_description, default_prompt for the two modes):
   - same flows and report blocks, using `mcp__t3_code__*` names;
   - T3's bounded direct attempt rule (in code mode, `tools.mcp__t3_code__orchestrator_capabilities({})`);
   - numbered-list questions, and no Claude-only tokens;
   - delete `references/current-thread.md`, `scripts/observe.py`, and `scripts/resolve-thread.py`, keeping every instruction in SKILL.md, the only file the checker scans.
-- [ ] update Step 3 of both `loopai-plan` skills:
+- [x] update Step 3 of both `loopai-plan` skills:
   - offer "Run in T3 Code now" only when the T3 MCP tools are present (deferred names count in Claude) or one bounded capabilities call succeeds (Codex);
   - it hands over to `loopai-t3` and its mode question, not a flag re-ask;
   - delete the Codex current-thread label, the preference override, and the `--t3-launch` text (lines 188-197);
   - keep every phrase `check-launch-history-skills_test.sh` pins.
-- [ ] update the Codex `loopai` skill (lines 36-42): a T3 plan run goes to `$loopai-t3` and its mode question; status questions use `loopai --runs` and `loopai --attach`; remove the observer and native-subagent wording.
-- [ ] add bullets to both `loopai-update` removed-key lists: `t3` and `acp_auto_merge` "were removed". T3 visibility now comes from `loopai-t3`, and merges go through `loopai --merge` or `loopai-merge`.
-- [ ] add identical `removed_spellings` patterns to `scripts/check-symlinks.sh` and `scripts/check-codex-skills.sh`:
+- [x] update the Codex `loopai` skill (lines 36-42): a T3 plan run goes to `$loopai-t3` and its mode question; status questions use `loopai --runs` and `loopai --attach`; remove the observer and native-subagent wording.
+- [x] add bullets to both `loopai-update` removed-key lists: `t3` and `acp_auto_merge` "were removed". T3 visibility now comes from `loopai-t3`, and merges go through `loopai --merge` or `loopai-merge`.
+- [x] add identical `removed_spellings` patterns to `scripts/check-symlinks.sh` and `scripts/check-codex-skills.sh`:
   - patterns: `'--t3([^-[:alnum:]_]|$)'`, `'--no-t3'`, `'--t3-launch'`, `'--t3-progress-thread'`, `'acp_auto_merge'`;
   - never a bare `--t3` prefix, which would reject `--t3-thread`;
   - extend the fixtures in `check-symlinks_test.sh` and `check-codex-skills_test.sh`, including a case proving `--t3-thread` passes.
-- [ ] rewrite `scripts/check-loopai-t3-skill_test.sh` (still run by `test-codex-skills`) to assert the new contract for both hosts:
+- [x] rewrite `scripts/check-loopai-t3-skill_test.sh` (still run by `test-codex-skills`) to assert the new contract for both hosts:
   - the mode question offers both modes and Cancel;
   - Mode 1:
     - uses `orchestrator_capabilities` `parentThreadId`, cross-checked with `t3_thread_list` `currentThreadId`;
@@ -1278,17 +1278,17 @@
     - includes the registration text;
   - no `--t3-launch`, `--t3-progress-thread`, `--no-t3`, `resolve-thread`, or `current-thread`;
   - the report blocks are identical across hosts and contain the pinned phrases `loopai --attach`, `fresh token`, ``type `resume` in that thread``, and `switch that thread's model to Claude or Codex`.
-- [ ] delete `scripts/t3-observer_test.py` and `scripts/t3-thread-resolver_test.py`, and remove the `test-t3-observer` target from the `Makefile`: target lines 69-71, the `test:` prerequisites on line 102, and `.PHONY` on line 163.
-- [ ] bump the contract:
+- [x] delete `scripts/t3-observer_test.py` and `scripts/t3-thread-resolver_test.py`, and remove the `test-t3-observer` target from the `Makefile`: target lines 69-71, the `test:` prerequisites on line 102, and `.PHONY` on line 163.
+- [x] bump the contract:
   - set `const skillContract = 4`, in the exact one-line form the checkers parse;
   - set `expected=4` in every `expected=` line of all 19 skills (10 Claude, 9 Codex);
   - run `go test ./cmd/loopai -run TestSkillContract -update`;
   - bump `.claude-plugin/plugin.json` and the loopai entry in `.claude-plugin/marketplace.json` to `0.9.0`; codex-imagegen stays unchanged.
-- [ ] write and extend tests:
+- [x] write and extend tests:
   - the rewritten `check-loopai-t3-skill_test.sh` fails on a fixture still containing `--t3-launch` and on one missing a report phrase;
   - the removed-spellings fixtures reject `--no-t3` and `acp_auto_merge` lines and accept "were removed" lines;
   - `make check-plugin test-plugin` passes with equal versions.
-- [ ] run, in order, and they must pass before task 17:
+- [x] run, in order, and they must pass before task 17:
   1. `make check-symlinks test-symlinks check-plugin test-plugin test-launch-history-skills test-skill-contract test-report-docs check-codex-skills test-codex-skills test-install </dev/null`;
   2. `scripts/install-codex-skills.sh --dry-run --dest "$(mktemp -d)"`;
   3. the guard `grep -rn -E -- '--t3-launch|--t3-progress-thread|--no-t3|resolve-thread|current-thread|observe\.py|t3-current' assets/ scripts/ Makefile` (only "were removed" lines and checker patterns may match);

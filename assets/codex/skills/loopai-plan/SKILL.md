@@ -14,7 +14,7 @@ Produce a plan, not an implementation. The output is one file at `docs/plans/YYY
 Run this first and read the printed line:
 
 ```bash
-expected=3
+expected=4
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else
@@ -185,16 +185,7 @@ The explicit file path and `--only` keep unrelated staged changes out of the com
 
 ## Step 3: Offer to Start
 
-Detect Orca before speaking: `ORCA=${ORCA_CLI_COMMAND:-orca}`, and on Linux outside an Orca terminal use `orca-ide` instead of bare `orca`, which is the GNOME screen reader there. Orca is available when `command -v "$ORCA"` succeeds. Do not call `orca status`; `$loopai-orca` runs its own preflight. T3 Code is available when the injected runtime identifies this conversation as T3 Code with native subagents, or when `${T3CODE_HOME:-$HOME/.t3}/userdata/server-runtime.json` exists for separate-thread launching. Current-thread mode needs no runtime file. Do not contact the server, since `$loopai-t3` runs its own preflight.
-
-When the injected runtime identifies this as a T3 Code conversation with native subagents,
-label the T3 choice "Run loopai in this thread" and recommend it unless the user selected another
-launcher. Invoke `$loopai-t3` with the plan and chosen flags: its current-thread mode keeps a
-native observer active, leaves report review and merge in this conversation, and creates no
-second T3 thread. Do not invoke `loopai --t3-launch` directly for that choice. An explicit request
-for a new T3 thread uses `$loopai-t3`'s separate-thread mode. This current-runtime preference
-takes precedence over the history-based recommendation below. A runtime file alone only makes
-the separate-thread launcher available; it does not identify the current conversation.
+Detect Orca before speaking: `ORCA=${ORCA_CLI_COMMAND:-orca}`, and on Linux outside an Orca terminal use `orca-ide` instead of bare `orca`, which is the GNOME screen reader there. Orca is available when `command -v "$ORCA"` succeeds. Do not call `orca status`; `$loopai-orca` runs its own preflight. T3 Code is available when one bounded direct call of `mcp__t3_code__orchestrator_capabilities` succeeds and returns a non-null `parentThreadId` (in Codex code mode, `tools.mcp__t3_code__orchestrator_capabilities({})`). Make that single attempt, without retrying; a missing tool, an error, or a null `parentThreadId` means T3 Code is not available. `$loopai-t3` runs its own preflight.
 
 Derive `FLAGS` from the effective configuration - the first uncommented `key = value` for `task_model`, `review_model`, and `external_reviewers`, taken from `<repo root>/.loopai/config` and falling back to `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/config`:
 
@@ -233,7 +224,7 @@ LAST_LAUNCHER=$(awk -F'\t' '$2 ~ /^(orca|t3)$/ { print $2; exit }' "$HIST" 2>/de
 
 With Orca available, report the plan path and the launch line `$loopai-orca <plan> <FLAGS>`; with T3 Code available, also the line `$loopai-t3 <plan> <FLAGS>`. When `FLAGS` came out empty, add one line saying no `task_model`/`review_model`/`external_reviewers` is set, so the run would use loopai defaults. When `HISTORY` is non-empty, add that recent flag combinations from earlier launches are offered once a launcher is picked.
 
-Then ask how to proceed as a numbered list, always in this order: run it in Orca now, run it in T3 Code now (each only when available), start implementing here from task 1, or stop. "(Recommended)" goes to the choice for `LAST_LAUNCHER` (the launcher of the newest history line whose launcher is `orca` or `t3`) when that launcher is available; otherwise, including when `LAST_LAUNCHER` is empty, it goes to the first launcher offered. Without Orca or T3 Code, offer the plain `loopai <plan>` run instead.
+Then ask how to proceed as a numbered list, always in this order: run it in Orca now, run it in T3 Code now (each only when available), start implementing here from task 1, or stop. Picking T3 Code invokes `$loopai-t3` with the plan and the chosen flags; it then asks only its mode question (a terminal tab in this thread or a new loopai thread that shows Working), never the flags again. "(Recommended)" goes to the choice for `LAST_LAUNCHER` (the launcher of the newest history line whose launcher is `orca` or `t3`) when that launcher is available; otherwise, including when `LAST_LAUNCHER` is empty, it goes to the first launcher offered. Without Orca or T3 Code, offer the plain `loopai <plan>` run instead.
 
 **Choosing the flags** (after the user picks Orca or T3 Code; `<launcher>` below is "Orca" or "T3 Code"):
 - `HISTORY` empty and `FLAGS` non-empty: do not ask; use exactly the `FLAGS` reported above.

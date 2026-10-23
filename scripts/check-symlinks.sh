@@ -15,6 +15,8 @@ expected_skills="$(printf '%s\n' loopai loopai-adopt loopai-brainstorm loopai-gr
 # (provider[:model[:effort]]). A skill still teaching one would make loopai stop at
 # startup, and loopai-orca splices its flags into a command a new Orca tab runs,
 # so the failure would surface only after the worktree and tab already exist.
+# The T3 spellings went with the protocol-1 integration; the bare --t3 pattern leaves
+# --t3-thread alone, which is the flag that replaced them.
 # Extended regular expressions; the bare --codex pattern leaves --codex-args alone.
 # A line that itself says the spelling "was removed" or "were removed" is a migration
 # hint, not a use; the bare word "removed" is not enough, since a plan path can carry it.
@@ -28,6 +30,11 @@ removed_spellings=(
 	'`executor`'
 	'executor[[:space:]]*='
 	'finalize_enabled'
+	'--t3([^-[:alnum:]_]|$)'
+	'--no-t3'
+	'--t3-launch'
+	'--t3-progress-thread'
+	'acp_auto_merge'
 )
 
 fail() {

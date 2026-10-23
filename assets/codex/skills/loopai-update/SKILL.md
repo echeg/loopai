@@ -14,7 +14,7 @@ metadata:
 Run this first and read the printed line:
 
 ```bash
-expected=3
+expected=4
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else
@@ -146,6 +146,7 @@ For each customized file:
      - `executor` was removed: `executor = codex` becomes a `codex:` prefix on `task_model` (`task_model = codex:` when it is unset) and on every unprefixed `plan_model` or `review_model`; `executor = claude` needs only the `claude:` prefixes below.
      - `codex_model` and `codex_reasoning_effort` were removed: they filled any empty model or effort segment of a codex spec, so write them into every `codex:` phase spec and `external_reviewers` entry that leaves that segment empty; when codex is only the automatic reviewer, ask whether to pin it as an explicit `external_reviewers = codex:<model>[:<effort>]` entry.
      - `external_review_tool` and `external_review_model` were removed: `none` becomes an empty `external_reviewers =`, and `claude`, `codex`, or `custom` becomes `external_reviewers = <tool>[:<model>[:<effort>]]` from the old model value (`custom` carries no model); `auto` or no tool is dropped when the old model value is empty, because the automatic reviewer is the default, but a non-empty one configured that automatic reviewer, which now always runs at its default model, so ask whether to pin it as `external_reviewers = <provider>:<model>[:<effort>]` from the old model value, `<provider>` being the one other than the migrated `task_model`'s (`codex` when `task_model` is unset); a pinned entry makes a missing reviewer binary a startup error and ignores `codex_enabled`. Under `codex_enabled = false` ask too, because `--external-only` bypasses that gate and was the one mode where the old model value reached the reviewer: explain that pinning also turns external review on for every other run, while dropping it keeps those runs unreviewed and leaves `--external-only` at the default model unless that command passes `--external-reviewers=<provider>:<model>[:<effort>]`.
+     - `t3` and `acp_auto_merge` were removed: delete both lines and name them in the summary. T3 visibility now comes from `$loopai-t3` (a terminal in this thread or a new loopai thread), and merges go through `loopai --merge` or `$loopai-merge`.
    - Rewrite a `plan_model`, `task_model`, or `review_model` value without a provider prefix as `claude:<value>` or `codex:<value>`: loopai stops at startup on it too. Use the provider the `executor` key that was removed named, if the file had one; under a wrapper `claude_command` use `claude:<value>`, since that wrapper ran every unprefixed spec; otherwise take it from the model name (`opus`, `sonnet`, `haiku`, `fable` are claude; `gpt-*` and `o3`-style names are codex). Ask when it is not obvious, and name every such change in the summary.
 4. Show a short summary of each side's changes plus the proposed result.
 5. Ask how to handle the file: accept the merge, keep the current version, or take the new default and discard the customization.

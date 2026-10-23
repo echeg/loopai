@@ -14,7 +14,7 @@ SCOPE: This skill reads and narrates a loopai completion report, predicts merge 
 Run this first and read the printed line:
 
 ```bash
-expected=3
+expected=4
 if ! command -v loopai >/dev/null 2>&1; then
   actual=missing
 else

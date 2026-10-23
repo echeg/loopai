@@ -144,16 +144,26 @@ for spelling in 'loopai --codex docs/plans/x.md' \
 	'codex_reasoning_effort = xhigh' \
 	'set `executor` to codex' \
 	'executor = codex' \
-	'finalize_enabled = true'; do
+	'finalize_enabled = true' \
+	'loopai --t3 docs/plans/x.md' \
+	'loopai --t3' \
+	'loopai --t3=true docs/plans/x.md' \
+	'loopai --no-t3 docs/plans/x.md' \
+	'loopai --t3-launch docs/plans/x.md' \
+	'loopai --t3-launch=terminal docs/plans/x.md' \
+	'loopai --t3-progress-thread abc docs/plans/x.md' \
+	'acp_auto_merge = false'; do
 	write_codex_skill loopai-orca
 	printf '%s\n' "$spelling" >>"$codex_skills/loopai-orca/SKILL.md"
 	expect_failure "removed loopai flag or key in codex skill"
 done
-# the surviving codex flag, the per-phase spec grammar, and a migration hint stay allowed
+# the surviving codex flag, the per-phase spec grammar, --t3-thread, and migration hints stay allowed
 write_codex_skill loopai-orca
 printf '%s\n' "loopai --codex-args='-c x=1' --task-model codex:gpt-6-astra:medium" 'the codex executor' \
 	'`--codex` was removed; write `--task-model codex:<model>`' \
 	'`finalize_enabled` was removed; write `finalize = sync|pr|merge`' 'finalize = pr' \
+	"loopai --detach --t3-thread 'thread:a%3Ab' docs/plans/x.md" '--t3-thread=abc' \
+	'`--no-t3` was removed; omit it' '`t3` and `acp_auto_merge` were removed: delete both lines' \
 	>>"$codex_skills/loopai-orca/SKILL.md"
 "$checker" "$fixture"
 write_codex_skill loopai-orca
