@@ -24,7 +24,7 @@ all: test build
 build:
 	cd cmd/loopai && go build -ldflags "-X main.revision=$(REV) -s -w" -o ../../.bin/loopai.$(BRANCH)
 	cp .bin/loopai.$(BRANCH) .bin/loopai
-	cd cmd/loopai-acp && go build -ldflags "-X main.revision=$(REV) -s -w" -o ../../.bin/loopai-acp.$(BRANCH)
+	cd cmd/loopai-acp && go build -ldflags "-s -w" -o ../../.bin/loopai-acp.$(BRANCH)
 	cp .bin/loopai-acp.$(BRANCH) .bin/loopai-acp$(EXE)
 	$(if $(EXE),cp .bin/loopai.$(BRANCH) .bin/loopai$(EXE))
 

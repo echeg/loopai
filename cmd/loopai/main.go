@@ -104,6 +104,7 @@ type opts struct {
 	Attach                  bool          `long:"attach" description:"follow a detached run: replay its console log, wait for it to end, and exit with its code (0 succeeded, 1 failed, 2 stopped); positional argument names the run (id, plan, or branch), default the single live run, else the newest; Ctrl+C only detaches"`
 	Runs                    bool          `long:"runs" description:"list this checkout's detached runs with their status, attempt, and origin"`
 	Stop                    bool          `long:"stop" description:"stop a live detached run gracefully, keeping its worktree; positional argument names the run (id, plan, or branch)"`
+	ACP                     bool          `long:"acp" description:"serve a T3 Code loopai thread over the Agent Client Protocol on stdin and stdout, as the provider that loopai-acp starts"`
 
 	PlanFile  string   `positional-arg-name:"plan-file" description:"path to one plan file or a comma-separated plan chain (optional, uses fzf if omitted); with --merge/--pr/--report it names the feature to close out, with --attach/--stop the detached run"`
 	PlanFiles []string // normalized comma-separated plan chain; PlanFile is always its first entry
@@ -3642,6 +3643,10 @@ func validateFlags(o opts) error {
 	if err := rejectRemovedFlags(o); err != nil {
 		return err
 	}
+	// before the other modes' checks: --acp combined with any of them must read as a misuse of --acp
+	if err := validateACPFlags(o); err != nil {
+		return err
+	}
 	if err := validateCloseoutFlags(o); err != nil {
 		return err
 	}
@@ -3845,13 +3850,16 @@ func validateGenAgentsFlags(o opts) error {
 
 // runPreConfigCommand routes the standalone commands that load config themselves, before run loads
 // it in the invoking directory: the hidden detached-run child, which first takes its run's lifetime
-// lock and answers its launcher, so a config error becomes the attempt's recorded failure. It also
+// lock and answers its launcher, so a config error becomes the attempt's recorded failure, and --acp,
+// whose sessions each have a cwd of their own and whose probes must not read config at all. It also
 // refuses the --detach launcher inside an agent sandbox before config loading writes anything; the
 // launcher itself runs after config.
 func runPreConfigCommand(ctx context.Context, o opts) (bool, error) {
 	switch {
 	case o.DetachedRun != "":
 		return true, runDetachedChild(ctx, o)
+	case o.ACP:
+		return true, runACPCommand(ctx)
 	case o.Detach:
 		if err := refuseDetachInSandbox(os.Getenv); err != nil {
 			return true, err
@@ -5089,10 +5097,11 @@ func clearStaleCmuxStatus(o opts) {
 // and never constructs a reporter. so does the detached-run child: it runs a plan, but in a
 // process of its own with no terminal and no sidebar card. its launcher, --detach, starts that
 // process and returns, so it owns no card either, and neither do --attach, --runs, and --stop,
-// which only observe or signal such a process.
+// which only observe or signal such a process, nor --acp, a provider T3 Code starts with no terminal.
 func isStandaloneCommand(o opts) bool {
 	return o.Clear || closeoutRequested(o) || o.Init || o.DumpDefaults != "" || o.GenAgents ||
-		o.SkillContract || o.Detach || o.DetachedRun != "" || runCommandRequested(o) || (o.Reset && isResetOnly(o))
+		o.SkillContract || o.Detach || o.DetachedRun != "" || runCommandRequested(o) || o.ACP ||
+		(o.Reset && isResetOnly(o))
 }
 
 // handOffSucceeded reports whether an early stop came from a successful cmux workspace hand-off,

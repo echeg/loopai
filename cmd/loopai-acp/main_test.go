@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -20,13 +21,20 @@ import (
 // helperEnv makes the test binary act as a fake loopai: it records its argv to the named file and
 // exits with the code in helperExitEnv. Two non-numeric values change what it does after recording:
 // helperAwaitTerm waits for SIGTERM and exits with helperTermCode, and helperSelfKill kills itself.
+// With helperPIDEnv it also records its pid and the value of helperMarkerEnv in the named file.
 const (
 	helperEnv       = "LOOPAI_ACP_TEST_HELPER_ARGS"
 	helperExitEnv   = "LOOPAI_ACP_TEST_HELPER_EXIT"
+	helperPIDEnv    = "LOOPAI_ACP_TEST_HELPER_PID"
+	helperMarkerEnv = "LOOPAI_ACP_TEST_HELPER_MARKER"
 	helperAwaitTerm = "await-term"
 	helperSelfKill  = "self-kill"
 	helperTermCode  = 42
 )
+
+// authWords is the Go form of the pattern T3 Code uses to mark a provider unauthenticated; nothing the
+// launcher prints may match it.
+var authWords = regexp.MustCompile(`(?i)\b(authenticat(e|ed|es|ing|ion)|credentials?|log([\s-]+)?in)\b`)
 
 func TestMain(m *testing.M) {
 	if out := os.Getenv(helperEnv); out != "" {
@@ -36,6 +44,10 @@ func TestMain(m *testing.M) {
 }
 
 func runHelper(out, mode string) int {
+	if pidFile := os.Getenv(helperPIDEnv); pidFile != "" {
+		record := strconv.Itoa(os.Getpid()) + "\n" + os.Getenv(helperMarkerEnv)
+		_ = os.WriteFile(pidFile, []byte(record), 0o600)
+	}
 	switch mode {
 	case helperAwaitTerm:
 		sigs := make(chan os.Signal, 1)
@@ -66,13 +78,12 @@ type launchCall struct {
 	args []string
 }
 
-// testEnv returns an env with buffers, no LOOPAI_ACP_LOOPAI, no sibling, no PATH entry, and a
-// recording launcher returning code.
-func testEnv(code int) (e env, stdout, stderr *bytes.Buffer, calls *[]launchCall) {
-	stdout, stderr = &bytes.Buffer{}, &bytes.Buffer{}
+// testEnv returns an env with a stderr buffer, no LOOPAI_ACP_LOOPAI, no sibling, a loopai on PATH,
+// and a recording launcher returning code.
+func testEnv(code int) (e env, stderr *bytes.Buffer, calls *[]launchCall) {
+	stderr = &bytes.Buffer{}
 	calls = &[]launchCall{}
 	e = env{
-		stdout:     stdout,
 		stderr:     stderr,
 		getenv:     func(string) string { return "" },
 		executable: func() (string, error) { return filepath.Join("launcher", "dir", "loopai-acp"), nil },
@@ -83,95 +94,63 @@ func testEnv(code int) (e env, stdout, stderr *bytes.Buffer, calls *[]launchCall
 			return code, nil
 		},
 	}
-	return e, stdout, stderr, calls
+	return e, stderr, calls
 }
 
-func TestRunProbeCommands(t *testing.T) {
-	tests := []struct {
-		name       string
-		args       []string
-		wantCode   int
-		wantStdout string
-		wantStderr string
-	}{
-		{name: "version", args: []string{"--version"}, wantCode: 0, wantStdout: "loopai-acp "},
-		{name: "version short alias", args: []string{"-v"}, wantCode: 0, wantStdout: "loopai-acp "},
-		{name: "inspect", args: []string{"inspect", "--json"}, wantCode: 1, wantStderr: "inspect is not supported"},
-		{name: "update", args: []string{"update"}, wantCode: 1, wantStderr: "update is not supported"},
-		{name: "no args", args: nil, wantCode: exitUsage, wantStderr: "usage: loopai-acp"},
-		{name: "unknown", args: []string{"chat"}, wantCode: exitUsage, wantStderr: "usage: loopai-acp"},
-		{name: "inspect without json", args: []string{"inspect"}, wantCode: exitUsage, wantStderr: "usage: loopai-acp"},
-		{name: "stdio without agent", args: []string{"stdio"}, wantCode: exitUsage, wantStderr: "usage: loopai-acp"},
-		{name: "agent without stdio", args: []string{"agent"}, wantCode: exitUsage, wantStderr: "usage: loopai-acp"},
-		{name: "stdio with trailing arg", args: []string{"agent", "stdio", "extra"}, wantCode: exitUsage, wantStderr: "usage: loopai-acp"},
-		{name: "permission mode without value", args: []string{"--permission-mode"}, wantCode: exitUsage, wantStderr: "usage: loopai-acp"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			e, stdout, stderr, calls := testEnv(0)
-			assert.Equal(t, tc.wantCode, run(tc.args, e))
-			if tc.wantStdout == "" {
-				assert.Empty(t, stdout.String())
-			} else {
-				assert.Contains(t, stdout.String(), tc.wantStdout)
-			}
-			if tc.wantStderr == "" {
-				assert.Empty(t, stderr.String())
-			} else {
-				assert.Contains(t, stderr.String(), tc.wantStderr)
-			}
-			assert.Empty(t, *calls, "probe commands must not start loopai")
-		})
-	}
-}
-
-func TestRunVersionUsesRevision(t *testing.T) {
-	prev := revision
-	revision = "v1.2.3"
-	t.Cleanup(func() { revision = prev })
-	e, stdout, _, _ := testEnv(0)
-	require.Equal(t, 0, run([]string{"--version"}, e))
-	assert.Equal(t, "loopai-acp v1.2.3\n", stdout.String())
-}
-
-func TestRunStdioSessionShapes(t *testing.T) {
-	shapes := [][]string{
+// TestRunLaunchesLoopaiACPForAnyArgv checks that the launcher takes no arguments of its own: empty
+// argv, the old Grok driver's probes and session argv, and anything else a provider instance's
+// arguments hold all start "loopai --acp", whose exit code the launcher returns.
+func TestRunLaunchesLoopaiACPForAnyArgv(t *testing.T) {
+	argvs := [][]string{
+		nil,
+		{},
+		{"--version"},
+		{"models"},
+		{"inspect", "--json"},
+		{"update"},
 		{"agent", "stdio"},
-		{"agent", "--always-approve", "stdio"},
-		{"--permission-mode", "default", "agent", "stdio"},
-		{"--permission-mode", "acceptEdits", "agent", "stdio"},
-		{"--permission-mode", "auto", "agent", "stdio"},
-		{"--permission-mode=auto", "agent", "stdio"},
+		{"--permission-mode", "auto", "agent", "--always-approve", "stdio"},
+		{"--acp", "docs/plans/x.md", "--weird=1"},
 	}
-	for _, args := range shapes {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			e, stdout, stderr, calls := testEnv(7)
-			assert.Equal(t, 7, run(args, e), "exit code is forwarded")
+	for _, argv := range argvs {
+		t.Run(strings.Join(argv, " "), func(t *testing.T) {
+			e, stderr, calls := testEnv(7)
+			assert.Equal(t, 7, run(argv, e), "the exit code is forwarded")
 			require.Len(t, *calls, 1)
-			assert.Equal(t, filepath.Join("path", "loopai"), (*calls)[0].path)
-			assert.Equal(t, []string{"--acp"}, (*calls)[0].args)
-			assert.Empty(t, stdout.String(), "stdout belongs to the protocol")
+			assert.Equal(t, launchCall{path: filepath.Join("path", "loopai"), args: []string{"--acp"}}, (*calls)[0])
 			assert.Empty(t, stderr.String())
 		})
 	}
 }
 
-func TestRunStdioLaunchError(t *testing.T) {
-	e, stdout, stderr, _ := testEnv(0)
+func TestRunLaunchError(t *testing.T) {
+	e, stderr, _ := testEnv(0)
 	e.launch = func(string, []string) (int, error) { return 0, errors.New("boom") }
-	assert.Equal(t, 1, run([]string{"agent", "stdio"}, e))
-	assert.Empty(t, stdout.String())
+	assert.Equal(t, 1, run(nil, e))
 	assert.Contains(t, stderr.String(), "boom")
 }
 
-func TestRunStdioMissingLoopai(t *testing.T) {
-	e, stdout, stderr, calls := testEnv(0)
-	e.lookPath = func(string) (string, error) { return "", errors.New("not on PATH") }
+func TestRunMissingLoopai(t *testing.T) {
+	e, stderr, calls := testEnv(0)
+	e.lookPath = func(string) (string, error) {
+		return "", errors.New(`exec: "loopai": executable file not found in $PATH`)
+	}
 	assert.Equal(t, 1, run([]string{"agent", "stdio"}, e))
 	assert.Empty(t, *calls)
-	assert.Empty(t, stdout.String())
-	assert.Contains(t, stderr.String(), loopaiEnv)
-	assert.Contains(t, stderr.String(), "not on PATH")
+	msg := stderr.String()
+	assert.Contains(t, msg, loopaiEnv)
+	assert.Contains(t, msg, "executable file not found")
+	assert.False(t, authWords.MatchString(msg), "T3 Code would read %q as a sign-in failure", msg)
+}
+
+// TestLauncherTextHasNoAuthWords keeps every user-visible string of the launcher, the package doc
+// included, free of the words T3 Code reads as a sign-in failure.
+func TestLauncherTextHasNoAuthWords(t *testing.T) {
+	for _, file := range []string{"main.go", "exec_unix.go", "exec_windows.go"} {
+		data, err := os.ReadFile(file) //nolint:gosec // the package's own sources
+		require.NoError(t, err)
+		assert.False(t, authWords.Match(data), "%s matches %q", file, authWords.Find(data))
+	}
 }
 
 func TestResolveLoopaiOrder(t *testing.T) {
@@ -198,7 +177,7 @@ func TestResolveLoopaiOrder(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			e, _, _, _ := testEnv(0)
+			e, _, _ := testEnv(0)
 			e.stat = os.Stat
 			e.getenv = func(k string) string {
 				if k == loopaiEnv {
@@ -226,7 +205,7 @@ func TestResolveLoopaiSiblingDirectoryIgnored(t *testing.T) {
 	}
 	dir := t.TempDir()
 	require.NoError(t, os.Mkdir(filepath.Join(dir, siblingName), 0o700))
-	e, _, _, _ := testEnv(0)
+	e, _, _ := testEnv(0)
 	e.stat = os.Stat
 	e.executable = func() (string, error) { return filepath.Join(dir, "loopai-acp"), nil }
 	got, err := resolveLoopai(e)

@@ -1,0 +1,215 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/umputun/ralphex/pkg/runs"
+)
+
+// acpLongThreadID is a ~330-character T3 thread id of the kind subagent and provider-native threads
+// get: it carries ':' and '%' and could never be a file name.
+var acpLongThreadID = "thread:provider:claudeAgent:native-thread:" +
+	strings.Repeat("thread%3Aprovider%3AclaudeAgent%3Anative-thread%3A", 5) + "thread%3Aprovider%3Aabc%3Aagent%3A3"
+
+// readBindingFile decodes a binding file into a generic map, so the test sees the exact JSON keys.
+func readBindingFile(t *testing.T, path string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path) //nolint:gosec // test temp file
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(data, &m))
+	return m
+}
+
+func TestSaveSessionThreadSchema(t *testing.T) {
+	cwd := t.TempDir()
+	before := time.Now().UTC()
+	require.NoError(t, saveSessionThread(cwd, "loopai-abc", "thread-1"))
+
+	path := filepath.Join(cwd, ".loopai", "acp", "binding-session-loopai-abc.json")
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "a binding is private to the user")
+	m := readBindingFile(t, path)
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	assert.Equal(t, []string{"cwd", "run_id", "session_id", "thread_id", "updated_at"}, keys)
+	assert.Equal(t, "thread-1", m["thread_id"])
+	assert.Equal(t, "loopai-abc", m["session_id"])
+	assert.Empty(t, m["run_id"])
+	assert.Equal(t, cwd, m["cwd"])
+	updated, err := time.Parse(time.RFC3339Nano, m["updated_at"].(string))
+	require.NoError(t, err)
+	assert.WithinDuration(t, before, updated, time.Minute)
+
+	entries, err := os.ReadDir(filepath.Dir(path))
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "the write leaves no temp file behind")
+}
+
+func TestBindRunHashesALongThreadID(t *testing.T) {
+	require.Greater(t, len(acpLongThreadID), 300)
+	cwd := t.TempDir()
+	require.NoError(t, bindRun(cwd, acpLongThreadID, "loopai-abc", "feature-20261022-120000-abcd"))
+
+	dir := filepath.Join(cwd, ".loopai", "acp")
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	name := entries[0].Name()
+	assert.Equal(t, "binding-thread-"+runs.ThreadKey(acpLongThreadID)+".json", name)
+	assert.Regexp(t, `^binding-thread-[0-9a-f]{32}\.json$`, name, "only the hash is in the name")
+	assert.Equal(t, acpLongThreadID, readBindingFile(t, filepath.Join(dir, name))["thread_id"], "the raw id is in the file")
+
+	b, ok := loadBinding(cwd, acpLongThreadID, "another-session")
+	require.True(t, ok, "the thread key finds the binding from any session")
+	assert.Equal(t, acpBinding{ThreadID: acpLongThreadID, SessionID: "loopai-abc", RunID: "feature-20261022-120000-abcd",
+		Cwd: cwd, UpdatedAt: b.UpdatedAt}, b)
+	assert.False(t, b.UpdatedAt.IsZero())
+}
+
+func TestLoadBindingRestoresTheThreadFromTheSession(t *testing.T) {
+	cwd := t.TempDir()
+	require.NoError(t, saveSessionThread(cwd, "s-1", "thread-1"))
+
+	b, ok := loadBinding(cwd, "", "s-1")
+	require.True(t, ok)
+	assert.Equal(t, "thread-1", b.ThreadID, "a session/load without a lookup still knows its thread")
+	assert.Empty(t, b.RunID)
+
+	require.NoError(t, bindRun(cwd, "thread-1", "s-1", "run-a"))
+	b, ok = loadBinding(cwd, "", "s-1")
+	require.True(t, ok)
+	assert.Equal(t, "run-a", b.RunID, "the session's thread leads to the thread's run")
+	assert.Equal(t, "thread-1", b.ThreadID)
+
+	_, ok = loadBinding(cwd, "", "s-2")
+	assert.False(t, ok, "an unknown session with no thread has no binding")
+	b, ok = loadBinding(cwd, "thread-1", "s-2")
+	require.True(t, ok, "a session T3 Code replaced finds the run through the thread")
+	assert.Equal(t, "run-a", b.RunID)
+}
+
+func TestBindingSessionFallback(t *testing.T) {
+	cwd := t.TempDir()
+	require.NoError(t, saveSessionThread(cwd, "s-1", ""))
+	require.NoError(t, bindRun(cwd, "", "s-1", "run-a"))
+
+	entries, err := os.ReadDir(filepath.Join(cwd, ".loopai", "acp"))
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "without a thread id the session file is the key")
+	assert.Equal(t, "binding-session-s-1.json", entries[0].Name())
+
+	b, ok := loadBinding(cwd, "", "s-1")
+	require.True(t, ok)
+	assert.Equal(t, acpBinding{SessionID: "s-1", RunID: "run-a", Cwd: cwd, UpdatedAt: b.UpdatedAt}, b)
+	b, ok = loadBinding(cwd, "thread-1", "s-1")
+	require.True(t, ok, "a thread found later still sees the run bound by session")
+	assert.Equal(t, "run-a", b.RunID)
+
+	require.NoError(t, saveSessionThread(cwd, "s-1", "thread-1"))
+	b, ok = loadBinding(cwd, "", "s-1")
+	require.True(t, ok)
+	assert.Equal(t, "run-a", b.RunID, "recording the thread keeps the run")
+	assert.Equal(t, "thread-1", b.ThreadID)
+	require.NoError(t, saveSessionThread(cwd, "s-1", ""))
+	b, _ = loadBinding(cwd, "", "s-1")
+	assert.Equal(t, "thread-1", b.ThreadID, "a failed lookup later never forgets the thread")
+
+	_, ok = loadBinding(cwd, "thread-2", "s-1")
+	assert.False(t, ok, "a session of another thread is not this thread's binding")
+}
+
+func TestUnbindRun(t *testing.T) {
+	cwd := t.TempDir()
+	require.NoError(t, saveSessionThread(cwd, "s-1", ""))
+	require.NoError(t, bindRun(cwd, "", "s-1", "run-a"))
+	require.NoError(t, saveSessionThread(cwd, "s-1", "thread-1"))
+	require.NoError(t, bindRun(cwd, "thread-1", "s-1", "run-a"))
+
+	require.NoError(t, unbindRun(cwd, "thread-1", "s-1", "run-b"))
+	b, _ := loadBinding(cwd, "thread-1", "s-1")
+	assert.Equal(t, "run-a", b.RunID, "another run's unbind leaves the binding alone")
+
+	require.NoError(t, unbindRun(cwd, "thread-1", "s-1", "run-a"))
+	b, ok := loadBinding(cwd, "thread-1", "s-1")
+	require.True(t, ok)
+	assert.Empty(t, b.RunID, "neither key finds the run again")
+	b, ok = loadBinding(cwd, "", "s-1")
+	require.True(t, ok)
+	assert.Empty(t, b.RunID)
+	assert.Equal(t, "thread-1", b.ThreadID, "the session keeps its thread")
+
+	require.NoError(t, unbindRun(cwd, "thread-1", "s-1", ""), "an empty run id unbinds nothing")
+	require.NoError(t, unbindRun(cwd, "thread-9", "s-9", "run-a"), "a key with no binding is no error")
+}
+
+func TestBindingIgnoresFilesThatDoNotDecode(t *testing.T) {
+	cwd := t.TempDir()
+	dir := filepath.Join(cwd, ".loopai", "acp")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	write := func(name, content string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600))
+	}
+	// the removed ACP chat's state of the same session, and binding files that are not this key's
+	write("s-1.json", `{"provider":"claude","provider_session_id":"p-1","last_run":{"plan":"docs/plans/a.md"}}`)
+	write("binding-session-s-1.json", `{"session_id":`)
+	write("binding-session-s-2.json", `{"provider":"claude","last_run":{"plan":"docs/plans/a.md"}}`)
+	write("binding-session-s-3.json", `{"session_id":"s-other","run_id":"run-a"}`)
+	write("binding-session-s-4.json", `{"session_id":"s-4","run_id":"../../escape"}`)
+	write("binding-thread-"+runs.ThreadKey("thread-1")+".json", `{"thread_id":"thread-2","run_id":"run-a"}`)
+
+	for _, sid := range []string{"s-1", "s-2", "s-3", "s-4"} {
+		_, ok := loadBinding(cwd, "", sid)
+		assert.False(t, ok, sid)
+	}
+	_, ok := loadBinding(cwd, "thread-1", "")
+	assert.False(t, ok, "a thread file holding another thread is ignored")
+
+	require.NoError(t, saveSessionThread(cwd, "s-1", "thread-1"), "a corrupt binding is replaced, not an error")
+	b, ok := loadBinding(cwd, "", "s-1")
+	require.True(t, ok)
+	assert.Equal(t, "thread-1", b.ThreadID)
+	assert.Empty(t, b.RunID)
+	data, err := os.ReadFile(filepath.Join(dir, "s-1.json")) //nolint:gosec // test temp file
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "provider_session_id", "the old state file is never touched")
+}
+
+func TestBindingRefusesUnsafeKeys(t *testing.T) {
+	cwd := t.TempDir()
+	for _, sid := range []string{"", "../escape", "a/b", ".hidden", strings.Repeat("x", 129)} {
+		require.Error(t, saveSessionThread(cwd, sid, "thread-1"), "session id %q", sid)
+		require.Error(t, bindRun(cwd, "", sid, "run-a"), "session id %q", sid)
+		_, ok := loadBinding(cwd, "", sid)
+		assert.False(t, ok, "session id %q", sid)
+	}
+	require.NoError(t, bindRun(cwd, "thread-1", "../unsafe-but-unused", "run-a"),
+		"a thread binding keeps the session id inside the file only")
+
+	for _, runID := range []string{"", "../escape", "Upper"} {
+		require.Error(t, bindRun(cwd, "thread-1", "s-1", runID), "run id %q", runID)
+	}
+
+	rel := "relative/checkout"
+	require.ErrorContains(t, saveSessionThread(rel, "s-1", "thread-1"), "not absolute")
+	require.ErrorContains(t, bindRun(rel, "thread-1", "s-1", "run-a"), "not absolute")
+	require.ErrorContains(t, unbindRun(rel, "thread-1", "s-1", "run-a"), "not absolute")
+	_, ok := loadBinding(rel, "thread-1", "s-1")
+	assert.False(t, ok)
+	_, err := os.Stat(filepath.Join(cwd, "relative"))
+	assert.True(t, os.IsNotExist(err))
+}

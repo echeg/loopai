@@ -121,6 +121,11 @@ func TestVersionBannerWriter(t *testing.T) {
 	assert.Same(t, os.Stdout, versionBannerWriter([]string{"plan.md"}))
 	assert.Same(t, os.Stdout, versionBannerWriter(nil))
 	assert.Same(t, os.Stdout, versionBannerWriter([]string{"--", "--skill-contract"}))
+	assert.Same(t, os.Stderr, versionBannerWriter([]string{"--acp"}), "stdout carries JSON-RPC only under --acp")
+	assert.Same(t, os.Stderr, versionBannerWriter([]string{"--debug", "--acp"}))
+	assert.Same(t, os.Stdout, versionBannerWriter([]string{"--", "--acp"}))
+	assert.Equal(t, io.Discard, versionBannerWriter([]string{"--acp", "--skill-contract"}),
+		"the skill contract's integer stays alone on stdout")
 }
 
 func TestPrintSkillContract(t *testing.T) {

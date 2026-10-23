@@ -1126,24 +1126,24 @@
 - ⚠️ `ParsePrompt` returns "" when the first text block starts with `<runtime_info>`: T3 sends that block first only for a message without text (image only).
 
 ### Task 13: Wire `loopai --acp` and rewrite loopai-acp as an exec launcher
-- [ ] re-add visible `ACP bool` (`long:"acp"`), routed through the Task 6 `runPreConfigCommand`:
+- [x] re-add visible `ACP bool` (`long:"acp"`), routed through the Task 6 `runPreConfigCommand`:
   - `validateACPFlags` rejects a plan argument, execution flags, close-out, and the other standalone modes;
   - add `o.ACP` to `isStandaloneCommand`;
   - restore the stderr branch in `versionBannerWriter` for `--acp`, with a raw-args check before parsing.
-- [ ] recover `catchSIGPIPE` and `redirectStdioForACP` from commit `0f3a570` (`cmd/loopai/acp.go:107-140`) into `cmd/loopai/acp_provider.go`, so stdout carries only JSON-RPC and every human line goes to stderr.
-- [ ] create the binding store `cmd/loopai/acp_binding.go` under `<session cwd>/.loopai/acp/`:
+- [x] recover `catchSIGPIPE` and `redirectStdioForACP` from commit `0f3a570` (`cmd/loopai/acp.go:107-140`) into `cmd/loopai/acp_provider.go`, so stdout carries only JSON-RPC and every human line goes to stderr.
+- [x] create the binding store `cmd/loopai/acp_binding.go` under `<session cwd>/.loopai/acp/`:
   - files: `binding-thread-<runs.ThreadKey(threadID)>.json` and `binding-session-<session-id>.json` (session id checked as one safe segment);
   - schema: `{thread_id, session_id, run_id, cwd, updated_at}`, with the raw thread id kept inside the JSON;
   - written atomically with mode 0600;
   - functions `loadBinding(cwd, threadID, sessionID)`, `saveSessionThread(...)`, and `bindRun(...)`/`unbindRun(...)`, all tested here;
   - files that fail to decode, such as the deleted chat's `<session-id>.json` state, are ignored.
-- [ ] wire the provider in `cmd/loopai/acp_provider.go`:
+- [x] wire the provider in `cmd/loopai/acp_provider.go`:
   - after a non-probe `session/new` or `session/load`, look up `currentThreadId` with a 5 s bound through `var lookupACPThreadID` (stubbed in `TestMain`), and persist the session→thread mapping;
   - a call is a probe when the clientInfo name is `t3-code-provider-test`/`t3-code-session-manager`, or when `mcpServers` is empty and no `T3_ACP_MCP_*` is set;
   - `session/load` restores the binding purely from disk;
   - every prompt in this task answers the status reply (rule 4 in Technical Details) and `end_turn`.
-- [ ] SIGTERM or stdin EOF: exit at once, well within 1 s, without touching any run and without answering the open prompt.
-- [ ] rewrite `cmd/loopai-acp` as an argument-free launcher that runs `loopai --acp` for any argv:
+- [x] SIGTERM or stdin EOF: exit at once, well within 1 s, without touching any run and without answering the open prompt.
+- [x] rewrite `cmd/loopai-acp` as an argument-free launcher that runs `loopai --acp` for any argv:
   - keep `resolveLoopai` (`LOOPAI_ACP_LOOPAI`, then sibling `loopai`/`loopai.exe`, then `PATH`) and the `env` struct test seam;
   - Unix: `exec_unix.go` (`//go:build !windows`) defines `var platformLaunch = execReplace`, where `execReplace` calls `syscall.Exec(bin, []string{bin, "--acp"}, os.Environ())`. T3 gives the provider no process group of its own and sends SIGKILL 1 s after SIGTERM;
   - Windows: `exec_windows.go` defines `var platformLaunch = launchInherited`;
@@ -1152,24 +1152,28 @@
   - drop `-X main.revision=$(REV)` from the `cmd/loopai-acp` build line in the `Makefile`;
   - rewrite the package doc and the missing-binary message so they never contain "login", "credential", or "authenticate";
   - never name the binary anything matching `claude-agent-acp` or `copilot`.
-- [ ] run `go test ./cmd/loopai -run TestSkillContract -update` (adds `--acp`).
-- [ ] write tests (success) as scripted JSON-RPC sessions over the real `--acp` wiring:
+- [x] run `go test ./cmd/loopai -run TestSkillContract -update` (adds `--acp`).
+- [x] write tests (success) as scripted JSON-RPC sessions over the real `--acp` wiring:
   - the probe sequence (`t3-code-provider-test`, cwd `/`, `mcpServers: []`) succeeds without config or repository access and writes no binding;
   - a non-probe `session/new` persists the session→thread mapping from the stubbed lookup;
   - a new process's `session/load` restores it from disk;
   - a binding for a ~330-character `thread:provider:…%3A…` id is stored under its hashed name and reads back the raw id;
   - `versionBannerWriter([]string{"--acp"})` is `os.Stderr` again.
-- [ ] write tests (success) for `cmd/loopai-acp`:
+- [x] write tests (success) for `cmd/loopai-acp`:
   - resolution order: env override, sibling, PATH;
   - empty argv and arbitrary argv both call the injected launch with `[bin, "--acp"]` semantics and the inherited environment.
-- [ ] write tests (errors/edge):
+- [x] write tests (errors/edge):
   - the MCP lookup failing falls back to the session-id key;
   - a corrupt or old-schema `.loopai/acp/<id>.json` is ignored;
   - stdout carries only JSON-RPC lines: a stray `fmt.Print` in a handler goes to stderr;
   - EOF and SIGTERM end the process promptly, with no prompt answer and no run touched;
   - `validateACPFlags` rejects a plan and `--detach`;
   - `cmd/loopai-acp` with no loopai found exits non-zero with a message free of auth words.
-- [ ] run `make test </dev/null`, `make lint`, `make build`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 14
+- [x] run `make test </dev/null`, `make lint`, `make build`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 14
+- ⚠️ `pkg/acp` now calls a session's `Prompt` only after the `NewSession`/`LoadSession` hook that opened the session returned (a per-session ready channel the read loop records): a prompt pipelined after a `session/load` would otherwise route without the thread id the load restores. The Task 12 review's ordering test uses the same wait to force `Cancel` before `Prompt` instead of making it likely.
+- ⚠️ Recovered panics (Task 12 review ruling) answer `session/new`/`session/load` with -32603 `internal error` and a prompt with `end_turn`; a panic in `Cancel` is recovered on the read loop. `Provider.SetErrorLog` names where the panic and its stack go (stderr under `--acp`).
+- ⚠️ The status reply already carries rule 4's bound-run branch: a binding's `run_id` reads `<session cwd>/.loopai/progress/runs/<id>/outcome.json` for the status, reason, report summary, and branch. A non-probe session whose `mcpServers` has no complete `t3-code` entry (and no `T3_ACP_MCP_*`) is bound by session id with a warning line. `--acp` writes `.loopai/acp/` without running `EnsureLocalGitignore`; the Task 14 launch path runs it.
+- ⚠️ The MCP session-ending DELETE is bounded at 1 s (`mcpEndTimeout`). The exit-time tests run the `--acp` child with `GORACE=atexit_sleep_ms=0`, since the race detector otherwise sleeps a second before every exit.
 
 ### Task 14: Add Mode 2 launch and routing
 - [ ] add hidden flags `ACPThread` (`--acp-thread`) and `ACPSession` (`--acp-session`), with no env tags:

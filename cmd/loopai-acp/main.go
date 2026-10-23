@@ -1,7 +1,13 @@
-// Command loopai-acp lets T3 Code host loopai as a provider session through its Grok driver.
-// It answers the Grok CLI probe commands the driver runs and, for the ACP session argv, starts
-// "loopai --acp" with inherited stdio. The loopai CLI keeps its own argument grammar this way:
-// positional "models" or "agent" never reach it.
+// Command loopai-acp is the argument-free launcher of a loopai provider in T3 Code. Register its
+// absolute path as the executable of a local ACP provider instance: whatever arguments it is given, it
+// runs "loopai --acp", which serves the Agent Client Protocol on the inherited stdin and stdout.
+//
+// The loopai binary comes from LOOPAI_ACP_LOOPAI, else a loopai beside the launcher, else PATH. On
+// Unix the launcher execs it in place, so the provider T3 Code started stays one stable process with
+// one pid: T3 Code runs the provider as the leader of its own process group and signals that group
+// as a whole (SIGTERM, then SIGKILL a second later), and loopai receives those signals itself with
+// nothing in between. Windows has no exec, so there the launcher starts loopai with inherited stdio,
+// forwards interrupts, and exits with its code.
 package main
 
 import (
@@ -14,25 +20,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
-	"strings"
 	"syscall"
 )
 
 // loopaiEnv names an explicit loopai binary, taking precedence over a sibling and PATH.
 const loopaiEnv = "LOOPAI_ACP_LOOPAI"
-
-// exitUsage is the exit code for argv the launcher does not recognize.
-const exitUsage = 2
-
-const usage = `usage: loopai-acp --version
-       loopai-acp [--permission-mode MODE] agent [--always-approve] stdio
-
-loopai-acp is a launcher for T3 Code's Grok driver: point a Grok provider instance's
-binaryPath at it, and "agent stdio" starts "loopai --acp" serving plan runs over ACP.
-`
-
-var revision = "unknown"
 
 func main() {
 	os.Exit(run(os.Args[1:], defaultEnv()))
@@ -40,72 +32,40 @@ func main() {
 
 // env holds the launcher's process dependencies so tests can replace them.
 type env struct {
-	stdout, stderr io.Writer
-	getenv         func(string) string
-	executable     func() (string, error)
-	lookPath       func(string) (string, error)
-	stat           func(string) (os.FileInfo, error)
-	launch         func(path string, args []string) (int, error)
+	stderr     io.Writer
+	getenv     func(string) string
+	executable func() (string, error)
+	lookPath   func(string) (string, error)
+	stat       func(string) (os.FileInfo, error)
+	launch     func(path string, args []string) (int, error)
 }
 
 func defaultEnv() env {
 	return env{
-		stdout:     os.Stdout,
 		stderr:     os.Stderr,
 		getenv:     os.Getenv,
 		executable: os.Executable,
 		lookPath:   exec.LookPath,
 		stat:       os.Stat,
-		launch:     launchInherited,
+		launch:     platformLaunch,
 	}
 }
 
-// run dispatches argv and returns the process exit code.
-func run(args []string, e env) int {
-	switch {
-	case len(args) == 1 && (args[0] == "--version" || args[0] == "-v"):
-		_, _ = fmt.Fprintf(e.stdout, "loopai-acp %s\n", resolveVersion())
-		return 0
-	case len(args) == 2 && args[0] == "inspect" && args[1] == "--json":
-		_, _ = fmt.Fprintln(e.stderr, "loopai-acp: inspect is not supported")
+// run launches "loopai --acp" and returns the process exit code. The arguments are ignored: a T3
+// Code provider instance may pass whatever its configured arguments hold, and loopai reads nothing
+// from them.
+func run(_ []string, e env) int {
+	bin, err := resolveLoopai(e)
+	if err != nil {
+		_, _ = fmt.Fprintf(e.stderr, "loopai-acp: %v\n", err)
 		return 1
-	case len(args) == 1 && args[0] == "update":
-		_, _ = fmt.Fprintln(e.stderr, "loopai-acp: update is not supported; rebuild loopai from source")
+	}
+	code, err := e.launch(bin, []string{"--acp"})
+	if err != nil {
+		_, _ = fmt.Fprintf(e.stderr, "loopai-acp: run %s: %v\n", bin, err)
 		return 1
-	case isStdioSession(args):
-		bin, err := resolveLoopai(e)
-		if err != nil {
-			_, _ = fmt.Fprintf(e.stderr, "loopai-acp: %v\n", err)
-			return 1
-		}
-		code, err := e.launch(bin, []string{"--acp"})
-		if err != nil {
-			_, _ = fmt.Fprintf(e.stderr, "loopai-acp: run %s: %v\n", bin, err)
-			return 1
-		}
-		return code
-	default:
-		_, _ = fmt.Fprint(e.stderr, usage)
-		return exitUsage
 	}
-}
-
-// isStdioSession reports whether args is the Grok driver's ACP session argv:
-// [--permission-mode MODE] agent [--always-approve] stdio.
-func isStdioSession(args []string) bool {
-	if len(args) > 0 && strings.HasPrefix(args[0], "--permission-mode=") {
-		args = args[1:]
-	} else if len(args) > 1 && args[0] == "--permission-mode" {
-		args = args[2:]
-	}
-	if len(args) == 0 || args[0] != "agent" {
-		return false
-	}
-	args = args[1:]
-	if len(args) > 0 && args[0] == "--always-approve" {
-		args = args[1:]
-	}
-	return len(args) == 1 && args[0] == "stdio"
+	return code
 }
 
 // resolveLoopai finds the loopai binary: LOOPAI_ACP_LOOPAI, then a loopai beside the launcher,
@@ -132,9 +92,10 @@ func resolveLoopai(e env) (string, error) {
 	return p, nil
 }
 
-// launchInherited runs bin with the launcher's stdin, stdout, and stderr, forwards interrupt and
-// termination signals to it, and returns its exit code. Where a signal cannot be forwarded (Windows),
-// the child still stops: it shares the console's Ctrl+C and sees EOF when its stdin closes.
+// launchInherited runs bin with the launcher's stdin, stdout, stderr, and environment, forwards
+// interrupt and termination signals to it, and returns its exit code. It is the Windows launch;
+// where a signal cannot be forwarded, the child still stops: it shares the console's Ctrl+C and
+// sees EOF when its stdin closes.
 func launchInherited(bin string, args []string) (int, error) {
 	cmd := exec.CommandContext(context.Background(), bin, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -167,24 +128,4 @@ func launchInherited(bin string, args []string) (int, error) {
 		return 0, fmt.Errorf("wait: %w", err)
 	}
 	return 0, nil
-}
-
-// resolveVersion mirrors loopai's: ldflags revision, then module version, then VCS commit.
-func resolveVersion() string {
-	if revision != "unknown" {
-		return revision
-	}
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return revision
-	}
-	if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
-	}
-	for _, s := range info.Settings {
-		if s.Key == "vcs.revision" && len(s.Value) >= 7 {
-			return s.Value[:7]
-		}
-	}
-	return revision
 }

@@ -33,10 +33,14 @@ func skillContractRequested(args []string) bool {
 }
 
 // versionBannerWriter is where main prints the version banner: nowhere under --skill-contract,
-// whose stdout carries the integer alone, and stdout otherwise.
+// whose stdout carries the integer alone, stderr under --acp, whose stdout carries JSON-RPC only,
+// and stdout otherwise.
 func versionBannerWriter(args []string) io.Writer {
 	if skillContractRequested(args) {
 		return io.Discard
+	}
+	if acpRequested(args) {
+		return os.Stderr
 	}
 	return os.Stdout
 }

@@ -1,6 +1,7 @@
 contract: 3
 
 flags:
+--acp
 --attach
 --base-ref
 --branch

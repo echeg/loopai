@@ -36,6 +36,7 @@ import (
 	"github.com/umputun/ralphex/pkg/processor"
 	"github.com/umputun/ralphex/pkg/progress"
 	"github.com/umputun/ralphex/pkg/status"
+	"github.com/umputun/ralphex/pkg/t3"
 	"github.com/umputun/ralphex/pkg/web"
 )
 
@@ -114,6 +115,9 @@ func TestMain(m *testing.M) {
 	// a detached child started with a T3 token would otherwise bridge its run to whatever T3 server
 	// its environment finds; the bridge tests start it themselves against the fake server
 	newT3Bridge = func(t3BridgeConfig) func() { return func() {} }
+	// an --acp session carrying T3 credentials would otherwise ask the real T3 MCP endpoint for its
+	// thread; the provider tests choose the answer through acpLookupEnv instead
+	lookupACPThreadID = stubACPThreadLookup
 	// a developer shell may export a T3 Code token or server URL; no test may reach a real T3
 	// server, so neither leaks into the suite. tests that need them set them through t.Setenv.
 	for _, key := range []string{"LOOPAI_T3_TOKEN", "LOOPAI_T3_URL"} {
@@ -123,6 +127,36 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(m.Run())
+}
+
+const (
+	// acpLookupEnv chooses what stubACPThreadLookup answers, in this process and in helper processes.
+	acpLookupEnv = "LOOPAI_TEST_ACP_LOOKUP"
+	// acpStrayLine is what the "stray=" lookup prints to stdout from inside a handler.
+	acpStrayLine = "stray stdout line from a handler"
+	// acpLookupStarted is what the "block" lookup prints to stderr once it waits.
+	acpLookupStarted = "acp test: lookup started"
+)
+
+// stubACPThreadLookup replaces lookupACPThreadID for the whole suite and its helper processes, so no
+// test reaches a T3 server. acpLookupEnv chooses the answer: "thread=<id>" answers id, "stray=<id>"
+// first prints acpStrayLine to stdout, "block" prints acpLookupStarted to stderr and waits until the
+// lookup is canceled, and anything else, unset included, fails as an unreachable endpoint would.
+func stubACPThreadLookup(ctx context.Context, _ t3.MCPCredential) (string, error) {
+	mode := os.Getenv(acpLookupEnv)
+	if id, ok := strings.CutPrefix(mode, "thread="); ok {
+		return id, nil
+	}
+	if id, ok := strings.CutPrefix(mode, "stray="); ok {
+		fmt.Println(acpStrayLine)
+		return id, nil
+	}
+	if mode == "block" {
+		fmt.Fprintln(os.Stderr, acpLookupStarted)
+		<-ctx.Done()
+		return "", fmt.Errorf("t3 mcp initialize: %w", ctx.Err())
+	}
+	return "", errors.New("t3 mcp initialize: HTTP 401")
 }
 
 var (
