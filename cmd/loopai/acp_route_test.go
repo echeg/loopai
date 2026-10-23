@@ -145,8 +145,14 @@ func launchedRun(t *testing.T, launched <-chan *acpTestRun) *acpTestRun {
 // does after T3 Code reaped the old one. It returns the server and the session id.
 func openACPSession(t *testing.T, cwd, lookup, sid string) (*acpServer, string) {
 	t.Helper()
+	return openACPSessionContext(t, context.Background(), cwd, lookup, sid)
+}
+
+// openACPSessionContext is openACPSession with ctx as the server's process context.
+func openACPSessionContext(t *testing.T, ctx context.Context, cwd, lookup, sid string) (*acpServer, string) {
+	t.Helper()
 	t.Setenv(acpLookupEnv, lookup)
-	s := startACPServer(t, noACPEnv)
+	s := startACPServerContext(t, ctx, noACPEnv)
 	s.send(acpInitialize("t3-code"))
 	s.result(1)
 	if sid == "" {
@@ -163,6 +169,12 @@ func acpBoundRun(t *testing.T, cwd, threadID, sessionID string) string {
 	t.Helper()
 	b, _ := loadBinding(cwd, threadID, sessionID)
 	return b.RunID
+}
+
+// acpHeadline is the first line of a final message: how the run's attempt ended.
+func acpHeadline(text string) string {
+	line, _, _ := strings.Cut(text, "\n")
+	return line
 }
 
 // waitBound waits until the binding of threadID or sessionID in cwd names run id: a provider binds a
@@ -210,7 +222,7 @@ func TestACPPlanMessageStartsAndBindsItsRun(t *testing.T) {
 			}
 
 			run.finish(runs.Outcome{Status: runs.StatusSucceeded, Branch: "feature"})
-			assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", s.turnReply(3, sid))
+			assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", acpHeadline(s.turnReply(3, sid)))
 			assert.False(t, run.attached(), "the attach.lock is released with the turn")
 		})
 	}
@@ -241,7 +253,7 @@ func TestACPResumeInANewProcessRelaunchesTheBoundRun(t *testing.T) {
 	run := launchedRun(t, launched)
 	run.waitAttached()
 	run.finish(runs.Outcome{Status: runs.StatusFailed, Reason: "task 2 failed", Branch: "feature"})
-	assert.Equal(t, "loopai run "+acpRouteRunID+" failed: task 2 failed.", first.turnReply(3, sid))
+	assert.Equal(t, "loopai run "+acpRouteRunID+" failed: task 2 failed.", acpHeadline(first.turnReply(3, sid)))
 	require.NoError(t, first.in.Close()) // the idle provider is reaped
 
 	second, _ := openACPSession(t, cwd, "fail", sid)
@@ -255,7 +267,7 @@ func TestACPResumeInANewProcessRelaunchesTheBoundRun(t *testing.T) {
 		relaunch, "the recorded argv and options, with the thread the session recorded")
 
 	run.finish(runs.Outcome{Status: runs.StatusSucceeded, Branch: "feature"})
-	assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", second.turnReply(3, sid))
+	assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", acpHeadline(second.turnReply(3, sid)))
 	assert.Equal(t, acpRouteRunID, acpBoundRun(t, cwd, "thread-1", sid))
 	assert.Contains(t, second.stderr.String(), "using the thread the session recorded")
 }
@@ -306,7 +318,7 @@ func TestACPContinuationRelaunchesARunThatDidNotSucceed(t *testing.T) {
 			assert.Equal(t, []acpLaunch{{cwd: cwd, threadID: "thread-1", sessionID: sid, args: []string{acpRoutePlan}}},
 				launches.all())
 			run.finish(runs.Outcome{Status: runs.StatusSucceeded})
-			assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", s.turnReply(3, sid))
+			assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", acpHeadline(s.turnReply(3, sid)))
 		})
 	}
 }
@@ -353,7 +365,7 @@ func TestACPReattachesTheBoundLiveRun(t *testing.T) {
 			s.send(acpPrompt(3, sid, tc.text))
 			run.waitAttached()
 			finish()
-			assert.Equal(t, "loopai run "+acpRouteRunID+" failed: task 1 failed.", s.turnReply(3, sid))
+			assert.Equal(t, "loopai run "+acpRouteRunID+" failed: task 1 failed.", acpHeadline(s.turnReply(3, sid)))
 			assert.Empty(t, launches.all())
 		})
 	}
@@ -377,7 +389,7 @@ func TestACPContinuationAdoptsTheOnlyCandidate(t *testing.T) {
 			run.waitAttached()
 			waitBound(t, cwd, tc.threadID, sid, acpRouteRunID) // the adopted run is bound
 			run.finish(runs.Outcome{Status: runs.StatusSucceeded})
-			assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", s.turnReply(3, sid))
+			assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", acpHeadline(s.turnReply(3, sid)))
 			assert.Empty(t, launches.all())
 		})
 	}
@@ -565,7 +577,7 @@ func TestACPPlanMessageNeverAdoptsAnotherRun(t *testing.T) {
 		assert.False(t, other.attached(), "the other run is left alone")
 		waitBound(t, cwd, "thread-1", sid, acpRouteRunID)
 		run.finish(runs.Outcome{Status: runs.StatusSucceeded})
-		assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", s.turnReply(3, sid))
+		assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", acpHeadline(s.turnReply(3, sid)))
 	})
 
 	t.Run("a refused launch", func(t *testing.T) {
@@ -633,7 +645,7 @@ func TestACPCanceledAttachLeavesTheRunRunning(t *testing.T) {
 	s.send(acpPrompt(3, sid, acp.ContinuationText))
 	run.waitAttached()
 	s.send(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"` + sid + `"}}`)
-	assert.Equal(t, map[string]any{"stopReason": "cancelled"}, s.result(3)) //nolint:misspell // ACP wire value
+	assert.Equal(t, map[string]any{"stopReason": "cancelled"}, s.resultAfterUpdates(3)) //nolint:misspell // ACP wire value
 	status, err := runs.Classify(cwd, run.dir)
 	require.NoError(t, err)
 	assert.Equal(t, runs.StatusRunning, status, "a cancel never stops the run")
@@ -641,7 +653,7 @@ func TestACPCanceledAttachLeavesTheRunRunning(t *testing.T) {
 	s.send(acpPrompt(4, sid, "docs/plans/other.md"))
 	run.waitAttached()
 	run.finish(runs.Outcome{Status: runs.StatusSucceeded})
-	assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", s.turnReply(4, sid))
+	assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", acpHeadline(s.turnReply(4, sid)))
 }
 
 // TestACPAttachToARunAnotherProviderFollows answers instead of waiting when the bound run's
@@ -683,7 +695,7 @@ func TestACPUnavailableBindingStoreReadsAsNoBinding(t *testing.T) {
 	run := launchedRun(t, launched)
 	run.waitAttached()
 	run.finish(runs.Outcome{Status: runs.StatusSucceeded})
-	assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", s.turnReply(4, sid))
+	assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", acpHeadline(s.turnReply(4, sid)))
 	assert.Equal(t, 2, strings.Count(s.stderr.String(), "is a symbolic link"),
 		"one warning for the session binding and one for the run binding: "+s.stderr.String())
 	assert.Contains(t, s.stderr.String(), "warning: acp: run binding not recorded:")
@@ -717,10 +729,35 @@ func TestACPUnreadableBoundRunWarnsAndFallsThrough(t *testing.T) {
 	run := launchedRun(t, launched)
 	run.waitAttached()
 	run.finish(runs.Outcome{Status: runs.StatusSucceeded})
-	assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", s.turnReply(4, sid))
+	assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", acpHeadline(s.turnReply(4, sid)))
 	assert.Equal(t, 2, strings.Count(s.stderr.String(), warning), "the plan message fell through to its own run")
 	assert.Equal(t, acpRouteRunID, acpBoundRun(t, cwd, "thread-1", sid))
 	assert.NotContains(t, s.stderr.String(), acpTestAuthz)
+}
+
+// TestACPBindingToARemovedRunIsDropped binds the thread to a run whose directory was pruned: the first
+// turn removes the binding with one warning and is answered as for an unbound thread, so a continuation
+// may adopt; later turns warn no more.
+func TestACPBindingToARemovedRunIsDropped(t *testing.T) {
+	cwd := t.TempDir()
+	const goneID = "old-20261022-110000-abcd"
+	require.NoError(t, bindRun(cwd, "thread-1", "sess-old", goneID))
+	adoptable := newACPTestRun(t, cwd, runs.Descriptor{ID: acpRouteRunID,
+		Origin: runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "thread-1"}}).start()
+
+	s, sid := openACPSession(t, cwd, "thread=thread-1", "")
+	s.send(acpPrompt(3, sid, acp.ContinuationText))
+	adoptable.waitAttached()
+	adoptable.finish(runs.Outcome{Status: runs.StatusSucceeded})
+	assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", acpHeadline(s.turnReply(3, sid)),
+		"the unbound thread's continuation adopts the live run")
+	warning := "warning: acp: bound run " + goneID + " no longer exists"
+	assert.Equal(t, 1, strings.Count(s.stderr.String(), warning), s.stderr.String())
+	assert.Equal(t, acpRouteRunID, acpBoundRun(t, cwd, "thread-1", sid))
+
+	s.statusReply(4, sid, "status")
+	assert.Equal(t, 1, strings.Count(s.stderr.String(), warning), "the binding was removed once")
+	assert.NotContains(t, s.stderr.String(), "unavailable")
 }
 
 func TestParseACPPlanMessage(t *testing.T) {

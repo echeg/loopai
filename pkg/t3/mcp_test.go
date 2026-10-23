@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"net/http"
 	"net/http/httptest"
@@ -49,6 +50,8 @@ type fakeMCP struct {
 	block       bool   // hold every request until the client gives up
 	blockDelete bool   // hold the session-ending DELETE until the client gives up
 	status      map[string]int
+	// resultFor, when set, returns the tools/call result for a request body in place of result
+	resultFor func(body string) string
 
 	mu      sync.Mutex
 	calls   []mcpCall
@@ -146,7 +149,11 @@ func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if f.wrongID {
 			id = json.RawMessage(`"99"`)
 		}
-		f.respond(w, id, f.result, "")
+		result := f.result
+		if f.resultFor != nil {
+			result = f.resultFor(string(data))
+		}
+		f.respond(w, id, result, "")
 	default:
 		w.WriteHeader(http.StatusBadRequest)
 	}
@@ -485,4 +492,126 @@ func TestMCPCredentialFormattingRedacts(t *testing.T) {
 	}
 	assert.Equal(t, "{Endpoint:http://127.0.0.1:3773/mcp Authorization:[redacted]}", cred.String())
 	assert.Equal(t, "{Endpoint: Authorization:}", MCPCredential{}.String())
+}
+
+// threadReadToolResult returns a t3_thread_read result whose thread has latestRunID (null when nil)
+// and itemCount items, listing items as its timeline (no items key when nil), as structured content or
+// as the first content item's text.
+func threadReadToolResult(t *testing.T, latestRunID any, itemCount int, items []map[string]any, structured bool) string {
+	t.Helper()
+	content := map[string]any{"thread": map[string]any{"threadId": mcpTestThread, "latestRunId": latestRunID,
+		"itemCount": itemCount}, "recentRuns": []any{}, "nextPosition": nil, "hasMore": false}
+	if items != nil {
+		content["items"] = items
+	}
+	text, err := json.Marshal(content)
+	require.NoError(t, err)
+	result := map[string]any{"isError": false, "content": []any{map[string]any{"type": "text", "text": string(text)}}}
+	if structured {
+		result["structuredContent"] = content
+	}
+	data, err := json.Marshal(result)
+	require.NoError(t, err)
+	return string(data)
+}
+
+func TestMCPClientInterruptRequested(t *testing.T) {
+	interrupt := func(runID string) map[string]any {
+		return map[string]any{"position": 119, "type": "run_interrupt_request", "runId": runID}
+	}
+	other := map[string]any{"position": 118, "type": "assistant_message", "runId": "run-2"}
+	tests := []struct {
+		name       string
+		itemCount  int
+		items      []map[string]any
+		structured bool
+		want       bool
+		wantAfter  string // the afterPosition argument of the second read; "" when it must be absent
+	}{
+		{"a Stop of the latest run", 120, []map[string]any{other, interrupt("run-2")}, true, true, `"afterPosition":69`},
+		{"a Stop read from content text", 120, []map[string]any{interrupt("run-2")}, false, true, `"afterPosition":69`},
+		{"a steer records none", 120, []map[string]any{other}, true, false, `"afterPosition":69`},
+		{"an earlier run's Stop does not count", 120, []map[string]any{interrupt("run-1"), other}, true, false,
+			`"afterPosition":69`},
+		{"a short thread is read from its first item", 7, []map[string]any{interrupt("run-2")}, true, true, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeMCP(t)
+			var mu sync.Mutex
+			var bodies []string
+			f.resultFor = func(body string) string {
+				mu.Lock()
+				defer mu.Unlock()
+				bodies = append(bodies, body)
+				if len(bodies) == 1 {
+					return threadReadToolResult(t, "run-2", tc.itemCount, []map[string]any{}, tc.structured)
+				}
+				return threadReadToolResult(t, "run-2", tc.itemCount, tc.items, tc.structured)
+			}
+			got, err := NewMCPClient(f.start(), "1.2.3").InterruptRequested(context.Background(), mcpTestThread)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+			mu.Lock()
+			defer mu.Unlock()
+			require.Len(t, bodies, 2)
+			for _, body := range bodies {
+				assert.Contains(t, body, `"name":"t3_thread_read"`)
+				assert.Contains(t, body, `"view":"activity"`)
+				assert.Contains(t, body, `"threadId":"`+mcpTestThread+`"`)
+			}
+			assert.Contains(t, bodies[0], `"limit":1,`)
+			assert.NotContains(t, bodies[0], "afterPosition")
+			assert.Contains(t, bodies[1], `"limit":50,`)
+			if tc.wantAfter == "" {
+				assert.NotContains(t, bodies[1], "afterPosition")
+			} else {
+				assert.Contains(t, bodies[1], tc.wantAfter)
+			}
+		})
+	}
+}
+
+func TestMCPClientInterruptRequestedFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		head    func(t *testing.T) string
+		tail    func(t *testing.T) string
+		status  map[string]int
+		wantErr string
+	}{
+		{"a thread without a run", func(t *testing.T) string { return threadReadToolResult(t, nil, 0, []map[string]any{}, true) },
+			nil, nil, "the thread has no run"},
+		{"a reply without timeline items", func(t *testing.T) string {
+			return threadReadToolResult(t, "run-2", 3, []map[string]any{}, true)
+		}, func(t *testing.T) string { return threadReadToolResult(t, "run-2", 3, nil, true) }, nil,
+			"lists no timeline items"},
+		{"a tool error", func(*testing.T) string { return `{"isError":true,"content":[]}` }, nil, nil, "reported an error"},
+		{"an undecodable payload", func(*testing.T) string {
+			return `{"isError":false,"content":[{"type":"text","text":"not json"}]}`
+		}, nil, nil, "undecodable t3_thread_read result"},
+		{"a reply without content", func(*testing.T) string { return `{"isError":false}` }, nil, nil, "has no content"},
+		{"a rejected credential", nil, nil, map[string]int{"initialize": http.StatusUnauthorized}, "HTTP 401"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeMCP(t)
+			maps.Copy(f.status, tc.status)
+			var mu sync.Mutex
+			calls := 0
+			f.resultFor = func(string) string {
+				mu.Lock()
+				defer mu.Unlock()
+				calls++
+				if calls > 1 && tc.tail != nil {
+					return tc.tail(t)
+				}
+				return tc.head(t)
+			}
+			got, err := NewMCPClient(f.start(), "1.2.3").InterruptRequested(context.Background(), mcpTestThread)
+			require.ErrorContains(t, err, tc.wantErr)
+			assert.False(t, got)
+			assert.NotContains(t, err.Error(), mcpTestAuthz)
+		})
+	}
 }

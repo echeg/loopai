@@ -152,6 +152,22 @@ func (w *acpWire) result(id int) map[string]any {
 	return result
 }
 
+// resultAfterUpdates returns the result object of the answer to request id, skipping the
+// session/update notifications before it.
+func (w *acpWire) resultAfterUpdates(id int) map[string]any {
+	w.t.Helper()
+	for {
+		m := w.next()
+		if m["method"] == "session/update" {
+			continue
+		}
+		require.InDelta(w.t, float64(id), m["id"], 0, "expected the answer to %d, got %v", id, m)
+		result, ok := m["result"].(map[string]any)
+		require.True(w.t, ok, "request %d failed: %v", id, m)
+		return result
+	}
+}
+
 // newSession opens a session through session/new and returns its id.
 func (w *acpWire) newSession(id int, cwd, servers string) string {
 	w.t.Helper()
@@ -170,14 +186,22 @@ func (w *acpWire) statusReply(id int, sid, text string) string {
 }
 
 // turnReply returns the text of the one message prompt id of session sid answers with before
-// end_turn.
+// end_turn, skipping the plan and tool call updates of a followed run.
 func (w *acpWire) turnReply(id int, sid string) string {
 	w.t.Helper()
-	update := w.next()
-	require.Equal(w.t, "session/update", update["method"], "got %v", update)
-	params, _ := update["params"].(map[string]any)
-	assert.Equal(w.t, sid, params["sessionId"])
-	chunk, _ := params["update"].(map[string]any)
+	var chunk map[string]any
+	for chunk == nil {
+		update := w.next()
+		require.Equal(w.t, "session/update", update["method"], "got %v", update)
+		params, _ := update["params"].(map[string]any)
+		assert.Equal(w.t, sid, params["sessionId"])
+		u, _ := params["update"].(map[string]any)
+		switch u["sessionUpdate"] {
+		case "plan", "tool_call", "tool_call_update":
+		default:
+			chunk = u
+		}
+	}
 	require.Equal(w.t, "agent_message_chunk", chunk["sessionUpdate"])
 	assert.Regexp(w.t, `^loopai-final-[0-9a-f]{16}$`, chunk["messageId"])
 	content, _ := chunk["content"].(map[string]any)
@@ -204,11 +228,18 @@ type acpServer struct {
 // closing its input.
 func startACPServer(t *testing.T, getenv func(string) string) *acpServer {
 	t.Helper()
+	return startACPServerContext(t, context.Background(), getenv)
+}
+
+// startACPServerContext is startACPServer with ctx as the process context, whose cancellation is how
+// SIGTERM reaches serveACP.
+func startACPServerContext(t *testing.T, ctx context.Context, getenv func(string) string) *acpServer {
+	t.Helper()
 	clientToAgent, agentIn := io.Pipe()
 	agentOut, agentToClient := io.Pipe()
 	s := &acpServer{acpWire: newACPWire(t, agentIn, agentOut), stderr: &syncBuffer{}}
 	served := make(chan error, 1)
-	go func() { served <- serveACP(context.Background(), clientToAgent, agentToClient, s.stderr, getenv) }()
+	go func() { served <- serveACP(ctx, clientToAgent, agentToClient, s.stderr, getenv) }()
 	t.Cleanup(func() {
 		_ = agentIn.Close()
 		select {

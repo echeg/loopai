@@ -140,9 +140,11 @@ func redirectStdioForACP() (in, out *os.File, restore func(), err error) {
 
 // serveACP runs the provider over in and out until in ends or ctx is canceled, whichever comes
 // first, then gives its handlers acpShutdownWait to return. Neither ending answers an open prompt or
-// touches a run. getenv reads the spawn-time T3_ACP_MCP_* fallback.
+// touches a run: a stop still in its grace is abandoned. getenv reads the spawn-time T3_ACP_MCP_*
+// fallback.
 func serveACP(ctx context.Context, in io.Reader, out, stderr io.Writer, getenv func(string) string) error {
-	h := &acpHandler{stderr: stderr, getenv: getenv, threads: map[string]string{}}
+	h := &acpHandler{stderr: stderr, getenv: getenv, threads: map[string]string{}, creds: map[string]t3.MCPCredential{},
+		stops: newACPStops(stderr)}
 	p := acp.NewProvider(in, out, resolveVersion(), h)
 	p.SetErrorLog(stderr)
 	served := make(chan error, 1)
@@ -152,6 +154,7 @@ func serveACP(ctx context.Context, in io.Reader, out, stderr io.Writer, getenv f
 	case serveErr = <-served:
 	case <-ctx.Done():
 	}
+	h.stops.close()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), acpShutdownWait)
 	defer cancel()
 	_ = p.Shutdown(shutdownCtx) // a handler still running at the bound ends with the process
@@ -166,9 +169,11 @@ func serveACP(ctx context.Context, in io.Reader, out, stderr io.Writer, getenv f
 type acpHandler struct {
 	stderr io.Writer
 	getenv func(string) string
+	stops  *acpStops
 
 	mu      sync.Mutex
-	threads map[string]string // session id -> T3 thread id, "" when unknown
+	threads map[string]string           // session id -> T3 thread id, "" when unknown
+	creds   map[string]t3.MCPCredential // session id -> its MCP credential, in memory only and never logged
 }
 
 // NewSession resolves the thread of a session/new.
@@ -179,13 +184,22 @@ func (h *acpHandler) NewSession(ctx context.Context, s acp.Session) { h.openSess
 func (h *acpHandler) LoadSession(ctx context.Context, s acp.Session) { h.openSession(ctx, s) }
 
 // Prompt routes the prompt to the run it shows, launching or relaunching one when the message asks,
-// and holds the turn open while it follows that run.
+// and holds the turn open while it follows that run. A prompt of a session cancels the session's stop
+// still in its grace: a steer or a restart arrives as a cancel followed by a new prompt. A followed run
+// whose prompt is canceled gets a stop armed.
 func (h *acpHandler) Prompt(ctx context.Context, req acp.PromptRequest, updates *acp.Updates) acp.StopReason {
-	t := &acpTurn{ctx: ctx, req: req, updates: updates, threadID: h.thread(req.SessionID), stderr: h.stderr}
+	h.stops.cancel(req.SessionID)
+	threadID := h.thread(req.SessionID)
+	t := &acpTurn{ctx: ctx, req: req, updates: updates, threadID: threadID, stderr: h.stderr,
+		stopOnCancel: func(runID string) {
+			h.stops.arm(acpStopRequest{ctx: ctx, cwd: req.Cwd, threadID: threadID, sessionID: req.SessionID, runID: runID,
+				credential: func() (t3.MCPCredential, bool) { return h.credential(req.SessionID) }})
+		}}
 	return t.route()
 }
 
-// Cancel is a no-op: a canceled prompt learns it from its Canceled channel and leaves its run running.
+// Cancel is a no-op: a canceled prompt learns it from its Canceled channel, and a prompt that
+// followed a run arms its stop as it ends.
 func (h *acpHandler) Cancel(string) {}
 
 // openSession resolves the T3 thread a session belongs to and records it, in memory for the
@@ -197,7 +211,8 @@ func (h *acpHandler) openSession(ctx context.Context, s acp.Session) {
 	if acpIsProbe(s, h.getenv) {
 		return
 	}
-	threadID, lookupErr := h.lookupThread(ctx, s)
+	cred, hasCred := t3.MCPCredentialFromServers(s.MCPServers, h.getenv)
+	threadID, lookupErr := h.lookupThread(ctx, cred, hasCred)
 	if ctx.Err() != nil {
 		return
 	}
@@ -214,17 +229,21 @@ func (h *acpHandler) openSession(ctx context.Context, s acp.Session) {
 	}
 	h.mu.Lock()
 	h.threads[s.ID] = threadID
+	if hasCred {
+		h.creds[s.ID] = cred
+	} else {
+		delete(h.creds, s.ID)
+	}
 	h.mu.Unlock()
 	if err := saveSessionThread(s.Cwd, s.ID, threadID); err != nil {
 		fmt.Fprintf(h.stderr, "warning: acp: session binding not recorded: %v\n", err)
 	}
 }
 
-// lookupThread returns the T3 thread id of a session from T3 Code's MCP endpoint, within
-// acpLookupTimeout. A session without an endpoint and a failed lookup return "" and the reason, which
-// never carries the authorization.
-func (h *acpHandler) lookupThread(ctx context.Context, s acp.Session) (string, error) {
-	cred, ok := t3.MCPCredentialFromServers(s.MCPServers, h.getenv)
+// lookupThread returns the T3 thread id of a session from T3 Code's MCP endpoint, which cred
+// addresses, within acpLookupTimeout. A session without an endpoint and a failed lookup return "" and
+// the reason, which never carries the authorization.
+func (h *acpHandler) lookupThread(ctx context.Context, cred t3.MCPCredential, ok bool) (string, error) {
 	if !ok {
 		return "", errors.New("the session has no T3 MCP endpoint")
 	}
@@ -235,6 +254,14 @@ func (h *acpHandler) lookupThread(ctx context.Context, s acp.Session) (string, e
 		return "", fmt.Errorf("thread id lookup failed: %w", err)
 	}
 	return threadID, nil
+}
+
+// credential returns the MCP credential the session's latest session/new or session/load carried.
+func (h *acpHandler) credential(sessionID string) (t3.MCPCredential, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cred, ok := h.creds[sessionID]
+	return cred, ok
 }
 
 // thread returns the T3 thread id recorded for a session.

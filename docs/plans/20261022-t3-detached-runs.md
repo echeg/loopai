@@ -1205,34 +1205,36 @@
 - ⚠️ adoption (rule 3) also skips a run recorded for another thread id when both ids are known, which never blocks the lookup-failed recovery; a relaunch restores the recorded env options over the provider's own; a plan path is a first word ending in `.md`.
 
 ### Task 15: Add Mode 2 attach rendering, the final message, and Stop
-- [ ] attach rendering through the observer:
+- [x] attach rendering through the observer:
   - send the plan entries at once: tasks plus stages from `attempt_start`, with priority `medium`;
   - open one `tool_call` (kind `other`) for the current phase;
   - close, open, or retitle it and update the plan only on transitions;
   - retitle with the elapsed time every 20 minutes without a transition;
   - stream no reasoning and no executor output.
-- [ ] final message on finish:
+- [x] final message on finish:
   - close the open tool call (`completed` or `failed`);
   - send one `agent_message_chunk` with one `messageId`, containing the summary, risk, outcome (status, reason), branch, and the full report path (`<run dir>/report.md`);
   - cap it so the JSON-escaped UTF-8 text is ≤ 12,000 bytes, truncating at a rune boundary with a pointer to the report path;
   - then answer `{"stopReason":"end_turn"}`.
-- [ ] Stop, with the grace held in one constant, `acpStopGrace = 5 * time.Second`. Its basis (steering arrives as cancel then prompt) is bundle-verified but not confirmed live, so a live mismatch only changes this constant or this handler.
+- [x] Stop, with the grace held in one constant, `acpStopGrace = 5 * time.Second`. Its basis (steering arrives as cancel then prompt) is bundle-verified but not confirmed live, so a live mismatch only changes this constant or this handler.
   - On `session/cancel`, answer the open prompt `{"stopReason":"cancelled"}` at once and start the grace timer.
   - A new `session/prompt` for the same session within the window cancels the pending stop (steer or restart).
   - Otherwise stop the run through `stopRun`, but only when it is this thread's bound run with origin `t3-thread` and a matching thread id. The worktree is kept, and `resume` relaunches the run.
   - SIGTERM or EOF during the window abandons the pending stop.
-- [ ] write tests (success):
+- [x] write tests (success):
   - the plan and tool-call updates arrive with `priority` and `title`;
   - only transitions and the 20-minute liveness tick (injected clock) send updates;
   - the final message precedes the `end_turn` response;
   - cancel followed by a prompt within the grace window keeps the run, and the new prompt re-attaches it;
   - cancel without a prompt stops this thread's own `t3-thread` run, which classifies as `stopped` with a kept worktree.
-- [ ] write tests (errors/edge):
+- [x] write tests (errors/edge):
   - cancel never stops another thread's run or a `cli` run, even when it is the only live run in the cwd;
   - a final message above 12,000 bytes (ASCII and Cyrillic) is truncated with the report path kept;
   - a crashed run ends the turn with the crash status and no hang;
   - SIGTERM during the grace window leaves the run running.
-- [ ] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 16
+- [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 16
+- ⚠️ An external review's evaluation phase stays on the external review's tool call (retitled, not a new card), so each reviewer/evaluator iteration does not open two cards; a limit wait retitles the card it interrupts.
+- ⚠️ The Stop guard reads `t3_thread_read` twice (thread state, then the latest 50 activity items), reading the session's latest MCP credential when the grace ends; a reply without an `items` list counts as the item kind being unavailable and stops.
 
 ### Task 16: Rewrite the T3 skills, checks, and contract
 - [ ] rewrite `assets/claude/skills/loopai-t3/SKILL.md` around the mode question, per Technical Details:

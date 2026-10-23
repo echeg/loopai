@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/umputun/ralphex/pkg/acp"
@@ -31,13 +34,16 @@ type acpTurn struct {
 	updates  *acp.Updates
 	threadID string // the session's T3 thread; "" when the provider could not look it up
 	stderr   io.Writer
+	// stopOnCancel arms the stop of the run a canceled prompt followed; nil arms nothing.
+	stopOnCancel func(runID string)
 }
 
 // route answers a prompt by the first rule that applies:
 //  1. the run bound to the thread, or to the session without a thread id: a live one, starting
 //     included, is attached whatever the text says; one that ended without success is relaunched from
-//     its recorded arguments and attached when the text is T3 Code's continuation or resume; one that
-//     cannot be read or classified is one stderr warning, and the later rules answer;
+//     its recorded arguments and attached when the text is T3 Code's continuation or resume; one whose
+//     run directory is gone is unbound with one stderr warning, and the prompt is routed as unbound;
+//     one that cannot be read or classified is one stderr warning, and the later rules answer;
 //  2. a message naming a plan starts that plan's own detached run, binds it, and attaches to it;
 //  3. without a binding, a continuation adopts the one live, unattached run a loopai thread started
 //     from this cwd, or lists the candidates when there are several;
@@ -55,6 +61,9 @@ func (t *acpTurn) route() acp.StopReason {
 	if b.RunID != "" {
 		run, err := acpRun(t.req.Cwd, b.RunID)
 		switch {
+		case err != nil && acpRunGone(t.req.Cwd, b.RunID):
+			t.unbindGone(b.RunID)
+			b = acpBinding{}
 		case err != nil:
 			// the bound run cannot be read or classified: the message is still answered by the rules
 			// below, and the reason they ignored the binding is left on stderr
@@ -76,6 +85,23 @@ func (t *acpTurn) route() acp.StopReason {
 		return t.adopt()
 	}
 	return t.reply(acpStatusReply(t.req.Cwd, b.RunID))
+}
+
+// acpRunGone reports whether run id's directory no longer exists in the session cwd, as after a prune
+// or a manual removal.
+func acpRunGone(cwd, id string) bool {
+	_, err := os.Lstat(runs.Dir(cwd, id))
+	return errors.Is(err, fs.ErrNotExist)
+}
+
+// unbindGone removes the binding to run id, whose directory is gone, so the warning about it is left
+// once rather than on every turn.
+func (t *acpTurn) unbindGone(id string) {
+	if err := unbindRun(t.req.Cwd, t.threadID, t.req.SessionID, id); err != nil {
+		fmt.Fprintf(t.stderr, "warning: acp: bound run %s no longer exists, and its binding cannot be removed: %v\n", id, err)
+		return
+	}
+	fmt.Fprintf(t.stderr, "warning: acp: bound run %s no longer exists; the thread is no longer bound to it\n", id)
 }
 
 // acpRun returns the run id names in the session cwd's runs directory, classified.
@@ -210,30 +236,58 @@ func (t *acpTurn) lockAttach(id string) (release func(), refusal string) {
 	}, ""
 }
 
-// follow follows run id, whose attach.lock the caller holds, until it is no longer live and answers its
-// outcome line. A cancel ends the turn with StopCancelled and leaves the run running; the provider
+// follow follows run id, whose attach.lock the caller holds, until it is no longer live: it shows the
+// run's plan and current phase through an acpRenderer, then closes the phase's tool call and sends the
+// final message, which every finished run ends with, whatever its status. A cancel ends the turn with
+// StopCancelled, leaves the run running, and arms its stop through stopOnCancel; the provider
 // stopping ends it unanswered.
 func (t *acpTurn) follow(id string) acp.StopReason {
 	dir := runs.Dir(t.req.Cwd, id)
+	events, err := runs.ReadFrom(dir, 0)
+	if err != nil {
+		return t.reply(fmt.Sprintf("loopai cannot follow run %s: %v", id, err))
+	}
+	r := newACPRenderer(t.updates, id, time.Now)
+	r.start(events)
 	followCtx, cancel := context.WithCancel(t.ctx)
 	defer cancel()
-	go func() {
-		select {
-		case <-t.req.Canceled:
-			cancel()
-		case <-followCtx.Done():
+	var watcher sync.WaitGroup
+	watcher.Go(func() {
+		ticker := time.NewTicker(acpLivenessCheck)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-t.req.Canceled:
+				cancel()
+				return
+			case <-followCtx.Done():
+				return
+			case <-ticker.C:
+				r.tick()
+			}
 		}
-	}()
-	status, err := runs.Follow(followCtx, t.req.Cwd, dir, 0, func(runs.Event) {})
+	})
+	status, err := runs.Follow(followCtx, t.req.Cwd, dir, r.seq(), r.apply)
+	cancel()
+	watcher.Wait() // no liveness retitle after the final message
 	switch {
 	case t.canceled():
+		if t.stopOnCancel != nil {
+			t.stopOnCancel(id) // armed before the StopCancelled answer, which a steered prompt follows
+		}
 		return acp.StopCancelled
 	case t.ctx.Err() != nil:
 		return acp.StopEndTurn // the provider stopped and answers nothing
 	case err != nil:
-		return t.reply(fmt.Sprintf("loopai cannot follow run %s: %v", id, err))
+		r.finish(acp.ToolFailed, fmt.Sprintf("loopai cannot follow run %s: %v", id, err))
+		return acp.StopEndTurn
 	}
-	return t.reply(acpOutcomeLine(dir, id, status))
+	callStatus := acp.ToolFailed
+	if status == runs.StatusSucceeded {
+		callStatus = acp.ToolCompleted
+	}
+	r.finish(callStatus, acpFinalMessage(dir, id, status))
+	return acp.StopEndTurn
 }
 
 // canceled reports whether the client canceled the prompt.
@@ -253,7 +307,7 @@ func (t *acpTurn) reply(text string) acp.StopReason {
 }
 
 // acpOutcomeLine is how the current attempt of run id in dir ended: its status and the reason its
-// outcome or, without one, its finish event records.
+// outcome or, without one, its finish event records. It opens the final message.
 func acpOutcomeLine(dir, id string, status runs.Status) string {
 	attempt := 0
 	if desc, err := runs.LoadDescriptor(dir); err == nil {

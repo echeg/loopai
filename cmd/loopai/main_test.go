@@ -118,6 +118,9 @@ func TestMain(m *testing.M) {
 	// an --acp session carrying T3 credentials would otherwise ask the real T3 MCP endpoint for its
 	// thread; the provider tests choose the answer through acpLookupEnv instead
 	lookupACPThreadID = stubACPThreadLookup
+	// a Stop's guard would otherwise read the thread from the real T3 MCP endpoint; acpInterruptEnv
+	// chooses its answer instead
+	acpThreadInterrupted = stubACPThreadInterrupted
 	// a loopai thread's plan message would otherwise start the test binary itself as the launcher,
 	// which without a test selector runs the whole suite again; the routing tests stub the launch
 	acpLaunchDetached = refuseACPLaunch
@@ -139,6 +142,8 @@ const (
 	acpStrayLine = "stray stdout line from a handler"
 	// acpLookupStarted is what the "block" lookup prints to stderr once it waits.
 	acpLookupStarted = "acp test: lookup started"
+	// acpInterruptEnv chooses what stubACPThreadInterrupted answers.
+	acpInterruptEnv = "LOOPAI_TEST_ACP_INTERRUPT"
 )
 
 // stubACPThreadLookup replaces lookupACPThreadID for the whole suite and its helper processes, so no
@@ -160,6 +165,20 @@ func stubACPThreadLookup(ctx context.Context, _ t3.MCPCredential) (string, error
 		return "", fmt.Errorf("t3 mcp initialize: %w", ctx.Err())
 	}
 	return "", errors.New("t3 mcp initialize: HTTP 401")
+}
+
+// stubACPThreadInterrupted replaces acpThreadInterrupted for the whole suite, so no Stop guard reaches a
+// T3 server. acpInterruptEnv chooses the answer: "stop" reports a user interrupt request, "steer"
+// reports none, and anything else, unset included, fails as an unreachable endpoint would.
+func stubACPThreadInterrupted(context.Context, t3.MCPCredential, string) (bool, error) {
+	switch os.Getenv(acpInterruptEnv) {
+	case "stop":
+		return true, nil
+	case "steer":
+		return false, nil
+	default:
+		return false, errors.New("t3 mcp initialize: HTTP 401")
+	}
 }
 
 // refuseACPLaunch replaces acpLaunchDetached for the whole suite and its helper processes, so a test

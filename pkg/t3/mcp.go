@@ -29,6 +29,13 @@ const (
 	maxMCPBody = 4 << 20
 	// toolThreadList is the tool whose reply names the caller's thread.
 	toolThreadList = "t3_thread_list"
+	// toolThreadRead is the tool whose reply carries a thread's state and timeline items.
+	toolThreadRead = "t3_thread_read"
+	// itemRunInterruptRequest is the timeline item T3 Code records when the user stops a run. A steer
+	// and a cancel of T3 Code's own record none.
+	itemRunInterruptRequest = "run_interrupt_request"
+	// interruptTail is how many of a thread's latest timeline items InterruptRequested reads.
+	interruptTail = 50
 	// mcpEndTimeout bounds the best-effort DELETE that ends an MCP session, so an endpoint that
 	// hangs on it never holds back a tool call that already has its answer.
 	mcpEndTimeout = time.Second
@@ -159,6 +166,103 @@ func (c *MCPClient) CurrentThreadID(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return currentThreadID(result)
+}
+
+// threadReadArgs are the t3_thread_read arguments InterruptRequested sends. The tool is strict, so
+// only fields it declares are sent; afterPosition is a non-negative position and is omitted to read
+// from the first item.
+type threadReadArgs struct {
+	ThreadID        string `json:"threadId"`
+	View            string `json:"view"`
+	AfterPosition   *int   `json:"afterPosition,omitempty"`
+	Limit           int    `json:"limit"`
+	MaxCharsPerItem int    `json:"maxCharsPerItem"`
+}
+
+// threadReadResult is the part of a t3_thread_read result InterruptRequested reads. Items is nil when
+// the reply carries no timeline items at all.
+type threadReadResult struct {
+	Thread struct {
+		LatestRunID *string `json:"latestRunId"`
+		ItemCount   int     `json:"itemCount"`
+	} `json:"thread"`
+	Items *[]struct {
+		Type  string  `json:"type"`
+		RunID *string `json:"runId"`
+	} `json:"items"`
+}
+
+// InterruptRequested reports whether T3 Code recorded a user interrupt request (a
+// run_interrupt_request timeline item) for the latest run of thread threadID: it does when the user
+// presses Stop, and not for a steer or for a cancel of its own. It reads the thread's state, then its
+// latest timeline items, in two t3_thread_read calls. Any failure returns an error, and so do a
+// thread without a run and a reply without timeline items, which an older server may not list.
+func (c *MCPClient) InterruptRequested(ctx context.Context, threadID string) (bool, error) {
+	head, err := c.readThread(ctx, threadReadArgs{ThreadID: threadID, View: "activity", Limit: 1, MaxCharsPerItem: 1})
+	if err != nil {
+		return false, err
+	}
+	if head.Thread.LatestRunID == nil || *head.Thread.LatestRunID == "" {
+		return false, errors.New("t3 mcp: the thread has no run")
+	}
+	latest := *head.Thread.LatestRunID
+	args := threadReadArgs{ThreadID: threadID, View: "activity", Limit: interruptTail, MaxCharsPerItem: 1}
+	if head.Thread.ItemCount > interruptTail {
+		after := head.Thread.ItemCount - interruptTail - 1 // positions count from 0
+		args.AfterPosition = &after
+	}
+	tail, err := c.readThread(ctx, args)
+	if err != nil {
+		return false, err
+	}
+	if tail.Items == nil {
+		return false, fmt.Errorf("t3 mcp: %s result lists no timeline items", toolThreadRead)
+	}
+	for _, item := range *tail.Items {
+		if item.Type == itemRunInterruptRequest && item.RunID != nil && *item.RunID == latest {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// readThread calls t3_thread_read with args and decodes its result.
+func (c *MCPClient) readThread(ctx context.Context, args threadReadArgs) (threadReadResult, error) {
+	result, err := c.callTool(ctx, toolThreadRead, args)
+	if err != nil {
+		return threadReadResult{}, err
+	}
+	var read threadReadResult
+	if err := decodeToolResult(toolThreadRead, result, &read); err != nil {
+		return threadReadResult{}, err
+	}
+	return read, nil
+}
+
+// decodeToolResult decodes a tool result's payload into v: structuredContent, else the JSON text of
+// the first content item.
+func decodeToolResult(name string, result json.RawMessage, v any) error {
+	var wire struct {
+		StructuredContent json.RawMessage `json:"structuredContent"`
+		Content           []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(result, &wire); err != nil {
+		return fmt.Errorf("t3 mcp: undecodable %s result: %w", name, err)
+	}
+	payload := []byte(wire.StructuredContent)
+	if len(payload) == 0 || string(payload) == "null" {
+		if len(wire.Content) == 0 || wire.Content[0].Type != "text" {
+			return fmt.Errorf("t3 mcp: %s result has no content", name)
+		}
+		payload = []byte(wire.Content[0].Text)
+	}
+	if err := json.Unmarshal(payload, v); err != nil {
+		return fmt.Errorf("t3 mcp: undecodable %s result: %w", name, err)
+	}
+	return nil
 }
 
 // mcpEnvelope is a JSON-RPC response from the endpoint.
