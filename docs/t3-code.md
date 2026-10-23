@@ -193,7 +193,11 @@ for a minute after the follow command ran, for example after Ctrl+C, gets the co
 
 An expired or revoked token, or a T3 Code server too old or too new for protocol 2, stops these
 updates with one line in the run's progress log; the run itself continues. The pin and the last title
-then stay as they were: unpin the thread or remove the prefix in T3 Code if you want to.
+then stay as they were: unpin the thread or remove the prefix in T3 Code if you want to. When T3 Code
+refuses only the terminal (for example because the thread's working directory is gone), only the
+terminal stops, with one progress-log line, and the title and pin keep following the run. When it
+refuses another request, the updates stop the same way, but loopai first removes the progress prefix
+(or writes the final state of a finished run) and unpins the thread if it pinned it.
 
 To resume a failed or stopped run with a fresh token, ask the thread's agent to run the same plan in
 this mode again. `loopai --detach <plan>` from a plain shell resumes it too, without the terminal and

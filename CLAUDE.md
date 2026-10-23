@@ -1075,8 +1075,12 @@ the two `T3CODE_*` variables, never `providerInstanceId`), typing
 ` cd '<checkout>' && '<loopai>' --attach <id>` — never through `exec` and never with `; exit`. After a
 server restart it reopens an absent terminal once per server start unless a `remove` was seen while
 connected, and it re-types only into a terminal idle for 60 s with nothing typed for 90 s after the
-previous command was seen running. `t3BridgeFatal` errors (401, protocol, remote) disable it with one
-progress-log line; the run is unaffected. The child stops it through `beforeExit`, bounded by
+previous command was seen running. A typed error answering a terminal request, or an unlisted project,
+stops only the terminal half (`failTerminal`); titles, pin, and unpin go on. Other `t3BridgeFatal`
+errors (401, protocol, remote) disable it with one progress-log line; the run is unaffected. Unless the
+error is a refused connection (`t3BridgeUnreachable`), `closeOut` first makes a best-effort last write:
+the final title of a finished attempt or the title without the prefix, then the unpin of a thread the
+bridge pinned, since a left pin blocks T3's auto-settle. The child stops it through `beforeExit`, bounded by
 `t3BridgeStopTimeout`, so the final title and unpin are sent. `pkg/t3/t3test` is an importable fake
 protocol-2 server enforcing the query parameter, the Bearer header, request headers, and ack-gated
 streams.

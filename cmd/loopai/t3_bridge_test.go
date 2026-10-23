@@ -717,6 +717,96 @@ func TestT3BridgeDisables(t *testing.T) {
 	})
 }
 
+// TestT3BridgeTerminalErrorStopsOnlyTheTerminal makes T3 refuse the bridge's terminal with a typed
+// error, on the open and on the write of the follow command: the terminal half stops with one
+// progress-log line, while the titles, the pin, and the unpin at the end carry on.
+func TestT3BridgeTerminalErrorStopsOnlyTheTerminal(t *testing.T) {
+	tests := []struct {
+		name, method, tag string
+		writes            int
+	}{
+		{name: "the open", method: "terminal.open", tag: "TerminalCwdNotFoundError"},
+		{name: "the write", method: "terminal.write", tag: "TerminalUnexpectedError", writes: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
+			h.server.FailNext(tc.method, tc.tag)
+			h.start()
+			require.Eventually(t, func() bool { return len(h.log.all()) == 1 }, bridgeWait, time.Millisecond)
+			lines := h.log.all()
+			assert.Contains(t, lines[0], "T3 terminal updates stopped, the thread's title and the run continue")
+			assert.Contains(t, lines[0], tc.tag)
+
+			h.task(1)
+			h.waitTitle("[loopai: task 1/2] My thread")
+			h.clock.Advance(10 * time.Minute) // past every re-type wait
+			h.settle()
+			h.finish(runs.StatusSucceeded)
+			h.waitDone()
+			assert.Equal(t, "[loopai: done] My thread", h.thread().Title)
+			assert.Empty(t, h.thread().PinnedAt)
+			assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin"},
+				h.commands())
+			assert.Len(t, h.server.Opens(), 1, "the terminal is never opened again")
+			assert.Len(t, h.server.Writes(), tc.writes, "the follow command is never typed again")
+			assert.Len(t, h.log.all(), 1, "one progress-log line")
+		})
+	}
+}
+
+// TestT3BridgeDisableLeavesTheThread makes T3 refuse a title update with a typed error, which
+// disables the bridge: before it stops, it removes its progress prefix from a run still going, or
+// writes the final state of a finished one, and unpins the thread it pinned, so T3 can settle it.
+func TestT3BridgeDisableLeavesTheThread(t *testing.T) {
+	t.Run("a run still going", func(t *testing.T) {
+		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
+		h.start()
+		h.task(1)
+		h.waitTitle("[loopai: task 1/2] My thread")
+		require.NotEmpty(t, h.thread().PinnedAt)
+
+		h.server.FailNext("orchestration.dispatchCommand", "OrchestrationV2DispatchCommandError")
+		h.task(2)
+		h.waitDone()
+		assert.Equal(t, "My thread", h.thread().Title, "no progress state stays behind")
+		assert.Empty(t, h.thread().PinnedAt, "the thread the bridge pinned is unpinned")
+		lines := h.log.all()
+		require.Len(t, lines, 1, "exactly one progress-log line")
+		assert.Contains(t, lines[0], "T3 thread updates stopped, the run continues without them")
+		assert.Contains(t, lines[0], "OrchestrationV2DispatchCommandError")
+	})
+
+	t.Run("a finished run", func(t *testing.T) {
+		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
+		h.start()
+		h.task(1)
+		h.waitTitle("[loopai: task 1/2] My thread")
+
+		h.server.FailNext("orchestration.dispatchCommand", "OrchestrationV2DispatchCommandError")
+		h.finish(runs.StatusFailed)
+		h.waitDone()
+		assert.Equal(t, "[loopai: failed] My thread", h.thread().Title, "the final state is written once more")
+		assert.Empty(t, h.thread().PinnedAt)
+		assert.Len(t, h.log.all(), 1)
+	})
+
+	t.Run("a thread the bridge did not pin stays pinned", func(t *testing.T) {
+		const pinned = "2026-10-01T00:00:00.000Z"
+		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread", PinnedAt: pinned}, false)
+		h.start()
+		h.task(1)
+		h.waitTitle("[loopai: task 1/2] My thread")
+
+		h.server.FailNext("orchestration.dispatchCommand", "OrchestrationV2DispatchCommandError")
+		h.task(2)
+		h.waitDone()
+		assert.Equal(t, "My thread", h.thread().Title)
+		assert.Equal(t, pinned, h.thread().PinnedAt)
+		assert.NotContains(t, h.commands(), "thread.unpin")
+	})
+}
+
 func TestT3BridgeStopIsBounded(t *testing.T) {
 	h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
 	h.start()
@@ -807,6 +897,26 @@ func TestT3PrefixedTitle(t *testing.T) {
 	for _, tc := range tests {
 		assert.Equal(t, tc.want, t3PrefixedTitle("done", tc.title), "title %q", tc.title)
 	}
+}
+
+func TestT3BaseTitle(t *testing.T) {
+	tests := []struct{ title, want string }{
+		{"My thread", "My thread"},
+		{"[loopai: task 1/2] My thread", "My thread"},
+		{"[loopai: task 1/2] [loopai: review] My thread", "My thread"},
+		{"[loopai: task 1/2]", ""},
+		{"My [loopai: x] thread", "My [loopai: x] thread"},
+	}
+	for _, tc := range tests {
+		assert.Equal(t, tc.want, t3BaseTitle(tc.title), "title %q", tc.title)
+	}
+}
+
+func TestT3BridgeUnreachable(t *testing.T) {
+	assert.True(t, t3BridgeUnreachable(&t3.HandshakeError{StatusCode: http.StatusUnauthorized}))
+	assert.True(t, t3BridgeUnreachable(fmt.Errorf("%w: bad", t3.ErrProtocolUnsupported)))
+	assert.False(t, t3BridgeUnreachable(&t3.RemoteError{Method: "m", Tag: "OrchestrationV2DispatchCommandError"}))
+	assert.False(t, t3BridgeUnreachable(fmt.Errorf("%w: p1", errT3ProjectNotListed)))
 }
 
 func TestT3FollowCommand(t *testing.T) {

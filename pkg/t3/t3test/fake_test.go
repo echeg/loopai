@@ -536,6 +536,14 @@ func TestServerOverridesStallAndDefect(t *testing.T) {
 	th, _ := s.Thread("th")
 	assert.Empty(t, th.PinnedAt, "a Die override does not apply the command")
 
+	s.FailNext("orchestration.dispatchCommand", "SomeRefusalError")
+	c.request(4, "orchestration.dispatchCommand", map[string]any{"type": "thread.pin", "commandId": "c2", "threadId": "th"})
+	cause = c.recv()["exit"].(map[string]any)["cause"].([]any)[0].(map[string]any)
+	assert.Equal(t, map[string]any{"_tag": "Fail", "error": map[string]any{"_tag": "SomeRefusalError",
+		"message": "t3test: SomeRefusalError"}}, cause)
+	th, _ = s.Thread("th")
+	assert.Empty(t, th.PinnedAt, "a Fail override does not apply the command")
+
 	s.Stall("orchestration.getThreadProjection")
 	c.request(3, "orchestration.getThreadProjection", map[string]any{"threadId": "th"})
 	_, err := c.tryRecv(300 * time.Millisecond)

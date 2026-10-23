@@ -97,9 +97,10 @@ func startT3Bridge(cfg t3BridgeConfig) func() {
 // t3Bridge mirrors one attempt of a detached run into the T3 thread it was started from: a
 // replaceable [loopai: <state>] title prefix written on transitions, a pin held while the run is
 // live, and a terminal tab that follows the run through loopai --attach and is restored after a T3
-// restart. It never affects the run: an unrecoverable T3 error disables it with one progress-log
-// line. One goroutine owns its state; a follower feeds it the journal and a reader per connection
-// the terminal metadata.
+// restart. It never affects the run: an error T3 answers a terminal request with stops only the
+// terminal, and any other unrecoverable T3 error disables the bridge, each with one progress-log line.
+// One goroutine owns its state; a follower feeds it the journal and a reader per connection the
+// terminal metadata.
 type t3Bridge struct {
 	cfg        t3BridgeConfig
 	timing     t3BridgeTiming
@@ -124,6 +125,7 @@ type t3Bridge struct {
 	pinned     bool // the bridge pinned the thread, so it unpins it at the end
 	unpinned   bool
 	disabled   bool
+	termOff    bool // the terminal half is stopped; the title and the pin carry on
 
 	conn        *bridgeConn
 	retry       <-chan time.Time // fires when a reconnect is due; nil while connected or connecting at once
@@ -368,10 +370,52 @@ func (b *t3Bridge) fail(err error) {
 	b.retry = time.After(b.backoff)
 }
 
-// disable stops the bridge with its one progress-log line; the run is never affected.
+// disable stops the bridge with its one progress-log line; the run is never affected. Unless T3 refused
+// the connection itself, the bridge first leaves the thread as a finished bridge would, best-effort.
 func (b *t3Bridge) disable(err error) {
 	b.disabled = true
 	b.cfg.log.Print("T3 thread updates stopped, the run continues without them: %v", err)
+	if !t3BridgeUnreachable(err) {
+		b.closeOut()
+	}
+}
+
+// closeOut is the best-effort last write of a bridge that stops before the run ends: the title shows
+// the final state when the attempt finished, and loses the bridge's prefix otherwise, since a progress
+// state no later update replaces would stay wrong, then a thread the bridge pinned is unpinned so T3
+// can settle it. Every error is ignored; each request is still bounded by callTimeout.
+func (b *t3Bridge) closeOut() {
+	if th, err := b.projection(); err == nil {
+		title := t3BaseTitle(th.Title)
+		if b.final && b.state != "" {
+			title = t3PrefixedTitle(b.state, th.Title)
+		}
+		if title != th.Title && title != "" {
+			ctx, cancel := b.callContext()
+			_ = b.client.SetTitle(ctx, b.cfg.threadID, title)
+			cancel()
+		}
+	}
+	if b.pinned && !b.unpinned {
+		ctx, cancel := b.callContext()
+		if b.client.Unpin(ctx, b.cfg.threadID) == nil {
+			b.unpinned = true
+		}
+		cancel()
+	}
+}
+
+// failTerminal handles a failed terminal request: an error T3 answered it with, or a thread whose
+// project is not listed, stops only the terminal half, since the thread's title and pin still work;
+// anything else fails as fail does.
+func (b *t3Bridge) failTerminal(err error) {
+	var remote *t3.RemoteError
+	if b.ctx.Err() == nil && (errors.As(err, &remote) || errors.Is(err, errT3ProjectNotListed)) {
+		b.termOff, b.term.pending = true, false
+		b.cfg.log.Print("T3 terminal updates stopped, the thread's title and the run continue: %v", err)
+		return
+	}
+	b.fail(err)
 }
 
 // callContext bounds one T3 request.
@@ -516,7 +560,7 @@ func (b *t3Bridge) onSnapshot(terminals []t3.TerminalSummary) {
 		}
 	}
 	b.terminalGone()
-	if b.term.closed || b.final || b.opened == b.conn.server {
+	if b.term.closed || b.termOff || b.final || b.opened == b.conn.server {
 		return
 	}
 	b.openTerminal()
@@ -547,14 +591,14 @@ func (b *t3Bridge) observe(summary t3.TerminalSummary) {
 func (b *t3Bridge) openTerminal() {
 	in, err := b.terminalLaunch()
 	if err != nil {
-		b.fail(err)
+		b.failTerminal(err)
 		return
 	}
 	ctx, cancel := b.callContext()
 	session, err := b.client.TerminalOpen(ctx, in)
 	cancel()
 	if err != nil {
-		b.fail(fmt.Errorf("open the terminal: %w", err))
+		b.failTerminal(fmt.Errorf("open the terminal: %w", err))
 		return
 	}
 	b.opened = b.conn.server
@@ -598,7 +642,7 @@ func (b *t3Bridge) terminalLaunch() (t3.TerminalOpenInput, error) {
 // tolerates the metadata lag. A re-type also needs the previous command to have been seen running,
 // so a command that fails at once is not typed every retypeQuiet for the rest of the run.
 func (b *t3Bridge) syncTerminal() {
-	if b.final {
+	if b.final || b.termOff {
 		return
 	}
 	if b.term.pending {
@@ -641,7 +685,7 @@ func (b *t3Bridge) typeFollow() bool {
 	case errors.As(err, &remote) && (remote.Tag == t3TerminalLookup || remote.Tag == t3TerminalWrite):
 		b.terminalGone()
 	default:
-		b.fail(fmt.Errorf("type into the terminal: %w", err))
+		b.failTerminal(fmt.Errorf("type into the terminal: %w", err))
 	}
 	return false
 }
@@ -665,6 +709,14 @@ func t3BridgeFatal(err error) bool {
 		return true
 	}
 	return false
+}
+
+// t3BridgeUnreachable reports whether a fatal error means T3 refuses the bridge's connection itself:
+// a server that does not speak protocol 2 or rejected the token or the upgrade, so no last request can
+// reach the thread either.
+func t3BridgeUnreachable(err error) bool {
+	var handshake *t3.HandshakeError
+	return errors.Is(err, t3.ErrProtocolUnsupported) || errors.As(err, &handshake)
 }
 
 // t3ServerStart identifies a server start by its pid and start time; empty when the runtime names
@@ -722,15 +774,21 @@ func t3TaskState(n, m int) string {
 // t3PrefixedTitle is title with every leading [loopai: …] prefix replaced by the prefix of state;
 // the prefix alone when nothing else is left.
 func t3PrefixedTitle(state, title string) string {
+	prefix := "[loopai: " + state + "]"
+	base := t3BaseTitle(title)
+	if base == "" {
+		return prefix
+	}
+	return prefix + " " + base
+}
+
+// t3BaseTitle is title without its leading [loopai: …] prefixes, trimmed.
+func t3BaseTitle(title string) string {
 	base := title
 	for loc := t3TitlePrefix.FindStringIndex(base); loc != nil; loc = t3TitlePrefix.FindStringIndex(base) {
 		base = base[loc[1]:]
 	}
-	prefix := "[loopai: " + state + "]"
-	if base = strings.TrimSpace(base); base == "" {
-		return prefix
-	}
-	return prefix + " " + base
+	return strings.TrimSpace(base)
 }
 
 // t3FollowCommand is the command the bridge types into its terminal: a leading space that keeps it

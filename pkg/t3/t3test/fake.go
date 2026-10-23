@@ -340,6 +340,14 @@ func (s *Server) DieNext(method, defect string) {
 	s.pushOverride(method, func(id json.RawMessage) map[string]any { return exitDie(id, defect) })
 }
 
+// FailNext makes the next call of method fail with a typed error tagged tag, as T3 Code answers a
+// request it refuses; the call has no effect.
+func (s *Server) FailNext(method, tag string) {
+	s.pushOverride(method, func(id json.RawMessage) map[string]any {
+		return exitFail(id, map[string]any{"_tag": tag, "message": "t3test: " + tag})
+	})
+}
+
 // ReplyNext makes the next call of method succeed with value instead of its normal reply.
 func (s *Server) ReplyNext(method string, value any) {
 	s.pushOverride(method, func(id json.RawMessage) map[string]any { return exitSuccess(id, value) })
