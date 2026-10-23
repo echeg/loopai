@@ -114,6 +114,28 @@ func TestConnUnknownMethod(t *testing.T) {
 	assert.NotContains(t, msgs[0], "result")
 }
 
+func TestConnHandleUnknownRequest(t *testing.T) {
+	input := `{"jsonrpc":"2.0","id":"x7","method":"authenticate","params":{}}` + "\n" +
+		`{"jsonrpc":"2.0","id":8,"method":"ping"}` + "\n" +
+		`{"jsonrpc":"2.0","method":"unknown/notification"}` + "\n"
+	var unknown []string
+	msgs := serveLines(t, input, func(c *Conn) {
+		c.HandleRequest("ping", func(id, _ json.RawMessage) { assert.NoError(t, c.Reply(id, "pong")) })
+		c.HandleUnknownRequest(func(id json.RawMessage, method string) {
+			unknown = append(unknown, string(id)+" "+method)
+			assert.NoError(t, c.ReplyError(id, CodeMethodNotFound, "method not found"))
+		})
+	})
+	assert.Equal(t, []string{`"x7" authenticate`}, unknown, "registered requests and notifications never reach it")
+	require.Len(t, msgs, 2)
+	assert.Equal(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "x7",
+		"error":   map[string]any{"code": float64(CodeMethodNotFound), "message": "method not found"},
+	}, msgs[0])
+	assert.Equal(t, "pong", msgs[1]["result"])
+}
+
 func TestConnSkipsMalformedLines(t *testing.T) {
 	input := strings.Join([]string{
 		`not json`,

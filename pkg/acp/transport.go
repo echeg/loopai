@@ -1,6 +1,9 @@
-// Package acp provides a newline-delimited JSON-RPC 2.0 connection over a pair of byte streams,
-// typically a process's stdin and stdout: one message per line, request and notification handlers
-// registered by method, and serialized writes.
+// Package acp is the agent side of the Agent Client Protocol (ACP) v1 as T3 Code's acpRegistry
+// driver speaks it. Conn is a newline-delimited JSON-RPC 2.0 connection over a pair of byte
+// streams, typically a process's stdin and stdout: one message per line, request and notification
+// handlers registered by method, and serialized writes. Provider serves the ACP session methods on
+// top of it, Updates encodes session/update notifications, and ParsePrompt and IsContinuation read
+// the user's message out of T3 Code's prompt envelope.
 package acp
 
 import (
@@ -46,7 +49,12 @@ type Conn struct {
 	mu            sync.RWMutex
 	requests      map[string]RequestHandler
 	notifications map[string]NotificationHandler
+	unknown       UnknownRequestHandler
 }
+
+// UnknownRequestHandler handles a request whose method has no registered handler. Like a
+// RequestHandler it runs on the read loop and must not block.
+type UnknownRequestHandler func(id json.RawMessage, method string)
 
 // incoming is any message read from the peer. Unknown fields such as traceId and spanId are ignored.
 type incoming struct {
@@ -102,9 +110,18 @@ func (c *Conn) HandleNotification(method string, h NotificationHandler) {
 	c.notifications[method] = h
 }
 
+// HandleUnknownRequest replaces the default answer to a request with no registered handler,
+// a CodeMethodNotFound error naming the method.
+func (c *Conn) HandleUnknownRequest(h UnknownRequestHandler) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unknown = h
+}
+
 // Serve reads and dispatches messages until the reader is exhausted. It returns nil on EOF and
 // the read error otherwise. Malformed and oversized lines are skipped, unknown requests are
-// answered with CodeMethodNotFound, and unknown notifications and responses are ignored.
+// answered with CodeMethodNotFound unless HandleUnknownRequest replaced that answer, and unknown
+// notifications and responses are ignored.
 func (c *Conn) Serve() error {
 	br := bufio.NewReader(c.r)
 	for {
@@ -171,9 +188,13 @@ func (c *Conn) dispatch(line []byte) {
 		return
 	}
 	c.mu.RLock()
-	h := c.requests[msg.Method]
+	h, unknown := c.requests[msg.Method], c.unknown
 	c.mu.RUnlock()
 	if h == nil {
+		if unknown != nil {
+			unknown(msg.ID, msg.Method)
+			return
+		}
 		_ = c.ReplyError(msg.ID, CodeMethodNotFound, "method not found: "+msg.Method)
 		return
 	}
