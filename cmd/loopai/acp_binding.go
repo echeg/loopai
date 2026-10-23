@@ -9,11 +9,15 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/umputun/ralphex/pkg/git"
 	"github.com/umputun/ralphex/pkg/runs"
 )
 
 // acpBindingDir holds the Mode 2 bindings, relative to the session cwd. It is a loopai runtime path,
-// so the generated .loopai/.gitignore ignores it and the dirty checks skip it.
+// which the dirty checks skip. The generated .loopai/.gitignore cannot be what keeps it out of Git
+// status: that file ignores itself and is never committed, so a T3 thread's worktree, created from
+// committed files, never has it, and neither does a checkout loopai has not run in or one whose file
+// predates acp/. Every binding write therefore installs the directory's own ignore file first.
 const acpBindingDir = ".loopai/acp"
 
 // acpSessionIDPattern accepts a session id that is one safe path segment: loopai's own
@@ -56,6 +60,17 @@ func requireAbsSessionCwd(cwd string) error {
 		return fmt.Errorf("ACP session cwd %q is not absolute", cwd)
 	}
 	return nil
+}
+
+// saveACPBinding writes binding b to path, a binding file of the session cwd, with mode 0600 and
+// atomically. The binding directory's own ignore file is installed first, and its failure refuses the
+// write: a binding Git could see shows up in T3 Code's changes panel and gets committed by the first
+// agent of the thread that stages everything.
+func saveACPBinding(cwd, path, label string, b acpBinding) error {
+	if err := git.EnsureRuntimeDirectoryIgnored(filepath.Join(cwd, filepath.FromSlash(acpBindingDir))); err != nil {
+		return fmt.Errorf("ignore the ACP bindings: %w", err)
+	}
+	return saveJSONState(path, label, b)
 }
 
 // readACPBinding reads a binding file and reports whether belongs accepts it as the key's own. A
@@ -135,7 +150,7 @@ func saveSessionThread(cwd, sessionID, threadID string) error {
 		b.ThreadID = threadID
 	}
 	b.SessionID, b.Cwd, b.UpdatedAt = sessionID, cwd, time.Now().UTC()
-	return saveJSONState(path, "ACP session binding", b)
+	return saveACPBinding(cwd, path, "ACP session binding", b)
 }
 
 // bindRun binds run runID to the thread, or to the session when the thread id is unknown, replacing
@@ -149,7 +164,7 @@ func bindRun(cwd, threadID, sessionID, runID string) error {
 	}
 	if threadID != "" {
 		b := acpBinding{ThreadID: threadID, SessionID: sessionID, RunID: runID, Cwd: cwd, UpdatedAt: time.Now().UTC()}
-		return saveJSONState(acpThreadBindingPath(cwd, threadID), "ACP thread binding", b)
+		return saveACPBinding(cwd, acpThreadBindingPath(cwd, threadID), "ACP thread binding", b)
 	}
 	path, err := acpSessionBindingPath(cwd, sessionID)
 	if err != nil {
@@ -157,7 +172,7 @@ func bindRun(cwd, threadID, sessionID, runID string) error {
 	}
 	b, _ := readSessionBinding(cwd, sessionID)
 	b.SessionID, b.RunID, b.Cwd, b.UpdatedAt = sessionID, runID, cwd, time.Now().UTC()
-	return saveJSONState(path, "ACP session binding", b)
+	return saveACPBinding(cwd, path, "ACP session binding", b)
 }
 
 // unbindRun removes run runID from the thread's binding and from the session's, wherever it is
@@ -173,13 +188,13 @@ func unbindRun(cwd, threadID, sessionID, runID string) error {
 	var errs []error
 	if b, ok := readThreadBinding(cwd, threadID); ok && b.RunID == runID {
 		b.RunID, b.UpdatedAt = "", time.Now().UTC()
-		errs = append(errs, saveJSONState(acpThreadBindingPath(cwd, threadID), "ACP thread binding", b))
+		errs = append(errs, saveACPBinding(cwd, acpThreadBindingPath(cwd, threadID), "ACP thread binding", b))
 	}
 	if b, ok := readSessionBinding(cwd, sessionID); ok && b.RunID == runID {
 		path, err := acpSessionBindingPath(cwd, sessionID)
 		if err == nil {
 			b.RunID, b.UpdatedAt = "", time.Now().UTC()
-			err = saveJSONState(path, "ACP session binding", b)
+			err = saveACPBinding(cwd, path, "ACP session binding", b)
 		}
 		errs = append(errs, err)
 	}

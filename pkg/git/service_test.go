@@ -1844,6 +1844,52 @@ func TestService_EnsureLocalGitignore(t *testing.T) {
 	})
 }
 
+func TestEnsureRuntimeDirectoryIgnored(t *testing.T) {
+	t.Run("creates the directory and an ignore file that hides it from status", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		runtimeDir := filepath.Join(dir, ".loopai", "acp")
+		require.NoError(t, EnsureRuntimeDirectoryIgnored(runtimeDir))
+
+		content, err := os.ReadFile(filepath.Join(runtimeDir, ".gitignore")) //nolint:gosec // test file
+		require.NoError(t, err)
+		assert.Equal(t, "*\n", string(content))
+		require.NoError(t, os.WriteFile(filepath.Join(runtimeDir, "binding.json"), []byte("{}"), 0o600))
+		assert.Empty(t, runGit(t, dir, "status", "--porcelain", "--untracked-files=all"))
+		require.NoError(t, EnsureRuntimeDirectoryIgnored(runtimeDir), "a second call is a no-op")
+	})
+
+	t.Run("keeps an existing ignore file", func(t *testing.T) {
+		runtimeDir := filepath.Join(t.TempDir(), "acp")
+		require.NoError(t, os.MkdirAll(runtimeDir, 0o750))
+		const owned = "# project-owned\n"
+		require.NoError(t, os.WriteFile(filepath.Join(runtimeDir, ".gitignore"), []byte(owned), 0o600))
+
+		require.NoError(t, EnsureRuntimeDirectoryIgnored(runtimeDir))
+		content, err := os.ReadFile(filepath.Join(runtimeDir, ".gitignore")) //nolint:gosec // test file
+		require.NoError(t, err)
+		assert.Equal(t, owned, string(content))
+	})
+
+	t.Run("refuses a symlinked ignore file", func(t *testing.T) {
+		runtimeDir := filepath.Join(t.TempDir(), "acp")
+		require.NoError(t, os.MkdirAll(runtimeDir, 0o750))
+		target := filepath.Join(t.TempDir(), "elsewhere")
+		if err := os.Symlink(target, filepath.Join(runtimeDir, ".gitignore")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+
+		require.ErrorContains(t, EnsureRuntimeDirectoryIgnored(runtimeDir), "symbolic link")
+		assert.NoFileExists(t, target)
+	})
+
+	t.Run("refuses a path that is not a directory", func(t *testing.T) {
+		runtimeDir := filepath.Join(t.TempDir(), "acp")
+		require.NoError(t, os.WriteFile(runtimeDir, []byte("file"), 0o600))
+
+		require.ErrorContains(t, EnsureRuntimeDirectoryIgnored(runtimeDir), "not a directory")
+	})
+}
+
 func TestService_GetDefaultBranch(t *testing.T) {
 	t.Run("returns detected default branch", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

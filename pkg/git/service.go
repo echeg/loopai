@@ -2723,7 +2723,7 @@ func (s *Service) preserveCustomGitignore(loopaiDir string, runtimeDirs, runtime
 		return fmt.Errorf("preserve custom .loopai/.gitignore: %w", err)
 	}
 	for _, runtimeDir := range runtimeDirs {
-		if err := ensureRuntimeDirectoryIgnored(filepath.Join(loopaiDir, filepath.FromSlash(runtimeDir))); err != nil {
+		if err := EnsureRuntimeDirectoryIgnored(filepath.Join(loopaiDir, filepath.FromSlash(runtimeDir))); err != nil {
 			return fmt.Errorf("preserve custom .loopai/.gitignore: %w", err)
 		}
 	}
@@ -2792,10 +2792,13 @@ func (s *Service) validateRuntimeDirectoryPath(path string) error {
 	return nil
 }
 
-// ensureRuntimeDirectoryIgnored installs a higher-precedence ignore rule inside a runtime
-// directory only when that file does not already exist. Existing files may be tracked project
-// configuration and must never be rewritten by loopai.
-func ensureRuntimeDirectoryIgnored(dir string) error {
+// EnsureRuntimeDirectoryIgnored creates dir when missing and installs a higher-precedence ignore
+// rule inside it, a .gitignore matching everything, only when that file does not already exist.
+// Existing files may be tracked project configuration and must never be rewritten by loopai. It
+// needs neither a repository nor a Git command, so a writer that cannot rely on .loopai/.gitignore
+// (a file that ignores itself and is never committed) can keep its own runtime directory out of
+// the status of whatever repository holds it.
+func EnsureRuntimeDirectoryIgnored(dir string) error {
 	if info, err := os.Lstat(dir); err == nil {
 		if !info.IsDir() {
 			return fmt.Errorf("runtime path %s is not a directory", dir)

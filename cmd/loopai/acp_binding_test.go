@@ -30,6 +30,19 @@ func readBindingFile(t *testing.T, path string) map[string]any {
 	return m
 }
 
+// bindingDirNames returns the sorted names in the session cwd's binding directory.
+func bindingDirNames(t *testing.T, cwd string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(cwd, ".loopai", "acp"))
+	require.NoError(t, err)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	slices.Sort(names)
+	return names
+}
+
 func TestSaveSessionThreadSchema(t *testing.T) {
 	cwd := t.TempDir()
 	before := time.Now().UTC()
@@ -54,9 +67,11 @@ func TestSaveSessionThreadSchema(t *testing.T) {
 	require.NoError(t, err)
 	assert.WithinDuration(t, before, updated, time.Minute)
 
-	entries, err := os.ReadDir(filepath.Dir(path))
+	assert.Equal(t, []string{".gitignore", "binding-session-loopai-abc.json"}, bindingDirNames(t, cwd),
+		"the write leaves no temp file behind, only the binding and the directory's ignore file")
+	data, err := os.ReadFile(filepath.Join(cwd, ".loopai", "acp", ".gitignore")) //nolint:gosec // test temp file
 	require.NoError(t, err)
-	assert.Len(t, entries, 1, "the write leaves no temp file behind")
+	assert.Equal(t, "*\n", string(data))
 }
 
 func TestBindRunHashesALongThreadID(t *testing.T) {
@@ -65,11 +80,9 @@ func TestBindRunHashesALongThreadID(t *testing.T) {
 	require.NoError(t, bindRun(cwd, acpLongThreadID, "loopai-abc", "feature-20261022-120000-abcd"))
 
 	dir := filepath.Join(cwd, ".loopai", "acp")
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	require.Len(t, entries, 1)
-	name := entries[0].Name()
-	assert.Equal(t, "binding-thread-"+runs.ThreadKey(acpLongThreadID)+".json", name)
+	names := bindingDirNames(t, cwd)
+	require.Equal(t, []string{".gitignore", "binding-thread-" + runs.ThreadKey(acpLongThreadID) + ".json"}, names)
+	name := names[1]
 	assert.Regexp(t, `^binding-thread-[0-9a-f]{32}\.json$`, name, "only the hash is in the name")
 	assert.Equal(t, acpLongThreadID, readBindingFile(t, filepath.Join(dir, name))["thread_id"], "the raw id is in the file")
 
@@ -107,10 +120,8 @@ func TestBindingSessionFallback(t *testing.T) {
 	require.NoError(t, saveSessionThread(cwd, "s-1", ""))
 	require.NoError(t, bindRun(cwd, "", "s-1", "run-a"))
 
-	entries, err := os.ReadDir(filepath.Join(cwd, ".loopai", "acp"))
-	require.NoError(t, err)
-	require.Len(t, entries, 1, "without a thread id the session file is the key")
-	assert.Equal(t, "binding-session-s-1.json", entries[0].Name())
+	assert.Equal(t, []string{".gitignore", "binding-session-s-1.json"}, bindingDirNames(t, cwd),
+		"without a thread id the session file is the key")
 
 	b, ok := loadBinding(cwd, "", "s-1")
 	require.True(t, ok)
@@ -154,6 +165,83 @@ func TestUnbindRun(t *testing.T) {
 
 	require.NoError(t, unbindRun(cwd, "thread-1", "s-1", ""), "an empty run id unbinds nothing")
 	require.NoError(t, unbindRun(cwd, "thread-9", "s-9", "run-a"), "a key with no binding is no error")
+}
+
+// TestBindingWritesStayOutOfGitStatus writes every kind of binding into checkouts with no ignore
+// rule for .loopai/acp/ of their own: none of them shows up in Git status, so neither T3 Code's
+// changes panel nor an agent of the thread that stages everything ever sees one.
+func TestBindingWritesStayOutOfGitStatus(t *testing.T) {
+	// a developer's global excludes could ignore .loopai/ and hide what the test checks
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "gitconfig"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	writeLoopaiIgnore := func(t *testing.T, repo, content string) {
+		t.Helper()
+		require.NoError(t, os.MkdirAll(filepath.Join(repo, ".loopai"), 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(repo, ".loopai", ".gitignore"), []byte(content), 0o600))
+	}
+	tests := []struct {
+		name  string
+		setup func(t *testing.T) string // returns the session cwd
+	}{
+		{name: "a fresh repository", setup: setupTestRepo},
+		{name: "a thread's linked worktree of a checkout with the generated ignore file", setup: func(t *testing.T) string {
+			repo := setupTestRepo(t)
+			writeLoopaiIgnore(t, repo, ".gitignore\nprogress/\nworktrees/\nacp/\n") // ignores itself, never committed
+			wt := filepath.Join(t.TempDir(), "thread")
+			runGit(t, repo, "worktree", "add", "-b", "t3code/thread", wt)
+			return wt
+		}},
+		{name: "a generated ignore file that predates acp/", setup: func(t *testing.T) string {
+			repo := setupTestRepo(t)
+			writeLoopaiIgnore(t, repo, ".gitignore\nprogress/\nworktrees/\n")
+			return repo
+		}},
+		{name: "a committed custom ignore file", setup: func(t *testing.T) string {
+			repo := setupTestRepo(t)
+			writeLoopaiIgnore(t, repo, "custom-rule\n")
+			runGit(t, repo, "add", ".loopai/.gitignore")
+			runGit(t, repo, "commit", "-m", "add a custom loopai ignore file")
+			return repo
+		}},
+	}
+	const runID = "feature-20261022-120000-abcd"
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := tc.setup(t)
+			require.NoError(t, saveSessionThread(cwd, "s-1", "thread-1"))
+			require.NoError(t, bindRun(cwd, "thread-1", "s-1", runID))
+			require.NoError(t, bindRun(cwd, "", "s-2", runID))
+			require.NoError(t, unbindRun(cwd, "thread-1", "s-1", runID))
+			assert.Equal(t, []string{".gitignore", "binding-session-s-1.json", "binding-session-s-2.json",
+				"binding-thread-" + runs.ThreadKey("thread-1") + ".json"}, bindingDirNames(t, cwd))
+
+			assert.Empty(t, gitOutput(t, cwd, "status", "--porcelain"))
+			assert.Empty(t, gitOutput(t, cwd, "status", "--porcelain", "--untracked-files=all"))
+			assert.Empty(t, gitOutput(t, cwd, "add", "--all", "--dry-run"), "staging everything picks up no binding")
+
+			require.NoError(t, os.Remove(filepath.Join(cwd, ".loopai", "acp", ".gitignore")))
+			assert.NotEmpty(t, gitOutput(t, cwd, "status", "--porcelain"),
+				"the checkout ignores no binding by itself: the directory's own ignore file is what hides them")
+		})
+	}
+}
+
+// TestBindingWriteNeedsItsIgnoreFile refuses a binding whose directory cannot get its ignore file,
+// since Git would show the binding.
+func TestBindingWriteNeedsItsIgnoreFile(t *testing.T) {
+	cwd := t.TempDir()
+	dir := filepath.Join(cwd, ".loopai", "acp")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	target := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.Symlink(target, filepath.Join(dir, ".gitignore")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	require.ErrorContains(t, saveSessionThread(cwd, "s-1", "thread-1"), "symbolic link")
+	require.ErrorContains(t, bindRun(cwd, "thread-1", "s-1", "run-a"), "symbolic link")
+	require.ErrorContains(t, bindRun(cwd, "", "s-1", "run-a"), "symbolic link")
+	assert.Equal(t, []string{".gitignore"}, bindingDirNames(t, cwd), "no binding is written")
+	assert.NoFileExists(t, target)
 }
 
 func TestBindingIgnoresFilesThatDoNotDecode(t *testing.T) {

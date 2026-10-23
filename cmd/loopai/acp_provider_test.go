@@ -453,6 +453,26 @@ func TestACPNewSessionRecordsTheThread(t *testing.T) {
 	}
 }
 
+// TestACPSessionBindingStaysOutOfGitStatus opens a thread's sessions in a fresh repository, as T3
+// Code does in the new worktree of a thread, which never has the generated .loopai/.gitignore: the
+// bindings are written, and Git status stays empty.
+func TestACPSessionBindingStaysOutOfGitStatus(t *testing.T) {
+	cwd := setupTestRepo(t)
+	t.Setenv(acpLookupEnv, "thread=thread-1")
+	s := startACPServer(t, noACPEnv)
+	s.send(acpInitialize("t3-code"))
+	s.result(1)
+	sid := s.newSession(2, cwd, acpT3Servers())
+	s.send(acpSessionLoad(3, "sess-restored", cwd, acpT3Servers()))
+	assert.Empty(t, s.result(3), "session/load answers {}")
+
+	assert.FileExists(t, filepath.Join(cwd, ".loopai", "acp", "binding-session-"+sid+".json"))
+	assert.FileExists(t, filepath.Join(cwd, ".loopai", "acp", "binding-session-sess-restored.json"))
+	assert.Empty(t, gitOutput(t, cwd, "status", "--porcelain"))
+	assert.Empty(t, gitOutput(t, cwd, "status", "--porcelain", "--untracked-files=all"))
+	assert.NotContains(t, s.stderr.String(), "warning:")
+}
+
 // TestACPLoadSessionInANewProcessRestoresTheBinding starts a session in one --acp process, binds the
 // thread's run, and checks that a session/load in a new process finds it from disk alone: with the
 // lookup failing, the session's own binding names the thread.
