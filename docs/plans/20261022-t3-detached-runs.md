@@ -1295,13 +1295,13 @@
   4. `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...`.
 
 ### Task 17: Verify acceptance criteria
-- [ ] verify all requirements from the Overview are implemented:
+- [x] verify all requirements from the Overview are implemented:
   - a detached run survives its launcher: the launcher exits and the child keeps running in its own session;
   - `--attach`/`--runs`/`--stop` work from another shell;
   - resume reuses the id with a new attempt and keeps the origin;
   - Mode 1 titles and terminal;
   - Mode 2 provider routing and the final message.
-- [ ] verify the anti-goals in code:
+- [x] verify the anti-goals in code:
   - no token in the descriptor, outcome, journal, console log, progress log, or child environment (grep the writers; tests assert it);
   - the worktree is kept on every non-success exit and on a success with an incomplete close-out or a dirty tree;
   - no detached-run code path commits through `MainGitSvc`;
@@ -1309,16 +1309,17 @@
   - only transitions send title, plan, or tool-call updates;
   - a Mode 2 thread never stops or shows another thread's run;
   - `--merge`/`--pr` check every progress root and the feature worktree's run lock.
-- [ ] verify the removal in code and assets:
+- [x] verify the removal in code and assets:
   - `git grep -n -E 'thread\.meta\.update|LOOPAI_T3_THREAD_ID|env:"LOOPAI_T3"|ModeACPChat|WithResumeSession|ACPMerge|acp_chat\.txt' -- cmd pkg scripts assets Makefile` finds nothing, except lines saying "was removed" or "were removed";
   - `pkg/t3` contains only the protocol-2 client, `t3test`, and the MCP client;
   - `cmd/loopai-acp` only runs `loopai --acp`.
-- [ ] verify edge cases: plan-chain, Windows, and sandbox refusals; concurrent launches; `--merge`/`--pr` refused while a run is live; the continuation and steering paths.
-- [ ] run full test suite (`make test </dev/null`)
-- [ ] run e2e tests if affected (`make e2e`; skip with a note if no dashboard file changed)
-- [ ] run linter (`make lint`) - all issues must be fixed
-- [ ] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` and `make build`
-- [ ] verify that test coverage of `pkg/runs`, `pkg/t3`, `pkg/t3/t3test`, `pkg/acp`, and the new `cmd/loopai` files meets 80%+ (`go test -cover`)
+- [x] verify edge cases: plan-chain, Windows, and sandbox refusals; concurrent launches; `--merge`/`--pr` refused while a run is live; the continuation and steering paths.
+- [x] run full test suite (`make test </dev/null`)
+- [x] run e2e tests if affected (`make e2e`; skip with a note if no dashboard file changed)
+- [x] run linter (`make lint`) - all issues must be fixed
+- [x] cross-compile `GOOS=windows GOARCH=amd64 go build ./...` and `make build`
+- [x] verify that test coverage of `pkg/runs`, `pkg/t3`, `pkg/t3/t3test`, `pkg/acp`, and the new `cmd/loopai` files meets 80%+ (`go test -cover`)
+- ⚠️ e2e skipped: the branch changes no file under `pkg/web` or `e2e`. No test showed the detached child leading its own session, so `TestDetachLaunchThroughMain` now asserts it (it fails without `Setsid`). The three `_windows.go` stub files cannot be covered on a non-Windows host.
 
 ### Task 18: [Final] Update documentation
 - [ ] rewrite `docs/t3-code.md`:

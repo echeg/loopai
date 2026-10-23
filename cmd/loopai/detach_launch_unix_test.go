@@ -658,6 +658,19 @@ func TestDetachLaunchThroughMain(t *testing.T) {
 	assert.Equal(t, map[string]string{"LOOPAI_CONFIG_DIR": filepath.Join(home, "config")}, desc.EnvOptions)
 	assert.NoFileExists(t, filepath.Join(home, "config", launchHistoryFile),
 		"the launcher records no launch history; its child does")
+
+	t.Run("the child outlives its launcher in a session of its own", func(t *testing.T) {
+		status, err := runs.Classify(f.repo, runs.Dir(f.repo, desc.ID))
+		require.NoError(t, err)
+		assert.Equal(t, runs.StatusRunning, status, "the launcher exited and its child still holds the run")
+		pid := f.dump(t, desc.ID).PID
+		sid, err := syscall.Getsid(pid)
+		require.NoError(t, err)
+		assert.Equal(t, pid, sid, "the child leads its own session")
+		own, err := syscall.Getsid(0)
+		require.NoError(t, err)
+		assert.NotEqual(t, own, sid, "the child left the session the launcher ran in")
+	})
 }
 
 func TestDetachLaunchSandboxThroughMain(t *testing.T) {
