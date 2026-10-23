@@ -59,13 +59,15 @@ func acpSessionBindingPath(cwd, sessionID string) (string, error) {
 // written: a relative one, whose files would land wherever the process happens to run; one that is not
 // an existing directory, such as a thread worktree removed since, whose tree a write would recreate
 // for later runs to misread as loopai's own; and one whose .loopai or .loopai/acp is a symbolic link
-// or not a directory, which a write would follow outside the checkout. A missing .loopai or
-// .loopai/acp is fine: the first write creates it inside the existing cwd.
+// or not a directory, which a write would follow outside the checkout. The cwd itself may be a
+// symbolic link to a directory, as for a project added to T3 Code through a symlinked path: it is the
+// checkout the client names, and refusing it would lose every binding of the thread. A missing .loopai
+// or .loopai/acp is fine: the first write creates it inside the existing cwd.
 func requireBindingStore(cwd string) error {
 	if !filepath.IsAbs(cwd) {
 		return fmt.Errorf("ACP session cwd %q is not absolute", cwd)
 	}
-	info, err := os.Lstat(cwd)
+	info, err := os.Stat(cwd)
 	switch {
 	case err != nil:
 		return fmt.Errorf("ACP session cwd: %w", err)

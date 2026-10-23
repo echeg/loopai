@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -293,6 +294,41 @@ func TestPingCountsAPongReadyWithTheTick(t *testing.T) {
 	require.Eventually(t, func() bool { return failure() != nil }, 10*time.Second, time.Millisecond)
 	require.ErrorIs(t, failure(), ErrClosed)
 	assert.Contains(t, failure().Error(), "no pong")
+}
+
+// TestSendRacingACloseCarriesTheCloseReason registers a call and holds its write until the connection
+// failed for another reason, as the ping loop fails it after an unanswered Ping: the call's error is
+// that reason, not the write's "use of closed network connection".
+func TestSendRacingACloseCarriesTheCloseReason(t *testing.T) {
+	s := t3test.NewServer(t)
+	ws, resp, err := websocket.DefaultDialer.DialContext(t.Context(),
+		"ws"+strings.TrimPrefix(s.URL(), "http")+"/ws?orchestrationProtocol=2",
+		http.Header{"Authorization": {"Bearer " + s.Token()}})
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.NoError(t, err)
+	// no read or ping loop: the test fails the connection itself
+	c := &rpcConn{ws: ws, pong: make(chan struct{}, 1), done: make(chan struct{}),
+		calls: map[string]pendingCall{}, streams: map[string]*rpcStream{}}
+	t.Cleanup(func() { c.fail(ErrClosed) })
+
+	c.wmu.Lock() // the call's write waits until the connection failed
+	registered, sent := make(chan struct{}), make(chan error, 1)
+	go func() {
+		sent <- c.send("orchestration.getThreadProjection", nil, func(_ int64, _ string) { close(registered) })
+	}()
+	<-registered // send found the connection open and goes on to the write
+	reason := fmt.Errorf("%w: no pong within %s", ErrClosed, time.Second)
+	c.fail(reason)
+	c.wmu.Unlock()
+
+	err = <-sent
+	require.ErrorIs(t, err, ErrClosed)
+	assert.Contains(t, err.Error(), "send failed")
+	assert.Contains(t, err.Error(), "no pong", "the close reason, not the closed socket")
+	assert.NotContains(t, err.Error(), "use of closed network connection")
+	assert.ErrorIs(t, c.write(pingFrame), reason, "a later write reports the same reason")
 }
 
 func TestPongArrived(t *testing.T) {

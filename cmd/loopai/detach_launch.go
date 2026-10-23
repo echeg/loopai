@@ -496,7 +496,9 @@ func (l *detachLaunch) branchWorktree() (string, error) {
 // history, its stop marker cleared, and its descriptor gets the new attempt. The recorded origin stays,
 // so a run started from a T3 thread remains that thread's run when a plain shell resumes it, unless
 // this launch names a T3 thread with --t3-thread, --acp-thread, or --acp-session, which then owns the
-// run.
+// run. A loopai thread's relaunch that names only its session, because the provider could not look the
+// thread up, keeps the thread id a loopai thread recorded: the session is that thread's, and dropping
+// the id would leave the run unmatched by the thread's binding and adoption checks.
 func (l *detachLaunch) resume(run runs.Run) error {
 	l.dir = run.Dir
 	desc := run.Descriptor
@@ -509,6 +511,9 @@ func (l *detachLaunch) resume(run runs.Run) error {
 	desc.Attempt++
 	desc.PID, desc.PIDStart = 0, "" // the new attempt's process records itself
 	if origin := l.origin(); origin.Kind != runs.OriginCLI {
+		if origin.Kind == runs.OriginT3Thread && origin.ThreadID == "" && desc.Origin.Kind == runs.OriginT3Thread {
+			origin.ThreadID = desc.Origin.ThreadID
+		}
 		desc.Origin = origin
 	}
 	return l.record(desc)

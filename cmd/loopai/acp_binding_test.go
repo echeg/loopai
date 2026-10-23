@@ -333,6 +333,13 @@ func TestBindingStoreRefusesUnsafeCwds(t *testing.T) {
 			parent := t.TempDir()
 			return filepath.Join(parent, "worktree"), parent
 		}},
+		{name: "a symlink to a removed thread worktree", wantErr: "no such file or directory",
+			setup: func(t *testing.T) (string, string) {
+				parent := t.TempDir()
+				link := filepath.Join(t.TempDir(), "project")
+				require.NoError(t, os.Symlink(filepath.Join(parent, "worktree"), link))
+				return link, parent
+			}},
 		{name: "a file", wantErr: "is not a directory", setup: func(t *testing.T) (string, string) {
 			path := filepath.Join(t.TempDir(), "file")
 			require.NoError(t, os.WriteFile(path, nil, 0o600))
@@ -386,4 +393,33 @@ func TestBindingStoreRefusesUnsafeCwds(t *testing.T) {
 		_ = bindRun(cwd, "thread-1", "s-1", runID)
 		assert.NoDirExists(t, cwd)
 	})
+}
+
+// TestBindingStoreAcceptsASymlinkedCwd checks a project T3 Code reaches through a symbolic link to its
+// checkout: the cwd is that link, and its bindings are written inside the checkout and read back
+// through the same path, so a restarted provider still finds the thread's run.
+func TestBindingStoreAcceptsASymlinkedCwd(t *testing.T) {
+	const runID = "feature-20261022-120000-abcd"
+	checkout := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "project")
+	require.NoError(t, os.Symlink(checkout, cwd))
+
+	require.NoError(t, requireBindingStore(cwd))
+	require.NoError(t, saveSessionThread(cwd, "s-1", "thread-1"))
+	require.NoError(t, bindRun(cwd, "thread-1", "s-1", runID))
+
+	b, ok := loadBinding(cwd, "thread-1", "s-2")
+	require.True(t, ok, "a replaced session finds the run through the thread")
+	assert.Equal(t, runID, b.RunID)
+	b, ok = loadBinding(cwd, "", "s-1")
+	require.True(t, ok, "a session/load without a lookup finds the run through the session")
+	assert.Equal(t, runID, b.RunID)
+	assert.Equal(t, "thread-1", b.ThreadID)
+	assert.Contains(t, bindingDirNames(t, checkout), "binding-session-s-1.json",
+		"the binding lives in the checkout the link names")
+
+	require.NoError(t, unbindRun(cwd, "thread-1", "s-1", runID))
+	b, ok = loadBinding(cwd, "thread-1", "s-1")
+	require.True(t, ok)
+	assert.Empty(t, b.RunID)
 }

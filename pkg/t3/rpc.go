@@ -509,18 +509,27 @@ func (c *rpcConn) pongArrived() bool {
 	}
 }
 
-// write sends one text frame; a failed write fails the connection.
+// write sends one text frame; a failed write fails the connection. The error is the connection's
+// failure, which is the write's own only when nothing failed the connection first: a write racing a
+// close, such as the ping loop's after an unanswered Ping, meets a socket that close already shut, and
+// its "use of closed network connection" would hide why the connection ended.
 func (c *rpcConn) write(frame []byte) error {
 	c.wmu.Lock()
 	_ = c.ws.SetWriteDeadline(time.Now().Add(writeTimeout))
 	err := c.ws.WriteMessage(websocket.TextMessage, frame)
 	c.wmu.Unlock()
 	if err != nil {
-		err = fmt.Errorf("%w: write: %w", ErrClosed, err)
-		c.fail(err)
-		return err
+		c.fail(fmt.Errorf("%w: write: %w", ErrClosed, err))
+		return c.failure()
 	}
 	return nil
+}
+
+// failure returns the error the connection failed with, or nil while it is open.
+func (c *rpcConn) failure() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
 }
 
 // writeJSON encodes v and sends it as one frame.

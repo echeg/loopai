@@ -36,7 +36,8 @@ type acpTurn struct {
 // route answers a prompt by the first rule that applies:
 //  1. the run bound to the thread, or to the session without a thread id: a live one, starting
 //     included, is attached whatever the text says; one that ended without success is relaunched from
-//     its recorded arguments and attached when the text is T3 Code's continuation or resume;
+//     its recorded arguments and attached when the text is T3 Code's continuation or resume; one that
+//     cannot be read or classified is one stderr warning, and the later rules answer;
 //  2. a message naming a plan starts that plan's own detached run, binds it, and attaches to it;
 //  3. without a binding, a continuation adopts the one live, unattached run a loopai thread started
 //     from this cwd, or lists the candidates when there are several;
@@ -52,13 +53,16 @@ func (t *acpTurn) route() acp.StopReason {
 	resume := strings.EqualFold(strings.TrimSpace(text), acpResumeText)
 	b, _ := loadBinding(t.req.Cwd, t.threadID, t.req.SessionID) // no binding store reads as no binding
 	if b.RunID != "" {
-		if run, err := acpRun(t.req.Cwd, b.RunID); err == nil {
-			switch {
-			case run.Status.Live():
-				return t.attach(run.Descriptor.ID)
-			case run.Status != runs.StatusSucceeded && (continuation || resume):
-				return t.launch(acpLaunch{args: run.Descriptor.Argv, envOptions: run.Descriptor.EnvOptions})
-			}
+		run, err := acpRun(t.req.Cwd, b.RunID)
+		switch {
+		case err != nil:
+			// the bound run cannot be read or classified: the message is still answered by the rules
+			// below, and the reason they ignored the binding is left on stderr
+			fmt.Fprintf(t.stderr, "warning: acp: bound run %s unavailable: %v\n", b.RunID, err)
+		case run.Status.Live():
+			return t.attach(run.Descriptor.ID)
+		case run.Status != runs.StatusSucceeded && (continuation || resume):
+			return t.launch(acpLaunch{args: run.Descriptor.Argv, envOptions: run.Descriptor.EnvOptions})
 		}
 	}
 	if acpNamesPlan(text) {

@@ -521,6 +521,30 @@ func TestDetachLaunchACPThread(t *testing.T) {
 		assert.Equal(t, 2, desc.Attempt)
 		assert.Equal(t, runs.Origin{Kind: runs.OriginT3Thread, ThreadID: thread, ACPSessionID: session}, desc.Origin)
 	})
+
+	t.Run("a resume naming only the session keeps the recorded thread", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		dir := f.seedRun(t, runs.Origin{Kind: runs.OriginT3Thread, ThreadID: thread, ACPSessionID: "loopai-old"}, nil)
+		require.NoError(t, runs.SaveOutcome(dir, &runs.Outcome{RunID: detachSeedID, Attempt: 1, Status: runs.StatusFailed}))
+
+		_, stderr, err := f.launch(t, "--detach", "--acp-session="+session, detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		desc := f.onlyRun(t)
+		assert.Equal(t, 2, desc.Attempt)
+		assert.Equal(t, runs.Origin{Kind: runs.OriginT3Thread, ThreadID: thread, ACPSessionID: session}, desc.Origin,
+			"the new session owns the run, and the thread it recorded stays")
+	})
+
+	t.Run("a session-only resume of a terminal run records no thread", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		dir := f.seedRun(t, runs.Origin{Kind: runs.OriginT3Terminal, ThreadID: "terminal-thread"}, nil)
+		require.NoError(t, runs.SaveOutcome(dir, &runs.Outcome{RunID: detachSeedID, Attempt: 1, Status: runs.StatusFailed}))
+
+		_, stderr, err := f.launch(t, "--detach", "--acp-session="+session, detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		assert.Equal(t, runs.Origin{Kind: runs.OriginT3Thread, ACPSessionID: session}, f.onlyRun(t).Origin,
+			"a terminal's thread is not the loopai thread the session belongs to")
+	})
 }
 
 func TestDetachT3TokenLeavesNoTrace(t *testing.T) {

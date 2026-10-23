@@ -118,7 +118,11 @@ func (r *acpTestRun) relaunch(l acpLaunch) {
 	require.NoError(r.t, runs.ArchiveOutcome(r.dir, desc.Attempt))
 	require.NoError(r.t, runs.ClearStop(r.dir))
 	desc.Attempt++
-	desc.Origin = runs.Origin{Kind: runs.OriginT3Thread, ThreadID: l.threadID, ACPSessionID: l.sessionID}
+	threadID := l.threadID
+	if threadID == "" && desc.Origin.Kind == runs.OriginT3Thread {
+		threadID = desc.Origin.ThreadID // as detachLaunch.resume keeps a recorded loopai thread
+	}
+	desc.Origin = runs.Origin{Kind: runs.OriginT3Thread, ThreadID: threadID, ACPSessionID: l.sessionID}
 	require.NoError(r.t, runs.SaveDescriptor(r.dir, &desc))
 	r.start()
 }
@@ -683,6 +687,40 @@ func TestACPUnavailableBindingStoreReadsAsNoBinding(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(s.stderr.String(), "is a symbolic link"),
 		"one warning for the session binding and one for the run binding: "+s.stderr.String())
 	assert.Contains(t, s.stderr.String(), "warning: acp: run binding not recorded:")
+}
+
+// TestACPUnreadableBoundRunWarnsAndFallsThrough binds the thread to a run whose descriptor does not
+// decode: every message is still answered by the later rules, a plan message starts its run, and each
+// turn that met the binding leaves one warning on stderr naming the run, never the MCP credential.
+func TestACPUnreadableBoundRunWarnsAndFallsThrough(t *testing.T) {
+	cwd := t.TempDir()
+	const brokenID = "old-20261022-110000-abcd"
+	broken := newACPTestRun(t, cwd, runs.Descriptor{ID: brokenID, Plan: "docs/plans/old.md", Branch: "old",
+		Origin: runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "thread-1"}})
+	require.NoError(t, os.WriteFile(filepath.Join(broken.dir, runs.DescriptorFile), []byte("{not json"), 0o600))
+	require.NoError(t, bindRun(cwd, "thread-1", "sess-old", brokenID))
+	launched := make(chan *acpTestRun, 1)
+	launches := stubACPLaunch(t, func(l acpLaunch) (string, error) {
+		launched <- newACPTestRun(t, l.cwd, runs.Descriptor{ID: acpRouteRunID,
+			Origin: runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "thread-1"}}).start()
+		return acpRouteRunID, nil
+	})
+
+	s, sid := openACPSession(t, cwd, "thread=thread-1", "")
+	assert.Equal(t, "loopai run "+brokenID+" has no recorded outcome.\n\n"+acpModelSwitchHint,
+		s.statusReply(3, sid, acp.ContinuationText), "a continuation neither relaunches nor adopts")
+	warning := "warning: acp: bound run " + brokenID + " unavailable: load run " + brokenID + ":"
+	assert.Equal(t, 1, strings.Count(s.stderr.String(), warning), s.stderr.String())
+	assert.Empty(t, launches.all())
+
+	s.send(acpPrompt(4, sid, acpRoutePlan))
+	run := launchedRun(t, launched)
+	run.waitAttached()
+	run.finish(runs.Outcome{Status: runs.StatusSucceeded})
+	assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", s.turnReply(4, sid))
+	assert.Equal(t, 2, strings.Count(s.stderr.String(), warning), "the plan message fell through to its own run")
+	assert.Equal(t, acpRouteRunID, acpBoundRun(t, cwd, "thread-1", sid))
+	assert.NotContains(t, s.stderr.String(), acpTestAuthz)
 }
 
 func TestParseACPPlanMessage(t *testing.T) {
