@@ -487,6 +487,98 @@ func TestT3BridgeReopensTerminalAfterRestart(t *testing.T) {
 	})
 }
 
+func TestT3BridgeReopensTerminalAfterRestartOfAnUnknownServer(t *testing.T) {
+	// with LOOPAI_T3_URL and no runtime file the server's pid and start time are unknown, so a lost
+	// connection is what tells the bridge the server may have restarted
+	h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, true)
+	t.Setenv(t3.EnvURL, h.server.URL())
+	h.start()
+	h.waitWrites(1)
+	h.settle()
+
+	mark := h.mark()
+	require.NoError(t, h.server.Restart())
+	h.waitHandled(mark, "the new server's snapshot", isSnapshot)
+	require.Eventually(t, func() bool { return len(h.server.Opens()) == 2 }, bridgeWait, time.Millisecond,
+		"the absent terminal is reopened")
+	opens := h.server.Opens()
+	assert.Equal(t, opens[0], opens[1], "reopened with the identical launch context")
+	h.waitWrites(2)
+	assert.Equal(t, bridgeFollow, h.server.Writes()[1]["data"])
+
+	t.Run("a connection lost while the terminal lives reuses it", func(t *testing.T) {
+		mark := h.mark()
+		h.server.SendDefect("t3test: dropped")
+		h.waitHandled(mark, "the next connection's snapshot", isSnapshot)
+		h.settle()
+		assert.Len(t, h.server.Opens(), 2, "a terminal the snapshot holds is not opened again")
+		assert.Len(t, h.server.Writes(), 2)
+		h.task(1)
+		h.waitTitle("[loopai: task 1/2] My thread")
+		assert.Empty(t, h.log.all())
+	})
+}
+
+func TestT3BridgeSurvivesAWriteIntoADeadShell(t *testing.T) {
+	t.Run("into the terminal it opened", func(t *testing.T) {
+		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
+		h.server.BreakNextWrite()
+		h.start()
+		h.waitWrites(1)
+		h.settle()
+
+		h.task(1)
+		h.waitTitle("[loopai: task 1/2] My thread")
+		h.finish(runs.StatusSucceeded)
+		h.waitDone()
+		assert.Equal(t, "[loopai: done] My thread", h.thread().Title)
+		assert.Empty(t, h.thread().PinnedAt, "the pin the bridge took is released")
+		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin"},
+			h.commands())
+		assert.Len(t, h.server.Writes(), 1)
+		assert.Empty(t, h.log.all(), "a terminal gone does not disable the bridge")
+	})
+
+	t.Run("on a re-type", func(t *testing.T) {
+		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
+		h.start()
+		h.waitWrites(1)
+		h.settle()
+		// the follow command runs, then ends, and the shell dies just as the bridge types again
+		mark := h.mark()
+		require.True(t, h.server.SetTerminalState(bridgeThreadID, bridgeTerminalID, "running", true))
+		h.waitHandled(mark, "the busy upsert", isUpsert(true))
+		h.clock.Advance(90 * time.Second)
+		mark = h.mark()
+		require.True(t, h.server.SetTerminalState(bridgeThreadID, bridgeTerminalID, "running", false))
+		h.waitHandled(mark, "the idle upsert", isUpsert(false))
+		h.server.BreakNextWrite()
+		h.clock.Advance(60 * time.Second)
+		h.waitWrites(2)
+		h.clock.Advance(10 * time.Minute)
+		h.settle()
+		assert.Len(t, h.server.Writes(), 2, "a terminal gone is not typed into until T3 reports it again")
+
+		// T3 reports it running again: the idle wait starts afresh
+		mark = h.mark()
+		require.True(t, h.server.SetTerminalState(bridgeThreadID, bridgeTerminalID, "running", false))
+		h.waitHandled(mark, "the terminal reported again", isUpsert(false))
+		h.clock.Advance(59 * time.Second)
+		h.settle()
+		assert.Len(t, h.server.Writes(), 2)
+		h.clock.Advance(time.Second)
+		h.waitWrites(3)
+
+		h.task(1)
+		h.waitTitle("[loopai: task 1/2] My thread")
+		h.finish(runs.StatusFailed)
+		h.waitDone()
+		assert.Equal(t, "[loopai: failed] My thread", h.thread().Title)
+		assert.Empty(t, h.thread().PinnedAt, "the pin the bridge took is released")
+		assert.Empty(t, h.log.all(), "a terminal gone does not disable the bridge")
+	})
+}
+
 func TestT3BridgeNeverRetypesAClosedTerminal(t *testing.T) {
 	h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
 	h.start()
@@ -729,4 +821,16 @@ func TestT3ServerStart(t *testing.T) {
 	assert.Equal(t, "40000@2026-10-22T12:00:00Z", a)
 	assert.NotEqual(t, a, t3ServerStart(t3.Runtime{PID: 40001, StartedAt: "2026-10-22T12:00:00Z"}))
 	assert.NotEqual(t, a, t3ServerStart(t3.Runtime{PID: 40000, StartedAt: "2026-10-22T12:01:00Z"}))
+	assert.Equal(t, "40000@", t3ServerStart(t3.Runtime{PID: 40000}), "a pid alone identifies a start")
+	assert.Equal(t, "0@2026-10-22T12:00:00Z", t3ServerStart(t3.Runtime{StartedAt: "2026-10-22T12:00:00Z"}))
+	assert.Empty(t, t3ServerStart(t3.Runtime{Origin: "http://127.0.0.1:1"}), "LOOPAI_T3_URL without a runtime file")
+
+	b := &t3Bridge{}
+	known := t3.Runtime{PID: 40000, StartedAt: "2026-10-22T12:00:00Z"}
+	assert.Equal(t, a, b.serverStart(known))
+	assert.Equal(t, a, b.serverStart(known), "a known start is the same on every connection")
+	unknown := t3.Runtime{Origin: "http://127.0.0.1:1"}
+	first, second := b.serverStart(unknown), b.serverStart(unknown)
+	assert.NotEqual(t, first, second, "an unknown start counts each connection as a new one")
+	assert.NotEqual(t, a, first)
 }

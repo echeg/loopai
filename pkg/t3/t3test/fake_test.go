@@ -430,6 +430,36 @@ func TestServerOpenNextStarting(t *testing.T) {
 		"the hook applies to one open only")
 }
 
+func TestServerBreakNextWrite(t *testing.T) {
+	s := NewServer(t, WithTerminal(Terminal{ThreadID: "th", TerminalID: "starting", Cwd: "/r", Status: "starting"}),
+		WithTerminal(Terminal{ThreadID: "th", TerminalID: "t", Cwd: "/r"}))
+	c := connectRaw(t, s)
+	writeTag := func(id int, terminal string) string {
+		t.Helper()
+		c.request(id, "terminal.write", map[string]any{"threadId": "th", "terminalId": terminal, "data": "x"})
+		exit := c.recv()["exit"].(map[string]any)
+		if exit["_tag"] == "Success" {
+			return "Success"
+		}
+		return exit["cause"].([]any)[0].(map[string]any)["error"].(map[string]any)["_tag"].(string)
+	}
+
+	s.BreakNextWrite()
+	assert.Equal(t, "TerminalNotRunningError", writeTag(1, "starting"), "a write refused otherwise keeps the hook")
+	assert.Equal(t, "TerminalSessionLookupError", writeTag(2, "missing"))
+
+	c.request(3, "terminal.write", map[string]any{"threadId": "th", "terminalId": "t", "data": "x"})
+	cause := c.recv()["exit"].(map[string]any)["cause"].([]any)[0].(map[string]any)
+	assert.Equal(t, "Fail", cause["_tag"])
+	assert.Equal(t, map[string]any{"_tag": "TerminalWriteError", "threadId": "th", "terminalId": "t",
+		"terminalPid": float64(50000), "cause": map[string]any{"name": "Error", "message": "write EIO"}}, cause["error"])
+
+	assert.Equal(t, "Success", writeTag(4, "t"), "the hook applies to one write only")
+	terminals := s.Terminals()
+	require.Len(t, terminals, 2)
+	assert.Equal(t, "running", terminals[1].Status, "the session is left as it is")
+}
+
 func TestServerTerminalOpenResizesOrResets(t *testing.T) {
 	s := NewServer(t)
 	c := connectRaw(t, s)

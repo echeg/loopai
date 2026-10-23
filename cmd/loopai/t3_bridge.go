@@ -22,9 +22,11 @@ const (
 	// t3TerminalIDPrefix starts the id of the terminal the bridge opens: loopai-<run id>, at most 107
 	// characters, so never T3's own term-1.
 	t3TerminalIDPrefix = "loopai-"
-	// T3 error tags the bridge answers in its own way rather than as a failure.
+	// T3 error tags the bridge answers in its own way rather than as a failure: a terminal still
+	// starting, an unknown session, and a pty write that threw because the shell died.
 	t3TerminalNotRunning = "TerminalNotRunningError"
 	t3TerminalLookup     = "TerminalSessionLookupError"
+	t3TerminalWrite      = "TerminalWriteError"
 )
 
 // errT3ProjectNotListed reports a thread whose project T3 Code does not list, so the bridge cannot
@@ -123,12 +125,13 @@ type t3Bridge struct {
 	unpinned   bool
 	disabled   bool
 
-	conn    *bridgeConn
-	retry   <-chan time.Time // fires when a reconnect is due; nil while connected or connecting at once
-	backoff time.Duration
-	server  string // the server start of the latest connection
-	opened  string // the server start the bridge opened its terminal in
-	term    bridgeTerminal
+	conn        *bridgeConn
+	retry       <-chan time.Time // fires when a reconnect is due; nil while connected or connecting at once
+	backoff     time.Duration
+	server      string // the server start of the latest connection
+	opened      string // the server start the bridge opened its terminal in
+	connections int    // connections made to a server whose start is unknown
+	term        bridgeTerminal
 }
 
 // bridgeConn is one live connection: its terminal metadata reader and how to end it. Each has a
@@ -297,7 +300,7 @@ func (b *t3Bridge) connect() {
 		b.fail(err)
 		return
 	}
-	conn := &bridgeConn{server: t3ServerStart(rt), items: make(chan bridgeItem),
+	conn := &bridgeConn{server: b.serverStart(rt), items: make(chan bridgeItem),
 		closed: make(chan struct{}), stop: stop}
 	b.conn, b.backoff = conn, 0
 	if conn.server != b.server {
@@ -307,6 +310,18 @@ func (b *t3Bridge) connect() {
 	}
 	b.wg.Add(1)
 	go b.readMetadata(sub, conn)
+}
+
+// serverStart identifies the server start a new connection reached. A runtime that names neither a
+// pid nor a start time, as with LOOPAI_T3_URL and no readable runtime file, cannot tell a restart
+// from a lost connection, so every connection then counts as a new server start: a lost connection
+// is a restart signal too, and an absent terminal is reopened at most once per connection.
+func (b *t3Bridge) serverStart(rt t3.Runtime) string {
+	if start := t3ServerStart(rt); start != "" {
+		return start
+	}
+	b.connections++
+	return "connection " + strconv.Itoa(b.connections)
 }
 
 // readMetadata passes conn's terminal metadata events to run until the stream ends or the
@@ -500,11 +515,17 @@ func (b *t3Bridge) onSnapshot(terminals []t3.TerminalSummary) {
 			return
 		}
 	}
-	b.term.present, b.term.pending, b.term.busy, b.term.idleSince = false, false, false, time.Time{}
+	b.terminalGone()
 	if b.term.closed || b.final || b.opened == b.conn.server {
 		return
 	}
 	b.openTerminal()
+}
+
+// terminalGone forgets what the bridge saw of a terminal that is gone, so a later report of it starts
+// the idle wait afresh.
+func (b *t3Bridge) terminalGone() {
+	b.term.present, b.term.pending, b.term.busy, b.term.idleSince = false, false, false, time.Time{}
 }
 
 // observe records what a metadata summary reports of the bridge's terminal.
@@ -604,7 +625,9 @@ func (b *t3Bridge) typePending() {
 
 // typeFollow types the follow command, with a leading space that keeps it out of the shell history.
 // It reports whether the command was typed: a terminal not running is left for a later attempt, one
-// that is gone is forgotten, and any other failure fails the connection.
+// that is gone is forgotten until T3 reports it again, and any other failure fails the connection.
+// A terminal is gone when T3 has no session for it, or when the pty write threw, which it does when
+// the shell died between T3's status check and the write.
 func (b *t3Bridge) typeFollow() bool {
 	ctx, cancel := b.callContext()
 	err := b.client.TerminalWrite(ctx, b.cfg.threadID, b.terminalID, b.followCmd)
@@ -615,8 +638,8 @@ func (b *t3Bridge) typeFollow() bool {
 		b.term.typedAt, b.term.sawBusy = b.timing.now(), false
 		return true
 	case errors.As(err, &remote) && remote.Tag == t3TerminalNotRunning:
-	case errors.As(err, &remote) && remote.Tag == t3TerminalLookup:
-		b.term.present = false
+	case errors.As(err, &remote) && (remote.Tag == t3TerminalLookup || remote.Tag == t3TerminalWrite):
+		b.terminalGone()
 	default:
 		b.fail(fmt.Errorf("type into the terminal: %w", err))
 	}
@@ -644,8 +667,12 @@ func t3BridgeFatal(err error) bool {
 	return false
 }
 
-// t3ServerStart identifies a server start by its pid and start time.
+// t3ServerStart identifies a server start by its pid and start time; empty when the runtime names
+// neither.
 func t3ServerStart(rt t3.Runtime) string {
+	if rt.PID == 0 && strings.TrimSpace(rt.StartedAt) == "" {
+		return ""
+	}
 	return strconv.Itoa(rt.PID) + "@" + rt.StartedAt
 }
 

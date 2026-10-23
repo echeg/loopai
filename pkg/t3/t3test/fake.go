@@ -130,10 +130,12 @@ type Server struct {
 	ignorePings bool
 	// openStarting makes the next terminal.open that starts a session leave it starting
 	openStarting bool
-	stalled      map[string]bool
-	overrides    map[string][]func(id json.RawMessage) map[string]any
-	receipts     map[string]int
-	sequence     int
+	// breakWrite makes the next terminal.write into a running session fail with TerminalWriteError
+	breakWrite bool
+	stalled    map[string]bool
+	overrides  map[string][]func(id json.RawMessage) map[string]any
+	receipts   map[string]int
+	sequence   int
 
 	handshakes []Handshake
 	requests   []Request
@@ -285,6 +287,15 @@ func (s *Server) Upsert(term Terminal) {
 func (s *Server) OpenNextStarting() {
 	s.mu.Lock()
 	s.openStarting = true
+	s.mu.Unlock()
+}
+
+// BreakNextWrite makes the next terminal.write into a running session fail with TerminalWriteError,
+// as T3 Code answers when the pty write throws because the shell died between its status check and
+// the write. The session is left as it is. A write refused for another reason does not use it up.
+func (s *Server) BreakNextWrite() {
+	s.mu.Lock()
+	s.breakWrite = true
 	s.mu.Unlock()
 }
 
@@ -822,25 +833,33 @@ func (s *Server) terminalOpen(id, payload json.RawMessage) map[string]any {
 }
 
 // terminalWrite accepts data for a running session, drops it for an exited one, and fails while the
-// session is starting or errored, or when it does not exist.
+// session is starting or errored, when it does not exist, or once after BreakNextWrite.
 func (s *Server) terminalWrite(id, payload json.RawMessage) map[string]any {
 	var in struct {
 		ThreadID   string `json:"threadId"`
 		TerminalID string `json:"terminalId"`
 		Data       string `json:"data"`
 	}
-	err := json.Unmarshal(payload, &in)
+	if err := json.Unmarshal(payload, &in); err != nil || in.Data == "" || len(in.Data) > 65536 {
+		return exitDie(id, "t3test: invalid terminal.write payload")
+	}
 	s.mu.Lock()
 	term, found := s.terminal(in.ThreadID, in.TerminalID)
+	broken := found && term.Status == "running" && s.breakWrite
+	if broken {
+		s.breakWrite = false
+	}
 	s.mu.Unlock()
 	ids := map[string]any{"threadId": in.ThreadID, "terminalId": in.TerminalID}
 	switch {
-	case err != nil || in.Data == "" || len(in.Data) > 65536:
-		return exitDie(id, "t3test: invalid terminal.write payload")
 	case !found:
 		return exitFail(id, withTag("TerminalSessionLookupError", ids))
 	case term.Status == "starting" || term.Status == "error":
 		return exitFail(id, withTag("TerminalNotRunningError", ids))
+	case broken:
+		fields := map[string]any{"terminalPid": 50000, "cause": map[string]any{"name": "Error", "message": "write EIO"}}
+		maps.Copy(fields, ids)
+		return exitFail(id, withTag("TerminalWriteError", fields))
 	}
 	return exitSuccess(id, nil)
 }
