@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -25,6 +26,10 @@ const (
 	runsPoll = 250 * time.Millisecond
 	// consoleChunk is how much of a console log --attach copies between two checks for Ctrl+C.
 	consoleChunk = 64 << 10
+	// consoleReplayLimit bounds how much of a console log --attach replays before following it: a
+	// run of many hours, every attempt included, would otherwise push its whole history through the
+	// terminal on every attach, which the Mode 1 bridge repeats after each T3 Code restart.
+	consoleReplayLimit = 1 << 20
 	// runsTimeLayout is how --runs prints a run's start time, in local time.
 	runsTimeLayout = "2006-01-02 15:04:05"
 )
@@ -181,8 +186,9 @@ func resolveRun(root, ident string) (runs.Run, error) {
 }
 
 // attachRun follows run under root on out: a header from its journal, then its console log replayed
-// from the first byte, every attempt included, and followed until the run is no longer live and the
-// log is drained, then how the run ended. It returns the run's exit code: 0 succeeded, 2 stopped, and
+// from the first byte, every attempt included, or only its last consoleReplayLimit bytes from a line
+// start after a note naming the full log, and followed until the run is no longer live and the log is
+// drained, then how the run ended. It returns the run's exit code: 0 succeeded, 2 stopped, and
 // 1 failed or crashed. A canceled ctx detaches instead: the run is left untouched and the code is 0.
 func attachRun(ctx context.Context, root string, run runs.Run, out io.Writer, colors *progress.Colors) (int, error) {
 	id := run.Descriptor.ID
@@ -316,7 +322,9 @@ func statusColor(colors *progress.Colors, status runs.Status) *color.Color {
 	}
 }
 
-// consoleFollower copies a run's console log to out as it grows, from its first byte on.
+// consoleFollower copies a run's console log to out as it grows: from its first byte on, or, for a log
+// longer than consoleReplayLimit when first opened, from the first line start within its last
+// consoleReplayLimit bytes, after a note that names the full log.
 type consoleFollower struct {
 	path    string
 	out     io.Writer
@@ -338,6 +346,9 @@ func (f *consoleFollower) copy(ctx context.Context) error {
 			return fmt.Errorf("open console log: %w", err)
 		}
 		f.file, f.buf = file, make([]byte, consoleChunk)
+		if err := f.skipToTail(); err != nil {
+			return err
+		}
 	}
 	for ctx.Err() == nil {
 		n, err := f.file.Read(f.buf)
@@ -353,6 +364,37 @@ func (f *consoleFollower) copy(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("read console log: %w", err)
 		}
+	}
+	return nil
+}
+
+// skipToTail moves past the start of a log longer than consoleReplayLimit, to the first line start
+// within its last consoleReplayLimit bytes, and notes the omission with the full log's path. A tail
+// holding no line start begins mid-line at the limit.
+func (f *consoleFollower) skipToTail() error {
+	info, err := f.file.Stat()
+	if err != nil {
+		return fmt.Errorf("read console log: %w", err)
+	}
+	if info.Size() <= consoleReplayLimit {
+		return nil
+	}
+	// one byte before the window tells whether the window already starts a line
+	from := info.Size() - consoleReplayLimit - 1
+	window := make([]byte, consoleReplayLimit+1)
+	n, err := f.file.ReadAt(window, from)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("read console log: %w", err)
+	}
+	start := from + 1
+	if i := bytes.IndexByte(window[:n], '\n'); i >= 0 && i < n-1 {
+		start = from + int64(i) + 1
+	}
+	if _, err := f.file.Seek(start, io.SeekStart); err != nil {
+		return fmt.Errorf("read console log: %w", err)
+	}
+	if _, err := fmt.Fprintf(f.out, "(earlier output omitted; full log: %s)\n", f.path); err != nil {
+		return fmt.Errorf("write console output: %w", err)
 	}
 	return nil
 }

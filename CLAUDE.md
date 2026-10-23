@@ -1048,6 +1048,9 @@ on the attempt's `finish` event, for a reader inside the run process, which hold
 `--attach`, `--runs`, and `--stop` (`runs_cmd.go`) read the runs of `runsRoot`: the root of the repository
 or worktree holding the working directory, found through `git.NewService` with `vcs_command`, so they work
 from a subdirectory and refuse outside a repository instead of answering "no detached runs".
+`--attach` replays at most `consoleReplayLimit` (1 MiB) of `console.log`, from the first line start in
+that tail after an `(earlier output omitted; full log: <path>)` line, since the bridge re-types it after
+every T3 restart and a 40-hour log would otherwise pass through the terminal whole each time.
 `stopRun` rereads the descriptor and, only while the lifetime lock is held and the recorded process
 still carries its start token, writes `stop-requested` and then sends SIGTERM to that process alone;
 the marker comes first so a run killed by its own force exit classifies as stopped. `--stop` then

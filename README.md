@@ -1438,8 +1438,8 @@ and `--acp` takes none. Set `keep_awake = false` to opt out.
 worktree that survives the terminal, agent turn, or T3 Code session it was started from, with its
 state under `.loopai/progress/runs/<run-id>/`. The launcher prints the run id and
 `follow: loopai --attach <run-id>`, then returns. `loopai --runs` lists the checkout's runs,
-`loopai --attach [run]` replays and follows one until it ends (exit code `0` succeeded, `1` failed or
-crashed, `2` stopped; Ctrl+C only detaches), and `loopai --stop <run>` stops one gracefully. Launching
+`loopai --attach [run]` replays (at most the last 1 MiB of its console log) and follows one until it
+ends (exit code `0` succeeded, `1` failed or crashed, `2` stopped; Ctrl+C only detaches), and `loopai --stop <run>` stops one gracefully. Launching
 a plan whose latest run failed, crashed, or was stopped resumes that run in its kept worktree. A
 detached run archives the plan on its own branch, never committing into the checkout it was launched
 from, removes its worktree only after a clean success, and makes `--merge` and `--pr` of its branch

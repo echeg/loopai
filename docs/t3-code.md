@@ -56,7 +56,9 @@ loopai warns and starts the run without it. The run's environment never contains
 `LOOPAI_T3_TOKEN`, or `CMUX_*`. It takes its own keep-awake hold when `keep_awake` is on.
 
 `--attach` prints the run's id, attempt, status, phase, and task, replays its console log from the
-first byte (every attempt included), and follows it until the run ends. It then prints the status,
+first byte (every attempt included), and follows it until the run ends. A log longer than 1 MiB is
+replayed from the first line start within its last 1 MiB, after a line
+`(earlier output omitted; full log: <path>)`. It then prints the status,
 reason, branch, commit, report location, pull request, and kept worktree, and exits with `0` for
 succeeded, `1` for failed or crashed, and `2` for stopped. Ctrl+C only detaches: the run keeps going.
 

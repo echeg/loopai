@@ -809,6 +809,58 @@ func TestAttachRunFinishedRun(t *testing.T) {
 	}
 }
 
+// TestAttachRunBoundsTheReplay attaches to finished runs whose console log is longer than
+// consoleReplayLimit: only its last consoleReplayLimit bytes are replayed, from the first line start
+// among them, after a note naming the full log, while a log that fits is replayed whole.
+func TestAttachRunBoundsTheReplay(t *testing.T) {
+	plainColors(t)
+	numbered := func(n int) string {
+		var b strings.Builder
+		for i := range n {
+			fmt.Fprintf(&b, "line %07d of the console log\n", i) // 32 bytes, so the limit holds whole lines
+		}
+		return b.String()
+	}
+	long := numbered(consoleReplayLimit/32+10_000) + "a last line without a newline, longer than the others"
+	cut := len(long) - consoleReplayLimit // falls inside a line: the replay starts at the next one
+	nextLine := cut + strings.IndexByte(long[cut:], '\n') + 1
+	oneLine := strings.Repeat("x", consoleReplayLimit+100) + "\n"
+	tests := []struct {
+		name, log, want string
+		note            bool
+	}{
+		{name: "a log over the limit", log: long, want: long[nextLine:] + "\n", note: true},
+		{name: "a cut at a line start", log: "early line\n" + numbered(consoleReplayLimit/32),
+			want: numbered(consoleReplayLimit / 32), note: true},
+		{name: "a tail without a line start", log: oneLine, want: oneLine[len(oneLine)-consoleReplayLimit:], note: true},
+		{name: "a log at the limit", log: numbered(consoleReplayLimit / 32), want: numbered(consoleReplayLimit / 32)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := saveRunsTestRun(t, root, runs.Descriptor{ID: "long-1", Plan: "docs/plans/long.md", Branch: "long"})
+			require.NoError(t, appendRunsConsole(dir, tc.log))
+			saveRunsTestOutcome(t, dir, runs.Outcome{Status: runs.StatusSucceeded, Branch: "long"})
+			run, err := runs.Resolve(root, "long-1")
+			require.NoError(t, err)
+
+			var out bytes.Buffer
+			code, err := attachRun(t.Context(), root, run, &out, testColors())
+			require.NoError(t, err)
+			assert.Equal(t, 0, code)
+			header := "loopai run long-1, attempt 1: succeeded\n"
+			if tc.note {
+				header += "(earlier output omitted; full log: " + filepath.Join(dir, runs.ConsoleLogFile) + ")\n"
+			}
+			want := header + tc.want + "=== loopai run long-1, attempt 1 finished ===\nstatus: succeeded\nbranch: long\n"
+			got := out.String()
+			assert.Len(t, got, len(want))
+			assert.Equal(t, want, got)
+			assert.LessOrEqual(t, len(got)-len(header), consoleReplayLimit+100, "the replay is bounded")
+		})
+	}
+}
+
 func TestAttachRunHeaderOfAnAttemptNotStartedYet(t *testing.T) {
 	plainColors(t)
 	root := t.TempDir()
