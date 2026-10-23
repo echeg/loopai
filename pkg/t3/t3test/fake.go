@@ -128,10 +128,12 @@ type Server struct {
 	runtimeHome string
 	reject401   bool
 	ignorePings bool
-	stalled     map[string]bool
-	overrides   map[string][]func(id json.RawMessage) map[string]any
-	receipts    map[string]int
-	sequence    int
+	// openStarting makes the next terminal.open that starts a session leave it starting
+	openStarting bool
+	stalled      map[string]bool
+	overrides    map[string][]func(id json.RawMessage) map[string]any
+	receipts     map[string]int
+	sequence     int
 
 	handshakes []Handshake
 	requests   []Request
@@ -275,6 +277,32 @@ func (s *Server) Upsert(term Terminal) {
 	s.putTerminal(term)
 	s.mu.Unlock()
 	s.broadcast(map[string]any{"type": "upsert", "terminal": terminalSummary(term)})
+}
+
+// OpenNextStarting makes the next terminal.open that starts a session leave it starting, as a shell
+// still launching is, so writes fail with TerminalNotRunningError until SetTerminalState marks it
+// running. An open that only resizes a live session does not use it up.
+func (s *Server) OpenNextStarting() {
+	s.mu.Lock()
+	s.openStarting = true
+	s.mu.Unlock()
+}
+
+// SetTerminalState changes an existing session's status and hasRunningSubprocess in place, keeping
+// its launch context, and streams an upsert to every subscriber. It reports whether the session
+// exists.
+func (s *Server) SetTerminalState(threadID, terminalID, status string, hasRunningSubprocess bool) bool {
+	s.mu.Lock()
+	term, found := s.terminal(threadID, terminalID)
+	if found {
+		term.Status, term.HasRunningSubprocess = status, hasRunningSubprocess
+		s.putTerminal(term)
+	}
+	s.mu.Unlock()
+	if found {
+		s.broadcast(map[string]any{"type": "upsert", "terminal": terminalSummary(term)})
+	}
+	return found
 }
 
 // Remove deletes a terminal session and streams a remove to every subscriber, as closing its tab
@@ -780,6 +808,9 @@ func (s *Server) terminalOpen(id, payload json.RawMessage) map[string]any {
 	if sameContext {
 		term = existing
 	} else {
+		if s.openStarting {
+			term.Status, s.openStarting = "starting", false
+		}
 		term = normalizeTerminal(term)
 		s.putTerminal(term)
 	}
@@ -905,17 +936,20 @@ func (s *Server) dispatch(id, payload json.RawMessage) map[string]any {
 // client acknowledged the previous chunk.
 func (fc *fakeConn) subscribe(id json.RawMessage) {
 	s := fc.server
+	// the stream is registered before the snapshot is read, so an event changing the terminals in
+	// between is queued behind the snapshot instead of lost: an upsert may then arrive twice, which
+	// is harmless, while a lost remove is not. The snapshot counts as unacknowledged before it is
+	// sent, so an Ack racing ahead of run is kept.
+	sub := &fakeSub{conn: fc, id: id, wake: make(chan struct{}, 1), quit: make(chan struct{}), unacked: true}
+	fc.mu.Lock()
+	fc.subs[requestKey(id)] = sub
+	fc.mu.Unlock()
 	s.mu.Lock()
 	terminals := make([]map[string]any, 0, len(s.terminals))
 	for _, term := range s.terminals {
 		terminals = append(terminals, terminalSummary(term))
 	}
 	s.mu.Unlock()
-	// the snapshot counts as unacknowledged before it is sent, so an Ack racing ahead of run is kept
-	sub := &fakeSub{conn: fc, id: id, wake: make(chan struct{}, 1), quit: make(chan struct{}), unacked: true}
-	fc.mu.Lock()
-	fc.subs[requestKey(id)] = sub
-	fc.mu.Unlock()
 	fc.send(chunk(id, map[string]any{"type": "snapshot", "terminals": terminals}))
 	s.wg.Go(sub.run)
 }

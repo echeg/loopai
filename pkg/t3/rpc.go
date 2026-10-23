@@ -41,6 +41,11 @@ var ErrProtocolUnsupported = errors.New("t3: server does not speak orchestration
 // ErrClosed reports a connection that was closed or lost, or a call made without one.
 var ErrClosed = errors.New("t3: connection closed")
 
+// ErrReplyTooLarge reports a server message above the frame limit, such as the projection of a very
+// long thread. It closes the shared connection, and a reconnect would read the same message again,
+// so callers disable their T3 integration on it rather than retry.
+var ErrReplyTooLarge = errors.New("t3: server message exceeds the frame limit")
+
 // HandshakeError is an HTTP-level rejection by the server: a failed WebSocket upgrade, or a failed
 // HTTP API request. Code and Reason come from the JSON body, for example 426
 // orchestration_protocol_incompatible, or 401 auth_invalid with reason missing_credential or
@@ -189,7 +194,7 @@ type pendingCall struct {
 
 // dialRPC opens a connection with the Bearer token. A rejected upgrade is a *HandshakeError carrying
 // the JSON body's code, reason, and message.
-func dialRPC(ctx context.Context, wsURL, token string, pingInterval time.Duration) (*rpcConn, error) {
+func dialRPC(ctx context.Context, wsURL, token string, pingInterval time.Duration, maxFrame int64) (*rpcConn, error) {
 	dialer := websocket.Dialer{Proxy: http.ProxyFromEnvironment, HandshakeTimeout: handshakeTimeout}
 	ws, resp, err := dialer.DialContext(ctx, wsURL, http.Header{"Authorization": {"Bearer " + token}})
 	if resp != nil && resp.Body != nil {
@@ -201,7 +206,7 @@ func dialRPC(ctx context.Context, wsURL, token string, pingInterval time.Duratio
 		}
 		return nil, fmt.Errorf("t3: connect %s: %w", wsURL, err)
 	}
-	ws.SetReadLimit(maxFrameSize)
+	ws.SetReadLimit(maxFrame)
 	c := &rpcConn{
 		ws:      ws,
 		pong:    make(chan struct{}, 1),
@@ -269,11 +274,16 @@ func (c *rpcConn) fail(err error) {
 }
 
 // readLoop routes every incoming frame until the connection fails. A frame that is not JSON means
-// the server speaks something else, so it closes the connection with ErrProtocolUnsupported.
+// the server speaks something else, so it closes the connection with ErrProtocolUnsupported; a
+// frame above the read limit closes it with ErrReplyTooLarge.
 func (c *rpcConn) readLoop() {
 	defer c.loops.Done()
 	for {
 		_, data, err := c.ws.ReadMessage()
+		if errors.Is(err, websocket.ErrReadLimit) {
+			c.fail(fmt.Errorf("%w: %w: %w", ErrClosed, ErrReplyTooLarge, err))
+			return
+		}
 		if err != nil {
 			c.fail(fmt.Errorf("%w: %w", ErrClosed, err))
 			return
@@ -461,6 +471,12 @@ func (c *rpcConn) pingLoop(interval time.Duration) {
 	defer c.loops.Done()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	c.pingOnTicks(ticker.C, interval)
+}
+
+// pingOnTicks is pingLoop's body: it sends a Ping on every tick and fails the connection when the
+// previous one went unanswered for an interval.
+func (c *rpcConn) pingOnTicks(ticks <-chan time.Time, interval time.Duration) {
 	awaiting := false
 	for {
 		select {
@@ -468,8 +484,10 @@ func (c *rpcConn) pingLoop(interval time.Duration) {
 			return
 		case <-c.pong:
 			awaiting = false
-		case <-ticker.C:
-			if awaiting {
+		case <-ticks:
+			// a pong and the tick can be ready together after a descheduled interval, and select
+			// picks either, so a pong already delivered still counts
+			if awaiting && !c.pongArrived() {
 				c.fail(fmt.Errorf("%w: no pong within %s", ErrClosed, interval))
 				return
 			}
@@ -478,6 +496,16 @@ func (c *rpcConn) pingLoop(interval time.Duration) {
 				return
 			}
 		}
+	}
+}
+
+// pongArrived takes a pong already delivered, without waiting for one.
+func (c *rpcConn) pongArrived() bool {
+	select {
+	case <-c.pong:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -528,9 +556,13 @@ func (c *rpcConn) send(method string, payload any, register func(id int64, key s
 	return nil
 }
 
-// call performs one unary request and returns its Success value. A canceled context abandons the
-// call; its late reply is ignored.
+// call performs one unary request and returns its Success value. A context already done sends
+// nothing, so a canceled command can never apply; a context canceled later abandons the call, and
+// its late reply is ignored.
 func (c *rpcConn) call(ctx context.Context, method string, payload any) (json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("t3 %s: %w", method, err)
+	}
 	result := make(chan callResult, 1)
 	var key string
 	err := c.send(method, payload, func(_ int64, k string) {

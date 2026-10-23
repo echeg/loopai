@@ -237,6 +237,99 @@ func TestPing(t *testing.T) {
 	assert.Contains(t, err.Error(), "no pong")
 }
 
+func TestPingCountsAPongReadyWithTheTick(t *testing.T) {
+	s := t3test.NewServer(t)
+	s.IgnorePings()
+	ws, resp, err := websocket.DefaultDialer.DialContext(t.Context(),
+		"ws"+strings.TrimPrefix(s.URL(), "http")+"/ws?orchestrationProtocol=2",
+		http.Header{"Authorization": {"Bearer " + s.Token()}})
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.NoError(t, err)
+	// no read loop: the server ignores pings, and the test delivers every pong itself
+	c := &rpcConn{ws: ws, pong: make(chan struct{}, 1), done: make(chan struct{}),
+		calls: map[string]pendingCall{}, streams: map[string]*rpcStream{}}
+	ticks := make(chan time.Time, 1)
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		c.pingOnTicks(ticks, time.Second)
+	}()
+	t.Cleanup(func() {
+		c.fail(ErrClosed)
+		<-ended
+	})
+	failure := func() error {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.err
+	}
+	// drained waits until the loop took everything queued on a channel, or failed the connection
+	drained := func(name string, n func() int) {
+		t.Helper()
+		require.Eventually(t, func() bool { return n() == 0 || failure() != nil }, 10*time.Second, time.Millisecond,
+			"%s taken", name)
+	}
+
+	// each round leaves a pong and a tick ready together while a ping is awaited; select picks
+	// either, so without counting the delivered pong half the rounds would fail the connection
+	for round := range 20 {
+		c.pong <- struct{}{} // nothing awaited
+		drained("pong", func() int { return len(c.pong) })
+		c.wmu.Lock() // the next ping's write waits until both are ready
+		ticks <- time.Now()
+		drained("tick", func() int { return len(ticks) })
+		c.pong <- struct{}{}
+		ticks <- time.Now()
+		c.wmu.Unlock()
+		drained("pong", func() int { return len(c.pong) })
+		drained("tick", func() int { return len(ticks) })
+		require.NoError(t, failure(), "round %d", round)
+	}
+	require.Eventually(t, func() bool { return s.Pings() == 40 }, 10*time.Second, time.Millisecond, "a ping per tick")
+
+	ticks <- time.Now() // a ping is awaited and no pong came
+	require.Eventually(t, func() bool { return failure() != nil }, 10*time.Second, time.Millisecond)
+	require.ErrorIs(t, failure(), ErrClosed)
+	assert.Contains(t, failure().Error(), "no pong")
+}
+
+func TestPongArrived(t *testing.T) {
+	c := &rpcConn{pong: make(chan struct{}, 1)}
+	assert.False(t, c.pongArrived())
+	c.pong <- struct{}{}
+	assert.True(t, c.pongArrived())
+	assert.False(t, c.pongArrived(), "the pong is taken")
+}
+
+func TestCallWithDoneContextSendsNothing(t *testing.T) {
+	s := t3test.NewServer(t, t3test.WithThread(t3test.Thread{ID: "th", ProjectID: "p", Title: "T"}))
+	c := newTestClient(t, s)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err := c.SetTitle(ctx, "th", "never")
+	require.ErrorIs(t, err, context.Canceled)
+	require.NoError(t, c.Pin(t.Context(), "th"), "the connection stays usable")
+	dispatches := s.Dispatches()
+	require.Len(t, dispatches, 1, "the canceled update never reached the server")
+	assert.Equal(t, "thread.pin", dispatches[0]["type"])
+	th, _ := s.Thread("th")
+	assert.Equal(t, "T", th.Title)
+}
+
+func TestReplyAboveFrameLimit(t *testing.T) {
+	s := t3test.NewServer(t, t3test.WithThread(t3test.Thread{ID: "th", ProjectID: "p", Title: strings.Repeat("x", 4096)}))
+	c := newTestClient(t, s, withMaxFrameSize(1024))
+	_, err := c.GetThreadProjection(t.Context(), "th")
+	require.ErrorIs(t, err, ErrReplyTooLarge)
+	require.ErrorIs(t, err, ErrClosed, "the oversized reply closes the shared connection")
+	require.NotErrorIs(t, err, ErrProtocolUnsupported)
+	_, err = c.GetThreadProjection(t.Context(), "th")
+	require.ErrorIs(t, err, ErrReplyTooLarge, "the connection stays failed with the cause")
+}
+
 func TestCallContextCanceled(t *testing.T) {
 	s := t3test.NewServer(t, t3test.WithThread(t3test.Thread{ID: "th", ProjectID: "p", Title: "T"}))
 	c := newTestClient(t, s)

@@ -99,11 +99,12 @@ func (c *rawConn) tryRecv(timeout time.Duration) (map[string]any, error) {
 	}
 }
 
-// recvTagged reads n messages and indexes them by _tag, for replies whose order is not defined.
-func (c *rawConn) recvTagged(n int) map[string]map[string]any {
+// recvTagged reads two messages and indexes them by _tag, for a reply and a chunk whose order is not
+// defined.
+func (c *rawConn) recvTagged() map[string]map[string]any {
 	c.t.Helper()
 	out := map[string]map[string]any{}
-	for range n {
+	for range 2 {
 		msg := c.recv()
 		out[msg["_tag"].(string)] = msg
 	}
@@ -366,6 +367,69 @@ func TestServerMetadataStreamWaitsForAck(t *testing.T) {
 	assert.Equal(t, 1, s.Interrupts())
 }
 
+func TestServerMetadataStreamKeepsARemoveRacingTheSubscription(t *testing.T) {
+	for i := range 40 {
+		s := NewServer(t, WithTerminal(Terminal{ThreadID: "th", TerminalID: "a", Cwd: "/r"}))
+		c := connectRaw(t, s)
+		removed := make(chan struct{})
+		go func() {
+			defer close(removed)
+			s.Remove("th", "a")
+		}()
+		c.request(1, "subscribeTerminalMetadata", map[string]any{})
+		snapshot := readChunk(t, c)
+		<-removed
+		if len(snapshot["terminals"].([]any)) == 0 {
+			continue // the remove came first; the snapshot already lacks the terminal
+		}
+		c.send(map[string]any{"_tag": "Ack", "requestId": 1})
+		event := readChunk(t, c)
+		assert.Equal(t, map[string]any{"type": "remove", "threadId": "th", "terminalId": "a"}, event,
+			"iteration %d: a snapshot holding the terminal is followed by its remove", i)
+	}
+}
+
+func TestServerOpenNextStarting(t *testing.T) {
+	s := NewServer(t)
+	c := connectRaw(t, s)
+	c.request(1, "subscribeTerminalMetadata", map[string]any{})
+	readChunk(t, c)
+	c.send(map[string]any{"_tag": "Ack", "requestId": 1})
+
+	s.OpenNextStarting()
+	open := map[string]any{"threadId": "th", "terminalId": "t", "cwd": "/r", "env": map[string]any{"K": "v"}}
+	c.request(2, "terminal.open", open)
+	replies := c.recvTagged()
+	assert.Equal(t, "starting", replies["Exit"]["exit"].(map[string]any)["value"].(map[string]any)["status"])
+	upsert := replies["Chunk"]["values"].([]any)[0].(map[string]any)
+	assert.Equal(t, "starting", upsert["terminal"].(map[string]any)["status"])
+	c.send(map[string]any{"_tag": "Ack", "requestId": 1})
+
+	c.request(3, "terminal.write", map[string]any{"threadId": "th", "terminalId": "t", "data": "x"})
+	cause := c.recv()["exit"].(map[string]any)["cause"].([]any)[0].(map[string]any)
+	assert.Equal(t, "TerminalNotRunningError", cause["error"].(map[string]any)["_tag"])
+
+	require.True(t, s.SetTerminalState("th", "t", "running", true))
+	upsert = readChunk(t, c)
+	assert.Equal(t, "upsert", upsert["type"])
+	summary := upsert["terminal"].(map[string]any)
+	assert.Equal(t, "running", summary["status"])
+	assert.Equal(t, true, summary["hasRunningSubprocess"])
+	c.send(map[string]any{"_tag": "Ack", "requestId": 1})
+	c.request(4, "terminal.write", map[string]any{"threadId": "th", "terminalId": "t", "data": "x"})
+	assert.Equal(t, "Success", c.recv()["exit"].(map[string]any)["_tag"])
+
+	terminals := s.Terminals()
+	require.Len(t, terminals, 1)
+	assert.Equal(t, map[string]string{"K": "v"}, terminals[0].Env, "the launch context is kept")
+	assert.False(t, s.SetTerminalState("th", "missing", "running", false))
+
+	c.request(5, "terminal.open", map[string]any{"threadId": "th", "terminalId": "u", "cwd": "/r"})
+	replies = c.recvTagged()
+	assert.Equal(t, "running", replies["Exit"]["exit"].(map[string]any)["value"].(map[string]any)["status"],
+		"the hook applies to one open only")
+}
+
 func TestServerTerminalOpenResizesOrResets(t *testing.T) {
 	s := NewServer(t)
 	c := connectRaw(t, s)
@@ -375,7 +439,7 @@ func TestServerTerminalOpenResizesOrResets(t *testing.T) {
 
 	open := map[string]any{"threadId": "th", "terminalId": "t", "cwd": "/r"}
 	c.request(2, "terminal.open", open)
-	replies := c.recvTagged(2) // a new session streams an upsert beside the reply
+	replies := c.recvTagged() // a new session streams an upsert beside the reply
 	require.Contains(t, replies, "Exit")
 	upsert := replies["Chunk"]["values"].([]any)[0].(map[string]any)
 	assert.Equal(t, "upsert", upsert["type"])
@@ -387,7 +451,7 @@ func TestServerTerminalOpenResizesOrResets(t *testing.T) {
 	require.ErrorIs(t, err, errNoMessage, "an identical launch context only resizes, without an upsert")
 
 	c.request(4, "terminal.open", map[string]any{"threadId": "th", "terminalId": "t", "cwd": "/other"})
-	replies = c.recvTagged(2)
+	replies = c.recvTagged()
 	upsert = replies["Chunk"]["values"].([]any)[0].(map[string]any)
 	assert.Equal(t, "/other", upsert["terminal"].(map[string]any)["cwd"], "another launch context resets the session")
 }

@@ -53,6 +53,7 @@ const (
 type Client struct {
 	token        string
 	pingInterval time.Duration
+	maxFrame     int64
 	httpClient   *http.Client
 
 	mu      sync.Mutex
@@ -80,11 +81,17 @@ func WithPingInterval(d time.Duration) Option {
 	}
 }
 
+// withMaxFrameSize lowers the frame limit, so a test can exceed it without a 64 MiB reply.
+func withMaxFrameSize(n int64) Option {
+	return func(c *Client) { c.maxFrame = n }
+}
+
 // NewClient returns a Client that authenticates with token. It does not connect.
 func NewClient(token string, opts ...Option) *Client {
 	c := &Client{
 		token:        token,
 		pingInterval: defaultPingInterval,
+		maxFrame:     maxFrameSize,
 		httpClient:   &http.Client{Timeout: httpTimeout},
 		unknown:      map[string]pendingCommand{},
 	}
@@ -108,7 +115,7 @@ func (c *Client) Connect(ctx context.Context) (Runtime, error) {
 	if err != nil {
 		return Runtime{}, err
 	}
-	conn, err := dialRPC(ctx, wsURL, c.token, c.pingInterval)
+	conn, err := dialRPC(ctx, wsURL, c.token, c.pingInterval, c.maxFrame)
 	if err != nil {
 		return Runtime{}, err
 	}
