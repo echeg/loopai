@@ -348,6 +348,9 @@ func acpFinalMessage(dir, id string, st runs.Status) string {
 	if branch == "" {
 		branch = desc.Branch
 	}
+	// report.md is written only when the run produced a report (tasks-only and early failures do
+	// not), so a missing one is left out rather than named, and the truncation pointer names the
+	// run directory instead
 	reportPath := filepath.Join(dir, runs.ReportFile)
 	_, statErr := os.Stat(reportPath)
 	hasReport := statErr == nil

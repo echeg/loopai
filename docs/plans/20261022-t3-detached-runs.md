@@ -1235,6 +1235,7 @@
 - [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 16
 - ⚠️ An external review's evaluation phase stays on the external review's tool call (retitled, not a new card), so each reviewer/evaluator iteration does not open two cards; a limit wait retitles the card it interrupts.
 - ⚠️ The Stop guard reads `t3_thread_read` twice (thread state, then the latest 50 activity items), reading the session's latest MCP credential when the grace ends; a reply without an `items` list counts as the item kind being unavailable and stops.
+- ⚠️ The final message names `<run dir>/report.md` only when that file exists (a run without a report, such as tasks-only or an early failure, writes none); otherwise the line is omitted and the truncation pointer names the run directory instead of a missing report.
 
 ### Task 16: Rewrite the T3 skills, checks, and contract
 - [ ] rewrite `assets/claude/skills/loopai-t3/SKILL.md` around the mode question, per Technical Details:

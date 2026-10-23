@@ -347,6 +347,17 @@ func TestACPFinalMessage(t *testing.T) {
 		assert.Equal(t, "loopai run b-20261022-120000-bbbb stopped: stopped before the run recorded an outcome.\n\n"+
 			"Branch: feat-b", acpFinalMessage(dir, "b-20261022-120000-bbbb", runs.StatusStopped))
 	})
+	t.Run("a truncated message without a report points at the run directory", func(t *testing.T) {
+		cwd := t.TempDir()
+		dir := saveRunsTestRun(t, cwd, runs.Descriptor{ID: "c-20261022-120000-cccc", Branch: "feat-c"})
+		appendRunsTestEvents(t, dir, 1, runs.Event{Type: runs.EventAttemptStart},
+			runs.Event{Type: runs.EventFinish, Status: runs.StatusFailed, Reason: strings.Repeat("failure ", 4000)})
+		got := acpFinalMessage(dir, "c-20261022-120000-cccc", runs.StatusFailed)
+		assert.LessOrEqual(t, acpJSONLen(got), acpFinalMessageLimit)
+		assert.NotContains(t, got, "Full report:")
+		assert.NotContains(t, got, runs.ReportFile)
+		assert.True(t, strings.HasSuffix(got, "[truncated; the run's records are in "+dir+"]"))
+	})
 }
 
 func TestACPCapMessage(t *testing.T) {
