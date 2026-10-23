@@ -725,7 +725,9 @@ Every plan-archive commit is pathspec-restricted: `MovePlanToCompleted` commits 
 `commitFiles` over the destination plus, when `git mv` staged it, the source deletion, and the
 report variant goes through `commitReportPlanMove`. Never use the bare `commit` there: a single-plan
 worktree run archives through `MainGitSvc` in the user's own checkout, so anything they staged during
-the run would otherwise land under the `move completed plan` message.
+the run would otherwise land under the `move completed plan` message. A detached run is the exception:
+`ArchiveOnRunBranch` archives on its own branch through the run's Git service, so its pushed branch,
+and a `finalize = pr` PR, carry the archive commit and the report sidecar.
 A rejected single-plan archive (a `commit-msg` hook is the reported case) keeps the run green but is
 not silent: `moveCompletedPlan` warns through the progress logger and returns it as `incomplete`,
 which `displayStats` repeats after the finalize summary lines and before any `finalize incomplete`
@@ -805,7 +807,8 @@ cleanup, because it pushes from the run's own checkout. A PR opens only after a 
 body against `origin/<base>`. `executePlan` passes `Runner.Report()` through
 `runFinalizeCloseout` and `openFinalizePR` into `closeoutTarget.report`. This in-memory report
 reaches the PR even under single-plan `--worktree`, where archival writes the sidecar through
-`MainGitSvc` in the source checkout rather than on the pushed branch. `merge` runs
+`MainGitSvc` in the source checkout rather than on the pushed branch; a detached run's sidecar is on
+the pushed branch as well. `merge` runs
 `gh pr checks <url> --watch --fail-fast` under `finalize_checks_timeout`, retrying a fresh PR's
 "no checks reported" for `finalizeNoChecksGrace` before treating it as having none — the wait
 emits no output, so `awake.Holder.Pin` holds the keep-awake inhibitor through it — then
@@ -817,8 +820,9 @@ merge queue only enqueued the PR; no branch is deleted and the local base is nev
 plan archive it keeps the run green and is surfaced, printed last by `displayStats` as
 `finalize incomplete: <reason>`, in `notify.Result.Finalize`/`PRURL`, and through `SetFinishNote`
 on the cmux and Orca reporters (`synced`, `PR opened`, `PR merged`, `finalize incomplete`).
-Finalize removes no worktree: loopai's own `--worktree` is removed by the usual teardown, and a
-T3 Code-managed checkout, which the run uses without `--worktree`, is never touched.
+Finalize removes no worktree: loopai's own worktree (`--worktree`, or a detached run's after a clean
+success) is removed by the usual teardown, and a T3 Code-managed checkout a detached run was launched
+from is never touched.
 
 `phase.ReportPhase` runs after finalize and before the successful review-checkpoint clear on every review pipeline when `report_enabled` is true. It receives rendered deterministic facts and returns ordinary assistant Markdown; the model must not write the repository file because a single-plan worktree run archives through `MainGitSvc` in the main checkout, outside the executor's worktree. `Runner.Report()` exposes the extracted report, or an eleven-section facts-only fallback when model assessment is unavailable. `MovePlanToCompletedWithReport` writes `docs/plans/completed/<stem>.report.md` beside the archived plan in the same commit; tasks-only never generates a report, and review-only modes may populate `Runner.Report()` but do not archive a sidecar because `shouldMovePlan` is false. A non-empty review-checkpoint invalidation reason resets and removes stale run-record state together with the checkpoint. Current-invocation task counts and start time survive post-task invalidation so newly completed work remains in the report. The success clear intentionally removes only the checkpoint, preserving the record through report generation and archival; successful archival then removes the `.run.json` file.
 

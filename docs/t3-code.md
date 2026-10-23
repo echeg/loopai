@@ -35,8 +35,9 @@ branch. Without one, `--attach` follows the only live run, else the newest.
 
 `--detach` starts one plan, in full or `--tasks-only` mode, as an independent process. It always runs
 in a loopai worktree (`.loopai/worktrees/<branch>`), as `--worktree` would, and accepts the usual
-model, reviewer, finalize, and branch flags. It refuses a plan chain, `--commit`, the review-only and
-plan-creation modes, `--serve`, `--cmux-workspace`, and the standalone commands. The launcher waits up
+model, reviewer, finalize, and branch flags. It refuses a plan chain, `--commit`, the review-only
+modes (`--review`, `--external-only`), plan creation (`--plan`), `--gen-agents`, `--serve`, `--watch`,
+`--cmux-workspace`, and the standalone commands. The launcher waits up
 to 120 seconds for the run to confirm that its attempt started, prints
 
 ```text

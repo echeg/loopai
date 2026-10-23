@@ -591,10 +591,11 @@ modes existed still describes the old rebase step and never asks for
 run. Refresh it from `loopai --dump-defaults` or with `/loopai-update`.
 
 Under `pr` and `merge`, the pull request is opened after the plan is archived, using the same push,
-origin, and title/body rules as `--pr`. Without `--worktree`, including Orca- and T3 Code-managed
-checkouts and plan chains, the archive commit and report sidecar are on the plan branch and part of
-the PR. A single-plan `--worktree` run archives in the source checkout instead, so the PR carries the
-plan under `docs/plans/` with its ticked checkboxes and the archive commit stays local. Finalize
+origin, and title/body rules as `--pr`. Without `--worktree`, including Orca-managed checkouts, for
+plan chains, and for a detached run (`--detach`, which both T3 Code modes start), the archive commit
+and report sidecar are on the plan branch and part of the PR. A single-plan `--worktree` run without
+`--detach` archives in the source checkout instead, so the PR carries the plan under `docs/plans/`
+with its ticked checkboxes and the archive commit stays local. Finalize
 passes the completion report in memory to build the PR body even when its sidecar is absent
 from the pushed branch; it uses the report-backed layout described under [Completion and close-out](#completion-and-close-out). Its diff statistics are
 measured against `origin/<base>`, so base changes on the branch do not count as the run's work. After
@@ -639,7 +640,8 @@ During a full run that archives its plan, the report is written beside it as
 `docs/plans/completed/<stem>.report.md`. The plan and report are committed together. For a
 single-plan `--worktree` run, both are archived through the main-checkout Git service, so the
 sidecar lands next to the plan in the main checkout rather than in the temporary execution
-worktree. Tasks-only runs generate no report, and review-only modes generate a report in their run
+worktree. A detached run (`--detach`) archives both on its own branch instead and never commits into
+the checkout it was launched from. Tasks-only runs generate no report, and review-only modes generate a report in their run
 record but do not archive a plan or sidecar.
 
 After each completed review stage, loopai writes a review checkpoint beside the progress log as
@@ -1439,11 +1441,15 @@ worktree that survives the terminal, agent turn, or T3 Code session it was start
 state under `.loopai/progress/runs/<run-id>/`. The launcher prints the run id and
 `follow: loopai --attach <run-id>`, then returns. `loopai --runs` lists the checkout's runs,
 `loopai --attach [run]` replays (at most the last 1 MiB of its console log) and follows one until it
-ends (exit code `0` succeeded, `1` failed or crashed, `2` stopped; Ctrl+C only detaches), and `loopai --stop <run>` stops one gracefully. Launching
-a plan whose latest run failed, crashed, or was stopped resumes that run in its kept worktree. A
-detached run archives the plan on its own branch, never committing into the checkout it was launched
-from, removes its worktree only after a clean success, and makes `--merge` and `--pr` of its branch
-refuse while it is live. Detached runs are not available on Windows or inside an agent sandbox.
+ends (exit code `0` succeeded, `1` failed or crashed, `2` stopped; Ctrl+C only detaches), and
+`loopai --stop <run>` stops one gracefully. `--detach` runs one plan in full or `--tasks-only` mode
+and refuses a plan chain, `--commit`, `--review`, `--external-only`, `--plan`, `--gen-agents`,
+`--serve`, `--watch`, `--cmux-workspace`, and the standalone commands. Launching a plan whose latest
+run failed, crashed, or was stopped resumes that run in its kept worktree. A detached run archives
+the plan and report on its own branch, never committing into the checkout it was launched from, so a
+`finalize = pr` run's pull request carries both; it removes its worktree only after a clean success,
+and makes `--merge` and `--pr` of its branch refuse while it is live. Detached runs are not available
+on Windows or inside an agent sandbox.
 
 [T3 Code](https://t3.codes) shows a detached run in one of two modes, both started by the `loopai-t3`
 skill. In Mode 1, `loopai --detach --t3-thread <thread-id> <plan>` with a T3 Code token in
