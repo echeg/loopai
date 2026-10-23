@@ -607,6 +607,48 @@ func TestStopDetachedRunMarksBeforeSignal(t *testing.T) {
 	})
 }
 
+// TestStopRunSignalFailure fails the SIGTERM after the stop marker is written: the marker is removed
+// again, so the run's later ending is not read as stopped, and a marker that cannot be removed is
+// reported together with the signal error.
+func TestStopRunSignalFailure(t *testing.T) {
+	pid := os.Getpid()
+	token, err := runs.ProcessStartToken(pid)
+	require.NoError(t, err)
+	t.Cleanup(func() { signalRun = signalTerm })
+
+	t.Run("the marker is removed", func(t *testing.T) {
+		root := t.TempDir()
+		dir := saveRunsTestRun(t, root, runs.Descriptor{ID: "live-1", PID: pid, PIDStart: token})
+		holdRunsTestLock(t, dir)
+		marked := false
+		signalRun = func(int) error {
+			marked, _ = runs.StopRequested(dir)
+			return errors.New("operation not permitted")
+		}
+		err := stopRun(root, runs.Descriptor{ID: "live-1"})
+		require.EqualError(t, err, "stop run live-1: operation not permitted")
+		assert.True(t, marked, "the marker was written before the signal")
+		stop, err := runs.StopRequested(dir)
+		require.NoError(t, err)
+		assert.False(t, stop, "the marker is removed after the failed signal")
+	})
+
+	t.Run("the marker cannot be removed", func(t *testing.T) {
+		root := t.TempDir()
+		dir := saveRunsTestRun(t, root, runs.Descriptor{ID: "live-2", PID: pid, PIDStart: token})
+		holdRunsTestLock(t, dir)
+		signalRun = func(int) error {
+			// a directory in place of the marker file cannot be removed by os.Remove
+			require.NoError(t, os.Remove(filepath.Join(dir, runs.StopFile)))
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, runs.StopFile, "x"), 0o750))
+			return errors.New("operation not permitted")
+		}
+		err := stopRun(root, runs.Descriptor{ID: "live-2"})
+		require.ErrorContains(t, err, "stop run live-2: operation not permitted")
+		require.ErrorContains(t, err, "clear stop marker")
+	})
+}
+
 func TestStopForceExitedRunIsStopped(t *testing.T) {
 	plainColors(t)
 	root := runsTestRepo(t)

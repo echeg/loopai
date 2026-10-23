@@ -413,8 +413,8 @@ func orDash(s string) string {
 // is held and the process the descriptor records still carries its recorded start token does stopRun
 // write the stop marker and then send SIGTERM to that process alone, never its group. The marker comes
 // first, so a run that its own force exit kills before it records an outcome classifies as stopped
-// rather than crashed. A run that is not running, or whose pid was reused, is refused without a signal.
-// stopRun does not wait for the run to end.
+// rather than crashed. A run that is not running, or whose pid was reused, is refused without a signal,
+// and a signal that fails removes the marker again. stopRun does not wait for the run to end.
 func stopRun(root string, desc runs.Descriptor) error {
 	id := desc.ID
 	if !runs.ValidID(id) {
@@ -439,7 +439,9 @@ func stopRun(root string, desc runs.Descriptor) error {
 		return fmt.Errorf("stop run %s: %w", id, markErr)
 	}
 	if signalErr := signalRun(current.PID); signalErr != nil {
-		return fmt.Errorf("stop run %s: %w", id, signalErr)
+		// the run was not asked to stop, so the marker must not make a later failure or crash read as
+		// stopped
+		return fmt.Errorf("stop run %s: %w", id, errors.Join(signalErr, runs.ClearStop(dir)))
 	}
 	return nil
 }
