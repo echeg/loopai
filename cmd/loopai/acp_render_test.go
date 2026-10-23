@@ -397,7 +397,7 @@ func TestACPCrashedRunWithAPlanShowsNoEntryInProgress(t *testing.T) {
 }
 
 // TestACPCanceledFollowClosesItsToolCall cancels a prompt following a live run: the open tool call is
-// closed as completed before the cancelled answer, so no card keeps spinning in the thread.
+// closed as completed before the StopCancelled answer, so no card keeps spinning in the thread.
 func TestACPCanceledFollowClosesItsToolCall(t *testing.T) {
 	cwd := t.TempDir()
 	run := newACPTestRun(t, cwd, runs.Descriptor{ID: acpRouteRunID,
