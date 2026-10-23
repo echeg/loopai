@@ -111,8 +111,9 @@ its only writes; it never edits prompts, agents, config, steering files, plans, 
 The `loopai-t3` skill (Claude and Codex) starts one plan run that T3 Code shows and asks for the
 mode every time. It reads `orchestrator_capabilities` (a null `parentThreadId` stops it) and
 `currentThreadId` from `t3_thread_list`. Mode 1 is offered only when `runtimeMode` is `full-access`,
-no sandbox variable (`SANDBOX_RUNTIME`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`) is set, the
-OS is not Windows, `parentThreadId` equals `currentThreadId`, and the id matches
+the environment check finds no sandbox the way `detectSandbox` does (a non-empty `CODEX_SANDBOX`,
+`CODEX_SANDBOX_NETWORK_DISABLED=1`, or `SANDBOX_RUNTIME=1`; `check-loopai-t3-skill_test.sh` executes it),
+the OS is not Windows, `parentThreadId` equals `currentThreadId`, and the id matches
 `^[A-Za-z0-9_.:%-]{1,1024}$`. It mints the token inline through
 `${T3CODE_CLI_PATH:-<T3 home>/bin/t3} auth session issue` with the four `orchestration:` and
 `terminal:` read/operate scopes and `--ttl 3d`, never through a `t3` on `PATH` or `npx`, so the token

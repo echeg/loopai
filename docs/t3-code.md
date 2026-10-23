@@ -386,8 +386,9 @@ development ports, so keep `previewUrl` explicit.
 
 - Windows: detached runs are not supported, so `--detach`, `--attach`, `--runs`, and `--stop` refuse
   there and neither mode works.
-- Sandbox: `--detach` refuses to start inside an agent sandbox (`SANDBOX_RUNTIME`, `CODEX_SANDBOX`, or
-  `CODEX_SANDBOX_NETWORK_DISABLED`), because every model process of the run would inherit it. Use Mode
+- Sandbox: `--detach` refuses to start inside an agent sandbox (a non-empty `CODEX_SANDBOX`,
+  `CODEX_SANDBOX_NETWORK_DISABLED=1`, or `SANDBOX_RUNTIME=1`), because every model process of the run
+  would inherit it. Use Mode
   2 from a sandboxed agent, or a thread in `full-access`.
 - Linux: T3 Code runs providers in a systemd slice that it stops at its next start. The transient scope
   keeps the run out of that slice; this has not been verified live.

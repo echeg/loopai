@@ -86,6 +86,7 @@ for variant in ("claude", "codex"):
             "`runtimeMode` is `full-access`", "SANDBOX_RUNTIME", "CODEX_SANDBOX",
             "CODEX_SANDBOX_NETWORK_DISABLED", "Windows", "`^[A-Za-z0-9_.:%-]{1,1024}$`", "single-quote",
             "`models[].id`")
+    environment = bash_block(label, context, "sandbox=")
     if variant == "claude":
         require(label, "T3 context", context, "ToolSearch")
     else:
@@ -130,7 +131,7 @@ for variant in ("claude", "codex"):
     for mode_name, phrase in report_phrases:
         assert phrase in named[mode_name], f"{label}: missing report phrase: {phrase}"
 
-    for key, value in (("Mode 1 launch", launch), ("settings lookup", lookup),
+    for key, value in (("environment check", environment), ("Mode 1 launch", launch), ("settings lookup", lookup),
                        ("workspace", workspace), ("report", blocks)):
         if key in shared:
             assert shared[key] == value, f"{label}: {key} differs between Claude and Codex"
@@ -152,6 +153,25 @@ def acp(path, args=None, source="local", **extra):
     config.update(extra.pop("config", {}))
     return dict({"driver": "acpRegistry", "config": config}, **extra)
 
+
+# the environment check reports a sandbox exactly when loopai's detectSandbox refuses --detach
+sandbox_vars = ("CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "SANDBOX_RUNTIME")
+sandbox_cases = [
+    ("no sandbox", {}, "sandbox="),
+    ("SANDBOX_RUNTIME=1", {"SANDBOX_RUNTIME": "1"}, "sandbox=SANDBOX_RUNTIME=1"),
+    ("SANDBOX_RUNTIME=0", {"SANDBOX_RUNTIME": "0"}, "sandbox="),
+    ("CODEX_SANDBOX set", {"CODEX_SANDBOX": "seatbelt"}, "sandbox=CODEX_SANDBOX=seatbelt"),
+    ("CODEX_SANDBOX_NETWORK_DISABLED=1", {"CODEX_SANDBOX_NETWORK_DISABLED": "1"},
+     "sandbox=CODEX_SANDBOX_NETWORK_DISABLED=1"),
+    ("CODEX_SANDBOX_NETWORK_DISABLED=0", {"CODEX_SANDBOX_NETWORK_DISABLED": "0"}, "sandbox="),
+    ("all three", {"CODEX_SANDBOX": "seatbelt", "CODEX_SANDBOX_NETWORK_DISABLED": "1", "SANDBOX_RUNTIME": "1"},
+     "sandbox=CODEX_SANDBOX=seatbelt CODEX_SANDBOX_NETWORK_DISABLED=1 SANDBOX_RUNTIME=1"),
+]
+for name, values, expected in sandbox_cases:
+    env = dict({var: "" for var in sandbox_vars}, **values)
+    lines = run_bash(shared["environment check"], env=env).splitlines()
+    got = [line for line in lines if line.startswith("sandbox=")]
+    assert got == [expected], f"environment check, {name}: got {got!r}, want {expected!r}"
 
 settings_cases = [
     ("missing file", None, "instance=none"),
@@ -273,5 +293,14 @@ make_fixture
 edit_fixture claude 'base in ("loopai-acp", "loopai-acp.exe")' 'base in ("loopai-acp.exe",)'
 edit_fixture codex 'base in ("loopai-acp", "loopai-acp.exe")' 'base in ("loopai-acp.exe",)'
 expect_failure "settings lookup, loopai-acp"
+
+make_fixture
+edit_fixture claude 'if [ "${SANDBOX_RUNTIME:-}" = 1 ]' 'if [ -n "${SANDBOX_RUNTIME:-}" ]'
+edit_fixture codex 'if [ "${SANDBOX_RUNTIME:-}" = 1 ]' 'if [ -n "${SANDBOX_RUNTIME:-}" ]'
+expect_failure "environment check, SANDBOX_RUNTIME=0"
+
+make_fixture
+edit_fixture codex 'if [ -n "${CODEX_SANDBOX:-}" ]' 'if [ "${CODEX_SANDBOX:-}" = 1 ]'
+expect_failure "codex: environment check differs between Claude and Codex"
 
 echo "loopai-t3 skill tests passed"

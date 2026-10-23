@@ -104,13 +104,17 @@ The T3 Code tools are named `mcp__t3_code__<tool>` here. T3's rule applies: make
 
 ```bash
 echo "os=$(uname -s)"
-echo "sandbox=${SANDBOX_RUNTIME:+SANDBOX_RUNTIME=$SANDBOX_RUNTIME }${CODEX_SANDBOX:+CODEX_SANDBOX=$CODEX_SANDBOX }${CODEX_SANDBOX_NETWORK_DISABLED:+CODEX_SANDBOX_NETWORK_DISABLED=$CODEX_SANDBOX_NETWORK_DISABLED}"
+sandbox=""
+if [ -n "${CODEX_SANDBOX:-}" ]; then sandbox="$sandbox CODEX_SANDBOX=$CODEX_SANDBOX"; fi
+if [ "${CODEX_SANDBOX_NETWORK_DISABLED:-}" = 1 ]; then sandbox="$sandbox CODEX_SANDBOX_NETWORK_DISABLED=1"; fi
+if [ "${SANDBOX_RUNTIME:-}" = 1 ]; then sandbox="$sandbox SANDBOX_RUNTIME=1"; fi
+echo "sandbox=${sandbox# }"
 ```
 
 **Mode 1 gate.** Mode 1 is offered only when all of these hold; otherwise name the first failed condition when asking the mode question:
 
 - `runtimeMode` is `full-access`: the run, its token mint, and the terminal bridge need an unsandboxed shell;
-- `sandbox=` is empty: `loopai --detach` refuses to start inside an agent sandbox (`SANDBOX_RUNTIME`, `CODEX_SANDBOX`, or `CODEX_SANDBOX_NETWORK_DISABLED`), because every model process of a 40-hour run would inherit it;
+- `sandbox=` is empty: `loopai --detach` refuses to start inside an agent sandbox, which it detects exactly as this check does (a non-empty `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED=1`, or `SANDBOX_RUNTIME=1`), because every model process of a 40-hour run would inherit it;
 - `os=` is not Windows (`MINGW*`, `MSYS*`, `CYGWIN*`, `Windows_NT`): `loopai --detach` is refused on Windows;
 - `parentThreadId` equals `currentThreadId`, so the terminal goes to this thread and no other;
 - the thread id matches `^[A-Za-z0-9_.:%-]{1,1024}$`. T3 thread ids are opaque and not always UUIDs (subagent ids carry `:` and `%`); validate before writing the id into any command, and always single-quote it there.
