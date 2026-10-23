@@ -277,7 +277,9 @@ applies:
 1. The thread's own run is live (starting included): the turn follows it, whatever the message says.
    The thread's run ended without success (failed, stopped, or crashed) and the message is `resume`
    or T3 Code's continuation text: the run is resumed from its recorded arguments and environment
-   options, and followed. A run that succeeded is never resumed.
+   options, and followed. A run that succeeded is never resumed. When another loopai thread or a
+   `--t3-thread` launch has resumed the run since, it is no longer this thread's: the thread drops
+   the binding, neither follows nor resumes the run, and answers with a status reply.
 2. The message names a plan: that plan's own detached run starts (or resumes) and the thread follows
    it. It never adopts another run.
 3. The thread has no run, and the message is T3 Code's continuation: it adopts the one live run that a

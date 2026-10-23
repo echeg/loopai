@@ -384,11 +384,11 @@ func treeSnapshot(t *testing.T, root string) map[string]string {
 	return snap
 }
 
-// saveACPTestRun records a finished run with outcome under root, as a Mode 2 launch would.
-func saveACPTestRun(t *testing.T, root, id string, outcome runs.Outcome) {
+// saveACPTestRun records a finished run of origin with outcome under root, as a Mode 2 launch would.
+func saveACPTestRun(t *testing.T, root, id string, origin runs.Origin, outcome runs.Outcome) {
 	t.Helper()
 	dir := saveRunsTestRun(t, root, runs.Descriptor{ID: id, Plan: "docs/plans/feature.md", Branch: "feature",
-		Origin: runs.Origin{Kind: runs.OriginT3Thread}})
+		Origin: origin})
 	saveRunsTestOutcome(t, dir, outcome)
 }
 
@@ -524,8 +524,8 @@ func TestACPLoadSessionInANewProcessRestoresTheBinding(t *testing.T) {
 	require.Equal(t, 0, first.wait())
 
 	const runID = "feature-20261022-120000-abcd"
-	saveACPTestRun(t, cwd, runID, runs.Outcome{Status: runs.StatusSucceeded, ReportSummary: "Added the provider.",
-		Branch: "feature"})
+	saveACPTestRun(t, cwd, runID, runs.Origin{Kind: runs.OriginT3Thread, ThreadID: acpLongThreadID, ACPSessionID: sid},
+		runs.Outcome{Status: runs.StatusSucceeded, ReportSummary: "Added the provider.", Branch: "feature"})
 	require.NoError(t, bindRun(cwd, acpLongThreadID, sid, runID))
 
 	for _, lookup := range []string{"fail", "thread=" + acpLongThreadID} {
@@ -557,7 +557,8 @@ func TestACPLongThreadIDBinding(t *testing.T) {
 	assert.Equal(t, acpLongThreadID, m["thread_id"], "the session binding keeps the raw thread id")
 
 	const runID = "feature-20261022-120000-abcd"
-	saveACPTestRun(t, cwd, runID, runs.Outcome{Status: runs.StatusFailed, Reason: "task 2 failed", Branch: "feature"})
+	saveACPTestRun(t, cwd, runID, runs.Origin{Kind: runs.OriginT3Thread, ThreadID: acpLongThreadID, ACPSessionID: sid},
+		runs.Outcome{Status: runs.StatusFailed, Reason: "task 2 failed", Branch: "feature"})
 	require.NoError(t, bindRun(cwd, acpLongThreadID, sid, runID))
 	assert.FileExists(t, filepath.Join(cwd, ".loopai", "acp", "binding-thread-"+runs.ThreadKey(acpLongThreadID)+".json"))
 
@@ -590,7 +591,8 @@ func TestACPLookupFailureFallsBackToTheSessionKey(t *testing.T) {
 			assert.Equal(t, sid, m["session_id"])
 
 			const runID = "feature-20261022-120000-abcd"
-			saveACPTestRun(t, cwd, runID, runs.Outcome{Status: runs.StatusStopped, Branch: "feature"})
+			saveACPTestRun(t, cwd, runID, runs.Origin{Kind: runs.OriginT3Thread, ACPSessionID: sid},
+				runs.Outcome{Status: runs.StatusStopped, Branch: "feature"})
 			require.NoError(t, bindRun(cwd, "", sid, runID))
 			reply := s.statusReply(2, sid, "status")
 			assert.True(t, strings.HasPrefix(reply, "loopai run "+runID+" stopped."), reply)
@@ -656,7 +658,8 @@ func TestACPEndsPromptlyWithoutAnswering(t *testing.T) {
 		t.Run(end, func(t *testing.T) {
 			cwd := t.TempDir()
 			const runID = "feature-20261022-120000-abcd"
-			saveACPTestRun(t, cwd, runID, runs.Outcome{Status: runs.StatusFailed, Branch: "feature"})
+			saveACPTestRun(t, cwd, runID, runs.Origin{Kind: runs.OriginT3Thread, ACPSessionID: "sess-1"},
+				runs.Outcome{Status: runs.StatusFailed, Branch: "feature"})
 			require.NoError(t, bindRun(cwd, "", "sess-1", runID))
 			before := treeSnapshot(t, cwd)
 
@@ -795,9 +798,11 @@ func TestACPIsProbe(t *testing.T) {
 
 func TestACPStatusReply(t *testing.T) {
 	cwd := t.TempDir()
-	saveACPTestRun(t, cwd, "done-20261022-120000-abcd", runs.Outcome{Status: runs.StatusSucceeded,
+	origin := runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "thread-1"}
+	saveACPTestRun(t, cwd, "done-20261022-120000-abcd", origin, runs.Outcome{Status: runs.StatusSucceeded,
 		ReportSummary: "  Added the provider.\n", Branch: "done"})
-	saveACPTestRun(t, cwd, "broke-20261022-120000-abcd", runs.Outcome{Status: runs.StatusFailed, Reason: "task 2 failed"})
+	saveACPTestRun(t, cwd, "broke-20261022-120000-abcd", origin,
+		runs.Outcome{Status: runs.StatusFailed, Reason: "task 2 failed"})
 	saveRunsTestRun(t, cwd, runs.Descriptor{ID: "crashed-20261022-120000-abcd", Plan: "docs/plans/c.md", Branch: "c"})
 
 	tests := []struct {

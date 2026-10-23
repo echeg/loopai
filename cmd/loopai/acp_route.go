@@ -43,7 +43,10 @@ type acpTurn struct {
 //     included, is attached whatever the text says; one that ended without success is relaunched from
 //     its recorded arguments and attached when the text is T3 Code's continuation or resume; one whose
 //     run directory is gone is unbound with one stderr warning, and the prompt is routed as unbound;
-//     one that cannot be read or classified is one stderr warning, and the later rules answer;
+//     one acpThreadMayClaim no longer accepts, because another loopai thread or a --t3-thread launch
+//     resumed it, is unbound with one stderr warning, neither shown nor relaunched, and the prompt is
+//     routed as unbound without adopting a run; one that cannot be read or classified is one stderr
+//     warning, and the later rules answer;
 //  2. a message naming a plan starts that plan's own detached run, binds it, and attaches to it;
 //  3. without a binding, a continuation adopts the one live, unattached run a loopai thread started
 //     from this cwd, or lists the candidates when there are several;
@@ -68,6 +71,12 @@ func (t *acpTurn) route() acp.StopReason {
 			// the bound run cannot be read or classified: the message is still answered by the rules
 			// below, and the reason they ignored the binding is left on stderr
 			fmt.Fprintf(t.stderr, "warning: acp: bound run %s unavailable: %v\n", b.RunID, err)
+		case !acpThreadMayClaim(run.Descriptor.Origin, t.threadID):
+			// another owner resumed the run: its current attempt is not this thread's to show or
+			// relaunch, and the turn answers as unbound without adopting a run
+			t.unbindTakenOver(b.RunID)
+			b = acpBinding{}
+			continuation = false
 		case run.Status.Live():
 			return t.attach(run.Descriptor.ID)
 		case run.Status != runs.StatusSucceeded && (continuation || resume):
@@ -102,6 +111,17 @@ func (t *acpTurn) unbindGone(id string) {
 		return
 	}
 	fmt.Fprintf(t.stderr, "warning: acp: bound run %s no longer exists; the thread is no longer bound to it\n", id)
+}
+
+// unbindTakenOver removes the binding to run id, which another loopai thread or a T3 terminal launch
+// resumed since, so the thread no longer shows or relaunches it and the warning is left once.
+func (t *acpTurn) unbindTakenOver(id string) {
+	if err := unbindRun(t.req.Cwd, t.threadID, t.req.SessionID, id); err != nil {
+		fmt.Fprintf(t.stderr, "warning: acp: bound run %s now belongs to another owner, and its binding cannot be "+
+			"removed: %v\n", id, err)
+		return
+	}
+	fmt.Fprintf(t.stderr, "warning: acp: bound run %s now belongs to another owner; the thread is no longer bound to it\n", id)
 }
 
 // acpRun returns the run id names in the session cwd's runs directory, classified.
@@ -192,11 +212,20 @@ func acpAdoptionCandidates(cwd, threadID string) ([]runs.Run, error) {
 // run is live and a loopai thread started it (origin t3-thread) from cwd. A run recorded for another
 // thread than threadID, when both ids are known, is never adoptable.
 func acpAdoptable(run runs.Run, cwd, threadID string) bool {
-	origin := run.Descriptor.Origin
-	if !run.Status.Live() || origin.Kind != runs.OriginT3Thread || !sameProgressRoot(run.Descriptor.Cwd, cwd) {
+	if !run.Status.Live() || !sameProgressRoot(run.Descriptor.Cwd, cwd) {
 		return false
 	}
-	return threadID == "" || origin.ThreadID == "" || origin.ThreadID == threadID
+	return acpThreadMayClaim(run.Descriptor.Origin, threadID)
+}
+
+// acpThreadMayClaim reports whether a run of origin o may be a thread of threadID's own: a loopai thread
+// started or last resumed it (origin t3-thread), and no recorded thread id other than threadID says it
+// is another thread's. A thread follows and relaunches its bound run only while this holds, and adopts
+// only such runs, so a run another thread or a --t3-thread launch resumed is neither shown nor traded
+// back. It is weaker than acpOwnsRun, which Stop requires: without a thread id on either side the
+// session ids differ after a session/load fallback, and the spec's adoption accepts the run then.
+func acpThreadMayClaim(o runs.Origin, threadID string) bool {
+	return o.Kind == runs.OriginT3Thread && (threadID == "" || o.ThreadID == "" || o.ThreadID == threadID)
 }
 
 // bind binds run id to the thread, or to the session without a thread id. A binding that cannot be

@@ -118,8 +118,8 @@ func TestACPStopStopsTheThreadsOwnRun(t *testing.T) {
 
 // TestACPCancelKeepsTheRun cancels a followed prompt in every way that must not stop the run: a prompt
 // within the grace, as a steer or restart sends, which re-attaches the run even when it names a plan; a
-// cancel the thread shows was not a Stop; a bound run another thread or a shell started; and a cancel in
-// a session with no binding while the only live run in the cwd is a shell's.
+// cancel the thread shows was not a Stop; and a followed run that another thread, a T3 terminal launch,
+// or a shell took over before the cancel.
 func TestACPCancelKeepsTheRun(t *testing.T) {
 	t.Run("a prompt within the grace re-attaches the run", func(t *testing.T) {
 		grace := shortACPStopGrace(t)
@@ -150,36 +150,39 @@ func TestACPCancelKeepsTheRun(t *testing.T) {
 		assert.Contains(t, s.stderr.String(), "run "+acpRouteRunID+" keeps running")
 		assert.NotContains(t, s.stderr.String(), acpTestAuthz)
 	})
+	// a run another owner resumed is never followed again by the thread that bound it, so the stop
+	// guard is reached by a takeover while the thread's prompt still follows the run, as when the
+	// attempt it followed ended and another owner relaunched it before the follow noticed
 	for _, tc := range []struct {
 		name   string
 		origin runs.Origin
 	}{
-		{"a bound run of another thread", runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "thread-2"}},
-		{"a bound run started from a shell", runs.Origin{Kind: runs.OriginCLI}},
-		{"a bound run of a T3 terminal", runs.Origin{Kind: runs.OriginT3Terminal, ThreadID: "thread-1"}},
+		{"the followed run is taken over by another thread", runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "thread-2",
+			ACPSessionID: "sess-2"}},
+		{"the followed run is taken over by a --t3-thread launch", runs.Origin{Kind: runs.OriginT3Terminal,
+			ThreadID: "thread-1"}},
+		{"the followed run is taken over by a shell", runs.Origin{Kind: runs.OriginCLI}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			grace := shortACPStopGrace(t)
 			t.Setenv(acpInterruptEnv, "stop")
 			cwd := t.TempDir()
 			s, sid := openACPSession(t, cwd, "thread=thread-1", "")
-			target := startACPStopTarget(t, cwd, tc.origin, "thread-1", sid)
+			target := startACPStopTarget(t, cwd, runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "thread-1"}, "thread-1", sid)
 
-			target.cancelFollowed(t, s, sid)
+			s.send(acpPrompt(3, sid, acp.ContinuationText))
+			target.run.waitAttached()
+			desc, err := runs.LoadDescriptor(target.run.dir)
+			require.NoError(t, err)
+			desc.Origin = tc.origin
+			require.NoError(t, runs.SaveDescriptor(target.run.dir, &desc))
+			s.send(acpCancel(sid))
+			assert.Equal(t, map[string]any{"stopReason": string(acp.StopCancelled)}, s.resultAfterUpdates(3),
+				"the open prompt is canceled")
 			target.assertRunning(t, grace)
+			assert.Equal(t, acpRouteRunID, acpBoundRun(t, cwd, "thread-1", sid), "a cancel leaves the binding alone")
 		})
 	}
-	t.Run("the only live run in the cwd is not this thread's", func(t *testing.T) {
-		grace := shortACPStopGrace(t)
-		t.Setenv(acpInterruptEnv, "stop")
-		cwd := t.TempDir()
-		s, sid := openACPSession(t, cwd, "thread=thread-1", "")
-		target := startACPStopTarget(t, cwd, runs.Origin{Kind: runs.OriginCLI}, "thread-9", "sess-9")
-
-		assert.Contains(t, s.statusReply(3, sid, "status"), "No loopai run belongs to this thread yet")
-		s.send(acpCancel(sid))
-		target.assertRunning(t, grace)
-	})
 }
 
 // TestACPProviderEndAbandonsAPendingStop ends the provider during the grace, as T3 Code's restart does

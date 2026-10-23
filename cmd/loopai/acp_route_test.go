@@ -391,6 +391,10 @@ func TestACPContinuationAdoptsTheOnlyCandidate(t *testing.T) {
 			run.finish(runs.Outcome{Status: runs.StatusSucceeded})
 			assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", acpHeadline(s.turnReply(3, sid)))
 			assert.Empty(t, launches.all())
+			// the adopted run stays the thread's, though its session ids differ from the run's
+			assert.True(t, strings.HasPrefix(s.statusReply(4, sid, "status"), "loopai run "+acpRouteRunID+" succeeded."))
+			assert.Equal(t, acpRouteRunID, acpBoundRun(t, cwd, tc.threadID, sid))
+			assert.NotContains(t, s.stderr.String(), "another owner")
 		})
 	}
 }
@@ -758,6 +762,65 @@ func TestACPBindingToARemovedRunIsDropped(t *testing.T) {
 	s.statusReply(4, sid, "status")
 	assert.Equal(t, 1, strings.Count(s.stderr.String(), warning), "the binding was removed once")
 	assert.NotContains(t, s.stderr.String(), "unavailable")
+}
+
+// TestACPBindingToATakenOverRunIsDropped binds the thread to a run another owner resumed since, by
+// a loopai thread's plan message or a --t3-thread launch: the thread neither shows nor relaunches it,
+// whatever it sends, adopts nothing either, and removes its binding with one warning, while the new
+// owner's thread still follows the run.
+func TestACPBindingToATakenOverRunIsDropped(t *testing.T) {
+	tests := []struct {
+		name   string
+		origin runs.Origin
+		live   bool
+		text   string
+	}{
+		{name: "a live run another thread resumed, on a continuation", live: true, text: acp.ContinuationText,
+			origin: runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "thread-2", ACPSessionID: "sess-2"}},
+		{name: "a live run a --t3-thread launch resumed, on a question", live: true, text: "how is it going?",
+			origin: runs.Origin{Kind: runs.OriginT3Terminal, ThreadID: "thread-1"}},
+		{name: "a failed run another thread resumed, on resume", text: "resume",
+			origin: runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "thread-2", ACPSessionID: "sess-2"}},
+		{name: "a failed run a --t3-thread launch resumed, on a continuation", text: acp.ContinuationText,
+			origin: runs.Origin{Kind: runs.OriginT3Terminal, ThreadID: "thread-1"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			run := newACPTestRun(t, cwd, runs.Descriptor{ID: acpRouteRunID, Argv: []string{acpRoutePlan}, Origin: tc.origin})
+			if tc.live {
+				run.start()
+			} else {
+				saveRunsTestOutcome(t, run.dir, runs.Outcome{Status: runs.StatusFailed, Reason: "task 2 failed"})
+			}
+			require.NoError(t, bindRun(cwd, "thread-1", "sess-old", acpRouteRunID))
+			require.NoError(t, bindRun(cwd, "thread-2", "sess-2", acpRouteRunID))
+			launches := stubACPLaunch(t, func(acpLaunch) (string, error) { return "", errors.New("no launch expected") })
+
+			s, sid := openACPSession(t, cwd, "thread=thread-1", "")
+			assert.Equal(t, acpStatusReply(cwd, ""), s.statusReply(3, sid, tc.text),
+				"the thread answers as unbound and adopts nothing")
+			assert.False(t, run.attached(), "the run is not shown")
+			assert.Empty(t, launches.all(), "the run is not relaunched")
+			assert.Empty(t, acpBoundRun(t, cwd, "thread-1", sid), "the thread is no longer bound to the run")
+			warning := "warning: acp: bound run " + acpRouteRunID + " now belongs to another owner; " +
+				"the thread is no longer bound to it"
+			assert.Equal(t, 1, strings.Count(s.stderr.String(), warning), s.stderr.String())
+			s.statusReply(4, sid, tc.text)
+			assert.Equal(t, 1, strings.Count(s.stderr.String(), warning), "the binding was removed once")
+			assert.Equal(t, acpRouteRunID, acpBoundRun(t, cwd, "thread-2", "sess-2"), "the new owner's binding is kept")
+			if !tc.live || tc.origin.Kind != runs.OriginT3Thread {
+				return
+			}
+			owner, ownerSID := openACPSession(t, cwd, "thread=thread-2", "")
+			owner.send(acpPrompt(3, ownerSID, "how is it going?"))
+			run.waitAttached()
+			run.finish(runs.Outcome{Status: runs.StatusSucceeded})
+			assert.Equal(t, "loopai run "+acpRouteRunID+" succeeded.", acpHeadline(owner.turnReply(3, ownerSID)),
+				"the new owner still follows the run")
+			assert.NotContains(t, owner.stderr.String(), "another owner")
+		})
+	}
 }
 
 func TestParseACPPlanMessage(t *testing.T) {
