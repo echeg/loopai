@@ -317,7 +317,7 @@ The explicit file path and `--only` keep unrelated staged changes out of the com
 After creating the file, detect Orca and T3 Code and build the launch lines before speaking to the user:
 
 1. **Detect Orca.** `ORCA=${ORCA_CLI_COMMAND:-orca}`; on Linux outside an Orca terminal use `orca-ide` instead of bare `orca` (there `orca` is the GNOME screen reader). Orca is available when `command -v "$ORCA"` succeeds. Do not call `orca status`; the `loopai-orca` skill runs its own preflight.
-   **Detect T3 Code.** T3 Code is available when this conversation has the T3 Code tools: `mcp__t3-code__orchestrator_capabilities` appears among the available tools, and a deferred tool listed by name only counts (it loads through ToolSearch). Do not call a T3 tool here; the `loopai-t3` skill runs its own preflight and asks how to show the run.
+   **Detect T3 Code.** T3 Code is available when this conversation has the T3 Code tools: `mcp__t3-code__orchestrator_capabilities` appears among the available tools, and a deferred tool listed by name only counts (it loads through ToolSearch). Do not call a T3 tool here; the `loopai-t3` skill runs its own preflight and asks how to show the run. The tools can be present in a conversation that is not a T3 thread; the `loopai-t3` skill then stops and says so, so offer T3 Code anyway and let that preflight decide.
 2. **Derive `FLAGS` from the effective loopai configuration.** For each key `task_model`, `review_model`, `external_reviewers`, take the first uncommented `key = value` line from `<repo root>/.loopai/config`, falling back to `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/config`:
 
    ```bash
