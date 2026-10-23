@@ -238,14 +238,46 @@ func (c *detachedChild) attemptStarted(hooks *journalHooks, start attemptStart, 
 	if err := runs.SaveDescriptor(c.dir, &c.desc); err != nil {
 		return fmt.Errorf("record attempt: %w", err)
 	}
-	if _, err := hooks.startAttempt(ev); err != nil {
+	stamped, err := hooks.startAttempt(ev)
+	if err != nil {
 		return err
 	}
 	c.started = true
 	if err := c.ack.send(detachAckMessage{OK: true, RunID: c.desc.ID, Attempt: c.desc.Attempt}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: run %s started, but its launcher could not be told: %v\n", c.desc.ID, err)
 	}
+	c.startBridge(hooks, stamped.Seq)
 	return nil
+}
+
+// startBridge starts the Mode 1 bridge of a run started with a terminal in a T3 thread whose
+// launcher handed over a token, following the journal from the attempt's start event at seq
+// startSeq. The token moves into the bridge, so the child keeps no copy; without a bridge it is
+// dropped. The bridge ends on the attempt's finish event; the before-exit hook gives it a bounded
+// wait to write the final title and unpin before the process exits.
+func (c *detachedChild) startBridge(hooks *journalHooks, startSeq int) {
+	token := c.secret.T3Token
+	c.secret = detachSecret{}
+	origin := c.desc.Origin
+	if token == "" || origin.Kind != runs.OriginT3Terminal || origin.ThreadID == "" {
+		return
+	}
+	// the run changes into its worktree, so the bridge follows the journal by its absolute path
+	dir, err := filepath.Abs(c.dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: the T3 thread does not show run %s: %v\n", c.desc.ID, err)
+		return
+	}
+	exe := c.desc.Executable
+	if exe == "" {
+		if exe, err = os.Executable(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: the T3 thread does not show run %s: %v\n", c.desc.ID, err)
+			return
+		}
+	}
+	c.beforeExit = newT3Bridge(t3BridgeConfig{token: token, threadID: origin.ThreadID, runID: c.desc.ID,
+		runDir: dir, attempt: c.desc.Attempt, fromSeq: startSeq - 1, checkout: c.desc.Cwd, executable: exe,
+		log: hooks.progressLogger()})
 }
 
 // complete ends a started attempt after the run returned with runErr. It classifies the run, then
@@ -294,6 +326,7 @@ func (c *detachedChild) complete(svc *git.Service, outcome *planExecutionOutcome
 	}
 	rec.FinishedAt = time.Now().UTC()
 	saveErr := runs.SaveOutcome(c.dir, &rec)
+	c.hooks.endProgressLog()
 	if c.beforeExit != nil {
 		c.beforeExit()
 	}

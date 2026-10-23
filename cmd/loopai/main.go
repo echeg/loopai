@@ -100,6 +100,7 @@ type opts struct {
 	ConfigDir               string        `long:"config-dir" env:"LOOPAI_CONFIG_DIR" description:"custom config directory"`
 	Detach                  bool          `long:"detach" description:"start the plan as a detached run in its own worktree, print the run id, and return; launching a plan whose last run did not succeed resumes it"`
 	DetachedRun             string        `long:"detached-run" hidden:"true" description:"internal: run as the detached child of the given run id"`
+	T3Thread                string        `long:"t3-thread" value-name:"thread-id" description:"with --detach: show the run in this T3 Code thread, as a terminal tab following it and a [loopai: <state>] title prefix; needs a T3 token in LOOPAI_T3_TOKEN"`
 	Attach                  bool          `long:"attach" description:"follow a detached run: replay its console log, wait for it to end, and exit with its code (0 succeeded, 1 failed, 2 stopped); positional argument names the run (id, plan, or branch), default the single live run, else the newest; Ctrl+C only detaches"`
 	Runs                    bool          `long:"runs" description:"list this checkout's detached runs with their status, attempt, and origin"`
 	Stop                    bool          `long:"stop" description:"stop a live detached run gracefully, keeping its worktree; positional argument names the run (id, plan, or branch)"`
@@ -119,6 +120,7 @@ type opts struct {
 	prSet             bool
 	executionModeSet  bool
 	detachedRunSet    bool
+	t3ThreadSet       bool
 
 	claudeCommandSet      bool
 	claudeArgsSet         bool
@@ -213,6 +215,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 	o.externalReviewersSet = isFlagSet(parser, "external-reviewers")
 	o.customReviewScriptSet = isFlagSet(parser, "custom-review-script")
 	o.detachedRunSet = isFlagSet(parser, "detached-run")
+	o.t3ThreadSet = isFlagSet(parser, "t3-thread")
 	for _, name := range []string{
 		"max-iterations", "max-external-iterations", "review-patience",
 		"plan-model", "task-model", "review-model", "claude-command", "claude-args", "codex-args",

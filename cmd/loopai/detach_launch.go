@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -56,12 +57,24 @@ var (
 // by stripDetachArgs together with their value.
 var detachValueFlags = []string{"--detached-run", "--t3-thread", "--acp-thread", "--acp-session"}
 
+// t3ThreadIDPattern and maxT3ThreadIDLen are the shape of a T3 thread id loopai accepts,
+// ^[A-Za-z0-9_.:%-]{1,1024}$; Go's regexp caps a repeat count at 1000, so the length is checked on
+// its own. T3 treats the id as an opaque string: a UUID, or a provider-native id such as
+// thread:provider:claudeAgent:native-thread:thread%3A… of some 330 characters. The set leaves out
+// everything a shell splits or expands.
+var t3ThreadIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.:%-]+$`)
+
+const maxT3ThreadIDLen = 1024
+
 // validateDetachFlags keeps a detached run to what it supports: exactly one plan, in full or
 // tasks-only mode, executed in a worktree of its own and never committing into the invoking checkout.
 // It applies to the --detach launcher and to the hidden --detached-run child, which receives the
 // launcher's arguments, so the child refuses what the launcher would.
 func validateDetachFlags(o opts) error {
 	childSet := o.detachedRunSet || o.DetachedRun != ""
+	if err := validateT3ThreadFlag(o, o.Detach || childSet); err != nil {
+		return err
+	}
 	if !o.Detach && !childSet {
 		return nil
 	}
@@ -110,6 +123,22 @@ func validateDetachFlags(o opts) error {
 	}
 	if strings.TrimSpace(o.PlanFile) == "" {
 		return fmt.Errorf("%s requires a plan file argument", flag)
+	}
+	return nil
+}
+
+// validateT3ThreadFlag accepts --t3-thread only on a detached run, detached reporting whether the
+// invocation is one, and only with a thread id t3ThreadIDPattern matches.
+func validateT3ThreadFlag(o opts, detached bool) error {
+	if !o.t3ThreadSet && o.T3Thread == "" {
+		return nil
+	}
+	if !detached {
+		return errors.New("--t3-thread is valid only with --detach")
+	}
+	if len(o.T3Thread) > maxT3ThreadIDLen || !t3ThreadIDPattern.MatchString(o.T3Thread) {
+		return fmt.Errorf("--t3-thread: invalid thread id %q: expected 1 to 1024 letters, digits, and _.:%%- characters",
+			o.T3Thread)
 	}
 	return nil
 }
@@ -273,6 +302,7 @@ type detachLaunch struct {
 	dir     string       // the run directory
 	desc    runs.Descriptor
 	env     []string // the child's environment
+	token   string   // the T3 token a --t3-thread run gets over the secret pipe; never written anywhere
 }
 
 // launchDetached is the --detach launcher, which runPreConfigCommand has already refused inside an
@@ -307,6 +337,10 @@ func launchDetached(ctx context.Context, o opts, cfg *config.Config, dio detachI
 // rules written before anything is created under .loopai/progress. It resolves the run's branch the
 // way worktree creation does: the --branch override, else the plan's derived name.
 func prepareDetachLaunch(o opts, cfg *config.Config, dio detachIO) (*detachLaunch, error) {
+	token, err := detachT3Token(o)
+	if err != nil {
+		return nil, err
+	}
 	if reason := planFileRefusal(o.PlanFile); reason != "" {
 		return nil, errors.New(reason)
 	}
@@ -323,7 +357,20 @@ func prepareDetachLaunch(o opts, cfg *config.Config, dio detachIO) (*detachLaunc
 	}
 	root := svc.Root()
 	return &detachLaunch{o: o, dio: dio, svc: svc, exe: exe, root: root, planRel: relativePlan(root, o.PlanFile),
-		branch: svc.EffectiveBranchName(o.PlanFile, o.Branch)}, nil
+		branch: svc.EffectiveBranchName(o.PlanFile, o.Branch), token: token}, nil
+}
+
+// detachT3Token returns the T3 token a --t3-thread launch hands its child, from LOOPAI_T3_TOKEN, which
+// such a launch requires; any other launch hands over none.
+func detachT3Token(o opts) (string, error) {
+	if o.T3Thread == "" {
+		return "", nil
+	}
+	token := strings.TrimSpace(os.Getenv("LOOPAI_T3_TOKEN"))
+	if token == "" {
+		return "", errors.New("--t3-thread needs LOOPAI_T3_TOKEN")
+	}
+	return token, nil
 }
 
 // openDetachRepository opens the repository in the working directory with vcs_command and requires
@@ -432,7 +479,8 @@ func (l *detachLaunch) branchWorktree() (string, error) {
 
 // resume prepares the next attempt of run, which did not succeed: its outcome is kept as attempt
 // history, its stop marker cleared, and its descriptor gets the new attempt. The recorded origin stays,
-// so a run started from a T3 thread remains that thread's run when a plain shell resumes it.
+// so a run started from a T3 thread remains that thread's run when a plain shell resumes it, unless
+// this launch names a T3 thread with --t3-thread, which then shows the run.
 func (l *detachLaunch) resume(run runs.Run) error {
 	l.dir = run.Dir
 	desc := run.Descriptor
@@ -444,12 +492,24 @@ func (l *detachLaunch) resume(run runs.Run) error {
 	}
 	desc.Attempt++
 	desc.PID, desc.PIDStart = 0, "" // the new attempt's process records itself
+	if l.o.T3Thread != "" {
+		desc.Origin = l.origin()
+	}
 	return l.record(desc)
 }
 
-// create makes the directory of a new run, prunes old succeeded runs, and records the run with origin
-// cli. The directory is created exclusively and never reused: when one exists already, as for a launch
-// that drew the same id within the same second, another id is drawn.
+// origin is the origin this launch gives a run: a terminal in the T3 thread --t3-thread names, else
+// the shell.
+func (l *detachLaunch) origin() runs.Origin {
+	if l.o.T3Thread != "" {
+		return runs.Origin{Kind: runs.OriginT3Terminal, ThreadID: l.o.T3Thread}
+	}
+	return runs.Origin{Kind: runs.OriginCLI}
+}
+
+// create makes the directory of a new run, prunes old succeeded runs, and records the run with this
+// launch's origin. The directory is created exclusively and never reused: when one exists already, as
+// for a launch that drew the same id within the same second, another id is drawn.
 func (l *detachLaunch) create(now time.Time) error {
 	id, err := l.createDir(now)
 	if err != nil {
@@ -459,8 +519,7 @@ func (l *detachLaunch) create(now time.Time) error {
 	if pruneErr := runs.PruneSucceeded(l.root, detachKeepSucceeded); pruneErr != nil {
 		fmt.Fprintf(l.dio.stderr, "warning: %v\n", pruneErr)
 	}
-	return l.record(runs.Descriptor{ID: id, Attempt: 1, Plan: l.planRel, Branch: l.branch,
-		Origin: runs.Origin{Kind: runs.OriginCLI}})
+	return l.record(runs.Descriptor{ID: id, Attempt: 1, Plan: l.planRel, Branch: l.branch, Origin: l.origin()})
 }
 
 // createDir creates the directory of a new run with a fresh id and returns the id.
@@ -564,7 +623,8 @@ func (s detachStart) noHandshakeReason() string {
 // spawn starts the child once, through prefix when it is not empty, and waits for its answer. The
 // child gets two distinct pipes: the read end of the secret pipe as fd 3 and the write end of the ack
 // pipe as fd 4, the inherited FIFOs it requires. The launcher closes its copies of those ends at once,
-// so EOF on the ack pipe comes from the child alone, sends the secret line, and never waits for the
+// so EOF on the ack pipe comes from the child alone, sends the secret line, which carries the T3 token
+// of a --t3-thread run and is the only way the token reaches the child, and never waits for the
 // child, which outlives it; the child's exit shows as that EOF instead.
 func (l *detachLaunch) spawn(ctx context.Context, prefix []string, console *os.File) detachStart {
 	secretR, secretW, err := os.Pipe()
@@ -594,7 +654,7 @@ func (l *detachLaunch) spawn(ctx context.Context, prefix []string, console *os.F
 	}
 	defer func() { _ = cmd.Process.Release() }()
 
-	sendDetachSecret(secretW, detachSecret{})
+	sendDetachSecret(secretW, detachSecret{T3Token: l.token})
 	return awaitDetachAck(ctx, ackR, detachAckTimeout)
 }
 

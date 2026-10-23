@@ -432,6 +432,46 @@ func TestJournalHooksAppendFailureWarnsOnce(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(warn.String(), "warning: run journal not updated"), warn.String())
 }
 
+func TestJournalHooksProgressLogger(t *testing.T) {
+	t.Run("writes exactly one line to the wrapped logger", func(t *testing.T) {
+		hooks, _, warn := newTestJournalHooks(t, &config.Config{})
+		inner := &runnerLoggerRecorder{}
+		hooks.decorateLogger(inner)
+
+		hooks.progressLogger().Print("bridge %s", "line")
+		assert.Equal(t, []string{"print: bridge line"}, inner.calls)
+		assert.Empty(t, warn.String())
+	})
+
+	t.Run("queues lines until the run builds its logger", func(t *testing.T) {
+		hooks, _, warn := newTestJournalHooks(t, &config.Config{})
+		log := hooks.progressLogger()
+		log.Print("first %d", 1)
+		log.Print("second")
+
+		inner := &runnerLoggerRecorder{}
+		hooks.decorateLogger(inner)
+		assert.Equal(t, []string{"print: first 1", "print: second"}, inner.calls, "flushed in order")
+		log.Print("third")
+		hooks.endProgressLog()
+		log.Print("fourth")
+		assert.Equal(t, []string{"print: first 1", "print: second", "print: third", "print: fourth"}, inner.calls,
+			"the run's logger keeps every line, after the attempt ended too")
+		assert.Empty(t, warn.String())
+	})
+
+	t.Run("a run that never built its logger writes the lines to the console log", func(t *testing.T) {
+		hooks, _, warn := newTestJournalHooks(t, &config.Config{})
+		log := hooks.progressLogger()
+		log.Print("queued")
+		assert.Empty(t, warn.String())
+
+		hooks.endProgressLog()
+		log.Print("late %s", "line")
+		assert.Equal(t, "queued\nlate line\n", warn.String())
+	})
+}
+
 func TestAttemptStartEvent(t *testing.T) {
 	planFile := writeJournalTestPlan(t)
 	start := attemptStart{PlanFile: planFile, MainPlanFile: "/repo/docs/plans/feature.md", Branch: "feature",

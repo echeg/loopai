@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -24,6 +25,8 @@ import (
 
 	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/runs"
+	"github.com/umputun/ralphex/pkg/t3"
+	"github.com/umputun/ralphex/pkg/t3/t3test"
 )
 
 const (
@@ -47,6 +50,13 @@ const (
 
 // detachStubSelector is the argv prefix that makes a re-executed test binary the stub child.
 var detachStubSelector = []string{"-test.run=^TestDetachLaunchChildHelper$", "--"}
+
+// detachRealChildSelector is the argv prefix that makes a re-executed test binary the real child, run
+// through main() with the real T3 bridge; detachRealChildEnv names the file it writes the environment
+// it started with into.
+var detachRealChildSelector = []string{"-test.run=^TestDetachLaunchRealChildHelper$", "--"}
+
+const detachRealChildEnv = "LOOPAI_TEST_DETACH_REAL_CHILD"
 
 // detachStubEnviron is the environment the process started with. TestMain unsets the ambient T3 and
 // cmux variables before any test runs, so a stub child records this copy to show what it received.
@@ -85,6 +95,24 @@ func TestDetachLaunchMainHelper(t *testing.T) {
 	os.Args = append([]string{"loopai"}, strings.Split(raw, "\x1f")...)
 	main()
 	os.Exit(0) // main returns after a successful launch, as for every command that succeeds
+}
+
+// TestDetachLaunchRealChildHelper is the real detached child a launcher test starts, not a test of its
+// own: it records the environment it started with, which TestMain has not touched yet, and runs main()
+// with the real T3 bridge.
+func TestDetachLaunchRealChildHelper(t *testing.T) {
+	dump, ok := os.LookupEnv(detachRealChildEnv)
+	if !ok {
+		t.Skip("helper process only")
+	}
+	if err := os.WriteFile(dump, []byte(strings.Join(detachStubEnviron, "\n")), 0o600); err != nil {
+		t.Fatalf("record the environment: %v", err)
+	}
+	newT3Bridge = startT3Bridge
+	args := os.Args[slices.Index(os.Args, "--")+1:]
+	os.Args = append([]string{"loopai"}, args...)
+	main()
+	t.Fatal("main returned without exiting")
 }
 
 // runDetachStub is the stub child: it takes the handshake pipes and the run's lifetime lock as the
@@ -361,6 +389,189 @@ func TestDetachLaunchStartsRun(t *testing.T) {
 		require.NoError(t, classifyErr)
 		assert.Equal(t, runs.StatusRunning, status)
 	})
+}
+
+func TestDetachLaunchT3Thread(t *testing.T) {
+	const thread = "thread:provider:claudeAgent:native-thread:thread%3Aprovider%3AclaudeAgent%3Aagent%3A3"
+	const token = "t3-bearer-token-6f1c" //nolint:gosec // a fake token no server accepts
+
+	t.Run("the token goes over the secret pipe and nowhere else", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		t.Setenv("LOOPAI_T3_TOKEN", " "+token+"\n")
+
+		stdout, stderr, err := f.launch(t, "--detach", "--t3-thread", thread, "--tasks-only", detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		desc := f.onlyRun(t)
+		assert.Equal(t, "run: "+desc.ID+"\nfollow: loopai --attach "+desc.ID+"\n", stdout)
+		assert.NotContains(t, stdout+stderr, token)
+
+		dump := f.dump(t, desc.ID)
+		assert.JSONEq(t, `{"t3_token":"`+token+`"}`, dump.Secret, "the trimmed token")
+		assert.Equal(t, 1, strings.Count(dump.Secret, "\n"), "one line")
+		assert.True(t, strings.HasSuffix(dump.Secret, "\n"))
+		for _, kv := range dump.Env {
+			assert.NotContains(t, kv, token, "the child's environment never holds the token")
+		}
+		assert.Equal(t, runs.Origin{Kind: runs.OriginT3Terminal, ThreadID: thread}, desc.Origin)
+		assert.Equal(t, []string{"--tasks-only", detachLaunchPlan}, desc.Argv, "the thread is not a run argument")
+		for _, name := range []string{runs.DescriptorFile, runs.ConsoleLogFile} {
+			data, readErr := os.ReadFile(filepath.Join(runs.Dir(f.repo, desc.ID), name)) //nolint:gosec // test temp path
+			require.NoError(t, readErr)
+			assert.NotContains(t, string(data), token, "%s never holds the token", name)
+		}
+	})
+
+	t.Run("an attached thread id is stripped too", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		t.Setenv("LOOPAI_T3_TOKEN", token)
+		_, stderr, err := f.launch(t, "--detach", "--t3-thread="+thread, detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		desc := f.onlyRun(t)
+		assert.Equal(t, []string{detachLaunchPlan}, desc.Argv)
+		assert.Equal(t, thread, desc.Origin.ThreadID)
+	})
+
+	t.Run("without a token the launch is refused before anything is created", func(t *testing.T) {
+		for _, value := range []string{"", " \n"} {
+			f := newDetachLaunchFixture(t)
+			t.Setenv("LOOPAI_T3_TOKEN", value)
+			_, _, err := f.launch(t, "--detach", "--t3-thread", thread, detachLaunchPlan)
+			require.EqualError(t, err, "--t3-thread needs LOOPAI_T3_TOKEN")
+			assert.Empty(t, f.runDirs())
+			assert.NoDirExists(t, filepath.Join(f.repo, ".loopai"))
+		}
+	})
+
+	t.Run("a token without a thread is never sent", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		t.Setenv("LOOPAI_T3_TOKEN", token)
+		_, stderr, err := f.launch(t, "--detach", detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		desc := f.onlyRun(t)
+		assert.JSONEq(t, `{"t3_token":""}`, f.dump(t, desc.ID).Secret)
+		assert.Equal(t, runs.Origin{Kind: runs.OriginCLI}, desc.Origin)
+	})
+
+	t.Run("a resume naming a thread shows the run there", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		t.Setenv("LOOPAI_T3_TOKEN", token)
+		dir := f.seedRun(t, runs.Origin{Kind: runs.OriginT3Thread, ThreadID: "other", ACPSessionID: "sess_1"}, nil)
+		require.NoError(t, runs.SaveOutcome(dir, &runs.Outcome{RunID: detachSeedID, Attempt: 1, Status: runs.StatusFailed}))
+
+		_, stderr, err := f.launch(t, "--detach", "--t3-thread", thread, detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		desc := f.onlyRun(t)
+		assert.Equal(t, detachSeedID, desc.ID)
+		assert.Equal(t, 2, desc.Attempt)
+		assert.Equal(t, runs.Origin{Kind: runs.OriginT3Terminal, ThreadID: thread}, desc.Origin)
+		assert.JSONEq(t, `{"t3_token":"`+token+`"}`, f.dump(t, desc.ID).Secret)
+	})
+
+	t.Run("a resume from a plain shell keeps the thread without a token", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		t.Setenv("LOOPAI_T3_TOKEN", token)
+		origin := runs.Origin{Kind: runs.OriginT3Terminal, ThreadID: thread}
+		dir := f.seedRun(t, origin, nil)
+		require.NoError(t, runs.SaveOutcome(dir, &runs.Outcome{RunID: detachSeedID, Attempt: 1, Status: runs.StatusFailed}))
+
+		_, stderr, err := f.launch(t, "--detach", detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		desc := f.onlyRun(t)
+		assert.Equal(t, origin, desc.Origin)
+		assert.JSONEq(t, `{"t3_token":""}`, f.dump(t, desc.ID).Secret, "only --t3-thread hands over a token")
+	})
+}
+
+func TestDetachT3TokenLeavesNoTrace(t *testing.T) {
+	const thread = "8e8b69fc-3359-47c8-a5a3-6dd91c245a86"
+	token := "t3-leak-probe-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	f := newDetachChildFixture(t, false)
+	f.addLocalConfig(t, "report_enabled = true")
+	require.NoError(t, os.RemoveAll(f.dir), "the launcher creates the run")
+	s := t3test.NewServer(t, t3test.WithToken(token),
+		t3test.WithThread(t3test.Thread{ID: thread, ProjectID: "p", Title: "My thread"}),
+		t3test.WithProject(t3test.Project{ID: "p", WorkspaceRoot: f.repo}))
+	t3Home := t.TempDir()
+	require.NoError(t, s.WriteRuntime(t3Home))
+	dumps := t.TempDir()
+	childEnv, modelEnv := filepath.Join(dumps, "child-env"), filepath.Join(dumps, "model-env")
+
+	// the launcher runs in this process; the child inherits its environment
+	for _, kv := range f.env {
+		key, value, _ := strings.Cut(kv, "=")
+		if os.Getenv(key) != value {
+			t.Setenv(key, value)
+		}
+	}
+	t.Setenv(t3.EnvHome, t3Home)
+	t.Setenv("LOOPAI_T3_TOKEN", token)
+	t.Setenv(detachRealChildEnv, childEnv)
+	t.Setenv("DETACH_CHILD_ENV_DUMP", modelEnv)
+	t.Chdir(f.repo)
+	detachChildArgs = detachRealChildSelector
+	t.Cleanup(func() { detachChildArgs = nil })
+
+	args := []string{"--detach", "--t3-thread", thread, "docs/plans/child.md"}
+	o := parseTestOpts(t, args...)
+	require.NoError(t, validateFlags(o))
+	var stdout, stderr bytes.Buffer
+	require.NoError(t, runDetachCommand(t.Context(), o, &config.Config{},
+		detachIO{args: args, stdout: &stdout, stderr: &stderr, colors: testColors()}), stderr.String())
+	dirs, err := os.ReadDir(runs.RunsDir(f.repo))
+	require.NoError(t, err)
+	var runDir string
+	for _, entry := range dirs {
+		if entry.IsDir() {
+			runDir = filepath.Join(runs.RunsDir(f.repo), entry.Name())
+		}
+	}
+	desc, err := runs.LoadDescriptor(runDir)
+	require.NoError(t, err)
+	waitDetachStub(t, desc.PID, filepath.Join(runDir, runs.LockFile))
+
+	outcome, err := runs.LoadOutcome(runDir)
+	require.NoError(t, err)
+	require.Equal(t, runs.StatusSucceeded, outcome.Status, "console log:\n%s", readTestFile(t, desc.ConsoleLog))
+	th, _ := s.Thread(thread)
+	require.Equal(t, "[loopai: done] My thread", th.Title, "the bridge worked with the token")
+	require.NotEmpty(t, s.Handshakes())
+	assert.Equal(t, "Bearer "+token, s.Handshakes()[0].Authorization)
+
+	// sources are named, never printed: an environment dump holds whatever the developer's shell exports
+	scanned := map[string]string{"the child's environment": readTestFile(t, childEnv),
+		"a model process's environment": readTestFile(t, modelEnv), "launcher stdout": stdout.String(),
+		"launcher stderr": stderr.String()}
+	for _, source := range []string{"the child's environment", "a model process's environment"} {
+		//nolint:testifylint // assert.Contains would print the dump, which holds the developer's shell secrets
+		assert.True(t, strings.Contains(scanned[source], "\nHOME="), "%s was recorded", source)
+	}
+	desc, err = runs.LoadDescriptor(runDir)
+	require.NoError(t, err)
+	for _, name := range []string{runs.DescriptorFile, runs.OutcomeFile, runs.JournalFile, runs.ReportFile,
+		runs.ConsoleLogFile} {
+		assert.FileExists(t, filepath.Join(runDir, name))
+	}
+	require.NoError(t, filepath.WalkDir(runDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return walkErr
+		}
+		scanned["run directory file "+entry.Name()] = readTestFile(t, path)
+		return nil
+	}))
+	scanned["the progress log"] = readTestFile(t, desc.ProgressLog)
+	scanned["the launch history"] = readTestFile(t, filepath.Join(filepath.Dir(f.config), launchHistoryFile))
+	for source, text := range scanned {
+		//nolint:testifylint // assert.NotContains would print the text, which may hold the developer's shell secrets
+		assert.False(t, strings.Contains(text, token), "%s holds the token", source)
+	}
+}
+
+// readTestFile returns the content of a file the test reads.
+func readTestFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path) //nolint:gosec // a path the test built
+	require.NoError(t, err)
+	return string(data)
 }
 
 func TestDetachLaunchThroughMain(t *testing.T) {

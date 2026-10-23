@@ -72,6 +72,28 @@ func TestValidateDetachFlags(t *testing.T) {
 			"docs/plans/x.md"}, wantErr: "--detach cannot be combined with --detached-run"},
 		{name: "detach with an empty child run id", args: []string{"--detach", "--detached-run=", "docs/plans/x.md"},
 			wantErr: "--detach cannot be combined with --detached-run"},
+		{name: "a T3 thread", args: []string{"--detach", "--t3-thread", "8e8b69fc-3359-47c8-a5a3-6dd91c245a86",
+			"docs/plans/x.md"}},
+		{name: "a provider-native T3 thread id with : and %", args: []string{"--detach",
+			"--t3-thread=thread:provider:claudeAgent:native-thread:thread%3Aprovider%3Aagent%3A3", "docs/plans/x.md"}},
+		{name: "a T3 thread id of 1024 characters", args: []string{"--detach", "--t3-thread=" + strings.Repeat("a", 1024),
+			"docs/plans/x.md"}},
+		{name: "a T3 thread in the child's arguments", args: []string{"--detached-run=x-1", "--t3-thread=t-1",
+			"docs/plans/x.md"}},
+		{name: "a T3 thread without detach", args: []string{"--t3-thread", "t-1", "docs/plans/x.md"},
+			wantErr: "--t3-thread is valid only with --detach"},
+		{name: "a T3 thread with attach", args: []string{"--attach", "--t3-thread", "t-1"},
+			wantErr: "--t3-thread is valid only with --detach"},
+		{name: "a T3 thread id with whitespace", args: []string{"--detach", "--t3-thread", "thread 1", "docs/plans/x.md"},
+			wantErr: `--t3-thread: invalid thread id "thread 1"`},
+		{name: "a T3 thread id with a quote", args: []string{"--detach", "--t3-thread", "it's", "docs/plans/x.md"},
+			wantErr: `--t3-thread: invalid thread id "it's"`},
+		{name: "a T3 thread id with a slash", args: []string{"--detach", "--t3-thread=a/b", "docs/plans/x.md"},
+			wantErr: "--t3-thread: invalid thread id"},
+		{name: "an empty T3 thread id", args: []string{"--detach", "--t3-thread=", "docs/plans/x.md"},
+			wantErr: `--t3-thread: invalid thread id ""`},
+		{name: "a T3 thread id over 1024 characters", args: []string{"--detach",
+			"--t3-thread=" + strings.Repeat("a", 1025), "docs/plans/x.md"}, wantErr: "--t3-thread: invalid thread id"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -134,6 +156,8 @@ func TestStripDetachArgs(t *testing.T) {
 			{"--detach", "--external-reviewers=", "--tasks-only", plan},
 			{"--detached-run", "x-1", "--detach", "--branch", "b", plan},
 			{"--detach", "--", plan},
+			{"--detach", "--t3-thread", "thread:a%3Ab", "--tasks-only", plan},
+			{"--t3-thread=thread-1", "--detach", plan},
 		} {
 			launcher := parseTestOpts(t, args...)
 			var child opts
@@ -150,6 +174,7 @@ func TestStripDetachArgs(t *testing.T) {
 			assert.Equal(t, launcher.ExternalReviewers, child.ExternalReviewers)
 			assert.Equal(t, launcher.externalReviewersSet, child.externalReviewersSet, "an explicit empty value survives")
 			assert.Equal(t, launcher.Branch, child.Branch)
+			assert.Empty(t, child.T3Thread, "the child never sees the thread: %v", args)
 		}
 	})
 }

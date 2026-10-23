@@ -111,6 +111,9 @@ func TestMain(m *testing.M) {
 	// a Linux machine with a systemd user manager would otherwise start every detached child the
 	// suite launches in a transient scope of the real user manager
 	detachScopePrefix = func() []string { return nil }
+	// a detached child started with a T3 token would otherwise bridge its run to whatever T3 server
+	// its environment finds; the bridge tests start it themselves against the fake server
+	newT3Bridge = func(t3BridgeConfig) func() { return func() {} }
 	// a developer shell may export a T3 Code token or server URL; no test may reach a real T3
 	// server, so neither leaks into the suite. tests that need them set them through t.Setenv.
 	for _, key := range []string{"LOOPAI_T3_TOKEN", "LOOPAI_T3_URL"} {

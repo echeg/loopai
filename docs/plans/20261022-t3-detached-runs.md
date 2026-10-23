@@ -1024,39 +1024,39 @@
 - ⚠️ every client method takes a leading `context.Context` (Go convention), and `Projects` uses the origin of the current connection; with `LOOPAI_T3_URL` set, a missing or unreadable runtime file only leaves the PID and start time zero. The fake additionally fails a request carrying `providerInstanceId`, `createdBy`, `creationSource`, or `createdAt`, so a violation is loud; T3 v0.1.1 itself tolerates a Request without `headers` (`Headers.fromInput(undefined)`), so the fake's rejection is stricter than the server.
 
 ### Task 11: Add Mode 1 (--t3-thread) and the title/terminal bridge
-- [ ] add the visible `T3Thread string` (`long:"t3-thread" value-name:"thread-id"`, no env tag):
+- [x] add the visible `T3Thread string` (`long:"t3-thread" value-name:"thread-id"`, no env tag):
   - valid only with `--detach`/`--detached-run`;
   - validated against `^[A-Za-z0-9_.:%-]{1,1024}$`. T3 ids include UUIDs and provider-native ids such as `thread:provider:claudeAgent:native-thread:thread%3A…%3Aagent%3A3`;
   - the launcher requires `LOOPAI_T3_TOKEN` when the flag is set ("--t3-thread needs LOOPAI_T3_TOKEN");
   - the launcher records origin `t3-terminal` with the thread id, and sends `{"t3_token":"<token>"}` over fd 3;
   - the recorded descriptor argv excludes `--t3-thread` in either form (`stripDetachArgs`).
-- [ ] create `cmd/loopai/t3_bridge.go` with `var newT3Bridge = startT3Bridge`, stubbed to a no-op in `TestMain` in this same task:
+- [x] create `cmd/loopai/t3_bridge.go` with `var newT3Bridge = startT3Bridge`, stubbed to a no-op in `TestMain` in this same task:
   - the child starts it after a successful `AttemptStarted` when the origin is `t3-terminal` and a token arrived;
   - the token lives only in the bridge's memory and is never logged;
   - add a `progressLogger()` accessor to `journalHooks` that returns the decorated logger, so the bridge can write one line into the progress log.
-- [ ] bridge titles:
+- [x] bridge titles:
   - follow the journal through the observer;
   - desired title = `[loopai: <state>] ` + the current title with any `^\[loopai: [^\]]*\] ?` prefix stripped;
   - re-read the title with `GetThreadProjection` before each update, so a user rename is kept;
   - one goroutine coalesces to the latest desired title and sends only changed titles, on transitions only (task change, phase change, finish);
   - states are listed in Technical Details; the final `done`/`failed`/`stopped` is left in place.
-- [ ] bridge pin: pin the thread when `pinnedAt` is null at start and remember that; unpin at finish only if the bridge pinned.
-- [ ] bridge terminal:
+- [x] bridge pin: pin the thread when `pinnedAt` is null at start and remember that; unpin at finish only if the bridge pinned.
+- [x] bridge terminal:
   - terminal id `loopai-<run-id>` (≤128 chars, never `term-1`);
   - on the first metadata snapshot of this child process, reuse the terminal if it is present. Otherwise call `terminal.open` once with:
     - cwd = `thread.worktreePath ?? project.workspaceRoot`, the root taken from `Projects()` matched by `projectId`;
     - `worktreePath` only when non-null;
     - env `{T3CODE_PROJECT_ROOT: workspaceRoot, T3CODE_WORKTREE_PATH: worktreePath (omitted when null)}`;
   - then write the follow command `" cd '<invoking checkout>' && '<absolute loopai>' --attach <run-id>\r"`, with a leading space and POSIX single-quote escaping.
-- [ ] bridge reconnect:
+- [x] bridge reconnect:
   - back off from 1 s to 30 s, re-reading `server-runtime.json`;
   - never call `terminal.open` again in this process;
   - after a server restart (runtime pid/startedAt changed, or the connection was lost), a missing terminal is pending, and the bridge waits for its `upsert`;
   - a `remove` for its terminal seen during a live connection means the user closed it, so it is never re-typed;
   - re-type the follow command only when the terminal is running, `hasRunningSubprocess` has been false for 60 s, and nothing was typed in the last 90 s. This tolerates the ~30 s metadata lag.
-- [ ] bridge failure: a `HandshakeError` with `auth_invalid`, or any other unrecoverable T3 error, disables the bridge. It writes one line through `journalHooks.progressLogger()` (and so the console log) and never affects the run.
-- [ ] run `go test ./cmd/loopai -run TestSkillContract -update` (adds `--t3-thread`).
-- [ ] write tests (success) against `t3test.NewServer`:
+- [x] bridge failure: a `HandshakeError` with `auth_invalid`, or any other unrecoverable T3 error, disables the bridge. It writes one line through `journalHooks.progressLogger()` (and so the console log) and never affects the run.
+- [x] run `go test ./cmd/loopai -run TestSkillContract -update` (adds `--t3-thread`).
+- [x] write tests (success) against `t3test.NewServer`:
   - titles go `[loopai: task 1/2] My thread` → `[loopai: task 2/2] My thread` → `[loopai: done] My thread`;
   - a user rename to `Renamed` between updates yields `[loopai: …] Renamed`;
   - an already pinned thread is neither pinned nor unpinned;
@@ -1064,13 +1064,17 @@
   - the launcher hands the token over fd 3, and the child's environment and descriptor never contain it;
   - a thread id containing `:` and `%` passes validation and reaches every request unchanged;
   - `progressLogger()` writes exactly one line to the wrapped logger.
-- [ ] write tests (errors/edge):
+- [x] write tests (errors/edge):
   - after a simulated restart the snapshot lacks the terminal and no `terminal.open` is sent; a later `upsert` with `hasRunningSubprocess:false` for 60 s (injected clock) re-types once;
   - a `remove` during a live connection is never re-typed;
   - no title update is sent when the desired title is unchanged;
   - a 401 on reconnect disables the bridge with exactly one progress-log line, and the run still succeeds;
   - `--t3-thread` is rejected without `--detach`, with an id containing whitespace or `'`, and without `LOOPAI_T3_TOKEN`.
-- [ ] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 12
+- [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 12
+- ⚠️ Go's regexp caps a repeat count at 1000, so `{1,1024}` does not compile: the id is checked as `^[A-Za-z0-9_.:%-]+$` plus a length of at most 1024, the same accepted set.
+- ⚠️ per the T3 v0.1.1 source-study ruling, "never call `terminal.open` again in this process" and the restart test's "no `terminal.open` is sent" are superseded: after a restart (or a lost connection) an absent terminal is reopened once per server start with the identical UI launch context, the follow command retried on `TerminalNotRunningError` until it runs (bounded 30 s); the restart test checks exactly that and the later idle re-type. A terminal found present on the first snapshot is reused and typed into only through the re-type rule.
+- ⚠️ a re-type also needs the previous follow command to have been seen running since the bridge last typed, so a command that fails at once is not typed every 90 s for the life of the run; a pin or unpin T3 refuses with a typed error (an archived thread) is skipped instead of disabling the bridge.
+- ⚠️ `progressLogger()` returns a forwarder to the decorated logger (C6): lines queue until `LogDecorator` runs, and a run that ends without building its logger writes them to the console log. The bridge, the child's wiring, and the 401 and token-leak checks also have end-to-end tests through the real child against `t3test`.
 
 ### Task 12: Add the ACP provider protocol and the MCP thread-id client (packages only)
 - [ ] create `pkg/acp/provider.go` on top of `transport.go`:

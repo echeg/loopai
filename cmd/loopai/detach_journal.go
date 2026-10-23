@@ -26,6 +26,13 @@ type journalHooks struct {
 	planFile string          // the worktree plan copy the run ticks, from attempt_start
 	tasks    []runs.TaskInfo // the plan's tasks as last parsed
 	warnOnce sync.Once
+
+	// progressLogger's sink: the decorated runner logger once decorateLogger built it, the lines
+	// queued for it until then, and whether the run ended without one
+	logMu     sync.Mutex
+	logger    processor.Logger
+	queued    []string
+	loggerEnd bool
 }
 
 // newJournalHooks returns hooks appending to j; cfg supplies the limit-wait duration.
@@ -49,9 +56,60 @@ func (h *journalHooks) startAttempt(ev runs.Event) (runs.Event, error) {
 }
 
 // decorateLogger wraps the runner logger so its structured sections become journal events. Every
-// call is forwarded to inner unchanged.
+// call is forwarded to inner unchanged. The wrapped logger also becomes progressLogger's sink, and
+// the lines queued for it are written first.
 func (h *journalHooks) decorateLogger(inner processor.Logger) processor.Logger {
-	return &journalLogger{Logger: inner, hooks: h}
+	decorated := &journalLogger{Logger: inner, hooks: h}
+	h.logMu.Lock()
+	defer h.logMu.Unlock()
+	h.logger = decorated
+	for _, line := range h.queued {
+		decorated.Print("%s", line)
+	}
+	h.queued = nil
+	return decorated
+}
+
+// progressLogger returns a logger that writes into the run's progress log, and with it the console
+// log, through the logger decorateLogger wrapped. It works before the run built that logger: lines
+// are queued until decorateLogger runs, or written to warnOut once endProgressLog finds the run
+// ended without one.
+func (h *journalHooks) progressLogger() progressLine {
+	return progressLine{hooks: h}
+}
+
+// endProgressLog is called when the attempt ends. A run that never built its logger has its queued
+// lines and every later one written to warnOut instead, so none is lost.
+func (h *journalHooks) endProgressLog() {
+	h.logMu.Lock()
+	defer h.logMu.Unlock()
+	if h.logger != nil {
+		return
+	}
+	for _, line := range h.queued {
+		fmt.Fprintln(h.warnOut, line)
+	}
+	h.queued, h.loggerEnd = nil, true
+}
+
+// progressLine is the logger progressLogger returns.
+type progressLine struct {
+	hooks *journalHooks
+}
+
+// Print writes one line, or queues it until the run's logger exists.
+func (p progressLine) Print(format string, args ...any) {
+	h := p.hooks
+	h.logMu.Lock()
+	defer h.logMu.Unlock()
+	switch {
+	case h.logger != nil:
+		h.logger.Print(format, args...)
+	case h.loggerEnd:
+		fmt.Fprintf(h.warnOut, format+"\n", args...)
+	default:
+		h.queued = append(h.queued, fmt.Sprintf(format, args...))
+	}
 }
 
 // observePhase records a phase change. A limit wait carries the configured wait_on_limit, because

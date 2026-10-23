@@ -23,6 +23,8 @@ import (
 	"github.com/umputun/ralphex/pkg/git"
 	"github.com/umputun/ralphex/pkg/processor"
 	"github.com/umputun/ralphex/pkg/runs"
+	"github.com/umputun/ralphex/pkg/t3"
+	"github.com/umputun/ralphex/pkg/t3/t3test"
 )
 
 const (
@@ -33,6 +35,14 @@ const (
 	detachChildWait = 30 * time.Second
 	// detachChildID is the run the fixture's descriptor records.
 	detachChildID = "child-20261022-120000-abcd"
+	// detachChildBridgeEnv makes the helper child start the real T3 bridge instead of TestMain's no-op.
+	detachChildBridgeEnv = "LOOPAI_TEST_T3_BRIDGE"
+	// detachChildToken is the T3 token the fake server of bridgeToT3 accepts.
+	detachChildToken = "t3-child-token-9a4e1f" //nolint:gosec // the fake server's token, not a credential
+	// detachChildThread is the T3 thread of bridgeToT3, a provider-native id.
+	detachChildThread = "thread:provider:claudeAgent:native-thread:thread%3Achild"
+	// detachBridgeStopped starts the one progress-log line of a disabled bridge.
+	detachBridgeStopped = "T3 thread updates stopped"
 )
 
 // detachChildFakeClaude completes every session: a review with REVIEW_DONE, the report with a
@@ -40,9 +50,11 @@ const (
 // leaves leftover.txt and reports TASK_FAILED. The fixture's prompts tell the sessions apart. While
 // $DETACH_CHILD_GATE is set every session first creates $DETACH_CHILD_STARTED, then waits, at most a
 // minute, for the gate file to exist, so a test can hold the run inside its first session and know
-// that session is running.
+// that session is running. With $DETACH_CHILD_ENV_DUMP set every session appends its environment
+// there.
 const detachChildFakeClaude = `#!/bin/sh
 prompt=$(cat)
+if [ -n "$DETACH_CHILD_ENV_DUMP" ]; then env >> "$DETACH_CHILD_ENV_DUMP"; fi
 if [ -n "$DETACH_CHILD_GATE" ]; then
   : > "$DETACH_CHILD_STARTED"
   i=0
@@ -83,6 +95,9 @@ func TestDetachChildHelper(t *testing.T) {
 	raw, ok := os.LookupEnv(detachChildMainEnv)
 	if !ok {
 		t.Skip("helper process only")
+	}
+	if _, set := os.LookupEnv(detachChildBridgeEnv); set {
+		newT3Bridge = startT3Bridge
 	}
 	os.Args = append([]string{"loopai"}, strings.Split(raw, "\x1f")...)
 	main()
@@ -349,9 +364,45 @@ func (f *detachChildFixture) launch(t *testing.T, args ...string) *detachChildPr
 // sendSecret writes the secret line and closes the launcher's end of the secret pipe.
 func (p *detachChildProc) sendSecret(t *testing.T) {
 	t.Helper()
-	_, err := p.secretW.WriteString(`{"t3_token":""}` + "\n")
+	p.sendToken(t, "")
+}
+
+// sendToken writes the secret line carrying token and closes the launcher's end of the secret pipe.
+func (p *detachChildProc) sendToken(t *testing.T, token string) {
+	t.Helper()
+	_, err := p.secretW.WriteString(`{"t3_token":"` + token + `"}` + "\n")
 	require.NoError(t, err)
 	require.NoError(t, p.secretW.Close())
+}
+
+// bridgeToT3 records the run as started from a terminal in detachChildThread of a fake T3 server
+// whose project is the repository, and has the child start the real bridge against it.
+func (f *detachChildFixture) bridgeToT3(t *testing.T) *t3test.Server {
+	t.Helper()
+	s := t3test.NewServer(t, t3test.WithToken(detachChildToken),
+		t3test.WithThread(t3test.Thread{ID: detachChildThread, ProjectID: "p", Title: "My thread"}),
+		t3test.WithProject(t3test.Project{ID: "p", Title: "Repo", WorkspaceRoot: f.repo}))
+	home := t.TempDir()
+	require.NoError(t, s.WriteRuntime(home))
+	f.env = append(f.env, t3.EnvHome+"="+home, detachChildBridgeEnv+"=1")
+	desc := f.descriptor(t)
+	desc.Origin = runs.Origin{Kind: runs.OriginT3Terminal, ThreadID: detachChildThread}
+	require.NoError(t, runs.SaveDescriptor(f.dir, &desc))
+	return s
+}
+
+// progressLog returns the attempt's progress log.
+func (f *detachChildFixture) progressLog(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(f.descriptor(t).ProgressLog)
+	require.NoError(t, err)
+	return string(data)
+}
+
+// threadTitle returns the title of detachChildThread on s.
+func threadTitle(s *t3test.Server) string {
+	th, _ := s.Thread(detachChildThread)
+	return th.Title
 }
 
 // awaitAck reads the launcher's end of the ack pipe to EOF and returns what arrived.
@@ -552,6 +603,92 @@ func TestDetachedChildRecordsT3Launcher(t *testing.T) {
 	history := f.launchHistory(t)
 	require.Len(t, history, 1)
 	assert.Equal(t, launcherT3, strings.Split(history[0], "\t")[1])
+}
+
+func TestDetachedChildBridgesToT3Thread(t *testing.T) {
+	f := newDetachChildFixture(t, true)
+	s := f.bridgeToT3(t)
+	p := f.start(t, "--tasks-only", "docs/plans/child.md")
+	p.sendToken(t, detachChildToken)
+	assert.Contains(t, p.awaitAck(t, f), `"ok":true`)
+	f.awaitSession(t)
+
+	t.Run("while the run works, the thread shows it", func(t *testing.T) {
+		require.Eventually(t, func() bool { return threadTitle(s) == "[loopai: task 1/1] My thread" }, detachChildWait,
+			10*time.Millisecond, "console log:\n%s", f.consoleLog(t))
+		require.Eventually(t, func() bool { return len(s.Writes()) == 1 }, detachChildWait, 10*time.Millisecond)
+		th, _ := s.Thread(detachChildThread)
+		assert.NotEmpty(t, th.PinnedAt, "pinned for the run")
+		opens := s.Opens()
+		require.Len(t, opens, 1)
+		assert.Equal(t, map[string]any{"threadId": detachChildThread, "terminalId": "loopai-" + detachChildID,
+			"cwd": f.repo, "env": map[string]any{"T3CODE_PROJECT_ROOT": f.repo}}, opens[0])
+		assert.Equal(t, t3FollowCommand(f.repo, os.Args[0], detachChildID), s.Writes()[0]["data"])
+		for _, h := range s.Handshakes() {
+			assert.Equal(t, "Bearer "+detachChildToken, h.Authorization, "the token came over the secret pipe")
+		}
+	})
+
+	require.NoError(t, os.WriteFile(f.gate, nil, 0o600))
+	require.Equal(t, 0, p.wait(t, f))
+
+	t.Run("the final title and the unpin are sent before the child exits", func(t *testing.T) {
+		assert.Equal(t, runs.StatusSucceeded, f.outcome(t).Status)
+		events := f.events(t)
+		assert.Equal(t, runs.EventFinish, events[len(events)-1].Type, "the journal ends with the finish event")
+		dispatches := s.Dispatches()
+		require.GreaterOrEqual(t, len(dispatches), 2)
+		final, unpin := dispatches[len(dispatches)-2], dispatches[len(dispatches)-1]
+		assert.Equal(t, "thread.metadata.update", final["type"])
+		assert.Equal(t, "[loopai: done] My thread", final["title"])
+		assert.Equal(t, "thread.unpin", unpin["type"])
+		th, _ := s.Thread(detachChildThread)
+		assert.Equal(t, "[loopai: done] My thread", th.Title)
+		assert.Empty(t, th.PinnedAt)
+	})
+
+	t.Run("a working bridge leaves no line and no token behind", func(t *testing.T) {
+		assert.NotContains(t, f.progressLog(t), detachBridgeStopped)
+		assert.NotContains(t, f.consoleLog(t), detachChildToken)
+		assert.NotContains(t, f.progressLog(t), detachChildToken)
+	})
+}
+
+func TestDetachedChildBridgeRejectedTokenKeepsTheRun(t *testing.T) {
+	f := newDetachChildFixture(t, true)
+	s := f.bridgeToT3(t)
+	p := f.start(t, "--tasks-only", "docs/plans/child.md")
+	p.sendToken(t, detachChildToken)
+	assert.Contains(t, p.awaitAck(t, f), `"ok":true`)
+	f.awaitSession(t)
+	require.Eventually(t, func() bool { return threadTitle(s) == "[loopai: task 1/1] My thread" }, detachChildWait,
+		10*time.Millisecond, "console log:\n%s", f.consoleLog(t))
+
+	// the token expires, then T3 restarts: the reconnect is rejected
+	s.RejectNextConnection()
+	require.NoError(t, s.Restart())
+	require.Eventually(t, func() bool { return strings.Contains(f.progressLog(t), detachBridgeStopped) }, detachChildWait,
+		10*time.Millisecond, "console log:\n%s", f.consoleLog(t))
+
+	require.NoError(t, os.WriteFile(f.gate, nil, 0o600))
+	require.Equal(t, 0, p.wait(t, f), "the run still succeeds")
+	assert.Equal(t, runs.StatusSucceeded, f.outcome(t).Status)
+
+	progressLog := f.progressLog(t)
+	assert.Equal(t, 1, strings.Count(progressLog, detachBridgeStopped), "exactly one progress-log line:\n%s", progressLog)
+	assert.Contains(t, progressLog, "401 auth_invalid (invalid_credential)")
+	assert.Equal(t, 1, strings.Count(f.consoleLog(t), detachBridgeStopped), "and its copy on the console log")
+	assert.Equal(t, "[loopai: task 1/1] My thread", threadTitle(s), "a disabled bridge writes nothing more")
+	assert.NotContains(t, progressLog+f.consoleLog(t), detachChildToken)
+}
+
+func TestDetachedChildWithoutTokenHasNoBridge(t *testing.T) {
+	f := newDetachChildFixture(t, false)
+	s := f.bridgeToT3(t)
+	p := f.launch(t, "--tasks-only", "docs/plans/child.md") // a plain-shell resume hands over no token
+	assert.Contains(t, p.awaitAck(t, f), `"ok":true`)
+	require.Equal(t, 0, p.wait(t, f))
+	assert.Empty(t, s.Handshakes(), "no token, no bridge")
 }
 
 func TestDetachedChildFailedTask(t *testing.T) {

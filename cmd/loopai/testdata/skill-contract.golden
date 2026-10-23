@@ -46,6 +46,7 @@ flags:
 --skill-contract
 --skip-finalize
 --stop
+--t3-thread
 --task-model
 --tasks-only
 --version
