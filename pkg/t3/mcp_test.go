@@ -47,6 +47,7 @@ type fakeMCP struct {
 	badBody     bool   // answer tools/call with an undecodable body
 	wrongID     bool   // answer tools/call with another request's id
 	block       bool   // hold every request until the client gives up
+	blockDelete bool   // hold the session-ending DELETE until the client gives up
 	status      map[string]int
 
 	mu      sync.Mutex
@@ -100,7 +101,7 @@ func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.calls = append(f.calls, mcpCall{httpMethod: r.Method, rpcMethod: msg.Method, header: r.Header.Clone(), body: string(data)})
 	f.mu.Unlock()
 
-	if f.block {
+	if f.block || (f.blockDelete && r.Method == http.MethodDelete) {
 		<-r.Context().Done()
 		return
 	}
@@ -339,6 +340,24 @@ func TestMCPClientTimeout(t *testing.T) {
 	assert.Empty(t, id)
 	assert.Less(t, time.Since(start), 5*time.Second, "the caller's deadline bounds the lookup")
 	assert.NotContains(t, err.Error(), mcpTestAuthz)
+}
+
+// TestMCPClientHungDeleteDoesNotDelayTheAnswer makes the endpoint hang on the session-ending DELETE:
+// the lookup still returns its thread id after at most the DELETE's own short bound, not the HTTP
+// client's 30-second timeout, even with a caller context that never expires.
+func TestMCPClientHungDeleteDoesNotDelayTheAnswer(t *testing.T) {
+	f := newFakeMCP(t)
+	f.blockDelete = true
+	cred := f.start()
+	start := time.Now()
+	id, err := NewMCPClient(cred, "v").CurrentThreadID(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, mcpTestThread, id)
+	assert.Less(t, time.Since(start), mcpEndTimeout+3*time.Second, "the DELETE is bounded on its own")
+	calls, deleted := f.snapshot()
+	require.Len(t, calls, 4)
+	assert.Equal(t, http.MethodDelete, calls[3].httpMethod, "the DELETE was still sent")
+	assert.False(t, deleted, "the endpoint never answered it")
 }
 
 func TestMCPClientUnreachable(t *testing.T) {

@@ -479,42 +479,91 @@ func (p *Provider) openPromptCount() int {
 	return n
 }
 
-func TestProviderCancelEndsAnOpenPrompt(t *testing.T) {
-	h := &fakeHandler{onPrompt: untilCanceled}
+// answersByID reads n messages and returns them by their numeric id; notifications fail the test.
+func (s *script) answersByID(n int) map[float64]map[string]any {
+	s.t.Helper()
+	got := map[float64]map[string]any{}
+	for range n {
+		m := s.next()
+		id, ok := m["id"].(float64)
+		require.True(s.t, ok, "expected an answer, got %v", m)
+		got[id] = m
+	}
+	return got
+}
+
+// TestProviderCancelBeforePromptIsCalled pins the contract a handler cannot see: a session/cancel
+// read right after a session/prompt closes that prompt's Canceled channel even when Handler.Cancel
+// runs before Handler.Prompt is called. The order is forced, not likely: the session's LoadSession
+// returns only once Cancel has run, and a prompt reaches Prompt only after its session is ready.
+func TestProviderCancelBeforePromptIsCalled(t *testing.T) {
+	cancelDone := make(chan struct{})
+	h := &fakeHandler{onCancel: func(string) { close(cancelDone) }}
+	h.onLoad = func(ctx context.Context, _ Session) {
+		select {
+		case <-cancelDone:
+		case <-ctx.Done():
+		}
+	}
+	h.onPrompt = func(ctx context.Context, req PromptRequest, u *Updates) StopReason {
+		_, _, _, cancels := h.snapshot()
+		assert.Equal(t, []string{"s1"}, cancels, "Cancel ran before Prompt was called")
+		assert.True(t, isClosed(req.Canceled), "Canceled is already closed when Prompt is called")
+		return untilCanceled(ctx, req, u)
+	}
 	s := startProvider(t, h)
-	sid := s.newSession(1, "/repo")
-	s.send(`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"` + sid + `","prompt":[]}}`)
-	s.send(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"` + sid + `"}}`)
-	assert.JSONEq(t, `{"jsonrpc":"2.0","id":2,"result":{"stopReason":"cancelled"}}`, s.nextRaw()) //nolint:misspell // ACP wire value
-	s.sync(3)
-	_, _, _, cancels := h.snapshot()
-	assert.Equal(t, []string{sid}, cancels, "the handler hears the cancel too")
+	s.send(`{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"s1","cwd":"/repo","mcpServers":[]}}` + "\n" +
+		`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"s1","prompt":[]}}` + "\n" +
+		`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s1"}}`)
+	got := s.answersByID(2)
+	assert.Equal(t, map[string]any{}, got[1]["result"], "the load is answered once its hook returned")
+	assert.Equal(t, map[string]any{"stopReason": "cancelled"}, got[2]["result"]) //nolint:misspell // ACP wire value
+	_, _, prompts, _ := h.snapshot()
+	assert.Len(t, prompts, 1)
 	require.Eventually(t, func() bool { return s.p.openPromptCount() == 0 }, 10*time.Second, 10*time.Millisecond)
 }
 
-// TestProviderCancelBeforePromptCall pins the order a handler cannot see: Prompt starts on its own
-// goroutine, so the cancel that follows a prompt can reach Cancel before the prompt reaches Prompt.
-// The handler here starts its prompt only after Cancel returned, and still finds it canceled.
-func TestProviderCancelBeforePromptCall(t *testing.T) {
-	cancelSeen := make(chan struct{})
-	h := &fakeHandler{
-		onCancel: func(string) { close(cancelSeen) },
-		onPrompt: func(ctx context.Context, req PromptRequest, u *Updates) StopReason {
-			select {
-			case <-cancelSeen:
-			case <-ctx.Done():
-				return StopEndTurn
-			}
-			assert.True(t, isClosed(req.Canceled), "Canceled is closed before Cancel runs")
-			return untilCanceled(ctx, req, u)
-		},
-	}
+// TestProviderPromptWaitsForItsSession sends a prompt before the session/load that opens its session
+// is answered: Prompt is called only once LoadSession returned, so it sees what the load recorded.
+func TestProviderPromptWaitsForItsSession(t *testing.T) {
+	release := make(chan struct{})
+	h := &fakeHandler{onLoad: func(ctx context.Context, _ Session) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	}}
 	s := startProvider(t, h)
-	sid := s.newSession(1, "/repo")
-	// one write, so the read loop handles the cancel before the prompt's goroutine is likely to run
-	s.send(`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"` + sid + `","prompt":[]}}` + "\n" +
-		`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"` + sid + `"}}`)
-	assert.JSONEq(t, `{"jsonrpc":"2.0","id":2,"result":{"stopReason":"cancelled"}}`, s.nextRaw()) //nolint:misspell // ACP wire value
+	s.send(`{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"s1","cwd":"/repo","mcpServers":[]}}`)
+	s.send(`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"s1","prompt":[]}}`)
+	s.sync(3) // the read loop is not blocked by the waiting prompt
+	s.expectSilence()
+	_, _, prompts, _ := h.snapshot()
+	assert.Empty(t, prompts, "no Prompt before the session's LoadSession returned")
+
+	close(release)
+	got := s.answersByID(2)
+	assert.Equal(t, map[string]any{}, got[1]["result"])
+	assert.Equal(t, map[string]any{"stopReason": "end_turn"}, got[2]["result"])
+	_, _, prompts, _ = h.snapshot()
+	assert.Len(t, prompts, 1)
+}
+
+// TestProviderShutdownWhilePromptWaits stops the provider while a prompt waits for its session: the
+// prompt is never handed to Prompt and never answered.
+func TestProviderShutdownWhilePromptWaits(t *testing.T) {
+	h := &fakeHandler{onLoad: func(ctx context.Context, _ Session) { <-ctx.Done() }}
+	s := startProvider(t, h)
+	s.send(`{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"s1","cwd":"/repo","mcpServers":[]}}`)
+	s.send(`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"s1","prompt":[]}}`)
+	s.sync(3)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, s.p.Shutdown(ctx))
+	s.expectSilence()
+	_, _, prompts, _ := h.snapshot()
+	assert.Empty(t, prompts)
+	assert.Zero(t, s.p.openPromptCount())
 }
 
 // TestProviderCancelBackToBack sends each prompt and its cancel in one write, the way a Stop pressed
@@ -748,6 +797,89 @@ func TestProviderErrorsNeverReadAsAuthFailures(t *testing.T) {
 		assert.NotEqual(t, -32000, int(code), "request %v", id)
 		assert.False(t, authRE.MatchString(msg), "request %v answered %q", id, msg)
 	}
+}
+
+// lockedBuffer is a bytes.Buffer the provider's handler goroutines and the test can share.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p) //nolint:wrapcheck // strings.Builder.Write never fails
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestProviderRecoversHandlerPanics makes every handler method panic once and expects each request
+// answered as the Handler contract states, the panic logged to the error log, and the provider still
+// serving: a dead provider has its T3 Code turn finalized as failed and never continued.
+func TestProviderRecoversHandlerPanics(t *testing.T) {
+	h := &fakeHandler{
+		onNew: func(_ context.Context, s Session) {
+			if s.Cwd == "/panic" {
+				panic("new boom")
+			}
+		},
+		onLoad:   func(context.Context, Session) { panic("load boom") },
+		onPrompt: func(context.Context, PromptRequest, *Updates) StopReason { panic("prompt boom") },
+		onCancel: func(string) { panic("cancel boom") },
+	}
+	s := startProvider(t, h)
+	var errLog lockedBuffer
+	s.p.SetErrorLog(&errLog)
+
+	s.send(`{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/panic","mcpServers":[]}}`)
+	s.send(`{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"s1","cwd":"/repo","mcpServers":[]}}`)
+	for _, m := range s.answersByID(2) {
+		code, msg := errorOf(t, m)
+		assert.InDelta(t, CodeInternalError, code, 0, "a panicking session hook is an internal error: %v", m)
+		assert.NotEqual(t, -32000, int(code))
+		assert.False(t, authRE.MatchString(msg), "answered %q", msg)
+	}
+
+	sid := s.newSession(3, "/repo") // still serving
+	s.send(`{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"` + sid + `","prompt":[]}}`)
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":4,"result":{"stopReason":"end_turn"}}`, s.nextRaw(),
+		"a panicking prompt ends its turn")
+	s.send(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"` + sid + `"}}`)
+	s.send(`{"jsonrpc":"2.0","id":5,"method":"session/cancel","params":{"sessionId":"` + sid + `"}}`)
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":5,"result":{}}`, s.nextRaw(), "a panicking Cancel leaves the read loop serving")
+	s.sync(6)
+	require.Eventually(t, func() bool { return s.p.openPromptCount() == 0 }, 10*time.Second, 10*time.Millisecond)
+
+	logged := errLog.String()
+	for _, want := range []string{"panic in the session/new handler: new boom", "panic in the session/load handler: load boom",
+		"panic in the session/prompt handler: prompt boom", "panic in the session/cancel handler: cancel boom"} {
+		assert.Contains(t, logged, want)
+	}
+	assert.Contains(t, logged, "goroutine", "the stack is logged with the panic")
+}
+
+func TestSessionFormattingRedacts(t *testing.T) {
+	const authz = "mcp-0f9e8d7c6b5a-a1b2c3"
+	s := Session{ID: "loopai-1", Cwd: "/repo", ClientName: "t3-code", MCPServers: json.RawMessage(
+		`[{"name":"t3-code","env":[{"name":"T3_ACP_MCP_AUTHORIZATION","value":"Bearer ` + authz + `"}]}]`)}
+	wrapped := struct {
+		S Session
+		P *Session
+	}{S: s, P: &s}
+	for _, verb := range []string{"%v", "%+v", "%s", "%#v", "%q"} {
+		for _, v := range []any{s, &s, wrapped} {
+			out := fmt.Sprintf(verb, v)
+			assert.NotContains(t, out, authz, "%s of %T", verb, v)
+			assert.Contains(t, out, "loopai-1", "%s of %T", verb, v)
+		}
+	}
+	assert.Equal(t, fmt.Sprintf("{ID:loopai-1 Cwd:/repo MCPServers:[%d bytes redacted] ClientName:t3-code}", len(s.MCPServers)),
+		s.String())
+	assert.Equal(t, "acp.Session"+s.String(), s.GoString())
 }
 
 func TestProviderSendsNoRequests(t *testing.T) {

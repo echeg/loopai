@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const (
@@ -28,6 +29,9 @@ const (
 	maxMCPBody = 4 << 20
 	// toolThreadList is the tool whose reply names the caller's thread.
 	toolThreadList = "t3_thread_list"
+	// mcpEndTimeout bounds the best-effort DELETE that ends an MCP session, so an endpoint that
+	// hangs on it never holds back a tool call that already has its answer.
+	mcpEndTimeout = time.Second
 )
 
 // Environment variables carrying the MCP endpoint and authorization in an ACP provider's spawn
@@ -279,8 +283,11 @@ func (s *mcpSession) notify(ctx context.Context, method string) error {
 	return nil
 }
 
-// end asks the endpoint to drop the session. It is best-effort: the session expires on its own.
+// end asks the endpoint to drop the session, waiting at most mcpEndTimeout. It is best-effort: the
+// session expires on its own.
 func (s *mcpSession) end(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, mcpEndTimeout)
+	defer cancel()
 	resp, err := s.send(ctx, http.MethodDelete, "session end", nil)
 	if err == nil {
 		resp.Body.Close()

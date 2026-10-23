@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"runtime/debug"
 	"slices"
 	"sync"
 )
@@ -37,6 +39,7 @@ const (
 	errTextMethodNotFound = "method not found"
 	errTextInvalidParams  = "invalid params"
 	errTextUnknownSession = "unknown session"
+	errTextInternal       = "internal error"
 )
 
 // StopReason answers a session/prompt.
@@ -56,11 +59,21 @@ type Session struct {
 	ID  string
 	Cwd string
 	// MCPServers is the raw mcpServers parameter. T3 Code's entry carries a bearer token in its env,
-	// so it is never logged.
+	// so it is never logged, and String and GoString report only its size.
 	MCPServers json.RawMessage
 	// ClientName is clientInfo.name from initialize, empty when the client sent none.
 	ClientName string
 }
+
+// String describes the session with its MCP servers redacted to their size, so formatting a session
+// with %v, %+v, or %s never prints the bearer token T3 Code's entry carries.
+func (s Session) String() string {
+	return fmt.Sprintf("{ID:%s Cwd:%s MCPServers:[%d bytes redacted] ClientName:%s}", s.ID, s.Cwd, len(s.MCPServers),
+		s.ClientName)
+}
+
+// GoString is String, so %#v redacts too.
+func (s Session) GoString() string { return "acp.Session" + s.String() }
 
 // PromptRequest is one session/prompt.
 type PromptRequest struct {
@@ -77,18 +90,24 @@ type PromptRequest struct {
 
 // Handler serves the provider's sessions. NewSession, LoadSession, and Prompt run on goroutines of
 // their own, with a context canceled when the provider stops. Cancel runs on the read loop, in
-// message order, and must not block.
+// message order, and must not block. A Prompt of a session is called only once the NewSession or
+// LoadSession call that opened the session has returned, so it sees what that call recorded even when
+// the client sent the prompt before the session's answer.
 //
 // Because Prompt starts on its own goroutine, a session/cancel read right after a session/prompt
 // can reach Cancel before that prompt reaches Prompt. A handler therefore learns that a prompt was
 // canceled from PromptRequest.Canceled, which is already closed when Cancel runs, and not from
 // whether Prompt was called before Cancel.
+//
+// A panic in any of the four methods is recovered and logged, and the provider keeps serving: a
+// session/new or session/load whose hook panicked is answered with an internal error, a prompt whose
+// Prompt panicked with StopEndTurn.
 type Handler interface {
 	// NewSession is called for session/new with a fresh session id, which is answered once it
-	// returns. session/new always succeeds, for any cwd.
+	// returns. session/new always succeeds, for any cwd, unless NewSession panics.
 	NewSession(ctx context.Context, s Session)
 	// LoadSession is called for session/load with whatever id the client sent. {} is answered once
-	// it returns, so it must return promptly; session/load never fails.
+	// it returns, so it must return promptly; session/load never fails unless LoadSession panics.
 	LoadSession(ctx context.Context, s Session)
 	// Prompt runs one session/prompt and returns its stop reason, which is answered unless the
 	// provider stopped meanwhile. Updates sends the session's session/update notifications.
@@ -119,13 +138,22 @@ type Provider struct {
 
 	mu         sync.Mutex
 	stopped    bool
+	errLog     io.Writer // where recovered handler panics are reported
 	clientName string
-	sessions   map[string]string          // session id -> cwd
+	sessions   map[string]session         // session id -> its cwd and readiness
 	open       map[string][]chan struct{} // session id -> Canceled channels of prompts not yet canceled or ended
 }
 
+// session is what the provider records for a session/new or session/load: the session's cwd, and a
+// channel closed once the handler call that opened it returned.
+type session struct {
+	cwd   string
+	ready chan struct{}
+}
+
 // NewProvider returns a provider reading client messages from r and writing to w. version is
-// reported as agentInfo.version.
+// reported as agentInfo.version. Recovered handler panics are reported on os.Stderr until
+// SetErrorLog names another writer.
 func NewProvider(r io.Reader, w io.Writer, version string, h Handler) *Provider {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &Provider{
@@ -134,7 +162,8 @@ func NewProvider(r io.Reader, w io.Writer, version string, h Handler) *Provider 
 		version:  version,
 		ctx:      ctx,
 		cancel:   cancel,
-		sessions: map[string]string{},
+		errLog:   os.Stderr,
+		sessions: map[string]session{},
 		open:     map[string][]chan struct{}{},
 	}
 	p.conn.HandleRequest(methodInitialize, p.handleInitialize)
@@ -151,6 +180,14 @@ func NewProvider(r io.Reader, w io.Writer, version string, h Handler) *Provider 
 		_ = p.replyError(id, CodeMethodNotFound, errTextMethodNotFound)
 	})
 	return p
+}
+
+// SetErrorLog names the writer recovered handler panics are reported on. It never receives the
+// protocol's own traffic, so it must not be the provider's output.
+func (p *Provider) SetErrorLog(w io.Writer) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.errLog = w
 }
 
 // Serve handles client messages until the input ends, then stops the provider without waiting for
@@ -195,15 +232,34 @@ func (p *Provider) isStopped() bool {
 }
 
 // spawn runs fn on a goroutine counted by Shutdown, unless the provider stopped. It reports whether
-// fn was started.
-func (p *Provider) spawn(fn func()) bool {
+// fn was started. A panic in fn is recovered and reported under name, then onPanic answers the
+// request fn was serving, so a handler bug never ends the process or leaves a request unanswered.
+func (p *Provider) spawn(name string, fn, onPanic func()) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stopped {
 		return false
 	}
-	p.wg.Go(fn)
+	p.wg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				p.logPanic(name, r)
+				onPanic()
+			}
+		}()
+		fn()
+	})
 	return true
+}
+
+// logPanic reports a recovered handler panic and its stack on the error log.
+func (p *Provider) logPanic(name string, r any) {
+	p.mu.Lock()
+	w := p.errLog
+	p.mu.Unlock()
+	if w != nil {
+		_, _ = fmt.Fprintf(w, "acp: recovered from a panic in the %s handler: %v\n%s", name, r, debug.Stack())
+	}
 }
 
 // reply answers a request unless the provider stopped. An answer already being written when the
@@ -298,19 +354,37 @@ func (p *Provider) decodeSession(params json.RawMessage) Session {
 	return Session{ID: req.SessionID, Cwd: req.Cwd, MCPServers: req.MCPServers, ClientName: p.clientName}
 }
 
-// register records a session's cwd for its prompts.
-func (p *Provider) register(sessionID, cwd string) {
+// register records a session's cwd for its prompts and returns the channel the caller closes once
+// the handler call opening the session returned. A session loaded again gets a fresh channel.
+func (p *Provider) register(sessionID, cwd string) chan struct{} {
+	ready := make(chan struct{})
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.sessions[sessionID] = cwd
+	p.sessions[sessionID] = session{cwd: cwd, ready: ready}
+	return ready
 }
 
-// sessionCwd returns the cwd recorded for a session.
-func (p *Provider) sessionCwd(sessionID string) (string, bool) {
+// lookupSession returns what the provider recorded for a session.
+func (p *Provider) lookupSession(sessionID string) (session, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	cwd, ok := p.sessions[sessionID]
-	return cwd, ok
+	s, ok := p.sessions[sessionID]
+	return s, ok
+}
+
+// openSession runs hook, the handler's NewSession or LoadSession, on its own goroutine, marks the
+// session ready once hook returned, and then answers the request with result. A panicking hook is
+// answered with an internal error instead.
+func (p *Provider) openSession(name string, id json.RawMessage, s Session, hook func(context.Context, Session),
+	result any) {
+	ready := p.register(s.ID, s.Cwd)
+	p.spawn(name, func() {
+		func() {
+			defer close(ready)
+			hook(p.ctx, s)
+		}()
+		_ = p.reply(id, result)
+	}, func() { _ = p.replyError(id, CodeInternalError, errTextInternal) })
 }
 
 // handleNewSession answers a fresh session id once the handler's NewSession returns. It reads no
@@ -318,13 +392,9 @@ func (p *Provider) sessionCwd(sessionID string) (string, bool) {
 func (p *Provider) handleNewSession(id, params json.RawMessage) {
 	s := p.decodeSession(params)
 	s.ID = newSessionID()
-	p.register(s.ID, s.Cwd)
-	p.spawn(func() {
-		p.handler.NewSession(p.ctx, s)
-		_ = p.reply(id, struct {
-			SessionID string `json:"sessionId"`
-		}{s.ID})
-	})
+	p.openSession(methodSessionNew, id, s, p.handler.NewSession, struct {
+		SessionID string `json:"sessionId"`
+	}{s.ID})
 }
 
 // handleLoadSession registers any session id and answers {} once the handler's LoadSession
@@ -335,16 +405,12 @@ func (p *Provider) handleLoadSession(id, params json.RawMessage) {
 		_ = p.reply(id, struct{}{})
 		return
 	}
-	p.register(s.ID, s.Cwd)
-	p.spawn(func() {
-		p.handler.LoadSession(p.ctx, s)
-		_ = p.reply(id, struct{}{})
-	})
+	p.openSession(methodSessionLoad, id, s, p.handler.LoadSession, struct{}{})
 }
 
-// handlePrompt runs a prompt of a known session on its own goroutine and answers its stop reason.
-// The prompt is recorded as open before the read loop moves on, so a session/cancel read next
-// closes its Canceled channel even when Prompt has not been called yet.
+// handlePrompt runs a prompt of a known session on its own goroutine, once the session is ready, and
+// answers its stop reason. The prompt is recorded as open before the read loop moves on, so a
+// session/cancel read next closes its Canceled channel even when Prompt has not been called yet.
 func (p *Provider) handlePrompt(id, params json.RawMessage) {
 	var req struct {
 		SessionID string            `json:"sessionId"`
@@ -354,24 +420,34 @@ func (p *Provider) handlePrompt(id, params json.RawMessage) {
 		_ = p.replyError(id, CodeInvalidParams, errTextInvalidParams)
 		return
 	}
-	cwd, ok := p.sessionCwd(req.SessionID)
+	s, ok := p.lookupSession(req.SessionID)
 	if !ok {
 		_ = p.replyError(id, CodeInvalidParams, errTextUnknownSession)
 		return
 	}
 	canceled := p.openPrompt(req.SessionID)
-	pr := PromptRequest{SessionID: req.SessionID, Cwd: cwd, Blocks: req.Prompt, Canceled: canceled}
+	pr := PromptRequest{SessionID: req.SessionID, Cwd: s.cwd, Blocks: req.Prompt, Canceled: canceled}
 	updates := &Updates{p: p, sessionID: req.SessionID, messageID: newMessageID()}
-	started := p.spawn(func() {
+	answer := func(reason StopReason) {
+		_ = p.reply(id, struct {
+			StopReason StopReason `json:"stopReason"`
+		}{reason})
+	}
+	started := p.spawn(methodSessionPrompt, func() {
 		defer p.endPrompt(req.SessionID, canceled)
+		select {
+		case <-s.ready:
+		case <-p.ctx.Done():
+		}
+		if p.ctx.Err() != nil { // stopped while waiting, even if the session became ready meanwhile
+			return
+		}
 		reason := p.handler.Prompt(p.ctx, pr, updates)
 		if reason == "" {
 			reason = StopEndTurn
 		}
-		_ = p.reply(id, struct {
-			StopReason StopReason `json:"stopReason"`
-		}{reason})
-	})
+		answer(reason)
+	}, func() { answer(StopEndTurn) })
 	if !started {
 		p.endPrompt(req.SessionID, canceled)
 	}
@@ -411,7 +487,8 @@ func (p *Provider) cancelPrompts(sessionID string) {
 
 // handleCancel closes the Canceled channels of the session's open prompts, then reports the
 // session/cancel to the handler, unless the provider stopped. Both happen on the read loop, before
-// any later message is read.
+// any later message is read. A panic in the handler's Cancel is recovered, so the read loop keeps
+// serving.
 func (p *Provider) handleCancel(params json.RawMessage) {
 	var req struct {
 		SessionID string `json:"sessionId"`
@@ -420,6 +497,11 @@ func (p *Provider) handleCancel(params json.RawMessage) {
 		return
 	}
 	p.cancelPrompts(req.SessionID)
+	defer func() {
+		if r := recover(); r != nil {
+			p.logPanic(methodSessionCancel, r)
+		}
+	}()
 	p.handler.Cancel(req.SessionID)
 }
 
