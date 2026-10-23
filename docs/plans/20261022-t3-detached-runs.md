@@ -1322,7 +1322,7 @@
 - ⚠️ e2e skipped: the branch changes no file under `pkg/web` or `e2e`. No test showed the detached child leading its own session, so `TestDetachLaunchThroughMain` now asserts it (it fails without `Setsid`). The three `_windows.go` stub files cannot be covered on a non-Windows host.
 
 ### Task 18: [Final] Update documentation
-- [ ] rewrite `docs/t3-code.md`:
+- [x] rewrite `docs/t3-code.md`:
   - detached runs: `--detach`, `--attach`, `--runs`, `--stop`, the run directory, resume and origin preservation, and the worktree kept on non-success or an incomplete close-out;
   - archive on the run branch;
   - Mode 1: the token mint with scopes, the terminal, the title prefix, the pin, restart behaviour, and resume by re-running the skill;
@@ -1330,20 +1330,23 @@
   - `--merge`/`--pr` refusal during a live run;
   - limitations: Windows, sandbox, the Linux slice, lid-closed sleep, the Mode 2 run environment being T3's, the terminal history cap, and the items still unverified live;
   - removal of the old `--t3`/`--t3-launch`, ACP chat, settlement, PR linking, and the `t3.json` `--t3` actions.
-- [ ] update `README.md`:
+- [x] update `README.md`:
   - features, install (`loopai-acp`), and the skill list entries. Keep the check-report-docs blocks intact, naming only existing skills: from "The plugin provides <N> skills:" to "Use `/loopai:loopai-merge", and from "<N> skills are installed:" to "Invoke them as";
   - the Codex current-thread paragraph, the launch-history paragraph, and the env vars (remove `LOOPAI_T3`, `LOOPAI_T3_THREAD_ID`);
   - the `--acp` keep-awake note, the T3 section, the cmux env list, and the resumed-ACP-chat sentence;
   - every link to the removed anchors `#keep-the-current-codex-thread`, `#limitations`, `#experimental-loopai-as-a-t3-code-provider`, pointed at the new headings.
-- [ ] update the `llms.txt` T3/ACP lines and flags. Keep the "The plugin provides" … "The CLI remains" and "It installs" … "`loopai-grill` stays" blocks, and "Manually invoke"/"explicit `$loopai-retro`".
-- [ ] update `CLAUDE.md`:
+- [x] update the `llms.txt` T3/ACP lines and flags. Keep the "The plugin provides" … "The CLI remains" and "It installs" … "`loopai-grill` stays" blocks, and "Manually invoke"/"explicit `$loopai-retro`".
+- [x] update `CLAUDE.md`:
   - the project-structure lines for `cmd/loopai-acp`, `pkg/acp`, `pkg/t3` (with `t3test`), the new `pkg/runs`, and the phase package;
   - replace the loopai-t3/current-thread, T3 reporting, settlement, and ACP agent-mode/chat paragraphs with the detached-run, Mode 1, and Mode 2 architecture: hidden `--detached-run`, handshake fds, journal and observer, knobs on `executePlanRequest`, the keep-worktree decision, the `--merge`/`--pr` guard, the binding store with hashed thread keys, and the TestMain stubs;
   - update the removed-spellings sentence, the launch-history hook paragraph (the child records with `launcherForOrigin`), and the codex resume lines;
   - keep every check-report-docs anchor ("The current set is" … "; every added skill", and the report-contract phrases).
-- [ ] update `docs/backlog/preserve-review-worktree-on-failure.md`: detached runs keep their worktree on every non-success exit, while foreground `--worktree` runs are unchanged. Update the embedded config comments if any still mention `t3` or ACP auto-merge.
-- [ ] verify the docs removal: `git grep -n -E 'thread\.meta\.update|LOOPAI_T3_THREAD_ID|LOOPAI_T3\b|--t3-launch|--t3-progress-thread|ModeACPChat|acp_chat\.txt|acp_auto_merge' -- docs README.md llms.txt CLAUDE.md ':!docs/plans/completed' ':!CHANGELOG.md'` matches only lines that say "was removed" or "were removed".
-- [ ] run `make test-report-docs </dev/null`, `make test </dev/null`, and `make lint` - must pass
+- [x] update `docs/backlog/preserve-review-worktree-on-failure.md`: detached runs keep their worktree on every non-success exit, while foreground `--worktree` runs are unchanged. Update the embedded config comments if any still mention `t3` or ACP auto-merge.
+- [x] verify the docs removal: `git grep -n -E 'thread\.meta\.update|LOOPAI_T3_THREAD_ID|LOOPAI_T3\b|--t3-launch|--t3-progress-thread|ModeACPChat|acp_chat\.txt|acp_auto_merge' -- docs README.md llms.txt CLAUDE.md ':!docs/plans/completed' ':!CHANGELOG.md'` matches only lines that say "was removed" or "were removed".
+- [x] run `make test-report-docs </dev/null`, `make test </dev/null`, and `make lint` - must pass
+⚠️ Mode 2 registration keeps T3 Code's default instance id (`acpRegistry_local_acp`) and never recommends `loopai`, per the T3 source-study ruling for Tasks 16 and 18.
+⚠️ The docs-removal grep ran in the C8/C9 form: `':!docs/plans' ':!docs/superpowers'` excluded and `LOOPAI_T3([^_[:alnum:]]|$)` in place of `LOOPAI_T3\b`.
+⚠️ `docs/t3-code.md` keeps a `## Limitations` heading for the new limitations; the README's link to it is removed instead of re-pointed, because the review-cadence plan-view limitation it cited no longer exists (the journal snapshot leaves the stages alone during per-task blocks).
 
 ## Technical Details
 

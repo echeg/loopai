@@ -26,10 +26,11 @@ workflows are distributed through this repository's plugin marketplace.
 - Reports live and persistent completion status to the cmux sidebar when available
 - Optionally hands a run off to its own cmux workspace with `--cmux-workspace[=always|auto]`
 - Reports working, waiting, and completion state through Orca terminal titles with `--orca`
-- Reports runs as T3 Code threads with `--t3`, and launches a plan in a T3 Code worktree and
-  provider session or thread terminal with `--t3-launch[=auto|agent|terminal]` (see [docs/t3-code.md](docs/t3-code.md))
-- Experimentally runs as a T3 Code provider session through `loopai-acp` and `--acp`, so a T3 Code
-  thread shows the run as working with plan progress and the final report
+- Runs a plan as a detached process with `--detach` that survives its terminal, agent, and T3 Code,
+  then follows, lists, and stops it with `--attach`, `--runs`, and `--stop`
+- Shows a detached run in T3 Code, either as a terminal tab and title prefix in the current thread or
+  as a loopai thread that shows Working for the whole run, through the `loopai-acp` provider (see
+  [docs/t3-code.md](docs/t3-code.md))
 - Sends optional Telegram, email, Slack, webhook, or custom-script notifications
 
 ## Requirements
@@ -102,8 +103,8 @@ Every skill begins by comparing `loopai --skill-contract` with the contract numb
 for. When they differ, the skill tells you which side is older and to run `/loopai:loopai-update`,
 then continues; a binary too old to know the flag reads as contract `0`.
 
-`make build` alone refreshes `.bin/loopai` and `.bin/loopai-acp`, the launcher for the experimental
-T3 Code provider mode, without installing anything. On Windows the launcher is written only as
+`make build` alone refreshes `.bin/loopai` and `.bin/loopai-acp`, the launcher you register as the
+loopai provider in T3 Code, without installing anything. On Windows the launcher is written only as
 `.bin/loopai-acp.exe`, and loopai also gets a `.bin/loopai.exe` copy. The launcher prefers a `loopai`
 in its own directory (`loopai.exe` on Windows), then `PATH`; `LOOPAI_ACP_LOOPAI` overrides both. See
 [docs/t3-code.md](docs/t3-code.md).
@@ -147,10 +148,9 @@ The plugin provides ten skills:
   terminal tab with `--orca`, so the run appears as an Orca card with live status;
   it forwards `--task-model`, `--review-model`, and `--external-reviewers`
   when given
-- `loopai:loopai-t3` launches a plan inside a T3 Code-managed worktree and thread
-  with `--t3-launch`: a configured loopai provider instance gives it Working state, plan steps,
-  and a final report message; otherwise it uses a terminal with phase titles. It forwards the same
-  three flags
+- `loopai:loopai-t3` starts a plan from a T3 Code thread as a detached run, shown either in a
+  terminal tab of that thread with a `[loopai: …]` title prefix or in a new loopai thread that shows
+  Working until the run ends. It forwards the same three flags
 - `loopai:loopai-plan` creates an executable implementation plan
 - `loopai:loopai-brainstorm` designs a feature interactively, then hands the
   approved design to `loopai:loopai-plan`
@@ -162,13 +162,13 @@ The plugin provides ten skills:
 - `loopai:loopai-retro` reviews run artifacts and ranks evidence-backed improvements;
   it files only backlog entries you select
 
-In Codex inside T3 Code, `$loopai-t3` defaults to the **current thread** when native
-subagents are available. A subagent runs and monitors loopai in an isolated Git worktree, keeping
-the original conversation in Working until the process exits. The title shows a compact prefix
-such as `[loopai: task 3/7]` or `[loopai: review · iteration 2]`, preserving the conversation's
-name. Report review and merge stay in that conversation; ask for a new thread to use `--t3-launch`. See
-[current-thread execution](docs/t3-code.md#keep-the-current-codex-thread) for completion and
-observer-lifetime details.
+In Claude Code and Codex alike, `loopai-t3` asks how T3 Code should show the run. A terminal in
+this thread follows the run while the conversation stays free, with a title prefix such as
+`[loopai: task 3/7]` that keeps the thread's name; it needs a `full-access` thread outside an agent
+sandbox. A new loopai thread shows Working for the whole run and ends with the report summary, after
+which you switch its model to Claude or Codex to discuss the result. See
+[Mode 1](docs/t3-code.md#mode-1-a-terminal-in-this-thread) and
+[Mode 2](docs/t3-code.md#mode-2-a-loopai-thread-that-shows-working).
 
 Use `/loopai:loopai-merge <plan>` after a successful run to have Claude narrate the report in the
 conversation language, predict merge conflicts read-only with `git merge-tree` and describe each
@@ -179,7 +179,7 @@ validation commands, commits, and only then delegates close-out to `loopai --mer
 clean merge and performs its usual cleanup. It never merges the plan branch into the base by hand.
 
 Every plan-executing launch (full and tasks-only runs, a `--plan` session that continues into
-execution, and T3 Code agent-mode runs) records its effective `--task-model`, `--review-model`, and
+execution, and every attempt of a detached run) records its effective `--task-model`, `--review-model`, and
 `--external-reviewers` flags and its launcher (`orca`, `t3`, or `cli`) in
 `~/.config/loopai/launch-history` (or under `LOOPAI_CONFIG_DIR`). The file keeps the ten newest
 distinct flag combinations, holds flag strings only, and recording never fails or changes a run.
@@ -187,8 +187,9 @@ distinct flag combinations, holds flag strings only, and recording never fails o
 combinations as ready-made choices, so a model typed once becomes an option on the next launch, and
 `loopai:loopai-plan` recommends the launcher of your most recent Orca or T3 Code launch instead of
 always recommending Orca; a plain terminal (`cli`) run does not change the recommendation. The
-launcher comes from the run's effective `orca`/`t3` settings, so `orca = true` in config records a
-terminal run as `orca`. A review chain is recorded only when set explicitly, as typed, since an
+launcher comes from the run's effective `orca` setting, so `orca = true` in config records a
+terminal run as `orca`, while a detached run records `t3` when a T3 Code thread started it, in
+either mode, and `cli` otherwise. A review chain is recorded only when set explicitly, as typed, since an
 automatic reviewer is selected again the same way; an explicitly empty chain and a chain with a
 `custom` reviewer are not recorded, because the flag cannot replay them. `--config-dir` moves where
 loopai writes the history, but the skills read only `LOOPAI_CONFIG_DIR` or `~/.config/loopai`.
@@ -609,7 +610,7 @@ branch.
 
 A finalize stop never fails the run, because the plan's work succeeded. The reason is printed as
 the last summary line (`finalize incomplete: <reason>`) and appears in the notification and in the
-cmux, Orca, and T3 Code final status (`done · finalize incomplete`); a successful finalize prints
+cmux and Orca final status (`done · finalize incomplete`); a successful finalize prints
 `finalize: merged origin/master (3 files resolved)`, `PR: <url>`, and `PR merged` instead, and the
 status reads `done · synced`, `done · PR opened`, or `done · PR merged`. After `sync`, or a finalize
 that stopped before a `PR: <url>` line, close out by hand with `/loopai-merge` or `--merge`/`--pr`.
@@ -1024,9 +1025,7 @@ settings remain available. `--codex-args`, or the `codex_args` config key, appen
 to every codex invocation loopai spawns — every phase whose spec names codex and every external
 codex reviewer. Unlike `claude_args`, which *is* the claude command's argument list,
 codex args are strictly additive and are appended after loopai's own options, so an explicit `-c`
-value there overrides the matching override loopai sets. A resumed ACP chat turn adds
-`resume <id> -` after them, so a bare positional token in codex args breaks the resume and every
-such turn falls back to a fresh session. The motivating recipe keeps long autonomous runs off the
+value there overrides the matching override loopai sets. The motivating recipe keeps long autonomous runs off the
 priority tier while interactive codex sessions keep `service_tier = "priority"`:
 
 ```bash
@@ -1184,11 +1183,8 @@ startup warning, as does a run whose chain resolves to no reviewers. The startup
 The cost grows with the plan: `max_external_iterations` and `review_patience` apply to every
 block separately, so a chain of R reviewers over T tasks can spend up to T × R extra reviewer
 loops. The completion report's External review facts show `(N review blocks)` after a reviewer
-that ran more than once. Two limitations apply in this version: per-task blocks save no
-[review checkpoint](#execution-pipeline), so a process death between tasks loses only
-that task's review, which the final block repeats; and the T3 Code provider session's plan view
-marks the Review stage completed and External review in progress at the first per-task block (see
-[docs/t3-code.md](docs/t3-code.md#limitations)).
+that ran more than once. Per-task blocks save no [review checkpoint](#execution-pipeline), so a
+process death between tasks loses only that task's review, which the final block repeats.
 
 ## Worktree isolation
 
@@ -1310,8 +1306,9 @@ Useful environment variables include:
 
 - `LOOPAI_CONFIG_DIR` — override the global configuration directory
 - `LOOPAI_ORCA` — enable Orca terminal-title status
-- `LOOPAI_T3` — enable T3 Code thread status; `LOOPAI_T3_TOKEN` holds its bearer token and
-  `LOOPAI_T3_URL` overrides the server origin
+- `LOOPAI_T3_TOKEN` — the T3 Code token a `--detach --t3-thread` launch hands to its run;
+  `LOOPAI_T3_URL` overrides the T3 Code server origin
+- `LOOPAI_ACP_LOOPAI` — the `loopai` binary `loopai-acp` starts
 - `LOOPAI_WEB_HOST` — dashboard listen address
 
 The embedded configuration documents every option. Extract it with:
@@ -1418,8 +1415,8 @@ request checks keep the hold for their duration, and
 waiting for your answer at a prompt counts as inactivity. The inhibitor is bound to the loopai
 process, so a crash releases it. Closing a MacBook lid still sleeps the machine on battery. One hold
 covers a whole plan chain, and watch-only dashboard mode, the close-out commands, and the other
-standalone utility commands never take one. Under the experimental T3 Code provider mode
-(`--acp`), each plan run and chat turn takes its own hold. Set `keep_awake = false` to opt out.
+standalone utility commands never take one. A detached run takes its own hold in its own process,
+and `--acp` takes none. Set `keep_awake = false` to opt out.
 
 | loopai state | Terminal title | Orca status |
 |---|---|---|
@@ -1437,48 +1434,27 @@ standalone utility commands never take one. Under the experimental T3 Code provi
 | Failure | `✳ loopai · failed` | Idle |
 | Stopped before completion | `✳ loopai` | Idle |
 
-Pass `--t3`, set `t3 = true`, or set `LOOPAI_T3=1` to report plan execution and review as a
-[T3 Code](https://t3.codes) thread whose title follows the same phases (`<plan> · task 3/7`,
-`<plan> · done`), pinned to the top of the sidebar while the run is active. It needs a running T3 Code server that has the repository as a project and a
-bearer token in `LOOPAI_T3_TOKEN`; without them loopai warns once and runs normally.
-`--no-t3` overrides those settings for one run, disabling thread reporting and PR linking.
-It does not disable the separate local-merge settlement mechanism.
+`loopai --detach <plan>` starts a plan as a detached run: an independent process in its own loopai
+worktree that survives the terminal, agent turn, or T3 Code session it was started from, with its
+state under `.loopai/progress/runs/<run-id>/`. The launcher prints the run id and
+`follow: loopai --attach <run-id>`, then returns. `loopai --runs` lists the checkout's runs,
+`loopai --attach [run]` replays and follows one until it ends (exit code `0` succeeded, `1` failed or
+crashed, `2` stopped; Ctrl+C only detaches), and `loopai --stop <run>` stops one gracefully. Launching
+a plan whose latest run failed, crashed, or was stopped resumes that run in its kept worktree. A
+detached run archives the plan on its own branch, never committing into the checkout it was launched
+from, removes its worktree only after a clean success, and makes `--merge` and `--pr` of its branch
+refuse while it is live. Detached runs are not available on Windows or inside an agent sandbox.
 
-`--t3-progress-thread ID` updates only the title of that existing thread, preserving its name,
-provider, branch and pin state. It suppresses ordinary T3 reporting and PR linking even when
-config enables them, and conflicts with `--no-t3` and `--t3-launch`. The current-thread Codex
-skill resolves the ID before delegation. Without an explicit token, loopai can issue a local
-7-day token through `t3` (or `npx`); failed title updates only warn and never stop the plan.
-
-`loopai --t3-launch[=auto|agent|terminal] <plan>` creates a T3 Code-managed worktree and thread,
-carrying the plan and missing local `.loopai/` overrides over. It adds the repository as a T3 Code
-project first when no project has it as workspace root, leaving existing projects untouched. The bare flag uses `auto`: it reads
-`providerInstances` from `${T3CODE_HOME:-~/.t3}/userdata/settings.json` and starts a provider session
-when an enabled `grok` instance points at `loopai-acp` or `loopai-acp.exe`; otherwise it starts
-`loopai --t3 <plan>` in the thread's terminal. Attach the mode with `=`. `agent` requires a matching
-instance; `terminal` skips the lookup. Agent mode opens no terminal and places no token in the
-thread; terminal mode passes the token in the terminal environment. With `t3` enabled, `--pr` and
-`finalize = pr|merge` link the created pull request to the branch's threads. Agent runs force `t3`
-off. See [docs/t3-code.md](docs/t3-code.md) for setup, mode selection, and `t3.json` project actions.
-
-Experimental: T3 Code can also run loopai as a provider session, so the thread reads "Working"
-for the whole run and shows plan progress, phases as activities, executor output as reasoning, and
-the completion report as the final message. `--t3-launch` starts this session automatically when
-configured, and the stop button cancels the run. A T3 Code provider instance of the `grok` driver points
-at `loopai-acp`, which starts `loopai --acp`, a JSON-RPC server for the Agent Client Protocol on
-stdin/stdout. Each message names a plan and optionally `--task-model`, `--review-model`, and
-`--external-reviewers`; the plan runs in place in the thread's working directory. After a run the
-thread stays usable: any other message is a chat turn answered by the `review_model` provider in the
-thread's worktree, which remembers earlier messages by resuming its provider session, and `merge` or
-`pr` merges the branch into the local base or opens a pull request without removing the worktree.
-If a run succeeds and its report rates Risk `low` or `medium`, loopai merges the plan branch into the
-local base branch where the base is checked out. Nothing is pushed, and neither the branch nor T3
-Code's worktree is removed. Successful local merges automatically settle the branch's T3 threads:
-`--merge` settles idle threads after cleanup, while ACP waits until its final answer has been sent.
-Settlement can issue a short-lived token through the local T3 CLI and is independent of `t3`
-title reporting; failures only warn. `acp_auto_merge = false` turns automatic merging off, and `finalize = pr|merge` takes
-precedence. The mode relies on undocumented T3 Code Grok driver contracts. See
-[docs/t3-code.md](docs/t3-code.md#experimental-loopai-as-a-t3-code-provider).
+[T3 Code](https://t3.codes) shows a detached run in one of two modes, both started by the `loopai-t3`
+skill. In Mode 1, `loopai --detach --t3-thread <thread-id> <plan>` with a T3 Code token in
+`LOOPAI_T3_TOKEN` opens a terminal tab in that thread which follows the run, writes a replaceable
+`[loopai: task 3/7]` title prefix that keeps the thread's name, pins the thread while the run is live,
+and reopens its terminal after a T3 Code restart. In Mode 2, a thread on the loopai provider, a T3 Code
+ACP Registry instance whose executable is `loopai-acp` (which runs `loopai --acp`), shows Working for
+the whole run with the plan's tasks and current phase, ends with a bounded report summary, and comes
+back after a T3 Code restart. Typing `resume` there resumes a stopped or failed run. Register the
+provider in T3 Code's settings, never by editing `settings.json`. See
+[docs/t3-code.md](docs/t3-code.md) for setup, routing, Stop, restarts, and limitations.
 
 The cmux status pill and progress bar belong to the workspace, not to an individual run, so
 several runs started from one workspace overwrite each other's status. Bare `--cmux-workspace`
@@ -1536,7 +1512,7 @@ and is performed once, in the new workspace. With `--plan`, the interactive plan
 the new workspace's terminal.
 
 The new workspace starts a fresh shell, so it does not inherit the environment of the terminal the
-run was started from. `LOOPAI_CONFIG_DIR`, `LOOPAI_ORCA`, `LOOPAI_T3`, and `LOOPAI_WEB_HOST` are carried over
+run was started from. `LOOPAI_CONFIG_DIR`, `LOOPAI_ORCA`, and `LOOPAI_WEB_HOST` are carried over
 with the command; anything else the run needs, such as provider credentials, has to come from the
 shell profile.
 The `ANTHROPIC_API_KEY` pass-through travels with the command but the key does not, so loopai warns

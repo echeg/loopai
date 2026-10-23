@@ -56,9 +56,9 @@ go mod vendor
 
 ```text
 cmd/loopai/          main package, CLI parsing, startup wiring
-cmd/loopai-acp/      launcher answering T3 Code's Grok CLI probes and starting `loopai --acp`
+cmd/loopai-acp/      argument-free launcher of the T3 Code loopai provider: execs `loopai --acp`
 internal/validation/ shared validation-command matching without package cycles
-pkg/acp/             ACP JSON-RPC stdio transport, session server, and session/update event sink
+pkg/acp/             JSON-RPC stdio transport, ACP v1 provider protocol, prompt parser, update encoders
 pkg/awake/           best-effort keep-awake sleep inhibitor renewed by run activity
 pkg/cmux/            best-effort cmux status integration
 pkg/config/          configuration loading and embedded defaults
@@ -69,10 +69,11 @@ pkg/notify/          Telegram, email, Slack, webhook, custom notifications
 pkg/orca/            best-effort OSC terminal-title status integration
 pkg/plan/            plan discovery, parsing, and mutation
 pkg/processor/       pipeline coordinator, prompts, executor policy
-pkg/processor/phase/ task, review, external, finalize, report, planning, and ACP chat phases
+pkg/processor/phase/ task, review, external, finalize, report, planning, and agent-generation phases
 pkg/progress/        timestamped progress logging
+pkg/runs/            detached-run registry, locks, event journal, and journal observer
 pkg/status/          shared phases, sections, and protocol signals
-pkg/t3/              best-effort T3 Code thread status, PR linking, and --t3-launch
+pkg/t3/              T3 Code orchestration-protocol-2 and thread MCP clients; pkg/t3/t3test fake server
 pkg/web/             dashboard, SSE, templates, static assets
 e2e/                 Playwright dashboard tests
 scripts/             provider wrappers and internal test helpers
@@ -92,10 +93,11 @@ directory name, and link target aligned; `make check-symlinks` rejects broken,
 missing, incorrect, and orphan links, requires skill descriptions, and verifies
 the exact skill inventory. It and `check-codex-skills.sh` also reject a skill body
 line naming a removed loopai spelling (`--codex`, `--codex-only`, the
-`--external-review-*` flags, the `executor`, `codex_model`, `codex_reasoning_effort`,
-`external_review_*`, and `finalize_enabled` keys) unless that line says it "was removed" or "were
-removed"; `--codex-args` does not match, and the two `removed_spellings` lists must
-stay identical. The current set is `loopai`, `loopai-merge`,
+`--external-review-*` flags, `--t3`, `--no-t3`, the `executor`, `codex_model`, `codex_reasoning_effort`,
+`external_review_*`, and `finalize_enabled` keys, and the T3 Code spellings that
+`--t3-launch`, `--t3-progress-thread`, and `acp_auto_merge` were removed with) unless that line says
+it "was removed" or "were removed"; `--codex-args` and `--t3-thread` do not match, and the two
+`removed_spellings` lists must stay identical. The current set is `loopai`, `loopai-merge`,
 `loopai-plan`, `loopai-brainstorm`, `loopai-adopt`, `loopai-update`,
 `loopai-grill`, `loopai-orca`, `loopai-t3`, and `loopai-retro`; every added skill needs the matching
 top-level symlink.
@@ -106,33 +108,27 @@ reports, backlog, steering files, and check definitions, invoked manually as
 with `path:line` evidence. User-selected `docs/backlog/` entries, committed by pathspec, are
 its only writes; it never edits prompts, agents, config, steering files, plans, or reports.
 
-The Claude `loopai-t3` skill is the T3 Code counterpart of `loopai-orca`: it
-validates the same three pass-through flags and runs `loopai --t3-launch`, minting a
-T3 Code token inline (`t3 auth session issue --token-only`) when `LOOPAI_T3_TOKEN`
-is unset so the token never reaches the transcript. Worktree creation, input
-copying, thread creation, and provider-session or terminal launch all live in Go (`pkg/t3/launch.go`).
-The bare flag uses `auto`: `providerInstances` in `<T3 home>/userdata/settings.json` selects a usable
-loopai instance for agent mode; otherwise it falls back to terminal mode. Agent mode places no
-token in the thread; terminal mode passes it in the terminal environment.
-The Codex skill defaults to the current conversation when an injected T3 runtime and native
-subagent tools are available. One native subagent runs and monitors ordinary
-`loopai --worktree --skip-finalize`, with durable status under `.loopai/progress/`.
-Before delegation, the parent resolves its `CODEX_THREAD_ID` through T3's local read-only
-`provider_session_runtime` binding and passes `--t3-progress-thread ID`. This mode updates only
-that existing thread's title with a replaceable `[loopai: task N/M]` or review/outcome prefix,
-preserving the original name and any later manual rename. It never creates/pins a thread or
-changes its provider, branch or worktree. Title credentials use `LOOPAI_T3_TOKEN`, or the local
-T3 CLI's 7-day token kept in memory. Missing/ambiguous parent identity falls back to `--no-t3`;
-missing runtime/auth or a failed title request only disables titles. Never resolve the native
-child's session ID or guess from a project/name. The resolver depends on T3's SQLite schema and
-fails closed when that schema changes; API writes revalidate the exact target on each transition.
-T3 derives Working from the active subagent, even after the parent replies; the shell process
-alone cannot provide that status. A user-requested new thread retains the launcher above.
-The original conversation retains its provider and handles later report review and merge.
-Child completion does not reliably wake an idle parent, so no unsolicited parent report is
-promised. `--no-t3` wins over CLI, environment and config reporting and conflicts with explicit
-`--t3-progress-thread`; progress-only mode suppresses regular reporting/PR linking. Independent merge settlement
-is unchanged. See `docs/t3-code.md` for the observer's lifecycle and limitations.
+The `loopai-t3` skill (Claude and Codex) starts one plan run that T3 Code shows and asks for the
+mode every time. It reads `orchestrator_capabilities` (a null `parentThreadId` stops it) and
+`currentThreadId` from `t3_thread_list`. Mode 1 is offered only when `runtimeMode` is `full-access`,
+no sandbox variable (`SANDBOX_RUNTIME`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`) is set, the
+OS is not Windows, `parentThreadId` equals `currentThreadId`, and the id matches
+`^[A-Za-z0-9_.:%-]{1,1024}$`. It mints the token inline through
+`${T3CODE_CLI_PATH:-<T3 home>/bin/t3} auth session issue` with the four `orchestration:` and
+`terminal:` read/operate scopes and `--ttl 3d`, never through a `t3` on `PATH` or `npx`, so the token
+never reaches the transcript, and runs `loopai --detach --t3-thread` as one foreground Bash call with a
+timeout of at least 180 s, above the launcher's 120 s ack wait. Mode 2 reads
+`<T3 home>/userdata/settings.json` read-only for an enabled local `acpRegistry` instance whose
+`commandPath` basename is `loopai-acp`, or `loopai` with `--acp` in `commandArgs`, never assuming the
+instance id (T3 Code's default is `acpRegistry_local_acp`), requires it in `providers[]` with empty
+`constraints`, and calls `t3_thread_launch` with the required `title`, `models[0].id` as the model,
+the plan and flags as the message, and a `root` or `existing_worktree` workspace; after an error or a
+lost reply it inspects `t3_thread_list` before retrying. It never edits `settings.json`, whose schema
+errors make T3 Code silently reset its settings, and explains registration through the settings UI
+instead. Both modes' report blocks are byte-identical across the two hosts, and the skill stops after
+reporting. `loopai-plan` offers T3 Code only when the T3 Code tools are present and hands its flag
+choice to `loopai-t3`, which then asks only the mode. `scripts/check-loopai-t3-skill_test.sh` pins
+these contracts; the runtime side is described below and in `docs/t3-code.md`.
 `loopai-orca` drives the Orca desktop app's `orca` CLI and executes nothing
 itself: it creates an Orca-managed worktree cut from the current branch (Orca's
 default base is the remote-tracking ref, so `--base-branch` is always passed and
@@ -175,8 +171,7 @@ which is the only place Codex looks. Those skills are written by hand and are
 deliberately not generated from `assets/claude/skills/`: the two hosts expose
 different tools. Claude Code has `AskUserQuestion`, `Task` subagents, and named
 file tools, which cannot be copied into Codex skills. Native Codex subagent tools are
-runtime-dependent: the T3 current-thread workflow checks that they are available before use;
-other Codex hosts must not assume they exist. loopai's executor also registers a reviewer agent
+runtime-dependent, so no Codex skill assumes they exist. loopai's executor also registers a reviewer agent
 through `-c agents.reviewer.description=...` for its own Codex runs.
 A mechanical conversion would produce a skill that stalls at its first
 interactive step. `scripts/check-codex-skills.sh` is what keeps the split honest:
@@ -300,7 +295,8 @@ alone. When these contracts change, update and run `scripts/check-grill-skill_te
 - Local prompts/agents: `.loopai/{prompts,agents}/`
 - Progress: `.loopai/progress/`
 - Worktrees: `.loopai/worktrees/`
-- ACP session state: `.loopai/acp/<session-id>.json` (gitignored runtime path)
+- Detached runs: `.loopai/progress/runs/<run-id>/`
+- Mode 2 thread bindings: `.loopai/acp/binding-*.json` (runtime path with its own `.gitignore`)
 - Override: `--config-dir` or `LOOPAI_CONFIG_DIR`
 
 Local files override global files, which override embedded defaults. Embedded defaults remain the per-file fallback, so deleting an installed prompt or agent does not disable it. Remove its template reference to disable an agent.
@@ -482,13 +478,18 @@ reviewers, wrapper commands, and unknown names skipped.
 Removed spellings fail loudly rather than being ignored. `rejectRemovedFlags` runs through
 `validateFlags` before config loading and dependency checks, so a machine without the codex
 binary still gets the migration message; `--codex`, `--codex-only`,
-`--external-review-tool`, and `--external-review-model` stay declared as hidden `opts` fields
-because deleting them makes go-flags answer with a bare `unknown flag`, and the two
-external-review flags fold into one ready `--external-reviewers=` entry. The config keys
+`--external-review-tool`, `--external-review-model`, `--t3`, and `--no-t3` stay declared as hidden
+`opts` fields because deleting them makes go-flags answer with a bare `unknown flag`, and the two
+external-review flags fold into one ready `--external-reviewers=` entry. So do the flags
+`--t3-progress-thread` and `--t3-launch`, which were removed with the old T3 Code integration and
+whose errors name `loopai --detach --t3-thread <thread-id>` and the `loopai-t3` skill. The config keys
 `executor`, `external_review_tool`, `external_review_model`, `codex_model`,
-`codex_reasoning_effort`, and `finalize_enabled` are rejected by `checkRemovedKeys` at every
+`codex_reasoning_effort`, `finalize_enabled`, and `t3` are rejected by `checkRemovedKeys` at every
 config layer, each error naming the replacement spelling; `finalize_enabled` was a boolean whose
-replacement is the `finalize` mode, so its error names `finalize = sync|pr|merge`. `checkExecutionDeps` checks every distinct provider
+replacement is the `finalize` mode, so its error names `finalize = sync|pr|merge`. The key
+`acp_auto_merge` was removed too and names `loopai --merge` or the `loopai-merge` skill. The old
+environment toggle `LOOPAI_T3` was removed: it lost its `env:` tag and is inert, so an exported value
+never fails a run, while `LOOPAI_T3_TOKEN` and `LOOPAI_T3_URL` stay live inputs read directly. `checkExecutionDeps` checks every distinct provider
 of the phases the mode runs, each missing binary with its own error, then the reviewer chain
 under the existing explicit/automatic rules. Full mode does not check the plan provider, since
 most full runs never plan; `tryAutoPlanMode` checks it before prompting for a description
@@ -630,17 +631,17 @@ close-out commands and watch-only mode return before it for the same reason.
 
 `cmd/loopai/launch_history.go` records every plan-executing launch in
 `<config dir>/launch-history`, where the directory is `o.ConfigDir` or `config.DefaultConfigDir()` —
-never `DefaultConfigDir()` alone, which would ignore `--config-dir`. It is best-effort like the cmux,
-Orca, and T3 reporters: `recordLaunchHistory` returns nothing and turns a failure into one
-`warning: launch history not recorded` line on the caller's stderr writer, never `os.Stdout`, which
-ACP owns. There are exactly three hook points: `run()` after `resolveExecutionDeps` and the
-gen-agents return, gated on `modeRequiresBranch` (so `--review`, `--external-only`, and every
-standalone command record nothing, and a plan chain records once); `runPlanMode` where plan creation
-continues into a `ModeFull` run; and `acpRunner.runPlan` after `prepareNonInteractiveRequest` (chat and
-command turns record nothing), which
-passes `launcherT3` explicitly because `loadACPSessionConfig` forces `cfg.T3` off. `launcherFor`
-ranks `t3` over `orca` over `cli` from the post-override config, since `--t3-launch` terminal mode
-runs `loopai --t3` and a config enabling both is a reporting choice. `launchFlags` renders the
+never `DefaultConfigDir()` alone, which would ignore `--config-dir`. It is best-effort like the cmux
+and Orca reporters: `recordLaunchHistory` returns nothing and turns a failure into one
+`warning: launch history not recorded` line on the caller's stderr writer, never `os.Stdout`. There
+are exactly three hook points: `run()` after `resolveExecutionDeps` and the gen-agents return, gated
+on `modeRequiresBranch` (so `--review`, `--external-only`, and every standalone command, the
+`--detach` launcher and `--acp` included, record nothing, and a plan chain records once);
+`runPlanMode` where plan creation continues into a `ModeFull` run; and the detached child after
+`prepareNonInteractiveRequest`, once per attempt, which passes `launcherForOrigin` of the recorded
+origin: `t3` for both T3 origins (`t3-terminal` and `t3-thread`), `cli` otherwise, since
+`loadDetachedConfig` forces `cfg.Orca` off. `launcherFor` returns `orca` when the post-override
+config enables it and `cli` otherwise. `launchFlags` renders the
 review spec only when set and the reviewer chain only when `sel.Explicit`, because an inherited
 review spec or an automatic reviewer follows from the task spec and would be frozen into an explicit
 choice on replay; any value outside `^[A-Za-z0-9._:,+-]+$`, the charset the three skills accept,
@@ -710,13 +711,12 @@ block otherwise resets the record and discards every per-task review before the 
 `ExternalDone` aggregates rather than overwrites per reviewer key: durations add, `HadFindings` is
 OR-ed, `EndedBy` keeps the latest completion, and `ExternalReviewerRecord.Blocks` counts loops, which
 `run_facts.go` renders as `(N review blocks)` when above one. Each iteration carries its 1-based `Block`, rendered as `#### Block N, iteration M` once a reviewer has more than one, because indexes restart per block; `boundExternalReviewText` truncates nothing while the total fits and otherwise guarantees the reviewers' latest blocks at least half the text budget, plus whatever the earlier blocks leave unused, so the final whole-branch review is not truncated to an even share with the per-task blocks it re-reviews. `reviewCadenceStartupWarning` warns
-when `task` meets `--review`, `--external-only`, `--tasks-only`, or an empty chain, and
-`--t3-launch` rejects `--review-cadence` since the launched run reads the key from config.
+when `task` meets `--review`, `--external-only`, `--tasks-only`, or an empty chain.
 `cmd/loopai`'s `reviewCadenceFor` already turns the cadence into `end` outside `ModeFull` or with an
 empty chain, so `processor.Config.ReviewCadence` and the banner's `review cadence:` line carry `task`
-only when it will run. The ACP
-sink's never-reopen rule is unchanged, so the first per-task block completes the Review stage early;
-`docs/t3-code.md` documents that.
+only when it will run. The journal `Snapshot` treats an external review block entered from the task
+phase as a per-task block that leaves the stages alone, so the Mode 2 plan view does not complete the
+Review stage early.
 
 Completion reporting is split between durable fact collection and model assessment. `processor.RunRecord` is the persisted run-level model; `phase.RunRecorder`, supplied through `phase.Deps`, lets task, internal-review, external-review, and post-review phases record events without depending on the processor store. `Runner` owns the concrete recorder and saves `.loopai/progress/<progress-log-stem>.run.json` atomically with mode `0600` after each event. The record captures phase/task counts and timings plus bounded reviewer/evaluator text; repository facts such as commits, name-status, diff totals, backlog entries, validation commands, and plan drift are collected separately at report time. `Runner.SetRunTimingsSource` reads non-finalizing `SectionTimer` and `ValidationTimer` snapshots at recorded events and before reporting; resumed records add prior measurements once. The report uses a finish timestamp captured before model assessment, while the final persisted record timestamp includes the report phase. Sidecar creation uses exclusive creation so existing files and symlink targets are never overwritten.
 
@@ -804,7 +804,7 @@ cleanup, because it pushes from the run's own checkout. A PR opens only after a 
 body against `origin/<base>`. `executePlan` passes `Runner.Report()` through
 `runFinalizeCloseout` and `openFinalizePR` into `closeoutTarget.report`. This in-memory report
 reaches the PR even under single-plan `--worktree`, where archival writes the sidecar through
-`MainGitSvc` in the source checkout rather than on the pushed branch. T3 linking stays with each caller. `merge` runs
+`MainGitSvc` in the source checkout rather than on the pushed branch. `merge` runs
 `gh pr checks <url> --watch --fail-fast` under `finalize_checks_timeout`, retrying a fresh PR's
 "no checks reported" for `finalizeNoChecksGrace` before treating it as having none — the wait
 emits no output, so `awake.Holder.Pin` holds the keep-awake inhibitor through it — then
@@ -815,7 +815,7 @@ merge queue only enqueued the PR; no branch is deleted and the local base is nev
 `finalizeResult.incomplete` rather than a run error: the plan's work succeeded, so like a rejected
 plan archive it keeps the run green and is surfaced, printed last by `displayStats` as
 `finalize incomplete: <reason>`, in `notify.Result.Finalize`/`PRURL`, and through `SetFinishNote`
-on the cmux, Orca, and T3 reporters (`synced`, `PR opened`, `PR merged`, `finalize incomplete`).
+on the cmux and Orca reporters (`synced`, `PR opened`, `PR merged`, `finalize incomplete`).
 Finalize removes no worktree: loopai's own `--worktree` is removed by the usual teardown, and a
 T3 Code-managed checkout, which the run uses without `--worktree`, is never touched.
 
@@ -849,7 +849,7 @@ Claude runs every phase by default. `task_model = codex:<model>[:effort]` moves 
 
 Codex invocations use additive `-c` overrides so user `~/.codex/config.toml` settings remain available. loopai never writes to `~/.codex/`. `--pass-claude-md` lets Codex discover project `CLAUDE.md`; it does not install or link user-level files.
 
-`--codex-args` and the `codex_args` config key extend that additive contract: their value is tokenized by the shared `splitArgs`, which separates tokens on any unquoted, unescaped ASCII whitespace rather than the space alone — a tab or newline surviving the ini loader would otherwise fold into the neighboring token and turn the remainder into the bare positional `codex exec` takes as its prompt. The set is deliberately ASCII and not `unicode.IsSpace`, since no shell splits on U+00A0 and a non-breaking or thin space pasted from rendered documentation into an unquoted value would otherwise produce that same stray positional — and applies POSIX-shell backslash rules (literal inside single quotes, escaping only `"` and `\` inside double quotes, escaping the next rune when unquoted) so literal backslashes in Windows paths survive while the documented `[\"CLAUDE.md\"]` quote-escaping recipe still works, and appended to every codex invocation loopai composes, at both construction sites in `pkg/processor/executor_factory.go` — codex plan/task/review phases and external codex reviewers, which share `newBaseCodexExecutor`. The extras go *after* loopai's own `-c` overrides and sandbox flags, because codex resolves repeated `-c` keys last-occurrence-wins (verified against codex-cli 0.147.0), so a user value deliberately overrides the matching loopai one. This is the intentional asymmetry with `claude_args`, which replaces the claude command's argument list rather than extending it: loopai owns the `codex exec` invocation shape. An explicit empty `--codex-args=` clears an inherited config value through the `o.codexArgsSet` guard in `applyCLIOverrides` alone; there is deliberately no `Config.CodexArgsSet` mirroring `ClaudeArgsSet`, because that flag exists only so an empty `claude_args` means "no arguments" instead of "use the defaults", and empty codex extras already append nothing — the invocation stays byte-identical to a build without the flag. Four consequences of appending rather than merging are documented for users and deliberately not policed in code, since extras are trusted input like `codex_command`: `splitArgs` consumes unescaped quotes, so a `-c` value whose TOML type depends on them must escape them or codex fails to load its config and every phase dies at startup; last-occurrence-wins covers `-c key=value` only, so repeating any flag loopai already emits, valued or bare, is a fatal codex parse error rather than an override — `--sandbox` on every path, and `--dangerously-bypass-approvals-and-sandbox` on codex plan/task/review phases, where `codex.go` emits it whenever the effective sandbox is `danger-full-access`, which is the codex phase default; the extras land after the `exec` subcommand, so an option only the top-level `codex` command accepts (`--search`) is a fatal unexpected-argument error rather than a pass-through, while the global options that matter here (`-c`, `--model`, `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too; and a bare positional token becomes `codex exec`'s prompt, demoting the one loopai sends on stdin to the trailing `<stdin>` block codex appends when both are present — and on a resumed ACP chat turn, whose `resume <id> -` follows the extras, it breaks the resume, so `ChatPhase` falls back to a fresh session every turn. Because the extras are appended on the shared base, they also reach the external reviewer whose `ForceReadOnly` pin exists so it cannot write — that pin holds against `codex_sandbox` but not against `--dangerously-bypass-approvals-and-sandbox` in `codex_args`, which codex accepts alongside `--sandbox read-only` precisely because loopai emits no bypass flag on the reviewer path. The CLI spelling is `--codex-args=<value>`: the values that matter start with `-`, so the detached form is rejected by go-flags before the run starts, and the documented examples use the attached form.
+`--codex-args` and the `codex_args` config key extend that additive contract: their value is tokenized by the shared `splitArgs`, which separates tokens on any unquoted, unescaped ASCII whitespace rather than the space alone — a tab or newline surviving the ini loader would otherwise fold into the neighboring token and turn the remainder into the bare positional `codex exec` takes as its prompt. The set is deliberately ASCII and not `unicode.IsSpace`, since no shell splits on U+00A0 and a non-breaking or thin space pasted from rendered documentation into an unquoted value would otherwise produce that same stray positional — and applies POSIX-shell backslash rules (literal inside single quotes, escaping only `"` and `\` inside double quotes, escaping the next rune when unquoted) so literal backslashes in Windows paths survive while the documented `[\"CLAUDE.md\"]` quote-escaping recipe still works, and appended to every codex invocation loopai composes, at both construction sites in `pkg/processor/executor_factory.go` — codex plan/task/review phases and external codex reviewers, which share `newBaseCodexExecutor`. The extras go *after* loopai's own `-c` overrides and sandbox flags, because codex resolves repeated `-c` keys last-occurrence-wins (verified against codex-cli 0.147.0), so a user value deliberately overrides the matching loopai one. This is the intentional asymmetry with `claude_args`, which replaces the claude command's argument list rather than extending it: loopai owns the `codex exec` invocation shape. An explicit empty `--codex-args=` clears an inherited config value through the `o.codexArgsSet` guard in `applyCLIOverrides` alone; there is deliberately no `Config.CodexArgsSet` mirroring `ClaudeArgsSet`, because that flag exists only so an empty `claude_args` means "no arguments" instead of "use the defaults", and empty codex extras already append nothing — the invocation stays byte-identical to a build without the flag. Four consequences of appending rather than merging are documented for users and deliberately not policed in code, since extras are trusted input like `codex_command`: `splitArgs` consumes unescaped quotes, so a `-c` value whose TOML type depends on them must escape them or codex fails to load its config and every phase dies at startup; last-occurrence-wins covers `-c key=value` only, so repeating any flag loopai already emits, valued or bare, is a fatal codex parse error rather than an override — `--sandbox` on every path, and `--dangerously-bypass-approvals-and-sandbox` on codex plan/task/review phases, where `codex.go` emits it whenever the effective sandbox is `danger-full-access`, which is the codex phase default; the extras land after the `exec` subcommand, so an option only the top-level `codex` command accepts (`--search`) is a fatal unexpected-argument error rather than a pass-through, while the global options that matter here (`-c`, `--model`, `--sandbox`, `--cd`, `--profile`) are accepted by `exec` too; and a bare positional token becomes `codex exec`'s prompt, demoting the one loopai sends on stdin to the trailing `<stdin>` block codex appends when both are present. Because the extras are appended on the shared base, they also reach the external reviewer whose `ForceReadOnly` pin exists so it cannot write — that pin holds against `codex_sandbox` but not against `--dangerously-bypass-approvals-and-sandbox` in `codex_args`, which codex accepts alongside `--sandbox read-only` precisely because loopai emits no bypass flag on the reviewer path. The CLI spelling is `--codex-args=<value>`: the values that matter start with `-`, so the detached form is rejected by go-flags before the run starts, and the documented examples use the attached form.
 
 On Windows, `CodexExecutor.ForceReadOnly` adds `-c windows.sandbox="unelevated"`
 before user extras, retaining the external reviewer's `--sandbox read-only` pin without
@@ -866,10 +866,6 @@ handling. Review text is not scanned for patterns on this path. Non-empty stdout
 the result; otherwise `last_agent_message` does, with signals detected from the selected
 text. Normal exits retain their stdout result without an extra delay. Parent cancellation
 still returns the context error, and existing idle/session timeouts remain in force.
-A resumed run (`codex exec ... resume <id> -`) appends to the rollout file its session's earlier
-turns wrote, so `rolloutEnd` records that file's size before the process starts and the tail seeks
-past it: read from offset 0, the previous turn's `task_complete` would start the grace kill at once
-and its `last_agent_message`, signals included, would become this turn's answer.
 Without an observed completion event (including a missing rollout file), there is no
 grace kill. This mechanism applies independently of whether reviewer idle timeout is enabled.
 
@@ -933,9 +929,9 @@ bound to loopai's pid (`caffeinate -w`, `tail --pid` under `systemd-inhibit`) so
 releases them without cleanup; the Windows backend drives `SetThreadExecutionState` from one
 locked OS thread because the continuous flag is per thread. A failed `Acquire` disables the holder
 for the run instead of retrying on every output line. Watch-only mode, close-out, and the other
-standalone commands return before the holder is created. `--acp` returns before it too, so
-`acpRunner.runPlan` and `acpRunner.runChat` each create one holder per plan run or chat turn from the
-session's loaded `keep_awake` and stop it when the turn ends; the `merge`/`pr` commands take none. `cmd/loopai` tests replace
+standalone commands return before the holder is created. `--acp` and the `--detach` launcher take
+none; the detached child creates its own holder from its loaded `keep_awake` in `execute`, so the hold
+lives in the run's own process. `cmd/loopai` tests replace
 `newAwakeHolder` in `TestMain` so `run()` never starts a real inhibitor.
 
 cmux reporting is best-effort and must never affect execution. The status key and notification title are `loopai`. All calls go through the public `cmux` CLI and failures are ignored. After a completed run, `Reporter.Finish` intentionally leaves the final success or failure pill in place: `Stop` still clears the spinner and progress, but does not clear that pill. Abort paths do not call `Finish`, so `Stop` performs the full cleanup. A later run overwrites the pill, while `--clear`, a successful `--merge`, or a successful `--pr` removes it explicitly.
@@ -973,251 +969,178 @@ changes come from `status.PhaseHolder`, task and iteration detail from `WrapLogg
 human waits from `WrapInput` or `WithInputWait`. `Finish` freezes a persistent done/failed
 title, while `Stop` emits the bare idle title for aborts, declined continuation, and other
 non-completions. OSC writes are best-effort single writes to stdout and never fail the run.
-T3 Code reporting (`pkg/t3`) follows the same best-effort contract and uses only T3 Code's
-public API: the origin comes from `${T3CODE_HOME:-~/.t3}/userdata/server-runtime.json` or
-`LOOPAI_T3_URL`, the bearer token only from `LOOPAI_T3_TOKEN` (read directly, not an `opts` tag, so a
-cmux hand-off never types it into another shell). Title reporting never writes below the T3 home;
-merge settlement can invoke the official authentication CLI as described below.
-`startRunReporters`, called from `executePlan`, constructs it through `startT3Reporter` only when
-`cfg.T3` is set and the request is not `NonInteractive`; plan creation, the setup phase, watch-only
-mode, standalone commands, and ACP prompts never do. The reporter binds to
-`LOOPAI_T3_THREAD_ID` or creates a thread in the project whose normalized `workspaceRoot` equals
-the checkout root, recording `worktreePath` only when the directory outlives the run — a
-`--worktree` checkout is removed after success, so it registers the branch alone. All network work
-runs on one goroutine that coalesces to the latest title and sends only changed titles, because
-every `thread.meta.update` is a persisted T3 event; the first error disables it with one warning,
-and `Stop` waits at most `stopTimeout`, sized for a pin already in flight, the final title, and
-the unpin, because a missed unpin leaves a pin the next run bound to that thread reads as the
-user's and never releases. The worker pins the thread right after
-binding it and unpins it on exit, skipping a bound thread the user already pinned and any run that
-stopped while the bind was in flight, whose unpin would not fit the bound; pin failures are
-ignored rather than disabling titles, since `thread.pin` is cosmetic and absent on older servers. Title updates carry only `title`:
-`branch` or `worktreePath` in a meta update re-triggers T3's server-side PR lookup. `--t3-launch`
-is routed with close-out through `runConfiguredStandaloneCommand` and is part of
-`isStandaloneCommand`; it creates the worktree through the `vcs.createWorktree` WebSocket RPC so
-T3 Code owns it and never deletes anything on a partial failure. The optional mode is
-`--t3-launch[=auto|agent|terminal]` (attach with `=`); bare/auto reads `providerInstances` from
-`${T3CODE_HOME:-~/.t3}/userdata/settings.json` through `FindLoopaiInstance`. A usable instance has
-`driver == "grok"`, neither `enabled` nor `config.enabled` false, and a `config.binaryPath` basename
-of `loopai-acp` or `loopai-acp.exe`; the first key in sorted order wins. Auto warns and falls back
-to terminal on settings errors or uses terminal when no instance matches; explicit agent fails
-on settings errors or no instance, and explicit terminal skips the lookup. Agent mode selects
-`{instanceId: <settings key>, model: "loopai"}` for both `thread.create` and `thread.turn.start`,
-sending the forward-slash relative plan path and flags as a user message with empty attachments
-and a run-name `titleSeed`. It refuses whitespace in the plan path before creating anything,
-opens no terminal, and places no token or environment in the thread: the token authenticates only
-launcher requests. The provider session shows Working state, plan steps, reasoning, and the final
-report message; its stop button cancels the run. ACP forces `t3` off, so loopai does not update
-phase titles or link PRs in that run. Terminal mode types `loopai --t3` with PowerShell quoting on
-Windows (T3 Code's default shell there is pwsh or Windows PowerShell) and POSIX quoting elsewhere,
-passing the token in the terminal environment. Tests replace `newT3Reporter`, `newT3Dispatcher`,
-and `newT3Session` in `TestMain` so no test reaches a live server.
 
-Local-merge settlement (`cmd/loopai/t3_settle.go`, `pkg/t3/settle.go`) is independent of `cfg.T3`.
-`--merge` captures the worktree roots before cleanup and dispatches `thread.settle` only after all
-merge/cleanup steps succeed. Project-root and feature-branch matching deliberately ignores
-`LOOPAI_T3_THREAD_ID`; archived/settled/input-blocked threads are skipped. Active CLI targets warn
-instead of waiting on the calling agent. ACP merge callers prepare a snapshot after verified merge
-and attach it as `acp.Result.AfterReply`. The server starts it only after a successful prompt reply,
-and cancels and joins it before running the next accepted prompt or shutting down. The callback
-polls idle status for up to 15 seconds, abandons a changed message/turn/project/branch, and rechecks
-Git head and base containment at dispatch. T3 settlement stops provider sessions, so state and
-report writes must precede the callback. `newT3SettleDispatcher` is disabled in `TestMain` too.
-`ResolveSettleEndpoint` reuses an explicit token, or invokes `t3` (fallback `npx --yes t3@latest`)
-with a 1-hour token lifetime and 15-second timeout against the discovered local runtime only.
-The CLI owns the auth-store write; loopai never prints the token or modifies the runtime/settings.
-Missing runtime silently skips; other failures only warn and never fail the completed merge.
+Detached runs (`cmd/loopai/detach_*.go`, `runs_cmd*.go`, `pkg/runs`) are how a plan outlives the
+terminal, agent turn, T3 Code provider, or T3 Code session that started it; T3 Code is only a window
+onto them. `validateDetachFlags` keeps `--detach` to exactly one plan in full or tasks-only mode (no
+chain, `--commit`, review-only or plan-creation mode, `--serve`/`--watch`, `--cmux-workspace`, or
+standalone command), always executed in worktree mode. `runPreConfigCommand` refuses it inside an
+agent sandbox (`detectSandbox`: `SANDBOX_RUNTIME`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`)
+before config loading, whose defaults installer would otherwise fail first with an unrelated write
+error; the launcher itself is routed after config through `runConfiguredStandaloneCommand`.
+`launchDetached` checks the plan and executable, requires the repository root, takes the launch lock
+`<runs dir>/.launch-<hash(plan, branch)>.lock` for at most `detachLaunchLockTimeout`, and decides
+through `runs.LatestFor`, which ignores that lock's own tier so a crashed run reads `crashed`: a live
+latest run is refused; one that did not succeed is resumed (outcome archived as
+`outcome-attempt-<n>.json`, stop marker cleared, attempt incremented, recorded origin kept unless the
+launch names a thread); otherwise `refuseLeftWorktree` rejects a succeeded run whose branch is still
+checked out, and a new directory is created with `os.Mkdir`, never reused, before `PruneSucceeded`
+keeps the newest 20 succeeded runs. The descriptor records `stripDetachArgs(os.Args[1:])`, which drops
+`--detach`, `--detached-run`, `--t3-thread`, `--acp-thread`, and `--acp-session` in both value forms,
+and the set `cmuxEnvOptions` as `env_options`, on every launch, because Mode 2 relaunches from them.
+The child is the hidden `--detached-run <id>`, started by `startDetachedProcess` with `Setsid`, stdin
+on the null device, stdout and stderr appended to `console.log` after a per-attempt separator, and an
+environment `detachScrubbed` cleans of `T3_ACP_MCP_*`, `LOOPAI_T3_TOKEN`, and `CMUX_*`, behind
+`detachScopePrefix` (`systemd-run --user --scope --quiet --collect --` where a Linux user manager
+exists; a scoped child that ends before answering is retried once without the scope). Windows refuses
+every detached command, and with it every run a loopai thread asks for, through
+`errDetachUnsupported`, while the code builds.
 
-ACP agent mode is the experimental way T3 Code hosts loopai as a real provider session, which
-`--t3` cannot do: T3 Code derives "working" only from a running provider session. T3 Code has no
-custom-provider API, so loopai rides its Grok driver, which speaks ACP to a configurable
-`binaryPath`. `cmd/loopai-acp` is the launcher that path points at. It answers the Grok CLI probes:
-`--version`, `models` (which must never print "logged in", since T3 reads that text as an auth
-verdict), and `inspect --json`/`update`, which fail. For
-`[--permission-mode M] agent [--always-approve] stdio` it runs `loopai --acp` with inherited stdio
-and forwards signals and the exit code. It resolves the binary from `LOOPAI_ACP_LOOPAI`, then a sibling
-`loopai` (`loopai.exe` only on Windows, which cannot start an extensionless file), then `PATH`.
-The launcher exists so the loopai CLI never grows Grok-shaped positionals such as `models` or
-`agent`. `--acp` is a standalone command listed in `isStandaloneCommand`. `run()` routes it right
-before `loadRunConfig`, because each prompt loads config in its own session cwd and a config error
-in the directory the client started loopai in must arrive as a failed turn carrying the message,
-not as a session that never answers `initialize`. `validateACPFlags` rejects plan arguments, other standalone modes, and
-execution flags, but not `--t3`/`--orca`, which may come from the environment and are forced off
-per prompt instead. `pkg/acp` has three layers. `Conn` is newline-delimited JSON-RPC 2.0 with a
-16 MiB line cap and ids kept as `json.RawMessage`, because T3 sends ids above 2^32. `Server`
-implements `initialize`, `authenticate`, `session/new` (records `cwd`, discards `mcpServers`, whose
-headers carry T3's bearer credential and must never be logged), `session/load`, `session/prompt`,
-and `session/cancel` (a notification, also answered when sent as a request), and replies `{}` to
-`session/set_config_option`, `session/set_mode`, and `session/set_model`. `session/load` registers any saved session id with its `cwd` and replays
-nothing; chat continuity across a restart comes from the session state file described below, not from the server. It must succeed, because T3 resumes a thread whose agent process is gone through
-`session/load` with the saved id, without checking `loadSession` and with no `session/new` fallback.
-Rejecting it breaks every later message in that thread. It runs at most one prompt across all sessions, because a run changes the process
-cwd. A second prompt is rejected unless it follows its own session's `session/cancel`: T3 steers a
-message typed during a turn as cancel then prompt, so that prompt becomes the latest one, waits for
-the canceled run's answer, and then runs, or is answered `cancelled` unrun if canceled while waiting.
-A prompt stays active until its final message and answer are sent, and the answer is written under
-the server lock, so a steered prompt never interleaves its updates with its predecessor's last ones
-while a prompt sent after the answer never finds the run still active.
-Each prompt id is answered exactly once: `end_turn`, `cancelled` when the client canceled
-it, or a JSON-RPC error carrying the run's failure so T3 records a failed turn. Only the first text
-block is the user's message; T3 appends a runtime-instructions block that must be ignored. `Sink`
-maps events to `session/update`. Phases become `tool_call`s that close when the next opens. Their ids
-carry a random per-sink prefix, because ACP requires a tool call id to be unique within a session, a
-session spans many prompts with one sink each, and `session/load` revives it in a new process. Sections
-refresh `plan` entries built from the parsed plan file plus the review stages `acpStages` lists. A
-completed stage never reopens, so the review that follows external-review findings stays under the
-external review stage instead of moving progress backwards. Entering a stage completes every stage
-earlier in the pipeline order (`stageOrder`), and a successful `Finish` completes them all, so a
-stage a resumed run skipped through its review checkpoint is never left pending. The
-plan is reread from its `completed/` copy once archived, and `Finish` returns an unfinished task or
-stage to `pending` on failure. `PrintAligned` becomes `agent_thought_chunk`, coalesced to one per
-500 ms and capped per chunk. The report becomes the final `agent_message_chunk`, sent after
-`Sink.Finish` flushes reasoning and closes the open call. The heartbeat retitles the open tool call
-after 4 silent minutes, opening one titled `loopai` when none is open, because the Grok driver fails a
-turn after 10 minutes without progress and a `wait_on_limit` sleep emits nothing. `acpRunner.runPlan` in
-`cmd/loopai/acp.go` parses the prompt with `parseACPPrompt`, which applies `validatePassThroughValues`,
-the rules `--t3-launch` uses. It enters the session cwd, refuses an unreadable plan through
-`planFileRefusal`, and loads config there through `loadACPSessionConfig`, which forces `t3`, `orca`,
-and `use_worktree` off, because T3 owns the thread's worktree. `serveACP` makes a relative config
-directory absolute first, since each prompt loads config only after that chdir. The runner then
-builds the request through `prepareNonInteractiveRequest`, sets the sink as `LogDecorator` and
-`PhaseObserver`, and runs
-`selectAndExecutePlan`. `planExecutionOutcome` carries the report and failure reason back.
-`executePlanRequest.NonInteractive` is what keeps a run off the terminal: a missing plan is an error
-instead of the selector or auto-plan prompt, no pause handler or break signal is installed, and no
-cmux, orca, or T3 reporter is built. Repository setup is non-interactive separately:
-`prepareNonInteractiveRequest` hands `openExecutionRepository` an `executionIO` with a nil `stdin`,
-which is what makes an empty repository an error instead of the initial-commit prompt. ACP stdout discipline is absolute, since one stray byte
-corrupts the protocol. `main` prints the version banner to stderr when `acpRequested` sees `--acp`
-before flag parsing. `redirectStdioForACP` keeps the real stdin/stdout for the protocol and points
-`os.Stdin` at the null device and `os.Stdout`/`color.Output` at stderr until the serve returns.
-`executePlanRequest.Out` and `progress.Config.Stdout` route the banner, stats, worktree notices, and
-the logger's console copy to stderr. Any new code path a run can reach must write through those
-writers, never directly to `os.Stdout`. Both stdout and stderr are pipes owned by the client, so
-`runACPCommand` registers `catchSIGPIPE` for the serve's lifetime. Without a handler, Go kills the
-process on the first write after the client is gone, which skips cancellation and leaves the
-`Setsid` provider processes running. The handler uses `signal.Notify` rather than `signal.Ignore`,
-because an ignored disposition is inherited across exec. A canceled process context calls `acp.Server.Shutdown`,
-which cancels the running prompt and waits for its answer without waiting for stdin EOF. That wait is
-still bounded by the 5-second force exit of the `startInterruptWatcher` that `run()` installs before
-routing `--acp`, so a prompt whose cancellation outlasts it is never answered.
-`acpLooksLikeLaunch` runs before `parseACPPrompt` and decides whether a prompt is a launch at all. A
-first token that is an option (a lone `-` opens a Markdown bullet and is not one) is a launch, and so
-is a first token that ends in `.md` or names an existing non-directory path relative to the session
-cwd when nothing follows it or the next token is an option or another such path; a malformed launch
-or a missing plan still fails the turn. A plan-like first token followed by prose, as in `README.md is
-outdated`, is a chat message about that file and must not fail as a launch. `acpRoute` checks
-that first; then `acpCommand` matches a whole trimmed, case-insensitive `merge`/`мерж`/`pr`/`пр`,
-which `runCommand` performs with no model; any other text, a question typed after a run or a one-word
-`thanks` that would otherwise parse as a missing plan path, is a chat turn through `runChat`. Neither
-fails the turn for an ordinary message, because a failed turn for a chat message reads as a broken
-provider. After a run that succeeded, returned no error, and was not canceled,
-`acpRunner.autoMerge` opens a fresh Git service in the session cwd with `vcs_command` and calls
-`acpAutoMerge` (`cmd/loopai/acp_merge.go`). It also writes a one-line summary to `a.out`. The policy
-gates come first, in `acpMergePolicySkip`: `acp_auto_merge` (default `true`, ACP only), then
-`finalize = pr|merge` (GitHub owns close-out), then `planExecutionOutcome.finalizeIncomplete`,
-which `executePlan` copies from `finalizeResult.incomplete` because a stopped sync keeps the run green
-while the base and branch failed to combine or validate (or the checkout was left unrestored), then
-`reportRiskLevel`. That function lives in
-`pr_body.go` and reads the first non-empty line of the report's first fence-aware `Risk` section,
-strips emphasis, and returns only `low`, `medium`, or `high`. Only the first two merge, and the
-facts-only fallback reads as unstated. The repository gates follow: a resolvable non-detached feature
-branch, a local base distinct from it, a clean feature checkout, and a clean worktree that already
-has the base checked out. `acpCleanWorktreeSkip` checks `OperationInProgress` before `IsDirty` and
-`UntrackedFiles` on both, because a pending merge whose index matches HEAD reads as clean and
-`mergeRevision`'s failure path would then `git merge --abort` it. Untracked paths that
-`isLocalOverridePath` names (`.loopai/config`, `prompts/`, `agents/`) do not count: `--t3-launch`
-copies them into the thread's worktree uncommitted and the source checkout keeps its own, so counting
-them would skip every merge for a project with local overrides, while `git merge` already refuses to
-overwrite an untracked file. `acpCompletedTip` then requires `BranchHash(feature)` to
-equal `planExecutionOutcome.branchTip`, the commit `capturePlanOutcome` recorded, since commits
-added afterwards were not covered by the report's Risk rating. The base checks and the merge run
-under `AcquireWorktreeCreationLockContext`, bounded by `acpMergeLockTimeout`: two ACP processes
-can finish together, and a merge failing on Git's index lock while the other succeeds would see
-HEAD move and `reset --hard` the other's merge away. The merge runs in the base worktree through
-`openMergeWorktree` and `mergeIntoBase` with `MergeBranchTipContext`, which merges the recorded
-commit by hash, not `refs/heads/<feature>`, with a `Merge branch '<feature>'` message;
-`mergeForCloseout` is `mergeIntoBase` over the ref-based merge `--merge` keeps. Every gate failure, conflict, or failed
-verification becomes `acpMergeResult.skipped` and leaves the repository unchanged. It deliberately
-reuses only that primitive and none of `runMergeCommand`'s teardown: no push, no `DeleteBranch`, no
-`cleanupMergedWorktree`, and no checkout switch. The feature worktree belongs to T3 Code and is the
-process cwd, so removing it fails on Windows with `Permission denied` and would strand the thread, and while that worktree has the branch checked out Git refuses to delete it. `acpRunResult` composes the final message
-as the report, then the `## Merge` section, then `acpNextSteps` when the run failed or the merge was
-skipped; `acpNextSteps` now points at this same thread ("questions, edits, `merge`, `pr`"). A skipped
-merge never changes a successful turn's `end_turn`. `runPlan` then calls `recordLastRun`, which on
-every run, failed ones included, writes `acpLastRun` (plan, branch, base, the recorded `branchTip`,
-report, auto-merge summary and skip reason) to the session state and clears the provider session
-through `withLastRun`, since a chat resumed across a new run would answer about the previous one; it
-only warns on failure. The state (`cmd/loopai/acp_state.go`) lives at `.loopai/acp/<session-id>.json`
-relative to the session cwd and is saved atomically with mode `0600` through `saveJSONState`.
-`acpStatePath` rejects a session id that is not one safe path segment, since the id comes from the
-client and `session/load` accepts any. A missing file is an empty state, and so is a corrupt one,
-with a warning on `a.out`. `.loopai/acp` is one of `loopaiRuntimePaths`, so `EnsureLocalGitignore`
-ignores it: otherwise the state file is an untracked path and `acpCleanWorktreeSkip`'s
-`UntrackedFiles` gate skips every merge. `upgradeGeneratedGitignore` rewrites an untracked
-`.loopai/.gitignore` that still holds an earlier generated content in place, so existing checkouts
-pick up `acp/` instead of falling into the custom-file fallback. `openSession`
-(`cmd/loopai/acp_chat.go`) enters the cwd and loads config, state, and the repository for commands
-and chat alike; its errors, and a chat's executor error, are the only ways those turns fail.
-`runAction` resolves the base through `acpActionBase` (the last run's base, else
-`resolveDefaultBranch` as `--merge` does) and runs `acpRequestedMerge` or `acpRequestedPR`, whose
-refusals are part of the answer. `acpRequestedMerge` shares `acpFeatureBranch`,
-`acpCleanWorktreeSkip`, and `acpMergeIntoBase` (the lock, the base-worktree gates, and
-`MergeBranchTipContext` by hash) with `acpAutoMerge`, but skips `acpMergePolicySkip` and
-`acpCompletedTip` because a human asked: it merges the branch's current `BranchHash`, lists the
-commits after the last run's tip through `acpCommitsAfterRun`, and reports a branch the base already
-contains as `acpMergeResult.upToDate` without merging. `acpRequestedPR` returns the URL of an open
-pull request found through `gh pr view <branch> --repo <origin spec>`, otherwise calls
-`createPullRequest` with the last run's report as `closeoutTarget.report`, only when that run was on
-the same branch; a missing `gh` is a refusal. Both keep the auto-merge's no-teardown rule.
-`runChat` runs `processor.ModeACPChat`, modeled on `ModeGenAgents`: `resolveExecutionDeps` skips
-reviewer resolution for it, `modePhaseProviders`, `modePhaseBanners`, and `runHeaderParams` treat it
-as a review-provider mode, it logs to `.loopai/progress/progress-acp-chat.txt`, and
-`openSession` runs `EnsureLocalGitignore` before anything is written. The runner hands it to `phase.ChatPhase`
-through the review executor, so retry, `wait_on_limit`, and claude-swap match the other phases. The
-phase deliberately leaves the phase holder alone, because the sink turns every phase into a tool-call
-card and a chat shows none, while its section and output still reach the sink's reasoning through
-`WrapLogger`. Executor resume is a per-run context value set by `executor.WithResumeSession`. Claude
-appends `--resume <id>` after the configured arguments, stripping any `--resume` already there so the
-id survives a `claude_args` that replaces the defaults, and reports the `session_id` of its
-`system/init` event. Codex builds `codex exec <options> resume <id> -` with every option before the
-subcommand, because `resume` rejects `--sandbox` while `exec`'s options apply to the resumed session.
-Both report `Result.SessionID`. Claude's `Result.Output` joins every text block of the session,
-narration between tool calls included, so it also reports `Result.Reply`, the string `result` of a
-successful session, and `ChatPhase` answers with that, falling back to `Output` (Codex's stdout is
-already the final message); `chatSignal` still searches the whole `Output`. `NoResume`, set for wrapper commands, ignores the id and reports
-none; `acpChatProvider` pairs the review provider with `IsRealClaudeCommand`/`IsRealCodexCommand` so
-such a reply carries `acpChatNoResumeNote`, and the stored id is passed only when the stored provider
-equals the current one. `ChatPhase` retries a failed resumed session once as a fresh one with the full
-context unless the failure is a limit, a timeout, or cancellation — an error pattern is retried,
-since the default `API Error: 400/404/413` patterns are what an unusable resumed transcript produces
-and the stored id would otherwise fail every later message — and returns no
-result on cancellation, so `runChat` saves nothing and the previous id survives. `acp_chat.txt`
-renders in full only for a fresh session (`ACPChatPrompt` with `resumed` sends the message alone).
-A merge or PR runs outside the provider session, so `runCommand` and a signaled action record its
-message through `acpSessionState.withAction` (latest five, each capped), `acpChatMessage` prepends
-the pending outcomes to the next chat message, fresh or resumed, and a successful chat turn clears
-them; `withLastRun` drops them with the provider session. `acpLastRun` also records the launch's
-`--task-model`/`--review-model`, and `openSession` loads the state before config and applies them
-through `sessionOpts` (revalidated by `validatePassThroughValues`), so chat and commands run with
-the providers the thread's run used rather than the configured ones; `openSession` also runs
-`EnsureLocalGitignore`, since a command turn now writes the state file too. The template
-forbids loopai commands, worktree removal, branch switches, push, and `reset --hard`, and tells the
-model to end with `<<<RALPHEX:ACP_MERGE>>>` or `<<<RALPHEX:ACP_PR>>>` only when the current message
-asks. Both are `status.ACPMerge`/`ACPPR`, registered in `knownSignals`; `chatSignal` also searches the
-output because a later Claude text block overwrites the stream's signal, `status.StripSignals`
-removes them from the answer, and `runChat` then performs the action and appends its message. The
-prompt is deliberately the only guard against an unrequested signal: the merge is local,
-reversible, and gated. The mode
-relies on undocumented Grok driver contracts, documented in `docs/t3-code.md`, and must be
-re-verified after T3 Code updates.
+The handshake uses two pipes passed as `ExtraFiles`: fd 3 carries the launcher's one line
+`{"t3_token":"…"}` (empty without `--t3-thread`), fd 4 exactly one child line,
+`{"ok":true,"run_id":…,"attempt":…}` or `{"ok":false,"error":…}`; success is that line, never EOF.
+Inherited `ExtraFiles` descriptors lack `FD_CLOEXEC`, which is also how `checkHandshakeFD` tells them
+from the pipe the Go runtime itself opens on fds 3 and 4 on Darwin; the child marks both close-on-exec
+before anything else, so no provider or Git process holds the launcher's pipes. The launcher waits
+`detachAckTimeout` (120 s), detects a dead child through fd-4 EOF because `Process.Release` precludes
+`Wait`, and prints `run:`/`follow:` on success or the console tail on failure. `detachedChild.run`
+takes the run's lifetime lock (`run.lock`, separate from the worktree run lock), records its pid and
+`runs.ProcessStartToken`, loads config through `loadDetachedConfig` (worktree mode set on `o` before
+loading, `cfg.Orca` off), builds the request through `prepareNonInteractiveRequest`
+(`executePlanRequest.NonInteractive`: a missing plan is an error instead of a prompt, and no pause
+handler, break signal, or cmux or Orca reporter is installed; a nil-stdin `executionIO` makes an empty
+repository an error), records launch history, and executes. An error before the attempt starts becomes a failed outcome and the `ok:false`
+answer. SIGHUP is caught with `signal.Notify`, not ignored, because an ignored disposition is
+inherited by every process the run starts.
+
+`executePlanRequest` carries the detached-run knobs. `AttemptStarted` fires in `fireAttemptStarted`
+once the worktree and its progress log exist; the child's hook records the branch, worktree, and
+progress log in the descriptor, appends `attempt_start`, and only then answers ok. A failed answer is
+only reported on the console log, so a launcher that stopped waiting never ends a 40-hour run; a failed
+descriptor or journal write fails the hook. `KeepWorktreeOnFailure` keeps the worktree on every exit
+after a successful hook except a clean success: `keepWorktreeDecision` decides once, memoized, before
+removal, and `keepDetachedWorktree` also keeps a success whose finalize close-out or plan archive
+stopped short or whose tree is dirty or has an operation in progress, because removal is
+`git worktree remove --force`. Without the hook, or when it fails, a fresh worktree is removed as
+before and a resumed one is kept. A review stalemate or review max-iterations is not a failure: the
+post-review loop commits leftovers on the branch. `ArchiveOnRunBranch` archives the single plan
+through the run's own Git service and plan copy, as a chain does, so nothing is committed into the
+invoking checkout through `MainGitSvc`; `captureDetachedSourcePlan` and
+`reconcileDetachedSourcePlan` (`source-plans.json`) make that checkout's unchanged plan copy
+merge-ready after success. `planExecutionOutcome.recordFinalize`, `recordArchive`, and
+`recordWorktreeKept` feed `complete`, which classifies the attempt (exit codes 0 succeeded, 1 failed,
+2 stopped), fills the commit, writes `report.md`, appends the closing journal events (noting every
+failed append), reconciles, writes `outcome.json` (report capped at 256 KiB, summary at 4 KiB), and
+runs `beforeExit` last.
+
+`pkg/runs` is the registry under `<checkout>/.loopai/progress/runs/<run-id>/`, with run ids
+`<plan stem>-<YYYYMMDD-HHMMSS>-<4 hex>` and no file matching the dashboard's `progress-*.txt`.
+`Classify` probes the launch lock (`starting`), then the lifetime lock (`running`), then the outcome
+(`succeeded|failed|stopped`), else `crashed`; a probe never blocks a run. `Journal` appends
+`events.jsonl` (`attempt_start`, `phase`, `task`, `tasks`, `review`, `finalize`, `report`, `finish`);
+`journalHooks` (`detach_journal.go`) fills `LogDecorator` with section events and `PhaseObserver` with
+phases, the limit wait, and task statuses re-read from the worktree plan, and queues `progressLogger`
+lines until the decorated logger exists. `Snapshot`/`Fold` is the only structured state source for
+`--attach`, the Mode 1 bridge, and the Mode 2 renderer: an external review block entered from the task
+phase is a per-task block that leaves the stages alone, a stage never reopens, and entering one
+completes every earlier one. `Follow` ends on the lifetime lock and outcome; `FollowUntilFinish` ends
+on the attempt's `finish` event, for a reader inside the run process, which holds the lock itself.
+`--attach`, `--runs`, and `--stop` (`runs_cmd.go`) read the runs of `runsRoot`, the working directory.
+`stopRun` rereads the descriptor and, only while the lifetime lock is held and the recorded process
+still carries its start token, writes `stop-requested` and then sends SIGTERM to that process alone;
+the marker comes first so a run killed by its own force exit classifies as stopped. `--stop` then
+waits `stopWaitTimeout`. `refuseLiveDetachedRun` (`detach_guard.go`), called from `runMergeCommand`
+and `runPRCommand` once the feature is resolved, checks `runs.LiveRunForBranch` under every
+`progressRecordRoots` root, then probes the feature worktree's run lock without blocking, which also
+catches a foreground `--worktree` run.
+
+Mode 1 (`--t3-thread <id>`, `cmd/loopai/t3_bridge.go`) needs `LOOPAI_T3_TOKEN`, read only by the
+launcher (`detachT3Token`) and handed over fd 3. The child moves it into the bridge's `t3.Client` and
+keeps no copy, so it never reaches a file, log, descriptor, outcome, journal, or the environment of the
+processes the run spawns. Thread ids are opaque (`^[A-Za-z0-9_.:%-]{1,1024}$`, the length checked
+through `maxT3ThreadIDLen` because Go's regexp caps a repeat count at 1000), sent unchanged and always
+single-quoted in shell text. `pkg/t3` speaks T3 Code's orchestration protocol 2:
+`/ws?orchestrationProtocol=2` with `Authorization: Bearer`, plain-JSON RPC frames with `headers: []`,
+an `Ack` after every stream chunk (the server stalls otherwise), and a fresh `commandId` per command;
+the origin comes from `<T3 home>/userdata/server-runtime.json`, re-read on every reconnect, or
+`LOOPAI_T3_URL`, and a 426 or undecodable reply is the typed `t3.ErrProtocolUnsupported`. The bridge
+follows the journal with `FollowUntilFinish`, writes `[loopai: <state>]` title prefixes on transitions
+only (`thread.metadata.update` carrying the title alone, read first so the user's name survives, the
+first one after waiting up to about 2 minutes for a pending `titleRegeneration`), pins only an
+unpinned thread and unpins only what it pinned (the pin is what stops the 3-day auto-settle), and opens
+terminal `loopai-<run id>` with the UI's launch context (`thread.worktreePath ?? project.workspaceRoot`,
+the two `T3CODE_*` variables, never `providerInstanceId`), typing
+` cd '<checkout>' && '<loopai>' --attach <id>` — never through `exec` and never with `; exit`. After a
+server restart it reopens an absent terminal once per server start unless a `remove` was seen while
+connected, and it re-types only into a terminal idle for 60 s with nothing typed for 90 s after the
+previous command was seen running. `t3BridgeFatal` errors (401, protocol, remote) disable it with one
+progress-log line; the run is unaffected. The child stops it through `beforeExit`, bounded by
+`t3BridgeStopTimeout`, so the final title and unpin are sent. `pkg/t3/t3test` is an importable fake
+protocol-2 server enforcing the query parameter, the Bearer header, request headers, and ack-gated
+streams.
+
+Mode 2 (`--acp`, `cmd/loopai/acp_*.go`, `pkg/acp`) is a provider for T3 Code's `acpRegistry` driver.
+`cmd/loopai-acp` is argument-free: it resolves `loopai` from `LOOPAI_ACP_LOOPAI`, a sibling
+(`loopai.exe` only on Windows), or `PATH`, and on Unix `syscall.Exec`s `loopai --acp`, staying one
+stable process in the process group T3 Code leads and signals as a whole (SIGTERM, then SIGKILL a
+second later); Windows starts it with inherited stdio and returns its exit code. `runPreConfigCommand`
+routes `--acp` before config, since each session has a cwd of its own and probes must read no config;
+`validateACPFlags` keeps it standalone. `main` prints the version banner to stderr when `acpRequested`
+sees the flag, `redirectStdioForACP` reserves the real stdin and stdout for JSON-RPC and points
+`os.Stdin` at the null device and `os.Stdout`/`color.Output` at stderr, and `catchSIGPIPE` turns a
+write to a gone client into EPIPE. `pkg/acp` is `Conn` (newline-delimited JSON-RPC 2.0, 16 MiB lines,
+ids kept as `json.RawMessage`), `Provider` (`initialize` answers protocol 1 with `loadSession: true`,
+no `info` key, which would switch T3 Code to v2 methods, and no `mcpCapabilities.acp`, which would make
+it send an MCP entry without a URL; `session/load` always succeeds; handler panics are recovered, so the
+provider never exits by itself during a held turn, and it exits promptly on SIGTERM or stdin EOF),
+`ParsePrompt`/`IsContinuation` (the `<user_request>` envelope, the text after the last
+`User message:`, and `Continue where you left off.` with or without a restart note or handoff block),
+and the `session/update` encoders. `acpIsProbe` recognizes T3 Code's background connections
+(`t3-code-provider-test`, `t3-code-session-manager`, `t3-code-provider-auth`, or no MCP servers and no
+`T3_ACP_MCP_*`), which read no config and write nothing. `openSession` looks the thread id up through
+the session's MCP credential (`t3.MCPCredentialFromServers` from the `t3-code` entry's `env` array,
+else the spawn-time `T3_ACP_MCP_*`; `t3.MCPClient` over streamable HTTP, `t3_thread_list` →
+`currentThreadId`, bounded by `acpLookupTimeout`), never logging header values. Bindings
+(`acp_binding.go`) live in `<session cwd>/.loopai/acp/`: `binding-thread-<runs.ThreadKey(id)>.json`,
+named by a hash because ids exceed 300 characters and carry `:` and `%`, and
+`binding-session-<session id>.json` as the fallback, because T3 Code replaces the session id when
+`session/load` falls back. `requireBindingStore` refuses a relative or missing cwd and a symlinked
+`.loopai` or `.loopai/acp` while accepting a symlinked cwd, and every write first runs
+`git.EnsureRuntimeDirectoryIgnored`, because `.loopai/.gitignore` is never committed and a T3 Code
+worktree lacks it. `acpTurn.route` (`acp_route.go`) applies, in order: a bound live run, `starting`
+included, is attached whatever the text says, a bound run that ended without success is relaunched on
+continuation text or `resume`, and a bound run whose directory is gone is unbound once; a message whose
+first word is a `.md` path (`parseACPPlanMessage`: the three pass-through flags only, checked by
+`validatePassThroughValues`) launches that plan through `launchACPRun`, which runs
+`loopai --detach --acp-thread=<id> --acp-session=<sid> <args>` in the session cwd with `acpLaunchEnv`
+(scrubbed, recorded environment options restored on a relaunch), and binds it; without a binding, a
+continuation adopts the single live `t3-thread` run of the same cwd whose `attach.lock` is free,
+binding only once it holds that lock; anything else gets the status reply. `follow` holds the run's
+`attach.lock` and one `session/prompt` open for the whole run. `acpRenderer` (`acp_render.go`) sends
+plan entries and one `kind: other` tool call per phase on transitions only, plus a liveness retitle
+every `acpLivenessInterval` (20 minutes), never reasoning or output, since T3 Code stores every update
+and never compacts them, and a final message capped at `acpFinalMessageLimit` (12,000 JSON-escaped
+bytes, within the model-switch handoff) before `end_turn`, which every finished run gets. Stop
+(`acp_stop.go`) answers `cancelled` at once and arms a stop for `acpStopGrace` (5 s) measured from that
+answer; a new prompt of the session or the provider shutting down drops it. After the grace
+`acpThreadInterrupted` (MCP `t3_thread_read`, at most `acpStopGuardTimeout`) checks that T3 Code
+recorded a `run_interrupt_request`, which a steer or T3 Code's own cancel lacks, and a failed read
+stops anyway; `stopRun` then runs only on a live run of origin `t3-thread` whose binding key matches
+(`acpOwnsRun`). The provider reports status only: no chat, merge, or pull request. These contracts come
+from T3 Code 0.1.1's source rather than a documented API; `docs/t3-code.md` lists the checks still
+open against a live T3 Code.
+
+`cmd/loopai`'s `TestMain` replaces `newAwakeHolder`, `detachScopePrefix`, `newT3Bridge`,
+`lookupACPThreadID`, `acpThreadInterrupted`, and `acpLaunchDetached`, and unsets `LOOPAI_T3_TOKEN` and
+`LOOPAI_T3_URL`, so no test reaches a T3 Code server, a systemd user manager, or a real inhibitor;
+detached-run tests re-exec the test binary through `detachExecutable` and `detachChildArgs`.
 
 Keep `cmux.Reporter.WrapLogger` in the logger chain after dashboard setup. The
-Orca title wrapper sits below the cmux wrapper, the T3 thread wrapper below Orca, and
-the keep-awake wrapper between T3 and `progress.SectionTimer`, which in turn sits above
-the dashboard broadcast logger. `executePlanRequest.LogDecorator`, the ACP sink in agent mode,
-wraps the runner logger directly below `progress.SectionTimer`, so it sees sections and the timer's
-timing lines; `PhaseObserver` subscribes beside the cmux, orca, T3, and keep-awake observers. This preserves cmux's
+Orca title wrapper sits below the cmux wrapper, and the keep-awake wrapper between Orca and
+`progress.SectionTimer`, which in turn sits above the dashboard broadcast logger.
+`executePlanRequest.LogDecorator`, a detached run's journal hooks, wraps the runner logger directly
+below `progress.SectionTimer`, so it sees sections and the timer's timing lines; `PhaseObserver`
+subscribes beside the cmux, orca, and keep-awake observers. This preserves cmux's
 outermost rate-limit interfaces while timing structured sections. Orca's
 limit-wait title comes from its `status.PhaseHolder` observer, not from the logger
 chain. `progress.ValidationTimer` receives that wrapped runner
