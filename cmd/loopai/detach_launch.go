@@ -72,7 +72,7 @@ const maxT3ThreadIDLen = 1024
 // launcher's arguments, so the child refuses what the launcher would.
 func validateDetachFlags(o opts) error {
 	childSet := o.detachedRunSet || o.DetachedRun != ""
-	if err := validateT3ThreadFlag(o, o.Detach || childSet); err != nil {
+	if err := validateThreadFlags(o, o.Detach || childSet); err != nil {
 		return err
 	}
 	if !o.Detach && !childSet {
@@ -127,18 +127,33 @@ func validateDetachFlags(o opts) error {
 	return nil
 }
 
-// validateT3ThreadFlag accepts --t3-thread only on a detached run, detached reporting whether the
-// invocation is one, and only with a thread id t3ThreadIDPattern matches.
-func validateT3ThreadFlag(o opts, detached bool) error {
-	if !o.t3ThreadSet && o.T3Thread == "" {
-		return nil
+// validateThreadFlags accepts the flags that name the T3 thread a run belongs to only on a detached
+// run, detached reporting whether the invocation is one, and only with an id t3ThreadIDPattern
+// matches: --t3-thread, a terminal in an existing thread, and --acp-thread and --acp-session, which
+// the provider of a loopai thread passes and which cannot name a terminal thread as well.
+func validateThreadFlags(o opts, detached bool) error {
+	t3Set := o.t3ThreadSet || o.T3Thread != ""
+	acpSet := o.acpThreadSet || o.ACPThread != "" || o.acpSessionSet || o.ACPSession != ""
+	if t3Set && acpSet {
+		return errors.New("--t3-thread cannot be combined with --acp-thread or --acp-session")
 	}
-	if !detached {
-		return errors.New("--t3-thread is valid only with --detach")
-	}
-	if len(o.T3Thread) > maxT3ThreadIDLen || !t3ThreadIDPattern.MatchString(o.T3Thread) {
-		return fmt.Errorf("--t3-thread: invalid thread id %q: expected 1 to 1024 letters, digits, and _.:%%- characters",
-			o.T3Thread)
+	for _, flag := range []struct {
+		name, kind, value string
+		set               bool
+	}{
+		{"--t3-thread", "thread id", o.T3Thread, o.t3ThreadSet}, {"--acp-thread", "thread id", o.ACPThread, o.acpThreadSet},
+		{"--acp-session", "session id", o.ACPSession, o.acpSessionSet},
+	} {
+		if !flag.set && flag.value == "" {
+			continue
+		}
+		if !detached {
+			return fmt.Errorf("%s is valid only with --detach", flag.name)
+		}
+		if len(flag.value) > maxT3ThreadIDLen || !t3ThreadIDPattern.MatchString(flag.value) {
+			return fmt.Errorf("%s: invalid %s %q: expected 1 to 1024 letters, digits, and _.:%%- characters",
+				flag.name, flag.kind, flag.value)
+		}
 	}
 	return nil
 }
@@ -480,7 +495,8 @@ func (l *detachLaunch) branchWorktree() (string, error) {
 // resume prepares the next attempt of run, which did not succeed: its outcome is kept as attempt
 // history, its stop marker cleared, and its descriptor gets the new attempt. The recorded origin stays,
 // so a run started from a T3 thread remains that thread's run when a plain shell resumes it, unless
-// this launch names a T3 thread with --t3-thread, which then shows the run.
+// this launch names a T3 thread with --t3-thread, --acp-thread, or --acp-session, which then owns the
+// run.
 func (l *detachLaunch) resume(run runs.Run) error {
 	l.dir = run.Dir
 	desc := run.Descriptor
@@ -492,16 +508,19 @@ func (l *detachLaunch) resume(run runs.Run) error {
 	}
 	desc.Attempt++
 	desc.PID, desc.PIDStart = 0, "" // the new attempt's process records itself
-	if l.o.T3Thread != "" {
-		desc.Origin = l.origin()
+	if origin := l.origin(); origin.Kind != runs.OriginCLI {
+		desc.Origin = origin
 	}
 	return l.record(desc)
 }
 
-// origin is the origin this launch gives a run: a terminal in the T3 thread --t3-thread names, else
-// the shell.
+// origin is the origin this launch gives a run: the loopai thread --acp-thread or --acp-session
+// names, whose provider started it, a terminal in the T3 thread --t3-thread names, else the shell.
 func (l *detachLaunch) origin() runs.Origin {
-	if l.o.T3Thread != "" {
+	switch {
+	case l.o.ACPThread != "" || l.o.ACPSession != "":
+		return runs.Origin{Kind: runs.OriginT3Thread, ThreadID: l.o.ACPThread, ACPSessionID: l.o.ACPSession}
+	case l.o.T3Thread != "":
 		return runs.Origin{Kind: runs.OriginT3Terminal, ThreadID: l.o.T3Thread}
 	}
 	return runs.Origin{Kind: runs.OriginCLI}

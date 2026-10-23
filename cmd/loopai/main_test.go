@@ -118,6 +118,9 @@ func TestMain(m *testing.M) {
 	// an --acp session carrying T3 credentials would otherwise ask the real T3 MCP endpoint for its
 	// thread; the provider tests choose the answer through acpLookupEnv instead
 	lookupACPThreadID = stubACPThreadLookup
+	// a loopai thread's plan message would otherwise start the test binary itself as the launcher,
+	// which without a test selector runs the whole suite again; the routing tests stub the launch
+	acpLaunchDetached = refuseACPLaunch
 	// a developer shell may export a T3 Code token or server URL; no test may reach a real T3
 	// server, so neither leaks into the suite. tests that need them set them through t.Setenv.
 	for _, key := range []string{"LOOPAI_T3_TOKEN", "LOOPAI_T3_URL"} {
@@ -157,6 +160,12 @@ func stubACPThreadLookup(ctx context.Context, _ t3.MCPCredential) (string, error
 		return "", fmt.Errorf("t3 mcp initialize: %w", ctx.Err())
 	}
 	return "", errors.New("t3 mcp initialize: HTTP 401")
+}
+
+// refuseACPLaunch replaces acpLaunchDetached for the whole suite and its helper processes, so a test
+// starts a launcher only by replacing it.
+func refuseACPLaunch(context.Context, acpLaunch) (string, error) {
+	return "", errors.New("the test suite starts no detached run launcher")
 }
 
 var (

@@ -18,8 +18,8 @@ const (
 	OriginT3Thread   = "t3-thread"   // started by the ACP provider of a loopai T3 thread
 )
 
-// Origin records who started a run. ThreadID is set for both T3 kinds, ACPSessionID only for
-// OriginT3Thread.
+// Origin records who started a run. ThreadID is set for OriginT3Terminal, and for OriginT3Thread
+// unless the provider could not look its thread up; ACPSessionID is set only for OriginT3Thread.
 type Origin struct {
 	Kind         string `json:"kind"`
 	ThreadID     string `json:"thread_id,omitempty"`

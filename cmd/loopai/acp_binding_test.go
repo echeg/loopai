@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -300,4 +301,89 @@ func TestBindingRefusesUnsafeKeys(t *testing.T) {
 	assert.False(t, ok)
 	_, err := os.Stat(filepath.Join(cwd, "relative"))
 	assert.True(t, os.IsNotExist(err))
+}
+
+// bindingTreeFiles maps every file under root to its content.
+func bindingTreeFiles(t *testing.T, root string) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	require.NoError(t, filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		require.NoError(t, err)
+		if d.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path) //nolint:gosec // test temp tree
+		require.NoError(t, err)
+		files[path] = string(data)
+		return nil
+	}))
+	return files
+}
+
+// TestBindingStoreRefusesUnsafeCwds checks a session cwd that cannot hold bindings: nothing is written,
+// no directory is created, and every read finds no binding, which the routing treats as having none.
+func TestBindingStoreRefusesUnsafeCwds(t *testing.T) {
+	const runID = "feature-20261022-120000-abcd"
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) (cwd, outside string) // outside is a directory a write must not reach
+		wantErr string
+	}{
+		{name: "a removed thread worktree", wantErr: "no such file or directory", setup: func(t *testing.T) (string, string) {
+			parent := t.TempDir()
+			return filepath.Join(parent, "worktree"), parent
+		}},
+		{name: "a file", wantErr: "is not a directory", setup: func(t *testing.T) (string, string) {
+			path := filepath.Join(t.TempDir(), "file")
+			require.NoError(t, os.WriteFile(path, nil, 0o600))
+			return path, filepath.Dir(path)
+		}},
+		{name: "a symlinked .loopai", wantErr: "is a symbolic link", setup: func(t *testing.T) (string, string) {
+			cwd, outside := t.TempDir(), t.TempDir()
+			require.NoError(t, os.Symlink(outside, filepath.Join(cwd, ".loopai")))
+			return cwd, outside
+		}},
+		{name: "a symlinked .loopai/acp", wantErr: "is a symbolic link", setup: func(t *testing.T) (string, string) {
+			cwd, outside := t.TempDir(), t.TempDir()
+			require.NoError(t, os.Mkdir(filepath.Join(cwd, ".loopai"), 0o750))
+			require.NoError(t, os.Symlink(outside, filepath.Join(cwd, ".loopai", "acp")))
+			return cwd, outside
+		}},
+		{name: "a .loopai that is a file", wantErr: "is not a directory", setup: func(t *testing.T) (string, string) {
+			cwd := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(cwd, ".loopai"), nil, 0o600))
+			return cwd, t.TempDir()
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd, outside := tc.setup(t)
+			// a binding planted where a followed link leads must not be read either
+			if info, err := os.Stat(filepath.Join(cwd, ".loopai")); err == nil && info.IsDir() {
+				require.NoError(t, os.MkdirAll(filepath.Join(outside, "acp"), 0o750))
+				planted := `{"session_id":"s-1","run_id":"` + runID + `"}`
+				for _, dir := range []string{outside, filepath.Join(outside, "acp")} {
+					require.NoError(t, os.WriteFile(filepath.Join(dir, "binding-session-s-1.json"), []byte(planted), 0o600))
+				}
+			}
+			before := bindingTreeFiles(t, outside)
+
+			require.ErrorContains(t, saveSessionThread(cwd, "s-1", "thread-1"), tc.wantErr)
+			require.ErrorContains(t, bindRun(cwd, "thread-1", "s-1", runID), tc.wantErr)
+			require.ErrorContains(t, bindRun(cwd, "", "s-1", runID), tc.wantErr)
+			require.ErrorContains(t, unbindRun(cwd, "thread-1", "s-1", runID), tc.wantErr)
+			_, ok := loadBinding(cwd, "thread-1", "s-1")
+			assert.False(t, ok)
+			_, ok = loadBinding(cwd, "", "s-1")
+			assert.False(t, ok, "a binding behind a link is not read")
+			assert.Equal(t, before, bindingTreeFiles(t, outside), "nothing is written outside the cwd")
+		})
+	}
+
+	t.Run("a removed cwd is never recreated", func(t *testing.T) {
+		cwd := filepath.Join(t.TempDir(), "worktree")
+		_ = saveSessionThread(cwd, "s-1", "thread-1")
+		_ = bindRun(cwd, "thread-1", "s-1", runID)
+		assert.NoDirExists(t, cwd)
+	})
 }

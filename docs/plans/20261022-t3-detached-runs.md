@@ -1176,32 +1176,33 @@
 - ⚠️ The MCP session-ending DELETE is bounded at 1 s (`mcpEndTimeout`). The exit-time tests run the `--acp` child with `GORACE=atexit_sleep_ms=0`, since the race detector otherwise sleeps a second before every exit.
 
 ### Task 14: Add Mode 2 launch and routing
-- [ ] add hidden flags `ACPThread` (`--acp-thread`) and `ACPSession` (`--acp-session`), with no env tags:
+- [x] add hidden flags `ACPThread` (`--acp-thread`) and `ACPSession` (`--acp-session`), with no env tags:
   - `validateDetachFlags` accepts them only together with `--detach`/`--detached-run` and rejects them with `--t3-thread`;
   - they make the launcher record origin `t3-thread` with both ids, and are excluded from the recorded argv by `stripDetachArgs`.
-- [ ] launch through `var acpLaunchDetached` (stubbed in tests):
+- [x] launch through `var acpLaunchDetached` (stubbed in tests):
   - it runs `<os.Executable()> --detach --acp-thread=<tid> --acp-session=<sid> <args>` with `cmd.Dir` = the session cwd and the Task 8 environment filter, capturing its output;
   - the launcher's refusal text becomes the final message.
-- [ ] implement routing in `cmd/loopai/acp_route.go`, exactly as in Technical Details:
+- [x] implement routing in `cmd/loopai/acp_route.go`, exactly as in Technical Details:
   1. **bound run.** If it is live, attach whatever the text says. If it is crashed and the text is a continuation, or it ended without success and the text is `resume`, relaunch from the recorded argv and env options, then attach.
   2. **a message naming a plan** (first token a plan path; the rest only `--task-model`/`--review-model`/`--external-reviewers`, with values validated by `validatePassThroughValues`) starts that plan's own detached run, binds it, and attaches. It never attaches to another run.
   3. **no binding.** Only continuation text may adopt, and only a live run of origin `t3-thread` whose `cwd` equals the session cwd and whose `attach.lock` is free. Exactly one candidate is bound and attached; otherwise the reply lists the candidates.
   4. **otherwise** a status reply.
 
   In this task, "attach" holds `attach.lock` (non-blocking, bounded 2 s) and waits on the observer until finish, then answers with a plain outcome line. The rendering comes in Task 15.
-- [ ] write tests (success) with scripted sessions, a fake registry, and the stubbed launcher:
+- [x] write tests (success) with scripted sessions, a fake registry, and the stubbed launcher:
   - a plan message starts and binds a run with origin `t3-thread` and both ids;
   - a new process after idle reaping (`session/load`, then `resume`) relaunches the bound failed run with the recorded argv;
   - continuation after a restart, with and without the restart note, re-attaches the bound live run;
   - continuation with no binding adopts exactly one unattached live `t3-thread` run from this cwd;
   - a status question after the run gets the outcome summary and the model-switch hint.
-- [ ] write tests (errors/edge):
+- [x] write tests (errors/edge):
   - a plan message never adopts another run, even a live one from the same cwd;
   - continuation with two candidates lists both and binds neither;
   - a run of origin `cli` or `t3-terminal`, from another cwd, or held by another provider's `attach.lock` is never adopted;
   - an unparsable flag in a plan message gets the usage text, not a run;
   - `--acp-thread` without `--detach`, or together with `--t3-thread`, is rejected.
-- [ ] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 15
+- [x] run `make test </dev/null`, `make lint`, and `GOOS=windows GOARCH=amd64 go build ./...` - must pass before task 15
+- ⚠️ adoption (rule 3) also skips a run recorded for another thread id when both ids are known, which never blocks the lookup-failed recovery; a relaunch restores the recorded env options over the provider's own; a plan path is a first word ending in `.md`.
 
 ### Task 15: Add Mode 2 attach rendering, the final message, and Stop
 - [ ] attach rendering through the observer:

@@ -549,6 +549,47 @@ func TestProviderPromptWaitsForItsSession(t *testing.T) {
 	assert.Len(t, prompts, 1)
 }
 
+// TestProviderLoadAnswerPrecedesPromptUpdates sends a prompt right behind each session/load, written
+// together as T3 Code's continuation after a restart sends them, with a Prompt that sends an update
+// at once: the load's answer always comes first, whether LoadSession returns or panics, because an
+// update ahead of that answer would be one T3 Code drops as sent during the load.
+func TestProviderLoadAnswerPrecedesPromptUpdates(t *testing.T) {
+	h := &fakeHandler{
+		onLoad: func(_ context.Context, s Session) {
+			if strings.HasPrefix(s.ID, "panic-") {
+				panic("load boom")
+			}
+		},
+		onPrompt: func(_ context.Context, _ PromptRequest, u *Updates) StopReason {
+			assert.NoError(t, u.AgentMessageChunk("status"))
+			return StopEndTurn
+		},
+	}
+	s := startProvider(t, h)
+	s.p.SetErrorLog(io.Discard)
+	for i := range 40 {
+		load, prompt := 2*i+1, 2*i+2
+		sid := fmt.Sprintf("s-%d", i)
+		if i%2 == 1 {
+			sid = fmt.Sprintf("panic-%d", i)
+		}
+		s.send(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"session/load","params":{"sessionId":%q,"cwd":"/repo","mcpServers":[]}}`,
+			load, sid) + "\n" +
+			fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"session/prompt","params":{"sessionId":%q,"prompt":[]}}`, prompt, sid))
+		first := s.next()
+		require.InDelta(t, float64(load), first["id"], 0, "the load's answer comes first: %v", first)
+		if i%2 == 1 {
+			errorOf(t, first)
+		} else {
+			assert.Equal(t, map[string]any{}, first["result"])
+		}
+		update := s.next()
+		require.Equal(t, "session/update", update["method"], "got %v", update)
+		answer := s.next()
+		require.InDelta(t, float64(prompt), answer["id"], 0, "got %v", answer)
+	}
+}
+
 // TestProviderShutdownWhilePromptWaits stops the provider while a prompt waits for its session: the
 // prompt is never handed to Prompt and never answered.
 func TestProviderShutdownWhilePromptWaits(t *testing.T) {

@@ -94,6 +94,32 @@ func TestValidateDetachFlags(t *testing.T) {
 			wantErr: `--t3-thread: invalid thread id ""`},
 		{name: "a T3 thread id over 1024 characters", args: []string{"--detach",
 			"--t3-thread=" + strings.Repeat("a", 1025), "docs/plans/x.md"}, wantErr: "--t3-thread: invalid thread id"},
+		{name: "a loopai thread and its session", args: []string{"--detach", "--acp-thread=thread:a%3Ab",
+			"--acp-session=loopai-0f1e", "docs/plans/x.md"}},
+		{name: "a loopai thread's session without its thread id", args: []string{"--detach", "--acp-session",
+			"loopai-0f1e", "docs/plans/x.md"}},
+		{name: "a loopai thread in the child's arguments", args: []string{"--detached-run=x-1", "--acp-thread=t-1",
+			"--acp-session=s-1", "docs/plans/x.md"}},
+		{name: "a loopai thread without detach", args: []string{"--acp-thread", "t-1", "docs/plans/x.md"},
+			wantErr: "--acp-thread is valid only with --detach"},
+		{name: "a loopai session without detach", args: []string{"--acp-session=s-1", "docs/plans/x.md"},
+			wantErr: "--acp-session is valid only with --detach"},
+		{name: "a loopai thread with attach", args: []string{"--attach", "--acp-thread", "t-1"},
+			wantErr: "--acp-thread is valid only with --detach"},
+		{name: "a loopai thread with a T3 thread", args: []string{"--detach", "--t3-thread", "t-1", "--acp-thread", "t-1",
+			"docs/plans/x.md"}, wantErr: "--t3-thread cannot be combined with --acp-thread or --acp-session"},
+		{name: "a loopai session with a T3 thread", args: []string{"--detach", "--acp-session=s-1", "--t3-thread=t-1",
+			"docs/plans/x.md"}, wantErr: "--t3-thread cannot be combined with --acp-thread or --acp-session"},
+		{name: "an empty loopai thread id", args: []string{"--detach", "--acp-thread=", "--acp-session=s-1", "docs/plans/x.md"},
+			wantErr: `--acp-thread: invalid thread id ""`},
+		{name: "a loopai thread id with whitespace", args: []string{"--detach", "--acp-thread", "thread 1", "docs/plans/x.md"},
+			wantErr: `--acp-thread: invalid thread id "thread 1"`},
+		{name: "a loopai thread id over 1024 characters", args: []string{"--detach",
+			"--acp-thread=" + strings.Repeat("a", 1025), "docs/plans/x.md"}, wantErr: "--acp-thread: invalid thread id"},
+		{name: "a loopai session id with a slash", args: []string{"--detach", "--acp-session=a/b", "docs/plans/x.md"},
+			wantErr: `--acp-session: invalid session id "a/b"`},
+		{name: "an empty loopai session id", args: []string{"--detach", "--acp-session=", "docs/plans/x.md"},
+			wantErr: `--acp-session: invalid session id ""`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -158,6 +184,7 @@ func TestStripDetachArgs(t *testing.T) {
 			{"--detach", "--", plan},
 			{"--detach", "--t3-thread", "thread:a%3Ab", "--tasks-only", plan},
 			{"--t3-thread=thread-1", "--detach", plan},
+			{"--detach", "--acp-thread=thread:a%3Ab", "--acp-session", "loopai-0f1e", "--task-model=codex", plan},
 		} {
 			launcher := parseTestOpts(t, args...)
 			var child opts
@@ -175,6 +202,9 @@ func TestStripDetachArgs(t *testing.T) {
 			assert.Equal(t, launcher.externalReviewersSet, child.externalReviewersSet, "an explicit empty value survives")
 			assert.Equal(t, launcher.Branch, child.Branch)
 			assert.Empty(t, child.T3Thread, "the child never sees the thread: %v", args)
+			assert.Empty(t, child.ACPThread, "the child never sees the loopai thread: %v", args)
+			assert.Empty(t, child.ACPSession, "the child never sees the loopai session: %v", args)
+			assert.Equal(t, launcher.TaskModel, child.TaskModel)
 		}
 	})
 }

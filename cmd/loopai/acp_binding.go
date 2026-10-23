@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/umputun/ralphex/pkg/git"
@@ -53,11 +55,37 @@ func acpSessionBindingPath(cwd, sessionID string) (string, error) {
 	return filepath.Join(cwd, filepath.FromSlash(acpBindingDir), "binding-session-"+sessionID+".json"), nil
 }
 
-// requireAbsSessionCwd refuses a relative session cwd before a binding is written: the file would
-// land wherever the process happens to run.
-func requireAbsSessionCwd(cwd string) error {
+// requireBindingStore refuses a session cwd that cannot hold bindings, before any binding is read or
+// written: a relative one, whose files would land wherever the process happens to run; one that is not
+// an existing directory, such as a thread worktree removed since, whose tree a write would recreate
+// for later runs to misread as loopai's own; and one whose .loopai or .loopai/acp is a symbolic link
+// or not a directory, which a write would follow outside the checkout. A missing .loopai or
+// .loopai/acp is fine: the first write creates it inside the existing cwd.
+func requireBindingStore(cwd string) error {
 	if !filepath.IsAbs(cwd) {
 		return fmt.Errorf("ACP session cwd %q is not absolute", cwd)
+	}
+	info, err := os.Lstat(cwd)
+	switch {
+	case err != nil:
+		return fmt.Errorf("ACP session cwd: %w", err)
+	case !info.IsDir():
+		return fmt.Errorf("ACP session cwd %s is not a directory", cwd)
+	}
+	path := cwd
+	for component := range strings.SplitSeq(acpBindingDir, "/") {
+		path = filepath.Join(path, component)
+		info, err := os.Lstat(path)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return nil
+		case err != nil:
+			return fmt.Errorf("inspect %s: %w", path, err)
+		case info.Mode()&os.ModeSymlink != 0:
+			return fmt.Errorf("%s is a symbolic link", path)
+		case !info.IsDir():
+			return fmt.Errorf("%s is not a directory", path)
+		}
 	}
 	return nil
 }
@@ -109,10 +137,10 @@ func readSessionBinding(cwd, sessionID string) (acpBinding, bool) {
 // loadBinding returns the binding of a session's thread, read from disk alone. A known thread id
 // finds the thread's binding. Without one, the session's binding names the thread, which is how a
 // session/load in a new process restores it, and that thread's binding wins when it exists. Otherwise
-// the session's own binding is returned, unless it belongs to another thread than threadID. A
-// relative cwd has no binding.
+// the session's own binding is returned, unless it belongs to another thread than threadID. A cwd
+// requireBindingStore refuses has no binding.
 func loadBinding(cwd, threadID, sessionID string) (acpBinding, bool) {
-	if requireAbsSessionCwd(cwd) != nil {
+	if requireBindingStore(cwd) != nil {
 		return acpBinding{}, false
 	}
 	if b, ok := readThreadBinding(cwd, threadID); ok {
@@ -138,7 +166,7 @@ func loadBinding(cwd, threadID, sessionID string) (acpBinding, bool) {
 // the run it binds. An empty threadID keeps a thread recorded earlier, so a failed lookup never
 // forgets the thread a previous one found.
 func saveSessionThread(cwd, sessionID, threadID string) error {
-	if err := requireAbsSessionCwd(cwd); err != nil {
+	if err := requireBindingStore(cwd); err != nil {
 		return err
 	}
 	path, err := acpSessionBindingPath(cwd, sessionID)
@@ -159,7 +187,7 @@ func bindRun(cwd, threadID, sessionID, runID string) error {
 	if !runs.ValidID(runID) {
 		return fmt.Errorf("invalid run id %q", runID)
 	}
-	if err := requireAbsSessionCwd(cwd); err != nil {
+	if err := requireBindingStore(cwd); err != nil {
 		return err
 	}
 	if threadID != "" {
@@ -182,7 +210,7 @@ func unbindRun(cwd, threadID, sessionID, runID string) error {
 	if runID == "" {
 		return nil
 	}
-	if err := requireAbsSessionCwd(cwd); err != nil {
+	if err := requireBindingStore(cwd); err != nil {
 		return err
 	}
 	var errs []error

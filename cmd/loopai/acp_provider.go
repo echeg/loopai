@@ -162,7 +162,7 @@ func serveACP(ctx context.Context, in io.Reader, out, stderr io.Writer, getenv f
 }
 
 // acpHandler serves the provider's sessions. It records the T3 thread of every session that belongs
-// to one and answers every prompt with the status reply.
+// to one and routes every prompt to the run it shows.
 type acpHandler struct {
 	stderr io.Writer
 	getenv func(string) string
@@ -178,14 +178,14 @@ func (h *acpHandler) NewSession(ctx context.Context, s acp.Session) { h.openSess
 // binding recorded, so a new process restores it from disk.
 func (h *acpHandler) LoadSession(ctx context.Context, s acp.Session) { h.openSession(ctx, s) }
 
-// Prompt answers the status reply and ends the turn.
-func (h *acpHandler) Prompt(_ context.Context, req acp.PromptRequest, updates *acp.Updates) acp.StopReason {
-	b, _ := loadBinding(req.Cwd, h.thread(req.SessionID), req.SessionID) // no binding reads as no run
-	_ = updates.AgentMessageChunk(acpStatusReply(req.Cwd, b.RunID))      // nothing to do when the client is gone
-	return acp.StopEndTurn
+// Prompt routes the prompt to the run it shows, launching or relaunching one when the message asks,
+// and holds the turn open while it follows that run.
+func (h *acpHandler) Prompt(ctx context.Context, req acp.PromptRequest, updates *acp.Updates) acp.StopReason {
+	t := &acpTurn{ctx: ctx, req: req, updates: updates, threadID: h.thread(req.SessionID), stderr: h.stderr}
+	return t.route()
 }
 
-// Cancel is a no-op: no prompt holds a run open yet.
+// Cancel is a no-op: a canceled prompt learns it from its Canceled channel and leaves its run running.
 func (h *acpHandler) Cancel(string) {}
 
 // openSession resolves the T3 thread a session belongs to and records it, in memory for the

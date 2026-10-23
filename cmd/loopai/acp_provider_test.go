@@ -166,6 +166,13 @@ func (w *acpWire) newSession(id int, cwd, servers string) string {
 func (w *acpWire) statusReply(id int, sid, text string) string {
 	w.t.Helper()
 	w.send(acpPrompt(id, sid, text))
+	return w.turnReply(id, sid)
+}
+
+// turnReply returns the text of the one message prompt id of session sid answers with before
+// end_turn.
+func (w *acpWire) turnReply(id int, sid string) string {
+	w.t.Helper()
 	update := w.next()
 	require.Equal(w.t, "session/update", update["method"], "got %v", update)
 	params, _ := update["params"].(map[string]any)
@@ -443,7 +450,7 @@ func TestACPNewSessionRecordsTheThread(t *testing.T) {
 			assert.Equal(t, []t3.MCPCredential{tc.wantCred}, creds)
 			mu.Unlock()
 
-			reply := s.statusReply(3, sid, "docs/plans/feature.md")
+			reply := s.statusReply(3, sid, "what can you do?")
 			assert.Contains(t, reply, "No loopai run belongs to this thread yet")
 			assert.Contains(t, reply, acpPromptUsage)
 			assert.Contains(t, reply, acpModelSwitchHint)
@@ -554,7 +561,7 @@ func TestACPLookupFailureFallsBackToTheSessionKey(t *testing.T) {
 			const runID = "feature-20261022-120000-abcd"
 			saveACPTestRun(t, cwd, runID, runs.Outcome{Status: runs.StatusStopped, Branch: "feature"})
 			require.NoError(t, bindRun(cwd, "", sid, runID))
-			reply := s.statusReply(2, sid, "resume")
+			reply := s.statusReply(2, sid, "status")
 			assert.True(t, strings.HasPrefix(reply, "loopai run "+runID+" stopped."), reply)
 			matches, err := filepath.Glob(filepath.Join(cwd, ".loopai", "acp", "binding-thread-*"))
 			require.NoError(t, err)

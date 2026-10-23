@@ -91,8 +91,9 @@ type PromptRequest struct {
 // Handler serves the provider's sessions. NewSession, LoadSession, and Prompt run on goroutines of
 // their own, with a context canceled when the provider stops. Cancel runs on the read loop, in
 // message order, and must not block. A Prompt of a session is called only once the NewSession or
-// LoadSession call that opened the session has returned, so it sees what that call recorded even when
-// the client sent the prompt before the session's answer.
+// LoadSession call that opened the session has returned and the session's answer was sent, so it sees
+// what that call recorded even when the client sent the prompt before the session's answer, and none
+// of its updates precedes that answer.
 //
 // Because Prompt starts on its own goroutine, a session/cancel read right after a session/prompt
 // can reach Cancel before that prompt reaches Prompt. A handler therefore learns that a prompt was
@@ -372,19 +373,21 @@ func (p *Provider) lookupSession(sessionID string) (session, bool) {
 	return s, ok
 }
 
-// openSession runs hook, the handler's NewSession or LoadSession, on its own goroutine, marks the
-// session ready once hook returned, and then answers the request with result. A panicking hook is
-// answered with an internal error instead.
+// openSession runs hook, the handler's NewSession or LoadSession, on its own goroutine, answers the
+// request with result once hook returned, and only then marks the session ready, so no update of a
+// prompt sent right after the request precedes its answer. A panicking hook is answered with an
+// internal error instead, and the session is marked ready after that answer too.
 func (p *Provider) openSession(name string, id json.RawMessage, s Session, hook func(context.Context, Session),
 	result any) {
 	ready := p.register(s.ID, s.Cwd)
 	p.spawn(name, func() {
-		func() {
-			defer close(ready)
-			hook(p.ctx, s)
-		}()
+		hook(p.ctx, s)
 		_ = p.reply(id, result)
-	}, func() { _ = p.replyError(id, CodeInternalError, errTextInternal) })
+		close(ready)
+	}, func() {
+		_ = p.replyError(id, CodeInternalError, errTextInternal)
+		close(ready)
+	})
 }
 
 // handleNewSession answers a fresh session id once the handler's NewSession returns. It reads no

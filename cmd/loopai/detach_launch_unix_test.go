@@ -482,6 +482,47 @@ func TestDetachLaunchT3Thread(t *testing.T) {
 	})
 }
 
+func TestDetachLaunchACPThread(t *testing.T) {
+	const thread = "thread:provider:claudeAgent:native-thread:thread%3Aprovider%3AclaudeAgent%3Aagent%3A3"
+	const session = "loopai-0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+
+	t.Run("a loopai thread's launch records the thread and its session", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		t.Setenv("LOOPAI_T3_TOKEN", "t3-bearer-token-6f1c")
+		stdout, stderr, err := f.launch(t, "--detach", "--acp-thread="+thread, "--acp-session="+session,
+			"--task-model=codex:gpt-6-astra:high", detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		desc := f.onlyRun(t)
+		assert.Equal(t, "run: "+desc.ID+"\nfollow: loopai --attach "+desc.ID+"\n", stdout)
+		assert.Equal(t, runs.Origin{Kind: runs.OriginT3Thread, ThreadID: thread, ACPSessionID: session}, desc.Origin)
+		assert.Equal(t, []string{"--task-model=codex:gpt-6-astra:high", detachLaunchPlan}, desc.Argv,
+			"neither id is a run argument")
+		assert.JSONEq(t, `{"t3_token":""}`, f.dump(t, desc.ID).Secret, "a loopai thread's run gets no T3 token")
+	})
+
+	t.Run("without a thread id the session alone names the thread", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		_, stderr, err := f.launch(t, "--detach", "--acp-session", session, detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		desc := f.onlyRun(t)
+		assert.Equal(t, runs.Origin{Kind: runs.OriginT3Thread, ACPSessionID: session}, desc.Origin)
+		assert.Equal(t, []string{detachLaunchPlan}, desc.Argv)
+	})
+
+	t.Run("a resume from a loopai thread makes the run that thread's", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		dir := f.seedRun(t, runs.Origin{Kind: runs.OriginCLI}, nil)
+		require.NoError(t, runs.SaveOutcome(dir, &runs.Outcome{RunID: detachSeedID, Attempt: 1, Status: runs.StatusStopped}))
+
+		_, stderr, err := f.launch(t, "--detach", "--acp-thread", thread, "--acp-session="+session, detachLaunchPlan)
+		require.NoError(t, err, stderr)
+		desc := f.onlyRun(t)
+		assert.Equal(t, detachSeedID, desc.ID)
+		assert.Equal(t, 2, desc.Attempt)
+		assert.Equal(t, runs.Origin{Kind: runs.OriginT3Thread, ThreadID: thread, ACPSessionID: session}, desc.Origin)
+	})
+}
+
 func TestDetachT3TokenLeavesNoTrace(t *testing.T) {
 	const thread = "8e8b69fc-3359-47c8-a5a3-6dd91c245a86"
 	token := "t3-leak-probe-" + strconv.FormatInt(time.Now().UnixNano(), 36)
