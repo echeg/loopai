@@ -130,7 +130,7 @@ Write the accepted plan to disk:
 - Dependencies: <external dependencies if any>
 
 ## Development Approach
-- **Testing approach**: Regular (code first, then tests) or TDD (test first)
+- **Testing approach**: Regular (code first, then tests). Write TDD (test first) only when the plan description explicitly asks for it; never ask the user which approach to use
 - Complete each task fully before moving to the next
 - <Any project-specific approaches>
 - **CRITICAL: every task MUST include new/updated tests**

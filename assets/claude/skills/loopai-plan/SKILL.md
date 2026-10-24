@@ -99,7 +99,7 @@ Show the discovered context, then ask questions **one at a time** using the AskU
 
 **Ask questions one at a time (do not overwhelm with multiple questions):**
 
-When the request comes from `loopai-brainstorm`, treat its approved design as authoritative. Preserve its goal, scope, constraints, chosen approach, and rejected alternatives; ask only for missing information such as testing preference.
+When the request comes from `loopai-brainstorm`, treat its approved design as authoritative. Preserve its goal, scope, constraints, chosen approach, and rejected alternatives; ask only for missing information.
 
 1. **Plan purpose**: use AskUserQuestion - "What is the main goal?"
    - provide multiple choice with suggested answer based on discovered intent
@@ -113,10 +113,7 @@ When the request comes from `loopai-brainstorm`, treat its approved design as au
    - can be open-ended if constraints vary widely
    - wait for response before next question
 
-4. **Testing approach**: use AskUserQuestion - "Do you prefer TDD or regular approach?"
-   - options: "TDD (tests first)" and "Regular (code first, then tests)"
-   - store preference for reference during implementation
-   - wait for response before next question
+Do not ask about the testing approach. Use regular (code first, then tests) unless the user's request explicitly asks for TDD.
 
 Do not ask for a plan title. Derive a short descriptive title from the answered goal, and the `<task-name>` slug from that title: lowercase, ASCII-only, words joined by `-`, at most ~50 characters. The slug also becomes the branch name, so keep it specific. The user can rename the file before running it.
 
@@ -183,7 +180,7 @@ Check `docs/plans/` for existing files, then create `docs/plans/YYYYMMDD-<task-n
 - Dependencies identified: [dependencies]
 
 ## Development Approach
-- **Testing approach**: [TDD / Regular - from user preference in planning]
+- **Testing approach**: Regular (code first, then tests) [TDD only if the user's request explicitly asked for it]
 - Complete each task fully before moving to the next
 - Make small, focused changes
 - **CRITICAL: every task MUST include new/updated tests** for code changes in that task

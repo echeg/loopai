@@ -72,7 +72,8 @@ Show the discovered context, then ask **one question per message**, waiting for 
 1. **Goal** - what is the main outcome?
 2. **Scope** - which components and files are involved?
 3. **Constraints** - requirements or limitations that shape the design?
-4. **Testing approach** - TDD (tests first) or regular (code first, then tests)?
+
+Do not ask about the testing approach. Use regular (code first, then tests) unless the user's request explicitly asks for TDD.
 
 Do not ask for a plan title. Derive a short descriptive title from the answered goal, and the `<slug>` from that title: lowercase, ASCII-only, words joined by `-`, at most ~50 characters. The slug also becomes the branch name, so keep it specific. The user can rename the file before running it.
 
@@ -110,7 +111,8 @@ Check `docs/plans/` for collisions, then write `docs/plans/YYYYMMDD-<slug>.md`.
 - dependencies identified
 
 ## Development Approach
-- **Testing approach**: TDD or regular, from the answer above
+- **Testing approach**: regular (code first, then tests); TDD only if the request
+  explicitly asked for it
 - complete each task fully before starting the next
 - **every task MUST include new or updated tests** for the code it changes -
   success and error paths, listed as their own checklist items
