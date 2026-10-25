@@ -115,12 +115,12 @@
 - [x] run `make test-launch-history-skills check-codex-skills </dev/null` - must pass before task 2
 
 ### Task 2: Reject positional parameters in Claude skill bodies
-- [ ] in `scripts/check-symlinks.sh`, beside the `removed_spellings` loop, fail with
+- [x] in `scripts/check-symlinks.sh`, beside the `removed_spellings` loop, fail with
       `positional parameter in skill body: <file>:<line>` for any line of a Claude `SKILL.md` matching
       `\$\{?[0-9]`, with a comment saying Claude Code substitutes skill arguments into `$N`
-- [ ] write regression cases in `scripts/check-symlinks_test.sh`: `$1`, `$0`, `${2}`, and an awk
+- [x] write regression cases in `scripts/check-symlinks_test.sh`: `$1`, `$0`, `${2}`, and an awk
       `print $3` line each fail; `$(2)`, `${key}`, `$HOME`, and `${CLAUDE_SKILL_DIR}` pass
-- [ ] run `make check-symlinks test-symlinks </dev/null` - must pass before task 3
+- [x] run `make check-symlinks test-symlinks </dev/null` - must pass before task 3
 
 ### Task 3: Write the final T3 title without waiting for regeneration
 - [ ] in `cmd/loopai/t3_bridge.go` `syncTitle`, skip the `awaitRegeneration` wait when `b.final` is set,

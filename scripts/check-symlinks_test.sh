@@ -134,6 +134,20 @@ printf '%s\n' "loopai --codex-args='-c x=1' --task-model codex:gpt-6-astra:mediu
 "$checker" "$fixture"
 write_skill loopai-orca
 
+# Claude Code substitutes skill arguments into $N, so a skill body must not use one
+skill_file="$fixture/assets/claude/skills/loopai-plan/SKILL.md"
+for line in 'cfgval() { grep "^$1" config; }' 'echo "$0"' 'echo "${2}"' "awk -F'\\t' '{ print \$3 }' history"; do
+	write_skill loopai-plan
+	printf '%s\n' "$line" >>"$skill_file"
+	expected_line="$(wc -l <"$skill_file" | tr -d '[:space:]')"
+	expect_failure "positional parameter in skill body: $skill_file:$expected_line"
+done
+write_skill loopai-plan
+printf '%s\n' "awk -F'\\t' '{ print \$(2) }' history" 'echo "${key}"' 'cd "$HOME"' \
+	'python3 "${CLAUDE_SKILL_DIR}/scripts/x.py"' 'branch=$(git branch --show-current)' >>"$skill_file"
+"$checker" "$fixture"
+write_skill loopai-plan
+
 # every skill must carry the shared contract snippet with the current expected= value
 skill_file="$fixture/assets/claude/skills/loopai-merge/SKILL.md"
 printf '%s\n' '---' 'name: loopai-merge' 'description: fixture skill' '---' >"$skill_file"

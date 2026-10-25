@@ -122,6 +122,14 @@ while IFS= read -r skill_name; do
 		fi
 	done
 
+	# Claude Code substitutes the words of a skill's arguments into $0, $1, ... in the
+	# skill body, so a shell or awk snippet using one breaks whenever the skill is invoked
+	# with arguments. ${N} is forbidden too, since whether it is substituted is undocumented;
+	# awk fields stay reachable as $(N). Bundled scripts are not substituted.
+	while IFS=: read -r line_number _; do
+		fail "positional parameter in skill body: $skill_file:$line_number"
+	done < <(grep -nE '\$\{?[0-9]' "$skill_file" || true)
+
 	if [[ -n "$skill_contract" ]]; then
 		snippet_status=0
 		stale="$(check_skill_contract_snippet "$skill_file" "$skill_contract")" || snippet_status=$?
