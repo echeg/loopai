@@ -97,7 +97,11 @@ line naming a removed loopai spelling (`--codex`, `--codex-only`, the
 `external_review_*`, and `finalize_enabled` keys, and the T3 Code spellings that
 `--t3-launch`, `--t3-progress-thread`, and `acp_auto_merge` were removed with) unless that line says
 it "was removed" or "were removed"; `--codex-args` and `--t3-thread` do not match, and the two
-`removed_spellings` lists must stay identical. The current set is `loopai`, `loopai-merge`,
+`removed_spellings` lists must stay identical. `check-symlinks.sh` alone also rejects a Claude
+`SKILL.md` line matching `\$\{?[0-9]` as a positional parameter in the skill body, because Claude Code
+substitutes the skill's argument words into `$0`, `$1`, ... (so snippets read awk fields as `$(2)` and
+pass a key to `cfgval` through a named variable); Codex substitutes nothing, so `check-codex-skills.sh`
+has no such rule. The current set is `loopai`, `loopai-merge`,
 `loopai-plan`, `loopai-brainstorm`, `loopai-adopt`, `loopai-update`,
 `loopai-grill`, `loopai-orca`, `loopai-t3`, and `loopai-retro`; every added skill needs the matching
 top-level symlink.
@@ -1079,7 +1083,8 @@ the origin comes from `<T3 home>/userdata/server-runtime.json`, re-read on every
 `LOOPAI_T3_URL`, and a 426 or undecodable reply is the typed `t3.ErrProtocolUnsupported`. The bridge
 follows the journal with `FollowUntilFinish`, writes `[loopai: <state>]` title prefixes on transitions
 only (`thread.metadata.update` carrying the title alone, read first so the user's name survives, the
-first one after waiting up to about 2 minutes for a pending `titleRegeneration`), pins only an
+first one after waiting up to about 2 minutes for a pending `titleRegeneration`, a wait a finished
+attempt skips so its final title lands inside `t3BridgeStopTimeout`), pins only an
 unpinned thread and unpins only what it pinned (the pin is what stops the 3-day auto-settle), sends
 `thread.mark-unread` on every finish as its last command, after the final title and the unpin, because
 T3 Code derives the sidebar's "Done" badge from the latest run's `completedAt` versus `lastVisitedAt` and

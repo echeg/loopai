@@ -143,14 +143,14 @@
 - [x] verify test coverage of the changed bridge code meets the project standard (80%+) (`syncTitle` 88.2%, `awaitRegeneration` 100%; the one uncovered block is the pre-existing projection-error path)
 
 ### Task 5: [Final] Update documentation and close the backlog entries
-- [ ] `CLAUDE.md`: add the positional-parameter rule to the paragraph describing what
+- [x] `CLAUDE.md`: add the positional-parameter rule to the paragraph describing what
       `make check-symlinks` rejects, and say in the Mode 1 paragraph that a finished attempt skips the
       title-regeneration wait
-- [ ] `docs/t3-code.md`: in "What the thread shows", say the ~2 minute wait does not apply once the run
+- [x] `docs/t3-code.md`: in "What the thread shows", say the ~2 minute wait does not apply once the run
       has finished, so a short run's final title cancels T3 Code's generation
-- [ ] bump the version in `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` to the same
+- [x] bump the version in `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` to the same
       next patch value, since skill files changed
-- [ ] delete `docs/backlog/skill-positional-args-substituted.md` and
+- [x] delete `docs/backlog/skill-positional-args-substituted.md` and
       `docs/backlog/t3-bridge-regeneration-wait-outlasts-stop.md`, staged with `git rm` in the task commit
 
 *Note: loopai automatically moves completed plans to `docs/plans/completed/`*

@@ -173,7 +173,9 @@ What the thread shows:
   finally `[loopai: done]`, `[loopai: failed]`, or `[loopai: stopped]`. The rest of the title is kept,
   including a name you gave the thread after the run started. Only a recognized `[loopai: …]` prefix
   is ever replaced. Before its first write loopai waits up to about 2 minutes for a title T3 Code is
-  still generating, since any title write cancels that generation.
+  still generating, since any title write cancels that generation. The wait does not apply once the
+  run has finished: a run that ends within those 2 minutes writes its final title at once, cancelling
+  T3 Code's generation, so the thread still gets its final state and unread mark before loopai exits.
 - A pin. T3 Code settles a thread that has been idle for 3 days unless it is pinned; the pin protects
   it in T3 Code's code, although T3 Code's user documentation says otherwise. The run pins the thread
   at the start when it is not pinned already and unpins it at the end only when it pinned it itself.
