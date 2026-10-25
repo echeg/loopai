@@ -133,12 +133,12 @@
 - [x] run `go test ./cmd/loopai -run 'T3'` - must pass before task 3
 
 ### Task 3: Verify acceptance criteria
-- [ ] verify the Overview: every finish state marks the thread unread, after the final title and
+- [x] verify the Overview: every finish state marks the thread unread, after the final title and
       the unpin, and a refusal never disables the bridge or affects the run
-- [ ] run `make test </dev/null` (full suite)
-- [ ] run `make lint` - all issues must be fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] verify test coverage of the changed functions in `pkg/t3` and `cmd/loopai/t3_bridge.go` meets
+- [x] run `make test </dev/null` (full suite)
+- [x] run `make lint` - all issues must be fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify test coverage of the changed functions in `pkg/t3` and `cmd/loopai/t3_bridge.go` meets
       the project standard (80%+)
 
 ### Task 4: [Final] Update documentation
