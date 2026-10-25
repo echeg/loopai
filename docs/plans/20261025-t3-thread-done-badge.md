@@ -111,26 +111,26 @@
 - [x] run `go test ./pkg/t3/...` - must pass before task 2
 
 ### Task 2: Mark the thread unread as the bridge's last command
-- [ ] in `cmd/loopai/t3_bridge.go` add a `markedUnread` field to `t3Bridge` and a `syncUnread` step,
+- [x] in `cmd/loopai/t3_bridge.go` add a `markedUnread` field to `t3Bridge` and a `syncUnread` step,
       run after `syncUnpin` in `step()`: it acts only when `final` is set, the title is no longer
       dirty, and an unpin the bridge owes is done; it calls `MarkUnread`, treats success and a typed
       `*t3.RemoteError` (no completed run, an archived or busy thread) as done without a progress-log
       line, and passes any other error to `fail` so it is retried after the reconnect
-- [ ] extend `ended()` so a finished bridge waits for `markedUnread`
-- [ ] in `closeOut()`, when `final` is set, send a best-effort `MarkUnread` after the title and the
+- [x] extend `ended()` so a finished bridge waits for `markedUnread`
+- [x] in `closeOut()`, when `final` is set, send a best-effort `MarkUnread` after the title and the
       unpin, ignoring its error, so a bridge disabled after the finish event still marks the thread
-- [ ] update the `t3Bridge` doc comment and the `t3BridgeStopTimeout` comment to name the mark-unread
-- [ ] give the default thread in `newBridgeHarness` a `LatestRunCompletedAt`, then update the exact
+- [x] update the `t3Bridge` doc comment and the `t3BridgeStopTimeout` comment to name the mark-unread
+- [x] give the default thread in `newBridgeHarness` a `LatestRunCompletedAt`, then update the exact
       command lists in `TestT3BridgePin` and any other test asserting `h.commands()` so
       `thread.mark-unread` is the last command
-- [ ] write tests: succeeded, failed, and stopped finishes each end with `thread.mark-unread` after
+- [x] write tests: succeeded, failed, and stopped finishes each end with `thread.mark-unread` after
       the final title and the unpin, and the fake thread's `LastVisitedAt` precedes its
       `LatestRunCompletedAt`; no mark-unread is sent before the finish event
-- [ ] write tests for the error paths: a thread with no completed run (typed refusal) still lets the
+- [x] write tests for the error paths: a thread with no completed run (typed refusal) still lets the
       bridge end with no progress-log line; a `DieNext` on the mark-unread dispatch is retried and
       the thread ends marked; `TestT3BridgeDisableLeavesTheThread` "a finished run" also marks the
       thread unread while "a run still going" does not
-- [ ] run `go test ./cmd/loopai -run 'T3'` - must pass before task 3
+- [x] run `go test ./cmd/loopai -run 'T3'` - must pass before task 3
 
 ### Task 3: Verify acceptance criteria
 - [ ] verify the Overview: every finish state marks the thread unread, after the final title and

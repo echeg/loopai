@@ -31,6 +31,9 @@ const (
 	bridgeCheckout       = "/repo/it's here"
 	bridgeExecutable     = "/opt/loop ai/loopai"
 	bridgeWait           = 10 * time.Second
+	// bridgeRunCompletedAt is when the agent turn that launched the run completed, the latest run
+	// thread.mark-unread rewinds the thread's visit to
+	bridgeRunCompletedAt = "2026-10-23T11:00:00.000Z"
 	// bridgeFollow is the follow command of the harness's run
 	bridgeFollow = ` cd '/repo/it'\''s here' && '/opt/loop ai/loopai' --attach ` + bridgeRunID + "\r"
 )
@@ -98,8 +101,9 @@ type bridgeHarness struct {
 	handled []t3.TerminalMetadataEvent // the terminal metadata events the bridge handled
 }
 
-// newBridgeHarness serves thread, whose project is bridgeProjectID, from a fake server whose runtime
-// file the T3 home holds unless noRuntime is set.
+// newBridgeHarness serves thread, whose project is bridgeProjectID and whose latest run completed at
+// bridgeRunCompletedAt unless it names another time, from a fake server whose runtime file the T3 home
+// holds unless noRuntime is set.
 func newBridgeHarness(t *testing.T, thread t3test.Thread, noRuntime bool, opts ...t3test.Option) *bridgeHarness {
 	t.Helper()
 	h := &bridgeHarness{t: t, home: t.TempDir(), root: t.TempDir(), threadID: thread.ID, dir: t.TempDir(),
@@ -107,6 +111,9 @@ func newBridgeHarness(t *testing.T, thread t3test.Thread, noRuntime bool, opts .
 	t.Setenv(t3.EnvHome, h.home)
 	t.Setenv(t3.EnvURL, "")
 	thread.ProjectID = bridgeProjectID
+	if thread.LatestRunCompletedAt == "" {
+		thread.LatestRunCompletedAt = bridgeRunCompletedAt
+	}
 	opts = append([]t3test.Option{t3test.WithThread(thread),
 		t3test.WithProject(t3test.Project{ID: bridgeProjectID, Title: "Repo", WorkspaceRoot: h.root})}, opts...)
 	h.server = t3test.NewServer(t, opts...)
@@ -266,6 +273,19 @@ func (h *bridgeHarness) titles() []string {
 	return titles
 }
 
+// assertMarkedUnread checks that the thread was marked unread: its visit rewound to just before its
+// latest run completed, so T3 shows that run as unseen.
+func (h *bridgeHarness) assertMarkedUnread() {
+	h.t.Helper()
+	th := h.thread()
+	require.NotEmpty(h.t, th.LastVisitedAt, "the thread is marked unread; dispatched %v", h.commands())
+	visited, err := time.Parse(time.RFC3339Nano, th.LastVisitedAt)
+	require.NoError(h.t, err)
+	completed, err := time.Parse(time.RFC3339Nano, th.LatestRunCompletedAt)
+	require.NoError(h.t, err)
+	assert.True(h.t, visited.Before(completed), "visited %s before the run completed at %s", visited, completed)
+}
+
 // commands returns the type of every command dispatched.
 func (h *bridgeHarness) commands() []string {
 	dispatches := h.server.Dispatches()
@@ -325,9 +345,18 @@ func TestT3BridgeFinalStates(t *testing.T) {
 			h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
 			h.start()
 			h.task(1)
+			h.waitTitle("[loopai: task 1/2] My thread")
+			h.settle()
+			assert.NotContains(t, h.commands(), "thread.mark-unread", "nothing is marked before the finish")
+			assert.Empty(t, h.thread().LastVisitedAt)
+
 			h.finish(tc.status)
 			h.waitDone()
 			assert.Equal(t, "[loopai: "+tc.want+"] My thread", h.thread().Title)
+			assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin",
+				"thread.mark-unread"}, h.commands(), "the mark-unread follows the final title and the unpin")
+			h.assertMarkedUnread()
+			assert.Empty(t, h.log.all())
 		})
 	}
 }
@@ -368,8 +397,8 @@ func TestT3BridgePin(t *testing.T) {
 		h.finish(runs.StatusSucceeded)
 		h.waitDone()
 		assert.Empty(t, h.thread().PinnedAt)
-		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin"},
-			h.commands())
+		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin",
+			"thread.mark-unread"}, h.commands())
 	})
 
 	t.Run("an already pinned thread is neither pinned nor unpinned", func(t *testing.T) {
@@ -381,7 +410,7 @@ func TestT3BridgePin(t *testing.T) {
 		h.finish(runs.StatusSucceeded)
 		h.waitDone()
 		assert.Equal(t, pinned, h.thread().PinnedAt)
-		assert.Equal(t, []string{"thread.metadata.update", "thread.metadata.update"}, h.commands())
+		assert.Equal(t, []string{"thread.metadata.update", "thread.metadata.update", "thread.mark-unread"}, h.commands())
 	})
 
 	t.Run("a thread T3 refuses to pin still gets its titles", func(t *testing.T) {
@@ -393,9 +422,47 @@ func TestT3BridgePin(t *testing.T) {
 		h.finish(runs.StatusSucceeded)
 		h.waitDone()
 		assert.Equal(t, "[loopai: done] My thread", h.thread().Title)
-		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update"}, h.commands(),
-			"no unpin for a pin that failed")
+		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.mark-unread"},
+			h.commands(), "no unpin for a pin that failed")
 		assert.Empty(t, h.log.all())
+	})
+}
+
+func TestT3BridgeMarkUnreadFailures(t *testing.T) {
+	t.Run("a thread with no completed run is a refusal that ends the bridge quietly", func(t *testing.T) {
+		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
+		th := h.thread()
+		th.LatestRunCompletedAt = "" // a new agent turn is running in the thread
+		h.server.SetThread(th)
+		h.start()
+		h.task(1)
+		h.waitTitle("[loopai: task 1/2] My thread")
+		h.finish(runs.StatusSucceeded)
+		h.waitDone()
+		assert.Equal(t, "[loopai: done] My thread", h.thread().Title)
+		assert.Empty(t, h.thread().PinnedAt)
+		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin",
+			"thread.mark-unread"}, h.commands(), "the refused mark-unread is not retried")
+		assert.Empty(t, h.thread().LastVisitedAt)
+		assert.Empty(t, h.log.all(), "a refused mark-unread does not disable the bridge")
+	})
+
+	t.Run("a mark-unread with an unknown outcome is retried after the reconnect", func(t *testing.T) {
+		const pinned = "2026-10-01T00:00:00.000Z"
+		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread", PinnedAt: pinned}, false)
+		h.start()
+		h.task(1)
+		h.waitTitle("[loopai: task 1/2] My thread")
+		// the final title is already in place, so the next dispatch is the mark-unread
+		h.rename("[loopai: done] My thread")
+		h.server.DieNext("orchestration.dispatchCommand", "lost")
+		h.finish(runs.StatusSucceeded)
+		h.waitDone()
+		assert.Equal(t, []string{"thread.metadata.update", "thread.mark-unread", "thread.mark-unread"}, h.commands())
+		dispatches := h.server.Dispatches()
+		assert.Equal(t, dispatches[1]["commandId"], dispatches[2]["commandId"], "the retry reuses the command id")
+		h.assertMarkedUnread()
+		assert.Empty(t, h.log.all(), "an unknown outcome does not disable the bridge")
 	})
 }
 
@@ -533,8 +600,8 @@ func TestT3BridgeSurvivesAWriteIntoADeadShell(t *testing.T) {
 		h.waitDone()
 		assert.Equal(t, "[loopai: done] My thread", h.thread().Title)
 		assert.Empty(t, h.thread().PinnedAt, "the pin the bridge took is released")
-		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin"},
-			h.commands())
+		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin",
+			"thread.mark-unread"}, h.commands())
 		assert.Len(t, h.server.Writes(), 1)
 		assert.Empty(t, h.log.all(), "a terminal gone does not disable the bridge")
 	})
@@ -746,8 +813,8 @@ func TestT3BridgeTerminalErrorStopsOnlyTheTerminal(t *testing.T) {
 			h.waitDone()
 			assert.Equal(t, "[loopai: done] My thread", h.thread().Title)
 			assert.Empty(t, h.thread().PinnedAt)
-			assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin"},
-				h.commands())
+			assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin",
+				"thread.mark-unread"}, h.commands())
 			assert.Len(t, h.server.Opens(), 1, "the terminal is never opened again")
 			assert.Len(t, h.server.Writes(), tc.writes, "the follow command is never typed again")
 			assert.Len(t, h.log.all(), 1, "one progress-log line")
@@ -757,7 +824,8 @@ func TestT3BridgeTerminalErrorStopsOnlyTheTerminal(t *testing.T) {
 
 // TestT3BridgeDisableLeavesTheThread makes T3 refuse a title update with a typed error, which
 // disables the bridge: before it stops, it removes its progress prefix from a run still going, or
-// writes the final state of a finished one, and unpins the thread it pinned, so T3 can settle it.
+// writes the final state of a finished one, and unpins the thread it pinned, so T3 can settle it; a
+// finished thread is then marked unread.
 func TestT3BridgeDisableLeavesTheThread(t *testing.T) {
 	t.Run("a run still going", func(t *testing.T) {
 		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
@@ -771,6 +839,8 @@ func TestT3BridgeDisableLeavesTheThread(t *testing.T) {
 		h.waitDone()
 		assert.Equal(t, "My thread", h.thread().Title, "no progress state stays behind")
 		assert.Empty(t, h.thread().PinnedAt, "the thread the bridge pinned is unpinned")
+		assert.NotContains(t, h.commands(), "thread.mark-unread", "a run still going is not marked unread")
+		assert.Empty(t, h.thread().LastVisitedAt)
 		lines := h.log.all()
 		require.Len(t, lines, 1, "exactly one progress-log line")
 		assert.Contains(t, lines[0], "T3 thread updates stopped, the run continues without them")
@@ -788,6 +858,9 @@ func TestT3BridgeDisableLeavesTheThread(t *testing.T) {
 		h.waitDone()
 		assert.Equal(t, "[loopai: failed] My thread", h.thread().Title, "the final state is written once more")
 		assert.Empty(t, h.thread().PinnedAt)
+		commands := h.commands()
+		assert.Equal(t, "thread.mark-unread", commands[len(commands)-1], "the finished thread is marked unread last")
+		h.assertMarkedUnread()
 		assert.Len(t, h.log.all(), 1)
 	})
 
