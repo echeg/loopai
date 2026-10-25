@@ -136,11 +136,11 @@
 - [x] run `go test ./cmd/loopai -run 'T3'` - must pass before task 4
 
 ### Task 4: Verify acceptance criteria
-- [ ] verify both backlog problems are fixed as described in the Overview
-- [ ] run `make test </dev/null` (full suite)
-- [ ] run `make lint` - all issues must be fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] verify test coverage of the changed bridge code meets the project standard (80%+)
+- [x] verify both backlog problems are fixed as described in the Overview (no `$<digit>` in any SKILL.md; `syncTitle` gates the wait on `!b.final`)
+- [x] run `make test </dev/null` (full suite)
+- [x] run `make lint` - all issues must be fixed (0 issues)
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify test coverage of the changed bridge code meets the project standard (80%+) (`syncTitle` 88.2%, `awaitRegeneration` 100%; the one uncovered block is the pre-existing projection-error path)
 
 ### Task 5: [Final] Update documentation and close the backlog entries
 - [ ] `CLAUDE.md`: add the positional-parameter rule to the paragraph describing what
