@@ -6,7 +6,8 @@
 //
 // It never talks to a real T3 Code server, and it deliberately models only what loopai uses:
 // terminal.open, terminal.write, subscribeTerminalMetadata, orchestration.getThreadProjection, and
-// orchestration.dispatchCommand with thread.metadata.update, thread.pin, and thread.unpin.
+// orchestration.dispatchCommand with thread.metadata.update, thread.pin, thread.unpin, and
+// thread.mark-unread.
 package t3test
 
 import (
@@ -43,15 +44,19 @@ var forbiddenFields = []string{"providerInstanceId", "createdBy", "creationSourc
 
 // Thread is the thread state the fake serves through orchestration.getThreadProjection and changes
 // on dispatched commands. Empty WorktreePath and ArchivedAt are null, an empty PinnedAt is absent,
-// and TitleRegenerating sets titleRegeneration.
+// and TitleRegenerating sets titleRegeneration. LatestRunCompletedAt is the completion time of the
+// thread's latest run, empty while that run is still going; thread.mark-unread sets LastVisitedAt
+// one millisecond before it, as T3 Code does.
 type Thread struct {
-	ID                string
-	ProjectID         string
-	Title             string
-	WorktreePath      string
-	PinnedAt          string
-	ArchivedAt        string
-	TitleRegenerating bool
+	ID                   string
+	ProjectID            string
+	Title                string
+	WorktreePath         string
+	PinnedAt             string
+	ArchivedAt           string
+	TitleRegenerating    bool
+	LatestRunCompletedAt string
+	LastVisitedAt        string
 }
 
 // Project is a project GET /api/projects lists.
@@ -531,6 +536,9 @@ func incompatibleProtocolBody(version string) []byte {
 // timestamp is the fixed time the fake reports for creation and update fields.
 const timestamp = "2026-10-22T12:00:00.000Z"
 
+// timestampLayout is the millisecond ISO 8601 layout T3 Code writes timestamps in.
+const timestampLayout = "2006-01-02T15:04:05.000Z"
+
 func writeJSON(w http.ResponseWriter, status int, body []byte) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -909,8 +917,8 @@ func (s *Server) threadProjection(id, payload json.RawMessage) map[string]any {
 	})
 }
 
-// dispatch applies thread.metadata.update, thread.pin, and thread.unpin. A command id seen before
-// replays its receipt without applying the command again.
+// dispatch applies thread.metadata.update, thread.pin, thread.unpin, and thread.mark-unread. A
+// command id seen before replays its receipt without applying the command again.
 func (s *Server) dispatch(id, payload json.RawMessage) map[string]any {
 	var cmd struct {
 		Type      string  `json:"type"`
@@ -950,6 +958,15 @@ func (s *Server) dispatch(id, payload json.RawMessage) map[string]any {
 		if cmd.Type == "thread.pin" {
 			th.PinnedAt = timestamp
 		}
+	case "thread.mark-unread":
+		if th.LatestRunCompletedAt == "" {
+			return fail("Thread " + cmd.ThreadID + " has no completed run to mark unread.")
+		}
+		completed, perr := time.Parse(time.RFC3339Nano, th.LatestRunCompletedAt)
+		if perr != nil {
+			return exitDie(id, "t3test: invalid LatestRunCompletedAt "+th.LatestRunCompletedAt)
+		}
+		th.LastVisitedAt = completed.Add(-time.Millisecond).UTC().Format(timestampLayout)
 	default:
 		return fail("t3test: unsupported command type " + cmd.Type)
 	}

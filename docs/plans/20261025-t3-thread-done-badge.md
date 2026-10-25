@@ -96,19 +96,19 @@
 ## Implementation Steps
 
 ### Task 1: Add thread.mark-unread to the T3 client and the fake server
-- [ ] in `pkg/t3/client.go` add `commandMarkUnread = "thread.mark-unread"` beside the other command
+- [x] in `pkg/t3/client.go` add `commandMarkUnread = "thread.mark-unread"` beside the other command
       constants and a `MarkUnread(ctx, threadID)` method that dispatches it through `dispatch`, with a
       godoc saying it makes T3 Code show the thread's latest completed run as unseen
-- [ ] in `pkg/t3/t3test/fake.go` add `LatestRunCompletedAt` and `LastVisitedAt` (strings, like
+- [x] in `pkg/t3/t3test/fake.go` add `LatestRunCompletedAt` and `LastVisitedAt` (strings, like
       `PinnedAt`) to `Thread`, handle `thread.mark-unread` in the dispatch switch: a typed failure
       worded like T3's ("Thread <id> has no completed run to mark unread.") when
       `LatestRunCompletedAt` is empty, otherwise `LastVisitedAt` set to that time minus one
       millisecond in the same timestamp format; update the package comment's list of modeled commands
-- [ ] write tests in `pkg/t3/client_test.go` for `MarkUnread`: the frame carries exactly `type`,
+- [x] write tests in `pkg/t3/client_test.go` for `MarkUnread`: the frame carries exactly `type`,
       `commandId`, `threadId`, and a fresh command id per call
-- [ ] write tests in `pkg/t3/t3test/fake_test.go` for mark-unread: success rewinds `LastVisitedAt`,
+- [x] write tests in `pkg/t3/t3test/fake_test.go` for mark-unread: success rewinds `LastVisitedAt`,
       a thread without a completed run gets the typed failure, an unknown thread fails as other commands do
-- [ ] run `go test ./pkg/t3/...` - must pass before task 2
+- [x] run `go test ./pkg/t3/...` - must pass before task 2
 
 ### Task 2: Mark the thread unread as the bridge's last command
 - [ ] in `cmd/loopai/t3_bridge.go` add a `markedUnread` field to `t3Bridge` and a `syncUnread` step,

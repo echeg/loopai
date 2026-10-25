@@ -283,6 +283,37 @@ func TestServerThreadProjectionAndDispatch(t *testing.T) {
 	assert.Equal(t, "New", s.Dispatches()[0]["title"])
 }
 
+func TestServerMarkUnread(t *testing.T) {
+	s := NewServer(t,
+		WithThread(Thread{ID: "th", ProjectID: "p", Title: "T", LatestRunCompletedAt: "2026-10-25T00:00:00.000Z",
+			LastVisitedAt: "2026-10-25T08:00:00.000Z"}),
+		WithThread(Thread{ID: "running", ProjectID: "p", Title: "R"}))
+	c := connectRaw(t, s)
+
+	c.request(1, "orchestration.dispatchCommand", map[string]any{"type": "thread.mark-unread", "commandId": "c1", "threadId": "th"})
+	exit := c.recv()["exit"].(map[string]any)
+	assert.Equal(t, "Success", exit["_tag"])
+	th, _ := s.Thread("th")
+	assert.Equal(t, "2026-10-24T23:59:59.999Z", th.LastVisitedAt, "one millisecond before the latest run completed")
+
+	c.request(2, "orchestration.dispatchCommand",
+		map[string]any{"type": "thread.mark-unread", "commandId": "c2", "threadId": "running"})
+	cause := c.recv()["exit"].(map[string]any)["cause"].([]any)[0].(map[string]any)
+	assert.Equal(t, "Fail", cause["_tag"])
+	failure := cause["error"].(map[string]any)
+	assert.Equal(t, "OrchestrationV2DispatchCommandError", failure["_tag"])
+	assert.Equal(t, "thread.mark-unread", failure["commandType"])
+	assert.Equal(t, "Thread running has no completed run to mark unread.", failure["message"])
+	th, _ = s.Thread("running")
+	assert.Empty(t, th.LastVisitedAt)
+
+	c.request(3, "orchestration.dispatchCommand",
+		map[string]any{"type": "thread.mark-unread", "commandId": "c3", "threadId": "missing"})
+	cause = c.recv()["exit"].(map[string]any)["cause"].([]any)[0].(map[string]any)
+	assert.Equal(t, "Fail", cause["_tag"])
+	assert.Equal(t, "Thread missing was not found.", cause["error"].(map[string]any)["message"])
+}
+
 func TestServerTerminals(t *testing.T) {
 	s := NewServer(t, WithTerminal(Terminal{ThreadID: "th", TerminalID: "starting", Cwd: "/r", Status: "starting"}),
 		WithTerminal(Terminal{ThreadID: "th", TerminalID: "done", Cwd: "/r", Status: "exited"}))
