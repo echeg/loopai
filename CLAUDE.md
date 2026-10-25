@@ -30,7 +30,7 @@ make check-plugin   # validate Claude plugin and marketplace manifests
 make test-plugin    # regression tests for manifest validation
 make test-grill-skill # validate loopai-grill metadata and workflow contracts
 make test-report-docs # check skill inventories and report contracts in documentation
-make test-launch-history-skills # launch-history snippet and contract in the six launch skills
+make test-launch-history-skills # launch-history snippet and contract in the six launch skills, plus loopai-plan's cfgval
 make test-skill-contract # execute the shared skill contract snippet against stub binaries
 make install    # build, install binaries, update the Claude plugin and Codex skills, verify the contract
 make test-install # regression tests for scripts/install.sh against stub tools in a temp HOME
@@ -668,7 +668,9 @@ repeated combination moves to the top and takes the new launcher), capped at
 flags string is a valid entry. There is no lock: two simultaneous launches lose at most one line.
 `loopai-plan`, `loopai-orca`, `loopai-t3`, and their Codex copies read it with one shared snippet
 that `scripts/check-launch-history-skills_test.sh` requires to be identical across all six skills
-and executes against fixtures; change the format and the snippet together. The skills read only
+and free of `$<digit>` and `${<digit>` (the Codex copies included, since they must match the Claude
+ones), and executes against fixtures, together with `loopai-plan`'s `cfgval` helper in both copies;
+change the format and the snippet together. The skills read only
 `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}`, so a launch made with `--config-dir` is recorded where
 no skill looks. Without pass-through flags, `loopai-orca` and `loopai-t3` offer up to three history
 entries before launching, but never when `loopai-plan` already chose the flags in the same

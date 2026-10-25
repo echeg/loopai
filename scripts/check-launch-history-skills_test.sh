@@ -7,9 +7,10 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 # the contract checks run in python; each skill's history snippet is extracted into
-# $tmp/snippets so the shell half can execute it against fixture history files.
-mkdir -p "$tmp/snippets"
-python3 - "$repo_root" "$tmp/snippets" <<'PY'
+# $tmp/snippets, and loopai-plan's cfgval helper into $tmp/cfgval, so the shell half
+# can execute them against fixture history and config files.
+mkdir -p "$tmp/snippets" "$tmp/cfgval"
+python3 - "$repo_root" "$tmp/snippets" "$tmp/cfgval" <<'PY'
 from pathlib import Path
 import re
 import sys
@@ -17,6 +18,7 @@ import textwrap
 
 root = Path(sys.argv[1])
 out = Path(sys.argv[2])
+cfgval_out = Path(sys.argv[3])
 charset = "`^[A-Za-z0-9._:,+-]+$`"
 skills = [(variant, name) for variant in ("claude", "codex")
           for name in ("loopai-plan", "loopai-t3", "loopai-orca")]
@@ -60,6 +62,13 @@ for variant, name in skills:
         assert step, f"{label}: missing Step 3"
         step = step[1]
         assert "LAST_LAUNCHER=$(awk" in snippet, f"{label}: snippet must assign LAST_LAUNCHER"
+        helpers = [b for b in re.findall(r"```bash\n(.*?)```", text, re.S) if "cfgval()" in b]
+        assert len(helpers) == 1, f"{label}: expected exactly one cfgval helper, found {len(helpers)}"
+        helper = textwrap.dedent(helpers[0])
+        positional = re.search(r"\$\{?[0-9]", helper)
+        assert not positional, f"{label}: positional parameter in cfgval: {positional and positional[0]}"
+        assert "Set `key` before each call (`key=task_model; cfgval`)" in step, f"{label}: cfgval calling convention"
+        (cfgval_out / f"{variant}.sh").write_text(helper, encoding="utf-8", newline="\n")
         assert f"\"(Recommended)\" goes to the {recommended_target[variant]} for `LAST_LAUNCHER`" in step, f"{label}: recommendation must follow the last launcher"
         assert "otherwise, including when `LAST_LAUNCHER` is empty, it goes to the first launcher offered" in step, f"{label}: recommendation fallback"
         order = [step.find(option) for option in launcher_options[variant]]
@@ -127,6 +136,23 @@ for snippet in "$tmp"/snippets/*.sh; do
   [[ "$got" == $'--task-model codex:gpt-6:high\n--\n'"$last_cli." ]] || { printf '%s: unexpected result for cli-only fixture:\n%s\n' "$name" "$got" >&2; exit 1; }
   got="$(run_snippet "$snippet" "$tmp/missing")"
   [[ "$got" == $'\n--\n'"$last_missing." ]] || { printf '%s: missing file must yield no history:\n%s\n' "$name" "$got" >&2; exit 1; }
+done
+
+# cfgval reads its key from a variable: the local config wins over the global one, and a
+# commented line or a longer key sharing the prefix never matches.
+mkdir -p "$tmp/repo/.loopai" "$tmp/global"
+git init -q "$tmp/repo"
+printf '%s\n' '# task_model = claude:commented' 'task_model_extra = claude:longer' \
+  '  task_model = codex:gpt-6:high  ' > "$tmp/repo/.loopai/config"
+printf '%s\n' 'task_model = claude:global' 'review_model=claude:sonnet' \
+  '# external_reviewers = codex:gpt-6' > "$tmp/global/config"
+expected_cfgval=$'task_model=[codex:gpt-6:high]\nreview_model=[claude:sonnet]\nexternal_reviewers=[]'
+for helper in "$tmp"/cfgval/*.sh; do
+  got="$(cd "$tmp/repo" && LOOPAI_CONFIG_DIR="$tmp/global" bash -c '. "$1"
+    key=task_model; printf "task_model=[%s]\n" "$(cfgval)"
+    key=review_model; printf "review_model=[%s]\n" "$(cfgval)"
+    key=external_reviewers; printf "external_reviewers=[%s]\n" "$(cfgval)"' _ "$helper")"
+  [[ "$got" == "$expected_cfgval" ]] || { printf '%s-loopai-plan: unexpected cfgval result:\n%s\n' "$(basename "$helper" .sh)" "$got" >&2; exit 1; }
 done
 
 echo "launch-history skill tests passed"

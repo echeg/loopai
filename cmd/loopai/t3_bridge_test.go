@@ -754,6 +754,24 @@ func TestT3BridgeFinalTitleSkipsRegenerationWait(t *testing.T) {
 			h.commands())
 		h.assertMarkedUnread()
 	})
+
+	t.Run("for a final title retried after an unknown outcome", func(t *testing.T) {
+		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "New thread", TitleRegenerating: true}, false)
+		h.start()
+		h.waitWrites(1) // connected and pinned, with no state to show yet
+		handshakes := len(h.server.Handshakes())
+		h.server.DieNext("orchestration.dispatchCommand", "lost")
+		h.finish(runs.StatusFailed)
+		h.waitDone()
+		require.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.metadata.update", "thread.unpin",
+			"thread.mark-unread"}, h.commands(), "the unpin and the mark-unread wait for the retried title")
+		assert.Greater(t, len(h.server.Handshakes()), handshakes, "the bridge reconnected")
+		dispatches := h.server.Dispatches()
+		assert.Equal(t, dispatches[1]["commandId"], dispatches[2]["commandId"], "the retry reuses the command id")
+		assert.Equal(t, "[loopai: failed] New thread", h.thread().Title, "the retry does not wait either")
+		h.assertMarkedUnread()
+		assert.Empty(t, h.log.all(), "an unknown outcome does not disable the bridge")
+	})
 }
 
 func TestT3BridgeThreadIDReachesEveryRequestUnchanged(t *testing.T) {
