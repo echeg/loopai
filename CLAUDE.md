@@ -1077,7 +1077,11 @@ the origin comes from `<T3 home>/userdata/server-runtime.json`, re-read on every
 follows the journal with `FollowUntilFinish`, writes `[loopai: <state>]` title prefixes on transitions
 only (`thread.metadata.update` carrying the title alone, read first so the user's name survives, the
 first one after waiting up to about 2 minutes for a pending `titleRegeneration`), pins only an
-unpinned thread and unpins only what it pinned (the pin is what stops the 3-day auto-settle), and opens
+unpinned thread and unpins only what it pinned (the pin is what stops the 3-day auto-settle), sends
+`thread.mark-unread` on every finish as its last command, after the final title and the unpin, because
+T3 Code derives the sidebar's "Done" badge from the latest run's `completedAt` versus `lastVisitedAt` and
+the title and unpin advance `updatedAt`, which gets an open thread visited again (`syncUnread` treats a
+typed `*t3.RemoteError`, such as no completed run while a new agent turn runs, as done), and opens
 terminal `loopai-<run id>` with the UI's launch context (`thread.worktreePath ?? project.workspaceRoot`,
 the two `T3CODE_*` variables, never `providerInstanceId`), typing
 ` cd '<checkout>' && '<loopai>' --attach <id>` — never through `exec` and never with `; exit`. After a
@@ -1088,8 +1092,9 @@ stops only the terminal half (`failTerminal`); titles, pin, and unpin go on. Oth
 errors (401, protocol, remote) disable it with one progress-log line; the run is unaffected. Unless the
 error is a refused connection (`t3BridgeUnreachable`), `closeOut` first makes a best-effort last write:
 the final title of a finished attempt or the title without the prefix, then the unpin of a thread the
-bridge pinned, since a left pin blocks T3's auto-settle. The child stops it through `beforeExit`, bounded by
-`t3BridgeStopTimeout`, so the final title and unpin are sent. `pkg/t3/t3test` is an importable fake
+bridge pinned, since a left pin blocks T3's auto-settle, then the mark-unread of a finished attempt. The child
+stops it through `beforeExit`, bounded by `t3BridgeStopTimeout`, so the final title, unpin, and mark-unread
+are sent. `pkg/t3/t3test` is an importable fake
 protocol-2 server enforcing the query parameter, the Bearer header, request headers, and ack-gated
 streams.
 

@@ -1455,7 +1455,8 @@ on Windows or inside an agent sandbox.
 skill. In Mode 1, `loopai --detach --t3-thread <thread-id> <plan>` with a T3 Code token in
 `LOOPAI_T3_TOKEN` opens a terminal tab in that thread which follows the run, writes a replaceable
 `[loopai: task 3/7]` title prefix that keeps the thread's name, pins the thread while the run is live,
-and reopens its terminal after a T3 Code restart. In Mode 2, a thread on the loopai provider, a T3 Code
+marks it unread when the run finishes so the sidebar shows a "Done" badge, and reopens its terminal
+after a T3 Code restart. In Mode 2, a thread on the loopai provider, a T3 Code
 ACP Registry instance whose executable is `loopai-acp` (which runs `loopai --acp`), shows Working for
 the whole run with the plan's tasks and current phase, ends with a bounded report summary, and comes
 back after a T3 Code restart. Typing `resume` there resumes a stopped or failed run. Register the

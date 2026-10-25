@@ -142,14 +142,14 @@
       the project standard (80%+)
 
 ### Task 4: [Final] Update documentation
-- [ ] `docs/t3-code.md`: add a bullet to "What the thread shows" describing the unread mark and the
+- [x] `docs/t3-code.md`: add a bullet to "What the thread shows" describing the unread mark and the
       green "Done" badge on every finish (the title prefix carries the outcome; opening the thread
       clears it; T3 Code refuses it while a new agent turn runs in the thread), adjust "There is no
       completion message in Mode 1", and mention the mark in the paragraph on a bridge that stops
       after a refused request
-- [ ] `llms.txt` Mode 1 paragraph, `README.md` Mode 1 description, and the Mode 1 paragraph of
+- [x] `llms.txt` Mode 1 paragraph, `README.md` Mode 1 description, and the Mode 1 paragraph of
       `CLAUDE.md`: one clause each about marking the thread unread at the end
-- [ ] leave the `loopai-t3` skills unchanged (their wording stays accurate), so no manifest bump
+- [x] leave the `loopai-t3` skills unchanged (their wording stays accurate), so no manifest bump
 
 *Note: loopai automatically moves completed plans to `docs/plans/completed/`*
 
