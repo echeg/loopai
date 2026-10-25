@@ -101,18 +101,18 @@
 ## Implementation Steps
 
 ### Task 1: Remove positional parameters from the skill snippets
-- [ ] rewrite the launch-history snippet in all six skills (`loopai-plan`, `loopai-orca`, `loopai-t3`,
+- [x] rewrite the launch-history snippet in all six skills (`loopai-plan`, `loopai-orca`, `loopai-t3`,
       Claude and Codex) so awk reads fields as `$(2)` and `$(3)` instead of `$2` and `$3`, keeping the
       six copies byte-identical and the output unchanged
-- [ ] rewrite `cfgval` in `assets/claude/skills/loopai-plan/SKILL.md` and its Codex counterpart so it
+- [x] rewrite `cfgval` in `assets/claude/skills/loopai-plan/SKILL.md` and its Codex counterpart so it
       reads the key from a named variable (for example `key=task_model; cfgval`) instead of `$1`, and
       update the surrounding instructions that describe calling it
-- [ ] confirm `grep -nE '\$\{?[0-9]' assets/claude/skills/*/SKILL.md assets/codex/skills/*/SKILL.md`
+- [x] confirm `grep -nE '\$\{?[0-9]' assets/claude/skills/*/SKILL.md assets/codex/skills/*/SKILL.md`
       prints nothing
-- [ ] extend `scripts/check-launch-history-skills_test.sh` so each extracted history snippet must not
+- [x] extend `scripts/check-launch-history-skills_test.sh` so each extracted history snippet must not
       contain `$` followed by a digit or by `{` and a digit (the fixture executions already prove the
       output is unchanged)
-- [ ] run `make test-launch-history-skills check-codex-skills </dev/null` - must pass before task 2
+- [x] run `make test-launch-history-skills check-codex-skills </dev/null` - must pass before task 2
 
 ### Task 2: Reject positional parameters in Claude skill bodies
 - [ ] in `scripts/check-symlinks.sh`, beside the `removed_spellings` loop, fail with

@@ -81,7 +81,7 @@ HISTORY=$(awk -F'\t' '
     }
     return 1
   }
-  $2 ~ /^(orca|t3|cli)$/ && ok($3) && !dup[$3]++ { print $3; if (++k == 3) exit }
+  $(2) ~ /^(orca|t3|cli)$/ && ok($(3)) && !dup[$(3)]++ { print $(3); if (++k == 3) exit }
 ' "$HIST" 2>/dev/null)
 ```
 

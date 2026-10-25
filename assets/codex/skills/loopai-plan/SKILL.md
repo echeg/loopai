@@ -194,11 +194,13 @@ Derive `FLAGS` from the effective configuration - the first uncommented `key = v
 ```bash
 cfgval() {
   for f in "$(git rev-parse --show-toplevel)/.loopai/config" "${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/config"; do
-    v=$(grep -E "^[[:space:]]*$1[[:space:]]*=" "$f" 2>/dev/null | head -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+$//')
+    v=$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$f" 2>/dev/null | head -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+$//')
     [ -n "$v" ] && { printf '%s\n' "$v"; return; }
   done
 }
 ```
+
+Set `key` before each call (`key=task_model; cfgval`); the helper reads the key from that variable rather than from an argument.
 
 Map the three keys to `--task-model <v>`, `--review-model <v>`, `--external-reviewers <v>`. Skip a key with no value, and skip a value that does not match `^[A-Za-z0-9._:,+-]+$` - `$loopai-orca` and `$loopai-t3` reject it - naming the skipped key. Join with single spaces.
 
@@ -217,9 +219,9 @@ HISTORY=$(awk -F'\t' '
     }
     return 1
   }
-  $2 ~ /^(orca|t3|cli)$/ && ok($3) && !dup[$3]++ { print $3; if (++k == 3) exit }
+  $(2) ~ /^(orca|t3|cli)$/ && ok($(3)) && !dup[$(3)]++ { print $(3); if (++k == 3) exit }
 ' "$HIST" 2>/dev/null)
-LAST_LAUNCHER=$(awk -F'\t' '$2 ~ /^(orca|t3)$/ { print $2; exit }' "$HIST" 2>/dev/null)
+LAST_LAUNCHER=$(awk -F'\t' '$(2) ~ /^(orca|t3)$/ { print $(2); exit }' "$HIST" 2>/dev/null)
 ```
 
 `HISTORY` holds up to three distinct flag strings, newest first, one per line. A line the skill cannot validate is skipped, never offered: an unknown launcher, a token other than `--task-model`, `--review-model`, or `--external-reviewers` (or one given twice), a value outside `^[A-Za-z0-9._:,+-]+$`, or a model spec without the `claude`/`codex` provider. A line with no flags is not listed; the "No flags" choice below covers it. A missing, unreadable, or empty file yields an empty `HISTORY` and `LAST_LAUNCHER`, and everything below behaves as it would without history.

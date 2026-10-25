@@ -49,6 +49,9 @@ for variant, name in skills:
     assert len(blocks) == 1, f"{label}: expected exactly one history snippet, found {len(blocks)}"
     snippet = textwrap.dedent(blocks[0])
     assert "HISTORY=$(awk" in snippet, f"{label}: snippet must assign HISTORY"
+    # Claude Code substitutes skill arguments into $0, $1, ... in a skill body, so awk fields are $(2)
+    positional = re.search(r"\$\{?[0-9]", snippet)
+    assert not positional, f"{label}: positional parameter in history snippet: {positional and positional[0]}"
     history_parts[label] = snippet[:snippet.index("' \"$HIST\" 2>/dev/null)") ]
     (out / f"{variant}-{name}.sh").write_text(snippet, encoding="utf-8", newline="\n")
 
