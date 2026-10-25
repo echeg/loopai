@@ -162,6 +162,7 @@ func TestCallsWithoutConnection(t *testing.T) {
 	_, err := c.GetThreadProjection(t.Context(), "th")
 	require.ErrorIs(t, err, ErrClosed)
 	require.ErrorIs(t, c.Pin(t.Context(), "th"), ErrClosed)
+	require.ErrorIs(t, c.MarkUnread(t.Context(), "th"), ErrClosed)
 	_, err = c.SubscribeTerminalMetadata(t.Context())
 	require.ErrorIs(t, err, ErrClosed)
 	_, err = c.Projects(t.Context())
@@ -403,6 +404,39 @@ func TestDispatchPayloads(t *testing.T) {
 		assert.False(t, seen[id], "every logical update gets a fresh command id, a repeated title included")
 		seen[id] = true
 	}
+}
+
+func TestMarkUnread(t *testing.T) {
+	const threadID = "thread:provider:claudeAgent:native-thread:thread%3Aprovider%3Aagent%3A3"
+	s := t3test.NewServer(t,
+		t3test.WithThread(t3test.Thread{ID: threadID, ProjectID: "p", Title: "T",
+			LatestRunCompletedAt: "2026-10-25T09:30:00.000Z"}),
+		t3test.WithThread(t3test.Thread{ID: "running", ProjectID: "p", Title: "R"}))
+	c := newTestClient(t, s)
+
+	require.NoError(t, c.MarkUnread(t.Context(), threadID))
+	require.NoError(t, c.MarkUnread(t.Context(), threadID))
+	th, _ := s.Thread(threadID)
+	assert.Equal(t, "2026-10-25T09:29:59.999Z", th.LastVisitedAt)
+
+	err := c.MarkUnread(t.Context(), "running")
+	var remote *RemoteError
+	require.ErrorAs(t, err, &remote, "a thread whose latest run has not completed is a typed refusal")
+	assert.Equal(t, "Thread running has no completed run to mark unread.", remote.Message)
+
+	dispatches := s.Dispatches()
+	require.Len(t, dispatches, 3)
+	seen := map[any]bool{}
+	for _, d := range dispatches {
+		assert.Equal(t, []string{"commandId", "threadId", "type"}, keys(d), "only type, commandId, and threadId")
+		assert.Equal(t, "thread.mark-unread", d["type"])
+		id, ok := d["commandId"].(string)
+		require.True(t, ok)
+		assert.Regexp(t, commandIDPattern, id)
+		assert.False(t, seen[id], "every mark-unread gets a fresh command id")
+		seen[id] = true
+	}
+	assert.Equal(t, threadID, dispatches[0]["threadId"], "the thread id reaches the payload unchanged")
 }
 
 func TestDispatchRetryReusesCommandID(t *testing.T) {

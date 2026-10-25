@@ -177,8 +177,16 @@ What the thread shows:
 - A pin. T3 Code settles a thread that has been idle for 3 days unless it is pinned; the pin protects
   it in T3 Code's code, although T3 Code's user documentation says otherwise. The run pins the thread
   at the start when it is not pinned already and unpins it at the end only when it pinned it itself.
+- An unread mark. When the run finishes, succeeded, failed, or stopped, loopai marks the thread unread
+  as its last request, after the final title and the unpin, so the sidebar shows T3 Code's green
+  "Done" badge until you open the thread. The badge is green for all three outcomes, because T3 Code
+  derives a red "Failed" from the status of the thread's own latest agent turn, which loopai cannot
+  set; the title prefix carries the outcome. Opening the thread clears the badge, so a thread you have
+  open at the finish may never show it. T3 Code refuses the mark while a new agent turn is running in
+  the thread, and the thread then stays as it is.
 
-There is no completion message in Mode 1: the final title prefix and the terminal show the result.
+There is no completion message in Mode 1: the final title prefix, the unread mark, and the terminal
+show the result.
 The thread's agent does not monitor the run. Ask it about the run, and it answers from `loopai --runs`.
 
 A background command or a held Monitor in an ordinary thread never shows Working in T3 Code: a held
@@ -200,7 +208,8 @@ then stay as they were: unpin the thread or remove the prefix in T3 Code if you 
 refuses only the terminal (for example because the thread's working directory is gone), only the
 terminal stops, with one progress-log line, and the title and pin keep following the run. When it
 refuses another request, the updates stop the same way, but loopai first removes the progress prefix
-(or writes the final state of a finished run) and unpins the thread if it pinned it.
+(or writes the final state of a finished run), unpins the thread if it pinned it, and marks a finished
+run's thread unread. A refused unread mark alone never stops the updates or affects the run.
 
 To resume a failed or stopped run with a fresh token, ask the thread's agent to run the same plan in
 this mode again. `loopai --detach <plan>` from a plain shell resumes it too, without the terminal and
@@ -407,7 +416,8 @@ development ports, so keep `previewUrl` explicit.
   that steering arrives as a cancel followed by a new prompt (the basis of the 5-second Stop window);
   whether Working shows while a saved session loads; whether the composer accepts the model `default`
   before the first probe; the model-switch handoff budget; the Mode 1 terminal reopen after a restart;
-  and the Linux scope.
+  that the Mode 1 unread mark shows the "Done" badge and is not cleared by the final title and unpin
+  written just before it; and the Linux scope.
 - These contracts come from reading T3 Code 0.1.1, not from a documented API. Re-check both modes after
   a T3 Code update.
 

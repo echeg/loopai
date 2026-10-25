@@ -380,7 +380,8 @@ func (p *detachChildProc) sendToken(t *testing.T, token string) {
 func (f *detachChildFixture) bridgeToT3(t *testing.T) *t3test.Server {
 	t.Helper()
 	s := t3test.NewServer(t, t3test.WithToken(detachChildToken),
-		t3test.WithThread(t3test.Thread{ID: detachChildThread, ProjectID: "p", Title: "My thread"}),
+		t3test.WithThread(t3test.Thread{ID: detachChildThread, ProjectID: "p", Title: "My thread",
+			LatestRunCompletedAt: "2026-10-23T11:00:00.000Z"}),
 		t3test.WithProject(t3test.Project{ID: "p", Title: "Repo", WorkspaceRoot: f.repo}))
 	home := t.TempDir()
 	require.NoError(t, s.WriteRuntime(home))
@@ -632,19 +633,21 @@ func TestDetachedChildBridgesToT3Thread(t *testing.T) {
 	require.NoError(t, os.WriteFile(f.gate, nil, 0o600))
 	require.Equal(t, 0, p.wait(t, f))
 
-	t.Run("the final title and the unpin are sent before the child exits", func(t *testing.T) {
+	t.Run("the final title, the unpin, and the mark-unread are sent before the child exits", func(t *testing.T) {
 		assert.Equal(t, runs.StatusSucceeded, f.outcome(t).Status)
 		events := f.events(t)
 		assert.Equal(t, runs.EventFinish, events[len(events)-1].Type, "the journal ends with the finish event")
 		dispatches := s.Dispatches()
-		require.GreaterOrEqual(t, len(dispatches), 2)
-		final, unpin := dispatches[len(dispatches)-2], dispatches[len(dispatches)-1]
+		require.GreaterOrEqual(t, len(dispatches), 3)
+		final, unpin, unread := dispatches[len(dispatches)-3], dispatches[len(dispatches)-2], dispatches[len(dispatches)-1]
 		assert.Equal(t, "thread.metadata.update", final["type"])
 		assert.Equal(t, "[loopai: done] My thread", final["title"])
 		assert.Equal(t, "thread.unpin", unpin["type"])
+		assert.Equal(t, "thread.mark-unread", unread["type"])
 		th, _ := s.Thread(detachChildThread)
 		assert.Equal(t, "[loopai: done] My thread", th.Title)
 		assert.Empty(t, th.PinnedAt)
+		assert.Equal(t, "2026-10-23T10:59:59.999Z", th.LastVisitedAt, "the thread is marked unread")
 	})
 
 	t.Run("a working bridge leaves no line and no token behind", func(t *testing.T) {

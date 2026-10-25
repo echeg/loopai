@@ -96,60 +96,60 @@
 ## Implementation Steps
 
 ### Task 1: Add thread.mark-unread to the T3 client and the fake server
-- [ ] in `pkg/t3/client.go` add `commandMarkUnread = "thread.mark-unread"` beside the other command
+- [x] in `pkg/t3/client.go` add `commandMarkUnread = "thread.mark-unread"` beside the other command
       constants and a `MarkUnread(ctx, threadID)` method that dispatches it through `dispatch`, with a
       godoc saying it makes T3 Code show the thread's latest completed run as unseen
-- [ ] in `pkg/t3/t3test/fake.go` add `LatestRunCompletedAt` and `LastVisitedAt` (strings, like
+- [x] in `pkg/t3/t3test/fake.go` add `LatestRunCompletedAt` and `LastVisitedAt` (strings, like
       `PinnedAt`) to `Thread`, handle `thread.mark-unread` in the dispatch switch: a typed failure
       worded like T3's ("Thread <id> has no completed run to mark unread.") when
       `LatestRunCompletedAt` is empty, otherwise `LastVisitedAt` set to that time minus one
       millisecond in the same timestamp format; update the package comment's list of modeled commands
-- [ ] write tests in `pkg/t3/client_test.go` for `MarkUnread`: the frame carries exactly `type`,
+- [x] write tests in `pkg/t3/client_test.go` for `MarkUnread`: the frame carries exactly `type`,
       `commandId`, `threadId`, and a fresh command id per call
-- [ ] write tests in `pkg/t3/t3test/fake_test.go` for mark-unread: success rewinds `LastVisitedAt`,
+- [x] write tests in `pkg/t3/t3test/fake_test.go` for mark-unread: success rewinds `LastVisitedAt`,
       a thread without a completed run gets the typed failure, an unknown thread fails as other commands do
-- [ ] run `go test ./pkg/t3/...` - must pass before task 2
+- [x] run `go test ./pkg/t3/...` - must pass before task 2
 
 ### Task 2: Mark the thread unread as the bridge's last command
-- [ ] in `cmd/loopai/t3_bridge.go` add a `markedUnread` field to `t3Bridge` and a `syncUnread` step,
+- [x] in `cmd/loopai/t3_bridge.go` add a `markedUnread` field to `t3Bridge` and a `syncUnread` step,
       run after `syncUnpin` in `step()`: it acts only when `final` is set, the title is no longer
       dirty, and an unpin the bridge owes is done; it calls `MarkUnread`, treats success and a typed
       `*t3.RemoteError` (no completed run, an archived or busy thread) as done without a progress-log
       line, and passes any other error to `fail` so it is retried after the reconnect
-- [ ] extend `ended()` so a finished bridge waits for `markedUnread`
-- [ ] in `closeOut()`, when `final` is set, send a best-effort `MarkUnread` after the title and the
+- [x] extend `ended()` so a finished bridge waits for `markedUnread`
+- [x] in `closeOut()`, when `final` is set, send a best-effort `MarkUnread` after the title and the
       unpin, ignoring its error, so a bridge disabled after the finish event still marks the thread
-- [ ] update the `t3Bridge` doc comment and the `t3BridgeStopTimeout` comment to name the mark-unread
-- [ ] give the default thread in `newBridgeHarness` a `LatestRunCompletedAt`, then update the exact
+- [x] update the `t3Bridge` doc comment and the `t3BridgeStopTimeout` comment to name the mark-unread
+- [x] give the default thread in `newBridgeHarness` a `LatestRunCompletedAt`, then update the exact
       command lists in `TestT3BridgePin` and any other test asserting `h.commands()` so
       `thread.mark-unread` is the last command
-- [ ] write tests: succeeded, failed, and stopped finishes each end with `thread.mark-unread` after
+- [x] write tests: succeeded, failed, and stopped finishes each end with `thread.mark-unread` after
       the final title and the unpin, and the fake thread's `LastVisitedAt` precedes its
       `LatestRunCompletedAt`; no mark-unread is sent before the finish event
-- [ ] write tests for the error paths: a thread with no completed run (typed refusal) still lets the
+- [x] write tests for the error paths: a thread with no completed run (typed refusal) still lets the
       bridge end with no progress-log line; a `DieNext` on the mark-unread dispatch is retried and
       the thread ends marked; `TestT3BridgeDisableLeavesTheThread` "a finished run" also marks the
       thread unread while "a run still going" does not
-- [ ] run `go test ./cmd/loopai -run 'T3'` - must pass before task 3
+- [x] run `go test ./cmd/loopai -run 'T3'` - must pass before task 3
 
 ### Task 3: Verify acceptance criteria
-- [ ] verify the Overview: every finish state marks the thread unread, after the final title and
+- [x] verify the Overview: every finish state marks the thread unread, after the final title and
       the unpin, and a refusal never disables the bridge or affects the run
-- [ ] run `make test </dev/null` (full suite)
-- [ ] run `make lint` - all issues must be fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] verify test coverage of the changed functions in `pkg/t3` and `cmd/loopai/t3_bridge.go` meets
+- [x] run `make test </dev/null` (full suite)
+- [x] run `make lint` - all issues must be fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify test coverage of the changed functions in `pkg/t3` and `cmd/loopai/t3_bridge.go` meets
       the project standard (80%+)
 
 ### Task 4: [Final] Update documentation
-- [ ] `docs/t3-code.md`: add a bullet to "What the thread shows" describing the unread mark and the
+- [x] `docs/t3-code.md`: add a bullet to "What the thread shows" describing the unread mark and the
       green "Done" badge on every finish (the title prefix carries the outcome; opening the thread
       clears it; T3 Code refuses it while a new agent turn runs in the thread), adjust "There is no
       completion message in Mode 1", and mention the mark in the paragraph on a bridge that stops
       after a refused request
-- [ ] `llms.txt` Mode 1 paragraph, `README.md` Mode 1 description, and the Mode 1 paragraph of
+- [x] `llms.txt` Mode 1 paragraph, `README.md` Mode 1 description, and the Mode 1 paragraph of
       `CLAUDE.md`: one clause each about marking the thread unread at the end
-- [ ] leave the `loopai-t3` skills unchanged (their wording stays accurate), so no manifest bump
+- [x] leave the `loopai-t3` skills unchanged (their wording stays accurate), so no manifest bump
 
 *Note: loopai automatically moves completed plans to `docs/plans/completed/`*
 

@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	// t3BridgeStopTimeout bounds the before-exit wait for the bridge's final title and unpin.
+	// t3BridgeStopTimeout bounds the before-exit wait for the bridge's final title, unpin, and
+	// mark-unread.
 	t3BridgeStopTimeout = 10 * time.Second
 	// t3TerminalIDPrefix starts the id of the terminal the bridge opens: loopai-<run id>, at most 107
 	// characters, so never T3's own term-1.
@@ -96,8 +97,9 @@ func startT3Bridge(cfg t3BridgeConfig) func() {
 
 // t3Bridge mirrors one attempt of a detached run into the T3 thread it was started from: a
 // replaceable [loopai: <state>] title prefix written on transitions, a pin held while the run is
-// live, and a terminal tab that follows the run through loopai --attach and is restored after a T3
-// restart. It never affects the run: an error T3 answers a terminal request with stops only the
+// live, a terminal tab that follows the run through loopai --attach and is restored after a T3
+// restart, and, as its last command, a mark-unread that gives the finished thread T3's "Done" badge
+// until the user opens it. It never affects the run: an error T3 answers a terminal request with stops only the
 // terminal, and any other unrecoverable T3 error disables the bridge, each with one progress-log line.
 // One goroutine owns its state; a follower feeds it the journal and a reader per connection the
 // terminal metadata.
@@ -124,8 +126,10 @@ type t3Bridge struct {
 	pinDecided bool
 	pinned     bool // the bridge pinned the thread, so it unpins it at the end
 	unpinned   bool
-	disabled   bool
-	termOff    bool // the terminal half is stopped; the title and the pin carry on
+	// markedUnread: the finished thread was marked unread, or T3 refused it
+	markedUnread bool
+	disabled     bool
+	termOff      bool // the terminal half is stopped; the title and the pin carry on
 
 	conn        *bridgeConn
 	retry       <-chan time.Time // fires when a reconnect is due; nil while connected or connecting at once
@@ -185,7 +189,8 @@ func openT3Bridge(cfg t3BridgeConfig, timing t3BridgeTiming) *t3Bridge {
 	return b
 }
 
-// stop waits up to timeout for the bridge to write the final title and unpin, then ends it.
+// stop waits up to timeout for the bridge to write the final title, unpin, and mark the thread
+// unread, then ends it.
 func (b *t3Bridge) stop(timeout time.Duration) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -210,7 +215,8 @@ func (b *t3Bridge) followJournal() {
 	})
 }
 
-// run is the bridge's loop. It returns once the final title and the unpin are done, when the bridge
+// run is the bridge's loop. It returns once the final title, the unpin, and the mark-unread are
+// done, when the bridge
 // is disabled, or when stop ends it.
 func (b *t3Bridge) run() {
 	defer b.wg.Done()
@@ -250,11 +256,17 @@ func (b *t3Bridge) run() {
 
 // ended reports whether the bridge has nothing left to do.
 func (b *t3Bridge) ended() bool {
-	return b.disabled || b.ctx.Err() != nil || (b.final && !b.titleDirty && (!b.pinned || b.unpinned))
+	return b.disabled || b.ctx.Err() != nil || (b.finalWritten() && b.markedUnread)
 }
 
-// step connects when due, then brings the thread up to date: the pin, the title, the unpin at the
-// end, and the terminal's follow command.
+// finalWritten reports whether the finished attempt's title and the unpin it owes are done, so only
+// the mark-unread is left.
+func (b *t3Bridge) finalWritten() bool {
+	return b.final && !b.titleDirty && (!b.pinned || b.unpinned)
+}
+
+// step connects when due, then brings the thread up to date: the pin, the title, the unpin and the
+// mark-unread at the end, and the terminal's follow command.
 func (b *t3Bridge) step() {
 	if b.timing.afterStep != nil {
 		defer b.timing.afterStep()
@@ -262,7 +274,7 @@ func (b *t3Bridge) step() {
 	if b.conn == nil && b.retry == nil {
 		b.connect()
 	}
-	for _, update := range []func(){b.syncPin, b.syncTitle, b.syncUnpin, b.syncTerminal} {
+	for _, update := range []func(){b.syncPin, b.syncTitle, b.syncUnpin, b.syncUnread, b.syncTerminal} {
 		if b.conn == nil || b.disabled {
 			return
 		}
@@ -383,7 +395,9 @@ func (b *t3Bridge) disable(err error) {
 // closeOut is the best-effort last write of a bridge that stops before the run ends: the title shows
 // the final state when the attempt finished, and loses the bridge's prefix otherwise, since a progress
 // state no later update replaces would stay wrong, then a thread the bridge pinned is unpinned so T3
-// can settle it. Every error is ignored; each request is still bounded by callTimeout.
+// can settle it, and a finished thread is marked unread last, since a title or unpin written after it
+// would get an open thread visited again. Every error is ignored; each request is still bounded by
+// callTimeout.
 func (b *t3Bridge) closeOut() {
 	if th, err := b.projection(); err == nil {
 		title := t3BaseTitle(th.Title)
@@ -401,6 +415,11 @@ func (b *t3Bridge) closeOut() {
 		if b.client.Unpin(ctx, b.cfg.threadID) == nil {
 			b.unpinned = true
 		}
+		cancel()
+	}
+	if b.final && !b.markedUnread {
+		ctx, cancel := b.callContext()
+		_ = b.client.MarkUnread(ctx, b.cfg.threadID)
 		cancel()
 	}
 }
@@ -475,6 +494,26 @@ func (b *t3Bridge) syncUnpin() {
 	var remote *t3.RemoteError
 	if err == nil || errors.As(err, &remote) {
 		b.unpinned = true
+		return
+	}
+	b.fail(err)
+}
+
+// syncUnread marks the finished thread unread once its final title and unpin are written, so T3
+// shows its latest completed run as unseen. It is the bridge's last command: thread.mark-unread does
+// not advance the thread's updatedAt, so any write after it would get an open thread visited again.
+// T3 refuses it while a new agent turn runs in the thread, which, like any typed refusal, is a
+// definite answer rather than a failure.
+func (b *t3Bridge) syncUnread() {
+	if b.markedUnread || !b.finalWritten() {
+		return
+	}
+	ctx, cancel := b.callContext()
+	err := b.client.MarkUnread(ctx, b.cfg.threadID)
+	cancel()
+	var remote *t3.RemoteError
+	if err == nil || errors.As(err, &remote) {
+		b.markedUnread = true
 		return
 	}
 	b.fail(err)

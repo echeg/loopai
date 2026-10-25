@@ -32,6 +32,7 @@ const (
 	commandMetadataUpdate = "thread.metadata.update"
 	commandPin            = "thread.pin"
 	commandUnpin          = "thread.unpin"
+	commandMarkUnread     = "thread.mark-unread"
 )
 
 const (
@@ -443,6 +444,13 @@ func (c *Client) Pin(ctx context.Context, threadID string) error {
 // Unpin unpins a thread.
 func (c *Client) Unpin(ctx context.Context, threadID string) error {
 	return c.dispatch(ctx, threadCommand{Type: commandUnpin, ThreadID: threadID})
+}
+
+// MarkUnread makes T3 Code show the thread's latest completed run as unseen, which gives it the
+// sidebar's "Done" badge until the user opens it. T3 Code refuses it with a *RemoteError while the
+// thread's latest run has not completed.
+func (c *Client) MarkUnread(ctx context.Context, threadID string) error {
+	return c.dispatch(ctx, threadCommand{Type: commandMarkUnread, ThreadID: threadID})
 }
 
 // dispatch sends one command through orchestration.dispatchCommand. Every logical update gets a
