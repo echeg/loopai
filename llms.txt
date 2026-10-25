@@ -54,7 +54,8 @@ Every plan-executing launch records its effective three flags and launcher (`orc
 `cli`) in `<global config>/launch-history`, ten newest distinct combinations, flag strings only;
 `loopai:loopai-plan`, `loopai:loopai-orca`, and `loopai:loopai-t3` offer the newest three as choices,
 and `loopai:loopai-plan` recommends the last `orca`/`t3` launcher. Delete the file to clear it.
-`loopai:loopai-grill` critiques an existing plan with Claude and Codex;
+`loopai:loopai-grill` critiques an existing plan with Claude and Codex, and `loopai:loopai-plan`
+offers it as "Grill the plan first" before the launch choice;
 its `compare` mode generates, judges, and synthesizes competing plans. Manually invoke
 `/loopai:loopai-retro [plan stem | progress log path | --last N]` (Codex: explicit `$loopai-retro`)
 for a read-only retrospective over bounded run-log excerpts, reports, backlog, and repository

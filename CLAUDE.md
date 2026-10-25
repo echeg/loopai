@@ -147,7 +147,10 @@ its own arguments, requires a `claude`/`codex` prefix on the two model flags, an
 because the flags are spliced into a shell command string and `--worktree` or
 `--serve` would break the Orca flow. `loopai-plan` ends by printing that
 invocation when an `orca` binary is on `PATH`, deriving the flags from the
-effective `task_model`, `review_model`, and `external_reviewers` config keys, and offers to launch it. When adding or removing a
+effective `task_model`, `review_model`, and `external_reviewers` config keys, and offers to launch it. Its launch
+question (Claude only; Codex has no `loopai-grill`) also offers "Grill the plan first", which hands the plan to
+`loopai-grill` and then asks again without that option; under the four-option cap, with Orca and T3 Code both
+available, the grill option takes the place of "Not now" until the grill round has run. When adding or removing a
 skill, update `expected_skills` in `scripts/check-symlinks.sh` and the valid
 fixture inventory in `scripts/check-symlinks_test.sh`, then bump both manifest
 versions.

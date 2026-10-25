@@ -27,7 +27,8 @@ variant_contract = {
     "codex": ("as a numbered list", "Typing flags instead of a number is the manual-entry path"),
 }
 launcher_options = {
-    "claude": ("\"Run in Orca now\"", "\"Run in T3 Code now\"", "\"Start implementation here\"", "\"Not now\""),
+    "claude": ("\"Run in Orca now\"", "\"Run in T3 Code now\"", "\"Start implementation here\"",
+               "\"Grill the plan first\"", "\"Not now\""),
     "codex": ("run it in Orca now", "run it in T3 Code now", "start implementing here", "or stop"),
 }
 recommended_target = {"claude": "option", "codex": "choice"}
@@ -59,7 +60,15 @@ for variant, name in skills:
         assert f"\"(Recommended)\" goes to the {recommended_target[variant]} for `LAST_LAUNCHER`" in step, f"{label}: recommendation must follow the last launcher"
         assert "otherwise, including when `LAST_LAUNCHER` is empty, it goes to the first launcher offered" in step, f"{label}: recommendation fallback"
         order = [step.find(option) for option in launcher_options[variant]]
-        assert -1 not in order and order == sorted(order), f"{label}: launcher options must stay Orca, T3 Code, here, not now"
+        assert -1 not in order and order == sorted(order), f"{label}: launcher options must stay Orca, T3 Code, here, (grill,) not now"
+        if variant == "claude":
+            # loopai-grill is a Claude-only skill; its offer must hand off, return, and fit the four-option cap
+            for expected in ("invoke the `loopai-grill` skill with the plan path",
+                             "then ask this question again without this option",
+                             "leave \"Not now\" out", "It returns once the grill option is gone"):
+                assert expected in step, f"{label}: grill offer contract: {expected}"
+        else:
+            assert "loopai-grill" not in step, f"{label}: Codex has no loopai-grill to offer"
         assert "(Recommended)\", only with" not in step, f"{label}: Orca must not be recommended unconditionally"
         assert "\"From .loopai/config: <FLAGS>\"" in step, f"{label}: config flags option"
         assert "`HISTORY` empty and `FLAGS` non-empty: do not ask" in step, f"{label}: config-only launch must not ask"

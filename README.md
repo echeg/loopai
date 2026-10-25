@@ -158,7 +158,8 @@ The plugin provides ten skills:
 - `loopai:loopai-update` updates the installation through `make install`, then merges updated
   embedded defaults into local customizations
 - `loopai:loopai-grill` critiques an existing plan with Claude and Codex, or
-  runs a plan-off that compares and synthesizes competing plans
+  runs a plan-off that compares and synthesizes competing plans;
+  `loopai:loopai-plan` offers a grill round before you choose how to run a new plan
 - `loopai:loopai-retro` reviews run artifacts and ranks evidence-backed improvements;
   it files only backlog entries you select
 

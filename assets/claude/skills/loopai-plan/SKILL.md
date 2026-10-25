@@ -365,7 +365,8 @@ Then use AskUserQuestion — "How do you want to proceed?" — with the options 
 - "Run in Orca now", only with Orca available: choose the flags as described under "Choosing the flags", then invoke the `loopai-orca` skill with the plan path followed by the chosen string.
 - "Run in T3 Code now", only with T3 Code available: choose the flags the same way, then invoke the `loopai-t3` skill with the plan path followed by the chosen string. That skill then asks only its mode question (a terminal tab in this thread or a new loopai thread that shows Working), never the flags again.
 - "Start implementation here": begin with task 1
-- "Not now": stop
+- "Grill the plan first", until a grill round of this plan has run in this conversation: invoke the `loopai-grill` skill with the plan path (grill mode, which critiques the plan with Claude and Codex and applies only the findings the user selects), then ask this question again without this option. The flags are chosen only after that second question, so a grill never fixes them in advance.
+- "Not now": stop. AskUserQuestion takes at most four options: when Orca and T3 Code are both available and the grill option is offered, leave "Not now" out; the user can still decline by choosing "Other". It returns once the grill option is gone.
 
 **Choosing the flags** (after the user picks Orca or T3 Code; `<launcher>` below is "Orca" or "T3 Code"):
 - `HISTORY` empty and `FLAGS` non-empty: do not ask; use exactly the `FLAGS` printed above.
@@ -376,11 +377,9 @@ Then use AskUserQuestion — "How do you want to proceed?" — with the options 
 
 **Without Orca or T3 Code**, tell the user:
 
-"Created plan: `docs/plans/YYYYMMDD-<task-name>.md`
+"Created plan: `docs/plans/YYYYMMDD-<task-name>.md`"
 
-Ready to start implementation?"
-
-If yes, begin with task 1.
+Then use AskUserQuestion — "How do you want to proceed?" — with "Start implementation here" (begin with task 1), "Grill the plan first" (as above: invoke `loopai-grill` with the plan path, then ask again without it), and "Not now" (stop).
 
 ## Execution Enforcement
 
