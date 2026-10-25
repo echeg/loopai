@@ -416,7 +416,8 @@ development ports, so keep `previewUrl` explicit.
   that steering arrives as a cancel followed by a new prompt (the basis of the 5-second Stop window);
   whether Working shows while a saved session loads; whether the composer accepts the model `default`
   before the first probe; the model-switch handoff budget; the Mode 1 terminal reopen after a restart;
-  and the Linux scope.
+  that the Mode 1 unread mark shows the "Done" badge and is not cleared by the final title and unpin
+  written just before it; and the Linux scope.
 - These contracts come from reading T3 Code 0.1.1, not from a documented API. Re-check both modes after
   a T3 Code update.
 

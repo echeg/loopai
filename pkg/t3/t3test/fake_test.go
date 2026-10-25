@@ -287,7 +287,8 @@ func TestServerMarkUnread(t *testing.T) {
 	s := NewServer(t,
 		WithThread(Thread{ID: "th", ProjectID: "p", Title: "T", LatestRunCompletedAt: "2026-10-25T00:00:00.000Z",
 			LastVisitedAt: "2026-10-25T08:00:00.000Z"}),
-		WithThread(Thread{ID: "running", ProjectID: "p", Title: "R"}))
+		WithThread(Thread{ID: "running", ProjectID: "p", Title: "R"}),
+		WithThread(Thread{ID: "broken", ProjectID: "p", Title: "B", LatestRunCompletedAt: "not-a-time"}))
 	c := connectRaw(t, s)
 
 	c.request(1, "orchestration.dispatchCommand", map[string]any{"type": "thread.mark-unread", "commandId": "c1", "threadId": "th"})
@@ -312,6 +313,14 @@ func TestServerMarkUnread(t *testing.T) {
 	cause = c.recv()["exit"].(map[string]any)["cause"].([]any)[0].(map[string]any)
 	assert.Equal(t, "Fail", cause["_tag"])
 	assert.Equal(t, "Thread missing was not found.", cause["error"].(map[string]any)["message"])
+
+	c.request(4, "orchestration.dispatchCommand",
+		map[string]any{"type": "thread.mark-unread", "commandId": "c4", "threadId": "broken"})
+	cause = c.recv()["exit"].(map[string]any)["cause"].([]any)[0].(map[string]any)
+	assert.Equal(t, "Die", cause["_tag"], "a fixture timestamp that does not parse is the test's own mistake")
+	assert.Equal(t, "t3test: invalid LatestRunCompletedAt not-a-time", cause["defect"])
+	th, _ = s.Thread("broken")
+	assert.Empty(t, th.LastVisitedAt)
 }
 
 func TestServerTerminals(t *testing.T) {

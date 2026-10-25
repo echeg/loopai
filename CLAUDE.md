@@ -1088,7 +1088,7 @@ the two `T3CODE_*` variables, never `providerInstanceId`), typing
 server restart it reopens an absent terminal once per server start unless a `remove` was seen while
 connected, and it re-types only into a terminal idle for 60 s with nothing typed for 90 s after the
 previous command was seen running. A typed error answering a terminal request, or an unlisted project,
-stops only the terminal half (`failTerminal`); titles, pin, and unpin go on. Other `t3BridgeFatal`
+stops only the terminal half (`failTerminal`); titles, pin, unpin, and mark-unread go on. Other `t3BridgeFatal`
 errors (401, protocol, remote) disable it with one progress-log line; the run is unaffected. Unless the
 error is a refused connection (`t3BridgeUnreachable`), `closeOut` first makes a best-effort last write:
 the final title of a finished attempt or the title without the prefix, then the unpin of a thread the

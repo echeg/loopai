@@ -254,7 +254,7 @@ func (c *detachedChild) attemptStarted(hooks *journalHooks, start attemptStart, 
 // launcher handed over a token, following the journal from the attempt's start event at seq
 // startSeq. The token moves into the bridge, so the child keeps no copy; without a bridge it is
 // dropped. The bridge ends on the attempt's finish event; the before-exit hook gives it a bounded
-// wait to write the final title and unpin before the process exits.
+// wait to write the final title, the unpin, and the mark-unread before the process exits.
 func (c *detachedChild) startBridge(hooks *journalHooks, startSeq int) {
 	token := c.secret.T3Token
 	c.secret = detachSecret{}

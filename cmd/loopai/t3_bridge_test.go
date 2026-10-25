@@ -168,10 +168,10 @@ func (h *bridgeHarness) waitApplied(ev runs.Event) {
 	h.settle()
 }
 
-// finish records the attempt's finish event with st.
-func (h *bridgeHarness) finish(st runs.Status) {
+// finish records the attempt's finish event with st and returns it.
+func (h *bridgeHarness) finish(st runs.Status) runs.Event {
 	h.t.Helper()
-	h.append(runs.Event{Type: runs.EventFinish, Status: st, ExitCode: detachExitCode(st)})
+	return h.append(runs.Event{Type: runs.EventFinish, Status: st, ExitCode: detachExitCode(st)})
 }
 
 // thread returns the thread as the server holds it.
@@ -273,12 +273,15 @@ func (h *bridgeHarness) titles() []string {
 	return titles
 }
 
-// assertMarkedUnread checks that the thread was marked unread: its visit rewound to just before its
-// latest run completed, so T3 shows that run as unseen.
+// assertMarkedUnread checks that the thread was marked unread by the last command dispatched: its
+// visit rewound to just before its latest run completed, so T3 shows that run as unseen.
 func (h *bridgeHarness) assertMarkedUnread() {
 	h.t.Helper()
+	commands := h.commands()
+	require.NotEmpty(h.t, commands)
+	assert.Equal(h.t, "thread.mark-unread", commands[len(commands)-1], "the mark-unread is the last command")
 	th := h.thread()
-	require.NotEmpty(h.t, th.LastVisitedAt, "the thread is marked unread; dispatched %v", h.commands())
+	require.NotEmpty(h.t, th.LastVisitedAt, "the thread is marked unread; dispatched %v", commands)
 	visited, err := time.Parse(time.RFC3339Nano, th.LastVisitedAt)
 	require.NoError(h.t, err)
 	completed, err := time.Parse(time.RFC3339Nano, th.LatestRunCompletedAt)
@@ -455,12 +458,33 @@ func TestT3BridgeMarkUnreadFailures(t *testing.T) {
 		h.waitTitle("[loopai: task 1/2] My thread")
 		// the final title is already in place, so the next dispatch is the mark-unread
 		h.rename("[loopai: done] My thread")
+		handshakes := len(h.server.Handshakes())
 		h.server.DieNext("orchestration.dispatchCommand", "lost")
 		h.finish(runs.StatusSucceeded)
 		h.waitDone()
-		assert.Equal(t, []string{"thread.metadata.update", "thread.mark-unread", "thread.mark-unread"}, h.commands())
+		require.Equal(t, []string{"thread.metadata.update", "thread.mark-unread", "thread.mark-unread"}, h.commands())
+		assert.Greater(t, len(h.server.Handshakes()), handshakes, "the bridge reconnected")
 		dispatches := h.server.Dispatches()
 		assert.Equal(t, dispatches[1]["commandId"], dispatches[2]["commandId"], "the retry reuses the command id")
+		h.assertMarkedUnread()
+		assert.Empty(t, h.log.all(), "an unknown outcome does not disable the bridge")
+	})
+
+	t.Run("an unpin with an unknown outcome is retried before the mark-unread", func(t *testing.T) {
+		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
+		h.start()
+		h.task(1)
+		h.waitTitle("[loopai: task 1/2] My thread")
+		// the final title is already in place, so the next dispatch is the unpin
+		h.rename("[loopai: done] My thread")
+		h.server.DieNext("orchestration.dispatchCommand", "lost")
+		h.finish(runs.StatusSucceeded)
+		h.waitDone()
+		require.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.unpin", "thread.unpin",
+			"thread.mark-unread"}, h.commands())
+		dispatches := h.server.Dispatches()
+		assert.Equal(t, dispatches[2]["commandId"], dispatches[3]["commandId"], "the retry reuses the command id")
+		assert.Empty(t, h.thread().PinnedAt)
 		h.assertMarkedUnread()
 		assert.Empty(t, h.log.all(), "an unknown outcome does not disable the bridge")
 	})
@@ -699,6 +723,25 @@ func TestT3BridgeWaitsForTitleRegeneration(t *testing.T) {
 		h.server.SetThread(th)
 		h.task(2)
 		h.waitTitle("[loopai: task 2/2] New thread")
+	})
+
+	t.Run("before the finished thread is marked unread", func(t *testing.T) {
+		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "New thread", TitleRegenerating: true}, false)
+		h.start()
+		h.task(1)
+		h.waitApplied(h.finish(runs.StatusSucceeded))
+		assert.Equal(t, []string{"thread.pin", "thread.unpin"}, h.commands(),
+			"the mark-unread waits for the final title, which waits for the generated one")
+		assert.Empty(t, h.thread().LastVisitedAt)
+
+		th := h.thread()
+		th.Title, th.TitleRegenerating = "Generated", false
+		h.server.SetThread(th)
+		h.waitDone()
+		assert.Equal(t, "[loopai: done] Generated", h.thread().Title)
+		assert.Equal(t, []string{"thread.pin", "thread.unpin", "thread.metadata.update", "thread.mark-unread"},
+			h.commands())
+		h.assertMarkedUnread()
 	})
 }
 
