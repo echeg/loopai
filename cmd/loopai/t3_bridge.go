@@ -522,7 +522,8 @@ func (b *t3Bridge) syncUnread() {
 // syncTitle writes the title of a changed state. The current title is read first, so a name the
 // user gave the thread is kept behind the prefix, and nothing is written when it already shows the
 // state. Before the first prefix, a title T3 is still generating gets regenWait to finish, because
-// any title write cancels it.
+// any title write cancels it; a finished attempt never waits, since the run's before-exit stop gives
+// the bridge far less than regenWait and the final title, unpin, and mark-unread would be lost.
 func (b *t3Bridge) syncTitle() {
 	if !b.titleDirty {
 		return
@@ -534,7 +535,7 @@ func (b *t3Bridge) syncTitle() {
 	}
 	title := t3PrefixedTitle(b.state, th.Title)
 	if title != th.Title {
-		if !b.titled && th.TitleRegeneration != nil && b.awaitRegeneration() {
+		if !b.final && !b.titled && th.TitleRegeneration != nil && b.awaitRegeneration() {
 			return
 		}
 		ctx, cancel := b.callContext()
@@ -549,7 +550,8 @@ func (b *t3Bridge) syncTitle() {
 }
 
 // awaitRegeneration reports whether the first title write still waits for a title generation,
-// which it does for at most regenWait from the first time it found one.
+// which it does for at most regenWait from the first time it found one. syncTitle never asks once
+// the attempt finished.
 func (b *t3Bridge) awaitRegeneration() bool {
 	now := b.timing.now()
 	if b.regenSince.IsZero() {

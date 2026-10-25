@@ -123,15 +123,17 @@
 - [x] run `make check-symlinks test-symlinks </dev/null` - must pass before task 3
 
 ### Task 3: Write the final T3 title without waiting for regeneration
-- [ ] in `cmd/loopai/t3_bridge.go` `syncTitle`, skip the `awaitRegeneration` wait when `b.final` is set,
+- [x] in `cmd/loopai/t3_bridge.go` `syncTitle`, skip the `awaitRegeneration` wait when `b.final` is set,
       and update the comments on `syncTitle` and `awaitRegeneration` to say a finished attempt never waits
-- [ ] write a test in `cmd/loopai/t3_bridge_test.go`: a thread with a pending title regeneration and an
+- [x] write a test in `cmd/loopai/t3_bridge_test.go`: a thread with a pending title regeneration and an
       attempt that finishes before any title write ends with the final `[loopai: failed]` title, then
       `thread.unpin`, then `thread.mark-unread`, without advancing the fake clock
-- [ ] write a test where the first progress title is waiting for the regeneration and the finish event
+- [x] write a test where the first progress title is waiting for the regeneration and the finish event
       arrives during the wait: the final title is written at once, the intermediate title never is
-- [ ] keep `TestT3BridgeWaitsForTitleRegeneration` passing unchanged for a run still in progress
-- [ ] run `go test ./cmd/loopai -run 'T3'` - must pass before task 4
+- [x] keep `TestT3BridgeWaitsForTitleRegeneration` passing unchanged for a run still in progress
+      (its two in-progress subtests are unchanged; ➕ its third subtest asserted the old wait for a
+      finished run and was replaced by the two new cases in `TestT3BridgeFinalTitleSkipsRegenerationWait`)
+- [x] run `go test ./cmd/loopai -run 'T3'` - must pass before task 4
 
 ### Task 4: Verify acceptance criteria
 - [ ] verify both backlog problems are fixed as described in the Overview

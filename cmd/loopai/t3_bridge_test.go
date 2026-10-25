@@ -168,10 +168,10 @@ func (h *bridgeHarness) waitApplied(ev runs.Event) {
 	h.settle()
 }
 
-// finish records the attempt's finish event with st and returns it.
-func (h *bridgeHarness) finish(st runs.Status) runs.Event {
+// finish records the attempt's finish event with st.
+func (h *bridgeHarness) finish(st runs.Status) {
 	h.t.Helper()
-	return h.append(runs.Event{Type: runs.EventFinish, Status: st, ExitCode: detachExitCode(st)})
+	h.append(runs.Event{Type: runs.EventFinish, Status: st, ExitCode: detachExitCode(st)})
 }
 
 // thread returns the thread as the server holds it.
@@ -724,22 +724,33 @@ func TestT3BridgeWaitsForTitleRegeneration(t *testing.T) {
 		h.task(2)
 		h.waitTitle("[loopai: task 2/2] New thread")
 	})
+}
 
-	t.Run("before the finished thread is marked unread", func(t *testing.T) {
+func TestT3BridgeFinalTitleSkipsRegenerationWait(t *testing.T) {
+	t.Run("for an attempt that finishes before any title write", func(t *testing.T) {
 		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "New thread", TitleRegenerating: true}, false)
 		h.start()
-		h.task(1)
-		h.waitApplied(h.finish(runs.StatusSucceeded))
-		assert.Equal(t, []string{"thread.pin", "thread.unpin"}, h.commands(),
-			"the mark-unread waits for the final title, which waits for the generated one")
-		assert.Empty(t, h.thread().LastVisitedAt)
-
-		th := h.thread()
-		th.Title, th.TitleRegenerating = "Generated", false
-		h.server.SetThread(th)
+		h.waitWrites(1) // connected and pinned, with no state to show yet
+		h.finish(runs.StatusFailed)
 		h.waitDone()
-		assert.Equal(t, "[loopai: done] Generated", h.thread().Title)
-		assert.Equal(t, []string{"thread.pin", "thread.unpin", "thread.metadata.update", "thread.mark-unread"},
+		assert.Equal(t, "[loopai: failed] New thread", h.thread().Title, "the final title does not wait")
+		assert.False(t, h.thread().TitleRegenerating, "the write cancels the generation")
+		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.unpin", "thread.mark-unread"},
+			h.commands())
+		h.assertMarkedUnread()
+	})
+
+	t.Run("for a finish arriving while a progress title waits", func(t *testing.T) {
+		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "New thread", TitleRegenerating: true}, false)
+		h.start()
+		h.waitApplied(h.task(1))
+		assert.Empty(t, h.titles(), "the progress title waits for the generated one")
+
+		h.finish(runs.StatusFailed)
+		h.waitDone()
+		assert.Equal(t, []string{"[loopai: failed] New thread"}, h.titles(),
+			"the waiting progress title is never written")
+		assert.Equal(t, []string{"thread.pin", "thread.metadata.update", "thread.unpin", "thread.mark-unread"},
 			h.commands())
 		h.assertMarkedUnread()
 	})
