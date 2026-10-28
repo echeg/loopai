@@ -97,6 +97,14 @@ for variant in ("claude", "codex"):
     order = [mode.find(o) for o in ('"Terminal in this thread"', '"New loopai thread (shows Working)"', '"Cancel"')]
     assert -1 not in order and order == sorted(order), f"{label}: the mode question must offer both modes, then Cancel"
     require(label, "mode question", mode, "AskUserQuestion" if variant == "claude" else "numbered list")
+    # loopai-plan replays the recorded T3 mode through --mode, the skill's own argument; it must
+    # never reach loopai, and it skips the question only when the recorded mode can run here.
+    args = section(label, text, "Step 0b: Parse Arguments")
+    require(label, "mode argument", args, "| `--mode` |", "never into `FLAGS`, the Mode 1 command, or the Mode 2 message",
+            "A value other than `terminal` or `thread`, or `--mode` without a value, stops the run")
+    require(label, "preselected mode", mode, "When `MODE` is set, do not ask", "`thread` is Mode 2",
+            "`terminal` is Mode 1 when the Mode 1 gate passed", "ask the question above with the failed condition named",
+            "Without `MODE`, ask this every time")
 
     mode1 = section(label, text, "Step 4: Mode 1 - Terminal in This Thread")
     launch = bash_block(label, mode1, "loopai --detach")

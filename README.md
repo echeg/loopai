@@ -181,16 +181,20 @@ clean merge and performs its usual cleanup. It never merges the plan branch into
 
 Every plan-executing launch (full and tasks-only runs, a `--plan` session that continues into
 execution, and every attempt of a detached run) records its effective `--task-model`, `--review-model`, and
-`--external-reviewers` flags and its launcher (`orca`, `t3`, or `cli`) in
+`--external-reviewers` flags and its launcher (`orca`, `t3-terminal`, `t3-thread`, or `cli`) in
 `~/.config/loopai/launch-history` (or under `LOOPAI_CONFIG_DIR`). The file keeps the ten newest
 distinct flag combinations, holds flag strings only, and recording never fails or changes a run.
 `loopai:loopai-plan`, `loopai:loopai-orca`, and `loopai:loopai-t3` offer the newest three
-combinations as ready-made choices, so a model typed once becomes an option on the next launch, and
-`loopai:loopai-plan` recommends the launcher of your most recent Orca or T3 Code launch instead of
-always recommending Orca; a plain terminal (`cli`) run does not change the recommendation. The
-launcher comes from the run's effective `orca` setting, so `orca = true` in config records a
-terminal run as `orca`, while a detached run records `t3` when a T3 Code thread started it, in
-either mode, and `cli` otherwise. A review chain is recorded only when set explicitly, as typed, since an
+combinations as ready-made choices, so a model typed once becomes an option on the next launch.
+`loopai:loopai-plan` opens its launch question with "Run as last time", which names the launcher,
+the T3 Code mode, and the flags of your most recent Orca or T3 Code launch and starts it without
+further questions; "Choose launcher and flags" leads to the full choice (Orca, T3 Code, implement
+here), where the launcher of that last launch is recommended. A plain terminal (`cli`) run does not
+change either. The launcher comes from the run's effective `orca` setting, so `orca = true` in
+config records a terminal run as `orca`, while a detached run records `t3-terminal` when started
+from a terminal tab in an existing T3 Code thread, `t3-thread` when a loopai thread of its own
+started it, and `cli` otherwise; a bare `t3` written by an older loopai build is still replayed,
+with `loopai:loopai-t3` asking the mode. A review chain is recorded only when set explicitly, as typed, since an
 automatic reviewer is selected again the same way; an explicitly empty chain and a chain with a
 `custom` reviewer are not recorded, because the flag cannot replay them. `--config-dir` moves where
 loopai writes the history, but the skills read only `LOOPAI_CONFIG_DIR` or `~/.config/loopai`.

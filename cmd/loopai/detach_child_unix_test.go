@@ -603,7 +603,7 @@ func TestDetachedChildRecordsT3Launcher(t *testing.T) {
 
 	history := f.launchHistory(t)
 	require.Len(t, history, 1)
-	assert.Equal(t, launcherT3, strings.Split(history[0], "\t")[1])
+	assert.Equal(t, launcherT3Thread, strings.Split(history[0], "\t")[1])
 }
 
 func TestDetachedChildBridgesToT3Thread(t *testing.T) {

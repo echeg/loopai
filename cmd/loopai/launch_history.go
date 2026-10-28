@@ -14,11 +14,16 @@ import (
 	"github.com/umputun/ralphex/pkg/runs"
 )
 
-// launcher tags recorded in the launch history; the skills read only these three.
+// launcher tags recorded in the launch history; the skills read only these. A T3 Code launch
+// records its mode, so the loopai-plan skill can offer "run as last time" with the mode included:
+// launcherT3Terminal is a terminal tab in an existing thread, launcherT3Thread a loopai thread of
+// its own. launcherT3 is the tag earlier builds wrote for both; it is still read but never written.
 const (
-	launcherOrca = "orca"
-	launcherT3   = "t3"
-	launcherCLI  = "cli"
+	launcherOrca       = "orca"
+	launcherT3Terminal = "t3-terminal"
+	launcherT3Thread   = "t3-thread"
+	launcherT3         = "t3"
+	launcherCLI        = "cli"
 )
 
 const (
@@ -45,7 +50,7 @@ func launchHistoryPath(configDir string) string {
 
 func knownLauncher(name string) bool {
 	switch name {
-	case launcherOrca, launcherT3, launcherCLI:
+	case launcherOrca, launcherT3Terminal, launcherT3Thread, launcherT3, launcherCLI:
 		return true
 	}
 	return false
@@ -136,13 +141,15 @@ func launcherFor(cfg *config.Config) string {
 	return launcherCLI
 }
 
-// launcherForOrigin names the launcher of a detached run from its recorded origin kind: both T3
-// origins, a terminal in an existing thread and a loopai thread of its own, are t3; anything else
-// is a plain CLI launch.
+// launcherForOrigin names the launcher of a detached run from its recorded origin kind: a
+// terminal in an existing T3 thread is t3-terminal, a loopai thread of its own t3-thread, and
+// anything else a plain CLI launch.
 func launcherForOrigin(kind string) string {
 	switch kind {
-	case runs.OriginT3Terminal, runs.OriginT3Thread:
-		return launcherT3
+	case runs.OriginT3Terminal:
+		return launcherT3Terminal
+	case runs.OriginT3Thread:
+		return launcherT3Thread
 	}
 	return launcherCLI
 }

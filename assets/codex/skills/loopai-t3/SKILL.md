@@ -53,14 +53,16 @@ Parse flag/value pairs first; the one remaining positional argument is `PLAN_ARG
 | `--task-model` | `--task-model SPEC` or `--task-model=SPEC` | one token: `provider[:model[:effort]]` |
 | `--review-model` | `--review-model SPEC` or `--review-model=SPEC` | one token: `provider[:model[:effort]]` |
 | `--external-reviewers` | `--external-reviewers LIST` or `=LIST` | one token: comma-separated `provider[:model[:effort]]` |
+| `--mode` | `--mode terminal`, `--mode=terminal`, `--mode thread`, or `--mode=thread` | the Step 3 mode, preselected; this skill's own argument, never passed to loopai |
 
 - `--task-model` and `--review-model` values must start with a provider: `claude` or `codex`, alone or followed by `:model[:effort]` (`codex:gpt-6-astra:medium`, `claude:opus:high`, `codex::medium` for the codex default model). `loopai --detach` and the loopai provider reject a bare `opus:high`; stop here instead and suggest the prefixed spelling.
 - Every value must match `^[A-Za-z0-9._:,+-]+$`; `loopai --detach` and the loopai provider reject anything else too.
-- Any other token (`--worktree`, `--commit`, `--serve`, `--plan`, `--branch`, a second plan path, anything else), a flag given twice, or a value-taking flag without a value **stops the run**. Report the offending token verbatim and state that only the three flags above pass through. `--codex` was removed from loopai: for it, also say to write `--task-model codex:<model>[:effort]` instead.
+- `--mode` is this skill's own argument, not a loopai flag: its value goes into `MODE`, never into `FLAGS`, the Mode 1 command, or the Mode 2 message. A value other than `terminal` or `thread`, or `--mode` without a value, stops the run. `$loopai-plan` passes it when the user chose "Run as last time", replaying the mode of the newest recorded T3 Code launch.
+- Any other token (`--worktree`, `--commit`, `--serve`, `--plan`, `--branch`, a second plan path, anything else), a flag given twice, or a value-taking flag without a value **stops the run**. Report the offending token verbatim and state that only the three loopai flags above pass through, plus this skill's own `--mode`. `--codex` was removed from loopai: for it, also say to write `--task-model codex:<model>[:effort]` instead.
 
-**Recent flag combinations.** When `FLAGS` is empty, offer the combinations from earlier launches before launching. Skip this entirely when `FLAGS` is non-empty, and also when the `loopai-plan` skill invoked this skill in the current conversation after its own flag question, since the choice (possibly no flags) is already made there.
+**Recent flag combinations.** When `FLAGS` is empty, offer the combinations from earlier launches before launching. Skip this entirely when `FLAGS` is non-empty, and also when the `loopai-plan` skill invoked this skill in the current conversation after its own launch or flag question, since the choice (possibly no flags) is already made there.
 
-loopai itself writes `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/launch-history` on every plan-executing launch: one line per launch, newest first, `<UTC time>\t<launcher>\t<flags>`, where the launcher is `orca`, `t3`, or `cli`. The file holds flag strings only, never tokens or paths. Read it only; never write to it.
+loopai itself writes `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/launch-history` on every plan-executing launch: one line per launch, newest first, `<UTC time>\t<launcher>\t<flags>`, where the launcher is `orca`, `t3-terminal` (a T3 Code terminal tab in an existing thread), `t3-thread` (a loopai thread of its own), `t3` (either T3 Code mode, written by older loopai builds), or `cli`. The file holds flag strings only, never tokens or paths. Read it only; never write to it.
 
 ```bash
 HIST="${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/launch-history"
@@ -75,11 +77,11 @@ HISTORY=$(awk -F'\t' '
     }
     return 1
   }
-  $(2) ~ /^(orca|t3|cli)$/ && ok($(3)) && !dup[$(3)]++ { print $(3); if (++k == 3) exit }
+  $(2) ~ /^(orca|t3-terminal|t3-thread|t3|cli)$/ && ok($(3)) && !dup[$(3)]++ { print $(3); if (++k == 3) exit }
 ' "$HIST" 2>/dev/null)
 ```
 
-`HISTORY` holds up to three distinct flag strings, newest first, one per line. A line the skill cannot validate is skipped, never offered: an unknown launcher, a token other than the three flags above (or one given twice), a value outside `^[A-Za-z0-9._:,+-]+$`, or a model spec without the `claude`/`codex` provider. A line with no flags is not listed. A missing, unreadable, or empty file yields an empty `HISTORY`; then launch with the empty `FLAGS` as before, without asking (the mode question in Step 3 still follows).
+`HISTORY` holds up to three distinct flag strings, newest first, one per line. A line the skill cannot validate is skipped, never offered: an unknown launcher, a token other than the three loopai flags above (or one given twice), a value outside `^[A-Za-z0-9._:,+-]+$`, or a model spec without the `claude`/`codex` provider. A line with no flags is not listed. A missing, unreadable, or empty file yields an empty `HISTORY`; then launch with the empty `FLAGS` as before, without asking (the mode question in Step 3 still follows).
 
 With `HISTORY` non-empty, ask "Which loopai flags should the T3 Code run use?" as a numbered list: one choice per `HISTORY` entry labelled by its flags, newest first and the newest marked "(Recommended)"; then "No flags (models and reviewers from .loopai/config and loopai defaults)" and "Cancel". A picked entry becomes `FLAGS` exactly as listed, without the "(Recommended)" suffix; "No flags" leaves `FLAGS` empty; "Cancel" stops without launching. Typing flags instead of a number is the manual-entry path: parse the typed text with the rules above and repeat the question naming any rejected token verbatim.
 
@@ -129,7 +131,7 @@ Ask "How should T3 Code show this loopai run?" as a numbered list, in this order
 2. "New loopai thread (shows Working)": Mode 2.
 3. "Cancel": stop without launching.
 
-Ask this every time, including when `$loopai-plan` invoked this skill after its own flag question: the flags were chosen there, the mode was not.
+When `MODE` is set, do not ask: `thread` is Mode 2, and `terminal` is Mode 1 when the Mode 1 gate passed. When the gate failed, the recorded mode cannot run here, so ask the question above with the failed condition named. Without `MODE`, ask this every time, including when `$loopai-plan` invoked this skill after its own launch or flag question: the flags were chosen there, the mode was not.
 
 ## Step 4: Mode 1 - Terminal in This Thread
 

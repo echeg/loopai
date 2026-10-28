@@ -64,9 +64,9 @@ Split the request on whitespace. The first token that does not start with `--` i
 - Any token outside the table - `--worktree`, `--commit`, `--serve`, `--plan`, `--codex-args`, a second plan path - a flag given twice, or a value-taking flag without a value **stops the run**. Report the offending token verbatim and state that only the three flags above pass through. `--codex` was removed from loopai: for it, also say to write `--task-model codex:<model>[:effort]` instead. Never forward it: `--worktree` would nest a second checkout inside Orca's worktree and `--serve` would block the tab after the run.
 - Forwarded flags override the matching `.loopai/config` keys carried over in Step 4 (`task_model`, `review_model`, `external_reviewers`); a flag not given leaves the config value in force.
 
-**Recent flag combinations.** When `FLAGS` is empty, offer the combinations from earlier launches before launching. Skip this entirely when `FLAGS` is non-empty, and also when the `loopai-plan` skill invoked this skill in the current conversation after its own flag question, since the choice (possibly no flags) is already made there.
+**Recent flag combinations.** When `FLAGS` is empty, offer the combinations from earlier launches before launching. Skip this entirely when `FLAGS` is non-empty, and also when the `loopai-plan` skill invoked this skill in the current conversation after its own launch or flag question, since the choice (possibly no flags) is already made there.
 
-loopai itself writes `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/launch-history` on every plan-executing launch: one line per launch, newest first, `<UTC time>\t<launcher>\t<flags>`, where the launcher is `orca`, `t3`, or `cli`. The file holds flag strings only, never tokens or paths. Read it only; never write to it.
+loopai itself writes `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/launch-history` on every plan-executing launch: one line per launch, newest first, `<UTC time>\t<launcher>\t<flags>`, where the launcher is `orca`, `t3-terminal` (a T3 Code terminal tab in an existing thread), `t3-thread` (a loopai thread of its own), `t3` (either T3 Code mode, written by older loopai builds), or `cli`. The file holds flag strings only, never tokens or paths. Read it only; never write to it.
 
 ```bash
 HIST="${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/launch-history"
@@ -81,7 +81,7 @@ HISTORY=$(awk -F'\t' '
     }
     return 1
   }
-  $(2) ~ /^(orca|t3|cli)$/ && ok($(3)) && !dup[$(3)]++ { print $(3); if (++k == 3) exit }
+  $(2) ~ /^(orca|t3-terminal|t3-thread|t3|cli)$/ && ok($(3)) && !dup[$(3)]++ { print $(3); if (++k == 3) exit }
 ' "$HIST" 2>/dev/null)
 ```
 

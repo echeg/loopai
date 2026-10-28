@@ -329,7 +329,7 @@ After creating the file, detect Orca and T3 Code and build the launch lines befo
    Set `key` before each call (`key=task_model; cfgval`): the helper reads the key from that variable and takes no positional argument, because Claude Code replaces a `$` followed by a digit in this skill's text with the words of the skill's arguments.
 
    Map: `task_model` → `--task-model <value>`; `review_model` → `--review-model <value>`; `external_reviewers` → `--external-reviewers <value>`. Skip a key with no value. Skip a value that does not match `^[A-Za-z0-9._:,+-]+$` (the `loopai-orca` and `loopai-t3` skills reject it) and name the skipped key in the message. Join the results with single spaces into `FLAGS`.
-3. **Read `HISTORY` and `LAST_LAUNCHER` from the launch history.** loopai itself writes `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/launch-history` on every plan-executing launch: one line per launch, newest first, `<UTC time>\t<launcher>\t<flags>`, where the launcher is `orca`, `t3`, or `cli`. The file holds flag strings only, never tokens or paths. Read it only; never write to it.
+3. **Read `HISTORY`, `LAST_LAUNCHER`, and `LAST_FLAGS` from the launch history.** loopai itself writes `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/launch-history` on every plan-executing launch: one line per launch, newest first, `<UTC time>\t<launcher>\t<flags>`, where the launcher is `orca`, `t3-terminal` (a T3 Code terminal tab in an existing thread), `t3-thread` (a loopai thread of its own), `t3` (either T3 Code mode, written by older loopai builds), or `cli`. The file holds flag strings only, never tokens or paths. Read it only; never write to it.
 
    ```bash
    HIST="${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}/launch-history"
@@ -344,12 +344,28 @@ After creating the file, detect Orca and T3 Code and build the launch lines befo
        }
        return 1
      }
-     $(2) ~ /^(orca|t3|cli)$/ && ok($(3)) && !dup[$(3)]++ { print $(3); if (++k == 3) exit }
+     $(2) ~ /^(orca|t3-terminal|t3-thread|t3|cli)$/ && ok($(3)) && !dup[$(3)]++ { print $(3); if (++k == 3) exit }
    ' "$HIST" 2>/dev/null)
-   LAST_LAUNCHER=$(awk -F'\t' '$(2) ~ /^(orca|t3)$/ { print $(2); exit }' "$HIST" 2>/dev/null)
+   LAST=$(awk -F'\t' '
+     function ok(s,   n, t, i, seen) {
+       n = split(s, t, " ")
+       if (n == 0 || n % 2) return 0
+       for (i = 1; i <= n; i += 2) {
+         if (t[i] !~ /^--(task-model|review-model|external-reviewers)$/ || seen[t[i]]++) return 0
+         if (t[i+1] !~ /^[A-Za-z0-9._:,+-]+$/) return 0
+         if (t[i] != "--external-reviewers" && t[i+1] !~ /^(claude|codex)(:|$)/) return 0
+       }
+       return 1
+     }
+     $(2) ~ /^(orca|t3-terminal|t3-thread|t3)$/ && ($(3) == "" || ok($(3))) { print $(2) "\t" $(3); exit }
+   ' "$HIST" 2>/dev/null)
+   LAST_LAUNCHER=$(printf '%s' "$LAST" | cut -f1)
+   LAST_FLAGS=$(printf '%s' "$LAST" | cut -f2)
    ```
 
-   `HISTORY` holds up to three distinct flag strings, newest first, one per line. A line the skill cannot validate is skipped, never offered: an unknown launcher, a token other than `--task-model`, `--review-model`, or `--external-reviewers` (or one given twice), a value outside `^[A-Za-z0-9._:,+-]+$`, or a model spec without the `claude`/`codex` provider. A line with no flags is not listed; the "No flags" option below covers it. A missing, unreadable, or empty file yields an empty `HISTORY` and `LAST_LAUNCHER`, and everything below behaves as it would without history.
+   `HISTORY` holds up to three distinct flag strings, newest first, one per line. A line the skill cannot validate is skipped, never offered: an unknown launcher, a token other than `--task-model`, `--review-model`, or `--external-reviewers` (or one given twice), a value outside `^[A-Za-z0-9._:,+-]+$`, or a model spec without the `claude`/`codex` provider. A line with no flags is not listed; the "No flags" option below covers it. `LAST_LAUNCHER` and `LAST_FLAGS` come from the newest line whose launcher is `orca`, `t3-terminal`, `t3-thread`, or `t3` and whose flags are empty or pass that same validation: a `cli` run never changes them, and a line that cannot be replayed is skipped. A missing, unreadable, or empty file yields all three empty, and everything below behaves as it would without history.
+
+   **The last launch is replayable** when `LAST_LAUNCHER` is `orca` with Orca available, or `t3-terminal`, `t3-thread`, or `t3` with T3 Code available. Its summary `<LAST>` is "Orca", "T3 Code, terminal in this thread", "T3 Code, new loopai thread", or "T3 Code" (for `t3`, whose mode was not recorded), followed by `LAST_FLAGS` in backticks, or by "no flags" when it is empty.
 
 **With Orca or T3 Code available**, tell the user (print only the lines for what is available):
 
@@ -361,13 +377,19 @@ Run in Orca:
 Run in T3 Code:
 `/loopai:loopai-t3 docs/plans/YYYYMMDD-<task-name>.md <FLAGS>`"
 
-When `FLAGS` is empty, add one line: "No `task_model`/`review_model`/`external_reviewers` set in `.loopai/config`, so the run uses loopai defaults — append `--task-model`, `--review-model`, `--external-reviewers` to the line above or set those keys in `.loopai/config`." When `HISTORY` is non-empty, add: "Recent flag combinations from earlier launches are offered once you pick a launcher."
+When `FLAGS` is empty, add one line: "No `task_model`/`review_model`/`external_reviewers` set in `.loopai/config`, so the run uses loopai defaults — append `--task-model`, `--review-model`, `--external-reviewers` to the line above or set those keys in `.loopai/config`." When the last launch is replayable, add: "Last launch: <LAST>". When `HISTORY` is non-empty, add: "Recent flag combinations from earlier launches are offered once you pick a launcher."
 
-Then use AskUserQuestion — "How do you want to proceed?" — with the options below, always in this order. "(Recommended)" goes to the option for `LAST_LAUNCHER` (the launcher of the newest history line whose launcher is `orca` or `t3`) when that launcher is available; otherwise, including when `LAST_LAUNCHER` is empty, it goes to the first launcher offered:
+**When the last launch is replayable**, use AskUserQuestion — "How do you want to proceed?" — with the options below, always in this order:
+- "Run as last time: <LAST>" (Recommended): launch with `LAST_FLAGS` exactly, without asking the flags: for `orca`, invoke the `loopai-orca` skill with the plan path followed by `LAST_FLAGS`; for the T3 launchers, invoke the `loopai-t3` skill with the plan path followed by `LAST_FLAGS` and then `--mode terminal` for `t3-terminal` or `--mode thread` for `t3-thread` (nothing for `t3`, so that skill asks its mode question). `loopai-t3` asks nothing more unless its Mode 1 gate fails for `--mode terminal`, when it asks the mode naming the failed condition. The grill offer is not repeated: choosing this launches now.
+- "Grill the plan first", until a grill round of this plan has run in this conversation: invoke the `loopai-grill` skill with the plan path (grill mode, which critiques the plan with Claude and Codex and applies only the findings the user selects), then ask this question again without this option. The flags are chosen only after that second question, so a grill never fixes them in advance.
+- "Choose launcher and flags": ask the launcher question below, without its grill option.
+- "Not now": stop.
+
+**The launcher question** is the first question when the last launch is not replayable, and the second one after "Choose launcher and flags". Use AskUserQuestion — "How do you want to proceed?" — with the options below, always in this order. "(Recommended)" goes to the option for `LAST_LAUNCHER` (the launcher of the newest replayable history line, the three T3 tags all meaning T3 Code) when that launcher is available; otherwise, including when `LAST_LAUNCHER` is empty, it goes to the first launcher offered:
 - "Run in Orca now", only with Orca available: choose the flags as described under "Choosing the flags", then invoke the `loopai-orca` skill with the plan path followed by the chosen string.
 - "Run in T3 Code now", only with T3 Code available: choose the flags the same way, then invoke the `loopai-t3` skill with the plan path followed by the chosen string. That skill then asks only its mode question (a terminal tab in this thread or a new loopai thread that shows Working), never the flags again.
 - "Start implementation here": begin with task 1
-- "Grill the plan first", until a grill round of this plan has run in this conversation: invoke the `loopai-grill` skill with the plan path (grill mode, which critiques the plan with Claude and Codex and applies only the findings the user selects), then ask this question again without this option. The flags are chosen only after that second question, so a grill never fixes them in advance.
+- "Grill the plan first", only when this is the first question and until a grill round of this plan has run in this conversation: invoke the `loopai-grill` skill with the plan path as above, then ask this question again without this option. The flags are chosen only after that second question, so a grill never fixes them in advance.
 - "Not now": stop. AskUserQuestion takes at most four options: when Orca and T3 Code are both available and the grill option is offered, leave "Not now" out; the user can still decline by choosing "Other". It returns once the grill option is gone.
 
 **Choosing the flags** (after the user picks Orca or T3 Code; `<launcher>` below is "Orca" or "T3 Code"):

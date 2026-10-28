@@ -113,7 +113,8 @@ with `path:line` evidence. User-selected `docs/backlog/` entries, committed by p
 its only writes; it never edits prompts, agents, config, steering files, plans, or reports.
 
 The `loopai-t3` skill (Claude and Codex) starts one plan run that T3 Code shows and asks for the
-mode every time. It reads `orchestrator_capabilities` (a null `parentThreadId` stops it) and
+mode every time unless its own `--mode terminal|thread` argument, which never reaches loopai, replays
+a recorded one (a preselected `terminal` whose Mode 1 gate fails still asks). It reads `orchestrator_capabilities` (a null `parentThreadId` stops it) and
 `currentThreadId` from `t3_thread_list`. Mode 1 is offered only when `runtimeMode` is `full-access`,
 the environment check finds no sandbox the way `detectSandbox` does (a non-empty `CODEX_SANDBOX`,
 `CODEX_SANDBOX_NETWORK_DISABLED=1`, or `SANDBOX_RUNTIME=1`; `check-loopai-t3-skill_test.sh` executes it),
@@ -132,7 +133,8 @@ lost reply it inspects `t3_thread_list` before retrying. It never edits `setting
 errors make T3 Code silently reset its settings, and explains registration through the settings UI
 instead. Both modes' report blocks are byte-identical across the two hosts, and the skill stops after
 reporting. `loopai-plan` offers T3 Code only when the T3 Code tools are present and hands its flag
-choice to `loopai-t3`, which then asks only the mode. `scripts/check-loopai-t3-skill_test.sh` pins
+choice to `loopai-t3`, which then asks only the mode; its "Run as last time" option hands over the
+recorded mode as `--mode` too, so nothing is asked. `scripts/check-loopai-t3-skill_test.sh` pins
 these contracts; the runtime side is described below and in `docs/t3-code.md`.
 `loopai-orca` drives the Orca desktop app's `orca` CLI and executes nothing
 itself: it creates an Orca-managed worktree cut from the current branch (Orca's
@@ -154,7 +156,9 @@ invocation when an `orca` binary is on `PATH`, deriving the flags from the
 effective `task_model`, `review_model`, and `external_reviewers` config keys, and offers to launch it. Its launch
 question (Claude only; Codex has no `loopai-grill`) also offers "Grill the plan first", which hands the plan to
 `loopai-grill` and then asks again without that option; under the four-option cap, with Orca and T3 Code both
-available, the grill option takes the place of "Not now" until the grill round has run. When adding or removing a
+available, the grill option takes the place of "Not now" until the grill round has run; when the last
+launch is replayable the grill option sits in the "Run as last time" question instead and the launcher
+question that follows "Choose launcher and flags" omits it. When adding or removing a
 skill, update `expected_skills` in `scripts/check-symlinks.sh` and the valid
 fixture inventory in `scripts/check-symlinks_test.sh`, then bump both manifest
 versions.
@@ -647,7 +651,7 @@ on `modeRequiresBranch` (so `--review`, `--external-only`, and every standalone 
 `--detach` launcher and `--acp` included, record nothing, and a plan chain records once);
 `runPlanMode` where plan creation continues into a `ModeFull` run; and the detached child after
 `prepareNonInteractiveRequest`, once per attempt, which passes `launcherForOrigin` of the recorded
-origin: `t3` for both T3 origins (`t3-terminal` and `t3-thread`), `cli` otherwise, since
+origin: `t3-terminal` or `t3-thread` by origin kind, so a replay carries the mode, `cli` otherwise, since
 `loadDetachedConfig` forces `cfg.Orca` off. `launcherFor` returns `orca` when the post-override
 config enables it and `cli` otherwise. `launchFlags` renders the
 review spec only when set and the reviewer chain only when `sel.Explicit`, because an inherited
@@ -662,7 +666,8 @@ cannot travel through the flag, and an explicitly empty chain is omitted for the
 of either selects the automatic reviewer. The `run()` hook sits before plan selection, so a full-mode
 run that falls into auto-plan records there even when the description prompt is canceled, and records
 again, deduplicated, if plan creation continues. The file is
-tab-separated `<RFC3339 UTC>`, `<launcher>`, and `<flags>`, newest first, deduplicated by the flags string alone (a
+tab-separated `<RFC3339 UTC>`, `<launcher>`, and `<flags>`, newest first, the launcher one of `orca`,
+`t3-terminal`, `t3-thread`, and `cli` (`knownLauncher` still reads the bare `t3` older builds wrote), deduplicated by the flags string alone (a
 repeated combination moves to the top and takes the new launcher), capped at
 `launchHistoryLimit` (10), and rewritten whole through `writeFileAtomic` with mode `0600`; an empty
 flags string is a valid entry. There is no lock: two simultaneous launches lose at most one line.
@@ -674,9 +679,12 @@ change the format and the snippet together. The skills read only
 `${LOOPAI_CONFIG_DIR:-$HOME/.config/loopai}`, so a launch made with `--config-dir` is recorded where
 no skill looks. Without pass-through flags, `loopai-orca` and `loopai-t3` offer up to three history
 entries before launching, but never when `loopai-plan` already chose the flags in the same
-conversation, an empty choice included; `loopai-plan` marks the launcher of the newest `orca`/`t3`
-line "(Recommended)", and within `AskUserQuestion`'s four-option cap the oldest history entries are
-dropped first.
+conversation, an empty choice included; `loopai-plan` reads the newest `orca`/`t3*` line whose flags
+are empty or valid as `LAST_LAUNCHER`/`LAST_FLAGS` and, when that launcher is available, opens with
+"Run as last time: <launcher, T3 mode, flags>" (Recommended), which launches with those flags and
+`--mode` for a mode-tagged T3 line and asks nothing else; "Choose launcher and flags" leads to the
+launcher question, where that launcher is marked "(Recommended)", and within `AskUserQuestion`'s
+four-option cap the oldest history entries are dropped first.
 
 The task and review providers own all repository writes. External reviewers produce findings only; the `review_model` provider (falling back to `task_model`'s) evaluates and fixes them. Reviewer chains run in order, and each reviewer loops until clean, its independent iteration cap, or its independent stalemate threshold before the next reviewer starts. Post-external review and finalize run once after the complete chain.
 

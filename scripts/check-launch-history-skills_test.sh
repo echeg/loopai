@@ -61,7 +61,8 @@ for variant, name in skills:
         step = re.search(r"^## Step 3: Offer to Start\n(.*?)(?=^## )", text, re.M | re.S)
         assert step, f"{label}: missing Step 3"
         step = step[1]
-        assert "LAST_LAUNCHER=$(awk" in snippet, f"{label}: snippet must assign LAST_LAUNCHER"
+        for expected in ("LAST=$(awk", "LAST_LAUNCHER=$(", "LAST_FLAGS=$("):
+            assert expected in snippet, f"{label}: snippet must assign {expected}"
         helpers = [b for b in re.findall(r"```bash\n(.*?)```", text, re.S) if "cfgval()" in b]
         assert len(helpers) == 1, f"{label}: expected exactly one cfgval helper, found {len(helpers)}"
         helper = textwrap.dedent(helpers[0])
@@ -71,14 +72,33 @@ for variant, name in skills:
         (cfgval_out / f"{variant}.sh").write_text(helper, encoding="utf-8", newline="\n")
         assert f"\"(Recommended)\" goes to the {recommended_target[variant]} for `LAST_LAUNCHER`" in step, f"{label}: recommendation must follow the last launcher"
         assert "otherwise, including when `LAST_LAUNCHER` is empty, it goes to the first launcher offered" in step, f"{label}: recommendation fallback"
-        order = [step.find(option) for option in launcher_options[variant]]
+        # the first question replays the last launch, mode included, and defers everything else
+        # to the launcher question; both hosts hand the recorded T3 mode to loopai-t3 as --mode.
+        assert "**When the last launch is replayable**" in step and "**The launcher question**" in step, f"{label}: two-question layout"
+        replay = step[step.index("**When the last launch is replayable**"):step.index("**The launcher question**")]
+        launcher = step[step.index("**The launcher question**"):]
+        for expected in ("\"Run as last time: <LAST>\"", "(Recommended)", "\"Choose launcher and flags\"",
+                         "with `LAST_FLAGS` exactly, without asking the flags",
+                         "`--mode terminal` for `t3-terminal`", "`--mode thread` for `t3-thread`",
+                         "nothing for `t3`, so that skill asks its mode question"):
+            assert expected in replay, f"{label}: replay question contract: {expected}"
+        for expected in ("**The last launch is replayable** when `LAST_LAUNCHER` is `orca` with Orca available, or `t3-terminal`, `t3-thread`, or `t3` with T3 Code available",
+                         "\"T3 Code, terminal in this thread\"", "\"T3 Code, new loopai thread\"", "\"Last launch: <LAST>\"",
+                         "whose flags are empty or pass that same validation"):
+            assert expected in step, f"{label}: last-launch contract: {expected}"
+        order = [launcher.find(option) for option in launcher_options[variant]]
         assert -1 not in order and order == sorted(order), f"{label}: launcher options must stay Orca, T3 Code, here, (grill,) not now"
+        assert "Run as last time" not in launcher, f"{label}: the launcher question must not repeat the replay option"
         if variant == "claude":
             # loopai-grill is a Claude-only skill; its offer must hand off, return, and fit the four-option cap
             for expected in ("invoke the `loopai-grill` skill with the plan path",
                              "then ask this question again without this option",
                              "leave \"Not now\" out", "It returns once the grill option is gone"):
                 assert expected in step, f"{label}: grill offer contract: {expected}"
+            order = [replay.find(o) for o in ("\"Run as last time: <LAST>\"", "\"Grill the plan first\"",
+                                              "\"Choose launcher and flags\"", "\"Not now\"")]
+            assert -1 not in order and order == sorted(order), f"{label}: replay question must stay last time, grill, choose, not now"
+            assert "only when this is the first question" in launcher, f"{label}: the launcher question offers grill only as the first question"
         else:
             assert "loopai-grill" not in step, f"{label}: Codex has no loopai-grill to offer"
         assert "(Recommended)\", only with" not in step, f"{label}: Orca must not be recommended unconditionally"
@@ -104,6 +124,7 @@ printf '%s\n' \
   '' \
   $'2026-10-06T11:50:00Z\tbogus\t--task-model claude:opus' \
   $'2026-10-06T11:40:00Z\tt3\t--task-model opus:high' \
+  $'2026-10-06T11:35:00Z\tt3-terminal\t--task-model codex:gpt-6:high' \
   $'2026-10-06T11:30:00Z\torca\t--task-model claude:opus:high --external-reviewers codex:gpt-6:high,claude:fable' \
   $'2026-10-06T11:20:00Z\tt3\t' \
   'malformed' \
@@ -116,26 +137,37 @@ printf '%s\n' \
   $'2026-10-06T10:10:00Z\tcli\t--review-model claude:haiku' \
   > "$tmp/cfg/launch-history"
 printf '%s\n' $'2026-10-06T12:00:00Z\tcli\t--task-model codex:gpt-6:high' > "$tmp/cli-only/launch-history"
+# a loopai thread launched without flags replays as t3-thread with empty flags; the legacy tag is
+# replayed as t3, whose mode the skill cannot know.
+mkdir -p "$tmp/thread-empty" "$tmp/legacy"
+printf '%s\n' $'2026-10-06T12:00:00Z\tcli\t--task-model codex:gpt-6:high' $'2026-10-06T11:50:00Z\tt3-thread\t' \
+  $'2026-10-06T11:40:00Z\torca\t--review-model claude:sonnet' > "$tmp/thread-empty/launch-history"
+printf '%s\n' $'2026-10-06T12:00:00Z\tt3\t--task-model claude:opus' > "$tmp/legacy/launch-history"
 
 expected_history=$'--task-model codex:gpt-6:high\n--task-model claude:opus:high --external-reviewers codex:gpt-6:high,claude:fable\n--review-model claude:sonnet'
 
-# the trailing "." keeps command substitution from stripping an empty LAST_LAUNCHER's newline.
+# the trailing "." keeps command substitution from stripping an empty LAST_FLAGS's newline.
 run_snippet() {
-  LOOPAI_CONFIG_DIR="$2" bash -c '. "$1"; printf "%s\n--\n%s." "$HISTORY" "${LAST_LAUNCHER-unset}"' _ "$1"
+  LOOPAI_CONFIG_DIR="$2" bash -c '. "$1"; printf "%s\n--\n%s\n%s." "$HISTORY" "${LAST_LAUNCHER-unset}" "${LAST_FLAGS-unset}"' _ "$1"
 }
 
+# one expected HISTORY, LAST_LAUNCHER, and LAST_FLAGS per fixture for loopai-plan; the other
+# skills never assign LAST_*. In the full fixture the invalid legacy t3 line is skipped and the
+# mode-tagged line below it is the last launch, though its flags are already in HISTORY.
+fixtures=(cfg cli-only missing thread-empty legacy)
+histories=("$expected_history" '--task-model codex:gpt-6:high' '' $'--task-model codex:gpt-6:high\n--review-model claude:sonnet' '--task-model claude:opus')
+launchers=(t3-terminal '' '' t3-thread t3)
+flags=('--task-model codex:gpt-6:high' '' '' '' '--task-model claude:opus')
 for snippet in "$tmp"/snippets/*.sh; do
   name="$(basename "$snippet" .sh)"
-  last_full="unset" last_cli="unset" last_missing="unset"
-  if [[ "$name" == *-loopai-plan ]]; then
-    last_full="t3" last_cli="" last_missing=""
-  fi
-  got="$(run_snippet "$snippet" "$tmp/cfg")"
-  [[ "$got" == "$expected_history"$'\n--\n'"$last_full." ]] || { printf '%s: unexpected result for full fixture:\n%s\n' "$name" "$got" >&2; exit 1; }
-  got="$(run_snippet "$snippet" "$tmp/cli-only")"
-  [[ "$got" == $'--task-model codex:gpt-6:high\n--\n'"$last_cli." ]] || { printf '%s: unexpected result for cli-only fixture:\n%s\n' "$name" "$got" >&2; exit 1; }
-  got="$(run_snippet "$snippet" "$tmp/missing")"
-  [[ "$got" == $'\n--\n'"$last_missing." ]] || { printf '%s: missing file must yield no history:\n%s\n' "$name" "$got" >&2; exit 1; }
+  for i in "${!fixtures[@]}"; do
+    launcher="${launchers[$i]}" flag="${flags[$i]}"
+    if [[ "$name" != *-loopai-plan ]]; then
+      launcher="unset" flag="unset"
+    fi
+    got="$(run_snippet "$snippet" "$tmp/${fixtures[$i]}")"
+    [[ "$got" == "${histories[$i]}"$'\n--\n'"$launcher"$'\n'"$flag." ]] || { printf '%s: unexpected result for %s fixture:\n%s\n' "$name" "${fixtures[$i]}" "$got" >&2; exit 1; }
+  done
 done
 
 # cfgval reads its key from a variable: the local config wins over the global one, and a

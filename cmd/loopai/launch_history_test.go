@@ -66,6 +66,17 @@ func TestReadLaunchHistory(t *testing.T) {
 			want: []launchEntry{{When: t2, Launcher: launcherOrca, Flags: "--task-model claude:sonnet"}},
 		},
 		{
+			name: "T3 mode tags and the legacy t3 tag",
+			content: "2026-10-06T12:34:56Z\tt3-terminal\t--task-model claude:opus\n" +
+				"2026-10-05T08:00:00Z\tt3-thread\t\n" +
+				"2026-10-04T09:30:00Z\tt3\t--task-model codex\n",
+			want: []launchEntry{
+				{When: t1, Launcher: launcherT3Terminal, Flags: "--task-model claude:opus"},
+				{When: t2, Launcher: launcherT3Thread, Flags: ""},
+				{When: t3, Launcher: launcherT3, Flags: "--task-model codex"},
+			},
+		},
+		{
 			name:    "non-UTC timestamp normalized",
 			content: "2026-10-06T14:34:56+02:00\tcli\t--task-model claude:opus\n",
 			want:    []launchEntry{{When: t1, Launcher: launcherCLI, Flags: "--task-model claude:opus"}},
@@ -282,8 +293,8 @@ func TestLauncherForOrigin(t *testing.T) {
 	tests := []struct {
 		name, kind, want string
 	}{
-		{name: "terminal in a T3 thread", kind: runs.OriginT3Terminal, want: launcherT3},
-		{name: "loopai T3 thread", kind: runs.OriginT3Thread, want: launcherT3},
+		{name: "terminal in a T3 thread", kind: runs.OriginT3Terminal, want: launcherT3Terminal},
+		{name: "loopai T3 thread", kind: runs.OriginT3Thread, want: launcherT3Thread},
 		{name: "shell", kind: runs.OriginCLI, want: launcherCLI},
 		{name: "unrecorded", kind: "", want: launcherCLI},
 		{name: "unknown kind", kind: "orca", want: launcherCLI},
