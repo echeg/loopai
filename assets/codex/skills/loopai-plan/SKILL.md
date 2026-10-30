@@ -77,13 +77,13 @@ Do not ask about the testing approach. Use regular (code first, then tests) unle
 
 Do not ask for a plan title. Derive a short descriptive title from the answered goal, and the `<slug>` from that title: lowercase, ASCII-only, words joined by `-`, at most ~50 characters. The slug also becomes the branch name, so keep it specific. The user can rename the file before running it.
 
-When the request arrives from `$loopai-brainstorm`, its approved design is authoritative: preserve the goal, scope, constraints, chosen approach, and rejected alternatives, and ask only for what is genuinely missing.
+When the request arrives from `$loopai-brainstorm` or `$loopai-brainstorm-v2`, its approved design is authoritative: preserve the goal, scope, constraints, chosen approach, and rejected alternatives, and ask only for what is genuinely missing.
 
 ## Step 1.5: Explore Approaches
 
 Propose two or three meaningfully different approaches with trade-offs, lead with a recommendation and its reasoning, and ask which direction to take before drafting.
 
-Skip this step when the approach is obvious, the user already specified it, or it is a bug fix with one clear solution. Skip it when invoked from `$loopai-brainstorm` and carry that dialogue's approved and rejected approaches into `## Decisions` instead.
+Skip this step when the approach is obvious, the user already specified it, or it is a bug fix with one clear solution. Skip it when invoked from `$loopai-brainstorm` or `$loopai-brainstorm-v2` and carry that dialogue's approved and rejected approaches into `## Decisions` instead.
 
 ## Step 2: Write the Plan File
 
@@ -99,7 +99,7 @@ Check `docs/plans/` for collisions, then write `docs/plans/YYYYMMDD-<slug>.md`.
 - how it fits the existing system
 
 ## Decisions
-<!-- Optional. Record an approved design from $loopai-brainstorm here. -->
+<!-- Optional. Record an approved design from $loopai-brainstorm or $loopai-brainstorm-v2 here. -->
 - **Context**: why a decision was needed
 - **Chosen approach**: the approved direction and its rationale
 - **Rejected alternatives**: what else was considered and why it lost

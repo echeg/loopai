@@ -72,6 +72,20 @@ assert_contains "missing private-path case-alias exclusion" 'recovery paths, ign
 assert_contains "missing unsafe Git-directory rejection" 'reject a nonstandard Git private or common directory inside the worktree'
 assert_contains "missing grill-mode Codex degradation" 'continue with the three Claude critics'
 assert_contains "missing zero-findings handling" 'If no verified findings survive, skip AskUserQuestion'
+assert_contains "missing fork/decided split test" 'whether the repository decides the fix'
+assert_contains "missing decided-finding auto-apply" 'Apply decided findings without asking'
+assert_contains "missing fork scope criterion" "changes the plan's Overview, scope, or non-goals, removes or merges a task"
+assert_contains "missing per-fork question" 'name the finding and its evidence in the question text itself'
+# shellcheck disable=SC2016 # Backticks are literal skill text, not shell syntax.
+assert_contains "missing single-fork question rule" 'never fold several forks into one `multiSelect` question'
+assert_contains "missing fork decline handling" 'a bare decline as a deferral'
+assert_contains "missing all-forks-declined handling" 'If every verified finding is a fork and the user declines all of them, leave the plan unchanged'
+assert_contains "missing decided-finding log evidence" '- decided by grill: <evidence>'
+assert_contains "missing decided-finding report" 'lists each decided finding with what changed, where, and the evidence'
+# shellcheck disable=SC2016 # Backticks are literal skill text, not shell syntax.
+if grep -Fq 'present the verified findings with short evidence and impact summaries using AskUserQuestion with `multiSelect: true`' "$skill_file"; then
+	fail "grill still presents every verified finding for manual selection"
+fi
 assert_contains "missing decision-log critic contract" 'not to re-raise a point recorded as rejected'
 assert_contains "missing decision-log Codex critique contract" 'do not re-raise a point it records as rejected'
 assert_contains "missing decision-log apply step" "Record the round in the draft's \`## Decision Log\` section"

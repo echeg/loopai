@@ -1,0 +1,4 @@
+interface:
+  display_name: "loopai Brainstorm v2"
+  short_description: "Design a feature into a loopai plan with few questions"
+  default_prompt: "Use $loopai-brainstorm-v2 to design this before planning it, asking only about direction."

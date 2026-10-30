@@ -58,6 +58,7 @@ expect_failure() {
 add_pair loopai
 add_pair loopai-adopt
 add_pair loopai-brainstorm
+add_pair loopai-brainstorm-v2
 add_pair loopai-orca
 add_pair loopai-plan
 add_pair loopai-retro

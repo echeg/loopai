@@ -9,7 +9,7 @@ status=0
 
 # shellcheck source=lib/skill-contract.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/skill-contract.sh"
-expected_skills="$(printf '%s\n' loopai loopai-adopt loopai-brainstorm loopai-grill loopai-merge loopai-orca loopai-plan loopai-retro loopai-t3 loopai-update | sort)"
+expected_skills="$(printf '%s\n' loopai loopai-adopt loopai-brainstorm loopai-brainstorm-v2 loopai-grill loopai-merge loopai-orca loopai-plan loopai-retro loopai-t3 loopai-update | sort)"
 
 # Spellings loopai removed when the provider moved into every model spec
 # (provider[:model[:effort]]). A skill still teaching one would make loopai stop at

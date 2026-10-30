@@ -99,7 +99,7 @@ Show the discovered context, then ask questions **one at a time** using the AskU
 
 **Ask questions one at a time (do not overwhelm with multiple questions):**
 
-When the request comes from `loopai-brainstorm`, treat its approved design as authoritative. Preserve its goal, scope, constraints, chosen approach, and rejected alternatives; ask only for missing information.
+When the request comes from `loopai-brainstorm` or `loopai-brainstorm-v2`, treat its approved design as authoritative. Preserve its goal, scope, constraints, chosen approach, and rejected alternatives; ask only for missing information.
 
 1. **Plan purpose**: use AskUserQuestion - "What is the main goal?"
    - provide multiple choice with suggested answer based on discovered intent
@@ -123,7 +123,7 @@ After all questions answered, synthesize responses into plan context.
 
 Once the problem is understood, propose implementation approaches:
 
-When invoked from `loopai-brainstorm`, skip this step and carry its approved and rejected approaches into `## Decisions`.
+When invoked from `loopai-brainstorm` or `loopai-brainstorm-v2`, skip this step and carry its approved and rejected approaches into `## Decisions`.
 
 1. **Propose 2-3 different approaches** with trade-offs for each
 2. **Lead with recommended option** and explain reasoning
@@ -168,7 +168,7 @@ Check `docs/plans/` for existing files, then create `docs/plans/YYYYMMDD-<task-n
 - How it integrates with existing system
 
 ## Decisions
-<!-- Optional. When invoked from loopai-brainstorm, record its approved design here. -->
+<!-- Optional. When invoked from loopai-brainstorm or loopai-brainstorm-v2, record its approved design here. -->
 - **Context**: [why a decision was needed]
 - **Chosen approach**: [approved direction and rationale]
 - **Rejected alternatives**: [other approaches considered and why they were not selected]
@@ -217,7 +217,8 @@ Check `docs/plans/` for existing files, then create `docs/plans/YYYYMMDD-<task-n
 
 ## Decision Log
 <!-- Omit this whole section from a first-time plan. Add it only when the plan was revised after feedback or
-     critique (loopai-grill, draft review), and then replace this comment with one list item per point:
+     critique (loopai-grill, draft review), or when loopai-brainstorm-v2 asks for it, and then replace this
+     comment with one list item per point:
      - <YYYY-MM-DD> <source>: **accepted** - <what changed and where>
      - <YYYY-MM-DD> <source>: **rejected** - "<the point>" - <one-line reasoning>
      NEVER put checkboxes in this section. -->
@@ -311,6 +312,8 @@ The explicit file path and `--only` keep unrelated staged changes out of the com
 
 ## Step 3: Offer to Start
 
+**When the invoking skill pre-selected a grill round** (`loopai-brainstorm-v2` does), invoke the `loopai-grill` skill with the plan path right after the plan is committed and before the first question below, exactly as the "Grill the plan first" option does, then ask the questions below without that option. The user did not review the decisions that skill made alone, so the round is not optional here.
+
 After creating the file, detect Orca and T3 Code and build the launch lines before speaking to the user:
 
 1. **Detect Orca.** `ORCA=${ORCA_CLI_COMMAND:-orca}`; on Linux outside an Orca terminal use `orca-ide` instead of bare `orca` (there `orca` is the GNOME screen reader). Orca is available when `command -v "$ORCA"` succeeds. Do not call `orca status`; the `loopai-orca` skill runs its own preflight.
@@ -381,7 +384,7 @@ When `FLAGS` is empty, add one line: "No `task_model`/`review_model`/`external_r
 
 **When the last launch is replayable**, use AskUserQuestion — "How do you want to proceed?" — with the options below, always in this order:
 - "Run as last time: <LAST>" (Recommended): launch with `LAST_FLAGS` exactly, without asking the flags: for `orca`, invoke the `loopai-orca` skill with the plan path followed by `LAST_FLAGS`; for the T3 launchers, invoke the `loopai-t3` skill with the plan path followed by `LAST_FLAGS` and then `--mode terminal` for `t3-terminal` or `--mode thread` for `t3-thread` (nothing for `t3`, so that skill asks its mode question). `loopai-t3` asks nothing more unless its Mode 1 gate fails for `--mode terminal`, when it asks the mode naming the failed condition. The grill offer is not repeated: choosing this launches now.
-- "Grill the plan first", until a grill round of this plan has run in this conversation: invoke the `loopai-grill` skill with the plan path (grill mode, which critiques the plan with Claude and Codex and applies only the findings the user selects), then ask this question again without this option. The flags are chosen only after that second question, so a grill never fixes them in advance.
+- "Grill the plan first", until a grill round of this plan has run in this conversation: invoke the `loopai-grill` skill with the plan path (grill mode, which critiques the plan with Claude and Codex, applies the verified findings the repository decides, and asks only about forks), then ask this question again without this option. The flags are chosen only after that second question, so a grill never fixes them in advance.
 - "Choose launcher and flags": ask the launcher question below, without its grill option.
 - "Not now": stop.
 

@@ -38,7 +38,7 @@ claude plugin install loopai@loopai
 ```
 
 The plugin provides `loopai:loopai`, `loopai:loopai-merge`, `loopai:loopai-orca`, `loopai:loopai-t3`, `loopai:loopai-plan`,
-`loopai:loopai-brainstorm`, `loopai:loopai-adopt`, `loopai:loopai-update`,
+`loopai:loopai-brainstorm`, `loopai:loopai-brainstorm-v2`, `loopai:loopai-adopt`, `loopai:loopai-update`,
 `loopai:loopai-grill`, and `loopai:loopai-retro`. The CLI remains the execution
 engine. `loopai:loopai-orca` creates an Orca-managed worktree from the current
 branch through the `orca` CLI, copies the plan and untracked `.loopai/` overrides
@@ -82,12 +82,20 @@ context, chosen approach, rejected alternatives, and verified facts in the
 plan's `## Decisions` section. This pipeline does not create an intermediate
 spec file or invoke `superpowers:writing-plans`.
 
+`loopai:loopai-brainstorm-v2` is the same pipeline for a user who usually accepts
+the recommended option: it asks one question at a time only about direction (goal,
+scope, order, non-goals), verifies every fork against the code first, decides the
+implementation forks itself in one decision table, presents the design in one
+message, and has `loopai:loopai-plan` run a `loopai:loopai-grill` round before
+offering to launch. Decided forks are logged as accepted only, never as rejected
+alternatives, so the grill can still challenge them.
+
 ## Codex CLI skills
 
 Codex reads skills from `${CODEX_HOME:-~/.codex}/skills` only, so `make
 install-codex-skills` copies them there (`--dry-run` previews, `--keep-legacy`
 skips pre-rename `ralphex-*` cleanup). It installs `$loopai`, `$loopai-plan`,
-`$loopai-adopt`, `$loopai-update`, `$loopai-brainstorm`, `$loopai-orca`, `$loopai-t3`, `$loopai-merge`, and `$loopai-retro`.
+`$loopai-adopt`, `$loopai-update`, `$loopai-brainstorm`, `$loopai-brainstorm-v2`, `$loopai-orca`, `$loopai-t3`, `$loopai-merge`, and `$loopai-retro`.
 `loopai-grill` stays Claude-only: its safety model is a read-only Claude tool
 pin that Codex cannot express. The Codex bodies live in `assets/codex/skills/`
 and are maintained by hand, because Codex has no Claude `AskUserQuestion` or `Task`
@@ -164,7 +172,7 @@ Describe the outcome.
 
 Task headings must be `### Task N:` or `### Iteration N:`. Incomplete work uses `[ ]`; loopai marks successful work `[x]`. Put actionable checkboxes inside task sections and include validation commands.
 
-A plan may also carry an optional `## Decision Log` recording how earlier critique rounds were resolved, one line per finding as `<YYYY-MM-DD> grill: **accepted** - <what changed>` or `**rejected** - "<finding>" - <reason>`. `loopai-grill` writes it when applying selected findings, recording a finding you were shown but did not pick as `**deferred**` rather than rejected and refreshing an existing deferred entry instead of appending a duplicate; later rounds do not re-raise a recorded rejection without new evidence, but may raise a deferred point again. The section never contains checkboxes; a checkbox outside a task section makes the plan read as unfinished work.
+A plan may also carry an optional `## Decision Log` recording how earlier critique rounds were resolved, one line per finding as `<YYYY-MM-DD> grill: **accepted** - <what changed>` or `**rejected** - "<finding>" - <reason>`. `loopai-grill` writes it when applying findings: a finding whose fix the repository determines is applied without asking and logged as accepted with a `decided by grill: <evidence>` suffix, while a fork (fixes differing in behavior, interface, stored format, or ownership, or a scope change) gets its own question; a fork you declined without a reason is recorded as `**deferred**` rather than rejected and refreshing an existing deferred entry instead of appending a duplicate; later rounds do not re-raise a recorded rejection without new evidence, but may raise a deferred point again. The section never contains checkboxes; a checkbox outside a task section makes the plan read as unfinished work.
 
 ## Execution
 

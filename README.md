@@ -139,7 +139,7 @@ marketplace from its local path instead (`claude plugin marketplace add /path/to
 GitHub source the plugin follows the published repository: `make install` warns when its version
 differs from the checkout, and `loopai-update` needs `LOOPAI_SRC` or asks where the checkout is.
 
-The plugin provides ten skills:
+The plugin provides eleven skills:
 
 - `loopai:loopai` launches loopai, monitors progress, and resumes active runs
 - `loopai:loopai-merge` reads and narrates a completion report, previews merge
@@ -154,10 +154,14 @@ The plugin provides ten skills:
 - `loopai:loopai-plan` creates an executable implementation plan
 - `loopai:loopai-brainstorm` designs a feature interactively, then hands the
   approved design to `loopai:loopai-plan`
+- `loopai:loopai-brainstorm-v2` does the same with fewer questions: it asks only
+  about direction, decides implementation forks from the code, and has
+  `loopai:loopai-plan` run a grill round before offering to launch
 - `loopai:loopai-adopt` converts an existing specification or issue into a plan
 - `loopai:loopai-update` updates the installation through `make install`, then merges updated
   embedded defaults into local customizations
-- `loopai:loopai-grill` critiques an existing plan with Claude and Codex, or
+- `loopai:loopai-grill` critiques an existing plan with Claude and Codex, applying the
+  findings the repository decides and asking only about forks, or
   runs a plan-off that compares and synthesizes competing plans;
   `loopai:loopai-plan` offers a grill round before you choose how to run a new plan
 - `loopai:loopai-retro` reviews run artifacts and ranks evidence-backed improvements;
@@ -304,8 +308,8 @@ make install-codex-skills          # add --dry-run first to see what changes
 
 `make install` runs this step too whenever the Codex home exists.
 
-Nine skills are installed: `loopai`, `loopai-plan`, `loopai-adopt`,
-`loopai-update`, `loopai-brainstorm`, `loopai-orca`, `loopai-t3`, `loopai-merge`, and
+Ten skills are installed: `loopai`, `loopai-plan`, `loopai-adopt`,
+`loopai-update`, `loopai-brainstorm`, `loopai-brainstorm-v2`, `loopai-orca`, `loopai-t3`, `loopai-merge`, and
 `loopai-retro`. Invoke them as
 `$loopai-plan` and so on. Re-run the command after pulling a newer repository
 version; each skill directory is replaced wholesale, so a file dropped upstream
@@ -759,15 +763,17 @@ rounds were resolved:
 ## Decision Log
 
 - 2026-08-25 grill: **accepted** - split lock acquisition into prepare/commit (tasks 3-4 updated)
+- 2026-08-25 grill: **accepted** - fixed the worktree lock path in task 2 - decided by grill: `pkg/git/lock.go:41` resolves it under the Git directory
 - 2026-08-25 grill: **rejected** - "add retry around merge" - merge is already the backstop
 - 2026-08-25 grill: **deferred** - "split the git package" - not selected this round
 ```
 
-`accepted` and `rejected` record decisions you made explicitly; `deferred` records a
-finding you were shown and did not pick. Only a `rejected` entry stops a later round from
-raising the point again.
+`accepted` records a fix you chose, or one the grill applied on its own because the
+repository left only one reasonable fix, marked `decided by grill` with its evidence;
+`rejected` records a fork you declined with a reason; `deferred` records a fork you declined
+without one. Only a `rejected` entry stops a later round from raising the point again.
 
-`loopai-grill` writes the section when it applies user-selected findings, and plan revision
+`loopai-grill` writes the section when it applies findings, and plan revision
 after critique records accepted and rejected points there. Later critique rounds read it and
 do not re-raise a rejected point without new evidence, so repeated rounds converge instead of
 relitigating. The section never contains checkboxes: a checkbox outside a task section is not an

@@ -102,9 +102,22 @@ it "was removed" or "were removed"; `--codex-args` and `--t3-thread` do not matc
 substitutes the skill's argument words into `$0`, `$1`, ... (so snippets read awk fields as `$(2)` and
 pass a key to `cfgval` through a named variable); Codex substitutes nothing, so `check-codex-skills.sh`
 has no such rule. The current set is `loopai`, `loopai-merge`,
-`loopai-plan`, `loopai-brainstorm`, `loopai-adopt`, `loopai-update`,
+`loopai-plan`, `loopai-brainstorm`, `loopai-brainstorm-v2`, `loopai-adopt`, `loopai-update`,
 `loopai-grill`, `loopai-orca`, `loopai-t3`, and `loopai-retro`; every added skill needs the matching
 top-level symlink.
+
+`loopai-brainstorm-v2` (Claude and Codex) is `loopai-brainstorm` for a user who accepts nearly every
+recommended option. It splits open points by one observable test, whether the repository can answer
+them: direction questions (intent, live data, order of work, non-goals) are still asked one per
+message, while mechanism forks are verified against the base branch first and then decided from
+the evidence, shown in one decision table with one "Accept all / Review one by one" question, and
+a fork with no evidence either way is promoted to a question. The design is presented in one
+message with one approval. The handoff asks `loopai-plan` to log every decided fork as `accepted`
+with its evidence and to log `rejected` only what the user turned down, since the grill critics skip
+a recorded rejection and the user never judged those alternatives. The Claude copy also asks
+`loopai-plan` to run the grill round before its first launch question, as the "Grill the plan first"
+option would; `loopai-plan`'s Step 3 honors that pre-selection. Codex has no `loopai-grill`, so its
+copy tells the user to run the `loopai-grill` skill with the plan path from Claude Code before launching.
 
 `loopai-retro` is a read-only retrospective over bounded progress-log excerpts, completion
 reports, backlog, steering files, and check definitions, invoked manually as
@@ -253,8 +266,8 @@ installed copies receive the update. Keep the marketplace entry version equal
 to the plugin version.
 
 `loopai-grill` has two safety-sensitive routes. Grill mode critiques an active
-plan and applies only user-selected verified findings; plan-off creates one new
-plan and never edits its source. Both reject completed, symlinked, nested, and
+plan, applies the verified findings the repository decides, and asks only about forks;
+plan-off creates one new plan and never edits its source. Both reject completed, symlinked, nested, and
 `.loopai/` plans. The skill pre-approves no Claude tools. Its bundled path
 helper rejects symlinked plan and `.loopai` roots, rejects hard-linked plans,
 validates outside-repository scratch directories, identity-and-content-guards
@@ -275,9 +288,18 @@ credential-like shell variables, and starts an ephemeral session without
 approval escalation. Candidate and judging scratch files live outside the
 repository and are removed on every exit. Grill mode reports Codex failure
 and degrades to Claude-only; plan-off requires Codex and fails closed. Grill
+mode sorts every verified finding by one test, whether the repository decides the fix: a
+finding is a fork when several reasonable fixes differ in user-visible behavior, a public
+interface, a stored format, or component ownership with no repository evidence selecting one,
+or when the fix changes the Overview, scope, or non-goals, removes or merges a task, or
+reverses an accepted Decision Log entry; everything else is decided and applied without
+asking. Each fork gets its own `AskUserQuestion` with two to four concrete fixes, the
+recommended one first, never a `multiSelect` over all findings, because that dialog is what
+made every round a manual triage of findings the repository had already settled. Grill
 mode's apply path also records the round in the draft's `## Decision Log` —
-accepted findings with what changed, findings the user declined with a stated
-reason as rejected, and findings merely not selected as deferred — before
+decided findings as accepted with a `decided by grill: <evidence>` suffix so an unasked
+change stays auditable, chosen fork fixes as accepted, forks the user declined with a stated
+reason as rejected, and forks declined bare as deferred — before
 `replace-active` publishes it, since the skill never edits the plan at
 its repository path and a post-publication write would need a second guarded
 replacement. The section is created immediately before `## Implementation
@@ -289,13 +311,13 @@ fallback used when a plan has no task headings — counts it, so such a plan
 never reads as complete; the executor also reads the section as text and can
 treat the line as outstanding work. Every critic and the verification pass are told
 to read the log and not re-raise a recorded rejection absent contradicting
-evidence, while a deferred entry may be raised again: `AskUserQuestion` with
-`multiSelect` captures no reason, so recording an unexplained non-selection as
-rejected would silently suppress the finding in every later round. The log is
-written only when the user selects at least one finding;
-a round where nothing is selected leaves the plan untouched, so its rejections
-go unrecorded rather than loopai writing to a plan the user asked to leave
-alone. When these contracts change, update and run `scripts/check-grill-skill_test.sh`.
+evidence, while a deferred entry may be raised again: a bare decline carries no reason, so
+recording an unexplained decline as rejected would silently suppress the finding in every
+later round. The log is written only when at least one finding is applied, which a decided
+finding always is; a round whose only findings are forks the user declines leaves the plan
+untouched, so its rejections go unrecorded rather than loopai writing to a plan the user
+asked to leave alone. The closing report lists every decided finding with its evidence,
+since that report is the user's only view of the unasked changes before the next round. When these contracts change, update and run `scripts/check-grill-skill_test.sh`.
 
 ## Configuration
 

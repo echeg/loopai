@@ -21,12 +21,12 @@ sections = [title or heading for title, heading in re.findall(r"^(?:# (Report: <
 
 def skill_list(text, start, end, prefix=""):
     block = text.split(start, 1)[1].split(end, 1)[0]
-    return set(re.findall(r"`" + re.escape(prefix) + r"(loopai(?:-[a-z0-9]+)?)`", block))
+    return set(re.findall(r"`" + re.escape(prefix) + r"(loopai(?:-[a-z0-9]+)*)`", block))
 
 
 def check_inventories(contents):
     readme = contents["README.md"]
-    counts = {"eight": 8, "nine": 9, "ten": 10}
+    counts = {"eight": 8, "nine": 9, "ten": 10, "eleven": 11}
     claude_count = re.search(r"The plugin provides (\w+) skills:", readme).group(1).lower()
     codex_count = re.search(r"(\w+) skills are installed:", readme).group(1).lower()
     assert counts[claude_count] == len(inventory["claude"]), "README Claude count is stale"
@@ -70,7 +70,7 @@ class ReportDocumentationTests(unittest.TestCase):
         check_reports(docs)
 
     def test_stale_skill_count_is_rejected(self):
-        stale = dict(docs, **{"README.md": docs["README.md"].replace("provides ten skills", "provides eight skills")})
+        stale = dict(docs, **{"README.md": docs["README.md"].replace("provides eleven skills", "provides eight skills")})
         with self.assertRaisesRegex(AssertionError, "count is stale"):
             check_inventories(stale)
 
