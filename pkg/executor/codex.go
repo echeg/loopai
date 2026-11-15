@@ -345,8 +345,9 @@ type codexUsage struct {
 	totals *rolloutTokenUsage // totals of the latest token_count record, nil until one arrives
 }
 
-// rolloutTokenUsage is a token_count record's info.total_token_usage. codex counts the
-// cached tokens inside input_tokens.
+// rolloutTokenUsage is a token_count record's info.total_token_usage. codex counts both the
+// cache reads and the cache writes inside input_tokens: total_tokens is input_tokens plus
+// output_tokens.
 type rolloutTokenUsage struct {
 	InputTokens           int64 `json:"input_tokens"`
 	CachedInputTokens     int64 `json:"cached_input_tokens"`
@@ -355,8 +356,9 @@ type rolloutTokenUsage struct {
 }
 
 // result converts the accumulated totals into a Usage, or nil when no token_count record
-// carried totals. InputTokens is normalized to exclude cached tokens, the convention Usage
-// shares with claude; codex reports no cost.
+// carried totals. InputTokens is normalized to exclude the cache reads and writes, the
+// convention Usage shares with claude, where the three input counts are disjoint and their sum
+// is the billable input; codex reports no cost.
 func (u *codexUsage) result(configuredModel string) *Usage {
 	if u == nil || u.totals == nil {
 		return nil
@@ -367,7 +369,7 @@ func (u *codexUsage) result(configuredModel string) *Usage {
 	}
 	return &Usage{
 		Model:                 model,
-		InputTokens:           max(u.totals.InputTokens-u.totals.CachedInputTokens, 0),
+		InputTokens:           max(u.totals.InputTokens-u.totals.CachedInputTokens-u.totals.CacheWriteInputTokens, 0),
 		CachedInputTokens:     u.totals.CachedInputTokens,
 		CacheWriteInputTokens: u.totals.CacheWriteInputTokens,
 		OutputTokens:          u.totals.OutputTokens,

@@ -4035,7 +4035,7 @@ func TestCodexExecutor_Run_TaskComplete(t *testing.T) {
 			}
 			assert.True(t, stopped.Load(), "grace timer must be stopped on every exit path")
 			assert.Equal(t, tt.action == "idle", result.IdleTimedOut)
-			assert.Equal(t, &Usage{InputTokens: 6000, CachedInputTokens: 24000, CacheWriteInputTokens: 1200, OutputTokens: 1100},
+			assert.Equal(t, &Usage{InputTokens: 4800, CachedInputTokens: 24000, CacheWriteInputTokens: 1200, OutputTokens: 1100},
 				result.Usage, "usage is kept on every exit path")
 			switch tt.action {
 			case "cancel":
@@ -4283,9 +4283,11 @@ func TestCodexUsage_result(t *testing.T) {
 		{name: "nil accumulator", usage: nil},
 		{name: "no totals", usage: &codexUsage{model: "gpt-6-astra"}},
 		{
-			name:  "cached tokens subtracted from input",
+			// codex counts cache reads and cache writes inside input_tokens; the three Usage input
+			// counts are disjoint, so their sum is codex's input_tokens again
+			name:  "cache reads and writes subtracted from input",
 			usage: &codexUsage{model: "gpt-6-astra", totals: &rolloutTokenUsage{InputTokens: 1000, CachedInputTokens: 600, CacheWriteInputTokens: 50, OutputTokens: 70}},
-			want:  &Usage{Model: "gpt-6-astra", InputTokens: 400, CachedInputTokens: 600, CacheWriteInputTokens: 50, OutputTokens: 70},
+			want:  &Usage{Model: "gpt-6-astra", InputTokens: 350, CachedInputTokens: 600, CacheWriteInputTokens: 50, OutputTokens: 70},
 		},
 		{
 			name:       "configured model when the rollout names none",
@@ -4302,6 +4304,11 @@ func TestCodexUsage_result(t *testing.T) {
 			name:  "inconsistent cache count never goes negative",
 			usage: &codexUsage{totals: &rolloutTokenUsage{InputTokens: 10, CachedInputTokens: 30}},
 			want:  &Usage{CachedInputTokens: 30},
+		},
+		{
+			name:  "inconsistent cache write count never goes negative",
+			usage: &codexUsage{totals: &rolloutTokenUsage{InputTokens: 10, CachedInputTokens: 8, CacheWriteInputTokens: 5}},
+			want:  &Usage{CachedInputTokens: 8, CacheWriteInputTokens: 5},
 		},
 	}
 	for _, tt := range tests {
@@ -4417,7 +4424,7 @@ func TestCodexExecutor_Run_Usage(t *testing.T) {
 		sessionID = "019e3bbe-9788-79f1-b668-0000000a0001"
 		childID   = "019e3bbe-9788-79f1-b668-0000000a0002"
 	)
-	mainUsage := &Usage{Model: "gpt-6-astra", InputTokens: 6500, CachedInputTokens: 24000, CacheWriteInputTokens: 1200, OutputTokens: 1100}
+	mainUsage := &Usage{Model: "gpt-6-astra", InputTokens: 5300, CachedInputTokens: 24000, CacheWriteInputTokens: 1200, OutputTokens: 1100}
 	tests := []struct {
 		name       string
 		fixture    string
@@ -4427,11 +4434,11 @@ func TestCodexExecutor_Run_Usage(t *testing.T) {
 		lateRecord string
 		want       *Usage
 	}{
-		{name: "last token_count totals with cached tokens subtracted", fixture: "usage-rollout.jsonl", want: mainUsage},
+		{name: "last token_count totals with cache reads and writes subtracted", fixture: "usage-rollout.jsonl", want: mainUsage},
 		{name: "rollout model wins over configured model", fixture: "usage-rollout.jsonl", configured: "gpt-cfg", want: mainUsage},
 		{
 			name: "configured model without turn_context", fixture: "usage-rollout.jsonl", configured: "gpt-cfg", stripModel: true,
-			want: &Usage{Model: "gpt-cfg", InputTokens: 6500, CachedInputTokens: 24000, CacheWriteInputTokens: 1200, OutputTokens: 1100},
+			want: &Usage{Model: "gpt-cfg", InputTokens: 5300, CachedInputTokens: 24000, CacheWriteInputTokens: 1200, OutputTokens: 1100},
 		},
 		{name: "no token_count totals", fixture: "no-usage-rollout.jsonl"},
 		{name: "child totals are not counted", fixture: "no-usage-rollout.jsonl", child: true},
@@ -4440,7 +4447,7 @@ func TestCodexExecutor_Run_Usage(t *testing.T) {
 			// unterminated, so only the final drain after exit can read it
 			name: "token_count in the final drain", fixture: "usage-rollout.jsonl",
 			lateRecord: `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40000,"cached_input_tokens":31000,"cache_write_input_tokens":1500,"output_tokens":1600,"total_tokens":41600}}}}`,
-			want:       &Usage{Model: "gpt-6-astra", InputTokens: 9000, CachedInputTokens: 31000, CacheWriteInputTokens: 1500, OutputTokens: 1600},
+			want:       &Usage{Model: "gpt-6-astra", InputTokens: 7500, CachedInputTokens: 31000, CacheWriteInputTokens: 1500, OutputTokens: 1600},
 		},
 	}
 	for _, tt := range tests {

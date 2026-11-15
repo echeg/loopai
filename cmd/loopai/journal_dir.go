@@ -132,9 +132,15 @@ func attachForegroundJournal(o opts, cfg *config.Config, req executePlanRequest)
 }
 
 // attemptStarted is the run's InPlaceAttemptStarted hook: it appends ev, the attempt_start event,
-// and remembers the branch the completion reads the run's commit from. A failed append fails the
-// hook, which ends the run before it executes.
+// and remembers the branch the completion reads the run's commit from. It first repeats the ignore
+// check prepareJournalDir made: that ran on the branch checked out at startup, and branch
+// preparation may since have switched to an existing plan branch whose .gitignore does not ignore
+// the journal files, which would then read as code changes for the whole run. A refusal or a failed
+// append fails the hook, which ends the run before it executes.
 func (f *foregroundJournal) attemptStarted(start attemptStart, ev runs.Event) error {
+	if err := refuseUnignoredJournalDir(f.dir); err != nil {
+		return fmt.Errorf("on branch %q: %w", start.Branch, err)
+	}
 	if _, err := f.hooks.startAttempt(ev); err != nil {
 		return err
 	}

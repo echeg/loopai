@@ -1113,7 +1113,10 @@ a second writer out, unlike `OpenJournal`) and sets `Outcome`, `NonInteractive`,
 through `prepareNonInteractiveRequest`, which would replace `run()`'s `WtCleanup`, skip `KeepAwake` and
 launch history, re-resolve dependencies, and move output to stderr. `InPlaceAttemptStarted` is not
 copied by `worktreeExecuteRequest`; `setupProgressLogger` calls `fireInPlaceAttemptStarted` once the
-progress logger exists, which appends `attempt_start` with `plan` and `worktree_plan` both the absolute
+progress logger exists. Its hook, `foregroundJournal.attemptStarted`, first repeats the ignore check
+through `refuseUnignoredJournalDir`, because `prepareSelectedPlanBranch` may have checked out an
+existing plan branch whose `.gitignore` no longer ignores the journal, then appends `attempt_start`
+with `plan` and `worktree_plan` both the absolute
 plan path (`worktree_plan` is what `parsePlan` re-reads for titles and statuses), an empty `worktree`,
 `console_offset` 0, and the checked-out branch; its error ends the run before the runner is built.
 `foregroundJournal.complete` runs after `runSelectedPlans` returns: `closeAttempt` with an empty run
@@ -1132,8 +1135,8 @@ configured model, possibly an alias) on both `parseStream` return paths, and `re
 it. Codex runs `codex exec` without `--json`, so the rollout is the only source: a `codexUsage`
 accumulator local to one `Run` call is threaded through `startRolloutTail` to `processRolloutLine`,
 written for the main rollout only (never a child rollout), and read after `<-tailDone`; the last
-`token_count` record's `info.total_token_usage` wins, `input_tokens - cached_input_tokens` is the
-input, the model comes from `turn_context` or configuration, and the cost is nil. One executor serves
+`token_count` record's `info.total_token_usage` wins, `input_tokens - cached_input_tokens -
+cache_write_input_tokens` is the input (codex counts both cache counts inside `input_tokens`), the model comes from `turn_context` or configuration, and the cost is nil. One executor serves
 several `Run` calls, which is why the accumulator is per call. `retryPolicy.reportUsage`, called in
 `runWithSessionTimeout` after every session with a non-nil `Usage` whatever its error or timeout
 state, hands `processor.SessionUsage` (provider `toolName`, the `phaseHolder` phase, the usage) to

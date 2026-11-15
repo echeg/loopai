@@ -63,7 +63,9 @@ written to `.loopai/progress/progress-<plan>.txt`, and the human output still go
   second process given the same directory at the same moment fails instead of appending to it.
 - A directory inside the repository work tree is refused unless git ignores both `events.jsonl` and
   `outcome.json` there, because review stalemate detection fingerprints untracked file content and
-  journal writes would read as code changes. Prefer a directory outside the checkout.
+  journal writes would read as code changes. Prefer a directory outside the checkout. The check is
+  repeated once the plan's branch is checked out, before the attempt starts: an existing plan branch
+  whose `.gitignore` does not ignore the files ends the run with a `startup:` outcome.
 
 ## `events.jsonl`
 
@@ -110,7 +112,8 @@ ran in. A session that hit the session timeout still reports the usage it return
   `cached_input_tokens` its `cache_read_input_tokens`, `cache_write_input_tokens` its
   `cache_creation_input_tokens`, and `cost_usd` its `total_cost_usd`.
 - Codex: the counts are the last `token_count` record of the session's rollout file. Codex's own
-  `input_tokens` includes the cached tokens, so loopai subtracts `cached_input_tokens` from it.
+  `input_tokens` includes both the cache reads and the cache writes, so loopai subtracts
+  `cached_input_tokens` and `cache_write_input_tokens` from it.
   Codex reports no cost, so `cost_usd` is absent.
 
 ### Limits

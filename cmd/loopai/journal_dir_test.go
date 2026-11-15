@@ -294,6 +294,55 @@ func TestForegroundJournalAttemptStartedFailure(t *testing.T) {
 	assert.Empty(t, fj.branch)
 }
 
+func TestForegroundJournalRechecksIgnoreAfterBranchSwitch(t *testing.T) {
+	// master ignores ignored/, while the existing plan branch was cut before that rule landed, so a
+	// journal accepted at startup on master is no longer ignored once branch preparation checks the
+	// plan branch out
+	newRepo := func(t *testing.T) (repo, journalDir string) {
+		t.Helper()
+		repo = setupTestRepo(t)
+		t.Chdir(repo)
+		runGit(t, repo, "branch", "plan-branch")
+		require.NoError(t, os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("ignored/\n"), 0o600))
+		runGit(t, repo, "add", ".gitignore")
+		runGit(t, repo, "commit", "-m", "ignore journals")
+		journalDir, err := prepareJournalDir(filepath.Join("ignored", "run-1"))
+		require.NoError(t, err, "the journal is ignored on master")
+		return repo, journalDir
+	}
+	attach := func(t *testing.T, journalDir string) (*foregroundJournal, executePlanRequest) {
+		t.Helper()
+		fj, req, err := attachForegroundJournal(opts{JournalDir: journalDir}, &config.Config{},
+			executePlanRequest{Mode: processor.ModeFull})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = fj.journal.Close() })
+		return fj, req
+	}
+
+	t.Run("the attempt starts while the journal stays ignored", func(t *testing.T) {
+		_, journalDir := newRepo(t)
+		fj, req := attach(t, journalDir)
+		require.NoError(t, req.InPlaceAttemptStarted(attemptStart{PlanFile: "/nowhere/p.md",
+			MainPlanFile: "/nowhere/p.md", Branch: "master"}))
+		assert.True(t, fj.started)
+	})
+
+	t.Run("a branch that does not ignore the journal stops the attempt", func(t *testing.T) {
+		repo, journalDir := newRepo(t)
+		fj, req := attach(t, journalDir)
+		runGit(t, repo, "checkout", "-q", "plan-branch")
+		err := req.InPlaceAttemptStarted(attemptStart{PlanFile: "/nowhere/p.md", MainPlanFile: "/nowhere/p.md",
+			Branch: "plan-branch"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `on branch "plan-branch"`)
+		assert.Contains(t, err.Error(), "git does not ignore events.jsonl")
+		assert.False(t, fj.started, "a refused journal does not start the attempt")
+		data, readErr := os.ReadFile(filepath.Join(journalDir, runs.JournalFile)) //nolint:gosec // test temp path
+		require.NoError(t, readErr)
+		assert.Empty(t, data, "no attempt_start is recorded")
+	})
+}
+
 // discardWriter is an io.Writer that drops everything.
 type discardWriter struct{}
 
