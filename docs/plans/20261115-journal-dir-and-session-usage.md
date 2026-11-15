@@ -515,7 +515,7 @@
   them to 94.4%, 100%, and 100%
 
 ### Task 11: [Final] Update documentation
-- [ ] add `docs/host-integration.md`: how a host spawns a foreground run with `--journal-dir`, the
+- [x] add `docs/host-integration.md`: how a host spawns a foreground run with `--journal-dir`, the
   directory rules (empty, outside the checkout or git-ignored), the `events.jsonl` event types with
   their fields including `usage`, the `outcome.json` fields, which fields are empty for a foreground
   run (`run_id`, `worktree_kept`, `attempt_start.worktree`, `console_offset`), the token convention
@@ -523,10 +523,10 @@
   that a forced exit leaves no `finish` event or `outcome.json` and must be read with the non-zero
   exit as not completed, that the run is non-interactive, and the limits (main session usage only, no
   Codex cost, `model` possibly an alias or empty, no usage for a session killed before its result)
-- [ ] update `README.md` and `llms.txt`: the flag in the options list and in the detached-runs
+- [x] update `README.md` and `llms.txt`: the flag in the options list and in the detached-runs
   paragraph, with a pointer to `docs/host-integration.md`
-- [ ] update `CLAUDE.md` where it describes the journal, the event types, and the executors' `Result`
-- [ ] update `docs/t3-code.md` "The run directory" to mention the `usage` event
+- [x] update `CLAUDE.md` where it describes the journal, the event types, and the executors' `Result`
+- [x] update `docs/t3-code.md` "The run directory" to mention the `usage` event
 
 *Note: loopai automatically moves completed plans to `docs/plans/completed/`*
 
