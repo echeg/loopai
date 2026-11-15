@@ -397,18 +397,22 @@
 - [x] run `make test` - must pass before task 6
 
 ### Task 6: Add and validate the `--journal-dir` flag
-- [ ] add `JournalDir string` with `long:"journal-dir"`, `value-name:"dir"`, and a description to
+- [x] add `JournalDir string` with `long:"journal-dir"`, `value-name:"dir"`, and a description to
   `opts` in `cmd/loopai/main.go`
-- [ ] add `journal-dir` to the execution-flag lists in `markFlagsSet` and `hasExecutionMode`
-- [ ] add `validateJournalDirFlags` and call it from `validateFlags`: refuse the flag with
+- [x] add `journal-dir` to the execution-flag lists in `markFlagsSet` and `hasExecutionMode`
+- [x] add `validateJournalDirFlags` and call it from `validateFlags`: refuse the flag with
   `--worktree`, `--review`, `--external-only`, `--plan`, `--gen-agents`, `--serve`, `--watch`,
   `--detach`, `--cmux-workspace`, and every standalone command, with a plan chain, and without a plan
   file, using the `"%s cannot be combined with %s"` form of `validateDetachFlags`; it touches no file
-- [ ] run `go test ./cmd/loopai -run TestSkillContract -update` and commit the changed
+- [x] run `go test ./cmd/loopai -run TestSkillContract -update` and commit the changed
   `cmd/loopai/testdata/skill-contract.golden`; do not bump `skillContract`
-- [ ] write tests in `cmd/loopai/main_test.go`: one case per incompatible flag, a chain, a missing
+- [x] write tests in `cmd/loopai/main_test.go`: one case per incompatible flag, a chain, a missing
   plan, and that `--merge`, `--pr`, `--runs`, `--attach`, and `--stop` reject the flag
-- [ ] run `make test` - must pass before task 7
+- [x] run `make test` - must pass before task 7
+- ➕ [x] refuse `--commit` with the flag too (it needs a worktree), reject an empty `--journal-dir=` value
+  and extra plan arguments, and force `cfg.WorktreeEnabled` off in `applyWorktreeOverride` so a
+  `use_worktree = true` config cannot move the run into a worktree (`validateFlags` runs before config),
+  with tests
 
 ### Task 7: Prepare the journal directory and keep the run in this process
 - [ ] add an exclusive constructor to `pkg/runs` that creates `events.jsonl` with

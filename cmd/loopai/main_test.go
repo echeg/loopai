@@ -5217,6 +5217,143 @@ func TestApplyCLIOverrides_PhaseProviders(t *testing.T) {
 	})
 }
 
+func TestValidateJournalDirFlags(t *testing.T) {
+	const planFile = "docs/plans/one.md"
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "full mode plan", args: []string{"--journal-dir", "/tmp/j", planFile}},
+		{name: "tasks-only plan", args: []string{"--journal-dir=/tmp/j", "--tasks-only", planFile}},
+		{name: "branch and models pass", args: []string{"--journal-dir", "/tmp/j", "--branch", "feat",
+			"--task-model", "claude:opus", planFile}},
+		{name: "empty value", args: []string{"--journal-dir=", planFile}, wantErr: "--journal-dir requires a directory"},
+		{name: "blank value", args: []string{"--journal-dir", "  ", planFile}, wantErr: "--journal-dir requires a directory"},
+		{name: "missing plan", args: []string{"--journal-dir", "/tmp/j"}, wantErr: "--journal-dir requires a plan file argument"},
+		{name: "plan chain", args: []string{"--journal-dir", "/tmp/j", "one.md,two.md"},
+			wantErr: "--journal-dir takes exactly one plan; plan chains are not supported"},
+		{name: "extra positional", args: []string{"--journal-dir", "/tmp/j", planFile, "two.md"},
+			wantErr: "--journal-dir takes exactly one plan argument, got 2"},
+		{name: "worktree", args: []string{"--journal-dir", "/tmp/j", "--worktree", planFile},
+			wantErr: "--journal-dir cannot be combined with --worktree"},
+		{name: "commit", args: []string{"--journal-dir", "/tmp/j", "--commit", planFile},
+			wantErr: "--journal-dir cannot be combined with --commit"},
+		{name: "review", args: []string{"--journal-dir", "/tmp/j", "--review", planFile},
+			wantErr: "--journal-dir cannot be combined with --review"},
+		{name: "external-only", args: []string{"--journal-dir", "/tmp/j", "--external-only", planFile},
+			wantErr: "--journal-dir cannot be combined with --external-only"},
+		{name: "plan creation", args: []string{"--journal-dir", "/tmp/j", "--plan", "add a feature"},
+			wantErr: "--journal-dir cannot be combined with --plan"},
+		{name: "gen-agents", args: []string{"--journal-dir", "/tmp/j", "--gen-agents"},
+			wantErr: "--journal-dir cannot be combined with --gen-agents"},
+		{name: "serve", args: []string{"--journal-dir", "/tmp/j", "--serve", planFile},
+			wantErr: "--journal-dir cannot be combined with --serve"},
+		{name: "watch", args: []string{"--journal-dir", "/tmp/j", "--watch", "/tmp/w", planFile},
+			wantErr: "--journal-dir cannot be combined with --watch"},
+		{name: "detach", args: []string{"--journal-dir", "/tmp/j", "--detach", planFile},
+			wantErr: "--journal-dir cannot be combined with --detach"},
+		{name: "cmux-workspace", args: []string{"--journal-dir", "/tmp/j", "--cmux-workspace", planFile},
+			wantErr: "--journal-dir cannot be combined with --cmux-workspace"},
+		{name: "cmux-workspace auto", args: []string{"--journal-dir", "/tmp/j", "--cmux-workspace=auto", planFile},
+			wantErr: "--journal-dir cannot be combined with --cmux-workspace"},
+		{name: "init", args: []string{"--journal-dir", "/tmp/j", "--init"},
+			wantErr: "--journal-dir cannot be combined with --init"},
+		{name: "reset", args: []string{"--journal-dir", "/tmp/j", "--reset", planFile},
+			wantErr: "--journal-dir cannot be combined with --reset"},
+		{name: "dump-defaults", args: []string{"--journal-dir", "/tmp/j", "--dump-defaults", "/tmp/d"},
+			wantErr: "--journal-dir cannot be combined with --dump-defaults"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := parseTestOpts(t, tc.args...)
+			err := validateJournalDirFlags(o)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				require.NoError(t, validateFlags(o), "validateFlags must accept what validateJournalDirFlags accepts")
+				return
+			}
+			require.EqualError(t, err, tc.wantErr)
+			require.Error(t, validateFlags(o))
+		})
+	}
+
+	t.Run("absent flag is not checked", func(t *testing.T) {
+		require.NoError(t, validateJournalDirFlags(parseTestOpts(t, "--worktree", "one.md,two.md")))
+	})
+
+	t.Run("detach launcher reports the journal-dir conflict", func(t *testing.T) {
+		err := validateFlags(parseTestOpts(t, "--detach", "--journal-dir", "/tmp/j", planFile))
+		require.EqualError(t, err, "--journal-dir cannot be combined with --detach")
+	})
+
+	t.Run("chain is refused before its entries are inspected", func(t *testing.T) {
+		err := validateFlags(parseTestOpts(t, "--journal-dir", "/tmp/j", "missing-one.md,missing-two.md"))
+		require.EqualError(t, err, "--journal-dir takes exactly one plan; plan chains are not supported")
+	})
+
+	t.Run("detached child and standalone commands are refused", func(t *testing.T) {
+		for _, tc := range []struct {
+			flag string
+			o    opts
+		}{
+			{"--detached-run", opts{DetachedRun: "run-1"}},
+			{"--acp", opts{ACP: true}},
+			{"--clear", opts{Clear: true}},
+			{"--merge", opts{mergeSet: true}},
+			{"--pr", opts{prSet: true}},
+			{"--report", opts{Report: true}},
+			{"--attach", opts{Attach: true}},
+			{"--runs", opts{Runs: true}},
+			{"--stop", opts{Stop: true}},
+		} {
+			o := tc.o
+			o.JournalDir, o.journalDirSet, o.PlanFile, o.PlanFiles = "/tmp/j", true, planFile, []string{planFile}
+			assert.EqualError(t, validateJournalDirFlags(o), "--journal-dir cannot be combined with "+tc.flag, tc.flag)
+		}
+	})
+}
+
+func TestJournalDirFlagSelectsExecutionMode(t *testing.T) {
+	o := parseTestOpts(t, "--journal-dir=")
+	assert.True(t, o.journalDirSet, "an explicit empty value is still a use of the flag")
+	assert.True(t, o.executionModeSet)
+	assert.True(t, hasExecutionMode(o))
+	assert.True(t, hasExecutionMode(opts{JournalDir: "/tmp/j"}), "the value alone selects execution mode")
+
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "merge", args: []string{"--merge", "--journal-dir", "/tmp/j"}, wantErr: "--merge cannot be combined with other mode flags"},
+		{name: "merge with feature", args: []string{"--merge", "--journal-dir", "/tmp/j", "feature"},
+			wantErr: "--merge cannot be combined with other mode flags"},
+		{name: "pr", args: []string{"--pr", "--journal-dir", "/tmp/j"}, wantErr: "--pr cannot be combined with other mode flags"},
+		{name: "report", args: []string{"--report", "--journal-dir", "/tmp/j"}, wantErr: "--report cannot be combined with other mode flags"},
+		{name: "clear", args: []string{"--clear", "--journal-dir", "/tmp/j"}, wantErr: "--clear cannot be combined with a plan file or other mode flags"},
+		{name: "runs", args: []string{"--runs", "--journal-dir", "/tmp/j"}, wantErr: "--runs cannot be combined with other mode flags"},
+		{name: "attach", args: []string{"--attach", "--journal-dir", "/tmp/j"}, wantErr: "--attach cannot be combined with other mode flags"},
+		{name: "stop", args: []string{"--stop", "--journal-dir", "/tmp/j", "run-1"}, wantErr: "--stop cannot be combined with other mode flags"},
+		{name: "acp", args: []string{"--acp", "--journal-dir", "/tmp/j"}, wantErr: "--acp cannot be combined with execution flags; " +
+			"pass --task-model, --review-model, or --external-reviewers in the thread's message"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.EqualError(t, validateFlags(parseTestOpts(t, tc.args...)), tc.wantErr)
+		})
+	}
+}
+
+func TestApplyCLIOverrides_JournalDirRunsInPlace(t *testing.T) {
+	cfg := &config.Config{WorktreeEnabled: true}
+	require.NoError(t, applyCLIOverrides(opts{JournalDir: "/tmp/j"}, cfg))
+	assert.False(t, cfg.WorktreeEnabled, "a use_worktree config value must not move a --journal-dir run into a worktree")
+
+	cfg = &config.Config{WorktreeEnabled: true}
+	require.NoError(t, applyCLIOverrides(opts{}, cfg))
+	assert.True(t, cfg.WorktreeEnabled, "without the flag the config value is kept")
+}
+
 func TestApplyCLIOverrides_CommitRequiresEffectiveWorktree(t *testing.T) {
 	t.Run("accepts config enabled worktree", func(t *testing.T) {
 		cfg := &config.Config{WorktreeEnabled: true}

@@ -107,6 +107,7 @@ type opts struct {
 	Runs                    bool          `long:"runs" description:"list this checkout's detached runs with their status, attempt, and origin"`
 	Stop                    bool          `long:"stop" description:"stop a live detached run gracefully, keeping its worktree; positional argument names the run (id, plan, or branch)"`
 	ACP                     bool          `long:"acp" description:"serve a T3 Code loopai thread over the Agent Client Protocol on stdin and stdout, as the provider that loopai-acp starts"`
+	JournalDir              string        `long:"journal-dir" value-name:"dir" description:"run one plan (full or --tasks-only) in the current checkout, non-interactively, and write its events.jsonl journal and outcome.json into this directory, which must hold neither and be outside the checkout or ignored by git"`
 
 	PlanFile  string   `positional-arg-name:"plan-file" description:"path to one plan file or a comma-separated plan chain (optional, uses fzf if omitted); with --merge/--pr/--report it names the feature to close out, with --attach/--stop the detached run"`
 	PlanFiles []string // normalized comma-separated plan chain; PlanFile is always its first entry
@@ -126,6 +127,7 @@ type opts struct {
 	t3ThreadSet       bool
 	acpThreadSet      bool
 	acpSessionSet     bool
+	journalDirSet     bool
 
 	claudeCommandSet      bool
 	claudeArgsSet         bool
@@ -223,6 +225,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 	o.t3ThreadSet = isFlagSet(parser, "t3-thread")
 	o.acpThreadSet = isFlagSet(parser, "acp-thread")
 	o.acpSessionSet = isFlagSet(parser, "acp-session")
+	o.journalDirSet = isFlagSet(parser, "journal-dir")
 	for _, name := range []string{
 		"max-iterations", "max-external-iterations", "review-patience",
 		"plan-model", "task-model", "review-model", "claude-command", "claude-args", "codex-args",
@@ -231,6 +234,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 		"session-timeout", "idle-timeout", "finalize", "skip-finalize", "review-cadence", "preserve-anthropic-api-key",
 		"no-claude-swap", "pass-claude-md", "worktree",
 		"branch", "plan", "gen-agents", "serve", "watch", "init", "reset", "dump-defaults", "detach",
+		"journal-dir",
 	} {
 		if isFlagSet(parser, name) {
 			o.executionModeSet = true
@@ -3667,6 +3671,10 @@ func validateFlags(o opts) error {
 	if err := validateDetachFlags(o); err != nil {
 		return err
 	}
+	// before the chain checks, which stat every chain entry: a chain is refused by flag alone
+	if err := validateJournalDirFlags(o); err != nil {
+		return err
+	}
 	if err := validatePlanChain(o); err != nil {
 		return err
 	}
@@ -3821,6 +3829,61 @@ func validatePlanChain(o opts) error {
 	return nil
 }
 
+// validateJournalDirFlags keeps --journal-dir to what it supports: exactly one plan, in full or
+// tasks-only mode, executed in the current checkout by this process. A host spawns the run and reads
+// the directory, so every mode that runs elsewhere (a worktree, a detached process, another cmux
+// workspace), runs no plan, or runs several is refused. It checks the flags only and touches no file;
+// prepareJournalDir inspects the directory itself.
+func validateJournalDirFlags(o opts) error {
+	if !o.journalDirSet && o.JournalDir == "" {
+		return nil
+	}
+	if strings.TrimSpace(o.JournalDir) == "" {
+		return errors.New("--journal-dir requires a directory")
+	}
+	for _, conflict := range []struct {
+		flag string
+		set  bool
+	}{
+		{"--worktree", o.Worktree},
+		{"--commit", o.Commit},
+		{"--review", o.Review},
+		{"--external-only", o.ExternalOnly},
+		{"--plan", o.PlanDescription != ""},
+		{"--gen-agents", o.GenAgents},
+		{"--serve", o.Serve},
+		{"--watch", len(o.Watch) > 0},
+		{"--detach", o.Detach},
+		{"--detached-run", o.detachedRunSet || o.DetachedRun != ""},
+		{"--cmux-workspace", o.CmuxWorkspace != ""},
+		{"--acp", o.ACP},
+		{"--init", o.Init},
+		{"--reset", o.Reset},
+		{"--dump-defaults", o.DumpDefaults != ""},
+		{"--clear", o.Clear},
+		{"--merge", mergeRequested(o)},
+		{"--pr", prRequested(o)},
+		{"--report", reportRequested(o)},
+		{"--attach", o.Attach},
+		{"--runs", o.Runs},
+		{"--stop", o.Stop},
+	} {
+		if conflict.set {
+			return fmt.Errorf("--journal-dir cannot be combined with %s", conflict.flag)
+		}
+	}
+	if len(o.PlanFiles) > 1 {
+		return errors.New("--journal-dir takes exactly one plan; plan chains are not supported")
+	}
+	if len(o.extraArgs) > 0 {
+		return fmt.Errorf("--journal-dir takes exactly one plan argument, got %d", len(o.extraArgs)+1)
+	}
+	if strings.TrimSpace(o.PlanFile) == "" {
+		return errors.New("--journal-dir requires a plan file argument")
+	}
+	return nil
+}
+
 // validateGenAgentsFlags keeps --gen-agents standalone: it neither executes a plan
 // nor runs any review phase, so combining it with execution modes is a user error
 // rather than something to silently ignore.
@@ -3947,6 +4010,7 @@ func hasExecutionMode(o opts) bool {
 		o.PreserveAnthropicAPIKey,
 		o.NoClaudeSwap, o.PassClaudeMd, o.Worktree, o.Commit, o.Branch != "",
 		o.Serve, len(o.Watch) != 0, o.Init, o.Reset, o.DumpDefaults != "", o.GenAgents, o.Detach,
+		o.journalDirSet || o.JournalDir != "",
 	} {
 		if set {
 			return true
@@ -6690,6 +6754,23 @@ func applyReportingOverrides(o opts, cfg *config.Config) {
 	cfg.Orca = enabledByCLI(cfg.Orca, o.Orca)
 }
 
+// applyWorktreeOverride resolves worktree mode: --worktree enables it, --journal-dir disables it, and
+// --commit needs it enabled from either the flag or config. A --journal-dir run executes in the
+// checkout its host prepared, so a use_worktree config value must not move it into a worktree of its
+// own; --worktree itself is refused with the flag by validateJournalDirFlags.
+func applyWorktreeOverride(o opts, cfg *config.Config) error {
+	if o.Worktree {
+		cfg.WorktreeEnabled = true
+	}
+	if o.JournalDir != "" {
+		cfg.WorktreeEnabled = false
+	}
+	if o.Commit && !cfg.WorktreeEnabled {
+		return errors.New("--commit requires --worktree")
+	}
+	return nil
+}
+
 // applyCLIOverrides applies CLI flag overrides to config.
 // uses opts.*Set bools (populated by markFlagsSet) to detect explicitly-set zero values
 // so that e.g. --idle-timeout 0 can disable a non-zero config value.
@@ -6705,11 +6786,8 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 		cfg.PreserveAnthropicAPIKey = true
 	}
 	applyReportingOverrides(o, cfg)
-	if o.Worktree {
-		cfg.WorktreeEnabled = true
-	}
-	if o.Commit && !cfg.WorktreeEnabled {
-		return errors.New("--commit requires --worktree")
+	if err := applyWorktreeOverride(o, cfg); err != nil {
+		return err
 	}
 	if o.Wait > 0 || (o.Wait == 0 && o.waitSet) {
 		cfg.WaitOnLimit = o.Wait
