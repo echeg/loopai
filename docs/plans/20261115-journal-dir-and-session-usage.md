@@ -315,24 +315,24 @@
 - [x] run `make test` - must pass before task 2
 
 ### Task 2: Extract usage from a Claude session
-- [ ] add an exported `Usage` struct to `pkg/executor` (`Model`, `InputTokens`, `CachedInputTokens`,
+- [x] add an exported `Usage` struct to `pkg/executor` (`Model`, `InputTokens`, `CachedInputTokens`,
   `CacheWriteInputTokens`, `OutputTokens`, `CostUSD *float64`) and a `Usage *Usage` field to `Result`
-- [ ] extend `streamEvent` in `pkg/executor/executor.go` to decode the `result` record's `usage`
+- [x] extend `streamEvent` in `pkg/executor/executor.go` to decode the `result` record's `usage`
   (`input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `output_tokens`),
   `total_cost_usd`, and `modelUsage` keys
-- [ ] collect the usage in a variable inside `parseStream`'s line callback when a `result` record
+- [x] collect the usage in a variable inside `parseStream`'s line callback when a `result` record
   carries a `usage` object, and set it on both return paths (the stream-read-error return and the
   success return); a `result` record without `usage` leaves it nil
-- [ ] set `Model` to the single `modelUsage` key when there is exactly one, else the executor's
+- [x] set `Model` to the single `modelUsage` key when there is exactly one, else the executor's
   configured model (which may be an alias such as `opus`), else empty
-- [ ] add a synthetic fixture with usage under `pkg/executor/testdata/claude/` and note it in that
+- [x] add a synthetic fixture with usage under `pkg/executor/testdata/claude/` and note it in that
   directory's README
-- [ ] write tests in `pkg/executor/executor_test.go`: usage with cost, usage with several `modelUsage`
+- [x] write tests in `pkg/executor/executor_test.go`: usage with cost, usage with several `modelUsage`
   keys, a `result` record without usage, a stream that ends without a `result` record, a stream read
   error after the `result` record
-- [ ] write tests that `Usage` survives `resolveRunResult` for a pattern-error result and for a
+- [x] write tests that `Usage` survives `resolveRunResult` for a pattern-error result and for a
   non-zero-exit result
-- [ ] run `make test` - must pass before task 3
+- [x] run `make test` - must pass before task 3
 
 ### Task 3: Extract usage from a Codex session
 - [ ] extend `rolloutPayload` and `parseRolloutRecord` in `pkg/executor/codex.go` to keep the

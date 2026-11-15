@@ -19,3 +19,10 @@ from Claude Code 2.1.251 captures on 2026-08-29. Authentication was exercised
 with an invalid, process-local API key. The narrated fixtures model normal
 assistant and successful result records while deliberately placing configured
 phrases in non-diagnostic text.
+
+`usage-result.jsonl` is synthetic and is the one fixture that keeps usage: its
+successful result record carries the `usage` object (`input_tokens`,
+`cache_read_input_tokens`, `cache_creation_input_tokens`, `output_tokens`),
+`total_cost_usd`, and a single-key `modelUsage`, the fields `parseStream` reads
+into `Result.Usage`. The assistant record's `message.usage` is per-message and
+deliberately ignored; only the result record reports the session.
