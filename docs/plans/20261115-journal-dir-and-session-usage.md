@@ -335,24 +335,24 @@
 - [x] run `make test` - must pass before task 3
 
 ### Task 3: Extract usage from a Codex session
-- [ ] extend `rolloutPayload` and `parseRolloutRecord` in `pkg/executor/codex.go` to keep the
+- [x] extend `rolloutPayload` and `parseRolloutRecord` in `pkg/executor/codex.go` to keep the
   `token_count` `event_msg` record's `info.total_token_usage` and the `turn_context` record's `model`
-- [ ] create a usage accumulator in `Run` for that one call, pass it through `startRolloutTail` and
+- [x] create a usage accumulator in `Run` for that one call, pass it through `startRolloutTail` and
   `tailRolloutFile` to `processRolloutLine`, and write it only for the main rollout (`render` true);
   update the existing `processRolloutLine` test callers for the changed signature
-- [ ] read the accumulator in `Run` after `<-tailDone` and set `Usage` once on the result `runResult`
+- [x] read the accumulator in `Run` after `<-tailDone` and set `Usage` once on the result `runResult`
   returns: the last `token_count` totals with `InputTokens = input_tokens - cached_input_tokens`,
   `Model` from `turn_context` or else the configured model, `CostUSD` nil; no rollout file or no
   `token_count` record leaves it nil
-- [ ] add rollout fixtures to the codex testdata, synthetic but with the record shapes and the
+- [x] add rollout fixtures to the codex testdata, synthetic but with the record shapes and the
   arithmetic of a real rollout (`total_tokens == input_tokens + output_tokens`)
-- [ ] write tests in `pkg/executor/codex_test.go`: several `token_count` records (the last wins), the
+- [x] write tests in `pkg/executor/codex_test.go`: several `token_count` records (the last wins), the
   cached-token subtraction, no `token_count` record, a missing rollout file, model from
   `turn_context` and from configuration
-- [ ] write tests for isolation: two consecutive `Run` calls on one executor where only the first
+- [x] write tests for isolation: two consecutive `Run` calls on one executor where only the first
   reports usage, `token_count` records in a child rollout that must not be counted, and a
   `token_count` record that arrives in the final drain
-- [ ] run `make test` (it runs with `-race`) - must pass before task 4
+- [x] run `make test` (it runs with `-race`) - must pass before task 4
 
 ### Task 4: Report each session's usage to a handler
 - [ ] add `UsageHandler func(SessionUsage)` to `processor.Config` in `pkg/processor/runner.go`, where
