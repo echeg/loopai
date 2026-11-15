@@ -589,6 +589,19 @@ func TestDetachedChildSucceeds(t *testing.T) {
 			assert.Equal(t, runs.ProgressDone, stage.Status, stage.Name)
 		}
 	})
+
+	t.Run("exactly one attempt_start, from the worktree hook", func(t *testing.T) {
+		// the in-place hook a --journal-dir run uses is not copied into a worktree run's request,
+		// so a detached run records its start once
+		var starts []runs.Event
+		for _, ev := range f.events(t) {
+			if ev.Type == runs.EventAttemptStart {
+				starts = append(starts, ev)
+			}
+		}
+		require.Len(t, starts, 1)
+		assert.Equal(t, f.worktreePath(), starts[0].Worktree)
+	})
 }
 
 func TestDetachedChildRecordsT3Launcher(t *testing.T) {

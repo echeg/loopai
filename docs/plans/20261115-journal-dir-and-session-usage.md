@@ -442,30 +442,35 @@
   directory, and the check runs before config loading with plain `git`
 
 ### Task 8: Write the journal and the outcome on a foreground run
-- [ ] in `run()`, when `JournalDir` is set, open the journal with the exclusive constructor (attempt
+- [x] in `run()`, when `JournalDir` is set, open the journal with the exclusive constructor (attempt
   1), create `journalHooks`, and set on the existing request `Outcome: &planExecutionOutcome{}`,
   `NonInteractive: true`, `LogDecorator`, `PhaseObserver`, and `UsageHandler`; keep `run()`'s own
   `WtCleanup`, `KeepAwake`, reporters holders, and launch-history call; do not call
   `prepareNonInteractiveRequest`
-- [ ] add a request hook for the in-place attempt start, not copied by `worktreeExecuteRequest`, and
+- [x] add a request hook for the in-place attempt start, not copied by `worktreeExecuteRequest`, and
   call it in `executePlan` right after `setupProgressLogger` and before the runner is built; a hook
   error ends the run before any provider process starts
-- [ ] make that hook append `attempt_start` through `attemptStartEvent` with `Plan` and
+- [x] make that hook append `attempt_start` through `attemptStartEvent` with `Plan` and
   `WorktreePlan` set to the absolute plan path, `Worktree` empty, `ConsoleOffset` 0, `ProgressLog`
   the absolute progress-log path, and `Branch` the checked-out branch
-- [ ] after `runSelectedPlans` returns, complete the attempt with the two shared functions from task
+- [x] after `runSelectedPlans` returns, complete the attempt with the two shared functions from task
   5: `run_id` empty, `attempt` 1, `worktree_kept` empty, a stop when the context was cancelled; then
   call `endProgressLog` and close the journal
-- [ ] leave the process exit code as it is today on every path, including a stop (exit 1 while the
+- [x] leave the process exit code as it is today on every path, including a stop (exit 1 while the
   outcome records `stopped` with `exit_code` 2); a failure to save the outcome is printed as a
   warning and does not change the exit code
-- [ ] write in-process tests in `cmd/loopai/journal_dir_test.go` against a real `runs.Journal` in
+- [x] write in-process tests in `cmd/loopai/journal_dir_test.go` against a real `runs.Journal` in
   `t.TempDir()`: the in-place hook writes `attempt_start` with the fields above and task titles are
   then present in `task` events; a hook error is returned before the runner is built
-- [ ] write a test that with `JournalDir` empty the request built in `run()` has nil `Outcome`,
+- [x] write a test that with `JournalDir` empty the request built in `run()` has nil `Outcome`,
   `LogDecorator`, `PhaseObserver`, `UsageHandler`, and in-place hook, and `NonInteractive` false
-- [ ] write a test that a detached run still records exactly one `attempt_start`
-- [ ] run `make test` - must pass before task 9
+- [x] write a test that a detached run still records exactly one `attempt_start`
+- [x] run `make test` - must pass before task 9
+- ➕ [x] the in-place hook fires from `setupProgressLogger` (named `InPlaceAttemptStarted`, helper
+  `fireInPlaceAttemptStarted`), which keeps `executePlan` under the gocyclo limit; the wiring lives in
+  `cmd/loopai/journal_dir.go` (`attachForegroundJournal`, `foregroundJournal.complete`); a run that
+  ends before its attempt starts gets only a failed `outcome.json` with a `startup:` reason, as a
+  detached child's startup failure does
 
 ### Task 9: Cover the foreground journal with subprocess tests
 - [ ] add a foreground fixture and command builder to `cmd/loopai/detach_child_unix_test.go` (or a

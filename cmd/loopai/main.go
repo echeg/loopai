@@ -359,6 +359,12 @@ type executePlanRequest struct {
 	// AttemptStarted is called once in worktree mode, after the worktree and the progress logger
 	// exist and before execution starts. An error aborts the run before execution.
 	AttemptStarted func(attemptStart) error
+	// InPlaceAttemptStarted is AttemptStarted for a run in the current checkout: executePlan's
+	// setupProgressLogger calls it once the progress logger exists, before the runner is built, and
+	// an error ends the run
+	// before any provider process starts. worktreeExecuteRequest deliberately does not copy it, so a
+	// worktree run never calls it and records its start through AttemptStarted alone.
+	InPlaceAttemptStarted func(attemptStart) error
 }
 
 // out returns the writer for human-readable run output, read at call time so a redirected
@@ -692,7 +698,14 @@ func run(ctx context.Context, o opts) (runErr error) {
 		LimitRecovery:       limitRecovery,
 		ReviewPreflightDone: reviewPreflight,
 	}
-	return runSelectedPlans(ctx, o, req, selector, setupTitles, os.Stdout, selectAndExecutePlan)
+	journal, req, err := attachForegroundJournal(o, cfg, req)
+	if err != nil {
+		return err
+	}
+	runErr = runSelectedPlans(ctx, o, req, selector, setupTitles, os.Stdout, selectAndExecutePlan)
+	// the journal records the run's outcome but never changes the error the process exits with
+	journal.complete(ctx, req.GitSvc, runErr)
+	return runErr
 }
 
 // resolveExecutionDeps runs the post-config startup checks every execution shares: model specs,
@@ -1494,6 +1507,8 @@ type progressLogResult struct {
 
 // setupProgressLogger creates or reuses a progress logger and phase holder.
 // when req.ProgressLog and req.PhaseHolder are pre-created (worktree mode), uses them directly.
+// once the logger exists it fires req.InPlaceAttemptStarted; a hook error marks the log failed,
+// closes it, and is returned, so the run ends before its runner or any provider process exists.
 func setupProgressLogger(o opts, req executePlanRequest, branch string) (progressLogResult, error) {
 	holder := req.PhaseHolder
 	if holder == nil {
@@ -1526,6 +1541,11 @@ func setupProgressLogger(o opts, req executePlanRequest, branch string) (progres
 				}
 			})
 		}
+	}
+	if err := fireInPlaceAttemptStarted(req, baseLog); err != nil {
+		baseLog.SetFailed(err)
+		closeLog()
+		return progressLogResult{}, err
 	}
 	return progressLogResult{holder: holder, baseLog: baseLog, closeLog: closeLog}, nil
 }

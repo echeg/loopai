@@ -14631,6 +14631,10 @@ func TestWorktreeExecuteRequestForwardsDetachedKnobs(t *testing.T) {
 				got.UsageHandler(processor.SessionUsage{})
 				assert.Equal(t, before+1, usageCalls, "the copied usage handler is the caller's")
 			}},
+		{name: "in-place attempt hook is not copied", req: executePlanRequest{InPlaceAttemptStarted: hook},
+			assert: func(t *testing.T, got executePlanRequest) {
+				assert.Nil(t, got.InPlaceAttemptStarted, "a worktree run records its start through AttemptStarted only")
+			}},
 		{name: "unset knobs stay unset", req: executePlanRequest{},
 			assert: func(t *testing.T, got executePlanRequest) {
 				assert.False(t, got.KeepWorktreeOnFailure)

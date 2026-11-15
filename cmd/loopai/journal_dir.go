@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 
+	"github.com/umputun/ralphex/pkg/config"
 	"github.com/umputun/ralphex/pkg/git"
+	"github.com/umputun/ralphex/pkg/progress"
 	"github.com/umputun/ralphex/pkg/runs"
 )
 
@@ -76,6 +79,113 @@ func refuseUnignoredJournalDir(abs string) error {
 			return fmt.Errorf("--journal-dir %s is inside the repository work tree and git does not ignore %s; "+
 				"use a directory outside the checkout or one git ignores", abs, name)
 		}
+	}
+	return nil
+}
+
+// foregroundJournal is the event journal and outcome of a foreground --journal-dir run: one attempt
+// in the current checkout, owned by the process that spawned loopai. It is not a registered run, so
+// it writes neither a descriptor nor a lock, a console log, or report.md. A nil *foregroundJournal,
+// the run without the flag, does nothing.
+type foregroundJournal struct {
+	dir     string
+	journal *runs.Journal
+	hooks   *journalHooks
+	outcome *planExecutionOutcome
+
+	started bool   // the in-place attempt_start was recorded
+	branch  string // the branch the attempt started on
+}
+
+// attachForegroundJournal creates the journal of a run with --journal-dir and sets its hooks on req:
+// the outcome, the log decorator, the phase and usage observers, the in-place attempt hook, and
+// NonInteractive, since a host-spawned run has nobody to answer a prompt. Everything else run()
+// built stays, its cleanup holders, keep-awake hold, and output included. The journal is created
+// exclusively, so a second process given the same directory fails here instead of appending to it.
+// Without the flag req is returned unchanged with a nil journal.
+func attachForegroundJournal(o opts, cfg *config.Config, req executePlanRequest) (*foregroundJournal, executePlanRequest, error) {
+	if o.JournalDir == "" {
+		return nil, req, nil
+	}
+	journal, err := runs.CreateJournal(o.JournalDir, 1)
+	if err != nil {
+		return nil, req, fmt.Errorf("--journal-dir %s: %w", o.JournalDir, err)
+	}
+	fj := &foregroundJournal{dir: o.JournalDir, journal: journal, hooks: newJournalHooks(journal, cfg),
+		outcome: &planExecutionOutcome{}}
+	req.Outcome = fj.outcome
+	req.NonInteractive = true
+	req.LogDecorator = fj.hooks.decorateLogger
+	req.PhaseObserver = fj.hooks.observePhase
+	req.UsageHandler = fj.hooks.observeUsage
+	mode, sel := req.Mode, req.ExternalReview
+	req.InPlaceAttemptStarted = func(start attemptStart) error {
+		return fj.attemptStarted(start, attemptStartEvent(start, mode, cfg, sel, 0))
+	}
+	return fj, req, nil
+}
+
+// attemptStarted is the run's InPlaceAttemptStarted hook: it appends ev, the attempt_start event,
+// and remembers the branch the completion reads the run's commit from. A failed append fails the
+// hook, which ends the run before it executes.
+func (f *foregroundJournal) attemptStarted(start attemptStart, ev runs.Event) error {
+	if _, err := f.hooks.startAttempt(ev); err != nil {
+		return err
+	}
+	f.started, f.branch = true, start.Branch
+	return nil
+}
+
+// complete ends the run after execution returned runErr and closes the journal. A started attempt
+// is completed as a detached one is, through closeAttempt and saveAttemptOutcome, with a canceled
+// context read as a stop request; a run that ended before its attempt started gets only a failed
+// outcome, as a detached child's startup failure does. Neither changes the error the process exits
+// with: every failure on the way is a warning on stderr.
+func (f *foregroundJournal) complete(ctx context.Context, svc *git.Service, runErr error) {
+	if f == nil {
+		return
+	}
+	defer func() {
+		if err := f.journal.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: close the run journal: %v\n", err)
+		}
+	}()
+	var rec runs.Outcome
+	if f.started {
+		rec, _ = closeAttempt(attemptEnd{hooks: f.hooks, attempt: 1, branch: f.branch,
+			stopRequested: ctx.Err() != nil, svc: svc, outcome: f.outcome, runErr: runErr})
+	} else {
+		cause := runErr
+		if cause == nil {
+			cause = errors.New("the run ended before its attempt started")
+		}
+		rec = runs.Outcome{Attempt: 1, Status: runs.StatusFailed, Reason: fmt.Errorf("startup: %w", cause).Error(),
+			ExitCode: 1}
+	}
+	if _, err := saveAttemptOutcome(f.dir, rec); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
+	f.hooks.endProgressLog()
+}
+
+// fireInPlaceAttemptStarted calls req.InPlaceAttemptStarted for a run in the current checkout once
+// its progress logger exists. The plan and the progress log are named by absolute path, and the plan
+// stands for both the plan and the copy the run ticks, since an in-place run has no worktree. The
+// branch is the one checked out, read again rather than taken from the progress header, whose
+// "unknown" placeholder is no branch; it is empty when none is checked out.
+func fireInPlaceAttemptStarted(req executePlanRequest, baseLog *progress.Logger) error {
+	if req.InPlaceAttemptStarted == nil {
+		return nil
+	}
+	branch, err := req.GitSvc.CurrentBranch()
+	if err != nil {
+		branch = ""
+	}
+	planFile := absPath(req.PlanFile)
+	start := attemptStart{PlanFile: planFile, MainPlanFile: planFile, Branch: branch,
+		ProgressLog: absPath(baseLog.Path())}
+	if err := req.InPlaceAttemptStarted(start); err != nil {
+		return fmt.Errorf("start attempt: %w", err)
 	}
 	return nil
 }
