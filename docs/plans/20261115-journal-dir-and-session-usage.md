@@ -377,21 +377,24 @@
 - [x] run `make test` - must pass before task 5
 
 ### Task 5: Share the completion of an attempt between detached and foreground runs
-- [ ] extract from `detachedChild.complete` (`cmd/loopai/detach_child.go`) a function that, given the
+- [x] extract from `detachedChild.complete` (`cmd/loopai/detach_child.go`) a function that, given the
   journal, the hooks, the run id, the attempt, the branch, whether a stop was requested, the git
   service, the `planExecutionOutcome`, and the run error, classifies the run, builds the
   `runs.Outcome` record, and appends the closing `finalize`, `report`, and `finish` events
-- [ ] extract a second function that stamps `FinishedAt` and saves `outcome.json`; both return the
+- [x] extract a second function that stamps `FinishedAt` and saves `outcome.json`; both return the
   record and an error, never an `exitCodeError`
-- [ ] keep in `detachedChild.complete`, in today's order: the stop marker read, `runs.WriteReport`,
+- [x] keep in `detachedChild.complete`, in today's order: the stop marker read, `runs.WriteReport`,
   `keptWorktree` and `reconcileDetachedSourcePlan` between the two shared functions,
   `endProgressLog`, `beforeExit`, and the `exitCodeError` it returns
-- [ ] confirm the existing `detach_child_test.go` and `detach_child_unix_test.go` pass unchanged
-- [ ] write tests for the shared functions: succeeded, failed, stopped by a cancelled context, stopped
+  (`runs.WriteReport` runs through the first function's optional `beforeClosing` step, so report.md
+  still exists before the finish event an observer reacts to; shared code is in
+  `cmd/loopai/attempt_outcome.go`: `closeAttempt`, `saveAttemptOutcome`)
+- [x] confirm the existing `detach_child_test.go` and `detach_child_unix_test.go` pass unchanged
+- [x] write tests for the shared functions: succeeded, failed, stopped by a cancelled context, stopped
   by a stop request
-- [ ] write a test that a note recorded by `reconcileDetachedSourcePlan` and the kept-worktree path
+- [x] write a test that a note recorded by `reconcileDetachedSourcePlan` and the kept-worktree path
   still reach a detached run's `outcome.json`
-- [ ] run `make test` - must pass before task 6
+- [x] run `make test` - must pass before task 6
 
 ### Task 6: Add and validate the `--journal-dir` flag
 - [ ] add `JournalDir string` with `long:"journal-dir"`, `value-name:"dir"`, and a description to
