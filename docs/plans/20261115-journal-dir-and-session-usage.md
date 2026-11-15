@@ -473,26 +473,31 @@
   detached child's startup failure does
 
 ### Task 9: Cover the foreground journal with subprocess tests
-- [ ] add a foreground fixture and command builder to `cmd/loopai/detach_child_unix_test.go` (or a
+- [x] add a foreground fixture and command builder to `cmd/loopai/detach_child_unix_test.go` (or a
   sibling `journal_dir_unix_test.go`) that reuses `TestDetachChildHelper`, the fake `claude`, and the
   real git repository, passes no `--detached-run` and no handshake files, and writes no descriptor
-- [ ] extend the fake `claude` so that, when an environment variable is set, its `result` line carries
+- [x] extend the fake `claude` so that, when an environment variable is set, its `result` line carries
   `usage`, `total_cost_usd`, and one `modelUsage` key
-- [ ] write a success test for the fixture's one-task plan in full mode with `report_enabled = true`:
+- [x] write a success test for the fixture's one-task plan in full mode with `report_enabled = true`:
   compare `eventTypes(events)` with a literal expected list that includes `attempt_start`, `task`,
   `usage`, `report`, and `finish`, assert the `task` event's title and the `usage` event's tokens and
   cost, and assert `outcome.json` has status `succeeded`, an empty `run_id`, and the report
-- [ ] write a failing-provider test: `outcome.json` has status `failed` with a reason and the process
+- [x] write a failing-provider test: `outcome.json` has status `failed` with a reason and the process
   exits 1
-- [ ] write a graceful-stop test: SIGTERM sent inside a live session (use `awaitSession`) yields a
+- [x] write a graceful-stop test: SIGTERM sent inside a live session (use `awaitSession`) yields a
   `finish` event and an `outcome.json` with status `stopped`, and the process exits 1
-- [ ] write a refusal test: with a pre-existing `events.jsonl` in the directory the process exits 1
+- [x] write a refusal test: with a pre-existing `events.jsonl` in the directory the process exits 1
   with the error line and the fake provider's dump file does not exist
-- [ ] write a no-flag test: the same plan without `--journal-dir` exits with the same code and leaves
+- [x] write a no-flag test: the same plan without `--journal-dir` exits with the same code and leaves
   no `events.jsonl` or `outcome.json` anywhere under the repository or the test's temporary directory
-- [ ] write a detached-run variant with the usage-emitting fake: its journal holds at least one
+- [x] write a detached-run variant with the usage-emitting fake: its journal holds at least one
   `usage` event and the existing detached assertions still hold
-- [ ] run `make test` - must pass before task 10
+- [x] run `make test` - must pass before task 10
+- ➕ [x] the foreground fixture is `newForegroundFixture` in `cmd/loopai/journal_dir_unix_test.go`, built on
+  `newChildRepoFixture` split out of `newDetachChildFixture`; the helper exits 0 when a foreground
+  run's `main()` returns; the fake `claude` also ticks and commits the plan under `$DETACH_CHILD_TICK`,
+  since a finished plan's `task` event carries no title; the detached variant is
+  `TestDetachedChildSucceedsWithUsage`
 
 ### Task 10: Verify acceptance criteria
 - [ ] verify every requirement from Overview has a test from tasks 1-9: in-place journal and outcome

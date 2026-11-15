@@ -31,6 +31,9 @@ const (
 	// detachChildMainEnv makes the test binary run main() with the unit-separator-delimited
 	// arguments it holds, as the launcher starts the detached child.
 	detachChildMainEnv = "LOOPAI_TEST_DETACH_CHILD_MAIN"
+	// foregroundMainEnv marks a helper child as a foreground run, whose success returns from main()
+	// instead of exiting through an exitCodeError as a detached child does.
+	foregroundMainEnv = "LOOPAI_TEST_FOREGROUND_MAIN"
 	// detachChildWait bounds every wait on a child; spawns are slow under the race-enabled suite.
 	detachChildWait = 30 * time.Second
 	// detachChildID is the run the fixture's descriptor records.
@@ -51,7 +54,9 @@ const (
 // $DETACH_CHILD_GATE is set every session first creates $DETACH_CHILD_STARTED, then waits, at most a
 // minute, for the gate file to exist, so a test can hold the run inside its first session and know
 // that session is running. With $DETACH_CHILD_ENV_DUMP set every session appends its environment
-// there.
+// there. With $DETACH_CHILD_TICK set a succeeding task session ticks every checkbox of the plan and
+// commits it, as a real session finishing the task does. With $DETACH_CHILD_USAGE set the result record carries a fixed usage, the one
+// assertChildUsage expects.
 const detachChildFakeClaude = `#!/bin/sh
 prompt=$(cat)
 if [ -n "$DETACH_CHILD_ENV_DUMP" ]; then env >> "$DETACH_CHILD_ENV_DUMP"; fi
@@ -66,11 +71,19 @@ case "$prompt" in
 *) if [ "$DETACH_CHILD_MODE" = fail ]; then
      echo leftover > leftover.txt; text='<<<RALPHEX:TASK_FAILED>>>'
    else
+     if [ -n "$DETACH_CHILD_TICK" ]; then
+       sed 's/- \[ \]/- [x]/' docs/plans/child.md > docs/plans/child.md.tick && mv docs/plans/child.md.tick docs/plans/child.md
+       git commit -qam 'tick the task' >/dev/null
+     fi
      text='<<<RALPHEX:ALL_TASKS_DONE>>>'
    fi ;;
 esac
 printf '{"type":"content_block_delta","delta":{"type":"text_delta","text":"%s"}}\n' "$text"
-printf '%s\n' '{"type":"result","result":""}'
+if [ -n "$DETACH_CHILD_USAGE" ]; then
+  printf '%s\n' '{"type":"result","result":"","usage":{"input_tokens":120,"cache_read_input_tokens":30,"cache_creation_input_tokens":10,"output_tokens":45},"total_cost_usd":0.25,"modelUsage":{"claude-fake-1":{}}}'
+else
+  printf '%s\n' '{"type":"result","result":""}'
+fi
 `
 
 // detachChildPrompts are the global prompt overrides that let detachChildFakeClaude tell the review
@@ -101,6 +114,9 @@ func TestDetachChildHelper(t *testing.T) {
 	}
 	os.Args = append([]string{"loopai"}, strings.Split(raw, "\x1f")...)
 	main()
+	if _, foreground := os.LookupEnv(foregroundMainEnv); foreground {
+		os.Exit(0) // a successful foreground run returns from main, as the real binary exits 0
+	}
 	t.Fatal("main returned without exiting")
 }
 
@@ -109,8 +125,8 @@ func TestDetachChildHelper(t *testing.T) {
 // plan. env is the child's environment: home and config redirected, the fake claude first on PATH.
 type detachChildFixture struct {
 	repo    string
-	dir     string // the run directory
-	console string // the run's console log
+	dir     string // the run directory, or a foreground run's journal directory
+	console string // the run's console log, or a foreground run's output
 	config  string // the global config file
 	gate    string // the file a gated fake claude waits for
 	started string // the file a gated fake claude creates before it waits
@@ -121,6 +137,24 @@ type detachChildFixture struct {
 // newDetachChildFixture prepares a run of docs/plans/child.md. gated makes every session wait for
 // the gate file.
 func newDetachChildFixture(t *testing.T, gated bool) *detachChildFixture {
+	t.Helper()
+	f := newChildRepoFixture(t, gated)
+	f.dir = runs.Dir(f.repo, detachChildID)
+	require.NoError(t, os.MkdirAll(f.dir, 0o750))
+	f.console = filepath.Join(f.dir, runs.ConsoleLogFile)
+	desc := runs.Descriptor{
+		ID: detachChildID, Attempt: 1, Executable: os.Args[0], Argv: []string{"--tasks-only", "docs/plans/child.md"},
+		Cwd: f.repo, Mode: string(processor.ModeTasksOnly), Plan: "docs/plans/child.md", ConsoleLog: f.console,
+		Origin: runs.Origin{Kind: runs.OriginCLI},
+	}
+	require.NoError(t, runs.SaveDescriptor(f.dir, &desc))
+	return f
+}
+
+// newChildRepoFixture prepares the repository, config, and environment a run of docs/plans/child.md
+// needs, leaving dir and console for the caller: a detached run's directory, or a foreground run's
+// journal directory. gated makes every session wait for the gate file.
+func newChildRepoFixture(t *testing.T, gated bool) *detachChildFixture {
 	t.Helper()
 	f := &detachChildFixture{
 		repo:    setupTestRepo(t),
@@ -150,16 +184,6 @@ func newDetachChildFixture(t *testing.T, gated bool) *detachChildFixture {
 	}
 	bin := t.TempDir()
 	writeExecutable(t, filepath.Join(bin, "claude"), detachChildFakeClaude)
-
-	f.dir = runs.Dir(f.repo, detachChildID)
-	require.NoError(t, os.MkdirAll(f.dir, 0o750))
-	f.console = filepath.Join(f.dir, runs.ConsoleLogFile)
-	desc := runs.Descriptor{
-		ID: detachChildID, Attempt: 1, Executable: os.Args[0], Argv: []string{"--tasks-only", "docs/plans/child.md"},
-		Cwd: f.repo, Mode: string(processor.ModeTasksOnly), Plan: "docs/plans/child.md", ConsoleLog: f.console,
-		Origin: runs.Origin{Kind: runs.OriginCLI},
-	}
-	require.NoError(t, runs.SaveDescriptor(f.dir, &desc))
 
 	f.env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home,
 		"LOOPAI_CONFIG_DIR="+cfgDir, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
@@ -520,9 +544,25 @@ func TestDetachedChildStartsAttempt(t *testing.T) {
 }
 
 func TestDetachedChildSucceeds(t *testing.T) {
+	testDetachedChildSucceeds(t, false)
+}
+
+// TestDetachedChildSucceedsWithUsage is TestDetachedChildSucceeds with sessions that report usage:
+// the journal gains usage events and every other assertion still holds.
+func TestDetachedChildSucceedsWithUsage(t *testing.T) {
+	testDetachedChildSucceeds(t, true)
+}
+
+// testDetachedChildSucceeds runs the fixture's plan to success in full mode with a report; usage
+// makes every fake claude session report usage.
+func testDetachedChildSucceeds(t *testing.T, usage bool) {
+	t.Helper()
 	f := newDetachChildFixture(t, false)
 	f.addLocalConfig(t, "report_enabled = true")
 	f.untrackPlan(t, detachedFinishedPlan)
+	if usage {
+		f.env = append(f.env, "DETACH_CHILD_USAGE=1")
+	}
 	checkout := f.checkoutState(t)
 
 	p := f.launch(t, "docs/plans/child.md")
@@ -601,6 +641,23 @@ func TestDetachedChildSucceeds(t *testing.T) {
 		}
 		require.Len(t, starts, 1)
 		assert.Equal(t, f.worktreePath(), starts[0].Worktree)
+	})
+
+	t.Run("usage events only from sessions that reported usage", func(t *testing.T) {
+		var usages []runs.Event
+		for _, ev := range f.events(t) {
+			if ev.Type == runs.EventUsage {
+				usages = append(usages, ev)
+			}
+		}
+		if !usage {
+			assert.Empty(t, usages)
+			return
+		}
+		require.NotEmpty(t, usages)
+		for _, ev := range usages {
+			assertChildUsage(t, ev)
+		}
 	})
 }
 
