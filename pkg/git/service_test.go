@@ -526,6 +526,62 @@ func TestService_UntrackedFiles(t *testing.T) {
 	assert.ElementsMatch(t, []string{".gitignore", "sub/deep/a b.txt", "top.txt"}, files)
 }
 
+func TestService_WorkTreeContains(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(dir, link))
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "root", path: dir, want: true},
+		{name: "existing file", path: filepath.Join(dir, "README.md"), want: true},
+		{name: "missing nested directory", path: filepath.Join(dir, "a", "b"), want: true},
+		{name: "through a symlink", path: filepath.Join(link, "missing"), want: true},
+		{name: "dot-dot named directory inside", path: filepath.Join(dir, "..journal"), want: true},
+		{name: "outside", path: filepath.Join(t.TempDir(), "journal"), want: false},
+		{name: "parent", path: filepath.Dir(dir), want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, svc.WorkTreeContains(tc.path))
+		})
+	}
+}
+
+func TestService_PathIgnored(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("journal/\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.md"), []byte("x\n"), 0o600))
+	svc, err := NewService(dir, noopServiceLogger())
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "ignored path", path: filepath.Join(dir, "journal", "events.jsonl"), want: true},
+		{name: "tracked path", path: filepath.Join(dir, "README.md"), want: false},
+		{name: "untracked non-ignored path", path: filepath.Join(dir, "untracked.md"), want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ignored, ignoreErr := svc.PathIgnored(tc.path)
+			require.NoError(t, ignoreErr)
+			assert.Equal(t, tc.want, ignored)
+		})
+	}
+
+	_, err = svc.PathIgnored(filepath.Join(t.TempDir(), "outside"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "check ignored path")
+}
+
 func TestService_WorktreeInspectionAndSafeRemoval(t *testing.T) {
 	dir := setupExternalTestRepo(t)
 	worktreePath := filepath.Join(dir, ".loopai", "worktrees", "feature")

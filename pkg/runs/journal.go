@@ -287,6 +287,20 @@ func OpenJournal(dir string, attempt int) (*Journal, error) {
 	return &Journal{f: f, attempt: attempt, seq: seq, size: size}, nil
 }
 
+// CreateJournal creates the journal of directory dir for attempt with mode 0600 and fails, with an
+// error matching fs.ErrExist, when the file already exists; the directory must exist. It is the
+// constructor of a run that holds no lifetime lock, such as a foreground --journal-dir run: the
+// exclusive creation is what keeps a second process from appending to the same journal, where
+// OpenJournal would continue it.
+func CreateJournal(dir string, attempt int) (*Journal, error) {
+	path := filepath.Join(dir, JournalFile)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // journal path chosen by the caller
+	if err != nil {
+		return nil, fmt.Errorf("create journal: %w", err)
+	}
+	return &Journal{f: f, attempt: attempt}, nil
+}
+
 // Append stamps ev with the next seq number, the current time, and the journal's attempt, writes
 // it as one line in a single write, and returns the stamped event. A failed write is cut off
 // again, so the journal keeps only complete lines and the seq number is not used up. When the cut

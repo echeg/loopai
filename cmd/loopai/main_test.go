@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -13482,6 +13483,59 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 			"no workspace is created for an invocation that cannot run")
 		assert.Contains(t, string(recorded), "clear-status",
 			"the run stayed here, so it takes over the stale pill")
+	})
+}
+
+func TestCmuxWorkspaceEligible(t *testing.T) {
+	tests := []struct {
+		name string
+		o    opts
+		want bool
+	}{
+		{name: "no flag", o: opts{PlanFile: "p.md"}},
+		{name: "always", o: opts{CmuxWorkspace: "always", PlanFile: "p.md"}, want: true},
+		{name: "auto", o: opts{CmuxWorkspace: "auto", PlanFile: "p.md"}, want: true},
+		{name: "standalone command", o: opts{CmuxWorkspace: "auto", Init: true}},
+		{name: "journal dir with always", o: opts{CmuxWorkspace: "always", PlanFile: "p.md", JournalDir: "/j"}},
+		{name: "journal dir with auto", o: opts{CmuxWorkspace: "auto", PlanFile: "p.md", JournalDir: "/j"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, cmuxWorkspaceEligible(tc.o))
+		})
+	}
+}
+
+func TestJournalDirRunStaysInThisProcess(t *testing.T) {
+	t.Run("hand-off is skipped even in a busy workspace", func(t *testing.T) {
+		argvLog := cmuxAutoStub(t, "loopai=task 1/3 icon=bolt\n", 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
+
+		for _, mode := range []string{"always", "auto"} {
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			o := opts{CmuxWorkspace: mode, PlanFile: "p.md", JournalDir: t.TempDir()}
+			stop, err := handOffToCmuxWorkspace(o, []string{"--cmux-workspace=" + mode, "p.md"}, stdout, stderr)
+			require.NoError(t, err)
+			assert.False(t, stop, mode)
+			assert.Empty(t, stdout.String(), mode)
+			assert.Empty(t, stderr.String(), mode)
+		}
+		_, statErr := os.Stat(argvLog)
+		assert.ErrorIs(t, statErr, fs.ErrNotExist, "cmux must not be queried or spawned")
+	})
+
+	t.Run("auto reservation is skipped", func(t *testing.T) {
+		argvLog := cmuxAutoStub(t, "", 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		cmuxStop := &cleanupHolder{}
+
+		reserved := ensureAutoWorkspaceReservation(
+			opts{CmuxWorkspace: "auto", PlanFile: "p.md", JournalDir: t.TempDir()}, true, false, cmuxStop, io.Discard)
+
+		assert.False(t, reserved)
+		_, statErr := os.Stat(argvLog)
+		assert.ErrorIs(t, statErr, fs.ErrNotExist, "no starting pill may be written")
 	})
 }
 

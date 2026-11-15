@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -416,4 +417,71 @@ func eventSeqs(events []Event) []int {
 		seqs = append(seqs, ev.Seq)
 	}
 	return seqs
+}
+
+func TestCreateJournal(t *testing.T) {
+	t.Run("creates a fresh journal", func(t *testing.T) {
+		dir := t.TempDir()
+		j, err := CreateJournal(dir, 1)
+		require.NoError(t, err)
+		first, err := j.Append(Event{Type: EventPhase, Phase: status.PhaseTask})
+		require.NoError(t, err)
+		require.NoError(t, j.Close())
+		assert.Equal(t, 1, first.Seq)
+		assert.Equal(t, 1, first.Attempt)
+
+		info, err := os.Stat(filepath.Join(dir, JournalFile))
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+		events, err := ReadFrom(dir, 0)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, EventPhase, events[0].Type)
+	})
+
+	t.Run("fails on an existing file and leaves it unchanged", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, JournalFile)
+		require.NoError(t, os.WriteFile(path, []byte("existing\n"), 0o600))
+		_, err := CreateJournal(dir, 1)
+		require.Error(t, err)
+		require.ErrorIs(t, err, fs.ErrExist)
+		data, readErr := os.ReadFile(path) //nolint:gosec // test temp dir
+		require.NoError(t, readErr)
+		assert.Equal(t, "existing\n", string(data))
+	})
+
+	t.Run("fails on a missing directory", func(t *testing.T) {
+		_, err := CreateJournal(filepath.Join(t.TempDir(), "missing"), 1)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, fs.ErrNotExist)
+	})
+
+	t.Run("exactly one of two concurrent creators succeeds", func(t *testing.T) {
+		for range 20 {
+			dir := t.TempDir()
+			var wg sync.WaitGroup
+			results := make([]error, 2)
+			journals := make([]*Journal, 2)
+			start := make(chan struct{})
+			for i := range 2 {
+				wg.Go(func() {
+					<-start
+					journals[i], results[i] = CreateJournal(dir, 1)
+				})
+			}
+			close(start)
+			wg.Wait()
+			succeeded := 0
+			for i, err := range results {
+				if err == nil {
+					succeeded++
+					require.NoError(t, journals[i].Close())
+					continue
+				}
+				require.ErrorIs(t, err, fs.ErrExist)
+			}
+			assert.Equal(t, 1, succeeded)
+		}
+	})
 }

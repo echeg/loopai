@@ -551,6 +551,14 @@ func run(ctx context.Context, o opts) (runErr error) {
 		resolveStaleCmuxStatus(false)
 		return err
 	}
+	if o.JournalDir != "" {
+		journalDir, err := prepareJournalDir(o.JournalDir)
+		if err != nil {
+			resolveStaleCmuxStatus(false)
+			return err
+		}
+		o.JournalDir = journalDir
+	}
 
 	done, autoWorkspaceReserved, preserveEarlyStatus, err := prepareRunBeforeConfig(o, cmuxStop)
 	if err != nil || done {
@@ -4870,6 +4878,15 @@ func clearCmuxStatus(stdout io.Writer) {
 	rep.Clear()
 }
 
+// cmuxWorkspaceEligible reports whether --cmux-workspace applies to this invocation at all: it was
+// given, the invocation is no standalone command, and no --journal-dir is set. A --journal-dir run
+// belongs to the host process that spawned it and reads its journal, so it must stay in this
+// process; validateJournalDirFlags already refuses the combination, and this keeps the hand-off and
+// the auto reservation from ever acting on such a run.
+func cmuxWorkspaceEligible(o opts) bool {
+	return o.CmuxWorkspace != "" && !isStandaloneCommand(o) && o.JournalDir == ""
+}
+
 // handOffToCmuxWorkspace relaunches this invocation in a new cmux workspace and reports whether
 // the caller must stop, plus an error when stopping is not a success. hand-off is best-effort like
 // the rest of the cmux integration: outside cmux, or when workspace creation is cleanly refused, a
@@ -4881,7 +4898,7 @@ func clearCmuxStatus(stdout io.Writer) {
 // are excluded, they are short synchronous commands whose output belongs to the terminal the user
 // typed them in.
 func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bool, error) {
-	if o.CmuxWorkspace == "" || isStandaloneCommand(o) {
+	if !cmuxWorkspaceEligible(o) {
 		return false, nil
 	}
 	handOffRequired := false
@@ -4951,7 +4968,7 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bo
 // The cleanup holder owns the reservation until a normal reporter replaces it, clearing "starting"
 // on every startup error and on interrupts without erasing a later final pill.
 func ensureAutoWorkspaceReservation(o opts, eligible, reserved bool, cmuxStop *cleanupHolder, stderr io.Writer) bool {
-	if o.CmuxWorkspace != "auto" || isStandaloneCommand(o) || !eligible || reserved {
+	if o.CmuxWorkspace != "auto" || !cmuxWorkspaceEligible(o) || !eligible || reserved {
 		return reserved
 	}
 	rep := cmux.New("", cmux.Models{})

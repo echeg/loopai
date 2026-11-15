@@ -56,6 +56,7 @@ type backend interface {
 	untrackedFiles() ([]string, error)
 	fileHasChanges(path string) (bool, error)
 	fileTracked(path string) (bool, error)
+	pathIgnored(path string) (bool, error)
 	fileStateFingerprint(path string) (string, error)
 	hasChangesOtherThan(paths ...string) ([]string, error)
 	operationInProgress() (string, error)
@@ -373,6 +374,27 @@ func (s *Service) IsDirtyAll() (bool, error) {
 		return false, fmt.Errorf("check complete working tree: %w", err)
 	}
 	return dirty, nil
+}
+
+// WorkTreeContains reports whether the absolute path, which need not exist, lies inside this
+// checkout's work tree, comparing symlink-resolved paths.
+func (s *Service) WorkTreeContains(path string) bool {
+	rel, err := filepath.Rel(s.repo.root(), resolveExistingPrefix(path))
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// PathIgnored reports whether git ignores path, which must lie inside the work tree; it need not
+// exist. A tracked path is not ignored, since an ignore rule does not apply to it, and a path under
+// an ignored directory is.
+func (s *Service) PathIgnored(path string) (bool, error) {
+	ignored, err := s.repo.pathIgnored(path)
+	if err != nil {
+		return false, fmt.Errorf("check ignored path: %w", err)
+	}
+	return ignored, nil
 }
 
 // UntrackedFiles lists every untracked, non-ignored file individually, relative to the worktree

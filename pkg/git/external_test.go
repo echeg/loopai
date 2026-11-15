@@ -716,6 +716,68 @@ func TestExternalBackend_FileTracked(t *testing.T) {
 	assert.False(t, tracked)
 }
 
+func TestExternalBackend_PathIgnored(t *testing.T) {
+	dir := setupExternalTestRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("journal/\n*.log\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tracked.log"), []byte("log\n"), 0o600))
+	runGit(t, dir, "add", "-f", ".gitignore", "tracked.log")
+	runGit(t, dir, "commit", "-m", "ignore rules")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked.md"), []byte("# Plan\n"), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "journal"), 0o700))
+	eb, err := newExternalBackend(dir, "git")
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "ignored directory", path: "journal", want: true},
+		{name: "missing directory matching a directory-only rule", path: "elsewhere/journal", want: false},
+		{name: "absolute path below a missing ignored directory", path: filepath.Join(dir, "journal", "run", "x", "events.jsonl"), want: true},
+		{name: "missing file under an ignored directory", path: "journal/run/events.jsonl", want: true},
+		{name: "absolute path under an ignored directory", path: filepath.Join(dir, "journal", "events.jsonl"), want: true},
+		{name: "ignored file pattern", path: "debug.log", want: true},
+		{name: "tracked path matching an ignore rule", path: "tracked.log", want: false},
+		{name: "tracked path", path: "README.md", want: false},
+		{name: "untracked non-ignored path", path: "untracked.md", want: false},
+		{name: "missing non-ignored path", path: "other/events.jsonl", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ignored, err := eb.pathIgnored(tc.path)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, ignored)
+		})
+	}
+
+	t.Run("path outside the repository", func(t *testing.T) {
+		ignored, err := eb.pathIgnored(filepath.Join(t.TempDir(), "events.jsonl"))
+		require.Error(t, err)
+		assert.False(t, ignored)
+	})
+
+	t.Run("command failure", func(t *testing.T) {
+		broken := &externalBackend{path: filepath.Join(t.TempDir(), "gone"), command: "git"}
+		ignored, err := broken.pathIgnored("events.jsonl")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "git check-ignore")
+		assert.False(t, ignored)
+	})
+}
+
+func TestResolveExistingPrefix(t *testing.T) {
+	base := t.TempDir()
+	resolvedBase, err := filepath.EvalSymlinks(base)
+	require.NoError(t, err)
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(base, link))
+
+	assert.Equal(t, resolvedBase, resolveExistingPrefix(base))
+	assert.Equal(t, filepath.Join(resolvedBase, "a", "b"), resolveExistingPrefix(filepath.Join(base, "a", "b")))
+	assert.Equal(t, filepath.Join(resolvedBase, "a"), resolveExistingPrefix(filepath.Join(link, "a")))
+}
+
 func TestExternalBackend_HasChangesOtherThan(t *testing.T) {
 	t.Run("returns empty when no changes", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

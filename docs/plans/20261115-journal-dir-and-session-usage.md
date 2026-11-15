@@ -415,26 +415,31 @@
   with tests
 
 ### Task 7: Prepare the journal directory and keep the run in this process
-- [ ] add an exclusive constructor to `pkg/runs` that creates `events.jsonl` with
+- [x] add an exclusive constructor to `pkg/runs` that creates `events.jsonl` with
   `O_CREATE|O_EXCL` and fails when the file exists; `OpenJournal` is unchanged
-- [ ] add an ignored-path check to `pkg/git` (through `git check-ignore`) reporting whether a path
+- [x] add an ignored-path check to `pkg/git` (through `git check-ignore`) reporting whether a path
   inside the work tree is ignored
-- [ ] add `prepareJournalDir(dir string) (string, error)` in `cmd/loopai`, called after
+- [x] add `prepareJournalDir(dir string) (string, error)` in `cmd/loopai`, called after
   `validateFlags` and before `prepareRunBeforeConfig`: it makes the path absolute, creates the
   directory with mode `0700` when missing, and refuses a path that is a regular file, a directory
   that holds `events.jsonl` or `outcome.json`, and a directory inside the repository work tree that
   git does not ignore
-- [ ] make a run with `JournalDir` set ineligible for the automatic cmux hand-off, since a hand-off
+- [x] make a run with `JournalDir` set ineligible for the automatic cmux hand-off, since a hand-off
   re-executes the command in another process
-- [ ] write tests in `pkg/runs/journal_test.go`: the exclusive constructor fails on an existing file,
+- [x] write tests in `pkg/runs/journal_test.go`: the exclusive constructor fails on an existing file,
   and of two goroutines calling it for one directory exactly one succeeds
-- [ ] write tests for the ignored-path check: an ignored path, a tracked path, an untracked
+- [x] write tests for the ignored-path check: an ignored path, a tracked path, an untracked
   non-ignored path
-- [ ] write table tests for `prepareJournalDir`: a relative path made absolute, a directory created
+- [x] write table tests for `prepareJournalDir`: a relative path made absolute, a directory created
   with `0700`, an existing `events.jsonl` refused, an existing `outcome.json` refused, a regular file
   refused, an in-tree non-ignored directory refused, an in-tree ignored directory accepted
-- [ ] write a test that the auto-workspace eligibility is false when `JournalDir` is set
-- [ ] run `make test` - must pass before task 8
+- [x] write a test that the auto-workspace eligibility is false when `JournalDir` is set
+- [x] run `make test` - must pass before task 8
+- ➕ [x] add `git.Service.WorkTreeContains` (symlink-resolved, for a path that need not exist) for the
+  in-tree test, and check that git ignores the two files the run writes (`events.jsonl`,
+  `outcome.json`) rather than the directory: a directory-only ignore rule matches a missing directory
+  only once it exists, while a file below an ignored directory always matches; a refusal creates no
+  directory, and the check runs before config loading with plain `git`
 
 ### Task 8: Write the journal and the outcome on a foreground run
 - [ ] in `run()`, when `JournalDir` is set, open the journal with the exclusive constructor (attempt
