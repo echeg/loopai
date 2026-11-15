@@ -75,6 +75,26 @@ func TestPrepareJournalDir(t *testing.T) {
 			require.NoError(t, os.WriteFile(path, []byte("x"), 0o600))
 			return path, path
 		}, wantErr: "is not a directory", createdOnRefusal: true},
+		{name: "path below a regular file refused", setup: func(t *testing.T) (string, string) {
+			file := filepath.Join(t.TempDir(), "file")
+			require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
+			path := filepath.Join(file, "journal")
+			return path, path
+		}, wantErr: "inspect --journal-dir"},
+		{name: "unreadable directory refused", setup: func(t *testing.T) (string, string) {
+			dir := filepath.Join(t.TempDir(), "locked")
+			require.NoError(t, os.Mkdir(dir, 0o700))
+			require.NoError(t, os.Chmod(dir, 0o000))
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // test temp dir
+			return dir, dir
+		}, wantErr: "inspect --journal-dir", createdOnRefusal: true},
+		{name: "uncreatable directory refused", setup: func(t *testing.T) (string, string) {
+			parent := filepath.Join(t.TempDir(), "readonly")
+			require.NoError(t, os.Mkdir(parent, 0o500))
+			t.Cleanup(func() { _ = os.Chmod(parent, 0o700) }) //nolint:gosec // test temp dir
+			path := filepath.Join(parent, "journal")
+			return path, path
+		}, wantErr: "create --journal-dir"},
 		{name: "in-tree non-ignored directory refused", setup: func(t *testing.T) (string, string) {
 			repo := journalDirRepo(t)
 			return "journal", filepath.Join(repo, "journal")
@@ -242,6 +262,19 @@ func TestFireInPlaceAttemptStarted(t *testing.T) {
 		require.Error(t, err)
 		assert.Equal(t, "start attempt: journal full", err.Error())
 	})
+}
+
+func TestForegroundJournalAttemptStartedFailure(t *testing.T) {
+	dir := t.TempDir()
+	fj, req, err := attachForegroundJournal(opts{JournalDir: dir}, &config.Config{}, executePlanRequest{Mode: processor.ModeFull})
+	require.NoError(t, err)
+	require.NoError(t, fj.journal.Close())
+
+	err = req.InPlaceAttemptStarted(attemptStart{PlanFile: "/nowhere/p.md", MainPlanFile: "/nowhere/p.md", Branch: "feat"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "record attempt start")
+	assert.False(t, fj.started, "a failed append does not start the attempt")
+	assert.Empty(t, fj.branch)
 }
 
 // discardWriter is an io.Writer that drops everything.

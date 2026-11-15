@@ -545,6 +545,7 @@ func TestService_WorkTreeContains(t *testing.T) {
 		{name: "dot-dot named directory inside", path: filepath.Join(dir, "..journal"), want: true},
 		{name: "outside", path: filepath.Join(t.TempDir(), "journal"), want: false},
 		{name: "parent", path: filepath.Dir(dir), want: false},
+		{name: "relative path", path: "journal", want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

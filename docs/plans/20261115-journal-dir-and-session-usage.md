@@ -500,15 +500,19 @@
   `TestDetachedChildSucceedsWithUsage`
 
 ### Task 10: Verify acceptance criteria
-- [ ] verify every requirement from Overview has a test from tasks 1-9: in-place journal and outcome
+- [x] verify every requirement from Overview has a test from tasks 1-9: in-place journal and outcome
   for full and `--tasks-only`, `usage` events for Claude and Codex, refusals before a provider starts,
   no change without the flag
-- [ ] run `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] run `go test -race -coverprofile=c.out ./cmd/loopai ./pkg/runs ./pkg/executor ./pkg/processor
+- [x] run `make test`
+- [x] run `make lint` - all issues must be fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] run `go test -race -coverprofile=c.out ./cmd/loopai ./pkg/runs ./pkg/executor ./pkg/processor
   ./pkg/git && go tool cover -func=c.out` and confirm the new functions are covered (80%+), then
   remove `c.out`
+- ➕ [x] the coverage run left `prepareJournalDir` (77.8%), `foregroundJournal.attemptStarted` (75%), and
+  `git.Service.WorkTreeContains` (75%) below 80%; tests for a path below a regular file, an unreadable
+  and an uncreatable journal directory, a failed `attempt_start` append, and a relative path raised
+  them to 94.4%, 100%, and 100%
 
 ### Task 11: [Final] Update documentation
 - [ ] add `docs/host-integration.md`: how a host spawns a foreground run with `--journal-dir`, the
