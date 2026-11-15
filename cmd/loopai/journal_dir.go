@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,13 +14,6 @@ import (
 	"github.com/umputun/ralphex/pkg/progress"
 	"github.com/umputun/ralphex/pkg/runs"
 )
-
-// openJournalDirRepo opens the repository holding the working directory for prepareJournalDir. It
-// runs before config loading, so it uses plain git: a repository a custom vcs_command reaches but
-// git does not has no git work tree for the journal to pollute.
-var openJournalDirRepo = func() (*git.Service, error) {
-	return git.NewService(".", nil)
-}
 
 // prepareJournalDir checks and creates the --journal-dir directory before anything else runs and
 // returns its absolute path, so the journal and outcome land where the host expects them whatever
@@ -64,9 +58,11 @@ func prepareJournalDir(dir string) (string, error) {
 // repository holding the working directory unless git ignores both files the run writes there.
 // The files are checked rather than the directory because a directory-only ignore rule matches a
 // missing directory only once it exists, while a file below an ignored directory always matches.
-// Outside a repository there is no work tree to protect.
+// Outside a repository there is no work tree to protect. It runs before config loading, so it opens
+// the repository with plain git: a repository a custom vcs_command reaches but git does not has no git
+// work tree for the journal to pollute.
 func refuseUnignoredJournalDir(abs string) error {
-	svc, err := openJournalDirRepo()
+	svc, err := git.NewService(".", nil)
 	if err != nil || !svc.WorkTreeContains(abs) {
 		return nil //nolint:nilerr // no git work tree around the working directory, nothing to pollute
 	}
@@ -81,6 +77,16 @@ func refuseUnignoredJournalDir(abs string) error {
 		}
 	}
 	return nil
+}
+
+// executionStdin is the stdin the repository checks may prompt on: os.Stdin, or nil for a
+// --journal-dir run, which its host spawned with nobody to answer, so an empty repository is an
+// error there, as for a detached run, instead of a "create initial commit?" question.
+func executionStdin(o opts) io.Reader {
+	if o.JournalDir != "" {
+		return nil
+	}
+	return os.Stdin
 }
 
 // foregroundJournal is the event journal and outcome of a foreground --journal-dir run: one attempt
@@ -150,22 +156,49 @@ func (f *foregroundJournal) complete(ctx context.Context, svc *git.Service, runE
 			fmt.Fprintf(os.Stderr, "warning: close the run journal: %v\n", err)
 		}
 	}()
-	var rec runs.Outcome
+	rec := startupOutcome(runErr)
 	if f.started {
 		rec, _ = closeAttempt(attemptEnd{hooks: f.hooks, attempt: 1, branch: f.branch,
 			stopRequested: ctx.Err() != nil, svc: svc, outcome: f.outcome, runErr: runErr})
-	} else {
-		cause := runErr
-		if cause == nil {
-			cause = errors.New("the run ended before its attempt started")
-		}
-		rec = runs.Outcome{Attempt: 1, Status: runs.StatusFailed, Reason: fmt.Errorf("startup: %w", cause).Error(),
-			ExitCode: 1}
 	}
 	if _, err := saveAttemptOutcome(f.dir, rec); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 	}
 	f.hooks.endProgressLog()
+}
+
+// startupOutcome is the failed outcome of a run that ended before its attempt started, with a
+// reason beginning with "startup:", as a detached child records its startup failure. A nil runErr is
+// still a failure: no attempt ran.
+func startupOutcome(runErr error) runs.Outcome {
+	cause := runErr
+	if cause == nil {
+		cause = errors.New("the run ended before its attempt started")
+	}
+	return runs.Outcome{Attempt: 1, Status: runs.StatusFailed, Reason: fmt.Errorf("startup: %w", cause).Error(),
+		ExitCode: 1}
+}
+
+// failForegroundStartup records runErr as the failed startup outcome of a --journal-dir run that
+// returned before its journal was attached: configuration loading, the dependency checks, or the
+// repository checks failed after prepareJournalDir accepted the directory. It first claims the
+// directory by creating the journal exclusively, as attaching does, so a directory another process
+// took meanwhile is left alone; the journal stays empty, as for a run that failed after attaching
+// and before its attempt started. A failure on the way is a warning on stderr.
+func failForegroundStartup(dir string, runErr error) {
+	journal, err := runs.CreateJournal(dir, 1)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: --journal-dir %s: the startup failure is not recorded: %v\n", dir, err)
+		return
+	}
+	defer func() {
+		if closeErr := journal.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: close the run journal: %v\n", closeErr)
+		}
+	}()
+	if _, err := saveAttemptOutcome(dir, startupOutcome(runErr)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
 }
 
 // fireInPlaceAttemptStarted calls req.InPlaceAttemptStarted for a run in the current checkout once

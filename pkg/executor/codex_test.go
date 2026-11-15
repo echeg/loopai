@@ -3975,8 +3975,11 @@ func TestCodexExecutor_Run_TaskComplete(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// a token_count before task_complete: the session's usage must survive every exit path
+			tokens := `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":` +
+				`{"input_tokens":30000,"cached_input_tokens":24000,"cache_write_input_tokens":1200,"output_tokens":1100,"total_tokens":31100}}}}` + "\n"
 			event := `{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":` + strconv.Quote(message) + "}}\n"
-			sessionID, _ := taskCompleteFixture(t, event)
+			sessionID, _ := taskCompleteFixture(t, tokens+event)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			exit := make(chan error, 1)
@@ -4032,6 +4035,8 @@ func TestCodexExecutor_Run_TaskComplete(t *testing.T) {
 			}
 			assert.True(t, stopped.Load(), "grace timer must be stopped on every exit path")
 			assert.Equal(t, tt.action == "idle", result.IdleTimedOut)
+			assert.Equal(t, &Usage{InputTokens: 6000, CachedInputTokens: 24000, CacheWriteInputTokens: 1200, OutputTokens: 1100},
+				result.Usage, "usage is kept on every exit path")
 			switch tt.action {
 			case "cancel":
 				require.ErrorIs(t, result.Error, context.Canceled)

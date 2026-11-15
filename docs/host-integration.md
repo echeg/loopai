@@ -32,16 +32,24 @@ written to `.loopai/progress/progress-<plan>.txt`, and the human output still go
   `--gen-agents`, `--serve`, `--watch`, `--detach`, `--cmux-workspace`, `--acp`, every standalone
   command (`--init`, `--reset`, `--dump-defaults`, `--clear`, `--merge`, `--pr`, `--report`,
   `--attach`, `--runs`, `--stop`), a plan chain, a missing plan argument, or extra plan arguments.
-- The run is non-interactive: a missing plan is an error rather than a selection prompt, no pause
+- The run is non-interactive: a missing plan is an error rather than a selection prompt, a
+  repository without commits is an error rather than an offer to create the initial commit, no pause
   handler or manual-break signal (Ctrl+\) is installed, and the cmux and Orca reporters are not
-  started. An invocation with `--cmux-workspace` is refused rather than handed off, since a hand-off
-  would run the plan in another process. Give the child its stdin on the null device.
+  started (`orca = true` and `--orca` are ignored, and the cmux status pill a previous run left is
+  not cleared). An invocation with `--cmux-workspace` is refused rather than handed off, since a
+  hand-off would run the plan in another process. Give the child its stdin on the null device.
 - The run keeps loopai's other behavior: the configured providers, reviewers, `finalize` mode, and
   report, notifications, and the plan archive. On success the plan is moved to
   `docs/plans/completed/` and committed on the run's branch in this checkout. Pass
   `--skip-finalize` when the host closes the branch out itself.
 - It works inside a sandbox that `--detach` refuses (`SANDBOX_RUNTIME`, `CODEX_SANDBOX`, a jail
-  started with `--die-with-parent`), because nothing outlives the loopai process.
+  started with `--die-with-parent`), because nothing outlives the loopai process. The jail must
+  allow writes to the checkout (`.loopai/` included), the journal directory, and the global config
+  directory (`~/.config/loopai`): every run installs missing default prompts and agents there,
+  rewrites a config file that is missing or holds only comments, and records the launch in
+  `launch-history`. To keep a read-only home, point `LOOPAI_CONFIG_DIR` or `--config-dir` at a
+  writable directory whose `config` sets at least one key; that also keeps the host's runs out of the
+  user's launch history.
 
 ## The directory
 
@@ -119,7 +127,8 @@ ran in. A session that hit the session timeout still reports the usage it return
 
 ## `outcome.json`
 
-Written when execution returns, after the `finish` event:
+Written when execution returns, after the `finish` event. Because it comes after `finish`, it may not
+exist yet at the moment a reader sees that event: read it once the loopai process has exited.
 
 | Field | Content |
 |---|---|
@@ -152,6 +161,12 @@ SIGINT or SIGTERM cancels the run. When it returns within the five seconds loopa
 forced exit, the journal ends with `finish` and `outcome.json` records `stopped`. A forced exit, a
 SIGKILL, or a crash leaves no `finish` event and no `outcome.json`: treat a non-zero exit without
 `outcome.json` as a run that did not complete.
+
+A run that fails after the directory was accepted but before its attempt started, from configuration
+loading, a missing provider binary, or the repository checks through plan selection and branch
+creation, leaves an empty `events.jsonl` and an `outcome.json` recording `failed` with a `startup:`
+reason; a stop in that window is recorded the same way. Only a refusal of the directory itself, or of
+the flags, writes nothing into it.
 
 If writing `outcome.json` fails, loopai prints a warning on stderr and keeps its exit code. If
 creating the journal or recording `attempt_start` fails, the run stops before any provider starts.

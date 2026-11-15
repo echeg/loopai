@@ -5355,6 +5355,28 @@ func TestApplyCLIOverrides_JournalDirRunsInPlace(t *testing.T) {
 	assert.True(t, cfg.WorktreeEnabled, "without the flag the config value is kept")
 }
 
+func TestApplyCLIOverrides_JournalDirTurnsOrcaOff(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		o    opts
+		cfg  bool
+	}{
+		{name: "config value", o: opts{JournalDir: "/tmp/j"}, cfg: true},
+		{name: "--orca flag", o: opts{JournalDir: "/tmp/j", Orca: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{Orca: tc.cfg}
+			require.NoError(t, applyCLIOverrides(tc.o, cfg))
+			assert.False(t, cfg.Orca, "a --journal-dir run starts no Orca title reporter")
+			assert.Equal(t, launcherCLI, launcherFor(cfg), "launch history records a plain CLI launch")
+		})
+	}
+
+	cfg := &config.Config{Orca: true}
+	require.NoError(t, applyCLIOverrides(opts{}, cfg))
+	assert.True(t, cfg.Orca, "without the flag the config value is kept")
+}
+
 func TestApplyCLIOverrides_CommitRequiresEffectiveWorktree(t *testing.T) {
 	t.Run("accepts config enabled worktree", func(t *testing.T) {
 		cfg := &config.Config{WorktreeEnabled: true}
@@ -7615,6 +7637,8 @@ func TestClearStaleCmuxStatusSkipsConfigUtilities(t *testing.T) {
 		{DetachedRun: "plan-20261022-120000-abcd", PlanFile: "plan.md"},
 		// nor has its launcher, which returns once the child started
 		{Detach: true, PlanFile: "plan.md"},
+		// a --journal-dir run reports to its host through the journal and builds no reporter
+		{JournalDir: "/tmp/journal", PlanFile: "plan.md"},
 	} {
 		clearStaleCmuxStatus(o)
 	}

@@ -557,6 +557,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 		resolveStaleCmuxStatus(false)
 		return err
 	}
+	var journal *foregroundJournal
 	if o.JournalDir != "" {
 		journalDir, err := prepareJournalDir(o.JournalDir)
 		if err != nil {
@@ -564,6 +565,14 @@ func run(ctx context.Context, o opts) (runErr error) {
 			return err
 		}
 		o.JournalDir = journalDir
+		// a failure before the journal is attached, from config loading through the repository checks,
+		// still leaves the host a failed startup outcome; once attached, journal.complete records the
+		// run. a nil runErr here is a panic unwinding, which records nothing, as a crash does
+		defer func() {
+			if journal == nil && runErr != nil {
+				failForegroundStartup(journalDir, runErr)
+			}
+		}()
 	}
 
 	done, autoWorkspaceReserved, preserveEarlyStatus, err := prepareRunBeforeConfig(o, cmuxStop)
@@ -637,7 +646,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 	}
 
 	repo, err := openExecutionRepository(ctx, o, cfg, colors, mode, executionIO{
-		stdin: os.Stdin, stdout: os.Stdout, setupTitles: setupTitles,
+		stdin: executionStdin(o), stdout: os.Stdout, setupTitles: setupTitles,
 	})
 	if err != nil {
 		return err
@@ -698,7 +707,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 		LimitRecovery:       limitRecovery,
 		ReviewPreflightDone: reviewPreflight,
 	}
-	journal, req, err := attachForegroundJournal(o, cfg, req)
+	journal, req, err = attachForegroundJournal(o, cfg, req)
 	if err != nil {
 		return err
 	}
@@ -5195,8 +5204,11 @@ func stripCmuxWorkspaceArg(args []string) []string {
 	return filtered
 }
 
+// clearStaleCmuxStatus removes the previous run's pill before a run that will report its own. A
+// --journal-dir run never builds a cmux reporter, it reports to its host through the journal, so
+// like a detached child it leaves the workspace's pill, possibly another live run's, alone.
 func clearStaleCmuxStatus(o opts) {
-	if isStandaloneCommand(o) {
+	if isStandaloneCommand(o) || o.JournalDir != "" {
 		return
 	}
 	cmux.New("", cmux.Models{}).Clear()
@@ -6786,9 +6798,11 @@ func applyFinalizeOverride(o opts, cfg *config.Config) {
 	}
 }
 
-// applyReportingOverrides resolves optional host reporting.
+// applyReportingOverrides resolves optional host reporting. A --journal-dir run reports to its host
+// through the journal, so Orca titles are turned off as for a detached run: no setup title is left
+// on a terminal no reporter finishes, and launch history records a plain CLI launch.
 func applyReportingOverrides(o opts, cfg *config.Config) {
-	cfg.Orca = enabledByCLI(cfg.Orca, o.Orca)
+	cfg.Orca = enabledByCLI(cfg.Orca, o.Orca) && o.JournalDir == ""
 }
 
 // applyWorktreeOverride resolves worktree mode: --worktree enables it, --journal-dir disables it, and

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -82,6 +83,7 @@ func TestPrepareJournalDir(t *testing.T) {
 			return path, path
 		}, wantErr: "inspect --journal-dir"},
 		{name: "unreadable directory refused", setup: func(t *testing.T) (string, string) {
+			skipIfRootIgnoresPermissions(t)
 			dir := filepath.Join(t.TempDir(), "locked")
 			require.NoError(t, os.Mkdir(dir, 0o700))
 			require.NoError(t, os.Chmod(dir, 0o000))
@@ -89,6 +91,7 @@ func TestPrepareJournalDir(t *testing.T) {
 			return dir, dir
 		}, wantErr: "inspect --journal-dir", createdOnRefusal: true},
 		{name: "uncreatable directory refused", setup: func(t *testing.T) (string, string) {
+			skipIfRootIgnoresPermissions(t)
 			parent := filepath.Join(t.TempDir(), "readonly")
 			require.NoError(t, os.Mkdir(parent, 0o500))
 			t.Cleanup(func() { _ = os.Chmod(parent, 0o700) }) //nolint:gosec // test temp dir
@@ -104,6 +107,11 @@ func TestPrepareJournalDir(t *testing.T) {
 			require.NoError(t, os.Mkdir(filepath.Join(repo, "journal"), 0o700))
 			return filepath.Join(repo, "journal"), filepath.Join(repo, "journal")
 		}, wantErr: "inside the repository work tree", createdOnRefusal: true},
+		{name: "in-tree directory ignoring only events.jsonl refused", setup: func(t *testing.T) (string, string) {
+			repo := journalDirRepo(t)
+			require.NoError(t, os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("*.jsonl\n"), 0o600))
+			return "journal", filepath.Join(repo, "journal")
+		}, wantErr: "inside the repository work tree and git does not ignore outcome.json"},
 		{name: "in-tree ignored directory accepted", setup: func(t *testing.T) (string, string) {
 			repo := journalDirRepo(t)
 			return filepath.Join("ignored", "run-1"), filepath.Join(repo, "ignored", "run-1")
@@ -140,6 +148,15 @@ func TestPrepareJournalDir(t *testing.T) {
 			require.NoError(t, readErr)
 			assert.Empty(t, entries, "preparing the directory writes nothing into it")
 		})
+	}
+}
+
+// skipIfRootIgnoresPermissions skips a test whose refusal depends on directory permissions, which
+// root bypasses.
+func skipIfRootIgnoresPermissions(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
 	}
 }
 
@@ -381,7 +398,7 @@ printf '%s\n' '{"type":"result","result":"","usage":{"input_tokens":10,"output_t
 }
 
 func TestExecutePlanInPlaceHookErrorStopsBeforeRunner(t *testing.T) {
-	_, planPath, svc := foregroundJournalRepo(t)
+	repo, planPath, svc := foregroundJournalRepo(t)
 	marker := filepath.Join(t.TempDir(), "provider-ran")
 	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
 	writeExecutable(t, fakeClaude, "#!/bin/sh\ntouch '"+marker+"'\ncat >/dev/null\n")
@@ -398,6 +415,14 @@ func TestExecutePlanInPlaceHookErrorStopsBeforeRunner(t *testing.T) {
 	assert.NoFileExists(t, marker, "no provider process started")
 	assert.False(t, outcome.succeeded)
 	require.Error(t, outcome.failure)
+
+	// the progress log ends failed, so the next run on this plan does not archive it as a finished session
+	logData, err := os.ReadFile(filepath.Join(repo, ".loopai", "progress", "progress-fg.txt")) //nolint:gosec // test temp path
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimRight(string(logData), "\n"), "\n")
+	last := lines[len(lines)-1]
+	assert.True(t, strings.HasPrefix(last, "Failed: "), last)
+	assert.Contains(t, last, "start attempt: journal full")
 }
 
 func TestForegroundJournalComplete(t *testing.T) {
@@ -465,4 +490,76 @@ func TestForegroundJournalComplete(t *testing.T) {
 		stderr := captureStderr(t, func() { fj.complete(t.Context(), nil, errors.New("boom")) })
 		assert.Contains(t, stderr, "warning: record the attempt's outcome:")
 	})
+}
+
+func TestFailForegroundStartup(t *testing.T) {
+	t.Run("records a failed startup outcome with an empty journal", func(t *testing.T) {
+		dir := t.TempDir()
+		stderr := captureStderr(t, func() { failForegroundStartup(dir, errors.New("load config: bad key")) })
+		assert.Empty(t, stderr)
+
+		rec, err := runs.LoadOutcome(dir)
+		require.NoError(t, err)
+		assert.Equal(t, runs.StatusFailed, rec.Status)
+		assert.Equal(t, "startup: load config: bad key", rec.Reason)
+		assert.Equal(t, 1, rec.ExitCode)
+		assert.Equal(t, 1, rec.Attempt)
+		assert.Empty(t, rec.RunID)
+		assert.False(t, rec.FinishedAt.IsZero())
+		events, err := runs.ReadFrom(dir, 0)
+		require.NoError(t, err)
+		assert.Empty(t, events)
+		assert.FileExists(t, filepath.Join(dir, runs.JournalFile), "the journal claims the directory")
+	})
+
+	t.Run("leaves a directory another process claimed alone", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, runs.JournalFile), []byte("x\n"), 0o600))
+		stderr := captureStderr(t, func() { failForegroundStartup(dir, errors.New("boom")) })
+		assert.Contains(t, stderr, "the startup failure is not recorded")
+		assert.NoFileExists(t, filepath.Join(dir, runs.OutcomeFile))
+		data, err := os.ReadFile(filepath.Join(dir, runs.JournalFile)) //nolint:gosec // test temp path
+		require.NoError(t, err)
+		assert.Equal(t, "x\n", string(data))
+	})
+}
+
+// TestRunJournalDirStartupFailure drives run() into a repository without commits: a --journal-dir
+// run must not ask to create an initial commit, and the failure, which comes before the journal is
+// attached, must still leave a failed startup outcome.
+func TestRunJournalDirStartupFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	repo := t.TempDir()
+	out, err := exec.Command("git", "init", "-q", repo).CombinedOutput()
+	require.NoError(t, err, string(out))
+	t.Chdir(repo)
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "docs", "plans"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "docs", "plans", "p.md"),
+		[]byte("# Plan\n\n### Task 1: Build it\n\n- [ ] do it\n"), 0o600))
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, "#!/bin/sh\nexit 1\n")
+	configDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"),
+		[]byte("claude_command = "+fakeClaude+"\nexternal_reviewers =\n"), 0o600))
+	journal := filepath.Join(t.TempDir(), "journal")
+
+	var runErr error
+	stdout := captureStdout(t, func() {
+		runErr = run(t.Context(), opts{PlanFile: "docs/plans/p.md", PlanFiles: []string{"docs/plans/p.md"},
+			JournalDir: journal, journalDirSet: true, ConfigDir: configDir, NoColor: true})
+	})
+	require.Error(t, runErr)
+	assert.Contains(t, runErr.Error(), "repository has no commits")
+	assert.NotContains(t, stdout, "create initial commit?", "a host-spawned run never prompts")
+
+	rec, err := runs.LoadOutcome(journal)
+	require.NoError(t, err)
+	assert.Equal(t, runs.StatusFailed, rec.Status)
+	assert.Equal(t, "startup: "+runErr.Error(), rec.Reason)
+	assert.Equal(t, 1, rec.ExitCode)
+	events, err := runs.ReadFrom(journal, 0)
+	require.NoError(t, err)
+	assert.Empty(t, events)
 }

@@ -1091,13 +1091,22 @@ plan arguments, an empty value, and no plan, and the flag sits in `markFlagsSet`
 `hasExecutionMode`'s execution-flag lists so close-out and `--runs`/`--attach`/`--stop` reject it;
 `applyWorktreeOverride` forces `WorktreeEnabled` off, so `use_worktree = true` cannot move the run, and
 `cmuxWorkspaceEligible` is false with it, so neither the hand-off nor the auto reservation acts on
-the run. `prepareJournalDir` runs after `validateFlags` and before `prepareRunBeforeConfig`, with plain `git` because config is not loaded: it makes the path
+the run. The run builds no reporter, so `applyReportingOverrides` turns `cfg.Orca` off as
+`loadDetachedConfig` does (no setup title left on a terminal, launch history records `cli`) and
+`clearStaleCmuxStatus` leaves the workspace's pill alone; `executionStdin` hands
+`openExecutionRepository` a nil stdin, so an empty repository is an error rather than a prompt, the
+one prompt that precedes `NonInteractive`. `prepareJournalDir` runs after `validateFlags` and before `prepareRunBeforeConfig`, with plain `git` because config is not loaded: it makes the path
 absolute, refuses a non-directory and a directory already holding either file, and refuses a directory
 inside the work tree (`git.Service.WorkTreeContains`, symlink-resolved for a path that need not exist)
 unless `PathIgnored` (`git check-ignore`) holds for both files — the files and not the directory,
 because a directory-only ignore rule matches a missing directory only once it exists — since
 `diffFingerprint` hashes untracked content and journal writes would defeat stalemate detection. Only
-then is a missing directory created with mode `0700`. `attachForegroundJournal` creates the journal
+then is a missing directory created with mode `0700`. From there a deferred guard in `run()` calls
+`failForegroundStartup` when `run()` returns an error with no journal attached — config loading,
+`resolveExecutionDeps`, or `openExecutionRepository` failed — which claims the directory with the same
+exclusive `CreateJournal` first, so a directory another process took is left alone, and saves a failed
+`startup:` outcome beside the empty journal, as a detached child records its startup failures; a nil
+error there is a panic and records nothing. `attachForegroundJournal` creates the journal
 through `runs.CreateJournal` (`O_CREATE|O_EXCL`: a foreground run holds no lifetime lock that would keep
 a second writer out, unlike `OpenJournal`) and sets `Outcome`, `NonInteractive`, `LogDecorator`,
 `PhaseObserver`, `UsageHandler`, and `InPlaceAttemptStarted` on `run()`'s own request, deliberately not
