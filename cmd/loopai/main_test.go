@@ -14415,6 +14415,8 @@ func TestWorktreeExecuteRequestForwardsDetachedKnobs(t *testing.T) {
 	// or lose its worktree without any error
 	hookCalls := 0
 	hook := func(attemptStart) error { hookCalls++; return nil }
+	usageCalls := 0
+	usageHook := func(processor.SessionUsage) { usageCalls++ }
 	tests := []struct {
 		name   string
 		req    executePlanRequest
@@ -14431,11 +14433,19 @@ func TestWorktreeExecuteRequestForwardsDetachedKnobs(t *testing.T) {
 				require.NoError(t, got.AttemptStarted(attemptStart{}))
 				assert.Equal(t, before+1, hookCalls, "the copied hook is the caller's")
 			}},
+		{name: "usage handler", req: executePlanRequest{UsageHandler: usageHook},
+			assert: func(t *testing.T, got executePlanRequest) {
+				require.NotNil(t, got.UsageHandler)
+				before := usageCalls
+				got.UsageHandler(processor.SessionUsage{})
+				assert.Equal(t, before+1, usageCalls, "the copied usage handler is the caller's")
+			}},
 		{name: "unset knobs stay unset", req: executePlanRequest{},
 			assert: func(t *testing.T, got executePlanRequest) {
 				assert.False(t, got.KeepWorktreeOnFailure)
 				assert.False(t, got.ArchiveOnRunBranch)
 				assert.Nil(t, got.AttemptStarted)
+				assert.Nil(t, got.UsageHandler)
 			}},
 	}
 	for _, tc := range tests {
@@ -15378,13 +15388,15 @@ func TestExecutePlanNonInteractiveRoutesOutputAndHooks(t *testing.T) {
 	writeExecutable(t, fakeClaude, `#!/bin/sh
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:REVIEW_DONE>>>"}}'
-printf '%s\n' '{"type":"result","result":""}'
+printf '%s\n' '{"type":"result","result":"","total_cost_usd":0.25,"usage":{"input_tokens":12,"output_tokens":3}}'
 `)
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
 
 	var out bytes.Buffer
 	var decorated *sectionRecordingLogger
+	var usageMu sync.Mutex
+	var usages []processor.SessionUsage
 	var phasesMu sync.Mutex
 	var phases []status.Phase
 	outcome := &planExecutionOutcome{}
@@ -15402,6 +15414,11 @@ printf '%s\n' '{"type":"result","result":""}'
 				phasesMu.Lock()
 				phases = append(phases, cur)
 				phasesMu.Unlock()
+			},
+			UsageHandler: func(u processor.SessionUsage) {
+				usageMu.Lock()
+				usages = append(usages, u)
+				usageMu.Unlock()
 			},
 		})
 	})
@@ -15421,6 +15438,15 @@ printf '%s\n' '{"type":"result","result":""}'
 	assert.True(t, outcome.succeeded)
 	require.NoError(t, outcome.failure)
 	assert.Contains(t, outcome.report, "| internal review |", "the outcome carries the completion report")
+	usageMu.Lock()
+	defer usageMu.Unlock()
+	require.NotEmpty(t, usages, "every session's usage reaches the request's handler")
+	assert.Equal(t, "claude", usages[0].Provider)
+	assert.Equal(t, status.PhaseReview, usages[0].Phase)
+	assert.Equal(t, int64(12), usages[0].Usage.InputTokens)
+	assert.Equal(t, int64(3), usages[0].Usage.OutputTokens)
+	require.NotNil(t, usages[0].Usage.CostUSD)
+	assert.InDelta(t, 0.25, *usages[0].Usage.CostUSD, 1e-9)
 }
 
 // TestStartRunReportersNonInteractive enables both reporters the way a cmux terminal and orca

@@ -355,26 +355,26 @@
 - [x] run `make test` (it runs with `-race`) - must pass before task 4
 
 ### Task 4: Report each session's usage to a handler
-- [ ] add `UsageHandler func(SessionUsage)` to `processor.Config` in `pkg/processor/runner.go`, where
+- [x] add `UsageHandler func(SessionUsage)` to `processor.Config` in `pkg/processor/runner.go`, where
   `SessionUsage` carries the provider name, the phase, and the `executor.Usage`
-- [ ] call it in `retryPolicy.runWithSessionTimeout` (`pkg/processor/execution_policy.go`) after each
+- [x] call it in `retryPolicy.runWithSessionTimeout` (`pkg/processor/execution_policy.go`) after each
   `run` returns with a non-nil `Result.Usage`, whatever the result's error or timeout state, passing
   `toolName` and the phase from a nil-safe read of `phaseHolder`; a nil handler or nil usage does
   nothing
-- [ ] add a `UsageHandler` field to `executePlanRequest`, copy it in `worktreeExecuteRequest`, and pass
+- [x] add a `UsageHandler` field to `executePlanRequest`, copy it in `worktreeExecuteRequest`, and pass
   it to `createRunner` the way `CommandTimingHandler` is passed
-- [ ] add `journalHooks.observeUsage` in `cmd/loopai/detach_journal.go` appending an `EventUsage`
+- [x] add `journalHooks.observeUsage` in `cmd/loopai/detach_journal.go` appending an `EventUsage`
   event; a failed append follows the existing warn-once rule
-- [ ] set the request's `UsageHandler` to `hooks.observeUsage` in `detachedChild.execute`
-- [ ] write tests in `pkg/processor/execution_policy_test.go` driving `policy.Run` with a short
+- [x] set the request's `UsageHandler` to `hooks.observeUsage` in `detachedChild.execute`
+- [x] write tests in `pkg/processor/execution_policy_test.go` driving `policy.Run` with a short
   `waitOnLimit`: a `run` stub whose first call returns a limit error with usage and whose second
   returns usage yields two handler calls
-- [ ] write tests on `runWithSessionTimeout`: one call for a session with usage, none without it, one
+- [x] write tests on `runWithSessionTimeout`: one call for a session with usage, none without it, one
   call when the stub returns usage after the session timeout fired, and the provider and a
   `PhaseReview` phase passed through
-- [ ] write tests in `cmd/loopai/detach_journal_test.go`: `observeUsage` writes the event with and
+- [x] write tests in `cmd/loopai/detach_journal_test.go`: `observeUsage` writes the event with and
   without a cost and warns once when the append fails
-- [ ] run `make test` - must pass before task 5
+- [x] run `make test` - must pass before task 5
 
 ### Task 5: Share the completion of an attempt between detached and foreground runs
 - [ ] extract from `detachedChild.complete` (`cmd/loopai/detach_child.go`) a function that, given the

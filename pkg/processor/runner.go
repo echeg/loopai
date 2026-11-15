@@ -58,6 +58,15 @@ type Config struct {
 	AppConfig             *config.Config              // full application config (for executors and prompts)
 	LimitRecovery         limits.Recovery             // optional provider-specific limit recovery
 	CommandTimingHandler  func(string, time.Duration) // optional callback for completed shell commands
+	UsageHandler          func(SessionUsage)          // optional callback for each finished session that reported usage
+}
+
+// SessionUsage is the usage one finished provider session reported, with the provider that ran it
+// and the pipeline phase it ran in.
+type SessionUsage struct {
+	Provider string         // provider name, such as claude, codex, or custom
+	Phase    status.Phase   // phase the session ran in; empty when no phase was set
+	Usage    executor.Usage // the session's token counts and cost
 }
 
 func toPhaseConfig(c Config) phase.Config {

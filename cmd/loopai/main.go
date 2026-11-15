@@ -340,6 +340,8 @@ type executePlanRequest struct {
 	LogDecorator func(processor.Logger) processor.Logger
 	// PhaseObserver is subscribed to phase changes beside the status reporters.
 	PhaseObserver func(old, cur status.Phase)
+	// UsageHandler receives the usage of every finished provider session that reported one.
+	UsageHandler func(processor.SessionUsage)
 
 	// KeepWorktreeOnFailure keeps a worktree mode run's worktree on every exit after a successful
 	// AttemptStarted except a clean success: a non-success, or a success whose close-out is
@@ -2366,6 +2368,7 @@ func worktreeExecuteRequest(req executePlanRequest, wt worktreeRun, baseLog *pro
 		NonInteractive:         req.NonInteractive,
 		LogDecorator:           req.LogDecorator,
 		PhaseObserver:          req.PhaseObserver,
+		UsageHandler:           req.UsageHandler,
 		KeepWorktreeOnFailure:  req.KeepWorktreeOnFailure,
 		ArchiveOnRunBranch:     req.ArchiveOnRunBranch,
 		AttemptStarted:         req.AttemptStarted,
@@ -4063,6 +4066,7 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		AppConfig:             req.Config,
 		LimitRecovery:         req.LimitRecovery,
 		CommandTimingHandler:  commandTimingHandler,
+		UsageHandler:          req.UsageHandler,
 	}, log, holder)
 	if req.GitSvc != nil {
 		r.SetGitChecker(req.GitSvc)

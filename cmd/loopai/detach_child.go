@@ -217,6 +217,7 @@ func (c *detachedChild) execute(
 	req.ArchiveOnRunBranch = true
 	req.LogDecorator = hooks.decorateLogger
 	req.PhaseObserver = hooks.observePhase
+	req.UsageHandler = hooks.observeUsage
 	mode, sel := req.Mode, req.ExternalReview
 	req.AttemptStarted = func(start attemptStart) error {
 		return c.attemptStarted(hooks, start, attemptStartEvent(start, mode, cfg, sel, c.consoleOffset))

@@ -15,7 +15,7 @@ import (
 )
 
 // journalHooks records a detached run's execution in its event journal. decorateLogger fills the
-// request's LogDecorator and observePhase its PhaseObserver. A failed append never reaches the run:
+// request's LogDecorator, observePhase its PhaseObserver, and observeUsage its UsageHandler. A failed append never reaches the run:
 // the first one is reported once as a warning on warnOut, the console log in a detached child.
 type journalHooks struct {
 	journal     *runs.Journal
@@ -129,6 +129,17 @@ func (h *journalHooks) observePhase(old, cur status.Phase) {
 		parsed, _ := h.parsePlan()
 		h.appendStatuses(parsed)
 	}
+}
+
+// observeUsage records one finished provider session's usage. Like the section and phase events, a
+// failed append is reported once and never reaches the run.
+func (h *journalHooks) observeUsage(u processor.SessionUsage) {
+	h.append(runs.Event{
+		Type: runs.EventUsage, Provider: u.Provider, Model: u.Usage.Model, Phase: u.Phase,
+		InputTokens: u.Usage.InputTokens, CachedInputTokens: u.Usage.CachedInputTokens,
+		CacheWriteInputTokens: u.Usage.CacheWriteInputTokens, OutputTokens: u.Usage.OutputTokens,
+		CostUSD: u.Usage.CostUSD,
+	})
 }
 
 // onSection records the task and review sections; other sections leave no event.
