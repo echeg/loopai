@@ -37,6 +37,11 @@ const (
 	EventReport EventType = "report"
 	// EventFinish closes an attempt: Status, Reason, and ExitCode.
 	EventFinish EventType = "finish"
+	// EventUsage is one finished provider session's usage: Provider, Model, Phase, InputTokens,
+	// CachedInputTokens, CacheWriteInputTokens, OutputTokens, and CostUSD when the CLI reported a
+	// cost. InputTokens excludes the cached tokens, which CachedInputTokens and
+	// CacheWriteInputTokens count separately, for every provider.
+	EventUsage EventType = "usage"
 )
 
 // Stage names an attempt_start event lists, in pipeline order.
@@ -107,6 +112,16 @@ type Event struct {
 	Status        Status       `json:"status"`
 	Reason        string       `json:"reason"`
 	ExitCode      int          `json:"exit_code"`
+
+	// Provider, Model, the token counts, and CostUSD belong to a usage event; CostUSD is nil when
+	// the provider CLI reported no cost.
+	Provider              string   `json:"provider"`
+	Model                 string   `json:"model"`
+	InputTokens           int64    `json:"input_tokens"`
+	CachedInputTokens     int64    `json:"cached_input_tokens"`
+	CacheWriteInputTokens int64    `json:"cache_write_input_tokens"`
+	OutputTokens          int64    `json:"output_tokens"`
+	CostUSD               *float64 `json:"cost_usd"`
 }
 
 // eventHeader is the part every journal line carries.
@@ -197,6 +212,18 @@ func (e Event) payload() any {
 			Reason   string `json:"reason"`
 			ExitCode int    `json:"exit_code"`
 		}{e.Status, e.Reason, e.ExitCode}
+	case EventUsage:
+		return struct {
+			Provider              string       `json:"provider"`
+			Model                 string       `json:"model"`
+			Phase                 status.Phase `json:"phase"`
+			InputTokens           int64        `json:"input_tokens"`
+			CachedInputTokens     int64        `json:"cached_input_tokens"`
+			CacheWriteInputTokens int64        `json:"cache_write_input_tokens"`
+			OutputTokens          int64        `json:"output_tokens"`
+			CostUSD               *float64     `json:"cost_usd,omitempty"`
+		}{e.Provider, e.Model, e.Phase, e.InputTokens, e.CachedInputTokens, e.CacheWriteInputTokens,
+			e.OutputTokens, e.CostUSD}
 	default:
 		return nil
 	}

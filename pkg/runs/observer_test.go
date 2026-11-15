@@ -6,6 +6,7 @@ import (
 	"context"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -195,6 +196,42 @@ func TestFollowUntilFinishCanceled(t *testing.T) {
 	case <-time.After(followTimeout):
 		t.Fatal("follow did not return on cancel")
 	}
+}
+
+func TestFollowUntilFinishIgnoresUsage(t *testing.T) {
+	dir := t.TempDir()
+	j := openTestJournal(t, dir, 1)
+	appendTestEvents(t, j, Event{Type: EventAttemptStart},
+		Event{Type: EventUsage, Provider: "claude", Phase: status.PhaseTask, InputTokens: 1, CostUSD: new(0.5)})
+
+	got := &eventRecorder{}
+	type result struct {
+		finish Event
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		finish, err := FollowUntilFinish(t.Context(), dir, 1, 0, got.add)
+		done <- result{finish, err}
+	}()
+
+	require.Eventually(t, func() bool { return len(got.seqs()) == 2 }, followTimeout, 10*time.Millisecond)
+	select {
+	case res := <-done:
+		t.Fatalf("follow ended on a usage event: %+v, %v", res.finish, res.err)
+	case <-time.After(2 * followPoll):
+	}
+	appendTestEvents(t, j, Event{Type: EventUsage, Provider: "codex", Phase: status.PhaseReview},
+		Event{Type: EventFinish, Status: StatusSucceeded})
+	select {
+	case res := <-done:
+		require.NoError(t, res.err)
+		assert.Equal(t, EventFinish, res.finish.Type)
+		assert.Equal(t, 4, res.finish.Seq)
+	case <-time.After(followTimeout):
+		t.Fatal("follow did not return at the finish event")
+	}
+	assert.Equal(t, []int{1, 2, 3, 4}, got.seqs(), "usage events are delivered")
 }
 
 func TestSnapshotTasksAndStages(t *testing.T) {
@@ -407,6 +444,33 @@ func TestSnapshotResumedPastInternalReview(t *testing.T) {
 		assert.Equal(t, []string{"active", "pending", "pending"}, stageStates(s),
 			"the internal review after the last task is the review stage")
 	})
+}
+
+func TestSnapshotUsageAdvancesSeqOnly(t *testing.T) {
+	events := []Event{
+		{Seq: 1, Attempt: 1, Type: EventAttemptStart, TaskTotal: 2,
+			Tasks:  []TaskInfo{{N: 1, Title: "one"}, {N: 2, Title: "two"}},
+			Stages: []string{StageReview, StageReport}},
+		{Seq: 2, Type: EventPhase, Phase: status.PhaseTask},
+		{Seq: 3, Type: EventTask, N: 1, M: 2, Title: "one"},
+		{Seq: 4, Type: EventTasks, Statuses: []TaskStatus{{N: 1, Status: ProgressActive}, {N: 2, Status: ProgressPending}}},
+	}
+	before := Fold(events)
+	usage := Event{Seq: 5, Attempt: 1, Type: EventUsage, Provider: "claude", Model: "opus",
+		Phase: status.PhaseReview, InputTokens: 10, OutputTokens: 20, CostUSD: new(0.3)}
+
+	applied := before
+	applied.Tasks = slices.Clone(before.Tasks)
+	applied.Stages = slices.Clone(before.Stages)
+	applied.recorded = slices.Clone(before.recorded)
+	applied.Apply(usage)
+	folded := Fold(append(slices.Clone(events), usage))
+
+	want := before
+	want.Seq = 5
+	assert.Equal(t, want, applied, "Apply changes only Seq")
+	assert.Equal(t, want, folded, "Fold changes only Seq")
+	assert.Equal(t, status.PhaseTask, folded.Phase, "the usage event's phase is not a phase change")
 }
 
 func TestSnapshotUndeclaredStage(t *testing.T) {

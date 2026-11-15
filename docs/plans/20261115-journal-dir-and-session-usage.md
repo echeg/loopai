@@ -297,22 +297,22 @@
 ## Implementation Steps
 
 ### Task 1: Add the `usage` event type to the journal
-- [ ] add `EventUsage EventType = "usage"` with its doc comment to the constants in
+- [x] add `EventUsage EventType = "usage"` with its doc comment to the constants in
   `pkg/runs/journal.go`, listing the fields it carries and stating that `input_tokens` excludes
   cached tokens
-- [ ] add the fields to `Event`: `Provider`, `Model`, `InputTokens`, `CachedInputTokens`,
+- [x] add the fields to `Event`: `Provider`, `Model`, `InputTokens`, `CachedInputTokens`,
   `CacheWriteInputTokens`, `OutputTokens`, and `CostUSD *float64` (nil when the CLI reported no cost);
   reuse the existing `Phase` field
-- [ ] add a `case EventUsage` to `Event.payload()` writing `provider`, `model`, `phase`,
+- [x] add a `case EventUsage` to `Event.payload()` writing `provider`, `model`, `phase`,
   `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, and `cost_usd`
   only when it is not nil
-- [ ] write tests in `pkg/runs/journal_test.go`: a `usage` event round-trips through `Append` and
+- [x] write tests in `pkg/runs/journal_test.go`: a `usage` event round-trips through `Append` and
   `parseEvents` with and without a cost, and an event with zero cache counts
-- [ ] write tests in `pkg/runs/observer_test.go`: `Snapshot.Apply` and `Fold` advance `Seq` on a
+- [x] write tests in `pkg/runs/observer_test.go`: `Snapshot.Apply` and `Fold` advance `Seq` on a
   `usage` event and change nothing else; `FollowUntilFinish` does not end on it
-- [ ] write tests in `cmd/loopai/t3_bridge_test.go` and `cmd/loopai/acp_render_test.go`: a `usage`
+- [x] write tests in `cmd/loopai/t3_bridge_test.go` and `cmd/loopai/acp_render_test.go`: a `usage`
   event between two known events changes no title and sends no update
-- [ ] run `make test` - must pass before task 2
+- [x] run `make test` - must pass before task 2
 
 ### Task 2: Extract usage from a Claude session
 - [ ] add an exported `Usage` struct to `pkg/executor` (`Model`, `InputTokens`, `CachedInputTokens`,

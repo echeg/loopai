@@ -390,6 +390,25 @@ func TestT3BridgeSendsOnlyChangedTitles(t *testing.T) {
 	})
 }
 
+func TestT3BridgeIgnoresUsage(t *testing.T) {
+	h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
+	h.start()
+	h.task(1)
+	h.waitTitle("[loopai: task 1/2] My thread")
+	before := h.commands()
+
+	h.waitApplied(h.append(runs.Event{Type: runs.EventUsage, Provider: "claude", Model: "opus",
+		Phase: status.PhaseReview, InputTokens: 10, OutputTokens: 20, CostUSD: new(0.5)}))
+	assert.Equal(t, before, h.commands(), "a usage event sends no command")
+	assert.Equal(t, []string{"[loopai: task 1/2] My thread"}, h.titles())
+	assert.Equal(t, "[loopai: task 1/2] My thread", h.thread().Title, "a usage event's phase is not a phase change")
+
+	h.task(2)
+	h.waitTitle("[loopai: task 2/2] My thread")
+	assert.Equal(t, []string{"[loopai: task 1/2] My thread", "[loopai: task 2/2] My thread"}, h.titles())
+	assert.Empty(t, h.log.all())
+}
+
 func TestT3BridgePin(t *testing.T) {
 	t.Run("an unpinned thread is pinned for the run and unpinned at the end", func(t *testing.T) {
 		h := newBridgeHarness(t, t3test.Thread{ID: bridgeThreadID, Title: "My thread"}, false)
