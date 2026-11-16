@@ -283,7 +283,9 @@ over 512 MiB, confine model reads to isolated temporary directories, and reject
 in-worktree alternate Git directories. The Claude wrapper exposes only
 read-only repository tools and disables user/project customizations; the Codex
 wrapper requires strict-config and permission-profile support, disables
-user/project config, rules, MCP and external tools, strips
+user/project config (forwarding only the selected custom model provider and
+model, with a bearer token in the environment rather than argv), rules, MCP
+and external tools, strips
 credential-like shell variables, and starts an ephemeral session without
 approval escalation. Candidate and judging scratch files live outside the
 repository and are removed on every exit. Grill mode reports Codex failure

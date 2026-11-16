@@ -7,6 +7,7 @@ skill_dir="$repo_root/assets/claude/skills/loopai-grill"
 skill_file="$skill_dir/SKILL.md"
 path_helper="$skill_dir/scripts/plan_paths.py"
 snapshot_helper="$skill_dir/scripts/snapshot_repository.py"
+provider_helper="$skill_dir/scripts/codex_provider.py"
 claude_wrapper="$skill_dir/scripts/run-claude.sh"
 codex_wrapper="$skill_dir/scripts/run-codex.sh"
 symlink_checker="$repo_root/scripts/check-symlinks.sh"
@@ -40,6 +41,7 @@ run_paths() {
 [[ -f "$skill_file" ]] || fail "missing loopai-grill skill"
 [[ -x "$path_helper" ]] || fail "missing executable deterministic plan-path helper"
 [[ -x "$snapshot_helper" ]] || fail "missing executable descriptor-anchored snapshot helper"
+[[ -x "$provider_helper" ]] || fail "missing executable Codex provider helper"
 [[ -x "$claude_wrapper" ]] || fail "missing executable isolated Claude wrapper"
 [[ -x "$codex_wrapper" ]] || fail "missing executable isolated Codex wrapper"
 
@@ -64,6 +66,9 @@ assert_contains "missing compare input classification" 'plan_paths.py classify'
 assert_contains "missing empty compare handling" 'If it is empty or whitespace, stop and ask the user'
 # shellcheck disable=SC2016 # Backticks are literal skill text, not shell syntax.
 assert_contains "missing Codex wrapper requirement" 'call `claude -p` or `codex exec` directly'
+# shellcheck disable=SC2016 # Backticks and the parameter expansion are literal skill text, not shell syntax.
+assert_contains "missing Codex provider forwarding contract" 'forwarding from `${CODEX_HOME:-~/.codex}/config.toml` only the selected custom model provider and model'
+assert_contains "missing Codex token channel contract" 'through the environment and never in process arguments'
 assert_contains "missing Claude wrapper requirement" 'Never launch a plan-consuming Agent with inherited repository permissions'
 assert_contains "missing loopai plan-mode substitution ban" 'or substitute `loopai --plan` under any `--plan-model`'
 assert_contains "missing bounded plan input" '64 MiB or more than 512 MiB total'
@@ -842,6 +847,7 @@ printf '%s\n' \
 	'if [[ "${1:-}" == "exec" && "${2:-}" == "--help" ]]; then printf "%s\\n" "--strict-config"; exit 0; fi' \
 	'if [[ "${1:-}" == "sandbox" && "${2:-}" == "--help" ]]; then printf "%s\\n" "--permission-profile"; exit 0; fi' \
 	'printf "%s\\n" "$@" >"$CODEX_ARGS_LOG"' \
+	'if [[ -n "${CODEX_TOKEN_LOG:-}" ]]; then printf "%s\\n" "${LOOPAI_GRILL_CODEX_TOKEN-unset}" >"$CODEX_TOKEN_LOG"; fi' \
 	'codex_cwd=' \
 	'previous=' \
 	'for argument in "$@"; do' \
@@ -907,9 +913,15 @@ expect_failure "missing Claude binary was not reported" env PATH="$fixture/empty
 	"$fixture/repo" "$fixture/codex-prompt.txt" "$fixture/missing-claude.stdout" "$fixture/missing-claude.stderr"
 grep -Fq 'claude binary is required' "$fixture/failure.stderr" || fail "missing Claude error was not actionable"
 
-CODEX_CREATE_READONLY=1 CODEX_ARGS_LOG="$fixture/codex.args" CODEX_SNAPSHOT_LOG="$fixture/codex.snapshot" CODEX_STDIN_LOG="$fixture/codex.stdin" TMPDIR="$fixture" PATH="$fixture/fake-bin:/usr/bin:/bin" \
+# The Codex wrapper forwards the model provider selected in the user's Codex configuration, so every wrapper run
+# below reads an empty Codex home instead of the developer's own.
+mkdir -p "$fixture/empty-codex-home"
+export CODEX_HOME="$fixture/empty-codex-home"
+
+LOOPAI_GRILL_CODEX_TOKEN=inherited-token CODEX_TOKEN_LOG="$fixture/codex.token" CODEX_CREATE_READONLY=1 CODEX_ARGS_LOG="$fixture/codex.args" CODEX_SNAPSHOT_LOG="$fixture/codex.snapshot" CODEX_STDIN_LOG="$fixture/codex.stdin" TMPDIR="$fixture" PATH="$fixture/fake-bin:/usr/bin:/bin" \
 	bash "$codex_wrapper" "$fixture/repo" "$fixture/codex-prompt.txt" "$fixture/codex.stdout" "$fixture/codex.stderr"
 [[ "$(<"$fixture/codex.stdout")" == "codex result" ]] || fail "Codex stdout was not captured"
+[[ "$(<"$fixture/codex.token")" == "unset" ]] || fail "Codex inherited a provider token the wrapper did not set"
 [[ ! -s "$fixture/codex.stderr" ]] || fail "successful Codex stderr was not captured separately"
 codex_isolation_dir="$(awk 'previous == "-C" { print; exit } { previous = $0 }' "$fixture/codex.args")"
 [[ "$codex_isolation_dir" == "$canonical_fixture"/loopai-grill-codex.* ]] || fail "Codex did not use an isolated working directory"
@@ -977,6 +989,148 @@ printf '%s\n' \
 	--skip-git-repo-check \
 	- >"$fixture/expected-codex.args"
 diff -u "$fixture/expected-codex.args" "$fixture/codex.args" || fail "Codex isolation arguments changed"
+
+# The isolated run ignores the user's Codex configuration, so the wrapper forwards the custom model provider
+# selected there, and nothing else. Its bearer token must reach Codex through the environment and never through
+# argv. Reading the configuration needs tomllib (Python 3.11+), which the system interpreter may lack.
+mkdir -p "$fixture/provider-home"
+run_provider_wrapper() {
+	env CODEX_HOME="$fixture/provider-home" CODEX_ARGS_LOG="$fixture/provider.args" \
+		CODEX_TOKEN_LOG="$fixture/provider.token" CODEX_SNAPSHOT_LOG="$fixture/provider.snapshot" \
+		CODEX_STDIN_LOG="$fixture/provider.stdin" TMPDIR="$fixture" PATH="$provider_path" \
+		/bin/bash "$codex_wrapper" "$fixture/repo" "$fixture/codex-prompt.txt" \
+		"$fixture/provider.stdout" "$fixture/provider.stderr"
+}
+provider_overrides() {
+	grep -E '^(model=|model_provider=|model_providers\.)' "$fixture/provider.args" || true
+}
+# isolation_arguments prints an argument log without the per-run working directory and without the provider
+# overrides, each dropped together with the -c that introduces it.
+isolation_arguments() {
+	awk 'after_cwd { after_cwd = 0; next }
+		held { held = 0; if ($0 ~ /^(model=|model_provider=|model_providers\.)/) next; print "-c" }
+		$0 == "-c" { held = 1; next }
+		$0 == "-C" { after_cwd = 1 }
+		{ print }' "$1"
+}
+provider_python=''
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import tomllib' 2>/dev/null; then
+	provider_python="$(command -v python3)"
+fi
+if [[ -n "$provider_python" ]]; then
+	mkdir -p "$fixture/python-bin"
+	ln -s "$provider_python" "$fixture/python-bin/python3"
+	provider_path="$fixture/fake-bin:$fixture/python-bin:/usr/bin:/bin"
+
+	printf '%s\n' \
+		'model_provider = "proxy"' \
+		'model = "proxy-model"' \
+		'' \
+		'[model_providers.proxy]' \
+		'name = "Proxy \"quoted\""' \
+		'base_url = "https://proxy.example/v1"' \
+		'wire_api = "responses"' \
+		'requires_openai_auth = true' \
+		'supports_websockets = false' \
+		'stream_max_retries = 3' \
+		'experimental_bearer_token = "fixture-secret-token"' \
+		'unknown_future_field = "dropped"' \
+		'' \
+		'[model_providers.proxy.query_params]' \
+		'api-version = "2026-01-01"' \
+		'' \
+		'[model_providers.proxy.http_headers]' \
+		'X-Static = "header-secret"' \
+		'' \
+		'[model_providers.other]' \
+		'base_url = "https://other.example/v1"' >"$fixture/provider-home/config.toml"
+	run_provider_wrapper 2>"$fixture/provider.wrapper-stderr" || fail "wrapper rejected a forwardable Codex provider"
+	printf '%s\n' \
+		'model_provider="loopai_grill"' \
+		'model_providers.loopai_grill.name="Proxy \"quoted\""' \
+		'model_providers.loopai_grill.base_url="https://proxy.example/v1"' \
+		'model_providers.loopai_grill.wire_api="responses"' \
+		'model_providers.loopai_grill.stream_max_retries=3' \
+		'model_providers.loopai_grill.supports_websockets=false' \
+		'model_providers.loopai_grill.query_params={ "api-version" = "2026-01-01" }' \
+		'model_providers.loopai_grill.env_key="LOOPAI_GRILL_CODEX_TOKEN"' \
+		'model_providers.loopai_grill.requires_openai_auth=false' \
+		'model="proxy-model"' >"$fixture/expected-provider.overrides"
+	diff -u "$fixture/expected-provider.overrides" <(provider_overrides) || fail "Codex provider overrides changed"
+	[[ "$(<"$fixture/provider.token")" == "fixture-secret-token" ]] ||
+		fail "Codex provider token did not reach Codex through the environment"
+	if grep -Eq 'fixture-secret-token|header-secret|unknown_future_field|other\.example' "$fixture/provider.args"; then
+		fail "Codex arguments carried a secret or a setting outside the forwarded provider"
+	fi
+	grep -Fq 'http_headers is not forwarded' "$fixture/provider.wrapper-stderr" ||
+		fail "dropped static provider headers were not reported"
+	# with each override and its -c removed, the isolation argument list is the unchanged one
+	diff -u <(isolation_arguments "$fixture/expected-codex.args") <(isolation_arguments "$fixture/provider.args") ||
+		fail "forwarding a Codex provider changed the isolation arguments"
+
+	printf '%s\n' \
+		'profile = "gateway"' \
+		'model_provider = "other"' \
+		'' \
+		'[profiles.gateway]' \
+		'model_provider = "gateway"' \
+		'' \
+		'[model_providers.gateway]' \
+		'base_url = "https://gateway.example/v1"' \
+		'env_key = "GATEWAY_API_KEY"' \
+		'' \
+		'[model_providers.other]' \
+		'base_url = "https://other.example/v1"' >"$fixture/provider-home/config.toml"
+	run_provider_wrapper 2>"$fixture/provider.wrapper-stderr" || fail "wrapper rejected a profile-selected Codex provider"
+	printf '%s\n' \
+		'model_provider="loopai_grill"' \
+		'model_providers.loopai_grill.base_url="https://gateway.example/v1"' \
+		'model_providers.loopai_grill.env_key="GATEWAY_API_KEY"' \
+		'model_providers.loopai_grill.requires_openai_auth=false' >"$fixture/expected-provider.overrides"
+	diff -u "$fixture/expected-provider.overrides" <(provider_overrides) ||
+		fail "profile-selected Codex provider overrides changed"
+	[[ "$(<"$fixture/provider.token")" == "unset" ]] || fail "wrapper invented a token for an env_key provider"
+
+	printf '%s\n' 'model_provider = "openai"' 'model = "some-model"' >"$fixture/provider-home/config.toml"
+	run_provider_wrapper 2>"$fixture/provider.wrapper-stderr" || fail "wrapper rejected the built-in Codex provider"
+	[[ -z "$(provider_overrides)" ]] || fail "built-in Codex provider produced overrides"
+	[[ ! -s "$fixture/provider.wrapper-stderr" ]] || fail "built-in Codex provider produced a warning"
+
+	printf '%s\n' 'model_provider = ' >"$fixture/provider-home/config.toml"
+	run_provider_wrapper 2>"$fixture/provider.wrapper-stderr" || fail "unreadable Codex configuration stopped the wrapper"
+	[[ -z "$(provider_overrides)" ]] || fail "unreadable Codex configuration produced overrides"
+	grep -Fq "using Codex's built-in provider" "$fixture/provider.wrapper-stderr" ||
+		fail "unreadable Codex configuration was not reported"
+
+	printf '%s\n' \
+		'model_provider = "proxy"' \
+		'' \
+		'[model_providers.proxy]' \
+		'name = "No URL"' >"$fixture/provider-home/config.toml"
+	expect_failure "Codex provider without a base URL was accepted" run_provider_wrapper
+	grep -Fq 'base_url is required' "$fixture/failure.stderr" || fail "unforwardable provider error was not actionable"
+
+	printf '%s\n' \
+		'model_provider = "proxy"' \
+		'' \
+		'[model_providers.proxy]' \
+		'base_url = "https://proxy.example/v1"' \
+		'experimental_bearer_token = "bad\ttoken-secret"' >"$fixture/provider-home/config.toml"
+	expect_failure "Codex provider token with a control character was accepted" run_provider_wrapper
+	grep -Fq 'must not contain control characters' "$fixture/failure.stderr" ||
+		fail "malformed provider token error was not actionable"
+	if grep -Fq 'token-secret' "$fixture/failure.stderr" "$fixture/failure.stdout"; then
+		fail "malformed provider token was echoed"
+	fi
+fi
+if ! /usr/bin/python3 -c 'import tomllib' 2>/dev/null; then
+	provider_path="$fixture/fake-bin:/usr/bin:/bin"
+	printf '%s\n' 'model_provider = "proxy"' >"$fixture/provider-home/config.toml"
+	run_provider_wrapper 2>"$fixture/provider.wrapper-stderr" || fail "an interpreter without tomllib stopped the wrapper"
+	[[ -z "$(provider_overrides)" ]] || fail "an interpreter without tomllib produced overrides"
+	grep -Fq 'python3 older than 3.11 cannot read' "$fixture/provider.wrapper-stderr" ||
+		fail "an interpreter without tomllib was not reported"
+fi
 
 expect_failure "repository-local TMPDIR was accepted for Codex isolation" env \
 	CODEX_ARGS_LOG="$fixture/local-tmp.args" \
