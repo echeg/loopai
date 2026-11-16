@@ -23,6 +23,7 @@ flags:
 --host
 --idle-timeout
 --init
+--journal-dir
 --max-external-iterations
 --max-iterations
 --merge

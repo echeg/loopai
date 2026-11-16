@@ -1996,7 +1996,7 @@ func TestCodexExecutor_processRolloutLine_Rendering(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var got string
 			e := &CodexExecutor{OutputHandler: func(output string) { got = output }}
-			e.processRolloutLine([]byte(tc.line), newCodexTimingState(), time.Now, tc.render, nil)
+			e.processRolloutLine([]byte(tc.line), newCodexTimingState(), time.Now, tc.render, nil, nil)
 			assert.Equal(t, tc.want, got)
 		})
 	}
@@ -3267,7 +3267,7 @@ func TestCodexExecutor_trackRolloutCommandTiming_nilHandlerPreservesRendering(t 
 	line := []byte(`{"timestamp":"2026-08-07T09:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"unchanged"}]}}`)
 
 	assert.NotPanics(t, func() {
-		e.processRolloutLine(line, newCodexTimingState(), time.Now, true, nil)
+		e.processRolloutLine(line, newCodexTimingState(), time.Now, true, nil, nil)
 	})
 	assert.Equal(t, "unchanged", got)
 }
@@ -3370,7 +3370,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 	tailDone := make(chan struct{})
 	go func() {
 		defer close(tailDone)
-		e.tailRolloutFile(ctx, sessionID, nil, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil, nil)
 	}()
 
 	// wait briefly for initial drain (assistant text + reasoning title)
@@ -3421,7 +3421,7 @@ func TestCodexExecutor_tailRolloutFile_tracksCommandsWithoutOutputHandler(t *tes
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil, nil)
 	}()
 
 	select {
@@ -3453,7 +3453,7 @@ func TestCodexExecutor_tailRolloutFile_ProcessesUnterminatedFinalRecordOnCancel(
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil, nil)
 	}()
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -3493,7 +3493,7 @@ func TestCodexExecutor_tailRolloutFile_TracksChildSessionCustomExec(t *testing.T
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil, nil)
 	}()
 
 	select {
@@ -3654,7 +3654,7 @@ func TestCodexExecutor_tailRolloutFile_CancelDropsPendingCommand(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.tailRolloutFile(ctx, sessionID, nil, nil)
+		e.tailRolloutFile(ctx, sessionID, nil, nil, nil)
 	}()
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -3975,8 +3975,11 @@ func TestCodexExecutor_Run_TaskComplete(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// a token_count before task_complete: the session's usage must survive every exit path
+			tokens := `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":` +
+				`{"input_tokens":30000,"cached_input_tokens":24000,"cache_write_input_tokens":1200,"output_tokens":1100,"total_tokens":31100}}}}` + "\n"
 			event := `{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":` + strconv.Quote(message) + "}}\n"
-			sessionID, _ := taskCompleteFixture(t, event)
+			sessionID, _ := taskCompleteFixture(t, tokens+event)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			exit := make(chan error, 1)
@@ -4032,6 +4035,8 @@ func TestCodexExecutor_Run_TaskComplete(t *testing.T) {
 			}
 			assert.True(t, stopped.Load(), "grace timer must be stopped on every exit path")
 			assert.Equal(t, tt.action == "idle", result.IdleTimedOut)
+			assert.Equal(t, &Usage{InputTokens: 4800, CachedInputTokens: 24000, CacheWriteInputTokens: 1200, OutputTokens: 1100},
+				result.Usage, "usage is kept on every exit path")
 			switch tt.action {
 			case "cancel":
 				require.ErrorIs(t, result.Error, context.Canceled)
@@ -4177,9 +4182,9 @@ func TestCodexExecutor_processRolloutLine_TaskComplete(t *testing.T) {
 			e := &CodexExecutor{}
 			// A full or nil notification channel must never block rollout draining.
 			for range 2 {
-				e.processRolloutLine([]byte(tt.line), newCodexTimingState(), time.Now, tt.render, completed)
+				e.processRolloutLine([]byte(tt.line), newCodexTimingState(), time.Now, tt.render, completed, nil)
 			}
-			e.processRolloutLine([]byte(tt.line), newCodexTimingState(), time.Now, tt.render, nil)
+			e.processRolloutLine([]byte(tt.line), newCodexTimingState(), time.Now, tt.render, nil, nil)
 			if tt.want {
 				require.Len(t, completed, 1)
 				assert.Equal(t, "done", <-completed)
@@ -4262,6 +4267,250 @@ func TestCodexExecutor_Run_MissingRollout(t *testing.T) {
 			assert.Equal(t, "partial answer", result.Output)
 			assert.Equal(t, mode == "idle timeout", result.IdleTimedOut)
 			assert.False(t, timerStarted.Load(), "missing rollout cannot trigger grace completion")
+			assert.Nil(t, result.Usage, "a missing rollout reports no usage")
 		})
 	}
+}
+
+func TestCodexUsage_result(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		usage      *codexUsage
+		configured string
+		want       *Usage
+	}{
+		{name: "nil accumulator", usage: nil},
+		{name: "no totals", usage: &codexUsage{model: "gpt-6-astra"}},
+		{
+			// codex counts cache reads and cache writes inside input_tokens; the three Usage input
+			// counts are disjoint, so their sum is codex's input_tokens again
+			name:  "cache reads and writes subtracted from input",
+			usage: &codexUsage{model: "gpt-6-astra", totals: &rolloutTokenUsage{InputTokens: 1000, CachedInputTokens: 600, CacheWriteInputTokens: 50, OutputTokens: 70}},
+			want:  &Usage{Model: "gpt-6-astra", InputTokens: 350, CachedInputTokens: 600, CacheWriteInputTokens: 50, OutputTokens: 70},
+		},
+		{
+			name:       "configured model when the rollout names none",
+			usage:      &codexUsage{totals: &rolloutTokenUsage{InputTokens: 10, OutputTokens: 2}},
+			configured: "gpt-cfg",
+			want:       &Usage{Model: "gpt-cfg", InputTokens: 10, OutputTokens: 2},
+		},
+		{
+			name:  "no model anywhere",
+			usage: &codexUsage{totals: &rolloutTokenUsage{InputTokens: 10}},
+			want:  &Usage{InputTokens: 10},
+		},
+		{
+			name:  "inconsistent cache count never goes negative",
+			usage: &codexUsage{totals: &rolloutTokenUsage{InputTokens: 10, CachedInputTokens: 30}},
+			want:  &Usage{CachedInputTokens: 30},
+		},
+		{
+			name:  "inconsistent cache write count never goes negative",
+			usage: &codexUsage{totals: &rolloutTokenUsage{InputTokens: 10, CachedInputTokens: 8, CacheWriteInputTokens: 5}},
+			want:  &Usage{CachedInputTokens: 8, CacheWriteInputTokens: 5},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.usage.result(tt.configured))
+		})
+	}
+}
+
+func TestCodexExecutor_processRolloutLine_Usage(t *testing.T) {
+	t.Parallel()
+	const (
+		turn   = `{"type":"turn_context","payload":{"model":"gpt-6-astra","summary":"auto","sandbox_policy":{"type":"read-only"}}}`
+		first  = `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":5,"output_tokens":10,"total_tokens":110}}}}`
+		second = `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":200,"cache_write_input_tokens":7,"output_tokens":30,"total_tokens":330}}}}`
+		empty  = `{"type":"event_msg","payload":{"type":"token_count","info":null}}`
+	)
+	tests := []struct {
+		name   string
+		lines  []string
+		render bool
+		want   codexUsage
+	}{
+		{
+			name: "last token_count wins and null info keeps totals", lines: []string{turn, first, second, empty}, render: true,
+			want: codexUsage{model: "gpt-6-astra", totals: &rolloutTokenUsage{InputTokens: 300, CachedInputTokens: 200, CacheWriteInputTokens: 7, OutputTokens: 30}},
+		},
+		{name: "null info only", lines: []string{turn, empty}, render: true, want: codexUsage{model: "gpt-6-astra"}},
+		{name: "child rollout is not counted", lines: []string{turn, first, second}},
+		{
+			name:  "wrong envelope is ignored",
+			lines: []string{`{"type":"response_item","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1}}}}`}, render: true,
+		},
+		{name: "malformed turn_context is ignored", lines: []string{`{"type":"turn_context","payload":{"model":7}}`}, render: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var got codexUsage
+			e := &CodexExecutor{}
+			for _, line := range tt.lines {
+				e.processRolloutLine([]byte(line), newCodexTimingState(), time.Now, tt.render, nil, &got)
+				// a nil accumulator must be tolerated on every path
+				e.processRolloutLine([]byte(line), newCodexTimingState(), time.Now, tt.render, nil, nil)
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// usageFixtureRun drives Run against rollout fixtures in an isolated CODEX_HOME. each
+// call takes the next session id; its wait blocks until the tail has read the
+// fixture's task_complete record, so every record before it has been processed, then
+// runs beforeExit (to append late records) and exits cleanly.
+type usageFixtureRun struct {
+	dir     string
+	started chan struct{}
+}
+
+func newUsageFixtureRun(t *testing.T) *usageFixtureRun {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CODEX_HOME", home)
+	dir := filepath.Join(home, "sessions", "2026", "11", "15")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	return &usageFixtureRun{dir: dir, started: make(chan struct{}, 8)}
+}
+
+// install copies testdata/codex/<fixture> as the rollout of sessionID and returns its path.
+func (f *usageFixtureRun) install(t *testing.T, fixture, sessionID, childID string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "codex", fixture)) //nolint:gosec // test fixture
+	require.NoError(t, err)
+	content := strings.NewReplacer("{{SESSION_ID}}", sessionID, "{{CHILD_ID}}", childID).Replace(string(data))
+	id := sessionID
+	if childID != "" {
+		id = childID
+	}
+	path := filepath.Join(f.dir, "rollout-2026-11-15T10-00-00-"+id+".jsonl")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
+}
+
+func (f *usageFixtureRun) executor(sessionIDs []string, beforeExit func(sessionID string)) *CodexExecutor {
+	var calls atomic.Int32
+	return &CodexExecutor{
+		runner: &mockCodexRunner{runFunc: func(ctx context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+			id := sessionIDs[calls.Add(1)-1]
+			return mockStreams("session id: "+id+"\n", "answer"), func() error {
+				select {
+				case <-f.started:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				if beforeExit != nil {
+					beforeExit(id)
+				}
+				return nil
+			}, nil
+		}},
+		completionTimer: func(time.Duration) (<-chan time.Time, func()) {
+			f.started <- struct{}{}
+			return make(chan time.Time), func() {}
+		},
+	}
+}
+
+func TestCodexExecutor_Run_Usage(t *testing.T) {
+	const (
+		sessionID = "019e3bbe-9788-79f1-b668-0000000a0001"
+		childID   = "019e3bbe-9788-79f1-b668-0000000a0002"
+	)
+	mainUsage := &Usage{Model: "gpt-6-astra", InputTokens: 5300, CachedInputTokens: 24000, CacheWriteInputTokens: 1200, OutputTokens: 1100}
+	tests := []struct {
+		name       string
+		fixture    string
+		child      bool
+		configured string
+		stripModel bool
+		lateRecord string
+		want       *Usage
+	}{
+		{name: "last token_count totals with cache reads and writes subtracted", fixture: "usage-rollout.jsonl", want: mainUsage},
+		{name: "rollout model wins over configured model", fixture: "usage-rollout.jsonl", configured: "gpt-cfg", want: mainUsage},
+		{
+			name: "configured model without turn_context", fixture: "usage-rollout.jsonl", configured: "gpt-cfg", stripModel: true,
+			want: &Usage{Model: "gpt-cfg", InputTokens: 5300, CachedInputTokens: 24000, CacheWriteInputTokens: 1200, OutputTokens: 1100},
+		},
+		{name: "no token_count totals", fixture: "no-usage-rollout.jsonl"},
+		{name: "child totals are not counted", fixture: "no-usage-rollout.jsonl", child: true},
+		{name: "child totals do not replace the main totals", fixture: "usage-rollout.jsonl", child: true, want: mainUsage},
+		{
+			// unterminated, so only the final drain after exit can read it
+			name: "token_count in the final drain", fixture: "usage-rollout.jsonl",
+			lateRecord: `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40000,"cached_input_tokens":31000,"cache_write_input_tokens":1500,"output_tokens":1600,"total_tokens":41600}}}}`,
+			want:       &Usage{Model: "gpt-6-astra", InputTokens: 7500, CachedInputTokens: 31000, CacheWriteInputTokens: 1500, OutputTokens: 1600},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newUsageFixtureRun(t)
+			path := f.install(t, tt.fixture, sessionID, "")
+			if tt.stripModel {
+				data, err := os.ReadFile(path) //nolint:gosec // test temp file
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path, bytes.ReplaceAll(data, []byte(`"model":"gpt-6-astra",`), nil), 0o600))
+			}
+			if tt.child {
+				f.install(t, "usage-child-rollout.jsonl", sessionID, childID)
+			}
+			var beforeExit func(string)
+			if tt.lateRecord != "" {
+				beforeExit = func(string) {
+					file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test temp file
+					require.NoError(t, err)
+					_, err = file.WriteString(tt.lateRecord)
+					require.NoError(t, err)
+					require.NoError(t, file.Close())
+				}
+			}
+			e := f.executor([]string{sessionID}, beforeExit)
+			e.Model = tt.configured
+			var childCommands atomic.Int32
+			if tt.child {
+				// enables child rollout discovery and proves the child was read
+				e.CommandTimingHandler = func(string, time.Duration) { childCommands.Add(1) }
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			result := e.Run(ctx, "task")
+			require.NoError(t, result.Error)
+			assert.Equal(t, "answer", result.Output)
+			assert.Equal(t, tt.want, result.Usage)
+			if tt.child {
+				assert.Equal(t, int32(1), childCommands.Load(), "the child rollout must have been read")
+			}
+		})
+	}
+}
+
+func TestCodexExecutor_Run_UsageIsPerCall(t *testing.T) {
+	const (
+		first  = "019e3bbe-9788-79f1-b668-0000000b0001"
+		second = "019e3bbe-9788-79f1-b668-0000000b0002"
+	)
+	f := newUsageFixtureRun(t)
+	f.install(t, "usage-rollout.jsonl", first, "")
+	f.install(t, "no-usage-rollout.jsonl", second, "")
+	e := f.executor([]string{first, second}, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	firstResult := e.Run(ctx, "task")
+	require.NoError(t, firstResult.Error)
+	require.NotNil(t, firstResult.Usage)
+	assert.Equal(t, int64(1100), firstResult.Usage.OutputTokens)
+
+	secondResult := e.Run(ctx, "task")
+	require.NoError(t, secondResult.Error)
+	assert.Nil(t, secondResult.Usage, "a later call must not inherit the previous call's usage")
+	assert.Equal(t, int64(1100), firstResult.Usage.OutputTokens, "the first result must not be mutated by a later call")
 }

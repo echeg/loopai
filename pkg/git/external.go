@@ -1197,6 +1197,53 @@ func (e *externalBackend) fileTracked(path string) (bool, error) {
 	return out != "", nil
 }
 
+// pathIgnored reports whether path is ignored through git check-ignore, whose exit status is 0 for
+// an ignored path, 1 for one that is not, and anything else for an error.
+func (e *externalBackend) pathIgnored(path string) (bool, error) {
+	if filepath.IsAbs(path) {
+		path = resolveExistingPrefix(path)
+	}
+	rel, err := e.toRelative(path)
+	if err != nil {
+		return false, err
+	}
+	cmd := exec.CommandContext(context.Background(), e.command, "check-ignore", "-q", "--", rel)
+	cmd.Dir = e.path
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		return false, fmt.Errorf("%s check-ignore: %s", e.command, msg)
+	}
+	return false, fmt.Errorf("%s check-ignore: %w", e.command, err)
+}
+
+// resolveExistingPrefix resolves the symlinks of the longest existing prefix of the absolute path and
+// appends the rest unchanged, so a path below a missing directory compares with the symlink-resolved
+// repository root too (macOS /var -> /private/var); toRelative resolves only an existing parent.
+func resolveExistingPrefix(path string) string {
+	path = filepath.Clean(path)
+	var rest []string
+	for dir := path; ; {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(append([]string{resolved}, rest...)...)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return path
+		}
+		rest = append([]string{filepath.Base(dir)}, rest...)
+		dir = parent
+	}
+}
+
 // fileStateFingerprint returns the exact per-path porcelain and index state. Source-plan
 // reconciliation compares it with the captured value so index-only concurrent changes are never
 // discarded by a later git restore.

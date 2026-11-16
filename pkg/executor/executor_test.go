@@ -260,6 +260,145 @@ func TestClaudeExecutor_parseStream(t *testing.T) {
 	}
 }
 
+func TestClaudeExecutor_parseStream_usage(t *testing.T) {
+	cost := 0.4213
+	tests := []struct {
+		name  string
+		model string
+		input string
+		want  *Usage
+	}{
+		{
+			name:  "result record with usage and cost",
+			model: "opus",
+			input: readClaudeFixture(t, "usage-result.jsonl"),
+			want: &Usage{Model: "claude-opus-4-1", InputTokens: 1200, CachedInputTokens: 48000,
+				CacheWriteInputTokens: 5300, OutputTokens: 2100, CostUSD: &cost},
+		},
+		{
+			name:  "several modelUsage keys fall back to the configured model",
+			model: "opus",
+			input: `{"type":"result","result":"done","usage":{"input_tokens":10,"output_tokens":5},` +
+				`"modelUsage":{"claude-opus-4-1":{},"claude-haiku-4-5":{}}}`,
+			want: &Usage{Model: "opus", InputTokens: 10, OutputTokens: 5},
+		},
+		{
+			name: "several modelUsage keys without a configured model leave it empty",
+			input: `{"type":"result","result":"done","usage":{"input_tokens":10,"output_tokens":5},` +
+				`"modelUsage":{"claude-opus-4-1":{},"claude-haiku-4-5":{}}}`,
+			want: &Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		{
+			name:  "no modelUsage uses the configured model and no cost",
+			model: "sonnet",
+			input: `{"type":"result","result":"done","usage":{"input_tokens":1,"cache_read_input_tokens":2,"cache_creation_input_tokens":3,"output_tokens":4}}`,
+			want:  &Usage{Model: "sonnet", InputTokens: 1, CachedInputTokens: 2, CacheWriteInputTokens: 3, OutputTokens: 4},
+		},
+		{
+			name:  "result record without usage",
+			model: "opus",
+			input: `{"type":"result","subtype":"success","result":"done","total_cost_usd":0.1}`,
+		},
+		{
+			name:  "stream ends without a result record",
+			model: "opus",
+			input: `{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":3,"output_tokens":4}}}`,
+		},
+		{
+			name:  "usage outside a result record is ignored",
+			input: `{"type":"assistant","usage":{"input_tokens":3,"output_tokens":4},"message":{"content":[{"type":"text","text":"hi"}]}}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &ClaudeExecutor{Model: tc.model}
+			result := e.parseStream(context.Background(), strings.NewReader(tc.input), func() {})
+			require.NoError(t, result.Error)
+			assert.Equal(t, tc.want, result.Usage)
+		})
+	}
+}
+
+func TestClaudeExecutor_parseStream_usageSurvivesStreamReadError(t *testing.T) {
+	stream := io.MultiReader(strings.NewReader(readClaudeFixture(t, "usage-result.jsonl")),
+		&failingReader{err: errors.New("read failed")})
+
+	result := (&ClaudeExecutor{}).parseStream(context.Background(), stream, func() {})
+
+	require.ErrorContains(t, result.Error, "stream read")
+	require.NotNil(t, result.Usage, "usage of a result record read before the failure must be kept")
+	assert.Equal(t, "claude-opus-4-1", result.Usage.Model)
+	assert.Equal(t, int64(1200), result.Usage.InputTokens)
+	assert.Equal(t, int64(2100), result.Usage.OutputTokens)
+	require.NotNil(t, result.Usage.CostUSD)
+	assert.InDelta(t, 0.4213, *result.Usage.CostUSD, 1e-9)
+}
+
+func TestClaudeExecutor_Run_usageSurvivesResolveRunResult(t *testing.T) {
+	errorResult := `{"type":"result","is_error":true,"result":"API Error: 500 internal","usage":{"input_tokens":7,"output_tokens":8},` +
+		`"total_cost_usd":0.02,"modelUsage":{"claude-sonnet-4-5":{}}}`
+	cleanResult := `{"type":"result","result":"partial","usage":{"input_tokens":7,"output_tokens":8},` +
+		`"total_cost_usd":0.02,"modelUsage":{"claude-sonnet-4-5":{}}}`
+	tests := []struct {
+		name    string
+		stream  string
+		waitErr error
+		check   func(t *testing.T, err error)
+	}{
+		{
+			name:   "pattern error",
+			stream: errorResult,
+			check: func(t *testing.T, err error) {
+				t.Helper()
+				var patternErr *PatternMatchError
+				require.ErrorAs(t, err, &patternErr)
+			},
+		},
+		{
+			name:    "non-zero exit",
+			stream:  cleanResult,
+			waitErr: errors.New("exit status 1"),
+			check: func(t *testing.T, err error) {
+				t.Helper()
+				require.ErrorContains(t, err, "claude exited with error")
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mocks.CommandRunnerMock{
+				RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+					return strings.NewReader(tc.stream), func() error { return tc.waitErr }, nil
+				},
+			}
+			e := &ClaudeExecutor{cmdRunner: mock, ErrorPatterns: []string{"API Error: 500"}}
+
+			result := e.Run(context.Background(), "test prompt")
+
+			tc.check(t, result.Error)
+			require.NotNil(t, result.Usage)
+			assert.Equal(t, "claude-sonnet-4-5", result.Usage.Model)
+			assert.Equal(t, int64(7), result.Usage.InputTokens)
+			assert.Equal(t, int64(8), result.Usage.OutputTokens)
+			require.NotNil(t, result.Usage.CostUSD)
+			assert.InDelta(t, 0.02, *result.Usage.CostUSD, 1e-9)
+		})
+	}
+}
+
+func TestClaudeExecutor_Run_startFailureHasNoUsage(t *testing.T) {
+	mock := &mocks.CommandRunnerMock{
+		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+			return nil, nil, errors.New("start failed")
+		},
+	}
+	result := (&ClaudeExecutor{cmdRunner: mock}).Run(context.Background(), "test prompt")
+	require.Error(t, result.Error)
+	assert.Nil(t, result.Usage)
+}
+
 func TestClaudeExecutor_parseStream_withHandler(t *testing.T) {
 	input := `{"type":"content_block_delta","delta":{"type":"text_delta","text":"chunk1"}}
 {"type":"content_block_delta","delta":{"type":"text_delta","text":"chunk2"}}`

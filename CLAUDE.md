@@ -1077,16 +1077,86 @@ merge-ready after success. `planExecutionOutcome.recordFinalize`, `recordArchive
 `recordWorktreeKept` feed `complete`, which classifies the attempt (exit codes 0 succeeded, 1 failed,
 2 stopped), fills the commit, writes `report.md`, appends the closing journal events (noting every
 failed append), reconciles, writes `outcome.json` (report capped at 256 KiB, summary at 4 KiB), and
-runs `beforeExit` last.
+runs `beforeExit` last. The classification, the record, and the closing events are shared with the
+foreground journal through `closeAttempt` and `saveAttemptOutcome` (`attempt_outcome.go`), returning a
+record and an error rather than an `exitCodeError`; `attemptEnd.beforeClosing` is where the detached
+child writes `report.md` so it exists before an observer sees `finish`, and `keptWorktree` and
+`reconcileDetachedSourcePlan` stay between the two calls in `complete`.
+
+`--journal-dir <dir>` (`cmd/loopai/journal_dir.go`, host contract in `docs/host-integration.md`) gives
+an ordinary foreground run of one plan, full or tasks-only, the same `events.jsonl` and `outcome.json`
+in `<dir>` for a host process that spawns loopai inside a sandbox, where `--detach` is refused and a
+`--die-with-parent` jail would kill a detached child anyway. `validateJournalDirFlags` refuses
+`--worktree`, `--commit`, review-only modes, `--plan`, `--gen-agents`, `--serve`, `--watch`,
+`--detach`, `--detached-run`, `--cmux-workspace`, `--acp`, every standalone command, a chain, extra
+plan arguments, an empty value, and no plan, and the flag sits in `markFlagsSet`'s and
+`hasExecutionMode`'s execution-flag lists so close-out and `--runs`/`--attach`/`--stop` reject it;
+`applyWorktreeOverride` forces `WorktreeEnabled` off, so `use_worktree = true` cannot move the run, and
+`cmuxWorkspaceEligible` is false with it, so neither the hand-off nor the auto reservation acts on
+the run. The run builds no reporter, so `applyReportingOverrides` turns `cfg.Orca` off as
+`loadDetachedConfig` does (no setup title left on a terminal, launch history records `cli`) and
+`clearStaleCmuxStatus` leaves the workspace's pill alone; `executionStdin` hands
+`openExecutionRepository` a nil stdin, so an empty repository is an error rather than a prompt, the
+one prompt that precedes `NonInteractive`. `prepareJournalDir` runs after `validateFlags` and before `prepareRunBeforeConfig`, with plain `git` because config is not loaded: it makes the path
+absolute, refuses a non-directory and a directory already holding either file, and refuses a directory
+inside the work tree (`git.Service.WorkTreeContains`, symlink-resolved for a path that need not exist)
+unless `PathIgnored` (`git check-ignore`) holds for both files — the files and not the directory,
+because a directory-only ignore rule matches a missing directory only once it exists — since
+`diffFingerprint` hashes untracked content and journal writes would defeat stalemate detection. Only
+then is a missing directory created with mode `0700`. From there a deferred guard in `run()` calls
+`failForegroundStartup` when `run()` returns an error with no journal attached — config loading,
+`resolveExecutionDeps`, or `openExecutionRepository` failed — which claims the directory with the same
+exclusive `CreateJournal` first, so a directory another process took is left alone, and saves a failed
+`startup:` outcome beside the empty journal, as a detached child records its startup failures; a nil
+error there is a panic and records nothing. `attachForegroundJournal` creates the journal
+through `runs.CreateJournal` (`O_CREATE|O_EXCL`: a foreground run holds no lifetime lock that would keep
+a second writer out, unlike `OpenJournal`) and sets `Outcome`, `NonInteractive`, `LogDecorator`,
+`PhaseObserver`, `UsageHandler`, and `InPlaceAttemptStarted` on `run()`'s own request, deliberately not
+through `prepareNonInteractiveRequest`, which would replace `run()`'s `WtCleanup`, skip `KeepAwake` and
+launch history, re-resolve dependencies, and move output to stderr. `InPlaceAttemptStarted` is not
+copied by `worktreeExecuteRequest`; `setupProgressLogger` calls `fireInPlaceAttemptStarted` once the
+progress logger exists. Its hook, `foregroundJournal.attemptStarted`, first repeats the ignore check
+through `refuseUnignoredJournalDir`, because `prepareSelectedPlanBranch` may have checked out an
+existing plan branch whose `.gitignore` no longer ignores the journal, then appends `attempt_start`
+with `plan` and `worktree_plan` both the absolute
+plan path (`worktree_plan` is what `parsePlan` re-reads for titles and statuses), an empty `worktree`,
+`console_offset` 0, and the checked-out branch; its error ends the run before the runner is built.
+`foregroundJournal.complete` runs after `runSelectedPlans` returns: `closeAttempt` with an empty run
+id, attempt 1, and a cancelled context as the stop, or for a run that ended before its attempt started
+only a failed outcome with a `startup:` reason, then `saveAttemptOutcome`, `endProgressLog`, and the
+journal close. Every failure there is a stderr warning: the process exit code never changes, so a
+stop exits 1 while the outcome records `stopped` with `exit_code` 2. There is no completion on the
+forced exit, so a forced exit leaves no `finish` and no `outcome.json`, as for a detached run. The run
+is not registered and writes no `run.json`, `run.lock`, `console.log`, or `report.md`.
+
+`executor.Result.Usage` (`*executor.Usage`: `Model`, `InputTokens`, `CachedInputTokens`,
+`CacheWriteInputTokens`, `OutputTokens`, `CostUSD *float64`) carries a session's usage, with
+`InputTokens` excluding cached tokens for both providers. Claude reads it from the stream's `result`
+record (`usage`, `total_cost_usd`, and `modelUsage`, whose single key names the model, else the
+configured model, possibly an alias) on both `parseStream` return paths, and `resolveRunResult` keeps
+it. Codex runs `codex exec` without `--json`, so the rollout is the only source: a `codexUsage`
+accumulator local to one `Run` call is threaded through `startRolloutTail` to `processRolloutLine`,
+written for the main rollout only (never a child rollout), and read after `<-tailDone`; the last
+`token_count` record's `info.total_token_usage` wins, `input_tokens - cached_input_tokens -
+cache_write_input_tokens` is the input (codex counts both cache counts inside `input_tokens`), the model comes from `turn_context` or configuration, and the cost is nil. One executor serves
+several `Run` calls, which is why the accumulator is per call. `retryPolicy.reportUsage`, called in
+`runWithSessionTimeout` after every session with a non-nil `Usage` whatever its error or timeout
+state, hands `processor.SessionUsage` (provider `toolName`, the `phaseHolder` phase, the usage) to
+`Config.UsageHandler`, wired from `executePlanRequest.UsageHandler` through `createRunner` like
+`CommandTimingHandler`; a limit retry is a new session and reports again. Only main-session usage is
+reported, and a session killed before its result record or first `token_count` reports none.
 
 `pkg/runs` is the registry under `<checkout>/.loopai/progress/runs/<run-id>/`, with run ids
 `<plan stem>-<YYYYMMDD-HHMMSS>-<4 hex>` and no file matching the dashboard's `progress-*.txt`.
 `Classify` probes the launch lock (`starting`), then the lifetime lock (`running`), then the outcome
 (`succeeded|failed|stopped`), else `crashed`; a probe never blocks a run. `Journal` appends
-`events.jsonl` (`attempt_start`, `phase`, `task`, `tasks`, `review`, `finalize`, `report`, `finish`);
-`journalHooks` (`detach_journal.go`) fills `LogDecorator` with section events and `PhaseObserver` with
-phases, the limit wait, and task statuses re-read from the worktree plan, and queues `progressLogger`
-lines until the decorated logger exists. `Snapshot`/`Fold` is the only structured state source for
+`events.jsonl` (`attempt_start`, `phase`, `task`, `tasks`, `review`, `usage`, `finalize`, `report`,
+`finish`); every reader ignores an unknown type, so a new one needs no schema version, but
+`Event.payload()` writes only the header for a type without a case, so a new type needs a constant, a
+case, and its `Event` fields. `journalHooks` (`detach_journal.go`) fills `LogDecorator` with section
+events, `PhaseObserver` with phases, the limit wait, and task statuses re-read from the worktree plan,
+and `UsageHandler` with `usage` events through `observeUsage`, and queues `progressLogger` lines until
+the decorated logger exists. `Snapshot`/`Fold` is the only structured state source for
 `--attach`, the Mode 1 bridge, and the Mode 2 renderer: an external review block entered from the task
 phase is a per-task block that leaves the stages alone, a stage never reopens, and entering one
 completes every earlier one. `Follow` ends on the lifetime lock and outcome; `FollowUntilFinish` ends

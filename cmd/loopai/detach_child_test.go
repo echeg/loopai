@@ -435,6 +435,28 @@ func TestDetachedChildCompleteNotes(t *testing.T) {
 		assert.FileExists(t, sourcePlan)
 	})
 
+	t.Run("the kept worktree and a reconcile note both follow the closing events into the outcome", func(t *testing.T) {
+		c := newCompletingChild(t)
+		require.NoError(t, os.MkdirAll(c.desc.Worktree, 0o750))
+		sourcePlan := c.captureSourcePlan(t)
+		require.NoError(t, os.WriteFile(sourcePlan, []byte("# Feature\n\nedited during the run\n"), 0o600))
+
+		code, _, _ := c.complete(t, &planExecutionOutcome{succeeded: true, branchTip: "abc"}, nil)
+
+		assert.Equal(t, 0, code)
+		rec, err := runs.LoadOutcome(c.dir)
+		require.NoError(t, err)
+		assert.Equal(t, c.desc.Worktree, rec.WorktreeKept)
+		assert.Equal(t, []string{
+			"worktree " + c.desc.Worktree + " was not removed and is kept",
+			`reconcile the invoking checkout: source plan "docs/plans/feature.md" changed during execution; left untouched`,
+		}, rec.Notes)
+		events := c.closingEvents(t)
+		finish := events[len(events)-1]
+		require.Equal(t, runs.EventFinish, finish.Type)
+		assert.Equal(t, runs.StatusSucceeded, finish.Status, "the notes do not change the recorded finish")
+	})
+
 	t.Run("an unreadable branch head is noted", func(t *testing.T) {
 		c := newCompletingChild(t)
 		c.desc.Branch = "missing"

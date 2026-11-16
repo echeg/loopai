@@ -150,6 +150,27 @@ func TestACPRendererSendsOnlyTransitionsAndTheLivenessTick(t *testing.T) {
 	}, sent.take(), "the finish closes the tool call before the final message, and no tick follows it")
 }
 
+func TestACPRendererIgnoresUsage(t *testing.T) {
+	sent, control := &acpSentUpdates{}, &acpSentUpdates{}
+	r := newACPRenderer(sent, "run-1", func() time.Time { return acpRenderEpoch })
+	c := newACPRenderer(control, "run-1", func() time.Time { return acpRenderEpoch })
+	r.start(acpRenderEvents())
+	c.start(acpRenderEvents())
+	assert.Equal(t, control.take(), sent.take())
+
+	r.apply(runs.Event{Seq: 4, Time: acpRenderEpoch, Attempt: 1, Type: runs.EventUsage, Provider: "codex",
+		Model: "gpt-6-astra", Phase: status.PhaseReview, InputTokens: 100, CachedInputTokens: 50, OutputTokens: 7})
+	assert.Empty(t, sent.take(), "a usage event sends no update")
+	assert.Equal(t, 4, r.seq(), "the usage event is folded")
+
+	next := runs.Event{Seq: 5, Time: acpRenderEpoch, Attempt: 1, Type: runs.EventTask, N: 2, M: 2, Title: "Wire the CLI"}
+	r.apply(next)
+	c.apply(next)
+	want := control.take()
+	assert.Contains(t, want, "update 1 |Task 2/2: Wire the CLI")
+	assert.Equal(t, want, sent.take(), "the next known event renders as if the usage event were absent")
+}
+
 func TestACPRendererStart(t *testing.T) {
 	t.Run("an empty journal shows the run starting", func(t *testing.T) {
 		sent := &acpSentUpdates{}

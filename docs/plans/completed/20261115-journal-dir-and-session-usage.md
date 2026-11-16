@@ -297,199 +297,225 @@
 ## Implementation Steps
 
 ### Task 1: Add the `usage` event type to the journal
-- [ ] add `EventUsage EventType = "usage"` with its doc comment to the constants in
+- [x] add `EventUsage EventType = "usage"` with its doc comment to the constants in
   `pkg/runs/journal.go`, listing the fields it carries and stating that `input_tokens` excludes
   cached tokens
-- [ ] add the fields to `Event`: `Provider`, `Model`, `InputTokens`, `CachedInputTokens`,
+- [x] add the fields to `Event`: `Provider`, `Model`, `InputTokens`, `CachedInputTokens`,
   `CacheWriteInputTokens`, `OutputTokens`, and `CostUSD *float64` (nil when the CLI reported no cost);
   reuse the existing `Phase` field
-- [ ] add a `case EventUsage` to `Event.payload()` writing `provider`, `model`, `phase`,
+- [x] add a `case EventUsage` to `Event.payload()` writing `provider`, `model`, `phase`,
   `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, and `cost_usd`
   only when it is not nil
-- [ ] write tests in `pkg/runs/journal_test.go`: a `usage` event round-trips through `Append` and
+- [x] write tests in `pkg/runs/journal_test.go`: a `usage` event round-trips through `Append` and
   `parseEvents` with and without a cost, and an event with zero cache counts
-- [ ] write tests in `pkg/runs/observer_test.go`: `Snapshot.Apply` and `Fold` advance `Seq` on a
+- [x] write tests in `pkg/runs/observer_test.go`: `Snapshot.Apply` and `Fold` advance `Seq` on a
   `usage` event and change nothing else; `FollowUntilFinish` does not end on it
-- [ ] write tests in `cmd/loopai/t3_bridge_test.go` and `cmd/loopai/acp_render_test.go`: a `usage`
+- [x] write tests in `cmd/loopai/t3_bridge_test.go` and `cmd/loopai/acp_render_test.go`: a `usage`
   event between two known events changes no title and sends no update
-- [ ] run `make test` - must pass before task 2
+- [x] run `make test` - must pass before task 2
 
 ### Task 2: Extract usage from a Claude session
-- [ ] add an exported `Usage` struct to `pkg/executor` (`Model`, `InputTokens`, `CachedInputTokens`,
+- [x] add an exported `Usage` struct to `pkg/executor` (`Model`, `InputTokens`, `CachedInputTokens`,
   `CacheWriteInputTokens`, `OutputTokens`, `CostUSD *float64`) and a `Usage *Usage` field to `Result`
-- [ ] extend `streamEvent` in `pkg/executor/executor.go` to decode the `result` record's `usage`
+- [x] extend `streamEvent` in `pkg/executor/executor.go` to decode the `result` record's `usage`
   (`input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `output_tokens`),
   `total_cost_usd`, and `modelUsage` keys
-- [ ] collect the usage in a variable inside `parseStream`'s line callback when a `result` record
+- [x] collect the usage in a variable inside `parseStream`'s line callback when a `result` record
   carries a `usage` object, and set it on both return paths (the stream-read-error return and the
   success return); a `result` record without `usage` leaves it nil
-- [ ] set `Model` to the single `modelUsage` key when there is exactly one, else the executor's
+- [x] set `Model` to the single `modelUsage` key when there is exactly one, else the executor's
   configured model (which may be an alias such as `opus`), else empty
-- [ ] add a synthetic fixture with usage under `pkg/executor/testdata/claude/` and note it in that
+- [x] add a synthetic fixture with usage under `pkg/executor/testdata/claude/` and note it in that
   directory's README
-- [ ] write tests in `pkg/executor/executor_test.go`: usage with cost, usage with several `modelUsage`
+- [x] write tests in `pkg/executor/executor_test.go`: usage with cost, usage with several `modelUsage`
   keys, a `result` record without usage, a stream that ends without a `result` record, a stream read
   error after the `result` record
-- [ ] write tests that `Usage` survives `resolveRunResult` for a pattern-error result and for a
+- [x] write tests that `Usage` survives `resolveRunResult` for a pattern-error result and for a
   non-zero-exit result
-- [ ] run `make test` - must pass before task 3
+- [x] run `make test` - must pass before task 3
 
 ### Task 3: Extract usage from a Codex session
-- [ ] extend `rolloutPayload` and `parseRolloutRecord` in `pkg/executor/codex.go` to keep the
+- [x] extend `rolloutPayload` and `parseRolloutRecord` in `pkg/executor/codex.go` to keep the
   `token_count` `event_msg` record's `info.total_token_usage` and the `turn_context` record's `model`
-- [ ] create a usage accumulator in `Run` for that one call, pass it through `startRolloutTail` and
+- [x] create a usage accumulator in `Run` for that one call, pass it through `startRolloutTail` and
   `tailRolloutFile` to `processRolloutLine`, and write it only for the main rollout (`render` true);
   update the existing `processRolloutLine` test callers for the changed signature
-- [ ] read the accumulator in `Run` after `<-tailDone` and set `Usage` once on the result `runResult`
+- [x] read the accumulator in `Run` after `<-tailDone` and set `Usage` once on the result `runResult`
   returns: the last `token_count` totals with `InputTokens = input_tokens - cached_input_tokens`,
   `Model` from `turn_context` or else the configured model, `CostUSD` nil; no rollout file or no
   `token_count` record leaves it nil
-- [ ] add rollout fixtures to the codex testdata, synthetic but with the record shapes and the
+- [x] add rollout fixtures to the codex testdata, synthetic but with the record shapes and the
   arithmetic of a real rollout (`total_tokens == input_tokens + output_tokens`)
-- [ ] write tests in `pkg/executor/codex_test.go`: several `token_count` records (the last wins), the
+- [x] write tests in `pkg/executor/codex_test.go`: several `token_count` records (the last wins), the
   cached-token subtraction, no `token_count` record, a missing rollout file, model from
   `turn_context` and from configuration
-- [ ] write tests for isolation: two consecutive `Run` calls on one executor where only the first
+- [x] write tests for isolation: two consecutive `Run` calls on one executor where only the first
   reports usage, `token_count` records in a child rollout that must not be counted, and a
   `token_count` record that arrives in the final drain
-- [ ] run `make test` (it runs with `-race`) - must pass before task 4
+- [x] run `make test` (it runs with `-race`) - must pass before task 4
 
 ### Task 4: Report each session's usage to a handler
-- [ ] add `UsageHandler func(SessionUsage)` to `processor.Config` in `pkg/processor/runner.go`, where
+- [x] add `UsageHandler func(SessionUsage)` to `processor.Config` in `pkg/processor/runner.go`, where
   `SessionUsage` carries the provider name, the phase, and the `executor.Usage`
-- [ ] call it in `retryPolicy.runWithSessionTimeout` (`pkg/processor/execution_policy.go`) after each
+- [x] call it in `retryPolicy.runWithSessionTimeout` (`pkg/processor/execution_policy.go`) after each
   `run` returns with a non-nil `Result.Usage`, whatever the result's error or timeout state, passing
   `toolName` and the phase from a nil-safe read of `phaseHolder`; a nil handler or nil usage does
   nothing
-- [ ] add a `UsageHandler` field to `executePlanRequest`, copy it in `worktreeExecuteRequest`, and pass
+- [x] add a `UsageHandler` field to `executePlanRequest`, copy it in `worktreeExecuteRequest`, and pass
   it to `createRunner` the way `CommandTimingHandler` is passed
-- [ ] add `journalHooks.observeUsage` in `cmd/loopai/detach_journal.go` appending an `EventUsage`
+- [x] add `journalHooks.observeUsage` in `cmd/loopai/detach_journal.go` appending an `EventUsage`
   event; a failed append follows the existing warn-once rule
-- [ ] set the request's `UsageHandler` to `hooks.observeUsage` in `detachedChild.execute`
-- [ ] write tests in `pkg/processor/execution_policy_test.go` driving `policy.Run` with a short
+- [x] set the request's `UsageHandler` to `hooks.observeUsage` in `detachedChild.execute`
+- [x] write tests in `pkg/processor/execution_policy_test.go` driving `policy.Run` with a short
   `waitOnLimit`: a `run` stub whose first call returns a limit error with usage and whose second
   returns usage yields two handler calls
-- [ ] write tests on `runWithSessionTimeout`: one call for a session with usage, none without it, one
+- [x] write tests on `runWithSessionTimeout`: one call for a session with usage, none without it, one
   call when the stub returns usage after the session timeout fired, and the provider and a
   `PhaseReview` phase passed through
-- [ ] write tests in `cmd/loopai/detach_journal_test.go`: `observeUsage` writes the event with and
+- [x] write tests in `cmd/loopai/detach_journal_test.go`: `observeUsage` writes the event with and
   without a cost and warns once when the append fails
-- [ ] run `make test` - must pass before task 5
+- [x] run `make test` - must pass before task 5
 
 ### Task 5: Share the completion of an attempt between detached and foreground runs
-- [ ] extract from `detachedChild.complete` (`cmd/loopai/detach_child.go`) a function that, given the
+- [x] extract from `detachedChild.complete` (`cmd/loopai/detach_child.go`) a function that, given the
   journal, the hooks, the run id, the attempt, the branch, whether a stop was requested, the git
   service, the `planExecutionOutcome`, and the run error, classifies the run, builds the
   `runs.Outcome` record, and appends the closing `finalize`, `report`, and `finish` events
-- [ ] extract a second function that stamps `FinishedAt` and saves `outcome.json`; both return the
+- [x] extract a second function that stamps `FinishedAt` and saves `outcome.json`; both return the
   record and an error, never an `exitCodeError`
-- [ ] keep in `detachedChild.complete`, in today's order: the stop marker read, `runs.WriteReport`,
+- [x] keep in `detachedChild.complete`, in today's order: the stop marker read, `runs.WriteReport`,
   `keptWorktree` and `reconcileDetachedSourcePlan` between the two shared functions,
   `endProgressLog`, `beforeExit`, and the `exitCodeError` it returns
-- [ ] confirm the existing `detach_child_test.go` and `detach_child_unix_test.go` pass unchanged
-- [ ] write tests for the shared functions: succeeded, failed, stopped by a cancelled context, stopped
+  (`runs.WriteReport` runs through the first function's optional `beforeClosing` step, so report.md
+  still exists before the finish event an observer reacts to; shared code is in
+  `cmd/loopai/attempt_outcome.go`: `closeAttempt`, `saveAttemptOutcome`)
+- [x] confirm the existing `detach_child_test.go` and `detach_child_unix_test.go` pass unchanged
+- [x] write tests for the shared functions: succeeded, failed, stopped by a cancelled context, stopped
   by a stop request
-- [ ] write a test that a note recorded by `reconcileDetachedSourcePlan` and the kept-worktree path
+- [x] write a test that a note recorded by `reconcileDetachedSourcePlan` and the kept-worktree path
   still reach a detached run's `outcome.json`
-- [ ] run `make test` - must pass before task 6
+- [x] run `make test` - must pass before task 6
 
 ### Task 6: Add and validate the `--journal-dir` flag
-- [ ] add `JournalDir string` with `long:"journal-dir"`, `value-name:"dir"`, and a description to
+- [x] add `JournalDir string` with `long:"journal-dir"`, `value-name:"dir"`, and a description to
   `opts` in `cmd/loopai/main.go`
-- [ ] add `journal-dir` to the execution-flag lists in `markFlagsSet` and `hasExecutionMode`
-- [ ] add `validateJournalDirFlags` and call it from `validateFlags`: refuse the flag with
+- [x] add `journal-dir` to the execution-flag lists in `markFlagsSet` and `hasExecutionMode`
+- [x] add `validateJournalDirFlags` and call it from `validateFlags`: refuse the flag with
   `--worktree`, `--review`, `--external-only`, `--plan`, `--gen-agents`, `--serve`, `--watch`,
   `--detach`, `--cmux-workspace`, and every standalone command, with a plan chain, and without a plan
   file, using the `"%s cannot be combined with %s"` form of `validateDetachFlags`; it touches no file
-- [ ] run `go test ./cmd/loopai -run TestSkillContract -update` and commit the changed
+- [x] run `go test ./cmd/loopai -run TestSkillContract -update` and commit the changed
   `cmd/loopai/testdata/skill-contract.golden`; do not bump `skillContract`
-- [ ] write tests in `cmd/loopai/main_test.go`: one case per incompatible flag, a chain, a missing
+- [x] write tests in `cmd/loopai/main_test.go`: one case per incompatible flag, a chain, a missing
   plan, and that `--merge`, `--pr`, `--runs`, `--attach`, and `--stop` reject the flag
-- [ ] run `make test` - must pass before task 7
+- [x] run `make test` - must pass before task 7
+- ➕ [x] refuse `--commit` with the flag too (it needs a worktree), reject an empty `--journal-dir=` value
+  and extra plan arguments, and force `cfg.WorktreeEnabled` off in `applyWorktreeOverride` so a
+  `use_worktree = true` config cannot move the run into a worktree (`validateFlags` runs before config),
+  with tests
 
 ### Task 7: Prepare the journal directory and keep the run in this process
-- [ ] add an exclusive constructor to `pkg/runs` that creates `events.jsonl` with
+- [x] add an exclusive constructor to `pkg/runs` that creates `events.jsonl` with
   `O_CREATE|O_EXCL` and fails when the file exists; `OpenJournal` is unchanged
-- [ ] add an ignored-path check to `pkg/git` (through `git check-ignore`) reporting whether a path
+- [x] add an ignored-path check to `pkg/git` (through `git check-ignore`) reporting whether a path
   inside the work tree is ignored
-- [ ] add `prepareJournalDir(dir string) (string, error)` in `cmd/loopai`, called after
+- [x] add `prepareJournalDir(dir string) (string, error)` in `cmd/loopai`, called after
   `validateFlags` and before `prepareRunBeforeConfig`: it makes the path absolute, creates the
   directory with mode `0700` when missing, and refuses a path that is a regular file, a directory
   that holds `events.jsonl` or `outcome.json`, and a directory inside the repository work tree that
   git does not ignore
-- [ ] make a run with `JournalDir` set ineligible for the automatic cmux hand-off, since a hand-off
+- [x] make a run with `JournalDir` set ineligible for the automatic cmux hand-off, since a hand-off
   re-executes the command in another process
-- [ ] write tests in `pkg/runs/journal_test.go`: the exclusive constructor fails on an existing file,
+- [x] write tests in `pkg/runs/journal_test.go`: the exclusive constructor fails on an existing file,
   and of two goroutines calling it for one directory exactly one succeeds
-- [ ] write tests for the ignored-path check: an ignored path, a tracked path, an untracked
+- [x] write tests for the ignored-path check: an ignored path, a tracked path, an untracked
   non-ignored path
-- [ ] write table tests for `prepareJournalDir`: a relative path made absolute, a directory created
+- [x] write table tests for `prepareJournalDir`: a relative path made absolute, a directory created
   with `0700`, an existing `events.jsonl` refused, an existing `outcome.json` refused, a regular file
   refused, an in-tree non-ignored directory refused, an in-tree ignored directory accepted
-- [ ] write a test that the auto-workspace eligibility is false when `JournalDir` is set
-- [ ] run `make test` - must pass before task 8
+- [x] write a test that the auto-workspace eligibility is false when `JournalDir` is set
+- [x] run `make test` - must pass before task 8
+- ➕ [x] add `git.Service.WorkTreeContains` (symlink-resolved, for a path that need not exist) for the
+  in-tree test, and check that git ignores the two files the run writes (`events.jsonl`,
+  `outcome.json`) rather than the directory: a directory-only ignore rule matches a missing directory
+  only once it exists, while a file below an ignored directory always matches; a refusal creates no
+  directory, and the check runs before config loading with plain `git`
 
 ### Task 8: Write the journal and the outcome on a foreground run
-- [ ] in `run()`, when `JournalDir` is set, open the journal with the exclusive constructor (attempt
+- [x] in `run()`, when `JournalDir` is set, open the journal with the exclusive constructor (attempt
   1), create `journalHooks`, and set on the existing request `Outcome: &planExecutionOutcome{}`,
   `NonInteractive: true`, `LogDecorator`, `PhaseObserver`, and `UsageHandler`; keep `run()`'s own
   `WtCleanup`, `KeepAwake`, reporters holders, and launch-history call; do not call
   `prepareNonInteractiveRequest`
-- [ ] add a request hook for the in-place attempt start, not copied by `worktreeExecuteRequest`, and
+- [x] add a request hook for the in-place attempt start, not copied by `worktreeExecuteRequest`, and
   call it in `executePlan` right after `setupProgressLogger` and before the runner is built; a hook
   error ends the run before any provider process starts
-- [ ] make that hook append `attempt_start` through `attemptStartEvent` with `Plan` and
+- [x] make that hook append `attempt_start` through `attemptStartEvent` with `Plan` and
   `WorktreePlan` set to the absolute plan path, `Worktree` empty, `ConsoleOffset` 0, `ProgressLog`
   the absolute progress-log path, and `Branch` the checked-out branch
-- [ ] after `runSelectedPlans` returns, complete the attempt with the two shared functions from task
+- [x] after `runSelectedPlans` returns, complete the attempt with the two shared functions from task
   5: `run_id` empty, `attempt` 1, `worktree_kept` empty, a stop when the context was cancelled; then
   call `endProgressLog` and close the journal
-- [ ] leave the process exit code as it is today on every path, including a stop (exit 1 while the
+- [x] leave the process exit code as it is today on every path, including a stop (exit 1 while the
   outcome records `stopped` with `exit_code` 2); a failure to save the outcome is printed as a
   warning and does not change the exit code
-- [ ] write in-process tests in `cmd/loopai/journal_dir_test.go` against a real `runs.Journal` in
+- [x] write in-process tests in `cmd/loopai/journal_dir_test.go` against a real `runs.Journal` in
   `t.TempDir()`: the in-place hook writes `attempt_start` with the fields above and task titles are
   then present in `task` events; a hook error is returned before the runner is built
-- [ ] write a test that with `JournalDir` empty the request built in `run()` has nil `Outcome`,
+- [x] write a test that with `JournalDir` empty the request built in `run()` has nil `Outcome`,
   `LogDecorator`, `PhaseObserver`, `UsageHandler`, and in-place hook, and `NonInteractive` false
-- [ ] write a test that a detached run still records exactly one `attempt_start`
-- [ ] run `make test` - must pass before task 9
+- [x] write a test that a detached run still records exactly one `attempt_start`
+- [x] run `make test` - must pass before task 9
+- ➕ [x] the in-place hook fires from `setupProgressLogger` (named `InPlaceAttemptStarted`, helper
+  `fireInPlaceAttemptStarted`), which keeps `executePlan` under the gocyclo limit; the wiring lives in
+  `cmd/loopai/journal_dir.go` (`attachForegroundJournal`, `foregroundJournal.complete`); a run that
+  ends before its attempt starts gets only a failed `outcome.json` with a `startup:` reason, as a
+  detached child's startup failure does
 
 ### Task 9: Cover the foreground journal with subprocess tests
-- [ ] add a foreground fixture and command builder to `cmd/loopai/detach_child_unix_test.go` (or a
+- [x] add a foreground fixture and command builder to `cmd/loopai/detach_child_unix_test.go` (or a
   sibling `journal_dir_unix_test.go`) that reuses `TestDetachChildHelper`, the fake `claude`, and the
   real git repository, passes no `--detached-run` and no handshake files, and writes no descriptor
-- [ ] extend the fake `claude` so that, when an environment variable is set, its `result` line carries
+- [x] extend the fake `claude` so that, when an environment variable is set, its `result` line carries
   `usage`, `total_cost_usd`, and one `modelUsage` key
-- [ ] write a success test for the fixture's one-task plan in full mode with `report_enabled = true`:
+- [x] write a success test for the fixture's one-task plan in full mode with `report_enabled = true`:
   compare `eventTypes(events)` with a literal expected list that includes `attempt_start`, `task`,
   `usage`, `report`, and `finish`, assert the `task` event's title and the `usage` event's tokens and
   cost, and assert `outcome.json` has status `succeeded`, an empty `run_id`, and the report
-- [ ] write a failing-provider test: `outcome.json` has status `failed` with a reason and the process
+- [x] write a failing-provider test: `outcome.json` has status `failed` with a reason and the process
   exits 1
-- [ ] write a graceful-stop test: SIGTERM sent inside a live session (use `awaitSession`) yields a
+- [x] write a graceful-stop test: SIGTERM sent inside a live session (use `awaitSession`) yields a
   `finish` event and an `outcome.json` with status `stopped`, and the process exits 1
-- [ ] write a refusal test: with a pre-existing `events.jsonl` in the directory the process exits 1
+- [x] write a refusal test: with a pre-existing `events.jsonl` in the directory the process exits 1
   with the error line and the fake provider's dump file does not exist
-- [ ] write a no-flag test: the same plan without `--journal-dir` exits with the same code and leaves
+- [x] write a no-flag test: the same plan without `--journal-dir` exits with the same code and leaves
   no `events.jsonl` or `outcome.json` anywhere under the repository or the test's temporary directory
-- [ ] write a detached-run variant with the usage-emitting fake: its journal holds at least one
+- [x] write a detached-run variant with the usage-emitting fake: its journal holds at least one
   `usage` event and the existing detached assertions still hold
-- [ ] run `make test` - must pass before task 10
+- [x] run `make test` - must pass before task 10
+- ➕ [x] the foreground fixture is `newForegroundFixture` in `cmd/loopai/journal_dir_unix_test.go`, built on
+  `newChildRepoFixture` split out of `newDetachChildFixture`; the helper exits 0 when a foreground
+  run's `main()` returns; the fake `claude` also ticks and commits the plan under `$DETACH_CHILD_TICK`,
+  since a finished plan's `task` event carries no title; the detached variant is
+  `TestDetachedChildSucceedsWithUsage`
 
 ### Task 10: Verify acceptance criteria
-- [ ] verify every requirement from Overview has a test from tasks 1-9: in-place journal and outcome
+- [x] verify every requirement from Overview has a test from tasks 1-9: in-place journal and outcome
   for full and `--tasks-only`, `usage` events for Claude and Codex, refusals before a provider starts,
   no change without the flag
-- [ ] run `make test`
-- [ ] run `make lint` - all issues must be fixed
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] run `go test -race -coverprofile=c.out ./cmd/loopai ./pkg/runs ./pkg/executor ./pkg/processor
+- [x] run `make test`
+- [x] run `make lint` - all issues must be fixed
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] run `go test -race -coverprofile=c.out ./cmd/loopai ./pkg/runs ./pkg/executor ./pkg/processor
   ./pkg/git && go tool cover -func=c.out` and confirm the new functions are covered (80%+), then
   remove `c.out`
+- ➕ [x] the coverage run left `prepareJournalDir` (77.8%), `foregroundJournal.attemptStarted` (75%), and
+  `git.Service.WorkTreeContains` (75%) below 80%; tests for a path below a regular file, an unreadable
+  and an uncreatable journal directory, a failed `attempt_start` append, and a relative path raised
+  them to 94.4%, 100%, and 100%
 
 ### Task 11: [Final] Update documentation
-- [ ] add `docs/host-integration.md`: how a host spawns a foreground run with `--journal-dir`, the
+- [x] add `docs/host-integration.md`: how a host spawns a foreground run with `--journal-dir`, the
   directory rules (empty, outside the checkout or git-ignored), the `events.jsonl` event types with
   their fields including `usage`, the `outcome.json` fields, which fields are empty for a foreground
   run (`run_id`, `worktree_kept`, `attempt_start.worktree`, `console_offset`), the token convention
@@ -497,10 +523,10 @@
   that a forced exit leaves no `finish` event or `outcome.json` and must be read with the non-zero
   exit as not completed, that the run is non-interactive, and the limits (main session usage only, no
   Codex cost, `model` possibly an alias or empty, no usage for a session killed before its result)
-- [ ] update `README.md` and `llms.txt`: the flag in the options list and in the detached-runs
+- [x] update `README.md` and `llms.txt`: the flag in the options list and in the detached-runs
   paragraph, with a pointer to `docs/host-integration.md`
-- [ ] update `CLAUDE.md` where it describes the journal, the event types, and the executors' `Result`
-- [ ] update `docs/t3-code.md` "The run directory" to mention the `usage` event
+- [x] update `CLAUDE.md` where it describes the journal, the event types, and the executors' `Result`
+- [x] update `docs/t3-code.md` "The run directory" to mention the `usage` event
 
 *Note: loopai automatically moves completed plans to `docs/plans/completed/`*
 

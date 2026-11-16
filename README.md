@@ -28,6 +28,8 @@ workflows are distributed through this repository's plugin marketplace.
 - Reports working, waiting, and completion state through Orca terminal titles with `--orca`
 - Runs a plan as a detached process with `--detach` that survives its terminal, agent, and T3 Code,
   then follows, lists, and stops it with `--attach`, `--runs`, and `--stop`
+- Lets a host process that spawns loopai follow a foreground run and read its result and per-session
+  token usage through `--journal-dir` (see [docs/host-integration.md](docs/host-integration.md))
 - Shows a detached run in T3 Code, either as a terminal tab and title prefix in the current thread or
   as a loopai thread that shows Working for the whole run, through the `loopai-acp` provider (see
   [docs/t3-code.md](docs/t3-code.md))
@@ -492,6 +494,9 @@ loopai --dump-defaults /tmp/loopai-defaults
 
 # run with the live dashboard
 loopai --serve docs/plans/feature.md
+
+# run for a host process: write events.jsonl and outcome.json into a directory outside the checkout
+loopai --journal-dir /tmp/loopai-run-42 docs/plans/feature.md
 ```
 
 Use `loopai --help` for the complete flag list.
@@ -1461,6 +1466,15 @@ the plan and report on its own branch, never committing into the checkout it was
 `finalize = pr` run's pull request carries both; it removes its worktree only after a clean success,
 and makes `--merge` and `--pr` of its branch refuse while it is live. Detached runs are not available
 on Windows or inside an agent sandbox.
+
+A host process that spawns loopai itself, inside a sandbox where `--detach` is refused, uses
+`loopai --journal-dir <dir> <plan>` instead: an ordinary foreground run of one plan (full or
+`--tasks-only`) in the current checkout, non-interactive, that writes the same `events.jsonl` journal
+and `outcome.json` a detached run keeps into `<dir>`. The directory must not already hold either file
+and must lie outside the checkout or be ignored by git. The run is not registered for `--runs`,
+`--attach`, or `--stop`, and the process keeps its usual exit code. Every journal, detached or not,
+also records one `usage` event per finished provider session with its token counts and, for Claude,
+its cost. See [docs/host-integration.md](docs/host-integration.md).
 
 [T3 Code](https://t3.codes) shows a detached run in one of two modes, both started by the `loopai-t3`
 skill. In Mode 1, `loopai --detach --t3-thread <thread-id> <plan>` with a T3 Code token in

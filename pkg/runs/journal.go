@@ -37,6 +37,11 @@ const (
 	EventReport EventType = "report"
 	// EventFinish closes an attempt: Status, Reason, and ExitCode.
 	EventFinish EventType = "finish"
+	// EventUsage is one finished provider session's usage: Provider, Model, Phase, InputTokens,
+	// CachedInputTokens, CacheWriteInputTokens, OutputTokens, and CostUSD when the CLI reported a
+	// cost. InputTokens excludes the cached tokens, which CachedInputTokens and
+	// CacheWriteInputTokens count separately, for every provider.
+	EventUsage EventType = "usage"
 )
 
 // Stage names an attempt_start event lists, in pipeline order.
@@ -107,6 +112,16 @@ type Event struct {
 	Status        Status       `json:"status"`
 	Reason        string       `json:"reason"`
 	ExitCode      int          `json:"exit_code"`
+
+	// Provider, Model, the token counts, and CostUSD belong to a usage event; CostUSD is nil when
+	// the provider CLI reported no cost.
+	Provider              string   `json:"provider"`
+	Model                 string   `json:"model"`
+	InputTokens           int64    `json:"input_tokens"`
+	CachedInputTokens     int64    `json:"cached_input_tokens"`
+	CacheWriteInputTokens int64    `json:"cache_write_input_tokens"`
+	OutputTokens          int64    `json:"output_tokens"`
+	CostUSD               *float64 `json:"cost_usd"`
 }
 
 // eventHeader is the part every journal line carries.
@@ -197,6 +212,18 @@ func (e Event) payload() any {
 			Reason   string `json:"reason"`
 			ExitCode int    `json:"exit_code"`
 		}{e.Status, e.Reason, e.ExitCode}
+	case EventUsage:
+		return struct {
+			Provider              string       `json:"provider"`
+			Model                 string       `json:"model"`
+			Phase                 status.Phase `json:"phase"`
+			InputTokens           int64        `json:"input_tokens"`
+			CachedInputTokens     int64        `json:"cached_input_tokens"`
+			CacheWriteInputTokens int64        `json:"cache_write_input_tokens"`
+			OutputTokens          int64        `json:"output_tokens"`
+			CostUSD               *float64     `json:"cost_usd,omitempty"`
+		}{e.Provider, e.Model, e.Phase, e.InputTokens, e.CachedInputTokens, e.CacheWriteInputTokens,
+			e.OutputTokens, e.CostUSD}
 	default:
 		return nil
 	}
@@ -258,6 +285,20 @@ func OpenJournal(dir string, attempt int) (*Journal, error) {
 		seq = max(seq, ev.Seq)
 	}
 	return &Journal{f: f, attempt: attempt, seq: seq, size: size}, nil
+}
+
+// CreateJournal creates the journal of directory dir for attempt with mode 0600 and fails, with an
+// error matching fs.ErrExist, when the file already exists; the directory must exist. It is the
+// constructor of a run that holds no lifetime lock, such as a foreground --journal-dir run: the
+// exclusive creation is what keeps a second process from appending to the same journal, where
+// OpenJournal would continue it.
+func CreateJournal(dir string, attempt int) (*Journal, error) {
+	path := filepath.Join(dir, JournalFile)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // journal path chosen by the caller
+	if err != nil {
+		return nil, fmt.Errorf("create journal: %w", err)
+	}
+	return &Journal{f: f, attempt: attempt}, nil
 }
 
 // Append stamps ev with the next seq number, the current time, and the journal's attempt, writes

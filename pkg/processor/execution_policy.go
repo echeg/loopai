@@ -213,6 +213,7 @@ func (p *retryPolicy) runWithSessionTimeout(ctx context.Context, run func(contex
 
 	if !useTimeout {
 		result := run(ctx, prompt)
+		p.reportUsage(result, toolName)
 		return phase.ExecutionResult{Result: result, TimedOut: p.handleIdleTimeout(result, toolName)}
 	}
 
@@ -220,6 +221,7 @@ func (p *retryPolicy) runWithSessionTimeout(ctx context.Context, run func(contex
 	defer cancel()
 
 	result := run(childCtx, prompt)
+	p.reportUsage(result, toolName)
 
 	if childCtx.Err() != nil && ctx.Err() == nil {
 		p.log.Print("warning: %s session timed out after %s, the agent may have started a blocking operation",
@@ -230,6 +232,20 @@ func (p *retryPolicy) runWithSessionTimeout(ctx context.Context, run func(contex
 	}
 
 	return phase.ExecutionResult{Result: result, TimedOut: p.handleIdleTimeout(result, toolName)}
+}
+
+// reportUsage passes a finished session's usage to the configured handler, whatever the session's
+// error or timeout state, since tokens are spent either way. A nil handler or a result without usage
+// does nothing.
+func (p *retryPolicy) reportUsage(result executor.Result, toolName string) {
+	if p.cfg.UsageHandler == nil || result.Usage == nil {
+		return
+	}
+	var ph status.Phase
+	if p.phaseHolder != nil {
+		ph = p.phaseHolder.Get()
+	}
+	p.cfg.UsageHandler(SessionUsage{Provider: toolName, Phase: ph, Usage: *result.Usage})
 }
 
 func (p *retryPolicy) handleIdleTimeout(result executor.Result, toolName string) bool {

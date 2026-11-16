@@ -1,0 +1,614 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/umputun/ralphex/pkg/config"
+	"github.com/umputun/ralphex/pkg/git"
+	"github.com/umputun/ralphex/pkg/processor"
+	"github.com/umputun/ralphex/pkg/progress"
+	"github.com/umputun/ralphex/pkg/runs"
+	"github.com/umputun/ralphex/pkg/status"
+)
+
+// journalDirRepo creates a git repository whose .gitignore ignores ignored/, makes it the working
+// directory, and returns its path.
+func journalDirRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init", "-q", dir)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ignored/\n"), 0o600))
+	t.Chdir(dir)
+	return dir
+}
+
+func TestPrepareJournalDir(t *testing.T) {
+	tests := []struct {
+		name string
+		// setup prepares the working directory and returns the --journal-dir argument and the
+		// absolute path it must resolve to.
+		setup   func(t *testing.T) (arg, want string)
+		wantErr string
+		// createdOnRefusal reports whether the directory exists after a refusal (it did before).
+		createdOnRefusal bool
+	}{
+		{name: "relative path made absolute", setup: func(t *testing.T) (string, string) {
+			cwd := t.TempDir()
+			t.Chdir(cwd)
+			return "journal", filepath.Join(cwd, "journal")
+		}},
+		{name: "missing nested directory created", setup: func(t *testing.T) (string, string) {
+			dir := filepath.Join(t.TempDir(), "a", "b")
+			return dir, dir
+		}},
+		{name: "existing empty directory accepted", setup: func(t *testing.T) (string, string) {
+			dir := t.TempDir()
+			return dir, dir
+		}},
+		{name: "existing events.jsonl refused", setup: func(t *testing.T) (string, string) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, runs.JournalFile), nil, 0o600))
+			return dir, dir
+		}, wantErr: "already holds events.jsonl", createdOnRefusal: true},
+		{name: "existing outcome.json refused", setup: func(t *testing.T) (string, string) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, runs.OutcomeFile), []byte("{}\n"), 0o600))
+			return dir, dir
+		}, wantErr: "already holds outcome.json", createdOnRefusal: true},
+		{name: "dangling events.jsonl symlink refused", setup: func(t *testing.T) (string, string) {
+			dir := t.TempDir()
+			require.NoError(t, os.Symlink(filepath.Join(dir, "gone"), filepath.Join(dir, runs.JournalFile)))
+			return dir, dir
+		}, wantErr: "already holds events.jsonl", createdOnRefusal: true},
+		{name: "regular file refused", setup: func(t *testing.T) (string, string) {
+			path := filepath.Join(t.TempDir(), "file")
+			require.NoError(t, os.WriteFile(path, []byte("x"), 0o600))
+			return path, path
+		}, wantErr: "is not a directory", createdOnRefusal: true},
+		{name: "path below a regular file refused", setup: func(t *testing.T) (string, string) {
+			file := filepath.Join(t.TempDir(), "file")
+			require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
+			path := filepath.Join(file, "journal")
+			return path, path
+		}, wantErr: "inspect --journal-dir"},
+		{name: "unreadable directory refused", setup: func(t *testing.T) (string, string) {
+			skipIfRootIgnoresPermissions(t)
+			dir := filepath.Join(t.TempDir(), "locked")
+			require.NoError(t, os.Mkdir(dir, 0o700))
+			require.NoError(t, os.Chmod(dir, 0o000))
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // test temp dir
+			return dir, dir
+		}, wantErr: "inspect --journal-dir", createdOnRefusal: true},
+		{name: "uncreatable directory refused", setup: func(t *testing.T) (string, string) {
+			skipIfRootIgnoresPermissions(t)
+			parent := filepath.Join(t.TempDir(), "readonly")
+			require.NoError(t, os.Mkdir(parent, 0o500))
+			t.Cleanup(func() { _ = os.Chmod(parent, 0o700) }) //nolint:gosec // test temp dir
+			path := filepath.Join(parent, "journal")
+			return path, path
+		}, wantErr: "create --journal-dir"},
+		{name: "in-tree non-ignored directory refused", setup: func(t *testing.T) (string, string) {
+			repo := journalDirRepo(t)
+			return "journal", filepath.Join(repo, "journal")
+		}, wantErr: "inside the repository work tree and git does not ignore events.jsonl"},
+		{name: "in-tree non-ignored existing directory refused", setup: func(t *testing.T) (string, string) {
+			repo := journalDirRepo(t)
+			require.NoError(t, os.Mkdir(filepath.Join(repo, "journal"), 0o700))
+			return filepath.Join(repo, "journal"), filepath.Join(repo, "journal")
+		}, wantErr: "inside the repository work tree", createdOnRefusal: true},
+		{name: "in-tree directory ignoring only events.jsonl refused", setup: func(t *testing.T) (string, string) {
+			repo := journalDirRepo(t)
+			require.NoError(t, os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("*.jsonl\n"), 0o600))
+			return "journal", filepath.Join(repo, "journal")
+		}, wantErr: "inside the repository work tree and git does not ignore outcome.json"},
+		{name: "in-tree ignored directory accepted", setup: func(t *testing.T) (string, string) {
+			repo := journalDirRepo(t)
+			return filepath.Join("ignored", "run-1"), filepath.Join(repo, "ignored", "run-1")
+		}},
+		{name: "directory outside the repository accepted", setup: func(t *testing.T) (string, string) {
+			journalDirRepo(t)
+			dir := filepath.Join(t.TempDir(), "journal")
+			return dir, dir
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			arg, want := tc.setup(t)
+			got, err := prepareJournalDir(arg)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				assert.Empty(t, got)
+				_, statErr := os.Stat(want)
+				assert.Equal(t, tc.createdOnRefusal, statErr == nil, "a refusal must not create the directory")
+				return
+			}
+			require.NoError(t, err)
+			wantResolved, evalErr := filepath.EvalSymlinks(want)
+			require.NoError(t, evalErr)
+			gotResolved, evalErr := filepath.EvalSymlinks(got)
+			require.NoError(t, evalErr)
+			assert.True(t, filepath.IsAbs(got))
+			assert.Equal(t, wantResolved, gotResolved)
+			info, statErr := os.Stat(got)
+			require.NoError(t, statErr)
+			assert.True(t, info.IsDir())
+			entries, readErr := os.ReadDir(got)
+			require.NoError(t, readErr)
+			assert.Empty(t, entries, "preparing the directory writes nothing into it")
+		})
+	}
+}
+
+// skipIfRootIgnoresPermissions skips a test whose refusal depends on directory permissions, which
+// root bypasses.
+func skipIfRootIgnoresPermissions(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+}
+
+func TestPrepareJournalDirCreatesWithMode0700(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "journal")
+	got, err := prepareJournalDir(dir)
+	require.NoError(t, err)
+	assert.Equal(t, dir, got)
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}
+
+func TestPrepareJournalDirKeepsExistingMode(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "journal")
+	require.NoError(t, os.Mkdir(dir, 0o750))
+	_, err := prepareJournalDir(dir)
+	require.NoError(t, err)
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o750), info.Mode().Perm())
+}
+
+func TestRunRefusesJournalDirBeforeConfig(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	journal := filepath.Join(t.TempDir(), "journal")
+	require.NoError(t, os.Mkdir(journal, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(journal, runs.OutcomeFile), []byte("{}\n"), 0o600))
+	configDir := filepath.Join(t.TempDir(), "config")
+
+	err := run(t.Context(), opts{PlanFile: "p.md", JournalDir: journal, journalDirSet: true, ConfigDir: configDir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already holds outcome.json")
+	_, statErr := os.Stat(configDir)
+	assert.True(t, os.IsNotExist(statErr), "the refusal comes before config loading installs defaults")
+}
+
+func TestAttachForegroundJournal(t *testing.T) {
+	cfg := &config.Config{}
+	base := executePlanRequest{PlanFile: "p.md", Mode: processor.ModeFull, WtCleanup: &cleanupHolder{}}
+
+	t.Run("without the flag the request is unchanged", func(t *testing.T) {
+		fj, req, err := attachForegroundJournal(opts{}, cfg, base)
+		require.NoError(t, err)
+		assert.Nil(t, fj)
+		assert.Nil(t, req.Outcome)
+		assert.Nil(t, req.LogDecorator)
+		assert.Nil(t, req.PhaseObserver)
+		assert.Nil(t, req.UsageHandler)
+		assert.Nil(t, req.InPlaceAttemptStarted)
+		assert.False(t, req.NonInteractive)
+		assert.Same(t, base.WtCleanup, req.WtCleanup)
+		// a nil journal completes as a no-op
+		fj.complete(t.Context(), nil, errors.New("boom"))
+	})
+
+	t.Run("with the flag the hooks are set and the journal is created", func(t *testing.T) {
+		dir := t.TempDir()
+		fj, req, err := attachForegroundJournal(opts{JournalDir: dir}, cfg, base)
+		require.NoError(t, err)
+		require.NotNil(t, fj)
+		t.Cleanup(func() { _ = fj.journal.Close() })
+		assert.Same(t, fj.outcome, req.Outcome)
+		assert.NotNil(t, req.LogDecorator)
+		assert.NotNil(t, req.PhaseObserver)
+		assert.NotNil(t, req.UsageHandler)
+		assert.NotNil(t, req.InPlaceAttemptStarted)
+		assert.Nil(t, req.AttemptStarted, "a worktree hook is never set: the run executes in place")
+		assert.True(t, req.NonInteractive)
+		assert.Same(t, base.WtCleanup, req.WtCleanup, "run()'s own cleanup holder is kept")
+		assert.FileExists(t, filepath.Join(dir, runs.JournalFile))
+	})
+
+	t.Run("an existing journal is refused", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, runs.JournalFile), []byte("x\n"), 0o600))
+		fj, _, err := attachForegroundJournal(opts{JournalDir: dir}, cfg, base)
+		require.ErrorIs(t, err, os.ErrExist)
+		assert.Nil(t, fj)
+		data, readErr := os.ReadFile(filepath.Join(dir, runs.JournalFile)) //nolint:gosec // test temp path
+		require.NoError(t, readErr)
+		assert.Equal(t, "x\n", string(data), "the existing journal is left alone")
+	})
+}
+
+func TestFireInPlaceAttemptStarted(t *testing.T) {
+	repo := setupTestRepo(t)
+	t.Chdir(repo)
+	svc, err := git.NewService(repo, noopLogger())
+	require.NoError(t, err)
+	baseLog, err := progress.NewLogger(progress.Config{PlanFile: "docs/plans/p.md", Mode: string(processor.ModeFull),
+		Branch: "master", NoColor: true, Stdout: &discardWriter{}}, testColors(), &status.PhaseHolder{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = baseLog.Close() })
+
+	t.Run("no hook does nothing", func(t *testing.T) {
+		require.NoError(t, fireInPlaceAttemptStarted(executePlanRequest{GitSvc: svc}, baseLog))
+	})
+
+	t.Run("the hook receives absolute paths and the checked-out branch", func(t *testing.T) {
+		var got attemptStart
+		req := executePlanRequest{PlanFile: "docs/plans/p.md", GitSvc: svc,
+			InPlaceAttemptStarted: func(start attemptStart) error { got = start; return nil }}
+		require.NoError(t, fireInPlaceAttemptStarted(req, baseLog))
+		want := filepath.Join(repo, "docs", "plans", "p.md")
+		assert.Equal(t, want, got.PlanFile)
+		assert.Equal(t, want, got.MainPlanFile)
+		assert.Equal(t, "master", got.Branch)
+		assert.Empty(t, got.WorktreePath)
+		assert.True(t, filepath.IsAbs(got.ProgressLog), got.ProgressLog)
+		assert.Equal(t, absPath(baseLog.Path()), got.ProgressLog)
+		assert.False(t, got.Resumed)
+	})
+
+	t.Run("a hook error is wrapped", func(t *testing.T) {
+		req := executePlanRequest{PlanFile: "p.md", GitSvc: svc,
+			InPlaceAttemptStarted: func(attemptStart) error { return errors.New("journal full") }}
+		err := fireInPlaceAttemptStarted(req, baseLog)
+		require.Error(t, err)
+		assert.Equal(t, "start attempt: journal full", err.Error())
+	})
+}
+
+func TestForegroundJournalAttemptStartedFailure(t *testing.T) {
+	dir := t.TempDir()
+	fj, req, err := attachForegroundJournal(opts{JournalDir: dir}, &config.Config{}, executePlanRequest{Mode: processor.ModeFull})
+	require.NoError(t, err)
+	require.NoError(t, fj.journal.Close())
+
+	err = req.InPlaceAttemptStarted(attemptStart{PlanFile: "/nowhere/p.md", MainPlanFile: "/nowhere/p.md", Branch: "feat"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "record attempt start")
+	assert.False(t, fj.started, "a failed append does not start the attempt")
+	assert.Empty(t, fj.branch)
+}
+
+func TestForegroundJournalRechecksIgnoreAfterBranchSwitch(t *testing.T) {
+	// master ignores ignored/, while the existing plan branch was cut before that rule landed, so a
+	// journal accepted at startup on master is no longer ignored once branch preparation checks the
+	// plan branch out
+	newRepo := func(t *testing.T) (repo, journalDir string) {
+		t.Helper()
+		repo = setupTestRepo(t)
+		t.Chdir(repo)
+		runGit(t, repo, "branch", "plan-branch")
+		require.NoError(t, os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("ignored/\n"), 0o600))
+		runGit(t, repo, "add", ".gitignore")
+		runGit(t, repo, "commit", "-m", "ignore journals")
+		journalDir, err := prepareJournalDir(filepath.Join("ignored", "run-1"))
+		require.NoError(t, err, "the journal is ignored on master")
+		return repo, journalDir
+	}
+	attach := func(t *testing.T, journalDir string) (*foregroundJournal, executePlanRequest) {
+		t.Helper()
+		fj, req, err := attachForegroundJournal(opts{JournalDir: journalDir}, &config.Config{},
+			executePlanRequest{Mode: processor.ModeFull})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = fj.journal.Close() })
+		return fj, req
+	}
+
+	t.Run("the attempt starts while the journal stays ignored", func(t *testing.T) {
+		_, journalDir := newRepo(t)
+		fj, req := attach(t, journalDir)
+		require.NoError(t, req.InPlaceAttemptStarted(attemptStart{PlanFile: "/nowhere/p.md",
+			MainPlanFile: "/nowhere/p.md", Branch: "master"}))
+		assert.True(t, fj.started)
+	})
+
+	t.Run("a branch that does not ignore the journal stops the attempt", func(t *testing.T) {
+		repo, journalDir := newRepo(t)
+		fj, req := attach(t, journalDir)
+		runGit(t, repo, "checkout", "-q", "plan-branch")
+		err := req.InPlaceAttemptStarted(attemptStart{PlanFile: "/nowhere/p.md", MainPlanFile: "/nowhere/p.md",
+			Branch: "plan-branch"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `on branch "plan-branch"`)
+		assert.Contains(t, err.Error(), "git does not ignore events.jsonl")
+		assert.False(t, fj.started, "a refused journal does not start the attempt")
+		data, readErr := os.ReadFile(filepath.Join(journalDir, runs.JournalFile)) //nolint:gosec // test temp path
+		require.NoError(t, readErr)
+		assert.Empty(t, data, "no attempt_start is recorded")
+	})
+}
+
+// discardWriter is an io.Writer that drops everything.
+type discardWriter struct{}
+
+func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// foregroundJournalRepo makes a repository with a one-task open plan the working directory and
+// returns the repository, the plan's path, and a git service for it.
+func foregroundJournalRepo(t *testing.T) (repo, planPath string, svc *git.Service) {
+	t.Helper()
+	repo = setupTestRepo(t)
+	t.Chdir(repo)
+	planPath = filepath.Join(repo, "docs", "plans", "fg.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(planPath), 0o750))
+	require.NoError(t, os.WriteFile(planPath, []byte("# Plan\n\n### Task 1: Build it\n\n- [ ] do it\n"), 0o600))
+	svc, err := git.NewService(repo, noopLogger())
+	require.NoError(t, err)
+	return repo, planPath, svc
+}
+
+func TestExecutePlanRecordsForegroundJournal(t *testing.T) {
+	repo, planPath, svc := foregroundJournalRepo(t)
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, `#!/bin/sh
+cat >/dev/null
+printf '# Plan\n\n### Task 1: Build it\n\n- [x] do it\n' > "$FG_JOURNAL_PLAN"
+printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:ALL_TASKS_DONE>>>"}}'
+printf '%s\n' '{"type":"result","result":"","usage":{"input_tokens":10,"output_tokens":5},"total_cost_usd":0.25}'
+`)
+	t.Setenv("FG_JOURNAL_PLAN", planPath)
+	dir := t.TempDir()
+	cfg := &config.Config{ClaudeCommand: fakeClaude}
+	o := opts{TasksOnly: true, MaxIterations: 1, NoColor: true, JournalDir: dir}
+	fj, req, err := attachForegroundJournal(o, cfg, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: svc, Config: cfg, Colors: testColors(),
+		BaseRef: "master",
+	})
+	require.NoError(t, err)
+
+	runErr := executePlan(t.Context(), o, req)
+	require.NoError(t, runErr)
+	fj.complete(t.Context(), svc, runErr)
+
+	events, err := runs.ReadFrom(dir, 0)
+	require.NoError(t, err)
+	require.NotEmpty(t, events)
+
+	t.Run("attempt_start names the plan in place", func(t *testing.T) {
+		start := events[0]
+		require.Equal(t, runs.EventAttemptStart, start.Type)
+		assert.Equal(t, 1, start.Attempt)
+		assert.Equal(t, string(processor.ModeTasksOnly), start.Mode)
+		assert.Equal(t, planPath, start.Plan)
+		assert.Equal(t, planPath, start.WorktreePlan)
+		assert.Empty(t, start.Worktree)
+		assert.Zero(t, start.ConsoleOffset)
+		assert.Equal(t, "master", start.Branch)
+		assert.True(t, filepath.IsAbs(start.ProgressLog), start.ProgressLog)
+		assert.FileExists(t, start.ProgressLog)
+		assert.Equal(t, []runs.TaskInfo{{N: 1, Title: "Build it"}}, start.Tasks)
+	})
+
+	t.Run("task events carry the plan's titles", func(t *testing.T) {
+		var titles []string
+		for _, ev := range events {
+			if ev.Type == runs.EventTask {
+				titles = append(titles, ev.Title)
+			}
+		}
+		require.NotEmpty(t, titles)
+		assert.Equal(t, "Build it", titles[0])
+	})
+
+	t.Run("the session's usage is recorded", func(t *testing.T) {
+		var usage []runs.Event
+		for _, ev := range events {
+			if ev.Type == runs.EventUsage {
+				usage = append(usage, ev)
+			}
+		}
+		require.Len(t, usage, 1)
+		assert.Equal(t, "claude", usage[0].Provider)
+		assert.Equal(t, int64(10), usage[0].InputTokens)
+		assert.Equal(t, int64(5), usage[0].OutputTokens)
+		require.NotNil(t, usage[0].CostUSD)
+		assert.InDelta(t, 0.25, *usage[0].CostUSD, 1e-9)
+	})
+
+	t.Run("the outcome records the success without a run id", func(t *testing.T) {
+		assert.Equal(t, runs.EventFinish, events[len(events)-1].Type)
+		rec, err := runs.LoadOutcome(dir)
+		require.NoError(t, err)
+		assert.Equal(t, runs.StatusSucceeded, rec.Status)
+		assert.Empty(t, rec.RunID)
+		assert.Equal(t, 1, rec.Attempt)
+		assert.Zero(t, rec.ExitCode)
+		assert.Equal(t, "master", rec.Branch)
+		assert.Equal(t, gitOutput(t, repo, "rev-parse", "HEAD"), rec.Commit+"\n")
+		assert.Empty(t, rec.WorktreeKept)
+		assert.False(t, rec.FinishedAt.IsZero())
+		assert.NoFileExists(t, filepath.Join(dir, runs.ReportFile), "a foreground run writes no report.md")
+	})
+}
+
+func TestExecutePlanInPlaceHookErrorStopsBeforeRunner(t *testing.T) {
+	repo, planPath, svc := foregroundJournalRepo(t)
+	marker := filepath.Join(t.TempDir(), "provider-ran")
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, "#!/bin/sh\ntouch '"+marker+"'\ncat >/dev/null\n")
+	cfg := &config.Config{ClaudeCommand: fakeClaude}
+	outcome := &planExecutionOutcome{}
+
+	err := executePlan(t.Context(), opts{TasksOnly: true, MaxIterations: 1, NoColor: true}, executePlanRequest{
+		PlanFile: planPath, Mode: processor.ModeTasksOnly, GitSvc: svc, Config: cfg, Colors: testColors(),
+		BaseRef: "master", Outcome: outcome, NonInteractive: true,
+		InPlaceAttemptStarted: func(attemptStart) error { return errors.New("journal full") },
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "start attempt: journal full")
+	assert.NoFileExists(t, marker, "no provider process started")
+	assert.False(t, outcome.succeeded)
+	require.Error(t, outcome.failure)
+
+	// the progress log ends failed, so the next run on this plan does not archive it as a finished session
+	logData, err := os.ReadFile(filepath.Join(repo, ".loopai", "progress", "progress-fg.txt")) //nolint:gosec // test temp path
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimRight(string(logData), "\n"), "\n")
+	last := lines[len(lines)-1]
+	assert.True(t, strings.HasPrefix(last, "Failed: "), last)
+	assert.Contains(t, last, "start attempt: journal full")
+}
+
+func TestForegroundJournalComplete(t *testing.T) {
+	cfg := &config.Config{}
+
+	t.Run("a run that never started gets only a failed outcome", func(t *testing.T) {
+		dir := t.TempDir()
+		fj, _, err := attachForegroundJournal(opts{JournalDir: dir}, cfg, executePlanRequest{})
+		require.NoError(t, err)
+		stderr := captureStderr(t, func() { fj.complete(t.Context(), nil, errors.New("dirty tree")) })
+		assert.Empty(t, stderr)
+
+		rec, err := runs.LoadOutcome(dir)
+		require.NoError(t, err)
+		assert.Equal(t, runs.StatusFailed, rec.Status)
+		assert.Equal(t, "startup: dirty tree", rec.Reason)
+		assert.Equal(t, 1, rec.ExitCode)
+		assert.Equal(t, 1, rec.Attempt)
+		assert.Empty(t, rec.RunID)
+		events, err := runs.ReadFrom(dir, 0)
+		require.NoError(t, err)
+		assert.Empty(t, events, "no attempt started, so there is nothing to close")
+	})
+
+	t.Run("a run that returned nothing before starting is still a failure", func(t *testing.T) {
+		dir := t.TempDir()
+		fj, _, err := attachForegroundJournal(opts{JournalDir: dir}, cfg, executePlanRequest{})
+		require.NoError(t, err)
+		fj.complete(t.Context(), nil, nil)
+		rec, err := runs.LoadOutcome(dir)
+		require.NoError(t, err)
+		assert.Equal(t, runs.StatusFailed, rec.Status)
+		assert.Equal(t, "startup: the run ended before its attempt started", rec.Reason)
+	})
+
+	t.Run("a canceled run is recorded as stopped", func(t *testing.T) {
+		dir := t.TempDir()
+		fj, req, err := attachForegroundJournal(opts{JournalDir: dir}, cfg, executePlanRequest{Mode: processor.ModeFull})
+		require.NoError(t, err)
+		require.NoError(t, req.InPlaceAttemptStarted(attemptStart{PlanFile: "/nowhere/p.md", MainPlanFile: "/nowhere/p.md"}))
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		fj.complete(ctx, nil, errors.New("runner: interrupted"))
+
+		rec, err := runs.LoadOutcome(dir)
+		require.NoError(t, err)
+		assert.Equal(t, runs.StatusStopped, rec.Status)
+		assert.Equal(t, 2, rec.ExitCode)
+		assert.Equal(t, "runner: interrupted", rec.Reason)
+		events, err := runs.ReadFrom(dir, 0)
+		require.NoError(t, err)
+		require.NotEmpty(t, events)
+		finish := events[len(events)-1]
+		assert.Equal(t, runs.EventFinish, finish.Type)
+		assert.Equal(t, runs.StatusStopped, finish.Status)
+		assert.Equal(t, 2, finish.ExitCode)
+	})
+
+	t.Run("a failed outcome save is only a warning", func(t *testing.T) {
+		dir := t.TempDir()
+		fj, _, err := attachForegroundJournal(opts{JournalDir: dir}, cfg, executePlanRequest{})
+		require.NoError(t, err)
+		require.NoError(t, os.Mkdir(filepath.Join(dir, runs.OutcomeFile), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, runs.OutcomeFile, "x"), nil, 0o600))
+		stderr := captureStderr(t, func() { fj.complete(t.Context(), nil, errors.New("boom")) })
+		assert.Contains(t, stderr, "warning: record the attempt's outcome:")
+	})
+}
+
+func TestFailForegroundStartup(t *testing.T) {
+	t.Run("records a failed startup outcome with an empty journal", func(t *testing.T) {
+		dir := t.TempDir()
+		stderr := captureStderr(t, func() { failForegroundStartup(dir, errors.New("load config: bad key")) })
+		assert.Empty(t, stderr)
+
+		rec, err := runs.LoadOutcome(dir)
+		require.NoError(t, err)
+		assert.Equal(t, runs.StatusFailed, rec.Status)
+		assert.Equal(t, "startup: load config: bad key", rec.Reason)
+		assert.Equal(t, 1, rec.ExitCode)
+		assert.Equal(t, 1, rec.Attempt)
+		assert.Empty(t, rec.RunID)
+		assert.False(t, rec.FinishedAt.IsZero())
+		events, err := runs.ReadFrom(dir, 0)
+		require.NoError(t, err)
+		assert.Empty(t, events)
+		assert.FileExists(t, filepath.Join(dir, runs.JournalFile), "the journal claims the directory")
+	})
+
+	t.Run("leaves a directory another process claimed alone", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, runs.JournalFile), []byte("x\n"), 0o600))
+		stderr := captureStderr(t, func() { failForegroundStartup(dir, errors.New("boom")) })
+		assert.Contains(t, stderr, "the startup failure is not recorded")
+		assert.NoFileExists(t, filepath.Join(dir, runs.OutcomeFile))
+		data, err := os.ReadFile(filepath.Join(dir, runs.JournalFile)) //nolint:gosec // test temp path
+		require.NoError(t, err)
+		assert.Equal(t, "x\n", string(data))
+	})
+}
+
+// TestRunJournalDirStartupFailure drives run() into a repository without commits: a --journal-dir
+// run must not ask to create an initial commit, and the failure, which comes before the journal is
+// attached, must still leave a failed startup outcome.
+func TestRunJournalDirStartupFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	repo := t.TempDir()
+	out, err := exec.Command("git", "init", "-q", repo).CombinedOutput()
+	require.NoError(t, err, string(out))
+	t.Chdir(repo)
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "docs", "plans"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "docs", "plans", "p.md"),
+		[]byte("# Plan\n\n### Task 1: Build it\n\n- [ ] do it\n"), 0o600))
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, "#!/bin/sh\nexit 1\n")
+	configDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"),
+		[]byte("claude_command = "+fakeClaude+"\nexternal_reviewers =\n"), 0o600))
+	journal := filepath.Join(t.TempDir(), "journal")
+
+	var runErr error
+	stdout := captureStdout(t, func() {
+		runErr = run(t.Context(), opts{PlanFile: "docs/plans/p.md", PlanFiles: []string{"docs/plans/p.md"},
+			JournalDir: journal, journalDirSet: true, ConfigDir: configDir, NoColor: true})
+	})
+	require.Error(t, runErr)
+	assert.Contains(t, runErr.Error(), "repository has no commits")
+	assert.NotContains(t, stdout, "create initial commit?", "a host-spawned run never prompts")
+
+	rec, err := runs.LoadOutcome(journal)
+	require.NoError(t, err)
+	assert.Equal(t, runs.StatusFailed, rec.Status)
+	assert.Equal(t, "startup: "+runErr.Error(), rec.Reason)
+	assert.Equal(t, 1, rec.ExitCode)
+	events, err := runs.ReadFrom(journal, 0)
+	require.NoError(t, err)
+	assert.Empty(t, events)
+}

@@ -562,3 +562,121 @@ func TestExecutionPolicy_SessionTimeoutClearsSignalOnTimeout(t *testing.T) {
 	assert.Empty(t, result.Result.Signal)
 	assert.True(t, result.TimedOut)
 }
+
+func TestExecutionPolicy_RunReportsUsageOfEverySession(t *testing.T) {
+	holder := &status.PhaseHolder{}
+	holder.Set(status.PhaseTask)
+	var got []SessionUsage
+	policy := newRetryPolicy(retryPolicyOpts{
+		cfg: Config{UsageHandler: func(u SessionUsage) { got = append(got, u) }},
+		log: newMockLogger(), waitOnLimit: time.Millisecond, phaseHolder: holder,
+	})
+
+	calls := 0
+	run := func(_ context.Context, _ string) executor.Result {
+		calls++
+		if calls == 1 {
+			return executor.Result{Error: &executor.LimitPatternError{Pattern: "limit", HelpCmd: "usage"},
+				Usage: &executor.Usage{Model: "opus", InputTokens: 10, OutputTokens: 1}}
+		}
+		return executor.Result{Output: "ok", Signal: status.Completed,
+			Usage: &executor.Usage{Model: "opus", InputTokens: 20, OutputTokens: 2}}
+	}
+
+	result := policy.Run(t.Context(), run, "prompt", "claude")
+	require.NoError(t, result.Result.Error)
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, []SessionUsage{
+		{Provider: "claude", Phase: status.PhaseTask, Usage: executor.Usage{Model: "opus", InputTokens: 10, OutputTokens: 1}},
+		{Provider: "claude", Phase: status.PhaseTask, Usage: executor.Usage{Model: "opus", InputTokens: 20, OutputTokens: 2}},
+	}, got)
+	assert.Equal(t, status.PhaseTask, holder.Get(), "limit wait restores the phase")
+}
+
+func TestExecutionPolicy_RunWithSessionTimeoutReportsUsage(t *testing.T) {
+	cost := 0.42
+	usage := &executor.Usage{Model: "gpt-6-astra", InputTokens: 100, CachedInputTokens: 40,
+		CacheWriteInputTokens: 5, OutputTokens: 7, CostUSD: &cost}
+
+	tests := []struct {
+		name     string
+		timeout  time.Duration
+		holder   bool
+		run      func(ctx context.Context, _ string) executor.Result
+		want     []SessionUsage
+		timedOut bool
+	}{
+		{
+			name: "session with usage", holder: true,
+			run: func(context.Context, string) executor.Result {
+				return executor.Result{Output: "ok", Signal: status.Completed, Usage: usage}
+			},
+			want: []SessionUsage{{Provider: "codex", Phase: status.PhaseReview, Usage: *usage}},
+		},
+		{
+			name: "session without usage", holder: true,
+			run: func(context.Context, string) executor.Result {
+				return executor.Result{Output: "ok", Signal: status.Completed}
+			},
+		},
+		{
+			name: "session error still reports usage", holder: true,
+			run: func(context.Context, string) executor.Result {
+				return executor.Result{Error: &executor.PatternMatchError{Pattern: "boom"}, Usage: usage}
+			},
+			want: []SessionUsage{{Provider: "codex", Phase: status.PhaseReview, Usage: *usage}},
+		},
+		{
+			name: "usage after the session timeout fired", timeout: 20 * time.Millisecond, holder: true,
+			run: func(ctx context.Context, _ string) executor.Result {
+				<-ctx.Done()
+				return executor.Result{Error: ctx.Err(), Usage: usage}
+			},
+			want:     []SessionUsage{{Provider: "codex", Phase: status.PhaseReview, Usage: *usage}},
+			timedOut: true,
+		},
+		{
+			name: "no phase holder leaves the phase empty",
+			run: func(context.Context, string) executor.Result {
+				return executor.Result{Output: "ok", Usage: usage}
+			},
+			want: []SessionUsage{{Provider: "codex", Usage: *usage}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			appCfg := testAppConfig(t)
+			if tt.timeout > 0 {
+				appCfg.SessionTimeout = tt.timeout
+				appCfg.SessionTimeoutSet = true
+			}
+			var holder *status.PhaseHolder
+			if tt.holder {
+				holder = &status.PhaseHolder{}
+				holder.Set(status.PhaseReview)
+			}
+			var got []SessionUsage
+			// codex runs the task phase, so a codex session gets the session timeout too
+			policy := newRetryPolicy(retryPolicyOpts{
+				cfg: Config{AppConfig: appCfg, TaskModel: "codex", UsageHandler: func(u SessionUsage) {
+					got = append(got, u)
+				}},
+				log: newMockLogger(), phaseHolder: holder,
+			})
+
+			result := policy.runWithSessionTimeout(t.Context(), tt.run, "prompt", "codex")
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.timedOut, result.TimedOut)
+		})
+	}
+}
+
+func TestExecutionPolicy_NilUsageHandlerIgnoresUsage(t *testing.T) {
+	policy := newRetryPolicy(retryPolicyOpts{log: newMockLogger()})
+	run := func(context.Context, string) executor.Result {
+		return executor.Result{Output: "ok", Usage: &executor.Usage{InputTokens: 1}}
+	}
+	result := policy.runWithSessionTimeout(t.Context(), run, "prompt", "claude")
+	require.NoError(t, result.Result.Error)
+	assert.Equal(t, int64(1), result.Result.Usage.InputTokens)
+}

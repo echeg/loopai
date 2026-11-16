@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -308,6 +309,23 @@ func TestEventMarshalJSON(t *testing.T) {
 		{name: "finish", ev: Event{Type: EventFinish, Status: StatusSucceeded, Phase: status.PhaseTask, Mode: "full"},
 			keys: []string{"status", "reason", "exit_code"},
 			want: map[string]any{"status": "succeeded", "exit_code": float64(0)}},
+		{name: "usage with cost", ev: Event{Type: EventUsage, Provider: "claude", Model: "claude-opus-4",
+			Phase: status.PhaseTask, InputTokens: 10, CachedInputTokens: 20, CacheWriteInputTokens: 30,
+			OutputTokens: 40, CostUSD: new(0.42), Title: "foreign", ExitCode: 2},
+			keys: []string{"provider", "model", "phase", "input_tokens", "cached_input_tokens",
+				"cache_write_input_tokens", "output_tokens", "cost_usd"},
+			want: map[string]any{"provider": "claude", "model": "claude-opus-4", "phase": "task",
+				"input_tokens": float64(10), "cached_input_tokens": float64(20),
+				"cache_write_input_tokens": float64(30), "output_tokens": float64(40), "cost_usd": 0.42}},
+		{name: "usage without cost", ev: Event{Type: EventUsage, Provider: "codex", Phase: status.PhaseReview,
+			InputTokens: 5},
+			keys: []string{"provider", "model", "phase", "input_tokens", "cached_input_tokens",
+				"cache_write_input_tokens", "output_tokens"},
+			want: map[string]any{"model": "", "cached_input_tokens": float64(0), "output_tokens": float64(0)}},
+		{name: "usage with zero cost", ev: Event{Type: EventUsage, Provider: "claude", CostUSD: new(0.0)},
+			keys: []string{"provider", "model", "phase", "input_tokens", "cached_input_tokens",
+				"cache_write_input_tokens", "output_tokens", "cost_usd"},
+			want: map[string]any{"cost_usd": float64(0)}},
 		{name: "unknown type", ev: Event{Type: "other", Phase: status.PhaseTask, N: 4}},
 	}
 	for _, tc := range tests {
@@ -344,6 +362,54 @@ func TestEventRoundTrip(t *testing.T) {
 	assert.Equal(t, ev, back)
 }
 
+func TestJournalUsageRoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		ev   Event
+	}{
+		{name: "with cost", ev: Event{Type: EventUsage, Provider: "claude", Model: "claude-opus-4",
+			Phase: status.PhaseTask, InputTokens: 12, CachedInputTokens: 3400, CacheWriteInputTokens: 560,
+			OutputTokens: 78, CostUSD: new(1.25)}},
+		{name: "without cost", ev: Event{Type: EventUsage, Provider: "codex", Model: "gpt-6-astra",
+			Phase: status.PhaseReview, InputTokens: 900, CachedInputTokens: 100, OutputTokens: 50}},
+		{name: "zero cache counts", ev: Event{Type: EventUsage, Provider: "claude", Phase: status.PhasePlan,
+			InputTokens: 7, OutputTokens: 8, CostUSD: new(0.01)}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			j, err := OpenJournal(dir, 1)
+			require.NoError(t, err)
+			written, err := j.Append(tc.ev)
+			require.NoError(t, err)
+			require.NoError(t, j.Close())
+
+			data, err := os.ReadFile(filepath.Join(dir, JournalFile)) //nolint:gosec // test temp dir
+			require.NoError(t, err)
+			events, size := parseEvents(data)
+			assert.Equal(t, int64(len(data)), size)
+			require.Len(t, events, 1)
+			assert.Equal(t, written, events[0])
+			got := events[0]
+			assert.Equal(t, EventUsage, got.Type)
+			assert.Equal(t, tc.ev.Provider, got.Provider)
+			assert.Equal(t, tc.ev.Model, got.Model)
+			assert.Equal(t, tc.ev.Phase, got.Phase)
+			assert.Equal(t, tc.ev.InputTokens, got.InputTokens)
+			assert.Equal(t, tc.ev.CachedInputTokens, got.CachedInputTokens)
+			assert.Equal(t, tc.ev.CacheWriteInputTokens, got.CacheWriteInputTokens)
+			assert.Equal(t, tc.ev.OutputTokens, got.OutputTokens)
+			if tc.ev.CostUSD == nil {
+				assert.Nil(t, got.CostUSD)
+				assert.NotContains(t, string(data), "cost_usd")
+			} else {
+				require.NotNil(t, got.CostUSD)
+				assert.InDelta(t, *tc.ev.CostUSD, *got.CostUSD, 0)
+			}
+		})
+	}
+}
+
 // eventSeqs returns the seq numbers of events.
 func eventSeqs(events []Event) []int {
 	seqs := make([]int, 0, len(events))
@@ -351,4 +417,71 @@ func eventSeqs(events []Event) []int {
 		seqs = append(seqs, ev.Seq)
 	}
 	return seqs
+}
+
+func TestCreateJournal(t *testing.T) {
+	t.Run("creates a fresh journal", func(t *testing.T) {
+		dir := t.TempDir()
+		j, err := CreateJournal(dir, 1)
+		require.NoError(t, err)
+		first, err := j.Append(Event{Type: EventPhase, Phase: status.PhaseTask})
+		require.NoError(t, err)
+		require.NoError(t, j.Close())
+		assert.Equal(t, 1, first.Seq)
+		assert.Equal(t, 1, first.Attempt)
+
+		info, err := os.Stat(filepath.Join(dir, JournalFile))
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+		events, err := ReadFrom(dir, 0)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, EventPhase, events[0].Type)
+	})
+
+	t.Run("fails on an existing file and leaves it unchanged", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, JournalFile)
+		require.NoError(t, os.WriteFile(path, []byte("existing\n"), 0o600))
+		_, err := CreateJournal(dir, 1)
+		require.Error(t, err)
+		require.ErrorIs(t, err, fs.ErrExist)
+		data, readErr := os.ReadFile(path) //nolint:gosec // test temp dir
+		require.NoError(t, readErr)
+		assert.Equal(t, "existing\n", string(data))
+	})
+
+	t.Run("fails on a missing directory", func(t *testing.T) {
+		_, err := CreateJournal(filepath.Join(t.TempDir(), "missing"), 1)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, fs.ErrNotExist)
+	})
+
+	t.Run("exactly one of two concurrent creators succeeds", func(t *testing.T) {
+		for range 20 {
+			dir := t.TempDir()
+			var wg sync.WaitGroup
+			results := make([]error, 2)
+			journals := make([]*Journal, 2)
+			start := make(chan struct{})
+			for i := range 2 {
+				wg.Go(func() {
+					<-start
+					journals[i], results[i] = CreateJournal(dir, 1)
+				})
+			}
+			close(start)
+			wg.Wait()
+			succeeded := 0
+			for i, err := range results {
+				if err == nil {
+					succeeded++
+					require.NoError(t, journals[i].Close())
+					continue
+				}
+				require.ErrorIs(t, err, fs.ErrExist)
+			}
+			assert.Equal(t, 1, succeeded)
+		}
+	})
 }

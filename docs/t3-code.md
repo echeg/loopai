@@ -81,7 +81,7 @@ Every run records its state in the invoking checkout, under `.loopai/progress/ru
 |---|---|
 | `run.json` | The descriptor: plan, branch, worktree, progress log, console log, recorded arguments and environment options, origin, attempt, and process. It never holds a token. |
 | `run.lock` | The lifetime lock, held by the run's process for its whole life. |
-| `events.jsonl` | The event journal: attempt start, phases, tasks, review sections, finalize, report, and finish. Every view of a run reads it. |
+| `events.jsonl` | The event journal: attempt start, phases, tasks, review sections, per-session token `usage`, finalize, report, and finish. Every view of a run reads it; T3 Code's views ignore `usage`, which is there for host processes (see [host-integration.md](host-integration.md)). |
 | `outcome.json` | How the current attempt ended; earlier attempts are kept as `outcome-attempt-<n>.json`. |
 | `report.md` | The completion report, when the run produced one. |
 | `console.log` | The run's full output across all attempts, one separator line per attempt. |

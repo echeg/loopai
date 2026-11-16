@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/umputun/ralphex/pkg/config"
+	"github.com/umputun/ralphex/pkg/executor"
 	"github.com/umputun/ralphex/pkg/processor"
 	processormocks "github.com/umputun/ralphex/pkg/processor/mocks"
 	"github.com/umputun/ralphex/pkg/runs"
@@ -429,6 +430,48 @@ func TestJournalHooksAppendFailureWarnsOnce(t *testing.T) {
 	log.PrintSection(status.NewInternalReviewSection(2, ""))
 
 	assert.Equal(t, []string{"section: review 1", "section: review 2"}, inner.calls, "the run continues")
+	assert.Equal(t, 1, strings.Count(warn.String(), "warning: run journal not updated"), warn.String())
+}
+
+func TestJournalHooksObserveUsage(t *testing.T) {
+	hooks, dir, warn := newTestJournalHooks(t, &config.Config{})
+	cost := 0.42
+	hooks.observeUsage(processor.SessionUsage{Provider: "claude", Phase: status.PhaseTask, Usage: executor.Usage{
+		Model: "claude-opus-5-5", InputTokens: 10, CachedInputTokens: 20, CacheWriteInputTokens: 30,
+		OutputTokens: 40, CostUSD: &cost}})
+	hooks.observeUsage(processor.SessionUsage{Provider: "codex", Phase: status.PhaseReview, Usage: executor.Usage{
+		Model: "gpt-6-astra", InputTokens: 5, CachedInputTokens: 6, OutputTokens: 7}})
+
+	events, err := runs.ReadFrom(dir, 0)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+	for i := range events {
+		events[i].Seq, events[i].Time, events[i].Attempt = 0, time.Time{}, 0
+	}
+	assert.Equal(t, []runs.Event{
+		{Type: runs.EventUsage, Provider: "claude", Model: "claude-opus-5-5", Phase: status.PhaseTask,
+			InputTokens: 10, CachedInputTokens: 20, CacheWriteInputTokens: 30, OutputTokens: 40, CostUSD: &cost},
+		{Type: runs.EventUsage, Provider: "codex", Model: "gpt-6-astra", Phase: status.PhaseReview,
+			InputTokens: 5, CachedInputTokens: 6, OutputTokens: 7},
+	}, events)
+	assert.Empty(t, warn.String())
+
+	raw, err := os.ReadFile(filepath.Join(dir, runs.JournalFile)) //nolint:gosec // test temp file
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	require.Len(t, lines, 2)
+	assert.Contains(t, lines[0], `"cost_usd":0.42`)
+	assert.NotContains(t, lines[1], "cost_usd", "a session without a reported cost carries no cost key")
+}
+
+func TestJournalHooksObserveUsageAppendFailureWarnsOnce(t *testing.T) {
+	hooks, _, warn := newTestJournalHooks(t, &config.Config{})
+	require.NoError(t, hooks.journal.Close())
+
+	hooks.observeUsage(processor.SessionUsage{Provider: "claude", Usage: executor.Usage{InputTokens: 1}})
+	hooks.observeUsage(processor.SessionUsage{Provider: "claude", Usage: executor.Usage{InputTokens: 2}})
+	hooks.observePhase(status.PhaseTask, status.PhaseReview)
+
 	assert.Equal(t, 1, strings.Count(warn.String(), "warning: run journal not updated"), warn.String())
 }
 

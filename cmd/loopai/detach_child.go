@@ -217,6 +217,7 @@ func (c *detachedChild) execute(
 	req.ArchiveOnRunBranch = true
 	req.LogDecorator = hooks.decorateLogger
 	req.PhaseObserver = hooks.observePhase
+	req.UsageHandler = hooks.observeUsage
 	mode, sel := req.Mode, req.ExternalReview
 	req.AttemptStarted = func(start attemptStart) error {
 		return c.attemptStarted(hooks, start, attemptStartEvent(start, mode, cfg, sel, c.consoleOffset))
@@ -280,76 +281,35 @@ func (c *detachedChild) startBridge(hooks *journalHooks, startSeq int) {
 		log: hooks.progressLogger()})
 }
 
-// complete ends a started attempt after the run returned with runErr. It classifies the run, then
-// in this order fills the commit, writes report.md, appends the closing events, reconciles the
-// invoking checkout's plan after a success, and writes outcome.json; every warning on the way
-// reaches the console log and the outcome's notes. The before-exit hook runs last. The returned
-// exitCodeError carries the outcome's exit code; the lifetime lock is released only by the process
-// exit that follows.
+// complete ends a started attempt after the run returned with runErr. It reads the stop marker,
+// then through closeAttempt classifies the run, fills the commit, writes report.md before the
+// closing events, and appends them; it then records the kept worktree, reconciles the invoking
+// checkout's plan after a success, and writes outcome.json through saveAttemptOutcome. Every warning
+// on the way reaches the console log and the outcome's notes. The before-exit hook runs last. The
+// returned exitCodeError carries the outcome's exit code; the lifetime lock is released only by the
+// process exit that follows.
 func (c *detachedChild) complete(svc *git.Service, outcome *planExecutionOutcome, runErr error) error {
 	stop, stopErr := runs.StopRequested(c.dir)
-	status, cause := classifyDetachedRun(runErr, outcome, stop)
-	rec := runs.Outcome{
-		RunID: c.desc.ID, Attempt: c.desc.Attempt, Status: status, ExitCode: detachExitCode(status),
-		Branch: c.desc.Branch, Report: outcome.report, Finalize: outcomeFinalize(outcome),
-		PlanMoved: outcome.planMoved, ArchiveIncomplete: outcome.archiveIncomplete,
-	}
-	if cause != nil {
-		rec.Reason = cause.Error()
-	}
-	c.note(&rec, stopErr)
-
-	commit, err := runCommit(svc, outcome, c.desc.Branch)
-	rec.Commit = commit
-	c.note(&rec, err)
-	var report runs.Event
-	if rec.Report != "" {
-		report = reportEvent(rec.Report)
-		rec.ReportSummary, rec.Risk = report.Summary, report.Risk
-		c.note(&rec, runs.WriteReport(c.dir, rec.Report))
-	}
-
-	if status != runs.StatusSucceeded {
-		c.hooks.recordStatuses()
-	}
-	if outcome.finalizeMode != "" {
-		c.appendClosing(&rec, finalizeEvent(rec.Finalize))
-	}
-	if rec.Report != "" {
-		c.appendClosing(&rec, report)
-	}
-	c.appendClosing(&rec, finishEvent(rec.Status, rec.Reason, rec.ExitCode))
+	rec, cause := closeAttempt(attemptEnd{
+		hooks: c.hooks, runID: c.desc.ID, attempt: c.desc.Attempt, branch: c.desc.Branch,
+		stopRequested: stop, stopErr: stopErr, svc: svc, outcome: outcome, runErr: runErr,
+		beforeClosing: func(rec *runs.Outcome) {
+			if rec.Report != "" {
+				noteOutcome(rec, runs.WriteReport(c.dir, rec.Report))
+			}
+		},
+	})
 
 	rec.WorktreeKept = c.keptWorktree(&rec, outcome.worktreeKept)
-	if status == runs.StatusSucceeded {
-		c.note(&rec, reconcileDetachedSourcePlan(svc, filepath.Join(c.dir, runs.SourcePlansFile)))
+	if rec.Status == runs.StatusSucceeded {
+		noteOutcome(&rec, reconcileDetachedSourcePlan(svc, filepath.Join(c.dir, runs.SourcePlansFile)))
 	}
-	rec.FinishedAt = time.Now().UTC()
-	saveErr := runs.SaveOutcome(c.dir, &rec)
+	rec, saveErr := saveAttemptOutcome(c.dir, rec)
 	c.hooks.endProgressLog()
 	if c.beforeExit != nil {
 		c.beforeExit()
 	}
 	return &exitCodeError{code: rec.ExitCode, err: errors.Join(cause, saveErr)}
-}
-
-// appendClosing appends one of the attempt's closing events, finalize, report, or finish, straight
-// to the journal. Unlike the hooks, which warn about the first failed append only, every failure is
-// noted: observers end a run on its finish event, so a lost one must leave a trace.
-func (c *detachedChild) appendClosing(rec *runs.Outcome, ev runs.Event) {
-	if _, err := c.journal.Append(ev); err != nil {
-		c.note(rec, fmt.Errorf("record the %s event: %w", ev.Type, err))
-	}
-}
-
-// note reports err as a warning on the console log and records it in the outcome's notes; a nil
-// err notes nothing.
-func (c *detachedChild) note(rec *runs.Outcome, err error) {
-	if err == nil {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "warning: %v\n", err)
-	rec.Notes = append(rec.Notes, err.Error())
 }
 
 // keptWorktree returns the worktree the run left in place: the one it recorded keeping or, when it
@@ -362,7 +322,7 @@ func (c *detachedChild) keptWorktree(rec *runs.Outcome, recorded string) string 
 	if _, err := os.Lstat(c.desc.Worktree); err != nil {
 		return ""
 	}
-	c.note(rec, fmt.Errorf("worktree %s was not removed and is kept", c.desc.Worktree))
+	noteOutcome(rec, fmt.Errorf("worktree %s was not removed and is kept", c.desc.Worktree))
 	return c.desc.Worktree
 }
 

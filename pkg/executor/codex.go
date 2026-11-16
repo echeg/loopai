@@ -304,7 +304,10 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	go func() {
 		completionDone <- e.watchTaskComplete(execCtx, execCancel, completed, runDone)
 	}()
-	tailCancel, tailDone := e.startRolloutTail(execCtx, sessionIDCh, idleTouch, completed)
+	// usage belongs to this call alone: one executor serves several Run calls, and the
+	// tail goroutine is its only writer until <-tailDone below orders the read.
+	usage := &codexUsage{}
+	tailCancel, tailDone := e.startRolloutTail(execCtx, sessionIDCh, idleTouch, completed, usage)
 
 	// read stdout entirely as final response; wrap with touch-on-read so reads
 	// keep the idle timer alive even while stderr is quiet.
@@ -329,7 +332,48 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 	tailCancel()
 	<-tailDone
 
-	return e.runResult(ctx, execCtx, stdoutContent, lastAgentMessage, stderrRes, stdoutErr, waitErr)
+	result := e.runResult(ctx, execCtx, stdoutContent, lastAgentMessage, stderrRes, stdoutErr, waitErr)
+	result.Usage = usage.result(e.Model)
+	return result
+}
+
+// codexUsage accumulates the token usage of one Run call from its main rollout. codex
+// prints no usage on stdout or stderr without --json, so the rollout's token_count
+// records are the only source, and each carries the session's running totals.
+type codexUsage struct {
+	model  string             // model of the latest turn_context record
+	totals *rolloutTokenUsage // totals of the latest token_count record, nil until one arrives
+}
+
+// rolloutTokenUsage is a token_count record's info.total_token_usage. codex counts both the
+// cache reads and the cache writes inside input_tokens: total_tokens is input_tokens plus
+// output_tokens.
+type rolloutTokenUsage struct {
+	InputTokens           int64 `json:"input_tokens"`
+	CachedInputTokens     int64 `json:"cached_input_tokens"`
+	CacheWriteInputTokens int64 `json:"cache_write_input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"`
+}
+
+// result converts the accumulated totals into a Usage, or nil when no token_count record
+// carried totals. InputTokens is normalized to exclude the cache reads and writes, the
+// convention Usage shares with claude, where the three input counts are disjoint and their sum
+// is the billable input; codex reports no cost.
+func (u *codexUsage) result(configuredModel string) *Usage {
+	if u == nil || u.totals == nil {
+		return nil
+	}
+	model := u.model
+	if model == "" {
+		model = configuredModel
+	}
+	return &Usage{
+		Model:                 model,
+		InputTokens:           max(u.totals.InputTokens-u.totals.CachedInputTokens-u.totals.CacheWriteInputTokens, 0),
+		CachedInputTokens:     u.totals.CachedInputTokens,
+		CacheWriteInputTokens: u.totals.CacheWriteInputTokens,
+		OutputTokens:          u.totals.OutputTokens,
+	}
 }
 
 // runResult classifies a finished codex process into a Result. it runs after
@@ -754,9 +798,10 @@ func (e *CodexExecutor) extractSessionID(line string) string {
 // sessionIDCh, then follows codex's session rollout file until the returned
 // cancel is called. caller must invoke tailCancel and wait on tailDone before
 // returning so the tailer drains remaining file content and exits cleanly.
-// Completion monitoring also requires the tailer when both display handlers are nil.
+// Completion monitoring and usage also require the tailer when both display handlers are nil.
+// usage collects the main rollout's token totals; it may be nil.
 func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-chan string, idleTouch func(),
-	completed chan<- string) (context.CancelFunc, <-chan struct{}) {
+	completed chan<- string, usage *codexUsage) (context.CancelFunc, <-chan struct{}) {
 	tailCtx, tailCancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	go func() {
@@ -765,7 +810,7 @@ func (e *CodexExecutor) startRolloutTail(parent context.Context, sessionIDCh <-c
 		case <-tailCtx.Done():
 			return
 		case id := <-sessionIDCh:
-			e.tailRolloutFile(tailCtx, id, idleTouch, completed)
+			e.tailRolloutFile(tailCtx, id, idleTouch, completed, usage)
 		}
 	}()
 	return tailCancel, done
@@ -821,7 +866,7 @@ func (e *CodexExecutor) findRolloutFile(ctx context.Context, sessionID string) s
 // lines before returning so late writes (e.g. codex flushing the final
 // assistant message just before exit) are not lost.
 func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, idleTouch func(),
-	completed chan<- string) {
+	completed chan<- string, usage *codexUsage) {
 	path := e.findRolloutFile(ctx, sessionID)
 	if path == "" {
 		// suppress the diagnostic when the session was canceled — findRolloutFile
@@ -844,6 +889,7 @@ func (e *CodexExecutor) tailRolloutFile(ctx context.Context, sessionID string, i
 		return
 	}
 	states[path].completed = completed // child rollouts never complete the main invocation
+	states[path].usage = usage         // nor count toward its usage
 	defer func() {
 		for _, state := range states {
 			_ = state.file.Close()
@@ -991,6 +1037,7 @@ func (e *CodexExecutor) shouldDiscoverChildRollout(
 
 type rolloutTailState struct {
 	completed chan<- string
+	usage     *codexUsage
 	file      *os.File
 	acc       []byte
 	timing    *codexTimingState
@@ -1019,7 +1066,7 @@ func (e *CodexExecutor) drainRolloutState(state *rolloutTailState, now func() ti
 				if i < 0 {
 					break
 				}
-				e.processRolloutLine(state.acc[:i], state.timing, now, state.render, state.completed)
+				e.processRolloutLine(state.acc[:i], state.timing, now, state.render, state.completed, state.usage)
 				state.acc = state.acc[i+1:]
 			}
 		}
@@ -1032,7 +1079,7 @@ func (e *CodexExecutor) drainRolloutState(state *rolloutTailState, now func() ti
 	}
 	if final {
 		if line := bytes.TrimSpace(state.acc); len(line) > 0 {
-			e.processRolloutLine(line, state.timing, now, state.render, state.completed)
+			e.processRolloutLine(line, state.timing, now, state.render, state.completed, state.usage)
 		}
 		state.acc = nil
 	}
@@ -1102,16 +1149,19 @@ type rolloutEvent struct {
 // messages (payload.type=message, role=assistant, text in Content), reasoning
 // summaries (payload.type=reasoning, titles in Summary), and the function_call /
 // custom tool records command timing reads (Name, Arguments, Input, CallID, Output).
-// It also consumes event_msg task_complete records (LastAgentMessage).
+// It also consumes event_msg task_complete records (LastAgentMessage) and token_count
+// records (Info), and carries a turn_context record's Model.
 type rolloutPayload struct {
-	LastAgentMessage string          `json:"last_agent_message"`
-	Type             string          `json:"type"`
-	Role             string          `json:"role"`
-	Name             string          `json:"name"`
-	Arguments        string          `json:"arguments"`
-	Input            string          `json:"input"`
-	CallID           string          `json:"call_id"`
-	Output           json.RawMessage `json:"output"`
+	LastAgentMessage string            `json:"last_agent_message"`
+	Info             *rolloutTokenInfo `json:"info"`
+	Model            string            `json:"-"` // set from turn_context records only
+	Type             string            `json:"type"`
+	Role             string            `json:"role"`
+	Name             string            `json:"name"`
+	Arguments        string            `json:"arguments"`
+	Input            string            `json:"input"`
+	CallID           string            `json:"call_id"`
+	Output           json.RawMessage   `json:"output"`
 	Content          []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -1120,6 +1170,12 @@ type rolloutPayload struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"summary"`
+}
+
+// rolloutTokenInfo is a token_count record's info object; codex writes info as null
+// before the first model response.
+type rolloutTokenInfo struct {
+	TotalTokenUsage *rolloutTokenUsage `json:"total_token_usage"`
 }
 
 type codexCommandStart struct {
@@ -1192,7 +1248,22 @@ var (
 
 func parseRolloutRecord(line []byte) (rolloutEvent, rolloutPayload, bool) {
 	var ev rolloutEvent
-	if err := json.Unmarshal(line, &ev); err != nil || (ev.Type != "response_item" && ev.Type != "event_msg") {
+	if err := json.Unmarshal(line, &ev); err != nil {
+		return rolloutEvent{}, rolloutPayload{}, false
+	}
+	switch ev.Type {
+	case "response_item", "event_msg":
+	case "turn_context":
+		// decoded on its own: its payload's summary is a string setting, which does not
+		// fit rolloutPayload's reasoning summary list
+		var turn struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(ev.Payload, &turn); err != nil {
+			return rolloutEvent{}, rolloutPayload{}, false
+		}
+		return ev, rolloutPayload{Model: turn.Model}, true
+	default:
 		return rolloutEvent{}, rolloutPayload{}, false
 	}
 	var payload rolloutPayload
@@ -1202,17 +1273,33 @@ func parseRolloutRecord(line []byte) (rolloutEvent, rolloutPayload, bool) {
 	return ev, payload, true
 }
 
-func (e *CodexExecutor) processRolloutLine(line []byte, state *codexTimingState, now func() time.Time, render bool, completed chan<- string) {
+// processRolloutLine handles one rollout record. render is true for the main rollout
+// only; completion and usage come from the main rollout alone, so a child agent's
+// records never complete the invocation or count toward its usage.
+func (e *CodexExecutor) processRolloutLine(line []byte, state *codexTimingState, now func() time.Time, render bool,
+	completed chan<- string, usage *codexUsage) {
 	ev, payload, ok := parseRolloutRecord(line)
 	if !ok {
 		return
 	}
+	if ev.Type == "turn_context" {
+		if render && usage != nil && payload.Model != "" {
+			usage.model = payload.Model
+		}
+		return
+	}
 	if ev.Type == "event_msg" {
-		if payload.Type == "task_complete" && render && completed != nil {
+		switch {
+		case payload.Type == "task_complete" && render && completed != nil:
 			select {
 			case completed <- payload.LastAgentMessage:
 			default:
 			}
+		case payload.Type == "token_count" && render && usage != nil && payload.Info != nil &&
+			payload.Info.TotalTokenUsage != nil:
+			// each record carries running totals, so the last one is the session's
+			totals := *payload.Info.TotalTokenUsage
+			usage.totals = &totals
 		}
 		return
 	}

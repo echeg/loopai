@@ -32,6 +32,19 @@ type Result struct {
 	Signal         string // detected signal (COMPLETED, FAILED, etc.) or empty
 	Error          error  // execution error if any
 	IdleTimedOut   bool   // true when idle timeout fired (derived context canceled, parent alive)
+	Usage          *Usage // usage the session reported, nil when it reported none
+}
+
+// Usage is the token usage and cost one provider session reported. InputTokens excludes
+// cached tokens for every provider, so the billable input is InputTokens plus
+// CachedInputTokens plus CacheWriteInputTokens, each at its own price.
+type Usage struct {
+	Model                 string   // model the session ran, or the configured model when the CLI named none
+	InputTokens           int64    // uncached input tokens
+	CachedInputTokens     int64    // input tokens read from the prompt cache
+	CacheWriteInputTokens int64    // input tokens written to the prompt cache
+	OutputTokens          int64    // output tokens, reasoning included
+	CostUSD               *float64 // cost the CLI reported, nil when it reported none
 }
 
 // recentBlockCount bounds both recent surfaced output and trusted diagnostics.
@@ -419,6 +432,18 @@ type streamEvent struct {
 	// events whose description names the action; the subagent type is intentionally
 	// not surfaced (stock config runs every review agent as "general-purpose").
 	Description string `json:"description"` // task title / current step, e.g. "Running tests"
+	// session usage, carried by the final result record only.
+	Usage        *streamUsage               `json:"usage"`
+	TotalCostUSD *float64                   `json:"total_cost_usd"`
+	ModelUsage   map[string]json.RawMessage `json:"modelUsage"`
+}
+
+// streamUsage is the usage object of a claude result record.
+type streamUsage struct {
+	InputTokens              int64 `json:"input_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
 }
 
 // ClaudeExecutor runs claude CLI commands with streaming JSON parsing.
@@ -612,6 +637,7 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 		now = time.Now
 	}
 	var lastProgress time.Time // throttle window for subagent heartbeat lines
+	var usage *Usage           // usage of the session's result record, nil until one carries it
 
 	err := readLines(ctx, r, func(line string) {
 		idleTouch() // reset idle timer on every line of pipe activity
@@ -637,6 +663,10 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 
 		if e.CommandTimingHandler != nil {
 			e.trackCommandTiming(&event, commandStarts, now)
+		}
+
+		if u := e.resultUsage(&event); u != nil {
+			usage = u
 		}
 
 		// surface subagent (Task tool) progress. newer Claude Code streams subagent
@@ -683,11 +713,35 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 
 	if err != nil {
 		return Result{Output: output.String(), RecentText: recentText.text(),
-			DiagnosticText: diagnostics.text(), Signal: signal, Error: fmt.Errorf("stream read: %w", err)}
+			DiagnosticText: diagnostics.text(), Signal: signal, Error: fmt.Errorf("stream read: %w", err), Usage: usage}
 	}
 
 	return Result{Output: output.String(), RecentText: recentText.text(),
-		DiagnosticText: diagnostics.text(), Signal: signal}
+		DiagnosticText: diagnostics.text(), Signal: signal, Usage: usage}
+}
+
+// resultUsage returns the usage a result record reports, or nil for any other record and
+// for a result record without a usage object. the model is the single modelUsage key when
+// the CLI names exactly one; several keys mean the session used several models (a subagent
+// on another model, for example), so the configured model, possibly an alias, names it.
+func (e *ClaudeExecutor) resultUsage(event *streamEvent) *Usage {
+	if event.Type != "result" || event.Usage == nil {
+		return nil
+	}
+	model := e.Model
+	if len(event.ModelUsage) == 1 {
+		for name := range event.ModelUsage {
+			model = name
+		}
+	}
+	return &Usage{
+		Model:                 model,
+		InputTokens:           event.Usage.InputTokens,
+		CachedInputTokens:     event.Usage.CacheReadInputTokens,
+		CacheWriteInputTokens: event.Usage.CacheCreationInputTokens,
+		OutputTokens:          event.Usage.OutputTokens,
+		CostUSD:               event.TotalCostUSD,
+	}
 }
 
 // extractDiagnostic returns pattern input from structured Claude events. normal

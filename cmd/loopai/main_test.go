@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -5217,6 +5218,165 @@ func TestApplyCLIOverrides_PhaseProviders(t *testing.T) {
 	})
 }
 
+func TestValidateJournalDirFlags(t *testing.T) {
+	const planFile = "docs/plans/one.md"
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "full mode plan", args: []string{"--journal-dir", "/tmp/j", planFile}},
+		{name: "tasks-only plan", args: []string{"--journal-dir=/tmp/j", "--tasks-only", planFile}},
+		{name: "branch and models pass", args: []string{"--journal-dir", "/tmp/j", "--branch", "feat",
+			"--task-model", "claude:opus", planFile}},
+		{name: "empty value", args: []string{"--journal-dir=", planFile}, wantErr: "--journal-dir requires a directory"},
+		{name: "blank value", args: []string{"--journal-dir", "  ", planFile}, wantErr: "--journal-dir requires a directory"},
+		{name: "missing plan", args: []string{"--journal-dir", "/tmp/j"}, wantErr: "--journal-dir requires a plan file argument"},
+		{name: "plan chain", args: []string{"--journal-dir", "/tmp/j", "one.md,two.md"},
+			wantErr: "--journal-dir takes exactly one plan; plan chains are not supported"},
+		{name: "extra positional", args: []string{"--journal-dir", "/tmp/j", planFile, "two.md"},
+			wantErr: "--journal-dir takes exactly one plan argument, got 2"},
+		{name: "worktree", args: []string{"--journal-dir", "/tmp/j", "--worktree", planFile},
+			wantErr: "--journal-dir cannot be combined with --worktree"},
+		{name: "commit", args: []string{"--journal-dir", "/tmp/j", "--commit", planFile},
+			wantErr: "--journal-dir cannot be combined with --commit"},
+		{name: "review", args: []string{"--journal-dir", "/tmp/j", "--review", planFile},
+			wantErr: "--journal-dir cannot be combined with --review"},
+		{name: "external-only", args: []string{"--journal-dir", "/tmp/j", "--external-only", planFile},
+			wantErr: "--journal-dir cannot be combined with --external-only"},
+		{name: "plan creation", args: []string{"--journal-dir", "/tmp/j", "--plan", "add a feature"},
+			wantErr: "--journal-dir cannot be combined with --plan"},
+		{name: "gen-agents", args: []string{"--journal-dir", "/tmp/j", "--gen-agents"},
+			wantErr: "--journal-dir cannot be combined with --gen-agents"},
+		{name: "serve", args: []string{"--journal-dir", "/tmp/j", "--serve", planFile},
+			wantErr: "--journal-dir cannot be combined with --serve"},
+		{name: "watch", args: []string{"--journal-dir", "/tmp/j", "--watch", "/tmp/w", planFile},
+			wantErr: "--journal-dir cannot be combined with --watch"},
+		{name: "detach", args: []string{"--journal-dir", "/tmp/j", "--detach", planFile},
+			wantErr: "--journal-dir cannot be combined with --detach"},
+		{name: "cmux-workspace", args: []string{"--journal-dir", "/tmp/j", "--cmux-workspace", planFile},
+			wantErr: "--journal-dir cannot be combined with --cmux-workspace"},
+		{name: "cmux-workspace auto", args: []string{"--journal-dir", "/tmp/j", "--cmux-workspace=auto", planFile},
+			wantErr: "--journal-dir cannot be combined with --cmux-workspace"},
+		{name: "init", args: []string{"--journal-dir", "/tmp/j", "--init"},
+			wantErr: "--journal-dir cannot be combined with --init"},
+		{name: "reset", args: []string{"--journal-dir", "/tmp/j", "--reset", planFile},
+			wantErr: "--journal-dir cannot be combined with --reset"},
+		{name: "dump-defaults", args: []string{"--journal-dir", "/tmp/j", "--dump-defaults", "/tmp/d"},
+			wantErr: "--journal-dir cannot be combined with --dump-defaults"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := parseTestOpts(t, tc.args...)
+			err := validateJournalDirFlags(o)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				require.NoError(t, validateFlags(o), "validateFlags must accept what validateJournalDirFlags accepts")
+				return
+			}
+			require.EqualError(t, err, tc.wantErr)
+			require.Error(t, validateFlags(o))
+		})
+	}
+
+	t.Run("absent flag is not checked", func(t *testing.T) {
+		require.NoError(t, validateJournalDirFlags(parseTestOpts(t, "--worktree", "one.md,two.md")))
+	})
+
+	t.Run("detach launcher reports the journal-dir conflict", func(t *testing.T) {
+		err := validateFlags(parseTestOpts(t, "--detach", "--journal-dir", "/tmp/j", planFile))
+		require.EqualError(t, err, "--journal-dir cannot be combined with --detach")
+	})
+
+	t.Run("chain is refused before its entries are inspected", func(t *testing.T) {
+		err := validateFlags(parseTestOpts(t, "--journal-dir", "/tmp/j", "missing-one.md,missing-two.md"))
+		require.EqualError(t, err, "--journal-dir takes exactly one plan; plan chains are not supported")
+	})
+
+	t.Run("detached child and standalone commands are refused", func(t *testing.T) {
+		for _, tc := range []struct {
+			flag string
+			o    opts
+		}{
+			{"--detached-run", opts{DetachedRun: "run-1"}},
+			{"--acp", opts{ACP: true}},
+			{"--clear", opts{Clear: true}},
+			{"--merge", opts{mergeSet: true}},
+			{"--pr", opts{prSet: true}},
+			{"--report", opts{Report: true}},
+			{"--attach", opts{Attach: true}},
+			{"--runs", opts{Runs: true}},
+			{"--stop", opts{Stop: true}},
+		} {
+			o := tc.o
+			o.JournalDir, o.journalDirSet, o.PlanFile, o.PlanFiles = "/tmp/j", true, planFile, []string{planFile}
+			assert.EqualError(t, validateJournalDirFlags(o), "--journal-dir cannot be combined with "+tc.flag, tc.flag)
+		}
+	})
+}
+
+func TestJournalDirFlagSelectsExecutionMode(t *testing.T) {
+	o := parseTestOpts(t, "--journal-dir=")
+	assert.True(t, o.journalDirSet, "an explicit empty value is still a use of the flag")
+	assert.True(t, o.executionModeSet)
+	assert.True(t, hasExecutionMode(o))
+	assert.True(t, hasExecutionMode(opts{JournalDir: "/tmp/j"}), "the value alone selects execution mode")
+
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "merge", args: []string{"--merge", "--journal-dir", "/tmp/j"}, wantErr: "--merge cannot be combined with other mode flags"},
+		{name: "merge with feature", args: []string{"--merge", "--journal-dir", "/tmp/j", "feature"},
+			wantErr: "--merge cannot be combined with other mode flags"},
+		{name: "pr", args: []string{"--pr", "--journal-dir", "/tmp/j"}, wantErr: "--pr cannot be combined with other mode flags"},
+		{name: "report", args: []string{"--report", "--journal-dir", "/tmp/j"}, wantErr: "--report cannot be combined with other mode flags"},
+		{name: "clear", args: []string{"--clear", "--journal-dir", "/tmp/j"}, wantErr: "--clear cannot be combined with a plan file or other mode flags"},
+		{name: "runs", args: []string{"--runs", "--journal-dir", "/tmp/j"}, wantErr: "--runs cannot be combined with other mode flags"},
+		{name: "attach", args: []string{"--attach", "--journal-dir", "/tmp/j"}, wantErr: "--attach cannot be combined with other mode flags"},
+		{name: "stop", args: []string{"--stop", "--journal-dir", "/tmp/j", "run-1"}, wantErr: "--stop cannot be combined with other mode flags"},
+		{name: "acp", args: []string{"--acp", "--journal-dir", "/tmp/j"}, wantErr: "--acp cannot be combined with execution flags; " +
+			"pass --task-model, --review-model, or --external-reviewers in the thread's message"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.EqualError(t, validateFlags(parseTestOpts(t, tc.args...)), tc.wantErr)
+		})
+	}
+}
+
+func TestApplyCLIOverrides_JournalDirRunsInPlace(t *testing.T) {
+	cfg := &config.Config{WorktreeEnabled: true}
+	require.NoError(t, applyCLIOverrides(opts{JournalDir: "/tmp/j"}, cfg))
+	assert.False(t, cfg.WorktreeEnabled, "a use_worktree config value must not move a --journal-dir run into a worktree")
+
+	cfg = &config.Config{WorktreeEnabled: true}
+	require.NoError(t, applyCLIOverrides(opts{}, cfg))
+	assert.True(t, cfg.WorktreeEnabled, "without the flag the config value is kept")
+}
+
+func TestApplyCLIOverrides_JournalDirTurnsOrcaOff(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		o    opts
+		cfg  bool
+	}{
+		{name: "config value", o: opts{JournalDir: "/tmp/j"}, cfg: true},
+		{name: "--orca flag", o: opts{JournalDir: "/tmp/j", Orca: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{Orca: tc.cfg}
+			require.NoError(t, applyCLIOverrides(tc.o, cfg))
+			assert.False(t, cfg.Orca, "a --journal-dir run starts no Orca title reporter")
+			assert.Equal(t, launcherCLI, launcherFor(cfg), "launch history records a plain CLI launch")
+		})
+	}
+
+	cfg := &config.Config{Orca: true}
+	require.NoError(t, applyCLIOverrides(opts{}, cfg))
+	assert.True(t, cfg.Orca, "without the flag the config value is kept")
+}
+
 func TestApplyCLIOverrides_CommitRequiresEffectiveWorktree(t *testing.T) {
 	t.Run("accepts config enabled worktree", func(t *testing.T) {
 		cfg := &config.Config{WorktreeEnabled: true}
@@ -7477,6 +7637,8 @@ func TestClearStaleCmuxStatusSkipsConfigUtilities(t *testing.T) {
 		{DetachedRun: "plan-20261022-120000-abcd", PlanFile: "plan.md"},
 		// nor has its launcher, which returns once the child started
 		{Detach: true, PlanFile: "plan.md"},
+		// a --journal-dir run reports to its host through the journal and builds no reporter
+		{JournalDir: "/tmp/journal", PlanFile: "plan.md"},
 	} {
 		clearStaleCmuxStatus(o)
 	}
@@ -13348,6 +13510,59 @@ func TestRunHandsOffBeforeConfigLoad(t *testing.T) {
 	})
 }
 
+func TestCmuxWorkspaceEligible(t *testing.T) {
+	tests := []struct {
+		name string
+		o    opts
+		want bool
+	}{
+		{name: "no flag", o: opts{PlanFile: "p.md"}},
+		{name: "always", o: opts{CmuxWorkspace: "always", PlanFile: "p.md"}, want: true},
+		{name: "auto", o: opts{CmuxWorkspace: "auto", PlanFile: "p.md"}, want: true},
+		{name: "standalone command", o: opts{CmuxWorkspace: "auto", Init: true}},
+		{name: "journal dir with always", o: opts{CmuxWorkspace: "always", PlanFile: "p.md", JournalDir: "/j"}},
+		{name: "journal dir with auto", o: opts{CmuxWorkspace: "auto", PlanFile: "p.md", JournalDir: "/j"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, cmuxWorkspaceEligible(tc.o))
+		})
+	}
+}
+
+func TestJournalDirRunStaysInThisProcess(t *testing.T) {
+	t.Run("hand-off is skipped even in a busy workspace", func(t *testing.T) {
+		argvLog := cmuxAutoStub(t, "loopai=task 1/3 icon=bolt\n", 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		chdirWithPlan(t, "p.md")
+
+		for _, mode := range []string{"always", "auto"} {
+			stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+			o := opts{CmuxWorkspace: mode, PlanFile: "p.md", JournalDir: t.TempDir()}
+			stop, err := handOffToCmuxWorkspace(o, []string{"--cmux-workspace=" + mode, "p.md"}, stdout, stderr)
+			require.NoError(t, err)
+			assert.False(t, stop, mode)
+			assert.Empty(t, stdout.String(), mode)
+			assert.Empty(t, stderr.String(), mode)
+		}
+		_, statErr := os.Stat(argvLog)
+		assert.ErrorIs(t, statErr, fs.ErrNotExist, "cmux must not be queried or spawned")
+	})
+
+	t.Run("auto reservation is skipped", func(t *testing.T) {
+		argvLog := cmuxAutoStub(t, "", 0)
+		t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
+		cmuxStop := &cleanupHolder{}
+
+		reserved := ensureAutoWorkspaceReservation(
+			opts{CmuxWorkspace: "auto", PlanFile: "p.md", JournalDir: t.TempDir()}, true, false, cmuxStop, io.Discard)
+
+		assert.False(t, reserved)
+		_, statErr := os.Stat(argvLog)
+		assert.ErrorIs(t, statErr, fs.ErrNotExist, "no starting pill may be written")
+	})
+}
+
 func TestEnsureAutoWorkspaceReservationReportsWriteFailureInDebugMode(t *testing.T) {
 	argvLog := cmuxAutoSpawnStub(t, "", 0, 1)
 	t.Setenv("CMUX_WORKSPACE_ID", "ws-1")
@@ -14415,6 +14630,8 @@ func TestWorktreeExecuteRequestForwardsDetachedKnobs(t *testing.T) {
 	// or lose its worktree without any error
 	hookCalls := 0
 	hook := func(attemptStart) error { hookCalls++; return nil }
+	usageCalls := 0
+	usageHook := func(processor.SessionUsage) { usageCalls++ }
 	tests := []struct {
 		name   string
 		req    executePlanRequest
@@ -14431,11 +14648,23 @@ func TestWorktreeExecuteRequestForwardsDetachedKnobs(t *testing.T) {
 				require.NoError(t, got.AttemptStarted(attemptStart{}))
 				assert.Equal(t, before+1, hookCalls, "the copied hook is the caller's")
 			}},
+		{name: "usage handler", req: executePlanRequest{UsageHandler: usageHook},
+			assert: func(t *testing.T, got executePlanRequest) {
+				require.NotNil(t, got.UsageHandler)
+				before := usageCalls
+				got.UsageHandler(processor.SessionUsage{})
+				assert.Equal(t, before+1, usageCalls, "the copied usage handler is the caller's")
+			}},
+		{name: "in-place attempt hook is not copied", req: executePlanRequest{InPlaceAttemptStarted: hook},
+			assert: func(t *testing.T, got executePlanRequest) {
+				assert.Nil(t, got.InPlaceAttemptStarted, "a worktree run records its start through AttemptStarted only")
+			}},
 		{name: "unset knobs stay unset", req: executePlanRequest{},
 			assert: func(t *testing.T, got executePlanRequest) {
 				assert.False(t, got.KeepWorktreeOnFailure)
 				assert.False(t, got.ArchiveOnRunBranch)
 				assert.Nil(t, got.AttemptStarted)
+				assert.Nil(t, got.UsageHandler)
 			}},
 	}
 	for _, tc := range tests {
@@ -15378,13 +15607,15 @@ func TestExecutePlanNonInteractiveRoutesOutputAndHooks(t *testing.T) {
 	writeExecutable(t, fakeClaude, `#!/bin/sh
 cat >/dev/null
 printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"<<<RALPHEX:REVIEW_DONE>>>"}}'
-printf '%s\n' '{"type":"result","result":""}'
+printf '%s\n' '{"type":"result","result":"","total_cost_usd":0.25,"usage":{"input_tokens":12,"output_tokens":3}}'
 `)
 	gitSvc, err := git.NewService(dir, noopLogger())
 	require.NoError(t, err)
 
 	var out bytes.Buffer
 	var decorated *sectionRecordingLogger
+	var usageMu sync.Mutex
+	var usages []processor.SessionUsage
 	var phasesMu sync.Mutex
 	var phases []status.Phase
 	outcome := &planExecutionOutcome{}
@@ -15402,6 +15633,11 @@ printf '%s\n' '{"type":"result","result":""}'
 				phasesMu.Lock()
 				phases = append(phases, cur)
 				phasesMu.Unlock()
+			},
+			UsageHandler: func(u processor.SessionUsage) {
+				usageMu.Lock()
+				usages = append(usages, u)
+				usageMu.Unlock()
 			},
 		})
 	})
@@ -15421,6 +15657,15 @@ printf '%s\n' '{"type":"result","result":""}'
 	assert.True(t, outcome.succeeded)
 	require.NoError(t, outcome.failure)
 	assert.Contains(t, outcome.report, "| internal review |", "the outcome carries the completion report")
+	usageMu.Lock()
+	defer usageMu.Unlock()
+	require.NotEmpty(t, usages, "every session's usage reaches the request's handler")
+	assert.Equal(t, "claude", usages[0].Provider)
+	assert.Equal(t, status.PhaseReview, usages[0].Phase)
+	assert.Equal(t, int64(12), usages[0].Usage.InputTokens)
+	assert.Equal(t, int64(3), usages[0].Usage.OutputTokens)
+	require.NotNil(t, usages[0].Usage.CostUSD)
+	assert.InDelta(t, 0.25, *usages[0].Usage.CostUSD, 1e-9)
 }
 
 // TestStartRunReportersNonInteractive enables both reporters the way a cmux terminal and orca

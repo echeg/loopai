@@ -107,6 +107,7 @@ type opts struct {
 	Runs                    bool          `long:"runs" description:"list this checkout's detached runs with their status, attempt, and origin"`
 	Stop                    bool          `long:"stop" description:"stop a live detached run gracefully, keeping its worktree; positional argument names the run (id, plan, or branch)"`
 	ACP                     bool          `long:"acp" description:"serve a T3 Code loopai thread over the Agent Client Protocol on stdin and stdout, as the provider that loopai-acp starts"`
+	JournalDir              string        `long:"journal-dir" value-name:"dir" description:"run one plan (full or --tasks-only) in the current checkout, non-interactively, and write its events.jsonl journal and outcome.json into this directory, which must hold neither and be outside the checkout or ignored by git"`
 
 	PlanFile  string   `positional-arg-name:"plan-file" description:"path to one plan file or a comma-separated plan chain (optional, uses fzf if omitted); with --merge/--pr/--report it names the feature to close out, with --attach/--stop the detached run"`
 	PlanFiles []string // normalized comma-separated plan chain; PlanFile is always its first entry
@@ -126,6 +127,7 @@ type opts struct {
 	t3ThreadSet       bool
 	acpThreadSet      bool
 	acpSessionSet     bool
+	journalDirSet     bool
 
 	claudeCommandSet      bool
 	claudeArgsSet         bool
@@ -223,6 +225,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 	o.t3ThreadSet = isFlagSet(parser, "t3-thread")
 	o.acpThreadSet = isFlagSet(parser, "acp-thread")
 	o.acpSessionSet = isFlagSet(parser, "acp-session")
+	o.journalDirSet = isFlagSet(parser, "journal-dir")
 	for _, name := range []string{
 		"max-iterations", "max-external-iterations", "review-patience",
 		"plan-model", "task-model", "review-model", "claude-command", "claude-args", "codex-args",
@@ -231,6 +234,7 @@ func (o *opts) markFlagsSet(parser *flags.Parser) {
 		"session-timeout", "idle-timeout", "finalize", "skip-finalize", "review-cadence", "preserve-anthropic-api-key",
 		"no-claude-swap", "pass-claude-md", "worktree",
 		"branch", "plan", "gen-agents", "serve", "watch", "init", "reset", "dump-defaults", "detach",
+		"journal-dir",
 	} {
 		if isFlagSet(parser, name) {
 			o.executionModeSet = true
@@ -340,6 +344,8 @@ type executePlanRequest struct {
 	LogDecorator func(processor.Logger) processor.Logger
 	// PhaseObserver is subscribed to phase changes beside the status reporters.
 	PhaseObserver func(old, cur status.Phase)
+	// UsageHandler receives the usage of every finished provider session that reported one.
+	UsageHandler func(processor.SessionUsage)
 
 	// KeepWorktreeOnFailure keeps a worktree mode run's worktree on every exit after a successful
 	// AttemptStarted except a clean success: a non-success, or a success whose close-out is
@@ -353,6 +359,12 @@ type executePlanRequest struct {
 	// AttemptStarted is called once in worktree mode, after the worktree and the progress logger
 	// exist and before execution starts. An error aborts the run before execution.
 	AttemptStarted func(attemptStart) error
+	// InPlaceAttemptStarted is AttemptStarted for a run in the current checkout: executePlan's
+	// setupProgressLogger calls it once the progress logger exists, before the runner is built, and
+	// an error ends the run
+	// before any provider process starts. worktreeExecuteRequest deliberately does not copy it, so a
+	// worktree run never calls it and records its start through AttemptStarted alone.
+	InPlaceAttemptStarted func(attemptStart) error
 }
 
 // out returns the writer for human-readable run output, read at call time so a redirected
@@ -545,6 +557,23 @@ func run(ctx context.Context, o opts) (runErr error) {
 		resolveStaleCmuxStatus(false)
 		return err
 	}
+	var journal *foregroundJournal
+	if o.JournalDir != "" {
+		journalDir, err := prepareJournalDir(o.JournalDir)
+		if err != nil {
+			resolveStaleCmuxStatus(false)
+			return err
+		}
+		o.JournalDir = journalDir
+		// a failure before the journal is attached, from config loading through the repository checks,
+		// still leaves the host a failed startup outcome; once attached, journal.complete records the
+		// run. a nil runErr here is a panic unwinding, which records nothing, as a crash does
+		defer func() {
+			if journal == nil && runErr != nil {
+				failForegroundStartup(journalDir, runErr)
+			}
+		}()
+	}
 
 	done, autoWorkspaceReserved, preserveEarlyStatus, err := prepareRunBeforeConfig(o, cmuxStop)
 	if err != nil || done {
@@ -617,7 +646,7 @@ func run(ctx context.Context, o opts) (runErr error) {
 	}
 
 	repo, err := openExecutionRepository(ctx, o, cfg, colors, mode, executionIO{
-		stdin: os.Stdin, stdout: os.Stdout, setupTitles: setupTitles,
+		stdin: executionStdin(o), stdout: os.Stdout, setupTitles: setupTitles,
 	})
 	if err != nil {
 		return err
@@ -678,7 +707,14 @@ func run(ctx context.Context, o opts) (runErr error) {
 		LimitRecovery:       limitRecovery,
 		ReviewPreflightDone: reviewPreflight,
 	}
-	return runSelectedPlans(ctx, o, req, selector, setupTitles, os.Stdout, selectAndExecutePlan)
+	journal, req, err = attachForegroundJournal(o, cfg, req)
+	if err != nil {
+		return err
+	}
+	runErr = runSelectedPlans(ctx, o, req, selector, setupTitles, os.Stdout, selectAndExecutePlan)
+	// the journal records the run's outcome but never changes the error the process exits with
+	journal.complete(ctx, req.GitSvc, runErr)
+	return runErr
 }
 
 // resolveExecutionDeps runs the post-config startup checks every execution shares: model specs,
@@ -1480,6 +1516,8 @@ type progressLogResult struct {
 
 // setupProgressLogger creates or reuses a progress logger and phase holder.
 // when req.ProgressLog and req.PhaseHolder are pre-created (worktree mode), uses them directly.
+// once the logger exists it fires req.InPlaceAttemptStarted; a hook error marks the log failed,
+// closes it, and is returned, so the run ends before its runner or any provider process exists.
 func setupProgressLogger(o opts, req executePlanRequest, branch string) (progressLogResult, error) {
 	holder := req.PhaseHolder
 	if holder == nil {
@@ -1512,6 +1550,11 @@ func setupProgressLogger(o opts, req executePlanRequest, branch string) (progres
 				}
 			})
 		}
+	}
+	if err := fireInPlaceAttemptStarted(req, baseLog); err != nil {
+		baseLog.SetFailed(err)
+		closeLog()
+		return progressLogResult{}, err
 	}
 	return progressLogResult{holder: holder, baseLog: baseLog, closeLog: closeLog}, nil
 }
@@ -2366,6 +2409,7 @@ func worktreeExecuteRequest(req executePlanRequest, wt worktreeRun, baseLog *pro
 		NonInteractive:         req.NonInteractive,
 		LogDecorator:           req.LogDecorator,
 		PhaseObserver:          req.PhaseObserver,
+		UsageHandler:           req.UsageHandler,
 		KeepWorktreeOnFailure:  req.KeepWorktreeOnFailure,
 		ArchiveOnRunBranch:     req.ArchiveOnRunBranch,
 		AttemptStarted:         req.AttemptStarted,
@@ -3664,6 +3708,10 @@ func validateFlags(o opts) error {
 	if err := validateDetachFlags(o); err != nil {
 		return err
 	}
+	// before the chain checks, which stat every chain entry: a chain is refused by flag alone
+	if err := validateJournalDirFlags(o); err != nil {
+		return err
+	}
 	if err := validatePlanChain(o); err != nil {
 		return err
 	}
@@ -3818,6 +3866,61 @@ func validatePlanChain(o opts) error {
 	return nil
 }
 
+// validateJournalDirFlags keeps --journal-dir to what it supports: exactly one plan, in full or
+// tasks-only mode, executed in the current checkout by this process. A host spawns the run and reads
+// the directory, so every mode that runs elsewhere (a worktree, a detached process, another cmux
+// workspace), runs no plan, or runs several is refused. It checks the flags only and touches no file;
+// prepareJournalDir inspects the directory itself.
+func validateJournalDirFlags(o opts) error {
+	if !o.journalDirSet && o.JournalDir == "" {
+		return nil
+	}
+	if strings.TrimSpace(o.JournalDir) == "" {
+		return errors.New("--journal-dir requires a directory")
+	}
+	for _, conflict := range []struct {
+		flag string
+		set  bool
+	}{
+		{"--worktree", o.Worktree},
+		{"--commit", o.Commit},
+		{"--review", o.Review},
+		{"--external-only", o.ExternalOnly},
+		{"--plan", o.PlanDescription != ""},
+		{"--gen-agents", o.GenAgents},
+		{"--serve", o.Serve},
+		{"--watch", len(o.Watch) > 0},
+		{"--detach", o.Detach},
+		{"--detached-run", o.detachedRunSet || o.DetachedRun != ""},
+		{"--cmux-workspace", o.CmuxWorkspace != ""},
+		{"--acp", o.ACP},
+		{"--init", o.Init},
+		{"--reset", o.Reset},
+		{"--dump-defaults", o.DumpDefaults != ""},
+		{"--clear", o.Clear},
+		{"--merge", mergeRequested(o)},
+		{"--pr", prRequested(o)},
+		{"--report", reportRequested(o)},
+		{"--attach", o.Attach},
+		{"--runs", o.Runs},
+		{"--stop", o.Stop},
+	} {
+		if conflict.set {
+			return fmt.Errorf("--journal-dir cannot be combined with %s", conflict.flag)
+		}
+	}
+	if len(o.PlanFiles) > 1 {
+		return errors.New("--journal-dir takes exactly one plan; plan chains are not supported")
+	}
+	if len(o.extraArgs) > 0 {
+		return fmt.Errorf("--journal-dir takes exactly one plan argument, got %d", len(o.extraArgs)+1)
+	}
+	if strings.TrimSpace(o.PlanFile) == "" {
+		return errors.New("--journal-dir requires a plan file argument")
+	}
+	return nil
+}
+
 // validateGenAgentsFlags keeps --gen-agents standalone: it neither executes a plan
 // nor runs any review phase, so combining it with execution modes is a user error
 // rather than something to silently ignore.
@@ -3944,6 +4047,7 @@ func hasExecutionMode(o opts) bool {
 		o.PreserveAnthropicAPIKey,
 		o.NoClaudeSwap, o.PassClaudeMd, o.Worktree, o.Commit, o.Branch != "",
 		o.Serve, len(o.Watch) != 0, o.Init, o.Reset, o.DumpDefaults != "", o.GenAgents, o.Detach,
+		o.journalDirSet || o.JournalDir != "",
 	} {
 		if set {
 			return true
@@ -4063,6 +4167,7 @@ func createRunner(req executePlanRequest, o opts, log processor.Logger, holder *
 		AppConfig:             req.Config,
 		LimitRecovery:         req.LimitRecovery,
 		CommandTimingHandler:  commandTimingHandler,
+		UsageHandler:          req.UsageHandler,
 	}, log, holder)
 	if req.GitSvc != nil {
 		r.SetGitChecker(req.GitSvc)
@@ -4802,6 +4907,15 @@ func clearCmuxStatus(stdout io.Writer) {
 	rep.Clear()
 }
 
+// cmuxWorkspaceEligible reports whether --cmux-workspace applies to this invocation at all: it was
+// given, the invocation is no standalone command, and no --journal-dir is set. A --journal-dir run
+// belongs to the host process that spawned it and reads its journal, so it must stay in this
+// process; validateJournalDirFlags already refuses the combination, and this keeps the hand-off and
+// the auto reservation from ever acting on such a run.
+func cmuxWorkspaceEligible(o opts) bool {
+	return o.CmuxWorkspace != "" && !isStandaloneCommand(o) && o.JournalDir == ""
+}
+
 // handOffToCmuxWorkspace relaunches this invocation in a new cmux workspace and reports whether
 // the caller must stop, plus an error when stopping is not a success. hand-off is best-effort like
 // the rest of the cmux integration: outside cmux, or when workspace creation is cleanly refused, a
@@ -4813,7 +4927,7 @@ func clearCmuxStatus(stdout io.Writer) {
 // are excluded, they are short synchronous commands whose output belongs to the terminal the user
 // typed them in.
 func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bool, error) {
-	if o.CmuxWorkspace == "" || isStandaloneCommand(o) {
+	if !cmuxWorkspaceEligible(o) {
 		return false, nil
 	}
 	handOffRequired := false
@@ -4883,7 +4997,7 @@ func handOffToCmuxWorkspace(o opts, args []string, stdout, stderr io.Writer) (bo
 // The cleanup holder owns the reservation until a normal reporter replaces it, clearing "starting"
 // on every startup error and on interrupts without erasing a later final pill.
 func ensureAutoWorkspaceReservation(o opts, eligible, reserved bool, cmuxStop *cleanupHolder, stderr io.Writer) bool {
-	if o.CmuxWorkspace != "auto" || isStandaloneCommand(o) || !eligible || reserved {
+	if o.CmuxWorkspace != "auto" || !cmuxWorkspaceEligible(o) || !eligible || reserved {
 		return reserved
 	}
 	rep := cmux.New("", cmux.Models{})
@@ -5090,8 +5204,11 @@ func stripCmuxWorkspaceArg(args []string) []string {
 	return filtered
 }
 
+// clearStaleCmuxStatus removes the previous run's pill before a run that will report its own. A
+// --journal-dir run never builds a cmux reporter, it reports to its host through the journal, so
+// like a detached child it leaves the workspace's pill, possibly another live run's, alone.
 func clearStaleCmuxStatus(o opts) {
-	if isStandaloneCommand(o) {
+	if isStandaloneCommand(o) || o.JournalDir != "" {
 		return
 	}
 	cmux.New("", cmux.Models{}).Clear()
@@ -6681,9 +6798,28 @@ func applyFinalizeOverride(o opts, cfg *config.Config) {
 	}
 }
 
-// applyReportingOverrides resolves optional host reporting.
+// applyReportingOverrides resolves optional host reporting. A --journal-dir run reports to its host
+// through the journal, so Orca titles are turned off as for a detached run: no setup title is left
+// on a terminal no reporter finishes, and launch history records a plain CLI launch.
 func applyReportingOverrides(o opts, cfg *config.Config) {
-	cfg.Orca = enabledByCLI(cfg.Orca, o.Orca)
+	cfg.Orca = enabledByCLI(cfg.Orca, o.Orca) && o.JournalDir == ""
+}
+
+// applyWorktreeOverride resolves worktree mode: --worktree enables it, --journal-dir disables it, and
+// --commit needs it enabled from either the flag or config. A --journal-dir run executes in the
+// checkout its host prepared, so a use_worktree config value must not move it into a worktree of its
+// own; --worktree itself is refused with the flag by validateJournalDirFlags.
+func applyWorktreeOverride(o opts, cfg *config.Config) error {
+	if o.Worktree {
+		cfg.WorktreeEnabled = true
+	}
+	if o.JournalDir != "" {
+		cfg.WorktreeEnabled = false
+	}
+	if o.Commit && !cfg.WorktreeEnabled {
+		return errors.New("--commit requires --worktree")
+	}
+	return nil
 }
 
 // applyCLIOverrides applies CLI flag overrides to config.
@@ -6701,11 +6837,8 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 		cfg.PreserveAnthropicAPIKey = true
 	}
 	applyReportingOverrides(o, cfg)
-	if o.Worktree {
-		cfg.WorktreeEnabled = true
-	}
-	if o.Commit && !cfg.WorktreeEnabled {
-		return errors.New("--commit requires --worktree")
+	if err := applyWorktreeOverride(o, cfg); err != nil {
+		return err
 	}
 	if o.Wait > 0 || (o.Wait == 0 && o.waitSet) {
 		cfg.WaitOnLimit = o.Wait
