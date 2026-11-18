@@ -441,6 +441,10 @@ func (c *cleanupHolder) call() {
 }
 
 func main() {
+	// the hop starts the detached child and exits before anything reaches its stdout, the console log
+	if len(os.Args) > 1 && os.Args[1] == detachHopArg {
+		os.Exit(runDetachHop(os.Args[2:], os.Stderr))
+	}
 	if os.Getenv("GO_FLAGS_COMPLETION") == "" {
 		fmt.Fprintf(versionBannerWriter(os.Args[1:]), "loopai %s\n", resolveVersion())
 	}
