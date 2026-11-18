@@ -16,6 +16,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// detachHopExeEnv, when set, replaces the executable the hop helper starts, so a launcher test can
+// make the hop fail to start the child.
+const detachHopExeEnv = "LOOPAI_TEST_DETACH_HOP_EXE"
+
 // TestDetachHopHelper is the hop the launcher tests start, not a test of its own; TestMain points
 // detachHopArgs at it.
 func TestDetachHopHelper(t *testing.T) {
@@ -23,7 +27,11 @@ func TestDetachHopHelper(t *testing.T) {
 	if i < 0 {
 		t.Skip("helper process only")
 	}
-	os.Exit(runDetachHop(os.Args[i+1:], os.Stderr))
+	argv := os.Args[i+1:]
+	if exe, ok := os.LookupEnv(detachHopExeEnv); ok && len(argv) > 0 {
+		argv[0] = exe
+	}
+	os.Exit(runDetachHop(argv, os.Stderr))
 }
 
 // hopRun is one run of the hop helper: its exit code, its stderr, and the launcher's ends of the

@@ -1184,26 +1184,44 @@ func TestDetachLaunchChildFailures(t *testing.T) {
 		detachAckTimeout = 2 * time.Second
 		t.Cleanup(func() { detachAckTimeout = 120 * time.Second })
 
-		_, _, err := f.launch(t, "--detach", detachLaunchPlan)
+		_, stderr, err := f.launch(t, "--detach", detachLaunchPlan)
 		desc := f.onlyRun(t)
 		require.ErrorContains(t, err, "detached run "+desc.ID+": no answer within 2s; it may still be starting: "+
-			"follow it with loopai --attach "+desc.ID+" or read its console log "+desc.ConsoleLog)
+			"follow it with loopai --attach "+desc.ID+" or read its console log "+desc.ConsoleLog, stderr)
 		lock := filepath.Join(runs.Dir(f.repo, desc.ID), runs.LockFile)
 		assert.Eventually(t, func() bool { held, _ := runs.Probe(lock); return held }, detachChildWait,
 			20*time.Millisecond, "the child is not killed and takes the run")
 	})
 
-	t.Run("a hop that does not finish is reported", func(t *testing.T) {
+	t.Run("a hop that does not finish in time still starts the run", func(t *testing.T) {
 		f := newDetachLaunchFixture(t)
-		detachScopePrefix = func() []string { return []string{"/bin/sh", "-c", "sleep 30", "scope"} }
+		detachScopePrefix = func() []string { return []string{"/bin/sh", "-c", `sleep 3; exec "$@"`, "scope"} }
 		t.Cleanup(func() { detachScopePrefix = func() []string { return nil } })
 		detachAckTimeout = 2 * time.Second
 		t.Cleanup(func() { detachAckTimeout = 120 * time.Second })
 
 		_, stderr, err := f.launch(t, "--detach", detachLaunchPlan)
 		desc := f.onlyRun(t)
-		require.ErrorContains(t, err, "detached run "+desc.ID+": the start did not finish within 2s")
+		require.ErrorContains(t, err, "detached run "+desc.ID+": no answer within 2s; it may still be "+
+			"starting: follow it with loopai --attach "+desc.ID)
 		assert.NotContains(t, stderr, "warning:", "a slow start is not retried")
+		lock := filepath.Join(runs.Dir(f.repo, desc.ID), runs.LockFile)
+		assert.Eventually(t, func() bool { held, _ := runs.Probe(lock); return held }, detachChildWait,
+			20*time.Millisecond, "the late child takes the run, as the message says")
+		assert.JSONEq(t, `{"t3_token":""}`, f.dump(t, desc.ID).Secret,
+			"the late child got the secret; the real child refuses to start without it")
+	})
+
+	t.Run("a hop that cannot start the child shows why", func(t *testing.T) {
+		f := newDetachLaunchFixture(t)
+		t.Setenv(detachHopExeEnv, "/nonexistent/loopai")
+
+		_, stderr, err := f.launch(t, "--detach", detachLaunchPlan)
+		desc := f.onlyRun(t)
+		require.EqualError(t, err, "detached run "+desc.ID+": start the detached child: exit status 1; console log: "+
+			desc.ConsoleLog)
+		assert.Contains(t, stderr, "the end of console log "+desc.ConsoleLog+":\n")
+		assert.Contains(t, stderr, "start the detached child: fork/exec /nonexistent/loopai")
 	})
 
 	t.Run("a canceled launcher leaves the child running", func(t *testing.T) {

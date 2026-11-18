@@ -633,20 +633,25 @@ type detachStart struct {
 	ack      detachAckMessage
 	answered bool  // the child sent its answer line
 	startErr error // the child could not be started
+	hopErr   error // the hop exited non-zero: it could not start the child, and said why in the console log
 	readErr  error // the answer could not be read or decoded
 	waitErr  error // the launcher stopped waiting: the timeout passed or its context ended
 }
 
-// noHandshake reports whether the child ended before any answer: it could not be started, or the ack
-// pipe reached EOF without a line, which means every holder of its write end exited.
+// noHandshake reports whether the child ended before any answer: it could not be started, the hop
+// failed to start it, or the ack pipe reached EOF without a line, which means every holder of its
+// write end exited.
 func (s detachStart) noHandshake() bool {
-	return s.startErr != nil || (!s.answered && s.readErr == nil && s.waitErr == nil)
+	return s.startErr != nil || s.hopErr != nil || (!s.answered && s.readErr == nil && s.waitErr == nil)
 }
 
 // noHandshakeReason describes a start that ended without an answer.
 func (s detachStart) noHandshakeReason() string {
-	if s.startErr != nil {
+	switch {
+	case s.startErr != nil:
 		return s.startErr.Error()
+	case s.hopErr != nil:
+		return s.hopErr.Error()
 	}
 	return "it exited before answering"
 }
@@ -683,33 +688,24 @@ func (l *detachLaunch) spawn(ctx context.Context, prefix []string, console *os.F
 	startErr := startDetachedProcess(cmd)
 	_ = secretR.Close()
 	_ = ackW.Close()
-	if startErr == nil {
-		startErr = awaitDetachHop(ctx, cmd, detachAckTimeout)
-	}
-	var waitErr *detachHopWaitError
-	switch {
-	case errors.As(startErr, &waitErr):
-		_ = secretW.Close()
-		return detachStart{waitErr: waitErr.err}
-	case startErr != nil:
+	if startErr != nil {
 		_ = secretW.Close()
 		return detachStart{startErr: startErr}
 	}
 
+	// sent before the hop is done, so a hop that is only slow still hands the child its secret; a hop
+	// that fails leaves the line in a pipe buffer that dies with the pipe
 	sendDetachSecret(secretW, detachSecret{T3Token: l.token})
+	if res, started := awaitDetachHop(ctx, cmd, detachAckTimeout); !started {
+		return res
+	}
 	return awaitDetachAck(ctx, ackR, detachAckTimeout)
 }
 
-// detachHopWaitError is a wait for the hop that ended before the hop did: the timeout passed or the
-// launcher's context ended. The hop is left running, as the child would be.
-type detachHopWaitError struct{ err error }
-
-func (e *detachHopWaitError) Error() string { return e.err.Error() }
-
-// awaitDetachHop waits for the started hop cmd, at most timeout and no longer than ctx lives: nil once
-// the hop started the child and exited, the start error when it exited non-zero, a
-// *detachHopWaitError when the wait ended first.
-func awaitDetachHop(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) error {
+// awaitDetachHop waits for the started hop cmd, at most timeout and no longer than ctx lives. It
+// reports true once the hop started the child and exited; otherwise the result carries the hop's exit
+// error or why the wait ended first, and the hop is left running, as the child would be.
+func awaitDetachHop(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) (detachStart, bool) {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	timer := time.NewTimer(timeout)
@@ -717,13 +713,15 @@ func awaitDetachHop(ctx context.Context, cmd *exec.Cmd, timeout time.Duration) e
 	select {
 	case err := <-done:
 		if err != nil {
-			return fmt.Errorf("start the detached child: %w", err)
+			return detachStart{hopErr: fmt.Errorf("start the detached child: %w", err)}, false
 		}
-		return nil
+		return detachStart{}, true
+	// worded as the answer's wait: to the user both are the wait for the run to confirm its start, and
+	// the child can take the run before the hop has been reaped
 	case <-timer.C:
-		return &detachHopWaitError{err: fmt.Errorf("the start did not finish within %s", timeout)}
+		return detachStart{waitErr: fmt.Errorf("no answer within %s", timeout)}, false
 	case <-ctx.Done():
-		return &detachHopWaitError{err: fmt.Errorf("stopped waiting for the start: %w", ctx.Err())}
+		return detachStart{waitErr: fmt.Errorf("stopped waiting for its answer: %w", ctx.Err())}, false
 	}
 }
 
@@ -775,6 +773,9 @@ func (l *detachLaunch) report(res detachStart, from int64) error {
 	switch {
 	case res.startErr != nil:
 		return fmt.Errorf("detached run %s: %w", id, res.startErr)
+	case res.hopErr != nil:
+		l.printConsoleTail(from)
+		return fmt.Errorf("detached run %s: %w; console log: %s", id, res.hopErr, consoleLog)
 	case res.waitErr != nil:
 		return fmt.Errorf("detached run %s: %w; it may still be starting: follow it with loopai --attach %s "+
 			"or read its console log %s", id, res.waitErr, id, consoleLog)

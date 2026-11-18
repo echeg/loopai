@@ -1042,8 +1042,11 @@ exists; a scoped start that fails or ends before answering is retried once witho
 hop is loopai run with `--detached-hop` as its first argument, which `main` dispatches to
 `runDetachHop` before flag parsing and the version banner, since its stdout is the console log: it
 checks fds 3 and 4 with `checkHandshakeFD`, starts the rest of its argv with `Setsid` passing them on,
-and exits at once; `spawn` waits for it under `detachAckTimeout`, reads a non-zero exit as a start
-error, and only then writes the secret. The hop exists because T3 Code 0.1.10's `ClaudeAdapterV2.ts`,
+and exits at once. `spawn` writes the secret as soon as the hop has started, so a hop that is only
+slow still hands the child its token and "it may still be starting" stays true, then waits for the hop
+under `detachAckTimeout`; a non-zero exit is `detachStart.hopErr`, reported with the console log tail
+and path, because the hop's reason went to the console log, and retried without the scope like any
+start that ended without an answer. The hop exists because T3 Code 0.1.10's `ClaudeAdapterV2.ts`,
 for a Claude CLI without a systemd scope (macOS, Linux without a user manager), walks
 `ps -A -o pid=,ppid=,pgid=,lstart=` parent-pid edges from the CLI and from every process it already
 tracks once a second, and SIGKILLs every tracked process, a group leader's whole group, when the CLI
