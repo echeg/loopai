@@ -23,7 +23,7 @@ func TestValidateDetachFlags(t *testing.T) {
 		{name: "a plan", args: []string{"--detach", "docs/plans/x.md"}},
 		{name: "tasks-only", args: []string{"--detach", "--tasks-only", "docs/plans/x.md"}},
 		{name: "explicit worktree", args: []string{"--detach", "--worktree", "docs/plans/x.md"}},
-		{name: "branch and models", args: []string{"--detach", "--branch", "b", "--task-model", "codex:gpt-6-astra",
+		{name: "branch and models", args: []string{"--detach", "--branch", "b", "--task-model", "codex:gpt-6.2-astra",
 			"--external-reviewers=", "docs/plans/x.md"}},
 		{name: "the child's own arguments", args: []string{"--detached-run=x-20261022-120000-abcd", "docs/plans/x.md"}},
 		{name: "chain", args: []string{"--detach", "docs/plans/a.md,docs/plans/b.md"},

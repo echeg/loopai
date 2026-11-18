@@ -47,7 +47,7 @@ type opts struct {
 	MaxExternalIterations   int           `long:"max-external-iterations" default:"0" description:"override external review iteration limit (0 = auto)"`
 	ReviewPatience          int           `long:"review-patience" default:"0" description:"terminate external review after N unchanged rounds (0 = disabled)"`
 	PlanModel               string        `long:"plan-model" description:"model for plan creation as provider[:model[:effort]] (falls back to --task-model)"`
-	TaskModel               string        `long:"task-model" description:"model for task execution as provider[:model[:effort]] (e.g., claude:opus:high, codex:gpt-6-astra, codex::medium)"`
+	TaskModel               string        `long:"task-model" description:"model for task execution as provider[:model[:effort]] (e.g., claude:opus:high, codex:gpt-6.2-astra, codex::medium)"`
 	ReviewModel             string        `long:"review-model" description:"model for review phases as provider[:model[:effort]] (falls back to --task-model)"`
 	ClaudeCommand           string        `long:"claude-command" description:"override claude-compatible command for this run"`
 	ClaudeArgs              string        `long:"claude-args" description:"override claude-compatible command args for this run"`
@@ -3746,7 +3746,7 @@ func rejectRemovedFlags(o opts) error {
 	var errs []error
 	if o.Codex {
 		errs = append(errs, errors.New("--codex was removed; set the provider in the model spec instead, "+
-			"e.g. --task-model codex:gpt-6-astra:medium"))
+			"e.g. --task-model codex:gpt-6.2-astra:medium"))
 	}
 	if o.CodexOnly {
 		errs = append(errs, errors.New("--codex-only was removed; use --external-only instead"))
@@ -3807,7 +3807,7 @@ func removedExternalReviewFlagsError(o opts) error {
 			"or name reviewers with --external-reviewers=<provider>[:model[:effort]]", removed)
 	}
 	return fmt.Errorf("%s; use --external-reviewers=<provider>[:model[:effort]] instead, "+
-		"e.g. --external-reviewers=codex:gpt-6-astra:high", removed)
+		"e.g. --external-reviewers=codex:gpt-6.2-astra:high", removed)
 }
 
 // validatePlanChain rejects chain-only incompatibilities and verifies every input before any
@@ -6912,7 +6912,7 @@ func resolvePhaseProviders(o opts, cfg *config.Config) (phaseProviders, error) {
 	if (o.PassClaudeMd || cfg.PassClaudeMd) &&
 		providers.Task != config.ExecutorCodex && providers.Review != config.ExecutorCodex {
 		// an invalid spec resolved to claude above, so it is what tripped the gate: a config
-		// that still reads task_model = gpt-6-astra must get the prefixed rewrite, not this
+		// that still reads task_model = gpt-6.2-astra must get the prefixed rewrite, not this
 		if specErr := validateModelSpecs(o, cfg); specErr != nil {
 			return providers, specErr
 		}

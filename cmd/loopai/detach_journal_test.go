@@ -440,7 +440,7 @@ func TestJournalHooksObserveUsage(t *testing.T) {
 		Model: "claude-opus-5-5", InputTokens: 10, CachedInputTokens: 20, CacheWriteInputTokens: 30,
 		OutputTokens: 40, CostUSD: &cost}})
 	hooks.observeUsage(processor.SessionUsage{Provider: "codex", Phase: status.PhaseReview, Usage: executor.Usage{
-		Model: "gpt-6-astra", InputTokens: 5, CachedInputTokens: 6, OutputTokens: 7}})
+		Model: "gpt-6.2-astra", InputTokens: 5, CachedInputTokens: 6, OutputTokens: 7}})
 
 	events, err := runs.ReadFrom(dir, 0)
 	require.NoError(t, err)
@@ -451,7 +451,7 @@ func TestJournalHooksObserveUsage(t *testing.T) {
 	assert.Equal(t, []runs.Event{
 		{Type: runs.EventUsage, Provider: "claude", Model: "claude-opus-5-5", Phase: status.PhaseTask,
 			InputTokens: 10, CachedInputTokens: 20, CacheWriteInputTokens: 30, OutputTokens: 40, CostUSD: &cost},
-		{Type: runs.EventUsage, Provider: "codex", Model: "gpt-6-astra", Phase: status.PhaseReview,
+		{Type: runs.EventUsage, Provider: "codex", Model: "gpt-6.2-astra", Phase: status.PhaseReview,
 			InputTokens: 5, CachedInputTokens: 6, OutputTokens: 7},
 	}, events)
 	assert.Empty(t, warn.String())

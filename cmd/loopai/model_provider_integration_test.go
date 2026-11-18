@@ -12,7 +12,7 @@ import (
 )
 
 func TestRunModelProviderAcceptance(t *testing.T) {
-	const inheritedModels = "task_model = codex:gpt-6-astra:medium\nreview_model = codex:gpt-6-astra:high\n"
+	const inheritedModels = "task_model = codex:gpt-6.2-astra:medium\nreview_model = codex:gpt-6.2-astra:high\n"
 	tests := []struct {
 		name        string
 		global      string
@@ -26,36 +26,36 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 		{
 			name:      "removed codex flag names its replacement",
 			args:      []string{"--codex", "--task-model", "claude:fable:high"},
-			wantError: "--codex was removed; set the provider in the model spec instead, e.g. --task-model codex:gpt-6-astra:medium",
+			wantError: "--codex was removed; set the provider in the model spec instead, e.g. --task-model codex:gpt-6.2-astra:medium",
 		},
 		{
 			name:        "global task model provider selects codex and strips the provider",
 			global:      inheritedModels,
 			wantCommand: "codex",
-			wantArgs:    `model="gpt-6-astra"`,
+			wantArgs:    `model="gpt-6.2-astra"`,
 		},
 		{
 			name:        "CLI models switch to Claude with codex reviewer",
 			global:      inheritedModels,
-			args:        []string{"--task-model", "claude:fable:high", "--review-model", "claude:fable:high", "--external-reviewers", "codex:gpt-6-astra:high"},
+			args:        []string{"--task-model", "claude:fable:high", "--review-model", "claude:fable:high", "--external-reviewers", "codex:gpt-6.2-astra:high"},
 			wantCommand: "claude",
 			wantArgs:    "--model fable --effort high",
 		},
 		{
 			name:      "bare task model names the prefixed rewrite",
-			args:      []string{"--task-model", "gpt-6-astra:medium"},
-			wantError: `--task-model / task_model "gpt-6-astra:medium" is missing a provider prefix; write "codex:gpt-6-astra:medium"`,
+			args:      []string{"--task-model", "gpt-6.2-astra:medium"},
+			wantError: `--task-model / task_model "gpt-6.2-astra:medium" is missing a provider prefix; write "codex:gpt-6.2-astra:medium"`,
 		},
 		{
 			name:        "claude task runs under an inherited codex review model",
 			global:      inheritedModels,
-			args:        []string{"--task-model", "claude:fable:high", "--external-reviewers", "codex:gpt-6-astra:high"},
+			args:        []string{"--task-model", "claude:fable:high", "--external-reviewers", "codex:gpt-6.2-astra:high"},
 			wantCommand: "claude",
 			wantArgs:    "--model fable --effort high",
 		},
 		{
 			name:        "removed global executor key fails before any executor starts",
-			global:      "executor = codex\ntask_model = codex:gpt-6-astra:medium\n",
+			global:      "executor = codex\ntask_model = codex:gpt-6.2-astra:medium\n",
 			wantErrPart: "parse global config",
 		},
 		{
@@ -66,9 +66,9 @@ func TestRunModelProviderAcceptance(t *testing.T) {
 		},
 		{
 			name:        "codex wrapper runs a codex task",
-			global:      "codex_command = codex-wrapper\ntask_model = codex:gpt-6-astra:medium\n",
+			global:      "codex_command = codex-wrapper\ntask_model = codex:gpt-6.2-astra:medium\n",
 			wantCommand: "codex-wrapper",
-			wantArgs:    `model="gpt-6-astra"`,
+			wantArgs:    `model="gpt-6.2-astra"`,
 		},
 		{
 			// the real codex binary would reject codex:fable as a claude model under codex

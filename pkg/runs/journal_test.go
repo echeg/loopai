@@ -370,7 +370,7 @@ func TestJournalUsageRoundTrip(t *testing.T) {
 		{name: "with cost", ev: Event{Type: EventUsage, Provider: "claude", Model: "claude-opus-4",
 			Phase: status.PhaseTask, InputTokens: 12, CachedInputTokens: 3400, CacheWriteInputTokens: 560,
 			OutputTokens: 78, CostUSD: new(1.25)}},
-		{name: "without cost", ev: Event{Type: EventUsage, Provider: "codex", Model: "gpt-6-astra",
+		{name: "without cost", ev: Event{Type: EventUsage, Provider: "codex", Model: "gpt-6.2-astra",
 			Phase: status.PhaseReview, InputTokens: 900, CachedInputTokens: 100, OutputTokens: 50}},
 		{name: "zero cache counts", ev: Event{Type: EventUsage, Provider: "claude", Phase: status.PhasePlan,
 			InputTokens: 7, OutputTokens: 8, CostUSD: new(0.01)}},

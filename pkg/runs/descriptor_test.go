@@ -27,7 +27,7 @@ func TestDescriptorRoundTrip(t *testing.T) {
 		PID:         41231,
 		PIDStart:    "1729610400.123456",
 		Executable:  "/Users/u/.local/bin/loopai",
-		Argv:        []string{"--task-model", "codex:gpt-6-astra:high", "--external-reviewers=", "docs/plans/20261022-feature-x.md"},
+		Argv:        []string{"--task-model", "codex:gpt-6.2-astra:high", "--external-reviewers=", "docs/plans/20261022-feature-x.md"},
 		EnvOptions:  map[string]string{"LOOPAI_CONFIG_DIR": "/Users/u/alt"},
 		Cwd:         root,
 		Mode:        "full",

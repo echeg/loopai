@@ -1355,7 +1355,7 @@ func TestValuesLoader_Load_RemovedKeys(t *testing.T) {
 
 func TestValuesLoader_Load_WithoutRemovedKeysUnchanged(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config")
-	content := `task_model = codex:gpt-6-astra:medium
+	content := `task_model = codex:gpt-6.2-astra:medium
 review_model = claude:opus:high
 external_reviewers = claude:opus:high
 codex_command = /opt/codex
@@ -1365,7 +1365,7 @@ codex_sandbox = workspace-write
 
 	values, err := newValuesLoader(defaultsFS).Load("", cfgPath)
 	require.NoError(t, err)
-	assert.Equal(t, "codex:gpt-6-astra:medium", values.TaskModel)
+	assert.Equal(t, "codex:gpt-6.2-astra:medium", values.TaskModel)
 	assert.Equal(t, "claude:opus:high", values.ReviewModel)
 	assert.Equal(t, "claude:opus:high", values.ExternalReviewers)
 	assert.True(t, values.ExternalReviewersSet)

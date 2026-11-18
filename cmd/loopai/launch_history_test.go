@@ -46,11 +46,11 @@ func TestReadLaunchHistory(t *testing.T) {
 		{
 			name: "order preserved",
 			content: "2026-10-06T12:34:56Z\tt3\t--task-model claude:opus:high\n" +
-				"2026-10-05T08:00:00Z\torca\t--task-model codex:gpt-6-astra --external-reviewers claude:opus\n" +
+				"2026-10-05T08:00:00Z\torca\t--task-model codex:gpt-6.2-astra --external-reviewers claude:opus\n" +
 				"2026-10-04T09:30:00Z\tcli\t\n",
 			want: []launchEntry{
 				{When: t1, Launcher: launcherT3, Flags: "--task-model claude:opus:high"},
-				{When: t2, Launcher: launcherOrca, Flags: "--task-model codex:gpt-6-astra --external-reviewers claude:opus"},
+				{When: t2, Launcher: launcherOrca, Flags: "--task-model codex:gpt-6.2-astra --external-reviewers claude:opus"},
 				{When: t3, Launcher: launcherCLI, Flags: ""},
 			},
 		},
@@ -128,12 +128,12 @@ func TestRecordLaunchDedupKeepsNewerLauncher(t *testing.T) {
 	base := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 
 	require.NoError(t, recordLaunch(path, launchEntry{When: base, Launcher: launcherOrca, Flags: "--task-model claude:opus"}))
-	require.NoError(t, recordLaunch(path, launchEntry{When: base.Add(time.Minute), Launcher: launcherCLI, Flags: "--task-model codex:gpt-6-astra"}))
+	require.NoError(t, recordLaunch(path, launchEntry{When: base.Add(time.Minute), Launcher: launcherCLI, Flags: "--task-model codex:gpt-6.2-astra"}))
 	require.NoError(t, recordLaunch(path, launchEntry{When: base.Add(2 * time.Minute), Launcher: launcherT3, Flags: "--task-model claude:opus"}))
 
 	assert.Equal(t, []launchEntry{
 		{When: base.Add(2 * time.Minute), Launcher: launcherT3, Flags: "--task-model claude:opus"},
-		{When: base.Add(time.Minute), Launcher: launcherCLI, Flags: "--task-model codex:gpt-6-astra"},
+		{When: base.Add(time.Minute), Launcher: launcherCLI, Flags: "--task-model codex:gpt-6.2-astra"},
 	}, readLaunchHistory(path))
 }
 
@@ -202,7 +202,7 @@ func TestRecordLaunchErrors(t *testing.T) {
 func TestLaunchFlags(t *testing.T) {
 	codexChain := externalReviewSelection{Resolved: true, Explicit: true, Reviewers: []resolvedReviewer{
 		{Provider: config.ExternalReviewToolClaude, Model: "opus", Effort: "high", Spec: "opus:high"},
-		{Provider: config.ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "high", Spec: "gpt-6-astra:high"},
+		{Provider: config.ExternalReviewToolCodex, Model: "gpt-6.2-astra", Effort: "high", Spec: "gpt-6.2-astra:high"},
 	}}
 	tests := []struct {
 		name string
@@ -226,7 +226,7 @@ func TestLaunchFlags(t *testing.T) {
 		{name: "review only", o: opts{ReviewModel: "claude::max"}, cfg: &config.Config{},
 			want: "--review-model claude::max"},
 		{name: "explicit chain with efforts", o: opts{TaskModel: "claude:fable"}, cfg: &config.Config{}, sel: codexChain,
-			want: "--task-model claude:fable --external-reviewers claude:opus:high,codex:gpt-6-astra:high"},
+			want: "--task-model claude:fable --external-reviewers claude:opus:high,codex:gpt-6.2-astra:high"},
 		{name: "explicit chain without models", cfg: &config.Config{},
 			sel: externalReviewSelection{Explicit: true, Reviewers: []resolvedReviewer{
 				{Provider: config.ExternalReviewToolCodex},
@@ -249,7 +249,7 @@ func TestLaunchFlags(t *testing.T) {
 			want: "--task-model claude:opus"},
 		{name: "value outside charset omitted", o: opts{TaskModel: "claude:opus high", ReviewModel: "codex:$(x)"},
 			cfg: &config.Config{}, sel: codexChain,
-			want: "--external-reviewers claude:opus:high,codex:gpt-6-astra:high"},
+			want: "--external-reviewers claude:opus:high,codex:gpt-6.2-astra:high"},
 		{name: "CLI override beating config",
 			o:    opts{TaskModel: "codex:gpt-5.6-sol", ReviewModel: "claude:opus:xhigh"},
 			cfg:  &config.Config{TaskModel: "claude:sonnet", ReviewModel: "claude:sonnet:low"},
@@ -265,12 +265,12 @@ func TestLaunchFlags(t *testing.T) {
 // TestLaunchFlagsResolvedChain runs the configured chain through the real resolver: the
 // recorded value is the chain as configured, not the provider defaults filled into it.
 func TestLaunchFlagsResolvedChain(t *testing.T) {
-	cfg := &config.Config{ExternalReviewers: "claude,claude:sonnet,codex::max,codex:gpt-6-astra:high", ExternalReviewersSet: true}
+	cfg := &config.Config{ExternalReviewers: "claude,claude:sonnet,codex::max,codex:gpt-6.2-astra:high", ExternalReviewersSet: true}
 	sel, err := resolveReviewerChain(cfg, processor.ModeFull)
 	require.NoError(t, err)
 	require.Len(t, sel.Reviewers, 4)
 	assert.Equal(t, "opus", sel.Reviewers[0].Model, "the resolver fills the claude default")
-	assert.Equal(t, "--external-reviewers claude,claude:sonnet,codex::max,codex:gpt-6-astra:high", launchFlags(opts{}, cfg, sel))
+	assert.Equal(t, "--external-reviewers claude,claude:sonnet,codex::max,codex:gpt-6.2-astra:high", launchFlags(opts{}, cfg, sel))
 }
 
 func TestLauncherFor(t *testing.T) {

@@ -490,12 +490,12 @@ func TestDetachLaunchACPThread(t *testing.T) {
 		f := newDetachLaunchFixture(t)
 		t.Setenv("LOOPAI_T3_TOKEN", "t3-bearer-token-6f1c")
 		stdout, stderr, err := f.launch(t, "--detach", "--acp-thread="+thread, "--acp-session="+session,
-			"--task-model=codex:gpt-6-astra:high", detachLaunchPlan)
+			"--task-model=codex:gpt-6.2-astra:high", detachLaunchPlan)
 		require.NoError(t, err, stderr)
 		desc := f.onlyRun(t)
 		assert.Equal(t, "run: "+desc.ID+"\nfollow: loopai --attach "+desc.ID+"\n", stdout)
 		assert.Equal(t, runs.Origin{Kind: runs.OriginT3Thread, ThreadID: thread, ACPSessionID: session}, desc.Origin)
-		assert.Equal(t, []string{"--task-model=codex:gpt-6-astra:high", detachLaunchPlan}, desc.Argv,
+		assert.Equal(t, []string{"--task-model=codex:gpt-6.2-astra:high", detachLaunchPlan}, desc.Argv,
 			"neither id is a run argument")
 		assert.JSONEq(t, `{"t3_token":""}`, f.dump(t, desc.ID).Secret, "a loopai thread's run gets no T3 token")
 	})

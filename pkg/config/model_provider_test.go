@@ -18,7 +18,7 @@ func TestModelProvider(t *testing.T) {
 		{spec: "haiku", want: ExternalReviewToolClaude},
 		{spec: "fable:high", want: ExternalReviewToolClaude},
 		{spec: "fable-next", want: ExternalReviewToolClaude},
-		{spec: "gpt-6-astra:medium", want: ExternalReviewToolCodex},
+		{spec: "gpt-6.2-astra:medium", want: ExternalReviewToolCodex},
 		{spec: "GPT-5", want: ExternalReviewToolCodex},
 		{spec: "codex-mini", want: ExternalReviewToolCodex},
 		{spec: "o1", want: ExternalReviewToolCodex},
@@ -37,7 +37,7 @@ func TestModelProvider(t *testing.T) {
 		{spec: "github-copilot/claude-opus-4.6"},
 		{spec: " \t\n"},
 		{spec: " \tOpus:high\n", want: ExternalReviewToolClaude},
-		{spec: " gpt-6-astra:medium ", want: ExternalReviewToolCodex},
+		{spec: " gpt-6.2-astra:medium ", want: ExternalReviewToolCodex},
 		{spec: "opus:high:extra", want: ExternalReviewToolClaude},
 		{spec: "my-alias:opus"},
 	}

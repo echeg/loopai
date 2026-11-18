@@ -474,7 +474,7 @@ creation; the latter two inherit `task_model` whole, provider included, when uns
 `--pass-claude-md` unless Codex runs the task or review phase. It runs inside
 `applyCLIOverrides`, before startup spec validation, and resolves an invalid spec to claude,
 so when that trips the gate it returns `validateModelSpecs`' error instead: an unmigrated
-`task_model = gpt-6-astra` beside `pass_claude_md` must get the prefixed rewrite. The
+`task_model = gpt-6.2-astra` beside `pass_claude_md` must get the prefixed rewrite. The
 processor does not read
 those fields: `processor.Config.taskSpec()`/`reviewSpec()` derive each phase's provider
 from its own spec, `executorFactory.Build` constructs the task and review executors from
@@ -684,7 +684,7 @@ choice on replay; any value outside `^[A-Za-z0-9._:,+-]+$`, the charset the thre
 drops that flag, so a skill never offers a string it would reject. `externalReviewSelection.flagValue`
 renders each reviewer from `resolvedReviewer.Spec`, the `model[:effort]` remainder as configured, and
 never from the resolved `Model`/`Effort`: `ResolveExternalReviewerModelEffort` fills Claude's
-`opus`/`xhigh` and Codex's `gpt-6-astra`/`high` defaults and drops a Codex `max`, so a resolved rendering would freeze today's default
+`opus`/`xhigh` and Codex's `gpt-6.2-astra`/`high` defaults and drops a Codex `max`, so a resolved rendering would freeze today's default
 into every replay. A chain containing a `custom` reviewer renders empty, since `custom_review_script`
 cannot travel through the flag, and an explicitly empty chain is omitted for the same reason; a replay
 of either selects the automatic reviewer. The `run()` hook sits before plan selection, so a full-mode
@@ -891,7 +891,7 @@ or a facts-only Summary also uses the legacy body; existing PR metadata validati
 still applies to that fallback.
 Section parsing preserves headings inside backtick or tilde code fences as section content.
 
-Claude runs every phase by default. `task_model = codex:<model>[:effort]` moves tasks to Codex, and with them planning and the review block unless `plan_model` or `review_model` names another provider. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. With the chain unset, the provider other than `task_model`'s (`review_model`'s under `--review` and `--external-only`) is selected when installed. A reviewer spec missing its model or effort gets the reviewer default segment by segment — `opus:xhigh` for Claude, `gpt-6-astra:high` for Codex, a dropped Codex `max` counting as missing — while a bare `codex` phase spec keeps the codex CLI's own defaults. The embedded config cannot pin the automatic reviewer through `external_reviewers`: embedded values reset `ExternalReviewersSet`, and automatic selection never reads the key. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
+Claude runs every phase by default. `task_model = codex:<model>[:effort]` moves tasks to Codex, and with them planning and the review block unless `plan_model` or `review_model` names another provider. `external_reviewers` entries require explicit `claude`, `codex`, or `custom` providers; duplicate providers with different models are supported. With the chain unset, the provider other than `task_model`'s (`review_model`'s under `--review` and `--external-only`) is selected when installed. A reviewer spec missing its model or effort gets the reviewer default segment by segment — `opus:xhigh` for Claude, `gpt-6.2-astra:high` for Codex, a dropped Codex `max` counting as missing — while a bare `codex` phase spec keeps the codex CLI's own defaults. The embedded config cannot pin the automatic reviewer through `external_reviewers`: embedded values reset `ExternalReviewersSet`, and automatic selection never reads the key. Missing automatic reviewers are skipped with a warning; missing explicit reviewers are errors.
 
 Codex invocations use additive `-c` overrides so user `~/.codex/config.toml` settings remain available. loopai never writes to `~/.codex/`. `--pass-claude-md` lets Codex discover project `CLAUDE.md`; it does not install or link user-level files.
 

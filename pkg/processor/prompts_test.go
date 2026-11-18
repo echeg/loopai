@@ -2454,7 +2454,7 @@ const (
 
 func TestPromptBuilder_CrossProviderRendering(t *testing.T) {
 	t.Run("codex task with claude review", func(t *testing.T) {
-		b := crossProviderBuilder("codex:gpt-6-astra:medium", "claude:opus:high")
+		b := crossProviderBuilder("codex:gpt-6.2-astra:medium", "claude:opus:high")
 
 		task := b.TaskPrompt()
 		assert.True(t, strings.HasPrefix(task, codexTaskGuidance), "codex task phase keeps its task directives")
@@ -2476,7 +2476,7 @@ func TestPromptBuilder_CrossProviderRendering(t *testing.T) {
 	})
 
 	t.Run("claude task with codex review", func(t *testing.T) {
-		b := crossProviderBuilder("claude:opus:high", "codex:gpt-6-astra:high")
+		b := crossProviderBuilder("claude:opus:high", "codex:gpt-6.2-astra:high")
 
 		task := b.TaskPrompt()
 		assert.NotContains(t, task, "Codex task-execution directives", "claude task phase gets no codex directives")
@@ -2504,20 +2504,20 @@ func TestPromptBuilder_CrossProviderRendering(t *testing.T) {
 	// the external prompt is run by the reviewer, not the review block, so its agents follow
 	// the reviewer; a custom script has nothing to match and keeps the review block's syntax
 	t.Run("external prompt follows the reviewer", func(t *testing.T) {
-		codexReview := crossProviderBuilder("claude:opus:high", "codex:gpt-6-astra:high")
+		codexReview := crossProviderBuilder("claude:opus:high", "codex:gpt-6.2-astra:high")
 		claudeExternal := codexReview.ExternalReviewPrompt(config.ExternalReviewToolClaude, false, "fixed it")
 		assert.Contains(t, claudeExternal, claudeAgentShape)
 		assert.NotContains(t, claudeExternal, codexAgentShape)
 		assert.Contains(t, codexReview.ExternalReviewPrompt(config.ExternalReviewToolCustom, false, "fixed it"), codexAgentShape)
 
-		claudeReview := crossProviderBuilder("codex:gpt-6-astra:medium", "claude:opus:high")
+		claudeReview := crossProviderBuilder("codex:gpt-6.2-astra:medium", "claude:opus:high")
 		codexExternal := claudeReview.ExternalReviewPrompt(config.ExternalReviewToolCodex, false, "fixed it")
 		assert.Contains(t, codexExternal, codexAgentShape)
 		assert.NotContains(t, codexExternal, claudeAgentShape)
 	})
 
 	t.Run("review spec inherits the task provider when unset", func(t *testing.T) {
-		b := crossProviderBuilder("codex:gpt-6-astra:medium", "")
+		b := crossProviderBuilder("codex:gpt-6.2-astra:medium", "")
 		assert.True(t, strings.HasPrefix(b.FirstReviewPrompt(), codexReviewGuidance))
 		assert.Contains(t, b.FirstReviewPrompt(), codexAgentShape)
 	})
@@ -2528,9 +2528,9 @@ func TestPromptBuilder_DynamicCatalogFollowsReviewProvider(t *testing.T) {
 		name, taskModel, reviewModel string
 		want, notWant                string
 	}{
-		{name: "codex task, claude review", taskModel: "codex:gpt-6-astra", reviewModel: "claude:opus",
+		{name: "codex task, claude review", taskModel: "codex:gpt-6.2-astra", reviewModel: "claude:opus",
 			want: claudeAgentShape, notWant: codexAgentShape},
-		{name: "claude task, codex review", taskModel: "claude:opus", reviewModel: "codex:gpt-6-astra",
+		{name: "claude task, codex review", taskModel: "claude:opus", reviewModel: "codex:gpt-6.2-astra",
 			want: codexAgentShape, notWant: claudeAgentShape},
 	}
 	for _, tc := range tests {
@@ -2550,9 +2550,9 @@ func TestPromptBuilder_EvaluatorNameFollowsReviewProvider(t *testing.T) {
 		name, taskModel, reviewModel, reviewer string
 		want, notWant                          string
 	}{
-		{name: "codex task, claude review", taskModel: "codex:gpt-6-astra", reviewModel: "claude:opus",
+		{name: "codex task, claude review", taskModel: "codex:gpt-6.2-astra", reviewModel: "claude:opus",
 			reviewer: config.ExternalReviewToolCodex, want: "Claude (evaluator) responded to Codex's findings", notWant: "Codex (evaluator)"},
-		{name: "claude task, codex review", taskModel: "claude:opus", reviewModel: "codex:gpt-6-astra",
+		{name: "claude task, codex review", taskModel: "claude:opus", reviewModel: "codex:gpt-6.2-astra",
 			reviewer: config.ExternalReviewToolCodex, want: "Codex (evaluator) responded to Codex's findings", notWant: "Claude (evaluator)"},
 		{name: "unset specs default to claude", reviewer: config.ExternalReviewToolCodex,
 			want: "Claude (evaluator)", notWant: "Codex (evaluator)"},

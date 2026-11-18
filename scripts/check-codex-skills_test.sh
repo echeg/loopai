@@ -160,7 +160,7 @@ for spelling in 'loopai --codex docs/plans/x.md' \
 done
 # the surviving codex flag, the per-phase spec grammar, --t3-thread, and migration hints stay allowed
 write_codex_skill loopai-orca
-printf '%s\n' "loopai --codex-args='-c x=1' --task-model codex:gpt-6-astra:medium" 'the codex executor' \
+printf '%s\n' "loopai --codex-args='-c x=1' --task-model codex:gpt-6.2-astra:medium" 'the codex executor' \
 	'`--codex` was removed; write `--task-model codex:<model>`' \
 	'`finalize_enabled` was removed; write `finalize = sync|pr|merge`' 'finalize = pr' \
 	"loopai --detach --t3-thread 'thread:a%3Ab' docs/plans/x.md" '--t3-thread=abc' \

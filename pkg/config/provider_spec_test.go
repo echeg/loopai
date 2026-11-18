@@ -15,24 +15,24 @@ func TestParseProviderSpec(t *testing.T) {
 		wantErr error
 		wantMsg string
 	}{
-		{name: "provider model effort", value: "codex:gpt-6-astra:high",
-			want: ProviderSpec{Provider: ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "high"}},
+		{name: "provider model effort", value: "codex:gpt-6.2-astra:high",
+			want: ProviderSpec{Provider: ExternalReviewToolCodex, Model: "gpt-6.2-astra", Effort: "high"}},
 		{name: "provider model", value: "claude:opus", want: ProviderSpec{Provider: ExternalReviewToolClaude, Model: "opus"}},
 		{name: "provider only", value: "codex", want: ProviderSpec{Provider: ExternalReviewToolCodex}},
 		{name: "default model explicit effort", value: "codex::medium",
 			want: ProviderSpec{Provider: ExternalReviewToolCodex, Effort: "medium"}},
 		{name: "trailing separator leaves model empty", value: "claude:", want: ProviderSpec{Provider: ExternalReviewToolClaude}},
 		{name: "custom", value: "custom", want: ProviderSpec{Provider: ExternalReviewToolCustom}},
-		{name: "surrounding and inner spaces", value: "  codex : gpt-6-astra : xhigh  ",
-			want: ProviderSpec{Provider: ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "xhigh"}},
+		{name: "surrounding and inner spaces", value: "  codex : gpt-6.2-astra : xhigh  ",
+			want: ProviderSpec{Provider: ExternalReviewToolCodex, Model: "gpt-6.2-astra", Effort: "xhigh"}},
 		{name: "provider is case-insensitive", value: "Claude:Opus:high",
 			want: ProviderSpec{Provider: ExternalReviewToolClaude, Model: "Opus", Effort: "high"}},
 		{name: "provider prefix wins over model-name prefix", value: "codex:high",
 			want: ProviderSpec{Provider: ExternalReviewToolCodex, Model: "high"}},
 		{name: "empty string", value: "", wantErr: ErrEmptyProviderSpec, wantMsg: "provider[:model[:effort]]"},
 		{name: "whitespace only", value: "   ", wantErr: ErrEmptyProviderSpec},
-		{name: "four segments", value: "codex:gpt-6-astra:high:extra", wantErr: ErrTooManySpecSegments,
-			wantMsg: `"codex:gpt-6-astra:high:extra" has too many ':' separators; expected provider[:model[:effort]]`},
+		{name: "four segments", value: "codex:gpt-6.2-astra:high:extra", wantErr: ErrTooManySpecSegments,
+			wantMsg: `"codex:gpt-6.2-astra:high:extra" has too many ':' separators; expected provider[:model[:effort]]`},
 		{name: "unknown provider", value: "gemini:pro", wantErr: ErrUnknownProvider,
 			wantMsg: `"gemini:pro" names unknown provider "gemini"; expected claude, codex, or custom`},
 		{name: "legacy auto is not a provider", value: "auto", wantErr: ErrUnknownProvider},
@@ -64,8 +64,8 @@ func TestParseProviderSpec_MissingProviderSuggestsRewrite(t *testing.T) {
 		value   string
 		wantMsg string
 	}{
-		{name: "codex model with effort", value: "gpt-6-astra:medium",
-			wantMsg: `"gpt-6-astra:medium" is missing a provider prefix; write "codex:gpt-6-astra:medium"`},
+		{name: "codex model with effort", value: "gpt-6.2-astra:medium",
+			wantMsg: `"gpt-6.2-astra:medium" is missing a provider prefix; write "codex:gpt-6.2-astra:medium"`},
 		{name: "claude alias with effort", value: "opus:high",
 			wantMsg: `"opus:high" is missing a provider prefix; write "claude:opus:high"`},
 		{name: "full claude model name", value: "claude-sonnet-4-5",
@@ -106,9 +106,9 @@ func TestProviderSpec_ModelSpec(t *testing.T) {
 		want string
 	}{
 		{name: "provider only", spec: ProviderSpec{Provider: ExternalReviewToolCodex}, want: ""},
-		{name: "model only", spec: ProviderSpec{Provider: ExternalReviewToolCodex, Model: "gpt-6-astra"}, want: "gpt-6-astra"},
-		{name: "model and effort", spec: ProviderSpec{Provider: ExternalReviewToolCodex, Model: "gpt-6-astra", Effort: "high"},
-			want: "gpt-6-astra:high"},
+		{name: "model only", spec: ProviderSpec{Provider: ExternalReviewToolCodex, Model: "gpt-6.2-astra"}, want: "gpt-6.2-astra"},
+		{name: "model and effort", spec: ProviderSpec{Provider: ExternalReviewToolCodex, Model: "gpt-6.2-astra", Effort: "high"},
+			want: "gpt-6.2-astra:high"},
 		{name: "effort keeps its leading colon", spec: ProviderSpec{Provider: ExternalReviewToolCodex, Effort: "medium"}, want: ":medium"},
 	}
 	for _, tc := range tests {

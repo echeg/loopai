@@ -448,10 +448,10 @@ loopai --review
 loopai --external-only
 
 # use Codex for planning, tasks, fixes, and internal reviews
-loopai --task-model codex:gpt-6-astra:medium docs/plans/feature.md
+loopai --task-model codex:gpt-6.2-astra:medium docs/plans/feature.md
 
 # write code with Codex, review and fix with Claude
-loopai --task-model codex:gpt-6-astra:medium --review-model claude:opus:high docs/plans/feature.md
+loopai --task-model codex:gpt-6.2-astra:medium --review-model claude:opus:high docs/plans/feature.md
 
 # let Codex also discover project-level CLAUDE.md
 loopai --task-model codex --pass-claude-md docs/plans/feature.md
@@ -977,11 +977,11 @@ Claude-only and Codex downgrades it with a warning.
 Write with Codex and review with Claude:
 
 ```bash
-loopai --task-model codex:gpt-6-astra:medium --review-model claude:opus:high docs/plans/feature.md
+loopai --task-model codex:gpt-6.2-astra:medium --review-model claude:opus:high docs/plans/feature.md
 ```
 
 ```ini
-task_model = codex:gpt-6-astra:medium
+task_model = codex:gpt-6.2-astra:medium
 review_model = claude:opus:high
 ```
 
@@ -992,7 +992,7 @@ phase the mode runs, provider first, with Codex-only settings indented under the
 phase:
 
 ```text
-task:            codex gpt-6-astra:medium
+task:            codex gpt-6.2-astra:medium
   sandbox:       danger-full-access
 review:          claude opus:high
 external review: claude opus:xhigh (auto-selected)
@@ -1004,7 +1004,7 @@ do an effort written where the model goes and a model that belongs to the other 
 other unprefixed value fails as an unknown provider:
 
 ```text
-error: --task-model / task_model "gpt-6-astra:medium" is missing a provider prefix; write "codex:gpt-6-astra:medium"
+error: --task-model / task_model "gpt-6.2-astra:medium" is missing a provider prefix; write "codex:gpt-6.2-astra:medium"
 error: --task-model / task_model ":high" is missing a provider prefix; write "claude::high" or "codex::high"
 error: --task-model / task_model value "codex:high" puts reasoning effort "high" in the model segment; write "codex::high" to keep the provider's default model
 error: --task-model / task_model "codex:opus" names a claude model under the codex provider
@@ -1030,13 +1030,13 @@ The former provider switches fail at startup naming their replacement:
 | `--external-review-tool X`, `external_review_tool = X` | `--external-reviewers X[:model[:effort]]`, `external_reviewers = ...`; for `none` an empty `external_reviewers =`, for `auto` leave it unset |
 | `--external-review-model M`, `external_review_model = M` | the model segment of the matching `external_reviewers` entry |
 | `codex_model`, `codex_reasoning_effort` | the model and effort segments of each codex spec |
-| `task_model = gpt-6-astra:medium` | `task_model = codex:gpt-6-astra:medium` |
+| `task_model = gpt-6.2-astra:medium` | `task_model = codex:gpt-6.2-astra:medium` |
 | `finalize_enabled = true` | `finalize = sync`, `pr`, or `merge` (see [Finalize](#finalize)) |
 
 Removing `codex_model` and `codex_reasoning_effort` also removed their embedded defaults
 (`gpt-5.5` at `xhigh`). A bare `codex` phase spec now uses the codex CLI's own defaults from
 `~/.codex/config.toml`, while a Codex reviewer, the automatic one included, defaults to
-`gpt-6-astra:high`; set `external_reviewers = codex:gpt-5.5:xhigh` to keep the former reviewer.
+`gpt-6.2-astra:high`; set `external_reviewers = codex:gpt-5.5:xhigh` to keep the former reviewer.
 
 Codex invocations are composed by loopai and use additive `-c` overrides, so `~/.codex/config.toml`
 settings remain available. `--codex-args`, or the `codex_args` config key, appends extra arguments
@@ -1145,8 +1145,8 @@ Reviewers run in list order. Each reviewer loops until it reports no findings, r
 `max_external_iterations` cap, or triggers its own `review_patience` threshold; then the next
 reviewer starts. Reviewers remain read-only: the `review_model` provider (falling back to
 `task_model`'s) evaluates their findings and applies fixes. A bare `claude` entry defaults to
-`opus:xhigh` and a bare `codex` entry, like the automatic Codex reviewer, to `gpt-6-astra:high`;
-a missing model or effort is filled separately, so `codex::medium` means `gpt-6-astra:medium`.
+`opus:xhigh` and a bare `codex` entry, like the automatic Codex reviewer, to `gpt-6.2-astra:high`;
+a missing model or effort is filled separately, so `codex::medium` means `gpt-6.2-astra:medium`.
 Codex ignores the Claude-only `max` effort with a warning and falls back to `high`. Use
 `provider::effort` to override only effort.
 

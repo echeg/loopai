@@ -362,7 +362,7 @@ func TestRunner_RunFull_CodexExecutor_ExplicitNoneSkipsExternalReview(t *testing
 	appCfg := testAppConfig(t)
 
 	cfg := Config{
-		TaskModel:          "codex:gpt-6-astra",
+		TaskModel:          "codex:gpt-6.2-astra",
 		Mode:               ModeFull,
 		ExternalReviewTool: "none",
 		PlanFile:           planFile,
@@ -774,7 +774,7 @@ func TestRunner_CodexAndPostReview_ShortCircuitWhenCodexExecutorDisablesExternal
 
 	appCfg := testAppConfig(t)
 	cfg := Config{
-		TaskModel:          "codex:gpt-6-astra",
+		TaskModel:          "codex:gpt-6.2-astra",
 		Mode:               ModeFull,
 		ExternalReviewTool: "none",
 		PlanFile:           planFile,
@@ -918,7 +918,7 @@ func TestRunner_Finalize_CodexExecutor_RunsAllPhasesThroughSharedInstance(t *tes
 
 	appCfg := testAppConfig(t)
 	cfg := Config{
-		TaskModel:          "codex:gpt-6-astra",
+		TaskModel:          "codex:gpt-6.2-astra",
 		Mode:               ModeFull,
 		ExternalReviewTool: "none",
 		PlanFile:           planFile,
@@ -967,7 +967,7 @@ func TestRunner_CodexExternalOnly_ClaudeFindingsAreHandledByPrimaryCodex(t *test
 
 	appCfg := testAppConfig(t)
 	cfg := Config{
-		TaskModel: "codex:gpt-6-astra",
+		TaskModel: "codex:gpt-6.2-astra",
 		Mode:      ModeCodexOnly, MaxIterations: 50, IterationDelayMs: 1,
 		CodexEnabled: true, FinalizeEnabled: true, FinalizeBase: "master",
 		ExternalReviewTool: config.ExternalReviewToolClaude, AppConfig: appCfg,
@@ -1733,8 +1733,8 @@ func TestToPhaseConfig_CarriesEachPhaseProvider(t *testing.T) {
 		wantReview  string
 	}{
 		{name: "unset specs default to claude", wantTask: "claude", wantReview: "claude"},
-		{name: "review inherits the task provider", taskModel: "codex:gpt-6-astra", wantTask: "codex", wantReview: "codex"},
-		{name: "codex task with claude review", taskModel: "codex:gpt-6-astra:medium", reviewModel: "claude:opus:high",
+		{name: "review inherits the task provider", taskModel: "codex:gpt-6.2-astra", wantTask: "codex", wantReview: "codex"},
+		{name: "codex task with claude review", taskModel: "codex:gpt-6.2-astra:medium", reviewModel: "claude:opus:high",
 			wantTask: "codex", wantReview: "claude"},
 		{name: "claude task with codex review", taskModel: "claude:opus", reviewModel: "codex::high",
 			wantTask: "claude", wantReview: "codex"},
@@ -1755,8 +1755,8 @@ func TestRunner_PostReviewSkipNamesTheReviewProvider(t *testing.T) {
 		reviewModel string
 		want        string
 	}{
-		{name: "claude review under a codex task", taskModel: "codex:gpt-6-astra", reviewModel: "claude:opus", want: "claude"},
-		{name: "codex review under a claude task", taskModel: "claude:opus", reviewModel: "codex:gpt-6-astra", want: "codex"},
+		{name: "claude review under a codex task", taskModel: "codex:gpt-6.2-astra", reviewModel: "claude:opus", want: "claude"},
+		{name: "codex review under a claude task", taskModel: "claude:opus", reviewModel: "codex:gpt-6.2-astra", want: "codex"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := Config{Mode: ModeReview, PlanFile: "plan.md", TaskModel: tc.taskModel, ReviewModel: tc.reviewModel}

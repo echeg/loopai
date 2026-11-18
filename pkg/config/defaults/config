@@ -31,7 +31,7 @@ claude_swap_enabled = true
 # plan_model: provider and model for interactive plan creation
 # syntax: provider[:model[:effort]] where provider is claude or codex, model is a
 # model name for that provider (fable/opus/sonnet/haiku or a full claude model ID such as
-# claude-sonnet-4-5-20250929; gpt-6-astra or another codex model), and effort is
+# claude-sonnet-4-5-20250929; gpt-6.2-astra or another codex model), and effort is
 # low/medium/high/xhigh/max. the provider prefix is mandatory: "claude:opus:high" sets all
 # three, "codex" uses the codex CLI's own defaults from ~/.codex/config.toml, and
 # "codex::medium" keeps codex's default model with an explicit effort.
@@ -47,7 +47,7 @@ task_model = claude:opus:high
 # review_model: provider and model for the review block
 # same provider[:model[:effort]] syntax as plan_model. its provider runs internal review,
 # evaluation of external findings, finalize, and the completion report, so
-# task_model = codex:gpt-6-astra:medium with review_model = claude:opus:high writes code
+# task_model = codex:gpt-6.2-astra:medium with review_model = claude:opus:high writes code
 # with codex and reviews it with claude.
 # falls back to task_model, provider included, when empty.
 # use a cheaper/faster model (e.g., claude:sonnet) or lower effort to reduce review cost.
@@ -155,8 +155,8 @@ codex_sandbox = read-only
 # not installed and disabled by codex_enabled = false
 # an explicitly empty value clears an inherited chain and disables external review
 # reviewers run sequentially until clean, their per-reviewer iteration cap, or patience
-# bare claude defaults to opus:xhigh and bare codex to gpt-6-astra:high; a missing
-# model or effort is filled separately, so codex::medium means gpt-6-astra:medium
+# bare claude defaults to opus:xhigh and bare codex to gpt-6.2-astra:high; a missing
+# model or effort is filled separately, so codex::medium means gpt-6.2-astra:medium
 # max effort is Claude-only; Codex ignores it with a warning
 # providers may repeat; every entry creates a separate review loop
 # reviewers only report findings; review_model's provider (or task_model's) evaluates and fixes them

@@ -6,7 +6,7 @@ loopai runs each phase on the provider its model spec names: `claude` (Claude Co
 
 ## Codex phases (`codex:` specs) — native codex path
 
-Every model spec is `provider[:model[:effort]]`. `task_model`'s provider runs tasks; `review_model`'s runs internal review, finding evaluation, finalize, and the report; `plan_model`'s runs plan creation. The last two fall back to `task_model` whole, provider included, so `task_model = codex:gpt-6-astra:medium` alone puts every phase on Codex, while adding `review_model = claude:opus:high` hands the review block to Claude. `codex` alone uses the codex CLI's own defaults from `~/.codex/config.toml`, and `codex::medium` keeps that default model with an explicit effort. External review remains available: with `external_reviewers` unset, loopai selects the provider other than `task_model`'s, so a Codex task phase is reviewed by Claude; `--review` and `--external-only` run no task phase and select the provider other than `review_model`'s. Set `external_reviewers =` (empty) to disable it.
+Every model spec is `provider[:model[:effort]]`. `task_model`'s provider runs tasks; `review_model`'s runs internal review, finding evaluation, finalize, and the report; `plan_model`'s runs plan creation. The last two fall back to `task_model` whole, provider included, so `task_model = codex:gpt-6.2-astra:medium` alone puts every phase on Codex, while adding `review_model = claude:opus:high` hands the review block to Claude. `codex` alone uses the codex CLI's own defaults from `~/.codex/config.toml`, and `codex::medium` keeps that default model with an explicit effort. External review remains available: with `external_reviewers` unset, loopai selects the provider other than `task_model`'s, so a Codex task phase is reviewed by Claude; `--review` and `--external-only` run no task phase and select the provider other than `review_model`'s. Set `external_reviewers =` (empty) to disable it.
 
 The former `--codex` flag and `executor = codex` key were removed and fail at startup naming this replacement, as do `codex_model` and `codex_reasoning_effort`, whose values now belong in the model and effort segments of each codex spec.
 
@@ -21,10 +21,10 @@ Why this path exists alongside `codex-as-claude.sh`:
 
 ```bash
 # one-off
-loopai --task-model codex:gpt-6-astra:medium docs/plans/feature.md
+loopai --task-model codex:gpt-6.2-astra:medium docs/plans/feature.md
 
 # codex writes, claude reviews
-loopai --task-model codex:gpt-6-astra:medium --review-model claude:opus:high docs/plans/feature.md
+loopai --task-model codex:gpt-6.2-astra:medium --review-model claude:opus:high docs/plans/feature.md
 
 # with project CLAUDE.md passthrough
 loopai --task-model codex --pass-claude-md docs/plans/feature.md
@@ -34,7 +34,7 @@ Or persist via config:
 
 ```ini
 # in ~/.config/loopai/config or .loopai/config
-task_model     = codex:gpt-6-astra:medium
+task_model     = codex:gpt-6.2-astra:medium
 pass_claude_md = true
 ```
 

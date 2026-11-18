@@ -4281,13 +4281,13 @@ func TestCodexUsage_result(t *testing.T) {
 		want       *Usage
 	}{
 		{name: "nil accumulator", usage: nil},
-		{name: "no totals", usage: &codexUsage{model: "gpt-6-astra"}},
+		{name: "no totals", usage: &codexUsage{model: "gpt-6.2-astra"}},
 		{
 			// codex counts cache reads and cache writes inside input_tokens; the three Usage input
 			// counts are disjoint, so their sum is codex's input_tokens again
 			name:  "cache reads and writes subtracted from input",
-			usage: &codexUsage{model: "gpt-6-astra", totals: &rolloutTokenUsage{InputTokens: 1000, CachedInputTokens: 600, CacheWriteInputTokens: 50, OutputTokens: 70}},
-			want:  &Usage{Model: "gpt-6-astra", InputTokens: 350, CachedInputTokens: 600, CacheWriteInputTokens: 50, OutputTokens: 70},
+			usage: &codexUsage{model: "gpt-6.2-astra", totals: &rolloutTokenUsage{InputTokens: 1000, CachedInputTokens: 600, CacheWriteInputTokens: 50, OutputTokens: 70}},
+			want:  &Usage{Model: "gpt-6.2-astra", InputTokens: 350, CachedInputTokens: 600, CacheWriteInputTokens: 50, OutputTokens: 70},
 		},
 		{
 			name:       "configured model when the rollout names none",
@@ -4322,7 +4322,7 @@ func TestCodexUsage_result(t *testing.T) {
 func TestCodexExecutor_processRolloutLine_Usage(t *testing.T) {
 	t.Parallel()
 	const (
-		turn   = `{"type":"turn_context","payload":{"model":"gpt-6-astra","summary":"auto","sandbox_policy":{"type":"read-only"}}}`
+		turn   = `{"type":"turn_context","payload":{"model":"gpt-6.2-astra","summary":"auto","sandbox_policy":{"type":"read-only"}}}`
 		first  = `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":5,"output_tokens":10,"total_tokens":110}}}}`
 		second = `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":200,"cache_write_input_tokens":7,"output_tokens":30,"total_tokens":330}}}}`
 		empty  = `{"type":"event_msg","payload":{"type":"token_count","info":null}}`
@@ -4335,9 +4335,9 @@ func TestCodexExecutor_processRolloutLine_Usage(t *testing.T) {
 	}{
 		{
 			name: "last token_count wins and null info keeps totals", lines: []string{turn, first, second, empty}, render: true,
-			want: codexUsage{model: "gpt-6-astra", totals: &rolloutTokenUsage{InputTokens: 300, CachedInputTokens: 200, CacheWriteInputTokens: 7, OutputTokens: 30}},
+			want: codexUsage{model: "gpt-6.2-astra", totals: &rolloutTokenUsage{InputTokens: 300, CachedInputTokens: 200, CacheWriteInputTokens: 7, OutputTokens: 30}},
 		},
-		{name: "null info only", lines: []string{turn, empty}, render: true, want: codexUsage{model: "gpt-6-astra"}},
+		{name: "null info only", lines: []string{turn, empty}, render: true, want: codexUsage{model: "gpt-6.2-astra"}},
 		{name: "child rollout is not counted", lines: []string{turn, first, second}},
 		{
 			name:  "wrong envelope is ignored",
@@ -4424,7 +4424,7 @@ func TestCodexExecutor_Run_Usage(t *testing.T) {
 		sessionID = "019e3bbe-9788-79f1-b668-0000000a0001"
 		childID   = "019e3bbe-9788-79f1-b668-0000000a0002"
 	)
-	mainUsage := &Usage{Model: "gpt-6-astra", InputTokens: 5300, CachedInputTokens: 24000, CacheWriteInputTokens: 1200, OutputTokens: 1100}
+	mainUsage := &Usage{Model: "gpt-6.2-astra", InputTokens: 5300, CachedInputTokens: 24000, CacheWriteInputTokens: 1200, OutputTokens: 1100}
 	tests := []struct {
 		name       string
 		fixture    string
@@ -4447,7 +4447,7 @@ func TestCodexExecutor_Run_Usage(t *testing.T) {
 			// unterminated, so only the final drain after exit can read it
 			name: "token_count in the final drain", fixture: "usage-rollout.jsonl",
 			lateRecord: `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40000,"cached_input_tokens":31000,"cache_write_input_tokens":1500,"output_tokens":1600,"total_tokens":41600}}}}`,
-			want:       &Usage{Model: "gpt-6-astra", InputTokens: 7500, CachedInputTokens: 31000, CacheWriteInputTokens: 1500, OutputTokens: 1600},
+			want:       &Usage{Model: "gpt-6.2-astra", InputTokens: 7500, CachedInputTokens: 31000, CacheWriteInputTokens: 1500, OutputTokens: 1600},
 		},
 	}
 	for _, tt := range tests {
@@ -4457,7 +4457,7 @@ func TestCodexExecutor_Run_Usage(t *testing.T) {
 			if tt.stripModel {
 				data, err := os.ReadFile(path) //nolint:gosec // test temp file
 				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(path, bytes.ReplaceAll(data, []byte(`"model":"gpt-6-astra",`), nil), 0o600))
+				require.NoError(t, os.WriteFile(path, bytes.ReplaceAll(data, []byte(`"model":"gpt-6.2-astra",`), nil), 0o600))
 			}
 			if tt.child {
 				f.install(t, "usage-child-rollout.jsonl", sessionID, childID)

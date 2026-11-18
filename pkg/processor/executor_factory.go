@@ -228,7 +228,7 @@ func (cfg Config) externalReviewModelEffort(provider string) (model, effort stri
 // external reviewer model specification. It is shared by CLI resolution and
 // executor construction so both paths produce identical settings. each provider
 // fills an empty model or effort separately: claude with opus:xhigh, codex with
-// gpt-6-astra:high, where a dropped max effort counts as empty. codex phases do not
+// gpt-6.2-astra:high, where a dropped max effort counts as empty. codex phases do not
 // come through here and keep the codex CLI's own defaults.
 // A reviewer's model[:effort] remainder is re-joined with its provider so the shared
 // ParseProviderSpec grammar splits it; ParseExternalReviewers has already validated it.
@@ -249,7 +249,7 @@ func ResolveExternalReviewerModelEffort(provider, spec string) (model, effort st
 	case config.ExternalReviewToolCodex:
 		model, effort, maxDropped = ResolveModelEffort(parsed)
 		if model == "" {
-			model = "gpt-6-astra"
+			model = "gpt-6.2-astra"
 		}
 		if effort == "" {
 			effort = "high"

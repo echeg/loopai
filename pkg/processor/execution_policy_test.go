@@ -479,14 +479,14 @@ func TestExecutionPolicy_SessionTimeoutGatedByPhaseProvidersAndToolName(t *testi
 		{name: "claude phases, claude tool", toolName: "claude", wantApplied: true},
 		{name: "claude phases, codex external review", toolName: "codex", wantApplied: false},
 		{name: "claude phases, custom external review", toolName: "custom", wantApplied: false},
-		{name: "codex phases, claude tool", taskModel: "codex:gpt-6-astra", toolName: "claude", wantApplied: true},
-		{name: "codex phases, codex tool", taskModel: "codex:gpt-6-astra", toolName: "codex", wantApplied: true},
-		{name: "codex phases, custom external review", taskModel: "codex:gpt-6-astra", toolName: "custom", wantApplied: true},
-		{name: "codex task with claude review, codex tool", taskModel: "codex:gpt-6-astra", reviewModel: "claude:opus",
+		{name: "codex phases, claude tool", taskModel: "codex:gpt-6.2-astra", toolName: "claude", wantApplied: true},
+		{name: "codex phases, codex tool", taskModel: "codex:gpt-6.2-astra", toolName: "codex", wantApplied: true},
+		{name: "codex phases, custom external review", taskModel: "codex:gpt-6.2-astra", toolName: "custom", wantApplied: true},
+		{name: "codex task with claude review, codex tool", taskModel: "codex:gpt-6.2-astra", reviewModel: "claude:opus",
 			toolName: "codex", wantApplied: true},
-		{name: "claude task with codex review, codex tool", taskModel: "claude:opus", reviewModel: "codex:gpt-6-astra",
+		{name: "claude task with codex review, codex tool", taskModel: "claude:opus", reviewModel: "codex:gpt-6.2-astra",
 			toolName: "codex", wantApplied: true},
-		{name: "claude task with codex review, custom external review", taskModel: "claude:opus", reviewModel: "codex:gpt-6-astra",
+		{name: "claude task with codex review, custom external review", taskModel: "claude:opus", reviewModel: "codex:gpt-6.2-astra",
 			toolName: "custom", wantApplied: true},
 	}
 
@@ -595,7 +595,7 @@ func TestExecutionPolicy_RunReportsUsageOfEverySession(t *testing.T) {
 
 func TestExecutionPolicy_RunWithSessionTimeoutReportsUsage(t *testing.T) {
 	cost := 0.42
-	usage := &executor.Usage{Model: "gpt-6-astra", InputTokens: 100, CachedInputTokens: 40,
+	usage := &executor.Usage{Model: "gpt-6.2-astra", InputTokens: 100, CachedInputTokens: 40,
 		CacheWriteInputTokens: 5, OutputTokens: 7, CostUSD: &cost}
 
 	tests := []struct {

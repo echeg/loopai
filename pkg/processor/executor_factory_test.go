@@ -158,11 +158,11 @@ func TestConfig_PhaseSpecs(t *testing.T) {
 		wantTask, wantReview   config.ProviderSpec
 	}{
 		{name: "unset task means claude defaults", wantTask: claude, wantReview: claude},
-		{name: "review inherits task whole", taskModel: "codex:gpt-6-astra:medium",
-			wantTask:   config.ProviderSpec{Provider: "codex", Model: "gpt-6-astra", Effort: "medium"},
-			wantReview: config.ProviderSpec{Provider: "codex", Model: "gpt-6-astra", Effort: "medium"}},
-		{name: "review keeps its own provider", taskModel: "codex:gpt-6-astra:medium", reviewModel: "claude:opus:high",
-			wantTask:   config.ProviderSpec{Provider: "codex", Model: "gpt-6-astra", Effort: "medium"},
+		{name: "review inherits task whole", taskModel: "codex:gpt-6.2-astra:medium",
+			wantTask:   config.ProviderSpec{Provider: "codex", Model: "gpt-6.2-astra", Effort: "medium"},
+			wantReview: config.ProviderSpec{Provider: "codex", Model: "gpt-6.2-astra", Effort: "medium"}},
+		{name: "review keeps its own provider", taskModel: "codex:gpt-6.2-astra:medium", reviewModel: "claude:opus:high",
+			wantTask:   config.ProviderSpec{Provider: "codex", Model: "gpt-6.2-astra", Effort: "medium"},
 			wantReview: config.ProviderSpec{Provider: "claude", Model: "opus", Effort: "high"}},
 		{name: "review provider over unset task", reviewModel: "codex::low",
 			wantTask: claude, wantReview: config.ProviderSpec{Provider: "codex", Effort: "low"}},
@@ -220,9 +220,9 @@ func TestResolveExternalReviewerModelEffort(t *testing.T) {
 		{name: "claude defaults", provider: config.ExternalReviewToolClaude, wantModel: "opus", wantEffort: "xhigh"},
 		{name: "claude overrides", provider: config.ExternalReviewToolClaude, spec: "fable:max", wantModel: "fable", wantEffort: "max"},
 		{name: "claude effort only keeps default model", provider: config.ExternalReviewToolClaude, spec: ":high", wantModel: "opus", wantEffort: "high"},
-		{name: "codex defaults", provider: config.ExternalReviewToolCodex, wantModel: "gpt-6-astra", wantEffort: "high"},
+		{name: "codex defaults", provider: config.ExternalReviewToolCodex, wantModel: "gpt-6.2-astra", wantEffort: "high"},
 		{name: "codex explicit", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6:xhigh", wantModel: "gpt-5.6", wantEffort: "xhigh"},
-		{name: "codex effort only keeps default model", provider: config.ExternalReviewToolCodex, spec: ":medium", wantModel: "gpt-6-astra", wantEffort: "medium"},
+		{name: "codex effort only keeps default model", provider: config.ExternalReviewToolCodex, spec: ":medium", wantModel: "gpt-6.2-astra", wantEffort: "medium"},
 		{name: "codex model only keeps default effort", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6", wantModel: "gpt-5.6", wantEffort: "high"},
 		{name: "codex max dropped to default effort", provider: config.ExternalReviewToolCodex, spec: "gpt-5.6:max", wantModel: "gpt-5.6", wantEffort: "high", wantMax: true},
 		{name: "custom has no model", provider: config.ExternalReviewToolCustom},
@@ -256,12 +256,12 @@ func TestExecutorFactory_PerPhaseProviders(t *testing.T) {
 
 	t.Run("codex task with claude review", func(t *testing.T) {
 		setIsolatedHome(t)
-		cfg := Config{Mode: ModeFull, TaskModel: "codex:gpt-6-astra:medium", ReviewModel: "claude:opus:high", AppConfig: newAppCfg(t)}
+		cfg := Config{Mode: ModeFull, TaskModel: "codex:gpt-6.2-astra:medium", ReviewModel: "claude:opus:high", AppConfig: newAppCfg(t)}
 		_, execs := (&executorFactory{}).Build(cfg, newRunnerMockLogger(""))
 
 		taskExec, ok := execs.Task.(*executor.CodexExecutor)
 		require.True(t, ok, "task slot must hold a codex executor")
-		assert.Equal(t, [2]string{"gpt-6-astra", "medium"}, [2]string{taskExec.Model, taskExec.ReasoningEffort})
+		assert.Equal(t, [2]string{"gpt-6.2-astra", "medium"}, [2]string{taskExec.Model, taskExec.ReasoningEffort})
 		assert.Equal(t, "danger-full-access", taskExec.Sandbox)
 		assert.True(t, taskExec.MultiAgent)
 
@@ -275,7 +275,7 @@ func TestExecutorFactory_PerPhaseProviders(t *testing.T) {
 
 	t.Run("claude task with codex review is write-capable", func(t *testing.T) {
 		setIsolatedHome(t)
-		cfg := Config{Mode: ModeFull, TaskModel: "claude:opus:high", ReviewModel: "codex:gpt-6-astra:high", AppConfig: newAppCfg(t)}
+		cfg := Config{Mode: ModeFull, TaskModel: "claude:opus:high", ReviewModel: "codex:gpt-6.2-astra:high", AppConfig: newAppCfg(t)}
 		_, execs := (&executorFactory{}).Build(cfg, newRunnerMockLogger(""))
 
 		taskExec, ok := execs.Task.(*executor.ClaudeExecutor)
@@ -284,7 +284,7 @@ func TestExecutorFactory_PerPhaseProviders(t *testing.T) {
 
 		reviewExec, ok := execs.Review.(*executor.CodexExecutor)
 		require.True(t, ok, "review slot must hold a codex executor")
-		assert.Equal(t, [2]string{"gpt-6-astra", "high"}, [2]string{reviewExec.Model, reviewExec.ReasoningEffort})
+		assert.Equal(t, [2]string{"gpt-6.2-astra", "high"}, [2]string{reviewExec.Model, reviewExec.ReasoningEffort})
 		assert.False(t, reviewExec.ForceReadOnly, "the review executor must not be the read-only external reviewer")
 		assert.NotEqual(t, "read-only", reviewExec.Sandbox)
 		assert.Equal(t, "danger-full-access", reviewExec.Sandbox)
@@ -322,14 +322,14 @@ func TestExecutorFactory_PerPhaseProviders(t *testing.T) {
 		name, taskModel, reviewModel string
 		wantReview                   [3]string // zero when the review slot is shared
 	}{
-		{name: "same codex spec shares the task executor", taskModel: "codex:gpt-6-astra:high", reviewModel: "codex:gpt-6-astra:high"},
+		{name: "same codex spec shares the task executor", taskModel: "codex:gpt-6.2-astra:high", reviewModel: "codex:gpt-6.2-astra:high"},
 		{name: "same claude spec shares the task executor", taskModel: "claude:opus:high", reviewModel: "claude:opus:high"},
 		{name: "provider defaults on both sides still differ by provider", taskModel: "claude", reviewModel: "codex",
 			wantReview: [3]string{"codex", "", ""}},
 		{name: "same model name under another provider is a separate executor", taskModel: "claude:shared:high",
 			reviewModel: "codex:shared:high", wantReview: [3]string{"codex", "shared", "high"}},
-		{name: "same provider, different effort", taskModel: "codex:gpt-6-astra:medium", reviewModel: "codex:gpt-6-astra:high",
-			wantReview: [3]string{"codex", "gpt-6-astra", "high"}},
+		{name: "same provider, different effort", taskModel: "codex:gpt-6.2-astra:medium", reviewModel: "codex:gpt-6.2-astra:high",
+			wantReview: [3]string{"codex", "gpt-6.2-astra", "high"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -662,7 +662,7 @@ func TestRunner_New_ExternalModelEffortIsIndependent(t *testing.T) {
 
 		_, execs := (&executorFactory{}).Build(cfg, log)
 		externalExec := externalExecutor(t, execs).(*executor.CodexExecutor)
-		assert.Equal(t, [2]string{"gpt-6-astra", "high"}, [2]string{externalExec.Model, externalExec.ReasoningEffort})
+		assert.Equal(t, [2]string{"gpt-6.2-astra", "high"}, [2]string{externalExec.Model, externalExec.ReasoningEffort})
 	})
 }
 
@@ -816,11 +816,11 @@ func TestRunner_New_AutoExternalRouting(t *testing.T) {
 		{name: "codex phases auto-select claude", mode: ModeReview, taskModel: phaseSpecFor(config.ExecutorCodex),
 			wantExternal: &executor.ClaudeExecutor{}},
 		// the review-only modes run no task phase, so the reviewer differs from the review provider
-		{name: "review mode differs from the claude review provider", mode: ModeReview, taskModel: "codex:gpt-6-astra",
+		{name: "review mode differs from the claude review provider", mode: ModeReview, taskModel: "codex:gpt-6.2-astra",
 			reviewModel: "claude:opus", wantExternal: &executor.CodexExecutor{}},
 		{name: "external only differs from the codex review provider", mode: ModeCodexOnly, taskModel: "claude:opus",
-			reviewModel: "codex:gpt-6-astra", wantExternal: &executor.ClaudeExecutor{}},
-		{name: "full mode differs from the codex task provider", mode: ModeFull, taskModel: "codex:gpt-6-astra",
+			reviewModel: "codex:gpt-6.2-astra", wantExternal: &executor.ClaudeExecutor{}},
+		{name: "full mode differs from the codex task provider", mode: ModeFull, taskModel: "codex:gpt-6.2-astra",
 			reviewModel: "claude:opus", wantExternal: &executor.ClaudeExecutor{}},
 	}
 

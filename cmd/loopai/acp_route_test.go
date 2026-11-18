@@ -206,12 +206,12 @@ func TestACPPlanMessageStartsAndBindsItsRun(t *testing.T) {
 				return acpRouteRunID, nil
 			})
 			s, sid := openACPSession(t, cwd, tc.lookup, "")
-			s.send(acpPrompt(3, sid, acpRoutePlan+" --task-model codex:gpt-6-astra:high --external-reviewers=claude"))
+			s.send(acpPrompt(3, sid, acpRoutePlan+" --task-model codex:gpt-6.2-astra:high --external-reviewers=claude"))
 			run := launchedRun(t, launched)
 			run.waitAttached()
 
 			assert.Equal(t, []acpLaunch{{cwd: cwd, threadID: tc.wantThread, sessionID: sid,
-				args: []string{"--task-model=codex:gpt-6-astra:high", "--external-reviewers=claude", acpRoutePlan}}},
+				args: []string{"--task-model=codex:gpt-6.2-astra:high", "--external-reviewers=claude", acpRoutePlan}}},
 				launches.all())
 			waitBound(t, cwd, tc.wantThread, sid, acpRouteRunID)
 			if tc.wantThread == "" {

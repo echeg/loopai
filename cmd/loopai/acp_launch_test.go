@@ -212,7 +212,7 @@ func TestLaunchACPRunThroughTheLauncher(t *testing.T) {
 	t.Setenv("T3_ACP_MCP_AUTHORIZATION", "Bearer mcp-secret")
 	t.Setenv(acpLauncherMainEnv, "1")
 	useACPLauncher(t, "TestACPLauncherMainHelper")
-	l := acpLaunch{cwd: f.repo, threadID: thread, sessionID: session, args: []string{"--task-model=codex:gpt-6-astra:high",
+	l := acpLaunch{cwd: f.repo, threadID: thread, sessionID: session, args: []string{"--task-model=codex:gpt-6.2-astra:high",
 		detachLaunchPlan}}
 
 	id, err := launchACPRun(t.Context(), l)
@@ -220,7 +220,7 @@ func TestLaunchACPRunThroughTheLauncher(t *testing.T) {
 	desc := f.onlyRun(t)
 	assert.Equal(t, desc.ID, id)
 	assert.Equal(t, runs.Origin{Kind: runs.OriginT3Thread, ThreadID: thread, ACPSessionID: session}, desc.Origin)
-	assert.Equal(t, []string{"--task-model=codex:gpt-6-astra:high", detachLaunchPlan}, desc.Argv)
+	assert.Equal(t, []string{"--task-model=codex:gpt-6.2-astra:high", detachLaunchPlan}, desc.Argv)
 	assert.Equal(t, map[string]string{"LOOPAI_CONFIG_DIR": cfgDir}, desc.EnvOptions)
 	for _, kv := range f.dump(t, id).Env {
 		assert.NotContains(t, kv, "mcp-secret", "the provider's MCP credential never reaches the run")

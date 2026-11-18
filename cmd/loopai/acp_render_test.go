@@ -159,7 +159,7 @@ func TestACPRendererIgnoresUsage(t *testing.T) {
 	assert.Equal(t, control.take(), sent.take())
 
 	r.apply(runs.Event{Seq: 4, Time: acpRenderEpoch, Attempt: 1, Type: runs.EventUsage, Provider: "codex",
-		Model: "gpt-6-astra", Phase: status.PhaseReview, InputTokens: 100, CachedInputTokens: 50, OutputTokens: 7})
+		Model: "gpt-6.2-astra", Phase: status.PhaseReview, InputTokens: 100, CachedInputTokens: 50, OutputTokens: 7})
 	assert.Empty(t, sent.take(), "a usage event sends no update")
 	assert.Equal(t, 4, r.seq(), "the usage event is folded")
 

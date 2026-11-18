@@ -11,7 +11,7 @@ import (
 
 func TestWindowsExecutableModelProviders(t *testing.T) {
 	t.Run("Claude executable allows a codex provider", func(t *testing.T) {
-		cfg := &config.Config{ClaudeCommand: `C:\tools\CLAUDE.EXE`, TaskModel: "codex:gpt-6-astra:medium"}
+		cfg := &config.Config{ClaudeCommand: `C:\tools\CLAUDE.EXE`, TaskModel: "codex:gpt-6.2-astra:medium"}
 		require.NoError(t, applyCLIOverrides(opts{}, cfg))
 		assert.Equal(t, config.ExecutorCodex, cfg.TaskProvider)
 		require.NoError(t, validateModelSpecs(opts{}, cfg))
@@ -21,8 +21,8 @@ func TestWindowsExecutableModelProviders(t *testing.T) {
 		opts     opts
 		cfg      config.Config
 	}{
-		{"claude", opts{}, config.Config{ClaudeCommand: `C:\tools\claude.exe`, TaskModel: "claude:fable", PlanModel: "claude:gpt-6-astra"}},
-		{"codex", opts{}, config.Config{CodexCommand: `C:\tools\CODEX.EXE`, TaskModel: "codex:gpt-6-astra", PlanModel: "codex:fable"}},
+		{"claude", opts{}, config.Config{ClaudeCommand: `C:\tools\claude.exe`, TaskModel: "claude:fable", PlanModel: "claude:gpt-6.2-astra"}},
+		{"codex", opts{}, config.Config{CodexCommand: `C:\tools\CODEX.EXE`, TaskModel: "codex:gpt-6.2-astra", PlanModel: "codex:fable"}},
 	} {
 		t.Run(tt.provider+" executable rejects mismatched model", func(t *testing.T) {
 			require.NoError(t, applyCLIOverrides(tt.opts, &tt.cfg))
